@@ -2,6 +2,7 @@ using System.ComponentModel;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
+using HerdrOps.App.Files;
 using HerdrOps.App.Live;
 using HerdrOps.App.Localization;
 using HerdrOps.App.Overview;
@@ -41,6 +42,9 @@ public partial class ShellView : UserControl
         InitializeComponent();
         DataContext = Navigation;
         RealtimeActivityPage.DataContext = LiveDashboard.RealtimeActivity;
+        FileActivityPage.DataContext = syntheticPreview
+            ? FileActivityState.CreateSyntheticPreview()
+            : FileActivityState.CreateUnavailable();
         if (!syntheticPreview)
         {
             OverviewPage.DataContext = LiveDashboard.Overview;
@@ -117,6 +121,10 @@ public partial class ShellView : UserControl
         Navigation.NotifyLanguageChanged();
         NavigationList.Items.Refresh();
         LiveDashboard.RefreshLanguage();
+        if (FileActivityPage.DataContext is FileActivityState fileActivity)
+        {
+            fileActivity.RefreshLanguage();
+        }
         if (_syntheticPreview)
         {
             OverviewPage.DataContext = SyntheticOverviewState.Create();
@@ -151,6 +159,10 @@ public partial class ShellView : UserControl
             Navigation.SelectedDestination.Id,
             "realtime-activity",
             StringComparison.Ordinal);
+        var isFileActivity = string.Equals(
+            Navigation.SelectedDestination.Id,
+            "file-activity",
+            StringComparison.Ordinal);
         OverviewPage.Visibility = isOverview ? Visibility.Visible : Visibility.Collapsed;
         LiveOrganizationPage.Visibility = isLiveOrganization
             ? Visibility.Visible
@@ -159,7 +171,14 @@ public partial class ShellView : UserControl
         RealtimeActivityPage.Visibility = isRealtimeActivity
             ? Visibility.Visible
             : Visibility.Collapsed;
-        PlaceholderPage.Visibility = isOverview || isLiveOrganization || isAgentDetail || isRealtimeActivity
+        FileActivityPage.Visibility = isFileActivity
+            ? Visibility.Visible
+            : Visibility.Collapsed;
+        PlaceholderPage.Visibility = isOverview ||
+            isLiveOrganization ||
+            isAgentDetail ||
+            isRealtimeActivity ||
+            isFileActivity
             ? Visibility.Collapsed
             : Visibility.Visible;
     }

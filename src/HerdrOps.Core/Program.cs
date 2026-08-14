@@ -10,6 +10,11 @@ if (args.Length > 0 && string.Equals(args[0], "trace-herdr-terminal-process", St
     return await HerdrTerminalProcessTraceCommand.RunAsync(args, Console.Out, Console.Error);
 }
 
+if (args.Length > 0 && string.Equals(args[0], "trace-file-git-activity", StringComparison.Ordinal))
+{
+    return await FileGitActivityTraceCommand.RunAsync(args, Console.Out, Console.Error);
+}
+
 if (args.Length > 0 && string.Equals(args[0], "trace-herdr-runtime", StringComparison.Ordinal))
 {
     return await HerdrRuntimeTraceCommand.RunAsync(args, Console.Out, Console.Error);

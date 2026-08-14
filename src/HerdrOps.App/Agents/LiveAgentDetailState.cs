@@ -156,7 +156,7 @@ public sealed class LiveAgentDetailState : ObservableState
     {
         var text = UiLanguageService.Shared;
         Initials = "PM";
-        Name = "Project Manager";
+        Name = text["RealtimeActorProjectManager"];
         Runtime = text["SyntheticProfile"];
         Status = text["PreviewStatus"];
         StatusBrushKey = OverviewBrushKeys.Review;

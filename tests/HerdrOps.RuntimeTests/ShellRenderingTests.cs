@@ -44,7 +44,9 @@ public sealed class ShellRenderingTests
         foreach (var scale in new[] { 1.0, 1.25, 1.5 })
         {
             var view = ShellView.CreateSyntheticPreview();
-            Assert.AreEqual("Project Manager", view.LiveDashboard.AgentDetail.Name);
+            Assert.AreEqual(
+                UiLanguageService.Shared["RealtimeActorProjectManager"],
+                view.LiveDashboard.AgentDetail.Name);
             Assert.AreEqual(UiLanguageService.Shared["SyntheticProfile"], view.LiveDashboard.AgentDetail.Runtime);
             Assert.AreEqual(UiLanguageService.Shared["PreviewStatus"], view.LiveDashboard.AgentDetail.Status);
             view.Navigation.SelectedIndex = 1;
