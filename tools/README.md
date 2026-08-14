@@ -17,4 +17,7 @@ Build, verification, GitHub roadmap, evidence capture, and packaging helpers liv
 
 # Validate the exact installed Herdr binary and bounded v0.2 protocol contract
 ./tools/Test-V02ProtocolContract.ps1
+
+# Extract and validate the exact bundled Herdr JSON Schema successor contract
+./tools/Test-V02BundledSchemaContract.ps1
 ```

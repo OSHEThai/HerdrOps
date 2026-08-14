@@ -32,3 +32,11 @@
 - Consequence: Any changed Herdr executable fails closed and requires a successor contract; fixture tests remain Contract evidence and never become runtime credit.
 - Current admitted binary: `0.8.0-preview.2026-08-04-d78e3d3b5126-x86_64-pc-windows-msvc`, SHA-256 `6F470DA358D6713B6BEBAB922FFB1F5FE1D3D288CC6F374C7DCA1B4A9837A542`.
 - Status: Implemented for v0.2 Issue #6; actual session/runtime acceptance remains pending.
+
+## D-006 — Exact bundled Herdr JSON Schema admission
+
+- Decision: Extract one uniquely located balanced JSON object only after the Issue #6 binary identity passes, then admit the raw document by exact length, SHA-256, JSON Schema draft, protocol, schema version, group counts and required monitoring variants.
+- Exact schema: offset `16,342,610`, length `261,498`, SHA-256 `9449368D54BBECD4D4D0696EFFB9E9C002ECD63A5B8A48BBD901A305AF842982`, protocol `19`, schema version `1`.
+- Reason: Document-level validation gives Issue #7 a parsed source contract while preserving the distinction between the Issue #6 canonical fingerprint and actual embedded schema bytes.
+- Consequence: Duplicate, truncated, malformed, changed or incomplete schemas fail closed and cannot be exported; static extraction remains Contract evidence with no runtime credit.
+- Status: Implemented as the v0.2 Issue #54 successor; actual session/runtime acceptance remains pending.
