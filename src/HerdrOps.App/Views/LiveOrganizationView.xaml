@@ -3,6 +3,7 @@
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:automation="clr-namespace:System.Windows.Automation;assembly=PresentationCore"
              xmlns:converters="clr-namespace:HerdrOps.App.Converters"
+             xmlns:localization="clr-namespace:HerdrOps.App.Localization"
              Background="{DynamicResource HerdrOps.Brush.Background}"
              ClipToBounds="True"
              SizeChanged="OnViewSizeChanged">
@@ -104,11 +105,7 @@
                                            Foreground="{DynamicResource HerdrOps.Brush.TextPrimary}"
                                            FontSize="12"
                                            FontWeight="SemiBold"
-                                           Text="{Binding ThaiTitle}"
-                                           TextTrimming="CharacterEllipsis" />
-                                <TextBlock Foreground="{DynamicResource HerdrOps.Brush.TextSecondary}"
-                                           FontSize="10"
-                                           Text="{Binding EnglishTitle}"
+                                           Text="{Binding Title}"
                                            TextTrimming="CharacterEllipsis" />
                                 <TextBlock Margin="0,8,0,0"
                                            FontSize="27"
@@ -156,10 +153,10 @@
                             <TextBlock Tag="ThaiLiveOrganizationCheck"
                                        FontSize="15"
                                        FontWeight="SemiBold"
-                                       Text="โครงสร้าง Herdr แบบสด" />
+                                       Text="{Binding [OrganizationHierarchyTitle], Source={x:Static localization:UiLanguageService.Shared}}" />
                             <TextBlock Foreground="{DynamicResource HerdrOps.Brush.TextSecondary}"
                                        FontSize="11"
-                                       Text="Workspace → Tab → Agent topology" />
+                                       Text="{Binding [OrganizationHierarchySubtitle], Source={x:Static localization:UiLanguageService.Shared}}" />
                         </StackPanel>
                         <TextBlock Grid.Column="1"
                                    VerticalAlignment="Center"
@@ -180,7 +177,7 @@
                              ItemsSource="{Binding Nodes}"
                              SelectedItem="{Binding SelectedNode, Mode=TwoWay}"
                              SelectionChanged="OnNodeSelectionChanged"
-                             automation:AutomationProperties.Name="โครงสร้าง Workspace Tab และ Agent จาก Core">
+                             automation:AutomationProperties.Name="{Binding [OrganizationHierarchyAutomation], Source={x:Static localization:UiLanguageService.Shared}}">
                         <ListBox.ItemTemplate>
                             <DataTemplate>
                                 <Grid>
@@ -281,7 +278,7 @@
                                 CornerRadius="{DynamicResource HerdrOps.Radius.Pill}">
                             <TextBlock Foreground="{DynamicResource HerdrOps.Brush.PrimaryText}"
                                        FontSize="9"
-                                       Text="AGENT" />
+                                       Text="{Binding [OrganizationAgentBadge], Source={x:Static localization:UiLanguageService.Shared}}" />
                         </Border>
                     </Grid>
                     <Border Grid.Row="1"
@@ -301,17 +298,17 @@
                             <RowDefinition Height="Auto" />
                             <RowDefinition Height="*" />
                         </Grid.RowDefinitions>
-                        <TextBlock Style="{DynamicResource HerdrOps.Style.Text.Caption}" Text="Workspace" />
+                        <TextBlock Style="{DynamicResource HerdrOps.Style.Text.Caption}" Text="{Binding [OrganizationLabelWorkspace], Source={x:Static localization:UiLanguageService.Shared}}" />
                         <TextBlock Grid.Column="1" Text="{Binding SelectedAgent.Workspace}" TextTrimming="CharacterEllipsis" />
-                        <TextBlock Grid.Row="1" Style="{DynamicResource HerdrOps.Style.Text.Caption}" Text="Tab" />
+                        <TextBlock Grid.Row="1" Style="{DynamicResource HerdrOps.Style.Text.Caption}" Text="{Binding [OrganizationLabelTab], Source={x:Static localization:UiLanguageService.Shared}}" />
                         <TextBlock Grid.Row="1" Grid.Column="1" Text="{Binding SelectedAgent.Tab}" TextTrimming="CharacterEllipsis" />
-                        <TextBlock Grid.Row="2" Style="{DynamicResource HerdrOps.Style.Text.Caption}" Text="Pane" />
+                        <TextBlock Grid.Row="2" Style="{DynamicResource HerdrOps.Style.Text.Caption}" Text="{Binding [OrganizationLabelPane], Source={x:Static localization:UiLanguageService.Shared}}" />
                         <TextBlock Grid.Row="2" Grid.Column="1" Text="{Binding SelectedAgent.Pane}" TextTrimming="CharacterEllipsis" />
-                        <TextBlock Grid.Row="3" Style="{DynamicResource HerdrOps.Style.Text.Caption}" Text="Terminal" />
+                        <TextBlock Grid.Row="3" Style="{DynamicResource HerdrOps.Style.Text.Caption}" Text="{Binding [OrganizationLabelTerminal], Source={x:Static localization:UiLanguageService.Shared}}" />
                         <TextBlock Grid.Row="3" Grid.Column="1" Text="{Binding SelectedAgent.Terminal}" TextTrimming="CharacterEllipsis" />
-                        <TextBlock Grid.Row="4" Style="{DynamicResource HerdrOps.Style.Text.Caption}" Text="Revision" />
+                        <TextBlock Grid.Row="4" Style="{DynamicResource HerdrOps.Style.Text.Caption}" Text="{Binding [OrganizationLabelRevision], Source={x:Static localization:UiLanguageService.Shared}}" />
                         <TextBlock Grid.Row="4" Grid.Column="1" Text="{Binding SelectedAgent.Revision}" />
-                        <TextBlock Grid.Row="5" Style="{DynamicResource HerdrOps.Style.Text.Caption}" Text="Directory" />
+                        <TextBlock Grid.Row="5" Style="{DynamicResource HerdrOps.Style.Text.Caption}" Text="{Binding [OrganizationLabelDirectory], Source={x:Static localization:UiLanguageService.Shared}}" />
                         <TextBlock Grid.Row="5"
                                    Grid.Column="1"
                                    Text="{Binding SelectedAgent.CurrentDirectory}"
@@ -349,10 +346,10 @@
                     <TextBlock Tag="ThaiLiveOrganizationCheck"
                                FontSize="14"
                                FontWeight="SemiBold"
-                               Text="สิ่งที่ต้องให้ความสนใจ" />
+                               Text="{Binding [OrganizationAttentionTitle], Source={x:Static localization:UiLanguageService.Shared}}" />
                     <TextBlock Foreground="{DynamicResource HerdrOps.Brush.TextSecondary}"
                                FontSize="10"
-                               Text="State attention · no inferred roles" />
+                               Text="{Binding [OrganizationAttentionSubtitle], Source={x:Static localization:UiLanguageService.Shared}}" />
                 </StackPanel>
                 <ItemsControl Grid.Column="1" ItemsSource="{Binding AttentionItems}">
                     <ItemsControl.ItemsPanel>

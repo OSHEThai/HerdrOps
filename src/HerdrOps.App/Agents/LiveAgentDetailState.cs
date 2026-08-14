@@ -18,35 +18,34 @@ public sealed record AgentDetailRelatedAgent(
     string AccentBrushKey);
 
 public sealed record AgentDetailUnsupportedSection(
-    string ThaiTitle,
-    string EnglishTitle,
+    string Title,
     string Value,
     string Explanation);
 
 public sealed class LiveAgentDetailState : ObservableState
 {
-    private string _sourceLabel = "WAITING FOR CORE";
-    private string _connectionLabel = "Core not connected";
+    private string _sourceLabel = UiLanguageService.Shared["CoreWaitingSource"];
+    private string _connectionLabel = UiLanguageService.Shared["CoreNotConnected"];
     private string _initials = "?";
-    private string _name = "No Agent selected";
-    private string _runtime = "Unknown runtime";
-    private string _status = "Offline";
+    private string _name = UiLanguageService.Shared["NoAgentSelected"];
+    private string _runtime = UiLanguageService.Shared["UnknownRuntime"];
+    private string _status = UiLanguageService.Shared["StatusOffline"];
     private string _statusBrushKey = OverviewBrushKeys.Offline;
-    private string _workspace = "Unknown";
-    private string _tab = "Unknown";
-    private string _pane = "Unknown";
-    private string _terminal = "Unknown";
-    private string _title = "Unknown";
-    private string _currentDirectory = "Unknown";
-    private string _foregroundDirectory = "Unknown";
-    private string _terminalTitle = "Unknown";
+    private string _workspace = UiLanguageService.Shared["ValueUnknown"];
+    private string _tab = UiLanguageService.Shared["ValueUnknown"];
+    private string _pane = UiLanguageService.Shared["ValueUnknown"];
+    private string _terminal = UiLanguageService.Shared["ValueUnknown"];
+    private string _title = UiLanguageService.Shared["ValueUnknown"];
+    private string _currentDirectory = UiLanguageService.Shared["ValueUnknown"];
+    private string _foregroundDirectory = UiLanguageService.Shared["ValueUnknown"];
+    private string _terminalTitle = UiLanguageService.Shared["ValueUnknown"];
     private string _revision = "—";
     private string _stateChangeSequence = "—";
     private string _sessionSequence = "0";
     private string _connectionEpoch = "0";
-    private string _interactiveReady = "Unknown";
-    private string _launchPending = "Unknown";
-    private string _screenDetectionSkipped = "Unknown";
+    private string _interactiveReady = UiLanguageService.Shared["ValueUnknown"];
+    private string _launchPending = UiLanguageService.Shared["ValueUnknown"];
+    private string _screenDetectionSkipped = UiLanguageService.Shared["ValueUnknown"];
     private IReadOnlyList<AgentDetailFact> _recentFacts = [];
     private IReadOnlyList<AgentDetailRelatedAgent> _relatedAgents = [];
     private IReadOnlyList<AgentDetailUnsupportedSection> _unsupportedSections = [];
@@ -187,18 +186,18 @@ public sealed class LiveAgentDetailState : ObservableState
         Initials = AgentStatusPresentation.Initials(agent);
         Name = AgentStatusPresentation.DisplayName(agent);
         Runtime = AgentStatusPresentation.RuntimeName(agent);
-        Status = AgentStatusPresentation.EffectiveStatus(agent.AgentStatus, isLive);
-        StatusBrushKey = AgentStatusPresentation.BrushKey(Status);
+        var effectiveStatus = AgentStatusPresentation.EffectiveStatus(agent.AgentStatus, isLive);
+        Status = AgentStatusPresentation.DisplayStatus(effectiveStatus);
+        StatusBrushKey = AgentStatusPresentation.BrushKey(effectiveStatus);
         Workspace = LabelForWorkspace(state, agent.WorkspaceId);
         Tab = LabelForTab(state, agent.TabId);
         Pane = agent.PaneId;
         Terminal = agent.TerminalId;
-        Title = AgentStatusPresentation.FirstNonEmpty(agent.Title, "Unknown");
-        CurrentDirectory = AgentStatusPresentation.FirstNonEmpty(agent.CurrentDirectory, "Unknown");
+        Title = AgentStatusPresentation.FirstNonEmpty(agent.Title);
+        CurrentDirectory = AgentStatusPresentation.FirstNonEmpty(agent.CurrentDirectory);
         ForegroundDirectory = AgentStatusPresentation.FirstNonEmpty(
-            agent.ForegroundCurrentDirectory,
-            "Unknown");
-        TerminalTitle = AgentStatusPresentation.FirstNonEmpty(agent.TerminalTitle, "Unknown");
+            agent.ForegroundCurrentDirectory);
+        TerminalTitle = AgentStatusPresentation.FirstNonEmpty(agent.TerminalTitle);
         Revision = agent.Revision.ToString(System.Globalization.CultureInfo.InvariantCulture);
         StateChangeSequence = agent.StateChangeSequence.ToString(
             System.Globalization.CultureInfo.InvariantCulture);
@@ -217,7 +216,7 @@ public sealed class LiveAgentDetailState : ObservableState
                     AgentStatusPresentation.Initials(item),
                     AgentStatusPresentation.DisplayName(item),
                     AgentStatusPresentation.RuntimeName(item),
-                    effectiveStatus,
+                    AgentStatusPresentation.DisplayStatus(effectiveStatus),
                     AgentStatusPresentation.BrushKey(effectiveStatus));
             })
             .ToArray();
@@ -227,23 +226,25 @@ public sealed class LiveAgentDetailState : ObservableState
     private void ApplyEmpty(bool isLive)
     {
         Initials = "?";
-        Name = "No Agent selected";
-        Runtime = "Unknown runtime";
-        Status = isLive ? "Unknown" : AgentStatusPresentation.Offline;
+        var text = UiLanguageService.Shared;
+        Name = text["NoAgentSelected"];
+        Runtime = text["UnknownRuntime"];
+        Status = AgentStatusPresentation.DisplayStatus(
+            isLive ? "Unknown" : AgentStatusPresentation.Offline);
         StatusBrushKey = OverviewBrushKeys.Offline;
-        Workspace = "Unknown";
-        Tab = "Unknown";
-        Pane = "Unknown";
-        Terminal = "Unknown";
-        Title = "Unknown";
-        CurrentDirectory = "Unknown";
-        ForegroundDirectory = "Unknown";
-        TerminalTitle = "Unknown";
+        Workspace = text["ValueUnknown"];
+        Tab = text["ValueUnknown"];
+        Pane = text["ValueUnknown"];
+        Terminal = text["ValueUnknown"];
+        Title = text["ValueUnknown"];
+        CurrentDirectory = text["ValueUnknown"];
+        ForegroundDirectory = text["ValueUnknown"];
+        TerminalTitle = text["ValueUnknown"];
         Revision = "—";
         StateChangeSequence = "—";
-        InteractiveReady = "Unknown";
-        LaunchPending = "Unknown";
-        ScreenDetectionSkipped = "Unknown";
+        InteractiveReady = text["ValueUnknown"];
+        LaunchPending = text["ValueUnknown"];
+        ScreenDetectionSkipped = text["ValueUnknown"];
         RecentFacts = [];
         RelatedAgents = [];
         UnsupportedSections = CreateUnsupportedSections();
@@ -252,22 +253,40 @@ public sealed class LiveAgentDetailState : ObservableState
     private static IReadOnlyList<AgentDetailFact> CreateFacts(
         HerdrSessionStateContract state,
         HerdrAgentStateContract agent,
-        bool isLive) =>
-    [
-        new("State freshness", isLive ? "Latest accepted" : "Last known / offline", isLive ? "Core stream live · Herdr runtime freshness unknown" : "Core-to-App IPC offline"),
-        new("Herdr status", isLive ? $"Observed {agent.AgentStatus}" : "Unknown while offline", "Latest accepted Herdr session state"),
-        new("Pane revision", agent.Revision.ToString(), "Herdr pane metadata"),
-        new("State change sequence", agent.StateChangeSequence.ToString(), "Herdr agent metadata"),
-        new("Session sequence", state.LastIngestSequence.ToString(), "HerdrOps Core"),
-    ];
+        bool isLive)
+    {
+        var text = UiLanguageService.Shared;
+        return
+        [
+            new(
+                text["AgentFactFreshness"],
+                isLive ? text["AgentFactLatestAccepted"] : text["AgentFactLastKnownOffline"],
+                isLive ? text["AgentFactCoreLive"] : text["AgentFactCoreOffline"]),
+            new(
+                text["AgentFactHerdrStatus"],
+                isLive
+                    ? text.Format(
+                        "AgentFactObservedStatusFormat",
+                        AgentStatusPresentation.DisplayStatus(agent.AgentStatus))
+                    : text["AgentFactUnknownOffline"],
+                text["AgentFactLatestHerdrState"]),
+            new(text["AgentFactPaneRevision"], agent.Revision.ToString(), text["AgentFactPaneMetadata"]),
+            new(text["AgentFactStateSequence"], agent.StateChangeSequence.ToString(), text["AgentFactAgentMetadata"]),
+            new(text["AgentFactSessionSequence"], state.LastIngestSequence.ToString(), "HerdrOps Core"),
+        ];
+    }
 
-    private static IReadOnlyList<AgentDetailUnsupportedSection> CreateUnsupportedSections() =>
-    [
-        new("งานที่ได้รับมอบหมาย", "Current Assignment", "Unknown", "Not supplied by Herdr protocol 19"),
-        new("หลักฐานที่ส่งแล้ว", "Evidence Submitted", "Unknown", "Evidence collection starts in a later version"),
-        new("คะแนนรายมิติ", "Score by Dimension", "Unknown", "Evaluation is outside v0.2 state"),
-        new("งานที่เปิดอยู่", "Open Tasks", "Unknown", "Task contracts are introduced in v0.4"),
-    ];
+    private static IReadOnlyList<AgentDetailUnsupportedSection> CreateUnsupportedSections()
+    {
+        var text = UiLanguageService.Shared;
+        return
+        [
+            new(text["AgentUnsupportedAssignment"], text["ValueUnknown"], text["AgentUnsupportedAssignmentReason"]),
+            new(text["AgentUnsupportedEvidence"], text["ValueUnknown"], text["AgentUnsupportedEvidenceReason"]),
+            new(text["AgentUnsupportedScore"], text["ValueUnknown"], text["AgentUnsupportedScoreReason"]),
+            new(text["AgentUnsupportedTasks"], text["ValueUnknown"], text["AgentUnsupportedTasksReason"]),
+        ];
+    }
 
     private static string LabelForWorkspace(HerdrSessionStateContract state, string workspaceId) =>
         AgentStatusPresentation.FirstNonEmpty(

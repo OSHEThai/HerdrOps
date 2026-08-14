@@ -1,4 +1,5 @@
 using System.Text.RegularExpressions;
+using HerdrOps.App.Live;
 using HerdrOps.App.Localization;
 using HerdrOps.App.Overview;
 using HerdrOps.App.Widgets;
@@ -41,6 +42,8 @@ public sealed class UiLanguageCatalogTests
         {
             "src/HerdrOps.App/Views/ShellView.xaml",
             "src/HerdrOps.App/Views/OverviewView.xaml",
+            "src/HerdrOps.App/Views/LiveOrganizationView.xaml",
+            "src/HerdrOps.App/Views/AgentDetailView.xaml",
             "src/HerdrOps.App/Widgets/WidgetGalleryView.xaml",
             "src/HerdrOps.App/Widgets/WidgetSurface.xaml",
         };
@@ -69,6 +72,16 @@ public sealed class UiLanguageCatalogTests
                 $"Hard-coded Thai UI copy remains in {relativePath}");
             Assert.IsFalse(xaml.Contains("ThaiTitle", StringComparison.Ordinal), relativePath);
             Assert.IsFalse(xaml.Contains("EnglishTitle", StringComparison.Ordinal), relativePath);
+            if (relativePath.EndsWith("LiveOrganizationView.xaml", StringComparison.Ordinal) ||
+                relativePath.EndsWith("AgentDetailView.xaml", StringComparison.Ordinal))
+            {
+                Assert.IsFalse(
+                    Regex.IsMatch(
+                        xaml,
+                        @"(?:Text|Content|AutomationProperties\.Name)=""[^""{]*[A-Za-zก-๙]",
+                        RegexOptions.CultureInvariant),
+                    $"Hard-coded localized UI copy remains in {relativePath}");
+            }
         }
     }
 
@@ -96,6 +109,148 @@ public sealed class UiLanguageCatalogTests
         CollectionAssert.AreEqual(
             thaiOverview.SummaryCards.Select(card => card.Id).ToArray(),
             englishOverview.SummaryCards.Select(card => card.Id).ToArray());
+    }
+
+    [TestMethod]
+    public void LiveDashboardCopyRebuildsFromThaiToEnglishWithoutRetainingThaiText()
+    {
+        var language = UiLanguageService.Shared;
+        language.SetLanguage(UiLanguage.Thai);
+        var dashboard = new LiveDashboardState();
+        var state = LiveWidgetStateTests.CreateState(sequence: 12);
+        var update = LiveWidgetStateTests.SnapshotUpdate(state);
+        dashboard.ApplyUpdate(update, update.Envelope.SentUtc.AddMilliseconds(18));
+        var thaiCopy = FlattenLocalizedCopy(dashboard).ToArray();
+        var thaiActivity = dashboard.Overview.RecentActivities[0].Description;
+
+        Assert.IsTrue(thaiCopy.Any(ContainsThai));
+        Assert.IsTrue(ContainsThai(thaiActivity));
+
+        language.SetLanguage(UiLanguage.English);
+        dashboard.RefreshLanguage();
+        var englishCopy = FlattenLocalizedCopy(dashboard).ToArray();
+
+        Assert.AreNotEqual(thaiActivity, dashboard.Overview.RecentActivities[0].Description);
+        Assert.IsTrue(englishCopy.All(value => !ContainsThai(value)),
+            $"English live UI retained Thai copy: {string.Join(" | ", englishCopy.Where(ContainsThai))}");
+        Assert.AreEqual("CORE SNAPSHOT", dashboard.SourceLabel);
+        Assert.AreEqual("Working", dashboard.AgentDetail.Status);
+        Assert.IsTrue(dashboard.Organization.SummaryCards.All(card => !ContainsThai(card.Title + card.Detail)));
+        Assert.IsTrue(dashboard.AgentDetail.UnsupportedSections.All(
+            section => !ContainsThai(section.Title + section.Value + section.Explanation)));
+    }
+
+    private static IEnumerable<string> FlattenLocalizedCopy(LiveDashboardState dashboard)
+    {
+        yield return dashboard.SourceLabel;
+        yield return dashboard.ConnectionLabel;
+        yield return dashboard.StatusSummary;
+        yield return dashboard.LastUpdateLabel;
+        foreach (var card in dashboard.Overview.SummaryCards)
+        {
+            yield return card.Title;
+            yield return card.Metric;
+            yield return card.Trend;
+        }
+
+        yield return dashboard.Overview.ActivitySourceLabel;
+        yield return dashboard.Overview.ActivityFooterLabel;
+        yield return dashboard.Overview.ScoreTrendStatus;
+        yield return dashboard.Overview.TopAgentsSourceLabel;
+        yield return dashboard.Overview.AgentListTitle;
+        yield return dashboard.Overview.AlertsCountLabel;
+        foreach (var activity in dashboard.Overview.RecentActivities)
+        {
+            yield return activity.Description;
+        }
+
+        foreach (var alert in dashboard.Overview.Alerts)
+        {
+            yield return alert.Title;
+            yield return alert.Description;
+            yield return alert.State;
+        }
+
+        foreach (var row in dashboard.Overview.TopAgents)
+        {
+            yield return row.DeltaLabel;
+        }
+
+        yield return dashboard.Organization.HierarchyLabel;
+        foreach (var card in dashboard.Organization.SummaryCards)
+        {
+            yield return card.Title;
+            yield return card.Detail;
+        }
+
+        foreach (var node in dashboard.Organization.Nodes)
+        {
+            yield return node.NodeType;
+            yield return node.Subtitle;
+            yield return node.Status;
+        }
+
+        yield return dashboard.Organization.SelectedAgent.Status;
+        yield return dashboard.Organization.SelectedAgent.SourceNote;
+        foreach (var item in dashboard.Organization.AttentionItems)
+        {
+            yield return item.Title;
+            yield return item.Detail;
+        }
+
+        yield return dashboard.AgentDetail.Status;
+        yield return dashboard.AgentDetail.InteractiveReady;
+        yield return dashboard.AgentDetail.LaunchPending;
+        yield return dashboard.AgentDetail.ScreenDetectionSkipped;
+        foreach (var fact in dashboard.AgentDetail.RecentFacts)
+        {
+            yield return fact.Label;
+            yield return fact.Value;
+            yield return fact.Source;
+        }
+
+        foreach (var section in dashboard.AgentDetail.UnsupportedSections)
+        {
+            yield return section.Title;
+            yield return section.Value;
+            yield return section.Explanation;
+        }
+
+        foreach (var related in dashboard.AgentDetail.RelatedAgents)
+        {
+            yield return related.Status;
+        }
+
+        yield return dashboard.Widgets.SourceLabel;
+        yield return dashboard.Widgets.CompactSourceLabel;
+        yield return dashboard.Widgets.ConnectionLabel;
+        yield return dashboard.Widgets.CompactConnectionLabel;
+        yield return dashboard.Widgets.GalleryDescription;
+        yield return dashboard.Widgets.DashboardPreviewLabel;
+        yield return dashboard.Widgets.WindowTitleSuffix;
+        yield return dashboard.Widgets.DetailsSourceLabel;
+        yield return dashboard.Widgets.DailyScoreLabel;
+        yield return dashboard.Widgets.LatencyLabel;
+        foreach (var agent in dashboard.Widgets.Agents)
+        {
+            yield return agent.AssignedBy;
+            yield return agent.Activity;
+            yield return agent.Elapsed;
+            yield return agent.Status;
+            yield return agent.StartedLabel;
+        }
+
+        foreach (var notice in dashboard.Widgets.Notices)
+        {
+            yield return notice.AgentName;
+            yield return notice.Message;
+            yield return notice.State;
+        }
+
+        foreach (var activity in dashboard.Widgets.SelectedAgentActivity)
+        {
+            yield return activity.Description;
+        }
     }
 
     private static bool ContainsThai(string value) =>

@@ -16,7 +16,7 @@
 ## D-003 — Design authority
 
 - Decision: The 11 user-provided images are the visual Source of Truth.
-- Consequence: Preserve the circular blue logo, shared shell, bilingual density and canonical page/widget structure.
+- Consequence: Preserve the circular blue logo, shared shell, information density and canonical page/widget structure. Language presentation follows D-011 and never stacks Thai and English translations in one selected mode.
 - Status: Applied; exact hashes are in the reference manifest.
 
 ## D-004 — Local-first v1
@@ -81,3 +81,12 @@
 - Telemetry contract: Widget transport-latency samples are bounded to the latest 512 accepted sequences and report p95. The implementation test separately measures synchronous in-process contract-to-widget adapter time; neither value is accepted as end-to-end Herdr latency or Core-plus-App resource evidence.
 - Evidence boundary: Contract-backed WPF captures, same-user pipe tests and in-process measurements are Integration/Synthetic evidence. They do not satisfy Issue #10's actual live-widget capture, reference-host end-to-end latency, Core-plus-App resource budget or version-local runtime gate.
 - Status: Implementation-ready for v0.2 Issue #10. Actual Herdr/reference-host runtime acceptance remains pending, so the issue must stay open.
+
+## D-011 — Thai and English are separate presentation modes
+
+- Decision: Thai is the default UI language and English is selectable from the shared shell. Every implemented surface renders one selected language at a time; paired `ThaiTitle`/`EnglishTitle` presentation fields and stacked translation headings are prohibited.
+- Dynamic-state contract: Live copy is regenerated from raw Core contract state whenever the language changes. Status, empty, offline, freshness and unsupported-field explanations are localized without changing protocol values or turning unknown data into success.
+- Literal-data boundary: Product names, Agent names, workspace/tab/pane labels supplied by Herdr, identifiers, paths and protocol values remain literal source data rather than receiving invented translations.
+- Lifetime contract: Shell and Widget language listeners use weak subscriptions and marshal updates to their owning WPF dispatcher, preventing stale windows from retaining the application language service or receiving cross-thread UI writes.
+- Evidence boundary: Catalog parity, state-rebuild tests, XAML literal checks and contract-backed WPF captures are Integration/Synthetic UI evidence. They do not prove an actual Herdr session or satisfy the v0.2 runtime release gate.
+- Status: Implemented for v0.2 Issue #63 with a passing contract-backed language-mode gate; actual Herdr runtime acceptance remains pending for the v0.2 release.

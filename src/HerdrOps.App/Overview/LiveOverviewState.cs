@@ -6,8 +6,8 @@ namespace HerdrOps.App.Overview;
 
 public sealed class LiveOverviewState : ObservableState
 {
-    private string _sourceLabel = "WAITING FOR CORE";
-    private string _connectionLabel = "Core not connected";
+    private string _sourceLabel = UiLanguageService.Shared["CoreWaitingSource"];
+    private string _connectionLabel = UiLanguageService.Shared["CoreNotConnected"];
     private DateTimeOffset _snapshotTimestamp;
     private IReadOnlyList<OverviewSummaryCard> _summaryCards = [];
     private IReadOnlyList<OverviewActivity> _recentActivities = [];
@@ -15,13 +15,13 @@ public sealed class LiveOverviewState : ObservableState
     private IReadOnlyList<OverviewWorkstream> _workstreams = [];
     private IReadOnlyList<OverviewTopAgent> _topAgents = [];
     private IReadOnlyList<OverviewAlert> _alerts = [];
-    private string _activitySourceLabel = "NO CORE DATA";
-    private string _activityFooterLabel = "0 Core state events";
+    private string _activitySourceLabel = UiLanguageService.Shared["NoCoreDataSource"];
+    private string _activityFooterLabel = UiLanguageService.Shared.Format("LiveOverviewActivityFooterFormat", 0);
     private string _workDistributionTotal = "0";
-    private string _scoreTrendStatus = "Unknown — no evaluation data from Herdr";
-    private string _topAgentsSourceLabel = "STATUS ONLY";
+    private string _scoreTrendStatus = UiLanguageService.Shared["LiveOverviewScoreUnavailable"];
+    private string _topAgentsSourceLabel = UiLanguageService.Shared["LiveOverviewStatusNoScore"];
     private string _agentListTitle = UiLanguageService.Shared["OverviewAgentStatus"];
-    private string _alertsCountLabel = "0 state signals";
+    private string _alertsCountLabel = UiLanguageService.Shared.Format("LiveOverviewSignalsFormat", 0);
 
     public string SourceLabel { get => _sourceLabel; private set => Set(ref _sourceLabel, value); }
 
@@ -120,22 +120,25 @@ public sealed class LiveOverviewState : ObservableState
         IReadOnlyList<OverviewActivity> activities)
     {
         ArgumentNullException.ThrowIfNull(state);
+        var text = UiLanguageService.Shared;
         SourceLabel = sourceLabel;
         ConnectionLabel = connectionLabel;
         SnapshotTimestamp = sourceTimestamp;
         RecentActivities = activities;
-        ActivitySourceLabel = isLive ? "CORE STATE" : "LAST KNOWN";
-        ActivityFooterLabel = $"{activities.Count} Core state events";
+        ActivitySourceLabel = isLive
+            ? text["LiveOverviewActivitySourceCore"]
+            : text["LiveOverviewActivitySourceLastKnown"];
+        ActivityFooterLabel = text.Format("LiveOverviewActivityFooterFormat", activities.Count);
         SummaryCards = CreateSummaryCards(state, isLive);
         ScoreTrend = [];
-        ScoreTrendStatus = "Unknown — Herdr protocol 19 does not supply evaluation scores";
+        ScoreTrendStatus = text["LiveOverviewScoreUnavailable"];
         Workstreams = CreateWorkspaceDistribution(state);
         WorkDistributionTotal = state.Agents.Count.ToString(System.Globalization.CultureInfo.InvariantCulture);
         TopAgents = CreateAgentRows(state, isLive);
-        TopAgentsSourceLabel = "STATUS · NO SCORE";
-        AgentListTitle = UiLanguageService.Shared["OverviewAgentStatus"];
+        TopAgentsSourceLabel = text["LiveOverviewStatusNoScore"];
+        AgentListTitle = text["OverviewAgentStatus"];
         Alerts = CreateAlerts(state, isLive, sourceTimestamp);
-        AlertsCountLabel = $"{Alerts.Count} state signals";
+        AlertsCountLabel = text.Format("LiveOverviewSignalsFormat", Alerts.Count);
     }
 
     private static IReadOnlyList<OverviewSummaryCard> CreateSummaryCards(
@@ -151,8 +154,12 @@ public sealed class LiveOverviewState : ObservableState
                 "total-agents",
                 text["OverviewTotalAgents"],
                 total.ToString(System.Globalization.CultureInfo.InvariantCulture),
-                isLive ? $"Observed {total}   Unknown {unknown}" : $"Last known {total}",
-                isLive ? $"Latest accepted · Core sequence {state.LastIngestSequence}" : "Offline — values are not current",
+                isLive
+                    ? text.Format("LiveOverviewObservedUnknownFormat", total, unknown)
+                    : text.Format("LiveOverviewLastKnownFormat", total),
+                isLive
+                    ? text.Format("LiveOverviewAcceptedSequenceFormat", state.LastIngestSequence)
+                    : text["LiveOverviewOfflineNotCurrent"],
                 "\uE716",
                 OverviewBrushKeys.Primary,
                 [],
@@ -166,7 +173,7 @@ public sealed class LiveOverviewState : ObservableState
                 text["OverviewDailyScore"],
                 "—",
                 "/100",
-                "Unknown — not supplied by Herdr",
+                text["LiveOverviewScoreNotSupplied"],
                 "\uE9D2",
                 OverviewBrushKeys.Primary,
                 [],
@@ -184,6 +191,7 @@ public sealed class LiveOverviewState : ObservableState
         string glyph,
         string brushKey)
     {
+        var text = UiLanguageService.Shared;
         var count = Count(state, status);
         var percentage = state.Agents.Count == 0
             ? 0
@@ -192,8 +200,10 @@ public sealed class LiveOverviewState : ObservableState
             id,
             title,
             isLive ? count.ToString(System.Globalization.CultureInfo.InvariantCulture) : "—",
-            isLive ? $"{percentage}%" : "Offline",
-            isLive ? "Latest accepted Herdr state" : $"Last known count {count}",
+            isLive ? $"{percentage}%" : text["StatusOffline"],
+            isLive
+                ? text["LiveOverviewLatestAccepted"]
+                : text.Format("LiveOverviewLastKnownCountFormat", count),
             glyph,
             isLive ? brushKey : OverviewBrushKeys.Offline,
             [],
@@ -262,7 +272,8 @@ public sealed class LiveOverviewState : ObservableState
                 AgentStatusPresentation.BrushKey(
                     AgentStatusPresentation.EffectiveStatus(agent.AgentStatus, isLive)),
                 HasScore: false,
-                StatusLabel: AgentStatusPresentation.EffectiveStatus(agent.AgentStatus, isLive)))
+                StatusLabel: AgentStatusPresentation.DisplayStatus(
+                    AgentStatusPresentation.EffectiveStatus(agent.AgentStatus, isLive))))
             .ToArray();
 
     private static IReadOnlyList<OverviewAlert> CreateAlerts(
@@ -270,6 +281,7 @@ public sealed class LiveOverviewState : ObservableState
         bool isLive,
         DateTimeOffset sourceTimestamp)
     {
+        var text = UiLanguageService.Shared;
         var time = sourceTimestamp == default
             ? "—"
             : sourceTimestamp.ToLocalTime().ToString("HH:mm", System.Globalization.CultureInfo.InvariantCulture);
@@ -278,10 +290,10 @@ public sealed class LiveOverviewState : ObservableState
             return
             [
                 new(
-                    "Core connection offline",
-                    "Last-known Herdr values are not treated as current",
+                    text["LiveOverviewCoreOfflineTitle"],
+                    text["LiveOverviewCoreOfflineDescription"],
                     time,
-                    AgentStatusPresentation.Offline,
+                    text["StatusOffline"],
                     OverviewBrushKeys.Offline),
             ];
         }
@@ -291,10 +303,10 @@ public sealed class LiveOverviewState : ObservableState
             return
             [
                 new(
-                    "Herdr state unavailable",
-                    "Core is connected but has no admitted Herdr snapshot",
+                    text["LiveOverviewHerdrUnavailableTitle"],
+                    text["LiveOverviewHerdrUnavailableDescription"],
                     time,
-                    "Unknown",
+                    text["StatusUnknown"],
                     OverviewBrushKeys.Offline),
             ];
         }
@@ -305,10 +317,10 @@ public sealed class LiveOverviewState : ObservableState
             .Select(agent => new OverviewAlert(
                 AgentStatusPresentation.DisplayName(agent),
                 agent.AgentStatus == "Blocked"
-                    ? "Herdr reports this Agent as blocked"
-                    : "Herdr supplied an unknown Agent status",
+                    ? text["LiveOverviewBlockedDescription"]
+                    : text["LiveOverviewUnknownDescription"],
                 time,
-                agent.AgentStatus,
+                AgentStatusPresentation.DisplayStatus(agent.AgentStatus),
                 AgentStatusPresentation.BrushKey(agent.AgentStatus)))
             .ToArray();
     }

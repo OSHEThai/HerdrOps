@@ -1,4 +1,5 @@
 using HerdrOps.App.Live;
+using HerdrOps.App.Localization;
 using HerdrOps.App.Overview;
 using HerdrOps.Contracts;
 using HerdrOps.Contracts.StateIpc;
@@ -9,12 +10,12 @@ public sealed class LiveWidgetState : ObservableState, IWidgetState
 {
     private readonly WidgetUpdateTelemetry _telemetry;
     private bool _isLive;
-    private string _sourceLabel = "WAITING FOR CORE";
-    private string _compactSourceLabel = "WAIT";
-    private string _connectionLabel = "Core not connected";
-    private string _compactConnectionLabel = "Waiting for Core";
+    private string _sourceLabel = UiLanguageService.Shared["CoreWaitingSource"];
+    private string _compactSourceLabel = UiLanguageService.Shared["OffCompact"];
+    private string _connectionLabel = UiLanguageService.Shared["CoreNotConnected"];
+    private string _compactConnectionLabel = UiLanguageService.Shared["LiveWidgetWaitingCore"];
     private string _connectionBrushKey = OverviewBrushKeys.Offline;
-    private string _galleryDescription = "รอข้อมูลจาก Core · ยังไม่อ้างสถานะ Herdr runtime";
+    private string _galleryDescription = UiLanguageService.Shared["LiveWidgetGalleryOffline"];
     private DateTimeOffset _snapshotAt;
     private long _sequence;
     private long _lastMeasuredSequence;
@@ -25,7 +26,7 @@ public sealed class LiveWidgetState : ObservableState, IWidgetState
     private string _workingCountLabel = "—";
     private string _blockedCountLabel = "—";
     private string _doneCountLabel = "—";
-    private string _latencyLabel = "Latency: —";
+    private string _latencyLabel = UiLanguageService.Shared["LiveWidgetLatencyEmpty"];
     private int _updateSampleCount;
     private double? _lastUpdateLatencyMilliseconds;
     private double? _p95UpdateLatencyMilliseconds;
@@ -76,11 +77,11 @@ public sealed class LiveWidgetState : ObservableState, IWidgetState
         private set => Set(ref _galleryDescription, value);
     }
 
-    public string DashboardPreviewLabel => "DASHBOARD UI PREVIEW";
+    public string DashboardPreviewLabel => UiLanguageService.Shared["LiveWidgetDashboardPreview"];
 
-    public string WindowTitleSuffix => "Core State";
+    public string WindowTitleSuffix => UiLanguageService.Shared["LiveWidgetWindowSuffix"];
 
-    public string DetailsSourceLabel => "Latest accepted Core state · unsupported fields remain Unknown";
+    public string DetailsSourceLabel => UiLanguageService.Shared["LiveWidgetDetailsSource"];
 
     public DateTimeOffset SnapshotAt
     {
@@ -116,7 +117,7 @@ public sealed class LiveWidgetState : ObservableState, IWidgetState
         private set => Set(ref _doneCountLabel, value);
     }
 
-    public string DailyScoreLabel => "Unknown";
+    public string DailyScoreLabel => UiLanguageService.Shared["ValueUnknown"];
 
     public string PositiveDeltaLabel => "—";
 
@@ -181,26 +182,27 @@ public sealed class LiveWidgetState : ObservableState, IWidgetState
         TimeSpan? transportLatency)
     {
         ArgumentNullException.ThrowIfNull(state);
+        var text = UiLanguageService.Shared;
         var hasAdmittedState = isLive && state.LastIngestSequence > 0;
         IsLive = isLive;
         SourceLabel = isLive
-            ? hasAdmittedState ? "CORE STATE" : "NO HERDR STATE"
-            : state.LastIngestSequence > 0 ? "LAST KNOWN" : "NO CORE DATA";
+            ? hasAdmittedState ? text["CoreStateSource"] : text["NoHerdrStateSource"]
+            : state.LastIngestSequence > 0 ? text["LastKnownSource"] : text["NoCoreDataSource"];
         CompactSourceLabel = isLive
-            ? hasAdmittedState ? "CORE" : "EMPTY"
-            : state.LastIngestSequence > 0 ? "LAST" : "OFF";
+            ? hasAdmittedState ? text["CoreCompact"] : text["EmptyCompact"]
+            : state.LastIngestSequence > 0 ? text["LastCompact"] : text["OffCompact"];
         ConnectionLabel = connectionLabel;
         CompactConnectionLabel = isLive
-            ? "Core connected"
+            ? text["CoreConnected"]
             : state.LastIngestSequence > 0
-                ? "Core offline · last known"
-                : "Waiting for Core";
+                ? text["LiveWidgetCoreOfflineLastKnown"]
+                : text["LiveWidgetWaitingCore"];
         ConnectionBrushKey = isLive ? OverviewBrushKeys.Working : OverviewBrushKeys.Offline;
         GalleryDescription = hasAdmittedState
-            ? "สถานะล่าสุดจาก Core ชุดเดียวกับ Dashboard · Herdr runtime freshness ยังไม่ทราบ"
+            ? text["LiveWidgetGalleryLive"]
             : isLive
-                ? "Core เชื่อมต่อแล้ว · ยังไม่มี Herdr snapshot ที่รับรอง"
-            : "Core offline · แสดง identity ล่าสุดเพื่อการวินิจฉัยเท่านั้น";
+                ? text["LiveWidgetGalleryEmpty"]
+                : text["LiveWidgetGalleryOffline"];
         SnapshotAt = snapshotAt;
         Sequence = state.LastIngestSequence;
         TotalAgents = state.Agents.Count;
@@ -222,6 +224,10 @@ public sealed class LiveWidgetState : ObservableState, IWidgetState
         SelectedAgent = ResolveSelectedAgent(Agents, selectedTerminalId);
         SelectedAgentActivity = CreateSelectedAgentFacts(state, SelectedAgent, snapshotAt);
         RecordLatency(state.LastIngestSequence, isLive, transportLatency);
+        Raise(nameof(DashboardPreviewLabel));
+        Raise(nameof(WindowTitleSuffix));
+        Raise(nameof(DetailsSourceLabel));
+        Raise(nameof(DailyScoreLabel));
     }
 
     private void RecordLatency(long sequence, bool isLive, TimeSpan? transportLatency)
@@ -240,8 +246,8 @@ public sealed class LiveWidgetState : ObservableState, IWidgetState
         LastUpdateLatencyMilliseconds = snapshot.LastMilliseconds;
         P95UpdateLatencyMilliseconds = snapshot.P95Milliseconds;
         LatencyLabel = snapshot.P95Milliseconds is { } p95 && snapshot.LastMilliseconds is { } last
-            ? $"Last {last:0} ms · p95 {p95:0} ms"
-            : "Latency: —";
+            ? UiLanguageService.Shared.Format("LiveWidgetLatencyFormat", last.ToString("0"), p95.ToString("0"))
+            : UiLanguageService.Shared["LiveWidgetLatencyEmpty"];
     }
 
     private static IReadOnlyList<WidgetAgent> CreateAgents(
@@ -252,21 +258,28 @@ public sealed class LiveWidgetState : ObservableState, IWidgetState
             .ThenBy(AgentStatusPresentation.DisplayName, StringComparer.OrdinalIgnoreCase)
             .Select(agent =>
             {
+                var text = UiLanguageService.Shared;
                 var effectiveStatus = AgentStatusPresentation.EffectiveStatus(agent.AgentStatus, isLive);
                 return new WidgetAgent(
                     agent.TerminalId,
                     AgentStatusPresentation.Initials(agent),
                     AgentStatusPresentation.DisplayName(agent),
                     AgentStatusPresentation.FirstNonEmpty(agent.Title, agent.DisplayAgent, agent.Agent),
-                    "Unknown",
+                    text["ValueUnknown"],
                     isLive
-                        ? $"Observed {agent.AgentStatus} · pane {agent.PaneId}"
-                        : $"Last known {agent.AgentStatus} · Core offline",
-                    $"seq {agent.StateChangeSequence}",
+                        ? text.Format(
+                            "LiveWidgetObservedStatusFormat",
+                            AgentStatusPresentation.DisplayStatus(agent.AgentStatus),
+                            agent.PaneId)
+                        : text.Format(
+                            "LiveWidgetObservedStatusFormat",
+                            AgentStatusPresentation.DisplayStatus(AgentStatusPresentation.Offline),
+                            agent.PaneId),
+                    text.Format("LiveWidgetSequenceFormat", agent.StateChangeSequence),
                     Score: null,
-                    effectiveStatus,
+                    AgentStatusPresentation.DisplayStatus(effectiveStatus),
                     AgentStatusPresentation.BrushKey(effectiveStatus),
-                    "Unknown");
+                    text["ValueUnknown"]);
             })
             .ToArray();
 
@@ -275,6 +288,7 @@ public sealed class LiveWidgetState : ObservableState, IWidgetState
         bool isLive,
         DateTimeOffset snapshotAt)
     {
+        var text = UiLanguageService.Shared;
         var time = snapshotAt == default
             ? "—"
             : snapshotAt.ToLocalTime().ToString("HH:mm", System.Globalization.CultureInfo.InvariantCulture);
@@ -282,12 +296,12 @@ public sealed class LiveWidgetState : ObservableState, IWidgetState
         if (!isLive)
         {
             notices.Add(new WidgetNotice(
-                "Core offline",
-                "Agent status is last-known and not current",
+                text["LiveWidgetCoreOfflineNotice"],
+                text["LiveWidgetCoreOfflineNoticeDetail"],
                 time,
                 "\uE711",
                 OverviewBrushKeys.Offline,
-                "Offline"));
+                text["StatusOffline"]));
             if (state.LastIngestSequence > 0)
             {
                 return notices;
@@ -297,12 +311,12 @@ public sealed class LiveWidgetState : ObservableState, IWidgetState
         if (state.LastIngestSequence == 0)
         {
             notices.Add(new WidgetNotice(
-                "Herdr state unavailable",
-                "Core has no admitted Herdr snapshot",
+                text["LiveWidgetHerdrUnavailableNotice"],
+                text["LiveWidgetHerdrUnavailableNoticeDetail"],
                 time,
                 "\uE814",
                 OverviewBrushKeys.Offline,
-                "Unknown"));
+                text["StatusUnknown"]));
             return notices;
         }
 
@@ -327,12 +341,15 @@ public sealed class LiveWidgetState : ObservableState, IWidgetState
         }
 
         notices.Add(new WidgetNotice(
-            $"{matching.Length} {status} Agent{(matching.Length == 1 ? string.Empty : "s")}",
+            UiLanguageService.Shared.Format(
+                "LiveWidgetStatusNoticeFormat",
+                matching.Length,
+                AgentStatusPresentation.DisplayStatus(status)),
             string.Join(", ", matching.Take(2).Select(AgentStatusPresentation.DisplayName)),
             time,
             glyph,
             brushKey,
-            status));
+            AgentStatusPresentation.DisplayStatus(status)));
     }
 
     private static WidgetAgent ResolveSelectedAgent(
@@ -359,24 +376,28 @@ public sealed class LiveWidgetState : ObservableState, IWidgetState
             : snapshotAt.ToLocalTime().ToString("HH:mm", System.Globalization.CultureInfo.InvariantCulture);
         return
         [
-            new WidgetActivity(time, $"Latest accepted Core sequence {state.LastIngestSequence}"),
+            new WidgetActivity(
+                time,
+                UiLanguageService.Shared.Format(
+                    "LiveWidgetAcceptedSequenceFormat",
+                    state.LastIngestSequence)),
             new WidgetActivity("—", selectedAgent.Activity),
-            new WidgetActivity("—", "Assignment, score, and activity history are Unknown"),
+            new WidgetActivity("—", UiLanguageService.Shared["LiveWidgetUnknownHistory"]),
         ];
     }
 
     private static WidgetAgent EmptyAgent() => new(
         string.Empty,
         "?",
-        "No Agent selected",
-        "Unknown",
-        "Unknown",
-        "No admitted Agent state",
+        UiLanguageService.Shared["NoAgentSelected"],
+        UiLanguageService.Shared["ValueUnknown"],
+        UiLanguageService.Shared["ValueUnknown"],
+        UiLanguageService.Shared["LiveWidgetHerdrUnavailableNoticeDetail"],
         "—",
         Score: null,
-        "Unknown",
+        UiLanguageService.Shared["StatusUnknown"],
         OverviewBrushKeys.Offline,
-        "Unknown");
+        UiLanguageService.Shared["ValueUnknown"]);
 
     private static int Count(HerdrSessionStateContract state, string status) =>
         state.Agents.Count(agent => agent.AgentStatus == status);

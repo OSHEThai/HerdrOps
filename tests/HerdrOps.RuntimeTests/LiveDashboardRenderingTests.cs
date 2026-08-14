@@ -6,6 +6,7 @@ using System.Windows.Controls;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using HerdrOps.App.Live;
+using HerdrOps.App.Localization;
 using HerdrOps.App.StateIpc;
 using HerdrOps.App.Views;
 using HerdrOps.Contracts.StateIpc;
@@ -13,8 +14,15 @@ using HerdrOps.Contracts.StateIpc;
 namespace HerdrOps.RuntimeTests;
 
 [TestClass]
+[DoNotParallelize]
 public sealed class LiveDashboardRenderingTests
 {
+    [TestInitialize]
+    public void UseThaiDefault() => UiLanguageService.Shared.SetLanguage(UiLanguage.Thai);
+
+    [TestCleanup]
+    public void RestoreThaiDefault() => UiLanguageService.Shared.SetLanguage(UiLanguage.Thai);
+
     [TestMethod]
     public void LiveOverviewOrganizationAndAgentDetailRenderFromOneCoreSnapshot()
     {
@@ -70,7 +78,7 @@ public sealed class LiveDashboardRenderingTests
                 .OfType<ListBox>()
                 .Single(list => string.Equals(
                     AutomationProperties.GetName(list),
-                    "โครงสร้าง Workspace Tab และ Agent จาก Core",
+                    UiLanguageService.Shared["OrganizationHierarchyAutomation"],
                     StringComparison.Ordinal));
             var agentItems = topology.Items
                 .OfType<HerdrOps.App.Organization.OrganizationNode>()
@@ -89,8 +97,67 @@ public sealed class LiveDashboardRenderingTests
                 .Where(IsEffectivelyVisible)
                 .Select(text => text.Text)
                 .ToArray();
-            Assert.IsTrue(visibleText.Contains("Unknown", StringComparer.Ordinal));
+            Assert.IsTrue(visibleText.Contains(UiLanguageService.Shared["ValueUnknown"], StringComparer.Ordinal));
             Assert.IsFalse(visibleText.Contains("100", StringComparer.Ordinal));
+        });
+    }
+
+    [TestMethod]
+    public void LivePagesRenderThaiAndEnglishAsSeparateModes()
+    {
+        WpfTestHost.Run(() =>
+        {
+            var dashboard = CreateDashboard();
+            var outputDirectory = Path.Combine(
+                FindRepositoryRoot(),
+                "artifacts",
+                "design-evidence",
+                "v0.2.0",
+                "issue-63",
+                "contract-backed-wpf");
+            Directory.CreateDirectory(outputDirectory);
+            var pages = new[]
+            {
+                (Index: 0, Name: "overview", Type: typeof(OverviewView)),
+                (Index: 1, Name: "live-organization", Type: typeof(LiveOrganizationView)),
+                (Index: 4, Name: "agent-detail", Type: typeof(AgentDetailView)),
+            };
+
+            foreach (var language in new[] { UiLanguage.Thai, UiLanguage.English })
+            {
+                UiLanguageService.Shared.SetLanguage(language);
+                dashboard.RefreshLanguage();
+                foreach (var page in pages)
+                {
+                    var shell = new ShellView(dashboard);
+                    shell.Navigation.SelectedIndex = page.Index;
+                    var size = new Size(1672, 941);
+                    Layout(shell, size);
+                    var visiblePage = EnumerateDescendants(shell)
+                        .OfType<FrameworkElement>()
+                        .Single(element => element.GetType() == page.Type);
+                    Assert.AreEqual(Visibility.Visible, visiblePage.Visibility);
+                    var visibleText = EnumerateDescendants(shell)
+                        .OfType<TextBlock>()
+                        .Where(IsEffectivelyVisible)
+                        .Select(text => text.Text)
+                        .Where(text => !string.IsNullOrWhiteSpace(text))
+                        .ToArray();
+                    if (language == UiLanguage.English)
+                    {
+                        Assert.IsTrue(
+                            visibleText.All(text => !ContainsThai(text)),
+                            $"English {page.Name} retained Thai copy: {string.Join(" | ", visibleText.Where(ContainsThai))}");
+                    }
+                    else
+                    {
+                        Assert.IsTrue(visibleText.Any(ContainsThai), $"Thai {page.Name} did not render Thai UI copy.");
+                    }
+
+                    var languageName = language == UiLanguage.Thai ? "thai" : "english";
+                    SavePng(shell, size, Path.Combine(outputDirectory, $"{languageName}-{page.Name}.png"));
+                }
+            }
         });
     }
 
@@ -195,6 +262,9 @@ public sealed class LiveDashboardRenderingTests
 
         return true;
     }
+
+    private static bool ContainsThai(string value) =>
+        value.Any(character => character is >= '\u0E00' and <= '\u0E7F');
 
     private static IEnumerable<DependencyObject> EnumerateDescendants(DependencyObject parent)
     {

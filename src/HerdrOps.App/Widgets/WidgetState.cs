@@ -1,4 +1,5 @@
 using HerdrOps.Contracts;
+using HerdrOps.App.Localization;
 
 namespace HerdrOps.App.Widgets;
 
@@ -88,7 +89,7 @@ public sealed record WidgetAgent(
 
     public string ScoreWithMaximumLabel => Score is { } value
         ? $"{value}/100"
-        : "Unknown";
+        : UiLanguageService.Shared["ValueUnknown"];
 }
 
 public sealed record WidgetNotice(

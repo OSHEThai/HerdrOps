@@ -15,6 +15,7 @@ using HerdrOps.Contracts.StateIpc;
 namespace HerdrOps.RuntimeTests;
 
 [TestClass]
+[DoNotParallelize]
 public sealed class LiveWidgetRenderingTests
 {
     private static readonly DateTimeOffset EvidenceUtc = new(
@@ -25,6 +26,12 @@ public sealed class LiveWidgetRenderingTests
         32,
         0,
         TimeSpan.Zero);
+
+    [TestInitialize]
+    public void UseThaiDefault() => UiLanguageService.Shared.SetLanguage(UiLanguage.Thai);
+
+    [TestCleanup]
+    public void RestoreThaiDefault() => UiLanguageService.Shared.SetLanguage(UiLanguage.Thai);
 
     [TestMethod]
     public void LiveCompactNormalAndFloatingVerticalRenderFromSharedCoreState()
@@ -65,7 +72,11 @@ public sealed class LiveWidgetRenderingTests
                 var surfaceRoot = Assert.IsInstanceOfType<FrameworkElement>(surface.FindName("SurfaceRoot"));
                 Assert.AreSame(sharedState, surfaceRoot.DataContext);
                 Assert.AreEqual(12, sharedState.TotalAgents);
-                AssertHeaderSource(surface, item.Variant == WidgetVariant.FloatingVertical ? "CORE" : "CORE STATE");
+                AssertHeaderSource(
+                    surface,
+                    item.Variant == WidgetVariant.FloatingVertical
+                        ? UiLanguageService.Shared["CoreCompact"]
+                        : UiLanguageService.Shared["CoreStateSource"]);
                 AssertInteractiveActionsAreAccessible(surface);
                 if (item.RequiresThaiCheck)
                 {
@@ -112,8 +123,63 @@ public sealed class LiveWidgetRenderingTests
             Assert.AreEqual("12", sharedState.DoneCountLabel);
             Assert.AreEqual(2, sharedState.UpdateSampleCount);
             Assert.AreEqual(12, normalItems.Items.Count);
-            Assert.IsTrue(normalItems.Items.OfType<WidgetAgent>().All(agent => agent.Status == "Done"));
+            Assert.IsTrue(normalItems.Items.OfType<WidgetAgent>().All(
+                agent => agent.Status == UiLanguageService.Shared["StatusDone"]));
             Assert.IsTrue(VisibleText(compact).Contains("12", StringComparer.Ordinal));
+        });
+    }
+
+    [TestMethod]
+    public void AllLiveWidgetVariantsRenderThaiAndEnglishAsSeparateModes()
+    {
+        WpfTestHost.Run(() =>
+        {
+            var dashboard = CreateDashboard(sequence: 20);
+            var outputDirectory = Path.Combine(
+                FindRepositoryRoot(),
+                "artifacts",
+                "design-evidence",
+                "v0.2.0",
+                "issue-63",
+                "contract-backed-wpf");
+            Directory.CreateDirectory(outputDirectory);
+
+            foreach (var language in new[] { UiLanguage.Thai, UiLanguage.English })
+            {
+                UiLanguageService.Shared.SetLanguage(language);
+                dashboard.RefreshLanguage();
+                foreach (var descriptor in WidgetCatalog.All)
+                {
+                    var surface = new WidgetSurface(dashboard.Widgets)
+                    {
+                        Width = descriptor.WindowWidth,
+                        Height = descriptor.WindowHeight,
+                        Variant = descriptor.Variant,
+                        IsInteractive = true,
+                    };
+                    var size = new Size(descriptor.WindowWidth, descriptor.WindowHeight);
+                    Layout(surface, size);
+                    var visibleText = VisibleText(surface)
+                        .Where(text => !string.IsNullOrWhiteSpace(text))
+                        .ToArray();
+                    if (language == UiLanguage.English)
+                    {
+                        Assert.IsTrue(
+                            visibleText.All(text => !ContainsThai(text)),
+                            $"English {descriptor.Variant} retained Thai copy: {string.Join(" | ", visibleText.Where(ContainsThai))}");
+                    }
+                    else
+                    {
+                        Assert.IsTrue(
+                            visibleText.Any(ContainsThai),
+                            $"Thai {descriptor.Variant} did not render Thai UI copy.");
+                    }
+
+                    var languageName = language == UiLanguage.Thai ? "thai" : "english";
+                    var variantName = descriptor.Variant.ToString().ToLowerInvariant();
+                    SavePng(surface, size, Path.Combine(outputDirectory, $"{languageName}-widget-{variantName}.png"));
+                }
+            }
         });
     }
 
@@ -361,6 +427,9 @@ public sealed class LiveWidgetRenderingTests
             .Where(IsEffectivelyVisible)
             .Select(text => text.Text)
             .ToArray();
+
+    private static bool ContainsThai(string value) =>
+        value.Any(character => character is >= '\u0E00' and <= '\u0E7F');
 
     private static void AssertThaiTextFits(DependencyObject root)
     {
