@@ -312,12 +312,38 @@ public sealed class HerdrRuntimeMonitorTests
         Assert.AreEqual(identity, monitor.Current.ServerIdentity);
     }
 
+    [TestMethod]
+    public async Task RestoredCountersContinueOnFirstBootstrapAfterCoreRestart()
+    {
+        var initial = new HerdrStateReducer().Reconcile(
+            CreateSnapshot(revision: 3, HerdrAgentStatus.Working),
+            connectionEpoch: 4,
+            ingestSequence: 12);
+        var recovered = CreateSnapshot(revision: 4, HerdrAgentStatus.Idle);
+        var apiClient = new ScriptedApiClient(
+            [recovered, recovered],
+            [ScriptedSubscription.BlockUntilCancelled()]);
+        var monitor = CreateMonitor(apiClient, initialState: initial);
+        using var cancellation = new CancellationTokenSource();
+        var runTask = monitor.RunAsync(cancellation.Token);
+
+        await WaitForAsync(monitor, state => state.BootstrapCount == 1);
+        cancellation.Cancel();
+        await Assert.ThrowsAsync<OperationCanceledException>(() => runTask);
+
+        Assert.AreEqual(5, monitor.Current.State.ConnectionEpoch);
+        Assert.AreEqual(13, monitor.Current.State.LastIngestSequence);
+        Assert.AreEqual((ulong)4, monitor.Current.State.Panes["pane-1"].Revision);
+    }
+
     private static HerdrRuntimeMonitor CreateMonitor(
         IHerdrApiClient apiClient,
-        IHerdrReconnectDelay? reconnectDelay = null) => new(
+        IHerdrReconnectDelay? reconnectDelay = null,
+        HerdrSessionState? initialState = null) => new(
         apiClient,
         HerdrPipeEndpoint.FromSocketPath("herdrops-scripted-test"),
-        reconnectDelay: reconnectDelay ?? new NoReconnectDelay());
+        reconnectDelay: reconnectDelay ?? new NoReconnectDelay(),
+        initialState: initialState);
 
     private static async Task WaitForAsync(
         HerdrRuntimeMonitor monitor,

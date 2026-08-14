@@ -23,4 +23,7 @@ Build, verification, GitHub roadmap, evidence capture, and packaging helpers liv
 
 # From an authorized live Herdr environment, capture snapshot/event/reconnect evidence
 ./tools/Test-V02HerdrRuntime.ps1 -DurationSeconds 120
+
+# Verify SQLite WAL restart/migration and current-user Core-to-App IPC evidence
+./tools/Test-V02StateStoreIpc.ps1
 ```
