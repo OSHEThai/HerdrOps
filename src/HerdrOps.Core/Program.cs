@@ -1,5 +1,10 @@
 using HerdrOps.Core;
 
+if (args.Length > 0 && string.Equals(args[0], "activity-replay", StringComparison.Ordinal))
+{
+    return ActivityReplayCommand.Run(args, Console.Out, Console.Error);
+}
+
 if (args.Length > 0 && string.Equals(args[0], "trace-herdr-runtime", StringComparison.Ordinal))
 {
     return await HerdrRuntimeTraceCommand.RunAsync(args, Console.Out, Console.Error);

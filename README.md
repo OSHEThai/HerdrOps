@@ -81,6 +81,14 @@ Design checklists อยู่ที่ [`v0.1 Issue #2`](docs/design/implementa
 
 ระหว่างรัน Gate จะขอให้สร้าง Herdr event จริง ปิด/เชื่อมต่อ Herdr ใหม่โดยผู้ใช้ และสร้าง event อีกครั้ง โปรแกรมจะเก็บ exact Core trace, production WPF captures, Dashboard-close continuity, Widget latency, Core+App resource usage และ owned TCP listener evidence ไว้ใน `artifacts/runtime-evidence/` ผลจากสภาพแวดล้อมที่ไม่มี Herdr authorization จะ fail closed และไม่ได้ Runtime credit
 
+งานพื้นฐานของ v0.3 Issue #12 มีคำสั่ง replay สำหรับตรวจการเรียงลำดับ การตัดข้อมูลซ้ำ การรวมเหตุการณ์ถี่ และ sequence gap แบบ deterministic:
+
+```powershell
+./tools/Test-V03ActivityPipeline.ps1
+```
+
+คำสั่งนี้ต้องรันจาก checkout ที่ commit แล้วและไม่มีไฟล์ค้าง ผลผ่านเป็นหลักฐาน Contract กับ Synthetic เท่านั้น ยังไม่ใช่หลักฐาน Herdr runtime, process/file collection หรือความพร้อม Release ของ v0.3
+
 ## Build Foundation
 
 Requires .NET SDK 10.0.400 or a compatible latest patch in the 10.0.4xx feature band.

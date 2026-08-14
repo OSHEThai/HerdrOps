@@ -29,6 +29,8 @@ public static class HerdrProtocolInspectionCommand
                 "or 'inspect-herdr-bundled-schema' for the exact embedded JSON Schema document.");
             output.WriteLine(
                 "Use 'trace-herdr-runtime' only from an authorized HERDR_ENV=1 session to capture bounded runtime evidence.");
+            output.WriteLine(
+                "Use 'activity-replay' to verify a bounded deterministic v0.3 event fixture without claiming runtime evidence.");
             output.WriteLine("Live Herdr connectivity is not started unless that explicit command is selected.");
             return 0;
         }
