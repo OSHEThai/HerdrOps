@@ -6,6 +6,8 @@ using HerdrOps.App.Overview;
 using HerdrOps.App.StateIpc;
 using HerdrOps.App.Widgets;
 using HerdrOps.Contracts.StateIpc;
+using HerdrOps.Domain.Activity;
+using HerdrOps.Domain.Notifications;
 
 namespace HerdrOps.App.Live;
 
@@ -267,6 +269,12 @@ public sealed class LiveDashboardState : ObservableState
             resolved,
             LastUpdateLatency,
             recordLatency: false);
+    }
+
+    public NotificationCenterDecision ApplyActivity(ActivityPipelineStep step)
+    {
+        ArgumentNullException.ThrowIfNull(step);
+        return Widgets.ApplyNotification(step);
     }
 
     public void RefreshLanguage()

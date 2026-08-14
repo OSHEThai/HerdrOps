@@ -49,6 +49,14 @@ public partial class WidgetSurface : UserControl
 
     public event MouseButtonEventHandler? DragRequested;
 
+    public event EventHandler<WidgetNotificationEventArgs>? NotificationOpenRequested;
+
+    public event EventHandler<WidgetNotificationEventArgs>? NotificationAcknowledged;
+
+    public event EventHandler? NotificationHistoryRequested;
+
+    public event EventHandler<WidgetAgentEventArgs>? AgentDetailsRequested;
+
     public WidgetVariant Variant
     {
         get => (WidgetVariant)GetValue(VariantProperty);
@@ -137,6 +145,38 @@ public partial class WidgetSurface : UserControl
 
     private void OnResetPositionClick(object sender, RoutedEventArgs e) =>
         ResetPositionRequested?.Invoke(this, EventArgs.Empty);
+
+    private void OnNotificationOpenClick(object sender, RoutedEventArgs e)
+    {
+        if (sender is Button { CommandParameter: WidgetNotice { CanOpen: true } notice })
+        {
+            NotificationOpenRequested?.Invoke(this, new WidgetNotificationEventArgs(notice));
+        }
+    }
+
+    private void OnNotificationAcknowledgeClick(object sender, RoutedEventArgs e)
+    {
+        if (sender is not Button { CommandParameter: WidgetNotice notice } ||
+            State is not IInteractiveWidgetState interactiveState ||
+            !notice.CanAcknowledge ||
+            !interactiveState.AcknowledgeNotificationGroup(notice.GroupId, DateTimeOffset.UtcNow))
+        {
+            return;
+        }
+
+        NotificationAcknowledged?.Invoke(this, new WidgetNotificationEventArgs(notice));
+    }
+
+    private void OnViewAllNotificationsClick(object sender, RoutedEventArgs e) =>
+        NotificationHistoryRequested?.Invoke(this, EventArgs.Empty);
+
+    private void OnViewSelectedAgentClick(object sender, RoutedEventArgs e)
+    {
+        if (State?.SelectedAgent is { TerminalId.Length: > 0 } agent)
+        {
+            AgentDetailsRequested?.Invoke(this, new WidgetAgentEventArgs(agent));
+        }
+    }
 
     private void OnDragSurfaceMouseLeftButtonDown(object sender, MouseButtonEventArgs e) =>
         DragRequested?.Invoke(this, e);

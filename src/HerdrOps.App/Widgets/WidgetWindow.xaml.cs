@@ -11,14 +11,19 @@ public partial class WidgetWindow : Window
 {
     private bool _isConstraining;
     private IWidgetState _state;
+    private readonly IWidgetActionRouter _actionRouter;
 
-    public WidgetWindow(WidgetVariantDescriptor descriptor, IWidgetState state)
+    public WidgetWindow(
+        WidgetVariantDescriptor descriptor,
+        IWidgetState state,
+        IWidgetActionRouter? actionRouter = null)
     {
         ArgumentNullException.ThrowIfNull(descriptor);
         ArgumentNullException.ThrowIfNull(state);
 
         Descriptor = descriptor;
         _state = state;
+        _actionRouter = actionRouter ?? ApplicationWidgetActionRouter.Shared;
         MotionPolicy = WidgetMotionPolicy.Create(
             reducedMotionRequested: false,
             systemAnimationsEnabled: SystemParameters.ClientAreaAnimation);
@@ -41,6 +46,9 @@ public partial class WidgetWindow : Window
         Surface.PinToggleRequested += OnPinToggleRequested;
         Surface.ResetPositionRequested += OnResetPositionRequested;
         Surface.DragRequested += OnDragRequested;
+        Surface.NotificationOpenRequested += OnNotificationOpenRequested;
+        Surface.NotificationHistoryRequested += OnNotificationHistoryRequested;
+        Surface.AgentDetailsRequested += OnAgentDetailsRequested;
         WeakEventManager<UiLanguageService, EventArgs>.AddHandler(
             UiLanguageService.Shared,
             nameof(UiLanguageService.LanguageChanged),
@@ -111,6 +119,20 @@ public partial class WidgetWindow : Window
 
     private void OnResetPositionRequested(object? sender, EventArgs e) => ResetPosition();
 
+    private void OnNotificationOpenRequested(object? sender, WidgetNotificationEventArgs e)
+    {
+        if (e.Notice.Route is { } route)
+        {
+            _actionRouter.OpenNotification(route);
+        }
+    }
+
+    private void OnNotificationHistoryRequested(object? sender, EventArgs e) =>
+        _actionRouter.OpenNotificationHistory();
+
+    private void OnAgentDetailsRequested(object? sender, WidgetAgentEventArgs e) =>
+        _actionRouter.OpenAgent(e.Agent.TerminalId);
+
     private void OnLanguageChanged(object? sender, EventArgs e)
     {
         if (!Dispatcher.CheckAccess())
@@ -139,6 +161,9 @@ public partial class WidgetWindow : Window
 
     private void OnClosed(object? sender, EventArgs e)
     {
+        Surface.NotificationOpenRequested -= OnNotificationOpenRequested;
+        Surface.NotificationHistoryRequested -= OnNotificationHistoryRequested;
+        Surface.AgentDetailsRequested -= OnAgentDetailsRequested;
         WeakEventManager<UiLanguageService, EventArgs>.RemoveHandler(
             UiLanguageService.Shared,
             nameof(UiLanguageService.LanguageChanged),

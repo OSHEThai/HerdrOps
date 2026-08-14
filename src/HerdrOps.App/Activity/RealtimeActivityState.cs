@@ -1,4 +1,6 @@
 using System.Globalization;
+using System.Security.Cryptography;
+using System.Text;
 using HerdrOps.App.Live;
 using HerdrOps.App.Localization;
 using HerdrOps.App.Overview;
@@ -39,7 +41,9 @@ public sealed record RealtimeActivityEventRow(
     string Confidence,
     string Action,
     string AccentBrushKey,
-    IReadOnlyList<RealtimeActivityEvidence> EvidenceSources);
+    IReadOnlyList<RealtimeActivityEvidence> EvidenceSources,
+    Guid CorrelationId,
+    string EventIdentitySha256);
 
 public sealed record RealtimeActivityEventDetail(
     string EventId,
@@ -233,6 +237,51 @@ public sealed class RealtimeActivityState : ObservableState
 
         _visibleLimit = Math.Min(MaximumHistory, _visibleLimit + PageSize);
         ApplyFilters(preserveSelectedEventId: SelectedEvent?.EventId);
+    }
+
+    public bool TrySelectEvent(string eventId)
+    {
+        if (string.IsNullOrWhiteSpace(eventId) ||
+            !_history.Any(item => string.Equals(item.EventId, eventId, StringComparison.Ordinal)))
+        {
+            return false;
+        }
+
+        return SelectEvent(eventId);
+    }
+
+    public bool TrySelectEvent(
+        string eventId,
+        Guid correlationId,
+        string eventIdentitySha256)
+    {
+        if (string.IsNullOrWhiteSpace(eventId) ||
+            correlationId == Guid.Empty ||
+            string.IsNullOrWhiteSpace(eventIdentitySha256) ||
+            !_history.Any(item =>
+                string.Equals(item.EventId, eventId, StringComparison.Ordinal) &&
+                item.CorrelationId == correlationId &&
+                string.Equals(
+                    item.EventIdentitySha256,
+                    eventIdentitySha256,
+                    StringComparison.Ordinal)))
+        {
+            return false;
+        }
+
+        return SelectEvent(eventId);
+    }
+
+    private bool SelectEvent(string eventId)
+    {
+        ReplaceSelection(ref _selectedTimeFilter, TimeFilters, "all", nameof(SelectedTimeFilter));
+        ReplaceSelection(ref _selectedRoleFilter, RoleFilters, "all", nameof(SelectedRoleFilter));
+        ReplaceSelection(ref _selectedSeverityFilter, SeverityFilters, "all", nameof(SelectedSeverityFilter));
+        ReplaceSelection(ref _selectedTaskFilter, TaskFilters, "all", nameof(SelectedTaskFilter));
+        ReplaceSelection(ref _selectedEvidenceFilter, EvidenceFilters, "all", nameof(SelectedEvidenceFilter));
+        _visibleLimit = MaximumHistory;
+        ApplyFilters(eventId);
+        return string.Equals(SelectedEvent?.EventId, eventId, StringComparison.Ordinal);
     }
 
     public void RefreshLanguage()
@@ -469,7 +518,9 @@ public sealed class RealtimeActivityState : ObservableState
             $"{item.Confidence}%",
             text[item.ActionKey],
             SeverityBrushKey(item.SeverityId),
-            evidence);
+            evidence,
+            item.CorrelationId,
+            item.EventIdentitySha256);
     }
 
     private static string RoleKey(string roleId) => roleId switch
@@ -606,7 +657,12 @@ public sealed class RealtimeActivityState : ObservableState
         string TitleKey,
         string DescriptionKey,
         string ActionKey,
-        IReadOnlyList<RawEvidence> Evidence);
+        IReadOnlyList<RawEvidence> Evidence)
+    {
+        public Guid CorrelationId => CreateFixtureCorrelationId(EventId);
+
+        public string EventIdentitySha256 => CreateFixtureEventIdentity(EventId);
+    }
 
     private sealed record RawEvidence(
         string EvidenceId,
@@ -614,4 +670,15 @@ public sealed class RealtimeActivityState : ObservableState
         string DetailKey,
         DateTimeOffset ObservedAt,
         int Confidence);
+
+    private static Guid CreateFixtureCorrelationId(string eventId)
+    {
+        var hash = SHA256.HashData(Encoding.UTF8.GetBytes(
+            $"HerdrOps.RealtimeFixtureCorrelation.v1\u001f{eventId}"));
+        return new Guid(hash.AsSpan(0, 16));
+    }
+
+    private static string CreateFixtureEventIdentity(string eventId) =>
+        Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(
+            $"HerdrOps.RealtimeFixtureIdentity.v1\u001f{eventId}")));
 }

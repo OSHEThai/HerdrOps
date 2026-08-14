@@ -11,16 +11,18 @@ public interface IWidgetWindowLauncher
 public sealed class WidgetWindowLauncher : IWidgetWindowLauncher
 {
     private readonly IWidgetState _state;
+    private readonly IWidgetActionRouter _actionRouter;
 
-    public WidgetWindowLauncher(IWidgetState state)
+    public WidgetWindowLauncher(IWidgetState state, IWidgetActionRouter? actionRouter = null)
     {
         ArgumentNullException.ThrowIfNull(state);
         _state = state;
+        _actionRouter = actionRouter ?? ApplicationWidgetActionRouter.Shared;
     }
 
     public void Open(WidgetVariant variant)
     {
-        var window = new WidgetWindow(WidgetCatalog.Get(variant), _state);
+        var window = new WidgetWindow(WidgetCatalog.Get(variant), _state, _actionRouter);
         window.Show();
     }
 }
