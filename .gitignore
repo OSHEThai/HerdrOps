@@ -8,6 +8,7 @@ coverage/
 # IDE and user state
 .vs/
 .vscode/
+.ai-cli/
 *.user
 *.suo
 *.userosscache

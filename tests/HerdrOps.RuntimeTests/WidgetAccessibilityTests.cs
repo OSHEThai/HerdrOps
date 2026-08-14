@@ -23,6 +23,7 @@ public sealed class WidgetAccessibilityTests
             var openButtons = EnumerateDescendants(gallery)
                 .OfType<Button>()
                 .Where(button => button.Tag is string value && Enum.TryParse<WidgetVariant>(value, out _))
+                .Where(IsEffectivelyVisible)
                 .ToArray();
 
             Assert.HasCount(WidgetCatalog.All.Count, openButtons);
@@ -112,6 +113,42 @@ public sealed class WidgetAccessibilityTests
         });
     }
 
+    [TestMethod]
+    public void CriticalWidgetFidelityActionsRemainVisible()
+    {
+        WpfTestHost.Run(() =>
+        {
+            var state = SyntheticWidgetState.Create();
+            var vertical = new WidgetSurface(state)
+            {
+                Width = WidgetCatalog.Get(WidgetVariant.FloatingVertical).WindowWidth,
+                Height = WidgetCatalog.Get(WidgetVariant.FloatingVertical).WindowHeight,
+                Variant = WidgetVariant.FloatingVertical,
+                IsInteractive = true,
+            };
+            Layout(vertical, vertical.Width, vertical.Height);
+            var sourceLabel = EnumerateDescendants(vertical)
+                .OfType<TextBlock>()
+                .Single(text => string.Equals(text.Text, "SYN", StringComparison.Ordinal));
+            Assert.IsGreaterThan(0d, sourceLabel.ActualWidth, "Floating Vertical must visibly render its Synthetic source label.");
+            Assert.IsTrue(IsEffectivelyVisible(sourceLabel));
+
+            var detail = new WidgetSurface(state)
+            {
+                Width = WidgetCatalog.Get(WidgetVariant.AgentDetailPopup).WindowWidth,
+                Height = WidgetCatalog.Get(WidgetVariant.AgentDetailPopup).WindowHeight,
+                Variant = WidgetVariant.AgentDetailPopup,
+                IsInteractive = true,
+            };
+            Layout(detail, detail.Width, detail.Height);
+            var detailAction = EnumerateDescendants(detail)
+                .OfType<Button>()
+                .Single(button => string.Equals(button.Content?.ToString(), "ดูรายละเอียดทั้งหมด", StringComparison.Ordinal));
+            Assert.IsGreaterThanOrEqualTo(40d, detailAction.ActualHeight);
+            Assert.IsTrue(IsEffectivelyVisible(detailAction));
+        });
+    }
+
     private static IEnumerable<DependencyObject> EnumerateDescendants(DependencyObject parent)
     {
         for (var index = 0; index < VisualTreeHelper.GetChildrenCount(parent); index++)
@@ -124,6 +161,27 @@ public sealed class WidgetAccessibilityTests
                 yield return descendant;
             }
         }
+    }
+
+    private static bool IsEffectivelyVisible(DependencyObject element)
+    {
+        for (DependencyObject? current = element; current is not null; current = VisualTreeHelper.GetParent(current))
+        {
+            if (current is UIElement { Visibility: not Visibility.Visible })
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static void Layout(FrameworkElement element, double width, double height)
+    {
+        var size = new Size(width, height);
+        element.Measure(size);
+        element.Arrange(new Rect(size));
+        element.UpdateLayout();
     }
 
     private static Color GetColor(string key) =>

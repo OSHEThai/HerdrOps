@@ -72,7 +72,8 @@ $requiredAccessibilityChecks = @(
     'WidgetGalleryExposesKeyboardFocusAndAccessibleOpenActions',
     'SemanticTextContrastMeetsWcagAa',
     'ReducedMotionDisablesWidgetTransitions',
-    'WidgetWindowsUseBoundedAndReversibleBehavior'
+    'WidgetWindowsUseBoundedAndReversibleBehavior',
+    'CriticalWidgetFidelityActionsRemainVisible'
 )
 foreach ($check in $requiredAccessibilityChecks) {
     if ($combinedTestLog -notmatch [Regex]::Escape($check)) {

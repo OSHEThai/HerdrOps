@@ -6,9 +6,10 @@
              xmlns:widgets="clr-namespace:HerdrOps.App.Widgets"
              Background="{DynamicResource HerdrOps.Brush.Background}"
              Foreground="{DynamicResource HerdrOps.Brush.TextPrimary}"
-             FontFamily="{DynamicResource HerdrOps.FontFamily.UI}">
-    <Viewbox Stretch="Uniform">
-        <Grid Width="1536" Height="1024" Background="{DynamicResource HerdrOps.Brush.Background}">
+             FontFamily="{DynamicResource HerdrOps.FontFamily.UI}"
+             SizeChanged="OnGallerySizeChanged">
+    <Grid Background="{DynamicResource HerdrOps.Brush.Background}">
+        <Grid x:Name="FullGallery" Background="{DynamicResource HerdrOps.Brush.Background}">
             <Grid.RowDefinitions>
                 <RowDefinition Height="86" />
                 <RowDefinition Height="438" />
@@ -142,7 +143,7 @@
                         <Border Grid.Row="1" Background="{DynamicResource HerdrOps.Brush.Background}" BorderBrush="{DynamicResource HerdrOps.Brush.Border}" BorderThickness="1" CornerRadius="{DynamicResource HerdrOps.Radius.Default}" ClipToBounds="True">
                             <Viewbox Stretch="Uniform"><views:ShellView Width="1672" Height="941" IsHitTestVisible="False" /></Viewbox>
                         </Border>
-                        <Button x:Name="OpenDashboardButton" Grid.Row="2" Style="{DynamicResource HerdrOps.Style.SecondaryButton}" automation:AutomationProperties.Name="กลับไปยัง Dashboard หลัก" Click="OnOpenDashboardClick" Content="กลับไปยัง Dashboard" />
+                        <Button x:Name="OpenDashboardButton" Grid.Row="2" Tag="Dashboard" Style="{DynamicResource HerdrOps.Style.SecondaryButton}" automation:AutomationProperties.Name="กลับไปยัง Dashboard หลัก" Click="OnOpenDashboardClick" Content="กลับไปยัง Dashboard" />
                     </Grid>
                 </Border>
             </Grid>
@@ -154,5 +155,151 @@
                 </Grid>
             </Border>
         </Grid>
-    </Viewbox>
+
+        <Grid x:Name="AdaptiveGallery"
+              Background="{DynamicResource HerdrOps.Brush.Background}"
+              Visibility="Collapsed">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="68" />
+                <RowDefinition Height="*" />
+                <RowDefinition Height="34" />
+            </Grid.RowDefinitions>
+
+            <Border Background="{DynamicResource HerdrOps.Brush.TopBar}"
+                    BorderBrush="{DynamicResource HerdrOps.Brush.Border}"
+                    BorderThickness="0,0,0,1">
+                <Grid Margin="16,0">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <StackPanel VerticalAlignment="Center">
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock FontSize="22" FontWeight="SemiBold" Text="HerdrOps Widget" />
+                            <TextBlock Margin="7,0,0,0" Foreground="{DynamicResource HerdrOps.Brush.PrimaryText}" FontSize="22" FontWeight="SemiBold" Text="Gallery" />
+                        </StackPanel>
+                        <TextBlock Tag="ThaiWidgetCheck"
+                                   Foreground="{DynamicResource HerdrOps.Brush.TextSecondary}"
+                                   FontSize="11"
+                                   Text="Responsive Gallery · 7 Widget + Dashboard · ยังไม่เชื่อมต่อ Herdr" />
+                    </StackPanel>
+                    <Border Grid.Column="1"
+                            Padding="10,4"
+                            VerticalAlignment="Center"
+                            Background="{DynamicResource HerdrOps.Brush.PrimarySubtle}"
+                            BorderBrush="{DynamicResource HerdrOps.Brush.Primary}"
+                            BorderThickness="1"
+                            CornerRadius="{DynamicResource HerdrOps.Radius.Pill}">
+                        <TextBlock Foreground="{DynamicResource HerdrOps.Brush.PrimaryText}"
+                                   FontSize="10"
+                                   FontWeight="SemiBold"
+                                   Text="SYNTHETIC DATA" />
+                    </Border>
+                </Grid>
+            </Border>
+
+            <ItemsControl x:Name="AdaptiveGalleryItems"
+                          Grid.Row="1"
+                          Margin="8"
+                          ItemsSource="{Binding AdaptiveItems, RelativeSource={RelativeSource AncestorType=widgets:WidgetGalleryView}}">
+                <ItemsControl.ItemsPanel>
+                    <ItemsPanelTemplate>
+                        <UniformGrid Rows="2" Columns="4" />
+                    </ItemsPanelTemplate>
+                </ItemsControl.ItemsPanel>
+                <ItemsControl.ItemTemplate>
+                    <DataTemplate>
+                        <Border Margin="5"
+                                Padding="9"
+                                Style="{DynamicResource HerdrOps.Style.Card}">
+                            <Grid>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="39" />
+                                    <RowDefinition Height="*" />
+                                    <RowDefinition Height="42" />
+                                </Grid.RowDefinitions>
+                                <StackPanel>
+                                    <TextBlock Foreground="{DynamicResource HerdrOps.Brush.PrimaryText}"
+                                               FontSize="13"
+                                               FontWeight="SemiBold"
+                                               Text="{Binding DisplayName}"
+                                               TextTrimming="CharacterEllipsis" />
+                                    <TextBlock Tag="ThaiWidgetCheck"
+                                               Foreground="{DynamicResource HerdrOps.Brush.TextMuted}"
+                                               FontSize="9"
+                                               Text="{Binding ThaiDescription}"
+                                               TextTrimming="CharacterEllipsis" />
+                                </StackPanel>
+                                <Viewbox x:Name="AdaptiveWidgetPreview"
+                                         Grid.Row="1"
+                                         Margin="0,2"
+                                         Stretch="Uniform">
+                                    <widgets:WidgetSurface Width="{Binding PreviewWidth}"
+                                                           Height="{Binding PreviewHeight}"
+                                                           IsInteractive="False"
+                                                           State="{Binding SharedState, RelativeSource={RelativeSource AncestorType=widgets:WidgetGalleryView}}"
+                                                           Variant="{Binding Variant}" />
+                                </Viewbox>
+                                <Border x:Name="AdaptiveDashboardPreview"
+                                        Grid.Row="1"
+                                        Margin="0,2"
+                                        Background="{DynamicResource HerdrOps.Brush.Background}"
+                                        BorderBrush="{DynamicResource HerdrOps.Brush.Border}"
+                                        BorderThickness="1"
+                                        CornerRadius="{DynamicResource HerdrOps.Radius.Default}"
+                                        Visibility="Collapsed">
+                                    <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center">
+                                        <TextBlock HorizontalAlignment="Center"
+                                                   FontFamily="{DynamicResource HerdrOps.FontFamily.Icons}"
+                                                   Foreground="{DynamicResource HerdrOps.Brush.PrimaryText}"
+                                                   FontSize="34"
+                                                   Text="&#xE80F;" />
+                                        <TextBlock Margin="0,5,0,0"
+                                                   HorizontalAlignment="Center"
+                                                   FontSize="12"
+                                                   FontWeight="SemiBold"
+                                                   Text="HerdrOps Dashboard" />
+                                        <TextBlock HorizontalAlignment="Center"
+                                                   Foreground="{DynamicResource HerdrOps.Brush.TextMuted}"
+                                                   FontSize="9"
+                                                   Text="SYNTHETIC PREVIEW" />
+                                    </StackPanel>
+                                </Border>
+                                <Button Grid.Row="2"
+                                        MinHeight="40"
+                                        Tag="{Binding Key}"
+                                        Style="{DynamicResource HerdrOps.Style.SecondaryButton}"
+                                        automation:AutomationProperties.Name="{Binding AutomationName}"
+                                        Click="OnOpenWidgetClick"
+                                        Content="{Binding ActionLabel}" />
+                            </Grid>
+                        </Border>
+                        <DataTemplate.Triggers>
+                            <DataTrigger Binding="{Binding IsDashboard}" Value="True">
+                                <Setter TargetName="AdaptiveWidgetPreview" Property="Visibility" Value="Collapsed" />
+                                <Setter TargetName="AdaptiveDashboardPreview" Property="Visibility" Value="Visible" />
+                            </DataTrigger>
+                        </DataTemplate.Triggers>
+                    </DataTemplate>
+                </ItemsControl.ItemTemplate>
+            </ItemsControl>
+
+            <Border Grid.Row="2"
+                    Background="{DynamicResource HerdrOps.Brush.TopBar}"
+                    BorderBrush="{DynamicResource HerdrOps.Brush.Border}"
+                    BorderThickness="0,1,0,0">
+                <Grid Margin="16,0">
+                    <TextBlock VerticalAlignment="Center"
+                               Foreground="{DynamicResource HerdrOps.Brush.TextMuted}"
+                               FontSize="10"
+                               Text="Tab / Shift+Tab · Enter / Space" />
+                    <TextBlock HorizontalAlignment="Right"
+                               VerticalAlignment="Center"
+                               Foreground="{DynamicResource HerdrOps.Brush.TextMuted}"
+                               FontSize="10"
+                               Text="Herdr: Not connected" />
+                </Grid>
+            </Border>
+        </Grid>
+    </Grid>
 </UserControl>

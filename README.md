@@ -46,7 +46,7 @@ GitHub Milestones, scoped Issues และ Release Trackers อยู่ที�
 - ทุกค่าบน Shell ระบุเป็น Synthetic หรือ Not connected อย่างชัดเจน
 - หน้า Overview แสดง summary cards, recent activity, score trend, work distribution, top agents และ alerts จาก deterministic synthetic fixture
 
-Design checklists อยู่ที่ [`v0.1 Issue #2`](docs/design/implementation/v0.1-issue-2-checklist.md), [`v0.1 Issue #3`](docs/design/implementation/v0.1-issue-3-overview-checklist.md) และ [`v0.1 Issue #4`](docs/design/implementation/v0.1-issue-4-widget-checklist.md)
+Design checklists อยู่ที่ [`v0.1 Issue #2`](docs/design/implementation/v0.1-issue-2-checklist.md), [`v0.1 Issue #3`](docs/design/implementation/v0.1-issue-3-overview-checklist.md), [`v0.1 Issue #4`](docs/design/implementation/v0.1-issue-4-widget-checklist.md) และ [`v0.1 Issue #51`](docs/design/implementation/v0.1-issue-51-widget-review-remediation.md)
 
 รัน Quality Gate ของ v0.1 แบบครบชุดด้วย:
 
