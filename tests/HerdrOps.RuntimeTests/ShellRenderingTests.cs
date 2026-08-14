@@ -6,6 +6,7 @@ using System.Windows.Controls;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using HerdrOps.App.Views;
+using HerdrOps.App.Localization;
 using HerdrOps.App.Widgets;
 
 namespace HerdrOps.RuntimeTests;
@@ -30,6 +31,7 @@ public sealed class ShellRenderingTests
 
     private static void RenderEvidence()
     {
+        UiLanguageService.Shared.SetLanguage(UiLanguage.Thai);
         var repositoryRoot = FindRepositoryRoot();
         var shellEvidenceDirectory = Path.Combine(
             repositoryRoot,
@@ -43,8 +45,8 @@ public sealed class ShellRenderingTests
         {
             var view = ShellView.CreateSyntheticPreview();
             Assert.AreEqual("Project Manager", view.LiveDashboard.AgentDetail.Name);
-            Assert.AreEqual("Synthetic profile", view.LiveDashboard.AgentDetail.Runtime);
-            Assert.AreEqual("Preview", view.LiveDashboard.AgentDetail.Status);
+            Assert.AreEqual(UiLanguageService.Shared["SyntheticProfile"], view.LiveDashboard.AgentDetail.Runtime);
+            Assert.AreEqual(UiLanguageService.Shared["PreviewStatus"], view.LiveDashboard.AgentDetail.Status);
             view.Navigation.SelectedIndex = 1;
             var scaleLabel = FormattableString.Invariant($"{scale * 100:0}");
             RenderView(
@@ -87,6 +89,7 @@ public sealed class ShellRenderingTests
 
     private static void RenderWidgetEvidence()
     {
+        UiLanguageService.Shared.SetLanguage(UiLanguage.Thai);
         var repositoryRoot = FindRepositoryRoot();
         var widgetEvidenceDirectory = Path.Combine(
             repositoryRoot,

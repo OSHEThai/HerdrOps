@@ -1,4 +1,5 @@
 using HerdrOps.App.Agents;
+using HerdrOps.App.Localization;
 using HerdrOps.App.Organization;
 using HerdrOps.App.Overview;
 using HerdrOps.App.StateIpc;
@@ -21,6 +22,7 @@ public enum LiveDashboardConnectionStatus
 public sealed class LiveDashboardState : ObservableState
 {
     private readonly List<OverviewActivity> _activities = [];
+    private readonly bool _syntheticPreview;
     private HerdrSessionStateContract _currentState = HerdrSessionStateContract.Empty;
     private LiveDashboardConnectionStatus _connectionStatus;
     private bool _isLive;
@@ -42,6 +44,8 @@ public sealed class LiveDashboardState : ObservableState
 
     private LiveDashboardState(bool syntheticPreview)
     {
+        _syntheticPreview = syntheticPreview;
+        var text = UiLanguageService.Shared;
         Overview = new LiveOverviewState();
         Organization = new LiveOrganizationState();
         AgentDetail = new LiveAgentDetailState();
@@ -50,14 +54,14 @@ public sealed class LiveDashboardState : ObservableState
         _connectionStatus = syntheticPreview
             ? LiveDashboardConnectionStatus.SyntheticPreview
             : LiveDashboardConnectionStatus.Waiting;
-        _sourceLabel = syntheticPreview ? "SYNTHETIC SHELL PREVIEW" : "WAITING FOR CORE";
-        _connectionLabel = syntheticPreview ? "Herdr not connected" : "Core not connected";
+        _sourceLabel = syntheticPreview ? text["SyntheticShellPreview"] : "WAITING FOR CORE";
+        _connectionLabel = syntheticPreview ? text["HerdrNotConnected"] : "Core not connected";
         _connectionBrushKey = OverviewBrushKeys.Offline;
-        _projectLabel = syntheticPreview ? "Synthetic Preview" : "No active workspace";
+        _projectLabel = syntheticPreview ? text["SyntheticPreview"] : text["NoActiveWorkspace"];
         _statusSummary = syntheticPreview
-            ? "UI preview ready"
-            : "Waiting for the per-user Core state service";
-        _lastUpdateLabel = "Last Core update: —";
+            ? text["UiPreviewReady"]
+            : text["WaitingForCore"];
+        _lastUpdateLabel = text["LastCoreUpdateEmpty"];
         _latencyLabel = "— ms";
         RefreshViews();
         if (syntheticPreview)
@@ -237,6 +241,23 @@ public sealed class LiveDashboardState : ObservableState
             LastSourceTimestamp,
             resolved,
             LastTransportLatency);
+    }
+
+    public void RefreshLanguage()
+    {
+        if (_syntheticPreview)
+        {
+            var text = UiLanguageService.Shared;
+            SourceLabel = text["SyntheticShellPreview"];
+            ConnectionLabel = text["HerdrNotConnected"];
+            ProjectLabel = text["SyntheticPreview"];
+            StatusSummary = text["UiPreviewReady"];
+            LastUpdateLabel = text["LastCoreUpdateEmpty"];
+            AgentDetail.ApplySyntheticPreviewProfile();
+            return;
+        }
+
+        RefreshViews();
     }
 
     private void RefreshViews()

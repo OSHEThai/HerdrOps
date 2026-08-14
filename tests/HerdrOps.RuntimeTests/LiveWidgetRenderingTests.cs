@@ -6,6 +6,7 @@ using System.Windows.Automation;
 using System.Windows.Controls;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
+using HerdrOps.App.Localization;
 using HerdrOps.App.Live;
 using HerdrOps.App.StateIpc;
 using HerdrOps.App.Widgets;
@@ -340,7 +341,7 @@ public sealed class LiveWidgetRenderingTests
                 IsEffectivelyVisible(viewer) &&
                 string.Equals(
                     AutomationProperties.GetName(viewer),
-                    "รายชื่อ Agent ทั้งหมดใน Floating Vertical Widget",
+                    UiLanguageService.Shared["WidgetAllAgentsList"],
                     StringComparison.Ordinal));
         Assert.IsGreaterThan(0d, scrollViewer.ScrollableHeight);
         scrollViewer.ScrollToEnd();

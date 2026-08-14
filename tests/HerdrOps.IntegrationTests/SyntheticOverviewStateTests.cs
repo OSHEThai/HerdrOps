@@ -1,4 +1,5 @@
 using HerdrOps.App.Overview;
+using HerdrOps.App.Localization;
 using HerdrOps.Contracts;
 
 namespace HerdrOps.IntegrationTests;
@@ -13,8 +14,8 @@ public sealed class SyntheticOverviewStateTests
         var second = SyntheticOverviewState.Create();
 
         Assert.AreEqual(EvidenceClass.Synthetic, first.EvidenceClass);
-        Assert.AreEqual("SYNTHETIC DATA", first.SourceLabel);
-        Assert.AreEqual("Herdr not connected", first.ConnectionLabel);
+        Assert.AreEqual(UiLanguageService.Shared["SyntheticData"], first.SourceLabel);
+        Assert.AreEqual(UiLanguageService.Shared["HerdrNotConnected"], first.ConnectionLabel);
         Assert.AreEqual(
             new DateTimeOffset(2026, 8, 14, 14, 32, 0, TimeSpan.FromHours(7)),
             first.SnapshotTimestamp);
@@ -51,8 +52,8 @@ public sealed class SyntheticOverviewStateTests
     {
         return string.Join(
             "|",
-            card.ThaiTitle,
-            card.EnglishTitle,
+            card.Id,
+            card.Title,
             card.Value,
             card.Metric,
             card.Trend,

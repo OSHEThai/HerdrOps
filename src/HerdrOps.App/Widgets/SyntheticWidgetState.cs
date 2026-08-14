@@ -1,4 +1,5 @@
 using HerdrOps.Contracts;
+using HerdrOps.App.Localization;
 
 namespace HerdrOps.App.Widgets;
 
@@ -21,24 +22,23 @@ public sealed class SyntheticWidgetState : IWidgetState
 
     public bool IsLive => false;
 
-    public string SourceLabel => "SYNTHETIC DATA";
+    public string SourceLabel => UiLanguageService.Shared["SyntheticData"];
 
-    public string CompactSourceLabel => "SYN";
+    public string CompactSourceLabel => UiLanguageService.Shared["SyntheticCompact"];
 
-    public string ConnectionLabel => "Herdr not connected";
+    public string ConnectionLabel => UiLanguageService.Shared["HerdrNotConnected"];
 
-    public string CompactConnectionLabel => "Synthetic preview";
+    public string CompactConnectionLabel => UiLanguageService.Shared["SyntheticPreview"];
 
     public string ConnectionBrushKey => "HerdrOps.Brush.Status.Working";
 
-    public string GalleryDescription =>
-        "ต้นแบบ WPF ทั้ง 7 รูปแบบ · ใช้ข้อมูล Synthetic ชุดเดียวกัน · ยังไม่เชื่อมต่อ Herdr";
+    public string GalleryDescription => UiLanguageService.Shared["WidgetGalleryDescription"];
 
-    public string DashboardPreviewLabel => "SYNTHETIC PREVIEW";
+    public string DashboardPreviewLabel => UiLanguageService.Shared["WidgetDashboardPreview"];
 
-    public string WindowTitleSuffix => "Synthetic Preview";
+    public string WindowTitleSuffix => UiLanguageService.Shared["WidgetWindowSuffix"];
 
-    public string DetailsSourceLabel => "รายละเอียดเดียวกันจากสถานะ Synthetic ชุดกลาง";
+    public string DetailsSourceLabel => UiLanguageService.Shared["WidgetDetailsSource"];
 
     public DateTimeOffset SnapshotAt { get; } =
         new(2026, 8, 14, 14, 32, 0, TimeSpan.FromHours(7));
@@ -71,7 +71,7 @@ public sealed class SyntheticWidgetState : IWidgetState
 
     public string NegativeDeltaLabel => NegativeDelta.ToString();
 
-    public string LatencyLabel => "Synthetic snapshot";
+    public string LatencyLabel => UiLanguageService.Shared["SyntheticSnapshot"];
 
     public int UpdateSampleCount => 0;
 
@@ -89,28 +89,31 @@ public sealed class SyntheticWidgetState : IWidgetState
 
     public IReadOnlyList<WidgetActivity> SelectedAgentActivity { get; }
 
-    public static SyntheticWidgetState Create() =>
-        new(
+    public static SyntheticWidgetState Create()
+    {
+        var text = UiLanguageService.Shared;
+        return new(
             [
-                new("pm", "PM", "Project Manager", "PM", "System", "กำลังตรวจรวมแผนโปรเจกต์", "02:14", 95, "Working", "HerdrOps.Brush.Status.Working", "14:20"),
-                new("ps", "PS", "PM Secretary", "Secretary", "Project Manager", "อัปเดตทะเบียนงาน", "00:38", 98, "Review", "HerdrOps.Brush.Status.Review", "14:20"),
-                new("bl", "BL", "Backend Leader", "Leader", "Project Manager", "รอข้อมูลจาก Worker", "05:42", 72, "Blocked", "HerdrOps.Brush.Status.Blocked", "14:20"),
-                new("bw", "BW", "Backend Worker 01", "Worker", "Backend Leader", "แก้ไขไฟล์ auth/service.cs", "01:27", 88, "Working", "HerdrOps.Brush.Status.Working", "14:20"),
-                new("w2", "W2", "Backend Worker 02", "Worker", "Backend Leader", "ทำงาน TASK-118", "00:44", 100, "Done", "HerdrOps.Brush.Status.Done", "14:20"),
-                new("w3", "W3", "Backend Worker 03", "Worker", "Backend Leader", "อ่านไฟล์ config.yml", "02:31", 80, "Idle", "HerdrOps.Brush.Status.Idle", "14:20"),
-                new("tw", "TW", "Test Worker", "Worker", "Test Leader", "รัน Integration Tests", "03:16", 90, "Working", "HerdrOps.Brush.Status.Working", "14:20"),
-                new("dw", "DW", "DevOps Worker", "Worker", "DevOps Leader", "Deploy to staging", "01:02", 85, "Working", "HerdrOps.Brush.Status.Working", "14:20"),
+                new("pm", "PM", "Project Manager", text["WidgetAgentPmRole"], text["WidgetAssignedSystem"], text["WidgetActivityPlan"], "02:14", 95, text["StatusWorking"], "HerdrOps.Brush.Status.Working", "14:20"),
+                new("ps", "PS", "PM Secretary", text["WidgetAgentSecretaryRole"], "Project Manager", text["WidgetActivityRegistry"], "00:38", 98, text["StatusReview"], "HerdrOps.Brush.Status.Review", "14:20"),
+                new("bl", "BL", "Backend Leader", text["WidgetAgentLeaderRole"], "Project Manager", text["WidgetActivityWaiting"], "05:42", 72, text["StatusBlocked"], "HerdrOps.Brush.Status.Blocked", "14:20"),
+                new("bw", "BW", "Backend Worker 01", text["WidgetAgentWorkerRole"], "Backend Leader", text["WidgetActivityEditing"], "01:27", 88, text["StatusWorking"], "HerdrOps.Brush.Status.Working", "14:20"),
+                new("w2", "W2", "Backend Worker 02", text["WidgetAgentWorkerRole"], "Backend Leader", text["WidgetActivityTask"], "00:44", 100, text["StatusDone"], "HerdrOps.Brush.Status.Done", "14:20"),
+                new("w3", "W3", "Backend Worker 03", text["WidgetAgentWorkerRole"], "Backend Leader", text["WidgetActivityReading"], "02:31", 80, text["StatusIdle"], "HerdrOps.Brush.Status.Idle", "14:20"),
+                new("tw", "TW", "Test Worker", text["WidgetAgentWorkerRole"], "Test Leader", text["WidgetActivityTesting"], "03:16", 90, text["StatusWorking"], "HerdrOps.Brush.Status.Working", "14:20"),
+                new("dw", "DW", "DevOps Worker", text["WidgetAgentWorkerRole"], "DevOps Leader", text["WidgetActivityDeploy"], "01:02", 85, text["StatusWorking"], "HerdrOps.Brush.Status.Working", "14:20"),
             ],
             [
-                new("Backend Leader", "พบงานนอกคำสั่งของ Worker 03", "14:32", "\uE7BA", "HerdrOps.Brush.Status.Blocked", "Blocked"),
-                new("Worker 02", "ทำงาน TASK-118 เสร็จแล้ว", "14:30", "\uE73E", "HerdrOps.Brush.Status.Done", "Done"),
-                new("PM Secretary", "อัปเดตข้อมูลโครงการแล้ว", "14:30", "\uE946", "HerdrOps.Brush.Status.Review", "Review"),
-                new("Project Manager", "อนุมัติแผนงาน Backend", "14:28", "\uE73E", "HerdrOps.Brush.Status.Done", "Done"),
+                new("Backend Leader", text["WidgetNoticeCommand"], "14:32", "\uE7BA", "HerdrOps.Brush.Status.Blocked", text["StatusBlocked"]),
+                new("Worker 02", text["WidgetNoticeDone"], "14:30", "\uE73E", "HerdrOps.Brush.Status.Done", text["StatusDone"]),
+                new("PM Secretary", text["WidgetNoticeUpdated"], "14:30", "\uE946", "HerdrOps.Brush.Status.Review", text["StatusReview"]),
+                new("Project Manager", text["WidgetNoticeApproved"], "14:28", "\uE73E", "HerdrOps.Brush.Status.Done", text["StatusDone"]),
             ],
             [
-                new("14:20", "รับงาน TASK-115 จาก Leader"),
-                new("14:21", "เปิดไฟล์ auth/service.cs"),
-                new("14:22", "แก้ไขไฟล์ auth/service.cs"),
-                new("14:25", "บันทึกไฟล์ auth/service.cs"),
+                new("14:20", text["WidgetFactReceived"]),
+                new("14:21", text["WidgetFactOpened"]),
+                new("14:22", text["WidgetFactEdited"]),
+                new("14:25", text["WidgetFactSaved"]),
             ]);
+    }
 }

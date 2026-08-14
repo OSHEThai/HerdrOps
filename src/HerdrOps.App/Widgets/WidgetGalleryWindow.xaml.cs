@@ -1,4 +1,5 @@
 using System.Windows;
+using HerdrOps.App.Localization;
 
 namespace HerdrOps.App.Widgets;
 
@@ -18,7 +19,9 @@ public partial class WidgetGalleryWindow : Window
         InitializeComponent();
         GalleryView = new WidgetGalleryView(state, launcher: null);
         GalleryHost.Content = GalleryView;
-        Title = $"HerdrOps Widget Gallery — {state.WindowTitleSuffix}";
+        RefreshTitle();
+        UiLanguageService.Shared.LanguageChanged += OnLanguageChanged;
+        Closed += OnClosed;
     }
 
     public WidgetGalleryView GalleryView { get; }
@@ -40,5 +43,19 @@ public partial class WidgetGalleryWindow : Window
         {
             Width = nativeOuterWidth;
         }
+    }
+
+    private void OnLanguageChanged(object? sender, EventArgs e) => RefreshTitle();
+
+    private void RefreshTitle()
+    {
+        var text = UiLanguageService.Shared;
+        Title = $"{text["WidgetGalleryTitle"]} — {GalleryView.SharedState.WindowTitleSuffix}";
+    }
+
+    private void OnClosed(object? sender, EventArgs e)
+    {
+        UiLanguageService.Shared.LanguageChanged -= OnLanguageChanged;
+        Closed -= OnClosed;
     }
 }

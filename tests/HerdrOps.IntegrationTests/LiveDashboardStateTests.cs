@@ -23,8 +23,8 @@ public sealed class LiveDashboardStateTests
         Assert.IsFalse(dashboard.ConnectionLabel.Contains("state current", StringComparison.Ordinal));
         Assert.AreEqual("HerdrOps", dashboard.ProjectLabel);
         Assert.AreEqual("1", dashboard.Overview.SummaryCards[0].Value);
-        Assert.AreEqual("1", dashboard.Overview.SummaryCards.Single(card => card.EnglishTitle == "Working").Value);
-        Assert.AreEqual("—", dashboard.Overview.SummaryCards.Single(card => card.EnglishTitle == "Daily Score").Value);
+        Assert.AreEqual("1", dashboard.Overview.SummaryCards.Single(card => card.Id == "working").Value);
+        Assert.AreEqual("—", dashboard.Overview.SummaryCards.Single(card => card.Id == "daily-score").Value);
         Assert.IsEmpty(dashboard.Overview.ScoreTrend);
         Assert.AreEqual("—", dashboard.Overview.TopAgents[0].ScoreLabel);
         Assert.IsTrue(dashboard.Organization.Nodes.Any(node => node.AgentTerminalId == "terminal-1"));
@@ -49,7 +49,7 @@ public sealed class LiveDashboardStateTests
         Assert.IsFalse(dashboard.IsLive);
         Assert.AreEqual("Offline", dashboard.AgentDetail.Status);
         Assert.AreEqual("Offline", dashboard.Organization.SelectedAgent.Status);
-        var working = dashboard.Overview.SummaryCards.Single(card => card.EnglishTitle == "Working");
+        var working = dashboard.Overview.SummaryCards.Single(card => card.Id == "working");
         Assert.AreEqual("—", working.Value);
         Assert.AreEqual("Offline", working.Metric);
         StringAssert.Contains(working.Trend, "Last known count 1", StringComparison.Ordinal);
