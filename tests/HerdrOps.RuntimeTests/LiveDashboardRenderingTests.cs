@@ -161,16 +161,79 @@ public sealed class LiveDashboardRenderingTests
         });
     }
 
+    [TestMethod]
+    public void HerdrReconnectRendersLastKnownStateAsOfflineInBothLanguages()
+    {
+        WpfTestHost.Run(() =>
+        {
+            var dashboard = CreateDashboard();
+            var reconnecting = dashboard.CurrentRuntimeHealth with
+            {
+                Status = "Reconnecting",
+                LastTransitionUtc = dashboard.CurrentRuntimeHealth.LastTransitionUtc.AddSeconds(1),
+                DisconnectCount = 1,
+                ReconciliationCount = 1,
+            };
+            var update = CreateRuntimeHealthUpdate(dashboard.CurrentState, reconnecting);
+            dashboard.ApplyUpdate(update, update.Envelope.SentUtc.AddMilliseconds(5));
+            var outputDirectory = Path.Combine(
+                FindRepositoryRoot(),
+                "artifacts",
+                "design-evidence",
+                "v0.2.0",
+                "issue-9",
+                "contract-backed-wpf");
+            Directory.CreateDirectory(outputDirectory);
+
+            Assert.IsTrue(dashboard.IsCoreConnected);
+            Assert.IsFalse(dashboard.IsLive);
+            foreach (var language in new[] { UiLanguage.Thai, UiLanguage.English })
+            {
+                UiLanguageService.Shared.SetLanguage(language);
+                dashboard.RefreshLanguage();
+                var shell = new ShellView(dashboard);
+                shell.Navigation.SelectedIndex = 0;
+                var size = new Size(1672, 941);
+                Layout(shell, size);
+                var visibleText = EnumerateDescendants(shell)
+                    .OfType<TextBlock>()
+                    .Where(IsEffectivelyVisible)
+                    .Select(text => text.Text)
+                    .ToArray();
+                Assert.IsTrue(visibleText.Contains(
+                    UiLanguageService.Shared["HerdrReconnecting"],
+                    StringComparer.Ordinal));
+                Assert.IsTrue(dashboard.Overview.TopAgents.All(
+                    agent => agent.StatusLabel == UiLanguageService.Shared["StatusOffline"]));
+                var languageName = language == UiLanguage.Thai ? "thai" : "english";
+                SavePng(
+                    shell,
+                    size,
+                    Path.Combine(outputDirectory, $"{languageName}-overview-herdr-reconnecting.png"));
+            }
+        });
+    }
+
     private static LiveDashboardState CreateDashboard()
     {
         var state = CreateState();
+        var acceptedUtc = new DateTimeOffset(2026, 8, 14, 14, 32, 0, TimeSpan.Zero);
+        var runtimeHealth = new HerdrRuntimeHealthContract(
+            "Connected",
+            acceptedUtc,
+            acceptedUtc,
+            2,
+            12,
+            0,
+            0);
         var payload = new HerdrOpsStateSnapshotPayload(
             state,
-            HerdrOpsStateIpcJson.ComputeSha256(state));
+            HerdrOpsStateIpcJson.ComputeSha256(state),
+            runtimeHealth);
         var envelope = HerdrOpsStateIpcJson.CreateEnvelope(
             HerdrOpsStateIpcProtocol.MessageTypes.Snapshot,
             state.LastIngestSequence,
-            new DateTimeOffset(2026, 8, 14, 14, 32, 0, TimeSpan.Zero),
+            acceptedUtc,
             HerdrOpsStateIpcProtocol.CoreSource,
             Guid.NewGuid(),
             payload);
@@ -181,7 +244,8 @@ public sealed class LiveDashboardRenderingTests
                 state,
                 envelope,
                 payload,
-                null),
+                null,
+                runtimeHealth),
             envelope.SentUtc.AddMilliseconds(18));
         return dashboard;
     }
@@ -205,6 +269,29 @@ public sealed class LiveDashboardRenderingTests
             "workspace-1",
             "tab-1",
             "pane-1"));
+
+    private static HerdrOpsStateUpdate CreateRuntimeHealthUpdate(
+        HerdrSessionStateContract state,
+        HerdrRuntimeHealthContract health)
+    {
+        var payload = new HerdrOpsRuntimeHealthPayload(
+            health,
+            HerdrOpsStateIpcJson.ComputeSha256(state));
+        var envelope = HerdrOpsStateIpcJson.CreateEnvelope(
+            HerdrOpsStateIpcProtocol.MessageTypes.RuntimeHealth,
+            state.LastIngestSequence,
+            health.LastTransitionUtc,
+            HerdrOpsStateIpcProtocol.CoreSource,
+            Guid.NewGuid(),
+            payload);
+        return new HerdrOpsStateUpdate(
+            HerdrOpsStateUpdateKind.RuntimeHealth,
+            state,
+            envelope,
+            null,
+            null,
+            health);
+    }
 
     private static void Layout(FrameworkElement view, Size size)
     {

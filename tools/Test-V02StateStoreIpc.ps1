@@ -36,6 +36,7 @@ $requiredChecks = @(
     'LengthPrefixedEnvelopeRoundTripsWithStrictHeader',
     'StrictJsonRejectsUnmappedEnvelopeAndPayloadMembers',
     'DeltaReducerAppliesOnlyContiguousHashBoundState',
+    'RuntimeHealthRejectsInvalidStatusClockAndConnectedWithoutBootstrap',
     'RestoredCountersContinueOnFirstBootstrapAfterCoreRestart',
     'WalStoreSurvivesRestartWithExactAcceptedState',
     'ExistingVersionZeroDatabaseIsBackedUpBeforeMigration',
@@ -44,6 +45,7 @@ $requiredChecks = @(
     'SecondCoreStoreInstanceFailsUntilOwnerDisposes',
     'CoordinatorRestoresStateAndContinuesSequenceAfterCoreRestart',
     'AppReceivesFullSnapshotThenOrderedDeltas',
+    'AppReceivesRuntimeHealthWithoutAdvancingStateSequence',
     'ServerRejectsInvalidProtocolVersionBeforeSnapshot',
     'ServerRejectsUnauthorizedClientRoleBeforeSnapshot',
     'ProductionPipeEndpointsRequireCurrentUserOnly',
@@ -51,6 +53,8 @@ $requiredChecks = @(
     'ClientLimitWaitsForCapacityWithoutStoppingServer',
     'ServiceKeepsPipeAliveUntilCoreCancellation',
     'ServiceCommandRejectsMissingHerdrWithNonZeroResult',
+    'ServiceCommandRequiresCompleteRuntimeEvidenceOptions',
+    'ServiceCommandRuntimeEvidenceRequiresAuthorizedHerdrEnvironment',
     'WidgetGalleryExposesKeyboardFocusAndAccessibleOpenActions'
 )
 foreach ($check in $requiredChecks) {
@@ -128,7 +132,7 @@ $report = @(
     'NuGetVulnerabilityAudit: PASS',
     'SQLiteOwner: HerdrOps.Infrastructure only',
     'CoreToAppPipeAuthorization: PipeOptions.CurrentUserOnly',
-    'WireProtocol: v1 length-prefixed strict JSON, snapshot then contiguous deltas',
+    'WireProtocol: v2 length-prefixed strict JSON, snapshot, contiguous state deltas, and hash-bound runtime health',
     '',
     'RequiredChecks:'
 ) + ($requiredChecks | ForEach-Object { "PASS $_" }) + @(

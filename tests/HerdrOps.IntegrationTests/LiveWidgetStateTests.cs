@@ -23,8 +23,16 @@ public sealed class LiveWidgetStateTests
         var state = CreateState(sequence: 12);
         var update = SnapshotUpdate(state);
         var dashboard = new LiveDashboardState();
+        var acceptedStateUtc = update.RuntimeHealth.LastAcceptedStateUtc!.Value;
+        update = update with
+        {
+            Envelope = update.Envelope with
+            {
+                SentUtc = acceptedStateUtc.AddMilliseconds(10),
+            },
+        };
 
-        dashboard.ApplyUpdate(update, update.Envelope.SentUtc.AddMilliseconds(18));
+        dashboard.ApplyUpdate(update, acceptedStateUtc.AddMilliseconds(18));
 
         Assert.AreEqual(dashboard.CurrentState.LastIngestSequence, dashboard.Widgets.Sequence);
         Assert.AreEqual(dashboard.CurrentState.Agents.Count, dashboard.Widgets.TotalAgents);
@@ -79,7 +87,8 @@ public sealed class LiveWidgetStateTests
 
         dashboard.ApplyUpdate(update, update.Envelope.SentUtc.AddMilliseconds(7));
 
-        Assert.IsTrue(dashboard.Widgets.IsLive, "Core connectivity remains independently visible.");
+        Assert.IsTrue(dashboard.IsCoreConnected, "Core connectivity remains independently visible.");
+        Assert.IsFalse(dashboard.Widgets.IsLive, "Herdr is not live before an admitted snapshot.");
         Assert.AreEqual(UiLanguageService.Shared["NoHerdrStateSource"], dashboard.Widgets.SourceLabel);
         Assert.AreEqual(UiLanguageService.Shared["EmptyCompact"], dashboard.Widgets.CompactSourceLabel);
         Assert.AreEqual("—", dashboard.Widgets.WorkingCountLabel);
@@ -202,7 +211,8 @@ public sealed class LiveWidgetStateTests
             state,
             envelope,
             payload,
-            null);
+            null,
+            payload.RuntimeHealth);
     }
 
     private static async Task WaitUntilAsync(Func<bool> predicate)

@@ -24,6 +24,10 @@ Build, verification, GitHub roadmap, evidence capture, and packaging helpers liv
 # From an authorized live Herdr environment, capture snapshot/event/reconnect evidence
 ./tools/Test-V02HerdrRuntime.ps1 -DurationSeconds 120
 
+# From a standard non-elevated authorized Herdr pane, run the composite v0.2
+# actual-runtime gate for Issues #7, #9, and #10. Follow its event/restart prompts.
+./tools/Test-V02LiveRuntimeAcceptance.ps1
+
 # Verify SQLite WAL restart/migration and current-user Core-to-App IPC evidence
 ./tools/Test-V02StateStoreIpc.ps1
 
@@ -35,3 +39,5 @@ Build, verification, GitHub roadmap, evidence capture, and packaging helpers liv
 # (implementation-only; Issue #10 remains open pending actual Herdr/reference-host evidence)
 ./tools/Test-V02LiveWidgets.ps1
 ```
+
+The composite gate binds production WPF captures to exact state hashes from the admitted Herdr Core trace, verifies Dashboard-close Widget continuity, and measures Widget latency plus combined Core/App idle resources. It fails closed outside an authorized Herdr pane and does not control the Herdr session itself.

@@ -227,6 +227,53 @@ public sealed class HerdrOpsStatePipeServer
         }
     }
 
+    public void PublishRuntimeHealth(
+        HerdrOpsRuntimeHealthPayload payload,
+        Guid correlationId)
+    {
+        ArgumentNullException.ThrowIfNull(payload);
+        if (correlationId == Guid.Empty)
+        {
+            throw new ArgumentException(
+                "The runtime-health correlation identifier cannot be empty.",
+                nameof(correlationId));
+        }
+
+        ClientSubscription[] overflowed;
+        lock (_sync)
+        {
+            HerdrSessionStateContractReducer.ValidateRuntimeHealthPayload(
+                payload,
+                _currentSnapshot.State);
+            var envelope = HerdrOpsStateIpcJson.CreateEnvelope(
+                HerdrOpsStateIpcProtocol.MessageTypes.RuntimeHealth,
+                _currentSnapshot.State.LastIngestSequence,
+                _timeProvider.GetUtcNow(),
+                HerdrOpsStateIpcProtocol.CoreSource,
+                correlationId,
+                payload);
+            EnsureFrameFits(envelope);
+            _currentSnapshot = _currentSnapshot with
+            {
+                RuntimeHealth = payload.RuntimeHealth,
+            };
+            overflowed = _subscriptions.Values
+                .Where(subscription => !subscription.Channel.Writer.TryWrite(envelope))
+                .ToArray();
+            foreach (var subscription in overflowed)
+            {
+                _subscriptions.Remove(subscription.ClientId);
+            }
+        }
+
+        foreach (var subscription in overflowed)
+        {
+            subscription.Channel.Writer.TryComplete(
+                new HerdrOpsStateIpcProtocolException(
+                    "The state IPC client fell behind the bounded update queue."));
+        }
+    }
+
     internal NamedPipeServerStream CreateServerStream() => new(
         _options.PipeName,
         PipeDirection.InOut,
@@ -518,7 +565,8 @@ public sealed class HerdrOpsStatePipeServer
             !string.Equals(
                 deltaPayload.ResultStateSha256,
                 resultingSnapshot.StateSha256,
-                StringComparison.Ordinal))
+                StringComparison.Ordinal) ||
+            deltaPayload.RuntimeHealth != resultingSnapshot.RuntimeHealth)
         {
             throw new HerdrOpsStateIpcProtocolException(
                 "The resulting snapshot does not match the published state delta.");

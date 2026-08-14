@@ -175,33 +175,57 @@ public sealed class LiveWidgetState : ObservableState, IWidgetState
 
     internal void Update(
         HerdrSessionStateContract state,
+        bool isCoreConnected,
         bool isLive,
         string connectionLabel,
         DateTimeOffset snapshotAt,
         string? selectedTerminalId,
-        TimeSpan? transportLatency)
+        TimeSpan? updateLatency,
+        bool recordLatency)
     {
         ArgumentNullException.ThrowIfNull(state);
         var text = UiLanguageService.Shared;
-        var hasAdmittedState = isLive && state.LastIngestSequence > 0;
+        var hasAdmittedState = isCoreConnected && isLive && state.LastIngestSequence > 0;
         IsLive = isLive;
-        SourceLabel = isLive
-            ? hasAdmittedState ? text["CoreStateSource"] : text["NoHerdrStateSource"]
-            : state.LastIngestSequence > 0 ? text["LastKnownSource"] : text["NoCoreDataSource"];
-        CompactSourceLabel = isLive
-            ? hasAdmittedState ? text["CoreCompact"] : text["EmptyCompact"]
-            : state.LastIngestSequence > 0 ? text["LastCompact"] : text["OffCompact"];
+        SourceLabel = isCoreConnected
+            ? hasAdmittedState
+                ? text["CoreStateSource"]
+                : state.LastIngestSequence > 0
+                    ? text["LastKnownSource"]
+                    : text["NoHerdrStateSource"]
+            : state.LastIngestSequence > 0
+                ? text["LastKnownSource"]
+                : text["NoCoreDataSource"];
+        CompactSourceLabel = isCoreConnected
+            ? hasAdmittedState
+                ? text["CoreCompact"]
+                : state.LastIngestSequence > 0
+                    ? text["LastCompact"]
+                    : text["EmptyCompact"]
+            : state.LastIngestSequence > 0
+                ? text["LastCompact"]
+                : text["OffCompact"];
         ConnectionLabel = connectionLabel;
-        CompactConnectionLabel = isLive
-            ? text["CoreConnected"]
+        CompactConnectionLabel = isCoreConnected
+            ? isLive
+                ? text["CoreConnected"]
+                : state.LastIngestSequence > 0
+                    ? text["LiveWidgetHerdrInterruptedLastKnown"]
+                    : text["LiveWidgetWaitingHerdr"]
             : state.LastIngestSequence > 0
                 ? text["LiveWidgetCoreOfflineLastKnown"]
                 : text["LiveWidgetWaitingCore"];
-        ConnectionBrushKey = isLive ? OverviewBrushKeys.Working : OverviewBrushKeys.Offline;
+        ConnectionBrushKey = isLive
+            ? OverviewBrushKeys.Working
+            : isCoreConnected
+                ? OverviewBrushKeys.Idle
+                : OverviewBrushKeys.Offline;
         GalleryDescription = hasAdmittedState
             ? text["LiveWidgetGalleryLive"]
-            : isLive
-                ? text["LiveWidgetGalleryEmpty"]
+            : isCoreConnected
+                ? state.LastIngestSequence > 0
+                    ? text["LiveWidgetGalleryHerdrInterrupted"]
+                    : text["LiveWidgetGalleryEmpty"]
                 : text["LiveWidgetGalleryOffline"];
         SnapshotAt = snapshotAt;
         Sequence = state.LastIngestSequence;
@@ -219,23 +243,28 @@ public sealed class LiveWidgetState : ObservableState, IWidgetState
             ? DoneCount.ToString(System.Globalization.CultureInfo.InvariantCulture)
             : "—";
         Agents = CreateAgents(state, hasAdmittedState);
-        Notices = CreateNotices(state, isLive, snapshotAt);
+        Notices = CreateNotices(state, isCoreConnected, isLive, snapshotAt);
         PriorityNotices = Notices.Take(2).ToArray();
         SelectedAgent = ResolveSelectedAgent(Agents, selectedTerminalId);
         SelectedAgentActivity = CreateSelectedAgentFacts(state, SelectedAgent, snapshotAt);
-        RecordLatency(state.LastIngestSequence, isLive, transportLatency);
+        RecordLatency(state.LastIngestSequence, isLive, updateLatency, recordLatency);
         Raise(nameof(DashboardPreviewLabel));
         Raise(nameof(WindowTitleSuffix));
         Raise(nameof(DetailsSourceLabel));
         Raise(nameof(DailyScoreLabel));
     }
 
-    private void RecordLatency(long sequence, bool isLive, TimeSpan? transportLatency)
+    private void RecordLatency(
+        long sequence,
+        bool isLive,
+        TimeSpan? updateLatency,
+        bool recordLatency)
     {
-        if (isLive &&
+        if (recordLatency &&
+            isLive &&
             sequence > 0 &&
             sequence != _lastMeasuredSequence &&
-            transportLatency is { } latency)
+            updateLatency is { } latency)
         {
             _telemetry.Record(latency);
             _lastMeasuredSequence = sequence;
@@ -285,6 +314,7 @@ public sealed class LiveWidgetState : ObservableState, IWidgetState
 
     private static IReadOnlyList<WidgetNotice> CreateNotices(
         HerdrSessionStateContract state,
+        bool isCoreConnected,
         bool isLive,
         DateTimeOffset snapshotAt)
     {
@@ -293,7 +323,7 @@ public sealed class LiveWidgetState : ObservableState, IWidgetState
             ? "—"
             : snapshotAt.ToLocalTime().ToString("HH:mm", System.Globalization.CultureInfo.InvariantCulture);
         var notices = new List<WidgetNotice>();
-        if (!isLive)
+        if (!isCoreConnected)
         {
             notices.Add(new WidgetNotice(
                 text["LiveWidgetCoreOfflineNotice"],
@@ -306,6 +336,22 @@ public sealed class LiveWidgetState : ObservableState, IWidgetState
             {
                 return notices;
             }
+        }
+
+        if (isCoreConnected && !isLive)
+        {
+            notices.Add(new WidgetNotice(
+                text["LiveWidgetHerdrInterruptedNotice"],
+                state.LastIngestSequence > 0
+                    ? text["LiveWidgetHerdrInterruptedNoticeDetail"]
+                    : text["LiveWidgetWaitingHerdrNoticeDetail"],
+                time,
+                "\uE895",
+                OverviewBrushKeys.Idle,
+                state.LastIngestSequence > 0
+                    ? text["StatusOffline"]
+                    : text["StatusUnknown"]));
+            return notices;
         }
 
         if (state.LastIngestSequence == 0)

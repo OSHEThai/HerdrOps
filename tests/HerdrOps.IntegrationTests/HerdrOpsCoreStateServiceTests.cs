@@ -74,6 +74,46 @@ public sealed class HerdrOpsCoreStateServiceTests
         StringAssert.Contains(error.ToString(), "Invalid or incomplete option", StringComparison.Ordinal);
     }
 
+    [TestMethod]
+    public async Task ServiceCommandRequiresCompleteRuntimeEvidenceOptions()
+    {
+        var output = new StringWriter();
+        var error = new StringWriter();
+
+        var exitCode = await HerdrOpsCoreStateServiceCommand.RunAsync(
+            ["serve-herdr-state", "--seconds", "120"],
+            output,
+            error,
+            environmentVariableReader: _ => null);
+
+        Assert.AreEqual(64, exitCode);
+        StringAssert.Contains(error.ToString(), "requires --report", StringComparison.Ordinal);
+    }
+
+    [TestMethod]
+    public async Task ServiceCommandRuntimeEvidenceRequiresAuthorizedHerdrEnvironment()
+    {
+        using var directory = new TemporaryDirectory();
+        var output = new StringWriter();
+        var error = new StringWriter();
+
+        var exitCode = await HerdrOpsCoreStateServiceCommand.RunAsync(
+            [
+                "serve-herdr-state",
+                "--database", Path.Combine(directory.Path, "runtime.db"),
+                "--herdr", Path.Combine(directory.Path, "herdr.exe"),
+                "--socket-path", "herdr-runtime-test",
+                "--seconds", "120",
+                "--report", Path.Combine(directory.Path, "runtime.json"),
+            ],
+            output,
+            error,
+            environmentVariableReader: _ => null);
+
+        Assert.AreEqual(3, exitCode);
+        StringAssert.Contains(error.ToString(), "authorized Herdr environment", StringComparison.Ordinal);
+    }
+
     private sealed class BlockingApiClient : IHerdrApiClient
     {
         public HerdrServerProcessIdentity? LastVerifiedServerIdentity => null;

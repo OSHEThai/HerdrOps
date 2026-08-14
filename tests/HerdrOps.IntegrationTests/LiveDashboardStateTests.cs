@@ -103,7 +103,7 @@ public sealed class LiveDashboardStateTests
         var dashboardTask = session.RunAsync(dashboardCancellation.Token);
         try
         {
-            await WaitUntilAsync(() => dashboard.IsLive);
+            await WaitUntilAsync(() => dashboard.IsCoreConnected);
             dashboardCancellation.Cancel();
             await dashboardTask.WaitAsync(TimeSpan.FromSeconds(5));
 
@@ -123,6 +123,55 @@ public sealed class LiveDashboardStateTests
         }
     }
 
+    [TestMethod]
+    public void HerdrReconnectHealthFailsClosedWithoutDiscardingLastKnownState()
+    {
+        var state = HerdrStateTestData.CreateState(sequence: 7, status: "Blocked", revision: 7);
+        var dashboard = new LiveDashboardState();
+        var snapshot = SnapshotUpdate(state);
+        dashboard.ApplyUpdate(snapshot, snapshot.Envelope.SentUtc.AddMilliseconds(4));
+        var reconnecting = snapshot.RuntimeHealth with
+        {
+            Status = "Reconnecting",
+            LastTransitionUtc = snapshot.RuntimeHealth.LastTransitionUtc.AddSeconds(1),
+            DisconnectCount = 1,
+            ReconciliationCount = 1,
+        };
+        var reconnectingUpdate = RuntimeHealthUpdate(state, reconnecting);
+
+        dashboard.ApplyUpdate(
+            reconnectingUpdate,
+            reconnectingUpdate.Envelope.SentUtc.AddMilliseconds(5));
+
+        Assert.IsTrue(dashboard.IsCoreConnected);
+        Assert.IsFalse(dashboard.IsLive);
+        Assert.AreEqual(LiveDashboardConnectionStatus.HerdrReconnecting, dashboard.ConnectionStatus);
+        Assert.AreEqual(7L, dashboard.CurrentState.LastIngestSequence);
+        Assert.AreEqual(UiLanguageService.Shared["LastKnownSource"], dashboard.SourceLabel);
+        Assert.AreEqual(UiLanguageService.Shared["StatusOffline"], dashboard.AgentDetail.Status);
+        Assert.AreEqual("—", dashboard.Widgets.WorkingCountLabel);
+        Assert.HasCount(1, dashboard.Organization.AttentionItems);
+        Assert.AreEqual(
+            UiLanguageService.Shared["OrganizationAttentionHerdrInterruptedTitle"],
+            dashboard.Organization.AttentionItems[0].Title);
+
+        var reconnected = reconnecting with
+        {
+            Status = "Connected",
+            LastTransitionUtc = reconnecting.LastTransitionUtc.AddSeconds(1),
+            LastAcceptedStateUtc = reconnecting.LastTransitionUtc.AddSeconds(1),
+            BootstrapCount = reconnecting.BootstrapCount + 1,
+        };
+        var reconnectedUpdate = RuntimeHealthUpdate(state, reconnected);
+        dashboard.ApplyUpdate(
+            reconnectedUpdate,
+            reconnectedUpdate.Envelope.SentUtc.AddMilliseconds(5));
+
+        Assert.IsTrue(dashboard.IsLive);
+        Assert.AreEqual(LiveDashboardConnectionStatus.Live, dashboard.ConnectionStatus);
+        Assert.AreEqual(UiLanguageService.Shared["StatusBlocked"], dashboard.AgentDetail.Status);
+    }
+
     private static HerdrOpsStateUpdate SnapshotUpdate(HerdrSessionStateContract state)
     {
         var payload = HerdrStateTestData.Snapshot(state);
@@ -138,7 +187,31 @@ public sealed class LiveDashboardStateTests
             state,
             envelope,
             payload,
-            null);
+            null,
+            payload.RuntimeHealth);
+    }
+
+    private static HerdrOpsStateUpdate RuntimeHealthUpdate(
+        HerdrSessionStateContract state,
+        HerdrRuntimeHealthContract health)
+    {
+        var payload = new HerdrOpsRuntimeHealthPayload(
+            health,
+            HerdrOpsStateIpcJson.ComputeSha256(state));
+        var envelope = HerdrOpsStateIpcJson.CreateEnvelope(
+            HerdrOpsStateIpcProtocol.MessageTypes.RuntimeHealth,
+            state.LastIngestSequence,
+            health.LastTransitionUtc,
+            HerdrOpsStateIpcProtocol.CoreSource,
+            Guid.NewGuid(),
+            payload);
+        return new HerdrOpsStateUpdate(
+            HerdrOpsStateUpdateKind.RuntimeHealth,
+            state,
+            envelope,
+            null,
+            null,
+            health);
     }
 
     private static HerdrSessionStateContract CreateTwoAgentState()

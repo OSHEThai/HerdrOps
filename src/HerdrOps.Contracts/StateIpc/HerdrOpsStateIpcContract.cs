@@ -4,7 +4,7 @@ namespace HerdrOps.Contracts.StateIpc;
 
 public static class HerdrOpsStateIpcProtocol
 {
-    public const int Version = 1;
+    public const int Version = 2;
     public const int MaximumFrameBytes = 4 * 1024 * 1024;
     public const string AppClientRole = "app";
     public const string AuthorizationScope = "current-user";
@@ -17,6 +17,7 @@ public static class HerdrOpsStateIpcProtocol
         public const string HelloAccepted = "hello-accepted";
         public const string Snapshot = "state-snapshot";
         public const string Delta = "state-delta";
+        public const string RuntimeHealth = "runtime-health";
         public const string Error = "error";
     }
 
@@ -52,11 +53,36 @@ public sealed record HerdrOpsStateIpcError(
 
 public sealed record HerdrOpsStateSnapshotPayload(
     HerdrSessionStateContract State,
-    string StateSha256);
+    string StateSha256,
+    HerdrRuntimeHealthContract RuntimeHealth);
 
 public sealed record HerdrOpsStateDeltaPayload(
     HerdrSessionStateDeltaContract Delta,
-    string ResultStateSha256);
+    string ResultStateSha256,
+    HerdrRuntimeHealthContract RuntimeHealth);
+
+public sealed record HerdrOpsRuntimeHealthPayload(
+    HerdrRuntimeHealthContract RuntimeHealth,
+    string StateSha256);
+
+public sealed record HerdrRuntimeHealthContract(
+    string Status,
+    DateTimeOffset LastTransitionUtc,
+    DateTimeOffset? LastAcceptedStateUtc,
+    long BootstrapCount,
+    long EventCount,
+    long DisconnectCount,
+    long ReconciliationCount)
+{
+    public static HerdrRuntimeHealthContract Starting(DateTimeOffset observedUtc) => new(
+        "Starting",
+        observedUtc,
+        null,
+        0,
+        0,
+        0,
+        0);
+}
 
 public sealed record HerdrSessionStateContract(
     string Version,

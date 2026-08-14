@@ -110,6 +110,7 @@ public static class HerdrSessionStateContractReducer
         ArgumentNullException.ThrowIfNull(payload);
         var normalized = NormalizeAndValidate(payload.State);
         ValidateHash(payload.StateSha256, HerdrOpsStateIpcJson.ComputeSha256(normalized));
+        ValidateRuntimeHealth(payload.RuntimeHealth);
     }
 
     public static HerdrSessionStateContract ApplyAndValidateDeltaPayload(
@@ -119,7 +120,59 @@ public static class HerdrSessionStateContractReducer
         ArgumentNullException.ThrowIfNull(payload);
         var result = Apply(current, payload.Delta);
         ValidateHash(payload.ResultStateSha256, HerdrOpsStateIpcJson.ComputeSha256(result));
+        ValidateRuntimeHealth(payload.RuntimeHealth);
         return result;
+    }
+
+    public static void ValidateRuntimeHealthPayload(
+        HerdrOpsRuntimeHealthPayload payload,
+        HerdrSessionStateContract current)
+    {
+        ArgumentNullException.ThrowIfNull(payload);
+        ValidateRuntimeHealth(payload.RuntimeHealth);
+        ValidateHash(
+            payload.StateSha256,
+            HerdrOpsStateIpcJson.ComputeSha256(NormalizeAndValidate(current)));
+    }
+
+    public static void ValidateRuntimeHealth(HerdrRuntimeHealthContract health)
+    {
+        ArgumentNullException.ThrowIfNull(health);
+        if (health.Status is not ("Starting" or "Connected" or "Reconnecting" or "Stopped"))
+        {
+            throw new HerdrOpsStateIpcProtocolException(
+                $"Runtime health status '{health.Status}' is unsupported.");
+        }
+
+        if (health.LastTransitionUtc.Offset != TimeSpan.Zero ||
+            (health.LastAcceptedStateUtc is { } acceptedUtc &&
+             acceptedUtc.Offset != TimeSpan.Zero))
+        {
+            throw new HerdrOpsStateIpcProtocolException(
+                "Runtime health timestamps must be UTC.");
+        }
+
+        if (health.LastAcceptedStateUtc > health.LastTransitionUtc)
+        {
+            throw new HerdrOpsStateIpcProtocolException(
+                "The last accepted-state timestamp cannot be later than the health transition.");
+        }
+
+        if (health.BootstrapCount < 0 ||
+            health.EventCount < 0 ||
+            health.DisconnectCount < 0 ||
+            health.ReconciliationCount < 0)
+        {
+            throw new HerdrOpsStateIpcProtocolException(
+                "Runtime health counters cannot be negative.");
+        }
+
+        if (health.Status == "Connected" &&
+            (health.BootstrapCount == 0 || health.LastAcceptedStateUtc is null))
+        {
+            throw new HerdrOpsStateIpcProtocolException(
+                "Connected runtime health requires a bootstrap and an accepted-state timestamp.");
+        }
     }
 
     private static void ApplyChanges<T>(

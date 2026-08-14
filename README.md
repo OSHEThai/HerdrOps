@@ -4,7 +4,9 @@ HerdrOps คือ Windows desktop operations monitor สำหรับติ�
 
 ## สถานะปัจจุบัน
 
-Repository มีหลักฐาน implementation ของ **v0.1.0 Visual Shell** แล้วและกำลังรอ User visual approval ก่อน Release ส่วน **v0.2.0 Live Herdr Monitoring** มี protocol/schema admission, fail-closed Herdr monitor, SQLite state store, current-user Core-to-App Named Pipe และ live adapters สำหรับ Dashboard กับ Widget แล้ว หลักฐานปัจจุบันเป็น Contract, Integration และ Synthetic WPF เท่านั้น; actual Herdr snapshot/event/reconnect, live screen capture และผลวัดบน reference Windows host ยังรอการรับรอง จึงยังไม่อ้างว่า v0.2 พร้อม Release
+**v0.1.0 Visual Shell ได้รับอนุมัติและเผยแพร่แล้ว** ส่วน **v0.2.0 Live Herdr Monitoring** เปิดดำเนินการอยู่ โดยมี protocol/schema admission, fail-closed Herdr monitor, SQLite state store, Core-to-App Named Pipe protocol v2 และ live adapters สำหรับ Dashboard กับ Widget แล้ว
+
+IPC v2 แยกสถานะ `Core connected` ออกจาก `Herdr live` อย่างชัดเจน ถ้า Herdr ขาดการเชื่อมต่อ หน้าจอจะเก็บ identity/topology ล่าสุดไว้เพื่อวินิจฉัย แต่จะไม่แสดง Agent เก่าว่ายังทำงานอยู่ หลักฐานปัจจุบันยังเป็น Contract, Integration และ Synthetic WPF; actual Herdr snapshot/event/reconnect, production WPF captures และผลวัดบน reference Windows host ต้องผ่าน composite runtime gate ก่อน จึงยังไม่อ้างว่า v0.2 พร้อม Release
 
 Design Reference ที่ผู้ใช้ยืนยันถูกเก็บแบบไม่แก้ไขไว้ใน [`docs/design/reference`](docs/design/reference/). ไฟล์เหล่านี้เป็น Source of Truth สำหรับหน้าตา UI และโลโก้ HerdrOps
 
@@ -70,6 +72,14 @@ Design checklists อยู่ที่ [`v0.1 Issue #2`](docs/design/implementa
 ```
 
 ผลผ่านยังคงเป็น Contract evidence จาก executable bytes เท่านั้น ไม่ใช่หลักฐาน live Herdr runtime
+
+เมื่อเปิด PowerShell จาก Herdr pane ที่มี `HERDR_ENV=1` และ `HERDR_SOCKET_PATH` แล้ว ให้รัน composite runtime gate สำหรับ Issues #7, #9 และ #10 ด้วย:
+
+```powershell
+./tools/Test-V02LiveRuntimeAcceptance.ps1
+```
+
+ระหว่างรัน Gate จะขอให้สร้าง Herdr event จริง ปิด/เชื่อมต่อ Herdr ใหม่โดยผู้ใช้ และสร้าง event อีกครั้ง โปรแกรมจะเก็บ exact Core trace, production WPF captures, Dashboard-close continuity, Widget latency, Core+App resource usage และ owned TCP listener evidence ไว้ใน `artifacts/runtime-evidence/` ผลจากสภาพแวดล้อมที่ไม่มี Herdr authorization จะ fail closed และไม่ได้ Runtime credit
 
 ## Build Foundation
 

@@ -113,6 +113,7 @@ public sealed class LiveOverviewState : ObservableState
 
     internal void Update(
         HerdrSessionStateContract state,
+        bool isCoreConnected,
         bool isLive,
         string sourceLabel,
         string connectionLabel,
@@ -137,7 +138,7 @@ public sealed class LiveOverviewState : ObservableState
         TopAgents = CreateAgentRows(state, isLive);
         TopAgentsSourceLabel = text["LiveOverviewStatusNoScore"];
         AgentListTitle = text["OverviewAgentStatus"];
-        Alerts = CreateAlerts(state, isLive, sourceTimestamp);
+        Alerts = CreateAlerts(state, isCoreConnected, isLive, sourceTimestamp);
         AlertsCountLabel = text.Format("LiveOverviewSignalsFormat", Alerts.Count);
     }
 
@@ -278,6 +279,7 @@ public sealed class LiveOverviewState : ObservableState
 
     private static IReadOnlyList<OverviewAlert> CreateAlerts(
         HerdrSessionStateContract state,
+        bool isCoreConnected,
         bool isLive,
         DateTimeOffset sourceTimestamp)
     {
@@ -285,7 +287,7 @@ public sealed class LiveOverviewState : ObservableState
         var time = sourceTimestamp == default
             ? "—"
             : sourceTimestamp.ToLocalTime().ToString("HH:mm", System.Globalization.CultureInfo.InvariantCulture);
-        if (!isLive)
+        if (!isCoreConnected)
         {
             return
             [
@@ -295,6 +297,19 @@ public sealed class LiveOverviewState : ObservableState
                     time,
                     text["StatusOffline"],
                     OverviewBrushKeys.Offline),
+            ];
+        }
+
+        if (!isLive && state.LastIngestSequence > 0)
+        {
+            return
+            [
+                new(
+                    text["LiveOverviewHerdrInterruptedTitle"],
+                    text["LiveOverviewHerdrInterruptedDescription"],
+                    time,
+                    text["StatusOffline"],
+                    OverviewBrushKeys.Idle),
             ];
         }
 

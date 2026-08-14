@@ -63,6 +63,50 @@ public sealed class StateIpcIntegrationTests
     }
 
     [TestMethod]
+    public async Task AppReceivesRuntimeHealthWithoutAdvancingStateSequence()
+    {
+        var pipeName = $"herdrops-state-health-{Guid.NewGuid():N}";
+        var state = HerdrStateTestData.CreateState(sequence: 1);
+        var server = new HerdrOpsStatePipeServer(
+            new HerdrOpsStatePipeServerOptions(pipeName),
+            HerdrStateTestData.Snapshot(state));
+        using var serverCancellation = new CancellationTokenSource();
+        var serverTask = server.RunAsync(serverCancellation.Token);
+        await server.Ready.WaitAsync(TimeSpan.FromSeconds(5));
+        var client = new HerdrOpsStatePipeClient(new HerdrOpsStatePipeClientOptions(pipeName));
+        await using var updates = client.ReadUpdatesAsync().GetAsyncEnumerator();
+        try
+        {
+            Assert.IsTrue(await updates.MoveNextAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(5)));
+            Assert.AreEqual(HerdrOpsStateUpdateKind.Snapshot, updates.Current.Kind);
+            var connected = updates.Current.RuntimeHealth;
+            var reconnecting = connected with
+            {
+                Status = "Reconnecting",
+                LastTransitionUtc = connected.LastTransitionUtc.AddSeconds(1),
+                DisconnectCount = 1,
+                ReconciliationCount = 1,
+            };
+            server.PublishRuntimeHealth(
+                new HerdrOpsRuntimeHealthPayload(
+                    reconnecting,
+                    HerdrOpsStateIpcJson.ComputeSha256(state)),
+                Guid.NewGuid());
+
+            Assert.IsTrue(await updates.MoveNextAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(5)));
+            Assert.AreEqual(HerdrOpsStateUpdateKind.RuntimeHealth, updates.Current.Kind);
+            Assert.AreEqual(1L, updates.Current.CurrentState.LastIngestSequence);
+            Assert.AreEqual("Reconnecting", updates.Current.RuntimeHealth.Status);
+            Assert.AreEqual(1L, updates.Current.RuntimeHealth.DisconnectCount);
+        }
+        finally
+        {
+            serverCancellation.Cancel();
+            await serverTask.WaitAsync(TimeSpan.FromSeconds(5));
+        }
+    }
+
+    [TestMethod]
     public async Task ServerRejectsUnauthorizedClientRoleBeforeSnapshot()
     {
         var error = await SendRejectedHelloAsync(
@@ -82,7 +126,7 @@ public sealed class StateIpcIntegrationTests
         var serverOptions = HerdrOpsStatePipeServerOptions.ForCurrentUser();
         var clientOptions = HerdrOpsStatePipeClientOptions.ForCurrentUser();
         Assert.AreEqual(serverOptions.PipeName, clientOptions.PipeName);
-        Assert.StartsWith("herdrops-state-v1-", serverOptions.PipeName, StringComparison.Ordinal);
+        Assert.StartsWith("herdrops-state-v2-", serverOptions.PipeName, StringComparison.Ordinal);
     }
 
     [TestMethod]

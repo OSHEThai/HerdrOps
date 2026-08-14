@@ -83,9 +83,8 @@ public sealed class LiveDashboardSession
                     {
                         receivedAnyUpdate = true;
                         attempt = 0;
-                        var receivedUtc = _timeProvider.GetUtcNow();
                         await _scheduler.InvokeAsync(
-                            () => _state.ApplyUpdate(update, receivedUtc),
+                            () => _state.ApplyUpdate(update, _timeProvider.GetUtcNow()),
                             cancellationToken).ConfigureAwait(false);
                     }
 

@@ -9,7 +9,7 @@ public static class HerdrOpsStatePipeName
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(userScopeIdentifier);
         var hash = Convert.ToHexString(SHA256.HashData(
-            Encoding.UTF8.GetBytes($"HerdrOps.StateIpc.v1|{userScopeIdentifier}")));
-        return $"herdrops-state-v1-{hash[..24].ToLowerInvariant()}";
+            Encoding.UTF8.GetBytes($"HerdrOps.StateIpc.v2|{userScopeIdentifier}")));
+        return $"herdrops-state-v2-{hash[..24].ToLowerInvariant()}";
     }
 }
