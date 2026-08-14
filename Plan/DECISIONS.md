@@ -24,3 +24,11 @@
 - Decision: v1 stores and processes data locally under the current user.
 - Deferred: Remote aggregation, team access, cloud sync and elevated telemetry.
 - Status: Planned.
+
+## D-005 — Exact Herdr protocol admission
+
+- Decision: Admit an installed Herdr protocol only when release ID, PE header, executable SHA-256, required RPC methods, serialized-shape markers and Windows transport markers all match a reviewed contract.
+- Reason: The preview binary has no Windows file-version metadata and can change protocol surface between builds carrying similar version labels.
+- Consequence: Any changed Herdr executable fails closed and requires a successor contract; fixture tests remain Contract evidence and never become runtime credit.
+- Current admitted binary: `0.8.0-preview.2026-08-04-d78e3d3b5126-x86_64-pc-windows-msvc`, SHA-256 `6F470DA358D6713B6BEBAB922FFB1F5FE1D3D288CC6F374C7DCA1B4A9837A542`.
+- Status: Implemented for v0.2 Issue #6; actual session/runtime acceptance remains pending.

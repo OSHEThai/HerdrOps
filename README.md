@@ -4,7 +4,7 @@ HerdrOps คือ Windows desktop operations monitor สำหรับติ�
 
 ## สถานะปัจจุบัน
 
-Repository นี้อยู่ในระยะ **v0.1.0 Visual Shell Implementation** โดยมี Solution, ขอบเขต Process, Build Pipeline, Test Suites และ WPF Shell แบบ Synthetic แล้ว แต่ยังไม่มีหลักฐานว่าเชื่อมต่อ Herdr, เก็บ Event, แสดงข้อมูลจริง หรือพร้อมเผยแพร่
+Repository มีหลักฐาน implementation ของ **v0.1.0 Visual Shell** แล้วและกำลังรอ User visual approval ก่อน Release พร้อมเริ่มงาน **v0.2.0 Live Herdr Monitoring** แบบ version-local แล้ว ขณะนี้ v0.2 รองรับเฉพาะการตรวจ exact installed-binary protocol contract; ยังไม่มีหลักฐานว่าเชื่อม Named Pipe, รับ Snapshot/Event หรือแสดงข้อมูลจริงจาก Herdr
 
 Design Reference ที่ผู้ใช้ยืนยันถูกเก็บแบบไม่แก้ไขไว้ใน [`docs/design/reference`](docs/design/reference/). ไฟล์เหล่านี้เป็น Source of Truth สำหรับหน้าตา UI และโลโก้ HerdrOps
 
@@ -53,6 +53,14 @@ Design checklists อยู่ที่ [`v0.1 Issue #2`](docs/design/implementa
 ```powershell
 ./tools/Test-V01ReleaseGate.ps1
 ```
+
+ตรวจ exact Herdr binary และ bounded protocol contract สำหรับ v0.2 Issue #6 ด้วย:
+
+```powershell
+./tools/Test-V02ProtocolContract.ps1
+```
+
+ผลผ่านของคำสั่งนี้เป็น Contract evidence ไม่ใช่หลักฐาน live Herdr runtime
 
 ## Build Foundation
 
