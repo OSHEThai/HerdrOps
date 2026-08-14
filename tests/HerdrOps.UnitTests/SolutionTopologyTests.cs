@@ -79,6 +79,31 @@ public sealed class SolutionTopologyTests
         }
     }
 
+    [TestMethod]
+    public void DashboardProcessDoesNotOwnCoreLifecycle()
+    {
+        var repositoryRoot = FindRepositoryRoot();
+        var appSourceRoot = Path.Combine(repositoryRoot, "src", "HerdrOps.App");
+        var forbiddenLifecycleTokens = new[]
+        {
+            "HerdrOps.Core",
+            "HerdrOps.Infrastructure",
+            "Process.Start(",
+            ".Kill(",
+        };
+
+        foreach (var sourcePath in Directory.GetFiles(appSourceRoot, "*.cs", SearchOption.AllDirectories))
+        {
+            var source = File.ReadAllText(sourcePath);
+            foreach (var token in forbiddenLifecycleTokens)
+            {
+                Assert.IsFalse(
+                    source.Contains(token, StringComparison.Ordinal),
+                    $"Dashboard must subscribe to Core state without owning the Core process lifecycle: {sourcePath} contains {token}");
+            }
+        }
+    }
+
     private static string FindRepositoryRoot()
     {
         var directory = new DirectoryInfo(AppContext.BaseDirectory);

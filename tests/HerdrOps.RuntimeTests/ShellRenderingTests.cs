@@ -41,7 +41,10 @@ public sealed class ShellRenderingTests
 
         foreach (var scale in new[] { 1.0, 1.25, 1.5 })
         {
-            var view = new ShellView();
+            var view = ShellView.CreateSyntheticPreview();
+            Assert.AreEqual("Project Manager", view.LiveDashboard.AgentDetail.Name);
+            Assert.AreEqual("Synthetic profile", view.LiveDashboard.AgentDetail.Runtime);
+            Assert.AreEqual("Preview", view.LiveDashboard.AgentDetail.Status);
             view.Navigation.SelectedIndex = 1;
             var scaleLabel = FormattableString.Invariant($"{scale * 100:0}");
             RenderView(
@@ -65,7 +68,7 @@ public sealed class ShellRenderingTests
         {
             var scaleLabel = FormattableString.Invariant($"{scale * 100:0}");
             RenderView(
-                new ShellView(),
+                ShellView.CreateSyntheticPreview(),
                 ReferenceWidth,
                 ReferenceHeight,
                 scale,
@@ -74,7 +77,7 @@ public sealed class ShellRenderingTests
         }
 
         RenderView(
-            new ShellView(),
+            ShellView.CreateSyntheticPreview(),
             1366,
             768,
             1,

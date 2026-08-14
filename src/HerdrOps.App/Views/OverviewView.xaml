@@ -193,7 +193,7 @@
                             <TextBlock Foreground="{DynamicResource HerdrOps.Brush.PrimaryText}"
                                        FontSize="10"
                                        FontWeight="SemiBold"
-                                       Text="SYNTHETIC" />
+                                       Text="{Binding ActivitySourceLabel}" />
                         </Border>
                     </Grid>
 
@@ -262,7 +262,7 @@
                                VerticalAlignment="Center"
                                Foreground="{DynamicResource HerdrOps.Brush.PrimaryText}"
                                FontSize="11"
-                               Text="6 deterministic events" />
+                               Text="{Binding ActivityFooterLabel}" />
                 </Grid>
             </Border>
 
@@ -295,7 +295,8 @@
                                            Text="คะแนนรายวัน (7 วันล่าสุด)" />
                                 <TextBlock Foreground="{DynamicResource HerdrOps.Brush.TextSecondary}"
                                            FontSize="11"
-                                           Text="Daily Score Trend" />
+                                           Text="{Binding ScoreTrendStatus}"
+                                           TextTrimming="CharacterEllipsis" />
                             </StackPanel>
                             <controls:ScoreTrendChart Grid.Row="1"
                                                       ItemsSource="{Binding ScoreTrend}"
@@ -338,7 +339,7 @@
                                         <TextBlock HorizontalAlignment="Center"
                                                    FontSize="24"
                                                    FontWeight="SemiBold"
-                                                   Text="12" />
+                                                   Text="{Binding WorkDistributionTotal}" />
                                         <TextBlock HorizontalAlignment="Center"
                                                    Foreground="{DynamicResource HerdrOps.Brush.TextMuted}"
                                                    FontSize="10"
@@ -402,16 +403,16 @@
                                     <TextBlock Tag="ThaiOverviewCheck"
                                                FontSize="14"
                                                FontWeight="SemiBold"
-                                               Text="ตัวแทนที่ทำผลงานดี" />
+                                               Text="{Binding AgentListThaiTitle}" />
                                     <TextBlock Foreground="{DynamicResource HerdrOps.Brush.TextSecondary}"
                                                FontSize="11"
-                                               Text="Top Agents" />
+                                               Text="{Binding AgentListEnglishTitle}" />
                                 </StackPanel>
                                 <TextBlock Grid.Column="1"
                                            VerticalAlignment="Center"
                                            Foreground="{DynamicResource HerdrOps.Brush.TextMuted}"
                                            FontSize="10"
-                                           Text="SYNTHETIC" />
+                                           Text="{Binding TopAgentsSourceLabel}" />
                             </Grid>
                             <ItemsControl Grid.Row="1" ItemsSource="{Binding TopAgents}">
                                 <ItemsControl.ItemsPanel>
@@ -460,7 +461,7 @@
                                                        Foreground="{DynamicResource HerdrOps.Brush.Status.Working}"
                                                        FontSize="11"
                                                        FontWeight="SemiBold"
-                                                       Text="{Binding Score}" />
+                                                       Text="{Binding ScoreLabel}" />
                                             <TextBlock Grid.Column="4"
                                                        HorizontalAlignment="Right"
                                                        VerticalAlignment="Center"
@@ -501,7 +502,7 @@
                                            VerticalAlignment="Center"
                                            Foreground="{DynamicResource HerdrOps.Brush.PrimaryText}"
                                            FontSize="10"
-                                           Text="3 items" />
+                                           Text="{Binding AlertsCountLabel}" />
                             </Grid>
                             <ItemsControl Grid.Row="1" ItemsSource="{Binding Alerts}">
                                 <ItemsControl.ItemsPanel>

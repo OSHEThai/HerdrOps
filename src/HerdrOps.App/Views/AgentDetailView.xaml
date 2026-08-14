@@ -1,0 +1,395 @@
+<UserControl x:Class="HerdrOps.App.Views.AgentDetailView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:automation="clr-namespace:System.Windows.Automation;assembly=PresentationCore"
+             xmlns:converters="clr-namespace:HerdrOps.App.Converters"
+             Background="{DynamicResource HerdrOps.Brush.Background}"
+             ClipToBounds="True"
+             SizeChanged="OnViewSizeChanged">
+    <UserControl.Resources>
+        <converters:ResourceKeyToBrushConverter x:Key="ResourceBrush" />
+    </UserControl.Resources>
+
+    <Grid x:Name="AgentDetailRoot" Margin="16">
+        <Grid.RowDefinitions>
+            <RowDefinition x:Name="SourceRow" Height="28" />
+            <RowDefinition x:Name="IdentityRow" Height="184" />
+            <RowDefinition Height="12" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+
+        <StackPanel HorizontalAlignment="Right" Orientation="Horizontal">
+            <TextBlock Margin="0,0,10,0"
+                       VerticalAlignment="Center"
+                       Foreground="{DynamicResource HerdrOps.Brush.TextMuted}"
+                       FontSize="11"
+                       Text="{Binding ConnectionLabel}" />
+            <Border Padding="9,3"
+                    Background="{DynamicResource HerdrOps.Brush.PrimarySubtle}"
+                    BorderBrush="{DynamicResource HerdrOps.Brush.Primary}"
+                    BorderThickness="1"
+                    CornerRadius="{DynamicResource HerdrOps.Radius.Pill}">
+                <TextBlock Foreground="{DynamicResource HerdrOps.Brush.PrimaryText}"
+                           FontSize="10"
+                           FontWeight="SemiBold"
+                           Text="{Binding SourceLabel}" />
+            </Border>
+        </StackPanel>
+
+        <Grid Grid.Row="1">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="5*" />
+                <ColumnDefinition Width="12" />
+                <ColumnDefinition Width="6*" />
+                <ColumnDefinition Width="12" />
+                <ColumnDefinition Width="4*" />
+            </Grid.ColumnDefinitions>
+
+            <Border x:Name="AgentIdentityRegion"
+                    Grid.Column="0"
+                    Padding="16"
+                    Style="{DynamicResource HerdrOps.Style.Card}">
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="66" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+                    <Border Width="58"
+                            Height="58"
+                            VerticalAlignment="Top"
+                            Background="{Binding StatusBrushKey, Converter={StaticResource ResourceBrush}}"
+                            CornerRadius="29">
+                        <TextBlock HorizontalAlignment="Center"
+                                   VerticalAlignment="Center"
+                                   FontSize="18"
+                                   FontWeight="SemiBold"
+                                   Text="{Binding Initials}" />
+                    </Border>
+                    <StackPanel Grid.Column="1">
+                        <TextBlock Tag="ThaiAgentDetailCheck"
+                                   FontSize="18"
+                                   FontWeight="SemiBold"
+                                   Text="{Binding Name}"
+                                   TextTrimming="CharacterEllipsis" />
+                        <TextBlock Margin="0,2,0,0"
+                                   Foreground="{DynamicResource HerdrOps.Brush.TextSecondary}"
+                                   FontSize="12"
+                                   Text="{Binding Runtime}" />
+                        <StackPanel Margin="0,7,0,0" Orientation="Horizontal">
+                            <Ellipse Width="8"
+                                     Height="8"
+                                     Fill="{Binding StatusBrushKey, Converter={StaticResource ResourceBrush}}" />
+                            <TextBlock Margin="6,0,0,0"
+                                       Foreground="{Binding StatusBrushKey, Converter={StaticResource ResourceBrush}}"
+                                       FontSize="12"
+                                       Text="{Binding Status}" />
+                        </StackPanel>
+                        <TextBlock Margin="0,12,0,0"
+                                   Style="{DynamicResource HerdrOps.Style.Text.Caption}"
+                                   Text="Workspace / Tab" />
+                        <TextBlock FontSize="12">
+                            <Run Text="{Binding Workspace, Mode=OneWay}" /><Run Text="  /  " /><Run Text="{Binding Tab, Mode=OneWay}" />
+                        </TextBlock>
+                    </StackPanel>
+                </Grid>
+            </Border>
+
+            <Border x:Name="AgentLocationRegion"
+                    Grid.Column="2"
+                    Padding="16"
+                    Style="{DynamicResource HerdrOps.Style.Card}">
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="128" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                    </Grid.RowDefinitions>
+                    <TextBlock Grid.ColumnSpan="2"
+                               Margin="0,0,0,9"
+                               Tag="ThaiAgentDetailCheck"
+                               FontSize="14"
+                               FontWeight="SemiBold"
+                               Text="ตำแหน่งและ Terminal ปัจจุบัน" />
+                    <TextBlock Grid.Row="1" Style="{DynamicResource HerdrOps.Style.Text.Caption}" Text="Pane" />
+                    <TextBlock Grid.Row="1" Grid.Column="1" Text="{Binding Pane}" TextTrimming="CharacterEllipsis" />
+                    <TextBlock Grid.Row="2" Style="{DynamicResource HerdrOps.Style.Text.Caption}" Text="Terminal" />
+                    <TextBlock Grid.Row="2" Grid.Column="1" Text="{Binding Terminal}" TextTrimming="CharacterEllipsis" />
+                    <TextBlock Grid.Row="3" Style="{DynamicResource HerdrOps.Style.Text.Caption}" Text="Current directory" />
+                    <TextBlock Grid.Row="3"
+                               Grid.Column="1"
+                               Text="{Binding CurrentDirectory}"
+                               TextTrimming="CharacterEllipsis"
+                               ToolTip="{Binding CurrentDirectory}" />
+                    <TextBlock Grid.Row="4" Style="{DynamicResource HerdrOps.Style.Text.Caption}" Text="Foreground directory" />
+                    <TextBlock Grid.Row="4"
+                               Grid.Column="1"
+                               Text="{Binding ForegroundDirectory}"
+                               TextTrimming="CharacterEllipsis"
+                               ToolTip="{Binding ForegroundDirectory}" />
+                    <TextBlock Grid.Row="5" Style="{DynamicResource HerdrOps.Style.Text.Caption}" Text="Terminal title" />
+                    <TextBlock Grid.Row="5" Grid.Column="1" Text="{Binding TerminalTitle}" TextTrimming="CharacterEllipsis" />
+                </Grid>
+            </Border>
+
+            <Border x:Name="AgentSequenceRegion"
+                    Grid.Column="4"
+                    Padding="16"
+                    Style="{DynamicResource HerdrOps.Style.Card}">
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                    </Grid.RowDefinitions>
+                    <StackPanel>
+                        <TextBlock Tag="ThaiAgentDetailCheck"
+                                   FontSize="14"
+                                   FontWeight="SemiBold"
+                                   Text="ความสดของสถานะ" />
+                        <TextBlock Foreground="{DynamicResource HerdrOps.Brush.TextSecondary}"
+                                   FontSize="10"
+                                   Text="Core sequence metadata" />
+                    </StackPanel>
+                    <UniformGrid Grid.Row="1" Margin="0,12,0,0" Rows="2" Columns="2">
+                        <StackPanel>
+                            <TextBlock Style="{DynamicResource HerdrOps.Style.Text.Caption}" Text="Session seq" />
+                            <TextBlock FontSize="22" FontWeight="SemiBold" Text="{Binding SessionSequence}" />
+                        </StackPanel>
+                        <StackPanel>
+                            <TextBlock Style="{DynamicResource HerdrOps.Style.Text.Caption}" Text="Epoch" />
+                            <TextBlock FontSize="22" FontWeight="SemiBold" Text="{Binding ConnectionEpoch}" />
+                        </StackPanel>
+                        <StackPanel>
+                            <TextBlock Style="{DynamicResource HerdrOps.Style.Text.Caption}" Text="Pane rev" />
+                            <TextBlock FontSize="22" FontWeight="SemiBold" Text="{Binding Revision}" />
+                        </StackPanel>
+                        <StackPanel>
+                            <TextBlock Style="{DynamicResource HerdrOps.Style.Text.Caption}" Text="Agent seq" />
+                            <TextBlock FontSize="22" FontWeight="SemiBold" Text="{Binding StateChangeSequence}" />
+                        </StackPanel>
+                    </UniformGrid>
+                </Grid>
+            </Border>
+        </Grid>
+
+        <Grid Grid.Row="3">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="5*" />
+                <ColumnDefinition Width="12" />
+                <ColumnDefinition Width="5*" />
+                <ColumnDefinition Width="12" />
+                <ColumnDefinition Width="4*" />
+            </Grid.ColumnDefinitions>
+
+            <Grid Grid.Column="0">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="3*" />
+                    <RowDefinition Height="12" />
+                    <RowDefinition Height="2*" />
+                </Grid.RowDefinitions>
+                <Border x:Name="AgentFactsRegion"
+                        Padding="0"
+                        Style="{DynamicResource HerdrOps.Style.Card}">
+                    <Grid>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="52" />
+                            <RowDefinition Height="*" />
+                        </Grid.RowDefinitions>
+                        <StackPanel Margin="14,0" VerticalAlignment="Center">
+                            <TextBlock Tag="ThaiAgentDetailCheck"
+                                       FontSize="14"
+                                       FontWeight="SemiBold"
+                                       Text="ข้อเท็จจริงล่าสุด" />
+                            <TextBlock Foreground="{DynamicResource HerdrOps.Brush.TextSecondary}"
+                                       FontSize="10"
+                                       Text="Current state facts · not an activity history" />
+                        </StackPanel>
+                        <ItemsControl Grid.Row="1" ItemsSource="{Binding RecentFacts}">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <Grid Margin="14,3">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="132" />
+                                            <ColumnDefinition Width="*" />
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Foreground="{DynamicResource HerdrOps.Brush.TextMuted}"
+                                                   FontSize="10"
+                                                   Text="{Binding Label}" />
+                                        <StackPanel Grid.Column="1">
+                                            <TextBlock FontSize="11" Text="{Binding Value}" TextTrimming="CharacterEllipsis" />
+                                            <TextBlock Foreground="{DynamicResource HerdrOps.Brush.TextMuted}"
+                                                       FontSize="9"
+                                                       Text="{Binding Source}" />
+                                        </StackPanel>
+                                    </Grid>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                    </Grid>
+                </Border>
+
+                <Border x:Name="AgentRuntimeFlagsRegion"
+                        Grid.Row="2"
+                        Padding="14"
+                        Style="{DynamicResource HerdrOps.Style.Card}">
+                    <Grid>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="*" />
+                        </Grid.RowDefinitions>
+                        <StackPanel>
+                            <TextBlock Tag="ThaiAgentDetailCheck"
+                                       FontSize="14"
+                                       FontWeight="SemiBold"
+                                       Text="สัญญาณ Runtime" />
+                            <TextBlock Foreground="{DynamicResource HerdrOps.Brush.TextSecondary}"
+                                       FontSize="10"
+                                       Text="Nullable Herdr metadata stays Unknown" />
+                        </StackPanel>
+                        <UniformGrid Grid.Row="1" Margin="0,12,0,0" Rows="1" Columns="3">
+                            <StackPanel>
+                                <TextBlock Style="{DynamicResource HerdrOps.Style.Text.Caption}" Text="Interactive ready" />
+                                <TextBlock Margin="0,5,0,0" FontSize="16" FontWeight="SemiBold" Text="{Binding InteractiveReady}" />
+                            </StackPanel>
+                            <StackPanel>
+                                <TextBlock Style="{DynamicResource HerdrOps.Style.Text.Caption}" Text="Launch pending" />
+                                <TextBlock Margin="0,5,0,0" FontSize="16" FontWeight="SemiBold" Text="{Binding LaunchPending}" />
+                            </StackPanel>
+                            <StackPanel>
+                                <TextBlock Style="{DynamicResource HerdrOps.Style.Text.Caption}" Text="Detection skipped" />
+                                <TextBlock Margin="0,5,0,0" FontSize="16" FontWeight="SemiBold" Text="{Binding ScreenDetectionSkipped}" />
+                            </StackPanel>
+                        </UniformGrid>
+                    </Grid>
+                </Border>
+            </Grid>
+
+            <Border x:Name="AgentUnsupportedRegion"
+                    Grid.Column="2"
+                    Padding="0"
+                    Style="{DynamicResource HerdrOps.Style.Card}">
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="58" />
+                        <RowDefinition Height="*" />
+                    </Grid.RowDefinitions>
+                    <StackPanel Margin="14,0" VerticalAlignment="Center">
+                        <TextBlock Tag="ThaiAgentDetailCheck"
+                                   FontSize="14"
+                                   FontWeight="SemiBold"
+                                   Text="ข้อมูลที่ Herdr ยังไม่ได้ส่ง" />
+                        <TextBlock Foreground="{DynamicResource HerdrOps.Brush.TextSecondary}"
+                                   FontSize="10"
+                                   Text="Unsupported fields remain Unknown" />
+                    </StackPanel>
+                    <ItemsControl Grid.Row="1" ItemsSource="{Binding UnsupportedSections}">
+                        <ItemsControl.ItemsPanel>
+                            <ItemsPanelTemplate>
+                                <UniformGrid Rows="4" Columns="1" />
+                            </ItemsPanelTemplate>
+                        </ItemsControl.ItemsPanel>
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                                <Border Margin="12,2"
+                                        Padding="10,6"
+                                        Background="{DynamicResource HerdrOps.Brush.SurfaceRaised}"
+                                        BorderBrush="{DynamicResource HerdrOps.Brush.Border}"
+                                        BorderThickness="1"
+                                        CornerRadius="{DynamicResource HerdrOps.Radius.Small}">
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="Auto" />
+                                        </Grid.ColumnDefinitions>
+                                        <StackPanel>
+                                            <TextBlock Tag="ThaiAgentDetailCheck"
+                                                       FontSize="11"
+                                                       FontWeight="SemiBold"
+                                                       Text="{Binding ThaiTitle}"
+                                                       TextTrimming="CharacterEllipsis" />
+                                            <TextBlock Foreground="{DynamicResource HerdrOps.Brush.TextMuted}"
+                                                       FontSize="9"
+                                                       Text="{Binding Explanation}"
+                                                       TextTrimming="CharacterEllipsis" />
+                                        </StackPanel>
+                                        <Border Grid.Column="1"
+                                                Padding="7,3"
+                                                VerticalAlignment="Center"
+                                                Background="{DynamicResource HerdrOps.Brush.SurfaceHover}"
+                                                CornerRadius="{DynamicResource HerdrOps.Radius.Pill}">
+                                            <TextBlock Foreground="{DynamicResource HerdrOps.Brush.TextMuted}"
+                                                       FontSize="9"
+                                                       FontWeight="SemiBold"
+                                                       Text="{Binding Value}" />
+                                        </Border>
+                                    </Grid>
+                                </Border>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                </Grid>
+            </Border>
+
+            <Border x:Name="RelatedAgentsRegion"
+                    Grid.Column="4"
+                    Padding="0"
+                    Style="{DynamicResource HerdrOps.Style.Card}">
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="58" />
+                        <RowDefinition Height="*" />
+                    </Grid.RowDefinitions>
+                    <StackPanel Margin="14,0" VerticalAlignment="Center">
+                        <TextBlock Tag="ThaiAgentDetailCheck"
+                                   FontSize="14"
+                                   FontWeight="SemiBold"
+                                   Text="Agent ใน Workspace เดียวกัน" />
+                        <TextBlock Foreground="{DynamicResource HerdrOps.Brush.TextSecondary}"
+                                   FontSize="10"
+                                   Text="Related by observed topology only" />
+                    </StackPanel>
+                    <ItemsControl Grid.Row="1" ItemsSource="{Binding RelatedAgents}">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                                <Grid Margin="14,5">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="34" />
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <Border Width="28"
+                                            Height="28"
+                                            Background="{Binding AccentBrushKey, Converter={StaticResource ResourceBrush}}"
+                                            CornerRadius="14">
+                                        <TextBlock HorizontalAlignment="Center"
+                                                   VerticalAlignment="Center"
+                                                   FontSize="9"
+                                                   FontWeight="SemiBold"
+                                                   Text="{Binding Initials}" />
+                                    </Border>
+                                    <StackPanel Grid.Column="1">
+                                        <TextBlock FontSize="11" Text="{Binding Name}" TextTrimming="CharacterEllipsis" />
+                                        <TextBlock Foreground="{DynamicResource HerdrOps.Brush.TextMuted}"
+                                                   FontSize="9"
+                                                   Text="{Binding Runtime}" />
+                                    </StackPanel>
+                                    <TextBlock Grid.Column="2"
+                                               VerticalAlignment="Center"
+                                               Foreground="{Binding AccentBrushKey, Converter={StaticResource ResourceBrush}}"
+                                               FontSize="9"
+                                               Text="{Binding Status}" />
+                                </Grid>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                </Grid>
+            </Border>
+        </Grid>
+    </Grid>
+</UserControl>

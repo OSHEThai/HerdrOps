@@ -26,4 +26,8 @@ Build, verification, GitHub roadmap, evidence capture, and packaging helpers liv
 
 # Verify SQLite WAL restart/migration and current-user Core-to-App IPC evidence
 ./tools/Test-V02StateStoreIpc.ps1
+
+# Verify contract-backed live Overview, Organization, Agent Detail, and lifecycle evidence
+# (implementation-only; Issue #9 remains open pending actual Herdr runtime evidence)
+./tools/Test-V02LivePages.ps1
 ```
