@@ -43,4 +43,18 @@
                      Color="{StaticResource HerdrOps.Color.Blue.500}" />
     <SolidColorBrush x:Key="HerdrOps.Brush.Status.Offline"
                      Color="{StaticResource HerdrOps.Color.Slate.500}" />
+
+    <!-- Chart categories deliberately use separate semantic names from workflow state. -->
+    <SolidColorBrush x:Key="HerdrOps.Brush.Chart.Primary"
+                     Color="{StaticResource HerdrOps.Color.Blue.500}" />
+    <SolidColorBrush x:Key="HerdrOps.Brush.Chart.Working"
+                     Color="{StaticResource HerdrOps.Color.Green.500}" />
+    <SolidColorBrush x:Key="HerdrOps.Brush.Chart.Idle"
+                     Color="{StaticResource HerdrOps.Color.Amber.500}" />
+    <SolidColorBrush x:Key="HerdrOps.Brush.Chart.Blocked"
+                     Color="{StaticResource HerdrOps.Color.Coral.500}" />
+    <SolidColorBrush x:Key="HerdrOps.Brush.Chart.Review"
+                     Color="{StaticResource HerdrOps.Color.Purple.500}" />
+    <SolidColorBrush x:Key="HerdrOps.Brush.Chart.Done"
+                     Color="{StaticResource HerdrOps.Color.Blue.400}" />
 </ResourceDictionary>

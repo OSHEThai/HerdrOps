@@ -44,8 +44,9 @@ GitHub Milestones, scoped Issues และ Release Trackers อยู่ที�
 - ลงทะเบียน Navigation ครบ 10 หน้ามาตรฐาน พร้อม keyboard shortcuts และ responsive sidebar
 - Logo/Wordmark ของ v0.1 ใช้ crop จากภาพอ้างอิงเดิมโดยไม่แก้ไข Source PNG
 - ทุกค่าบน Shell ระบุเป็น Synthetic หรือ Not connected อย่างชัดเจน
+- หน้า Overview แสดง summary cards, recent activity, score trend, work distribution, top agents และ alerts จาก deterministic synthetic fixture
 
-Design checklist อยู่ที่ [`docs/design/implementation/v0.1-issue-2-checklist.md`](docs/design/implementation/v0.1-issue-2-checklist.md)
+Design checklists อยู่ที่ [`v0.1 Issue #2`](docs/design/implementation/v0.1-issue-2-checklist.md) และ [`v0.1 Issue #3`](docs/design/implementation/v0.1-issue-3-overview-checklist.md)
 
 ## Build Foundation
 

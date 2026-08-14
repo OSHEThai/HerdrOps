@@ -1,0 +1,553 @@
+<UserControl x:Class="HerdrOps.App.Views.OverviewView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:controls="clr-namespace:HerdrOps.App.Controls"
+             xmlns:converters="clr-namespace:HerdrOps.App.Converters"
+             ClipToBounds="True"
+             Background="{DynamicResource HerdrOps.Brush.Background}"
+             SizeChanged="OnOverviewSizeChanged">
+    <UserControl.Resources>
+        <converters:ResourceKeyToBrushConverter x:Key="ResourceBrush" />
+    </UserControl.Resources>
+
+    <Grid x:Name="OverviewRoot" Margin="16">
+        <Grid.RowDefinitions>
+            <RowDefinition x:Name="SourceRow" Height="28" />
+            <RowDefinition x:Name="SummaryRow" Height="160" />
+            <RowDefinition x:Name="SummaryGapRow" Height="12" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+
+        <Border Grid.Row="0"
+                Padding="9,3"
+                HorizontalAlignment="Right"
+                VerticalAlignment="Top"
+                Background="{DynamicResource HerdrOps.Brush.PrimarySubtle}"
+                BorderBrush="{DynamicResource HerdrOps.Brush.Primary}"
+                BorderThickness="1"
+                CornerRadius="{DynamicResource HerdrOps.Radius.Pill}">
+            <TextBlock Foreground="{DynamicResource HerdrOps.Brush.PrimaryText}"
+                       FontSize="10"
+                       FontWeight="SemiBold"
+                       Text="{Binding SourceLabel}" />
+        </Border>
+
+        <ItemsControl x:Name="SummaryCardsRegion"
+                      Grid.Row="1"
+                      ItemsSource="{Binding SummaryCards}">
+            <ItemsControl.ItemsPanel>
+                <ItemsPanelTemplate>
+                    <UniformGrid Rows="1" Columns="5" />
+                </ItemsPanelTemplate>
+            </ItemsControl.ItemsPanel>
+            <ItemsControl.ItemTemplate>
+                <DataTemplate>
+                    <Border Margin="0,0,12,0"
+                            Padding="14"
+                            Style="{DynamicResource HerdrOps.Style.Card}">
+                        <Grid>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="*" />
+                                <RowDefinition Height="Auto" />
+                            </Grid.RowDefinitions>
+
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="28" />
+                                </Grid.ColumnDefinitions>
+                                <StackPanel>
+                                    <TextBlock Tag="ThaiOverviewCheck"
+                                               Foreground="{DynamicResource HerdrOps.Brush.TextPrimary}"
+                                               FontSize="14"
+                                               FontWeight="SemiBold"
+                                               Text="{Binding ThaiTitle}"
+                                               TextTrimming="CharacterEllipsis" />
+                                    <TextBlock Foreground="{DynamicResource HerdrOps.Brush.TextSecondary}"
+                                               FontSize="12"
+                                               Text="{Binding EnglishTitle}"
+                                               TextTrimming="CharacterEllipsis" />
+                                </StackPanel>
+                                <TextBlock Grid.Column="1"
+                                           HorizontalAlignment="Right"
+                                           FontFamily="{DynamicResource HerdrOps.FontFamily.Icons}"
+                                           FontSize="20"
+                                           Foreground="{Binding AccentBrushKey, Converter={StaticResource ResourceBrush}}"
+                                           Text="{Binding IconGlyph}" />
+                            </Grid>
+
+                            <Grid Grid.Row="1" Margin="0,7,0,3">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="92" />
+                                </Grid.ColumnDefinitions>
+                                <StackPanel VerticalAlignment="Center">
+                                    <TextBlock Foreground="{DynamicResource HerdrOps.Brush.TextPrimary}"
+                                               FontSize="30"
+                                               FontWeight="SemiBold"
+                                               Text="{Binding Value}" />
+                                    <TextBlock Foreground="{Binding AccentBrushKey, Converter={StaticResource ResourceBrush}}"
+                                               FontSize="13"
+                                               FontWeight="SemiBold"
+                                               Text="{Binding Metric}" />
+                                </StackPanel>
+                                <controls:Sparkline x:Name="SummarySparkline"
+                                                    Grid.Column="1"
+                                                    Height="40"
+                                                    Margin="4,0,0,0"
+                                                    VerticalAlignment="Center"
+                                                    Stroke="{Binding AccentBrushKey, Converter={StaticResource ResourceBrush}}"
+                                                    StrokeThickness="2"
+                                                    Values="{Binding SparklineValues}" />
+                                <Grid x:Name="SummaryGauge"
+                                      Grid.Column="1"
+                                      Width="74"
+                                      Height="74"
+                                      HorizontalAlignment="Right"
+                                      VerticalAlignment="Center"
+                                      Visibility="Collapsed">
+                                    <controls:ScoreGauge Value="{Binding GaugeValue}"
+                                                         IndicatorBrush="{Binding AccentBrushKey, Converter={StaticResource ResourceBrush}}"
+                                                         TrackBrush="{DynamicResource HerdrOps.Brush.BorderStrong}"
+                                                         StrokeThickness="7" />
+                                    <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center">
+                                        <TextBlock HorizontalAlignment="Center"
+                                                   FontSize="18"
+                                                   FontWeight="SemiBold"
+                                                   Text="{Binding Value}" />
+                                        <TextBlock HorizontalAlignment="Center"
+                                                   Foreground="{DynamicResource HerdrOps.Brush.TextMuted}"
+                                                   FontSize="9"
+                                                   Text="/100" />
+                                    </StackPanel>
+                                </Grid>
+                            </Grid>
+
+                            <TextBlock Grid.Row="2"
+                                       Foreground="{DynamicResource HerdrOps.Brush.TextMuted}"
+                                       FontSize="11"
+                                       Text="{Binding Trend}"
+                                       TextTrimming="CharacterEllipsis" />
+                        </Grid>
+                    </Border>
+                    <DataTemplate.Triggers>
+                        <DataTrigger Binding="{Binding IsGauge}" Value="True">
+                            <Setter TargetName="SummarySparkline" Property="Visibility" Value="Collapsed" />
+                            <Setter TargetName="SummaryGauge" Property="Visibility" Value="Visible" />
+                        </DataTrigger>
+                    </DataTemplate.Triggers>
+                </DataTemplate>
+            </ItemsControl.ItemTemplate>
+        </ItemsControl>
+
+        <Grid Grid.Row="3">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="5*" />
+                <ColumnDefinition Width="12" />
+                <ColumnDefinition Width="8*" />
+            </Grid.ColumnDefinitions>
+
+            <Border x:Name="RecentActivityRegion"
+                    Grid.Column="0"
+                    Padding="0"
+                    Style="{DynamicResource HerdrOps.Style.Card}">
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition x:Name="RecentHeaderRow" Height="54" />
+                        <RowDefinition Height="*" />
+                        <RowDefinition x:Name="RecentFooterRow" Height="32" />
+                    </Grid.RowDefinitions>
+
+                    <Grid Margin="16,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <StackPanel VerticalAlignment="Center">
+                            <TextBlock Tag="ThaiOverviewCheck"
+                                       Foreground="{DynamicResource HerdrOps.Brush.TextPrimary}"
+                                       FontSize="15"
+                                       FontWeight="SemiBold"
+                                       Text="กิจกรรมล่าสุด" />
+                            <TextBlock Foreground="{DynamicResource HerdrOps.Brush.TextSecondary}"
+                                       FontSize="12"
+                                       Text="Realtime Activity" />
+                        </StackPanel>
+                        <Border Grid.Column="1"
+                                Padding="8,3"
+                                VerticalAlignment="Center"
+                                Background="{DynamicResource HerdrOps.Brush.PrimarySubtle}"
+                                CornerRadius="{DynamicResource HerdrOps.Radius.Small}">
+                            <TextBlock Foreground="{DynamicResource HerdrOps.Brush.PrimaryText}"
+                                       FontSize="10"
+                                       FontWeight="SemiBold"
+                                       Text="SYNTHETIC" />
+                        </Border>
+                    </Grid>
+
+                    <ItemsControl Grid.Row="1" ItemsSource="{Binding RecentActivities}">
+                        <ItemsControl.ItemsPanel>
+                            <ItemsPanelTemplate>
+                                <UniformGrid Rows="6" Columns="1" />
+                            </ItemsPanelTemplate>
+                        </ItemsControl.ItemsPanel>
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                                <Border Padding="12,3"
+                                        BorderBrush="{DynamicResource HerdrOps.Brush.Border}"
+                                        BorderThickness="0,1,0,0">
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="48" />
+                                            <ColumnDefinition Width="38" />
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="72" />
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock VerticalAlignment="Center"
+                                                   Foreground="{DynamicResource HerdrOps.Brush.TextSecondary}"
+                                                   FontSize="12"
+                                                   Text="{Binding Time}" />
+                                        <Border Grid.Column="1"
+                                                Width="30"
+                                                Height="30"
+                                                HorizontalAlignment="Left"
+                                                VerticalAlignment="Center"
+                                                Background="{Binding AccentBrushKey, Converter={StaticResource ResourceBrush}}"
+                                                CornerRadius="15">
+                                            <TextBlock HorizontalAlignment="Center"
+                                                       VerticalAlignment="Center"
+                                                       FontSize="11"
+                                                       FontWeight="SemiBold"
+                                                       Text="{Binding Initials}" />
+                                        </Border>
+                                        <StackPanel Grid.Column="2" VerticalAlignment="Center">
+                                            <TextBlock Foreground="{DynamicResource HerdrOps.Brush.TextPrimary}"
+                                                       FontSize="12"
+                                                       FontWeight="SemiBold"
+                                                       Text="{Binding Agent}"
+                                                       TextTrimming="CharacterEllipsis" />
+                                            <TextBlock Foreground="{DynamicResource HerdrOps.Brush.TextSecondary}"
+                                                       FontSize="11"
+                                                       Text="{Binding Description}"
+                                                       TextTrimming="CharacterEllipsis" />
+                                        </StackPanel>
+                                        <TextBlock Grid.Column="3"
+                                                   HorizontalAlignment="Right"
+                                                   VerticalAlignment="Center"
+                                                   Foreground="{DynamicResource HerdrOps.Brush.PrimaryText}"
+                                                   FontSize="11"
+                                                   Text="{Binding Reference}"
+                                                   TextTrimming="CharacterEllipsis" />
+                                    </Grid>
+                                </Border>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+
+                    <TextBlock Grid.Row="2"
+                               Margin="16,0"
+                               HorizontalAlignment="Right"
+                               VerticalAlignment="Center"
+                               Foreground="{DynamicResource HerdrOps.Brush.PrimaryText}"
+                               FontSize="11"
+                               Text="6 deterministic events" />
+                </Grid>
+            </Border>
+
+            <Grid Grid.Column="2">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="*" />
+                    <RowDefinition Height="12" />
+                    <RowDefinition Height="*" />
+                </Grid.RowDefinitions>
+
+                <Grid Grid.Row="0">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="3*" />
+                        <ColumnDefinition Width="12" />
+                        <ColumnDefinition Width="2*" />
+                    </Grid.ColumnDefinitions>
+
+                    <Border x:Name="ScoreTrendRegion"
+                            Grid.Column="0"
+                            Style="{DynamicResource HerdrOps.Style.Card}">
+                        <Grid>
+                            <Grid.RowDefinitions>
+                                <RowDefinition x:Name="ScoreHeaderRow" Height="42" />
+                                <RowDefinition Height="*" />
+                            </Grid.RowDefinitions>
+                            <StackPanel>
+                                <TextBlock Tag="ThaiOverviewCheck"
+                                           FontSize="14"
+                                           FontWeight="SemiBold"
+                                           Text="คะแนนรายวัน (7 วันล่าสุด)" />
+                                <TextBlock Foreground="{DynamicResource HerdrOps.Brush.TextSecondary}"
+                                           FontSize="11"
+                                           Text="Daily Score Trend" />
+                            </StackPanel>
+                            <controls:ScoreTrendChart Grid.Row="1"
+                                                      ItemsSource="{Binding ScoreTrend}"
+                                                      FontFamily="{DynamicResource HerdrOps.FontFamily.UI}"
+                                                      Foreground="{DynamicResource HerdrOps.Brush.TextPrimary}"
+                                                      LineBrush="{DynamicResource HerdrOps.Brush.Chart.Primary}"
+                                                      GridBrush="{DynamicResource HerdrOps.Brush.Border}"
+                                                      LabelBrush="{DynamicResource HerdrOps.Brush.TextMuted}" />
+                        </Grid>
+                    </Border>
+
+                    <Border x:Name="WorkDistributionRegion"
+                            Grid.Column="2"
+                            Style="{DynamicResource HerdrOps.Style.Card}">
+                        <Grid>
+                            <Grid.RowDefinitions>
+                                <RowDefinition x:Name="WorkstreamHeaderRow" Height="42" />
+                                <RowDefinition Height="*" />
+                            </Grid.RowDefinitions>
+                            <StackPanel>
+                                <TextBlock Tag="ThaiOverviewCheck"
+                                           FontSize="14"
+                                           FontWeight="SemiBold"
+                                           Text="การกระจายงาน" />
+                                <TextBlock Foreground="{DynamicResource HerdrOps.Brush.TextSecondary}"
+                                           FontSize="11"
+                                           Text="Work Distribution" />
+                            </StackPanel>
+                            <Grid Grid.Row="1">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="5*" />
+                                    <ColumnDefinition Width="6*" />
+                                </Grid.ColumnDefinitions>
+                                <Grid>
+                                    <controls:DonutChart Margin="4"
+                                                         ItemsSource="{Binding Workstreams}"
+                                                         TrackBrush="{DynamicResource HerdrOps.Brush.Border}"
+                                                         StrokeThickness="22" />
+                                    <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center">
+                                        <TextBlock HorizontalAlignment="Center"
+                                                   FontSize="24"
+                                                   FontWeight="SemiBold"
+                                                   Text="12" />
+                                        <TextBlock HorizontalAlignment="Center"
+                                                   Foreground="{DynamicResource HerdrOps.Brush.TextMuted}"
+                                                   FontSize="10"
+                                                   Text="Agents" />
+                                    </StackPanel>
+                                </Grid>
+                                <ItemsControl Grid.Column="1"
+                                              VerticalAlignment="Center"
+                                              ItemsSource="{Binding Workstreams}">
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate>
+                                            <Grid Margin="4,3">
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="14" />
+                                                    <ColumnDefinition Width="*" />
+                                                    <ColumnDefinition Width="Auto" />
+                                                </Grid.ColumnDefinitions>
+                                                <Ellipse Width="9"
+                                                         Height="9"
+                                                         Fill="{Binding AccentBrushKey, Converter={StaticResource ResourceBrush}}" />
+                                                <TextBlock Grid.Column="1"
+                                                           FontSize="10"
+                                                           Text="{Binding Name}"
+                                                           TextTrimming="CharacterEllipsis" />
+                                                <TextBlock Grid.Column="2"
+                                                           Foreground="{DynamicResource HerdrOps.Brush.TextSecondary}"
+                                                           FontSize="10">
+                                                    <Run Text="{Binding Percentage}" /><Run Text="%" />
+                                                </TextBlock>
+                                            </Grid>
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
+                            </Grid>
+                        </Grid>
+                    </Border>
+                </Grid>
+
+                <Grid Grid.Row="2">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="2*" />
+                        <ColumnDefinition Width="12" />
+                        <ColumnDefinition Width="3*" />
+                    </Grid.ColumnDefinitions>
+
+                    <Border x:Name="TopAgentsRegion"
+                            Grid.Column="0"
+                            Padding="0"
+                            Style="{DynamicResource HerdrOps.Style.Card}">
+                        <Grid>
+                            <Grid.RowDefinitions>
+                                <RowDefinition x:Name="TopAgentsHeaderRow" Height="48" />
+                                <RowDefinition Height="*" />
+                            </Grid.RowDefinitions>
+                            <Grid Margin="14,0">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <StackPanel VerticalAlignment="Center">
+                                    <TextBlock Tag="ThaiOverviewCheck"
+                                               FontSize="14"
+                                               FontWeight="SemiBold"
+                                               Text="ตัวแทนที่ทำผลงานดี" />
+                                    <TextBlock Foreground="{DynamicResource HerdrOps.Brush.TextSecondary}"
+                                               FontSize="11"
+                                               Text="Top Agents" />
+                                </StackPanel>
+                                <TextBlock Grid.Column="1"
+                                           VerticalAlignment="Center"
+                                           Foreground="{DynamicResource HerdrOps.Brush.TextMuted}"
+                                           FontSize="10"
+                                           Text="SYNTHETIC" />
+                            </Grid>
+                            <ItemsControl Grid.Row="1" ItemsSource="{Binding TopAgents}">
+                                <ItemsControl.ItemsPanel>
+                                    <ItemsPanelTemplate>
+                                        <UniformGrid Rows="5" Columns="1" />
+                                    </ItemsPanelTemplate>
+                                </ItemsControl.ItemsPanel>
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <Grid Margin="12,1">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="26" />
+                                                <ColumnDefinition Width="30" />
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="34" />
+                                                <ColumnDefinition Width="38" />
+                                            </Grid.ColumnDefinitions>
+                                            <Border Width="22"
+                                                    Height="22"
+                                                    Background="{DynamicResource HerdrOps.Brush.SurfaceRaised}"
+                                                    CornerRadius="11">
+                                                <TextBlock HorizontalAlignment="Center"
+                                                           VerticalAlignment="Center"
+                                                           FontSize="10"
+                                                           Text="{Binding Rank}" />
+                                            </Border>
+                                            <Border Grid.Column="1"
+                                                    Width="24"
+                                                    Height="24"
+                                                    Background="{Binding AccentBrushKey, Converter={StaticResource ResourceBrush}}"
+                                                    CornerRadius="12">
+                                                <TextBlock HorizontalAlignment="Center"
+                                                           VerticalAlignment="Center"
+                                                           FontSize="9"
+                                                           FontWeight="SemiBold"
+                                                           Text="{Binding Initials}" />
+                                            </Border>
+                                            <TextBlock Grid.Column="2"
+                                                       VerticalAlignment="Center"
+                                                       FontSize="11"
+                                                       Text="{Binding Name}"
+                                                       TextTrimming="CharacterEllipsis" />
+                                            <TextBlock Grid.Column="3"
+                                                       HorizontalAlignment="Right"
+                                                       VerticalAlignment="Center"
+                                                       Foreground="{DynamicResource HerdrOps.Brush.Status.Working}"
+                                                       FontSize="11"
+                                                       FontWeight="SemiBold"
+                                                       Text="{Binding Score}" />
+                                            <TextBlock Grid.Column="4"
+                                                       HorizontalAlignment="Right"
+                                                       VerticalAlignment="Center"
+                                                       Foreground="{DynamicResource HerdrOps.Brush.TextMuted}"
+                                                       FontSize="10"
+                                                       Text="{Binding DeltaLabel}" />
+                                        </Grid>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                        </Grid>
+                    </Border>
+
+                    <Border x:Name="AlertsRegion"
+                            Grid.Column="2"
+                            Padding="0"
+                            Style="{DynamicResource HerdrOps.Style.Card}">
+                        <Grid>
+                            <Grid.RowDefinitions>
+                                <RowDefinition x:Name="AlertsHeaderRow" Height="48" />
+                                <RowDefinition Height="*" />
+                            </Grid.RowDefinitions>
+                            <Grid Margin="14,0">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <StackPanel VerticalAlignment="Center">
+                                    <TextBlock Tag="ThaiOverviewCheck"
+                                               FontSize="14"
+                                               FontWeight="SemiBold"
+                                               Text="การแจ้งเตือน" />
+                                    <TextBlock Foreground="{DynamicResource HerdrOps.Brush.TextSecondary}"
+                                               FontSize="11"
+                                               Text="Alerts" />
+                                </StackPanel>
+                                <TextBlock Grid.Column="1"
+                                           VerticalAlignment="Center"
+                                           Foreground="{DynamicResource HerdrOps.Brush.PrimaryText}"
+                                           FontSize="10"
+                                           Text="3 items" />
+                            </Grid>
+                            <ItemsControl Grid.Row="1" ItemsSource="{Binding Alerts}">
+                                <ItemsControl.ItemsPanel>
+                                    <ItemsPanelTemplate>
+                                        <UniformGrid Rows="3" Columns="1" />
+                                    </ItemsPanelTemplate>
+                                </ItemsControl.ItemsPanel>
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <Border Margin="12,2"
+                                                Padding="10,4"
+                                                Background="{DynamicResource HerdrOps.Brush.SurfaceRaised}"
+                                                BorderBrush="{Binding AccentBrushKey, Converter={StaticResource ResourceBrush}}"
+                                                BorderThickness="1"
+                                                CornerRadius="{DynamicResource HerdrOps.Radius.Default}">
+                                            <Grid>
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="32" />
+                                                    <ColumnDefinition Width="*" />
+                                                    <ColumnDefinition Width="44" />
+                                                </Grid.ColumnDefinitions>
+                                                <Border Width="24"
+                                                        Height="24"
+                                                        Background="{Binding AccentBrushKey, Converter={StaticResource ResourceBrush}}"
+                                                        CornerRadius="12">
+                                                    <TextBlock HorizontalAlignment="Center"
+                                                               VerticalAlignment="Center"
+                                                               FontFamily="{DynamicResource HerdrOps.FontFamily.Icons}"
+                                                               FontSize="11"
+                                                               Text="&#xEA39;" />
+                                                </Border>
+                                                <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                                                    <TextBlock Foreground="{Binding AccentBrushKey, Converter={StaticResource ResourceBrush}}"
+                                                               FontSize="11"
+                                                               FontWeight="SemiBold"
+                                                               Text="{Binding Title}"
+                                                               TextTrimming="CharacterEllipsis" />
+                                                    <TextBlock Foreground="{DynamicResource HerdrOps.Brush.TextSecondary}"
+                                                               FontSize="10"
+                                                               Text="{Binding Description}"
+                                                               TextTrimming="CharacterEllipsis" />
+                                                </StackPanel>
+                                                <TextBlock Grid.Column="2"
+                                                           HorizontalAlignment="Right"
+                                                           VerticalAlignment="Center"
+                                                           Foreground="{DynamicResource HerdrOps.Brush.TextMuted}"
+                                                           FontSize="10"
+                                                           Text="{Binding Time}" />
+                                            </Grid>
+                                        </Border>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                        </Grid>
+                    </Border>
+                </Grid>
+            </Grid>
+        </Grid>
+    </Grid>
+</UserControl>

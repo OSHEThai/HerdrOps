@@ -3,6 +3,7 @@
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:automation="clr-namespace:System.Windows.Automation;assembly=PresentationCore"
              xmlns:shell="clr-namespace:System.Windows.Shell;assembly=PresentationFramework"
+             xmlns:views="clr-namespace:HerdrOps.App.Views"
              MinWidth="640"
              MinHeight="480"
              Background="{DynamicResource HerdrOps.Brush.Background}"
@@ -275,7 +276,7 @@
                 </Grid>
             </Border>
 
-            <Grid Grid.Column="1" Margin="16">
+            <Grid x:Name="PlaceholderPage" Grid.Column="1" Margin="16">
                 <Grid.RowDefinitions>
                     <RowDefinition Height="Auto" />
                     <RowDefinition Height="12" />
@@ -469,6 +470,8 @@
                     </Grid>
                 </Border>
             </Grid>
+
+            <views:OverviewView x:Name="OverviewPage" Grid.Column="1" />
         </Grid>
 
         <Border Grid.Row="2"
