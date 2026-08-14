@@ -41,7 +41,10 @@ public partial class WidgetWindow : Window
         Surface.PinToggleRequested += OnPinToggleRequested;
         Surface.ResetPositionRequested += OnResetPositionRequested;
         Surface.DragRequested += OnDragRequested;
-        UiLanguageService.Shared.LanguageChanged += OnLanguageChanged;
+        WeakEventManager<UiLanguageService, EventArgs>.AddHandler(
+            UiLanguageService.Shared,
+            nameof(UiLanguageService.LanguageChanged),
+            OnLanguageChanged);
         Closed += OnClosed;
 
         ResetPosition();
@@ -110,6 +113,21 @@ public partial class WidgetWindow : Window
 
     private void OnLanguageChanged(object? sender, EventArgs e)
     {
+        if (!Dispatcher.CheckAccess())
+        {
+            if (!Dispatcher.HasShutdownStarted && !Dispatcher.HasShutdownFinished)
+            {
+                _ = Dispatcher.InvokeAsync(ApplyLanguageChange);
+            }
+
+            return;
+        }
+
+        ApplyLanguageChange();
+    }
+
+    private void ApplyLanguageChange()
+    {
         if (_state.EvidenceClass == HerdrOps.Contracts.EvidenceClass.Synthetic)
         {
             _state = SyntheticWidgetState.Create();
@@ -121,7 +139,10 @@ public partial class WidgetWindow : Window
 
     private void OnClosed(object? sender, EventArgs e)
     {
-        UiLanguageService.Shared.LanguageChanged -= OnLanguageChanged;
+        WeakEventManager<UiLanguageService, EventArgs>.RemoveHandler(
+            UiLanguageService.Shared,
+            nameof(UiLanguageService.LanguageChanged),
+            OnLanguageChanged);
         Closed -= OnClosed;
     }
 

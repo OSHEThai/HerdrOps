@@ -49,7 +49,10 @@ public partial class ShellView : UserControl
         }
 
         Navigation.PropertyChanged += OnNavigationPropertyChanged;
-        LanguageService.LanguageChanged += OnLanguageChanged;
+        WeakEventManager<UiLanguageService, EventArgs>.AddHandler(
+            LanguageService,
+            nameof(UiLanguageService.LanguageChanged),
+            OnLanguageChanged);
         Unloaded += OnUnloaded;
         UpdatePageVisibility();
     }
@@ -95,6 +98,21 @@ public partial class ShellView : UserControl
 
     private void OnLanguageChanged(object? sender, EventArgs e)
     {
+        if (!Dispatcher.CheckAccess())
+        {
+            if (!Dispatcher.HasShutdownStarted && !Dispatcher.HasShutdownFinished)
+            {
+                _ = Dispatcher.InvokeAsync(ApplyLanguageChange);
+            }
+
+            return;
+        }
+
+        ApplyLanguageChange();
+    }
+
+    private void ApplyLanguageChange()
+    {
         Navigation.NotifyLanguageChanged();
         NavigationList.Items.Refresh();
         LiveDashboard.RefreshLanguage();
@@ -107,7 +125,10 @@ public partial class ShellView : UserControl
 
     private void OnUnloaded(object sender, RoutedEventArgs e)
     {
-        LanguageService.LanguageChanged -= OnLanguageChanged;
+        WeakEventManager<UiLanguageService, EventArgs>.RemoveHandler(
+            LanguageService,
+            nameof(UiLanguageService.LanguageChanged),
+            OnLanguageChanged);
         Unloaded -= OnUnloaded;
     }
 

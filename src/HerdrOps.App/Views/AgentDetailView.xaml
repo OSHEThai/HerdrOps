@@ -3,6 +3,7 @@
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:automation="clr-namespace:System.Windows.Automation;assembly=PresentationCore"
              xmlns:converters="clr-namespace:HerdrOps.App.Converters"
+             xmlns:localization="clr-namespace:HerdrOps.App.Localization"
              Background="{DynamicResource HerdrOps.Brush.Background}"
              ClipToBounds="True"
              SizeChanged="OnViewSizeChanged">
@@ -86,7 +87,7 @@
                         </StackPanel>
                         <TextBlock Margin="0,12,0,0"
                                    Style="{DynamicResource HerdrOps.Style.Text.Caption}"
-                                   Text="Workspace / Tab" />
+                                   Text="{Binding [AgentWorkspaceTab], Source={x:Static localization:UiLanguageService.Shared}}" />
                         <TextBlock FontSize="12">
                             <Run Text="{Binding Workspace, Mode=OneWay}" /><Run Text="  /  " /><Run Text="{Binding Tab, Mode=OneWay}" />
                         </TextBlock>
@@ -116,24 +117,24 @@
                                Tag="ThaiAgentDetailCheck"
                                FontSize="14"
                                FontWeight="SemiBold"
-                               Text="ตำแหน่งและ Terminal ปัจจุบัน" />
-                    <TextBlock Grid.Row="1" Style="{DynamicResource HerdrOps.Style.Text.Caption}" Text="Pane" />
+                               Text="{Binding [AgentCurrentLocationTitle], Source={x:Static localization:UiLanguageService.Shared}}" />
+                    <TextBlock Grid.Row="1" Style="{DynamicResource HerdrOps.Style.Text.Caption}" Text="{Binding [LabelPane], Source={x:Static localization:UiLanguageService.Shared}}" />
                     <TextBlock Grid.Row="1" Grid.Column="1" Text="{Binding Pane}" TextTrimming="CharacterEllipsis" />
-                    <TextBlock Grid.Row="2" Style="{DynamicResource HerdrOps.Style.Text.Caption}" Text="Terminal" />
+                    <TextBlock Grid.Row="2" Style="{DynamicResource HerdrOps.Style.Text.Caption}" Text="{Binding [LabelTerminal], Source={x:Static localization:UiLanguageService.Shared}}" />
                     <TextBlock Grid.Row="2" Grid.Column="1" Text="{Binding Terminal}" TextTrimming="CharacterEllipsis" />
-                    <TextBlock Grid.Row="3" Style="{DynamicResource HerdrOps.Style.Text.Caption}" Text="Current directory" />
+                    <TextBlock Grid.Row="3" Style="{DynamicResource HerdrOps.Style.Text.Caption}" Text="{Binding [AgentCurrentDirectory], Source={x:Static localization:UiLanguageService.Shared}}" />
                     <TextBlock Grid.Row="3"
                                Grid.Column="1"
                                Text="{Binding CurrentDirectory}"
                                TextTrimming="CharacterEllipsis"
                                ToolTip="{Binding CurrentDirectory}" />
-                    <TextBlock Grid.Row="4" Style="{DynamicResource HerdrOps.Style.Text.Caption}" Text="Foreground directory" />
+                    <TextBlock Grid.Row="4" Style="{DynamicResource HerdrOps.Style.Text.Caption}" Text="{Binding [AgentForegroundDirectory], Source={x:Static localization:UiLanguageService.Shared}}" />
                     <TextBlock Grid.Row="4"
                                Grid.Column="1"
                                Text="{Binding ForegroundDirectory}"
                                TextTrimming="CharacterEllipsis"
                                ToolTip="{Binding ForegroundDirectory}" />
-                    <TextBlock Grid.Row="5" Style="{DynamicResource HerdrOps.Style.Text.Caption}" Text="Terminal title" />
+                    <TextBlock Grid.Row="5" Style="{DynamicResource HerdrOps.Style.Text.Caption}" Text="{Binding [AgentTerminalTitle], Source={x:Static localization:UiLanguageService.Shared}}" />
                     <TextBlock Grid.Row="5" Grid.Column="1" Text="{Binding TerminalTitle}" TextTrimming="CharacterEllipsis" />
                 </Grid>
             </Border>
@@ -151,26 +152,26 @@
                         <TextBlock Tag="ThaiAgentDetailCheck"
                                    FontSize="14"
                                    FontWeight="SemiBold"
-                                   Text="ความสดของสถานะ" />
+                                   Text="{Binding [AgentFreshnessTitle], Source={x:Static localization:UiLanguageService.Shared}}" />
                         <TextBlock Foreground="{DynamicResource HerdrOps.Brush.TextSecondary}"
                                    FontSize="10"
-                                   Text="Core sequence metadata" />
+                                   Text="{Binding [AgentFreshnessSubtitle], Source={x:Static localization:UiLanguageService.Shared}}" />
                     </StackPanel>
                     <UniformGrid Grid.Row="1" Margin="0,12,0,0" Rows="2" Columns="2">
                         <StackPanel>
-                            <TextBlock Style="{DynamicResource HerdrOps.Style.Text.Caption}" Text="Session seq" />
+                            <TextBlock Style="{DynamicResource HerdrOps.Style.Text.Caption}" Text="{Binding [AgentSessionSequence], Source={x:Static localization:UiLanguageService.Shared}}" />
                             <TextBlock FontSize="22" FontWeight="SemiBold" Text="{Binding SessionSequence}" />
                         </StackPanel>
                         <StackPanel>
-                            <TextBlock Style="{DynamicResource HerdrOps.Style.Text.Caption}" Text="Epoch" />
+                            <TextBlock Style="{DynamicResource HerdrOps.Style.Text.Caption}" Text="{Binding [AgentConnectionEpoch], Source={x:Static localization:UiLanguageService.Shared}}" />
                             <TextBlock FontSize="22" FontWeight="SemiBold" Text="{Binding ConnectionEpoch}" />
                         </StackPanel>
                         <StackPanel>
-                            <TextBlock Style="{DynamicResource HerdrOps.Style.Text.Caption}" Text="Pane rev" />
+                            <TextBlock Style="{DynamicResource HerdrOps.Style.Text.Caption}" Text="{Binding [AgentPaneRevision], Source={x:Static localization:UiLanguageService.Shared}}" />
                             <TextBlock FontSize="22" FontWeight="SemiBold" Text="{Binding Revision}" />
                         </StackPanel>
                         <StackPanel>
-                            <TextBlock Style="{DynamicResource HerdrOps.Style.Text.Caption}" Text="Agent seq" />
+                            <TextBlock Style="{DynamicResource HerdrOps.Style.Text.Caption}" Text="{Binding [AgentStateSequence], Source={x:Static localization:UiLanguageService.Shared}}" />
                             <TextBlock FontSize="22" FontWeight="SemiBold" Text="{Binding StateChangeSequence}" />
                         </StackPanel>
                     </UniformGrid>
@@ -205,10 +206,10 @@
                             <TextBlock Tag="ThaiAgentDetailCheck"
                                        FontSize="14"
                                        FontWeight="SemiBold"
-                                       Text="ข้อเท็จจริงล่าสุด" />
+                                       Text="{Binding [AgentRecentFactsTitle], Source={x:Static localization:UiLanguageService.Shared}}" />
                             <TextBlock Foreground="{DynamicResource HerdrOps.Brush.TextSecondary}"
                                        FontSize="10"
-                                       Text="Current state facts · not an activity history" />
+                                       Text="{Binding [AgentRecentFactsSubtitle], Source={x:Static localization:UiLanguageService.Shared}}" />
                         </StackPanel>
                         <ItemsControl Grid.Row="1" ItemsSource="{Binding RecentFacts}">
                             <ItemsControl.ItemTemplate>
@@ -247,22 +248,22 @@
                             <TextBlock Tag="ThaiAgentDetailCheck"
                                        FontSize="14"
                                        FontWeight="SemiBold"
-                                       Text="สัญญาณ Runtime" />
+                                       Text="{Binding [AgentRuntimeSignalsTitle], Source={x:Static localization:UiLanguageService.Shared}}" />
                             <TextBlock Foreground="{DynamicResource HerdrOps.Brush.TextSecondary}"
                                        FontSize="10"
-                                       Text="Nullable Herdr metadata stays Unknown" />
+                                       Text="{Binding [AgentRuntimeSignalsSubtitle], Source={x:Static localization:UiLanguageService.Shared}}" />
                         </StackPanel>
                         <UniformGrid Grid.Row="1" Margin="0,12,0,0" Rows="1" Columns="3">
                             <StackPanel>
-                                <TextBlock Style="{DynamicResource HerdrOps.Style.Text.Caption}" Text="Interactive ready" />
+                                <TextBlock Style="{DynamicResource HerdrOps.Style.Text.Caption}" Text="{Binding [AgentInteractiveReady], Source={x:Static localization:UiLanguageService.Shared}}" />
                                 <TextBlock Margin="0,5,0,0" FontSize="16" FontWeight="SemiBold" Text="{Binding InteractiveReady}" />
                             </StackPanel>
                             <StackPanel>
-                                <TextBlock Style="{DynamicResource HerdrOps.Style.Text.Caption}" Text="Launch pending" />
+                                <TextBlock Style="{DynamicResource HerdrOps.Style.Text.Caption}" Text="{Binding [AgentLaunchPending], Source={x:Static localization:UiLanguageService.Shared}}" />
                                 <TextBlock Margin="0,5,0,0" FontSize="16" FontWeight="SemiBold" Text="{Binding LaunchPending}" />
                             </StackPanel>
                             <StackPanel>
-                                <TextBlock Style="{DynamicResource HerdrOps.Style.Text.Caption}" Text="Detection skipped" />
+                                <TextBlock Style="{DynamicResource HerdrOps.Style.Text.Caption}" Text="{Binding [AgentDetectionSkipped], Source={x:Static localization:UiLanguageService.Shared}}" />
                                 <TextBlock Margin="0,5,0,0" FontSize="16" FontWeight="SemiBold" Text="{Binding ScreenDetectionSkipped}" />
                             </StackPanel>
                         </UniformGrid>
@@ -283,10 +284,10 @@
                         <TextBlock Tag="ThaiAgentDetailCheck"
                                    FontSize="14"
                                    FontWeight="SemiBold"
-                                   Text="ข้อมูลที่ Herdr ยังไม่ได้ส่ง" />
+                                   Text="{Binding [AgentUnsupportedTitle], Source={x:Static localization:UiLanguageService.Shared}}" />
                         <TextBlock Foreground="{DynamicResource HerdrOps.Brush.TextSecondary}"
                                    FontSize="10"
-                                   Text="Unsupported fields remain Unknown" />
+                                   Text="{Binding [AgentUnsupportedSubtitle], Source={x:Static localization:UiLanguageService.Shared}}" />
                     </StackPanel>
                     <ItemsControl Grid.Row="1" ItemsSource="{Binding UnsupportedSections}">
                         <ItemsControl.ItemsPanel>
@@ -311,7 +312,7 @@
                                             <TextBlock Tag="ThaiAgentDetailCheck"
                                                        FontSize="11"
                                                        FontWeight="SemiBold"
-                                                       Text="{Binding ThaiTitle}"
+                                                       Text="{Binding Title}"
                                                        TextTrimming="CharacterEllipsis" />
                                             <TextBlock Foreground="{DynamicResource HerdrOps.Brush.TextMuted}"
                                                        FontSize="9"
@@ -349,10 +350,10 @@
                         <TextBlock Tag="ThaiAgentDetailCheck"
                                    FontSize="14"
                                    FontWeight="SemiBold"
-                                   Text="Agent ใน Workspace เดียวกัน" />
+                                   Text="{Binding [AgentRelatedTitle], Source={x:Static localization:UiLanguageService.Shared}}" />
                         <TextBlock Foreground="{DynamicResource HerdrOps.Brush.TextSecondary}"
                                    FontSize="10"
-                                   Text="Related by observed topology only" />
+                                   Text="{Binding [AgentRelatedSubtitle], Source={x:Static localization:UiLanguageService.Shared}}" />
                     </StackPanel>
                     <ItemsControl Grid.Row="1" ItemsSource="{Binding RelatedAgents}">
                         <ItemsControl.ItemTemplate>

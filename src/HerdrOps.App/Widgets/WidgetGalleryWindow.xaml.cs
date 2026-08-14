@@ -20,7 +20,10 @@ public partial class WidgetGalleryWindow : Window
         GalleryView = new WidgetGalleryView(state, launcher: null);
         GalleryHost.Content = GalleryView;
         RefreshTitle();
-        UiLanguageService.Shared.LanguageChanged += OnLanguageChanged;
+        WeakEventManager<UiLanguageService, EventArgs>.AddHandler(
+            UiLanguageService.Shared,
+            nameof(UiLanguageService.LanguageChanged),
+            OnLanguageChanged);
         Closed += OnClosed;
     }
 
@@ -45,7 +48,20 @@ public partial class WidgetGalleryWindow : Window
         }
     }
 
-    private void OnLanguageChanged(object? sender, EventArgs e) => RefreshTitle();
+    private void OnLanguageChanged(object? sender, EventArgs e)
+    {
+        if (!Dispatcher.CheckAccess())
+        {
+            if (!Dispatcher.HasShutdownStarted && !Dispatcher.HasShutdownFinished)
+            {
+                _ = Dispatcher.InvokeAsync(RefreshTitle);
+            }
+
+            return;
+        }
+
+        RefreshTitle();
+    }
 
     private void RefreshTitle()
     {
@@ -55,7 +71,10 @@ public partial class WidgetGalleryWindow : Window
 
     private void OnClosed(object? sender, EventArgs e)
     {
-        UiLanguageService.Shared.LanguageChanged -= OnLanguageChanged;
+        WeakEventManager<UiLanguageService, EventArgs>.RemoveHandler(
+            UiLanguageService.Shared,
+            nameof(UiLanguageService.LanguageChanged),
+            OnLanguageChanged);
         Closed -= OnClosed;
     }
 }

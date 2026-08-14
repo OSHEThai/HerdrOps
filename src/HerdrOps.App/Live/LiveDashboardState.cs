@@ -21,7 +21,7 @@ public enum LiveDashboardConnectionStatus
 
 public sealed class LiveDashboardState : ObservableState
 {
-    private readonly List<OverviewActivity> _activities = [];
+    private readonly List<LiveActivityRecord> _activities = [];
     private readonly bool _syntheticPreview;
     private HerdrSessionStateContract _currentState = HerdrSessionStateContract.Empty;
     private LiveDashboardConnectionStatus _connectionStatus;
@@ -36,6 +36,9 @@ public sealed class LiveDashboardState : ObservableState
     private string? _selectedTerminalId;
     private DateTimeOffset _lastSourceTimestamp;
     private TimeSpan? _lastTransportLatency;
+    private HerdrOpsStateUpdateKind? _lastUpdateKind;
+    private string? _lastOfflineExceptionType;
+    private bool _clockMismatch;
 
     public LiveDashboardState()
         : this(syntheticPreview: false)
@@ -54,8 +57,8 @@ public sealed class LiveDashboardState : ObservableState
         _connectionStatus = syntheticPreview
             ? LiveDashboardConnectionStatus.SyntheticPreview
             : LiveDashboardConnectionStatus.Waiting;
-        _sourceLabel = syntheticPreview ? text["SyntheticShellPreview"] : "WAITING FOR CORE";
-        _connectionLabel = syntheticPreview ? text["HerdrNotConnected"] : "Core not connected";
+        _sourceLabel = syntheticPreview ? text["SyntheticShellPreview"] : text["CoreWaitingSource"];
+        _connectionLabel = syntheticPreview ? text["HerdrNotConnected"] : text["CoreNotConnected"];
         _connectionBrushKey = OverviewBrushKeys.Offline;
         _projectLabel = syntheticPreview ? text["SyntheticPreview"] : text["NoActiveWorkspace"];
         _statusSummary = syntheticPreview
@@ -150,26 +153,15 @@ public sealed class LiveDashboardState : ObservableState
         CurrentState = normalized;
         ConnectionStatus = LiveDashboardConnectionStatus.Live;
         IsLive = true;
-        SourceLabel = update.Kind == HerdrOpsStateUpdateKind.Snapshot
-            ? "CORE SNAPSHOT"
-            : "CORE DELTA";
-        ConnectionLabel = normalized.LastIngestSequence == 0
-            ? "Core connected · Herdr state unavailable"
-            : "Core connected · Herdr runtime freshness unknown";
-        ConnectionBrushKey = OverviewBrushKeys.Working;
+        _lastUpdateKind = update.Kind;
+        _lastOfflineExceptionType = null;
         LastSourceTimestamp = update.Envelope.SentUtc;
-        LastUpdateLabel = $"Core update {update.Envelope.SentUtc.ToLocalTime():HH:mm:ss} · sequence {normalized.LastIngestSequence}";
         var latency = receivedUtc - update.Envelope.SentUtc;
+        _clockMismatch = latency < TimeSpan.Zero;
         LastTransportLatency = latency < TimeSpan.Zero ? null : latency;
-        LatencyLabel = latency < TimeSpan.Zero
-            ? "clock mismatch"
-            : $"{Math.Round(latency.TotalMilliseconds, MidpointRounding.AwayFromZero):0} ms";
-        ProjectLabel = ResolveProjectLabel(normalized);
-        StatusSummary = normalized.LastIngestSequence == 0
-            ? "Core link is live; no admitted Herdr snapshot is available"
-            : $"Latest accepted Herdr state via Core · epoch {normalized.ConnectionEpoch} · sequence {normalized.LastIngestSequence}";
         UpdateActivities(update);
         SelectedTerminalId = ResolveSelection(normalized, SelectedTerminalId);
+        RefreshPresentation();
         RefreshViews();
     }
 
@@ -179,13 +171,8 @@ public sealed class LiveDashboardState : ObservableState
             ? LiveDashboardConnectionStatus.Reconnecting
             : LiveDashboardConnectionStatus.Connecting;
         IsLive = false;
-        SourceLabel = CurrentState.LastIngestSequence > 0 ? "LAST KNOWN" : "WAITING FOR CORE";
-        ConnectionLabel = reconnecting ? "Reconnecting to Core" : "Connecting to Core";
-        ConnectionBrushKey = OverviewBrushKeys.Idle;
-        StatusSummary = reconnecting
-            ? "Core connection interrupted; displayed Herdr state is last-known"
-            : "Connecting to the per-user Core state service";
-        LatencyLabel = "— ms";
+        _clockMismatch = false;
+        RefreshPresentation();
         RefreshViews();
     }
 
@@ -196,22 +183,21 @@ public sealed class LiveDashboardState : ObservableState
         var wasOffline = ConnectionStatus == LiveDashboardConnectionStatus.Offline;
         ConnectionStatus = LiveDashboardConnectionStatus.Offline;
         IsLive = false;
-        SourceLabel = CurrentState.LastIngestSequence > 0 ? "LAST KNOWN" : "NO CORE DATA";
-        ConnectionLabel = $"Core offline · {exception.GetType().Name}";
-        ConnectionBrushKey = OverviewBrushKeys.Offline;
-        StatusSummary = "Core is offline; no last-known Agent status is treated as current";
-        LatencyLabel = "— ms";
+        _lastOfflineExceptionType = exception.GetType().Name;
+        _clockMismatch = false;
         if (!wasOffline)
         {
-            AddActivity(new OverviewActivity(
+            AddActivity(new LiveActivityRecord(
                 observedUtc.ToLocalTime().ToString("HH:mm", System.Globalization.CultureInfo.InvariantCulture),
                 "!",
                 "HerdrOps App",
-                "Core state IPC disconnected; status changed to Offline",
+                "ActivityCoreDisconnected",
+                [],
                 "IPC",
                 OverviewBrushKeys.Offline));
         }
 
+        RefreshPresentation();
         RefreshViews();
     }
 
@@ -220,11 +206,8 @@ public sealed class LiveDashboardState : ObservableState
         EnsureUtc(observedUtc, nameof(observedUtc));
         ConnectionStatus = LiveDashboardConnectionStatus.Stopped;
         IsLive = false;
-        SourceLabel = CurrentState.LastIngestSequence > 0 ? "LAST KNOWN" : "NO CORE DATA";
-        ConnectionLabel = "App state client stopped";
-        ConnectionBrushKey = OverviewBrushKeys.Offline;
-        StatusSummary = "App closed its read-only Core subscription";
-        LatencyLabel = "— ms";
+        _clockMismatch = false;
+        RefreshPresentation();
         RefreshViews();
     }
 
@@ -245,19 +228,12 @@ public sealed class LiveDashboardState : ObservableState
 
     public void RefreshLanguage()
     {
+        RefreshPresentation();
+        RefreshViews();
         if (_syntheticPreview)
         {
-            var text = UiLanguageService.Shared;
-            SourceLabel = text["SyntheticShellPreview"];
-            ConnectionLabel = text["HerdrNotConnected"];
-            ProjectLabel = text["SyntheticPreview"];
-            StatusSummary = text["UiPreviewReady"];
-            LastUpdateLabel = text["LastCoreUpdateEmpty"];
             AgentDetail.ApplySyntheticPreviewProfile();
-            return;
         }
-
-        RefreshViews();
     }
 
     private void RefreshViews()
@@ -268,7 +244,7 @@ public sealed class LiveDashboardState : ObservableState
             SourceLabel,
             ConnectionLabel,
             LastSourceTimestamp,
-            _activities.ToArray());
+            _activities.Select(RenderActivity).ToArray());
         Organization.Update(
             CurrentState,
             IsLive,
@@ -297,13 +273,16 @@ public sealed class LiveDashboardState : ObservableState
             System.Globalization.CultureInfo.InvariantCulture);
         if (update.Kind == HerdrOpsStateUpdateKind.Snapshot)
         {
-            AddActivity(new OverviewActivity(
+            AddActivity(new LiveActivityRecord(
                 time,
                 "SN",
                 "HerdrOps Core",
                 CurrentState.LastIngestSequence == 0
-                    ? "Core snapshot contains no admitted Herdr state"
-                    : $"Full state snapshot received for {CurrentState.Agents.Count} Agents",
+                    ? "ActivitySnapshotEmpty"
+                    : "ActivitySnapshotAgentsFormat",
+                CurrentState.LastIngestSequence == 0
+                    ? []
+                    : [CurrentState.Agents.Count],
                 $"SEQ-{CurrentState.LastIngestSequence}",
                 CurrentState.LastIngestSequence == 0
                     ? OverviewBrushKeys.Offline
@@ -314,11 +293,12 @@ public sealed class LiveDashboardState : ObservableState
         var changedAgents = update.Delta?.Delta.UpsertedAgents ?? [];
         if (changedAgents.Count == 0)
         {
-            AddActivity(new OverviewActivity(
+            AddActivity(new LiveActivityRecord(
                 time,
                 "Δ",
                 "HerdrOps Core",
-                "State delta applied without Agent field changes",
+                "ActivityDeltaNoAgentChanges",
+                [],
                 $"SEQ-{CurrentState.LastIngestSequence}",
                 OverviewBrushKeys.Primary));
             return;
@@ -326,17 +306,18 @@ public sealed class LiveDashboardState : ObservableState
 
         foreach (var agent in changedAgents.Take(6).Reverse())
         {
-            AddActivity(new OverviewActivity(
+            AddActivity(new LiveActivityRecord(
                 time,
                 AgentStatusPresentation.Initials(agent),
                 AgentStatusPresentation.DisplayName(agent),
-                $"Herdr status: {agent.AgentStatus} · pane revision {agent.Revision}",
+                "ActivityAgentStatusFormat",
+                [new LocalizedStatusArgument(agent.AgentStatus), agent.Revision],
                 agent.PaneId,
                 AgentStatusPresentation.BrushKey(agent.AgentStatus)));
         }
     }
 
-    private void AddActivity(OverviewActivity activity)
+    private void AddActivity(LiveActivityRecord activity)
     {
         _activities.Insert(0, activity);
         if (_activities.Count > 6)
@@ -352,8 +333,112 @@ public sealed class LiveDashboardState : ObservableState
             : state.Workspaces.FirstOrDefault(item => item.WorkspaceId == state.FocusedWorkspaceId);
         var workspace = focused ?? state.Workspaces.FirstOrDefault();
         return workspace is null
-            ? "No active workspace"
+            ? UiLanguageService.Shared["NoActiveWorkspace"]
             : AgentStatusPresentation.FirstNonEmpty(workspace.Label, workspace.WorkspaceId);
+    }
+
+    private void RefreshPresentation()
+    {
+        var text = UiLanguageService.Shared;
+        ProjectLabel = _syntheticPreview
+            ? text["SyntheticPreview"]
+            : ResolveProjectLabel(CurrentState);
+        LastUpdateLabel = LastSourceTimestamp == default
+            ? text["LastCoreUpdateEmpty"]
+            : text.Format(
+                "CoreUpdateFormat",
+                LastSourceTimestamp.ToLocalTime().ToString("HH:mm:ss", System.Globalization.CultureInfo.InvariantCulture),
+                CurrentState.LastIngestSequence);
+
+        switch (ConnectionStatus)
+        {
+            case LiveDashboardConnectionStatus.SyntheticPreview:
+                SourceLabel = text["SyntheticShellPreview"];
+                ConnectionLabel = text["HerdrNotConnected"];
+                ConnectionBrushKey = OverviewBrushKeys.Offline;
+                StatusSummary = text["UiPreviewReady"];
+                LatencyLabel = "— ms";
+                break;
+            case LiveDashboardConnectionStatus.Live:
+                SourceLabel = _lastUpdateKind == HerdrOpsStateUpdateKind.Delta
+                    ? text["CoreDeltaSource"]
+                    : text["CoreSnapshotSource"];
+                ConnectionLabel = CurrentState.LastIngestSequence == 0
+                    ? text["CoreConnectedNoSnapshot"]
+                    : text["CoreConnectedFreshnessUnknown"];
+                ConnectionBrushKey = OverviewBrushKeys.Working;
+                StatusSummary = CurrentState.LastIngestSequence == 0
+                    ? text["CoreLiveNoSnapshot"]
+                    : text.Format(
+                        "LatestAcceptedStateFormat",
+                        CurrentState.ConnectionEpoch,
+                        CurrentState.LastIngestSequence);
+                LatencyLabel = _clockMismatch
+                    ? text["ClockMismatch"]
+                    : LastTransportLatency is { } latency
+                        ? $"{Math.Round(latency.TotalMilliseconds, MidpointRounding.AwayFromZero):0} ms"
+                        : "— ms";
+                break;
+            case LiveDashboardConnectionStatus.Connecting:
+            case LiveDashboardConnectionStatus.Reconnecting:
+                SourceLabel = CurrentState.LastIngestSequence > 0
+                    ? text["LastKnownSource"]
+                    : text["CoreWaitingSource"];
+                ConnectionLabel = ConnectionStatus == LiveDashboardConnectionStatus.Reconnecting
+                    ? text["ReconnectingToCore"]
+                    : text["ConnectingToCore"];
+                ConnectionBrushKey = OverviewBrushKeys.Idle;
+                StatusSummary = ConnectionStatus == LiveDashboardConnectionStatus.Reconnecting
+                    ? text["CoreInterruptedLastKnown"]
+                    : text["ConnectingCoreStateService"];
+                LatencyLabel = "— ms";
+                break;
+            case LiveDashboardConnectionStatus.Offline:
+                SourceLabel = CurrentState.LastIngestSequence > 0
+                    ? text["LastKnownSource"]
+                    : text["NoCoreDataSource"];
+                ConnectionLabel = text.Format(
+                    "CoreOfflineFormat",
+                    _lastOfflineExceptionType ?? text["ValueUnknown"]);
+                ConnectionBrushKey = OverviewBrushKeys.Offline;
+                StatusSummary = text["CoreOfflineSummary"];
+                LatencyLabel = "— ms";
+                break;
+            case LiveDashboardConnectionStatus.Stopped:
+                SourceLabel = CurrentState.LastIngestSequence > 0
+                    ? text["LastKnownSource"]
+                    : text["NoCoreDataSource"];
+                ConnectionLabel = text["AppStateClientStopped"];
+                ConnectionBrushKey = OverviewBrushKeys.Offline;
+                StatusSummary = text["AppSubscriptionClosed"];
+                LatencyLabel = "— ms";
+                break;
+            default:
+                SourceLabel = text["CoreWaitingSource"];
+                ConnectionLabel = text["CoreNotConnected"];
+                ConnectionBrushKey = OverviewBrushKeys.Offline;
+                StatusSummary = text["WaitingForCore"];
+                LatencyLabel = "— ms";
+                break;
+        }
+    }
+
+    private static OverviewActivity RenderActivity(LiveActivityRecord activity)
+    {
+        var arguments = activity.DescriptionArguments
+            .Select(argument => argument is LocalizedStatusArgument status
+                ? AgentStatusPresentation.DisplayStatus(status.StatusCode)
+                : argument)
+            .ToArray();
+        return new OverviewActivity(
+            activity.Time,
+            activity.Initials,
+            activity.Agent,
+            arguments.Length == 0
+                ? UiLanguageService.Shared[activity.DescriptionKey]
+                : UiLanguageService.Shared.Format(activity.DescriptionKey, arguments),
+            activity.Reference,
+            activity.AccentBrushKey);
     }
 
     private static string? ResolveSelection(
@@ -379,4 +464,15 @@ public sealed class LiveDashboardState : ObservableState
             throw new ArgumentException("Dashboard state timestamps must be UTC.", name);
         }
     }
+
+    private sealed record LiveActivityRecord(
+        string Time,
+        string Initials,
+        string Agent,
+        string DescriptionKey,
+        object[] DescriptionArguments,
+        string Reference,
+        string AccentBrushKey);
+
+    private sealed record LocalizedStatusArgument(string StatusCode);
 }

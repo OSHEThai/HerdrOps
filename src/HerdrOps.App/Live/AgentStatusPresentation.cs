@@ -1,3 +1,4 @@
+using HerdrOps.App.Localization;
 using HerdrOps.Contracts.StateIpc;
 
 namespace HerdrOps.App.Live;
@@ -8,6 +9,21 @@ public static class AgentStatusPresentation
 
     public static string EffectiveStatus(string status, bool isLive) =>
         isLive ? status : Offline;
+
+    public static string DisplayStatus(string status)
+    {
+        var text = UiLanguageService.Shared;
+        return status switch
+        {
+            "Working" => text["StatusWorking"],
+            "Idle" => text["StatusIdle"],
+            "Blocked" => text["StatusBlocked"],
+            "Review" => text["StatusReview"],
+            "Done" => text["StatusDone"],
+            Offline => text["StatusOffline"],
+            _ => text["StatusUnknown"],
+        };
+    }
 
     public static string BrushKey(string status) => status switch
     {
@@ -32,7 +48,7 @@ public static class AgentStatusPresentation
     public static string RuntimeName(HerdrAgentStateContract agent)
     {
         ArgumentNullException.ThrowIfNull(agent);
-        return FirstNonEmpty(agent.DisplayAgent, agent.Agent, "Unknown runtime");
+        return FirstNonEmpty(agent.DisplayAgent, agent.Agent, UiLanguageService.Shared["UnknownRuntime"]);
     }
 
     public static string Initials(HerdrAgentStateContract agent)
@@ -56,11 +72,12 @@ public static class AgentStatusPresentation
 
     public static string OptionalBoolean(bool? value) => value switch
     {
-        true => "Yes",
-        false => "No",
-        null => "Unknown",
+        true => UiLanguageService.Shared["ValueYes"],
+        false => UiLanguageService.Shared["ValueNo"],
+        null => UiLanguageService.Shared["ValueUnknown"],
     };
 
     public static string FirstNonEmpty(params string?[] values) =>
-        values.FirstOrDefault(value => !string.IsNullOrWhiteSpace(value)) ?? "Unknown";
+        values.FirstOrDefault(value => !string.IsNullOrWhiteSpace(value)) ??
+        UiLanguageService.Shared["ValueUnknown"];
 }

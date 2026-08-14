@@ -1,4 +1,5 @@
 using HerdrOps.App.Live;
+using HerdrOps.App.Localization;
 using HerdrOps.App.StateIpc;
 using HerdrOps.Contracts.StateIpc;
 using HerdrOps.Infrastructure.StateIpc;
@@ -6,8 +7,15 @@ using HerdrOps.Infrastructure.StateIpc;
 namespace HerdrOps.IntegrationTests;
 
 [TestClass]
+[DoNotParallelize]
 public sealed class LiveDashboardStateTests
 {
+    [TestInitialize]
+    public void UseThaiDefault() => UiLanguageService.Shared.SetLanguage(UiLanguage.Thai);
+
+    [TestCleanup]
+    public void RestoreThaiDefault() => UiLanguageService.Shared.SetLanguage(UiLanguage.Thai);
+
     [TestMethod]
     public void CoreSnapshotDrivesAllThreePagesWithoutInventingUnsupportedData()
     {
@@ -18,9 +26,8 @@ public sealed class LiveDashboardStateTests
         dashboard.ApplyUpdate(update, update.Envelope.SentUtc.AddMilliseconds(12));
 
         Assert.IsTrue(dashboard.IsLive);
-        Assert.AreEqual("CORE SNAPSHOT", dashboard.SourceLabel);
-        StringAssert.Contains(dashboard.ConnectionLabel, "Herdr runtime freshness unknown");
-        Assert.IsFalse(dashboard.ConnectionLabel.Contains("state current", StringComparison.Ordinal));
+        Assert.AreEqual(UiLanguageService.Shared["CoreSnapshotSource"], dashboard.SourceLabel);
+        Assert.AreEqual(UiLanguageService.Shared["CoreConnectedFreshnessUnknown"], dashboard.ConnectionLabel);
         Assert.AreEqual("HerdrOps", dashboard.ProjectLabel);
         Assert.AreEqual("1", dashboard.Overview.SummaryCards[0].Value);
         Assert.AreEqual("1", dashboard.Overview.SummaryCards.Single(card => card.Id == "working").Value);
@@ -30,8 +37,9 @@ public sealed class LiveDashboardStateTests
         Assert.IsTrue(dashboard.Organization.Nodes.Any(node => node.AgentTerminalId == "terminal-1"));
         Assert.AreEqual("terminal-1", dashboard.Organization.SelectedAgent.Terminal);
         Assert.AreEqual("terminal-1", dashboard.AgentDetail.Terminal);
-        Assert.AreEqual("Latest accepted", dashboard.AgentDetail.RecentFacts[0].Value);
-        Assert.IsTrue(dashboard.AgentDetail.UnsupportedSections.All(section => section.Value == "Unknown"));
+        Assert.AreEqual(UiLanguageService.Shared["AgentFactLatestAccepted"], dashboard.AgentDetail.RecentFacts[0].Value);
+        Assert.IsTrue(dashboard.AgentDetail.UnsupportedSections.All(
+            section => section.Value == UiLanguageService.Shared["ValueUnknown"]));
     }
 
     [TestMethod]
@@ -47,13 +55,16 @@ public sealed class LiveDashboardStateTests
             update.Envelope.SentUtc.AddSeconds(1));
 
         Assert.IsFalse(dashboard.IsLive);
-        Assert.AreEqual("Offline", dashboard.AgentDetail.Status);
-        Assert.AreEqual("Offline", dashboard.Organization.SelectedAgent.Status);
+        Assert.AreEqual(UiLanguageService.Shared["StatusOffline"], dashboard.AgentDetail.Status);
+        Assert.AreEqual(UiLanguageService.Shared["StatusOffline"], dashboard.Organization.SelectedAgent.Status);
         var working = dashboard.Overview.SummaryCards.Single(card => card.Id == "working");
         Assert.AreEqual("—", working.Value);
-        Assert.AreEqual("Offline", working.Metric);
-        StringAssert.Contains(working.Trend, "Last known count 1", StringComparison.Ordinal);
-        Assert.IsTrue(dashboard.Overview.Alerts.Any(alert => alert.State == "Offline"));
+        Assert.AreEqual(UiLanguageService.Shared["StatusOffline"], working.Metric);
+        Assert.AreEqual(
+            UiLanguageService.Shared.Format("LiveOverviewLastKnownCountFormat", 1),
+            working.Trend);
+        Assert.IsTrue(dashboard.Overview.Alerts.Any(
+            alert => alert.State == UiLanguageService.Shared["StatusOffline"]));
     }
 
     [TestMethod]
@@ -69,7 +80,7 @@ public sealed class LiveDashboardStateTests
 
         Assert.AreEqual("terminal-2", dashboard.SelectedTerminalId);
         Assert.AreEqual("terminal-2", dashboard.AgentDetail.Terminal);
-        Assert.AreEqual("Unknown", dashboard.AgentDetail.Status);
+        Assert.AreEqual(UiLanguageService.Shared["StatusUnknown"], dashboard.AgentDetail.Status);
         Assert.AreEqual("—", dashboard.Overview.TopAgents.Single(agent => agent.Name == "Worker 02").ScoreLabel);
     }
 

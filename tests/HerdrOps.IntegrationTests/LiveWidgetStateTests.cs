@@ -1,4 +1,5 @@
 using HerdrOps.App.Live;
+using HerdrOps.App.Localization;
 using HerdrOps.App.StateIpc;
 using HerdrOps.App.Widgets;
 using HerdrOps.Contracts.StateIpc;
@@ -7,8 +8,15 @@ using HerdrOps.Infrastructure.StateIpc;
 namespace HerdrOps.IntegrationTests;
 
 [TestClass]
+[DoNotParallelize]
 public sealed class LiveWidgetStateTests
 {
+    [TestInitialize]
+    public void UseThaiDefault() => UiLanguageService.Shared.SetLanguage(UiLanguage.Thai);
+
+    [TestCleanup]
+    public void RestoreThaiDefault() => UiLanguageService.Shared.SetLanguage(UiLanguage.Thai);
+
     [TestMethod]
     public void DashboardAndWidgetsUseTheSameSnapshotSelectionAndLatency()
     {
@@ -23,8 +31,8 @@ public sealed class LiveWidgetStateTests
         Assert.AreEqual("1", dashboard.Widgets.WorkingCountLabel);
         Assert.AreEqual("1", dashboard.Widgets.BlockedCountLabel);
         Assert.AreEqual("1", dashboard.Widgets.DoneCountLabel);
-        Assert.AreEqual("CORE STATE", dashboard.Widgets.SourceLabel);
-        Assert.AreEqual("Unknown", dashboard.Widgets.DailyScoreLabel);
+        Assert.AreEqual(UiLanguageService.Shared["CoreStateSource"], dashboard.Widgets.SourceLabel);
+        Assert.AreEqual(UiLanguageService.Shared["ValueUnknown"], dashboard.Widgets.DailyScoreLabel);
         Assert.AreEqual("terminal-1", dashboard.Widgets.SelectedAgent.TerminalId);
         Assert.AreEqual(1, dashboard.Widgets.UpdateSampleCount);
         Assert.AreEqual(18d, dashboard.Widgets.LastUpdateLatencyMilliseconds);
@@ -50,13 +58,16 @@ public sealed class LiveWidgetStateTests
             update.Envelope.SentUtc.AddSeconds(1));
 
         Assert.IsFalse(dashboard.Widgets.IsLive);
-        Assert.AreEqual("LAST KNOWN", dashboard.Widgets.SourceLabel);
+        Assert.AreEqual(UiLanguageService.Shared["LastKnownSource"], dashboard.Widgets.SourceLabel);
         Assert.AreEqual("—", dashboard.Widgets.WorkingCountLabel);
         Assert.AreEqual("—", dashboard.Widgets.BlockedCountLabel);
         Assert.AreEqual("—", dashboard.Widgets.DoneCountLabel);
-        Assert.IsTrue(dashboard.Widgets.Agents.All(agent => agent.Status == "Offline"));
-        Assert.AreEqual("Offline", dashboard.Widgets.Notices[0].State);
-        Assert.IsFalse(dashboard.Widgets.Notices.Any(notice => notice.State is "Blocked" or "Done"));
+        Assert.IsTrue(dashboard.Widgets.Agents.All(
+            agent => agent.Status == UiLanguageService.Shared["StatusOffline"]));
+        Assert.AreEqual(UiLanguageService.Shared["StatusOffline"], dashboard.Widgets.Notices[0].State);
+        Assert.IsFalse(dashboard.Widgets.Notices.Any(notice =>
+            notice.State == UiLanguageService.Shared["StatusBlocked"] ||
+            notice.State == UiLanguageService.Shared["StatusDone"]));
     }
 
     [TestMethod]
@@ -69,13 +80,13 @@ public sealed class LiveWidgetStateTests
         dashboard.ApplyUpdate(update, update.Envelope.SentUtc.AddMilliseconds(7));
 
         Assert.IsTrue(dashboard.Widgets.IsLive, "Core connectivity remains independently visible.");
-        Assert.AreEqual("NO HERDR STATE", dashboard.Widgets.SourceLabel);
-        Assert.AreEqual("EMPTY", dashboard.Widgets.CompactSourceLabel);
+        Assert.AreEqual(UiLanguageService.Shared["NoHerdrStateSource"], dashboard.Widgets.SourceLabel);
+        Assert.AreEqual(UiLanguageService.Shared["EmptyCompact"], dashboard.Widgets.CompactSourceLabel);
         Assert.AreEqual("—", dashboard.Widgets.WorkingCountLabel);
         Assert.AreEqual("—", dashboard.Widgets.BlockedCountLabel);
         Assert.AreEqual("—", dashboard.Widgets.DoneCountLabel);
         Assert.IsEmpty(dashboard.Widgets.Agents);
-        Assert.AreEqual("Unknown", dashboard.Widgets.Notices.Single().State);
+        Assert.AreEqual(UiLanguageService.Shared["StatusUnknown"], dashboard.Widgets.Notices.Single().State);
     }
 
     [TestMethod]
@@ -87,12 +98,14 @@ public sealed class LiveWidgetStateTests
 
         dashboard.ApplyUpdate(update, update.Envelope.SentUtc.AddMilliseconds(11));
 
-        var blocked = dashboard.Widgets.PriorityNotices.Single(notice => notice.State == "Blocked");
-        var done = dashboard.Widgets.PriorityNotices.Single(notice => notice.State == "Done");
+        var blocked = dashboard.Widgets.PriorityNotices.Single(
+            notice => notice.State == UiLanguageService.Shared["StatusBlocked"]);
+        var done = dashboard.Widgets.PriorityNotices.Single(
+            notice => notice.State == UiLanguageService.Shared["StatusDone"]);
         Assert.AreNotEqual(blocked.IconGlyph, done.IconGlyph);
         Assert.AreNotEqual(blocked.StatusBrushKey, done.StatusBrushKey);
-        StringAssert.Contains(blocked.AgentName, "Blocked");
-        StringAssert.Contains(done.AgentName, "Done");
+        StringAssert.Contains(blocked.AgentName, UiLanguageService.Shared["StatusBlocked"]);
+        StringAssert.Contains(done.AgentName, UiLanguageService.Shared["StatusDone"]);
     }
 
     [TestMethod]

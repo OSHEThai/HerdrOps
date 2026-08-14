@@ -1,11 +1,11 @@
 using HerdrOps.App.Live;
+using HerdrOps.App.Localization;
 using HerdrOps.Contracts.StateIpc;
 
 namespace HerdrOps.App.Organization;
 
 public sealed record OrganizationSummaryCard(
-    string ThaiTitle,
-    string EnglishTitle,
+    string Title,
     string Value,
     string Detail,
     string IconGlyph,
@@ -50,14 +50,14 @@ public sealed record OrganizationAttentionItem(
 public sealed class LiveOrganizationState : ObservableState
 {
     private bool _suppressSelection;
-    private string _sourceLabel = "WAITING FOR CORE";
-    private string _connectionLabel = "Core not connected";
+    private string _sourceLabel = UiLanguageService.Shared["CoreWaitingSource"];
+    private string _connectionLabel = UiLanguageService.Shared["CoreNotConnected"];
     private IReadOnlyList<OrganizationSummaryCard> _summaryCards = [];
     private IReadOnlyList<OrganizationNode> _nodes = [];
     private OrganizationNode? _selectedNode;
     private OrganizationAgentDetail _selectedAgent = EmptyDetail(isLive: false);
     private IReadOnlyList<OrganizationAttentionItem> _attentionItems = [];
-    private string _hierarchyLabel = "No Core snapshot";
+    private string _hierarchyLabel = UiLanguageService.Shared["OrganizationNoTopology"];
 
     public event EventHandler<string>? AgentSelectionRequested;
 
@@ -123,9 +123,13 @@ public sealed class LiveOrganizationState : ObservableState
         ConnectionLabel = connectionLabel;
         SummaryCards = CreateSummaryCards(state, isLive);
         Nodes = CreateNodes(state, isLive);
+        var text = UiLanguageService.Shared;
         HierarchyLabel = state.LastIngestSequence == 0
-            ? "Core has no admitted Herdr topology"
-            : $"Herdr topology · epoch {state.ConnectionEpoch} · sequence {state.LastIngestSequence}";
+            ? text["OrganizationNoTopology"]
+            : text.Format(
+                "OrganizationTopologyFormat",
+                state.ConnectionEpoch,
+                state.LastIngestSequence);
         AttentionItems = CreateAttentionItems(state, isLive);
         SelectWithoutRequest(state, isLive, selectedTerminalId);
     }
@@ -168,6 +172,7 @@ public sealed class LiveOrganizationState : ObservableState
         HerdrSessionStateContract state,
         bool isLive)
     {
+        var text = UiLanguageService.Shared;
         var assignedTerminalIds = state.Agents
             .Select(agent => agent.TerminalId)
             .ToHashSet(StringComparer.Ordinal);
@@ -175,11 +180,11 @@ public sealed class LiveOrganizationState : ObservableState
         var unknown = state.Agents.Count(agent => agent.AgentStatus == "Unknown");
         return
         [
-            new("พื้นที่ทำงาน", "Workspaces", state.Workspaces.Count.ToString(), "Observed from Herdr", "\uE8B7", Overview.OverviewBrushKeys.Primary),
-            new("แท็บที่พบ", "Tabs", state.Tabs.Count.ToString(), "Current topology", "\uE7C5", Overview.OverviewBrushKeys.Working),
-            new("Agent ที่พบ", "Observed Agents", state.Agents.Count.ToString(), isLive ? "Latest accepted Core state" : "Last known only", "\uE716", isLive ? Overview.OverviewBrushKeys.Working : Overview.OverviewBrushKeys.Offline),
-            new("Pane ที่ไม่มี Agent", "Unassigned Panes", unassignedPanes.ToString(), "No role inferred", "\uE77B", unassignedPanes == 0 ? Overview.OverviewBrushKeys.Primary : Overview.OverviewBrushKeys.Idle),
-            new("สถานะไม่ทราบ", "Unknown Status", unknown.ToString(), "Never treated as success", "\uE814", unknown == 0 ? Overview.OverviewBrushKeys.Primary : Overview.OverviewBrushKeys.Offline),
+            new(text["OrganizationWorkspaces"], state.Workspaces.Count.ToString(), text["OrganizationObservedFromHerdr"], "\uE8B7", Overview.OverviewBrushKeys.Primary),
+            new(text["OrganizationTabs"], state.Tabs.Count.ToString(), text["OrganizationCurrentTopology"], "\uE7C5", Overview.OverviewBrushKeys.Working),
+            new(text["OrganizationObservedAgents"], state.Agents.Count.ToString(), isLive ? text["OrganizationLatestAcceptedCore"] : text["OrganizationLastKnownOnly"], "\uE716", isLive ? Overview.OverviewBrushKeys.Working : Overview.OverviewBrushKeys.Offline),
+            new(text["OrganizationUnassignedPanes"], unassignedPanes.ToString(), text["OrganizationNoRoleInferred"], "\uE77B", unassignedPanes == 0 ? Overview.OverviewBrushKeys.Primary : Overview.OverviewBrushKeys.Idle),
+            new(text["OrganizationUnknownStatus"], unknown.ToString(), text["OrganizationUnknownNeverHealthy"], "\uE814", unknown == 0 ? Overview.OverviewBrushKeys.Primary : Overview.OverviewBrushKeys.Offline),
         ];
     }
 
@@ -187,17 +192,23 @@ public sealed class LiveOrganizationState : ObservableState
         HerdrSessionStateContract state,
         bool isLive)
     {
+        var text = UiLanguageService.Shared;
         var nodes = new List<OrganizationNode>();
         foreach (var workspace in state.Workspaces.OrderBy(item => item.Number))
         {
             nodes.Add(new OrganizationNode(
                 workspace.WorkspaceId,
                 0,
-                "Workspace",
+                text["OrganizationWorkspaceType"],
                 "WS",
                 AgentStatusPresentation.FirstNonEmpty(workspace.Label, workspace.WorkspaceId),
-                $"Workspace {workspace.Number} · {workspace.TabCount} tabs · {workspace.PaneCount} panes",
-                AgentStatusPresentation.EffectiveStatus(workspace.AgentStatus, isLive),
+                text.Format(
+                    "OrganizationWorkspaceSubtitleFormat",
+                    workspace.Number,
+                    workspace.TabCount,
+                    workspace.PaneCount),
+                AgentStatusPresentation.DisplayStatus(
+                    AgentStatusPresentation.EffectiveStatus(workspace.AgentStatus, isLive)),
                 AgentStatusPresentation.BrushKey(
                     AgentStatusPresentation.EffectiveStatus(workspace.AgentStatus, isLive)),
                 null));
@@ -209,11 +220,12 @@ public sealed class LiveOrganizationState : ObservableState
                 nodes.Add(new OrganizationNode(
                     tab.TabId,
                     1,
-                    "Tab",
+                    text["OrganizationTabType"],
                     "TB",
                     AgentStatusPresentation.FirstNonEmpty(tab.Label, tab.TabId),
-                    $"Tab {tab.Number} · {tab.PaneCount} panes",
-                    AgentStatusPresentation.EffectiveStatus(tab.AgentStatus, isLive),
+                    text.Format("OrganizationTabSubtitleFormat", tab.Number, tab.PaneCount),
+                    AgentStatusPresentation.DisplayStatus(
+                        AgentStatusPresentation.EffectiveStatus(tab.AgentStatus, isLive)),
                     AgentStatusPresentation.BrushKey(
                         AgentStatusPresentation.EffectiveStatus(tab.AgentStatus, isLive)),
                     null));
@@ -228,11 +240,11 @@ public sealed class LiveOrganizationState : ObservableState
                     nodes.Add(new OrganizationNode(
                         agent.TerminalId,
                         2,
-                        "Agent",
+                        text["OrganizationAgentType"],
                         AgentStatusPresentation.Initials(agent),
                         AgentStatusPresentation.DisplayName(agent),
                         $"{AgentStatusPresentation.RuntimeName(agent)} · {agent.PaneId}",
-                        effectiveStatus,
+                        AgentStatusPresentation.DisplayStatus(effectiveStatus),
                         AgentStatusPresentation.BrushKey(effectiveStatus),
                         agent.TerminalId));
                 }
@@ -245,11 +257,12 @@ public sealed class LiveOrganizationState : ObservableState
                     nodes.Add(new OrganizationNode(
                         pane.PaneId,
                         2,
-                        "Unassigned pane",
+                        text["OrganizationUnassignedPaneType"],
                         "?",
-                        "Unknown Agent",
-                        $"Pane {pane.PaneId} · terminal {pane.TerminalId}",
-                        isLive ? "Unknown" : AgentStatusPresentation.Offline,
+                        text["OrganizationUnknownAgent"],
+                        text.Format("OrganizationPaneTerminalFormat", pane.PaneId, pane.TerminalId),
+                        AgentStatusPresentation.DisplayStatus(
+                            isLive ? "Unknown" : AgentStatusPresentation.Offline),
                         Overview.OverviewBrushKeys.Offline,
                         null));
                 }
@@ -271,7 +284,7 @@ public sealed class LiveOrganizationState : ObservableState
             AgentStatusPresentation.Initials(agent),
             AgentStatusPresentation.DisplayName(agent),
             AgentStatusPresentation.RuntimeName(agent),
-            effectiveStatus,
+            AgentStatusPresentation.DisplayStatus(effectiveStatus),
             AgentStatusPresentation.BrushKey(effectiveStatus),
             AgentStatusPresentation.FirstNonEmpty(workspace?.Label, agent.WorkspaceId),
             AgentStatusPresentation.FirstNonEmpty(tab?.Label, agent.TabId),
@@ -280,36 +293,41 @@ public sealed class LiveOrganizationState : ObservableState
             AgentStatusPresentation.FirstNonEmpty(
                 agent.ForegroundCurrentDirectory,
                 agent.CurrentDirectory,
-                "Unknown"),
+                UiLanguageService.Shared["ValueUnknown"]),
             agent.Revision.ToString(System.Globalization.CultureInfo.InvariantCulture),
-            isLive ? "Latest accepted Core state · Herdr freshness unknown" : "Last known — Core offline");
+            isLive
+                ? UiLanguageService.Shared["OrganizationDetailSourceLive"]
+                : UiLanguageService.Shared["OrganizationDetailSourceOffline"]);
     }
 
     private static OrganizationAgentDetail EmptyDetail(bool isLive) => new(
         "?",
-        "No Agent selected",
-        "Unknown runtime",
-        isLive ? "Unknown" : AgentStatusPresentation.Offline,
+        UiLanguageService.Shared["NoAgentSelected"],
+        UiLanguageService.Shared["UnknownRuntime"],
+        AgentStatusPresentation.DisplayStatus(isLive ? "Unknown" : AgentStatusPresentation.Offline),
         Overview.OverviewBrushKeys.Offline,
-        "Unknown",
-        "Unknown",
-        "Unknown",
-        "Unknown",
-        "Unknown",
+        UiLanguageService.Shared["ValueUnknown"],
+        UiLanguageService.Shared["ValueUnknown"],
+        UiLanguageService.Shared["ValueUnknown"],
+        UiLanguageService.Shared["ValueUnknown"],
+        UiLanguageService.Shared["ValueUnknown"],
         "—",
-        isLive ? "Select an observed Agent" : "Core is offline");
+        isLive
+            ? UiLanguageService.Shared["OrganizationSelectAgent"]
+            : UiLanguageService.Shared["LiveWidgetCoreOfflineNotice"]);
 
     private static IReadOnlyList<OrganizationAttentionItem> CreateAttentionItems(
         HerdrSessionStateContract state,
         bool isLive)
     {
+        var text = UiLanguageService.Shared;
         var result = new List<OrganizationAttentionItem>();
         if (!isLive)
         {
             result.Add(new OrganizationAttentionItem(
                 "\uE711",
-                "Core connection offline",
-                "Hierarchy is last-known and no Agent status is current",
+                text["OrganizationAttentionCoreOfflineTitle"],
+                text["OrganizationAttentionCoreOfflineDetail"],
                 Overview.OverviewBrushKeys.Offline));
         }
 
@@ -318,8 +336,8 @@ public sealed class LiveOrganizationState : ObservableState
         {
             result.Add(new OrganizationAttentionItem(
                 "\uEA39",
-                $"{blocked} blocked Agents",
-                "Reported directly by the accepted Core state contract",
+                text.Format("OrganizationAttentionBlockedFormat", blocked),
+                text["OrganizationAttentionBlockedDetail"],
                 Overview.OverviewBrushKeys.Blocked));
         }
 
@@ -328,8 +346,10 @@ public sealed class LiveOrganizationState : ObservableState
         {
             result.Add(new OrganizationAttentionItem(
                 "\uE814",
-                state.LastIngestSequence == 0 ? "No Herdr topology snapshot" : $"{unknown} unknown Agent states",
-                "Unknown values remain unknown and are not counted as healthy",
+                state.LastIngestSequence == 0
+                    ? text["OrganizationAttentionNoSnapshot"]
+                    : text.Format("OrganizationAttentionUnknownFormat", unknown),
+                text["OrganizationAttentionUnknownDetail"],
                 Overview.OverviewBrushKeys.Offline));
         }
 
@@ -339,8 +359,8 @@ public sealed class LiveOrganizationState : ObservableState
         {
             result.Add(new OrganizationAttentionItem(
                 "\uE77B",
-                $"{unassigned} panes without Agent metadata",
-                "HerdrOps does not invent a role or identity",
+                text.Format("OrganizationAttentionUnassignedFormat", unassigned),
+                text["OrganizationAttentionUnassignedDetail"],
                 Overview.OverviewBrushKeys.Idle));
         }
 

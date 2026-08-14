@@ -41,7 +41,10 @@ public partial class WidgetGalleryView : UserControl, INotifyPropertyChanged
             preview.SetState(state);
         }
 
-        UiLanguageService.Shared.LanguageChanged += OnLanguageChanged;
+        WeakEventManager<UiLanguageService, EventArgs>.AddHandler(
+            UiLanguageService.Shared,
+            nameof(UiLanguageService.LanguageChanged),
+            OnLanguageChanged);
         Unloaded += OnUnloaded;
     }
 
@@ -126,6 +129,21 @@ public partial class WidgetGalleryView : UserControl, INotifyPropertyChanged
 
     private void OnLanguageChanged(object? sender, EventArgs e)
     {
+        if (!Dispatcher.CheckAccess())
+        {
+            if (!Dispatcher.HasShutdownStarted && !Dispatcher.HasShutdownFinished)
+            {
+                _ = Dispatcher.InvokeAsync(ApplyLanguageChange);
+            }
+
+            return;
+        }
+
+        ApplyLanguageChange();
+    }
+
+    private void ApplyLanguageChange()
+    {
         if (SharedState.EvidenceClass == HerdrOps.Contracts.EvidenceClass.Synthetic)
         {
             SharedState = SyntheticWidgetState.Create();
@@ -145,7 +163,10 @@ public partial class WidgetGalleryView : UserControl, INotifyPropertyChanged
 
     private void OnUnloaded(object sender, RoutedEventArgs e)
     {
-        UiLanguageService.Shared.LanguageChanged -= OnLanguageChanged;
+        WeakEventManager<UiLanguageService, EventArgs>.RemoveHandler(
+            UiLanguageService.Shared,
+            nameof(UiLanguageService.LanguageChanged),
+            OnLanguageChanged);
         Unloaded -= OnUnloaded;
     }
 
