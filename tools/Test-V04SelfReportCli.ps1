@@ -260,15 +260,22 @@ if ($invalidExitCode -ne 65 -or (Get-Item -LiteralPath $invalidOutputPath).Lengt
     throw "The invalid-schema CLI example did not fail locally as required: exit=$invalidExitCode"
 }
 
-$acceptedResult = Get-Content -LiteralPath $acceptedOutputPath -Raw | ConvertFrom-Json
+$acceptedResultJson = Get-Content -LiteralPath $acceptedOutputPath -Raw
+$acceptedResult = $acceptedResultJson | ConvertFrom-Json
 $unknownResult = Get-Content -LiteralPath $unknownOutputPath -Raw | ConvertFrom-Json
 $invalidResult = Get-Content -LiteralPath $invalidErrorPath -Raw | ConvertFrom-Json
 $trace = Get-Content -LiteralPath $tracePath -Raw | ConvertFrom-Json
+$acceptedResultDocument = [Text.Json.JsonDocument]::Parse($acceptedResultJson)
+$acceptedUtcText = $acceptedResultDocument.RootElement.GetProperty('acceptedUtc').GetString()
+$acceptedUtc = [DateTimeOffset]::Parse(
+    $acceptedUtcText,
+    [Globalization.CultureInfo]::InvariantCulture,
+    [Globalization.DateTimeStyles]::RoundtripKind)
 if (-not $acceptedResult.accepted -or
     $acceptedResult.acceptedSource -ne 'HerdrOps.Core' -or
     [long]$acceptedResult.sequence -le 0 -or
     [Guid]$acceptedResult.correlationId -eq [Guid]::Empty -or
-    ([DateTimeOffset]$acceptedResult.acceptedUtc).Offset -ne [TimeSpan]::Zero) {
+    $acceptedUtc.Offset -ne [TimeSpan]::Zero) {
     throw 'The built CLI accepted response is missing Core source, sequence, correlation, or UTC identity.'
 }
 if ($unknownResult.accepted -or $unknownResult.code -ne 'unknown-task') {
@@ -335,7 +342,7 @@ $gateReport = @(
     "AcceptedSource: $($acceptedResult.acceptedSource)",
     "AcceptedSequence: $($acceptedResult.sequence)",
     "AcceptedCorrelationId: $($acceptedResult.correlationId)",
-    "AcceptedUtc: $($acceptedResult.acceptedUtc)",
+    "AcceptedUtc: $acceptedUtcText",
     'CliProjectReferences: HerdrOps.Contracts only',
     'CliSQLiteAccess: ABSENT',
     'NativeAot: DEFERRED PENDING COMPATIBILITY AND RESOURCE MEASUREMENTS',
