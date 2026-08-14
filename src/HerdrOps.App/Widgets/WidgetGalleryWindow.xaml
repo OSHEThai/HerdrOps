@@ -11,5 +11,5 @@
         WindowStartupLocation="CenterOwner"
         UseLayoutRounding="True"
         SnapsToDevicePixels="True">
-    <widgets:WidgetGalleryView />
+    <widgets:WidgetGalleryView x:Name="GalleryView" />
 </Window>

@@ -40,8 +40,6 @@ public partial class WidgetGalleryView : UserControl
 
     public SyntheticWidgetState SharedState => _state;
 
-    public bool IsAdaptiveLayout => AdaptiveGallery.Visibility == Visibility.Visible;
-
     public void OpenVariant(WidgetVariant variant) => _launcher.Open(variant);
 
     private IEnumerable<WidgetSurface> GetPreviews()

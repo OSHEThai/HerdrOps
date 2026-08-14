@@ -163,19 +163,43 @@ public sealed class WidgetAccessibilityTests
 
             var intermediateGallery = new WidgetGalleryView(state, new RecordingLauncher());
             Layout(intermediateGallery, 1500, 920);
-            Assert.IsTrue(
-                intermediateGallery.IsAdaptiveLayout,
+            var adaptiveLayer = Assert.IsInstanceOfType<FrameworkElement>(
+                intermediateGallery.FindName("AdaptiveGallery"));
+            Assert.AreEqual(
+                Visibility.Visible,
+                adaptiveLayer.Visibility,
                 "Widths below the 1536-pixel fixed board must use the adaptive layout.");
-            var intermediateActions = EnumerateDescendants(intermediateGallery)
-                .OfType<Button>()
-                .Where(IsEffectivelyVisible)
-                .Where(button =>
-                    string.Equals(button.Tag?.ToString(), "Dashboard", StringComparison.Ordinal) ||
-                    Enum.TryParse<WidgetVariant>(button.Tag?.ToString(), out _))
-                .ToArray();
+            var intermediateActions = GetVisibleLaunchActions(intermediateGallery);
             Assert.HasCount(8, intermediateActions);
+            Assert.IsTrue(
+                intermediateActions.All(button => button.ActualWidth > 0 && button.ActualHeight >= 40),
+                "All adaptive Gallery launch actions must retain visible 40-pixel targets.");
+
+            var nativeGallery = new WidgetGalleryView(state, new RecordingLauncher());
+            Layout(nativeGallery, 1536, 920);
+            var fullLayer = Assert.IsInstanceOfType<FrameworkElement>(
+                nativeGallery.FindName("FullGallery"));
+            Assert.AreEqual(
+                Visibility.Visible,
+                fullLayer.Visibility,
+                "The 1536-pixel native board must retain the full Gallery layout.");
+            var nativeActions = GetVisibleLaunchActions(nativeGallery);
+            Assert.HasCount(8, nativeActions);
+            Assert.IsTrue(
+                nativeActions.All(button => button.ActualWidth > 0 && button.ActualHeight >= 40),
+                "All native Gallery launch actions must retain visible 40-pixel targets.");
         });
     }
+
+    private static Button[] GetVisibleLaunchActions(DependencyObject root) =>
+        EnumerateDescendants(root)
+            .OfType<Button>()
+            .Where(button => button.ActualWidth > 0 && button.ActualHeight >= 40)
+            .Where(IsEffectivelyVisible)
+            .Where(button =>
+                string.Equals(button.Tag?.ToString(), "Dashboard", StringComparison.Ordinal) ||
+                Enum.TryParse<WidgetVariant>(button.Tag?.ToString(), out _))
+            .ToArray();
 
     private static IEnumerable<DependencyObject> EnumerateDescendants(DependencyObject parent)
     {
