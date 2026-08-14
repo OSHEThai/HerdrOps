@@ -40,6 +40,7 @@ public partial class ShellView : UserControl
         Navigation = new ShellNavigationController();
         InitializeComponent();
         DataContext = Navigation;
+        RealtimeActivityPage.DataContext = LiveDashboard.RealtimeActivity;
         if (!syntheticPreview)
         {
             OverviewPage.DataContext = LiveDashboard.Overview;
@@ -146,12 +147,19 @@ public partial class ShellView : UserControl
             Navigation.SelectedDestination.Id,
             "agent-detail",
             StringComparison.Ordinal);
+        var isRealtimeActivity = string.Equals(
+            Navigation.SelectedDestination.Id,
+            "realtime-activity",
+            StringComparison.Ordinal);
         OverviewPage.Visibility = isOverview ? Visibility.Visible : Visibility.Collapsed;
         LiveOrganizationPage.Visibility = isLiveOrganization
             ? Visibility.Visible
             : Visibility.Collapsed;
         AgentDetailPage.Visibility = isAgentDetail ? Visibility.Visible : Visibility.Collapsed;
-        PlaceholderPage.Visibility = isOverview || isLiveOrganization || isAgentDetail
+        RealtimeActivityPage.Visibility = isRealtimeActivity
+            ? Visibility.Visible
+            : Visibility.Collapsed;
+        PlaceholderPage.Visibility = isOverview || isLiveOrganization || isAgentDetail || isRealtimeActivity
             ? Visibility.Collapsed
             : Visibility.Visible;
     }
