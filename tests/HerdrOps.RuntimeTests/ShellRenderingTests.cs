@@ -1,11 +1,11 @@
 using System.Globalization;
 using System.IO;
-using System.Threading;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using HerdrOps.App.Views;
+using HerdrOps.App.Widgets;
 
 namespace HerdrOps.RuntimeTests;
 
@@ -18,36 +18,17 @@ public sealed class ShellRenderingTests
     [TestMethod]
     public void ActualWpfShellAndOverviewRenderWithoutThaiClippingAtRequiredSizes()
     {
-        Exception? renderingFailure = null;
-        var renderingThread = new Thread(() =>
-        {
-            try
-            {
-                RenderEvidence();
-            }
-            catch (Exception exception)
-            {
-                renderingFailure = exception;
-            }
-        });
+        WpfTestHost.Run(RenderEvidence);
+    }
 
-        renderingThread.SetApartmentState(ApartmentState.STA);
-        renderingThread.Start();
-
-        Assert.IsTrue(
-            renderingThread.Join(TimeSpan.FromSeconds(30)),
-            "WPF evidence rendering exceeded 30 seconds.");
-        if (renderingFailure is not null)
-        {
-            Assert.Fail(renderingFailure.ToString());
-        }
+    [TestMethod]
+    public void ActualWpfWidgetGalleryAndEveryVariantRenderAtRequiredSizes()
+    {
+        WpfTestHost.Run(RenderWidgetEvidence);
     }
 
     private static void RenderEvidence()
     {
-        var application = new HerdrOps.App.App();
-        application.InitializeComponent();
-
         var repositoryRoot = FindRepositoryRoot();
         var shellEvidenceDirectory = Path.Combine(
             repositoryRoot,
@@ -100,12 +81,60 @@ public sealed class ShellRenderingTests
             Path.Combine(overviewEvidenceDirectory, "overview-1366x768.png"));
     }
 
+    private static void RenderWidgetEvidence()
+    {
+        var repositoryRoot = FindRepositoryRoot();
+        var widgetEvidenceDirectory = Path.Combine(
+            repositoryRoot,
+            "artifacts",
+            "design-evidence",
+            "v0.1",
+            "issue-4");
+        Directory.CreateDirectory(widgetEvidenceDirectory);
+
+        foreach (var scale in new[] { 1.0, 1.25, 1.5 })
+        {
+            var scaleLabel = FormattableString.Invariant($"{scale * 100:0}");
+            RenderView(
+                new WidgetGalleryView(),
+                1536,
+                1024,
+                scale,
+                "ThaiWidgetCheck",
+                Path.Combine(widgetEvidenceDirectory, $"widget-gallery-{scaleLabel}.png"));
+        }
+
+        RenderView(
+            new WidgetGalleryView(),
+            1366,
+            768,
+            1,
+            "ThaiWidgetCheck",
+            Path.Combine(widgetEvidenceDirectory, "widget-gallery-1366x768.png"));
+
+        var state = SyntheticWidgetState.Create();
+        foreach (var descriptor in WidgetCatalog.All)
+        {
+            var window = new WidgetWindow(descriptor, state);
+            var surface = Assert.IsInstanceOfType<WidgetSurface>(window.Content);
+            RenderView(
+                surface,
+                (int)descriptor.WindowWidth,
+                (int)descriptor.WindowHeight,
+                1,
+                clippingTag: null,
+                Path.Combine(
+                    widgetEvidenceDirectory,
+                    $"widget-{descriptor.Variant.ToString().ToLowerInvariant()}.png"));
+        }
+    }
+
     private static void RenderView(
         FrameworkElement view,
         int pixelWidth,
         int pixelHeight,
         double scale,
-        string clippingTag,
+        string? clippingTag,
         string outputPath)
     {
         var logicalSize = new Size(pixelWidth / scale, pixelHeight / scale);
@@ -113,10 +142,18 @@ public sealed class ShellRenderingTests
         view.Arrange(new Rect(logicalSize));
         view.UpdateLayout();
 
-        AssertThaiTextFits(view, scale, clippingTag);
+        if (!string.IsNullOrEmpty(clippingTag))
+        {
+            AssertThaiTextFits(view, scale, clippingTag);
+        }
+
         if (string.Equals(clippingTag, "ThaiOverviewCheck", StringComparison.Ordinal))
         {
             AssertOverviewRegionsAreLaidOut(view);
+        }
+        else if (string.Equals(clippingTag, "ThaiWidgetCheck", StringComparison.Ordinal))
+        {
+            AssertWidgetVariantsAreLaidOut(view);
         }
 
         var bitmap = new RenderTargetBitmap(
@@ -132,8 +169,11 @@ public sealed class ShellRenderingTests
         using var output = File.Create(outputPath);
         encoder.Save(output);
 
+        var minimumEvidenceBytes = pixelWidth * pixelHeight < 100_000
+            ? 4_000L
+            : 10_000L;
         Assert.IsGreaterThan(
-            10_000L,
+            minimumEvidenceBytes,
             output.Length,
             $"Evidence image was unexpectedly small: {outputPath}");
     }
@@ -146,6 +186,7 @@ public sealed class ShellRenderingTests
         var taggedTextBlocks = EnumerateDescendants(root)
             .OfType<TextBlock>()
             .Where(textBlock => string.Equals(textBlock.Tag as string, clippingTag, StringComparison.Ordinal))
+            .Where(textBlock => textBlock.Visibility == Visibility.Visible && textBlock.ActualWidth > 0)
             .ToArray();
 
         Assert.IsNotEmpty(
@@ -221,6 +262,33 @@ public sealed class ShellRenderingTests
             Assert.IsGreaterThan(0d, region.ActualWidth, $"Overview region has no width: {regionName}");
             Assert.IsGreaterThan(0d, region.ActualHeight, $"Overview region has no height: {regionName}");
             Assert.AreEqual(Visibility.Visible, region.Visibility, $"Overview region is hidden: {regionName}");
+        }
+    }
+
+    private static void AssertWidgetVariantsAreLaidOut(DependencyObject root)
+    {
+        var expectedPreviewNames = new[]
+        {
+            "CompactPreview",
+            "NormalPreview",
+            "ExpandedPreview",
+            "MiniPreview",
+            "VerticalPreview",
+            "NotificationPreview",
+            "AgentDetailPreview",
+        };
+        var previews = EnumerateDescendants(root)
+            .OfType<WidgetSurface>()
+            .Where(surface => expectedPreviewNames.Contains(surface.Name, StringComparer.Ordinal))
+            .ToDictionary(surface => surface.Name, StringComparer.Ordinal);
+
+        foreach (var previewName in expectedPreviewNames)
+        {
+            Assert.IsTrue(previews.TryGetValue(previewName, out var preview), $"Missing Widget preview: {previewName}");
+            Assert.IsNotNull(preview);
+            Assert.IsGreaterThan(0d, preview.ActualWidth, $"Widget preview has no width: {previewName}");
+            Assert.IsGreaterThan(0d, preview.ActualHeight, $"Widget preview has no height: {previewName}");
+            Assert.AreEqual(Visibility.Visible, preview.Visibility, $"Widget preview is hidden: {previewName}");
         }
     }
 

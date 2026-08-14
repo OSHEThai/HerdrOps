@@ -1,6 +1,7 @@
 using System.Windows;
 using System.Windows.Controls;
 using HerdrOps.App.Overview;
+using HerdrOps.App.Widgets;
 
 namespace HerdrOps.App.Views;
 
@@ -10,6 +11,7 @@ namespace HerdrOps.App.Views;
 public partial class OverviewView : UserControl
 {
     private const double CompactHeightBreakpoint = 600;
+    private WidgetGalleryWindow? _galleryWindow;
 
     public OverviewView()
         : this(SyntheticOverviewState.Create())
@@ -35,5 +37,21 @@ public partial class OverviewView : UserControl
         WorkstreamHeaderRow.Height = new GridLength(compact ? 32 : 42);
         TopAgentsHeaderRow.Height = new GridLength(compact ? 36 : 48);
         AlertsHeaderRow.Height = new GridLength(compact ? 36 : 48);
+    }
+
+    private void OnOpenWidgetGalleryClick(object sender, RoutedEventArgs e)
+    {
+        if (_galleryWindow is null || !_galleryWindow.IsLoaded)
+        {
+            _galleryWindow = new WidgetGalleryWindow
+            {
+                Owner = Window.GetWindow(this),
+            };
+            _galleryWindow.Closed += (_, _) => _galleryWindow = null;
+            _galleryWindow.Show();
+            return;
+        }
+
+        _galleryWindow.Activate();
     }
 }
