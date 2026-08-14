@@ -190,6 +190,7 @@ $requiredFixtureTests = @(
     'ExecutableContentMutationBetweenReadsFailsClosed',
     'BalancedExtractionIgnoresBracesAndQuoteEscapesInsideStrings',
     'SchemaSizeBoundaryAcceptsExactLimitAndRejectsOverLimit',
+    'AtomicSchemaWriteFailurePreservesDestinationAndReturnsNonZero',
     'DuplicateSchemaDocumentsFailClosedBeforeParsing',
     'TruncatedSchemaFailsClosedBeforeJsonParsing',
     'BalancedMalformedJsonFailsClosed',

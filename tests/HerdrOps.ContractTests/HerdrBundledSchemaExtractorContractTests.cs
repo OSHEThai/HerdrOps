@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Encodings.Web;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using HerdrOps.Contracts;
@@ -44,6 +45,9 @@ public sealed class HerdrBundledSchemaExtractorContractTests
             " two-slashes-quote " + "\\\\" + "\"" +
             " ends-two-slashes " + "\\\\";
         var schema = SchemaDocument.Create(title: title);
+        var quoteBackslashRuns = BackslashRunsBeforeQuotes(schema);
+        Assert.IsTrue(quoteBackslashRuns.Any(count => count > 0 && count % 2 == 1));
+        Assert.IsTrue(quoteBackslashRuns.Any(count => count > 0 && count % 2 == 0));
         using var fixture = BundledSchemaFixture.Create(schema);
 
         var extraction = fixture.CreateExtractor().Extract(fixture.ExecutablePath);
@@ -328,10 +332,33 @@ public sealed class HerdrBundledSchemaExtractorContractTests
     private static string Sha256(byte[] bytes) =>
         Convert.ToHexString(SHA256.HashData(bytes));
 
+    private static IReadOnlyList<int> BackslashRunsBeforeQuotes(byte[] bytes)
+    {
+        var runs = new List<int>();
+        for (var index = 0; index < bytes.Length; index++)
+        {
+            if (bytes[index] != (byte)'\"')
+            {
+                continue;
+            }
+
+            var count = 0;
+            for (var cursor = index - 1; cursor >= 0 && bytes[cursor] == (byte)'\\'; cursor--)
+            {
+                count++;
+            }
+
+            runs.Add(count);
+        }
+
+        return runs;
+    }
+
     private static class SchemaDocument
     {
         private static readonly JsonSerializerOptions SerializerOptions = new()
         {
+            Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
             WriteIndented = true,
         };
 

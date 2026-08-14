@@ -5,7 +5,12 @@ using HerdrOps.Contracts;
 
 namespace HerdrOps.Infrastructure.Herdr;
 
-public sealed class HerdrBundledSchemaExtractor
+public interface IHerdrBundledSchemaExtractor
+{
+    HerdrBundledSchemaExtraction Extract(string executablePath);
+}
+
+public sealed class HerdrBundledSchemaExtractor : IHerdrBundledSchemaExtractor
 {
     private const long MaximumExecutableBytes = 128L * 1024 * 1024;
     private const int MaximumSchemaBytes = 4 * 1024 * 1024;

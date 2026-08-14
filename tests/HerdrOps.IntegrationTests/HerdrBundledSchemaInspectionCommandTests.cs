@@ -1,4 +1,6 @@
+using HerdrOps.Contracts;
 using HerdrOps.Core;
+using HerdrOps.Infrastructure.Herdr;
 
 namespace HerdrOps.IntegrationTests;
 
@@ -104,6 +106,58 @@ public sealed class HerdrBundledSchemaInspectionCommandTests
     }
 
     [TestMethod]
+    public void AtomicSchemaWriteFailurePreservesDestinationAndReturnsNonZero()
+    {
+        var root = Path.Combine(
+            Path.GetTempPath(),
+            "HerdrOps.BundledSchemaCommandTests",
+            Guid.NewGuid().ToString("N"));
+        var schemaPath = Path.Combine(root, "locked-schema.json");
+        var executablePath = Path.Combine(root, "fixture-herdr.exe");
+        var sentinel = new byte[] { 0x53, 0x41, 0x46, 0x45 };
+        var acceptedSchema = new byte[] { (byte)'{', (byte)'}' };
+        try
+        {
+            Directory.CreateDirectory(root);
+            File.WriteAllBytes(schemaPath, sentinel);
+            File.WriteAllBytes(executablePath, new byte[] { (byte)'M', (byte)'Z' });
+            using var output = new StringWriter();
+            using var error = new StringWriter();
+            var extraction = CreateCompatibleExtraction(executablePath, acceptedSchema);
+
+            int exitCode;
+            using (new FileStream(
+                       schemaPath,
+                       FileMode.Open,
+                       FileAccess.Read,
+                       FileShare.Read))
+            {
+                exitCode = HerdrBundledSchemaInspectionCommand.Run(
+                    [
+                        "inspect-herdr-bundled-schema",
+                        "--herdr",
+                        executablePath,
+                        "--schema-output",
+                        schemaPath,
+                    ],
+                    output,
+                    error,
+                    new StubExtractor(extraction),
+                    new AtomicSchemaOutputWriter());
+            }
+
+            Assert.AreEqual(2, exitCode);
+            CollectionAssert.AreEqual(sentinel, File.ReadAllBytes(schemaPath));
+            Assert.IsEmpty(Directory.GetFiles(root, "*.tmp"));
+            StringAssert.Contains(error.ToString(), "could not be written");
+        }
+        finally
+        {
+            DeleteFixtureRoot(root);
+        }
+    }
+
+    [TestMethod]
     public void BlankSchemaOutputValueReturnsUsageFailure()
     {
         using var output = new StringWriter();
@@ -169,5 +223,49 @@ public sealed class HerdrBundledSchemaInspectionCommandTests
         {
             Directory.Delete(resolvedRoot, recursive: true);
         }
+    }
+
+    private static HerdrBundledSchemaExtraction CreateCompatibleExtraction(
+        string executablePath,
+        byte[] schemaBytes)
+    {
+        var inspection = new HerdrBundledSchemaInspection(
+            HerdrBundledSchemaStatus.Compatible,
+            EvidenceClass.Contract,
+            RuntimeObserved: false,
+            SessionControlInvoked: false,
+            "fixture-schema-contract",
+            1,
+            executablePath,
+            executablePath,
+            "fixture-release",
+            new string('A', 64),
+            SchemaStartOffset: 0,
+            schemaBytes.Length,
+            new string('B', 64),
+            HerdrBundledSchemaContractV19.JsonSchemaDraft,
+            Protocol: 19,
+            SchemaVersion: 1,
+            Array.Empty<HerdrBundledSchemaGroupSummary>(),
+            Array.Empty<string>(),
+            Array.Empty<string>(),
+            Array.Empty<string>(),
+            Array.Empty<string>(),
+            Array.Empty<string>(),
+            Array.Empty<string>(),
+            "Fixture schema is compatible.");
+        return new HerdrBundledSchemaExtraction(inspection, schemaBytes);
+    }
+
+    private sealed class StubExtractor : IHerdrBundledSchemaExtractor
+    {
+        private readonly HerdrBundledSchemaExtraction _extraction;
+
+        public StubExtractor(HerdrBundledSchemaExtraction extraction)
+        {
+            _extraction = extraction;
+        }
+
+        public HerdrBundledSchemaExtraction Extract(string executablePath) => _extraction;
     }
 }
