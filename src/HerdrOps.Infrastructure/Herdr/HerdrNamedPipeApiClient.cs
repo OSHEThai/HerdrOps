@@ -2,7 +2,7 @@ using HerdrOps.Domain.Herdr;
 
 namespace HerdrOps.Infrastructure.Herdr;
 
-public sealed class HerdrNamedPipeApiClient : IHerdrApiClient
+public sealed class HerdrNamedPipeApiClient : IHerdrApiClient, IHerdrPaneInspectionClient
 {
     private readonly IHerdrStreamConnector _connector;
     private readonly IHerdrServerIdentityVerifier _serverIdentityVerifier;
@@ -72,6 +72,56 @@ public sealed class HerdrNamedPipeApiClient : IHerdrApiClient
             await connection.DisposeAsync().ConfigureAwait(false);
             throw;
         }
+    }
+
+    public async Task<HerdrPaneReadResult> ReadRecentUnwrappedAsync(
+        HerdrPipeEndpoint endpoint,
+        string paneId,
+        int maximumLines,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(endpoint);
+        var requestId = CreateRequestId("pane-read");
+        var request = HerdrProtocolJsonCodec.CreateBoundedPaneReadRequest(
+            requestId,
+            paneId,
+            maximumLines);
+        await using var connection = await _connector
+            .ConnectAsync(endpoint, _options.ConnectTimeout, cancellationToken)
+            .ConfigureAwait(false);
+        RecordVerifiedIdentity(_serverIdentityVerifier.Verify(connection));
+        var reader = new HerdrJsonLineReader(connection.Stream, _options.MaximumFrameBytes);
+        await HerdrJsonLineWriter
+            .WriteAsync(connection.Stream, request, _options.MaximumFrameBytes, cancellationToken)
+            .ConfigureAwait(false);
+        var response = await reader.ReadAsync(cancellationToken).ConfigureAwait(false);
+        return HerdrProtocolJsonCodec.ParseBoundedPaneReadResponse(
+            response,
+            requestId,
+            paneId);
+    }
+
+    public async Task<HerdrPaneProcessInfo> GetPaneProcessInfoAsync(
+        HerdrPipeEndpoint endpoint,
+        string paneId,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(endpoint);
+        var requestId = CreateRequestId("pane-process-info");
+        var request = HerdrProtocolJsonCodec.CreatePaneProcessInfoRequest(requestId, paneId);
+        await using var connection = await _connector
+            .ConnectAsync(endpoint, _options.ConnectTimeout, cancellationToken)
+            .ConfigureAwait(false);
+        RecordVerifiedIdentity(_serverIdentityVerifier.Verify(connection));
+        var reader = new HerdrJsonLineReader(connection.Stream, _options.MaximumFrameBytes);
+        await HerdrJsonLineWriter
+            .WriteAsync(connection.Stream, request, _options.MaximumFrameBytes, cancellationToken)
+            .ConfigureAwait(false);
+        var response = await reader.ReadAsync(cancellationToken).ConfigureAwait(false);
+        return HerdrProtocolJsonCodec.ParsePaneProcessInfoResponse(
+            response,
+            requestId,
+            paneId);
     }
 
     private void RecordVerifiedIdentity(HerdrServerProcessIdentity? identity)

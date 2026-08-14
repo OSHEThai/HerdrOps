@@ -124,6 +124,52 @@ public sealed class HerdrNamedPipeApiClientTests
     }
 
     [TestMethod]
+    public async Task PaneReadRoundTripSerializesANonOptionalBoundAndFixedSource()
+    {
+        var pipeName = CreatePipeName();
+        using var server = CreateServer(pipeName);
+        var serverTask = ServePaneReadAsync(server);
+
+        var read = await CreateClient().ReadRecentUnwrappedAsync(
+            HerdrPipeEndpoint.FromSocketPath(pipeName),
+            "pane-1",
+            maximumLines: 37,
+            TestContext.CancellationToken);
+        var observedRequest = await serverTask;
+        var parameters = observedRequest.GetProperty("params");
+
+        Assert.AreEqual("pane.read", observedRequest.GetProperty("method").GetString());
+        Assert.AreEqual("pane-1", parameters.GetProperty("pane_id").GetString());
+        Assert.AreEqual(37, parameters.GetProperty("lines").GetInt32());
+        Assert.AreEqual("recent_unwrapped", parameters.GetProperty("source").GetString());
+        Assert.AreEqual("text", parameters.GetProperty("format").GetString());
+        Assert.IsTrue(parameters.GetProperty("strip_ansi").GetBoolean());
+        Assert.AreEqual((ulong)7, read.Revision);
+        Assert.AreEqual("build complete", read.Text);
+    }
+
+    [TestMethod]
+    public async Task PaneProcessInfoRoundTripCorrelatesTheRequestedPaneAndPid()
+    {
+        var pipeName = CreatePipeName();
+        using var server = CreateServer(pipeName);
+        var serverTask = ServePaneProcessInfoAsync(server);
+
+        var processInfo = await CreateClient().GetPaneProcessInfoAsync(
+            HerdrPipeEndpoint.FromSocketPath(pipeName),
+            "pane-1",
+            TestContext.CancellationToken);
+        var observedRequest = await serverTask;
+
+        Assert.AreEqual("pane.process_info", observedRequest.GetProperty("method").GetString());
+        Assert.AreEqual("pane-1", observedRequest.GetProperty("params").GetProperty("pane_id").GetString());
+        Assert.AreEqual((uint)700, processInfo.ShellProcessId);
+        Assert.HasCount(1, processInfo.ForegroundProcesses);
+        Assert.AreEqual((uint)701, processInfo.ForegroundProcesses[0].ProcessId);
+        Assert.AreEqual("pwsh -NoLogo", processInfo.ForegroundProcesses[0].CommandLine);
+    }
+
+    [TestMethod]
     public async Task SubscriptionAcknowledgementKeepsPipeOpenForRegularAndFilteredEvents()
     {
         var pipeName = CreatePipeName();
@@ -318,6 +364,74 @@ public sealed class HerdrNamedPipeApiClientTests
             // An over-limit client may close the pipe as soon as the final byte crosses its limit.
         }
 
+        return requestDocument.RootElement.Clone();
+    }
+
+    private static async Task<JsonElement> ServePaneReadAsync(NamedPipeServerStream server)
+    {
+        await server.WaitForConnectionAsync();
+        var requestJson = await ReadLineAsync(server);
+        using var requestDocument = JsonDocument.Parse(requestJson);
+        var requestId = requestDocument.RootElement.GetProperty("id").GetString()!;
+        await WriteLineAsync(
+            server,
+            JsonSerializer.Serialize(new
+            {
+                id = requestId,
+                result = new
+                {
+                    type = "pane_read",
+                    read = new
+                    {
+                        pane_id = "pane-1",
+                        workspace_id = "workspace-1",
+                        tab_id = "tab-1",
+                        source = "recent_unwrapped",
+                        format = "text",
+                        text = "build complete",
+                        revision = 7,
+                        truncated = false,
+                    },
+                },
+            }));
+        return requestDocument.RootElement.Clone();
+    }
+
+    private static async Task<JsonElement> ServePaneProcessInfoAsync(NamedPipeServerStream server)
+    {
+        await server.WaitForConnectionAsync();
+        var requestJson = await ReadLineAsync(server);
+        using var requestDocument = JsonDocument.Parse(requestJson);
+        var requestId = requestDocument.RootElement.GetProperty("id").GetString()!;
+        await WriteLineAsync(
+            server,
+            JsonSerializer.Serialize(new
+            {
+                id = requestId,
+                result = new
+                {
+                    type = "pane_process_info",
+                    process_info = new
+                    {
+                        pane_id = "pane-1",
+                        shell_pid = 700,
+                        foreground_process_group_id = 701,
+                        tty = (string?)null,
+                        foreground_processes = new[]
+                        {
+                            new
+                            {
+                                pid = 701,
+                                name = "pwsh",
+                                argv0 = "pwsh",
+                                argv = new[] { "pwsh", "-NoLogo" },
+                                cmdline = "pwsh -NoLogo",
+                                cwd = "Z:\\HerdrOps",
+                            },
+                        },
+                    },
+                },
+            }));
         return requestDocument.RootElement.Clone();
     }
 
