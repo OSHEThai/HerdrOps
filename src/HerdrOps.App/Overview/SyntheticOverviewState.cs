@@ -17,6 +17,23 @@ public sealed record SyntheticOverviewState(
     IReadOnlyList<OverviewTopAgent> TopAgents,
     IReadOnlyList<OverviewAlert> Alerts)
 {
+    public string ActivitySourceLabel => "SYNTHETIC";
+
+    public string ActivityFooterLabel => $"{RecentActivities.Count} deterministic events";
+
+    public string WorkDistributionTotal => Workstreams.Sum(workstream => workstream.Count)
+        .ToString(System.Globalization.CultureInfo.InvariantCulture);
+
+    public string ScoreTrendStatus => "Synthetic score fixture";
+
+    public string TopAgentsSourceLabel => "SYNTHETIC";
+
+    public string AgentListThaiTitle => "ตัวแทนที่ทำผลงานดี";
+
+    public string AgentListEnglishTitle => "Top Agents";
+
+    public string AlertsCountLabel => $"{Alerts.Count} items";
+
     public static SyntheticOverviewState Create()
     {
         return new SyntheticOverviewState(
@@ -172,14 +189,22 @@ public sealed record OverviewTopAgent(
     string Name,
     int Score,
     int Delta,
-    string AccentBrushKey)
+    string AccentBrushKey,
+    bool HasScore = true,
+    string? StatusLabel = null)
 {
-    public string DeltaLabel => Delta switch
-    {
-        > 0 => $"▲ {Delta}",
-        < 0 => $"▼ {Math.Abs(Delta)}",
-        _ => "—",
-    };
+    public string ScoreLabel => HasScore
+        ? Score.ToString(System.Globalization.CultureInfo.InvariantCulture)
+        : "—";
+
+    public string DeltaLabel => !HasScore
+        ? StatusLabel ?? "Unknown"
+        : Delta switch
+        {
+            > 0 => $"▲ {Delta}",
+            < 0 => $"▼ {Math.Abs(Delta)}",
+            _ => "—",
+        };
 }
 
 public sealed record OverviewAlert(
@@ -197,4 +222,5 @@ public static class OverviewBrushKeys
     public const string Blocked = "HerdrOps.Brush.Chart.Blocked";
     public const string Review = "HerdrOps.Brush.Chart.Review";
     public const string Done = "HerdrOps.Brush.Chart.Done";
+    public const string Offline = "HerdrOps.Brush.Status.Offline";
 }

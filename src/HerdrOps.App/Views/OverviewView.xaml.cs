@@ -6,7 +6,8 @@ using HerdrOps.App.Widgets;
 namespace HerdrOps.App.Views;
 
 /// <summary>
-/// Approved Overview composition backed only by deterministic synthetic state in v0.1.
+/// Approved Overview composition. Standalone previews use the v0.1 fixture;
+/// the production shell supplies the live Core-backed state adapter.
 /// </summary>
 public partial class OverviewView : UserControl
 {

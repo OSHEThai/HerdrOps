@@ -37,7 +37,13 @@ public sealed record HerdrOpsStateUpdate(
     HerdrOpsStateSnapshotPayload? Snapshot,
     HerdrOpsStateDeltaPayload? Delta);
 
-public sealed class HerdrOpsStatePipeClient
+public interface IHerdrOpsStateUpdateSource
+{
+    IAsyncEnumerable<HerdrOpsStateUpdate> ReadUpdatesAsync(
+        CancellationToken cancellationToken = default);
+}
+
+public sealed class HerdrOpsStatePipeClient : IHerdrOpsStateUpdateSource
 {
     public const PipeOptions RequiredPipeOptions =
         PipeOptions.Asynchronous |
