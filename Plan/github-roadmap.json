@@ -1,0 +1,463 @@
+{
+  "schemaVersion": 1,
+  "repository": "OSHEThai/HerdrOps",
+  "milestones": [
+    {
+      "key": "V010",
+      "title": "v0.1.0",
+      "description": "Foundation and Visual Shell using clearly labelled synthetic data.",
+      "outcome": "A buildable .NET 10/WPF foundation that reproduces the approved shell, Overview slice, and widget concepts without claiming live Herdr integration.",
+      "releaseGates": [
+        "Clean build and automated tests pass.",
+        "Actual WPF screenshots pass design review at 1672x941 and Windows scale factors 100%, 125%, and 150%.",
+        "The approved logo and shared application shell are preserved.",
+        "All mock data is visibly labelled Demo or Synthetic."
+      ],
+      "issues": [
+        {
+          "key": "V010-01",
+          "title": "[v0.1.0] Scaffold the .NET 10 solution and process boundaries",
+          "labels": ["type:foundation", "area:core", "area:tooling", "priority:P0"],
+          "outcome": "Create the buildable solution structure for App, Core, CLI, Contracts, Domain, and Infrastructure.",
+          "scope": ["Pin the supported .NET SDK and repository build settings.", "Create production and test projects with explicit dependencies.", "Add build, test, format, and artifact commands."],
+          "acceptance": ["A clean checkout builds without manual file edits.", "Project references enforce the architecture boundaries documented in Plan/ARCHITECTURE.md.", "No Herdr runtime capability is claimed."],
+          "evidence": ["Build log", "Test log", "Solution dependency inspection"]
+        },
+        {
+          "key": "V010-02",
+          "title": "[v0.1.0] Implement design tokens, shared shell, and ten-page navigation",
+          "labels": ["type:feature", "area:app", "priority:P0"],
+          "outcome": "Implement the approved dark desktop shell and navigation contract in WPF.",
+          "scope": ["Create color, typography, spacing, radius, icon, and status resources.", "Implement top bar, sidebar, content host, bottom status bar, and window controls.", "Register all ten canonical page destinations."],
+          "acceptance": ["Logo and wordmark match the approved reference.", "Navigation exposes all ten pages and a visible active state.", "Thai text does not clip at required scale factors."],
+          "evidence": ["WPF screenshots", "Design checklist", "Keyboard navigation test"]
+        },
+        {
+          "key": "V010-03",
+          "title": "[v0.1.0] Build the Overview visual slice with synthetic state",
+          "labels": ["type:feature", "area:app", "priority:P1"],
+          "outcome": "Reproduce the approved Overview composition using deterministic synthetic data.",
+          "scope": ["Implement summary cards, recent activity, score trend, work distribution, top agents, and alerts.", "Create deterministic sample state for visual and interaction tests.", "Label the data source as Demo or Synthetic."],
+          "acceptance": ["Major regions and information hierarchy match 01-overview.png.", "The layout remains usable at 1366x768.", "No sample value is presented as live Herdr data."],
+          "evidence": ["Reference comparison screenshots", "Layout test", "Synthetic-source assertion"]
+        },
+        {
+          "key": "V010-04",
+          "title": "[v0.1.0] Implement widget gallery and foundation quality gates",
+          "labels": ["type:quality", "area:app", "area:tooling", "priority:P1"],
+          "outcome": "Implement the approved widget variants as testable WPF windows and establish v0.1 quality gates.",
+          "scope": ["Implement Compact, Normal, Expanded, Floating Mini, Floating Vertical, Notification, and Agent Detail Popup prototypes.", "Add DPI, keyboard focus, contrast, reduced-motion, and window-behavior checks.", "Capture repeatable visual evidence."],
+          "acceptance": ["Every approved widget variant can be opened from the gallery.", "Always-on-top and draggable behavior is bounded and reversible.", "The v0.1 release-gate test command is documented and passes."],
+          "evidence": ["Widget screenshots", "Accessibility test log", "v0.1 gate output"]
+        }
+      ]
+    },
+    {
+      "key": "V020",
+      "title": "v0.2.0",
+      "description": "Live Herdr monitoring with snapshot, events, reconciliation, and live core pages.",
+      "outcome": "HerdrOps displays real local Agent state from an installed Herdr instance and recovers correctly after disconnects.",
+      "releaseGates": [
+        "Contract tests pass against the installed Herdr schema.",
+        "Actual snapshot, event subscription, disconnect, reconnect, and reconciliation traces pass.",
+        "State mappings preserve working, idle, blocked, done, and unknown/offline semantics.",
+        "Normal operation opens no localhost HTTP listener and requires no Administrator privilege."
+      ],
+      "issues": [
+        {
+          "key": "V020-01",
+          "title": "[v0.2.0] Discover and validate the installed Herdr protocol schema",
+          "labels": ["type:foundation", "area:core", "priority:P0"],
+          "outcome": "Bind HerdrOps to the schema exposed by the installed Herdr binary instead of undocumented assumptions.",
+          "scope": ["Discover Herdr executable and protocol metadata.", "Parse snapshot, pane, agent, process, read, and subscription contracts.", "Fail closed on incompatible protocol versions."],
+          "acceptance": ["Known compatible schema passes contract validation.", "Incompatible or malformed schema produces an actionable non-zero failure.", "Fixture validation is labelled contract evidence, not runtime evidence."],
+          "evidence": ["Schema hash", "Contract-test output", "Compatibility failure example"]
+        },
+        {
+          "key": "V020-02",
+          "title": "[v0.2.0] Implement Herdr Named Pipe snapshot, subscription, and reconciliation",
+          "labels": ["type:feature", "area:core", "evidence:runtime", "priority:P0"],
+          "outcome": "Maintain accurate in-memory state from real Herdr snapshot and event streams.",
+          "scope": ["Open request/response and long-lived subscription connections.", "Sequence events and detect gaps.", "Reconnect with bounded backoff and reconcile from a fresh snapshot."],
+          "acceptance": ["Snapshot bootstraps all available workspaces, tabs, panes, and agents.", "A forced disconnect recovers without duplicate state.", "A sequence gap triggers reconciliation rather than silent continuation."],
+          "evidence": ["Actual Herdr runtime trace", "Reconnect trace", "State comparison before and after reconciliation"]
+        },
+        {
+          "key": "V020-03",
+          "title": "[v0.2.0] Add SQLite WAL state storage and Core-to-App IPC",
+          "labels": ["type:foundation", "area:core", "area:data", "priority:P0"],
+          "outcome": "Persist bounded local state in Core and deliver snapshots/deltas to App without direct UI database access.",
+          "scope": ["Create forward-only SQLite schema and migrations.", "Implement current-user Named Pipe IPC with versioned contracts.", "Keep App and CLI from opening SQLite directly."],
+          "acceptance": ["Core restarts without corrupting accepted state.", "App receives a full snapshot then ordered deltas.", "IPC rejects invalid versions and unauthorized clients."],
+          "evidence": ["Migration tests", "IPC contract tests", "Restart/recovery test"]
+        },
+        {
+          "key": "V020-04",
+          "title": "[v0.2.0] Connect Overview, Live Organization, and Agent Detail to live state",
+          "labels": ["type:feature", "area:app", "evidence:runtime", "priority:P1"],
+          "outcome": "Drive the three initial dashboard pages from real Core state while preserving the approved designs.",
+          "scope": ["Replace synthetic state on supported controls with live state adapters.", "Show source freshness, offline, and unknown states.", "Implement live organization hierarchy and agent detail selection."],
+          "acceptance": ["UI values match the same Herdr snapshot used for acceptance.", "Unknown data remains unknown and is not converted to success.", "Closing Dashboard does not stop Core collection."],
+          "evidence": ["Side-by-side Herdr/UI snapshot", "Runtime screen capture", "Dashboard lifecycle trace"]
+        },
+        {
+          "key": "V020-05",
+          "title": "[v0.2.0] Connect live widgets and complete runtime acceptance",
+          "labels": ["type:quality", "area:app", "evidence:runtime", "priority:P0"],
+          "outcome": "Deliver live Compact, Normal, and Floating Vertical widgets with measured update behavior.",
+          "scope": ["Subscribe widgets to Core state deltas.", "Implement offline/reconnect behavior and attention badges.", "Measure latency and resource budgets for v0.2."],
+          "acceptance": ["Widget state matches Dashboard state.", "Blocked and done attention states remain distinct.", "Version-local runtime gates pass on the reference Windows host."],
+          "evidence": ["Live widget capture", "Latency measurements", "v0.2 runtime-gate report"]
+        }
+      ]
+    },
+    {
+      "key": "V030",
+      "title": "v0.3.0",
+      "description": "Realtime event, terminal, process, file, and Git activity with explicit provenance.",
+      "outcome": "Operators can inspect realtime activity and file changes while knowing which data came from Herdr, Windows, Git, or inference.",
+      "releaseGates": [
+        "Event replay is deterministic and deduplication is verified.",
+        "Actual runtime traces prove bounded terminal reads and measured event latency.",
+        "File events expose source and confidence and remain within policy scope.",
+        "Secret and redaction tests pass."
+      ],
+      "issues": [
+        {
+          "key": "V030-01",
+          "title": "[v0.3.0] Build the deterministic activity event pipeline",
+          "labels": ["type:foundation", "area:core", "area:data", "priority:P0"],
+          "outcome": "Normalize, sequence, deduplicate, debounce, correlate, and replay activity deterministically.",
+          "scope": ["Define event envelope and source/confidence fields.", "Implement high-urgency and noisy-event paths.", "Add deterministic replay fixtures."],
+          "acceptance": ["Repeated replay produces the same state and summary.", "Duplicate/noisy events are bounded without losing urgent events.", "Sequence gaps remain observable."],
+          "evidence": ["Replay hashes", "Deduplication tests", "Sequence-gap test"]
+        },
+        {
+          "key": "V030-02",
+          "title": "[v0.3.0] Implement the Realtime Activity page",
+          "labels": ["type:feature", "area:app", "priority:P1"],
+          "outcome": "Implement the filtered realtime event stream, details pane, and evidence-source panel.",
+          "scope": ["Add filters for time, role, severity, task, and evidence level.", "Render selected-event details and source links.", "Support live refresh and bounded history paging."],
+          "acceptance": ["Layout and hierarchy match 03-realtime-activity.png.", "Filter results are deterministic for the same event set.", "The selected event and evidence panel remain synchronized."],
+          "evidence": ["UI screenshots", "Filter tests", "Live event capture"]
+        },
+        {
+          "key": "V030-03",
+          "title": "[v0.3.0] Add bounded terminal previews and Windows process telemetry",
+          "labels": ["type:feature", "area:core", "evidence:runtime", "priority:P1"],
+          "outcome": "Expose useful bounded pane output and process metrics without continuously capturing terminal bytes.",
+          "scope": ["Use pane revisions and bounded recent_unwrapped reads.", "Correlate Herdr PIDs with Windows CPU, memory, and process metadata.", "Apply debounce and redaction before persistence."],
+          "acceptance": ["There are zero unbounded terminal reads.", "Process metrics identify their PID/source and expire safely.", "Sensitive test strings are redacted."],
+          "evidence": ["Actual pane-read trace", "Process correlation trace", "Redaction tests"]
+        },
+        {
+          "key": "V030-04",
+          "title": "[v0.3.0] Implement scoped File/Git collectors and File Activity page",
+          "labels": ["type:feature", "area:core", "area:app", "priority:P1"],
+          "outcome": "Track file and Git activity inside authorized repositories and reproduce the approved File Activity design.",
+          "scope": ["Watch authorized repository roots and correlate paths to Agent/Task.", "Capture Git status/diff metadata without mutating repositories.", "Implement table, filters, charts, file details, and bounded diff preview."],
+          "acceptance": ["Out-of-scope paths are blocked or explicitly flagged.", "File actions carry source and confidence.", "UI matches 07-file-activity.png at the approved hierarchy."],
+          "evidence": ["Scoped collector tests", "Actual file activity trace", "UI screenshots"]
+        },
+        {
+          "key": "V030-05",
+          "title": "[v0.3.0] Deliver notification/popup UX and security-runtime gates",
+          "labels": ["type:quality", "area:app", "area:governance", "evidence:runtime", "priority:P0"],
+          "outcome": "Deliver Notification Widget and Agent Detail Popup with bounded alerts and complete v0.3 acceptance.",
+          "scope": ["Implement alert grouping, acknowledgement, and deep links.", "Prevent notification floods from noisy events.", "Run latency, scope, privacy, and redaction acceptance."],
+          "acceptance": ["Urgent alerts appear once and link to the correct event/agent.", "Notification history preserves acknowledgement state.", "All v0.3 release gates pass with actual runtime evidence."],
+          "evidence": ["Notification runtime capture", "Flood-control test", "v0.3 gate report"]
+        }
+      ]
+    },
+    {
+      "key": "V040",
+      "title": "v0.4.0",
+      "description": "Delegation lifecycle, Assignment Contracts, Task Alignment, and agent self-report.",
+      "outcome": "HerdrOps traces PM-to-Leader-to-Worker delegation and compares planned scope with observed work and evidence.",
+      "releaseGates": [
+        "A complete PM-to-Leader-to-Worker-to-Review lifecycle is traceable.",
+        "Every graph node and edge carries provenance and time.",
+        "Missing acknowledgement, orphan task, and scope mismatch cases are detected.",
+        "CLI submissions are validated by Core and never write SQLite directly."
+      ],
+      "issues": [
+        {
+          "key": "V040-01",
+          "title": "[v0.4.0] Implement versioned CLI self-report contracts",
+          "labels": ["type:foundation", "area:core", "area:tooling", "priority:P0"],
+          "outcome": "Provide a small CLI that submits validated assignment and evidence events to Core.",
+          "scope": ["Define assignment, acknowledgement, delegation, progress, deviation, evidence, and handoff commands.", "Return structured acknowledgement/errors.", "Evaluate Native AOT only after compatibility measurements."],
+          "acceptance": ["Invalid schemas and unknown tasks fail non-zero.", "CLI cannot open or mutate SQLite directly.", "Every accepted event receives source, sequence, correlation, and UTC time."],
+          "evidence": ["CLI contract tests", "Error examples", "Core acceptance trace"]
+        },
+        {
+          "key": "V040-02",
+          "title": "[v0.4.0] Build assignment, delegation, and provenance domain models",
+          "labels": ["type:foundation", "area:core", "area:data", "priority:P0"],
+          "outcome": "Represent tasks, roles, contracts, acknowledgements, delegations, deviations, and handoffs without losing provenance.",
+          "scope": ["Create versioned domain/state models.", "Define lifecycle transition rules and invalid transitions.", "Persist role and task relationships."],
+          "acceptance": ["Lifecycle transitions are deterministic and audited.", "Orphans and duplicate handoffs are visible.", "Historical provenance remains queryable after current state changes."],
+          "evidence": ["Domain tests", "Migration tests", "Lifecycle replay"]
+        },
+        {
+          "key": "V040-03",
+          "title": "[v0.4.0] Implement Delegation Graph and task tree",
+          "labels": ["type:feature", "area:app", "priority:P1"],
+          "outcome": "Reproduce the approved task tree, delegation graph, selected-node detail, and timeline.",
+          "scope": ["Render role/agent nodes and typed edges.", "Add pan, zoom, fit, selection, and accessible alternatives.", "Render handoff details and timeline."],
+          "acceptance": ["Graph and detail views remain synchronized.", "Blocked/review/idle/working semantics are distinct.", "An accessible list/tree exposes the same information."],
+          "evidence": ["UI screenshots", "Graph interaction tests", "Accessibility test"]
+        },
+        {
+          "key": "V040-04",
+          "title": "[v0.4.0] Implement Task Alignment analysis and page",
+          "labels": ["type:feature", "area:app", "area:governance", "priority:P1"],
+          "outcome": "Compare Assignment Contract, acknowledgement, planned steps, acceptance criteria, observed actions, touched files, deviations, and evidence.",
+          "scope": ["Implement alignment/scope analysis with explainable findings.", "Render all approved Task Alignment panels.", "Keep suspected misalignment separate from confirmed violation."],
+          "acceptance": ["Every verdict links to its supporting inputs.", "Missing data does not become a passing score.", "UI matches 06-task-alignment.png hierarchy."],
+          "evidence": ["Analysis fixtures", "Traceable verdict example", "UI screenshots"]
+        },
+        {
+          "key": "V040-05",
+          "title": "[v0.4.0] Deliver Expanded Widget and lifecycle acceptance",
+          "labels": ["type:quality", "area:app", "evidence:runtime", "priority:P0"],
+          "outcome": "Deliver the Expanded Widget and prove the complete delegation lifecycle in runtime acceptance.",
+          "scope": ["Show Agent, role, task/activity, elapsed time, and score from shared state.", "Deep-link to Agent Detail and Task Alignment.", "Run lifecycle, provenance, orphan, and mismatch acceptance."],
+          "acceptance": ["Widget values match the selected Agent/Task state.", "A complete role-distinct lifecycle passes against actual running agents.", "All v0.4 release gates pass."],
+          "evidence": ["Expanded Widget capture", "Runtime lifecycle trace", "v0.4 gate report"]
+        }
+      ]
+    },
+    {
+      "key": "V050",
+      "title": "v0.5.0",
+      "description": "Compliance rules, immutable evidence metadata, and role-distinct review workflow.",
+      "outcome": "HerdrOps detects explainable compliance candidates and routes them through evidence-backed Leader and PM review.",
+      "releaseGates": [
+        "Rule tests cover positive and negative cases and suppress duplicates.",
+        "Suspected incidents are not confirmed without policy authority.",
+        "Evidence hash, source, actor, and reviewer identity are traceable.",
+        "Role-distinct runtime review passes."
+      ],
+      "issues": [
+        {
+          "key": "V050-01",
+          "title": "[v0.5.0] Implement the explainable compliance rule engine",
+          "labels": ["type:foundation", "area:governance", "area:core", "priority:P0"],
+          "outcome": "Evaluate scope, evidence, deviation, and review-order rules with explicit inputs and outcomes.",
+          "scope": ["Version rule definitions and severity mapping.", "Implement scope violation, missing evidence, unapproved deviation, and review-order rules.", "Deduplicate repeated detections."],
+          "acceptance": ["Positive and negative corpora pass.", "Each finding records rule version and supporting facts.", "Rule errors fail observable and do not silently confirm incidents."],
+          "evidence": ["Rule corpus results", "Explainability record", "Duplicate-suppression test"]
+        },
+        {
+          "key": "V050-02",
+          "title": "[v0.5.0] Build evidence metadata, hashing, and audit storage",
+          "labels": ["type:foundation", "area:data", "area:governance", "priority:P0"],
+          "outcome": "Store immutable evidence metadata and hashes linked to task, actor, event, and review history.",
+          "scope": ["Hash evidence with SHA-256 and record source/time.", "Separate metadata from managed artifact bytes.", "Create append-only review audit records and retention controls."],
+          "acceptance": ["Changed evidence bytes produce a different identity.", "Missing artifacts remain explicit.", "Review history cannot be rewritten by ordinary update flows."],
+          "evidence": ["Hash tests", "Audit append-only test", "Retention test"]
+        },
+        {
+          "key": "V050-03",
+          "title": "[v0.5.0] Implement the Compliance Queue page",
+          "labels": ["type:feature", "area:app", "area:governance", "priority:P1"],
+          "outcome": "Reproduce the approved incident queue, selected incident detail, evidence list, and actions.",
+          "scope": ["Filter/sort by severity, state, actor, task, and reviewer.", "Render incident details and evidence provenance.", "Keep suspected, confirmed, pending Leader, pending PM, and dismissed states distinct."],
+          "acceptance": ["UI matches 08-compliance-queue.png hierarchy.", "Selected row, details, evidence, and actions remain synchronized.", "Actions unavailable to the current role are disabled and explained."],
+          "evidence": ["UI screenshots", "State-filter tests", "Role-visibility test"]
+        },
+        {
+          "key": "V050-04",
+          "title": "[v0.5.0] Implement role-distinct Leader and PM review actions",
+          "labels": ["type:feature", "area:governance", "evidence:runtime", "priority:P0"],
+          "outcome": "Route incidents through authorized confirm, Leader review, PM escalation, and dismiss actions.",
+          "scope": ["Enforce actor/reviewer separation and valid transitions.", "Record reviewer identity, reason, time, and evidence set.", "Notify affected views and widgets through Core state."],
+          "acceptance": ["Unauthorized and self-review transitions fail.", "Each accepted transition creates an immutable audit event.", "Leader and PM decisions remain separately attributable."],
+          "evidence": ["Authorization tests", "Role-distinct runtime trace", "Audit record"]
+        },
+        {
+          "key": "V050-05",
+          "title": "[v0.5.0] Complete compliance privacy, retention, and runtime acceptance",
+          "labels": ["type:quality", "area:governance", "evidence:runtime", "priority:P0"],
+          "outcome": "Validate compliance behavior, evidence integrity, retention, and redaction on actual workflows.",
+          "scope": ["Run incident lifecycle from suspicion through final review.", "Exercise retention and diagnostic export redaction.", "Measure queue consistency after restart/reconnect."],
+          "acceptance": ["No incident changes state without an attributable event.", "Retention cannot remove records still required by an open review.", "All v0.5 release gates pass."],
+          "evidence": ["Runtime review trace", "Retention/redaction report", "v0.5 gate report"]
+        }
+      ]
+    },
+    {
+      "key": "V060",
+      "title": "v0.6.0",
+      "description": "Explainable evaluation, score trends, and traceable Daily Summary.",
+      "outcome": "HerdrOps calculates reproducible multi-source evaluations and daily summaries that trace back to accepted events and evidence.",
+      "releaseGates": [
+        "Score formula and weights are versioned and reproducible.",
+        "Missing data never becomes an automatic passing score.",
+        "Leader, PM, and objective evidence values retain separate provenance.",
+        "Daily Summary values trace back to source events/evidence."
+      ],
+      "issues": [
+        {
+          "key": "V060-01",
+          "title": "[v0.6.0] Implement the versioned explainable scoring engine",
+          "labels": ["type:foundation", "area:core", "area:governance", "priority:P0"],
+          "outcome": "Calculate dimension and weighted scores with explicit provenance, missing-data behavior, and recalculation history.",
+          "scope": ["Implement six planned score dimensions and versioned weights.", "Separate Leader, PM, objective evidence, and weighted results.", "Record formula version and input snapshot."],
+          "acceptance": ["The same inputs produce the same score.", "Missing or invalid inputs remain visible and do not default to pass.", "Historical scores can be reproduced after formula changes."],
+          "evidence": ["Golden score fixtures", "Recalculation test", "Provenance record"]
+        },
+        {
+          "key": "V060-02",
+          "title": "[v0.6.0] Implement the Evaluation page",
+          "labels": ["type:feature", "area:app", "priority:P1"],
+          "outcome": "Reproduce score distribution, trends, dimensions, comparisons, and agent rankings.",
+          "scope": ["Render summary cards and charts.", "Render selected task/agent comparison table.", "Show highest/lowest performers with context and provenance links."],
+          "acceptance": ["UI matches 09-evaluation.png hierarchy.", "Chart/table values reconcile to the same scoring snapshot.", "Ranking ties and missing scores are handled explicitly."],
+          "evidence": ["UI screenshots", "Chart reconciliation test", "Missing-score test"]
+        },
+        {
+          "key": "V060-03",
+          "title": "[v0.6.0] Implement Daily Summary aggregation and page",
+          "labels": ["type:feature", "area:app", "area:core", "priority:P1"],
+          "outcome": "Create a traceable daily summary with highlights, issues, actions, timeline, and workstreams.",
+          "scope": ["Aggregate accepted events/evidence by local day and workstream.", "Generate repeated issues and recommended actions with source links.", "Render the approved Daily Summary layout."],
+          "acceptance": ["Every summary number links to its source set.", "Timezone/day boundaries are deterministic.", "UI matches 10-daily-summary.png hierarchy."],
+          "evidence": ["Aggregation fixtures", "Timezone tests", "UI screenshots"]
+        },
+        {
+          "key": "V060-04",
+          "title": "[v0.6.0] Add local export and complete evaluation acceptance",
+          "labels": ["type:quality", "area:docs", "area:governance", "priority:P0"],
+          "outcome": "Export evaluation/summary data locally with provenance and complete v0.6 acceptance.",
+          "scope": ["Export bounded human-readable and machine-readable reports.", "Include formula/source versions and generation time.", "Run reproducibility and traceability gates."],
+          "acceptance": ["Exported values match the accepted UI/query snapshot.", "Sensitive data follows redaction policy.", "All v0.6 release gates pass."],
+          "evidence": ["Export hashes", "Reproducibility report", "v0.6 gate report"]
+        }
+      ]
+    },
+    {
+      "key": "V070",
+      "title": "v0.7.0",
+      "description": "Beta hardening, complete design parity, localization, recovery, packaging, and UAT.",
+      "outcome": "A complete installable Beta that runs all approved pages/widgets reliably in Thai and English on the reference Windows environment.",
+      "releaseGates": [
+        "All ten pages and approved widget variants pass human design review.",
+        "Clean-machine install, upgrade, and uninstall pass.",
+        "An 8-hour actual-Herdr soak completes without crash or unreconciled state.",
+        "Performance budgets pass or have an explicit user-approved waiver.",
+        "Human UAT passes."
+      ],
+      "issues": [
+        {
+          "key": "V070-01",
+          "title": "[v0.7.0] Complete ten-page and widget design parity",
+          "labels": ["type:quality", "area:app", "priority:P0"],
+          "outcome": "Close visual and interaction gaps across all canonical pages and widget variants.",
+          "scope": ["Capture actual WPF screenshots for every page/widget.", "Resolve approved-reference differences or record explicit approvals.", "Verify shared status semantics and navigation consistency."],
+          "acceptance": ["All eleven reference entries have an accepted implementation capture.", "No replacement logo or conflicting status semantics remain.", "Human design review passes."],
+          "evidence": ["Reference/implementation comparison set", "Design review record", "Accessibility screenshots"]
+        },
+        {
+          "key": "V070-02",
+          "title": "[v0.7.0] Deliver tray, startup, settings, localization, and accessibility",
+          "labels": ["type:feature", "area:app", "priority:P1"],
+          "outcome": "Complete desktop lifecycle and usable Thai/English operation across supported displays.",
+          "scope": ["Implement System Tray, start-at-logon, notification, widget, theme, and retention settings.", "Complete Thai/English localization.", "Validate keyboard, screen reader, contrast, DPI, multi-monitor, and reduced motion."],
+          "acceptance": ["Settings persist and are reversible.", "Thai/English UI passes clipping and language-switch tests.", "Accessibility checklist passes on the reference host."],
+          "evidence": ["Lifecycle tests", "Localization screenshots", "Accessibility report"]
+        },
+        {
+          "key": "V070-03",
+          "title": "[v0.7.0] Harden crash recovery, migrations, backup, and diagnostics",
+          "labels": ["type:quality", "area:core", "area:data", "priority:P0"],
+          "outcome": "Recover predictably from process crashes, interrupted migrations, and damaged local state.",
+          "scope": ["Add migration backup and rollback safety.", "Implement corrupted-state quarantine/recovery.", "Create redacted diagnostic bundle and crash metadata."],
+          "acceptance": ["Fault-injected migration interruption preserves recoverability.", "Damaged data does not cause a silent reset.", "Diagnostic bundles exclude configured secrets."],
+          "evidence": ["Fault-injection tests", "Recovery trace", "Redaction inspection"]
+        },
+        {
+          "key": "V070-04",
+          "title": "[v0.7.0] Build and validate installer, upgrade, and uninstall paths",
+          "labels": ["type:feature", "area:tooling", "evidence:release", "priority:P0"],
+          "outcome": "Produce a versioned Beta package with clean install, upgrade, uninstall, and startup behavior.",
+          "scope": ["Choose and implement the Windows packaging approach.", "Version binaries and migrations consistently.", "Test clean install, in-place upgrade, uninstall, and retained-user-data policy."],
+          "acceptance": ["Exact packaged bytes are hashed.", "Clean-machine install and upgrade pass without manual repair.", "Uninstall behavior matches the documented retention choice."],
+          "evidence": ["Installer SHA-256", "Clean-machine transcript", "Upgrade/uninstall transcript"]
+        },
+        {
+          "key": "V070-05",
+          "title": "[v0.7.0] Pass performance budgets, 8-hour soak, and human UAT",
+          "labels": ["type:quality", "evidence:runtime", "evidence:release", "priority:P0"],
+          "outcome": "Prove Beta reliability and usability on the reference Windows/Herdr environment.",
+          "scope": ["Measure CPU, working set, launch, delta latency, and reconnect budgets.", "Run an 8-hour actual-Herdr soak with fault observations.", "Complete user UAT and go/no-go for Beta."],
+          "acceptance": ["No unhandled crash or unreconciled state occurs during soak.", "Budgets pass or have an explicit user-approved waiver.", "Human UAT and Beta go/no-go are recorded."],
+          "evidence": ["Performance report", "8-hour soak log", "UAT decision"]
+        }
+      ]
+    },
+    {
+      "key": "V100",
+      "title": "v1.0.0",
+      "description": "Stable local release with exact-artifact acceptance, 24-hour soak, privacy review, and rollback.",
+      "outcome": "Publish HerdrOps v1.0.0 as a stable local Windows release whose exact artifacts passed all required gates.",
+      "releaseGates": [
+        "All dependency milestones and required issues are closed with evidence.",
+        "The exact release candidate passes a 24-hour actual-Herdr soak and fault-injection suite.",
+        "Clean install, upgrade, rollback, privacy, and security reviews pass.",
+        "The user records final go/no-go approval.",
+        "Published artifacts and checksums match the accepted bytes."
+      ],
+      "issues": [
+        {
+          "key": "V100-01",
+          "title": "[v1.0.0] Close release blockers and audit all dependency evidence",
+          "labels": ["type:release", "area:governance", "priority:P0"],
+          "outcome": "Confirm every required pre-v1 issue and gate has acceptable, version-local evidence.",
+          "scope": ["Audit milestones v0.1.0 through v0.7.0.", "Reopen missing, stale, or wrong-artifact evidence.", "Freeze the v1 release-candidate commit only after blockers close."],
+          "acceptance": ["No required dependency issue remains open.", "Each gate links to exact evidence and commit/artifact identity.", "The release candidate commit is recorded."],
+          "evidence": ["Dependency audit", "Release-candidate commit hash", "Open-blocker query"]
+        },
+        {
+          "key": "V100-02",
+          "title": "[v1.0.0] Pass 24-hour soak, reconnect, and fault-injection acceptance",
+          "labels": ["type:quality", "evidence:runtime", "priority:P0"],
+          "outcome": "Prove the exact v1 release candidate remains accurate and recoverable during sustained actual-Herdr operation.",
+          "scope": ["Run 24-hour soak on exact candidate bytes.", "Inject Herdr/Core/App disconnects and process restarts.", "Verify snapshot reconciliation, database integrity, and alert consistency."],
+          "acceptance": ["Zero unhandled crashes and unreconciled states.", "Reconnect and integrity targets pass.", "Any candidate rebuild invalidates and repeats the run."],
+          "evidence": ["Artifact hashes", "24-hour soak log", "Fault-injection report"]
+        },
+        {
+          "key": "V100-03",
+          "title": "[v1.0.0] Complete final schema, privacy, and security review",
+          "labels": ["type:quality", "area:data", "area:governance", "priority:P0"],
+          "outcome": "Approve v1 storage, migration, retention, IPC, redaction, and local-privacy behavior.",
+          "scope": ["Review final schema/migrations and rollback.", "Review current-user pipe ACLs and absence of unexpected listeners.", "Review retention, export, diagnostics, and secret handling."],
+          "acceptance": ["No unresolved high-severity finding remains.", "Normal mode requires no Administrator privilege.", "Privacy defaults and limitations are documented."],
+          "evidence": ["Schema migration report", "Security/privacy checklist", "Listener/ACL inspection"]
+        },
+        {
+          "key": "V100-04",
+          "title": "[v1.0.0] Pass clean install, upgrade, rollback, and uninstall acceptance",
+          "labels": ["type:quality", "area:tooling", "evidence:release", "priority:P0"],
+          "outcome": "Validate the exact v1 candidate across supported lifecycle paths on a clean Windows host.",
+          "scope": ["Clean install and first-run acceptance.", "Upgrade from the accepted Beta and verify data migration.", "Rollback/uninstall according to documented policy."],
+          "acceptance": ["Every path completes without manual file repair.", "Accepted data is preserved or removed exactly as documented.", "Installed binaries match recorded hashes."],
+          "evidence": ["Clean-machine transcript", "Upgrade/rollback transcript", "Installed-file hashes"]
+        },
+        {
+          "key": "V100-05",
+          "title": "[v1.0.0] Finalize artifacts, documentation, go/no-go, and GitHub Release",
+          "labels": ["type:release", "area:docs", "evidence:release", "priority:P0"],
+          "outcome": "Publish the exact accepted HerdrOps v1.0.0 artifacts with checksums and final documentation after user approval.",
+          "scope": ["Finalize installer, checksums, release notes, user guide, upgrade/rollback, and troubleshooting.", "Obtain explicit user go/no-go.", "Tag v1.0.0 and publish the GitHub Release without rebuilding accepted artifacts."],
+          "acceptance": ["User go/no-go is recorded.", "Tag points to the accepted commit.", "Published artifact hashes match acceptance records exactly.", "GitHub Release is visible in OSHEThai/HerdrOps."],
+          "evidence": ["Go/no-go record", "Tag/commit verification", "Published checksums", "GitHub Release URL"]
+        }
+      ]
+    }
+  ]
+}
+

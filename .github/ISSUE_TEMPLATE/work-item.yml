@@ -1,0 +1,52 @@
+name: Versioned work item
+description: Add scoped work to an existing HerdrOps version milestone
+title: "[version] "
+labels:
+  - type:feature
+body:
+  - type:dropdown
+    id: version
+    attributes:
+      label: Target version
+      options:
+        - v0.1.0
+        - v0.2.0
+        - v0.3.0
+        - v0.4.0
+        - v0.5.0
+        - v0.6.0
+        - v0.7.0
+        - v1.0.0
+    validations:
+      required: true
+  - type:textarea
+    id: outcome
+    attributes:
+      label: Outcome
+      description: State the observable result, not only the activity.
+    validations:
+      required: true
+  - type:textarea
+    id: scope
+    attributes:
+      label: Scope
+      description: List included and excluded work.
+    validations:
+      required: true
+  - type:textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: Add measurable pass/fail checks.
+      value: "- [ ] "
+    validations:
+      required: true
+  - type:textarea
+    id: evidence
+    attributes:
+      label: Required evidence
+      description: Separate static, synthetic, contract, runtime, review, and release evidence.
+      value: "- [ ] "
+    validations:
+      required: true
+
