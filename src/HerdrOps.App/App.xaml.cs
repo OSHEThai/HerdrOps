@@ -1,11 +1,9 @@
-using System.Configuration;
-using System.Data;
 using System.Windows;
 
 namespace HerdrOps.App;
 
 /// <summary>
-/// Interaction logic for App.xaml
+/// Provides application-level design resources for the dashboard and widgets.
 /// </summary>
 public partial class App : Application
 {

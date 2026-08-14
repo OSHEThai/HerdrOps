@@ -1,9 +1,14 @@
 <Application x:Class="HerdrOps.App.App"
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-             xmlns:local="clr-namespace:HerdrOps.App"
              StartupUri="MainWindow.xaml">
     <Application.Resources>
-
+        <ResourceDictionary>
+            <ResourceDictionary.MergedDictionaries>
+                <ResourceDictionary Source="Themes/Tokens.Primitives.xaml" />
+                <ResourceDictionary Source="Themes/Tokens.Semantic.xaml" />
+                <ResourceDictionary Source="Themes/Tokens.Components.xaml" />
+            </ResourceDictionary.MergedDictionaries>
+        </ResourceDictionary>
     </Application.Resources>
 </Application>

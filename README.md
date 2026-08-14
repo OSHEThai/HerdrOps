@@ -4,7 +4,7 @@ HerdrOps คือ Windows desktop operations monitor สำหรับติ�
 
 ## สถานะปัจจุบัน
 
-Repository นี้อยู่ในระยะ **v0.1.0 Foundation Implementation** โดยมี Solution, ขอบเขต Process, Build Pipeline และ Test Suites ขั้นต้นแล้ว แต่ยังไม่มีหลักฐานว่าเชื่อมต่อ Herdr, เก็บ Event, แสดงข้อมูลจริง หรือพร้อมเผยแพร่
+Repository นี้อยู่ในระยะ **v0.1.0 Visual Shell Implementation** โดยมี Solution, ขอบเขต Process, Build Pipeline, Test Suites และ WPF Shell แบบ Synthetic แล้ว แต่ยังไม่มีหลักฐานว่าเชื่อมต่อ Herdr, เก็บ Event, แสดงข้อมูลจริง หรือพร้อมเผยแพร่
 
 Design Reference ที่ผู้ใช้ยืนยันถูกเก็บแบบไม่แก้ไขไว้ใน [`docs/design/reference`](docs/design/reference/). ไฟล์เหล่านี้เป็น Source of Truth สำหรับหน้าตา UI และโลโก้ HerdrOps
 
@@ -36,6 +36,16 @@ Design Reference ที่ผู้ใช้ยืนยันถูกเก็
 ขอบเขตและเกณฑ์รับรองแต่ละรุ่นอยู่ที่ [`Plan/ROADMAP.md`](Plan/ROADMAP.md) และ [`Plan/RELEASE-GATES.md`](Plan/RELEASE-GATES.md)
 
 GitHub Milestones, scoped Issues และ Release Trackers อยู่ที่ [`Plan/GITHUB-TRACKING.md`](Plan/GITHUB-TRACKING.md)
+
+## Visual Shell
+
+- ใช้ Design Token สามชั้น: Primitive → Semantic → Component
+- มี Top bar, Sidebar, Content host, Bottom status bar และ Window controls ตามภาพอ้างอิง
+- ลงทะเบียน Navigation ครบ 10 หน้ามาตรฐาน พร้อม keyboard shortcuts และ responsive sidebar
+- Logo/Wordmark ของ v0.1 ใช้ crop จากภาพอ้างอิงเดิมโดยไม่แก้ไข Source PNG
+- ทุกค่าบน Shell ระบุเป็น Synthetic หรือ Not connected อย่างชัดเจน
+
+Design checklist อยู่ที่ [`docs/design/implementation/v0.1-issue-2-checklist.md`](docs/design/implementation/v0.1-issue-2-checklist.md)
 
 ## Build Foundation
 
