@@ -1,6 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
     <IsPackable>false</IsPackable>
   </PropertyGroup>
 
@@ -9,6 +10,7 @@
   </ItemGroup>
 
   <ItemGroup>
+    <ProjectReference Include="..\..\src\HerdrOps.App\HerdrOps.App.csproj" />
     <ProjectReference Include="..\..\src\HerdrOps.Contracts\HerdrOps.Contracts.csproj" />
   </ItemGroup>
 

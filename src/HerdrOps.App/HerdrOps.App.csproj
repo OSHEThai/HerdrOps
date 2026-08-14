@@ -9,4 +9,9 @@
     <ProjectReference Include="..\HerdrOps.Contracts\HerdrOps.Contracts.csproj" />
     <ProjectReference Include="..\HerdrOps.Domain\HerdrOps.Domain.csproj" />
   </ItemGroup>
+
+  <ItemGroup>
+    <Resource Include="..\..\docs\design\reference\01-overview.png"
+              Link="Assets\Brand\ApprovedOverviewReference.png" />
+  </ItemGroup>
 </Project>
