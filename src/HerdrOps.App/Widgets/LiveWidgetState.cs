@@ -3,12 +3,20 @@ using HerdrOps.App.Localization;
 using HerdrOps.App.Overview;
 using HerdrOps.Contracts;
 using HerdrOps.Contracts.StateIpc;
+using HerdrOps.Domain.Activity;
+using HerdrOps.Domain.Notifications;
 
 namespace HerdrOps.App.Widgets;
 
-public sealed class LiveWidgetState : ObservableState, IWidgetState
+public sealed class LiveWidgetState : ObservableState, IInteractiveWidgetState
 {
+    private const int MaximumVisibleNotices = 4;
     private readonly WidgetUpdateTelemetry _telemetry;
+    private readonly NotificationCenter _notificationCenter;
+    private HerdrSessionStateContract _lastState = HerdrSessionStateContract.Empty;
+    private bool _lastIsCoreConnected;
+    private bool _lastIsLive;
+    private DateTimeOffset _lastNoticeSnapshotAt;
     private bool _isLive;
     private string _sourceLabel = UiLanguageService.Shared["CoreWaitingSource"];
     private string _compactSourceLabel = UiLanguageService.Shared["OffCompact"];
@@ -36,9 +44,12 @@ public sealed class LiveWidgetState : ObservableState, IWidgetState
     private WidgetAgent _selectedAgent = EmptyAgent();
     private IReadOnlyList<WidgetActivity> _selectedAgentActivity = [];
 
-    public LiveWidgetState(WidgetUpdateTelemetry? telemetry = null)
+    public LiveWidgetState(
+        WidgetUpdateTelemetry? telemetry = null,
+        NotificationCenter? notificationCenter = null)
     {
         _telemetry = telemetry ?? new WidgetUpdateTelemetry();
+        _notificationCenter = notificationCenter ?? new NotificationCenter();
     }
 
     public EvidenceClass EvidenceClass => EvidenceClass.Contract;
@@ -173,6 +184,8 @@ public sealed class LiveWidgetState : ObservableState, IWidgetState
         private set => Set(ref _selectedAgentActivity, value);
     }
 
+    public NotificationCenterSnapshot NotificationSnapshot => _notificationCenter.Snapshot();
+
     internal void Update(
         HerdrSessionStateContract state,
         bool isCoreConnected,
@@ -184,6 +197,10 @@ public sealed class LiveWidgetState : ObservableState, IWidgetState
         bool recordLatency)
     {
         ArgumentNullException.ThrowIfNull(state);
+        _lastState = state;
+        _lastIsCoreConnected = isCoreConnected;
+        _lastIsLive = isLive;
+        _lastNoticeSnapshotAt = snapshotAt;
         var text = UiLanguageService.Shared;
         var hasAdmittedState = isCoreConnected && isLive && state.LastIngestSequence > 0;
         IsLive = isLive;
@@ -243,8 +260,7 @@ public sealed class LiveWidgetState : ObservableState, IWidgetState
             ? DoneCount.ToString(System.Globalization.CultureInfo.InvariantCulture)
             : "—";
         Agents = CreateAgents(state, hasAdmittedState);
-        Notices = CreateNotices(state, isCoreConnected, isLive, snapshotAt);
-        PriorityNotices = Notices.Take(2).ToArray();
+        RefreshNotices();
         SelectedAgent = ResolveSelectedAgent(Agents, selectedTerminalId);
         SelectedAgentActivity = CreateSelectedAgentFacts(state, SelectedAgent, snapshotAt);
         RecordLatency(state.LastIngestSequence, isLive, updateLatency, recordLatency);
@@ -252,6 +268,48 @@ public sealed class LiveWidgetState : ObservableState, IWidgetState
         Raise(nameof(WindowTitleSuffix));
         Raise(nameof(DetailsSourceLabel));
         Raise(nameof(DailyScoreLabel));
+    }
+
+    public bool AcknowledgeNotificationGroup(string groupId, DateTimeOffset acknowledgedUtc)
+    {
+        var acknowledged = _notificationCenter.AcknowledgeGroup(groupId, acknowledgedUtc);
+        if (acknowledged == 0)
+        {
+            return false;
+        }
+
+        RefreshNotices();
+        return true;
+    }
+
+    public NotificationCenterDecision ApplyNotification(ActivityPipelineStep step)
+    {
+        var decision = _notificationCenter.Accept(step);
+        if (decision.Disposition is
+            NotificationCenterDisposition.Added or
+            NotificationCenterDisposition.Grouped)
+        {
+            RefreshNotices();
+        }
+
+        return decision;
+    }
+
+    private void RefreshNotices()
+    {
+        var activityNotices = CreateNotificationNotices(
+            _notificationCenter.Snapshot(),
+            _lastState);
+        var statusNotices = CreateNotices(
+            _lastState,
+            _lastIsCoreConnected,
+            _lastIsLive,
+            _lastNoticeSnapshotAt);
+        Notices = activityNotices
+            .Concat(statusNotices)
+            .Take(MaximumVisibleNotices)
+            .ToArray();
+        PriorityNotices = Notices.Take(2).ToArray();
     }
 
     private void RecordLatency(
@@ -370,6 +428,94 @@ public sealed class LiveWidgetState : ObservableState, IWidgetState
         AddStatusNotice(notices, state, "Done", "\uE73E", OverviewBrushKeys.Done, time);
         AddStatusNotice(notices, state, "Unknown", "\uE814", OverviewBrushKeys.Offline, time);
         return notices;
+    }
+
+    private static IReadOnlyList<WidgetNotice> CreateNotificationNotices(
+        NotificationCenterSnapshot snapshot,
+        HerdrSessionStateContract state)
+    {
+        var text = UiLanguageService.Shared;
+        return snapshot.Groups
+            .Select(group =>
+            {
+                var latest = group.LatestItem;
+                var agent = latest.AgentTerminalId is null
+                    ? null
+                    : state.Agents.FirstOrDefault(candidate => string.Equals(
+                        candidate.TerminalId,
+                        latest.AgentTerminalId,
+                        StringComparison.Ordinal));
+                var agentName = agent is null
+                    ? latest.AgentTerminalId ?? text["WidgetNotificationSystemActor"]
+                    : AgentStatusPresentation.DisplayName(agent);
+                var severityKey = group.HighestUrgency switch
+                {
+                    ActivityUrgency.Critical => "WidgetNotificationCritical",
+                    ActivityUrgency.High => "WidgetNotificationHigh",
+                    _ => "WidgetNotificationNormal",
+                };
+                var brushKey = group.HighestUrgency switch
+                {
+                    ActivityUrgency.Critical => OverviewBrushKeys.Blocked,
+                    ActivityUrgency.High => OverviewBrushKeys.Idle,
+                    _ => OverviewBrushKeys.Primary,
+                };
+                var glyph = group.HighestUrgency switch
+                {
+                    ActivityUrgency.Critical => "\uEA39",
+                    ActivityUrgency.High => "\uE7BA",
+                    _ => "\uE946",
+                };
+                var acknowledged = group.UnacknowledgedCount == 0;
+                return new WidgetNotice(
+                    agentName,
+                    CreateNotificationDisplaySummary(latest.RedactedSummary),
+                    latest.ObservedUtc.ToLocalTime().ToString(
+                        "HH:mm",
+                        System.Globalization.CultureInfo.InvariantCulture),
+                    glyph,
+                    brushKey,
+                    text[severityKey],
+                    group.GroupId,
+                    group.EventCount,
+                    group.UnacknowledgedCount,
+                    acknowledged,
+                    group.EventCount > 1
+                        ? text.Format("WidgetNotificationGroupCountFormat", group.EventCount)
+                        : string.Empty,
+                    acknowledged
+                        ? text["WidgetNotificationAcknowledged"]
+                        : text.Format(
+                            "WidgetNotificationUnacknowledgedFormat",
+                            group.UnacknowledgedCount),
+                    text.Format("WidgetOpenNotificationAutomationFormat", latest.SourceEventId),
+                    text.Format("WidgetAcknowledgeNotificationAutomationFormat", agentName),
+                    new WidgetNotificationRoute(
+                        latest.SourceEventId,
+                        latest.CorrelationId,
+                        latest.NotificationId,
+                        latest.AgentTerminalId,
+                        latest.TaskId));
+            })
+            .ToArray();
+    }
+
+    private static string CreateNotificationDisplaySummary(string value)
+    {
+        const int maximumDisplayLength = 180;
+        var singleLine = value
+            .Replace('\r', ' ')
+            .Replace('\n', ' ')
+            .Replace('\t', ' ')
+            .Trim();
+        while (singleLine.Contains("  ", StringComparison.Ordinal))
+        {
+            singleLine = singleLine.Replace("  ", " ", StringComparison.Ordinal);
+        }
+
+        return singleLine.Length <= maximumDisplayLength
+            ? singleLine
+            : $"{singleLine[..(maximumDisplayLength - 1)]}…";
     }
 
     private static void AddStatusNotice(

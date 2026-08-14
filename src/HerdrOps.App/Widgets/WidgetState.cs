@@ -70,6 +70,11 @@ public interface IWidgetState
     IReadOnlyList<WidgetActivity> SelectedAgentActivity { get; }
 }
 
+public interface IInteractiveWidgetState : IWidgetState
+{
+    bool AcknowledgeNotificationGroup(string groupId, DateTimeOffset acknowledgedUtc);
+}
+
 public sealed record WidgetAgent(
     string TerminalId,
     string Initials,
@@ -92,13 +97,34 @@ public sealed record WidgetAgent(
         : UiLanguageService.Shared["ValueUnknown"];
 }
 
+public sealed record WidgetNotificationRoute(
+    string SourceEventId,
+    Guid CorrelationId,
+    string EventIdentitySha256,
+    string? AgentTerminalId,
+    string? TaskId);
+
 public sealed record WidgetNotice(
     string AgentName,
     string Message,
     string Time,
     string IconGlyph,
     string StatusBrushKey,
-    string State);
+    string State,
+    string GroupId = "",
+    int GroupCount = 1,
+    int UnacknowledgedCount = 0,
+    bool IsAcknowledged = false,
+    string GroupCountLabel = "",
+    string AcknowledgementLabel = "",
+    string OpenAutomationName = "",
+    string AcknowledgeAutomationName = "",
+    WidgetNotificationRoute? Route = null)
+{
+    public bool CanOpen => Route is not null;
+
+    public bool CanAcknowledge => GroupId.Length > 0 && UnacknowledgedCount > 0;
+}
 
 public sealed record WidgetActivity(string Time, string Description);
 

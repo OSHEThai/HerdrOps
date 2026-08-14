@@ -53,6 +53,11 @@ Build, verification, GitHub roadmap, evidence capture, and packaging helpers liv
 # This remains partial until the authorized Herdr runtime trace is captured.
 ./tools/Test-V03TerminalProcess.ps1
 
+# Verify bounded notification grouping, exact deduplication, acknowledgement,
+# fail-closed event/Agent routes, and separate Thai/English WPF rendering.
+# This remains partial until actual Herdr notification delivery is captured.
+./tools/Test-V03NotificationRuntime.ps1
+
 # From an authorized Herdr pane, capture actual bounded pane-read and
 # Herdr-PID-to-Windows-process evidence without controlling the session.
 dotnet artifacts/bin/HerdrOps.Core/release/HerdrOps.Core.dll trace-herdr-terminal-process `
@@ -67,3 +72,5 @@ The v0.3 activity-pipeline gate is Contract plus Synthetic evidence only. It doe
 The v0.3 Realtime Activity gate is Contract plus actual WPF rendering backed by deterministic synthetic state. It does not close Issue #13 or claim an actual live event capture.
 
 The v0.3 terminal/process implementation gate is Contract plus Synthetic plus one local Windows-process sample. It does not close Issue #14 or claim that an actual Herdr pane returned terminal bytes or a live Herdr PID correlation.
+
+The v0.3 notification implementation gate includes actual WPF rendering and interaction from deterministic contract-backed input. It does not close Issue #16 or claim actual Herdr notification delivery, live Agent/Task correlation, restart persistence, or end-to-end runtime latency.

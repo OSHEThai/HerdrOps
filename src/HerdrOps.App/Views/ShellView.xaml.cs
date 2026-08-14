@@ -85,6 +85,34 @@ public partial class ShellView : UserControl
         return handled;
     }
 
+    public bool NavigateTo(string destinationId)
+    {
+        if (string.IsNullOrWhiteSpace(destinationId))
+        {
+            return false;
+        }
+
+        var index = Navigation.Destinations
+            .Select((destination, position) => (destination, position))
+            .FirstOrDefault(item => string.Equals(
+                item.destination.Id,
+                destinationId,
+                StringComparison.Ordinal))
+            .position;
+        if (index < 0 || index >= Navigation.Destinations.Count ||
+            !string.Equals(
+                Navigation.Destinations[index].Id,
+                destinationId,
+                StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        Navigation.SelectedIndex = index;
+        NavigationList.ScrollIntoView(Navigation.SelectedDestination);
+        return true;
+    }
+
     private void OnPreviewKeyDown(object sender, KeyEventArgs e)
     {
         if (TryNavigateByKey(e.Key, Keyboard.Modifiers))

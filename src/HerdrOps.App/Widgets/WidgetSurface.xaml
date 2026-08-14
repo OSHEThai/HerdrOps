@@ -396,28 +396,124 @@
                         <RowDefinition Height="*" />
                         <RowDefinition Height="46" />
                     </Grid.RowDefinitions>
-                    <ItemsControl ItemsSource="{Binding Notices}">
-                        <ItemsControl.ItemTemplate>
-                            <DataTemplate>
-                                <Grid Height="67" Margin="3,1">
-                                    <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="42" />
-                                        <ColumnDefinition Width="*" />
-                                        <ColumnDefinition Width="40" />
-                                    </Grid.ColumnDefinitions>
-                                    <Border Width="32" Height="32" Background="{Binding StatusBrushKey, Converter={StaticResource ResourceBrush}}" CornerRadius="16">
-                                        <TextBlock HorizontalAlignment="Center" VerticalAlignment="Center" FontFamily="{DynamicResource HerdrOps.FontFamily.Icons}" FontSize="13" Text="{Binding IconGlyph}" />
+                    <ScrollViewer VerticalScrollBarVisibility="Auto">
+                        <ItemsControl x:Name="NotificationItems" ItemsSource="{Binding Notices}">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <Border Height="67"
+                                            Margin="3,1"
+                                            BorderBrush="{DynamicResource HerdrOps.Brush.Border}"
+                                            BorderThickness="0,0,0,1">
+                                        <Border.Style>
+                                            <Style TargetType="Border">
+                                                <Setter Property="Opacity" Value="1" />
+                                                <Style.Triggers>
+                                                    <DataTrigger Binding="{Binding IsAcknowledged}" Value="True">
+                                                        <Setter Property="Opacity" Value="0.72" />
+                                                    </DataTrigger>
+                                                </Style.Triggers>
+                                            </Style>
+                                        </Border.Style>
+                                        <Grid>
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="76" />
+                                            </Grid.ColumnDefinitions>
+                                            <Button x:Name="OpenNotificationButton"
+                                                    Padding="0"
+                                                    HorizontalContentAlignment="Stretch"
+                                                    VerticalContentAlignment="Stretch"
+                                                    Background="Transparent"
+                                                    BorderBrush="Transparent"
+                                                    BorderThickness="0"
+                                                    IsEnabled="{Binding CanOpen}"
+                                                    CommandParameter="{Binding}"
+                                                    automation:AutomationProperties.Name="{Binding OpenAutomationName}"
+                                                    Click="OnNotificationOpenClick">
+                                                <Button.Template>
+                                                    <ControlTemplate TargetType="Button">
+                                                        <Border Background="{TemplateBinding Background}">
+                                                            <ContentPresenter HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
+                                                                              VerticalAlignment="{TemplateBinding VerticalContentAlignment}" />
+                                                        </Border>
+                                                    </ControlTemplate>
+                                                </Button.Template>
+                                                <Grid>
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="42" />
+                                                        <ColumnDefinition Width="*" />
+                                                    </Grid.ColumnDefinitions>
+                                                    <Border Width="32"
+                                                            Height="32"
+                                                            Background="{Binding StatusBrushKey, Converter={StaticResource ResourceBrush}}"
+                                                            CornerRadius="16">
+                                                        <TextBlock HorizontalAlignment="Center"
+                                                                   VerticalAlignment="Center"
+                                                                   FontFamily="{DynamicResource HerdrOps.FontFamily.Icons}"
+                                                                   FontSize="13"
+                                                                   Text="{Binding IconGlyph}" />
+                                                    </Border>
+                                                    <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                                                        <TextBlock FontSize="12"
+                                                                   FontWeight="SemiBold"
+                                                                   Text="{Binding AgentName}"
+                                                                   TextTrimming="CharacterEllipsis" />
+                                                        <TextBlock Tag="ThaiWidgetCheck"
+                                                                   Foreground="{DynamicResource HerdrOps.Brush.TextSecondary}"
+                                                                   FontSize="10"
+                                                                   Text="{Binding Message}"
+                                                                   TextTrimming="CharacterEllipsis" />
+                                                        <TextBlock Foreground="{Binding StatusBrushKey, Converter={StaticResource ResourceBrush}}"
+                                                                   FontSize="8"
+                                                                   Text="{Binding State}"
+                                                                   TextTrimming="CharacterEllipsis" />
+                                                    </StackPanel>
+                                                </Grid>
+                                            </Button>
+                                            <StackPanel Grid.Column="1"
+                                                        HorizontalAlignment="Right"
+                                                        VerticalAlignment="Center">
+                                                <TextBlock HorizontalAlignment="Right"
+                                                           Foreground="{DynamicResource HerdrOps.Brush.TextMuted}"
+                                                           FontSize="9"
+                                                           Text="{Binding Time}" />
+                                                <TextBlock HorizontalAlignment="Right"
+                                                           Foreground="{DynamicResource HerdrOps.Brush.TextMuted}"
+                                                           FontSize="8"
+                                                           Text="{Binding GroupCountLabel}"
+                                                           TextTrimming="CharacterEllipsis" />
+                                                <TextBlock HorizontalAlignment="Right"
+                                                           Foreground="{DynamicResource HerdrOps.Brush.TextMuted}"
+                                                           FontSize="8"
+                                                           Text="{Binding AcknowledgementLabel}"
+                                                           TextTrimming="CharacterEllipsis" />
+                                                <Button Width="26"
+                                                        Height="24"
+                                                        HorizontalAlignment="Right"
+                                                        Padding="0"
+                                                        Style="{StaticResource WidgetHeaderButton}"
+                                                        Visibility="{Binding CanAcknowledge, Converter={StaticResource BooleanVisibility}}"
+                                                        CommandParameter="{Binding}"
+                                                        automation:AutomationProperties.Name="{Binding AcknowledgeAutomationName}"
+                                                        Click="OnNotificationAcknowledgeClick">
+                                                    <TextBlock FontFamily="{DynamicResource HerdrOps.FontFamily.Icons}"
+                                                               FontSize="10"
+                                                               Text="&#xE73E;" />
+                                                </Button>
+                                            </StackPanel>
+                                        </Grid>
                                     </Border>
-                                    <StackPanel Grid.Column="1" VerticalAlignment="Center">
-                                        <TextBlock FontSize="12" FontWeight="SemiBold" Text="{Binding AgentName}" TextTrimming="CharacterEllipsis" />
-                                        <TextBlock Tag="ThaiWidgetCheck" Foreground="{DynamicResource HerdrOps.Brush.TextSecondary}" FontSize="10" Text="{Binding Message}" TextTrimming="CharacterEllipsis" />
-                                    </StackPanel>
-                                    <TextBlock Grid.Column="2" VerticalAlignment="Center" Foreground="{DynamicResource HerdrOps.Brush.TextMuted}" FontSize="9" Text="{Binding Time}" />
-                                </Grid>
-                            </DataTemplate>
-                        </ItemsControl.ItemTemplate>
-                    </ItemsControl>
-                    <Button Grid.Row="1" MinHeight="40" Style="{DynamicResource HerdrOps.Style.SecondaryButton}" automation:AutomationProperties.Name="{Binding [OverviewAlerts], Source={x:Static localization:UiLanguageService.Shared}}" Content="{Binding [WidgetViewAll], Source={x:Static localization:UiLanguageService.Shared}}" />
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                    </ScrollViewer>
+                    <Button x:Name="ViewAllNotificationsButton"
+                            Grid.Row="1"
+                            MinHeight="40"
+                            Style="{DynamicResource HerdrOps.Style.SecondaryButton}"
+                            automation:AutomationProperties.Name="{Binding [OverviewAlerts], Source={x:Static localization:UiLanguageService.Shared}}"
+                            Click="OnViewAllNotificationsClick"
+                            Content="{Binding [WidgetViewAll], Source={x:Static localization:UiLanguageService.Shared}}" />
                 </Grid>
 
                 <Grid x:Name="AgentDetailPanel" Visibility="Collapsed">
@@ -473,10 +569,12 @@
                             </DataTemplate>
                         </ItemsControl.ItemTemplate>
                     </ItemsControl>
-                    <Button Grid.Row="4"
+                    <Button x:Name="ViewSelectedAgentButton"
+                            Grid.Row="4"
                             MinHeight="40"
                             Style="{DynamicResource HerdrOps.Style.SecondaryButton}"
                             automation:AutomationProperties.Name="{Binding [WidgetViewAgentDetails], Source={x:Static localization:UiLanguageService.Shared}}"
+                            Click="OnViewSelectedAgentClick"
                             Content="{Binding [WidgetViewAllDetails], Source={x:Static localization:UiLanguageService.Shared}}" />
                 </Grid>
             </Grid>
