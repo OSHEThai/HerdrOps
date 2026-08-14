@@ -79,6 +79,7 @@ $requiredChecks = @(
     'RedactorRemovesFineGrainedGitHubPatAndColonlessUriCredentials',
     'RedactorBoundsUnicodeOutputWithoutSplittingRunes',
     'RedactorRejectsInputAboveItsExplicitByteBound',
+    'RedactorScansTheMaximumContractInputAndDetectsATailSecret',
     'PlannerReadsOnlyChangedRevisionsAndRetriesFailuresAfterDebounce',
     'PlannerEvictsOldestPaneAtTheConfiguredBound',
     'PlannerAcceptsAReadRevisionThatAdvancedAfterTheReadWasPlanned',

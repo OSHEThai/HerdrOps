@@ -88,6 +88,26 @@ public sealed class TerminalPreviewPolicyTests
     }
 
     [TestMethod]
+    public void RedactorScansTheMaximumContractInputAndDetectsATailSecret()
+    {
+        const string secret = "tail-secret-must-be-redacted";
+        const string secretLine = "\nPASSWORD=" + secret;
+        var paddingLength = TerminalPreviewContract.MaximumInputUtf8Bytes -
+                            Encoding.UTF8.GetByteCount(secretLine);
+        var input = new string('x', paddingLength) + secretLine;
+
+        var result = new SensitiveTextRedactor().Redact(input);
+
+        Assert.AreEqual(TerminalPreviewContract.MaximumInputUtf8Bytes, result.OriginalUtf8Bytes);
+        Assert.AreEqual(1, result.ReplacementCount);
+        Assert.IsTrue(result.WasTruncated);
+        Assert.IsFalse(result.RedactedText.Contains(secret, StringComparison.Ordinal));
+        Assert.IsLessThanOrEqualTo(
+            TerminalPreviewContract.MaximumSummaryUtf8Bytes,
+            result.RedactedUtf8Bytes);
+    }
+
+    [TestMethod]
     public void PlannerReadsOnlyChangedRevisionsAndRetriesFailuresAfterDebounce()
     {
         var planner = new TerminalReadPlanner(new TerminalReadPlannerOptions(

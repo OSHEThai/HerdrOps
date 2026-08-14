@@ -64,7 +64,7 @@ public sealed record SensitiveTextRedactionResult(
 public sealed class SensitiveTextRedactor
 {
     private const string Replacement = "[REDACTED]";
-    private static readonly TimeSpan RegexTimeout = TimeSpan.FromMilliseconds(100);
+    private static readonly TimeSpan RegexTimeout = TimeSpan.FromSeconds(1);
     private static readonly Regex AssignmentPattern = CreateRegex(
         "(?<prefix>\\b(?:[A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|PASSWD|API[_-]?KEY|PRIVATE[_-]?KEY|CONNECTION[_-]?STRING)[A-Z0-9_]*)\\s*[=:]\\s*)(?:\"[^\"\\r\\n]*\"|'[^'\\r\\n]*'|[^\\s;&\\r\\n]+)");
     private static readonly Regex AuthorizationPattern = CreateRegex(
