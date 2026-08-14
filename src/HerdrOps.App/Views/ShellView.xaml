@@ -545,6 +545,9 @@
             <views:LiveOrganizationView x:Name="LiveOrganizationPage"
                                         Grid.Column="1"
                                         Visibility="Collapsed" />
+            <views:RealtimeActivityView x:Name="RealtimeActivityPage"
+                                        Grid.Column="1"
+                                        Visibility="Collapsed" />
             <views:AgentDetailView x:Name="AgentDetailPage"
                                    Grid.Column="1"
                                    Visibility="Collapsed" />

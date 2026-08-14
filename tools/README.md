@@ -42,8 +42,15 @@ Build, verification, GitHub roadmap, evidence capture, and packaging helpers liv
 # From a clean committed checkout, verify the deterministic v0.3 activity-event
 # envelope, bounded pipeline, replay fixture, exact hashes, and fail-closed command.
 ./tools/Test-V03ActivityPipeline.ps1
+
+# Verify the v0.3 Realtime Activity layout, five deterministic filters,
+# bounded paging, language separation, and synchronized detail/evidence panels.
+# This remains implementation-only until actual live collector evidence exists.
+./tools/Test-V03RealtimeActivity.ps1
 ```
 
 The composite gate binds production WPF captures to exact state hashes from the admitted Herdr Core trace, verifies Dashboard-close Widget continuity, and measures Widget latency plus combined Core/App idle resources. It fails closed outside an authorized Herdr pane and does not control the Herdr session itself.
 
 The v0.3 activity-pipeline gate is Contract plus Synthetic evidence only. It does not claim a live Herdr trace, process telemetry, file collection, bounded `pane.read`, redaction against actual data, or v0.3 release readiness.
+
+The v0.3 Realtime Activity gate is Contract plus actual WPF rendering backed by deterministic synthetic state. It does not close Issue #13 or claim an actual live event capture.

@@ -1,4 +1,5 @@
 using HerdrOps.App.Agents;
+using HerdrOps.App.Activity;
 using HerdrOps.App.Localization;
 using HerdrOps.App.Organization;
 using HerdrOps.App.Overview;
@@ -58,6 +59,9 @@ public sealed class LiveDashboardState : ObservableState
         Organization = new LiveOrganizationState();
         AgentDetail = new LiveAgentDetailState();
         Widgets = new LiveWidgetState();
+        RealtimeActivity = syntheticPreview
+            ? RealtimeActivityState.CreateSyntheticPreview()
+            : RealtimeActivityState.CreateUnavailable();
         Organization.AgentSelectionRequested += (_, terminalId) => SelectAgent(terminalId);
         _connectionStatus = syntheticPreview
             ? LiveDashboardConnectionStatus.SyntheticPreview
@@ -87,6 +91,8 @@ public sealed class LiveDashboardState : ObservableState
     public LiveAgentDetailState AgentDetail { get; }
 
     public LiveWidgetState Widgets { get; }
+
+    public RealtimeActivityState RealtimeActivity { get; }
 
     public HerdrSessionStateContract CurrentState
     {
@@ -267,6 +273,7 @@ public sealed class LiveDashboardState : ObservableState
     {
         RefreshPresentation();
         RefreshViews();
+        RealtimeActivity.RefreshLanguage();
         if (_syntheticPreview)
         {
             AgentDetail.ApplySyntheticPreviewProfile();
