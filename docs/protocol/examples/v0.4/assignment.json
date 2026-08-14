@@ -1,0 +1,16 @@
+{
+  "contractVersion": 1,
+  "eventId": "11111111-1111-1111-1111-111111111111",
+  "taskId": "TASK-115",
+  "actorId": "project-manager",
+  "actorRole": "Project Manager",
+  "occurredUtc": "2026-08-15T03:00:00Z",
+  "summary": "Assign the bounded implementation task.",
+  "parentEventId": null,
+  "targetAgentId": "backend-worker-01",
+  "progressPercent": null,
+  "deviationReason": null,
+  "evidenceReference": null,
+  "evidenceSha256": null,
+  "handoffNote": null
+}

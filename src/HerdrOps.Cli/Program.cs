@@ -1,2 +1,8 @@
-Console.Error.WriteLine("HerdrOps.Cli foundation shell. Agent self-report commands begin in v0.4.");
-return 2;
+using HerdrOps.Cli;
+
+return await HerdrOpsCliCommand.RunAsync(
+    args,
+    Console.In,
+    Console.Out,
+    Console.Error,
+    CancellationToken.None);

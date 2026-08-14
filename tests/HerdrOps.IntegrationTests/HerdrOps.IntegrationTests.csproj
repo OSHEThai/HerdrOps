@@ -10,6 +10,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\HerdrOps.App\HerdrOps.App.csproj" />
+    <ProjectReference Include="..\..\src\HerdrOps.Cli\HerdrOps.Cli.csproj" />
     <ProjectReference Include="..\..\src\HerdrOps.Core\HerdrOps.Core.csproj" />
     <ProjectReference Include="..\..\src\HerdrOps.Infrastructure\HerdrOps.Infrastructure.csproj" />
   </ItemGroup>

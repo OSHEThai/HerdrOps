@@ -1,0 +1,16 @@
+{
+  "contractVersion": 1,
+  "eventId": "33333333-3333-3333-3333-333333333333",
+  "taskId": "TASK-115",
+  "actorId": "backend-leader",
+  "actorRole": "Backend Leader",
+  "occurredUtc": "2026-08-15T03:02:00Z",
+  "summary": "Delegate the task to the implementation worker.",
+  "parentEventId": "11111111-1111-1111-1111-111111111111",
+  "targetAgentId": "backend-worker-01",
+  "progressPercent": null,
+  "deviationReason": null,
+  "evidenceReference": null,
+  "evidenceSha256": null,
+  "handoffNote": null
+}
