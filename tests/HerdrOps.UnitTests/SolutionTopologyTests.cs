@@ -41,6 +41,44 @@ public sealed class SolutionTopologyTests
         }
     }
 
+    [TestMethod]
+    public void SQLiteProviderIsOwnedOnlyByInfrastructure()
+    {
+        var repositoryRoot = FindRepositoryRoot();
+        var projects = Directory.GetFiles(
+            Path.Combine(repositoryRoot, "src"),
+            "*.csproj",
+            SearchOption.AllDirectories);
+        var sqliteOwners = projects
+            .Where(project => XDocument.Load(project)
+                .Descendants("PackageReference")
+                .Any(reference =>
+                    ((string?)reference.Attribute("Include"))?.Contains(
+                        "Sqlite",
+                        StringComparison.OrdinalIgnoreCase) == true))
+            .Select(Path.GetFileNameWithoutExtension)
+            .Order(StringComparer.Ordinal)
+            .ToArray();
+
+        CollectionAssert.AreEqual(
+            new[] { "HerdrOps.Infrastructure" },
+            sqliteOwners,
+            "Only Infrastructure may own the SQLite provider or native bundle.");
+
+        foreach (var projectName in new[] { "HerdrOps.App", "HerdrOps.Cli" })
+        {
+            var sourceRoot = Path.Combine(repositoryRoot, "src", projectName);
+            foreach (var sourcePath in Directory.GetFiles(sourceRoot, "*.cs", SearchOption.AllDirectories))
+            {
+                var source = File.ReadAllText(sourcePath);
+                Assert.IsFalse(
+                    source.Contains("Microsoft.Data.Sqlite", StringComparison.Ordinal) ||
+                    source.Contains("SqliteConnection", StringComparison.Ordinal),
+                    $"{projectName} must use Core IPC instead of direct SQLite access: {sourcePath}");
+            }
+        }
+    }
+
     private static string FindRepositoryRoot()
     {
         var directory = new DirectoryInfo(AppContext.BaseDirectory);

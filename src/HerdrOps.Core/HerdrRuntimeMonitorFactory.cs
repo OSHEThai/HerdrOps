@@ -30,7 +30,8 @@ public sealed class HerdrRuntimeMonitorFactory
 {
     public HerdrAdmittedRuntimeMonitor Create(
         string? explicitExecutablePath = null,
-        string? explicitSocketPath = null)
+        string? explicitSocketPath = null,
+        HerdrOps.Domain.Herdr.HerdrSessionState? initialState = null)
     {
         var executablePath = HerdrInstallationLocator.FindExecutable(explicitExecutablePath);
         if (string.IsNullOrWhiteSpace(executablePath))
@@ -86,7 +87,7 @@ public sealed class HerdrRuntimeMonitorFactory
         var apiClient = new HerdrNamedPipeApiClient(
             serverIdentityVerifier: new ExpectedHerdrServerIdentityVerifier(admission.ExecutableSha256));
         return new HerdrAdmittedRuntimeMonitor(
-            new HerdrRuntimeMonitor(apiClient, endpoint),
+            new HerdrRuntimeMonitor(apiClient, endpoint, initialState: initialState),
             admission);
     }
 

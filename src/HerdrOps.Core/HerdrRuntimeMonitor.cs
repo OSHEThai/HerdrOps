@@ -37,16 +37,25 @@ public sealed class HerdrRuntimeMonitor
         HerdrPipeEndpoint endpoint,
         HerdrStateReducer? reducer = null,
         IHerdrReconnectDelay? reconnectDelay = null,
-        TimeProvider? timeProvider = null)
+        TimeProvider? timeProvider = null,
+        HerdrSessionState? initialState = null)
     {
         _apiClient = apiClient ?? throw new ArgumentNullException(nameof(apiClient));
         _endpoint = endpoint ?? throw new ArgumentNullException(nameof(endpoint));
         _reducer = reducer ?? new HerdrStateReducer();
         _reconnectDelay = reconnectDelay ?? new HerdrExponentialReconnectDelay();
         _timeProvider = timeProvider ?? TimeProvider.System;
+        initialState ??= HerdrSessionState.Empty;
+        if (initialState.ConnectionEpoch < 0 || initialState.LastIngestSequence < 0)
+        {
+            throw new ArgumentException(
+                "The initial Herdr state cannot contain negative counters.",
+                nameof(initialState));
+        }
+
         _current = new HerdrRuntimeMonitorSnapshot(
             HerdrRuntimeMonitorStatus.Starting,
-            HerdrSessionState.Empty,
+            initialState,
             null,
             0,
             0,
