@@ -92,11 +92,13 @@
                         <ColumnDefinition Width="Auto" />
                     </Grid.ColumnDefinitions>
                     <StackPanel VerticalAlignment="Center" Orientation="Horizontal">
-                        <TextBlock Foreground="{DynamicResource HerdrOps.Brush.PrimaryText}"
+                        <TextBlock x:Name="HeaderWordmark"
+                                   Foreground="{DynamicResource HerdrOps.Brush.PrimaryText}"
                                    FontSize="14"
                                    FontWeight="Bold"
                                    Text="HERDROPS" />
-                        <Ellipse Width="7"
+                        <Ellipse x:Name="HeaderStatusDot"
+                                 Width="7"
                                  Height="7"
                                  Margin="9,0,5,0"
                                  Fill="{DynamicResource HerdrOps.Brush.Status.Working}" />
@@ -107,7 +109,8 @@
                                    FontWeight="SemiBold"
                                    Text="SYNTHETIC" />
                     </StackPanel>
-                    <Button Grid.Column="1"
+                    <Button x:Name="PinButton"
+                            Grid.Column="1"
                             Style="{StaticResource WidgetHeaderButton}"
                             Visibility="{Binding IsInteractive, RelativeSource={RelativeSource AncestorType=UserControl}, Converter={StaticResource BooleanVisibility}}"
                             automation:AutomationProperties.Name="ปักหมุดหรือยกเลิก Always on top"
@@ -115,7 +118,8 @@
                         <TextBlock FontFamily="{DynamicResource HerdrOps.FontFamily.Icons}"
                                    Text="&#xE840;" />
                     </Button>
-                    <Button Grid.Column="2"
+                    <Button x:Name="CloseButton"
+                            Grid.Column="2"
                             Style="{StaticResource WidgetHeaderButton}"
                             Visibility="{Binding IsInteractive, RelativeSource={RelativeSource AncestorType=UserControl}, Converter={StaticResource BooleanVisibility}}"
                             automation:AutomationProperties.Name="ปิด Widget"
@@ -166,7 +170,7 @@
                                                Foreground="{Binding StatusBrushKey, Converter={StaticResource ResourceBrush}}"
                                                FontFamily="{DynamicResource HerdrOps.FontFamily.Icons}"
                                                FontSize="15"
-                                               Text="&#xE7BA;" />
+                                               Text="{Binding IconGlyph}" />
                                     <StackPanel Grid.Column="1" VerticalAlignment="Center">
                                         <TextBlock Tag="ThaiWidgetCheck" FontSize="11" FontWeight="SemiBold" Text="{Binding AgentName}" TextTrimming="CharacterEllipsis" />
                                         <TextBlock Foreground="{DynamicResource HerdrOps.Brush.TextMuted}" FontSize="10" Text="{Binding Message}" TextTrimming="CharacterEllipsis" />
@@ -179,9 +183,15 @@
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="*" />
                             <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="12" />
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="16" />
+                            <ColumnDefinition Width="Auto" />
                         </Grid.ColumnDefinitions>
                         <TextBlock VerticalAlignment="Center" Foreground="{DynamicResource HerdrOps.Brush.TextMuted}" FontSize="10" Text="คะแนนวันนี้" />
-                        <TextBlock Grid.Column="1" VerticalAlignment="Center" Foreground="{DynamicResource HerdrOps.Brush.PrimaryText}" FontSize="18" FontWeight="SemiBold" Text="{Binding DailyScore, StringFormat={}{0}/100}" />
+                        <TextBlock Grid.Column="1" VerticalAlignment="Center" Foreground="{DynamicResource HerdrOps.Brush.Status.Working}" FontSize="11" FontWeight="SemiBold" Text="{Binding PositiveDelta, StringFormat=+{0}}" />
+                        <TextBlock Grid.Column="3" VerticalAlignment="Center" Foreground="{DynamicResource HerdrOps.Brush.Status.Blocked}" FontSize="11" FontWeight="SemiBold" Text="{Binding NegativeDelta}" />
+                        <TextBlock Grid.Column="5" VerticalAlignment="Center" Foreground="{DynamicResource HerdrOps.Brush.PrimaryText}" FontSize="18" FontWeight="SemiBold" Text="{Binding DailyScore, StringFormat={}{0}/100}" />
                     </Grid>
                 </Grid>
 
@@ -197,12 +207,15 @@
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="*" />
                             <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="12" />
+                            <ColumnDefinition Width="Auto" />
                             <ColumnDefinition Width="16" />
                             <ColumnDefinition Width="Auto" />
                         </Grid.ColumnDefinitions>
                         <TextBlock Tag="ThaiWidgetCheck" VerticalAlignment="Center" Foreground="{DynamicResource HerdrOps.Brush.TextMuted}" FontSize="10" Text="คะแนนรวมวันนี้" />
                         <TextBlock Grid.Column="1" VerticalAlignment="Center" Foreground="{DynamicResource HerdrOps.Brush.Status.Working}" FontWeight="SemiBold" Text="{Binding PositiveDelta, StringFormat=+{0}}" />
-                        <TextBlock Grid.Column="3" VerticalAlignment="Center" Foreground="{DynamicResource HerdrOps.Brush.PrimaryText}" FontWeight="SemiBold" Text="{Binding DailyScore, StringFormat={}{0}/100}" />
+                        <TextBlock Grid.Column="3" VerticalAlignment="Center" Foreground="{DynamicResource HerdrOps.Brush.Status.Blocked}" FontWeight="SemiBold" Text="{Binding NegativeDelta}" />
+                        <TextBlock Grid.Column="5" VerticalAlignment="Center" Foreground="{DynamicResource HerdrOps.Brush.PrimaryText}" FontWeight="SemiBold" Text="{Binding DailyScore, StringFormat={}{0}/100}" />
                     </Grid>
                 </Grid>
 
@@ -253,9 +266,15 @@
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="*" />
                             <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="12" />
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="16" />
+                            <ColumnDefinition Width="Auto" />
                         </Grid.ColumnDefinitions>
                         <TextBlock Tag="ThaiWidgetCheck" VerticalAlignment="Center" Foreground="{DynamicResource HerdrOps.Brush.TextMuted}" FontSize="10" Text="รายละเอียดเดียวกันจากสถานะ Synthetic ชุดกลาง" />
-                        <TextBlock Grid.Column="1" VerticalAlignment="Center" Foreground="{DynamicResource HerdrOps.Brush.PrimaryText}" FontSize="15" FontWeight="SemiBold" Text="{Binding DailyScore, StringFormat={}{0}/100}" />
+                        <TextBlock Grid.Column="1" VerticalAlignment="Center" Foreground="{DynamicResource HerdrOps.Brush.Status.Working}" FontSize="11" FontWeight="SemiBold" Text="{Binding PositiveDelta, StringFormat=+{0}}" />
+                        <TextBlock Grid.Column="3" VerticalAlignment="Center" Foreground="{DynamicResource HerdrOps.Brush.Status.Blocked}" FontSize="11" FontWeight="SemiBold" Text="{Binding NegativeDelta}" />
+                        <TextBlock Grid.Column="5" VerticalAlignment="Center" Foreground="{DynamicResource HerdrOps.Brush.PrimaryText}" FontSize="15" FontWeight="SemiBold" Text="{Binding DailyScore, StringFormat={}{0}/100}" />
                     </Grid>
                 </Grid>
 
@@ -303,7 +322,7 @@
                                         <ColumnDefinition Width="*" />
                                     </Grid.ColumnDefinitions>
                                     <Border Width="25" Height="25" Background="{Binding StatusBrushKey, Converter={StaticResource ResourceBrush}}" CornerRadius="13">
-                                        <TextBlock HorizontalAlignment="Center" VerticalAlignment="Center" FontSize="9" FontWeight="SemiBold" Text="{Binding Initials}" />
+                                        <TextBlock HorizontalAlignment="Center" VerticalAlignment="Center" Foreground="{DynamicResource HerdrOps.Brush.TextPrimary}" FontSize="9" FontWeight="SemiBold" Text="{Binding Initials}" />
                                     </Border>
                                     <Ellipse Grid.Column="1" Width="7" Height="7" Fill="{Binding StatusBrushKey, Converter={StaticResource ResourceBrush}}" />
                                     <TextBlock Grid.Column="2" HorizontalAlignment="Right" VerticalAlignment="Center" Foreground="{DynamicResource HerdrOps.Brush.TextSecondary}" FontSize="10" Text="{Binding Elapsed}" />
@@ -329,7 +348,7 @@
                                         <ColumnDefinition Width="40" />
                                     </Grid.ColumnDefinitions>
                                     <Border Width="32" Height="32" Background="{Binding StatusBrushKey, Converter={StaticResource ResourceBrush}}" CornerRadius="16">
-                                        <TextBlock HorizontalAlignment="Center" VerticalAlignment="Center" FontFamily="{DynamicResource HerdrOps.FontFamily.Icons}" FontSize="13" Text="&#xE7BA;" />
+                                        <TextBlock HorizontalAlignment="Center" VerticalAlignment="Center" FontFamily="{DynamicResource HerdrOps.FontFamily.Icons}" FontSize="13" Text="{Binding IconGlyph}" />
                                     </Border>
                                     <StackPanel Grid.Column="1" VerticalAlignment="Center">
                                         <TextBlock FontSize="12" FontWeight="SemiBold" Text="{Binding AgentName}" TextTrimming="CharacterEllipsis" />
@@ -346,9 +365,10 @@
                 <Grid x:Name="AgentDetailPanel" Visibility="Collapsed">
                     <Grid.RowDefinitions>
                         <RowDefinition Height="38" />
-                        <RowDefinition Height="142" />
+                        <RowDefinition Height="152" />
                         <RowDefinition Height="Auto" />
                         <RowDefinition Height="*" />
+                        <RowDefinition Height="44" />
                     </Grid.RowDefinitions>
                     <StackPanel Orientation="Horizontal">
                         <Ellipse Width="9" Height="9" Margin="0,0,7,0" Fill="{Binding SelectedAgent.StatusBrushKey, Converter={StaticResource ResourceBrush}}" />
@@ -365,23 +385,26 @@
                             <RowDefinition />
                             <RowDefinition />
                             <RowDefinition />
+                            <RowDefinition />
                         </Grid.RowDefinitions>
                         <TextBlock Tag="ThaiWidgetCheck" Foreground="{DynamicResource HerdrOps.Brush.TextMuted}" FontSize="11" Text="บทบาท" />
                         <TextBlock Grid.Row="1" Foreground="{DynamicResource HerdrOps.Brush.TextMuted}" FontSize="11" Text="สถานะ" />
                         <TextBlock Grid.Row="2" Foreground="{DynamicResource HerdrOps.Brush.TextMuted}" FontSize="11" Text="งานปัจจุบัน" />
                         <TextBlock Grid.Row="3" Foreground="{DynamicResource HerdrOps.Brush.TextMuted}" FontSize="11" Text="เริ่มเมื่อ" />
                         <TextBlock Grid.Row="4" Foreground="{DynamicResource HerdrOps.Brush.TextMuted}" FontSize="11" Text="คะแนนวันนี้" />
+                        <TextBlock Grid.Row="5" Foreground="{DynamicResource HerdrOps.Brush.TextMuted}" FontSize="11" Text="ผู้มอบหมาย" />
                         <TextBlock Grid.Column="1" FontSize="11" Text="{Binding SelectedAgent.Role}" />
                         <TextBlock Grid.Row="1" Grid.Column="1" Foreground="{Binding SelectedAgent.StatusBrushKey, Converter={StaticResource ResourceBrush}}" FontSize="11" Text="{Binding SelectedAgent.Status}" />
                         <TextBlock Grid.Row="2" Grid.Column="1" FontSize="11" Text="{Binding SelectedAgent.Activity}" TextTrimming="CharacterEllipsis" />
                         <TextBlock Grid.Row="3" Grid.Column="1" FontSize="11" Text="14:20 (1h 27m)" />
                         <TextBlock Grid.Row="4" Grid.Column="1" Foreground="{DynamicResource HerdrOps.Brush.PrimaryText}" FontSize="11" Text="{Binding SelectedAgent.Score, StringFormat={}{0}/100}" />
+                        <TextBlock Grid.Row="5" Grid.Column="1" FontSize="11" Text="{Binding SelectedAgent.AssignedBy}" TextTrimming="CharacterEllipsis" />
                     </Grid>
                     <TextBlock Grid.Row="2" Margin="0,8,0,5" FontSize="11" FontWeight="SemiBold" Text="กิจกรรมล่าสุด" />
                     <ItemsControl Grid.Row="3" ItemsSource="{Binding SelectedAgentActivity}">
                         <ItemsControl.ItemTemplate>
                             <DataTemplate>
-                                <Grid Height="29">
+                                <Grid Height="24">
                                     <Grid.ColumnDefinitions>
                                         <ColumnDefinition Width="46" />
                                         <ColumnDefinition Width="*" />
@@ -392,6 +415,11 @@
                             </DataTemplate>
                         </ItemsControl.ItemTemplate>
                     </ItemsControl>
+                    <Button Grid.Row="4"
+                            MinHeight="40"
+                            Style="{DynamicResource HerdrOps.Style.SecondaryButton}"
+                            automation:AutomationProperties.Name="ดูรายละเอียด Agent Synthetic ทั้งหมด"
+                            Content="ดูรายละเอียดทั้งหมด" />
                 </Grid>
             </Grid>
 

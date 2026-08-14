@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.IO;
+using System.Security.Cryptography;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
@@ -92,17 +93,29 @@ public sealed class ShellRenderingTests
             "issue-4");
         Directory.CreateDirectory(widgetEvidenceDirectory);
 
+        var galleryEvidence = new Dictionary<double, string>();
         foreach (var scale in new[] { 1.0, 1.25, 1.5 })
         {
             var scaleLabel = FormattableString.Invariant($"{scale * 100:0}");
+            var outputPath = Path.Combine(widgetEvidenceDirectory, $"widget-gallery-{scaleLabel}.png");
             RenderView(
                 new WidgetGalleryView(),
                 1536,
                 1024,
                 scale,
                 "ThaiWidgetCheck",
-                Path.Combine(widgetEvidenceDirectory, $"widget-gallery-{scaleLabel}.png"));
+                outputPath);
+            galleryEvidence.Add(scale, outputPath);
         }
+
+        Assert.AreNotEqual(
+            GetDecodedPixelHash(galleryEvidence[1.0]),
+            GetDecodedPixelHash(galleryEvidence[1.25]),
+            "125% Gallery evidence must exercise an adaptive layout, not only different PNG DPI metadata.");
+        Assert.AreNotEqual(
+            GetDecodedPixelHash(galleryEvidence[1.0]),
+            GetDecodedPixelHash(galleryEvidence[1.5]),
+            "150% Gallery evidence must exercise an adaptive layout, not only different PNG DPI metadata.");
 
         RenderView(
             new WidgetGalleryView(),
@@ -267,29 +280,59 @@ public sealed class ShellRenderingTests
 
     private static void AssertWidgetVariantsAreLaidOut(DependencyObject root)
     {
-        var expectedPreviewNames = new[]
-        {
-            "CompactPreview",
-            "NormalPreview",
-            "ExpandedPreview",
-            "MiniPreview",
-            "VerticalPreview",
-            "NotificationPreview",
-            "AgentDetailPreview",
-        };
         var previews = EnumerateDescendants(root)
             .OfType<WidgetSurface>()
-            .Where(surface => expectedPreviewNames.Contains(surface.Name, StringComparer.Ordinal))
-            .ToDictionary(surface => surface.Name, StringComparer.Ordinal);
+            .Where(surface => surface.ActualWidth > 0 && surface.ActualHeight > 0)
+            .Where(IsEffectivelyVisible)
+            .ToArray();
 
-        foreach (var previewName in expectedPreviewNames)
+        foreach (var variant in Enum.GetValues<WidgetVariant>())
         {
-            Assert.IsTrue(previews.TryGetValue(previewName, out var preview), $"Missing Widget preview: {previewName}");
-            Assert.IsNotNull(preview);
-            Assert.IsGreaterThan(0d, preview.ActualWidth, $"Widget preview has no width: {previewName}");
-            Assert.IsGreaterThan(0d, preview.ActualHeight, $"Widget preview has no height: {previewName}");
-            Assert.AreEqual(Visibility.Visible, preview.Visibility, $"Widget preview is hidden: {previewName}");
+            Assert.IsTrue(
+                previews.Any(preview => preview.Variant == variant),
+                $"Missing visible Widget preview: {variant}");
         }
+
+        var visibleLaunchActions = EnumerateDescendants(root)
+            .OfType<Button>()
+            .Where(button => button.ActualWidth > 0 && button.ActualHeight >= 40)
+            .Where(IsEffectivelyVisible)
+            .Where(button =>
+                string.Equals(button.Tag?.ToString(), "Dashboard", StringComparison.Ordinal) ||
+                Enum.TryParse<WidgetVariant>(button.Tag?.ToString(), out _))
+            .ToArray();
+        Assert.HasCount(8, visibleLaunchActions, "Every responsive layout must retain seven Widget actions plus Dashboard.");
+    }
+
+    private static bool IsEffectivelyVisible(DependencyObject element)
+    {
+        for (DependencyObject? current = element; current is not null; current = VisualTreeHelper.GetParent(current))
+        {
+            if (current is UIElement { Visibility: not Visibility.Visible })
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static string GetDecodedPixelHash(string path)
+    {
+        using var input = File.OpenRead(path);
+        var decoder = new PngBitmapDecoder(
+            input,
+            BitmapCreateOptions.PreservePixelFormat,
+            BitmapCacheOption.OnLoad);
+        var converted = new FormatConvertedBitmap(
+            decoder.Frames[0],
+            PixelFormats.Bgra32,
+            destinationPalette: null,
+            alphaThreshold: 0);
+        var stride = converted.PixelWidth * 4;
+        var pixels = new byte[stride * converted.PixelHeight];
+        converted.CopyPixels(pixels, stride, 0);
+        return Convert.ToHexString(SHA256.HashData(pixels));
     }
 
     private static string FindRepositoryRoot()

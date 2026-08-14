@@ -53,20 +53,20 @@ public sealed class SyntheticWidgetState
     public static SyntheticWidgetState Create() =>
         new(
             [
-                new("PM", "Project Manager", "PM", "กำลังตรวจรวมแผนโปรเจกต์", "02:14", 95, "Working", "HerdrOps.Brush.Status.Working"),
-                new("PS", "PM Secretary", "Secretary", "อัปเดตทะเบียนงาน", "00:38", 98, "Review", "HerdrOps.Brush.Status.Review"),
-                new("BL", "Backend Leader", "Leader", "รอข้อมูลจาก Worker", "05:42", 72, "Blocked", "HerdrOps.Brush.Status.Blocked"),
-                new("BW", "Backend Worker 01", "Worker", "แก้ไขไฟล์ auth/service.cs", "01:27", 88, "Working", "HerdrOps.Brush.Status.Working"),
-                new("W2", "Backend Worker 02", "Worker", "ทำงาน TASK-118", "00:44", 100, "Done", "HerdrOps.Brush.Status.Done"),
-                new("W3", "Backend Worker 03", "Worker", "อ่านไฟล์ config.yml", "02:31", 80, "Idle", "HerdrOps.Brush.Status.Idle"),
-                new("TW", "Test Worker", "Worker", "รัน Integration Tests", "03:16", 90, "Working", "HerdrOps.Brush.Status.Working"),
-                new("DW", "DevOps Worker", "Worker", "Deploy to staging", "01:02", 85, "Working", "HerdrOps.Brush.Status.Working"),
+                new("PM", "Project Manager", "PM", "System", "กำลังตรวจรวมแผนโปรเจกต์", "02:14", 95, "Working", "HerdrOps.Brush.Status.Working"),
+                new("PS", "PM Secretary", "Secretary", "Project Manager", "อัปเดตทะเบียนงาน", "00:38", 98, "Review", "HerdrOps.Brush.Status.Review"),
+                new("BL", "Backend Leader", "Leader", "Project Manager", "รอข้อมูลจาก Worker", "05:42", 72, "Blocked", "HerdrOps.Brush.Status.Blocked"),
+                new("BW", "Backend Worker 01", "Worker", "Backend Leader", "แก้ไขไฟล์ auth/service.cs", "01:27", 88, "Working", "HerdrOps.Brush.Status.Working"),
+                new("W2", "Backend Worker 02", "Worker", "Backend Leader", "ทำงาน TASK-118", "00:44", 100, "Done", "HerdrOps.Brush.Status.Done"),
+                new("W3", "Backend Worker 03", "Worker", "Backend Leader", "อ่านไฟล์ config.yml", "02:31", 80, "Idle", "HerdrOps.Brush.Status.Idle"),
+                new("TW", "Test Worker", "Worker", "Test Leader", "รัน Integration Tests", "03:16", 90, "Working", "HerdrOps.Brush.Status.Working"),
+                new("DW", "DevOps Worker", "Worker", "DevOps Leader", "Deploy to staging", "01:02", 85, "Working", "HerdrOps.Brush.Status.Working"),
             ],
             [
-                new("Backend Leader", "พบงานนอกคำสั่งของ Worker 03", "14:32", "HerdrOps.Brush.Status.Blocked"),
-                new("Worker 02", "ทำงาน TASK-118 เสร็จแล้ว", "14:30", "HerdrOps.Brush.Status.Working"),
-                new("PM Secretary", "อัปเดตข้อมูลโครงการแล้ว", "14:30", "HerdrOps.Brush.Status.Review"),
-                new("Project Manager", "อนุมัติแผนงาน Backend", "14:28", "HerdrOps.Brush.Status.Done"),
+                new("Backend Leader", "พบงานนอกคำสั่งของ Worker 03", "14:32", "\uE7BA", "HerdrOps.Brush.Status.Blocked"),
+                new("Worker 02", "ทำงาน TASK-118 เสร็จแล้ว", "14:30", "\uE73E", "HerdrOps.Brush.Status.Working"),
+                new("PM Secretary", "อัปเดตข้อมูลโครงการแล้ว", "14:30", "\uE946", "HerdrOps.Brush.Status.Review"),
+                new("Project Manager", "อนุมัติแผนงาน Backend", "14:28", "\uE73E", "HerdrOps.Brush.Status.Done"),
             ],
             [
                 new("14:20", "รับงาน TASK-115 จาก Leader"),
@@ -80,6 +80,7 @@ public sealed record SyntheticWidgetAgent(
     string Initials,
     string Name,
     string Role,
+    string AssignedBy,
     string Activity,
     string Elapsed,
     int Score,
@@ -90,6 +91,7 @@ public sealed record SyntheticWidgetNotice(
     string AgentName,
     string Message,
     string Time,
+    string IconGlyph,
     string StatusBrushKey);
 
 public sealed record SyntheticWidgetActivity(string Time, string Description);

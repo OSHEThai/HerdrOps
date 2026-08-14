@@ -23,6 +23,17 @@ public sealed record WidgetVariantDescriptor(
     bool DefaultTopmost,
     bool ShowInTaskbar);
 
+public sealed record WidgetGalleryItem(
+    string Key,
+    string DisplayName,
+    string ThaiDescription,
+    WidgetVariant Variant,
+    double PreviewWidth,
+    double PreviewHeight,
+    bool IsDashboard,
+    string ActionLabel,
+    string AutomationName);
+
 /// <summary>
 /// Single source of truth for widget names, dimensions, and window policies.
 /// </summary>
@@ -41,4 +52,30 @@ public static class WidgetCatalog
 
     public static WidgetVariantDescriptor Get(WidgetVariant variant) =>
         All.Single(descriptor => descriptor.Variant == variant);
+
+    public static IReadOnlyList<WidgetGalleryItem> CreateAdaptiveGalleryItems()
+    {
+        var items = All.Select(descriptor => new WidgetGalleryItem(
+            descriptor.Variant.ToString(),
+            descriptor.DisplayName,
+            descriptor.ThaiDescription,
+            descriptor.Variant,
+            descriptor.WindowWidth,
+            descriptor.WindowHeight,
+            false,
+            "เปิด Widget",
+            $"เปิด {descriptor.DisplayName}"))
+            .ToList();
+        items.Add(new WidgetGalleryItem(
+            "Dashboard",
+            "Dashboard launch / preview",
+            "กลับไปยังหน้าต่างหลักที่ใช้ข้อมูล Synthetic",
+            WidgetVariant.Compact,
+            1672,
+            941,
+            true,
+            "กลับไปยัง Dashboard",
+            "กลับไปยัง Dashboard หลัก"));
+        return items;
+    }
 }

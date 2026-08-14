@@ -21,6 +21,12 @@ public partial class WidgetSurface : UserControl
         typeof(WidgetSurface),
         new FrameworkPropertyMetadata(true));
 
+    public static readonly DependencyProperty StateProperty = DependencyProperty.Register(
+        nameof(State),
+        typeof(SyntheticWidgetState),
+        typeof(WidgetSurface),
+        new FrameworkPropertyMetadata(null, OnStateChanged));
+
     public WidgetSurface()
         : this(SyntheticWidgetState.Create())
     {
@@ -54,10 +60,24 @@ public partial class WidgetSurface : UserControl
         set => SetValue(IsInteractiveProperty, value);
     }
 
+    public SyntheticWidgetState? State
+    {
+        get => (SyntheticWidgetState?)GetValue(StateProperty);
+        set => SetValue(StateProperty, value);
+    }
+
     public void SetState(SyntheticWidgetState state)
     {
         ArgumentNullException.ThrowIfNull(state);
-        SurfaceRoot.DataContext = state;
+        State = state;
+    }
+
+    private static void OnStateChanged(DependencyObject dependencyObject, DependencyPropertyChangedEventArgs e)
+    {
+        if (dependencyObject is WidgetSurface surface && e.NewValue is SyntheticWidgetState state)
+        {
+            surface.SurfaceRoot.DataContext = state;
+        }
     }
 
     private static void OnVariantChanged(DependencyObject dependencyObject, DependencyPropertyChangedEventArgs e)
@@ -85,6 +105,20 @@ public partial class WidgetSurface : UserControl
         HeaderSourceText.Text = variant == WidgetVariant.FloatingVertical
             ? "SYN"
             : "SYNTHETIC";
+        var isNarrowVertical = variant == WidgetVariant.FloatingVertical;
+        HeaderWordmark.FontSize = isNarrowVertical ? 11 : 14;
+        HeaderStatusDot.Margin = isNarrowVertical
+            ? new Thickness(4, 0, 3, 0)
+            : new Thickness(9, 0, 5, 0);
+        HeaderSourceText.FontSize = isNarrowVertical ? 7 : 9;
+        HeaderSourceText.Foreground = (System.Windows.Media.Brush)FindResource(
+            isNarrowVertical
+                ? "HerdrOps.Brush.PrimaryText"
+                : "HerdrOps.Brush.TextMuted");
+        PinButton.Width = isNarrowVertical ? 24 : 30;
+        PinButton.Height = isNarrowVertical ? 24 : 30;
+        CloseButton.Width = isNarrowVertical ? 24 : 30;
+        CloseButton.Height = isNarrowVertical ? 24 : 30;
     }
 
     private void OnCloseClick(object sender, RoutedEventArgs e) =>

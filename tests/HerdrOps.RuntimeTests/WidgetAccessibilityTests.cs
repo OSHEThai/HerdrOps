@@ -23,6 +23,7 @@ public sealed class WidgetAccessibilityTests
             var openButtons = EnumerateDescendants(gallery)
                 .OfType<Button>()
                 .Where(button => button.Tag is string value && Enum.TryParse<WidgetVariant>(value, out _))
+                .Where(IsEffectivelyVisible)
                 .ToArray();
 
             Assert.HasCount(WidgetCatalog.All.Count, openButtons);
@@ -112,6 +113,94 @@ public sealed class WidgetAccessibilityTests
         });
     }
 
+    [TestMethod]
+    public void CriticalWidgetFidelityActionsRemainVisible()
+    {
+        WpfTestHost.Run(() =>
+        {
+            var state = SyntheticWidgetState.Create();
+            var vertical = new WidgetSurface(state)
+            {
+                Width = WidgetCatalog.Get(WidgetVariant.FloatingVertical).WindowWidth,
+                Height = WidgetCatalog.Get(WidgetVariant.FloatingVertical).WindowHeight,
+                Variant = WidgetVariant.FloatingVertical,
+                IsInteractive = true,
+            };
+            Layout(vertical, vertical.Width, vertical.Height);
+            var sourceLabel = EnumerateDescendants(vertical)
+                .OfType<TextBlock>()
+                .Single(text => string.Equals(text.Text, "SYN", StringComparison.Ordinal));
+            Assert.IsGreaterThan(0d, sourceLabel.ActualWidth, "Floating Vertical must visibly render its Synthetic source label.");
+            Assert.IsTrue(IsEffectivelyVisible(sourceLabel));
+            var pinButton = EnumerateDescendants(vertical)
+                .OfType<Button>()
+                .Single(button => string.Equals(
+                    AutomationProperties.GetName(button),
+                    "ปักหมุดหรือยกเลิก Always on top",
+                    StringComparison.Ordinal));
+            var sourceRight = sourceLabel.TranslatePoint(
+                new Point(sourceLabel.ActualWidth, 0),
+                vertical).X;
+            var pinLeft = pinButton.TranslatePoint(new Point(0, 0), vertical).X;
+            Assert.IsLessThanOrEqualTo(
+                pinLeft - 4,
+                sourceRight,
+                "Floating Vertical must preserve visible clearance between SYN and the pin control.");
+
+            var detail = new WidgetSurface(state)
+            {
+                Width = WidgetCatalog.Get(WidgetVariant.AgentDetailPopup).WindowWidth,
+                Height = WidgetCatalog.Get(WidgetVariant.AgentDetailPopup).WindowHeight,
+                Variant = WidgetVariant.AgentDetailPopup,
+                IsInteractive = true,
+            };
+            Layout(detail, detail.Width, detail.Height);
+            var detailAction = EnumerateDescendants(detail)
+                .OfType<Button>()
+                .Single(button => string.Equals(button.Content?.ToString(), "ดูรายละเอียดทั้งหมด", StringComparison.Ordinal));
+            Assert.IsGreaterThanOrEqualTo(40d, detailAction.ActualHeight);
+            Assert.IsTrue(IsEffectivelyVisible(detailAction));
+
+            var intermediateGallery = new WidgetGalleryView(state, new RecordingLauncher());
+            Layout(intermediateGallery, 1500, 920);
+            var adaptiveLayer = Assert.IsInstanceOfType<FrameworkElement>(
+                intermediateGallery.FindName("AdaptiveGallery"));
+            Assert.AreEqual(
+                Visibility.Visible,
+                adaptiveLayer.Visibility,
+                "Widths below the 1536-pixel fixed board must use the adaptive layout.");
+            var intermediateActions = GetVisibleLaunchActions(intermediateGallery);
+            Assert.HasCount(8, intermediateActions);
+            Assert.IsTrue(
+                intermediateActions.All(button => button.ActualWidth > 0 && button.ActualHeight >= 40),
+                "All adaptive Gallery launch actions must retain visible 40-pixel targets.");
+
+            var nativeGallery = new WidgetGalleryView(state, new RecordingLauncher());
+            Layout(nativeGallery, 1536, 920);
+            var fullLayer = Assert.IsInstanceOfType<FrameworkElement>(
+                nativeGallery.FindName("FullGallery"));
+            Assert.AreEqual(
+                Visibility.Visible,
+                fullLayer.Visibility,
+                "The 1536-pixel native board must retain the full Gallery layout.");
+            var nativeActions = GetVisibleLaunchActions(nativeGallery);
+            Assert.HasCount(8, nativeActions);
+            Assert.IsTrue(
+                nativeActions.All(button => button.ActualWidth > 0 && button.ActualHeight >= 40),
+                "All native Gallery launch actions must retain visible 40-pixel targets.");
+        });
+    }
+
+    private static Button[] GetVisibleLaunchActions(DependencyObject root) =>
+        EnumerateDescendants(root)
+            .OfType<Button>()
+            .Where(button => button.ActualWidth > 0 && button.ActualHeight >= 40)
+            .Where(IsEffectivelyVisible)
+            .Where(button =>
+                string.Equals(button.Tag?.ToString(), "Dashboard", StringComparison.Ordinal) ||
+                Enum.TryParse<WidgetVariant>(button.Tag?.ToString(), out _))
+            .ToArray();
+
     private static IEnumerable<DependencyObject> EnumerateDescendants(DependencyObject parent)
     {
         for (var index = 0; index < VisualTreeHelper.GetChildrenCount(parent); index++)
@@ -124,6 +213,27 @@ public sealed class WidgetAccessibilityTests
                 yield return descendant;
             }
         }
+    }
+
+    private static bool IsEffectivelyVisible(DependencyObject element)
+    {
+        for (DependencyObject? current = element; current is not null; current = VisualTreeHelper.GetParent(current))
+        {
+            if (current is UIElement { Visibility: not Visibility.Visible })
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static void Layout(FrameworkElement element, double width, double height)
+    {
+        var size = new Size(width, height);
+        element.Measure(size);
+        element.Arrange(new Rect(size));
+        element.UpdateLayout();
     }
 
     private static Color GetColor(string key) =>
