@@ -172,6 +172,89 @@ public sealed class HerdrProtocolJsonCodecContractTests
             "fresh snapshot");
     }
 
+    [TestMethod]
+    public void PaneReadRequestIsAlwaysBoundedRecentUnwrappedPlainText()
+    {
+        var bytes = HerdrProtocolJsonCodec.CreateBoundedPaneReadRequest(
+            "request-pane-read",
+            "pane-1",
+            maximumLines: 80);
+        using var document = JsonDocument.Parse(bytes);
+        var root = document.RootElement;
+        var parameters = root.GetProperty("params");
+
+        Assert.AreEqual("request-pane-read", root.GetProperty("id").GetString());
+        Assert.AreEqual("pane.read", root.GetProperty("method").GetString());
+        Assert.AreEqual("pane-1", parameters.GetProperty("pane_id").GetString());
+        Assert.AreEqual("recent_unwrapped", parameters.GetProperty("source").GetString());
+        Assert.AreEqual("text", parameters.GetProperty("format").GetString());
+        Assert.AreEqual(80, parameters.GetProperty("lines").GetInt32());
+        Assert.IsTrue(parameters.GetProperty("strip_ansi").GetBoolean());
+        Assert.HasCount(5, parameters.EnumerateObject().ToArray());
+    }
+
+    [TestMethod]
+    public void PaneReadRequestRejectsEveryUnboundedLineValue()
+    {
+        _ = Assert.ThrowsExactly<ArgumentOutOfRangeException>(() =>
+            HerdrProtocolJsonCodec.CreateBoundedPaneReadRequest("request-low", "pane-1", 0));
+        _ = Assert.ThrowsExactly<ArgumentOutOfRangeException>(() =>
+            HerdrProtocolJsonCodec.CreateBoundedPaneReadRequest("request-high", "pane-1", 201));
+    }
+
+    [TestMethod]
+    public void PaneReadResponseRequiresMatchingPaneSourceAndFormat()
+    {
+        const string response =
+            """
+            {"id":"request-pane-response","result":{"type":"pane_read","read":{"pane_id":"pane-1","workspace_id":"workspace-1","tab_id":"tab-1","source":"recent_unwrapped","format":"text","text":"build complete","revision":42,"truncated":false}}}
+            """;
+
+        var read = HerdrProtocolJsonCodec.ParseBoundedPaneReadResponse(
+            response,
+            "request-pane-response",
+            "pane-1");
+
+        Assert.AreEqual("pane-1", read.PaneId);
+        Assert.AreEqual("recent_unwrapped", read.Source);
+        Assert.AreEqual("text", read.Format);
+        Assert.AreEqual("build complete", read.Text);
+        Assert.AreEqual((ulong)42, read.Revision);
+        Assert.IsFalse(read.Truncated);
+
+        var wrongSource = response.Replace("recent_unwrapped", "visible", StringComparison.Ordinal);
+        var exception = Assert.ThrowsExactly<HerdrProtocolException>(() =>
+            HerdrProtocolJsonCodec.ParseBoundedPaneReadResponse(
+                wrongSource,
+                "request-pane-response",
+                "pane-1"));
+        StringAssert.Contains(exception.Message, "expected 'recent_unwrapped'");
+    }
+
+    [TestMethod]
+    public void PaneProcessInfoPreservesReportedPidSourceMetadata()
+    {
+        const string response =
+            """
+            {"id":"request-process","result":{"type":"pane_process_info","process_info":{"pane_id":"pane-1","shell_pid":900,"foreground_process_group_id":901,"tty":null,"foreground_processes":[{"pid":901,"name":"dotnet","argv0":"dotnet","argv":["dotnet","build"],"cmdline":"dotnet build","cwd":"Z:\\HerdrOps"}]}}}
+            """;
+
+        var info = HerdrProtocolJsonCodec.ParsePaneProcessInfoResponse(
+            response,
+            "request-process",
+            "pane-1");
+
+        Assert.AreEqual("pane-1", info.PaneId);
+        Assert.AreEqual((uint)900, info.ShellProcessId);
+        Assert.AreEqual((uint)901, info.ForegroundProcessGroupId);
+        Assert.HasCount(1, info.ForegroundProcesses);
+        Assert.AreEqual((uint)901, info.ForegroundProcesses[0].ProcessId);
+        Assert.AreEqual("dotnet build", info.ForegroundProcesses[0].CommandLine);
+        CollectionAssert.AreEqual(
+            new[] { "dotnet", "build" },
+            info.ForegroundProcesses[0].Arguments!.ToArray());
+    }
+
     internal static string CreateSnapshotResponse(string requestId, ulong revision) => $$"""
         {
           "id": "{{requestId}}",

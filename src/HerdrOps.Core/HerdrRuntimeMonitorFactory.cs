@@ -16,7 +16,8 @@ public sealed record HerdrRuntimeAdmission(
 
 public sealed record HerdrAdmittedRuntimeMonitor(
     HerdrRuntimeMonitor Monitor,
-    HerdrRuntimeAdmission Admission);
+    HerdrRuntimeAdmission Admission,
+    IHerdrPaneInspectionClient PaneInspectionClient);
 
 public sealed class HerdrRuntimeAdmissionException : IOException
 {
@@ -84,11 +85,14 @@ public sealed class HerdrRuntimeMonitorFactory
             schemaInspection.Protocol ?? throw new HerdrRuntimeAdmissionException(
                 "The admitted bundled schema did not report a protocol version."),
             endpoint);
-        var apiClient = new HerdrNamedPipeApiClient(
+        var monitorClient = new HerdrNamedPipeApiClient(
+            serverIdentityVerifier: new ExpectedHerdrServerIdentityVerifier(admission.ExecutableSha256));
+        var paneInspectionClient = new HerdrNamedPipeApiClient(
             serverIdentityVerifier: new ExpectedHerdrServerIdentityVerifier(admission.ExecutableSha256));
         return new HerdrAdmittedRuntimeMonitor(
-            new HerdrRuntimeMonitor(apiClient, endpoint, initialState: initialState),
-            admission);
+            new HerdrRuntimeMonitor(monitorClient, endpoint, initialState: initialState),
+            admission,
+            paneInspectionClient);
     }
 
     private static string Require(string? value, string description) =>

@@ -47,6 +47,17 @@ Build, verification, GitHub roadmap, evidence capture, and packaging helpers liv
 # bounded paging, language separation, and synchronized detail/evidence panels.
 # This remains implementation-only until actual live collector evidence exists.
 ./tools/Test-V03RealtimeActivity.ps1
+
+# Verify the fixed bounded pane.read path, terminal redaction, PID/source
+# correlation, PID-reuse protection, CPU/memory telemetry, and expiry.
+# This remains partial until the authorized Herdr runtime trace is captured.
+./tools/Test-V03TerminalProcess.ps1
+
+# From an authorized Herdr pane, capture actual bounded pane-read and
+# Herdr-PID-to-Windows-process evidence without controlling the session.
+dotnet artifacts/bin/HerdrOps.Core/release/HerdrOps.Core.dll trace-herdr-terminal-process `
+  --report artifacts/runtime-evidence/v0.3.0/issue-14/terminal-process.json `
+  --seconds 120 --interval-ms 500 --lines 80
 ```
 
 The composite gate binds production WPF captures to exact state hashes from the admitted Herdr Core trace, verifies Dashboard-close Widget continuity, and measures Widget latency plus combined Core/App idle resources. It fails closed outside an authorized Herdr pane and does not control the Herdr session itself.
@@ -54,3 +65,5 @@ The composite gate binds production WPF captures to exact state hashes from the 
 The v0.3 activity-pipeline gate is Contract plus Synthetic evidence only. It does not claim a live Herdr trace, process telemetry, file collection, bounded `pane.read`, redaction against actual data, or v0.3 release readiness.
 
 The v0.3 Realtime Activity gate is Contract plus actual WPF rendering backed by deterministic synthetic state. It does not close Issue #13 or claim an actual live event capture.
+
+The v0.3 terminal/process implementation gate is Contract plus Synthetic plus one local Windows-process sample. It does not close Issue #14 or claim that an actual Herdr pane returned terminal bytes or a live Herdr PID correlation.

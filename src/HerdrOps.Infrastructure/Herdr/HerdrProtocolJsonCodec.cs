@@ -98,6 +98,54 @@ public static class HerdrProtocolJsonCodec
         return buffer.WrittenSpan.ToArray();
     }
 
+    public static byte[] CreateBoundedPaneReadRequest(
+        string requestId,
+        string paneId,
+        int maximumLines)
+    {
+        ValidateRequestId(requestId);
+        paneId = ValidateEntityId(paneId);
+        if (maximumLines is < 1 or > HerdrPaneReadBounds.HardMaximumLines)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(maximumLines),
+                $"A pane read must request between 1 and {HerdrPaneReadBounds.HardMaximumLines} lines.");
+        }
+
+        var buffer = new ArrayBufferWriter<byte>();
+        using var writer = new Utf8JsonWriter(buffer);
+        writer.WriteStartObject();
+        writer.WriteString("id", requestId);
+        writer.WriteString("method", "pane.read");
+        writer.WriteStartObject("params");
+        writer.WriteString("format", "text");
+        writer.WriteNumber("lines", maximumLines);
+        writer.WriteString("pane_id", paneId);
+        writer.WriteString("source", "recent_unwrapped");
+        writer.WriteBoolean("strip_ansi", true);
+        writer.WriteEndObject();
+        writer.WriteEndObject();
+        writer.Flush();
+        return buffer.WrittenSpan.ToArray();
+    }
+
+    public static byte[] CreatePaneProcessInfoRequest(string requestId, string paneId)
+    {
+        ValidateRequestId(requestId);
+        paneId = ValidateEntityId(paneId);
+        var buffer = new ArrayBufferWriter<byte>();
+        using var writer = new Utf8JsonWriter(buffer);
+        writer.WriteStartObject();
+        writer.WriteString("id", requestId);
+        writer.WriteString("method", "pane.process_info");
+        writer.WriteStartObject("params");
+        writer.WriteString("pane_id", paneId);
+        writer.WriteEndObject();
+        writer.WriteEndObject();
+        writer.Flush();
+        return buffer.WrittenSpan.ToArray();
+    }
+
     public static HerdrSessionSnapshot ParseSnapshotResponse(string json, string expectedRequestId)
     {
         ValidateRequestId(expectedRequestId);
@@ -117,6 +165,79 @@ public static class HerdrProtocolJsonCodec
         ValidateResponseEnvelope(root, expectedRequestId);
         var result = RequireObject(GetRequiredProperty(root, "result"), "result");
         RequireExactString(result, "type", "subscription_started");
+    }
+
+    public static HerdrPaneReadResult ParseBoundedPaneReadResponse(
+        string json,
+        string expectedRequestId,
+        string expectedPaneId)
+    {
+        ValidateRequestId(expectedRequestId);
+        expectedPaneId = ValidateEntityId(expectedPaneId);
+        using var document = ParseDocument(json);
+        var root = RequireObject(document.RootElement, "response");
+        ValidateResponseEnvelope(root, expectedRequestId);
+        var result = RequireObject(GetRequiredProperty(root, "result"), "result");
+        RequireExactString(result, "type", "pane_read");
+        var read = RequireObject(GetRequiredProperty(result, "read"), "pane read result");
+        var paneId = GetRequiredString(read, "pane_id", allowEmpty: false);
+        if (!string.Equals(paneId, expectedPaneId, StringComparison.Ordinal))
+        {
+            throw new HerdrProtocolException(
+                $"Herdr pane.read returned pane '{paneId}', expected '{expectedPaneId}'.");
+        }
+
+        RequireExactString(read, "source", "recent_unwrapped");
+        RequireExactString(read, "format", "text");
+        var text = GetRequiredString(read, "text", allowEmpty: true);
+        if (System.Text.Encoding.UTF8.GetByteCount(text) > HerdrPaneReadBounds.MaximumTextUtf8Bytes)
+        {
+            throw new HerdrProtocolException(
+                $"Herdr pane.read text exceeded the {HerdrPaneReadBounds.MaximumTextUtf8Bytes}-byte limit.");
+        }
+
+        return new HerdrPaneReadResult(
+            paneId,
+            GetRequiredString(read, "workspace_id", allowEmpty: false),
+            GetRequiredString(read, "tab_id", allowEmpty: false),
+            "recent_unwrapped",
+            "text",
+            text,
+            GetRequiredUInt64(read, "revision"),
+            GetRequiredBoolean(read, "truncated"));
+    }
+
+    public static HerdrPaneProcessInfo ParsePaneProcessInfoResponse(
+        string json,
+        string expectedRequestId,
+        string expectedPaneId)
+    {
+        ValidateRequestId(expectedRequestId);
+        expectedPaneId = ValidateEntityId(expectedPaneId);
+        using var document = ParseDocument(json);
+        var root = RequireObject(document.RootElement, "response");
+        ValidateResponseEnvelope(root, expectedRequestId);
+        var result = RequireObject(GetRequiredProperty(root, "result"), "result");
+        RequireExactString(result, "type", "pane_process_info");
+        var processInfo = RequireObject(
+            GetRequiredProperty(result, "process_info"),
+            "pane process info");
+        var paneId = GetRequiredString(processInfo, "pane_id", allowEmpty: false);
+        if (!string.Equals(paneId, expectedPaneId, StringComparison.Ordinal))
+        {
+            throw new HerdrProtocolException(
+                $"Herdr pane.process_info returned pane '{paneId}', expected '{expectedPaneId}'.");
+        }
+
+        var processes = processInfo.TryGetProperty("foreground_processes", out var processArray)
+            ? ParseProcessInfoArray(processArray)
+            : [];
+        return new HerdrPaneProcessInfo(
+            paneId,
+            GetOptionalUInt32(processInfo, "shell_pid"),
+            GetOptionalUInt32(processInfo, "foreground_process_group_id"),
+            GetOptionalString(processInfo, "tty"),
+            processes);
     }
 
     public static HerdrStateEvent ParseEvent(string json)
@@ -439,6 +560,82 @@ public static class HerdrProtocolJsonCodec
         }
 
         return result;
+    }
+
+    private static uint GetRequiredUInt32(JsonElement value, string propertyName)
+    {
+        var property = GetRequiredProperty(value, propertyName);
+        if (property.ValueKind != JsonValueKind.Number || !property.TryGetUInt32(out var result))
+        {
+            throw new HerdrProtocolException(
+                $"Herdr property '{propertyName}' must be an unsigned 32-bit integer.");
+        }
+
+        return result;
+    }
+
+    private static uint? GetOptionalUInt32(JsonElement value, string propertyName)
+    {
+        if (!value.TryGetProperty(propertyName, out var property) || property.ValueKind == JsonValueKind.Null)
+        {
+            return null;
+        }
+
+        if (property.ValueKind != JsonValueKind.Number || !property.TryGetUInt32(out var result))
+        {
+            throw new HerdrProtocolException(
+                $"Herdr property '{propertyName}' must be an unsigned 32-bit integer.");
+        }
+
+        return result;
+    }
+
+    private static IReadOnlyList<HerdrPaneProcess> ParseProcessInfoArray(JsonElement value)
+    {
+        if (value.ValueKind != JsonValueKind.Array)
+        {
+            throw new HerdrProtocolException(
+                "Herdr property 'foreground_processes' must be an array.");
+        }
+
+        var processes = new List<HerdrPaneProcess>(value.GetArrayLength());
+        foreach (var element in value.EnumerateArray())
+        {
+            var process = RequireObject(element, "foreground process");
+            processes.Add(new HerdrPaneProcess(
+                GetRequiredUInt32(process, "pid"),
+                GetRequiredString(process, "name", allowEmpty: false),
+                GetOptionalString(process, "argv0"),
+                GetOptionalStringArray(process, "argv"),
+                GetOptionalString(process, "cmdline"),
+                GetOptionalString(process, "cwd")));
+        }
+
+        return processes.AsReadOnly();
+    }
+
+    private static IReadOnlyList<string>? GetOptionalStringArray(
+        JsonElement value,
+        string propertyName)
+    {
+        if (!value.TryGetProperty(propertyName, out var property) || property.ValueKind == JsonValueKind.Null)
+        {
+            return null;
+        }
+
+        if (property.ValueKind != JsonValueKind.Array)
+        {
+            throw new HerdrProtocolException(
+                $"Herdr property '{propertyName}' must be an array of strings.");
+        }
+
+        var values = new List<string>(property.GetArrayLength());
+        foreach (var item in property.EnumerateArray())
+        {
+            values.Add(GetString(item, propertyName, allowEmpty: true));
+        }
+
+        return values.AsReadOnly();
     }
 
     private static bool GetRequiredBoolean(JsonElement value, string propertyName)

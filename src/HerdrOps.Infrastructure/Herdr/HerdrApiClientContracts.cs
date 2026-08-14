@@ -1,4 +1,5 @@
 using HerdrOps.Domain.Herdr;
+using HerdrOps.Domain.Activity;
 
 namespace HerdrOps.Infrastructure.Herdr;
 
@@ -15,6 +16,58 @@ public interface IHerdrApiClient
         IReadOnlyCollection<string> paneIds,
         CancellationToken cancellationToken);
 }
+
+/// <summary>
+/// Exposes only the bounded, read-only Herdr pane inspection operations admitted by HerdrOps.
+/// No caller can omit the terminal line limit or select an unbounded source through this API.
+/// </summary>
+public interface IHerdrPaneInspectionClient
+{
+    HerdrServerProcessIdentity? LastVerifiedServerIdentity { get; }
+
+    Task<HerdrPaneReadResult> ReadRecentUnwrappedAsync(
+        HerdrPipeEndpoint endpoint,
+        string paneId,
+        int maximumLines,
+        CancellationToken cancellationToken);
+
+    Task<HerdrPaneProcessInfo> GetPaneProcessInfoAsync(
+        HerdrPipeEndpoint endpoint,
+        string paneId,
+        CancellationToken cancellationToken);
+}
+
+public static class HerdrPaneReadBounds
+{
+    public const int DefaultMaximumLines = TerminalPreviewContract.DefaultMaximumLines;
+    public const int HardMaximumLines = TerminalPreviewContract.HardMaximumLines;
+    public const int MaximumTextUtf8Bytes = TerminalPreviewContract.MaximumInputUtf8Bytes;
+}
+
+public sealed record HerdrPaneReadResult(
+    string PaneId,
+    string WorkspaceId,
+    string TabId,
+    string Source,
+    string Format,
+    string Text,
+    ulong Revision,
+    bool Truncated);
+
+public sealed record HerdrPaneProcessInfo(
+    string PaneId,
+    uint? ShellProcessId,
+    uint? ForegroundProcessGroupId,
+    string? Tty,
+    IReadOnlyList<HerdrPaneProcess> ForegroundProcesses);
+
+public sealed record HerdrPaneProcess(
+    uint ProcessId,
+    string Name,
+    string? Argv0,
+    IReadOnlyList<string>? Arguments,
+    string? CommandLine,
+    string? CurrentDirectory);
 
 public interface IHerdrEventSubscription : IAsyncDisposable
 {

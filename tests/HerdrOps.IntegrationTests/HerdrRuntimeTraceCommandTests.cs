@@ -72,4 +72,63 @@ public sealed class HerdrRuntimeTraceCommandTests
         Assert.IsFalse(File.Exists(reportPath));
         StringAssert.Contains(error.ToString(), "HERDR_ENV=1");
     }
+
+    [TestMethod]
+    public async Task TerminalProcessTraceRequiresReportBeforeRuntimeAdmission()
+    {
+        using var output = new StringWriter();
+        using var error = new StringWriter();
+
+        var exitCode = await HerdrTerminalProcessTraceCommand.RunAsync(
+            ["trace-herdr-terminal-process", "--seconds", "5"],
+            output,
+            error,
+            environmentVariableReader: _ => "1");
+
+        Assert.AreEqual(64, exitCode);
+        StringAssert.Contains(error.ToString(), "--report is required");
+    }
+
+    [TestMethod]
+    public async Task TerminalProcessTraceRejectsAnUnboundedLineRequest()
+    {
+        using var output = new StringWriter();
+        using var error = new StringWriter();
+
+        var exitCode = await HerdrTerminalProcessTraceCommand.RunAsync(
+            [
+                "trace-herdr-terminal-process",
+                "--lines",
+                "201",
+                "--report",
+                "ignored.json",
+            ],
+            output,
+            error,
+            environmentVariableReader: _ => "1");
+
+        Assert.AreEqual(64, exitCode);
+        StringAssert.Contains(error.ToString(), "from 1 through 200");
+    }
+
+    [TestMethod]
+    public async Task TerminalProcessTraceRequiresAuthorizedHerdrEnvironmentWithoutWritingReport()
+    {
+        var reportPath = Path.Combine(
+            Path.GetTempPath(),
+            "HerdrOps.IntegrationTests",
+            $"terminal-process-{Guid.NewGuid():N}.json");
+        using var output = new StringWriter();
+        using var error = new StringWriter();
+
+        var exitCode = await HerdrTerminalProcessTraceCommand.RunAsync(
+            ["trace-herdr-terminal-process", "--report", reportPath],
+            output,
+            error,
+            environmentVariableReader: _ => null);
+
+        Assert.AreEqual(3, exitCode);
+        Assert.IsFalse(File.Exists(reportPath));
+        StringAssert.Contains(error.ToString(), "HERDR_ENV=1");
+    }
 }
