@@ -16,7 +16,7 @@ public sealed class ShellRenderingTests
     private const int ReferenceHeight = 941;
 
     [TestMethod]
-    public void ActualWpfShellRendersWithoutThaiClippingAtRequiredScaleFactors()
+    public void ActualWpfShellAndOverviewRenderWithoutThaiClippingAtRequiredSizes()
     {
         Exception? renderingFailure = null;
         var renderingThread = new Thread(() =>
@@ -49,54 +49,108 @@ public sealed class ShellRenderingTests
         application.InitializeComponent();
 
         var repositoryRoot = FindRepositoryRoot();
-        var evidenceDirectory = Path.Combine(
+        var shellEvidenceDirectory = Path.Combine(
             repositoryRoot,
             "artifacts",
             "design-evidence",
             "v0.1",
             "issue-2");
-        Directory.CreateDirectory(evidenceDirectory);
+        Directory.CreateDirectory(shellEvidenceDirectory);
 
         foreach (var scale in new[] { 1.0, 1.25, 1.5 })
         {
             var view = new ShellView();
-            var logicalSize = new Size(ReferenceWidth / scale, ReferenceHeight / scale);
-            view.Measure(logicalSize);
-            view.Arrange(new Rect(logicalSize));
-            view.UpdateLayout();
-
-            AssertThaiTextFits(view, scale);
-
-            var bitmap = new RenderTargetBitmap(
+            view.Navigation.SelectedIndex = 1;
+            var scaleLabel = FormattableString.Invariant($"{scale * 100:0}");
+            RenderView(
+                view,
                 ReferenceWidth,
                 ReferenceHeight,
-                96 * scale,
-                96 * scale,
-                PixelFormats.Pbgra32);
-            bitmap.Render(view);
-
-            var encoder = new PngBitmapEncoder();
-            encoder.Frames.Add(BitmapFrame.Create(bitmap));
-            var scaleLabel = FormattableString.Invariant($"{scale * 100:0}");
-            var outputPath = Path.Combine(evidenceDirectory, $"shell-{scaleLabel}.png");
-            using var output = File.Create(outputPath);
-            encoder.Save(output);
-
-            Assert.IsGreaterThan(
-                10_000L,
-                output.Length,
-                $"Evidence image was unexpectedly small: {outputPath}");
+                scale,
+                "ThaiCheck",
+                Path.Combine(shellEvidenceDirectory, $"shell-{scaleLabel}.png"));
         }
+
+        var overviewEvidenceDirectory = Path.Combine(
+            repositoryRoot,
+            "artifacts",
+            "design-evidence",
+            "v0.1",
+            "issue-3");
+        Directory.CreateDirectory(overviewEvidenceDirectory);
+
+        foreach (var scale in new[] { 1.0, 1.25, 1.5 })
+        {
+            var scaleLabel = FormattableString.Invariant($"{scale * 100:0}");
+            RenderView(
+                new ShellView(),
+                ReferenceWidth,
+                ReferenceHeight,
+                scale,
+                "ThaiOverviewCheck",
+                Path.Combine(overviewEvidenceDirectory, $"overview-{scaleLabel}.png"));
+        }
+
+        RenderView(
+            new ShellView(),
+            1366,
+            768,
+            1,
+            "ThaiOverviewCheck",
+            Path.Combine(overviewEvidenceDirectory, "overview-1366x768.png"));
     }
 
-    private static void AssertThaiTextFits(DependencyObject root, double pixelsPerDip)
+    private static void RenderView(
+        FrameworkElement view,
+        int pixelWidth,
+        int pixelHeight,
+        double scale,
+        string clippingTag,
+        string outputPath)
+    {
+        var logicalSize = new Size(pixelWidth / scale, pixelHeight / scale);
+        view.Measure(logicalSize);
+        view.Arrange(new Rect(logicalSize));
+        view.UpdateLayout();
+
+        AssertThaiTextFits(view, scale, clippingTag);
+        if (string.Equals(clippingTag, "ThaiOverviewCheck", StringComparison.Ordinal))
+        {
+            AssertOverviewRegionsAreLaidOut(view);
+        }
+
+        var bitmap = new RenderTargetBitmap(
+            pixelWidth,
+            pixelHeight,
+            96 * scale,
+            96 * scale,
+            PixelFormats.Pbgra32);
+        bitmap.Render(view);
+
+        var encoder = new PngBitmapEncoder();
+        encoder.Frames.Add(BitmapFrame.Create(bitmap));
+        using var output = File.Create(outputPath);
+        encoder.Save(output);
+
+        Assert.IsGreaterThan(
+            10_000L,
+            output.Length,
+            $"Evidence image was unexpectedly small: {outputPath}");
+    }
+
+    private static void AssertThaiTextFits(
+        DependencyObject root,
+        double pixelsPerDip,
+        string clippingTag)
     {
         var taggedTextBlocks = EnumerateDescendants(root)
             .OfType<TextBlock>()
-            .Where(textBlock => string.Equals(textBlock.Tag as string, "ThaiCheck", StringComparison.Ordinal))
+            .Where(textBlock => string.Equals(textBlock.Tag as string, clippingTag, StringComparison.Ordinal))
             .ToArray();
 
-        Assert.IsNotEmpty(taggedTextBlocks, "No Thai clipping checkpoints were rendered.");
+        Assert.IsNotEmpty(
+            taggedTextBlocks,
+            $"No Thai clipping checkpoints were rendered for tag {clippingTag}.");
 
         foreach (var textBlock in taggedTextBlocks)
         {
@@ -141,6 +195,32 @@ public sealed class ShellRenderingTests
             {
                 yield return descendant;
             }
+        }
+    }
+
+    private static void AssertOverviewRegionsAreLaidOut(DependencyObject root)
+    {
+        var expectedRegionNames = new[]
+        {
+            "SummaryCardsRegion",
+            "RecentActivityRegion",
+            "ScoreTrendRegion",
+            "WorkDistributionRegion",
+            "TopAgentsRegion",
+            "AlertsRegion",
+        };
+        var regions = EnumerateDescendants(root)
+            .OfType<FrameworkElement>()
+            .Where(element => expectedRegionNames.Contains(element.Name, StringComparer.Ordinal))
+            .ToDictionary(element => element.Name, StringComparer.Ordinal);
+
+        foreach (var regionName in expectedRegionNames)
+        {
+            Assert.IsTrue(regions.TryGetValue(regionName, out var region), $"Missing Overview region: {regionName}");
+            Assert.IsNotNull(region);
+            Assert.IsGreaterThan(0d, region.ActualWidth, $"Overview region has no width: {regionName}");
+            Assert.IsGreaterThan(0d, region.ActualHeight, $"Overview region has no height: {regionName}");
+            Assert.AreEqual(Visibility.Visible, region.Visibility, $"Overview region is hidden: {regionName}");
         }
     }
 

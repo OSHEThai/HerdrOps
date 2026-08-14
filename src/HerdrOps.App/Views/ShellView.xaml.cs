@@ -1,3 +1,4 @@
+using System.ComponentModel;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
@@ -20,6 +21,8 @@ public partial class ShellView : UserControl
         Navigation = new ShellNavigationController();
         InitializeComponent();
         DataContext = Navigation;
+        Navigation.PropertyChanged += OnNavigationPropertyChanged;
+        UpdatePageVisibility();
     }
 
     public ShellNavigationController Navigation { get; }
@@ -41,6 +44,24 @@ public partial class ShellView : UserControl
         {
             e.Handled = true;
         }
+    }
+
+    private void OnNavigationPropertyChanged(object? sender, PropertyChangedEventArgs e)
+    {
+        if (e.PropertyName == nameof(ShellNavigationController.SelectedDestination))
+        {
+            UpdatePageVisibility();
+        }
+    }
+
+    private void UpdatePageVisibility()
+    {
+        var isOverview = string.Equals(
+            Navigation.SelectedDestination.Id,
+            "overview",
+            StringComparison.Ordinal);
+        OverviewPage.Visibility = isOverview ? Visibility.Visible : Visibility.Collapsed;
+        PlaceholderPage.Visibility = isOverview ? Visibility.Collapsed : Visibility.Visible;
     }
 
     private void OnShellSizeChanged(object sender, SizeChangedEventArgs e)
