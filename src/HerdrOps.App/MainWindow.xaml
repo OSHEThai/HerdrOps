@@ -2,7 +2,6 @@
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:shell="clr-namespace:System.Windows.Shell;assembly=PresentationFramework"
-        xmlns:views="clr-namespace:HerdrOps.App.Views"
         Title="HerdrOps"
         Width="1672"
         Height="941"
@@ -25,5 +24,5 @@
                             UseAeroCaptionButtons="False" />
     </shell:WindowChrome.WindowChrome>
 
-    <views:ShellView />
+    <ContentControl x:Name="ShellHost" />
 </Window>

@@ -13,6 +13,7 @@ public partial class OverviewView : UserControl
 {
     private const double CompactHeightBreakpoint = 600;
     private WidgetGalleryWindow? _galleryWindow;
+    private IWidgetState _widgetState = SyntheticWidgetState.Create();
 
     public OverviewView()
         : this(SyntheticOverviewState.Create())
@@ -23,6 +24,12 @@ public partial class OverviewView : UserControl
     {
         InitializeComponent();
         DataContext = state;
+    }
+
+    public void UseWidgetState(IWidgetState state)
+    {
+        ArgumentNullException.ThrowIfNull(state);
+        _widgetState = state;
     }
 
     private void OnOverviewSizeChanged(object sender, SizeChangedEventArgs e)
@@ -44,7 +51,7 @@ public partial class OverviewView : UserControl
     {
         if (_galleryWindow is null || !_galleryWindow.IsLoaded)
         {
-            _galleryWindow = new WidgetGalleryWindow
+            _galleryWindow = new WidgetGalleryWindow(_widgetState)
             {
                 Owner = Window.GetWindow(this),
             };

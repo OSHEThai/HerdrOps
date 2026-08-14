@@ -70,3 +70,14 @@
 - Selection contract: selecting an observed Agent in Live Organization updates Agent Detail from the exact same normalized snapshot and sequence.
 - Evidence boundary: state-adapter tests, same-user pipe lifecycle tests and contract-backed WPF captures are Integration/Synthetic UI evidence. They do not satisfy Issue #9's required side-by-side actual-Herdr snapshot, runtime screen capture or Dashboard lifecycle trace.
 - Status: Implementation-ready for v0.2 Issue #9. Actual Herdr runtime acceptance remains pending, so the issue must stay open.
+
+## D-010 — One App subscription drives Dashboard and live Widgets
+
+- Decision: The WPF App owns one Core-to-App subscription for its complete process lifetime. Dashboard and every Widget consume one `LiveDashboardState`; opening additional Widget windows never creates duplicate Core clients.
+- Required v0.2 variants: Compact, Normal and Floating Vertical use `LiveWidgetState`. The Normal and Floating Vertical lists expose every admitted Agent through scrolling, while Compact summarizes Working, Blocked and Done plus priority attention.
+- Lifecycle contract: Closing the Dashboard window does not stop the App subscription while Widget windows keep the App alive. App shutdown disposes only the App-side read subscription and never owns or terminates Core.
+- Consistency contract: Dashboard and Widgets share the same normalized snapshot, sequence and selected Agent. A connected Core with no admitted Herdr snapshot renders counts as unknown rather than zero-agent success. A Core disconnect immediately makes counts unknown, removes stale status notices and makes current Agent statuses offline while retaining last-known identity for diagnosis.
+- Attention contract: Blocked and Done remain semantically distinct by status, glyph and brush. Assignment, score, activity history and other unavailable fields remain `Unknown`; the UI never invents them.
+- Telemetry contract: Widget transport-latency samples are bounded to the latest 512 accepted sequences and report p95. The implementation test separately measures synchronous in-process contract-to-widget adapter time; neither value is accepted as end-to-end Herdr latency or Core-plus-App resource evidence.
+- Evidence boundary: Contract-backed WPF captures, same-user pipe tests and in-process measurements are Integration/Synthetic evidence. They do not satisfy Issue #10's actual live-widget capture, reference-host end-to-end latency, Core-plus-App resource budget or version-local runtime gate.
+- Status: Implementation-ready for v0.2 Issue #10. Actual Herdr/reference-host runtime acceptance remains pending, so the issue must stay open.

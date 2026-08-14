@@ -2,7 +2,6 @@
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:automation="clr-namespace:System.Windows.Automation;assembly=PresentationCore"
-             xmlns:views="clr-namespace:HerdrOps.App.Views"
              xmlns:widgets="clr-namespace:HerdrOps.App.Widgets"
              Background="{DynamicResource HerdrOps.Brush.Background}"
              Foreground="{DynamicResource HerdrOps.Brush.TextPrimary}"
@@ -34,11 +33,14 @@
                         <TextBlock Tag="ThaiWidgetCheck"
                                    Foreground="{DynamicResource HerdrOps.Brush.TextSecondary}"
                                    FontSize="13"
-                                   Text="ต้นแบบ WPF ทั้ง 7 รูปแบบ · ใช้ข้อมูล Synthetic ชุดเดียวกัน · ยังไม่เชื่อมต่อ Herdr" />
+                                   Text="{Binding SharedState.GalleryDescription, RelativeSource={RelativeSource AncestorType=widgets:WidgetGalleryView}}" />
                     </StackPanel>
                     <StackPanel Grid.Column="1" VerticalAlignment="Center" Orientation="Horizontal">
                         <Border Margin="0,0,16,0" Padding="10,4" Background="{DynamicResource HerdrOps.Brush.PrimarySubtle}" BorderBrush="{DynamicResource HerdrOps.Brush.Primary}" BorderThickness="1" CornerRadius="{DynamicResource HerdrOps.Radius.Pill}">
-                            <TextBlock Foreground="{DynamicResource HerdrOps.Brush.PrimaryText}" FontSize="10" FontWeight="SemiBold" Text="SYNTHETIC DATA" />
+                            <TextBlock Foreground="{DynamicResource HerdrOps.Brush.PrimaryText}"
+                                       FontSize="10"
+                                       FontWeight="SemiBold"
+                                       Text="{Binding SharedState.SourceLabel, RelativeSource={RelativeSource AncestorType=widgets:WidgetGalleryView}}" />
                         </Border>
                         <Ellipse Width="10" Height="10" Fill="{DynamicResource HerdrOps.Brush.Status.Working}" />
                         <TextBlock Margin="6,0,14,0" FontSize="11" Text="Working" />
@@ -138,10 +140,10 @@
                     <Grid>
                         <Grid.RowDefinitions><RowDefinition Height="48" /><RowDefinition Height="*" /><RowDefinition Height="44" /></Grid.RowDefinitions>
                         <StackPanel Orientation="Horizontal">
-                            <StackPanel><TextBlock Foreground="{DynamicResource HerdrOps.Brush.PrimaryText}" FontSize="15" FontWeight="SemiBold" Text="8. Dashboard launch / preview" /><TextBlock Tag="ThaiWidgetCheck" Foreground="{DynamicResource HerdrOps.Brush.TextMuted}" FontSize="10" Text="เปิดหน้าต่างหลักโดยยังรักษาขอบเขตข้อมูล Synthetic" /></StackPanel>
+                            <StackPanel><TextBlock Foreground="{DynamicResource HerdrOps.Brush.PrimaryText}" FontSize="15" FontWeight="SemiBold" Text="8. Dashboard launch / preview" /><TextBlock Tag="ThaiWidgetCheck" Foreground="{DynamicResource HerdrOps.Brush.TextMuted}" FontSize="10" Text="ตัวอย่างหน้าต่างหลักและทางลัดกลับ Dashboard" /></StackPanel>
                         </StackPanel>
                         <Border Grid.Row="1" Background="{DynamicResource HerdrOps.Brush.Background}" BorderBrush="{DynamicResource HerdrOps.Brush.Border}" BorderThickness="1" CornerRadius="{DynamicResource HerdrOps.Radius.Default}" ClipToBounds="True">
-                            <Viewbox Stretch="Uniform"><views:ShellView Width="1672" Height="941" IsHitTestVisible="False" /></Viewbox>
+                            <Viewbox Stretch="Uniform"><ContentControl x:Name="DashboardPreviewHost" Width="1672" Height="941" IsHitTestVisible="False" /></Viewbox>
                         </Border>
                         <Button x:Name="OpenDashboardButton" Grid.Row="2" Tag="Dashboard" Style="{DynamicResource HerdrOps.Style.SecondaryButton}" automation:AutomationProperties.Name="กลับไปยัง Dashboard หลัก" Click="OnOpenDashboardClick" Content="กลับไปยัง Dashboard" />
                     </Grid>
@@ -151,7 +153,11 @@
             <Border Grid.Row="3" Background="{DynamicResource HerdrOps.Brush.TopBar}" BorderBrush="{DynamicResource HerdrOps.Brush.Border}" BorderThickness="0,1,0,0">
                 <Grid Margin="20,0">
                     <TextBlock VerticalAlignment="Center" Foreground="{DynamicResource HerdrOps.Brush.TextMuted}" FontSize="11" Text="Keyboard: Tab / Shift+Tab · Enter / Space · Widget: Esc, Ctrl+T, Ctrl+0" />
-                    <TextBlock HorizontalAlignment="Right" VerticalAlignment="Center" Foreground="{DynamicResource HerdrOps.Brush.TextMuted}" FontSize="11" Text="Herdr: Not connected" />
+                    <TextBlock HorizontalAlignment="Right"
+                               VerticalAlignment="Center"
+                               Foreground="{DynamicResource HerdrOps.Brush.TextMuted}"
+                               FontSize="11"
+                               Text="{Binding SharedState.ConnectionLabel, RelativeSource={RelativeSource AncestorType=widgets:WidgetGalleryView}}" />
                 </Grid>
             </Border>
         </Grid>
@@ -181,7 +187,7 @@
                         <TextBlock Tag="ThaiWidgetCheck"
                                    Foreground="{DynamicResource HerdrOps.Brush.TextSecondary}"
                                    FontSize="11"
-                                   Text="Responsive Gallery · 7 Widget + Dashboard · ยังไม่เชื่อมต่อ Herdr" />
+                                   Text="{Binding SharedState.GalleryDescription, RelativeSource={RelativeSource AncestorType=widgets:WidgetGalleryView}}" />
                     </StackPanel>
                     <Border Grid.Column="1"
                             Padding="10,4"
@@ -193,7 +199,7 @@
                         <TextBlock Foreground="{DynamicResource HerdrOps.Brush.PrimaryText}"
                                    FontSize="10"
                                    FontWeight="SemiBold"
-                                   Text="SYNTHETIC DATA" />
+                                   Text="{Binding SharedState.SourceLabel, RelativeSource={RelativeSource AncestorType=widgets:WidgetGalleryView}}" />
                     </Border>
                 </Grid>
             </Border>
@@ -262,7 +268,7 @@
                                         <TextBlock HorizontalAlignment="Center"
                                                    Foreground="{DynamicResource HerdrOps.Brush.TextMuted}"
                                                    FontSize="9"
-                                                   Text="SYNTHETIC PREVIEW" />
+                                                   Text="{Binding SharedState.DashboardPreviewLabel, RelativeSource={RelativeSource AncestorType=widgets:WidgetGalleryView}}" />
                                     </StackPanel>
                                 </Border>
                                 <Button Grid.Row="2"
@@ -297,7 +303,7 @@
                                VerticalAlignment="Center"
                                Foreground="{DynamicResource HerdrOps.Brush.TextMuted}"
                                FontSize="10"
-                               Text="Herdr: Not connected" />
+                               Text="{Binding SharedState.ConnectionLabel, RelativeSource={RelativeSource AncestorType=widgets:WidgetGalleryView}}" />
                 </Grid>
             </Border>
         </Grid>

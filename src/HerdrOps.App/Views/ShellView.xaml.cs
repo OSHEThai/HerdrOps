@@ -4,7 +4,6 @@ using System.Windows.Controls;
 using System.Windows.Input;
 using HerdrOps.App.Live;
 using HerdrOps.App.Shell;
-using HerdrOps.App.StateIpc;
 
 namespace HerdrOps.App.Views;
 
@@ -18,24 +17,20 @@ public partial class ShellView : UserControl
     private const double ProjectSelectorBreakpoint = 1080;
     private const double StatusLegendBreakpoint = 1280;
     private readonly bool _syntheticPreview;
-    private readonly LiveDashboardSession? _liveSession;
-    private CancellationTokenSource? _sessionCancellation;
-    private Task? _sessionTask;
 
     public ShellView()
-        : this(new LiveDashboardState(), syntheticPreview: false, startProductionSession: true)
+        : this(new LiveDashboardState(), syntheticPreview: false)
     {
     }
 
     public ShellView(LiveDashboardState liveDashboard)
-        : this(liveDashboard, syntheticPreview: false, startProductionSession: false)
+        : this(liveDashboard, syntheticPreview: false)
     {
     }
 
     private ShellView(
         LiveDashboardState liveDashboard,
-        bool syntheticPreview,
-        bool startProductionSession)
+        bool syntheticPreview)
     {
         LiveDashboard = liveDashboard ?? throw new ArgumentNullException(nameof(liveDashboard));
         _syntheticPreview = syntheticPreview;
@@ -45,16 +40,9 @@ public partial class ShellView : UserControl
         if (!syntheticPreview)
         {
             OverviewPage.DataContext = LiveDashboard.Overview;
+            OverviewPage.UseWidgetState(LiveDashboard.Widgets);
             LiveOrganizationPage.DataContext = LiveDashboard.Organization;
             AgentDetailPage.DataContext = LiveDashboard.AgentDetail;
-        }
-
-        if (startProductionSession)
-        {
-            _liveSession = new LiveDashboardSession(
-                new HerdrOpsStatePipeClient(HerdrOpsStatePipeClientOptions.ForCurrentUser()),
-                LiveDashboard,
-                new DispatcherLiveDashboardUiScheduler(Dispatcher));
         }
 
         Navigation.PropertyChanged += OnNavigationPropertyChanged;
@@ -63,14 +51,11 @@ public partial class ShellView : UserControl
 
     public static ShellView CreateSyntheticPreview() => new(
         LiveDashboardState.CreateSyntheticPreview(),
-        syntheticPreview: true,
-        startProductionSession: false);
+        syntheticPreview: true);
 
     public ShellNavigationController Navigation { get; }
 
     public LiveDashboardState LiveDashboard { get; }
-
-    public bool IsStateSessionRunning => _sessionTask is { IsCompleted: false };
 
     public bool TryNavigateByKey(Key key, ModifierKeys modifiers)
     {
@@ -121,60 +106,6 @@ public partial class ShellView : UserControl
         PlaceholderPage.Visibility = isOverview || isLiveOrganization || isAgentDetail
             ? Visibility.Collapsed
             : Visibility.Visible;
-    }
-
-    private void OnShellLoaded(object sender, RoutedEventArgs e)
-    {
-        if (_liveSession is null || _sessionTask is { IsCompleted: false })
-        {
-            return;
-        }
-
-        _sessionCancellation?.Dispose();
-        _sessionCancellation = new CancellationTokenSource();
-        _sessionTask = _liveSession.RunAsync(_sessionCancellation.Token);
-        _ = ObserveSessionAsync(_sessionTask);
-    }
-
-    private async void OnShellUnloaded(object sender, RoutedEventArgs e)
-    {
-        var cancellation = _sessionCancellation;
-        var sessionTask = _sessionTask;
-        _sessionCancellation = null;
-        _sessionTask = null;
-        if (cancellation is null)
-        {
-            return;
-        }
-
-        cancellation.Cancel();
-        try
-        {
-            if (sessionTask is not null)
-            {
-                await sessionTask.ConfigureAwait(true);
-            }
-        }
-        catch
-        {
-            // The state session reports recoverable failures in the visible connection state.
-        }
-        finally
-        {
-            cancellation.Dispose();
-        }
-    }
-
-    private static async Task ObserveSessionAsync(Task sessionTask)
-    {
-        try
-        {
-            await sessionTask.ConfigureAwait(false);
-        }
-        catch
-        {
-            // Prevent an unobserved task fault during WPF shutdown. The session fails closed.
-        }
     }
 
     private void OnShellSizeChanged(object sender, SizeChangedEventArgs e)

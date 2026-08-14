@@ -10,8 +10,6 @@
              Background="{DynamicResource HerdrOps.Brush.Background}"
              Foreground="{DynamicResource HerdrOps.Brush.TextPrimary}"
              FontFamily="{DynamicResource HerdrOps.FontFamily.UI}"
-             Loaded="OnShellLoaded"
-             Unloaded="OnShellUnloaded"
              PreviewKeyDown="OnPreviewKeyDown"
              SizeChanged="OnShellSizeChanged">
     <UserControl.Resources>

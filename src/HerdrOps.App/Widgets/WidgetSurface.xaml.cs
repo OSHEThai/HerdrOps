@@ -1,5 +1,6 @@
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Data;
 using System.Windows.Input;
 
 namespace HerdrOps.App.Widgets;
@@ -23,7 +24,7 @@ public partial class WidgetSurface : UserControl
 
     public static readonly DependencyProperty StateProperty = DependencyProperty.Register(
         nameof(State),
-        typeof(SyntheticWidgetState),
+        typeof(IWidgetState),
         typeof(WidgetSurface),
         new FrameworkPropertyMetadata(null, OnStateChanged));
 
@@ -32,7 +33,7 @@ public partial class WidgetSurface : UserControl
     {
     }
 
-    public WidgetSurface(SyntheticWidgetState state)
+    public WidgetSurface(IWidgetState state)
     {
         ArgumentNullException.ThrowIfNull(state);
         InitializeComponent();
@@ -60,13 +61,13 @@ public partial class WidgetSurface : UserControl
         set => SetValue(IsInteractiveProperty, value);
     }
 
-    public SyntheticWidgetState? State
+    public IWidgetState? State
     {
-        get => (SyntheticWidgetState?)GetValue(StateProperty);
+        get => (IWidgetState?)GetValue(StateProperty);
         set => SetValue(StateProperty, value);
     }
 
-    public void SetState(SyntheticWidgetState state)
+    public void SetState(IWidgetState state)
     {
         ArgumentNullException.ThrowIfNull(state);
         State = state;
@@ -74,7 +75,7 @@ public partial class WidgetSurface : UserControl
 
     private static void OnStateChanged(DependencyObject dependencyObject, DependencyPropertyChangedEventArgs e)
     {
-        if (dependencyObject is WidgetSurface surface && e.NewValue is SyntheticWidgetState state)
+        if (dependencyObject is WidgetSurface surface && e.NewValue is IWidgetState state)
         {
             surface.SurfaceRoot.DataContext = state;
         }
@@ -102,10 +103,17 @@ public partial class WidgetSurface : UserControl
         FloatingVerticalPanel.Visibility = variant == WidgetVariant.FloatingVertical ? Visibility.Visible : Visibility.Collapsed;
         NotificationPanel.Visibility = variant == WidgetVariant.Notification ? Visibility.Visible : Visibility.Collapsed;
         AgentDetailPanel.Visibility = variant == WidgetVariant.AgentDetailPopup ? Visibility.Visible : Visibility.Collapsed;
-        HeaderSourceText.Text = variant == WidgetVariant.FloatingVertical
-            ? "SYN"
-            : "SYNTHETIC";
         var isNarrowVertical = variant == WidgetVariant.FloatingVertical;
+        HeaderSourceText.SetBinding(
+            TextBlock.TextProperty,
+            new Binding(isNarrowVertical
+                ? nameof(IWidgetState.CompactSourceLabel)
+                : nameof(IWidgetState.SourceLabel)));
+        FooterConnectionText.SetBinding(
+            TextBlock.TextProperty,
+            new Binding(isNarrowVertical
+                ? nameof(IWidgetState.CompactConnectionLabel)
+                : nameof(IWidgetState.ConnectionLabel)));
         HeaderWordmark.FontSize = isNarrowVertical ? 11 : 14;
         HeaderStatusDot.Margin = isNarrowVertical
             ? new Thickness(4, 0, 3, 0)

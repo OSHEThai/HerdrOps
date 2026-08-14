@@ -1,4 +1,6 @@
 using System.Windows;
+using HerdrOps.App.Live;
+using HerdrOps.App.Views;
 
 namespace HerdrOps.App;
 
@@ -8,7 +10,17 @@ namespace HerdrOps.App;
 public partial class MainWindow : Window
 {
     public MainWindow()
+        : this(new LiveDashboardState())
     {
-        InitializeComponent();
     }
+
+    public MainWindow(LiveDashboardState state)
+    {
+        ArgumentNullException.ThrowIfNull(state);
+        InitializeComponent();
+        Shell = new ShellView(state);
+        ShellHost.Content = Shell;
+    }
+
+    public ShellView Shell { get; }
 }

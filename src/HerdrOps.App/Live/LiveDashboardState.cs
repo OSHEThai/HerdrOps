@@ -2,6 +2,7 @@ using HerdrOps.App.Agents;
 using HerdrOps.App.Organization;
 using HerdrOps.App.Overview;
 using HerdrOps.App.StateIpc;
+using HerdrOps.App.Widgets;
 using HerdrOps.Contracts.StateIpc;
 
 namespace HerdrOps.App.Live;
@@ -32,6 +33,7 @@ public sealed class LiveDashboardState : ObservableState
     private string _latencyLabel;
     private string? _selectedTerminalId;
     private DateTimeOffset _lastSourceTimestamp;
+    private TimeSpan? _lastTransportLatency;
 
     public LiveDashboardState()
         : this(syntheticPreview: false)
@@ -43,6 +45,7 @@ public sealed class LiveDashboardState : ObservableState
         Overview = new LiveOverviewState();
         Organization = new LiveOrganizationState();
         AgentDetail = new LiveAgentDetailState();
+        Widgets = new LiveWidgetState();
         Organization.AgentSelectionRequested += (_, terminalId) => SelectAgent(terminalId);
         _connectionStatus = syntheticPreview
             ? LiveDashboardConnectionStatus.SyntheticPreview
@@ -70,6 +73,8 @@ public sealed class LiveDashboardState : ObservableState
     public LiveOrganizationState Organization { get; }
 
     public LiveAgentDetailState AgentDetail { get; }
+
+    public LiveWidgetState Widgets { get; }
 
     public HerdrSessionStateContract CurrentState
     {
@@ -127,6 +132,12 @@ public sealed class LiveDashboardState : ObservableState
         private set => Set(ref _lastSourceTimestamp, value);
     }
 
+    public TimeSpan? LastTransportLatency
+    {
+        get => _lastTransportLatency;
+        private set => Set(ref _lastTransportLatency, value);
+    }
+
     public void ApplyUpdate(HerdrOpsStateUpdate update, DateTimeOffset receivedUtc)
     {
         ArgumentNullException.ThrowIfNull(update);
@@ -145,6 +156,7 @@ public sealed class LiveDashboardState : ObservableState
         LastSourceTimestamp = update.Envelope.SentUtc;
         LastUpdateLabel = $"Core update {update.Envelope.SentUtc.ToLocalTime():HH:mm:ss} · sequence {normalized.LastIngestSequence}";
         var latency = receivedUtc - update.Envelope.SentUtc;
+        LastTransportLatency = latency < TimeSpan.Zero ? null : latency;
         LatencyLabel = latency < TimeSpan.Zero
             ? "clock mismatch"
             : $"{Math.Round(latency.TotalMilliseconds, MidpointRounding.AwayFromZero):0} ms";
@@ -205,9 +217,9 @@ public sealed class LiveDashboardState : ObservableState
         ConnectionStatus = LiveDashboardConnectionStatus.Stopped;
         IsLive = false;
         SourceLabel = CurrentState.LastIngestSequence > 0 ? "LAST KNOWN" : "NO CORE DATA";
-        ConnectionLabel = "Dashboard state client stopped";
+        ConnectionLabel = "App state client stopped";
         ConnectionBrushKey = OverviewBrushKeys.Offline;
-        StatusSummary = "Dashboard closed its read-only Core subscription";
+        StatusSummary = "App closed its read-only Core subscription";
         LatencyLabel = "— ms";
         RefreshViews();
     }
@@ -218,6 +230,13 @@ public sealed class LiveDashboardState : ObservableState
         SelectedTerminalId = resolved;
         Organization.SelectAgent(CurrentState, IsLive, resolved);
         AgentDetail.Update(CurrentState, IsLive, SourceLabel, ConnectionLabel, resolved);
+        Widgets.Update(
+            CurrentState,
+            IsLive,
+            ConnectionLabel,
+            LastSourceTimestamp,
+            resolved,
+            LastTransportLatency);
     }
 
     private void RefreshViews()
@@ -241,6 +260,13 @@ public sealed class LiveDashboardState : ObservableState
             SourceLabel,
             ConnectionLabel,
             SelectedTerminalId);
+        Widgets.Update(
+            CurrentState,
+            IsLive,
+            ConnectionLabel,
+            LastSourceTimestamp,
+            SelectedTerminalId,
+            LastTransportLatency);
     }
 
     private void UpdateActivities(HerdrOpsStateUpdate update)

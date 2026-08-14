@@ -8,9 +8,20 @@ public partial class WidgetGalleryWindow : Window
     private bool _hasAdjustedInitialWidth;
 
     public WidgetGalleryWindow()
+        : this(SyntheticWidgetState.Create())
     {
-        InitializeComponent();
     }
+
+    public WidgetGalleryWindow(IWidgetState state)
+    {
+        ArgumentNullException.ThrowIfNull(state);
+        InitializeComponent();
+        GalleryView = new WidgetGalleryView(state, launcher: null);
+        GalleryHost.Content = GalleryView;
+        Title = $"HerdrOps Widget Gallery — {state.WindowTitleSuffix}";
+    }
+
+    public WidgetGalleryView GalleryView { get; }
 
     protected override void OnContentRendered(EventArgs e)
     {
