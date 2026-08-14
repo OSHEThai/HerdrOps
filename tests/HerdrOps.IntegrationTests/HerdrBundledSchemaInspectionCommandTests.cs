@@ -64,6 +64,46 @@ public sealed class HerdrBundledSchemaInspectionCommandTests
     }
 
     [TestMethod]
+    public void RejectedInspectionLeavesPreexistingSchemaOutputUntouched()
+    {
+        var root = Path.Combine(
+            Path.GetTempPath(),
+            "HerdrOps.BundledSchemaCommandTests",
+            Guid.NewGuid().ToString("N"));
+        var schemaPath = Path.Combine(root, "existing-schema.json");
+        var reportPath = Path.Combine(root, "rejection-report.json");
+        var sentinel = new byte[] { 0x53, 0x54, 0x41, 0x4C, 0x45 };
+        try
+        {
+            Directory.CreateDirectory(root);
+            File.WriteAllBytes(schemaPath, sentinel);
+            using var output = new StringWriter();
+            using var error = new StringWriter();
+
+            var exitCode = HerdrBundledSchemaInspectionCommand.Run(
+                [
+                    "inspect-herdr-bundled-schema",
+                    "--herdr",
+                    Path.Combine(root, "missing-herdr.exe"),
+                    "--schema-output",
+                    schemaPath,
+                    "--report",
+                    reportPath,
+                ],
+                output,
+                error);
+
+            Assert.AreEqual(2, exitCode);
+            CollectionAssert.AreEqual(sentinel, File.ReadAllBytes(schemaPath));
+            Assert.IsEmpty(Directory.GetFiles(root, "*.tmp"));
+        }
+        finally
+        {
+            DeleteFixtureRoot(root);
+        }
+    }
+
+    [TestMethod]
     public void BlankSchemaOutputValueReturnsUsageFailure()
     {
         using var output = new StringWriter();

@@ -20,6 +20,16 @@ $inspectionPath = Join-Path $evidenceDirectory 'installed-herdr-bundled-schema.j
 $schemaPath = Join-Path $evidenceDirectory 'herdr-api-v19.schema.json'
 $gateReportPath = Join-Path $evidenceDirectory 'gate-report.txt'
 
+$sourceCommit = (& git -C $repositoryRoot rev-parse HEAD).Trim()
+if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($sourceCommit)) {
+    throw 'Could not resolve the source commit for the bundled-schema gate.'
+}
+$repositoryChanges = @(& git -C $repositoryRoot status --porcelain --untracked-files=all)
+if ($LASTEXITCODE -ne 0) { throw 'Could not inspect repository status.' }
+if ($repositoryChanges.Count -ne 0) {
+    throw "Bundled-schema evidence requires a clean source checkout. Changes: $($repositoryChanges -join '; ')"
+}
+
 New-Item -ItemType Directory -Path $testResultsDirectory -Force | Out-Null
 
 if (-not (Test-Path -LiteralPath $HerdrExecutable -PathType Leaf)) {
@@ -184,7 +194,7 @@ foreach ($requiredFixtureTest in $requiredFixtureTests) {
 $reportLines = @(
     'HerdrOps v0.2 Issue #54 Bundled Schema Contract Gate',
     "GeneratedUtc: $((Get-Date).ToUniversalTime().ToString('O'))",
-    "SourceCommit: $(& git -C $repositoryRoot rev-parse HEAD)",
+    "SourceCommit: $sourceCommit",
     'Result: PASS',
     'EvidenceClass: Contract',
     'RuntimeObserved: false',

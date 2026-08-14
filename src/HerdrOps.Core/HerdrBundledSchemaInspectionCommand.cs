@@ -168,10 +168,28 @@ public static class HerdrBundledSchemaInspectionCommand
 
     private static bool TryWriteBytes(string path, byte[] contents, TextWriter error)
     {
+        string? temporaryPath = null;
         try
         {
             var fullPath = PrepareOutputPath(path);
-            File.WriteAllBytes(fullPath, contents);
+            var directory = Path.GetDirectoryName(fullPath)!;
+            temporaryPath = Path.Combine(
+                directory,
+                $".{Path.GetFileName(fullPath)}.{Guid.NewGuid():N}.tmp");
+            using (var stream = new FileStream(
+                       temporaryPath,
+                       FileMode.CreateNew,
+                       FileAccess.Write,
+                       FileShare.None,
+                       bufferSize: 81920,
+                       FileOptions.WriteThrough))
+            {
+                stream.Write(contents);
+                stream.Flush(flushToDisk: true);
+            }
+
+            File.Move(temporaryPath, fullPath, overwrite: true);
+            temporaryPath = null;
             return true;
         }
         catch (Exception exception) when (
@@ -182,6 +200,20 @@ public static class HerdrBundledSchemaInspectionCommand
         {
             error.WriteLine($"Bundled JSON Schema could not be written: {exception.Message}");
             return false;
+        }
+        finally
+        {
+            if (!string.IsNullOrWhiteSpace(temporaryPath))
+            {
+                try
+                {
+                    File.Delete(temporaryPath);
+                }
+                catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+                {
+                    error.WriteLine($"Temporary schema output could not be removed: {exception.Message}");
+                }
+            }
         }
     }
 
