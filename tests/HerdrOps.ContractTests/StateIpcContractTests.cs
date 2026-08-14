@@ -95,7 +95,15 @@ public sealed class StateIpcContractTests
             next.FocusedPaneId);
         var payload = new HerdrOpsStateDeltaPayload(
             delta,
-            HerdrOpsStateIpcJson.ComputeSha256(next));
+            HerdrOpsStateIpcJson.ComputeSha256(next),
+            new HerdrRuntimeHealthContract(
+                "Connected",
+                new DateTimeOffset(2026, 8, 14, 10, 0, 2, TimeSpan.Zero),
+                new DateTimeOffset(2026, 8, 14, 10, 0, 2, TimeSpan.Zero),
+                1,
+                1,
+                0,
+                0));
 
         var result = HerdrSessionStateContractReducer.ApplyAndValidateDeltaPayload(current, payload);
 
@@ -123,7 +131,35 @@ public sealed class StateIpcContractTests
         Assert.AreEqual(first, same);
         Assert.AreNotEqual(first, other);
         Assert.DoesNotContain("S-1-5-21", first, StringComparison.Ordinal);
-        Assert.StartsWith("herdrops-state-v1-", first, StringComparison.Ordinal);
+        Assert.StartsWith("herdrops-state-v2-", first, StringComparison.Ordinal);
+    }
+
+    [TestMethod]
+    public void RuntimeHealthRejectsInvalidStatusClockAndConnectedWithoutBootstrap()
+    {
+        var utc = new DateTimeOffset(2026, 8, 14, 10, 0, 0, TimeSpan.Zero);
+        var valid = new HerdrRuntimeHealthContract(
+            "Connected",
+            utc,
+            utc,
+            1,
+            0,
+            0,
+            0);
+
+        HerdrSessionStateContractReducer.ValidateRuntimeHealth(valid);
+        Assert.Throws<HerdrOpsStateIpcProtocolException>(() =>
+            HerdrSessionStateContractReducer.ValidateRuntimeHealth(
+                valid with { Status = "Healthy" }));
+        Assert.Throws<HerdrOpsStateIpcProtocolException>(() =>
+            HerdrSessionStateContractReducer.ValidateRuntimeHealth(
+                valid with { LastTransitionUtc = utc.ToOffset(TimeSpan.FromHours(7)) }));
+        Assert.Throws<HerdrOpsStateIpcProtocolException>(() =>
+            HerdrSessionStateContractReducer.ValidateRuntimeHealth(
+                valid with { LastAcceptedStateUtc = utc.AddSeconds(1) }));
+        Assert.Throws<HerdrOpsStateIpcProtocolException>(() =>
+            HerdrSessionStateContractReducer.ValidateRuntimeHealth(
+                valid with { BootstrapCount = 0 }));
     }
 
     private static async Task AssertFrameRejectedAsync(

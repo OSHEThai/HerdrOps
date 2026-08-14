@@ -16,6 +16,7 @@ public sealed class HerdrStateProjectionCoordinator
     private readonly SqliteHerdrStateStore _store;
     private readonly TimeProvider _timeProvider;
     private HerdrSessionStateContract _currentState;
+    private HerdrRuntimeHealthContract _currentRuntimeHealth;
 
     public HerdrStateProjectionCoordinator(
         SqliteHerdrStateStore store,
@@ -25,7 +26,8 @@ public sealed class HerdrStateProjectionCoordinator
         _store = store ?? throw new ArgumentNullException(nameof(store));
         _timeProvider = timeProvider ?? TimeProvider.System;
         _currentState = store.ReadCurrent()?.State ?? HerdrSessionStateContract.Empty;
-        var snapshot = CreateSnapshotPayload(_currentState);
+        _currentRuntimeHealth = HerdrRuntimeHealthContract.Starting(_timeProvider.GetUtcNow());
+        var snapshot = CreateSnapshotPayload(_currentState, _currentRuntimeHealth);
         PipeServer = new HerdrOpsStatePipeServer(pipeOptions, snapshot, _timeProvider);
     }
 
@@ -45,6 +47,17 @@ public sealed class HerdrStateProjectionCoordinator
     public HerdrSessionState RestoredDomainState =>
         HerdrSessionStateContractMapper.ToDomain(CurrentState);
 
+    public HerdrRuntimeHealthContract CurrentRuntimeHealth
+    {
+        get
+        {
+            lock (_sync)
+            {
+                return _currentRuntimeHealth;
+            }
+        }
+    }
+
     public HerdrStateProjectionResult Project(HerdrRuntimeMonitorSnapshot monitorSnapshot)
     {
         ArgumentNullException.ThrowIfNull(monitorSnapshot);
@@ -52,18 +65,35 @@ public sealed class HerdrStateProjectionCoordinator
         {
             var next = HerdrSessionStateContractMapper.ToContract(monitorSnapshot.State);
             var nextHash = HerdrOpsStateIpcJson.ComputeSha256(next);
+            var nextHealth = CreateRuntimeHealth(monitorSnapshot, _currentRuntimeHealth);
             if (next.LastIngestSequence == _currentState.LastIngestSequence &&
                 string.Equals(
                     nextHash,
                     HerdrOpsStateIpcJson.ComputeSha256(_currentState),
                     StringComparison.Ordinal))
             {
-                return new HerdrStateProjectionResult(_currentState, Persisted: false, CorrelationId: null);
+                if (nextHealth == _currentRuntimeHealth)
+                {
+                    return new HerdrStateProjectionResult(
+                        _currentState,
+                        Persisted: false,
+                        CorrelationId: null);
+                }
+
+                var healthCorrelationId = Guid.NewGuid();
+                PipeServer.PublishRuntimeHealth(
+                    new HerdrOpsRuntimeHealthPayload(nextHealth, nextHash),
+                    healthCorrelationId);
+                _currentRuntimeHealth = nextHealth;
+                return new HerdrStateProjectionResult(
+                    _currentState,
+                    Persisted: false,
+                    healthCorrelationId);
             }
 
             var delta = HerdrSessionStateContractMapper.CreateDelta(_currentState, next);
-            var deltaPayload = new HerdrOpsStateDeltaPayload(delta, nextHash);
-            var snapshotPayload = new HerdrOpsStateSnapshotPayload(next, nextHash);
+            var deltaPayload = new HerdrOpsStateDeltaPayload(delta, nextHash, nextHealth);
+            var snapshotPayload = new HerdrOpsStateSnapshotPayload(next, nextHash, nextHealth);
             var correlationId = Guid.NewGuid();
             var ingestedUtc = _timeProvider.GetUtcNow();
             var observedUtc = monitorSnapshot.LastTransitionUtc;
@@ -78,6 +108,7 @@ public sealed class HerdrStateProjectionCoordinator
                 HerdrOpsStateIpcJson.SerializePayload(deltaPayload)));
             PipeServer.PublishDelta(deltaPayload, snapshotPayload, correlationId);
             _currentState = result.StoredState.State;
+            _currentRuntimeHealth = nextHealth;
             return new HerdrStateProjectionResult(
                 _currentState,
                 Persisted: !result.WasAlreadyPresent,
@@ -86,11 +117,32 @@ public sealed class HerdrStateProjectionCoordinator
     }
 
     private static HerdrOpsStateSnapshotPayload CreateSnapshotPayload(
-        HerdrSessionStateContract state)
+        HerdrSessionStateContract state,
+        HerdrRuntimeHealthContract runtimeHealth)
     {
         state = HerdrSessionStateContractReducer.NormalizeAndValidate(state);
         return new HerdrOpsStateSnapshotPayload(
             state,
-            HerdrOpsStateIpcJson.ComputeSha256(state));
+            HerdrOpsStateIpcJson.ComputeSha256(state),
+            runtimeHealth);
+    }
+
+    private static HerdrRuntimeHealthContract CreateRuntimeHealth(
+        HerdrRuntimeMonitorSnapshot snapshot,
+        HerdrRuntimeHealthContract current)
+    {
+        var acceptedUtc = snapshot.Status == HerdrRuntimeMonitorStatus.Connected
+            ? snapshot.LastTransitionUtc
+            : current.LastAcceptedStateUtc;
+        var health = new HerdrRuntimeHealthContract(
+            snapshot.Status.ToString(),
+            snapshot.LastTransitionUtc,
+            acceptedUtc,
+            snapshot.BootstrapCount,
+            snapshot.EventCount,
+            snapshot.DisconnectCount,
+            snapshot.ReconciliationCount);
+        HerdrSessionStateContractReducer.ValidateRuntimeHealth(health);
+        return health;
     }
 }

@@ -28,6 +28,7 @@ public enum HerdrOpsStateUpdateKind
 {
     Snapshot,
     Delta,
+    RuntimeHealth,
 }
 
 public sealed record HerdrOpsStateUpdate(
@@ -35,7 +36,8 @@ public sealed record HerdrOpsStateUpdate(
     HerdrSessionStateContract CurrentState,
     HerdrOpsStateIpcEnvelope Envelope,
     HerdrOpsStateSnapshotPayload? Snapshot,
-    HerdrOpsStateDeltaPayload? Delta);
+    HerdrOpsStateDeltaPayload? Delta,
+    HerdrRuntimeHealthContract RuntimeHealth);
 
 public interface IHerdrOpsStateUpdateSource
 {
@@ -127,7 +129,8 @@ public sealed class HerdrOpsStatePipeClient : IHerdrOpsStateUpdateSource
             current,
             snapshotEnvelope,
             snapshot,
-            null);
+            null,
+            snapshot.RuntimeHealth);
 
         while (true)
         {
@@ -135,6 +138,34 @@ public sealed class HerdrOpsStatePipeClient : IHerdrOpsStateUpdateSource
                 .ReadFrameAsync(pipe, cancellationToken, _options.MaximumFrameBytes)
                 .ConfigureAwait(false);
             ThrowIfError(envelope);
+            if (string.Equals(
+                    envelope.MessageType,
+                    HerdrOpsStateIpcProtocol.MessageTypes.RuntimeHealth,
+                    StringComparison.Ordinal))
+            {
+                ValidateServerEnvelope(
+                    envelope,
+                    HerdrOpsStateIpcProtocol.MessageTypes.RuntimeHealth,
+                    expectedCorrelationId: null);
+                if (envelope.Sequence != current.LastIngestSequence)
+                {
+                    throw new HerdrOpsStateIpcProtocolException(
+                        "The runtime-health envelope sequence does not match the current state.");
+                }
+
+                var health = HerdrOpsStateIpcJson
+                    .DeserializePayload<HerdrOpsRuntimeHealthPayload>(envelope);
+                HerdrSessionStateContractReducer.ValidateRuntimeHealthPayload(health, current);
+                yield return new HerdrOpsStateUpdate(
+                    HerdrOpsStateUpdateKind.RuntimeHealth,
+                    current,
+                    envelope,
+                    null,
+                    null,
+                    health.RuntimeHealth);
+                continue;
+            }
+
             ValidateServerEnvelope(
                 envelope,
                 HerdrOpsStateIpcProtocol.MessageTypes.Delta,
@@ -152,7 +183,8 @@ public sealed class HerdrOpsStatePipeClient : IHerdrOpsStateUpdateSource
                 current,
                 envelope,
                 null,
-                delta);
+                delta,
+                delta.RuntimeHealth);
         }
     }
 

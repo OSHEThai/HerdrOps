@@ -35,6 +35,7 @@ $requiredChecks = @(
     'NormalModeDeclaresNoHttpServerOrAdministratorRequirement',
     'DashboardAndWidgetsUseTheSameSnapshotSelectionAndLatency',
     'CoreOfflineMakesWidgetCountsAndAgentStatusesFailClosed',
+    'HerdrReconnectHealthFailsClosedWithoutDiscardingLastKnownState',
     'ConnectedCoreWithoutAdmittedHerdrStateKeepsWidgetCountsUnknown',
     'BlockedAndDoneAttentionBadgesRemainDistinct',
     'WidgetTelemetryKeepsBoundedSamplesAndComputesP95',
@@ -43,7 +44,9 @@ $requiredChecks = @(
     'LiveWidgetBindingsRefreshWhenSameStateReceivesLaterSnapshot',
     'ContractBackedWidgetAdapterP95StaysWithinReleaseTarget',
     'WidgetWindowsUseBoundedAndReversibleBehavior',
-    'CriticalWidgetFidelityActionsRemainVisible'
+    'CriticalWidgetFidelityActionsRemainVisible',
+    'RuntimeEvidenceOptionsRequireExplicitOutputsAndCoreProcess',
+    'RuntimeEvidenceOptionsRejectUnknownOrUnsafeValues'
 )
 foreach ($check in $requiredChecks) {
     if ($combinedTestLog -notmatch [Regex]::Escape($check)) {
@@ -140,13 +143,13 @@ $report = @(
     'ActualRuntimeGate: PENDING',
     'IssueStateRequired: OPEN',
     "Tests: $passedTests/$totalTests PASS",
-    'WidgetStateSource: one App-owned per-user Core-to-App protocol v1 subscription',
+    'WidgetStateSource: one App-owned per-user Core-to-App protocol v2 subscription',
     'DashboardWidgetConsistency: Dashboard and Widgets share one LiveDashboardState snapshot and selection',
     'RequiredLiveVariants: Compact, Normal, Floating Vertical',
     'NoSnapshotPolicy: a connected Core with no admitted Herdr state renders counts Unknown',
     'OfflinePolicy: counts, status notices and current Agent status fail closed while identity remains last-known',
     'AttentionPolicy: Blocked and Done retain distinct glyphs and semantic brushes',
-    'HerdrRuntimeFreshness: UNKNOWN / NOT SUPPLIED BY PROTOCOL V1',
+    'HerdrRuntimeFreshness: explicit Core-projected Connected/Reconnecting/Stopped health',
     "ContractBackedWidgetAdapterP95Ms: $($p95Milliseconds.ToString('0.000', [Globalization.CultureInfo]::InvariantCulture))",
     "ContractBackedWpfCaptures: $($requiredCaptures.Count)",
     '',

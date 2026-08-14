@@ -348,13 +348,23 @@ public sealed class LiveWidgetRenderingTests
 
     private static HerdrOpsStateUpdate CreateUpdate(HerdrSessionStateContract state)
     {
+        var acceptedUtc = EvidenceUtc.AddSeconds(state.LastIngestSequence);
+        var runtimeHealth = new HerdrRuntimeHealthContract(
+            "Connected",
+            acceptedUtc,
+            acceptedUtc,
+            2,
+            Math.Max(1, state.LastIngestSequence - 1),
+            0,
+            0);
         var payload = new HerdrOpsStateSnapshotPayload(
             state,
-            HerdrOpsStateIpcJson.ComputeSha256(state));
+            HerdrOpsStateIpcJson.ComputeSha256(state),
+            runtimeHealth);
         var envelope = HerdrOpsStateIpcJson.CreateEnvelope(
             HerdrOpsStateIpcProtocol.MessageTypes.Snapshot,
             state.LastIngestSequence,
-            EvidenceUtc.AddSeconds(state.LastIngestSequence),
+            acceptedUtc,
             HerdrOpsStateIpcProtocol.CoreSource,
             Guid.NewGuid(),
             payload);
@@ -363,7 +373,8 @@ public sealed class LiveWidgetRenderingTests
             state,
             envelope,
             payload,
-            null);
+            null,
+            runtimeHealth);
     }
 
     private static void AssertHeaderSource(DependencyObject root, string expected)

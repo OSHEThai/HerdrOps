@@ -13,6 +13,9 @@ public enum LiveDashboardConnectionStatus
     Waiting,
     Connecting,
     Live,
+    HerdrConnecting,
+    HerdrReconnecting,
+    HerdrOffline,
     Reconnecting,
     Offline,
     Stopped,
@@ -24,6 +27,8 @@ public sealed class LiveDashboardState : ObservableState
     private readonly List<LiveActivityRecord> _activities = [];
     private readonly bool _syntheticPreview;
     private HerdrSessionStateContract _currentState = HerdrSessionStateContract.Empty;
+    private HerdrRuntimeHealthContract _currentRuntimeHealth =
+        HerdrRuntimeHealthContract.Starting(DateTimeOffset.UnixEpoch);
     private LiveDashboardConnectionStatus _connectionStatus;
     private bool _isLive;
     private string _sourceLabel;
@@ -35,7 +40,7 @@ public sealed class LiveDashboardState : ObservableState
     private string _latencyLabel;
     private string? _selectedTerminalId;
     private DateTimeOffset _lastSourceTimestamp;
-    private TimeSpan? _lastTransportLatency;
+    private TimeSpan? _lastUpdateLatency;
     private HerdrOpsStateUpdateKind? _lastUpdateKind;
     private string? _lastOfflineExceptionType;
     private bool _clockMismatch;
@@ -89,13 +94,31 @@ public sealed class LiveDashboardState : ObservableState
         private set => Set(ref _currentState, value);
     }
 
+    public HerdrRuntimeHealthContract CurrentRuntimeHealth
+    {
+        get => _currentRuntimeHealth;
+        private set => Set(ref _currentRuntimeHealth, value);
+    }
+
     public LiveDashboardConnectionStatus ConnectionStatus
     {
         get => _connectionStatus;
-        private set => Set(ref _connectionStatus, value);
+        private set
+        {
+            if (Set(ref _connectionStatus, value))
+            {
+                Raise(nameof(IsCoreConnected));
+            }
+        }
     }
 
     public bool IsLive { get => _isLive; private set => Set(ref _isLive, value); }
+
+    public bool IsCoreConnected => ConnectionStatus is
+        LiveDashboardConnectionStatus.Live or
+        LiveDashboardConnectionStatus.HerdrConnecting or
+        LiveDashboardConnectionStatus.HerdrReconnecting or
+        LiveDashboardConnectionStatus.HerdrOffline;
 
     public string SourceLabel { get => _sourceLabel; private set => Set(ref _sourceLabel, value); }
 
@@ -139,10 +162,10 @@ public sealed class LiveDashboardState : ObservableState
         private set => Set(ref _lastSourceTimestamp, value);
     }
 
-    public TimeSpan? LastTransportLatency
+    public TimeSpan? LastUpdateLatency
     {
-        get => _lastTransportLatency;
-        private set => Set(ref _lastTransportLatency, value);
+        get => _lastUpdateLatency;
+        private set => Set(ref _lastUpdateLatency, value);
     }
 
     public void ApplyUpdate(HerdrOpsStateUpdate update, DateTimeOffset receivedUtc)
@@ -150,19 +173,31 @@ public sealed class LiveDashboardState : ObservableState
         ArgumentNullException.ThrowIfNull(update);
         EnsureUtc(receivedUtc, nameof(receivedUtc));
         var normalized = HerdrSessionStateContractReducer.NormalizeAndValidate(update.CurrentState);
+        HerdrSessionStateContractReducer.ValidateRuntimeHealth(update.RuntimeHealth);
         CurrentState = normalized;
-        ConnectionStatus = LiveDashboardConnectionStatus.Live;
-        IsLive = true;
+        CurrentRuntimeHealth = update.RuntimeHealth;
+        ApplyRuntimeHealth(update.RuntimeHealth);
         _lastUpdateKind = update.Kind;
         _lastOfflineExceptionType = null;
-        LastSourceTimestamp = update.Envelope.SentUtc;
-        var latency = receivedUtc - update.Envelope.SentUtc;
-        _clockMismatch = latency < TimeSpan.Zero;
-        LastTransportLatency = latency < TimeSpan.Zero ? null : latency;
-        UpdateActivities(update);
+        LastSourceTimestamp = update.RuntimeHealth.LastAcceptedStateUtc ??
+            (LastSourceTimestamp == default ? update.Envelope.SentUtc : LastSourceTimestamp);
+        if (update.Kind != HerdrOpsStateUpdateKind.RuntimeHealth)
+        {
+            var acceptedStateUtc = update.RuntimeHealth.LastAcceptedStateUtc ??
+                update.Envelope.SentUtc;
+            var latency = receivedUtc - acceptedStateUtc;
+            _clockMismatch = latency < TimeSpan.Zero;
+            LastUpdateLatency = latency < TimeSpan.Zero ? null : latency;
+        }
+        if (update.Kind != HerdrOpsStateUpdateKind.RuntimeHealth)
+        {
+            UpdateActivities(update);
+        }
         SelectedTerminalId = ResolveSelection(normalized, SelectedTerminalId);
         RefreshPresentation();
-        RefreshViews();
+        RefreshViews(recordWidgetLatency: update.Kind is
+            HerdrOpsStateUpdateKind.Snapshot or
+            HerdrOpsStateUpdateKind.Delta);
     }
 
     public void MarkConnecting(bool reconnecting)
@@ -215,15 +250,17 @@ public sealed class LiveDashboardState : ObservableState
     {
         var resolved = ResolveSelection(CurrentState, terminalId);
         SelectedTerminalId = resolved;
-        Organization.SelectAgent(CurrentState, IsLive, resolved);
-        AgentDetail.Update(CurrentState, IsLive, SourceLabel, ConnectionLabel, resolved);
+        Organization.SelectAgent(CurrentState, IsCoreConnected, IsLive, resolved);
+        AgentDetail.Update(CurrentState, IsCoreConnected, IsLive, SourceLabel, ConnectionLabel, resolved);
         Widgets.Update(
             CurrentState,
+            IsCoreConnected,
             IsLive,
             ConnectionLabel,
             LastSourceTimestamp,
             resolved,
-            LastTransportLatency);
+            LastUpdateLatency,
+            recordLatency: false);
     }
 
     public void RefreshLanguage()
@@ -236,10 +273,11 @@ public sealed class LiveDashboardState : ObservableState
         }
     }
 
-    private void RefreshViews()
+    private void RefreshViews(bool recordWidgetLatency = false)
     {
         Overview.Update(
             CurrentState,
+            IsCoreConnected,
             IsLive,
             SourceLabel,
             ConnectionLabel,
@@ -247,23 +285,27 @@ public sealed class LiveDashboardState : ObservableState
             _activities.Select(RenderActivity).ToArray());
         Organization.Update(
             CurrentState,
+            IsCoreConnected,
             IsLive,
             SourceLabel,
             ConnectionLabel,
             SelectedTerminalId);
         AgentDetail.Update(
             CurrentState,
+            IsCoreConnected,
             IsLive,
             SourceLabel,
             ConnectionLabel,
             SelectedTerminalId);
         Widgets.Update(
             CurrentState,
+            IsCoreConnected,
             IsLive,
             ConnectionLabel,
             LastSourceTimestamp,
             SelectedTerminalId,
-            LastTransportLatency);
+            LastUpdateLatency,
+            recordWidgetLatency);
     }
 
     private void UpdateActivities(HerdrOpsStateUpdate update)
@@ -360,12 +402,15 @@ public sealed class LiveDashboardState : ObservableState
                 LatencyLabel = "— ms";
                 break;
             case LiveDashboardConnectionStatus.Live:
-                SourceLabel = _lastUpdateKind == HerdrOpsStateUpdateKind.Delta
-                    ? text["CoreDeltaSource"]
-                    : text["CoreSnapshotSource"];
+                SourceLabel = _lastUpdateKind switch
+                {
+                    HerdrOpsStateUpdateKind.Delta => text["CoreDeltaSource"],
+                    HerdrOpsStateUpdateKind.RuntimeHealth => text["CoreRuntimeHealthSource"],
+                    _ => text["CoreSnapshotSource"],
+                };
                 ConnectionLabel = CurrentState.LastIngestSequence == 0
                     ? text["CoreConnectedNoSnapshot"]
-                    : text["CoreConnectedFreshnessUnknown"];
+                    : text["HerdrConnectedLive"];
                 ConnectionBrushKey = OverviewBrushKeys.Working;
                 StatusSummary = CurrentState.LastIngestSequence == 0
                     ? text["CoreLiveNoSnapshot"]
@@ -375,9 +420,36 @@ public sealed class LiveDashboardState : ObservableState
                         CurrentState.LastIngestSequence);
                 LatencyLabel = _clockMismatch
                     ? text["ClockMismatch"]
-                    : LastTransportLatency is { } latency
+                    : LastUpdateLatency is { } latency
                         ? $"{Math.Round(latency.TotalMilliseconds, MidpointRounding.AwayFromZero):0} ms"
                         : "— ms";
+                break;
+            case LiveDashboardConnectionStatus.HerdrConnecting:
+            case LiveDashboardConnectionStatus.HerdrReconnecting:
+                SourceLabel = CurrentState.LastIngestSequence > 0
+                    ? text["LastKnownSource"]
+                    : text["CoreWaitingSource"];
+                ConnectionLabel = ConnectionStatus == LiveDashboardConnectionStatus.HerdrReconnecting
+                    ? text["HerdrReconnecting"]
+                    : text["HerdrConnecting"];
+                ConnectionBrushKey = OverviewBrushKeys.Idle;
+                StatusSummary = CurrentState.LastIngestSequence > 0
+                    ? text["HerdrInterruptedLastKnown"]
+                    : text["WaitingForHerdrSnapshot"];
+                LatencyLabel = _clockMismatch
+                    ? text["ClockMismatch"]
+                    : LastUpdateLatency is { } herdrLatency
+                        ? $"{Math.Round(herdrLatency.TotalMilliseconds, MidpointRounding.AwayFromZero):0} ms"
+                        : "— ms";
+                break;
+            case LiveDashboardConnectionStatus.HerdrOffline:
+                SourceLabel = CurrentState.LastIngestSequence > 0
+                    ? text["LastKnownSource"]
+                    : text["NoCoreDataSource"];
+                ConnectionLabel = text["HerdrRuntimeStopped"];
+                ConnectionBrushKey = OverviewBrushKeys.Offline;
+                StatusSummary = text["HerdrStoppedLastKnown"];
+                LatencyLabel = "— ms";
                 break;
             case LiveDashboardConnectionStatus.Connecting:
             case LiveDashboardConnectionStatus.Reconnecting:
@@ -420,6 +492,32 @@ public sealed class LiveDashboardState : ObservableState
                 StatusSummary = text["WaitingForCore"];
                 LatencyLabel = "— ms";
                 break;
+        }
+    }
+
+    private void ApplyRuntimeHealth(HerdrRuntimeHealthContract health)
+    {
+        switch (health.Status)
+        {
+            case "Connected":
+                ConnectionStatus = LiveDashboardConnectionStatus.Live;
+                IsLive = true;
+                break;
+            case "Starting":
+                ConnectionStatus = LiveDashboardConnectionStatus.HerdrConnecting;
+                IsLive = false;
+                break;
+            case "Reconnecting":
+                ConnectionStatus = LiveDashboardConnectionStatus.HerdrReconnecting;
+                IsLive = false;
+                break;
+            case "Stopped":
+                ConnectionStatus = LiveDashboardConnectionStatus.HerdrOffline;
+                IsLive = false;
+                break;
+            default:
+                throw new HerdrOpsStateIpcProtocolException(
+                    $"Unsupported runtime health status '{health.Status}'.");
         }
     }
 

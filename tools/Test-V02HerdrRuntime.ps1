@@ -146,6 +146,11 @@ foreach ($stateFingerprint in @($firstState.StateFingerprintSha256, $finalState.
         throw "Invalid state fingerprint: $stateFingerprint"
     }
 }
+foreach ($contractStateHash in @($firstState.ContractStateSha256, $finalState.ContractStateSha256)) {
+    if ($contractStateHash -notmatch '^[0-9A-F]{64}$') {
+        throw "Invalid normalized contract-state hash: $contractStateHash"
+    }
+}
 
 $trxFiles = @(Get-ChildItem -LiteralPath $testResultsDirectory -Filter '*.trx' -File)
 if ($trxFiles.Count -ne 3) { throw "Expected 3 fresh TRX files, found $($trxFiles.Count)." }
@@ -192,10 +197,12 @@ $reportLines = @(
     "FirstBootstrapCount: $($firstState.BootstrapCount)",
     "FirstBootstrapServerIdentity: pid=$($firstState.ServerIdentity.ProcessId) start=$($firstState.ServerIdentity.ProcessStartUtc) path=$($firstState.ServerIdentity.ExecutablePath) sha256=$($firstState.ServerIdentity.ExecutableSha256)",
     "FirstStateFingerprintSha256: $($firstState.StateFingerprintSha256)",
+    "FirstContractStateSha256: $($firstState.ContractStateSha256)",
     "FirstStateCounts: workspaces=$($firstState.WorkspaceCount) tabs=$($firstState.TabCount) panes=$($firstState.PaneCount) agents=$($firstState.AgentCount)",
     "FinalBootstrapCount: $($finalState.BootstrapCount)",
     "FinalBootstrapServerIdentity: pid=$($finalState.ServerIdentity.ProcessId) start=$($finalState.ServerIdentity.ProcessStartUtc) path=$($finalState.ServerIdentity.ExecutablePath) sha256=$($finalState.ServerIdentity.ExecutableSha256)",
     "FinalStateFingerprintSha256: $($finalState.StateFingerprintSha256)",
+    "FinalContractStateSha256: $($finalState.ContractStateSha256)",
     "FinalStateCounts: workspaces=$($finalState.WorkspaceCount) tabs=$($finalState.TabCount) panes=$($finalState.PaneCount) agents=$($finalState.AgentCount)",
     '',
     'EvidenceBoundary:',

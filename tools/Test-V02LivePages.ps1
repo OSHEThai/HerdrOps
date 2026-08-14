@@ -37,6 +37,8 @@ $requiredChecks = @(
     'OfflineTransitionDoesNotLeaveLastKnownWorkingStatusCurrent',
     'OrganizationSelectionUpdatesAgentDetailFromTheSameSnapshot',
     'DashboardClientCancellationLeavesCorePipeServerRunning',
+    'HerdrReconnectHealthFailsClosedWithoutDiscardingLastKnownState',
+    'HerdrReconnectRendersLastKnownStateAsOfflineInBothLanguages',
     'LiveOverviewOrganizationAndAgentDetailRenderFromOneCoreSnapshot',
     'UnsupportedHerdrFieldsRenderAsUnknownAndAgentTopologyIsKeyboardSelectable'
 )
@@ -67,7 +69,9 @@ $requiredCaptures = @(
     'live-organization-1672x941.png',
     'live-organization-1366x768.png',
     'agent-detail-1672x941.png',
-    'agent-detail-1366x768.png'
+    'agent-detail-1366x768.png',
+    'thai-overview-herdr-reconnecting.png',
+    'english-overview-herdr-reconnecting.png'
 )
 $captureEvidence = foreach ($captureName in $requiredCaptures) {
     $capturePath = Join-Path $captureDirectory $captureName
@@ -103,8 +107,8 @@ $report = @(
     'ActualHerdrRuntime: NOT OBSERVED / NOT CLAIMED',
     'IssueStateRequired: OPEN',
     "Tests: $passedTests/$totalTests PASS",
-    'DashboardStateSource: per-user Core-to-App protocol v1 stream',
-    'HerdrRuntimeFreshness: UNKNOWN / NOT SUPPLIED BY PROTOCOL V1',
+    'DashboardStateSource: per-user Core-to-App protocol v2 stream',
+    'HerdrRuntimeFreshness: explicit Core-projected Connected/Reconnecting/Stopped health',
     'UnknownDataPolicy: unsupported fields render Unknown',
     'LifecycleBoundary: Dashboard cancellation leaves Core pipe server running',
     "ContractBackedWpfCaptures: $($requiredCaptures.Count)",
@@ -120,7 +124,7 @@ $report = @(
     '',
     'EvidenceBoundary:',
     'This gate proves one normalized Core snapshot drives Overview, Live Organization and Agent Detail; unsupported Herdr fields remain Unknown; Core-offline state is fail-closed; selection stays snapshot-consistent; and closing the Dashboard subscription does not stop the Core pipe server.',
-    'Protocol v1 does not carry Herdr runtime health. A connected Dashboard therefore labels state as latest accepted by Core and does not claim current Herdr runtime freshness.',
+    'Protocol v2 carries hash-bound Herdr runtime health separately from state sequence; reconnecting and stopped health fail closed while retaining last-known identity and topology.',
     'The WPF captures are generated from a contract-backed test snapshot and are synthetic UI evidence, not an actual Herdr runtime capture.',
     'Issue #9 must remain open until a side-by-side actual Herdr/UI snapshot, an actual runtime screen capture, and a Dashboard-close/Core-continuity lifecycle trace are independently accepted.'
 )

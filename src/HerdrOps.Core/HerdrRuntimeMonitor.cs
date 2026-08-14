@@ -114,6 +114,7 @@ public sealed class HerdrRuntimeMonitor
                     var authoritativeSnapshot = await _apiClient
                         .GetSnapshotAsync(_endpoint, cancellationToken)
                         .ConfigureAwait(false);
+                    var snapshotReceivedUtc = _timeProvider.GetUtcNow();
                     var authoritativeServerIdentity = _apiClient.LastVerifiedServerIdentity;
                     var bootstrapServerIdentity = ValidateBootstrapServerIdentities(
                         discoveryServerIdentity,
@@ -133,7 +134,7 @@ public sealed class HerdrRuntimeMonitor
                         ServerIdentity = bootstrapServerIdentity,
                         BootstrapCount = current.BootstrapCount + 1,
                         LastTransitionReason = null,
-                        LastTransitionUtc = _timeProvider.GetUtcNow(),
+                        LastTransitionUtc = snapshotReceivedUtc,
                     });
                     hasBootstrapped = true;
                     cycleBootstrapped = true;
@@ -154,6 +155,7 @@ public sealed class HerdrRuntimeMonitor
                         var stateEvent = await subscriptionScope.Subscription
                             .ReadNextAsync(cancellationToken)
                             .ConfigureAwait(false);
+                        var eventReceivedUtc = _timeProvider.GetUtcNow();
                         ingestSequence++;
                         if (RequiresTopologyReconciliation(stateEvent.EventName))
                         {
@@ -181,7 +183,7 @@ public sealed class HerdrRuntimeMonitor
                             State = result.State,
                             EventCount = current.EventCount + 1,
                             LastTransitionReason = null,
-                            LastTransitionUtc = _timeProvider.GetUtcNow(),
+                            LastTransitionUtc = eventReceivedUtc,
                         });
                         consecutiveImmediateReconciliations = 0;
 

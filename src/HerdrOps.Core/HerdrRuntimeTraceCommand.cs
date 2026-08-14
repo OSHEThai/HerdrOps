@@ -23,6 +23,7 @@ public sealed record HerdrRuntimeTraceTransition(
     int PaneCount,
     int AgentCount,
     string StateFingerprintSha256,
+    string ContractStateSha256,
     HerdrServerProcessIdentity? ServerIdentity,
     string? Reason);
 
@@ -160,7 +161,7 @@ public static class HerdrRuntimeTraceCommand
         var transitions = new ConcurrentQueue<HerdrRuntimeTraceTransition>();
         admitted.Monitor.StateChanged += (_sender, state) =>
         {
-            transitions.Enqueue(ToTransition(state));
+            transitions.Enqueue(HerdrRuntimeEvidence.CreateTransition(state));
             while (transitions.Count > MaximumTransitions && transitions.TryDequeue(out _))
             {
             }
@@ -226,49 +227,6 @@ public static class HerdrRuntimeTraceCommand
         }
 
         return 0;
-    }
-
-    private static HerdrRuntimeTraceTransition ToTransition(HerdrRuntimeMonitorSnapshot snapshot) => new(
-        snapshot.LastTransitionUtc,
-        snapshot.Status,
-        snapshot.State.ConnectionEpoch,
-        snapshot.BootstrapCount,
-        snapshot.EventCount,
-        snapshot.DisconnectCount,
-        snapshot.ReconciliationCount,
-        snapshot.State.LastIngestSequence,
-        snapshot.State.Workspaces.Count,
-        snapshot.State.Tabs.Count,
-        snapshot.State.Panes.Count,
-        snapshot.State.Agents.Count,
-        ComputeStateFingerprint(snapshot.State),
-        snapshot.ServerIdentity,
-        snapshot.LastTransitionReason);
-
-    private static string ComputeStateFingerprint(HerdrSessionState state)
-    {
-        var canonicalState = new
-        {
-            state.Version,
-            state.Protocol,
-            state.FocusedWorkspaceId,
-            state.FocusedTabId,
-            state.FocusedPaneId,
-            Workspaces = state.Workspaces.Values
-                .OrderBy(item => item.WorkspaceId, StringComparer.Ordinal)
-                .ToArray(),
-            Tabs = state.Tabs.Values
-                .OrderBy(item => item.TabId, StringComparer.Ordinal)
-                .ToArray(),
-            Panes = state.Panes.Values
-                .OrderBy(item => item.PaneId, StringComparer.Ordinal)
-                .ToArray(),
-            Agents = state.Agents.Values
-                .OrderBy(item => item.TerminalId, StringComparer.Ordinal)
-                .ToArray(),
-        };
-        return Convert.ToHexString(
-            SHA256.HashData(JsonSerializer.SerializeToUtf8Bytes(canonicalState)));
     }
 
     private static bool IsInvalidValue(string value) =>

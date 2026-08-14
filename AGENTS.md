@@ -4,13 +4,13 @@
 
 - `Plan/` is the current product and release-planning truth.
 - `docs/design/reference/*.png` is the immutable visual reference set approved by the user.
-- Current phase is planning only. Do not claim implementation, integration, runtime, beta, or release completion without matching evidence.
+- v0.1.0 is approved and released; v0.2.0 implementation is active. Do not claim integration, runtime, beta, or release completion without matching version-local evidence.
 
 ## Design constraints
 
 - Preserve the blue circular HerdrOps mark and the `HerdrOps` wordmark shown in the reference images.
 - Preserve the shared shell: top project/status bar, left navigation, content workspace, and bottom connection/status bar.
-- Preserve Thai/English labels where the reference uses both languages.
+- Preserve the meaning and hierarchy of reference labels, but render exactly one selected UI language at a time. Thai mode must not stack English translations, and English mode must not stack Thai translations; literal product names, Agent names, identifiers, paths, and protocol values remain unchanged.
 - Do not edit reference PNG files in place. Put experiments under a separate working directory.
 
 ## Evidence boundaries

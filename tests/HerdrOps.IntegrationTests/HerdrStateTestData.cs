@@ -84,14 +84,34 @@ internal static class HerdrStateTestData
 
     public static HerdrOpsStateSnapshotPayload Snapshot(HerdrSessionStateContract state) => new(
         state,
-        HerdrOpsStateIpcJson.ComputeSha256(state));
+        HerdrOpsStateIpcJson.ComputeSha256(state),
+        Health(state));
 
     public static HerdrOpsStateDeltaPayload Delta(
         HerdrSessionStateContract current,
         HerdrSessionStateContract next)
     {
         var delta = HerdrOps.Core.HerdrSessionStateContractMapper.CreateDelta(current, next);
-        return new HerdrOpsStateDeltaPayload(delta, HerdrOpsStateIpcJson.ComputeSha256(next));
+        return new HerdrOpsStateDeltaPayload(
+            delta,
+            HerdrOpsStateIpcJson.ComputeSha256(next),
+            Health(next));
+    }
+
+    public static HerdrRuntimeHealthContract Health(
+        HerdrSessionStateContract state,
+        string? status = null)
+    {
+        status ??= state.LastIngestSequence == 0 ? "Starting" : "Connected";
+        var observedUtc = ObservedUtc.AddSeconds(state.LastIngestSequence);
+        return new HerdrRuntimeHealthContract(
+            status,
+            observedUtc,
+            status == "Connected" ? observedUtc : null,
+            state.LastIngestSequence == 0 ? 0 : Math.Max(1, state.ConnectionEpoch),
+            Math.Max(0, state.LastIngestSequence - 1),
+            0,
+            0);
     }
 
     public static HerdrOps.Infrastructure.Storage.HerdrStateStoreCommit Commit(

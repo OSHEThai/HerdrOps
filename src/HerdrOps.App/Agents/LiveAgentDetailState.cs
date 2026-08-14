@@ -164,6 +164,7 @@ public sealed class LiveAgentDetailState : ObservableState
 
     internal void Update(
         HerdrSessionStateContract state,
+        bool isCoreConnected,
         bool isLive,
         string sourceLabel,
         string connectionLabel,
@@ -204,7 +205,7 @@ public sealed class LiveAgentDetailState : ObservableState
         InteractiveReady = AgentStatusPresentation.OptionalBoolean(agent.InteractiveReady);
         LaunchPending = AgentStatusPresentation.OptionalBoolean(agent.LaunchPending);
         ScreenDetectionSkipped = AgentStatusPresentation.OptionalBoolean(agent.ScreenDetectionSkipped);
-        RecentFacts = CreateFacts(state, agent, isLive);
+        RecentFacts = CreateFacts(state, agent, isCoreConnected, isLive);
         RelatedAgents = state.Agents
             .Where(item => item.TerminalId != agent.TerminalId && item.WorkspaceId == agent.WorkspaceId)
             .OrderBy(AgentStatusPresentation.DisplayName, StringComparer.OrdinalIgnoreCase)
@@ -253,6 +254,7 @@ public sealed class LiveAgentDetailState : ObservableState
     private static IReadOnlyList<AgentDetailFact> CreateFacts(
         HerdrSessionStateContract state,
         HerdrAgentStateContract agent,
+        bool isCoreConnected,
         bool isLive)
     {
         var text = UiLanguageService.Shared;
@@ -261,7 +263,11 @@ public sealed class LiveAgentDetailState : ObservableState
             new(
                 text["AgentFactFreshness"],
                 isLive ? text["AgentFactLatestAccepted"] : text["AgentFactLastKnownOffline"],
-                isLive ? text["AgentFactCoreLive"] : text["AgentFactCoreOffline"]),
+                isLive
+                    ? text["AgentFactCoreLive"]
+                    : isCoreConnected
+                        ? text["AgentFactHerdrInterrupted"]
+                        : text["AgentFactCoreOffline"]),
             new(
                 text["AgentFactHerdrStatus"],
                 isLive

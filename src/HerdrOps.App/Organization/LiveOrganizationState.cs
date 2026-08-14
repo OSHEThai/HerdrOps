@@ -55,7 +55,9 @@ public sealed class LiveOrganizationState : ObservableState
     private IReadOnlyList<OrganizationSummaryCard> _summaryCards = [];
     private IReadOnlyList<OrganizationNode> _nodes = [];
     private OrganizationNode? _selectedNode;
-    private OrganizationAgentDetail _selectedAgent = EmptyDetail(isLive: false);
+    private OrganizationAgentDetail _selectedAgent = EmptyDetail(
+        isCoreConnected: false,
+        isLive: false);
     private IReadOnlyList<OrganizationAttentionItem> _attentionItems = [];
     private string _hierarchyLabel = UiLanguageService.Shared["OrganizationNoTopology"];
 
@@ -113,6 +115,7 @@ public sealed class LiveOrganizationState : ObservableState
 
     internal void Update(
         HerdrSessionStateContract state,
+        bool isCoreConnected,
         bool isLive,
         string sourceLabel,
         string connectionLabel,
@@ -130,18 +133,20 @@ public sealed class LiveOrganizationState : ObservableState
                 "OrganizationTopologyFormat",
                 state.ConnectionEpoch,
                 state.LastIngestSequence);
-        AttentionItems = CreateAttentionItems(state, isLive);
-        SelectWithoutRequest(state, isLive, selectedTerminalId);
+        AttentionItems = CreateAttentionItems(state, isCoreConnected, isLive);
+        SelectWithoutRequest(state, isCoreConnected, isLive, selectedTerminalId);
     }
 
     internal void SelectAgent(
         HerdrSessionStateContract state,
+        bool isCoreConnected,
         bool isLive,
         string? terminalId) =>
-        SelectWithoutRequest(state, isLive, terminalId);
+        SelectWithoutRequest(state, isCoreConnected, isLive, terminalId);
 
     private void SelectWithoutRequest(
         HerdrSessionStateContract state,
+        bool isCoreConnected,
         bool isLive,
         string? terminalId)
     {
@@ -164,8 +169,8 @@ public sealed class LiveOrganizationState : ObservableState
         }
 
         SelectedAgent = agent is null
-            ? EmptyDetail(isLive)
-            : CreateDetail(state, agent, isLive);
+            ? EmptyDetail(isCoreConnected, isLive)
+            : CreateDetail(state, agent, isCoreConnected, isLive);
     }
 
     private static IReadOnlyList<OrganizationSummaryCard> CreateSummaryCards(
@@ -275,6 +280,7 @@ public sealed class LiveOrganizationState : ObservableState
     private static OrganizationAgentDetail CreateDetail(
         HerdrSessionStateContract state,
         HerdrAgentStateContract agent,
+        bool isCoreConnected,
         bool isLive)
     {
         var workspace = state.Workspaces.FirstOrDefault(item => item.WorkspaceId == agent.WorkspaceId);
@@ -297,10 +303,12 @@ public sealed class LiveOrganizationState : ObservableState
             agent.Revision.ToString(System.Globalization.CultureInfo.InvariantCulture),
             isLive
                 ? UiLanguageService.Shared["OrganizationDetailSourceLive"]
-                : UiLanguageService.Shared["OrganizationDetailSourceOffline"]);
+                : isCoreConnected
+                    ? UiLanguageService.Shared["OrganizationDetailSourceHerdrInterrupted"]
+                    : UiLanguageService.Shared["OrganizationDetailSourceOffline"]);
     }
 
-    private static OrganizationAgentDetail EmptyDetail(bool isLive) => new(
+    private static OrganizationAgentDetail EmptyDetail(bool isCoreConnected, bool isLive) => new(
         "?",
         UiLanguageService.Shared["NoAgentSelected"],
         UiLanguageService.Shared["UnknownRuntime"],
@@ -314,21 +322,37 @@ public sealed class LiveOrganizationState : ObservableState
         "—",
         isLive
             ? UiLanguageService.Shared["OrganizationSelectAgent"]
-            : UiLanguageService.Shared["LiveWidgetCoreOfflineNotice"]);
+            : isCoreConnected
+                ? UiLanguageService.Shared["LiveWidgetHerdrInterruptedNotice"]
+                : UiLanguageService.Shared["LiveWidgetCoreOfflineNotice"]);
 
     private static IReadOnlyList<OrganizationAttentionItem> CreateAttentionItems(
         HerdrSessionStateContract state,
+        bool isCoreConnected,
         bool isLive)
     {
         var text = UiLanguageService.Shared;
         var result = new List<OrganizationAttentionItem>();
-        if (!isLive)
+        if (!isCoreConnected)
         {
             result.Add(new OrganizationAttentionItem(
                 "\uE711",
                 text["OrganizationAttentionCoreOfflineTitle"],
                 text["OrganizationAttentionCoreOfflineDetail"],
                 Overview.OverviewBrushKeys.Offline));
+        }
+        else if (!isLive)
+        {
+            result.Add(new OrganizationAttentionItem(
+                "\uE895",
+                text["OrganizationAttentionHerdrInterruptedTitle"],
+                text["OrganizationAttentionHerdrInterruptedDetail"],
+                Overview.OverviewBrushKeys.Idle));
+        }
+
+        if (!isLive)
+        {
+            return result;
         }
 
         var blocked = state.Agents.Count(agent => agent.AgentStatus == "Blocked");
