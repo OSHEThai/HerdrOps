@@ -14,4 +14,7 @@ Build, verification, GitHub roadmap, evidence capture, and packaging helpers liv
 
 # Apply formatting
 ./tools/Invoke-Format.ps1 -Apply
+
+# Validate the exact installed Herdr binary and bounded v0.2 protocol contract
+./tools/Test-V02ProtocolContract.ps1
 ```
