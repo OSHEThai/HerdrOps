@@ -2,6 +2,8 @@ using System.ComponentModel;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
+using HerdrOps.App.Localization;
+using HerdrOps.App.Overview;
 using HerdrOps.App.Shell;
 
 namespace HerdrOps.App.Views;
@@ -14,7 +16,7 @@ public partial class ShellView : UserControl
     private const double CompactSidebarBreakpoint = 1200;
     private const double CompactVerticalBreakpoint = 800;
     private const double ProjectSelectorBreakpoint = 1080;
-    private const double StatusLegendBreakpoint = 1280;
+    private const double StatusLegendBreakpoint = 1480;
 
     public ShellView()
     {
@@ -22,11 +24,16 @@ public partial class ShellView : UserControl
         InitializeComponent();
         DataContext = Navigation;
         Navigation.PropertyChanged += OnNavigationPropertyChanged;
+        LanguageService.LanguageChanged += OnLanguageChanged;
+        Unloaded += OnUnloaded;
         UpdatePageVisibility();
     }
 
     public ShellNavigationController Navigation { get; }
 
+    public UiLanguageService LanguageService => UiLanguageService.Shared;
+
+    public void SetLanguage(UiLanguage language) => LanguageService.SetLanguage(language);
     public bool TryNavigateByKey(Key key, ModifierKeys modifiers)
     {
         var handled = Navigation.TryHandleKey(key, modifiers);
@@ -52,6 +59,19 @@ public partial class ShellView : UserControl
         {
             UpdatePageVisibility();
         }
+    }
+
+    private void OnLanguageChanged(object? sender, EventArgs e)
+    {
+        Navigation.NotifyLanguageChanged();
+        NavigationList.Items.Refresh();
+        OverviewPage.DataContext = SyntheticOverviewState.Create();
+    }
+
+    private void OnUnloaded(object sender, RoutedEventArgs e)
+    {
+        LanguageService.LanguageChanged -= OnLanguageChanged;
+        Unloaded -= OnUnloaded;
     }
 
     private void UpdatePageVisibility()
@@ -81,6 +101,12 @@ public partial class ShellView : UserControl
     {
         ApplySidebarMode(!Navigation.IsCompactSidebar);
     }
+
+    private void OnThaiLanguageClick(object sender, RoutedEventArgs e) =>
+        SetLanguage(UiLanguage.Thai);
+
+    private void OnEnglishLanguageClick(object sender, RoutedEventArgs e) =>
+        SetLanguage(UiLanguage.English);
 
     private void ApplySidebarMode(bool compact)
     {

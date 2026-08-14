@@ -25,6 +25,7 @@ Versioning: Semantic Versioning; every version has a version-local acceptance ga
 - สร้าง Window shell: Top bar, Sidebar, Content host และ Bottom status bar
 - สร้าง Navigation สำหรับ 10 หน้าตาม Reference
 - สร้าง Overview visual slice และ Widget gallery จากข้อมูลจำลอง
+- แยกข้อความภาษาไทยและอังกฤษเป็นคนละโหมดสำหรับ Shell, Overview และ Widget โดยค่าเริ่มต้นเป็นภาษาไทย
 - เพิ่ม Dark theme, Windows scaling 100/125/150%, keyboard focus และ basic accessibility
 - ตั้งค่า build, unit test, formatting และ artifact output
 
@@ -40,6 +41,7 @@ Versioning: Semantic Versioning; every version has a version-local acceptance ga
 - Visual checklist ผ่านบน reference size 1672×941 และ Windows scaling ที่กำหนด
 - โลโก้และ shared shell ตรงกับ Design Contract
 - Mock data ถูกแสดงว่าเป็น Demo/Synthetic อย่างชัดเจน
+- หน้าจอ v0.1 แสดงภาษาไทยหรืออังกฤษเพียงภาษาเดียวตามตัวเลือก และไม่มีหัวข้อคำแปลสองภาษาซ้อนกัน
 
 ## v0.2.0 — Live Herdr Monitoring
 
@@ -164,7 +166,7 @@ Versioning: Semantic Versioning; every version has a version-local acceptance ga
 
 - ครบ 10 Dashboard pages และ Widget variants ที่ยืนยัน
 - System Tray, start at logon, notification settings และ retention settings
-- Thai/English localization, accessibility, DPI/multi-monitor และ reduced motion
+- ทำ localization ให้ครบทั้ง 10 หน้า บันทึกค่าภาษา accessibility, DPI/multi-monitor และ reduced motion
 - Crash recovery, database migration/backup และ corrupted-state recovery
 - Installer, upgrade, uninstall และ diagnostic bundle
 - Performance profiling และ 8-hour soak test
@@ -202,4 +204,3 @@ HerdrOps รุ่น Local Stable พร้อมคู่มือ การ�
 - v1.1: Adapter/Rule plugin SDK และ custom dashboard filters
 - v1.2: Read-only remote aggregation ผ่าน opt-in secure relay
 - v2.0: Multi-user/team operations โดยออกแบบ authorization และ privacy ใหม่
-

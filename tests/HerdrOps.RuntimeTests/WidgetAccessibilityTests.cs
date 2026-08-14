@@ -2,6 +2,7 @@ using System.Windows;
 using System.Windows.Automation;
 using System.Windows.Controls;
 using System.Windows.Media;
+using HerdrOps.App.Localization;
 using HerdrOps.App.Widgets;
 
 namespace HerdrOps.RuntimeTests;
@@ -94,7 +95,7 @@ public sealed class WidgetAccessibilityTests
                 Assert.AreEqual(descriptor.DefaultTopmost, window.Topmost);
                 Assert.AreEqual(descriptor.ShowInTaskbar, window.ShowInTaskbar);
                 Assert.IsTrue(window.IsDragEnabled);
-                StringAssert.Contains(window.Title, "Synthetic Preview");
+                StringAssert.Contains(window.Title, state.WindowTitleSuffix);
 
                 var initialTopmost = window.Topmost;
                 window.ToggleTopmost();
@@ -129,14 +130,14 @@ public sealed class WidgetAccessibilityTests
             Layout(vertical, vertical.Width, vertical.Height);
             var sourceLabel = EnumerateDescendants(vertical)
                 .OfType<TextBlock>()
-                .Single(text => string.Equals(text.Text, "SYN", StringComparison.Ordinal));
+                .Single(text => string.Equals(text.Text, state.CompactSourceLabel, StringComparison.Ordinal));
             Assert.IsGreaterThan(0d, sourceLabel.ActualWidth, "Floating Vertical must visibly render its Synthetic source label.");
             Assert.IsTrue(IsEffectivelyVisible(sourceLabel));
             var pinButton = EnumerateDescendants(vertical)
                 .OfType<Button>()
                 .Single(button => string.Equals(
                     AutomationProperties.GetName(button),
-                    "ปักหมุดหรือยกเลิก Always on top",
+                    UiLanguageService.Shared["WidgetPin"],
                     StringComparison.Ordinal));
             var sourceRight = sourceLabel.TranslatePoint(
                 new Point(sourceLabel.ActualWidth, 0),
@@ -157,7 +158,10 @@ public sealed class WidgetAccessibilityTests
             Layout(detail, detail.Width, detail.Height);
             var detailAction = EnumerateDescendants(detail)
                 .OfType<Button>()
-                .Single(button => string.Equals(button.Content?.ToString(), "ดูรายละเอียดทั้งหมด", StringComparison.Ordinal));
+                .Single(button => string.Equals(
+                    button.Content?.ToString(),
+                    UiLanguageService.Shared["WidgetViewAllDetails"],
+                    StringComparison.Ordinal));
             Assert.IsGreaterThanOrEqualTo(40d, detailAction.ActualHeight);
             Assert.IsTrue(IsEffectivelyVisible(detailAction));
 

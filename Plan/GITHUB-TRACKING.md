@@ -6,8 +6,8 @@ Every planned release has one GitHub Milestone, scoped work issues, and one rele
 
 | Version | Milestone | Work issues | Release tracker |
 |---|---|---:|---|
-| v0.1.0 | [Milestone 1](https://github.com/OSHEThai/HerdrOps/milestone/1) | 4 | [#5](https://github.com/OSHEThai/HerdrOps/issues/5) |
-| v0.2.0 | [Milestone 2](https://github.com/OSHEThai/HerdrOps/milestone/2) | 5 | [#11](https://github.com/OSHEThai/HerdrOps/issues/11) |
+| v0.1.0 | [Milestone 1](https://github.com/OSHEThai/HerdrOps/milestone/1) | 6 | [#5](https://github.com/OSHEThai/HerdrOps/issues/5) |
+| v0.2.0 | [Milestone 2](https://github.com/OSHEThai/HerdrOps/milestone/2) | 6 | [#11](https://github.com/OSHEThai/HerdrOps/issues/11) |
 | v0.3.0 | [Milestone 3](https://github.com/OSHEThai/HerdrOps/milestone/3) | 5 | [#17](https://github.com/OSHEThai/HerdrOps/issues/17) |
 | v0.4.0 | [Milestone 4](https://github.com/OSHEThai/HerdrOps/milestone/4) | 5 | [#23](https://github.com/OSHEThai/HerdrOps/issues/23) |
 | v0.5.0 | [Milestone 5](https://github.com/OSHEThai/HerdrOps/milestone/5) | 5 | [#29](https://github.com/OSHEThai/HerdrOps/issues/29) |
@@ -15,7 +15,7 @@ Every planned release has one GitHub Milestone, scoped work issues, and one rele
 | v0.7.0 | [Milestone 7](https://github.com/OSHEThai/HerdrOps/milestone/7) | 5 | [#40](https://github.com/OSHEThai/HerdrOps/issues/40) |
 | v1.0.0 | [Milestone 8](https://github.com/OSHEThai/HerdrOps/milestone/8) | 5 | [#46](https://github.com/OSHEThai/HerdrOps/issues/46) |
 
-Total: 8 milestones, 38 scoped work issues, and 8 release trackers.
+Total: 8 milestones, 41 scoped work issues, and 8 release trackers.
 
 ## Operating rules
 
@@ -41,4 +41,3 @@ Verify that a version has no open issues and its milestone is closed:
 ```
 
 The verifier is expected to fail while work or the release tracker remains open.
-

@@ -2,6 +2,7 @@
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:automation="clr-namespace:System.Windows.Automation;assembly=PresentationCore"
+             xmlns:localization="clr-namespace:HerdrOps.App.Localization"
              xmlns:shell="clr-namespace:System.Windows.Shell;assembly=PresentationFramework"
              xmlns:views="clr-namespace:HerdrOps.App.Views"
              MinWidth="640"
@@ -28,6 +29,7 @@
                     <ColumnDefinition Width="1" />
                     <ColumnDefinition Width="64" />
                     <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
                     <ColumnDefinition Width="Auto" />
                     <ColumnDefinition Width="Auto" />
                     <ColumnDefinition Width="136" />
@@ -67,7 +69,7 @@
                 <Button Grid.Column="2"
                         Style="{DynamicResource HerdrOps.Style.ChromeButton}"
                         shell:WindowChrome.IsHitTestVisibleInChrome="True"
-                        automation:AutomationProperties.Name="ย่อหรือขยายแถบนำทาง"
+                        automation:AutomationProperties.Name="{Binding [ToggleNavigation], Source={x:Static localization:UiLanguageService.Shared}}"
                         Click="OnToggleSidebarClick">
                     <TextBlock FontFamily="{DynamicResource HerdrOps.FontFamily.Icons}"
                                FontSize="18"
@@ -78,7 +80,7 @@
                            Margin="0,0,18,0"
                            VerticalAlignment="Center"
                            Style="{DynamicResource HerdrOps.Style.Text.PageTitle}"
-                           Text="{Binding SelectedDestination.EnglishName}" />
+                           Text="{Binding SelectedDestination.DisplayName}" />
 
                 <Border x:Name="ProjectSelector"
                         Grid.Column="4"
@@ -106,8 +108,11 @@
                                    Margin="10,0"
                                    VerticalAlignment="Center"
                                    Foreground="{DynamicResource HerdrOps.Brush.TextSecondary}"
-                                   FontSize="14"
-                                   Text="Project: Synthetic Preview" />
+                                   FontSize="14">
+                            <Run Text="{Binding [ProjectPrefix], Mode=OneWay, Source={x:Static localization:UiLanguageService.Shared}}" />
+                            <Run Text=": " />
+                            <Run Text="{Binding [SyntheticPreview], Mode=OneWay, Source={x:Static localization:UiLanguageService.Shared}}" />
+                        </TextBlock>
                         <TextBlock Grid.Column="2"
                                    VerticalAlignment="Center"
                                    FontFamily="{DynamicResource HerdrOps.FontFamily.Icons}"
@@ -124,43 +129,101 @@
                             IsHitTestVisible="False">
                     <StackPanel Margin="0,0,20,0" Orientation="Horizontal">
                         <Ellipse Width="12" Height="12" Fill="{DynamicResource HerdrOps.Brush.Status.Working}" />
-                        <TextBlock Margin="7,0,0,0" VerticalAlignment="Center" FontSize="12" Text="Working" />
+                        <TextBlock Margin="7,0,0,0" VerticalAlignment="Center" FontSize="12" Text="{Binding [StatusWorking], Source={x:Static localization:UiLanguageService.Shared}}" />
                     </StackPanel>
                     <StackPanel Margin="0,0,20,0" Orientation="Horizontal">
                         <Ellipse Width="12" Height="12" Fill="{DynamicResource HerdrOps.Brush.Status.Idle}" />
-                        <TextBlock Margin="7,0,0,0" VerticalAlignment="Center" FontSize="12" Text="Idle" />
+                        <TextBlock Margin="7,0,0,0" VerticalAlignment="Center" FontSize="12" Text="{Binding [StatusIdle], Source={x:Static localization:UiLanguageService.Shared}}" />
                     </StackPanel>
                     <StackPanel Margin="0,0,20,0" Orientation="Horizontal">
                         <Ellipse Width="12" Height="12" Fill="{DynamicResource HerdrOps.Brush.Status.Blocked}" />
-                        <TextBlock Margin="7,0,0,0" VerticalAlignment="Center" FontSize="12" Text="Blocked" />
+                        <TextBlock Margin="7,0,0,0" VerticalAlignment="Center" FontSize="12" Text="{Binding [StatusBlocked], Source={x:Static localization:UiLanguageService.Shared}}" />
                     </StackPanel>
                     <StackPanel Margin="0,0,20,0" Orientation="Horizontal">
                         <Ellipse Width="12" Height="12" Fill="{DynamicResource HerdrOps.Brush.Status.Review}" />
-                        <TextBlock Margin="7,0,0,0" VerticalAlignment="Center" FontSize="12" Text="Review" />
+                        <TextBlock Margin="7,0,0,0" VerticalAlignment="Center" FontSize="12" Text="{Binding [StatusReview], Source={x:Static localization:UiLanguageService.Shared}}" />
                     </StackPanel>
                     <StackPanel Orientation="Horizontal">
                         <Ellipse Width="12" Height="12" Fill="{DynamicResource HerdrOps.Brush.Status.Offline}" />
-                        <TextBlock Margin="7,0,0,0" VerticalAlignment="Center" FontSize="12" Text="Offline" />
+                        <TextBlock Margin="7,0,0,0" VerticalAlignment="Center" FontSize="12" Text="{Binding [StatusOffline], Source={x:Static localization:UiLanguageService.Shared}}" />
                     </StackPanel>
                 </StackPanel>
 
-                <StackPanel Grid.Column="6"
+                <Border x:Name="LanguageSelector"
+                        Grid.Column="6"
+                        Width="88"
+                        Height="36"
+                        Margin="0,0,12,0"
+                        Padding="2"
+                        VerticalAlignment="Center"
+                        Background="{DynamicResource HerdrOps.Brush.Sidebar}"
+                        BorderBrush="{DynamicResource HerdrOps.Brush.BorderStrong}"
+                        BorderThickness="1"
+                        CornerRadius="{DynamicResource HerdrOps.Radius.Default}"
+                        shell:WindowChrome.IsHitTestVisibleInChrome="True">
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <Button x:Name="ThaiLanguageButton"
+                                Grid.Column="0"
+                                automation:AutomationProperties.Name="{Binding [SelectThai], Source={x:Static localization:UiLanguageService.Shared}}"
+                                ToolTip="{Binding [SelectThai], Source={x:Static localization:UiLanguageService.Shared}}"
+                                Click="OnThaiLanguageClick">
+                            <Button.Style>
+                                <Style TargetType="Button" BasedOn="{StaticResource HerdrOps.Style.ChromeButton}">
+                                    <Setter Property="FontSize" Value="11" />
+                                    <Setter Property="FontWeight" Value="SemiBold" />
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding CurrentLanguage, Source={x:Static localization:UiLanguageService.Shared}}" Value="Thai">
+                                            <Setter Property="Background" Value="{DynamicResource HerdrOps.Brush.PrimarySubtle}" />
+                                            <Setter Property="Foreground" Value="{DynamicResource HerdrOps.Brush.PrimaryText}" />
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </Button.Style>
+                            <TextBlock Text="TH" />
+                        </Button>
+                        <Button x:Name="EnglishLanguageButton"
+                                Grid.Column="1"
+                                automation:AutomationProperties.Name="{Binding [SelectEnglish], Source={x:Static localization:UiLanguageService.Shared}}"
+                                ToolTip="{Binding [SelectEnglish], Source={x:Static localization:UiLanguageService.Shared}}"
+                                Click="OnEnglishLanguageClick">
+                            <Button.Style>
+                                <Style TargetType="Button" BasedOn="{StaticResource HerdrOps.Style.ChromeButton}">
+                                    <Setter Property="FontSize" Value="11" />
+                                    <Setter Property="FontWeight" Value="SemiBold" />
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding CurrentLanguage, Source={x:Static localization:UiLanguageService.Shared}}" Value="English">
+                                            <Setter Property="Background" Value="{DynamicResource HerdrOps.Brush.PrimarySubtle}" />
+                                            <Setter Property="Foreground" Value="{DynamicResource HerdrOps.Brush.PrimaryText}" />
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </Button.Style>
+                            <TextBlock Text="EN" />
+                        </Button>
+                    </Grid>
+                </Border>
+
+                <StackPanel Grid.Column="7"
                             HorizontalAlignment="Right"
                             VerticalAlignment="Center"
                             Orientation="Horizontal"
                             shell:WindowChrome.IsHitTestVisibleInChrome="True">
                     <Button Style="{DynamicResource HerdrOps.Style.ChromeButton}"
-                            automation:AutomationProperties.Name="ย่อหน้าต่าง"
+                            automation:AutomationProperties.Name="{Binding [MinimizeWindow], Source={x:Static localization:UiLanguageService.Shared}}"
                             Click="OnMinimizeClick">
                         <TextBlock FontFamily="{DynamicResource HerdrOps.FontFamily.Icons}" Text="&#xE921;" />
                     </Button>
                     <Button Style="{DynamicResource HerdrOps.Style.ChromeButton}"
-                            automation:AutomationProperties.Name="ขยายหรือคืนขนาดหน้าต่าง"
+                            automation:AutomationProperties.Name="{Binding [MaximizeWindow], Source={x:Static localization:UiLanguageService.Shared}}"
                             Click="OnMaximizeClick">
                         <TextBlock FontFamily="{DynamicResource HerdrOps.FontFamily.Icons}" Text="&#xE922;" />
                     </Button>
                     <Button Style="{DynamicResource HerdrOps.Style.ChromeButton}"
-                            automation:AutomationProperties.Name="ปิดหน้าต่าง"
+                            automation:AutomationProperties.Name="{Binding [CloseWindow], Source={x:Static localization:UiLanguageService.Shared}}"
                             Click="OnCloseClick">
                         <TextBlock FontFamily="{DynamicResource HerdrOps.FontFamily.Icons}" Text="&#xE8BB;" />
                     </Button>
@@ -191,10 +254,10 @@
                              SelectedIndex="{Binding SelectedIndex, Mode=TwoWay}"
                              ItemContainerStyle="{DynamicResource HerdrOps.Style.NavItem}"
                              Style="{DynamicResource HerdrOps.Style.SidebarList}"
-                             automation:AutomationProperties.Name="หน้าหลักของ HerdrOps">
+                             automation:AutomationProperties.Name="{Binding [MainNavigation], Source={x:Static localization:UiLanguageService.Shared}}">
                         <ListBox.ItemTemplate>
                             <DataTemplate>
-                                <Grid automation:AutomationProperties.Name="{Binding ThaiName}">
+                                <Grid automation:AutomationProperties.Name="{Binding DisplayName}">
                                     <Grid.ColumnDefinitions>
                                         <ColumnDefinition Width="28" />
                                         <ColumnDefinition Width="*" />
@@ -210,12 +273,12 @@
                                                Margin="12,0,0,0"
                                                VerticalAlignment="Center"
                                                FontSize="15"
-                                               Text="{Binding EnglishName}"
+                                               Text="{Binding DisplayName}"
                                                TextTrimming="CharacterEllipsis" />
                                     <Grid.ToolTip>
                                         <StackPanel>
-                                            <TextBlock FontWeight="SemiBold" Text="{Binding ThaiName}" />
-                                            <TextBlock Text="{Binding EnglishName}" />
+                                            <TextBlock FontWeight="SemiBold" Text="{Binding DisplayName}" />
+                                            <TextBlock Text="{Binding Summary}" TextWrapping="Wrap" />
                                         </StackPanel>
                                     </Grid.ToolTip>
                                 </Grid>
@@ -291,10 +354,7 @@
                     <StackPanel>
                         <TextBlock Tag="ThaiCheck"
                                    Style="{DynamicResource HerdrOps.Style.Text.PageTitle}"
-                                   Text="{Binding SelectedDestination.ThaiName}" />
-                        <TextBlock Margin="0,3,0,0"
-                                   Style="{DynamicResource HerdrOps.Style.Text.Caption}"
-                                   Text="{Binding SelectedDestination.EnglishName}" />
+                                   Text="{Binding SelectedDestination.DisplayName}" />
                     </StackPanel>
                     <Border Grid.Column="1"
                             Padding="10,5"
@@ -306,7 +366,7 @@
                         <TextBlock Foreground="{DynamicResource HerdrOps.Brush.PrimaryText}"
                                    FontSize="11"
                                    FontWeight="SemiBold"
-                                   Text="SYNTHETIC SHELL PREVIEW" />
+                                   Text="{Binding [SyntheticShellPreview], Source={x:Static localization:UiLanguageService.Shared}}" />
                     </Border>
                 </Grid>
 
@@ -345,7 +405,7 @@
                                            Foreground="{DynamicResource HerdrOps.Brush.TextPrimary}"
                                            FontSize="18"
                                            FontWeight="SemiBold"
-                                           Text="{Binding SelectedDestination.ThaiName}" />
+                                           Text="{Binding SelectedDestination.DisplayName}" />
                                 <TextBlock Margin="0,4,0,0"
                                            Tag="ThaiCheck"
                                            Foreground="{DynamicResource HerdrOps.Brush.TextSecondary}"
@@ -375,12 +435,12 @@
                                     BorderThickness="1"
                                     CornerRadius="{DynamicResource HerdrOps.Radius.Default}">
                                 <StackPanel>
-                                    <TextBlock Style="{DynamicResource HerdrOps.Style.Text.Caption}" Text="แหล่งข้อมูล (Data source)" />
-                                    <TextBlock Margin="0,8,0,0" FontSize="16" FontWeight="SemiBold" Text="Synthetic only" />
+                                    <TextBlock Style="{DynamicResource HerdrOps.Style.Text.Caption}" Text="{Binding [PlaceholderSource], Source={x:Static localization:UiLanguageService.Shared}}" />
+                                    <TextBlock Margin="0,8,0,0" FontSize="16" FontWeight="SemiBold" Text="{Binding [PlaceholderSyntheticOnly], Source={x:Static localization:UiLanguageService.Shared}}" />
                                     <TextBlock Margin="0,4,0,0"
                                                Foreground="{DynamicResource HerdrOps.Brush.TextMuted}"
                                                FontSize="12"
-                                               Text="ไม่มีข้อมูล Agent จริงในหน้าพรีวิวนี้"
+                                               Text="{Binding [PlaceholderNoRealAgents], Source={x:Static localization:UiLanguageService.Shared}}"
                                                TextWrapping="Wrap" />
                                 </StackPanel>
                             </Border>
@@ -392,7 +452,7 @@
                                     BorderThickness="1"
                                     CornerRadius="{DynamicResource HerdrOps.Radius.Default}">
                                 <StackPanel>
-                                    <TextBlock Style="{DynamicResource HerdrOps.Style.Text.Caption}" Text="เส้นทางหน้าจอ (Route)" />
+                                    <TextBlock Style="{DynamicResource HerdrOps.Style.Text.Caption}" Text="{Binding [PlaceholderRoute], Source={x:Static localization:UiLanguageService.Shared}}" />
                                     <TextBlock Margin="0,8,0,0"
                                                Foreground="{DynamicResource HerdrOps.Brush.PrimaryText}"
                                                FontSize="16"
@@ -401,7 +461,7 @@
                                     <TextBlock Margin="0,4,0,0"
                                                Foreground="{DynamicResource HerdrOps.Brush.TextMuted}"
                                                FontSize="12"
-                                               Text="หนึ่งในสิบเส้นทางมาตรฐานที่ลงทะเบียนแล้ว"
+                                               Text="{Binding [PlaceholderRegisteredRoute], Source={x:Static localization:UiLanguageService.Shared}}"
                                                TextWrapping="Wrap" />
                                 </StackPanel>
                             </Border>
@@ -413,15 +473,15 @@
                                     BorderThickness="1"
                                     CornerRadius="{DynamicResource HerdrOps.Radius.Default}">
                                 <StackPanel>
-                                    <TextBlock Style="{DynamicResource HerdrOps.Style.Text.Caption}" Text="การเชื่อมต่อ (Connection)" />
+                                    <TextBlock Style="{DynamicResource HerdrOps.Style.Text.Caption}" Text="{Binding [PlaceholderConnection], Source={x:Static localization:UiLanguageService.Shared}}" />
                                     <StackPanel Margin="0,8,0,0" Orientation="Horizontal">
                                         <Ellipse Width="10" Height="10" Fill="{DynamicResource HerdrOps.Brush.Status.Offline}" />
-                                        <TextBlock Margin="8,0,0,0" FontSize="16" FontWeight="SemiBold" Text="Herdr not connected" />
+                                        <TextBlock Margin="8,0,0,0" FontSize="16" FontWeight="SemiBold" Text="{Binding [HerdrNotConnected], Source={x:Static localization:UiLanguageService.Shared}}" />
                                     </StackPanel>
                                     <TextBlock Margin="0,4,0,0"
                                                Foreground="{DynamicResource HerdrOps.Brush.TextMuted}"
                                                FontSize="12"
-                                               Text="การเชื่อมต่อจริงเริ่มในขอบเขต v0.2"
+                                               Text="{Binding [PlaceholderV02Connection], Source={x:Static localization:UiLanguageService.Shared}}"
                                                TextWrapping="Wrap" />
                                 </StackPanel>
                             </Border>
@@ -450,7 +510,7 @@
                                                Foreground="{DynamicResource HerdrOps.Brush.TextPrimary}"
                                                FontSize="18"
                                                FontWeight="SemiBold"
-                                               Text="โครงหน้าจอพร้อมสำหรับเนื้อหาของเวอร์ชันที่กำหนด" />
+                                               Text="{Binding [PlaceholderReady], Source={x:Static localization:UiLanguageService.Shared}}" />
                                     <TextBlock MaxWidth="640"
                                                Margin="0,8,0,0"
                                                HorizontalAlignment="Center"
@@ -458,13 +518,13 @@
                                                Tag="ThaiCheck"
                                                Foreground="{DynamicResource HerdrOps.Brush.TextMuted}"
                                                FontSize="14"
-                                               Text="หน้าพรีวิวนี้ยืนยัน Design Token, Navigation และ Responsive Shell เท่านั้น ไม่ใช่หลักฐานข้อมูลหรือสถานะจาก Herdr จริง"
+                                               Text="{Binding [PlaceholderEvidenceBoundary], Source={x:Static localization:UiLanguageService.Shared}}"
                                                TextWrapping="Wrap" />
                                 </StackPanel>
                                 <TextBlock Grid.Row="1"
                                            HorizontalAlignment="Center"
                                            Style="{DynamicResource HerdrOps.Style.Text.Caption}"
-                                           Text="Keyboard: Ctrl+PageUp / Ctrl+PageDown · Alt+Home / Alt+End" />
+                                           Text="{Binding [PlaceholderKeyboard], Source={x:Static localization:UiLanguageService.Shared}}" />
                             </Grid>
                         </Border>
                     </Grid>
@@ -490,7 +550,7 @@
                     <TextBlock Margin="8,0,0,0"
                                Foreground="{DynamicResource HerdrOps.Brush.TextMuted}"
                                FontSize="12"
-                               Text="UI preview พร้อมใช้งาน" />
+                               Text="{Binding [UiPreviewReady], Source={x:Static localization:UiLanguageService.Shared}}" />
                 </StackPanel>
                 <Border Grid.Column="1"
                         Width="1"
@@ -500,14 +560,14 @@
                            VerticalAlignment="Center"
                            Foreground="{DynamicResource HerdrOps.Brush.TextMuted}"
                            FontSize="12"
-                           Text="ยังไม่เชื่อมต่อข้อมูลจริง · Last update: —"
+                           Text="{Binding [LastCoreUpdateEmpty], Source={x:Static localization:UiLanguageService.Shared}}"
                            TextTrimming="CharacterEllipsis" />
                 <StackPanel Grid.Column="3" VerticalAlignment="Center" Orientation="Horizontal">
                     <Ellipse Width="9" Height="9" Fill="{DynamicResource HerdrOps.Brush.Status.Offline}" />
                     <TextBlock Margin="8,0,18,0"
                                Foreground="{DynamicResource HerdrOps.Brush.TextMuted}"
                                FontSize="12"
-                               Text="Herdr: Not connected" />
+                               Text="{Binding [HerdrNotConnected], Source={x:Static localization:UiLanguageService.Shared}}" />
                     <TextBlock Foreground="{DynamicResource HerdrOps.Brush.TextMuted}"
                                FontSize="12"
                                Text="— ms" />

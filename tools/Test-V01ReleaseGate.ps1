@@ -35,7 +35,13 @@ $relativeEvidencePaths = @(
     'design-evidence\v0.1\issue-4\widget-floatingmini.png',
     'design-evidence\v0.1\issue-4\widget-floatingvertical.png',
     'design-evidence\v0.1\issue-4\widget-notification.png',
-    'design-evidence\v0.1\issue-4\widget-agentdetailpopup.png'
+    'design-evidence\v0.1\issue-4\widget-agentdetailpopup.png',
+    'design-evidence\v0.1\issue-60\shell-th-100.png',
+    'design-evidence\v0.1\issue-60\overview-th-100.png',
+    'design-evidence\v0.1\issue-60\widget-gallery-th-100.png',
+    'design-evidence\v0.1\issue-60\shell-en-100.png',
+    'design-evidence\v0.1\issue-60\overview-en-100.png',
+    'design-evidence\v0.1\issue-60\widget-gallery-en-100.png'
 )
 
 $evidenceFiles = foreach ($relativePath in $relativeEvidencePaths) {
@@ -68,14 +74,18 @@ if ($testResults.Count -lt 4) {
 $combinedTestLog = ($testResults | ForEach-Object {
     Get-Content -LiteralPath $_.FullName -Raw
 }) -join "`n"
-$requiredAccessibilityChecks = @(
+$requiredReleaseChecks = @(
     'WidgetGalleryExposesKeyboardFocusAndAccessibleOpenActions',
     'SemanticTextContrastMeetsWcagAa',
     'ReducedMotionDisablesWidgetTransitions',
     'WidgetWindowsUseBoundedAndReversibleBehavior',
-    'CriticalWidgetFidelityActionsRemainVisible'
+    'CriticalWidgetFidelityActionsRemainVisible',
+    'ThaiIsTheDefaultAndBothCatalogsContainTheSameNonEmptyKeys',
+    'EveryV01XamlLanguageBindingExistsAndNoBilingualLiteralRemains',
+    'SyntheticOverviewAndWidgetCopyRebuildsAsOneSelectedLanguage',
+    'ShellOverviewAndWidgetsRenderOneSelectedLanguageAtATime'
 )
-foreach ($check in $requiredAccessibilityChecks) {
+foreach ($check in $requiredReleaseChecks) {
     if ($combinedTestLog -notmatch [Regex]::Escape($check)) {
         throw "Required accessibility/window check is absent from the fresh test log: $check"
     }
@@ -101,8 +111,8 @@ $report = @(
     "FreshTrxFiles: $($testResults.Count)",
     "WpfEvidenceFiles: $($evidenceFiles.Count)",
     '',
-    'AccessibilityAndWindowChecks:'
-) + ($requiredAccessibilityChecks | ForEach-Object { "PASS $_" }) + @(
+    'ReleaseChecks:'
+) + ($requiredReleaseChecks | ForEach-Object { "PASS $_" }) + @(
     '',
     'EvidenceHashes:'
 ) + $hashLines

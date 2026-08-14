@@ -1,4 +1,5 @@
 using HerdrOps.App.Widgets;
+using HerdrOps.App.Localization;
 using HerdrOps.Contracts;
 
 namespace HerdrOps.IntegrationTests;
@@ -26,8 +27,8 @@ public sealed class SyntheticWidgetStateTests
         var second = SyntheticWidgetState.Create();
 
         Assert.AreEqual(EvidenceClass.Synthetic, first.EvidenceClass);
-        Assert.AreEqual("SYNTHETIC DATA", first.SourceLabel);
-        Assert.AreEqual("Herdr not connected", first.ConnectionLabel);
+        Assert.AreEqual(UiLanguageService.Shared["SyntheticData"], first.SourceLabel);
+        Assert.AreEqual(UiLanguageService.Shared["HerdrNotConnected"], first.ConnectionLabel);
         Assert.AreEqual(first.SnapshotAt, second.SnapshotAt);
         Assert.AreEqual(first.DailyScore, second.DailyScore);
         CollectionAssert.AreEqual(first.Agents.ToArray(), second.Agents.ToArray());
