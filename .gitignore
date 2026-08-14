@@ -1,0 +1,37 @@
+# Build output
+bin/
+obj/
+artifacts/
+TestResults/
+coverage/
+
+# IDE and user state
+.vs/
+.vscode/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# Local runtime data
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+logs/
+data/
+
+# Packaging and temporary files
+publish/
+packages/
+*.nupkg
+*.snupkg
+*.tmp
+*.temp
+*.bak
+
+# OS files
+Thumbs.db
+Desktop.ini
+.DS_Store
