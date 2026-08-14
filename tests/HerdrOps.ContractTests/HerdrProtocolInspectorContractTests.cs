@@ -21,8 +21,8 @@ public sealed class HerdrProtocolInspectorContractTests
         Assert.IsFalse(inspection.RuntimeObserved);
         Assert.AreEqual(fixture.ReleaseId, inspection.ReleaseId);
         Assert.AreEqual(fixture.BinarySha256, inspection.ExecutableSha256);
-        Assert.IsNotNull(inspection.DiscoveredSchemaSha256);
-        Assert.HasCount(64, inspection.DiscoveredSchemaSha256);
+        Assert.IsNotNull(inspection.ContractSchemaFingerprintSha256);
+        Assert.HasCount(64, inspection.ContractSchemaFingerprintSha256);
         Assert.IsEmpty(inspection.MissingRpcMethods);
         Assert.IsEmpty(inspection.MissingProtocolShapes);
         Assert.IsEmpty(inspection.MissingTransportMarkers);
@@ -40,7 +40,7 @@ public sealed class HerdrProtocolInspectorContractTests
         Assert.IsFalse(inspection.IsCompatible);
         Assert.IsFalse(inspection.RuntimeObserved);
         CollectionAssert.Contains(inspection.MissingProtocolShapes.ToArray(), missingMarker);
-        Assert.IsNull(inspection.DiscoveredSchemaSha256);
+        Assert.IsNull(inspection.ContractSchemaFingerprintSha256);
     }
 
     [TestMethod]
@@ -83,6 +83,83 @@ public sealed class HerdrProtocolInspectorContractTests
 
         Assert.AreEqual(HerdrProtocolCompatibilityStatus.ExecutableNotFound, inspection.Status);
         StringAssert.Contains(inspection.Message, missingPath);
+        Assert.IsFalse(inspection.RuntimeObserved);
+    }
+
+    [TestMethod]
+    public void ProductionPolicyPinsExactIdentitySurfaceAndFingerprint()
+    {
+        var policy = HerdrProtocolContractV080Preview.Policy;
+
+        Assert.AreEqual(HerdrProtocolContractV080Preview.ContractId, policy.ContractId);
+        Assert.AreEqual(HerdrProtocolContractV080Preview.Revision, policy.Revision);
+        Assert.HasCount(1, policy.CompatibleBinaries);
+        Assert.AreEqual(
+            HerdrProtocolContractV080Preview.SupportedReleaseId,
+            policy.CompatibleBinaries[0].ReleaseId);
+        Assert.AreEqual(
+            HerdrProtocolContractV080Preview.SupportedBinarySha256,
+            policy.CompatibleBinaries[0].Sha256);
+        CollectionAssert.AreEqual(
+            new[]
+            {
+                "session.snapshot",
+                "workspace.list",
+                "tab.list",
+                "pane.list",
+                "agent.list",
+                "agent.get",
+                "pane.process_info",
+                "pane.read",
+                "events.subscribe",
+            },
+            policy.RequiredRpcMethods.ToArray());
+        CollectionAssert.AreEqual(
+            new[]
+            {
+                "SessionSnapshot:10",
+                "WorkspaceInfo:10",
+                "TabInfo:7",
+                "PaneInfo:19",
+                "AgentInfo:22",
+                "PaneProcessInfo:5",
+                "PaneReadParams:5",
+                "PaneReadResult:8",
+                "EventsSubscribeParams:1",
+                "Subscription.PaneAgentStatusChanged:2",
+                "PaneAgentStatusChangedEvent:7",
+                "SubscriptionEventEnvelope:2",
+            },
+            policy.RequiredShapes.Select(shape => $"{shape.Name}:{shape.ElementCount}").ToArray());
+        CollectionAssert.AreEqual(
+            new[]
+            {
+                "HERDR_ENV",
+                "HERDR_SOCKET_PATH",
+                "HERDR_PANE_ID",
+                "process.platform === \"win32\"",
+            },
+            policy.RequiredTransportMarkers.ToArray());
+        Assert.AreEqual(
+            "40C9859AB291715A80154C278545C7E020213D7F0FED5955321ED98E1C2D03DB",
+            HerdrProtocolContractFingerprint.Compute(
+                policy,
+                HerdrProtocolContractV080Preview.SupportedReleaseId));
+    }
+
+    [TestMethod]
+    public void UnreviewedReleaseFailsClosedEvenWhenBytesMatchKnownFixture()
+    {
+        using var fixture = ProtocolFixture.Create();
+        var unreviewedReleasePath = Path.Combine(fixture.RootPath, "unreviewed-release");
+        Directory.CreateDirectory(unreviewedReleasePath);
+        var unreviewedExecutable = Path.Combine(unreviewedReleasePath, "herdr.exe");
+        File.Copy(fixture.ExecutablePath, unreviewedExecutable);
+
+        var inspection = new HerdrProtocolInspector(fixture.Policy).Inspect(unreviewedExecutable);
+
+        Assert.AreEqual(HerdrProtocolCompatibilityStatus.UnsupportedRelease, inspection.Status);
+        StringAssert.Contains(inspection.Message, "not admitted");
         Assert.IsFalse(inspection.RuntimeObserved);
     }
 

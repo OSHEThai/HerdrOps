@@ -17,7 +17,7 @@ public sealed record HerdrProtocolInspection(
     string? ReleaseId,
     long? ExecutableLength,
     string? ExecutableSha256,
-    string? DiscoveredSchemaSha256,
+    string? ContractSchemaFingerprintSha256,
     IReadOnlyList<string> MissingRpcMethods,
     IReadOnlyList<string> MissingProtocolShapes,
     IReadOnlyList<string> MissingTransportMarkers,

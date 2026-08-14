@@ -44,9 +44,21 @@ public static class HerdrProtocolInspectionCommand
             {
                 case "--herdr" when index + 1 < args.Length:
                     executablePath = args[++index];
+                    if (string.IsNullOrWhiteSpace(executablePath) || executablePath.StartsWith("--", StringComparison.Ordinal))
+                    {
+                        error.WriteLine("Option --herdr requires a non-empty executable path.");
+                        WriteUsage(error);
+                        return UsageFailureExitCode;
+                    }
                     break;
                 case "--report" when index + 1 < args.Length:
                     reportPath = args[++index];
+                    if (string.IsNullOrWhiteSpace(reportPath) || reportPath.StartsWith("--", StringComparison.Ordinal))
+                    {
+                        error.WriteLine("Option --report requires a non-empty JSON path.");
+                        WriteUsage(error);
+                        return UsageFailureExitCode;
+                    }
                     break;
                 default:
                     error.WriteLine($"Invalid or incomplete option: {args[index]}");
@@ -68,7 +80,11 @@ public static class HerdrProtocolInspectionCommand
         {
             inspection = new HerdrProtocolInspector().Inspect(executablePath);
         }
-        catch (Exception exception) when (exception is ArgumentException or NotSupportedException)
+        catch (Exception exception) when (
+            exception is ArgumentException or
+                NotSupportedException or
+                IOException or
+                UnauthorizedAccessException)
         {
             error.WriteLine($"Herdr protocol inspection could not start: {exception.Message}");
             return CompatibilityFailureExitCode;
@@ -79,14 +95,26 @@ public static class HerdrProtocolInspectionCommand
 
         if (!string.IsNullOrWhiteSpace(reportPath))
         {
-            var fullReportPath = Path.GetFullPath(reportPath);
-            var reportDirectory = Path.GetDirectoryName(fullReportPath);
-            if (!string.IsNullOrWhiteSpace(reportDirectory))
+            try
             {
-                Directory.CreateDirectory(reportDirectory);
-            }
+                var fullReportPath = Path.GetFullPath(reportPath);
+                var reportDirectory = Path.GetDirectoryName(fullReportPath);
+                if (!string.IsNullOrWhiteSpace(reportDirectory))
+                {
+                    Directory.CreateDirectory(reportDirectory);
+                }
 
-            File.WriteAllText(fullReportPath, json + Environment.NewLine);
+                File.WriteAllText(fullReportPath, json + Environment.NewLine);
+            }
+            catch (Exception exception) when (
+                exception is ArgumentException or
+                    NotSupportedException or
+                    IOException or
+                    UnauthorizedAccessException)
+            {
+                error.WriteLine($"Protocol inspection report could not be written: {exception.Message}");
+                return CompatibilityFailureExitCode;
+            }
         }
 
         if (!inspection.IsCompatible)

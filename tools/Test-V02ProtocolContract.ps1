@@ -8,6 +8,7 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+$PSNativeCommandUseErrorActionPreference = $false
 
 $repositoryRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
 $solutionPath = Join-Path $repositoryRoot 'HerdrOps.sln'
@@ -58,16 +59,20 @@ if ($inspection.MissingRpcMethods.Count -ne 0 -or
 }
 
 $malformedExecutable = Join-Path $evidenceDirectory 'malformed-herdr.exe'
+$malformedInspectionPath = Join-Path $evidenceDirectory 'malformed-herdr-contract.json'
 [System.IO.File]::WriteAllBytes(
     $malformedExecutable,
     [System.Text.Encoding]::ASCII.GetBytes('NOT-A-WINDOWS-PE'))
-$negativeOutput = & dotnet $coreDll inspect-herdr-schema --herdr $malformedExecutable 2>&1
+$negativeOutput = & dotnet $coreDll inspect-herdr-schema `
+    --herdr $malformedExecutable `
+    --report $malformedInspectionPath 2>&1
 $negativeExitCode = $LASTEXITCODE
 if ($negativeExitCode -ne 2) {
     throw "Malformed executable must fail with exit code 2; observed $negativeExitCode."
 }
-if (($negativeOutput -join [Environment]::NewLine) -notmatch 'InvalidPortableExecutable') {
-    throw 'Malformed executable failure did not identify InvalidPortableExecutable.'
+$negativeInspection = Get-Content -LiteralPath $malformedInspectionPath -Raw | ConvertFrom-Json
+if ($negativeInspection.Status -ne 'InvalidPortableExecutable') {
+    throw "Malformed executable failure returned unexpected status: $($negativeInspection.Status)"
 }
 
 $trxFiles = @(Get-ChildItem -LiteralPath $testResultsDirectory -Filter '*.trx' -File)
@@ -83,7 +88,7 @@ foreach ($trxFile in $trxFiles) {
     $passedTests += [int]$counters.passed
     $failedTests += [int]$counters.failed
 }
-if ($failedTests -ne 0 -or $totalTests -ne $passedTests) {
+if ($totalTests -le 0 -or $failedTests -ne 0 -or $totalTests -ne $passedTests) {
     throw "Protocol gate test counters are not all passing: total=$totalTests passed=$passedTests failed=$failedTests"
 }
 
@@ -100,10 +105,10 @@ $reportLines = @(
     "HerdrReleaseId: $($inspection.ReleaseId)",
     "HerdrExecutableLength: $($inspection.ExecutableLength)",
     "HerdrExecutableSha256: $($inspection.ExecutableSha256)",
-    "DiscoveredSchemaSha256: $($inspection.DiscoveredSchemaSha256)",
+    "ContractSchemaFingerprintSha256: $($inspection.ContractSchemaFingerprintSha256)",
     "ContractAndIntegrationTests: $passedTests/$totalTests PASS",
     "CompatibilityFailureExampleExitCode: $negativeExitCode",
-    'CompatibilityFailureExampleStatus: InvalidPortableExecutable',
+    "CompatibilityFailureExampleStatus: $($negativeInspection.Status)",
     'MissingRpcMethods: 0',
     'MissingProtocolShapes: 0',
     'MissingTransportMarkers: 0',

@@ -36,7 +36,7 @@ public sealed class HerdrProtocolInspector
         {
             resolvedPath = ResolveExecutablePath(requestedPath);
         }
-        catch (IOException exception)
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
             return Failure(
                 HerdrProtocolCompatibilityStatus.ExecutableUnreadable,
@@ -148,7 +148,7 @@ public sealed class HerdrProtocolInspector
         {
             return new HerdrProtocolInspection(
                 HerdrProtocolCompatibilityStatus.MissingProtocolMarkers,
-                _policy.EvidenceClass,
+                EvidenceClass.Contract,
                 RuntimeObserved: false,
                 _policy.ContractId,
                 _policy.Revision,
@@ -157,7 +157,7 @@ public sealed class HerdrProtocolInspector
                 releaseId,
                 file.Length,
                 executableSha256,
-                DiscoveredSchemaSha256: null,
+                ContractSchemaFingerprintSha256: null,
                 missingRpcMethods,
                 missingProtocolShapes,
                 missingTransportMarkers,
@@ -166,7 +166,7 @@ public sealed class HerdrProtocolInspector
 
         return new HerdrProtocolInspection(
             HerdrProtocolCompatibilityStatus.Compatible,
-            _policy.EvidenceClass,
+            EvidenceClass.Contract,
             RuntimeObserved: false,
             _policy.ContractId,
             _policy.Revision,
@@ -175,7 +175,7 @@ public sealed class HerdrProtocolInspector
             releaseId,
             file.Length,
             executableSha256,
-            ComputeSchemaFingerprint(releaseId),
+            HerdrProtocolContractFingerprint.Compute(_policy, releaseId),
             Array.Empty<string>(),
             Array.Empty<string>(),
             Array.Empty<string>(),
@@ -192,7 +192,7 @@ public sealed class HerdrProtocolInspector
         string message) =>
         new(
             status,
-            _policy.EvidenceClass,
+            EvidenceClass.Contract,
             RuntimeObserved: false,
             _policy.ContractId,
             _policy.Revision,
@@ -201,30 +201,11 @@ public sealed class HerdrProtocolInspector
             releaseId,
             executableLength,
             executableSha256,
-            DiscoveredSchemaSha256: null,
+            ContractSchemaFingerprintSha256: null,
             Array.Empty<string>(),
             Array.Empty<string>(),
             Array.Empty<string>(),
             message);
-
-    private string ComputeSchemaFingerprint(string releaseId)
-    {
-        var canonicalLines = new List<string>
-        {
-            $"contract={_policy.ContractId}",
-            $"revision={_policy.Revision}",
-            $"release={releaseId}",
-        };
-        canonicalLines.AddRange(_policy.RequiredRpcMethods.Order().Select(method => $"rpc={method}"));
-        canonicalLines.AddRange(
-            _policy.RequiredShapes
-                .OrderBy(shape => shape.Name, StringComparer.Ordinal)
-                .Select(shape => $"shape={shape.Name}:{shape.ElementCount}:{shape.BinaryMarker}"));
-        canonicalLines.AddRange(
-            _policy.RequiredTransportMarkers.Order().Select(marker => $"transport={marker}"));
-        var canonicalContract = string.Join('\n', canonicalLines);
-        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(canonicalContract)));
-    }
 
     private static IReadOnlyList<string> MissingMarkers(
         byte[] executableBytes,

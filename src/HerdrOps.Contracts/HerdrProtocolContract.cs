@@ -1,3 +1,6 @@
+using System.Security.Cryptography;
+using System.Text;
+
 namespace HerdrOps.Contracts;
 
 /// <summary>
@@ -21,7 +24,6 @@ public sealed record HerdrProtocolShape(
 public sealed record HerdrProtocolSupportPolicy(
     string ContractId,
     int Revision,
-    EvidenceClass EvidenceClass,
     IReadOnlyList<HerdrBinaryIdentity> CompatibleBinaries,
     IReadOnlyList<string> RequiredRpcMethods,
     IReadOnlyList<HerdrProtocolShape> RequiredShapes,
@@ -46,7 +48,6 @@ public static class HerdrProtocolContractV080Preview
     public static HerdrProtocolSupportPolicy Policy { get; } = new(
         ContractId,
         Revision,
-        EvidenceClass.Contract,
         Array.AsReadOnly(
         [
             new HerdrBinaryIdentity(SupportedReleaseId, SupportedBinarySha256),
@@ -94,4 +95,34 @@ public static class HerdrProtocolContractV080Preview
             "HERDR_PANE_ID",
             "process.platform === \"win32\"",
         ]));
+}
+
+public static class HerdrProtocolContractFingerprint
+{
+    public static string Compute(HerdrProtocolSupportPolicy policy, string releaseId)
+    {
+        ArgumentNullException.ThrowIfNull(policy);
+        ArgumentException.ThrowIfNullOrWhiteSpace(releaseId);
+
+        var canonicalLines = new List<string>
+        {
+            $"contract={policy.ContractId}",
+            $"revision={policy.Revision}",
+            $"release={releaseId}",
+        };
+        canonicalLines.AddRange(
+            policy.RequiredRpcMethods
+                .Order(StringComparer.Ordinal)
+                .Select(method => $"rpc={method}"));
+        canonicalLines.AddRange(
+            policy.RequiredShapes
+                .OrderBy(shape => shape.Name, StringComparer.Ordinal)
+                .Select(shape => $"shape={shape.Name}:{shape.ElementCount}:{shape.BinaryMarker}"));
+        canonicalLines.AddRange(
+            policy.RequiredTransportMarkers
+                .Order(StringComparer.Ordinal)
+                .Select(marker => $"transport={marker}"));
+        var canonicalContract = string.Join('\n', canonicalLines);
+        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(canonicalContract)));
+    }
 }
