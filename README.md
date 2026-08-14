@@ -4,7 +4,7 @@ HerdrOps คือ Windows desktop operations monitor สำหรับติ�
 
 ## สถานะปัจจุบัน
 
-Repository นี้อยู่ในระยะ **Planning Baseline** เท่านั้น ยังไม่มีหลักฐานว่าเชื่อมต่อ Herdr, เก็บ Event, แสดงข้อมูลจริง หรือพร้อมเผยแพร่
+Repository นี้อยู่ในระยะ **v0.1.0 Foundation Implementation** โดยมี Solution, ขอบเขต Process, Build Pipeline และ Test Suites ขั้นต้นแล้ว แต่ยังไม่มีหลักฐานว่าเชื่อมต่อ Herdr, เก็บ Event, แสดงข้อมูลจริง หรือพร้อมเผยแพร่
 
 Design Reference ที่ผู้ใช้ยืนยันถูกเก็บแบบไม่แก้ไขไว้ใน [`docs/design/reference`](docs/design/reference/). ไฟล์เหล่านี้เป็น Source of Truth สำหรับหน้าตา UI และโลโก้ HerdrOps
 
@@ -36,6 +36,16 @@ Design Reference ที่ผู้ใช้ยืนยันถูกเก็
 ขอบเขตและเกณฑ์รับรองแต่ละรุ่นอยู่ที่ [`Plan/ROADMAP.md`](Plan/ROADMAP.md) และ [`Plan/RELEASE-GATES.md`](Plan/RELEASE-GATES.md)
 
 GitHub Milestones, scoped Issues และ Release Trackers อยู่ที่ [`Plan/GITHUB-TRACKING.md`](Plan/GITHUB-TRACKING.md)
+
+## Build Foundation
+
+Requires .NET SDK 10.0.400 or a compatible latest patch in the 10.0.4xx feature band.
+
+```powershell
+./tools/Invoke-Build.ps1 -Configuration Release -VerifyFormat
+```
+
+This command restores from committed package locks, builds the solution, verifies formatting, runs all automated suites, and writes disposable output under `artifacts/`.
 
 ## Repository Map
 
