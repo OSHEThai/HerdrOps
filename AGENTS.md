@@ -23,6 +23,13 @@
 
 Report these classes separately. Preparation for a later version does not complete or credit an earlier version.
 
+## GitHub tracking
+
+- Every implementation or release change must map to an issue in the matching GitHub milestone.
+- Reference the issue number in commits and pull requests.
+- Close issues only after their acceptance criteria and required evidence are satisfied.
+- A version is not release-ready until its release tracker and milestone pass `tools/Test-VersionMilestone.ps1`.
+
 ## Repository safety
 
 - The authorized project root is `Z:\HerdrOps`.

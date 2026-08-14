@@ -21,7 +21,11 @@ if ($milestone.Count -ne 1) {
 $issues = & gh api "repos/$Repository/issues?state=all&per_page=100" | ConvertFrom-Json -Depth 50
 if ($LASTEXITCODE -ne 0) { throw 'Unable to query GitHub issues.' }
 
-$versionIssues = @($issues | Where-Object { $null -eq $_.pull_request -and $null -ne $_.milestone -and $_.milestone.number -eq $milestone[0].number })
+$versionIssues = @($issues | Where-Object {
+    -not ($_.PSObject.Properties.Name -contains 'pull_request') -and
+    $null -ne $_.milestone -and
+    $_.milestone.number -eq $milestone[0].number
+})
 $openIssues = @($versionIssues | Where-Object state -eq 'open')
 
 [pscustomobject]@{
@@ -43,4 +47,3 @@ if ($milestone[0].state -ne 'closed') {
 }
 
 Write-Host "$Version milestone is closed with no open issues."
-

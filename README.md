@@ -35,6 +35,8 @@ Design Reference ที่ผู้ใช้ยืนยันถูกเก็
 
 ขอบเขตและเกณฑ์รับรองแต่ละรุ่นอยู่ที่ [`Plan/ROADMAP.md`](Plan/ROADMAP.md) และ [`Plan/RELEASE-GATES.md`](Plan/RELEASE-GATES.md)
 
+GitHub Milestones, scoped Issues และ Release Trackers อยู่ที่ [`Plan/GITHUB-TRACKING.md`](Plan/GITHUB-TRACKING.md)
+
 ## Repository Map
 
 ```text
@@ -53,4 +55,3 @@ HerdrOps/
 - Mock, static checks และ synthetic tests ไม่ใช่หลักฐานว่าเชื่อมต่อ Herdr จริง
 - ห้ามแก้ภาพอ้างอิงใน `docs/design/reference` โดยตรง
 - โลโก้ในภาพอ้างอิงต้องคงรูปทรงและ Wordmark เดิม ไม่สร้างเครื่องหมายใหม่มาทดแทน
-

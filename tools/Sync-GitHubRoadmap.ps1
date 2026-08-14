@@ -161,7 +161,7 @@ foreach ($plannedMilestone in $manifest.milestones) {
 $existingIssues = @(Get-GhJson "repos/$Repository/issues?state=all&per_page=100")
 $issueByKey = @{}
 foreach ($issue in $existingIssues) {
-    if ($null -ne $issue.pull_request) { continue }
+    if ($issue.PSObject.Properties.Name -contains 'pull_request') { continue }
     if ([string]$issue.body -match '<!-- herdr-issue-key: ([A-Z0-9-]+) -->') {
         $issueByKey[$Matches[1]] = $issue
     }
@@ -209,4 +209,3 @@ $summary = foreach ($plannedMilestone in $manifest.milestones) {
 }
 
 $summary | Format-Table -AutoSize
-
