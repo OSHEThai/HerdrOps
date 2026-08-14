@@ -129,7 +129,9 @@ $labelDefinitions = @(
     @{ name = 'evidence:release'; color = 'b60205'; description = 'Requires exact packaged artifact evidence' },
     @{ name = 'priority:P0'; color = 'd93f0b'; description = 'Release-blocking priority' },
     @{ name = 'priority:P1'; color = 'fbca04'; description = 'Required milestone work' },
-    @{ name = 'priority:P2'; color = '0e8a16'; description = 'Non-blocking improvement' }
+    @{ name = 'priority:P2'; color = '0e8a16'; description = 'Non-blocking improvement' },
+    @{ name = 'status:in-progress'; color = '1d76db'; description = 'Work is actively in progress' },
+    @{ name = 'status:blocked'; color = 'd93f0b'; description = 'Work cannot continue without a dependency or decision' }
 )
 
 $existingLabels = @(Get-GhJson "repos/$Repository/labels?per_page=100")

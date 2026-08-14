@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\HerdrOps.Contracts\HerdrOps.Contracts.csproj" />
+    <ProjectReference Include="..\HerdrOps.Domain\HerdrOps.Domain.csproj" />
+  </ItemGroup>
+</Project>
