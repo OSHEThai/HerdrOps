@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -36,6 +37,42 @@ public sealed class HerdrBundledSchemaExtractorContractTests
     }
 
     [TestMethod]
+    public void BalancedExtractionIgnoresBracesAndQuoteEscapesInsideStrings()
+    {
+        var title = "braces { } and quote \"" +
+            " one-slash-quote " + "\\" + "\"" +
+            " two-slashes-quote " + "\\\\" + "\"" +
+            " ends-two-slashes " + "\\\\";
+        var schema = SchemaDocument.Create(title: title);
+        using var fixture = BundledSchemaFixture.Create(schema);
+
+        var extraction = fixture.CreateExtractor().Extract(fixture.ExecutablePath);
+
+        Assert.AreEqual(HerdrBundledSchemaStatus.Compatible, extraction.Inspection.Status);
+        Assert.IsNotNull(extraction.SchemaDocumentBytes);
+        CollectionAssert.AreEqual(schema, extraction.SchemaDocumentBytes);
+    }
+
+    [TestMethod]
+    public void SchemaSizeBoundaryAcceptsExactLimitAndRejectsOverLimit()
+    {
+        const int maximumSchemaBytes = 4 * 1024 * 1024;
+        var exactLimitSchema = SchemaDocument.CreateAtLength(maximumSchemaBytes);
+        using (var fixture = BundledSchemaFixture.Create(exactLimitSchema))
+        {
+            var exactLimit = fixture.CreateExtractor().Extract(fixture.ExecutablePath);
+
+            Assert.AreEqual(HerdrBundledSchemaStatus.Compatible, exactLimit.Inspection.Status);
+            Assert.AreEqual(maximumSchemaBytes, exactLimit.Inspection.SchemaDocumentLength);
+            Assert.IsNotNull(exactLimit.SchemaDocumentBytes);
+        }
+
+        AssertStatus(
+            SchemaDocument.CreateAtLength(maximumSchemaBytes + 1),
+            HerdrBundledSchemaStatus.SchemaTooLarge);
+    }
+
+    [TestMethod]
     public void DuplicateSchemaDocumentsFailClosedBeforeParsing()
     {
         var schema = SchemaDocument.Create();
@@ -61,6 +98,7 @@ public sealed class HerdrBundledSchemaExtractorContractTests
         Assert.AreEqual(HerdrBundledSchemaStatus.SchemaTruncated, extraction.Inspection.Status);
         StringAssert.Contains(extraction.Inspection.Message, "before its root JSON object was balanced");
         Assert.IsFalse(extraction.Inspection.RuntimeObserved);
+        Assert.IsNull(extraction.SchemaDocumentBytes);
     }
 
     [TestMethod]
@@ -79,6 +117,7 @@ public sealed class HerdrBundledSchemaExtractorContractTests
         Assert.AreEqual(HerdrBundledSchemaStatus.MalformedJson, extraction.Inspection.Status);
         StringAssert.Contains(extraction.Inspection.Message, "malformed");
         Assert.IsFalse(extraction.Inspection.RuntimeObserved);
+        Assert.IsNull(extraction.SchemaDocumentBytes);
     }
 
     [TestMethod]
@@ -188,6 +227,55 @@ public sealed class HerdrBundledSchemaExtractorContractTests
     }
 
     [TestMethod]
+    public void RequestedPathRetargetBetweenReadsFailsClosed()
+    {
+        var schema = SchemaDocument.Create();
+        using var fixture = BundledSchemaFixture.Create(schema);
+        var secondReleasePath = Path.Combine(fixture.RootPath, "retargeted-release");
+        Directory.CreateDirectory(secondReleasePath);
+        File.Copy(
+            fixture.ExecutablePath,
+            Path.Combine(secondReleasePath, "herdr.exe"));
+        var junctionPath = Path.Combine(fixture.RootPath, "bin");
+        CreateDirectoryJunction(junctionPath, Path.GetDirectoryName(fixture.ExecutablePath)!);
+        try
+        {
+            var requestedPath = Path.Combine(junctionPath, "herdr.exe");
+            var snapshotReader = new CallbackSnapshotReader(
+                () =>
+                {
+                    RemoveDirectoryJunction(junctionPath);
+                    CreateDirectoryJunction(junctionPath, secondReleasePath);
+                });
+
+            var extraction = fixture.CreateExtractor(snapshotReader).Extract(requestedPath);
+
+            Assert.AreEqual(HerdrBundledSchemaStatus.ExecutableRejected, extraction.Inspection.Status);
+            StringAssert.Contains(extraction.Inspection.Message, "target changed");
+            Assert.IsNull(extraction.SchemaDocumentBytes);
+        }
+        finally
+        {
+            RemoveDirectoryJunction(junctionPath);
+        }
+    }
+
+    [TestMethod]
+    public void ExecutableContentMutationBetweenReadsFailsClosed()
+    {
+        var schema = SchemaDocument.Create();
+        using var fixture = BundledSchemaFixture.Create(schema);
+        var snapshotReader = new CallbackSnapshotReader(
+            () => File.AppendAllText(fixture.ExecutablePath, "changed-after-admission"));
+
+        var extraction = fixture.CreateExtractor(snapshotReader).Extract(fixture.ExecutablePath);
+
+        Assert.AreEqual(HerdrBundledSchemaStatus.ExecutableRejected, extraction.Inspection.Status);
+        StringAssert.Contains(extraction.Inspection.Message, "bytes changed");
+        Assert.IsNull(extraction.SchemaDocumentBytes);
+    }
+
+    [TestMethod]
     public void ProductionPolicyPinsExactInstalledDocumentAndRequiredSurface()
     {
         var policy = HerdrBundledSchemaContractV19.Policy;
@@ -256,7 +344,9 @@ public sealed class HerdrBundledSchemaExtractorContractTests
             bool addUnexpectedRequestDefinition = false,
             bool includeSnapshotMethod = true,
             bool includeSubscriptionStartedResponse = true,
-            bool includeAgentStatusSubscriptionKind = true)
+            bool includeAgentStatusSubscriptionKind = true,
+            string title = "Fixture Herdr schema",
+            int paddingLength = 0)
         {
             var requestDefinitions = new JsonObject
             {
@@ -339,9 +429,34 @@ public sealed class HerdrBundledSchemaExtractorContractTests
                 ["protocol"] = protocol,
                 ["schema_version"] = schemaVersion,
                 ["schemas"] = schemas,
-                ["title"] = "Fixture Herdr schema",
+                ["title"] = title,
             };
+            if (paddingLength > 0)
+            {
+                root["padding"] = new string('x', paddingLength);
+            }
+
             return Encoding.UTF8.GetBytes(root.ToJsonString(SerializerOptions));
+        }
+
+        public static byte[] CreateAtLength(int targetLength)
+        {
+            var oneBytePadding = Create(paddingLength: 1);
+            var fixedLength = oneBytePadding.Length - 1;
+            var paddingLength = targetLength - fixedLength;
+            if (paddingLength <= 0)
+            {
+                throw new ArgumentOutOfRangeException(nameof(targetLength));
+            }
+
+            var document = Create(paddingLength: paddingLength);
+            if (document.Length != targetLength)
+            {
+                throw new InvalidOperationException(
+                    $"Expected schema fixture length {targetLength}, observed {document.Length}.");
+            }
+
+            return document;
         }
 
         private static JsonObject Group(JsonObject definitions) =>
@@ -392,8 +507,9 @@ public sealed class HerdrBundledSchemaExtractorContractTests
 
         public HerdrBundledSchemaSupportPolicy SchemaPolicy { get; }
 
-        public HerdrBundledSchemaExtractor CreateExtractor() =>
-            new(BinaryPolicy, SchemaPolicy);
+        public HerdrBundledSchemaExtractor CreateExtractor(
+            IHerdrExecutableSnapshotReader? snapshotReader = null) =>
+            new(BinaryPolicy, SchemaPolicy, snapshotReader);
 
         public static BundledSchemaFixture Create(params byte[][] schemaDocuments)
         {
@@ -494,6 +610,60 @@ public sealed class HerdrBundledSchemaExtractorContractTests
             {
                 Directory.Delete(resolvedRoot, recursive: true);
             }
+        }
+    }
+
+    private sealed class CallbackSnapshotReader : IHerdrExecutableSnapshotReader
+    {
+        private readonly Action _beforeRead;
+        private readonly HerdrExecutableSnapshotReader _inner = new();
+
+        public CallbackSnapshotReader(Action beforeRead)
+        {
+            _beforeRead = beforeRead;
+        }
+
+        public HerdrExecutableSnapshot Read(string requestedPath, long maximumBytes)
+        {
+            _beforeRead();
+            return _inner.Read(requestedPath, maximumBytes);
+        }
+    }
+
+    private static void CreateDirectoryJunction(string junctionPath, string targetPath)
+    {
+        var startInfo = new ProcessStartInfo
+        {
+            FileName = Environment.GetEnvironmentVariable("ComSpec") ??
+                Path.Combine(Environment.SystemDirectory, "cmd.exe"),
+            CreateNoWindow = true,
+            RedirectStandardError = true,
+            RedirectStandardOutput = true,
+            UseShellExecute = false,
+        };
+        startInfo.ArgumentList.Add("/d");
+        startInfo.ArgumentList.Add("/c");
+        startInfo.ArgumentList.Add("mklink");
+        startInfo.ArgumentList.Add("/J");
+        startInfo.ArgumentList.Add(junctionPath);
+        startInfo.ArgumentList.Add(targetPath);
+        using var process = Process.Start(startInfo) ??
+            throw new InvalidOperationException("Could not start mklink for the junction fixture.");
+        var standardOutput = process.StandardOutput.ReadToEnd();
+        var standardError = process.StandardError.ReadToEnd();
+        process.WaitForExit();
+        if (process.ExitCode != 0)
+        {
+            throw new InvalidOperationException(
+                $"Could not create junction fixture: {standardOutput} {standardError}");
+        }
+    }
+
+    private static void RemoveDirectoryJunction(string junctionPath)
+    {
+        if (Directory.Exists(junctionPath))
+        {
+            Directory.Delete(junctionPath, recursive: false);
         }
     }
 }

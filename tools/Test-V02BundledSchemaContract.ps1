@@ -10,6 +10,22 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $false
 
+function Get-CleanSourceCommit {
+    param([Parameter(Mandatory)][string]$Root)
+
+    $commit = (& git -C $Root rev-parse HEAD).Trim()
+    if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($commit)) {
+        throw 'Could not resolve the source commit for the bundled-schema gate.'
+    }
+    $changes = @(& git -C $Root status --porcelain --untracked-files=all)
+    if ($LASTEXITCODE -ne 0) { throw 'Could not inspect repository status.' }
+    if ($changes.Count -ne 0) {
+        throw "Bundled-schema evidence requires a clean source checkout. Changes: $($changes -join '; ')"
+    }
+
+    return $commit
+}
+
 $repositoryRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
 $solutionPath = Join-Path $repositoryRoot 'HerdrOps.sln'
 $artifactRoot = Join-Path $repositoryRoot 'artifacts'
@@ -20,15 +36,7 @@ $inspectionPath = Join-Path $evidenceDirectory 'installed-herdr-bundled-schema.j
 $schemaPath = Join-Path $evidenceDirectory 'herdr-api-v19.schema.json'
 $gateReportPath = Join-Path $evidenceDirectory 'gate-report.txt'
 
-$sourceCommit = (& git -C $repositoryRoot rev-parse HEAD).Trim()
-if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($sourceCommit)) {
-    throw 'Could not resolve the source commit for the bundled-schema gate.'
-}
-$repositoryChanges = @(& git -C $repositoryRoot status --porcelain --untracked-files=all)
-if ($LASTEXITCODE -ne 0) { throw 'Could not inspect repository status.' }
-if ($repositoryChanges.Count -ne 0) {
-    throw "Bundled-schema evidence requires a clean source checkout. Changes: $($repositoryChanges -join '; ')"
-}
+$sourceCommit = Get-CleanSourceCommit -Root $repositoryRoot
 
 New-Item -ItemType Directory -Path $testResultsDirectory -Force | Out-Null
 
@@ -178,6 +186,10 @@ if ($totalTests -le 0 -or $failedTests -ne 0 -or $totalTests -ne $passedTests) {
     throw "Bundled-schema test counters are not all passing: total=$totalTests passed=$passedTests failed=$failedTests"
 }
 $requiredFixtureTests = @(
+    'RequestedPathRetargetBetweenReadsFailsClosed',
+    'ExecutableContentMutationBetweenReadsFailsClosed',
+    'BalancedExtractionIgnoresBracesAndQuoteEscapesInsideStrings',
+    'SchemaSizeBoundaryAcceptsExactLimitAndRejectsOverLimit',
     'DuplicateSchemaDocumentsFailClosedBeforeParsing',
     'TruncatedSchemaFailsClosedBeforeJsonParsing',
     'BalancedMalformedJsonFailsClosed',
@@ -189,6 +201,11 @@ foreach ($requiredFixtureTest in $requiredFixtureTests) {
     if (-not $passedTestNames.Contains($requiredFixtureTest)) {
         throw "Required fail-closed fixture test did not pass: $requiredFixtureTest"
     }
+}
+
+$finalSourceCommit = Get-CleanSourceCommit -Root $repositoryRoot
+if ($finalSourceCommit -ne $sourceCommit) {
+    throw "Source commit changed during the bundled-schema gate: $sourceCommit -> $finalSourceCommit"
 }
 
 $reportLines = @(

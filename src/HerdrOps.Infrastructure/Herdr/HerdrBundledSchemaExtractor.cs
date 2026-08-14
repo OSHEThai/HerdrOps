@@ -19,13 +19,16 @@ public sealed class HerdrBundledSchemaExtractor
 
     private readonly HerdrProtocolInspector _binaryInspector;
     private readonly HerdrBundledSchemaSupportPolicy _schemaPolicy;
+    private readonly IHerdrExecutableSnapshotReader _snapshotReader;
 
     public HerdrBundledSchemaExtractor(
         HerdrProtocolSupportPolicy? binaryPolicy = null,
-        HerdrBundledSchemaSupportPolicy? schemaPolicy = null)
+        HerdrBundledSchemaSupportPolicy? schemaPolicy = null,
+        IHerdrExecutableSnapshotReader? snapshotReader = null)
     {
         _binaryInspector = new HerdrProtocolInspector(binaryPolicy);
         _schemaPolicy = schemaPolicy ?? HerdrBundledSchemaContractV19.Policy;
+        _snapshotReader = snapshotReader ?? new HerdrExecutableSnapshotReader();
     }
 
     public HerdrBundledSchemaExtraction Extract(string executablePath)
@@ -41,19 +44,12 @@ public sealed class HerdrBundledSchemaExtractor
                 $"Executable admission failed with {binaryInspection.Status}: {binaryInspection.Message}");
         }
 
-        byte[] executableBytes;
+        HerdrExecutableSnapshot snapshot;
         try
         {
-            var currentLength = new FileInfo(binaryInspection.ResolvedExecutablePath).Length;
-            if (currentLength is < 2 or > MaximumExecutableBytes)
-            {
-                return Failure(
-                    HerdrBundledSchemaStatus.ExecutableRejected,
-                    binaryInspection,
-                    $"Admitted executable length changed to {currentLength} before schema extraction.");
-            }
-
-            executableBytes = File.ReadAllBytes(binaryInspection.ResolvedExecutablePath);
+            snapshot = _snapshotReader.Read(
+                binaryInspection.RequestedExecutablePath,
+                MaximumExecutableBytes);
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
@@ -63,6 +59,18 @@ public sealed class HerdrBundledSchemaExtractor
                 $"Admitted executable could not be read for schema extraction: {exception.Message}");
         }
 
+        if (!string.Equals(
+                Path.GetFullPath(snapshot.FinalPath),
+                Path.GetFullPath(binaryInspection.ResolvedExecutablePath),
+                StringComparison.OrdinalIgnoreCase))
+        {
+            return Failure(
+                HerdrBundledSchemaStatus.ExecutableRejected,
+                binaryInspection,
+                $"Herdr executable target changed between binary admission and schema extraction: '{snapshot.FinalPath}'.");
+        }
+
+        var executableBytes = snapshot.Bytes;
         var currentExecutableSha256 = Convert.ToHexString(SHA256.HashData(executableBytes));
         if (!string.Equals(
                 currentExecutableSha256,
