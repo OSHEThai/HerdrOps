@@ -40,3 +40,12 @@
 - Reason: Document-level validation gives Issue #7 a parsed source contract while preserving the distinction between the Issue #6 canonical fingerprint and actual embedded schema bytes.
 - Consequence: Duplicate, truncated, malformed, changed or incomplete schemas fail closed and cannot be exported; static extraction remains Contract evidence with no runtime credit.
 - Status: Implemented as the v0.2 Issue #54 successor; actual session/runtime acceptance remains pending.
+
+## D-007 — Revision-aware Herdr runtime reconciliation
+
+- Decision: Use bounded newline-delimited strict UTF-8 over the Windows Named Pipe, correlate every response ID, subscribe before taking the authoritative bootstrap snapshot, and replace complete state after every disconnect or ambiguity.
+- Protocol limit: Herdr protocol 19 has no global event sequence field. HerdrOps records a local connection epoch and ingest sequence, but detects server-side gaps only where Herdr supplies pane revisions.
+- Consequence: A pane revision jump, same-revision conflict, incomplete/unknown state event, malformed frame, stream end, or pane-filter change forces a fresh snapshot. Events without a Herdr revision never receive invented gap-free semantics.
+- State invariants: A pane event older than the authoritative revision is discarded as stale; focus events update workspace/tab/pane/Agent mirrors atomically; every accepted bootstrap binds all three pipe connections to one PID/start/path/hash tuple.
+- Reliability: Exponential reconnect starts at 100 ms with bounded jitter and never exceeds 2 seconds; the version gate still requires an actual Herdr reconnect/reconcile trace.
+- Status: Client, reducer, synthetic Named Pipe tests, and fail-closed runtime evidence command implemented for v0.2 Issue #7; role-distinct implementation review accepted with no P0/P1/P2 findings. Actual Herdr runtime evidence and its independent acceptance remain pending.

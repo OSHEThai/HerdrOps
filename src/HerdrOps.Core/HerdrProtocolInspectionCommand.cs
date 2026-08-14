@@ -27,7 +27,9 @@ public static class HerdrProtocolInspectionCommand
                 "HerdrOps.Core v0.2 foundation. Use 'inspect-herdr-schema' for the bounded binary contract");
             output.WriteLine(
                 "or 'inspect-herdr-bundled-schema' for the exact embedded JSON Schema document.");
-            output.WriteLine("Live Herdr connectivity is not started by this command.");
+            output.WriteLine(
+                "Use 'trace-herdr-runtime' only from an authorized HERDR_ENV=1 session to capture bounded runtime evidence.");
+            output.WriteLine("Live Herdr connectivity is not started unless that explicit command is selected.");
             return 0;
         }
 

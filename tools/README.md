@@ -20,4 +20,7 @@ Build, verification, GitHub roadmap, evidence capture, and packaging helpers liv
 
 # Extract and validate the exact bundled Herdr JSON Schema successor contract
 ./tools/Test-V02BundledSchemaContract.ps1
+
+# From an authorized live Herdr environment, capture snapshot/event/reconnect evidence
+./tools/Test-V02HerdrRuntime.ps1 -DurationSeconds 120
 ```
