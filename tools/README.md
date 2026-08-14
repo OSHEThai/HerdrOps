@@ -30,4 +30,8 @@ Build, verification, GitHub roadmap, evidence capture, and packaging helpers liv
 # Verify contract-backed live Overview, Organization, Agent Detail, and lifecycle evidence
 # (implementation-only; Issue #9 remains open pending actual Herdr runtime evidence)
 ./tools/Test-V02LivePages.ps1
+
+# Verify shared-state Compact, Normal, and Floating Vertical Widget evidence
+# (implementation-only; Issue #10 remains open pending actual Herdr/reference-host evidence)
+./tools/Test-V02LiveWidgets.ps1
 ```

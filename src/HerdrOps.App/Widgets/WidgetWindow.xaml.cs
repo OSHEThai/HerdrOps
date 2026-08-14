@@ -10,7 +10,7 @@ public partial class WidgetWindow : Window
 {
     private bool _isConstraining;
 
-    public WidgetWindow(WidgetVariantDescriptor descriptor, SyntheticWidgetState state)
+    public WidgetWindow(WidgetVariantDescriptor descriptor, IWidgetState state)
     {
         ArgumentNullException.ThrowIfNull(descriptor);
         ArgumentNullException.ThrowIfNull(state);
@@ -29,7 +29,7 @@ public partial class WidgetWindow : Window
         MaxHeight = descriptor.WindowHeight;
         Topmost = descriptor.DefaultTopmost;
         ShowInTaskbar = descriptor.ShowInTaskbar;
-        Title = $"HerdrOps {descriptor.DisplayName} — Synthetic Preview";
+        Title = $"HerdrOps {descriptor.DisplayName} — {state.WindowTitleSuffix}";
 
         Surface.SetState(state);
         Surface.Variant = descriptor.Variant;

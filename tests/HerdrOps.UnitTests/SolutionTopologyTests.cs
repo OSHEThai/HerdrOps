@@ -104,6 +104,65 @@ public sealed class SolutionTopologyTests
         }
     }
 
+    [TestMethod]
+    public void AppOwnsCoreSubscriptionInsteadOfDashboardShell()
+    {
+        var repositoryRoot = FindRepositoryRoot();
+        var appSource = File.ReadAllText(Path.Combine(
+            repositoryRoot,
+            "src",
+            "HerdrOps.App",
+            "App.xaml.cs"));
+        var appXaml = File.ReadAllText(Path.Combine(
+            repositoryRoot,
+            "src",
+            "HerdrOps.App",
+            "App.xaml"));
+        var shellSource = File.ReadAllText(Path.Combine(
+            repositoryRoot,
+            "src",
+            "HerdrOps.App",
+            "Views",
+            "ShellView.xaml.cs"));
+
+        StringAssert.Contains(appSource, "LiveDashboardRuntime");
+        StringAssert.Contains(appSource, "new MainWindow(state)");
+        Assert.IsFalse(appXaml.Contains("StartupUri", StringComparison.Ordinal));
+        Assert.IsFalse(shellSource.Contains("LiveDashboardSession", StringComparison.Ordinal));
+        Assert.IsFalse(shellSource.Contains("HerdrOpsStatePipeClient", StringComparison.Ordinal));
+    }
+
+    [TestMethod]
+    public void NormalModeDeclaresNoHttpServerOrAdministratorRequirement()
+    {
+        var repositoryRoot = FindRepositoryRoot();
+        var sourceRoot = Path.Combine(repositoryRoot, "src");
+        var inspectedFiles = Directory.GetFiles(sourceRoot, "*", SearchOption.AllDirectories)
+            .Where(path => path.EndsWith(".cs", StringComparison.OrdinalIgnoreCase) ||
+                           path.EndsWith(".csproj", StringComparison.OrdinalIgnoreCase) ||
+                           path.EndsWith(".manifest", StringComparison.OrdinalIgnoreCase) ||
+                           path.EndsWith(".xaml", StringComparison.OrdinalIgnoreCase));
+        var forbiddenTokens = new[]
+        {
+            "HttpListener",
+            "Microsoft.AspNetCore.Server.Kestrel",
+            "UseKestrel(",
+            "UseUrls(",
+            "requireAdministrator",
+        };
+
+        foreach (var path in inspectedFiles)
+        {
+            var content = File.ReadAllText(path);
+            foreach (var token in forbiddenTokens)
+            {
+                Assert.IsFalse(
+                    content.Contains(token, StringComparison.OrdinalIgnoreCase),
+                    $"Normal mode must not declare a localhost HTTP server or Administrator requirement: {path} contains {token}");
+            }
+        }
+    }
+
     private static string FindRepositoryRoot()
     {
         var directory = new DirectoryInfo(AppContext.BaseDirectory);

@@ -1,7 +1,6 @@
 <Window x:Class="HerdrOps.App.Widgets.WidgetGalleryWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        xmlns:widgets="clr-namespace:HerdrOps.App.Widgets"
         Title="HerdrOps Widget Gallery — Synthetic Preview"
         Width="1536"
         Height="1024"
@@ -11,5 +10,5 @@
         WindowStartupLocation="CenterOwner"
         UseLayoutRounding="True"
         SnapsToDevicePixels="True">
-    <widgets:WidgetGalleryView x:Name="GalleryView" />
+    <ContentControl x:Name="GalleryHost" />
 </Window>

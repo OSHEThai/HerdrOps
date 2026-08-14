@@ -6,13 +6,13 @@ public interface IWidgetWindowLauncher
 }
 
 /// <summary>
-/// Opens real widget windows while preserving the shared synthetic state snapshot.
+/// Opens real widget windows while preserving one shared state object.
 /// </summary>
 public sealed class WidgetWindowLauncher : IWidgetWindowLauncher
 {
-    private readonly SyntheticWidgetState _state;
+    private readonly IWidgetState _state;
 
-    public WidgetWindowLauncher(SyntheticWidgetState state)
+    public WidgetWindowLauncher(IWidgetState state)
     {
         ArgumentNullException.ThrowIfNull(state);
         _state = state;

@@ -1,5 +1,6 @@
 using System.Windows;
 using System.Windows.Controls;
+using HerdrOps.App.Views;
 
 namespace HerdrOps.App.Widgets;
 
@@ -11,7 +12,7 @@ public partial class WidgetGalleryView : UserControl
     private const double AdaptiveWidthBreakpoint = 1536;
     private const double AdaptiveHeightBreakpoint = 900;
     private readonly IWidgetWindowLauncher _launcher;
-    private readonly SyntheticWidgetState _state;
+    private readonly IWidgetState _state;
 
     public WidgetGalleryView()
         : this(SyntheticWidgetState.Create(), launcher: null)
@@ -19,7 +20,7 @@ public partial class WidgetGalleryView : UserControl
     }
 
     public WidgetGalleryView(
-        SyntheticWidgetState state,
+        IWidgetState state,
         IWidgetWindowLauncher? launcher)
     {
         ArgumentNullException.ThrowIfNull(state);
@@ -28,6 +29,7 @@ public partial class WidgetGalleryView : UserControl
         AdaptiveItems = WidgetCatalog.CreateAdaptiveGalleryItems();
 
         InitializeComponent();
+        DashboardPreviewHost.Content = ShellView.CreateSyntheticPreview();
         foreach (var preview in GetPreviews())
         {
             preview.SetState(state);
@@ -38,7 +40,7 @@ public partial class WidgetGalleryView : UserControl
 
     public IReadOnlyList<WidgetGalleryItem> AdaptiveItems { get; }
 
-    public SyntheticWidgetState SharedState => _state;
+    public IWidgetState SharedState => _state;
 
     public void OpenVariant(WidgetVariant variant) => _launcher.Open(variant);
 
