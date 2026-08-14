@@ -1,0 +1,16 @@
+{
+  "contractVersion": 1,
+  "eventId": "55555555-5555-5555-5555-555555555555",
+  "taskId": "TASK-115",
+  "actorId": "backend-worker-01",
+  "actorRole": "Backend Worker",
+  "occurredUtc": "2026-08-15T03:04:00Z",
+  "summary": "Request review of a necessary scope deviation.",
+  "parentEventId": "33333333-3333-3333-3333-333333333333",
+  "targetAgentId": null,
+  "progressPercent": null,
+  "deviationReason": "The accepted interface cannot satisfy the required runtime constraint.",
+  "evidenceReference": null,
+  "evidenceSha256": null,
+  "handoffNote": null
+}

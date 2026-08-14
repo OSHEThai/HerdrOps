@@ -1,0 +1,16 @@
+{
+  "contractVersion": 1,
+  "eventId": "77777777-7777-7777-7777-777777777777",
+  "taskId": "TASK-115",
+  "actorId": "backend-worker-01",
+  "actorRole": "Backend Worker",
+  "occurredUtc": "2026-08-15T03:06:00Z",
+  "summary": "Hand off the completed implementation for review.",
+  "parentEventId": "66666666-6666-6666-6666-666666666666",
+  "targetAgentId": "backend-leader",
+  "progressPercent": null,
+  "deviationReason": null,
+  "evidenceReference": null,
+  "evidenceSha256": null,
+  "handoffNote": "Implementation complete; verify the attached evidence before acceptance."
+}

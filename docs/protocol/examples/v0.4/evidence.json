@@ -1,0 +1,16 @@
+{
+  "contractVersion": 1,
+  "eventId": "66666666-6666-6666-6666-666666666666",
+  "taskId": "TASK-115",
+  "actorId": "backend-worker-01",
+  "actorRole": "Backend Worker",
+  "occurredUtc": "2026-08-15T03:05:00Z",
+  "summary": "Submit the implementation test result.",
+  "parentEventId": "44444444-4444-4444-4444-444444444444",
+  "targetAgentId": null,
+  "progressPercent": null,
+  "deviationReason": null,
+  "evidenceReference": "artifacts/evidence/self-report-tests.trx",
+  "evidenceSha256": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+  "handoffNote": null
+}
