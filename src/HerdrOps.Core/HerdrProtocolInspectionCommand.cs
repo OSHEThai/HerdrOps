@@ -24,9 +24,16 @@ public static class HerdrProtocolInspectionCommand
         if (args.Length == 0)
         {
             output.WriteLine(
-                "HerdrOps.Core v0.2 foundation. Use 'inspect-herdr-schema' to validate installed protocol compatibility.");
+                "HerdrOps.Core v0.2 foundation. Use 'inspect-herdr-schema' for the bounded binary contract");
+            output.WriteLine(
+                "or 'inspect-herdr-bundled-schema' for the exact embedded JSON Schema document.");
             output.WriteLine("Live Herdr connectivity is not started by this command.");
             return 0;
+        }
+
+        if (string.Equals(args[0], "inspect-herdr-bundled-schema", StringComparison.Ordinal))
+        {
+            return HerdrBundledSchemaInspectionCommand.Run(args, output, error);
         }
 
         if (!string.Equals(args[0], "inspect-herdr-schema", StringComparison.Ordinal))

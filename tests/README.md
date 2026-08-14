@@ -10,3 +10,8 @@ The v0.2 protocol contract suite creates bounded binary fixtures for compatible,
 missing-marker and unknown-hash cases. Fixture success is Contract evidence only. The repeatable
 installed-binary gate is `./tools/Test-V02ProtocolContract.ps1`; it reads the exact executable
 bytes but does not connect to or control a Herdr session.
+
+The bundled-schema successor suite extracts one balanced strict-UTF-8 JSON document from an
+already admitted fixture binary. It covers duplicate, truncated, malformed, unsupported-version,
+missing-surface, changed-length, and changed-hash failures. The installed-binary gate is
+`./tools/Test-V02BundledSchemaContract.ps1`; its exported bytes remain Contract evidence only.
