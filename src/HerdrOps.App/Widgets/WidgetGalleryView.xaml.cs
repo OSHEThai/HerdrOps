@@ -8,7 +8,7 @@ namespace HerdrOps.App.Widgets;
 /// </summary>
 public partial class WidgetGalleryView : UserControl
 {
-    private const double AdaptiveWidthBreakpoint = 1400;
+    private const double AdaptiveWidthBreakpoint = 1536;
     private const double AdaptiveHeightBreakpoint = 900;
     private readonly IWidgetWindowLauncher _launcher;
     private readonly SyntheticWidgetState _state;
@@ -39,6 +39,8 @@ public partial class WidgetGalleryView : UserControl
     public IReadOnlyList<WidgetGalleryItem> AdaptiveItems { get; }
 
     public SyntheticWidgetState SharedState => _state;
+
+    public bool IsAdaptiveLayout => AdaptiveGallery.Visibility == Visibility.Visible;
 
     public void OpenVariant(WidgetVariant variant) => _launcher.Open(variant);
 

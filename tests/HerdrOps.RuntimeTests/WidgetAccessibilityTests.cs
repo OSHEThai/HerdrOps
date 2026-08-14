@@ -132,6 +132,20 @@ public sealed class WidgetAccessibilityTests
                 .Single(text => string.Equals(text.Text, "SYN", StringComparison.Ordinal));
             Assert.IsGreaterThan(0d, sourceLabel.ActualWidth, "Floating Vertical must visibly render its Synthetic source label.");
             Assert.IsTrue(IsEffectivelyVisible(sourceLabel));
+            var pinButton = EnumerateDescendants(vertical)
+                .OfType<Button>()
+                .Single(button => string.Equals(
+                    AutomationProperties.GetName(button),
+                    "ปักหมุดหรือยกเลิก Always on top",
+                    StringComparison.Ordinal));
+            var sourceRight = sourceLabel.TranslatePoint(
+                new Point(sourceLabel.ActualWidth, 0),
+                vertical).X;
+            var pinLeft = pinButton.TranslatePoint(new Point(0, 0), vertical).X;
+            Assert.IsLessThanOrEqualTo(
+                pinLeft - 4,
+                sourceRight,
+                "Floating Vertical must preserve visible clearance between SYN and the pin control.");
 
             var detail = new WidgetSurface(state)
             {
@@ -146,6 +160,20 @@ public sealed class WidgetAccessibilityTests
                 .Single(button => string.Equals(button.Content?.ToString(), "ดูรายละเอียดทั้งหมด", StringComparison.Ordinal));
             Assert.IsGreaterThanOrEqualTo(40d, detailAction.ActualHeight);
             Assert.IsTrue(IsEffectivelyVisible(detailAction));
+
+            var intermediateGallery = new WidgetGalleryView(state, new RecordingLauncher());
+            Layout(intermediateGallery, 1500, 920);
+            Assert.IsTrue(
+                intermediateGallery.IsAdaptiveLayout,
+                "Widths below the 1536-pixel fixed board must use the adaptive layout.");
+            var intermediateActions = EnumerateDescendants(intermediateGallery)
+                .OfType<Button>()
+                .Where(IsEffectivelyVisible)
+                .Where(button =>
+                    string.Equals(button.Tag?.ToString(), "Dashboard", StringComparison.Ordinal) ||
+                    Enum.TryParse<WidgetVariant>(button.Tag?.ToString(), out _))
+                .ToArray();
+            Assert.HasCount(8, intermediateActions);
         });
     }
 
