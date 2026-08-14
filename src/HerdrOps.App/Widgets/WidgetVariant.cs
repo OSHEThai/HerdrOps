@@ -1,3 +1,5 @@
+using HerdrOps.App.Localization;
+
 namespace HerdrOps.App.Widgets;
 
 /// <summary>
@@ -16,17 +18,22 @@ public enum WidgetVariant
 
 public sealed record WidgetVariantDescriptor(
     WidgetVariant Variant,
-    string DisplayName,
-    string ThaiDescription,
+    string NameKey,
+    string DescriptionKey,
     double WindowWidth,
     double WindowHeight,
     bool DefaultTopmost,
-    bool ShowInTaskbar);
+    bool ShowInTaskbar)
+{
+    public string DisplayName => UiLanguageService.Shared[NameKey];
+
+    public string Description => UiLanguageService.Shared[DescriptionKey];
+}
 
 public sealed record WidgetGalleryItem(
     string Key,
     string DisplayName,
-    string ThaiDescription,
+    string Description,
     WidgetVariant Variant,
     double PreviewWidth,
     double PreviewHeight,
@@ -41,13 +48,13 @@ public static class WidgetCatalog
 {
     public static IReadOnlyList<WidgetVariantDescriptor> All { get; } =
     [
-        new(WidgetVariant.Compact, "Compact Widget", "สรุปสถานะและเหตุการณ์สำคัญ", 300, 330, false, true),
-        new(WidgetVariant.Normal, "Normal Widget", "แสดง Agent ทั้งหมดแบบเลื่อนได้", 340, 448, false, true),
-        new(WidgetVariant.Expanded, "Expanded Widget", "ตารางกิจกรรมและคะแนนแบบละเอียด", 620, 390, false, true),
-        new(WidgetVariant.FloatingMini, "Floating Mini Widget", "สถานะสำคัญสำหรับลอยมุมจอ", 230, 220, true, false),
-        new(WidgetVariant.FloatingVertical, "Floating Vertical Widget", "รายชื่อ Agent แนวตั้งที่ประหยัดพื้นที่", 168, 474, true, false),
-        new(WidgetVariant.Notification, "Notification Widget", "เหตุการณ์สำคัญแบบเรียลไทม์", 328, 410, true, false),
-        new(WidgetVariant.AgentDetailPopup, "Agent Detail Popup", "รายละเอียด Agent และกิจกรรมล่าสุด", 340, 448, false, true),
+        new(WidgetVariant.Compact, "WidgetCompactName", "WidgetCompactDescription", 300, 330, false, true),
+        new(WidgetVariant.Normal, "WidgetNormalName", "WidgetNormalDescription", 340, 448, false, true),
+        new(WidgetVariant.Expanded, "WidgetExpandedName", "WidgetExpandedDescription", 620, 390, false, true),
+        new(WidgetVariant.FloatingMini, "WidgetMiniName", "WidgetMiniDescription", 230, 220, true, false),
+        new(WidgetVariant.FloatingVertical, "WidgetVerticalName", "WidgetVerticalDescription", 168, 474, true, false),
+        new(WidgetVariant.Notification, "WidgetNotificationName", "WidgetNotificationDescription", 328, 410, true, false),
+        new(WidgetVariant.AgentDetailPopup, "WidgetAgentDetailName", "WidgetAgentDetailDescription", 340, 448, false, true),
     ];
 
     public static WidgetVariantDescriptor Get(WidgetVariant variant) =>
@@ -55,27 +62,28 @@ public static class WidgetCatalog
 
     public static IReadOnlyList<WidgetGalleryItem> CreateAdaptiveGalleryItems()
     {
+        var text = UiLanguageService.Shared;
         var items = All.Select(descriptor => new WidgetGalleryItem(
             descriptor.Variant.ToString(),
             descriptor.DisplayName,
-            descriptor.ThaiDescription,
+            descriptor.Description,
             descriptor.Variant,
             descriptor.WindowWidth,
             descriptor.WindowHeight,
             false,
-            "เปิด Widget",
-            $"เปิด {descriptor.DisplayName}"))
+            text["WidgetOpen"],
+            $"{text["WidgetOpen"]}: {descriptor.DisplayName}"))
             .ToList();
         items.Add(new WidgetGalleryItem(
             "Dashboard",
-            "Dashboard launch / preview",
-            "กลับไปยังหน้าต่างหลักที่ใช้ข้อมูล Synthetic",
+            text["WidgetDashboardName"],
+            text["WidgetDashboardDescription"],
             WidgetVariant.Compact,
             1672,
             941,
             true,
-            "กลับไปยัง Dashboard",
-            "กลับไปยัง Dashboard หลัก"));
+            text["WidgetBackDashboard"],
+            text["WidgetBackDashboardAutomation"]));
         return items;
     }
 }

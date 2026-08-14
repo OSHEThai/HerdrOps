@@ -1,4 +1,5 @@
 using HerdrOps.App.Live;
+using HerdrOps.App.Localization;
 using HerdrOps.App.Overview;
 using HerdrOps.Contracts.StateIpc;
 
@@ -154,10 +155,11 @@ public sealed class LiveAgentDetailState : ObservableState
 
     internal void ApplySyntheticPreviewProfile()
     {
+        var text = UiLanguageService.Shared;
         Initials = "PM";
         Name = "Project Manager";
-        Runtime = "Synthetic profile";
-        Status = "Preview";
+        Runtime = text["SyntheticProfile"];
+        Status = text["PreviewStatus"];
         StatusBrushKey = OverviewBrushKeys.Review;
     }
 

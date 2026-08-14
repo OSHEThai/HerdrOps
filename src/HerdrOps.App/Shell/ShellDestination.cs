@@ -1,3 +1,5 @@
+using HerdrOps.App.Localization;
+
 namespace HerdrOps.App.Shell;
 
 /// <summary>
@@ -8,4 +10,10 @@ public sealed record ShellDestination(
     string EnglishName,
     string ThaiName,
     string IconGlyph,
-    string Summary);
+    string EnglishSummary,
+    string ThaiSummary)
+{
+    public string DisplayName => UiLanguageService.Shared.IsThai ? ThaiName : EnglishName;
+
+    public string Summary => UiLanguageService.Shared.IsThai ? ThaiSummary : EnglishSummary;
+}

@@ -1,5 +1,8 @@
+using System.ComponentModel;
+using System.Runtime.CompilerServices;
 using System.Windows;
 using System.Windows.Controls;
+using HerdrOps.App.Localization;
 using HerdrOps.App.Views;
 
 namespace HerdrOps.App.Widgets;
@@ -7,12 +10,14 @@ namespace HerdrOps.App.Widgets;
 /// <summary>
 /// Opens all approved widget variants and presents a deterministic visual comparison board.
 /// </summary>
-public partial class WidgetGalleryView : UserControl
+public partial class WidgetGalleryView : UserControl, INotifyPropertyChanged
 {
     private const double AdaptiveWidthBreakpoint = 1536;
     private const double AdaptiveHeightBreakpoint = 900;
-    private readonly IWidgetWindowLauncher _launcher;
-    private readonly IWidgetState _state;
+    private IWidgetWindowLauncher _launcher;
+    private IWidgetState _state;
+    private IReadOnlyList<WidgetGalleryItem> _adaptiveItems;
+    private readonly bool _usesDefaultLauncher;
 
     public WidgetGalleryView()
         : this(SyntheticWidgetState.Create(), launcher: null)
@@ -25,8 +30,9 @@ public partial class WidgetGalleryView : UserControl
     {
         ArgumentNullException.ThrowIfNull(state);
         _state = state;
+        _usesDefaultLauncher = launcher is null;
         _launcher = launcher ?? new WidgetWindowLauncher(state);
-        AdaptiveItems = WidgetCatalog.CreateAdaptiveGalleryItems();
+        _adaptiveItems = WidgetCatalog.CreateAdaptiveGalleryItems();
 
         InitializeComponent();
         DashboardPreviewHost.Content = ShellView.CreateSyntheticPreview();
@@ -34,13 +40,34 @@ public partial class WidgetGalleryView : UserControl
         {
             preview.SetState(state);
         }
+
+        UiLanguageService.Shared.LanguageChanged += OnLanguageChanged;
+        Unloaded += OnUnloaded;
     }
+
+    public event PropertyChangedEventHandler? PropertyChanged;
 
     public IReadOnlyList<WidgetVariantDescriptor> Variants => WidgetCatalog.All;
 
-    public IReadOnlyList<WidgetGalleryItem> AdaptiveItems { get; }
+    public IReadOnlyList<WidgetGalleryItem> AdaptiveItems
+    {
+        get => _adaptiveItems;
+        private set
+        {
+            _adaptiveItems = value;
+            OnPropertyChanged();
+        }
+    }
 
-    public IWidgetState SharedState => _state;
+    public IWidgetState SharedState
+    {
+        get => _state;
+        private set
+        {
+            _state = value;
+            OnPropertyChanged();
+        }
+    }
 
     public void OpenVariant(WidgetVariant variant) => _launcher.Open(variant);
 
@@ -96,4 +123,32 @@ public partial class WidgetGalleryView : UserControl
         FullGallery.Visibility = useAdaptiveLayout ? Visibility.Collapsed : Visibility.Visible;
         AdaptiveGallery.Visibility = useAdaptiveLayout ? Visibility.Visible : Visibility.Collapsed;
     }
+
+    private void OnLanguageChanged(object? sender, EventArgs e)
+    {
+        if (SharedState.EvidenceClass == HerdrOps.Contracts.EvidenceClass.Synthetic)
+        {
+            SharedState = SyntheticWidgetState.Create();
+            if (_usesDefaultLauncher)
+            {
+                _launcher = new WidgetWindowLauncher(SharedState);
+            }
+
+            foreach (var preview in GetPreviews())
+            {
+                preview.SetState(SharedState);
+            }
+        }
+
+        AdaptiveItems = WidgetCatalog.CreateAdaptiveGalleryItems();
+    }
+
+    private void OnUnloaded(object sender, RoutedEventArgs e)
+    {
+        UiLanguageService.Shared.LanguageChanged -= OnLanguageChanged;
+        Unloaded -= OnUnloaded;
+    }
+
+    private void OnPropertyChanged([CallerMemberName] string? propertyName = null) =>
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
 }

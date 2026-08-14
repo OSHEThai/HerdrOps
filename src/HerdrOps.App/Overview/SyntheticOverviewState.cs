@@ -1,4 +1,5 @@
 using HerdrOps.Contracts;
+using HerdrOps.App.Localization;
 
 namespace HerdrOps.App.Overview;
 
@@ -17,90 +18,91 @@ public sealed record SyntheticOverviewState(
     IReadOnlyList<OverviewTopAgent> TopAgents,
     IReadOnlyList<OverviewAlert> Alerts)
 {
-    public string ActivitySourceLabel => "SYNTHETIC";
+    public string ActivitySourceLabel => UiLanguageService.Shared["OverviewActivitySource"];
 
-    public string ActivityFooterLabel => $"{RecentActivities.Count} deterministic events";
+    public string ActivityFooterLabel => UiLanguageService.Shared.Format(
+        "OverviewActivityFooterFormat",
+        RecentActivities.Count);
 
     public string WorkDistributionTotal => Workstreams.Sum(workstream => workstream.Count)
         .ToString(System.Globalization.CultureInfo.InvariantCulture);
 
-    public string ScoreTrendStatus => "Synthetic score fixture";
+    public string ScoreTrendStatus => UiLanguageService.Shared["OverviewScoreFixture"];
 
-    public string TopAgentsSourceLabel => "SYNTHETIC";
+    public string TopAgentsSourceLabel => UiLanguageService.Shared["OverviewTopAgentsSource"];
 
-    public string AgentListThaiTitle => "ตัวแทนที่ทำผลงานดี";
+    public string AgentListTitle => UiLanguageService.Shared["OverviewTopAgents"];
 
-    public string AgentListEnglishTitle => "Top Agents";
-
-    public string AlertsCountLabel => $"{Alerts.Count} items";
+    public string AlertsCountLabel => UiLanguageService.Shared.Format("OverviewItemsFormat", Alerts.Count);
 
     public static SyntheticOverviewState Create()
     {
+        var text = UiLanguageService.Shared;
         return new SyntheticOverviewState(
             EvidenceClass.Synthetic,
-            "SYNTHETIC DATA",
-            "Herdr not connected",
+            text["SyntheticData"],
+            text["HerdrNotConnected"],
             new DateTimeOffset(2026, 8, 14, 14, 32, 0, TimeSpan.FromHours(7)),
-            CreateSummaryCards(),
-            CreateActivities(),
-            CreateScoreTrend(),
-            CreateWorkstreams(),
+            CreateSummaryCards(text),
+            CreateActivities(text),
+            CreateScoreTrend(text.CurrentLanguage),
+            CreateWorkstreams(text.CurrentLanguage),
             CreateTopAgents(),
-            CreateAlerts());
+            CreateAlerts(text));
     }
 
-    private static IReadOnlyList<OverviewSummaryCard> CreateSummaryCards() =>
+    private static IReadOnlyList<OverviewSummaryCard> CreateSummaryCards(UiLanguageService text) =>
     [
         new(
-            "สถานะรวม",
-            "Total Agents",
+            "total-agents",
+            text["OverviewTotalAgents"],
             "12",
-            "Online 10   Offline 2",
-            "Synthetic roster",
+            text["OverviewOnlineOffline"],
+            text["SyntheticRoster"],
             "\uE716",
             OverviewBrushKeys.Primary,
             [4, 5, 5, 7, 6, 8, 7],
             false,
             0),
         new(
-            "กำลังทำงาน",
-            "Working",
+            "working",
+            text["OverviewWorking"],
             "7",
             "58%",
-            "+1 from baseline",
+            text["OverviewFromBaseline"],
             "\uE9D9",
             OverviewBrushKeys.Working,
             [3, 4, 6, 5, 7, 9, 7],
             false,
             0),
         new(
-            "ติดขัด",
-            "Blocked",
+            "blocked",
+            text["OverviewBlocked"],
             "2",
             "17%",
-            "0 change",
+            text["OverviewNoChange"],
             "\uEA39",
             OverviewBrushKeys.Blocked,
             [1, 1, 2, 1, 2, 2, 2],
             false,
             0),
         new(
-            "เสร็จสิ้น",
-            "Done",
+            "done",
+            text["OverviewDone"],
             "3",
             "25%",
-            "+1 today",
+            text["OverviewTodayDelta"],
             "\uE73E",
             OverviewBrushKeys.Done,
             [0, 1, 1, 2, 1, 2, 3],
             false,
             0),
         new(
-            "คะแนนวันนี้",
-            "Daily Score",
+            "daily-score",
+            text["OverviewDailyScore"],
             "86",
             "/100",
-            "+5 from yesterday",
+            text["OverviewYesterdayDelta"],
             "\uE9D2",
             OverviewBrushKeys.Working,
             [],
@@ -108,35 +110,57 @@ public sealed record SyntheticOverviewState(
             86),
     ];
 
-    private static IReadOnlyList<OverviewActivity> CreateActivities() =>
+    private static IReadOnlyList<OverviewActivity> CreateActivities(UiLanguageService text) =>
     [
-        new("14:32", "PM", "Project Manager", "มอบหมายงาน Backend API Integration ให้ Backend Leader", "TASK-118", OverviewBrushKeys.Review),
-        new("14:31", "BL", "Backend Leader", "มอบหมายพัฒนา /auth/service.cs ให้ Backend Worker 01", "TASK-115", OverviewBrushKeys.Working),
-        new("14:30", "BW", "Backend Worker 01", "เริ่มดำเนินงาน TASK-115 ที่ไฟล์ auth/service.cs", "TASK-115", OverviewBrushKeys.Primary),
-        new("14:29", "PS", "PM Secretary", "อัปเดตข้อมูลโครงการ: เปลี่ยนกำหนดส่ง Release v1.2", "PROJECT", OverviewBrushKeys.Review),
-        new("14:28", "PM", "Project Manager", "มอบหมายตรวจสอบ Unit Tests ให้ Test Worker", "TASK-120", OverviewBrushKeys.Review),
-        new("14:27", "TW", "Test Worker", "อัปโหลดไฟล์รายงานผลการทดสอบ UnitTest_Report_0513.xlsx", "FILE", OverviewBrushKeys.Working),
+        new("14:32", "PM", "Project Manager", text["OverviewActivityPmAssign"], "TASK-118", OverviewBrushKeys.Review),
+        new("14:31", "BL", "Backend Leader", text["OverviewActivityLeaderAssign"], "TASK-115", OverviewBrushKeys.Working),
+        new("14:30", "BW", "Backend Worker 01", text["OverviewActivityWorkerStart"], "TASK-115", OverviewBrushKeys.Primary),
+        new("14:29", "PS", "PM Secretary", text["OverviewActivitySecretaryUpdate"], "PROJECT", OverviewBrushKeys.Review),
+        new("14:28", "PM", "Project Manager", text["OverviewActivityPmTest"], "TASK-120", OverviewBrushKeys.Review),
+        new("14:27", "TW", "Test Worker", text["OverviewActivityUpload"], "FILE", OverviewBrushKeys.Working),
     ];
 
-    private static IReadOnlyList<OverviewScorePoint> CreateScoreTrend() =>
-    [
-        new("7 พ.ค.", 62),
-        new("8 พ.ค.", 72),
-        new("9 พ.ค.", 65),
-        new("10 พ.ค.", 78),
-        new("11 พ.ค.", 71),
-        new("12 พ.ค.", 81),
-        new("13 พ.ค.", 86),
-    ];
+    private static IReadOnlyList<OverviewScorePoint> CreateScoreTrend(UiLanguage language) =>
+        language == UiLanguage.Thai
+            ?
+            [
+                new("7 พ.ค.", 62),
+                new("8 พ.ค.", 72),
+                new("9 พ.ค.", 65),
+                new("10 พ.ค.", 78),
+                new("11 พ.ค.", 71),
+                new("12 พ.ค.", 81),
+                new("13 พ.ค.", 86),
+            ]
+            :
+            [
+                new("May 7", 62),
+                new("May 8", 72),
+                new("May 9", 65),
+                new("May 10", 78),
+                new("May 11", 71),
+                new("May 12", 81),
+                new("May 13", 86),
+            ];
 
-    private static IReadOnlyList<OverviewWorkstream> CreateWorkstreams() =>
-    [
-        new("Backend", 5, 42, OverviewBrushKeys.Primary),
-        new("Frontend", 3, 25, OverviewBrushKeys.Review),
-        new("Test", 2, 15, OverviewBrushKeys.Working),
-        new("DevOps", 1, 10, OverviewBrushKeys.Idle),
-        new("Security", 1, 8, OverviewBrushKeys.Blocked),
-    ];
+    private static IReadOnlyList<OverviewWorkstream> CreateWorkstreams(UiLanguage language) =>
+        language == UiLanguage.Thai
+            ?
+            [
+                new("ส่วนหลัง", 5, 42, OverviewBrushKeys.Primary),
+                new("ส่วนหน้า", 3, 25, OverviewBrushKeys.Review),
+                new("ทดสอบ", 2, 15, OverviewBrushKeys.Working),
+                new("ส่งมอบระบบ", 1, 10, OverviewBrushKeys.Idle),
+                new("ความปลอดภัย", 1, 8, OverviewBrushKeys.Blocked),
+            ]
+            :
+            [
+                new("Backend", 5, 42, OverviewBrushKeys.Primary),
+                new("Frontend", 3, 25, OverviewBrushKeys.Review),
+                new("Test", 2, 15, OverviewBrushKeys.Working),
+                new("DevOps", 1, 10, OverviewBrushKeys.Idle),
+                new("Security", 1, 8, OverviewBrushKeys.Blocked),
+            ];
 
     private static IReadOnlyList<OverviewTopAgent> CreateTopAgents() =>
     [
@@ -147,17 +171,17 @@ public sealed record SyntheticOverviewState(
         new(5, "DW", "DevOps Worker", 85, -1, OverviewBrushKeys.Idle),
     ];
 
-    private static IReadOnlyList<OverviewAlert> CreateAlerts() =>
+    private static IReadOnlyList<OverviewAlert> CreateAlerts(UiLanguageService text) =>
     [
-        new("Backend Leader", "ไม่สามารถอัปโหลดไฟล์ผลงาน 2 รายการเกินกำหนด", "14:31", "Blocked", OverviewBrushKeys.Blocked),
-        new("Scope Violation (สงสัย)", "ตรวจพบการแก้ไขไฟล์นอกเหนือจากขอบเขตงานใน TASK-113", "14:29", "Suspected", OverviewBrushKeys.Idle),
-        new("PM Secretary", "ยังไม่ได้บันทึกรายงานประจำวัน", "14:28", "Pending", OverviewBrushKeys.Idle),
+        new(text["OverviewAlertUploadTitle"], text["OverviewAlertUploadText"], "14:31", text["StatusBlocked"], OverviewBrushKeys.Blocked),
+        new(text["OverviewAlertScopeTitle"], text["OverviewAlertScopeText"], "14:29", text["StateSuspected"], OverviewBrushKeys.Idle),
+        new(text["OverviewAlertSecretaryTitle"], text["OverviewAlertSecretaryText"], "14:28", text["StatePending"], OverviewBrushKeys.Idle),
     ];
 }
 
 public sealed record OverviewSummaryCard(
-    string ThaiTitle,
-    string EnglishTitle,
+    string Id,
+    string Title,
     string Value,
     string Metric,
     string Trend,

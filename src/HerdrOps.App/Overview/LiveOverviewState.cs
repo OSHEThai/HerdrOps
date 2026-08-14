@@ -1,4 +1,5 @@
 using HerdrOps.App.Live;
+using HerdrOps.App.Localization;
 using HerdrOps.Contracts.StateIpc;
 
 namespace HerdrOps.App.Overview;
@@ -19,8 +20,7 @@ public sealed class LiveOverviewState : ObservableState
     private string _workDistributionTotal = "0";
     private string _scoreTrendStatus = "Unknown — no evaluation data from Herdr";
     private string _topAgentsSourceLabel = "STATUS ONLY";
-    private string _agentListThaiTitle = "สถานะ Agent";
-    private string _agentListEnglishTitle = "Agent Status";
+    private string _agentListTitle = UiLanguageService.Shared["OverviewAgentStatus"];
     private string _alertsCountLabel = "0 state signals";
 
     public string SourceLabel { get => _sourceLabel; private set => Set(ref _sourceLabel, value); }
@@ -99,16 +99,10 @@ public sealed class LiveOverviewState : ObservableState
         private set => Set(ref _topAgentsSourceLabel, value);
     }
 
-    public string AgentListThaiTitle
+    public string AgentListTitle
     {
-        get => _agentListThaiTitle;
-        private set => Set(ref _agentListThaiTitle, value);
-    }
-
-    public string AgentListEnglishTitle
-    {
-        get => _agentListEnglishTitle;
-        private set => Set(ref _agentListEnglishTitle, value);
+        get => _agentListTitle;
+        private set => Set(ref _agentListTitle, value);
     }
 
     public string AlertsCountLabel
@@ -139,8 +133,7 @@ public sealed class LiveOverviewState : ObservableState
         WorkDistributionTotal = state.Agents.Count.ToString(System.Globalization.CultureInfo.InvariantCulture);
         TopAgents = CreateAgentRows(state, isLive);
         TopAgentsSourceLabel = "STATUS · NO SCORE";
-        AgentListThaiTitle = "สถานะ Agent";
-        AgentListEnglishTitle = "Agent Status (scores unknown)";
+        AgentListTitle = UiLanguageService.Shared["OverviewAgentStatus"];
         Alerts = CreateAlerts(state, isLive, sourceTimestamp);
         AlertsCountLabel = $"{Alerts.Count} state signals";
     }
@@ -149,13 +142,14 @@ public sealed class LiveOverviewState : ObservableState
         HerdrSessionStateContract state,
         bool isLive)
     {
+        var text = UiLanguageService.Shared;
         var total = state.Agents.Count;
         var unknown = Count(state, "Unknown");
         return
         [
             new(
-                "สถานะรวม",
-                "Observed Agents",
+                "total-agents",
+                text["OverviewTotalAgents"],
                 total.ToString(System.Globalization.CultureInfo.InvariantCulture),
                 isLive ? $"Observed {total}   Unknown {unknown}" : $"Last known {total}",
                 isLive ? $"Latest accepted · Core sequence {state.LastIngestSequence}" : "Offline — values are not current",
@@ -164,12 +158,12 @@ public sealed class LiveOverviewState : ObservableState
                 [],
                 false,
                 0),
-            CreateStatusCard(state, isLive, "กำลังทำงาน", "Working", "\uE9D9", OverviewBrushKeys.Working),
-            CreateStatusCard(state, isLive, "ติดขัด", "Blocked", "\uEA39", OverviewBrushKeys.Blocked),
-            CreateStatusCard(state, isLive, "เสร็จสิ้น", "Done", "\uE73E", OverviewBrushKeys.Done),
+            CreateStatusCard(state, isLive, "working", text["OverviewWorking"], "Working", "\uE9D9", OverviewBrushKeys.Working),
+            CreateStatusCard(state, isLive, "blocked", text["OverviewBlocked"], "Blocked", "\uEA39", OverviewBrushKeys.Blocked),
+            CreateStatusCard(state, isLive, "done", text["OverviewDone"], "Done", "\uE73E", OverviewBrushKeys.Done),
             new(
-                "คะแนนวันนี้",
-                "Daily Score",
+                "daily-score",
+                text["OverviewDailyScore"],
                 "—",
                 "/100",
                 "Unknown — not supplied by Herdr",
@@ -184,7 +178,8 @@ public sealed class LiveOverviewState : ObservableState
     private static OverviewSummaryCard CreateStatusCard(
         HerdrSessionStateContract state,
         bool isLive,
-        string thaiTitle,
+        string id,
+        string title,
         string status,
         string glyph,
         string brushKey)
@@ -194,8 +189,8 @@ public sealed class LiveOverviewState : ObservableState
             ? 0
             : (int)Math.Round(100d * count / state.Agents.Count, MidpointRounding.AwayFromZero);
         return new OverviewSummaryCard(
-            thaiTitle,
-            status,
+            id,
+            title,
             isLive ? count.ToString(System.Globalization.CultureInfo.InvariantCulture) : "—",
             isLive ? $"{percentage}%" : "Offline",
             isLive ? "Latest accepted Herdr state" : $"Last known count {count}",

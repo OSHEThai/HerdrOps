@@ -4,6 +4,7 @@
              xmlns:automation="clr-namespace:System.Windows.Automation;assembly=PresentationCore"
              xmlns:controls="clr-namespace:HerdrOps.App.Controls"
              xmlns:converters="clr-namespace:HerdrOps.App.Converters"
+             xmlns:localization="clr-namespace:HerdrOps.App.Localization"
              ClipToBounds="True"
              Background="{DynamicResource HerdrOps.Brush.Background}"
              SizeChanged="OnOverviewSizeChanged">
@@ -28,9 +29,9 @@
                     Margin="0,0,8,0"
                     Padding="10,2"
                     Style="{DynamicResource HerdrOps.Style.SecondaryButton}"
-                    automation:AutomationProperties.Name="เปิด Widget Gallery"
+                    automation:AutomationProperties.Name="{Binding [OpenWidgetGallery], Source={x:Static localization:UiLanguageService.Shared}}"
                     Click="OnOpenWidgetGalleryClick"
-                    Content="Widget Gallery" />
+                    Content="{Binding [WidgetGalleryButton], Source={x:Static localization:UiLanguageService.Shared}}" />
             <Border Padding="9,3"
                     Background="{DynamicResource HerdrOps.Brush.PrimarySubtle}"
                     BorderBrush="{DynamicResource HerdrOps.Brush.Primary}"
@@ -68,18 +69,13 @@
                                     <ColumnDefinition Width="*" />
                                     <ColumnDefinition Width="28" />
                                 </Grid.ColumnDefinitions>
-                                <StackPanel>
-                                    <TextBlock Tag="ThaiOverviewCheck"
-                                               Foreground="{DynamicResource HerdrOps.Brush.TextPrimary}"
-                                               FontSize="14"
-                                               FontWeight="SemiBold"
-                                               Text="{Binding ThaiTitle}"
-                                               TextTrimming="CharacterEllipsis" />
-                                    <TextBlock Foreground="{DynamicResource HerdrOps.Brush.TextSecondary}"
-                                               FontSize="12"
-                                               Text="{Binding EnglishTitle}"
-                                               TextTrimming="CharacterEllipsis" />
-                                </StackPanel>
+                                <TextBlock Tag="ThaiOverviewCheck"
+                                           VerticalAlignment="Center"
+                                           Foreground="{DynamicResource HerdrOps.Brush.TextPrimary}"
+                                           FontSize="14"
+                                           FontWeight="SemiBold"
+                                           Text="{Binding Title}"
+                                           TextTrimming="CharacterEllipsis" />
                                 <TextBlock Grid.Column="1"
                                            HorizontalAlignment="Right"
                                            FontFamily="{DynamicResource HerdrOps.FontFamily.Icons}"
@@ -175,16 +171,12 @@
                             <ColumnDefinition Width="*" />
                             <ColumnDefinition Width="Auto" />
                         </Grid.ColumnDefinitions>
-                        <StackPanel VerticalAlignment="Center">
-                            <TextBlock Tag="ThaiOverviewCheck"
-                                       Foreground="{DynamicResource HerdrOps.Brush.TextPrimary}"
-                                       FontSize="15"
-                                       FontWeight="SemiBold"
-                                       Text="กิจกรรมล่าสุด" />
-                            <TextBlock Foreground="{DynamicResource HerdrOps.Brush.TextSecondary}"
-                                       FontSize="12"
-                                       Text="Realtime Activity" />
-                        </StackPanel>
+                        <TextBlock Tag="ThaiOverviewCheck"
+                                   VerticalAlignment="Center"
+                                   Foreground="{DynamicResource HerdrOps.Brush.TextPrimary}"
+                                   FontSize="15"
+                                   FontWeight="SemiBold"
+                                   Text="{Binding [OverviewRecentActivity], Source={x:Static localization:UiLanguageService.Shared}}" />
                         <Border Grid.Column="1"
                                 Padding="8,3"
                                 VerticalAlignment="Center"
@@ -292,7 +284,7 @@
                                 <TextBlock Tag="ThaiOverviewCheck"
                                            FontSize="14"
                                            FontWeight="SemiBold"
-                                           Text="คะแนนรายวัน (7 วันล่าสุด)" />
+                                           Text="{Binding [OverviewScoreTrend], Source={x:Static localization:UiLanguageService.Shared}}" />
                                 <TextBlock Foreground="{DynamicResource HerdrOps.Brush.TextSecondary}"
                                            FontSize="11"
                                            Text="{Binding ScoreTrendStatus}"
@@ -316,15 +308,11 @@
                                 <RowDefinition x:Name="WorkstreamHeaderRow" Height="42" />
                                 <RowDefinition Height="*" />
                             </Grid.RowDefinitions>
-                            <StackPanel>
-                                <TextBlock Tag="ThaiOverviewCheck"
-                                           FontSize="14"
-                                           FontWeight="SemiBold"
-                                           Text="การกระจายงาน" />
-                                <TextBlock Foreground="{DynamicResource HerdrOps.Brush.TextSecondary}"
-                                           FontSize="11"
-                                           Text="Work Distribution" />
-                            </StackPanel>
+                            <TextBlock Tag="ThaiOverviewCheck"
+                                       VerticalAlignment="Center"
+                                       FontSize="14"
+                                       FontWeight="SemiBold"
+                                       Text="{Binding [OverviewWorkDistribution], Source={x:Static localization:UiLanguageService.Shared}}" />
                             <Grid Grid.Row="1">
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="5*" />
@@ -343,7 +331,7 @@
                                         <TextBlock HorizontalAlignment="Center"
                                                    Foreground="{DynamicResource HerdrOps.Brush.TextMuted}"
                                                    FontSize="10"
-                                                   Text="Agents" />
+                                                   Text="{Binding [AgentPlural], Source={x:Static localization:UiLanguageService.Shared}}" />
                                     </StackPanel>
                                 </Grid>
                                 <ItemsControl Grid.Column="1"
@@ -367,7 +355,7 @@
                                                 <TextBlock Grid.Column="2"
                                                            Foreground="{DynamicResource HerdrOps.Brush.TextSecondary}"
                                                            FontSize="10">
-                                                    <Run Text="{Binding Percentage}" /><Run Text="%" />
+                                                    <Run Text="{Binding Percentage, Mode=OneWay}" /><Run Text="%" />
                                                 </TextBlock>
                                             </Grid>
                                         </DataTemplate>
@@ -399,15 +387,11 @@
                                     <ColumnDefinition Width="*" />
                                     <ColumnDefinition Width="Auto" />
                                 </Grid.ColumnDefinitions>
-                                <StackPanel VerticalAlignment="Center">
-                                    <TextBlock Tag="ThaiOverviewCheck"
-                                               FontSize="14"
-                                               FontWeight="SemiBold"
-                                               Text="{Binding AgentListThaiTitle}" />
-                                    <TextBlock Foreground="{DynamicResource HerdrOps.Brush.TextSecondary}"
-                                               FontSize="11"
-                                               Text="{Binding AgentListEnglishTitle}" />
-                                </StackPanel>
+                                <TextBlock Tag="ThaiOverviewCheck"
+                                           VerticalAlignment="Center"
+                                           FontSize="14"
+                                           FontWeight="SemiBold"
+                                           Text="{Binding AgentListTitle}" />
                                 <TextBlock Grid.Column="1"
                                            VerticalAlignment="Center"
                                            Foreground="{DynamicResource HerdrOps.Brush.TextMuted}"
@@ -489,15 +473,11 @@
                                     <ColumnDefinition Width="*" />
                                     <ColumnDefinition Width="Auto" />
                                 </Grid.ColumnDefinitions>
-                                <StackPanel VerticalAlignment="Center">
-                                    <TextBlock Tag="ThaiOverviewCheck"
-                                               FontSize="14"
-                                               FontWeight="SemiBold"
-                                               Text="การแจ้งเตือน" />
-                                    <TextBlock Foreground="{DynamicResource HerdrOps.Brush.TextSecondary}"
-                                               FontSize="11"
-                                               Text="Alerts" />
-                                </StackPanel>
+                                <TextBlock Tag="ThaiOverviewCheck"
+                                           VerticalAlignment="Center"
+                                           FontSize="14"
+                                           FontWeight="SemiBold"
+                                           Text="{Binding [OverviewAlerts], Source={x:Static localization:UiLanguageService.Shared}}" />
                                 <TextBlock Grid.Column="1"
                                            VerticalAlignment="Center"
                                            Foreground="{DynamicResource HerdrOps.Brush.PrimaryText}"

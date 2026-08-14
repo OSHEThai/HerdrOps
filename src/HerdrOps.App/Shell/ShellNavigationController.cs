@@ -85,6 +85,12 @@ public sealed class ShellNavigationController : INotifyPropertyChanged
         SelectedIndex = (SelectedIndex + offset + destinationCount) % destinationCount;
     }
 
+    public void NotifyLanguageChanged()
+    {
+        OnPropertyChanged(nameof(Destinations));
+        OnPropertyChanged(nameof(SelectedDestination));
+    }
+
     private void OnPropertyChanged([CallerMemberName] string? propertyName = null)
     {
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
