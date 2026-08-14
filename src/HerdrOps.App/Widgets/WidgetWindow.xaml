@@ -1,0 +1,17 @@
+<Window x:Class="HerdrOps.App.Widgets.WidgetWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:widgets="clr-namespace:HerdrOps.App.Widgets"
+        Title="HerdrOps Widget — Synthetic Preview"
+        Background="{DynamicResource HerdrOps.Brush.Background}"
+        Foreground="{DynamicResource HerdrOps.Brush.TextPrimary}"
+        FontFamily="{DynamicResource HerdrOps.FontFamily.UI}"
+        WindowStyle="None"
+        ResizeMode="NoResize"
+        WindowStartupLocation="Manual"
+        UseLayoutRounding="True"
+        SnapsToDevicePixels="True"
+        PreviewKeyDown="OnPreviewKeyDown"
+        LocationChanged="OnLocationChanged">
+    <widgets:WidgetSurface x:Name="Surface" />
+</Window>

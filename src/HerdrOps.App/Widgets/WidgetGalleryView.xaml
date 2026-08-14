@@ -1,0 +1,158 @@
+<UserControl x:Class="HerdrOps.App.Widgets.WidgetGalleryView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:automation="clr-namespace:System.Windows.Automation;assembly=PresentationCore"
+             xmlns:views="clr-namespace:HerdrOps.App.Views"
+             xmlns:widgets="clr-namespace:HerdrOps.App.Widgets"
+             Background="{DynamicResource HerdrOps.Brush.Background}"
+             Foreground="{DynamicResource HerdrOps.Brush.TextPrimary}"
+             FontFamily="{DynamicResource HerdrOps.FontFamily.UI}">
+    <Viewbox Stretch="Uniform">
+        <Grid Width="1536" Height="1024" Background="{DynamicResource HerdrOps.Brush.Background}">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="86" />
+                <RowDefinition Height="438" />
+                <RowDefinition Height="*" />
+                <RowDefinition Height="38" />
+            </Grid.RowDefinitions>
+
+            <Border Grid.Row="0"
+                    Background="{DynamicResource HerdrOps.Brush.TopBar}"
+                    BorderBrush="{DynamicResource HerdrOps.Brush.Border}"
+                    BorderThickness="0,0,0,1">
+                <Grid Margin="20,0">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <StackPanel VerticalAlignment="Center">
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock FontSize="28" FontWeight="SemiBold" Text="HerdrOps Widget" />
+                            <TextBlock Margin="8,0,0,0" Foreground="{DynamicResource HerdrOps.Brush.PrimaryText}" FontSize="28" FontWeight="SemiBold" Text="Gallery" />
+                        </StackPanel>
+                        <TextBlock Tag="ThaiWidgetCheck"
+                                   Foreground="{DynamicResource HerdrOps.Brush.TextSecondary}"
+                                   FontSize="13"
+                                   Text="ต้นแบบ WPF ทั้ง 7 รูปแบบ · ใช้ข้อมูล Synthetic ชุดเดียวกัน · ยังไม่เชื่อมต่อ Herdr" />
+                    </StackPanel>
+                    <StackPanel Grid.Column="1" VerticalAlignment="Center" Orientation="Horizontal">
+                        <Border Margin="0,0,16,0" Padding="10,4" Background="{DynamicResource HerdrOps.Brush.PrimarySubtle}" BorderBrush="{DynamicResource HerdrOps.Brush.Primary}" BorderThickness="1" CornerRadius="{DynamicResource HerdrOps.Radius.Pill}">
+                            <TextBlock Foreground="{DynamicResource HerdrOps.Brush.PrimaryText}" FontSize="10" FontWeight="SemiBold" Text="SYNTHETIC DATA" />
+                        </Border>
+                        <Ellipse Width="10" Height="10" Fill="{DynamicResource HerdrOps.Brush.Status.Working}" />
+                        <TextBlock Margin="6,0,14,0" FontSize="11" Text="Working" />
+                        <Ellipse Width="10" Height="10" Fill="{DynamicResource HerdrOps.Brush.Status.Idle}" />
+                        <TextBlock Margin="6,0,14,0" FontSize="11" Text="Idle" />
+                        <Ellipse Width="10" Height="10" Fill="{DynamicResource HerdrOps.Brush.Status.Blocked}" />
+                        <TextBlock Margin="6,0,14,0" FontSize="11" Text="Blocked" />
+                        <Ellipse Width="10" Height="10" Fill="{DynamicResource HerdrOps.Brush.Status.Review}" />
+                        <TextBlock Margin="6,0,14,0" FontSize="11" Text="Review" />
+                        <Ellipse Width="10" Height="10" Fill="{DynamicResource HerdrOps.Brush.Status.Done}" />
+                        <TextBlock Margin="6,0,0,0" FontSize="11" Text="Done" />
+                    </StackPanel>
+                </Grid>
+            </Border>
+
+            <Grid Grid.Row="1" Margin="14,12,14,6">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="282" />
+                    <ColumnDefinition Width="312" />
+                    <ColumnDefinition Width="480" />
+                    <ColumnDefinition Width="220" />
+                    <ColumnDefinition Width="214" />
+                </Grid.ColumnDefinitions>
+
+                <Border Grid.Column="0" Margin="5" Style="{DynamicResource HerdrOps.Style.Card}">
+                    <Grid>
+                        <Grid.RowDefinitions><RowDefinition Height="48" /><RowDefinition Height="*" /><RowDefinition Height="44" /></Grid.RowDefinitions>
+                        <StackPanel><TextBlock Foreground="{DynamicResource HerdrOps.Brush.PrimaryText}" FontSize="15" FontWeight="SemiBold" Text="1. Compact Widget" /><TextBlock Tag="ThaiWidgetCheck" Foreground="{DynamicResource HerdrOps.Brush.TextMuted}" FontSize="10" Text="สรุปสถานะและเหตุการณ์สำคัญ" /></StackPanel>
+                        <Viewbox Grid.Row="1" Stretch="Uniform"><widgets:WidgetSurface x:Name="CompactPreview" Width="300" Height="330" IsInteractive="False" Variant="Compact" /></Viewbox>
+                        <Button x:Name="OpenCompactButton" Grid.Row="2" Tag="Compact" Style="{DynamicResource HerdrOps.Style.SecondaryButton}" automation:AutomationProperties.Name="เปิด Compact Widget" Click="OnOpenWidgetClick" Content="เปิด Widget" />
+                    </Grid>
+                </Border>
+
+                <Border Grid.Column="1" Margin="5" Style="{DynamicResource HerdrOps.Style.Card}">
+                    <Grid>
+                        <Grid.RowDefinitions><RowDefinition Height="48" /><RowDefinition Height="*" /><RowDefinition Height="44" /></Grid.RowDefinitions>
+                        <StackPanel><TextBlock Foreground="{DynamicResource HerdrOps.Brush.PrimaryText}" FontSize="15" FontWeight="SemiBold" Text="2. Normal Widget" /><TextBlock Tag="ThaiWidgetCheck" Foreground="{DynamicResource HerdrOps.Brush.TextMuted}" FontSize="10" Text="แสดง Agent ทั้งหมดแบบเลื่อนได้" /></StackPanel>
+                        <Viewbox Grid.Row="1" Stretch="Uniform"><widgets:WidgetSurface x:Name="NormalPreview" Width="340" Height="448" IsInteractive="False" Variant="Normal" /></Viewbox>
+                        <Button x:Name="OpenNormalButton" Grid.Row="2" Tag="Normal" Style="{DynamicResource HerdrOps.Style.SecondaryButton}" automation:AutomationProperties.Name="เปิด Normal Widget" Click="OnOpenWidgetClick" Content="เปิด Widget" />
+                    </Grid>
+                </Border>
+
+                <Border Grid.Column="2" Margin="5" Style="{DynamicResource HerdrOps.Style.Card}">
+                    <Grid>
+                        <Grid.RowDefinitions><RowDefinition Height="48" /><RowDefinition Height="*" /><RowDefinition Height="44" /></Grid.RowDefinitions>
+                        <StackPanel><TextBlock Foreground="{DynamicResource HerdrOps.Brush.PrimaryText}" FontSize="15" FontWeight="SemiBold" Text="3. Expanded Widget" /><TextBlock Tag="ThaiWidgetCheck" Foreground="{DynamicResource HerdrOps.Brush.TextMuted}" FontSize="10" Text="ตารางกิจกรรมและคะแนนแบบละเอียด" /></StackPanel>
+                        <Viewbox Grid.Row="1" Stretch="Uniform"><widgets:WidgetSurface x:Name="ExpandedPreview" Width="620" Height="390" IsInteractive="False" Variant="Expanded" /></Viewbox>
+                        <Button x:Name="OpenExpandedButton" Grid.Row="2" Tag="Expanded" Style="{DynamicResource HerdrOps.Style.SecondaryButton}" automation:AutomationProperties.Name="เปิด Expanded Widget" Click="OnOpenWidgetClick" Content="เปิด Widget" />
+                    </Grid>
+                </Border>
+
+                <Border Grid.Column="3" Margin="5" Style="{DynamicResource HerdrOps.Style.Card}">
+                    <Grid>
+                        <Grid.RowDefinitions><RowDefinition Height="48" /><RowDefinition Height="*" /><RowDefinition Height="44" /></Grid.RowDefinitions>
+                        <StackPanel><TextBlock Foreground="{DynamicResource HerdrOps.Brush.PrimaryText}" FontSize="15" FontWeight="SemiBold" Text="4. Floating Mini" /><TextBlock Tag="ThaiWidgetCheck" Foreground="{DynamicResource HerdrOps.Brush.TextMuted}" FontSize="10" Text="สถานะสำคัญสำหรับมุมจอ" /></StackPanel>
+                        <Viewbox Grid.Row="1" Stretch="Uniform"><widgets:WidgetSurface x:Name="MiniPreview" Width="230" Height="220" IsInteractive="False" Variant="FloatingMini" /></Viewbox>
+                        <Button x:Name="OpenMiniButton" Grid.Row="2" Tag="FloatingMini" Style="{DynamicResource HerdrOps.Style.SecondaryButton}" automation:AutomationProperties.Name="เปิด Floating Mini Widget" Click="OnOpenWidgetClick" Content="เปิด Widget" />
+                    </Grid>
+                </Border>
+
+                <Border Grid.Column="4" Margin="5" Style="{DynamicResource HerdrOps.Style.Card}">
+                    <Grid>
+                        <Grid.RowDefinitions><RowDefinition Height="48" /><RowDefinition Height="*" /><RowDefinition Height="44" /></Grid.RowDefinitions>
+                        <StackPanel><TextBlock Foreground="{DynamicResource HerdrOps.Brush.PrimaryText}" FontSize="15" FontWeight="SemiBold" Text="5. Floating Vertical" /><TextBlock Tag="ThaiWidgetCheck" Foreground="{DynamicResource HerdrOps.Brush.TextMuted}" FontSize="10" Text="รายชื่อแนวตั้งประหยัดพื้นที่" /></StackPanel>
+                        <Viewbox Grid.Row="1" Stretch="Uniform"><widgets:WidgetSurface x:Name="VerticalPreview" Width="168" Height="474" IsInteractive="False" Variant="FloatingVertical" /></Viewbox>
+                        <Button x:Name="OpenVerticalButton" Grid.Row="2" Tag="FloatingVertical" Style="{DynamicResource HerdrOps.Style.SecondaryButton}" automation:AutomationProperties.Name="เปิด Floating Vertical Widget" Click="OnOpenWidgetClick" Content="เปิด Widget" />
+                    </Grid>
+                </Border>
+            </Grid>
+
+            <Grid Grid.Row="2" Margin="14,6,14,10">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="312" />
+                    <ColumnDefinition Width="330" />
+                    <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+
+                <Border Grid.Column="0" Margin="5" Style="{DynamicResource HerdrOps.Style.Card}">
+                    <Grid>
+                        <Grid.RowDefinitions><RowDefinition Height="48" /><RowDefinition Height="*" /><RowDefinition Height="44" /></Grid.RowDefinitions>
+                        <StackPanel><TextBlock Foreground="{DynamicResource HerdrOps.Brush.PrimaryText}" FontSize="15" FontWeight="SemiBold" Text="6. Notification Widget" /><TextBlock Tag="ThaiWidgetCheck" Foreground="{DynamicResource HerdrOps.Brush.TextMuted}" FontSize="10" Text="เหตุการณ์สำคัญแบบเรียลไทม์" /></StackPanel>
+                        <Viewbox Grid.Row="1" Stretch="Uniform"><widgets:WidgetSurface x:Name="NotificationPreview" Width="328" Height="410" IsInteractive="False" Variant="Notification" /></Viewbox>
+                        <Button x:Name="OpenNotificationButton" Grid.Row="2" Tag="Notification" Style="{DynamicResource HerdrOps.Style.SecondaryButton}" automation:AutomationProperties.Name="เปิด Notification Widget" Click="OnOpenWidgetClick" Content="เปิด Widget" />
+                    </Grid>
+                </Border>
+
+                <Border Grid.Column="1" Margin="5" Style="{DynamicResource HerdrOps.Style.Card}">
+                    <Grid>
+                        <Grid.RowDefinitions><RowDefinition Height="48" /><RowDefinition Height="*" /><RowDefinition Height="44" /></Grid.RowDefinitions>
+                        <StackPanel><TextBlock Foreground="{DynamicResource HerdrOps.Brush.PrimaryText}" FontSize="15" FontWeight="SemiBold" Text="7. Agent Detail Popup" /><TextBlock Tag="ThaiWidgetCheck" Foreground="{DynamicResource HerdrOps.Brush.TextMuted}" FontSize="10" Text="รายละเอียด Agent และกิจกรรมล่าสุด" /></StackPanel>
+                        <Viewbox Grid.Row="1" Stretch="Uniform"><widgets:WidgetSurface x:Name="AgentDetailPreview" Width="340" Height="448" IsInteractive="False" Variant="AgentDetailPopup" /></Viewbox>
+                        <Button x:Name="OpenAgentDetailButton" Grid.Row="2" Tag="AgentDetailPopup" Style="{DynamicResource HerdrOps.Style.SecondaryButton}" automation:AutomationProperties.Name="เปิด Agent Detail Popup" Click="OnOpenWidgetClick" Content="เปิด Widget" />
+                    </Grid>
+                </Border>
+
+                <Border Grid.Column="2" Margin="5" Style="{DynamicResource HerdrOps.Style.Card}">
+                    <Grid>
+                        <Grid.RowDefinitions><RowDefinition Height="48" /><RowDefinition Height="*" /><RowDefinition Height="44" /></Grid.RowDefinitions>
+                        <StackPanel Orientation="Horizontal">
+                            <StackPanel><TextBlock Foreground="{DynamicResource HerdrOps.Brush.PrimaryText}" FontSize="15" FontWeight="SemiBold" Text="8. Dashboard launch / preview" /><TextBlock Tag="ThaiWidgetCheck" Foreground="{DynamicResource HerdrOps.Brush.TextMuted}" FontSize="10" Text="เปิดหน้าต่างหลักโดยยังรักษาขอบเขตข้อมูล Synthetic" /></StackPanel>
+                        </StackPanel>
+                        <Border Grid.Row="1" Background="{DynamicResource HerdrOps.Brush.Background}" BorderBrush="{DynamicResource HerdrOps.Brush.Border}" BorderThickness="1" CornerRadius="{DynamicResource HerdrOps.Radius.Default}" ClipToBounds="True">
+                            <Viewbox Stretch="Uniform"><views:ShellView Width="1672" Height="941" IsHitTestVisible="False" /></Viewbox>
+                        </Border>
+                        <Button x:Name="OpenDashboardButton" Grid.Row="2" Style="{DynamicResource HerdrOps.Style.SecondaryButton}" automation:AutomationProperties.Name="กลับไปยัง Dashboard หลัก" Click="OnOpenDashboardClick" Content="กลับไปยัง Dashboard" />
+                    </Grid>
+                </Border>
+            </Grid>
+
+            <Border Grid.Row="3" Background="{DynamicResource HerdrOps.Brush.TopBar}" BorderBrush="{DynamicResource HerdrOps.Brush.Border}" BorderThickness="0,1,0,0">
+                <Grid Margin="20,0">
+                    <TextBlock VerticalAlignment="Center" Foreground="{DynamicResource HerdrOps.Brush.TextMuted}" FontSize="11" Text="Keyboard: Tab / Shift+Tab · Enter / Space · Widget: Esc, Ctrl+T, Ctrl+0" />
+                    <TextBlock HorizontalAlignment="Right" VerticalAlignment="Center" Foreground="{DynamicResource HerdrOps.Brush.TextMuted}" FontSize="11" Text="Herdr: Not connected" />
+                </Grid>
+            </Border>
+        </Grid>
+    </Viewbox>
+</UserControl>
