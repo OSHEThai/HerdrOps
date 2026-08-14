@@ -3,6 +3,7 @@
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:automation="clr-namespace:System.Windows.Automation;assembly=PresentationCore"
              xmlns:views="clr-namespace:HerdrOps.App.Views"
+             xmlns:localization="clr-namespace:HerdrOps.App.Localization"
              xmlns:widgets="clr-namespace:HerdrOps.App.Widgets"
              Background="{DynamicResource HerdrOps.Brush.Background}"
              Foreground="{DynamicResource HerdrOps.Brush.TextPrimary}"
@@ -27,29 +28,32 @@
                         <ColumnDefinition Width="Auto" />
                     </Grid.ColumnDefinitions>
                     <StackPanel VerticalAlignment="Center">
-                        <StackPanel Orientation="Horizontal">
-                            <TextBlock FontSize="28" FontWeight="SemiBold" Text="HerdrOps Widget" />
-                            <TextBlock Margin="8,0,0,0" Foreground="{DynamicResource HerdrOps.Brush.PrimaryText}" FontSize="28" FontWeight="SemiBold" Text="Gallery" />
-                        </StackPanel>
+                        <TextBlock Foreground="{DynamicResource HerdrOps.Brush.PrimaryText}"
+                                   FontSize="28"
+                                   FontWeight="SemiBold"
+                                   Text="{Binding [WidgetGalleryTitle], Source={x:Static localization:UiLanguageService.Shared}}" />
                         <TextBlock Tag="ThaiWidgetCheck"
                                    Foreground="{DynamicResource HerdrOps.Brush.TextSecondary}"
                                    FontSize="13"
-                                   Text="ต้นแบบ WPF ทั้ง 7 รูปแบบ · ใช้ข้อมูล Synthetic ชุดเดียวกัน · ยังไม่เชื่อมต่อ Herdr" />
+                                   Text="{Binding SharedState.GalleryDescription, RelativeSource={RelativeSource AncestorType=widgets:WidgetGalleryView}}" />
                     </StackPanel>
                     <StackPanel Grid.Column="1" VerticalAlignment="Center" Orientation="Horizontal">
                         <Border Margin="0,0,16,0" Padding="10,4" Background="{DynamicResource HerdrOps.Brush.PrimarySubtle}" BorderBrush="{DynamicResource HerdrOps.Brush.Primary}" BorderThickness="1" CornerRadius="{DynamicResource HerdrOps.Radius.Pill}">
-                            <TextBlock Foreground="{DynamicResource HerdrOps.Brush.PrimaryText}" FontSize="10" FontWeight="SemiBold" Text="SYNTHETIC DATA" />
+                            <TextBlock Foreground="{DynamicResource HerdrOps.Brush.PrimaryText}"
+                                       FontSize="10"
+                                       FontWeight="SemiBold"
+                                       Text="{Binding SharedState.SourceLabel, RelativeSource={RelativeSource AncestorType=widgets:WidgetGalleryView}}" />
                         </Border>
                         <Ellipse Width="10" Height="10" Fill="{DynamicResource HerdrOps.Brush.Status.Working}" />
-                        <TextBlock Margin="6,0,14,0" FontSize="11" Text="Working" />
+                        <TextBlock Margin="6,0,14,0" FontSize="11" Text="{Binding [StatusWorking], Source={x:Static localization:UiLanguageService.Shared}}" />
                         <Ellipse Width="10" Height="10" Fill="{DynamicResource HerdrOps.Brush.Status.Idle}" />
-                        <TextBlock Margin="6,0,14,0" FontSize="11" Text="Idle" />
+                        <TextBlock Margin="6,0,14,0" FontSize="11" Text="{Binding [StatusIdle], Source={x:Static localization:UiLanguageService.Shared}}" />
                         <Ellipse Width="10" Height="10" Fill="{DynamicResource HerdrOps.Brush.Status.Blocked}" />
-                        <TextBlock Margin="6,0,14,0" FontSize="11" Text="Blocked" />
+                        <TextBlock Margin="6,0,14,0" FontSize="11" Text="{Binding [StatusBlocked], Source={x:Static localization:UiLanguageService.Shared}}" />
                         <Ellipse Width="10" Height="10" Fill="{DynamicResource HerdrOps.Brush.Status.Review}" />
-                        <TextBlock Margin="6,0,14,0" FontSize="11" Text="Review" />
+                        <TextBlock Margin="6,0,14,0" FontSize="11" Text="{Binding [StatusReview], Source={x:Static localization:UiLanguageService.Shared}}" />
                         <Ellipse Width="10" Height="10" Fill="{DynamicResource HerdrOps.Brush.Status.Done}" />
-                        <TextBlock Margin="6,0,0,0" FontSize="11" Text="Done" />
+                        <TextBlock Margin="6,0,0,0" FontSize="11" Text="{Binding [StatusDone], Source={x:Static localization:UiLanguageService.Shared}}" />
                     </StackPanel>
                 </Grid>
             </Border>
@@ -66,45 +70,45 @@
                 <Border Grid.Column="0" Margin="5" Style="{DynamicResource HerdrOps.Style.Card}">
                     <Grid>
                         <Grid.RowDefinitions><RowDefinition Height="48" /><RowDefinition Height="*" /><RowDefinition Height="44" /></Grid.RowDefinitions>
-                        <StackPanel><TextBlock Foreground="{DynamicResource HerdrOps.Brush.PrimaryText}" FontSize="15" FontWeight="SemiBold" Text="1. Compact Widget" /><TextBlock Tag="ThaiWidgetCheck" Foreground="{DynamicResource HerdrOps.Brush.TextMuted}" FontSize="10" Text="สรุปสถานะและเหตุการณ์สำคัญ" /></StackPanel>
+                        <StackPanel><TextBlock Foreground="{DynamicResource HerdrOps.Brush.PrimaryText}" FontSize="14" FontWeight="SemiBold"><Run Text="1. " /><Run Text="{Binding [WidgetCompactName], Mode=OneWay, Source={x:Static localization:UiLanguageService.Shared}}" /></TextBlock><TextBlock Tag="ThaiWidgetCheck" Foreground="{DynamicResource HerdrOps.Brush.TextMuted}" FontSize="10" Text="{Binding [WidgetCompactDescription], Source={x:Static localization:UiLanguageService.Shared}}" /></StackPanel>
                         <Viewbox Grid.Row="1" Stretch="Uniform"><widgets:WidgetSurface x:Name="CompactPreview" Width="300" Height="330" IsInteractive="False" Variant="Compact" /></Viewbox>
-                        <Button x:Name="OpenCompactButton" Grid.Row="2" Tag="Compact" Style="{DynamicResource HerdrOps.Style.SecondaryButton}" automation:AutomationProperties.Name="เปิด Compact Widget" Click="OnOpenWidgetClick" Content="เปิด Widget" />
+                        <Button x:Name="OpenCompactButton" Grid.Row="2" Tag="Compact" Style="{DynamicResource HerdrOps.Style.SecondaryButton}" automation:AutomationProperties.Name="{Binding [WidgetCompactName], Source={x:Static localization:UiLanguageService.Shared}}" Click="OnOpenWidgetClick" Content="{Binding [WidgetOpen], Source={x:Static localization:UiLanguageService.Shared}}" />
                     </Grid>
                 </Border>
 
                 <Border Grid.Column="1" Margin="5" Style="{DynamicResource HerdrOps.Style.Card}">
                     <Grid>
                         <Grid.RowDefinitions><RowDefinition Height="48" /><RowDefinition Height="*" /><RowDefinition Height="44" /></Grid.RowDefinitions>
-                        <StackPanel><TextBlock Foreground="{DynamicResource HerdrOps.Brush.PrimaryText}" FontSize="15" FontWeight="SemiBold" Text="2. Normal Widget" /><TextBlock Tag="ThaiWidgetCheck" Foreground="{DynamicResource HerdrOps.Brush.TextMuted}" FontSize="10" Text="แสดง Agent ทั้งหมดแบบเลื่อนได้" /></StackPanel>
+                        <StackPanel><TextBlock Foreground="{DynamicResource HerdrOps.Brush.PrimaryText}" FontSize="14" FontWeight="SemiBold"><Run Text="2. " /><Run Text="{Binding [WidgetNormalName], Mode=OneWay, Source={x:Static localization:UiLanguageService.Shared}}" /></TextBlock><TextBlock Tag="ThaiWidgetCheck" Foreground="{DynamicResource HerdrOps.Brush.TextMuted}" FontSize="10" Text="{Binding [WidgetNormalDescription], Source={x:Static localization:UiLanguageService.Shared}}" /></StackPanel>
                         <Viewbox Grid.Row="1" Stretch="Uniform"><widgets:WidgetSurface x:Name="NormalPreview" Width="340" Height="448" IsInteractive="False" Variant="Normal" /></Viewbox>
-                        <Button x:Name="OpenNormalButton" Grid.Row="2" Tag="Normal" Style="{DynamicResource HerdrOps.Style.SecondaryButton}" automation:AutomationProperties.Name="เปิด Normal Widget" Click="OnOpenWidgetClick" Content="เปิด Widget" />
+                        <Button x:Name="OpenNormalButton" Grid.Row="2" Tag="Normal" Style="{DynamicResource HerdrOps.Style.SecondaryButton}" automation:AutomationProperties.Name="{Binding [WidgetNormalName], Source={x:Static localization:UiLanguageService.Shared}}" Click="OnOpenWidgetClick" Content="{Binding [WidgetOpen], Source={x:Static localization:UiLanguageService.Shared}}" />
                     </Grid>
                 </Border>
 
                 <Border Grid.Column="2" Margin="5" Style="{DynamicResource HerdrOps.Style.Card}">
                     <Grid>
                         <Grid.RowDefinitions><RowDefinition Height="48" /><RowDefinition Height="*" /><RowDefinition Height="44" /></Grid.RowDefinitions>
-                        <StackPanel><TextBlock Foreground="{DynamicResource HerdrOps.Brush.PrimaryText}" FontSize="15" FontWeight="SemiBold" Text="3. Expanded Widget" /><TextBlock Tag="ThaiWidgetCheck" Foreground="{DynamicResource HerdrOps.Brush.TextMuted}" FontSize="10" Text="ตารางกิจกรรมและคะแนนแบบละเอียด" /></StackPanel>
+                        <StackPanel><TextBlock Foreground="{DynamicResource HerdrOps.Brush.PrimaryText}" FontSize="14" FontWeight="SemiBold"><Run Text="3. " /><Run Text="{Binding [WidgetExpandedName], Mode=OneWay, Source={x:Static localization:UiLanguageService.Shared}}" /></TextBlock><TextBlock Tag="ThaiWidgetCheck" Foreground="{DynamicResource HerdrOps.Brush.TextMuted}" FontSize="10" Text="{Binding [WidgetExpandedDescription], Source={x:Static localization:UiLanguageService.Shared}}" /></StackPanel>
                         <Viewbox Grid.Row="1" Stretch="Uniform"><widgets:WidgetSurface x:Name="ExpandedPreview" Width="620" Height="390" IsInteractive="False" Variant="Expanded" /></Viewbox>
-                        <Button x:Name="OpenExpandedButton" Grid.Row="2" Tag="Expanded" Style="{DynamicResource HerdrOps.Style.SecondaryButton}" automation:AutomationProperties.Name="เปิด Expanded Widget" Click="OnOpenWidgetClick" Content="เปิด Widget" />
+                        <Button x:Name="OpenExpandedButton" Grid.Row="2" Tag="Expanded" Style="{DynamicResource HerdrOps.Style.SecondaryButton}" automation:AutomationProperties.Name="{Binding [WidgetExpandedName], Source={x:Static localization:UiLanguageService.Shared}}" Click="OnOpenWidgetClick" Content="{Binding [WidgetOpen], Source={x:Static localization:UiLanguageService.Shared}}" />
                     </Grid>
                 </Border>
 
                 <Border Grid.Column="3" Margin="5" Style="{DynamicResource HerdrOps.Style.Card}">
                     <Grid>
                         <Grid.RowDefinitions><RowDefinition Height="48" /><RowDefinition Height="*" /><RowDefinition Height="44" /></Grid.RowDefinitions>
-                        <StackPanel><TextBlock Foreground="{DynamicResource HerdrOps.Brush.PrimaryText}" FontSize="15" FontWeight="SemiBold" Text="4. Floating Mini" /><TextBlock Tag="ThaiWidgetCheck" Foreground="{DynamicResource HerdrOps.Brush.TextMuted}" FontSize="10" Text="สถานะสำคัญสำหรับมุมจอ" /></StackPanel>
+                        <StackPanel><TextBlock Foreground="{DynamicResource HerdrOps.Brush.PrimaryText}" FontSize="14" FontWeight="SemiBold"><Run Text="4. " /><Run Text="{Binding [WidgetMiniName], Mode=OneWay, Source={x:Static localization:UiLanguageService.Shared}}" /></TextBlock><TextBlock Tag="ThaiWidgetCheck" Foreground="{DynamicResource HerdrOps.Brush.TextMuted}" FontSize="10" Text="{Binding [WidgetMiniDescription], Source={x:Static localization:UiLanguageService.Shared}}" /></StackPanel>
                         <Viewbox Grid.Row="1" Stretch="Uniform"><widgets:WidgetSurface x:Name="MiniPreview" Width="230" Height="220" IsInteractive="False" Variant="FloatingMini" /></Viewbox>
-                        <Button x:Name="OpenMiniButton" Grid.Row="2" Tag="FloatingMini" Style="{DynamicResource HerdrOps.Style.SecondaryButton}" automation:AutomationProperties.Name="เปิด Floating Mini Widget" Click="OnOpenWidgetClick" Content="เปิด Widget" />
+                        <Button x:Name="OpenMiniButton" Grid.Row="2" Tag="FloatingMini" Style="{DynamicResource HerdrOps.Style.SecondaryButton}" automation:AutomationProperties.Name="{Binding [WidgetMiniName], Source={x:Static localization:UiLanguageService.Shared}}" Click="OnOpenWidgetClick" Content="{Binding [WidgetOpen], Source={x:Static localization:UiLanguageService.Shared}}" />
                     </Grid>
                 </Border>
 
                 <Border Grid.Column="4" Margin="5" Style="{DynamicResource HerdrOps.Style.Card}">
                     <Grid>
                         <Grid.RowDefinitions><RowDefinition Height="48" /><RowDefinition Height="*" /><RowDefinition Height="44" /></Grid.RowDefinitions>
-                        <StackPanel><TextBlock Foreground="{DynamicResource HerdrOps.Brush.PrimaryText}" FontSize="15" FontWeight="SemiBold" Text="5. Floating Vertical" /><TextBlock Tag="ThaiWidgetCheck" Foreground="{DynamicResource HerdrOps.Brush.TextMuted}" FontSize="10" Text="รายชื่อแนวตั้งประหยัดพื้นที่" /></StackPanel>
+                        <StackPanel><TextBlock Foreground="{DynamicResource HerdrOps.Brush.PrimaryText}" FontSize="14" FontWeight="SemiBold"><Run Text="5. " /><Run Text="{Binding [WidgetVerticalName], Mode=OneWay, Source={x:Static localization:UiLanguageService.Shared}}" /></TextBlock><TextBlock Tag="ThaiWidgetCheck" Foreground="{DynamicResource HerdrOps.Brush.TextMuted}" FontSize="10" Text="{Binding [WidgetVerticalDescription], Source={x:Static localization:UiLanguageService.Shared}}" /></StackPanel>
                         <Viewbox Grid.Row="1" Stretch="Uniform"><widgets:WidgetSurface x:Name="VerticalPreview" Width="168" Height="474" IsInteractive="False" Variant="FloatingVertical" /></Viewbox>
-                        <Button x:Name="OpenVerticalButton" Grid.Row="2" Tag="FloatingVertical" Style="{DynamicResource HerdrOps.Style.SecondaryButton}" automation:AutomationProperties.Name="เปิด Floating Vertical Widget" Click="OnOpenWidgetClick" Content="เปิด Widget" />
+                        <Button x:Name="OpenVerticalButton" Grid.Row="2" Tag="FloatingVertical" Style="{DynamicResource HerdrOps.Style.SecondaryButton}" automation:AutomationProperties.Name="{Binding [WidgetVerticalName], Source={x:Static localization:UiLanguageService.Shared}}" Click="OnOpenWidgetClick" Content="{Binding [WidgetOpen], Source={x:Static localization:UiLanguageService.Shared}}" />
                     </Grid>
                 </Border>
             </Grid>
@@ -119,18 +123,18 @@
                 <Border Grid.Column="0" Margin="5" Style="{DynamicResource HerdrOps.Style.Card}">
                     <Grid>
                         <Grid.RowDefinitions><RowDefinition Height="48" /><RowDefinition Height="*" /><RowDefinition Height="44" /></Grid.RowDefinitions>
-                        <StackPanel><TextBlock Foreground="{DynamicResource HerdrOps.Brush.PrimaryText}" FontSize="15" FontWeight="SemiBold" Text="6. Notification Widget" /><TextBlock Tag="ThaiWidgetCheck" Foreground="{DynamicResource HerdrOps.Brush.TextMuted}" FontSize="10" Text="เหตุการณ์สำคัญแบบเรียลไทม์" /></StackPanel>
+                        <StackPanel><TextBlock Foreground="{DynamicResource HerdrOps.Brush.PrimaryText}" FontSize="14" FontWeight="SemiBold"><Run Text="6. " /><Run Text="{Binding [WidgetNotificationName], Mode=OneWay, Source={x:Static localization:UiLanguageService.Shared}}" /></TextBlock><TextBlock Tag="ThaiWidgetCheck" Foreground="{DynamicResource HerdrOps.Brush.TextMuted}" FontSize="10" Text="{Binding [WidgetNotificationDescription], Source={x:Static localization:UiLanguageService.Shared}}" /></StackPanel>
                         <Viewbox Grid.Row="1" Stretch="Uniform"><widgets:WidgetSurface x:Name="NotificationPreview" Width="328" Height="410" IsInteractive="False" Variant="Notification" /></Viewbox>
-                        <Button x:Name="OpenNotificationButton" Grid.Row="2" Tag="Notification" Style="{DynamicResource HerdrOps.Style.SecondaryButton}" automation:AutomationProperties.Name="เปิด Notification Widget" Click="OnOpenWidgetClick" Content="เปิด Widget" />
+                        <Button x:Name="OpenNotificationButton" Grid.Row="2" Tag="Notification" Style="{DynamicResource HerdrOps.Style.SecondaryButton}" automation:AutomationProperties.Name="{Binding [WidgetNotificationName], Source={x:Static localization:UiLanguageService.Shared}}" Click="OnOpenWidgetClick" Content="{Binding [WidgetOpen], Source={x:Static localization:UiLanguageService.Shared}}" />
                     </Grid>
                 </Border>
 
                 <Border Grid.Column="1" Margin="5" Style="{DynamicResource HerdrOps.Style.Card}">
                     <Grid>
                         <Grid.RowDefinitions><RowDefinition Height="48" /><RowDefinition Height="*" /><RowDefinition Height="44" /></Grid.RowDefinitions>
-                        <StackPanel><TextBlock Foreground="{DynamicResource HerdrOps.Brush.PrimaryText}" FontSize="15" FontWeight="SemiBold" Text="7. Agent Detail Popup" /><TextBlock Tag="ThaiWidgetCheck" Foreground="{DynamicResource HerdrOps.Brush.TextMuted}" FontSize="10" Text="รายละเอียด Agent และกิจกรรมล่าสุด" /></StackPanel>
+                        <StackPanel><TextBlock Foreground="{DynamicResource HerdrOps.Brush.PrimaryText}" FontSize="14" FontWeight="SemiBold"><Run Text="7. " /><Run Text="{Binding [WidgetAgentDetailName], Mode=OneWay, Source={x:Static localization:UiLanguageService.Shared}}" /></TextBlock><TextBlock Tag="ThaiWidgetCheck" Foreground="{DynamicResource HerdrOps.Brush.TextMuted}" FontSize="10" Text="{Binding [WidgetAgentDetailDescription], Source={x:Static localization:UiLanguageService.Shared}}" /></StackPanel>
                         <Viewbox Grid.Row="1" Stretch="Uniform"><widgets:WidgetSurface x:Name="AgentDetailPreview" Width="340" Height="448" IsInteractive="False" Variant="AgentDetailPopup" /></Viewbox>
-                        <Button x:Name="OpenAgentDetailButton" Grid.Row="2" Tag="AgentDetailPopup" Style="{DynamicResource HerdrOps.Style.SecondaryButton}" automation:AutomationProperties.Name="เปิด Agent Detail Popup" Click="OnOpenWidgetClick" Content="เปิด Widget" />
+                        <Button x:Name="OpenAgentDetailButton" Grid.Row="2" Tag="AgentDetailPopup" Style="{DynamicResource HerdrOps.Style.SecondaryButton}" automation:AutomationProperties.Name="{Binding [WidgetAgentDetailName], Source={x:Static localization:UiLanguageService.Shared}}" Click="OnOpenWidgetClick" Content="{Binding [WidgetOpen], Source={x:Static localization:UiLanguageService.Shared}}" />
                     </Grid>
                 </Border>
 
@@ -138,20 +142,24 @@
                     <Grid>
                         <Grid.RowDefinitions><RowDefinition Height="48" /><RowDefinition Height="*" /><RowDefinition Height="44" /></Grid.RowDefinitions>
                         <StackPanel Orientation="Horizontal">
-                            <StackPanel><TextBlock Foreground="{DynamicResource HerdrOps.Brush.PrimaryText}" FontSize="15" FontWeight="SemiBold" Text="8. Dashboard launch / preview" /><TextBlock Tag="ThaiWidgetCheck" Foreground="{DynamicResource HerdrOps.Brush.TextMuted}" FontSize="10" Text="เปิดหน้าต่างหลักโดยยังรักษาขอบเขตข้อมูล Synthetic" /></StackPanel>
+                            <StackPanel><TextBlock Foreground="{DynamicResource HerdrOps.Brush.PrimaryText}" FontSize="14" FontWeight="SemiBold"><Run Text="8. " /><Run Text="{Binding [WidgetDashboardName], Mode=OneWay, Source={x:Static localization:UiLanguageService.Shared}}" /></TextBlock><TextBlock Tag="ThaiWidgetCheck" Foreground="{DynamicResource HerdrOps.Brush.TextMuted}" FontSize="10" Text="{Binding [WidgetDashboardDescription], Source={x:Static localization:UiLanguageService.Shared}}" /></StackPanel>
                         </StackPanel>
                         <Border Grid.Row="1" Background="{DynamicResource HerdrOps.Brush.Background}" BorderBrush="{DynamicResource HerdrOps.Brush.Border}" BorderThickness="1" CornerRadius="{DynamicResource HerdrOps.Radius.Default}" ClipToBounds="True">
                             <Viewbox Stretch="Uniform"><views:ShellView Width="1672" Height="941" IsHitTestVisible="False" /></Viewbox>
                         </Border>
-                        <Button x:Name="OpenDashboardButton" Grid.Row="2" Tag="Dashboard" Style="{DynamicResource HerdrOps.Style.SecondaryButton}" automation:AutomationProperties.Name="กลับไปยัง Dashboard หลัก" Click="OnOpenDashboardClick" Content="กลับไปยัง Dashboard" />
+                        <Button x:Name="OpenDashboardButton" Grid.Row="2" Tag="Dashboard" Style="{DynamicResource HerdrOps.Style.SecondaryButton}" automation:AutomationProperties.Name="{Binding [WidgetBackDashboardAutomation], Source={x:Static localization:UiLanguageService.Shared}}" Click="OnOpenDashboardClick" Content="{Binding [WidgetBackDashboard], Source={x:Static localization:UiLanguageService.Shared}}" />
                     </Grid>
                 </Border>
             </Grid>
 
             <Border Grid.Row="3" Background="{DynamicResource HerdrOps.Brush.TopBar}" BorderBrush="{DynamicResource HerdrOps.Brush.Border}" BorderThickness="0,1,0,0">
                 <Grid Margin="20,0">
-                    <TextBlock VerticalAlignment="Center" Foreground="{DynamicResource HerdrOps.Brush.TextMuted}" FontSize="11" Text="Keyboard: Tab / Shift+Tab · Enter / Space · Widget: Esc, Ctrl+T, Ctrl+0" />
-                    <TextBlock HorizontalAlignment="Right" VerticalAlignment="Center" Foreground="{DynamicResource HerdrOps.Brush.TextMuted}" FontSize="11" Text="Herdr: Not connected" />
+                    <TextBlock VerticalAlignment="Center" Foreground="{DynamicResource HerdrOps.Brush.TextMuted}" FontSize="11" Text="{Binding [WidgetKeyboardHelp], Source={x:Static localization:UiLanguageService.Shared}}" />
+                    <TextBlock HorizontalAlignment="Right"
+                               VerticalAlignment="Center"
+                               Foreground="{DynamicResource HerdrOps.Brush.TextMuted}"
+                               FontSize="11"
+                               Text="{Binding SharedState.ConnectionLabel, RelativeSource={RelativeSource AncestorType=widgets:WidgetGalleryView}}" />
                 </Grid>
             </Border>
         </Grid>
@@ -174,14 +182,14 @@
                         <ColumnDefinition Width="Auto" />
                     </Grid.ColumnDefinitions>
                     <StackPanel VerticalAlignment="Center">
-                        <StackPanel Orientation="Horizontal">
-                            <TextBlock FontSize="22" FontWeight="SemiBold" Text="HerdrOps Widget" />
-                            <TextBlock Margin="7,0,0,0" Foreground="{DynamicResource HerdrOps.Brush.PrimaryText}" FontSize="22" FontWeight="SemiBold" Text="Gallery" />
-                        </StackPanel>
+                        <TextBlock Foreground="{DynamicResource HerdrOps.Brush.PrimaryText}"
+                                   FontSize="22"
+                                   FontWeight="SemiBold"
+                                   Text="{Binding [WidgetGalleryTitle], Source={x:Static localization:UiLanguageService.Shared}}" />
                         <TextBlock Tag="ThaiWidgetCheck"
                                    Foreground="{DynamicResource HerdrOps.Brush.TextSecondary}"
                                    FontSize="11"
-                                   Text="Responsive Gallery · 7 Widget + Dashboard · ยังไม่เชื่อมต่อ Herdr" />
+                                   Text="{Binding SharedState.GalleryDescription, RelativeSource={RelativeSource AncestorType=widgets:WidgetGalleryView}}" />
                     </StackPanel>
                     <Border Grid.Column="1"
                             Padding="10,4"
@@ -193,7 +201,7 @@
                         <TextBlock Foreground="{DynamicResource HerdrOps.Brush.PrimaryText}"
                                    FontSize="10"
                                    FontWeight="SemiBold"
-                                   Text="SYNTHETIC DATA" />
+                                   Text="{Binding SharedState.SourceLabel, RelativeSource={RelativeSource AncestorType=widgets:WidgetGalleryView}}" />
                     </Border>
                 </Grid>
             </Border>
@@ -227,7 +235,7 @@
                                     <TextBlock Tag="ThaiWidgetCheck"
                                                Foreground="{DynamicResource HerdrOps.Brush.TextMuted}"
                                                FontSize="9"
-                                               Text="{Binding ThaiDescription}"
+                                               Text="{Binding Description}"
                                                TextTrimming="CharacterEllipsis" />
                                 </StackPanel>
                                 <Viewbox x:Name="AdaptiveWidgetPreview"
@@ -258,11 +266,11 @@
                                                    HorizontalAlignment="Center"
                                                    FontSize="12"
                                                    FontWeight="SemiBold"
-                                                   Text="HerdrOps Dashboard" />
+                                                   Text="{Binding [WidgetDashboardTitle], Source={x:Static localization:UiLanguageService.Shared}}" />
                                         <TextBlock HorizontalAlignment="Center"
                                                    Foreground="{DynamicResource HerdrOps.Brush.TextMuted}"
                                                    FontSize="9"
-                                                   Text="SYNTHETIC PREVIEW" />
+                                                   Text="{Binding SharedState.DashboardPreviewLabel, RelativeSource={RelativeSource AncestorType=widgets:WidgetGalleryView}}" />
                                     </StackPanel>
                                 </Border>
                                 <Button Grid.Row="2"
@@ -292,12 +300,12 @@
                     <TextBlock VerticalAlignment="Center"
                                Foreground="{DynamicResource HerdrOps.Brush.TextMuted}"
                                FontSize="10"
-                               Text="Tab / Shift+Tab · Enter / Space" />
+                               Text="{Binding [WidgetKeyboardShort], Source={x:Static localization:UiLanguageService.Shared}}" />
                     <TextBlock HorizontalAlignment="Right"
                                VerticalAlignment="Center"
                                Foreground="{DynamicResource HerdrOps.Brush.TextMuted}"
                                FontSize="10"
-                               Text="Herdr: Not connected" />
+                               Text="{Binding SharedState.ConnectionLabel, RelativeSource={RelativeSource AncestorType=widgets:WidgetGalleryView}}" />
                 </Grid>
             </Border>
         </Grid>

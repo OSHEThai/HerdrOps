@@ -1,5 +1,6 @@
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Data;
 using System.Windows.Input;
 
 namespace HerdrOps.App.Widgets;
@@ -102,10 +103,17 @@ public partial class WidgetSurface : UserControl
         FloatingVerticalPanel.Visibility = variant == WidgetVariant.FloatingVertical ? Visibility.Visible : Visibility.Collapsed;
         NotificationPanel.Visibility = variant == WidgetVariant.Notification ? Visibility.Visible : Visibility.Collapsed;
         AgentDetailPanel.Visibility = variant == WidgetVariant.AgentDetailPopup ? Visibility.Visible : Visibility.Collapsed;
-        HeaderSourceText.Text = variant == WidgetVariant.FloatingVertical
-            ? "SYN"
-            : "SYNTHETIC";
         var isNarrowVertical = variant == WidgetVariant.FloatingVertical;
+        HeaderSourceText.SetBinding(
+            TextBlock.TextProperty,
+            new Binding(isNarrowVertical
+                ? nameof(SyntheticWidgetState.CompactSourceLabel)
+                : nameof(SyntheticWidgetState.SourceLabel)));
+        FooterConnectionText.SetBinding(
+            TextBlock.TextProperty,
+            new Binding(isNarrowVertical
+                ? nameof(SyntheticWidgetState.CompactConnectionLabel)
+                : nameof(SyntheticWidgetState.ConnectionLabel)));
         HeaderWordmark.FontSize = isNarrowVertical ? 11 : 14;
         HeaderStatusDot.Margin = isNarrowVertical
             ? new Thickness(4, 0, 3, 0)

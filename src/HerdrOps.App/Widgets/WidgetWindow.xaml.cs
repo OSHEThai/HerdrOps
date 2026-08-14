@@ -1,5 +1,6 @@
 using System.Windows;
 using System.Windows.Input;
+using HerdrOps.App.Localization;
 
 namespace HerdrOps.App.Widgets;
 
@@ -9,6 +10,7 @@ namespace HerdrOps.App.Widgets;
 public partial class WidgetWindow : Window
 {
     private bool _isConstraining;
+    private SyntheticWidgetState _state;
 
     public WidgetWindow(WidgetVariantDescriptor descriptor, SyntheticWidgetState state)
     {
@@ -16,6 +18,7 @@ public partial class WidgetWindow : Window
         ArgumentNullException.ThrowIfNull(state);
 
         Descriptor = descriptor;
+        _state = state;
         MotionPolicy = WidgetMotionPolicy.Create(
             reducedMotionRequested: false,
             systemAnimationsEnabled: SystemParameters.ClientAreaAnimation);
@@ -29,7 +32,7 @@ public partial class WidgetWindow : Window
         MaxHeight = descriptor.WindowHeight;
         Topmost = descriptor.DefaultTopmost;
         ShowInTaskbar = descriptor.ShowInTaskbar;
-        Title = $"HerdrOps {descriptor.DisplayName} — Synthetic Preview";
+        Title = $"HerdrOps {descriptor.DisplayName} — {state.WindowTitleSuffix}";
 
         Surface.SetState(state);
         Surface.Variant = descriptor.Variant;
@@ -38,6 +41,8 @@ public partial class WidgetWindow : Window
         Surface.PinToggleRequested += OnPinToggleRequested;
         Surface.ResetPositionRequested += OnResetPositionRequested;
         Surface.DragRequested += OnDragRequested;
+        UiLanguageService.Shared.LanguageChanged += OnLanguageChanged;
+        Closed += OnClosed;
 
         ResetPosition();
     }
@@ -102,6 +107,23 @@ public partial class WidgetWindow : Window
     private void OnPinToggleRequested(object? sender, EventArgs e) => ToggleTopmost();
 
     private void OnResetPositionRequested(object? sender, EventArgs e) => ResetPosition();
+
+    private void OnLanguageChanged(object? sender, EventArgs e)
+    {
+        if (_state.EvidenceClass == HerdrOps.Contracts.EvidenceClass.Synthetic)
+        {
+            _state = SyntheticWidgetState.Create();
+            Surface.SetState(_state);
+        }
+
+        Title = $"HerdrOps {Descriptor.DisplayName} — {_state.WindowTitleSuffix}";
+    }
+
+    private void OnClosed(object? sender, EventArgs e)
+    {
+        UiLanguageService.Shared.LanguageChanged -= OnLanguageChanged;
+        Closed -= OnClosed;
+    }
 
     private void OnLocationChanged(object? sender, EventArgs e)
     {

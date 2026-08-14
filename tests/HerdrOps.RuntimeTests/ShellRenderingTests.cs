@@ -6,6 +6,7 @@ using System.Windows.Controls;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using HerdrOps.App.Views;
+using HerdrOps.App.Localization;
 using HerdrOps.App.Widgets;
 
 namespace HerdrOps.RuntimeTests;
@@ -30,6 +31,7 @@ public sealed class ShellRenderingTests
 
     private static void RenderEvidence()
     {
+        UiLanguageService.Shared.SetLanguage(UiLanguage.Thai);
         var repositoryRoot = FindRepositoryRoot();
         var shellEvidenceDirectory = Path.Combine(
             repositoryRoot,
@@ -84,6 +86,7 @@ public sealed class ShellRenderingTests
 
     private static void RenderWidgetEvidence()
     {
+        UiLanguageService.Shared.SetLanguage(UiLanguage.Thai);
         var repositoryRoot = FindRepositoryRoot();
         var widgetEvidenceDirectory = Path.Combine(
             repositoryRoot,
