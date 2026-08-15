@@ -9,4 +9,4 @@ The v0.1 foundation contains these production assemblies:
 - `HerdrOps.Domain` — state and business rules
 - `HerdrOps.Infrastructure` — Herdr, storage, process, file, and Git adapters
 
-Project boundaries are defined in `../Plan/ARCHITECTURE.md` and enforced by foundation tests. The current App shell is a clearly labelled synthetic preview and does not consume Herdr data.
+Project boundaries are defined in `../Plan/ARCHITECTURE.md` and enforced by foundation tests. `HerdrOps.Domain` now includes the versioned v0.5 compliance-rule engine; its committed corpus is Synthetic evidence and cannot confirm incidents. The current App shell and deterministic page fixtures do not by themselves prove live Herdr data.

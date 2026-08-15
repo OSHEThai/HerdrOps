@@ -63,6 +63,10 @@ jobs:
         shell: pwsh
         run: ./tools/Test-V04ExpandedWidget.ps1 -Configuration Release -SkipBuild
 
+      - name: Run v0.5 compliance rule engine implementation gate
+        shell: pwsh
+        run: ./tools/Test-V05ComplianceRuleEngine.ps1 -Configuration Release -SkipBuild
+
       - name: Upload test results
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -165,4 +169,12 @@ jobs:
         with:
           name: v0.4-expanded-widget-gate-report
           path: artifacts/release-gates/v0.4.0/issue-22
+          if-no-files-found: warn
+
+      - name: Upload v0.5 compliance rule engine gate report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: v0.5-compliance-rule-engine-gate-report
+          path: artifacts/release-gates/v0.5.0/issue-24
           if-no-files-found: warn

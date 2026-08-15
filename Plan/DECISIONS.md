@@ -111,3 +111,14 @@
 - Replay contract: `HerdrOps.Core activity-replay` accepts strict, bounded, versioned JSON and atomically writes a deterministic report. The committed fixture must produce byte-identical reports and the exact same replay-result SHA-256 on repeated runs.
 - Evidence boundary: Issue #12 replay and command results are Contract plus Synthetic evidence. They do not prove an installed Herdr session, live event latency, Windows process telemetry, bounded `pane.read`, scoped file/Git collection, real-data redaction or v0.3 release readiness.
 - Status: Implemented for v0.3 Issue #12; independent read-only review returned no actionable P0-P3 findings. The clean-checkout gate remains pending.
+
+## D-014 — Explainable compliance findings remain suspected until authorized review
+
+- Decision: Evaluate v0.5 scope, evidence, deviation and review-order policy through the exact `HERDROPS-COMPLIANCE-V1` rule set. Each definition has a fixed Rule ID, Rule Version and Severity, and the canonical definition set is hash-bound.
+- Input contract: The engine accepts bounded normalized Task, actor, project-relative path, deviation, evidence-requirement/submission and sequenced review facts. Structural ambiguity fails the request; a rule-local semantic inconsistency becomes that rule's observable `Error` outcome while other rules continue.
+- Incident authority: Rule evaluation can emit only `Suspected` findings. It cannot confirm, dismiss or change review state. Role-authorized transitions and immutable audit records remain separate Issue #27 work.
+- Explainability contract: Every finding carries sorted supporting facts and a distinct explainability SHA-256. Its stable identity binds rule ID/version/kind, Task, actor and case-insensitive subject.
+- Duplicate contract: Callers provide the bounded active finding-identity set. Repeated detections return `DuplicateSuppressed`; the engine does not silently evict, rewrite or confirm an existing incident.
+- Replay contract: `HerdrOps.Core compliance-rule-corpus` validates a strict bounded positive/negative corpus, declared outcomes, error visibility and repeated suppression, then atomically writes a deterministic Synthetic report.
+- Evidence boundary: Unit tests, strict product-command tests and byte-identical corpus reports are Contract plus Synthetic evidence. They do not prove evidence storage, authorized role transitions, Compliance Queue UI, retention/redaction, actual Herdr runtime or v0.5 release readiness.
+- Status: Implemented for v0.5 Issue #24; independent review and the clean-checkout implementation gate remain pending.

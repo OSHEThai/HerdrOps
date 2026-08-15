@@ -15,3 +15,9 @@ The bundled-schema successor suite extracts one balanced strict-UTF-8 JSON docum
 already admitted fixture binary. It covers duplicate, truncated, malformed, unsupported-version,
 missing-surface, changed-length, and changed-hash failures. The installed-binary gate is
 `./tools/Test-V02BundledSchemaContract.ps1`; its exported bytes remain Contract evidence only.
+
+The v0.5 compliance suite covers exact rule definitions and severity mapping, positive and
+negative outcomes for all four rules, suspected-only findings, explainability hashes, visible
+rule errors and stable duplicate suppression. `./tools/Test-V05ComplianceRuleEngine.ps1`
+executes the strict product corpus twice and requires byte-identical reports. These results are
+Contract plus Synthetic evidence; they do not prove role-authorized runtime review or release.
