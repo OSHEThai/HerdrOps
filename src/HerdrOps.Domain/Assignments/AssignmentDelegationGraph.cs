@@ -53,6 +53,11 @@ public sealed record AssignmentDelegationTimelineEntry(
     string ActorRole,
     string? TargetAgentId,
     string Summary,
+    int? ProgressPercent,
+    string? DeviationReason,
+    string? EvidenceReference,
+    string? EvidenceSha256,
+    string? HandoffNote,
     long Sequence,
     DateTimeOffset OccurredUtc,
     DateTimeOffset AcceptedUtc,
@@ -240,6 +245,11 @@ public static class AssignmentDelegationGraphProjector
             lifecycleEvent.ActorRole,
             lifecycleEvent.TargetAgentId,
             lifecycleEvent.Summary,
+            lifecycleEvent.ProgressPercent,
+            lifecycleEvent.DeviationReason,
+            lifecycleEvent.EvidenceReference,
+            lifecycleEvent.EvidenceSha256,
+            lifecycleEvent.HandoffNote,
             lifecycleEvent.Sequence,
             lifecycleEvent.OccurredUtc,
             lifecycleEvent.AcceptedUtc,
@@ -382,6 +392,11 @@ public static class AssignmentDelegationGraphProjector
             writer.Write(entry.ActorRole);
             writer.Write(entry.TargetAgentId);
             writer.Write(entry.Summary);
+            writer.Write(entry.ProgressPercent ?? -1);
+            writer.Write(entry.DeviationReason);
+            writer.Write(entry.EvidenceReference);
+            writer.Write(entry.EvidenceSha256);
+            writer.Write(entry.HandoffNote);
             writer.Write(entry.Sequence);
             writer.Write(entry.OccurredUtc);
             writer.Write(entry.AcceptedUtc);

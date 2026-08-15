@@ -45,6 +45,7 @@ public sealed class UiLanguageCatalogTests
             "src/HerdrOps.App/Views/LiveOrganizationView.xaml",
             "src/HerdrOps.App/Views/AgentDetailView.xaml",
             "src/HerdrOps.App/Views/DelegationGraphView.xaml",
+            "src/HerdrOps.App/Views/TaskAlignmentView.xaml",
             "src/HerdrOps.App/Widgets/WidgetGalleryView.xaml",
             "src/HerdrOps.App/Widgets/WidgetSurface.xaml",
         };
@@ -74,7 +75,8 @@ public sealed class UiLanguageCatalogTests
             Assert.IsFalse(xaml.Contains("ThaiTitle", StringComparison.Ordinal), relativePath);
             Assert.IsFalse(xaml.Contains("EnglishTitle", StringComparison.Ordinal), relativePath);
             if (relativePath.EndsWith("LiveOrganizationView.xaml", StringComparison.Ordinal) ||
-                relativePath.EndsWith("AgentDetailView.xaml", StringComparison.Ordinal))
+                relativePath.EndsWith("AgentDetailView.xaml", StringComparison.Ordinal) ||
+                relativePath.EndsWith("TaskAlignmentView.xaml", StringComparison.Ordinal))
             {
                 Assert.IsFalse(
                     Regex.IsMatch(

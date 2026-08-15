@@ -43,6 +43,7 @@ public partial class ShellView : UserControl
         DataContext = Navigation;
         RealtimeActivityPage.DataContext = LiveDashboard.RealtimeActivity;
         DelegationGraphPage.DataContext = LiveDashboard.DelegationGraph;
+        TaskAlignmentPage.DataContext = LiveDashboard.TaskAlignment;
         FileActivityPage.DataContext = syntheticPreview
             ? FileActivityState.CreateSyntheticPreview()
             : FileActivityState.CreateUnavailable();
@@ -192,6 +193,10 @@ public partial class ShellView : UserControl
             Navigation.SelectedDestination.Id,
             "delegation-graph",
             StringComparison.Ordinal);
+        var isTaskAlignment = string.Equals(
+            Navigation.SelectedDestination.Id,
+            "task-alignment",
+            StringComparison.Ordinal);
         var isFileActivity = string.Equals(
             Navigation.SelectedDestination.Id,
             "file-activity",
@@ -207,6 +212,9 @@ public partial class ShellView : UserControl
         DelegationGraphPage.Visibility = isDelegationGraph
             ? Visibility.Visible
             : Visibility.Collapsed;
+        TaskAlignmentPage.Visibility = isTaskAlignment
+            ? Visibility.Visible
+            : Visibility.Collapsed;
         FileActivityPage.Visibility = isFileActivity
             ? Visibility.Visible
             : Visibility.Collapsed;
@@ -215,6 +223,7 @@ public partial class ShellView : UserControl
             isAgentDetail ||
             isRealtimeActivity ||
             isDelegationGraph ||
+            isTaskAlignment ||
             isFileActivity
             ? Visibility.Collapsed
             : Visibility.Visible;

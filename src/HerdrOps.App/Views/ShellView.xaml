@@ -551,6 +551,9 @@
             <views:DelegationGraphView x:Name="DelegationGraphPage"
                                        Grid.Column="1"
                                        Visibility="Collapsed" />
+            <views:TaskAlignmentView x:Name="TaskAlignmentPage"
+                                     Grid.Column="1"
+                                     Visibility="Collapsed" />
             <views:FileActivityView x:Name="FileActivityPage"
                                     Grid.Column="1"
                                     Visibility="Collapsed" />
