@@ -18,7 +18,7 @@ $expectedInputSha256 = '338C0F80C48E92D585AA3CA66CDB0BA6399ED1442C10A25C7E61F206
 $expectedRuleSetSha256 = '4EB8A183215D223296DBA64743EF24877F960556A723BDC4506F273183A972E4'
 $expectedCorpusResultSha256 = '2E4B53B8B80908726C431EC5637B6A92B0F82C99E14BAE36E8EBF3BE3DCA0F11'
 $expectedReportSha256 = '042361CFBE8764A6FC2E65FA4B4E78174A792A988ECC7FAD46D7974CFD57BF8E'
-$expectedContractSha256 = '2DBDEDC827080D73CFD69CDF21EEC92E4DDCFD7A825E65E63B4D5B1DA2513C57'
+$expectedContractSha256 = 'F61AA7D6CD06D92D422B17715B272216EAACF85004CB0354649C78CE98871A1C'
 
 $workingTreeStatus = @(& git -C $repositoryRoot status --porcelain=v1 --untracked-files=all)
 if ($LASTEXITCODE -ne 0) {
@@ -79,6 +79,9 @@ $requiredChecks = @(
     'ScopePrefixDoesNotMatchSiblingWithSameLeadingCharacters',
     'RequestCollectionOrderDoesNotChangeCanonicalResult',
     'ChangedRuleDefinitionAndUnsafePathFailClosed',
+    'CompliancePathsRejectAllControlCharacters',
+    'CompliancePathsRejectInvalidWindowsProjectRelativeForms',
+    'LegitimateWindowsProjectPathsNormalizeSeparatorsAndRemainAccepted',
     'CommittedComplianceCorpusProducesByteIdenticalReportsAndExpectedHashes',
     'UnknownCorpusMemberFailsClosedWithoutReplacingReport',
     'DuplicateCorpusPropertyFailsClosedWithoutReport',

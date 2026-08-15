@@ -522,7 +522,20 @@ public static class ComplianceEvaluationContract
 
     internal static string NormalizePath(string value, string name)
     {
-        var normalized = NormalizeDetail(value, name).Replace('\\', '/');
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            throw new ComplianceRuleContractException(
+                $"Compliance path {name} cannot be blank.");
+        }
+
+        var normalized = value.Normalize(NormalizationForm.FormC);
+        if (normalized.Any(char.IsControl))
+        {
+            throw new ComplianceRuleContractException(
+                $"Compliance path {name} must not contain control characters.");
+        }
+
+        normalized = normalized.Replace('\\', '/');
         if (normalized.Length > MaximumPathLength ||
             normalized.StartsWith("/", StringComparison.Ordinal) ||
             normalized.EndsWith("/", StringComparison.Ordinal) ||
@@ -535,10 +548,12 @@ public static class ComplianceEvaluationContract
         var segments = normalized.Split('/', StringSplitOptions.None);
         if (segments.Any(segment =>
                 string.IsNullOrWhiteSpace(segment) ||
-                segment is "." or ".."))
+                segment is "." or ".." ||
+                segment.EndsWith(".", StringComparison.Ordinal) ||
+                segment.EndsWith(" ", StringComparison.Ordinal)))
         {
             throw new ComplianceRuleContractException(
-                $"Compliance path {name} cannot contain empty, current-directory, or parent-directory segments.");
+                $"Compliance path {name} cannot contain empty, current-directory, parent-directory, or trailing-dot/space segments.");
         }
 
         return string.Join('/', segments);

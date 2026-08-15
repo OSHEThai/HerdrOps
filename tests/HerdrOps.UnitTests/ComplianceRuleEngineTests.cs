@@ -365,6 +365,122 @@ public sealed class ComplianceRuleEngineTests
             }));
     }
 
+    [TestMethod]
+    public void CompliancePathsRejectAllControlCharacters()
+    {
+        var controls = new[]
+        {
+            "\t",
+            "\r",
+            "\n",
+            "\0",
+            "\u0001",
+            "\u001F",
+            "\u007F",
+            "\u0085",
+        };
+
+        foreach (var control in controls)
+        {
+            AssertPathRejected($"src/backend/Auth{control}Service.cs");
+        }
+    }
+
+    [TestMethod]
+    public void CompliancePathsRejectInvalidWindowsProjectRelativeForms()
+    {
+        var invalidPaths = new[]
+        {
+            @"\rooted\file.txt",
+            "/rooted/file.txt",
+            @"\\server\share\file.txt",
+            "//server/share/file.txt",
+            @"\\?\C:\device\file.txt",
+            @"\\.\PIPE\device",
+            @"C:\project\file.txt",
+            "C:/project/file.txt",
+            "C:project/file.txt",
+            "src/invalid./file.txt",
+            "src/invalid /file.txt",
+            "src//file.txt",
+            "src/./file.txt",
+            @"src\..\file.txt",
+        };
+
+        foreach (var path in invalidPaths)
+        {
+            AssertPathRejected(path);
+        }
+    }
+
+    [TestMethod]
+    public void LegitimateWindowsProjectPathsNormalizeSeparatorsAndRemainAccepted()
+    {
+        var normalized = ComplianceEvaluationContract.NormalizeAndValidate(
+            CreateCompliantRequest() with
+            {
+                ScopeBoundaries =
+                [
+                    new ComplianceScopeBoundary("scope:backend", @"src\backend"),
+                    new ComplianceScopeBoundary("scope:tests", @"tests\backend"),
+                ],
+                Actions =
+                [
+                    new ComplianceActionObservation(
+                        "action:implementation",
+                        @"src\backend\AuthService.cs",
+                        BaseUtc.AddMinutes(1),
+                        null),
+                    new ComplianceActionObservation(
+                        "action:runbook",
+                        @"docs\runbook.md",
+                        BaseUtc.AddMinutes(2),
+                        "DEV-APPROVED"),
+                ],
+                Deviations =
+                [
+                    new ComplianceDeviationDecision(
+                        "deviation:approved",
+                        "DEV-APPROVED",
+                        @"docs",
+                        ComplianceDeviationDecisionKind.Approved,
+                        BaseUtc.AddMinutes(-10),
+                        BaseUtc.AddMinutes(-1)),
+                ],
+            });
+
+        Assert.AreEqual(
+            "src/backend",
+            normalized.ScopeBoundaries.Single(item => item.InputId == "scope:backend").PathPrefix);
+        Assert.AreEqual(
+            "tests/backend",
+            normalized.ScopeBoundaries.Single(item => item.InputId == "scope:tests").PathPrefix);
+        Assert.AreEqual(
+            "src/backend/AuthService.cs",
+            normalized.Actions.Single(item => item.InputId == "action:implementation").TargetPath);
+        Assert.AreEqual(
+            "docs/runbook.md",
+            normalized.Actions.Single(item => item.InputId == "action:runbook").TargetPath);
+        Assert.AreEqual("docs", normalized.Deviations.Single().PathPrefix);
+    }
+
+    private static void AssertPathRejected(string path)
+    {
+        Assert.ThrowsExactly<ComplianceRuleContractException>(() =>
+            _ = ComplianceEvaluationContract.NormalizeAndValidate(
+                CreateCompliantRequest() with
+                {
+                    Actions =
+                    [
+                        new ComplianceActionObservation(
+                            "action:unsafe-path",
+                            path,
+                            BaseUtc,
+                            null),
+                    ],
+                }));
+    }
+
     private static ComplianceEvaluationRequest PendingDeviationRequest()
     {
         var request = CreateCompliantRequest();
