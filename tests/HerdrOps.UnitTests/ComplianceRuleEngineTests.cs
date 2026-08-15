@@ -365,6 +365,163 @@ public sealed class ComplianceRuleEngineTests
             }));
     }
 
+    [TestMethod]
+    public void CompliancePathsRejectAllControlCharacters()
+    {
+        var controls = new[]
+        {
+            "\t",
+            "\r",
+            "\n",
+            "\0",
+            "\u0001",
+            "\u001F",
+            "\u007F",
+            "\u0085",
+        };
+
+        foreach (var control in controls)
+        {
+            AssertPathRejected($"src/backend/Auth{control}Service.cs");
+        }
+    }
+
+    [TestMethod]
+    public void CompliancePathsRejectInvalidWindowsProjectRelativeForms()
+    {
+        var invalidPaths = new[]
+        {
+            @"\rooted\file.txt",
+            "/rooted/file.txt",
+            @"\\server\share\file.txt",
+            "//server/share/file.txt",
+            @"\\?\C:\device\file.txt",
+            @"\\.\PIPE\device",
+            @"C:\project\file.txt",
+            "C:/project/file.txt",
+            "C:project/file.txt",
+            "src/invalid./file.txt",
+            "src/invalid /file.txt",
+            "src//file.txt",
+            "src/./file.txt",
+            @"src\..\file.txt",
+        };
+
+        foreach (var path in invalidPaths)
+        {
+            AssertPathRejected(path);
+        }
+    }
+
+    [TestMethod]
+    public void CompliancePathsRejectWindowsReservedDeviceNamesAndInvalidCharacters()
+    {
+        var invalidPaths = new[]
+        {
+            "src/CON",
+            "src/con.txt",
+            "src/PRN.log",
+            "src/AUX",
+            "src/NUL.json",
+            "src/CLOCK$",
+            "src/CONIN$",
+            "src/CONOUT$",
+            "src/COM1.txt",
+            "src/com9",
+            "src/COM¹.txt",
+            "src/LPT1",
+            "src/lpt9.md",
+            "src/LPT³.log",
+            "src/file?.txt",
+            "src/file*.txt",
+            "src/file<name>.txt",
+            "src/file>name.txt",
+            "src/file|name.txt",
+            "src/file\"name.txt",
+        };
+
+        foreach (var path in invalidPaths)
+        {
+            AssertPathRejected(path);
+        }
+    }
+
+    [TestMethod]
+    public void LegitimateWindowsProjectPathsNormalizeSeparatorsAndRemainAccepted()
+    {
+        var normalized = ComplianceEvaluationContract.NormalizeAndValidate(
+            CreateCompliantRequest() with
+            {
+                ScopeBoundaries =
+                [
+                    new ComplianceScopeBoundary("scope:backend", @"src\backend"),
+                    new ComplianceScopeBoundary("scope:tests", @"tests\backend"),
+                ],
+                Actions =
+                [
+                    new ComplianceActionObservation(
+                        "action:implementation",
+                        @"src\backend\AuthService.cs",
+                        BaseUtc.AddMinutes(1),
+                        null),
+                    new ComplianceActionObservation(
+                        "action:runbook",
+                        @"docs\runbook.md",
+                        BaseUtc.AddMinutes(2),
+                        "DEV-APPROVED"),
+                    new ComplianceActionObservation(
+                        "action:device-lookalike",
+                        @"src\CONTEXT\COM10.txt",
+                        BaseUtc.AddMinutes(3),
+                        null),
+                ],
+                Deviations =
+                [
+                    new ComplianceDeviationDecision(
+                        "deviation:approved",
+                        "DEV-APPROVED",
+                        @"docs",
+                        ComplianceDeviationDecisionKind.Approved,
+                        BaseUtc.AddMinutes(-10),
+                        BaseUtc.AddMinutes(-1)),
+                ],
+            });
+
+        Assert.AreEqual(
+            "src/backend",
+            normalized.ScopeBoundaries.Single(item => item.InputId == "scope:backend").PathPrefix);
+        Assert.AreEqual(
+            "tests/backend",
+            normalized.ScopeBoundaries.Single(item => item.InputId == "scope:tests").PathPrefix);
+        Assert.AreEqual(
+            "src/backend/AuthService.cs",
+            normalized.Actions.Single(item => item.InputId == "action:implementation").TargetPath);
+        Assert.AreEqual(
+            "docs/runbook.md",
+            normalized.Actions.Single(item => item.InputId == "action:runbook").TargetPath);
+        Assert.AreEqual(
+            "src/CONTEXT/COM10.txt",
+            normalized.Actions.Single(item => item.InputId == "action:device-lookalike").TargetPath);
+        Assert.AreEqual("docs", normalized.Deviations.Single().PathPrefix);
+    }
+
+    private static void AssertPathRejected(string path)
+    {
+        Assert.ThrowsExactly<ComplianceRuleContractException>(() =>
+            _ = ComplianceEvaluationContract.NormalizeAndValidate(
+                CreateCompliantRequest() with
+                {
+                    Actions =
+                    [
+                        new ComplianceActionObservation(
+                            "action:unsafe-path",
+                            path,
+                            BaseUtc,
+                            null),
+                    ],
+                }));
+    }
+
     private static ComplianceEvaluationRequest PendingDeviationRequest()
     {
         var request = CreateCompliantRequest();

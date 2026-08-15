@@ -14,11 +14,13 @@ $repositoryRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Pat
 $artifactRoot = Join-Path $repositoryRoot 'artifacts'
 $fixturePath = Join-Path $repositoryRoot 'tests\fixtures\v0.5\compliance-rule-corpus.json'
 $contractPath = Join-Path $repositoryRoot 'docs\protocol\v0.5-compliance-rule-engine-contract.md'
+$modelPath = Join-Path $repositoryRoot 'src\HerdrOps.Domain\Compliance\ComplianceRuleModels.cs'
 $expectedInputSha256 = '338C0F80C48E92D585AA3CA66CDB0BA6399ED1442C10A25C7E61F2069C1DB83A'
 $expectedRuleSetSha256 = '4EB8A183215D223296DBA64743EF24877F960556A723BDC4506F273183A972E4'
 $expectedCorpusResultSha256 = '2E4B53B8B80908726C431EC5637B6A92B0F82C99E14BAE36E8EBF3BE3DCA0F11'
 $expectedReportSha256 = '042361CFBE8764A6FC2E65FA4B4E78174A792A988ECC7FAD46D7974CFD57BF8E'
-$expectedContractSha256 = '2DBDEDC827080D73CFD69CDF21EEC92E4DDCFD7A825E65E63B4D5B1DA2513C57'
+$expectedContractSha256 = '9DF715D26B65269F6555855211287A40E37EC46E3B32AC69B4C277F74898FB9D'
+$expectedModelSha256 = '3525E88251C056118AF662F0F8390625AC45FF6C43DB129FAAA5BF97DB2E65A2'
 
 $workingTreeStatus = @(& git -C $repositoryRoot status --porcelain=v1 --untracked-files=all)
 if ($LASTEXITCODE -ne 0) {
@@ -79,6 +81,10 @@ $requiredChecks = @(
     'ScopePrefixDoesNotMatchSiblingWithSameLeadingCharacters',
     'RequestCollectionOrderDoesNotChangeCanonicalResult',
     'ChangedRuleDefinitionAndUnsafePathFailClosed',
+    'CompliancePathsRejectAllControlCharacters',
+    'CompliancePathsRejectInvalidWindowsProjectRelativeForms',
+    'CompliancePathsRejectWindowsReservedDeviceNamesAndInvalidCharacters',
+    'LegitimateWindowsProjectPathsNormalizeSeparatorsAndRemainAccepted',
     'CommittedComplianceCorpusProducesByteIdenticalReportsAndExpectedHashes',
     'UnknownCorpusMemberFailsClosedWithoutReplacingReport',
     'DuplicateCorpusPropertyFailsClosedWithoutReport',
@@ -117,6 +123,9 @@ if (-not (Test-Path -LiteralPath $fixturePath -PathType Leaf)) {
 if (-not (Test-Path -LiteralPath $contractPath -PathType Leaf)) {
     throw "Committed v0.5 compliance contract was not found: $contractPath"
 }
+if (-not (Test-Path -LiteralPath $modelPath -PathType Leaf)) {
+    throw "Committed v0.5 compliance model source was not found: $modelPath"
+}
 
 $firstReportPath = Join-Path $gateDirectory 'compliance-rule-report-1.json'
 $secondReportPath = Join-Path $gateDirectory 'compliance-rule-report-2.json'
@@ -137,12 +146,16 @@ if (-not [System.Linq.Enumerable]::SequenceEqual($firstReportBytes, $secondRepor
 
 $fixtureSha256 = (Get-FileHash -LiteralPath $fixturePath -Algorithm SHA256).Hash
 $contractSha256 = (Get-FileHash -LiteralPath $contractPath -Algorithm SHA256).Hash
+$modelSha256 = (Get-FileHash -LiteralPath $modelPath -Algorithm SHA256).Hash
 $reportSha256 = (Get-FileHash -LiteralPath $firstReportPath -Algorithm SHA256).Hash
 if ($fixtureSha256 -ne $expectedInputSha256) {
     throw "Compliance corpus SHA-256 drifted: expected $expectedInputSha256 observed $fixtureSha256"
 }
 if ($contractSha256 -ne $expectedContractSha256) {
     throw "Compliance contract SHA-256 drifted: expected $expectedContractSha256 observed $contractSha256"
+}
+if ($modelSha256 -ne $expectedModelSha256) {
+    throw "Compliance model SHA-256 drifted: expected $expectedModelSha256 observed $modelSha256"
 }
 if ($reportSha256 -ne $expectedReportSha256) {
     throw "Compliance report SHA-256 drifted: expected $expectedReportSha256 observed $reportSha256"
@@ -261,6 +274,7 @@ $gateReport = @(
     "CorpusResultSha256: $($report.corpusResultSha256)",
     "CorpusReportSha256: $reportSha256",
     "ContractSha256: $contractSha256",
+    "ModelSha256: $modelSha256",
     'RepeatedCorpusReports: BYTE IDENTICAL',
     "Cases: $($diagnostics.passedCaseCount)/$($diagnostics.caseCount) PASS",
     "EvaluationRuns: $($diagnostics.evaluationRunCount)",

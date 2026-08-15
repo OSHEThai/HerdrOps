@@ -522,7 +522,20 @@ public static class ComplianceEvaluationContract
 
     internal static string NormalizePath(string value, string name)
     {
-        var normalized = NormalizeDetail(value, name).Replace('\\', '/');
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            throw new ComplianceRuleContractException(
+                $"Compliance path {name} cannot be blank.");
+        }
+
+        var normalized = value.Normalize(NormalizationForm.FormC);
+        if (normalized.Any(char.IsControl))
+        {
+            throw new ComplianceRuleContractException(
+                $"Compliance path {name} must not contain control characters.");
+        }
+
+        normalized = normalized.Replace('\\', '/');
         if (normalized.Length > MaximumPathLength ||
             normalized.StartsWith("/", StringComparison.Ordinal) ||
             normalized.EndsWith("/", StringComparison.Ordinal) ||
@@ -535,13 +548,39 @@ public static class ComplianceEvaluationContract
         var segments = normalized.Split('/', StringSplitOptions.None);
         if (segments.Any(segment =>
                 string.IsNullOrWhiteSpace(segment) ||
-                segment is "." or ".."))
+                segment is "." or ".." ||
+                segment.EndsWith(".", StringComparison.Ordinal) ||
+                segment.EndsWith(" ", StringComparison.Ordinal) ||
+                segment.Any(character => character is '<' or '>' or '"' or '|' or '?' or '*') ||
+                IsReservedWindowsDeviceName(segment)))
         {
             throw new ComplianceRuleContractException(
-                $"Compliance path {name} cannot contain empty, current-directory, or parent-directory segments.");
+                $"Compliance path {name} cannot contain empty, current-directory, parent-directory, trailing-dot/space, invalid-character, or reserved-device segments.");
         }
 
         return string.Join('/', segments);
+    }
+
+    private static bool IsReservedWindowsDeviceName(string segment)
+    {
+        var extensionIndex = segment.IndexOf('.', StringComparison.Ordinal);
+        var stem = (extensionIndex < 0 ? segment : segment[..extensionIndex])
+            .TrimEnd(' ', '.');
+        if (stem.Equals("CON", StringComparison.OrdinalIgnoreCase) ||
+            stem.Equals("PRN", StringComparison.OrdinalIgnoreCase) ||
+            stem.Equals("AUX", StringComparison.OrdinalIgnoreCase) ||
+            stem.Equals("NUL", StringComparison.OrdinalIgnoreCase) ||
+            stem.Equals("CLOCK$", StringComparison.OrdinalIgnoreCase) ||
+            stem.Equals("CONIN$", StringComparison.OrdinalIgnoreCase) ||
+            stem.Equals("CONOUT$", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        return stem.Length == 4 &&
+            (stem.StartsWith("COM", StringComparison.OrdinalIgnoreCase) ||
+             stem.StartsWith("LPT", StringComparison.OrdinalIgnoreCase)) &&
+            stem[3] is (>= '1' and <= '9') or '¹' or '²' or '³';
     }
 
     private static ComplianceDeviationDecision NormalizeDeviation(
