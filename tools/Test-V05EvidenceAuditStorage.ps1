@@ -13,13 +13,15 @@ $PSNativeCommandUseErrorActionPreference = $false
 $repositoryRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
 $artifactRoot = Join-Path $repositoryRoot 'artifacts'
 $domainContractPath = Join-Path $repositoryRoot 'src\HerdrOps.Domain\Evidence\EvidenceContracts.cs'
+$storeCorePath = Join-Path $repositoryRoot 'src\HerdrOps.Infrastructure\Storage\SqliteHerdrStateStore.cs'
 $storagePath = Join-Path $repositoryRoot 'src\HerdrOps.Infrastructure\Storage\SqliteHerdrStateStore.Evidence.cs'
 $migrationPath = Join-Path $repositoryRoot 'src\HerdrOps.Infrastructure\Storage\SqliteHerdrStateStore.EvidenceMigration.cs'
 $contractPath = Join-Path $repositoryRoot 'docs\protocol\v0.5-evidence-audit-storage-contract.md'
 $expectedDomainContractSha256 = 'E6F5AE4E3AE96AF5A83B5D8C5E9FF4C432DA1CD727824B93121E8E39B79B3E06'
-$expectedStorageSha256 = 'E855706184003C29B2B20F43586F2D409414DE1553A91764D49E6CB107BA4C54'
+$expectedStoreCoreSha256 = '5F13130BC1B9F4AAE6674DA6CC7FF7A66868E15A82E86AA15EA12D1271D079C2'
+$expectedStorageSha256 = 'F5C0DB93279711154F11E281B81EA396C000D4E3DE583953799D6EC3CE30A8F6'
 $expectedMigrationSha256 = 'EE69EA92BC458DDD61214A90CC7EEEF08BB5B2D03FFDC24FDE6103A74C5D1E47'
-$expectedContractSha256 = '925F17576DD242700B2A0E29BDCD43193B82D1CA3D747D87CAB5B7FF4AE0C962'
+$expectedContractSha256 = '9D3FDA5DEB53274AB70458B14C09162290788813CAC6FA67366F27E33508819E'
 
 $workingTreeStatus = @(& git -C $repositoryRoot status --porcelain=v1 --untracked-files=all)
 if ($LASTEXITCODE -ne 0) {
@@ -36,7 +38,7 @@ if (-not $SkipBuild) {
     }
 }
 
-$requiredFiles = @($domainContractPath, $storagePath, $migrationPath, $contractPath)
+$requiredFiles = @($domainContractPath, $storeCorePath, $storagePath, $migrationPath, $contractPath)
 foreach ($requiredFile in $requiredFiles) {
     if (-not (Test-Path -LiteralPath $requiredFile -PathType Leaf)) {
         throw "Required v0.5 evidence/audit contract file was not found: $requiredFile"
@@ -45,12 +47,14 @@ foreach ($requiredFile in $requiredFiles) {
 
 $actualHashes = [ordered]@{
     DomainContract = (Get-FileHash -LiteralPath $domainContractPath -Algorithm SHA256).Hash
+    StoreCore = (Get-FileHash -LiteralPath $storeCorePath -Algorithm SHA256).Hash
     Storage = (Get-FileHash -LiteralPath $storagePath -Algorithm SHA256).Hash
     Migration = (Get-FileHash -LiteralPath $migrationPath -Algorithm SHA256).Hash
     Contract = (Get-FileHash -LiteralPath $contractPath -Algorithm SHA256).Hash
 }
 $expectedHashes = [ordered]@{
     DomainContract = $expectedDomainContractSha256
+    StoreCore = $expectedStoreCoreSha256
     Storage = $expectedStorageSha256
     Migration = $expectedMigrationSha256
     Contract = $expectedContractSha256
@@ -104,8 +108,12 @@ $requiredChecks = @(
     'UnicodeTaskAndReviewIdentifiersRoundTripThroughStorage',
     'ReviewHistoryIsHashChainedAndRejectsOrdinaryMutation',
     'RetentionProtectsOpenReviewThenPurgesBytesAndPreservesHistory',
+    'FailedRetentionAuditWriteLeavesRecoverableBytesAndRetryCompletes',
+    'ManagedEvidenceDirectoryMasqueradeFailsClosedOnRead',
+    'ManagedVaultRejectsReparsePointAncestorBeforeCreatingVault',
     'ManagedByteTamperingFailsClosedOnRead',
     'VersionOneDatabaseMigratesForwardWithoutLosingHistory',
+    'FailedVersionThreeMigrationRollsBackAllPartialChanges',
     'FutureSchemaFailsClosedWithoutMigration'
 )
 foreach ($check in $requiredChecks) {
@@ -154,6 +162,7 @@ $gateReport = @(
     'OpenReviewRetentionProtection: SYNTHETICALLY VERIFIED',
     "Tests: $passedTests/$totalTests PASS",
     "DomainContractSha256: $($actualHashes.DomainContract)",
+    "StoreCoreSha256: $($actualHashes.StoreCore)",
     "StorageSha256: $($actualHashes.Storage)",
     "MigrationSha256: $($actualHashes.Migration)",
     "ContractSha256: $($actualHashes.Contract)",

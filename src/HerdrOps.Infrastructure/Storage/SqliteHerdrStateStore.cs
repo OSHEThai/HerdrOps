@@ -280,6 +280,7 @@ public sealed partial class SqliteHerdrStateStore : IDisposable
             ValidateMigrationHistory(HerdrStateStoreOptions.CurrentSchemaVersion);
             EnsureIntegrity("after initialization");
             _assignmentLifecycleReducer = RestoreAssignmentLifecycleReducer();
+            EnsureManagedVaultParentChainIsSafe();
             Directory.CreateDirectory(_options.ManagedEvidenceRootPath!);
             EnsureManagedVaultRootIsSafe();
         }

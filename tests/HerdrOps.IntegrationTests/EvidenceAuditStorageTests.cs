@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Text;
 using HerdrOps.Domain.Evidence;
 using HerdrOps.Infrastructure.Storage;
@@ -263,6 +264,110 @@ public sealed class EvidenceAuditStorageTests
     }
 
     [TestMethod]
+    public void FailedRetentionAuditWriteLeavesRecoverableBytesAndRetryCompletes()
+    {
+        using var directory = new TemporaryDirectory();
+        var artifactPath = Path.Combine(directory.Path, "source", "recoverable.bin");
+        Directory.CreateDirectory(Path.GetDirectoryName(artifactPath)!);
+        File.WriteAllBytes(artifactPath, Encoding.UTF8.GetBytes("recoverable-retention-content"));
+        var options = CreateOptions(directory);
+        using var store = new SqliteHerdrStateStore(
+            options,
+            new FixedTimeProvider(ObservedUtc.AddDays(2)));
+        var captured = store.CaptureEvidence(
+            CreateCaptureRequest(retainUntilUtc: ObservedUtc.AddDays(1)),
+            artifactPath);
+        var identity = captured.StoredEvidence.Metadata.EvidenceIdentitySha256;
+        var managedPath = ResolveManagedPath(options, captured.StoredEvidence.Metadata);
+        var pendingPath = Path.Combine(
+            options.ManagedEvidenceRootPath!,
+            ".retention",
+            identity + ".pending");
+
+        using var connection = Open(options.DatabasePath);
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            CREATE TRIGGER test_reject_retention_insert
+            BEFORE INSERT ON evidence_retention_events
+            BEGIN
+                SELECT RAISE(ABORT, 'forced retention audit failure');
+            END;
+            """;
+        command.ExecuteNonQuery();
+
+        var failed = Assert.Throws<SqliteException>(() =>
+            store.ApplyEvidenceRetention(ObservedUtc.AddDays(2)));
+        StringAssert.Contains(failed.Message, "forced retention audit failure", StringComparison.Ordinal);
+        Assert.IsFalse(File.Exists(managedPath));
+        Assert.IsTrue(File.Exists(pendingPath));
+        Assert.IsEmpty(store.ReadEvidenceRetentionAudit());
+        var pendingRead = Assert.Throws<HerdrStateStoreException>(() =>
+            store.ReadEvidence(identity));
+        StringAssert.Contains(pendingRead.Message, "incomplete retention", StringComparison.Ordinal);
+
+        command.CommandText = "DROP TRIGGER test_reject_retention_insert;";
+        command.ExecuteNonQuery();
+        var recovered = store.ApplyEvidenceRetention(ObservedUtc.AddDays(2));
+
+        Assert.HasCount(1, recovered.Results);
+        Assert.AreEqual(HerdrEvidenceRetentionOutcome.Purged, recovered.Results[0].Outcome);
+        Assert.IsFalse(File.Exists(managedPath));
+        Assert.IsFalse(File.Exists(pendingPath));
+        Assert.HasCount(1, store.ReadEvidenceRetentionAudit());
+        var stored = store.ReadEvidence(identity);
+        Assert.IsNotNull(stored);
+        Assert.IsFalse(stored.ManagedBytesAvailable);
+        Assert.IsTrue(stored.RetentionCompleted);
+    }
+
+    [TestMethod]
+    public void ManagedEvidenceDirectoryMasqueradeFailsClosedOnRead()
+    {
+        using var directory = new TemporaryDirectory();
+        var artifactPath = Path.Combine(directory.Path, "source.bin");
+        File.WriteAllBytes(artifactPath, Encoding.UTF8.GetBytes("authentic"));
+        var options = CreateOptions(directory);
+        using var store = new SqliteHerdrStateStore(options);
+        var captured = store.CaptureEvidence(CreateCaptureRequest(), artifactPath);
+        var identity = captured.StoredEvidence.Metadata.EvidenceIdentitySha256;
+        var managedPath = ResolveManagedPath(options, captured.StoredEvidence.Metadata);
+        File.Delete(managedPath);
+        Directory.CreateDirectory(managedPath);
+
+        var exception = Assert.Throws<HerdrStateStoreException>(() =>
+            store.ReadEvidence(identity));
+        StringAssert.Contains(exception.Message, "not a regular", StringComparison.Ordinal);
+    }
+
+    [TestMethod]
+    public void ManagedVaultRejectsReparsePointAncestorBeforeCreatingVault()
+    {
+        using var directory = new TemporaryDirectory();
+        var targetParent = Path.Combine(directory.Path, "actual-parent");
+        var junctionParent = Path.Combine(directory.Path, "junction-parent");
+        Directory.CreateDirectory(targetParent);
+        CreateDirectoryJunction(junctionParent, targetParent);
+        try
+        {
+            var options = new HerdrStateStoreOptions(
+                Path.Combine(directory.Path, "state", "herdrops.db"),
+                ManagedEvidenceRootPath: Path.Combine(junctionParent, "vault"));
+
+            var exception = Assert.Throws<HerdrStateStoreException>(() =>
+                new SqliteHerdrStateStore(options));
+            StringAssert.Contains(exception.Message, "reparse point", StringComparison.Ordinal);
+            Assert.IsFalse(Directory.Exists(Path.Combine(targetParent, "vault")));
+        }
+        finally
+        {
+            if (Directory.Exists(junctionParent))
+            {
+                Directory.Delete(junctionParent);
+            }
+        }
+    }
+
+    [TestMethod]
     public void ManagedByteTamperingFailsClosedOnRead()
     {
         using var directory = new TemporaryDirectory();
@@ -335,5 +440,36 @@ public sealed class EvidenceAuditStorageTests
         }.ToString());
         connection.Open();
         return connection;
+    }
+
+    private static void CreateDirectoryJunction(string junctionPath, string targetPath)
+    {
+        var commandInterpreter = Environment.GetEnvironmentVariable("ComSpec");
+        Assert.IsFalse(
+            string.IsNullOrWhiteSpace(commandInterpreter),
+            "The Windows command interpreter is required to create a local test junction.");
+        var startInfo = new ProcessStartInfo
+        {
+            FileName = commandInterpreter,
+            CreateNoWindow = true,
+            RedirectStandardError = true,
+            RedirectStandardOutput = true,
+            UseShellExecute = false,
+        };
+        startInfo.ArgumentList.Add("/d");
+        startInfo.ArgumentList.Add("/c");
+        startInfo.ArgumentList.Add("mklink");
+        startInfo.ArgumentList.Add("/J");
+        startInfo.ArgumentList.Add(junctionPath);
+        startInfo.ArgumentList.Add(targetPath);
+        using var process = Process.Start(startInfo)
+            ?? throw new AssertFailedException("The junction helper process did not start.");
+        var standardOutput = process.StandardOutput.ReadToEnd();
+        var standardError = process.StandardError.ReadToEnd();
+        process.WaitForExit();
+        Assert.AreEqual(
+            0,
+            process.ExitCode,
+            $"Could not create test junction. Output: {standardOutput} Error: {standardError}");
     }
 }
