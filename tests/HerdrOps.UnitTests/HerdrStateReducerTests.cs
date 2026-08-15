@@ -230,6 +230,176 @@ public sealed class HerdrStateReducerTests
     }
 
     [TestMethod]
+    public void AgentFreeUnknownStatusDoesNotRequestReconciliation()
+    {
+        var snapshot = CreateSnapshot() with
+        {
+            Panes =
+            [
+                CreateSnapshot().Panes[0] with
+                {
+                    AgentStatus = HerdrAgentStatus.Unknown,
+                    Agent = null,
+                    DisplayAgent = null,
+                    Title = null,
+                },
+            ],
+            Agents = [],
+        };
+        var state = _reducer.Reconcile(snapshot, connectionEpoch: 1, ingestSequence: 1);
+
+        var result = _reducer.Apply(
+            state,
+            new HerdrPaneAgentStatusChangedEvent(
+                "pane.agent_status_changed",
+                "workspace-1",
+                "pane-1",
+                HerdrAgentStatus.Unknown,
+                Agent: null,
+                DisplayAgent: null,
+                Title: "Windows PowerShell"),
+            ingestSequence: 2);
+
+        Assert.AreEqual(HerdrStateApplyDisposition.Applied, result.Disposition);
+        Assert.AreEqual(2, result.State.LastIngestSequence);
+        Assert.AreEqual("Windows PowerShell", result.State.Panes["pane-1"].Title);
+        Assert.IsEmpty(result.State.Agents);
+    }
+
+    [TestMethod]
+    public void ReflectedAgentDetectionIsDuplicateButContradictoryDetectionReconciles()
+    {
+        var state = _reducer.Reconcile(CreateSnapshot(), connectionEpoch: 1, ingestSequence: 1);
+        var reflected = _reducer.Apply(
+            state,
+            new HerdrPaneAgentDetectedEvent(
+                "pane_agent_detected",
+                "workspace-1",
+                "pane-1",
+                "codex",
+                HerdrAgentStatus.Working,
+                Released: false),
+            ingestSequence: 2);
+        var contradictory = _reducer.Apply(
+            reflected.State,
+            new HerdrPaneAgentDetectedEvent(
+                "pane_agent_detected",
+                "workspace-1",
+                "pane-1",
+                "codex",
+                HerdrAgentStatus.Done,
+                Released: true),
+            ingestSequence: 3);
+
+        Assert.AreEqual(HerdrStateApplyDisposition.Duplicate, reflected.Disposition);
+        Assert.AreEqual(2, reflected.State.LastIngestSequence);
+        Assert.AreEqual(HerdrStateApplyDisposition.ReconciliationRequired, contradictory.Disposition);
+        StringAssert.Contains(contradictory.Reason!, "not reflected");
+    }
+
+    [TestMethod]
+    public void ReleasedAgentDetectionAlreadyReflectedByAgentFreePaneIsDuplicate()
+    {
+        var snapshot = CreateSnapshot() with
+        {
+            Panes =
+            [
+                CreateSnapshot().Panes[0] with
+                {
+                    AgentStatus = HerdrAgentStatus.Unknown,
+                    Agent = null,
+                    DisplayAgent = null,
+                    Title = null,
+                },
+            ],
+            Agents = [],
+        };
+        var state = _reducer.Reconcile(snapshot, connectionEpoch: 1, ingestSequence: 1);
+
+        var result = _reducer.Apply(
+            state,
+            new HerdrPaneAgentDetectedEvent(
+                "pane_agent_detected",
+                "workspace-1",
+                "pane-1",
+                "codex",
+                HerdrAgentStatus.Done,
+                Released: true),
+            ingestSequence: 2);
+
+        Assert.AreEqual(HerdrStateApplyDisposition.Duplicate, result.Disposition);
+        Assert.AreEqual(2, result.State.LastIngestSequence);
+    }
+
+    [TestMethod]
+    public void IdentityLessActiveFinalStatusRequestsReconciliation()
+    {
+        var snapshot = CreateSnapshot() with
+        {
+            Panes =
+            [
+                CreateSnapshot().Panes[0] with
+                {
+                    AgentStatus = HerdrAgentStatus.Unknown,
+                    Agent = null,
+                    DisplayAgent = null,
+                    Title = null,
+                },
+            ],
+            Agents = [],
+        };
+        var state = _reducer.Reconcile(snapshot, connectionEpoch: 1, ingestSequence: 1);
+
+        var result = _reducer.Apply(
+            state,
+            new HerdrPaneAgentDetectedEvent(
+                "pane_agent_detected",
+                "workspace-1",
+                "pane-1",
+                Agent: null,
+                HerdrAgentStatus.Working,
+                Released: false),
+            ingestSequence: 2);
+
+        Assert.AreEqual(HerdrStateApplyDisposition.ReconciliationRequired, result.Disposition);
+        StringAssert.Contains(result.Reason!, "not reflected");
+    }
+
+    [TestMethod]
+    public void DetectionAgainstPartiallyIdentifiedPaneRequestsReconciliation()
+    {
+        var snapshot = CreateSnapshot() with
+        {
+            Panes =
+            [
+                CreateSnapshot().Panes[0] with
+                {
+                    AgentStatus = HerdrAgentStatus.Unknown,
+                    Agent = null,
+                    DisplayAgent = "Codex",
+                    Title = null,
+                },
+            ],
+            Agents = [],
+        };
+        var state = _reducer.Reconcile(snapshot, connectionEpoch: 1, ingestSequence: 1);
+
+        var result = _reducer.Apply(
+            state,
+            new HerdrPaneAgentDetectedEvent(
+                "pane_agent_detected",
+                "workspace-1",
+                "pane-1",
+                Agent: null,
+                FinalStatus: null,
+                Released: false),
+            ingestSequence: 2);
+
+        Assert.AreEqual(HerdrStateApplyDisposition.ReconciliationRequired, result.Disposition);
+        StringAssert.Contains(result.Reason!, "not reflected");
+    }
+
+    [TestMethod]
     public void ClosingWorkspaceCascadesAllDescendantsIdempotently()
     {
         var state = _reducer.Reconcile(CreateSnapshot(), connectionEpoch: 1, ingestSequence: 1);

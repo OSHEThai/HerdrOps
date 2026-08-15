@@ -322,8 +322,7 @@ public sealed class HerdrRuntimeMonitor
         "pane_created" or
         "pane_closed" or
         "pane_moved" or
-        "pane_exited" or
-        "pane_agent_detected";
+        "pane_exited";
 
     private static HerdrServerProcessIdentity? ValidateBootstrapServerIdentities(
         HerdrServerProcessIdentity? discovery,

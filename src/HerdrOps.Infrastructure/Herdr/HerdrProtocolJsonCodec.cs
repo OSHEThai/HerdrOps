@@ -325,7 +325,8 @@ public static class HerdrProtocolJsonCodec
                 GetRequiredUInt64(data, "revision")),
             "pane_agent_status_changed" or "pane.agent_status_changed" =>
                 ParsePaneAgentStatusChanged(eventName, data),
-            "pane_exited" or "pane_agent_detected" => new HerdrReconciliationRequestedEvent(
+            "pane_agent_detected" => ParsePaneAgentDetected(eventName, data),
+            "pane_exited" => new HerdrReconciliationRequestedEvent(
                 eventName,
                 $"Event '{eventName}' does not carry a complete pane and agent state."),
             "layout_updated" or "pane.output_matched" or "pane.scroll_changed" =>
@@ -358,6 +359,16 @@ public static class HerdrProtocolJsonCodec
             GetOptionalString(data, "agent"),
             GetOptionalString(data, "display_agent"),
             GetOptionalString(data, "title"));
+
+    private static HerdrPaneAgentDetectedEvent ParsePaneAgentDetected(
+        string eventName,
+        JsonElement data) => new(
+            eventName,
+            GetRequiredString(data, "workspace_id", allowEmpty: false),
+            GetRequiredString(data, "pane_id", allowEmpty: false),
+            GetOptionalString(data, "agent"),
+            GetOptionalAgentStatus(data, "final_status"),
+            GetOptionalBoolean(data, "released"));
 
     private static HerdrSessionSnapshot ParseSnapshot(JsonElement snapshot)
     {
@@ -676,6 +687,19 @@ public static class HerdrProtocolJsonCodec
             "done" => HerdrAgentStatus.Done,
             _ => throw new HerdrProtocolException($"Unknown Herdr agent status '{status}'."),
         };
+    }
+
+    private static HerdrAgentStatus? GetOptionalAgentStatus(
+        JsonElement value,
+        string propertyName)
+    {
+        if (!value.TryGetProperty(propertyName, out var property) ||
+            property.ValueKind == JsonValueKind.Null)
+        {
+            return null;
+        }
+
+        return ParseAgentStatus(property, propertyName);
     }
 
     private static IReadOnlyList<T> ParseArray<T>(
