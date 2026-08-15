@@ -10,6 +10,8 @@ namespace HerdrOps.Infrastructure.Storage;
 public sealed partial class SqliteHerdrStateStore
 {
     private const int EvidenceCopyBufferSize = 128 * 1024;
+    private const string RetentionPendingDirectoryName = ".retention";
+    private const string RetentionPendingFileSuffix = ".pending";
 
     private static readonly JsonSerializerOptions EvidenceSerializerOptions =
         new(JsonSerializerDefaults.Web)
@@ -228,8 +230,10 @@ public sealed partial class SqliteHerdrStateStore
         lock (_sync)
         {
             ThrowIfDisposed();
+            var results = new List<HerdrEvidenceRetentionResult>();
+            RecoverPendingRetention(asOfUtc, results);
             var identities = ReadDueEvidenceIdentities(asOfUtc);
-            var results = new List<HerdrEvidenceRetentionResult>(identities.Count);
+            results.EnsureCapacity(results.Count + identities.Count);
             foreach (var identity in identities)
             {
                 if (IsProtectedByOpenReview(identity))
@@ -255,22 +259,25 @@ public sealed partial class SqliteHerdrStateStore
                         $"Due managed evidence '{identity}' has incomplete immutable metadata.");
                 }
 
-                var outcome = stored.ManagedBytesAvailable
-                    ? HerdrEvidenceRetentionOutcome.Purged
-                    : HerdrEvidenceRetentionOutcome.AlreadyMissing;
+                HerdrEvidenceRetentionOutcome outcome;
+                string? pendingPath = null;
                 if (stored.ManagedBytesAvailable)
                 {
-                    var managedPath = ResolveManagedPath(metadata.ManagedRelativePath);
-                    File.Delete(managedPath);
-                    if (File.Exists(managedPath))
-                    {
-                        throw new HerdrStateStoreException(
-                            $"Managed evidence bytes '{identity}' could not be purged.");
-                    }
+                    pendingPath = MoveManagedEvidenceToRetentionPending(metadata);
+                    outcome = HerdrEvidenceRetentionOutcome.Purged;
+                }
+                else
+                {
+                    outcome = HerdrEvidenceRetentionOutcome.AlreadyMissing;
                 }
 
                 var retentionEvent = CreateRetentionAuditEvent(metadata, outcome);
                 InsertRetentionAuditEvent(retentionEvent);
+                if (pendingPath is not null)
+                {
+                    DeleteRetentionPendingFile(pendingPath, identity);
+                }
+
                 results.Add(new HerdrEvidenceRetentionResult(
                     identity,
                     outcome,
@@ -425,7 +432,8 @@ public sealed partial class SqliteHerdrStateStore
 
     private HerdrStoredEvidence? ReadEvidenceCore(
         string evidenceIdentitySha256,
-        bool verifyManagedBytes)
+        bool verifyManagedBytes,
+        bool allowPendingRetention = false)
     {
         using var command = _connection.CreateCommand();
         command.CommandText = """
@@ -459,10 +467,39 @@ public sealed partial class SqliteHerdrStateStore
         if (metadata.StorageKind == EvidenceArtifactStorageKind.ManagedCopy)
         {
             var path = ResolveManagedPath(metadata.ManagedRelativePath!);
-            managedBytesAvailable = File.Exists(path);
+            var pendingPath = GetRetentionPendingPath(metadata.EvidenceIdentitySha256);
+            managedBytesAvailable = IsConfirmedRegularFile(
+                path,
+                $"Managed evidence bytes '{metadata.EvidenceIdentitySha256}'");
+            var pendingBytesAvailable = IsConfirmedRegularFile(
+                pendingPath,
+                $"Pending retention bytes '{metadata.EvidenceIdentitySha256}'");
+            if (managedBytesAvailable && pendingBytesAvailable)
+            {
+                throw new HerdrStateStoreException(
+                    $"Managed evidence '{metadata.EvidenceIdentitySha256}' exists at both its object and pending-retention paths.");
+            }
+
+            if (pendingBytesAvailable && !allowPendingRetention)
+            {
+                throw new HerdrStateStoreException(
+                    $"Managed evidence '{metadata.EvidenceIdentitySha256}' has an incomplete retention operation that must be recovered before reading.");
+            }
+
+            if (managedBytesAvailable && retentionCompleted)
+            {
+                throw new HerdrStateStoreException(
+                    $"Managed evidence '{metadata.EvidenceIdentitySha256}' has bytes after its terminal retention event.");
+            }
+
             if (managedBytesAvailable && verifyManagedBytes)
             {
                 ValidateManagedFile(path, metadata);
+            }
+
+            if (pendingBytesAvailable && verifyManagedBytes)
+            {
+                ValidateManagedFile(pendingPath, metadata);
             }
         }
 
@@ -619,6 +656,29 @@ public sealed partial class SqliteHerdrStateStore
     private void EnsureManagedVaultRootIsSafe() =>
         EnsureManagedPathHasNoReparsePoints(ManagedEvidenceRootPath);
 
+    private void EnsureManagedVaultParentChainIsSafe()
+    {
+        var root = Path.GetFullPath(ManagedEvidenceRootPath)
+            .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        var filesystemRoot = Path.GetPathRoot(root);
+        if (string.IsNullOrWhiteSpace(filesystemRoot))
+        {
+            throw new HerdrStateStoreException(
+                "The managed evidence vault has no filesystem or share root.");
+        }
+
+        var current = filesystemRoot;
+        ValidateExistingDirectoryComponent(current);
+        var relative = Path.GetRelativePath(filesystemRoot, root);
+        foreach (var segment in relative.Split(
+                     new[] { Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar },
+                     StringSplitOptions.RemoveEmptyEntries))
+        {
+            current = Path.Combine(current, segment);
+            ValidateExistingDirectoryComponent(current);
+        }
+    }
+
     private void EnsureManagedPathHasNoReparsePoints(string candidatePath)
     {
         var root = Path.GetFullPath(ManagedEvidenceRootPath)
@@ -631,7 +691,7 @@ public sealed partial class SqliteHerdrStateStore
                 "Managed evidence path resolved outside the configured vault.");
         }
 
-        RejectReparsePoint(root);
+        EnsureManagedVaultParentChainIsSafe();
         if (string.Equals(candidate, root, StringComparison.OrdinalIgnoreCase))
         {
             return;
@@ -639,26 +699,101 @@ public sealed partial class SqliteHerdrStateStore
 
         var relative = Path.GetRelativePath(root, candidate);
         var current = root;
-        foreach (var segment in relative.Split(
-                     new[] { Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar },
-                     StringSplitOptions.RemoveEmptyEntries))
+        var segments = relative.Split(
+            new[] { Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar },
+            StringSplitOptions.RemoveEmptyEntries);
+        for (var index = 0; index < segments.Length; index++)
         {
-            current = Path.Combine(current, segment);
-            RejectReparsePoint(current);
+            current = Path.Combine(current, segments[index]);
+            if (index < segments.Length - 1)
+            {
+                ValidateExistingDirectoryComponent(current);
+            }
+            else
+            {
+                RejectReparsePoint(current);
+            }
         }
     }
 
     private static void RejectReparsePoint(string path)
     {
-        if (!File.Exists(path) && !Directory.Exists(path))
+        var attributes = ReadPathAttributes(path, "Managed evidence vault path");
+        if (attributes is null)
         {
             return;
         }
 
-        if ((File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0)
+        if ((attributes.Value & FileAttributes.ReparsePoint) != 0)
         {
             throw new HerdrStateStoreException(
                 $"Managed evidence vault path '{path}' contains a reparse point.");
+        }
+    }
+
+    private static void ValidateExistingDirectoryComponent(string path)
+    {
+        var attributes = ReadPathAttributes(path, "Managed evidence vault ancestor");
+        if (attributes is null)
+        {
+            return;
+        }
+
+        if ((attributes.Value & FileAttributes.ReparsePoint) != 0)
+        {
+            throw new HerdrStateStoreException(
+                $"Managed evidence vault path '{path}' contains a reparse point.");
+        }
+
+        if ((attributes.Value & FileAttributes.Directory) == 0)
+        {
+            throw new HerdrStateStoreException(
+                $"Managed evidence vault ancestor '{path}' is not a directory.");
+        }
+    }
+
+    private static bool IsConfirmedRegularFile(string path, string description)
+    {
+        var attributes = ReadPathAttributes(path, description);
+        if (attributes is null)
+        {
+            return false;
+        }
+
+        if ((attributes.Value & (FileAttributes.Directory | FileAttributes.ReparsePoint)) != 0)
+        {
+            throw new HerdrStateStoreException(
+                $"{description} is not a regular non-reparse file.");
+        }
+
+        return true;
+    }
+
+    private static FileAttributes? ReadPathAttributes(string path, string description)
+    {
+        try
+        {
+            return File.GetAttributes(path);
+        }
+        catch (FileNotFoundException)
+        {
+            return null;
+        }
+        catch (DirectoryNotFoundException)
+        {
+            return null;
+        }
+        catch (UnauthorizedAccessException exception)
+        {
+            throw new HerdrStateStoreException(
+                $"{description} could not be inspected safely.",
+                exception);
+        }
+        catch (IOException exception)
+        {
+            throw new HerdrStateStoreException(
+                $"{description} could not be inspected safely.",
+                exception);
         }
     }
 
@@ -936,6 +1071,295 @@ public sealed partial class SqliteHerdrStateStore
         }
     }
 
+    private void RecoverPendingRetention(
+        DateTimeOffset asOfUtc,
+        List<HerdrEvidenceRetentionResult> results)
+    {
+        var pendingDirectory = GetRetentionPendingDirectory();
+        EnsureManagedPathHasNoReparsePoints(pendingDirectory);
+        var attributes = ReadPathAttributes(
+            pendingDirectory,
+            "The pending-retention directory");
+        if (attributes is null)
+        {
+            return;
+        }
+
+        if ((attributes.Value & FileAttributes.Directory) == 0 ||
+            (attributes.Value & FileAttributes.ReparsePoint) != 0)
+        {
+            throw new HerdrStateStoreException(
+                "The pending-retention path is not a regular non-reparse directory.");
+        }
+
+        string[] entries;
+        try
+        {
+            entries = Directory.GetFileSystemEntries(pendingDirectory);
+        }
+        catch (UnauthorizedAccessException exception)
+        {
+            throw new HerdrStateStoreException(
+                "The pending-retention directory could not be enumerated safely.",
+                exception);
+        }
+        catch (IOException exception)
+        {
+            throw new HerdrStateStoreException(
+                "The pending-retention directory could not be enumerated safely.",
+                exception);
+        }
+
+        foreach (var pendingPath in entries.Order(StringComparer.OrdinalIgnoreCase))
+        {
+            EnsureManagedPathHasNoReparsePoints(pendingPath);
+            _ = IsConfirmedRegularFile(
+                pendingPath,
+                $"Pending retention entry '{pendingPath}'");
+            var fileName = Path.GetFileName(pendingPath);
+            if (!fileName.EndsWith(
+                    RetentionPendingFileSuffix,
+                    StringComparison.Ordinal))
+            {
+                throw new HerdrStateStoreException(
+                    $"Pending retention entry '{fileName}' has an invalid name.");
+            }
+
+            var encodedIdentity = fileName[..^RetentionPendingFileSuffix.Length];
+            string identity;
+            try
+            {
+                identity = EvidenceMetadataContract.NormalizeEvidenceIdentity(encodedIdentity);
+            }
+            catch (EvidenceContractException exception)
+            {
+                throw new HerdrStateStoreException(
+                    $"Pending retention entry '{fileName}' has an invalid evidence identity.",
+                    exception);
+            }
+
+            if (!string.Equals(encodedIdentity, identity, StringComparison.Ordinal) ||
+                !string.Equals(
+                    Path.GetFullPath(pendingPath),
+                    GetRetentionPendingPath(identity),
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                throw new HerdrStateStoreException(
+                    $"Pending retention entry '{fileName}' is not canonically named.");
+            }
+
+            var stored = ReadEvidenceCore(
+                identity,
+                verifyManagedBytes: true,
+                allowPendingRetention: true)
+                ?? throw new HerdrStateStoreException(
+                    $"Pending retention entry '{identity}' has no immutable evidence metadata.");
+            var metadata = stored.Metadata;
+            if (metadata.StorageKind != EvidenceArtifactStorageKind.ManagedCopy ||
+                metadata.ManagedRelativePath is null ||
+                metadata.ContentLength is null ||
+                metadata.ContentSha256 is null)
+            {
+                throw new HerdrStateStoreException(
+                    $"Pending retention entry '{identity}' has incomplete managed-evidence metadata.");
+            }
+
+            var existingEvent = ReadRetentionAuditEvent(identity);
+            if (existingEvent is not null)
+            {
+                ValidateRetentionAuditMatchesMetadata(existingEvent, metadata);
+                if (existingEvent.Outcome != HerdrEvidenceRetentionOutcome.Purged)
+                {
+                    throw new HerdrStateStoreException(
+                        $"Pending retention bytes '{identity}' conflict with an AlreadyMissing audit event.");
+                }
+
+                DeleteRetentionPendingFile(pendingPath, identity);
+                results.Add(CreateRetentionResult(identity, asOfUtc, existingEvent));
+                continue;
+            }
+
+            if (metadata.RetainUntilUtc > asOfUtc)
+            {
+                throw new HerdrStateStoreException(
+                    $"Pending retention bytes '{identity}' are not due at the requested cutoff.");
+            }
+
+            if (IsProtectedByOpenReview(identity))
+            {
+                RestorePendingRetentionFile(metadata, pendingPath);
+                continue;
+            }
+
+            var recoveredEvent = CreateRetentionAuditEvent(
+                metadata,
+                HerdrEvidenceRetentionOutcome.Purged);
+            InsertRetentionAuditEvent(recoveredEvent);
+            DeleteRetentionPendingFile(pendingPath, identity);
+            results.Add(CreateRetentionResult(identity, asOfUtc, recoveredEvent));
+        }
+    }
+
+    private string MoveManagedEvidenceToRetentionPending(EvidenceMetadata metadata)
+    {
+        var identity = metadata.EvidenceIdentitySha256;
+        var managedPath = ResolveManagedPath(metadata.ManagedRelativePath!);
+        if (!IsConfirmedRegularFile(managedPath, $"Managed evidence bytes '{identity}'"))
+        {
+            throw new HerdrStateStoreException(
+                $"Managed evidence bytes '{identity}' disappeared before retention staging.");
+        }
+
+        ValidateManagedFile(managedPath, metadata);
+        var pendingDirectory = GetRetentionPendingDirectory();
+        EnsureManagedPathHasNoReparsePoints(pendingDirectory);
+        Directory.CreateDirectory(pendingDirectory);
+        EnsureManagedPathHasNoReparsePoints(pendingDirectory);
+        var pendingPath = GetRetentionPendingPath(identity);
+        if (ReadPathAttributes(
+                pendingPath,
+                $"Pending retention bytes '{identity}'") is not null)
+        {
+            throw new HerdrStateStoreException(
+                $"Pending retention bytes '{identity}' already exist.");
+        }
+
+        try
+        {
+            File.Move(managedPath, pendingPath);
+        }
+        catch (UnauthorizedAccessException exception)
+        {
+            throw new HerdrStateStoreException(
+                $"Managed evidence bytes '{identity}' could not enter recoverable retention staging.",
+                exception);
+        }
+        catch (IOException exception)
+        {
+            throw new HerdrStateStoreException(
+                $"Managed evidence bytes '{identity}' could not enter recoverable retention staging.",
+                exception);
+        }
+
+        if (ReadPathAttributes(
+                managedPath,
+                $"Managed evidence bytes '{identity}'") is not null ||
+            !IsConfirmedRegularFile(
+                pendingPath,
+                $"Pending retention bytes '{identity}'"))
+        {
+            throw new HerdrStateStoreException(
+                $"Managed evidence bytes '{identity}' did not enter retention staging atomically.");
+        }
+
+        ValidateManagedFile(pendingPath, metadata);
+        return pendingPath;
+    }
+
+    private void RestorePendingRetentionFile(
+        EvidenceMetadata metadata,
+        string pendingPath)
+    {
+        var identity = metadata.EvidenceIdentitySha256;
+        var managedPath = ResolveManagedPath(metadata.ManagedRelativePath!);
+        if (ReadPathAttributes(
+                managedPath,
+                $"Managed evidence bytes '{identity}'") is not null)
+        {
+            throw new HerdrStateStoreException(
+                $"Managed evidence '{identity}' cannot restore pending bytes over an existing object.");
+        }
+
+        ValidateManagedFile(pendingPath, metadata);
+        try
+        {
+            File.Move(pendingPath, managedPath);
+        }
+        catch (UnauthorizedAccessException exception)
+        {
+            throw new HerdrStateStoreException(
+                $"Pending retention bytes '{identity}' could not be restored for an open review.",
+                exception);
+        }
+        catch (IOException exception)
+        {
+            throw new HerdrStateStoreException(
+                $"Pending retention bytes '{identity}' could not be restored for an open review.",
+                exception);
+        }
+
+        if (!IsConfirmedRegularFile(managedPath, $"Managed evidence bytes '{identity}'") ||
+            ReadPathAttributes(
+                pendingPath,
+                $"Pending retention bytes '{identity}'") is not null)
+        {
+            throw new HerdrStateStoreException(
+                $"Pending retention bytes '{identity}' were not restored atomically.");
+        }
+
+        ValidateManagedFile(managedPath, metadata);
+    }
+
+    private void DeleteRetentionPendingFile(string pendingPath, string identity)
+    {
+        if (!IsConfirmedRegularFile(
+                pendingPath,
+                $"Pending retention bytes '{identity}'"))
+        {
+            return;
+        }
+
+        try
+        {
+            File.Delete(pendingPath);
+        }
+        catch (UnauthorizedAccessException exception)
+        {
+            throw new HerdrStateStoreException(
+                $"Committed pending retention bytes '{identity}' could not be deleted.",
+                exception);
+        }
+        catch (IOException exception)
+        {
+            throw new HerdrStateStoreException(
+                $"Committed pending retention bytes '{identity}' could not be deleted.",
+                exception);
+        }
+
+        if (ReadPathAttributes(
+                pendingPath,
+                $"Pending retention bytes '{identity}'") is not null)
+        {
+            throw new HerdrStateStoreException(
+                $"Committed pending retention bytes '{identity}' still exist after deletion.");
+        }
+    }
+
+    private string GetRetentionPendingDirectory() =>
+        Path.Combine(ManagedEvidenceRootPath, RetentionPendingDirectoryName);
+
+    private string GetRetentionPendingPath(string evidenceIdentitySha256)
+    {
+        var identity = EvidenceMetadataContract.NormalizeEvidenceIdentity(
+            evidenceIdentitySha256);
+        var path = Path.Combine(
+            GetRetentionPendingDirectory(),
+            identity + RetentionPendingFileSuffix);
+        EnsureManagedPathHasNoReparsePoints(path);
+        return Path.GetFullPath(path);
+    }
+
+    private static HerdrEvidenceRetentionResult CreateRetentionResult(
+        string identity,
+        DateTimeOffset evaluatedUtc,
+        HerdrEvidenceRetentionAuditEvent auditEvent) =>
+        new(
+            identity,
+            auditEvent.Outcome,
+            evaluatedUtc,
+            auditEvent.RetentionEventId,
+            auditEvent.RetentionAuditSha256);
+
     private IReadOnlyList<string> ReadDueEvidenceIdentities(DateTimeOffset asOfUtc)
     {
         using var command = _connection.CreateCommand();
@@ -1002,6 +1426,66 @@ public sealed partial class SqliteHerdrStateStore
         }
 
         return count == 1;
+    }
+
+    private HerdrEvidenceRetentionAuditEvent? ReadRetentionAuditEvent(
+        string evidenceIdentitySha256)
+    {
+        using var command = _connection.CreateCommand();
+        command.CommandText = """
+            SELECT retention_event_id, evidence_identity_sha256, occurred_utc,
+                   outcome, managed_relative_path, expected_content_length,
+                   expected_content_sha256, retention_audit_sha256
+            FROM evidence_retention_events
+            WHERE evidence_identity_sha256 = $identity;
+            """;
+        command.Parameters.AddWithValue("$identity", evidenceIdentitySha256);
+        using var reader = command.ExecuteReader();
+        if (!reader.Read())
+        {
+            return null;
+        }
+
+        var auditEvent = new HerdrEvidenceRetentionAuditEvent(
+            ParseGuid(reader.GetString(0), "retention_event_id"),
+            EvidenceMetadataContract.NormalizeEvidenceIdentity(reader.GetString(1)),
+            ParseUtc(reader.GetString(2)),
+            (HerdrEvidenceRetentionOutcome)reader.GetInt32(3),
+            reader.GetString(4),
+            reader.GetInt64(5),
+            reader.GetString(6),
+            reader.GetString(7));
+        if (reader.Read())
+        {
+            throw new HerdrStateStoreException(
+                $"Evidence '{evidenceIdentitySha256}' has duplicate retention events.");
+        }
+
+        ValidateRetentionAuditEvent(auditEvent);
+        return auditEvent;
+    }
+
+    private static void ValidateRetentionAuditMatchesMetadata(
+        HerdrEvidenceRetentionAuditEvent auditEvent,
+        EvidenceMetadata metadata)
+    {
+        if (!string.Equals(
+                auditEvent.EvidenceIdentitySha256,
+                metadata.EvidenceIdentitySha256,
+                StringComparison.Ordinal) ||
+            !string.Equals(
+                auditEvent.ManagedRelativePath,
+                metadata.ManagedRelativePath,
+                StringComparison.Ordinal) ||
+            auditEvent.ExpectedContentLength != metadata.ContentLength ||
+            !string.Equals(
+                auditEvent.ExpectedContentSha256,
+                metadata.ContentSha256,
+                StringComparison.Ordinal))
+        {
+            throw new HerdrStateStoreException(
+                $"Retention event for '{metadata.EvidenceIdentitySha256}' does not match immutable evidence metadata.");
+        }
     }
 
     private HerdrEvidenceRetentionAuditEvent CreateRetentionAuditEvent(

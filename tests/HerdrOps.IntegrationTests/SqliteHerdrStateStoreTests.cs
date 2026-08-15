@@ -191,6 +191,70 @@ public sealed class SqliteHerdrStateStoreTests
     }
 
     [TestMethod]
+    public void FailedVersionThreeMigrationRollsBackAllPartialChanges()
+    {
+        using var directory = new TemporaryDirectory();
+        var databasePath = Path.Combine(directory.Path, "rollback-v2.db");
+        var versionOne = SqliteHerdrStateStore.GetMigrationForTesting(1);
+        var versionTwo = SqliteHerdrStateStore.GetMigrationForTesting(2);
+        using (var versionTwoDatabase = Open(databasePath))
+        {
+            using var command = versionTwoDatabase.CreateCommand();
+            command.CommandText = versionOne.Sql;
+            command.ExecuteNonQuery();
+            command.CommandText = versionTwo.Sql;
+            command.ExecuteNonQuery();
+            command.CommandText = """
+                INSERT INTO schema_migrations(version, name, applied_utc, script_sha256)
+                VALUES (1, $v1Name, '2026-08-15T00:00:00.0000000+00:00', $v1Hash);
+                INSERT INTO schema_migrations(version, name, applied_utc, script_sha256)
+                VALUES (2, $v2Name, '2026-08-15T00:00:01.0000000+00:00', $v2Hash);
+                PRAGMA user_version = 2;
+                CREATE TABLE review_audit_events(conflict_marker TEXT NOT NULL);
+                """;
+            command.Parameters.AddWithValue("$v1Name", versionOne.Name);
+            command.Parameters.AddWithValue("$v1Hash", versionOne.ScriptSha256);
+            command.Parameters.AddWithValue("$v2Name", versionTwo.Name);
+            command.Parameters.AddWithValue("$v2Hash", versionTwo.ScriptSha256);
+            command.ExecuteNonQuery();
+        }
+
+        var exception = Assert.Throws<SqliteException>(() =>
+            new SqliteHerdrStateStore(new HerdrStateStoreOptions(databasePath)));
+        StringAssert.Contains(exception.Message, "review_audit_events", StringComparison.Ordinal);
+
+        using var unchanged = Open(databasePath);
+        using var verify = unchanged.CreateCommand();
+        verify.CommandText = "PRAGMA user_version;";
+        Assert.AreEqual(2L, Convert.ToInt64(verify.ExecuteScalar()));
+        verify.CommandText = "SELECT COUNT(*) FROM schema_migrations;";
+        Assert.AreEqual(2L, Convert.ToInt64(verify.ExecuteScalar()));
+        verify.CommandText =
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'evidence_items';";
+        Assert.AreEqual(0L, Convert.ToInt64(verify.ExecuteScalar()));
+        verify.CommandText =
+            "SELECT COUNT(*) FROM pragma_table_info('review_audit_events') WHERE name = 'conflict_marker';";
+        Assert.AreEqual(1L, Convert.ToInt64(verify.ExecuteScalar()));
+
+        var backupDirectory = Path.Combine(directory.Path, "backups");
+        var backupPaths = Directory.GetFiles(backupDirectory, "*.bak");
+        Assert.HasCount(1, backupPaths);
+        var backupPath = backupPaths[0];
+        using var backup = Open(backupPath);
+        using var backupCheck = backup.CreateCommand();
+        backupCheck.CommandText = "PRAGMA user_version;";
+        Assert.AreEqual(2L, Convert.ToInt64(backupCheck.ExecuteScalar()));
+        backupCheck.CommandText = "SELECT COUNT(*) FROM schema_migrations;";
+        Assert.AreEqual(2L, Convert.ToInt64(backupCheck.ExecuteScalar()));
+        backupCheck.CommandText =
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'evidence_items';";
+        Assert.AreEqual(0L, Convert.ToInt64(backupCheck.ExecuteScalar()));
+        backupCheck.CommandText =
+            "SELECT COUNT(*) FROM pragma_table_info('review_audit_events') WHERE name = 'conflict_marker';";
+        Assert.AreEqual(1L, Convert.ToInt64(backupCheck.ExecuteScalar()));
+    }
+
+    [TestMethod]
     public void FutureSchemaFailsClosedWithoutMigration()
     {
         using var directory = new TemporaryDirectory();
