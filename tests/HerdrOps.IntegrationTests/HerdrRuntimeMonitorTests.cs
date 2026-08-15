@@ -159,8 +159,15 @@ public sealed class HerdrRuntimeMonitorTests
             ]);
         var monitor = CreateMonitor(apiClient);
         var publishedIntermediatePane = false;
+        HerdrRuntimeMonitorSnapshot? reconciliation = null;
         monitor.StateChanged += (_, state) =>
+        {
             publishedIntermediatePane |= state.State.Panes.ContainsKey("pane-2");
+            if (state.Status == HerdrRuntimeMonitorStatus.Reconnecting && state.EventCount == 1)
+            {
+                reconciliation = state;
+            }
+        };
         using var cancellation = new CancellationTokenSource();
         var runTask = monitor.RunAsync(cancellation.Token);
 
@@ -171,6 +178,9 @@ public sealed class HerdrRuntimeMonitorTests
         await Assert.ThrowsAsync<OperationCanceledException>(() => runTask);
 
         Assert.IsFalse(publishedIntermediatePane);
+        Assert.IsNotNull(reconciliation);
+        Assert.AreEqual(2, reconciliation.State.LastIngestSequence);
+        Assert.AreEqual(3, monitor.Current.State.LastIngestSequence);
         Assert.HasCount(1, monitor.Current.State.Panes);
         Assert.AreEqual(1, monitor.Current.EventCount);
         Assert.IsGreaterThanOrEqualTo(1, monitor.Current.ReconciliationCount);
