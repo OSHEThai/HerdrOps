@@ -57,6 +57,8 @@ public partial class WidgetSurface : UserControl
 
     public event EventHandler<WidgetAgentEventArgs>? AgentDetailsRequested;
 
+    public event EventHandler<WidgetTaskEventArgs>? TaskAlignmentRequested;
+
     public WidgetVariant Variant
     {
         get => (WidgetVariant)GetValue(VariantProperty);
@@ -175,6 +177,25 @@ public partial class WidgetSurface : UserControl
         if (State?.SelectedAgent is { TerminalId.Length: > 0 } agent)
         {
             AgentDetailsRequested?.Invoke(this, new WidgetAgentEventArgs(agent));
+        }
+    }
+
+    private void OnAgentDetailsClick(object sender, RoutedEventArgs e)
+    {
+        if (sender is Button { CommandParameter: WidgetAgent agent })
+        {
+            AgentDetailsRequested?.Invoke(this, new WidgetAgentEventArgs(agent));
+        }
+    }
+
+    private void OnTaskAlignmentClick(object sender, RoutedEventArgs e)
+    {
+        if (sender is Button
+            {
+                CommandParameter: WidgetAgent { CanOpenTaskAlignment: true } agent,
+            })
+        {
+            TaskAlignmentRequested?.Invoke(this, new WidgetTaskEventArgs(agent));
         }
     }
 

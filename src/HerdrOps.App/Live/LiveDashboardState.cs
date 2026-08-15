@@ -9,6 +9,7 @@ using HerdrOps.App.StateIpc;
 using HerdrOps.App.Widgets;
 using HerdrOps.Contracts.StateIpc;
 using HerdrOps.Domain.Activity;
+using HerdrOps.Domain.Assignments;
 using HerdrOps.Domain.Notifications;
 
 namespace HerdrOps.App.Live;
@@ -31,6 +32,8 @@ public sealed class LiveDashboardState : ObservableState
 {
     private readonly List<LiveActivityRecord> _activities = [];
     private readonly bool _syntheticPreview;
+    private AssignmentLifecycleReplayResult? _assignmentReplay;
+    private IReadOnlyList<TaskAlignmentAnalysisResult> _taskAlignmentAnalyses = [];
     private HerdrSessionStateContract _currentState = HerdrSessionStateContract.Empty;
     private HerdrRuntimeHealthContract _currentRuntimeHealth =
         HerdrRuntimeHealthContract.Starting(DateTimeOffset.UnixEpoch);
@@ -280,7 +283,58 @@ public sealed class LiveDashboardState : ObservableState
             LastSourceTimestamp,
             resolved,
             LastUpdateLatency,
-            recordLatency: false);
+            recordLatency: false,
+            CreateWidgetAssignmentProjection());
+    }
+
+    public void ApplyAssignmentWorkspace(
+        AssignmentLifecycleReplayResult replay,
+        TaskAlignmentAnalysisRequest? alignmentRequest,
+        string projectLabel,
+        string sourceLabel,
+        string evidenceBoundary)
+    {
+        ArgumentNullException.ThrowIfNull(replay);
+        ArgumentException.ThrowIfNullOrWhiteSpace(projectLabel);
+        ArgumentException.ThrowIfNullOrWhiteSpace(sourceLabel);
+        ArgumentException.ThrowIfNullOrWhiteSpace(evidenceBoundary);
+        var graph = AssignmentDelegationGraphProjector.Create(replay);
+        TaskAlignmentAnalysisResult? analysis = null;
+        if (alignmentRequest is not null)
+        {
+            if (!string.Equals(
+                    alignmentRequest.LifecycleReplay.ResultSha256,
+                    replay.ResultSha256,
+                    StringComparison.Ordinal))
+            {
+                throw new ArgumentException(
+                    "Task Alignment and Delegation must bind the same lifecycle replay.",
+                    nameof(alignmentRequest));
+            }
+
+            analysis = TaskAlignmentAnalyzer.Analyze(alignmentRequest);
+        }
+
+        _assignmentReplay = replay;
+        _taskAlignmentAnalyses = analysis is null ? [] : [analysis];
+        DelegationGraph.ApplyGraph(graph, projectLabel, sourceLabel, evidenceBoundary);
+        if (alignmentRequest is null)
+        {
+            TaskAlignment.MarkUnavailable(
+                projectLabel,
+                sourceLabel,
+                evidenceBoundary);
+        }
+        else
+        {
+            TaskAlignment.ApplyAnalysis(
+                alignmentRequest,
+                projectLabel,
+                sourceLabel,
+                evidenceBoundary);
+        }
+
+        RefreshViews();
     }
 
     public NotificationCenterDecision ApplyActivity(ActivityPipelineStep step)
@@ -334,7 +388,8 @@ public sealed class LiveDashboardState : ObservableState
             LastSourceTimestamp,
             SelectedTerminalId,
             LastUpdateLatency,
-            recordWidgetLatency);
+            recordWidgetLatency,
+            CreateWidgetAssignmentProjection());
         if (!DelegationGraph.HasGraph)
         {
             DelegationGraph.MarkUnavailableFromCatalog(
@@ -351,6 +406,14 @@ public sealed class LiveDashboardState : ObservableState
                 "AlignmentUnavailableBoundary");
         }
     }
+
+    private WidgetAssignmentProjection CreateWidgetAssignmentProjection() =>
+        _assignmentReplay is null || CurrentState.LastIngestSequence == 0
+            ? WidgetAssignmentProjection.Empty
+            : WidgetAssignmentProjector.Create(
+                CurrentState,
+                _assignmentReplay,
+                _taskAlignmentAnalyses);
 
     private void UpdateActivities(HerdrOpsStateUpdate update)
     {

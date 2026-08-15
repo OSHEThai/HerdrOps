@@ -63,10 +63,38 @@ Build, verification, GitHub roadmap, evidence capture, and packaging helpers liv
 # duplicate-handoff visibility, and exact committed synthetic replay hashes.
 ./tools/Test-V04AssignmentLifecycle.ps1
 
+# Verify strict agent-facing CLI contracts, current-user Named Pipe transport,
+# Core-owned acceptance identity, and one built CLI-to-Core process exchange.
+./tools/Test-V04SelfReportCli.ps1
+
 # Verify deterministic Delegation Graph projection, task/node/detail/timeline
 # synchronization, pan/zoom/fit interaction, accessible equivalence, separate
 # Thai/English presentation, and actual WPF rendering at reference sizes.
 ./tools/Test-V04DelegationGraph.ps1
+
+# Verify deterministic Task Alignment findings, missing-data fail-closed behavior,
+# synchronized evidence regions, language separation, and actual WPF rendering.
+./tools/Test-V04TaskAlignment.ps1
+
+# Verify the shared Expanded Widget Agent/Task projection, exact identity and
+# provenance binding, durable lifecycle restart, accessible deep links, and
+# separate Thai/English WPF captures. This does not claim actual Herdr runtime.
+./tools/Test-V04ExpandedWidget.ps1
+
+# From an authorized Herdr pane with four already-running role-distinct Agents,
+# bind a durable ten-event CLI lifecycle to the exact overlapping Herdr runtime.
+./tools/Invoke-V04LifecycleRuntimeAcceptance.ps1 `
+  -ProjectManagerTerminalId '<terminal-id>' `
+  -LeaderTerminalId '<terminal-id>' `
+  -WorkerTerminalId '<terminal-id>' `
+  -ReviewerTerminalId '<terminal-id>' `
+  -EvidencePath '<verified-evidence-file>'
+
+# After five independent PASS records and a passing composite runtime report,
+# run the fail-closed v0.4 aggregate release gate.
+./tools/Test-V04ReleaseGate.ps1 `
+  -CompositeRuntimeReport '<composite-runtime-acceptance.json>' `
+  -RuntimeGateReport '<runtime-gate-report.txt>'
 
 # From an authorized Herdr pane, capture actual bounded pane-read and
 # Herdr-PID-to-Windows-process evidence without controlling the session.
@@ -86,3 +114,5 @@ The v0.3 terminal/process implementation gate is Contract plus Synthetic plus on
 The v0.3 notification implementation gate includes actual WPF rendering and interaction from deterministic contract-backed input. It does not close Issue #16 or claim actual Herdr notification delivery, live Agent/Task correlation, restart persistence, or end-to-end runtime latency.
 
 The v0.4 Delegation Graph gate includes deterministic lifecycle projection, provenance validation, actual WPF rendering, interaction tests, and an accessible equivalent. It does not close Issue #20 without independent review or claim actual Herdr/Core lifecycle delivery.
+
+The v0.4 Expanded Widget implementation gate includes contract, synthetic, local SQLite, and actual WPF rendering evidence. Runtime credit exists only after the authorized harness binds four exact running Agent IDs and roles to an overlapping durable lifecycle. Current-user Named Pipe isolation does not prove which same-user process submitted each event.

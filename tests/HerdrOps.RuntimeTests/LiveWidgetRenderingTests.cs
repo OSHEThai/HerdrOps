@@ -6,11 +6,13 @@ using System.Windows.Automation;
 using System.Windows.Controls;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
+using HerdrOps.App.Alignment;
 using HerdrOps.App.Localization;
 using HerdrOps.App.Live;
 using HerdrOps.App.StateIpc;
 using HerdrOps.App.Widgets;
 using HerdrOps.Contracts.StateIpc;
+using HerdrOps.Domain.Assignments;
 
 namespace HerdrOps.RuntimeTests;
 
@@ -89,6 +91,112 @@ public sealed class LiveWidgetRenderingTests
                 }
 
                 SavePng(surface, size, Path.Combine(outputDirectory, item.FileName));
+            }
+        });
+    }
+
+    [TestMethod]
+    public void ExpandedWidgetRendersExactSharedAgentTaskStateAndDeepLinkActions()
+    {
+        WpfTestHost.Run(() =>
+        {
+            var outputDirectory = Path.Combine(
+                FindRepositoryRoot(),
+                "artifacts",
+                "design-evidence",
+                "v0.4.0",
+                "issue-22",
+                "contract-backed-wpf");
+            Directory.CreateDirectory(outputDirectory);
+
+            foreach (var language in new[] { UiLanguage.Thai, UiLanguage.English })
+            {
+                UiLanguageService.Shared.SetLanguage(language);
+                var request = TaskAlignmentState.CreateSyntheticPreviewRequest();
+                var currentTask = request.LifecycleReplay.CurrentTasks.Single().State;
+                var session = CreateAssignmentState(
+                    currentTask.CurrentAssigneeId,
+                    currentTask.CurrentAssigneeRole!);
+                var update = CreateAssignmentUpdate(session);
+                var dashboard = new LiveDashboardState();
+                dashboard.ApplyUpdate(update, update.Envelope.SentUtc.AddMilliseconds(12));
+                dashboard.ApplyAssignmentWorkspace(
+                    request.LifecycleReplay,
+                    request,
+                    "HerdrOps",
+                    UiLanguageService.Shared["AlignmentSyntheticSource"],
+                    UiLanguageService.Shared["AlignmentSyntheticBoundary"]);
+
+                var agent = dashboard.Widgets.Agents.Single();
+                Assert.AreEqual(currentTask.CurrentAssigneeId, agent.TerminalId);
+                Assert.AreEqual(
+                    UiLanguageService.Shared["WidgetAgentBackendWorkerRole"],
+                    agent.Role);
+                Assert.AreEqual(currentTask.TaskId, agent.TaskId);
+                Assert.AreEqual("68", agent.ScoreLabel);
+                Assert.AreEqual(currentTask.TaskId, dashboard.TaskAlignment.Header.TaskId);
+                Assert.IsTrue(dashboard.TaskAlignment.HasExactTask(agent.TaskId!));
+                Assert.IsTrue(agent.CanOpenTaskAlignment);
+                Assert.AreEqual(
+                    request.LifecycleReplay.CurrentTasks.Single().State.Contract.ProvenanceEventSha256,
+                    agent.LifecycleProvenance);
+
+                var descriptor = WidgetCatalog.Get(WidgetVariant.Expanded);
+                var surface = new WidgetSurface(dashboard.Widgets)
+                {
+                    Width = descriptor.WindowWidth,
+                    Height = descriptor.WindowHeight,
+                    Variant = WidgetVariant.Expanded,
+                    IsInteractive = true,
+                };
+                var size = new Size(descriptor.WindowWidth, descriptor.WindowHeight);
+                Layout(surface, size);
+                var visibleText = VisibleText(surface);
+                if (language == UiLanguage.Thai)
+                {
+                    Assert.IsTrue(visibleText.Any(ContainsThai));
+                    Assert.IsFalse(visibleText.Any(text =>
+                        text.Contains("CORE", StringComparison.Ordinal) ||
+                        text.Contains("Backend Worker", StringComparison.Ordinal) ||
+                        text.Contains("Submitted", StringComparison.Ordinal)));
+                }
+                else
+                {
+                    Assert.IsTrue(visibleText.All(text => !ContainsThai(text)),
+                        $"English Expanded widget retained Thai copy: {string.Join(" | ", visibleText.Where(ContainsThai))}");
+                }
+
+                var rowActions = EnumerateDescendants(surface)
+                    .OfType<Button>()
+                    .Where(button => ReferenceEquals(button.CommandParameter, agent))
+                    .ToArray();
+                Assert.HasCount(2, rowActions);
+                Assert.IsTrue(rowActions.All(button => button.IsEnabled));
+                Assert.IsTrue(rowActions.All(button =>
+                    !string.IsNullOrWhiteSpace(AutomationProperties.GetName(button))));
+                WidgetAgentEventArgs? agentNavigation = null;
+                WidgetTaskEventArgs? taskNavigation = null;
+                surface.AgentDetailsRequested += (_, eventArgs) => agentNavigation = eventArgs;
+                surface.TaskAlignmentRequested += (_, eventArgs) => taskNavigation = eventArgs;
+                rowActions.Single(button => string.Equals(
+                        AutomationProperties.GetName(button),
+                        agent.AgentDetailsAutomationName,
+                        StringComparison.Ordinal))
+                    .RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                rowActions.Single(button => string.Equals(
+                        AutomationProperties.GetName(button),
+                        agent.TaskAlignmentAutomationName,
+                        StringComparison.Ordinal))
+                    .RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                Assert.AreSame(agent, agentNavigation?.Agent);
+                Assert.AreEqual(agent.TaskId, taskNavigation?.TaskId);
+                AssertThaiTextFits(surface);
+
+                var languageName = language == UiLanguage.Thai ? "thai" : "english";
+                SavePng(
+                    surface,
+                    size,
+                    Path.Combine(outputDirectory, $"expanded-{languageName}.png"));
             }
         });
     }
@@ -344,6 +452,59 @@ public sealed class LiveWidgetRenderingTests
             "workspace-1",
             "tab-1",
             "pane-1"));
+    }
+
+    private static HerdrSessionStateContract CreateAssignmentState(
+        string terminalId,
+        string role)
+    {
+        const long sequence = 30;
+        const string workspaceId = "workspace-assignment";
+        const string tabId = "tab-assignment";
+        const string paneId = "pane-assignment";
+        return HerdrSessionStateContractReducer.NormalizeAndValidate(new HerdrSessionStateContract(
+            "0.8.0-preview",
+            19,
+            2,
+            sequence,
+            [new(workspaceId, 1, "HerdrOps", true, 1, 1, tabId, "Working")],
+            [new(tabId, workspaceId, 1, "Implementation", true, 1, "Working")],
+            [new(paneId, terminalId, workspaceId, tabId, true, "Working", 30, "codex", "Codex", role, "Z:\\HerdrOps", "Z:\\HerdrOps", "Codex")],
+            [new(terminalId, workspaceId, tabId, paneId, true, "Working", 30, 30, "codex", "Codex", "Backend Worker 01", role, "Z:\\HerdrOps", "Z:\\HerdrOps", "Codex", true, false, false)],
+            workspaceId,
+            tabId,
+            paneId));
+    }
+
+    private static HerdrOpsStateUpdate CreateAssignmentUpdate(HerdrSessionStateContract state)
+    {
+        var acceptedUtc = new DateTimeOffset(2026, 8, 15, 3, 15, 0, TimeSpan.Zero);
+        var runtimeHealth = new HerdrRuntimeHealthContract(
+            "Connected",
+            acceptedUtc,
+            acceptedUtc,
+            1,
+            1,
+            0,
+            0);
+        var payload = new HerdrOpsStateSnapshotPayload(
+            state,
+            HerdrOpsStateIpcJson.ComputeSha256(state),
+            runtimeHealth);
+        var envelope = HerdrOpsStateIpcJson.CreateEnvelope(
+            HerdrOpsStateIpcProtocol.MessageTypes.Snapshot,
+            state.LastIngestSequence,
+            acceptedUtc,
+            HerdrOpsStateIpcProtocol.CoreSource,
+            Guid.NewGuid(),
+            payload);
+        return new HerdrOpsStateUpdate(
+            HerdrOpsStateUpdateKind.Snapshot,
+            state,
+            envelope,
+            payload,
+            null,
+            runtimeHealth);
     }
 
     private static HerdrOpsStateUpdate CreateUpdate(HerdrSessionStateContract state)

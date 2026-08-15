@@ -49,6 +49,7 @@ public partial class WidgetWindow : Window
         Surface.NotificationOpenRequested += OnNotificationOpenRequested;
         Surface.NotificationHistoryRequested += OnNotificationHistoryRequested;
         Surface.AgentDetailsRequested += OnAgentDetailsRequested;
+        Surface.TaskAlignmentRequested += OnTaskAlignmentRequested;
         WeakEventManager<UiLanguageService, EventArgs>.AddHandler(
             UiLanguageService.Shared,
             nameof(UiLanguageService.LanguageChanged),
@@ -133,6 +134,9 @@ public partial class WidgetWindow : Window
     private void OnAgentDetailsRequested(object? sender, WidgetAgentEventArgs e) =>
         _actionRouter.OpenAgent(e.Agent.TerminalId);
 
+    private void OnTaskAlignmentRequested(object? sender, WidgetTaskEventArgs e) =>
+        _actionRouter.OpenTaskAlignment(e.TaskId);
+
     private void OnLanguageChanged(object? sender, EventArgs e)
     {
         if (!Dispatcher.CheckAccess())
@@ -164,6 +168,7 @@ public partial class WidgetWindow : Window
         Surface.NotificationOpenRequested -= OnNotificationOpenRequested;
         Surface.NotificationHistoryRequested -= OnNotificationHistoryRequested;
         Surface.AgentDetailsRequested -= OnAgentDetailsRequested;
+        Surface.TaskAlignmentRequested -= OnTaskAlignmentRequested;
         WeakEventManager<UiLanguageService, EventArgs>.RemoveHandler(
             UiLanguageService.Shared,
             nameof(UiLanguageService.LanguageChanged),

@@ -30,6 +30,43 @@
             <Setter Property="CornerRadius" Value="{DynamicResource HerdrOps.Radius.Large}" />
         </Style>
 
+        <Style x:Key="WidgetInlineLinkButton" TargetType="Button">
+            <Setter Property="Padding" Value="0" />
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="BorderBrush" Value="Transparent" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="Foreground" Value="{DynamicResource HerdrOps.Brush.TextSecondary}" />
+            <Setter Property="HorizontalContentAlignment" Value="Left" />
+            <Setter Property="VerticalContentAlignment" Value="Center" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                CornerRadius="3">
+                            <ContentPresenter HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
+                                              VerticalAlignment="{TemplateBinding VerticalContentAlignment}" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter Property="Foreground" Value="{DynamicResource HerdrOps.Brush.PrimaryText}" />
+                                <Setter Property="Background" Value="{DynamicResource HerdrOps.Brush.SurfaceHover}" />
+                            </Trigger>
+                            <Trigger Property="IsKeyboardFocused" Value="True">
+                                <Setter Property="BorderBrush" Value="{DynamicResource HerdrOps.Brush.Primary}" />
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter Property="Cursor" Value="Arrow" />
+                                <Setter Property="Opacity" Value="0.72" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
         <Style TargetType="{x:Type ScrollBar}">
             <Setter Property="Width" Value="8" />
             <Setter Property="MinWidth" Value="8" />
@@ -305,12 +342,24 @@
                                         <ColumnDefinition Width="58" />
                                         <ColumnDefinition Width="48" />
                                     </Grid.ColumnDefinitions>
-                                    <StackPanel Orientation="Horizontal">
-                                        <Ellipse Width="10" Height="10" Margin="0,0,7,0" Fill="{Binding StatusBrushKey, Converter={StaticResource ResourceBrush}}" />
-                                        <TextBlock VerticalAlignment="Center" FontSize="11" FontWeight="SemiBold" Text="{Binding Name}" TextTrimming="CharacterEllipsis" />
-                                    </StackPanel>
+                                    <Button Style="{StaticResource WidgetInlineLinkButton}"
+                                            CommandParameter="{Binding}"
+                                            automation:AutomationProperties.Name="{Binding AgentDetailsAutomationName}"
+                                            Click="OnAgentDetailsClick">
+                                        <StackPanel Orientation="Horizontal">
+                                            <Ellipse Width="10" Height="10" Margin="0,0,7,0" Fill="{Binding StatusBrushKey, Converter={StaticResource ResourceBrush}}" />
+                                            <TextBlock VerticalAlignment="Center" FontSize="11" FontWeight="SemiBold" Text="{Binding Name}" TextTrimming="CharacterEllipsis" />
+                                        </StackPanel>
+                                    </Button>
                                     <TextBlock Grid.Column="1" VerticalAlignment="Center" Foreground="{DynamicResource HerdrOps.Brush.TextSecondary}" FontSize="10" Text="{Binding Role}" TextTrimming="CharacterEllipsis" />
-                                    <TextBlock Grid.Column="2" VerticalAlignment="Center" Foreground="{DynamicResource HerdrOps.Brush.TextSecondary}" FontSize="10" Text="{Binding Activity}" TextTrimming="CharacterEllipsis" />
+                                    <Button Grid.Column="2"
+                                            Style="{StaticResource WidgetInlineLinkButton}"
+                                            CommandParameter="{Binding}"
+                                            IsEnabled="{Binding CanOpenTaskAlignment}"
+                                            automation:AutomationProperties.Name="{Binding TaskAlignmentAutomationName}"
+                                            Click="OnTaskAlignmentClick">
+                                        <TextBlock VerticalAlignment="Center" FontSize="10" Text="{Binding Activity}" TextTrimming="CharacterEllipsis" />
+                                    </Button>
                                     <TextBlock Grid.Column="3" VerticalAlignment="Center" Foreground="{DynamicResource HerdrOps.Brush.TextSecondary}" FontSize="10" Text="{Binding Elapsed}" />
                                     <TextBlock Grid.Column="4" VerticalAlignment="Center" Foreground="{Binding StatusBrushKey, Converter={StaticResource ResourceBrush}}" FontSize="11" FontWeight="SemiBold" Text="{Binding ScoreLabel}" />
                                 </Grid>
