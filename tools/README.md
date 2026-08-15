@@ -63,6 +63,11 @@ Build, verification, GitHub roadmap, evidence capture, and packaging helpers liv
 # duplicate-handoff visibility, and exact committed synthetic replay hashes.
 ./tools/Test-V04AssignmentLifecycle.ps1
 
+# Verify deterministic Delegation Graph projection, task/node/detail/timeline
+# synchronization, pan/zoom/fit interaction, accessible equivalence, separate
+# Thai/English presentation, and actual WPF rendering at reference sizes.
+./tools/Test-V04DelegationGraph.ps1
+
 # From an authorized Herdr pane, capture actual bounded pane-read and
 # Herdr-PID-to-Windows-process evidence without controlling the session.
 dotnet artifacts/bin/HerdrOps.Core/release/HerdrOps.Core.dll trace-herdr-terminal-process `
@@ -79,3 +84,5 @@ The v0.3 Realtime Activity gate is Contract plus actual WPF rendering backed by 
 The v0.3 terminal/process implementation gate is Contract plus Synthetic plus one local Windows-process sample. It does not close Issue #14 or claim that an actual Herdr pane returned terminal bytes or a live Herdr PID correlation.
 
 The v0.3 notification implementation gate includes actual WPF rendering and interaction from deterministic contract-backed input. It does not close Issue #16 or claim actual Herdr notification delivery, live Agent/Task correlation, restart persistence, or end-to-end runtime latency.
+
+The v0.4 Delegation Graph gate includes deterministic lifecycle projection, provenance validation, actual WPF rendering, interaction tests, and an accessible equivalent. It does not close Issue #20 without independent review or claim actual Herdr/Core lifecycle delivery.

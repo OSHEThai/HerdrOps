@@ -1,5 +1,6 @@
 using HerdrOps.App.Agents;
 using HerdrOps.App.Activity;
+using HerdrOps.App.Delegation;
 using HerdrOps.App.Localization;
 using HerdrOps.App.Organization;
 using HerdrOps.App.Overview;
@@ -64,6 +65,9 @@ public sealed class LiveDashboardState : ObservableState
         RealtimeActivity = syntheticPreview
             ? RealtimeActivityState.CreateSyntheticPreview()
             : RealtimeActivityState.CreateUnavailable();
+        DelegationGraph = syntheticPreview
+            ? DelegationGraphState.CreateSyntheticPreview()
+            : new DelegationGraphState();
         Organization.AgentSelectionRequested += (_, terminalId) => SelectAgent(terminalId);
         _connectionStatus = syntheticPreview
             ? LiveDashboardConnectionStatus.SyntheticPreview
@@ -95,6 +99,8 @@ public sealed class LiveDashboardState : ObservableState
     public LiveWidgetState Widgets { get; }
 
     public RealtimeActivityState RealtimeActivity { get; }
+
+    public DelegationGraphState DelegationGraph { get; }
 
     public HerdrSessionStateContract CurrentState
     {
@@ -282,6 +288,7 @@ public sealed class LiveDashboardState : ObservableState
         RefreshPresentation();
         RefreshViews();
         RealtimeActivity.RefreshLanguage();
+        DelegationGraph.RefreshLanguage();
         if (_syntheticPreview)
         {
             AgentDetail.ApplySyntheticPreviewProfile();
@@ -321,6 +328,13 @@ public sealed class LiveDashboardState : ObservableState
             SelectedTerminalId,
             LastUpdateLatency,
             recordWidgetLatency);
+        if (!DelegationGraph.HasGraph)
+        {
+            DelegationGraph.MarkUnavailableFromCatalog(
+                ProjectLabel,
+                "DelegationWaitingSource",
+                "DelegationUnavailableBoundary");
+        }
     }
 
     private void UpdateActivities(HerdrOpsStateUpdate update)
