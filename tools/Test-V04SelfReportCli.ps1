@@ -306,6 +306,17 @@ foreach ($forbiddenToken in @('Microsoft.Data.Sqlite', 'SqliteConnection', 'Herd
     }
 }
 
+$reviewText = Get-Content -LiteralPath $reviewRecordPath -Raw
+$reviewPassed = $reviewText -match '(?m)^Verdict: PASS\s*$'
+$reviewVerdict = if ($reviewPassed) { 'PASS' } else { 'UNAVAILABLE OR PENDING' }
+$issueAcceptance = if ($reviewPassed) { 'PASS' } else { 'PENDING' }
+$issueStateRequired = if ($reviewPassed) {
+    'READY TO CLOSE AFTER MERGE AND POST-MERGE CI'
+} else {
+    'OPEN'
+}
+$result = if ($reviewPassed) { 'IMPLEMENTATION READY' } else { 'IMPLEMENTATION READY / PARTIAL' }
+
 $sourceCommit = (& git -C $repositoryRoot rev-parse HEAD).Trim()
 if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($sourceCommit)) {
     throw 'Could not resolve the source commit for the v0.4 self-report gate.'
@@ -321,9 +332,9 @@ $gateReport = @(
     'HerdrOps v0.4 Issue #18 CLI Self-report Implementation Gate',
     "GeneratedUtc: $([DateTime]::UtcNow.ToString('O'))",
     "SourceCommit: $sourceCommit",
-    'Result: IMPLEMENTATION READY / PARTIAL',
+    "Result: $result",
     'ImplementationGate: PASS',
-    'IssueAcceptance: PENDING',
+    "IssueAcceptance: $issueAcceptance",
     'VersionReleaseGate: PENDING',
     'ContractEvidence: PASS',
     'IntegrationEvidence: PASS',
@@ -331,8 +342,8 @@ $gateReport = @(
     'BuiltProcessCliToCoreTrace: OBSERVED',
     'ActualHerdrAgentRuntime: NOT OBSERVED / NOT CLAIMED',
     'DurableLifecyclePersistence: NOT ENABLED IN THIS ISSUE #18 TRACE / NOT CLAIMED',
-    'IndependentReviewVerdict: UNAVAILABLE / NOT CLAIMED',
-    'IssueStateRequired: OPEN',
+    "IndependentReviewVerdict: $reviewVerdict",
+    "IssueStateRequired: $issueStateRequired",
     "Tests: $passedTests/$totalTests PASS",
     "ContractSha256: $contractSha256",
     "IndependentReviewRecordSha256: $reviewRecordSha256",
@@ -353,7 +364,8 @@ $gateReport = @(
     '',
     'EvidenceBoundary:',
     'This gate proves strict versioned command contracts, current-user-only bounded Named Pipe transport, fail-closed schema and unknown-task handling, Core-owned source/sequence/correlation/UTC identity, idempotent retry behavior, the CLI dependency boundary, and one actual built CLI-to-Core acceptance trace on this host.',
-    'It does not prove an installed Herdr agent self-report, durable lifecycle persistence, graph projection, Task Alignment UI, independent review, Issue #18 acceptance, v0.4 acceptance, or release readiness.'
+    'It does not prove an installed Herdr agent self-report, durable lifecycle persistence, graph projection, Task Alignment UI, v0.4 runtime acceptance, or release readiness.',
+    'Independent-review and Issue #18 acceptance status are derived only from the committed review record and remain separate from runtime and release evidence.'
 )
 $gateReport | Set-Content -LiteralPath $gateReportPath -Encoding utf8
 $gateReport | Write-Output
