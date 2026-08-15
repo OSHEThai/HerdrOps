@@ -58,6 +58,11 @@ Build, verification, GitHub roadmap, evidence capture, and packaging helpers liv
 # This remains partial until actual Herdr notification delivery is captured.
 ./tools/Test-V03NotificationRuntime.ps1
 
+# Verify v0.4 assignment lifecycle transitions, Core-acceptance mapping,
+# SQLite migration and append-only provenance, restart replay, orphan and
+# duplicate-handoff visibility, and exact committed synthetic replay hashes.
+./tools/Test-V04AssignmentLifecycle.ps1
+
 # From an authorized Herdr pane, capture actual bounded pane-read and
 # Herdr-PID-to-Windows-process evidence without controlling the session.
 dotnet artifacts/bin/HerdrOps.Core/release/HerdrOps.Core.dll trace-herdr-terminal-process `

@@ -1,4 +1,5 @@
 using HerdrOps.Contracts.StateIpc;
+using HerdrOps.Domain.Assignments;
 
 namespace HerdrOps.Infrastructure.Storage;
 
@@ -6,7 +7,7 @@ public sealed record HerdrStateStoreOptions(
     string DatabasePath,
     int BusyTimeoutSeconds = 5)
 {
-    public const int CurrentSchemaVersion = 1;
+    public const int CurrentSchemaVersion = 2;
 
     public static HerdrStateStoreOptions ForCurrentUser()
     {
@@ -49,7 +50,21 @@ public sealed record HerdrStateStoreDiagnostics(
     bool ForeignKeysEnabled,
     string IntegrityResult,
     long EventCount,
+    long LifecycleEventCount,
+    long AssignmentTaskCount,
+    long AssignmentRelationshipCount,
+    long OrphanLifecycleEventCount,
+    long DuplicateHandoffCount,
     string? LastBackupPath);
+
+public sealed record HerdrStoredAssignmentLifecycleEvent(
+    NormalizedAssignmentLifecycleEvent NormalizedEvent,
+    AssignmentLifecycleAuditEntry Audit,
+    string EventJsonSha256);
+
+public sealed record HerdrAssignmentLifecycleWriteResult(
+    HerdrStoredAssignmentLifecycleEvent StoredEvent,
+    bool WasAlreadyPresent);
 
 public sealed class HerdrStateStoreException : IOException
 {
