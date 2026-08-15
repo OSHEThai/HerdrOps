@@ -163,6 +163,17 @@ public sealed class ShellRenderingTests
         view.Arrange(new Rect(logicalSize));
         view.UpdateLayout();
 
+        if (view is WidgetGalleryView)
+        {
+            // The gallery selects its responsive tree from SizeChanged, which is raised
+            // during the first arrange. Give the newly visible tree a deterministic
+            // measure/arrange pass before inspecting or rendering its item templates.
+            view.InvalidateMeasure();
+            view.Measure(logicalSize);
+            view.Arrange(new Rect(logicalSize));
+            view.UpdateLayout();
+        }
+
         if (!string.IsNullOrEmpty(clippingTag))
         {
             AssertThaiTextFits(view, scale, clippingTag);
