@@ -130,7 +130,7 @@ function Assert-CleanCommittedCheckout {
         throw "The v0.5 Compliance Queue gate requires a clean committed checkout. Pending paths: $($status -join ', ')"
     }
 
-    $commit = (& git -C $repositoryRoot rev-parse --verify HEAD^{commit}).Trim()
+    $commit = (& git -C $repositoryRoot rev-parse --verify 'HEAD^{commit}').Trim()
     if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($commit)) {
         throw 'The v0.5 Compliance Queue gate requires a committed HEAD.'
     }
