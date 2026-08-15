@@ -214,7 +214,7 @@ public static class AssignmentLifecycleRuntimeAcceptanceCommand
                                   timeCoherent &&
                                   string.Equals(
                                       lifecycleTrace.EvidenceClassification,
-                                      EvidenceClass.Runtime.ToString(),
+                                      HerdrOpsSelfReportAcceptanceTrace.BuiltProcessIntegrationEvidence,
                                       StringComparison.Ordinal) &&
                                   herdrRuntime.RuntimeObserved &&
                                   string.Equals(

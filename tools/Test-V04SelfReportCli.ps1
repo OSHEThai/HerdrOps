@@ -15,6 +15,7 @@ $artifactRoot = Join-Path $repositoryRoot 'artifacts'
 $contractPath = Join-Path $repositoryRoot 'docs\protocol\v0.4-cli-self-report-contract.md'
 $implementationPath = Join-Path $repositoryRoot 'docs\design\implementation\v0.4-issue-18-cli-self-report.md'
 $reviewRecordPath = Join-Path $repositoryRoot 'docs\reviews\v0.4-issue-18-independent-review.md'
+$reviewManifestPath = Join-Path $repositoryRoot 'docs\reviews\v0.4-issue-18-reviewed-files.sha256'
 $assignmentExamplePath = Join-Path $repositoryRoot 'docs\protocol\examples\v0.4\assignment.json'
 
 $workingTreeStatus = @(& git -C $repositoryRoot status --porcelain=v1 --untracked-files=all)
@@ -284,7 +285,7 @@ if ($unknownResult.accepted -or $unknownResult.code -ne 'unknown-task') {
 if ($invalidResult.code -ne 'invalid-schema') {
     throw 'The built CLI invalid-schema response is not the required structured local error.'
 }
-if ($trace.evidenceClassification -ne 'Runtime' -or
+if ($trace.evidenceClassification -ne 'BuiltProcessIntegration' -or
     [long]$trace.lastSequence -ne 1 -or
     @($trace.acceptedEvents).Count -ne 1 -or
     $trace.acceptedEvents[0].source -ne 'HerdrOps.Core' -or
@@ -306,6 +307,108 @@ foreach ($forbiddenToken in @('Microsoft.Data.Sqlite', 'SqliteConnection', 'Herd
     }
 }
 
+$reviewText = Get-Content -LiteralPath $reviewRecordPath -Raw
+$reviewPassed = $reviewText -match '(?m)^Verdict: PASS\s*$'
+$reviewManifestSha256 = 'UNAVAILABLE'
+if ($reviewPassed) {
+    $manifestPathMatch = [Regex]::Match(
+        $reviewText,
+        '(?m)^ManifestPath:\s*(\S+)\s*$')
+    $manifestHashMatch = [Regex]::Match(
+        $reviewText,
+        '(?m)^ManifestSha256:\s*([0-9A-F]{64})\s*$')
+    if (-not $manifestPathMatch.Success -or
+        -not $manifestHashMatch.Success) {
+        throw 'The PASS review record is missing its reviewed-file manifest binding.'
+    }
+
+    $expectedManifestRelativePath = 'docs/reviews/v0.4-issue-18-reviewed-files.sha256'
+    if ($manifestPathMatch.Groups[1].Value -cne $expectedManifestRelativePath -or
+        -not (Test-Path -LiteralPath $reviewManifestPath -PathType Leaf)) {
+        throw 'The PASS review record does not bind the required Issue #18 manifest path.'
+    }
+
+    $reviewManifestSha256 = (Get-FileHash -LiteralPath $reviewManifestPath -Algorithm SHA256).Hash
+    if ($reviewManifestSha256 -cne $manifestHashMatch.Groups[1].Value) {
+        throw 'The Issue #18 reviewed-file manifest hash does not match the PASS review record.'
+    }
+
+    $expectedReviewedPaths = @(
+        'docs/design/implementation/v0.4-issue-18-cli-self-report.md',
+        'docs/protocol/examples/v0.4/acknowledgement.json',
+        'docs/protocol/examples/v0.4/assignment.json',
+        'docs/protocol/examples/v0.4/delegation.json',
+        'docs/protocol/examples/v0.4/deviation.json',
+        'docs/protocol/examples/v0.4/evidence.json',
+        'docs/protocol/examples/v0.4/handoff.json',
+        'docs/protocol/examples/v0.4/progress.json',
+        'docs/protocol/v0.4-cli-self-report-contract.md',
+        'docs/protocol/v0.4-runtime-lifecycle-acceptance.md',
+        'src/HerdrOps.Cli/HerdrOps.Cli.csproj',
+        'src/HerdrOps.Cli/HerdrOpsCliCommand.cs',
+        'src/HerdrOps.Cli/HerdrOpsSelfReportPipeClient.cs',
+        'src/HerdrOps.Cli/Program.cs',
+        'src/HerdrOps.Contracts/SelfReport/HerdrOpsSelfReportContract.cs',
+        'src/HerdrOps.Contracts/SelfReport/HerdrOpsSelfReportJson.cs',
+        'src/HerdrOps.Contracts/SelfReport/HerdrOpsSelfReportPipeName.cs',
+        'src/HerdrOps.Core/AssignmentLifecycleRuntimeAcceptanceCommand.cs',
+        'src/HerdrOps.Core/HerdrOpsSelfReportAcceptanceService.cs',
+        'src/HerdrOps.Core/HerdrOpsSelfReportServiceCommand.cs',
+        'src/HerdrOps.Core/Program.cs',
+        'src/HerdrOps.Infrastructure/StateIpc/HerdrOpsSelfReportPipeServer.cs',
+        'tests/HerdrOps.ContractTests/SelfReportContractTests.cs',
+        'tests/HerdrOps.IntegrationTests/AssignmentLifecycleIngestionCoordinatorTests.cs',
+        'tests/HerdrOps.IntegrationTests/SelfReportIntegrationTests.cs',
+        'tests/HerdrOps.UnitTests/SolutionTopologyTests.cs',
+        'tools/Invoke-V04LifecycleRuntimeAcceptance.ps1',
+        'tools/Test-V04SelfReportCli.ps1'
+    )
+    $manifestEntries = [Collections.Generic.Dictionary[string, string]]::new(
+        [StringComparer]::Ordinal)
+    foreach ($line in Get-Content -LiteralPath $reviewManifestPath) {
+        $entryMatch = [Regex]::Match($line, '^SHA256 ([0-9A-F]{64}) (\S+)$')
+        if (-not $entryMatch.Success) {
+            throw "Invalid Issue #18 reviewed-file manifest line: $line"
+        }
+
+        $relativePath = $entryMatch.Groups[2].Value
+        if ($manifestEntries.ContainsKey($relativePath)) {
+            throw "Duplicate Issue #18 reviewed-file manifest path: $relativePath"
+        }
+        $manifestEntries.Add($relativePath, $entryMatch.Groups[1].Value)
+    }
+
+    if ($manifestEntries.Count -ne $expectedReviewedPaths.Count) {
+        throw 'The Issue #18 reviewed-file manifest has an unexpected number of entries.'
+    }
+    foreach ($relativePath in $expectedReviewedPaths) {
+        if (-not $manifestEntries.ContainsKey($relativePath)) {
+            throw "The Issue #18 reviewed-file manifest is missing: $relativePath"
+        }
+        $boundPath = Join-Path $repositoryRoot $relativePath
+        if (-not (Test-Path -LiteralPath $boundPath -PathType Leaf)) {
+            throw "A reviewed Issue #18 file is missing: $relativePath"
+        }
+        $actualSha256 = (Get-FileHash -LiteralPath $boundPath -Algorithm SHA256).Hash
+        if ($actualSha256 -cne $manifestEntries[$relativePath]) {
+            throw "A reviewed Issue #18 file changed after independent approval: $relativePath"
+        }
+    }
+    foreach ($relativePath in $manifestEntries.Keys) {
+        if ($expectedReviewedPaths -cnotcontains $relativePath) {
+            throw "The Issue #18 reviewed-file manifest contains an unexpected path: $relativePath"
+        }
+    }
+}
+$reviewVerdict = if ($reviewPassed) { 'PASS' } else { 'UNAVAILABLE OR PENDING' }
+$issueAcceptance = if ($reviewPassed) { 'PASS' } else { 'PENDING' }
+$issueStateRequired = if ($reviewPassed) {
+    'READY TO CLOSE AFTER MERGE AND POST-MERGE CI'
+} else {
+    'OPEN'
+}
+$result = if ($reviewPassed) { 'IMPLEMENTATION READY' } else { 'IMPLEMENTATION READY / PARTIAL' }
+
 $sourceCommit = (& git -C $repositoryRoot rev-parse HEAD).Trim()
 if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($sourceCommit)) {
     throw 'Could not resolve the source commit for the v0.4 self-report gate.'
@@ -321,19 +424,21 @@ $gateReport = @(
     'HerdrOps v0.4 Issue #18 CLI Self-report Implementation Gate',
     "GeneratedUtc: $([DateTime]::UtcNow.ToString('O'))",
     "SourceCommit: $sourceCommit",
-    'Result: IMPLEMENTATION READY / PARTIAL',
+    "Result: $result",
     'ImplementationGate: PASS',
-    'IssueAcceptance: PENDING',
+    "IssueAcceptance: $issueAcceptance",
     'VersionReleaseGate: PENDING',
     'ContractEvidence: PASS',
     'IntegrationEvidence: PASS',
+    'TraceEvidenceClassification: BuiltProcessIntegration',
     'BuiltProcessCliToCoreTrace: OBSERVED',
     'ActualHerdrAgentRuntime: NOT OBSERVED / NOT CLAIMED',
     'DurableLifecyclePersistence: NOT ENABLED IN THIS ISSUE #18 TRACE / NOT CLAIMED',
-    'IndependentReviewVerdict: UNAVAILABLE / NOT CLAIMED',
-    'IssueStateRequired: OPEN',
+    "IndependentReviewVerdict: $reviewVerdict",
+    "IssueStateRequired: $issueStateRequired",
     "Tests: $passedTests/$totalTests PASS",
     "ContractSha256: $contractSha256",
+    "ReviewManifestSha256: $reviewManifestSha256",
     "IndependentReviewRecordSha256: $reviewRecordSha256",
     "CoreAcceptanceTraceSha256: $traceSha256",
     "AcceptedResultSha256: $acceptedSha256",
@@ -352,7 +457,8 @@ $gateReport = @(
     '',
     'EvidenceBoundary:',
     'This gate proves strict versioned command contracts, current-user-only bounded Named Pipe transport, fail-closed schema and unknown-task handling, Core-owned source/sequence/correlation/UTC identity, idempotent retry behavior, the CLI dependency boundary, and one actual built CLI-to-Core acceptance trace on this host.',
-    'It does not prove an installed Herdr agent self-report, durable lifecycle persistence, graph projection, Task Alignment UI, independent review, Issue #18 acceptance, v0.4 acceptance, or release readiness.'
+    'It does not prove an installed Herdr agent self-report, durable lifecycle persistence, graph projection, Task Alignment UI, v0.4 runtime acceptance, or release readiness.',
+    'Independent-review and Issue #18 acceptance status are derived only from the committed review record and remain separate from runtime and release evidence.'
 )
 $gateReport | Set-Content -LiteralPath $gateReportPath -Encoding utf8
 $gateReport | Write-Output

@@ -145,6 +145,9 @@ public sealed class AssignmentLifecycleIngestionCoordinatorTests
         try
         {
             var lifecycleTrace = CreateLifecycleTrace();
+            Assert.AreEqual(
+                HerdrOpsSelfReportAcceptanceTrace.BuiltProcessIntegrationEvidence,
+                lifecycleTrace.EvidenceClassification);
             var state = CreateRuntimeAgentState(reviewerRole: "Reviewer");
             var runtimeReport = CreateRuntimeReport(state);
             var lifecyclePath = Path.Combine(directory, "lifecycle.json");
@@ -201,6 +204,25 @@ public sealed class AssignmentLifecycleIngestionCoordinatorTests
         {
             Directory.Delete(directory, recursive: true);
         }
+    }
+
+    [TestMethod]
+    public void RuntimeHarnessRequiresTheBuiltProcessLifecycleClassification()
+    {
+        var harnessPath = Path.Combine(
+            FindRepositoryRoot(),
+            "tools",
+            "Invoke-V04LifecycleRuntimeAcceptance.ps1");
+        var harness = File.ReadAllText(harnessPath);
+        var expectedCheck =
+            $"if ($lifecycleTrace.evidenceClassification -ne '{HerdrOpsSelfReportAcceptanceTrace.BuiltProcessIntegrationEvidence}' -or";
+
+        StringAssert.Contains(harness, expectedCheck);
+        Assert.IsFalse(
+            harness.Contains(
+                "if ($lifecycleTrace.evidenceClassification -ne 'Runtime' -or",
+                StringComparison.Ordinal),
+            "The runtime harness must not relabel the built CLI-to-Core lifecycle trace as Runtime.");
     }
 
     [TestMethod]
@@ -331,7 +353,7 @@ public sealed class AssignmentLifecycleIngestionCoordinatorTests
             .ToArray());
         var graph = AssignmentDelegationGraphProjector.Create(replay);
         return new HerdrOpsSelfReportAcceptanceTrace(
-            EvidenceClass.Runtime.ToString(),
+            HerdrOpsSelfReportAcceptanceTrace.BuiltProcessIntegrationEvidence,
             HerdrOpsSelfReportProtocol.Version,
             HerdrOpsSelfReportProtocol.AuthorizationScope,
             "test-self-report-pipe",
@@ -608,6 +630,23 @@ public sealed class AssignmentLifecycleIngestionCoordinatorTests
             Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(path);
         return path;
+    }
+
+    private static string FindRepositoryRoot()
+    {
+        var directory = new DirectoryInfo(AppContext.BaseDirectory);
+        while (directory is not null)
+        {
+            if (File.Exists(Path.Combine(directory.FullName, "HerdrOps.sln")))
+            {
+                return directory.FullName;
+            }
+
+            directory = directory.Parent;
+        }
+
+        Assert.Fail("Could not locate HerdrOps.sln from the test output directory.");
+        return string.Empty;
     }
 
     private static Guid GuidFor(long value) => Guid.Parse(

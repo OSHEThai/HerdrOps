@@ -133,7 +133,9 @@ public static class HerdrOpsSelfReportServiceCommand
                     ? null
                     : AssignmentDelegationGraphProjector.Create(lifecycleReplay);
                 var report = new HerdrOpsSelfReportAcceptanceTrace(
-                    acceptedEvents.Count > 0 ? "Runtime" : "NoRuntimeCredit",
+                    acceptedEvents.Count > 0
+                        ? HerdrOpsSelfReportAcceptanceTrace.BuiltProcessIntegrationEvidence
+                        : "NoEvidenceCredit",
                     HerdrOpsSelfReportProtocol.Version,
                     HerdrOpsSelfReportProtocol.AuthorizationScope,
                     serverOptions.PipeName,
@@ -190,4 +192,7 @@ public sealed record HerdrOpsSelfReportAcceptanceTrace(
     AssignmentLifecycleReplayResult? LifecycleReplay,
     string? LifecycleGraphSha256,
     HerdrStateStoreDiagnostics? StoreDiagnostics,
-    string EvidenceBoundary);
+    string EvidenceBoundary)
+{
+    public const string BuiltProcessIntegrationEvidence = "BuiltProcessIntegration";
+}
