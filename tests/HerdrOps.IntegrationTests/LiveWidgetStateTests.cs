@@ -161,6 +161,15 @@ public sealed class LiveWidgetStateTests
             Assert.IsFalse(runtime.IsRunning);
             Assert.AreEqual(LiveDashboardConnectionStatus.Stopped, dashboard.ConnectionStatus);
             Assert.IsFalse(serverTask.IsCompleted, "Stopping the App subscription must not stop Core.");
+
+            var queueTitle = dashboard.ComplianceQueue.SummaryCards[0].Title;
+            runtime.Dispose();
+            UiLanguageService.Shared.SetLanguage(UiLanguage.English);
+            dashboard.ComplianceQueue.RefreshLanguage();
+            Assert.AreEqual(
+                queueTitle,
+                dashboard.ComplianceQueue.SummaryCards[0].Title,
+                "Disposing the App runtime must dispose its owned dashboard state.");
         }
         finally
         {

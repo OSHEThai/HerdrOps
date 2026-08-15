@@ -44,6 +44,30 @@
     <SolidColorBrush x:Key="HerdrOps.Brush.Status.Offline"
                      Color="{StaticResource HerdrOps.Color.Slate.500}" />
 
+    <!-- Compliance severity semantics are intentionally separate from workflow status. -->
+    <SolidColorBrush x:Key="HerdrOps.Brush.Severity.Critical"
+                     Color="{StaticResource HerdrOps.Color.Coral.500}" />
+    <SolidColorBrush x:Key="HerdrOps.Brush.Severity.High"
+                     Color="{StaticResource HerdrOps.Color.Coral.500}" />
+    <SolidColorBrush x:Key="HerdrOps.Brush.Severity.Medium"
+                     Color="{StaticResource HerdrOps.Color.Amber.500}" />
+    <SolidColorBrush x:Key="HerdrOps.Brush.Severity.Low"
+                     Color="{StaticResource HerdrOps.Color.Blue.500}" />
+
+    <!-- Compliance review-state semantics are intentionally separate from workflow status. -->
+    <SolidColorBrush x:Key="HerdrOps.Brush.Review.Suspected"
+                     Color="{StaticResource HerdrOps.Color.Coral.500}" />
+    <SolidColorBrush x:Key="HerdrOps.Brush.Review.Confirmed"
+                     Color="{StaticResource HerdrOps.Color.Coral.500}" />
+    <SolidColorBrush x:Key="HerdrOps.Brush.Review.PendingLeader"
+                     Color="{StaticResource HerdrOps.Color.Amber.500}" />
+    <SolidColorBrush x:Key="HerdrOps.Brush.Review.PendingProjectManager"
+                     Color="{StaticResource HerdrOps.Color.Purple.500}" />
+    <SolidColorBrush x:Key="HerdrOps.Brush.Review.Dismissed"
+                     Color="{StaticResource HerdrOps.Color.Slate.500}" />
+    <SolidColorBrush x:Key="HerdrOps.Brush.Review.MissingEvidence"
+                     Color="{StaticResource HerdrOps.Color.Coral.500}" />
+
     <!-- Chart categories deliberately use separate semantic names from workflow state. -->
     <SolidColorBrush x:Key="HerdrOps.Brush.Chart.Primary"
                      Color="{StaticResource HerdrOps.Color.Blue.500}" />

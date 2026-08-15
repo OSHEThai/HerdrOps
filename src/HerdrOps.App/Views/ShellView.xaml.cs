@@ -44,6 +44,7 @@ public partial class ShellView : UserControl
         RealtimeActivityPage.DataContext = LiveDashboard.RealtimeActivity;
         DelegationGraphPage.DataContext = LiveDashboard.DelegationGraph;
         TaskAlignmentPage.DataContext = LiveDashboard.TaskAlignment;
+        ComplianceQueuePage.DataContext = LiveDashboard.ComplianceQueue;
         FileActivityPage.DataContext = syntheticPreview
             ? FileActivityState.CreateSyntheticPreview()
             : FileActivityState.CreateUnavailable();
@@ -201,6 +202,10 @@ public partial class ShellView : UserControl
             Navigation.SelectedDestination.Id,
             "file-activity",
             StringComparison.Ordinal);
+        var isComplianceQueue = string.Equals(
+            Navigation.SelectedDestination.Id,
+            "compliance-queue",
+            StringComparison.Ordinal);
         OverviewPage.Visibility = isOverview ? Visibility.Visible : Visibility.Collapsed;
         LiveOrganizationPage.Visibility = isLiveOrganization
             ? Visibility.Visible
@@ -218,13 +223,17 @@ public partial class ShellView : UserControl
         FileActivityPage.Visibility = isFileActivity
             ? Visibility.Visible
             : Visibility.Collapsed;
+        ComplianceQueuePage.Visibility = isComplianceQueue
+            ? Visibility.Visible
+            : Visibility.Collapsed;
         PlaceholderPage.Visibility = isOverview ||
             isLiveOrganization ||
             isAgentDetail ||
             isRealtimeActivity ||
             isDelegationGraph ||
             isTaskAlignment ||
-            isFileActivity
+            isFileActivity ||
+            isComplianceQueue
             ? Visibility.Collapsed
             : Visibility.Visible;
     }

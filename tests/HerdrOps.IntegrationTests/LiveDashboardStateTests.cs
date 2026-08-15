@@ -43,6 +43,23 @@ public sealed class LiveDashboardStateTests
     }
 
     [TestMethod]
+    public void DashboardDisposeDisposesComplianceQueueAndIsIdempotent()
+    {
+        var language = UiLanguageService.Shared;
+        language.SetLanguage(UiLanguage.English);
+        var dashboard = LiveDashboardState.CreateSyntheticPreview();
+        var queue = dashboard.ComplianceQueue;
+        var englishTitle = queue.SummaryCards[0].Title;
+
+        dashboard.Dispose();
+        dashboard.Dispose();
+        language.SetLanguage(UiLanguage.Thai);
+        queue.RefreshLanguage();
+
+        Assert.AreEqual(englishTitle, queue.SummaryCards[0].Title);
+    }
+
+    [TestMethod]
     public void OfflineTransitionDoesNotLeaveLastKnownWorkingStatusCurrent()
     {
         var state = HerdrStateTestData.CreateState(sequence: 1, status: "Working");

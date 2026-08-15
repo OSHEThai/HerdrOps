@@ -91,6 +91,10 @@ public sealed class LiveDashboardRuntime : IDisposable
             _disposed = true;
             _cancellation?.Cancel();
         }
+
+        // The runtime owns the dashboard state supplied to its subscription.
+        // Views consume that state but must not dispose it when unloaded.
+        State.Dispose();
     }
 
     private async Task ObserveCompletionAsync(
