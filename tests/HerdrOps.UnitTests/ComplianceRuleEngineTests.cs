@@ -414,6 +414,39 @@ public sealed class ComplianceRuleEngineTests
     }
 
     [TestMethod]
+    public void CompliancePathsRejectWindowsReservedDeviceNamesAndInvalidCharacters()
+    {
+        var invalidPaths = new[]
+        {
+            "src/CON",
+            "src/con.txt",
+            "src/PRN.log",
+            "src/AUX",
+            "src/NUL.json",
+            "src/CLOCK$",
+            "src/CONIN$",
+            "src/CONOUT$",
+            "src/COM1.txt",
+            "src/com9",
+            "src/COM¹.txt",
+            "src/LPT1",
+            "src/lpt9.md",
+            "src/LPT³.log",
+            "src/file?.txt",
+            "src/file*.txt",
+            "src/file<name>.txt",
+            "src/file>name.txt",
+            "src/file|name.txt",
+            "src/file\"name.txt",
+        };
+
+        foreach (var path in invalidPaths)
+        {
+            AssertPathRejected(path);
+        }
+    }
+
+    [TestMethod]
     public void LegitimateWindowsProjectPathsNormalizeSeparatorsAndRemainAccepted()
     {
         var normalized = ComplianceEvaluationContract.NormalizeAndValidate(
@@ -436,6 +469,11 @@ public sealed class ComplianceRuleEngineTests
                         @"docs\runbook.md",
                         BaseUtc.AddMinutes(2),
                         "DEV-APPROVED"),
+                    new ComplianceActionObservation(
+                        "action:device-lookalike",
+                        @"src\CONTEXT\COM10.txt",
+                        BaseUtc.AddMinutes(3),
+                        null),
                 ],
                 Deviations =
                 [
@@ -461,6 +499,9 @@ public sealed class ComplianceRuleEngineTests
         Assert.AreEqual(
             "docs/runbook.md",
             normalized.Actions.Single(item => item.InputId == "action:runbook").TargetPath);
+        Assert.AreEqual(
+            "src/CONTEXT/COM10.txt",
+            normalized.Actions.Single(item => item.InputId == "action:device-lookalike").TargetPath);
         Assert.AreEqual("docs", normalized.Deviations.Single().PathPrefix);
     }
 
