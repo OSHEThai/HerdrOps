@@ -19,7 +19,7 @@ $migrationPath = Join-Path $repositoryRoot 'src\HerdrOps.Infrastructure\Storage\
 $contractPath = Join-Path $repositoryRoot 'docs\protocol\v0.5-evidence-audit-storage-contract.md'
 $expectedDomainContractSha256 = 'E6F5AE4E3AE96AF5A83B5D8C5E9FF4C432DA1CD727824B93121E8E39B79B3E06'
 $expectedStoreCoreSha256 = '5F13130BC1B9F4AAE6674DA6CC7FF7A66868E15A82E86AA15EA12D1271D079C2'
-$expectedStorageSha256 = 'F5C0DB93279711154F11E281B81EA396C000D4E3DE583953799D6EC3CE30A8F6'
+$expectedStorageSha256 = '5A6AF41A731C4E0100F909AD3BEEA615729B422555A10FFA7AF463FC49A4D30C'
 $expectedMigrationSha256 = 'EE69EA92BC458DDD61214A90CC7EEEF08BB5B2D03FFDC24FDE6103A74C5D1E47'
 $expectedContractSha256 = '9D3FDA5DEB53274AB70458B14C09162290788813CAC6FA67366F27E33508819E'
 
@@ -109,7 +109,9 @@ $requiredChecks = @(
     'ReviewHistoryIsHashChainedAndRejectsOrdinaryMutation',
     'RetentionProtectsOpenReviewThenPurgesBytesAndPreservesHistory',
     'FailedRetentionAuditWriteLeavesRecoverableBytesAndRetryCompletes',
+    'CommittedRetentionAuditWithPendingBytesRecoversCleanup',
     'ManagedEvidenceDirectoryMasqueradeFailsClosedOnRead',
+    'ManagedEvidenceIntermediateFileMasqueradeFailsClosedOnRead',
     'ManagedVaultRejectsReparsePointAncestorBeforeCreatingVault',
     'ManagedByteTamperingFailsClosedOnRead',
     'VersionOneDatabaseMigratesForwardWithoutLosingHistory',

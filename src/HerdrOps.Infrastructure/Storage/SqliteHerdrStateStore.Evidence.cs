@@ -699,12 +699,20 @@ public sealed partial class SqliteHerdrStateStore
 
         var relative = Path.GetRelativePath(root, candidate);
         var current = root;
-        foreach (var segment in relative.Split(
-                     new[] { Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar },
-                     StringSplitOptions.RemoveEmptyEntries))
+        var segments = relative.Split(
+            new[] { Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar },
+            StringSplitOptions.RemoveEmptyEntries);
+        for (var index = 0; index < segments.Length; index++)
         {
-            current = Path.Combine(current, segment);
-            RejectReparsePoint(current);
+            current = Path.Combine(current, segments[index]);
+            if (index < segments.Length - 1)
+            {
+                ValidateExistingDirectoryComponent(current);
+            }
+            else
+            {
+                RejectReparsePoint(current);
+            }
         }
     }
 

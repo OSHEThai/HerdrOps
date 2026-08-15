@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Reflection;
 using System.Text;
 using HerdrOps.Domain.Evidence;
 using HerdrOps.Infrastructure.Storage;
@@ -321,6 +322,50 @@ public sealed class EvidenceAuditStorageTests
     }
 
     [TestMethod]
+    public void CommittedRetentionAuditWithPendingBytesRecoversCleanup()
+    {
+        using var directory = new TemporaryDirectory();
+        var artifactPath = Path.Combine(directory.Path, "source", "committed-pending.bin");
+        Directory.CreateDirectory(Path.GetDirectoryName(artifactPath)!);
+        File.WriteAllBytes(artifactPath, Encoding.UTF8.GetBytes("committed-pending-content"));
+        var options = CreateOptions(directory);
+        using var store = new SqliteHerdrStateStore(
+            options,
+            new FixedTimeProvider(ObservedUtc.AddDays(2)));
+        var captured = store.CaptureEvidence(
+            CreateCaptureRequest(retainUntilUtc: ObservedUtc.AddDays(1)),
+            artifactPath);
+        var metadata = captured.StoredEvidence.Metadata;
+        var managedPath = ResolveManagedPath(options, metadata);
+
+        var pendingPath = Assert.IsInstanceOfType<string>(InvokePrivate(
+            store,
+            "MoveManagedEvidenceToRetentionPending",
+            metadata));
+        var auditEvent = Assert.IsInstanceOfType<HerdrEvidenceRetentionAuditEvent>(InvokePrivate(
+            store,
+            "CreateRetentionAuditEvent",
+            metadata,
+            HerdrEvidenceRetentionOutcome.Purged));
+        _ = InvokePrivate(store, "InsertRetentionAuditEvent", auditEvent);
+
+        Assert.IsFalse(File.Exists(managedPath));
+        Assert.IsTrue(File.Exists(pendingPath));
+        Assert.HasCount(1, store.ReadEvidenceRetentionAudit());
+        var pendingRead = Assert.Throws<HerdrStateStoreException>(() =>
+            store.ReadEvidence(metadata.EvidenceIdentitySha256));
+        StringAssert.Contains(pendingRead.Message, "incomplete retention", StringComparison.Ordinal);
+
+        var recovered = store.ApplyEvidenceRetention(ObservedUtc.AddDays(2));
+
+        Assert.HasCount(1, recovered.Results);
+        Assert.AreEqual(auditEvent.RetentionEventId, recovered.Results[0].RetentionEventId);
+        Assert.AreEqual(HerdrEvidenceRetentionOutcome.Purged, recovered.Results[0].Outcome);
+        Assert.IsFalse(File.Exists(pendingPath));
+        Assert.HasCount(1, store.ReadEvidenceRetentionAudit());
+    }
+
+    [TestMethod]
     public void ManagedEvidenceDirectoryMasqueradeFailsClosedOnRead()
     {
         using var directory = new TemporaryDirectory();
@@ -337,6 +382,27 @@ public sealed class EvidenceAuditStorageTests
         var exception = Assert.Throws<HerdrStateStoreException>(() =>
             store.ReadEvidence(identity));
         StringAssert.Contains(exception.Message, "not a regular", StringComparison.Ordinal);
+    }
+
+    [TestMethod]
+    public void ManagedEvidenceIntermediateFileMasqueradeFailsClosedOnRead()
+    {
+        using var directory = new TemporaryDirectory();
+        var artifactPath = Path.Combine(directory.Path, "source.bin");
+        File.WriteAllBytes(artifactPath, Encoding.UTF8.GetBytes("authentic"));
+        var options = CreateOptions(directory);
+        using var store = new SqliteHerdrStateStore(options);
+        var captured = store.CaptureEvidence(CreateCaptureRequest(), artifactPath);
+        var identity = captured.StoredEvidence.Metadata.EvidenceIdentitySha256;
+        var managedPath = ResolveManagedPath(options, captured.StoredEvidence.Metadata);
+        var objectsPath = Path.Combine(options.ManagedEvidenceRootPath!, "objects");
+        Directory.Delete(objectsPath, recursive: true);
+        File.WriteAllText(objectsPath, "not-a-directory", Encoding.UTF8);
+
+        var exception = Assert.Throws<HerdrStateStoreException>(() =>
+            store.ReadEvidence(identity));
+        StringAssert.Contains(exception.Message, "not a directory", StringComparison.Ordinal);
+        Assert.IsFalse(File.Exists(managedPath));
     }
 
     [TestMethod]
@@ -471,5 +537,17 @@ public sealed class EvidenceAuditStorageTests
             0,
             process.ExitCode,
             $"Could not create test junction. Output: {standardOutput} Error: {standardError}");
+    }
+
+    private static object? InvokePrivate(
+        SqliteHerdrStateStore store,
+        string methodName,
+        params object[] arguments)
+    {
+        var method = typeof(SqliteHerdrStateStore).GetMethod(
+            methodName,
+            BindingFlags.Instance | BindingFlags.NonPublic)
+            ?? throw new AssertFailedException($"Private method '{methodName}' was not found.");
+        return method.Invoke(store, arguments);
     }
 }

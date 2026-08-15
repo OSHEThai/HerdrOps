@@ -237,7 +237,21 @@ public sealed class SqliteHerdrStateStoreTests
         Assert.AreEqual(1L, Convert.ToInt64(verify.ExecuteScalar()));
 
         var backupDirectory = Path.Combine(directory.Path, "backups");
-        Assert.HasCount(1, Directory.GetFiles(backupDirectory, "*.bak"));
+        var backupPaths = Directory.GetFiles(backupDirectory, "*.bak");
+        Assert.HasCount(1, backupPaths);
+        var backupPath = backupPaths[0];
+        using var backup = Open(backupPath);
+        using var backupCheck = backup.CreateCommand();
+        backupCheck.CommandText = "PRAGMA user_version;";
+        Assert.AreEqual(2L, Convert.ToInt64(backupCheck.ExecuteScalar()));
+        backupCheck.CommandText = "SELECT COUNT(*) FROM schema_migrations;";
+        Assert.AreEqual(2L, Convert.ToInt64(backupCheck.ExecuteScalar()));
+        backupCheck.CommandText =
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'evidence_items';";
+        Assert.AreEqual(0L, Convert.ToInt64(backupCheck.ExecuteScalar()));
+        backupCheck.CommandText =
+            "SELECT COUNT(*) FROM pragma_table_info('review_audit_events') WHERE name = 'conflict_marker';";
+        Assert.AreEqual(1L, Convert.ToInt64(backupCheck.ExecuteScalar()));
     }
 
     [TestMethod]
