@@ -145,6 +145,9 @@ public sealed class AssignmentLifecycleIngestionCoordinatorTests
         try
         {
             var lifecycleTrace = CreateLifecycleTrace();
+            Assert.AreEqual(
+                HerdrOpsSelfReportAcceptanceTrace.BuiltProcessIntegrationEvidence,
+                lifecycleTrace.EvidenceClassification);
             var state = CreateRuntimeAgentState(reviewerRole: "Reviewer");
             var runtimeReport = CreateRuntimeReport(state);
             var lifecyclePath = Path.Combine(directory, "lifecycle.json");
@@ -331,7 +334,7 @@ public sealed class AssignmentLifecycleIngestionCoordinatorTests
             .ToArray());
         var graph = AssignmentDelegationGraphProjector.Create(replay);
         return new HerdrOpsSelfReportAcceptanceTrace(
-            EvidenceClass.Runtime.ToString(),
+            HerdrOpsSelfReportAcceptanceTrace.BuiltProcessIntegrationEvidence,
             HerdrOpsSelfReportProtocol.Version,
             HerdrOpsSelfReportProtocol.AuthorizationScope,
             "test-self-report-pipe",

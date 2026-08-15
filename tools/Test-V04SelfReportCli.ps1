@@ -284,7 +284,7 @@ if ($unknownResult.accepted -or $unknownResult.code -ne 'unknown-task') {
 if ($invalidResult.code -ne 'invalid-schema') {
     throw 'The built CLI invalid-schema response is not the required structured local error.'
 }
-if ($trace.evidenceClassification -ne 'Runtime' -or
+if ($trace.evidenceClassification -ne 'BuiltProcessIntegration' -or
     [long]$trace.lastSequence -ne 1 -or
     @($trace.acceptedEvents).Count -ne 1 -or
     $trace.acceptedEvents[0].source -ne 'HerdrOps.Core' -or
@@ -327,6 +327,7 @@ $gateReport = @(
     'VersionReleaseGate: PENDING',
     'ContractEvidence: PASS',
     'IntegrationEvidence: PASS',
+    'TraceEvidenceClassification: BuiltProcessIntegration',
     'BuiltProcessCliToCoreTrace: OBSERVED',
     'ActualHerdrAgentRuntime: NOT OBSERVED / NOT CLAIMED',
     'DurableLifecyclePersistence: NOT ENABLED IN THIS ISSUE #18 TRACE / NOT CLAIMED',
