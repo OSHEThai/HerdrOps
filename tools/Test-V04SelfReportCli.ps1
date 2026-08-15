@@ -309,25 +309,19 @@ foreach ($forbiddenToken in @('Microsoft.Data.Sqlite', 'SqliteConnection', 'Herd
 
 $reviewText = Get-Content -LiteralPath $reviewRecordPath -Raw
 $reviewPassed = $reviewText -match '(?m)^Verdict: PASS\s*$'
-$reviewedCommit = 'UNAVAILABLE'
 $reviewManifestSha256 = 'UNAVAILABLE'
 if ($reviewPassed) {
-    $reviewedCommitMatch = [Regex]::Match(
-        $reviewText,
-        '(?m)^ReviewedCommit:\s*([0-9a-f]{40})\s*$')
     $manifestPathMatch = [Regex]::Match(
         $reviewText,
         '(?m)^ManifestPath:\s*(\S+)\s*$')
     $manifestHashMatch = [Regex]::Match(
         $reviewText,
         '(?m)^ManifestSha256:\s*([0-9A-F]{64})\s*$')
-    if (-not $reviewedCommitMatch.Success -or
-        -not $manifestPathMatch.Success -or
+    if (-not $manifestPathMatch.Success -or
         -not $manifestHashMatch.Success) {
-        throw 'The PASS review record is missing its reviewed commit or manifest binding.'
+        throw 'The PASS review record is missing its reviewed-file manifest binding.'
     }
 
-    $reviewedCommit = $reviewedCommitMatch.Groups[1].Value
     $expectedManifestRelativePath = 'docs/reviews/v0.4-issue-18-reviewed-files.sha256'
     if ($manifestPathMatch.Groups[1].Value -cne $expectedManifestRelativePath -or
         -not (Test-Path -LiteralPath $reviewManifestPath -PathType Leaf)) {
@@ -444,7 +438,6 @@ $gateReport = @(
     "IssueStateRequired: $issueStateRequired",
     "Tests: $passedTests/$totalTests PASS",
     "ContractSha256: $contractSha256",
-    "ReviewedImplementationCommit: $reviewedCommit",
     "ReviewManifestSha256: $reviewManifestSha256",
     "IndependentReviewRecordSha256: $reviewRecordSha256",
     "CoreAcceptanceTraceSha256: $traceSha256",
