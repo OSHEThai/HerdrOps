@@ -345,7 +345,7 @@ Assert-ContainsText `
         'LanguageRefreshKeepsTechnicalIdentityAndRendersOneCatalogAtATime',
         'ThaiComplianceQueueTaskCopyDoesNotRetainUnapprovedEnglishFragments',
         'BackgroundLanguageChangeWaitsForTheUiOwnedRefresh',
-        'DisposedStateStopsLanguageRefreshAndDisposeIsIdempotent',
+        'DisposedStateStopsWeakLanguageRefreshAndDisposeIsIdempotent',
         'PreviewActionsExposeRoleRequirementsButNeverEnableMutation',
         'UnavailableLiveStateDoesNotInventIncidentsOrActions')
 Assert-ContainsText `
@@ -459,7 +459,7 @@ $requiredChecks = @(
      'LanguageRefreshKeepsTechnicalIdentityAndRendersOneCatalogAtATime',
      'ThaiComplianceQueueTaskCopyDoesNotRetainUnapprovedEnglishFragments',
      'BackgroundLanguageChangeWaitsForTheUiOwnedRefresh',
-     'DisposedStateStopsLanguageRefreshAndDisposeIsIdempotent',
+     'DisposedStateStopsWeakLanguageRefreshAndDisposeIsIdempotent',
      'PreviewActionsExposeRoleRequirementsButNeverEnableMutation',
      'UnavailableLiveStateDoesNotInventIncidentsOrActions',
      'ThaiIsTheDefaultAndBothCatalogsContainTheSameNonEmptyKeys',
