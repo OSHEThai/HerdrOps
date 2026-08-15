@@ -101,6 +101,11 @@ Build, verification, GitHub roadmap, evidence capture, and packaging helpers liv
 # duplicate suppression, and deterministic product report.
 ./tools/Test-V05ComplianceRuleEngine.ps1
 
+# From a clean committed checkout, verify evidence SHA-256 identity, explicit
+# missing artifacts, SQLite schema v3, immutable review history, managed-byte
+# separation, open-review retention protection, and terminal retention audit.
+./tools/Test-V05EvidenceAuditStorage.ps1
+
 # From an authorized Herdr pane, capture actual bounded pane-read and
 # Herdr-PID-to-Windows-process evidence without controlling the session.
 dotnet artifacts/bin/HerdrOps.Core/release/HerdrOps.Core.dll trace-herdr-terminal-process `
@@ -123,3 +128,5 @@ The v0.4 Delegation Graph gate includes deterministic lifecycle projection, prov
 The v0.4 Expanded Widget implementation gate includes contract, synthetic, local SQLite, and actual WPF rendering evidence. Runtime credit exists only after the authorized harness binds four exact running Agent IDs and roles to an overlapping durable lifecycle. Current-user Named Pipe isolation does not prove which same-user process submitted each event.
 
 The v0.5 compliance-rule implementation gate is Contract plus Synthetic evidence. It verifies only suspected finding generation and cannot substitute for immutable evidence storage, role-authorized review actions, the Compliance Queue, retention/redaction, actual runtime review, or v0.5 release evidence.
+
+The v0.5 evidence/audit storage implementation gate is Contract plus local SQLite Integration evidence. It proves deterministic hashes, immutable ledgers and synthetic retention behavior, but not reviewer authorization, Compliance Queue rendering, real-data redaction, installed-product retention, actual Herdr operation, independent acceptance, or v0.5 release readiness.
