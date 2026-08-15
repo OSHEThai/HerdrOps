@@ -12,11 +12,20 @@ public sealed class WidgetAgentEventArgs(WidgetAgent agent) : EventArgs
     public WidgetAgent Agent { get; } = agent ?? throw new ArgumentNullException(nameof(agent));
 }
 
+public sealed class WidgetTaskEventArgs(WidgetAgent agent) : EventArgs
+{
+    public WidgetAgent Agent { get; } = agent ?? throw new ArgumentNullException(nameof(agent));
+
+    public string TaskId => Agent.TaskId ?? string.Empty;
+}
+
 public interface IWidgetActionRouter
 {
     bool OpenNotification(WidgetNotificationRoute route);
 
     bool OpenAgent(string terminalId);
+
+    bool OpenTaskAlignment(string taskId);
 
     bool OpenNotificationHistory();
 }
@@ -69,6 +78,20 @@ public sealed class ApplicationWidgetActionRouter : IWidgetActionRouter
         }
 
         return OpenAgent(mainWindow, terminalId);
+    }
+
+    public bool OpenTaskAlignment(string taskId)
+    {
+        if (string.IsNullOrWhiteSpace(taskId) ||
+            Application.Current?.MainWindow is not MainWindow mainWindow ||
+            !mainWindow.Shell.LiveDashboard.TaskAlignment.HasExactTask(taskId) ||
+            !mainWindow.Shell.NavigateTo("task-alignment"))
+        {
+            return false;
+        }
+
+        Activate(mainWindow);
+        return true;
     }
 
     public bool OpenNotificationHistory()

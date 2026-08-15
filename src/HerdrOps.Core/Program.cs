@@ -11,6 +11,15 @@ if (args.Length > 0 &&
     return AssignmentLifecycleReplayCommand.Run(args, Console.Out, Console.Error);
 }
 
+if (args.Length > 0 &&
+    string.Equals(args[0], "assignment-lifecycle-acceptance", StringComparison.Ordinal))
+{
+    return AssignmentLifecycleRuntimeAcceptanceCommand.Run(
+        args,
+        Console.Out,
+        Console.Error);
+}
+
 if (args.Length > 0 && string.Equals(args[0], "trace-herdr-terminal-process", StringComparison.Ordinal))
 {
     return await HerdrTerminalProcessTraceCommand.RunAsync(args, Console.Out, Console.Error);

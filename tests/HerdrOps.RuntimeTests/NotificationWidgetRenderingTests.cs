@@ -506,6 +506,8 @@ public sealed class NotificationWidgetRenderingTests
 
         public List<string> Agents { get; } = [];
 
+        public List<string> TaskAlignments { get; } = [];
+
         public int NotificationHistoryOpenCount { get; private set; }
 
         public bool OpenNotification(WidgetNotificationRoute route)
@@ -517,6 +519,12 @@ public sealed class NotificationWidgetRenderingTests
         public bool OpenAgent(string terminalId)
         {
             Agents.Add(terminalId);
+            return true;
+        }
+
+        public bool OpenTaskAlignment(string taskId)
+        {
+            TaskAlignments.Add(taskId);
             return true;
         }
 

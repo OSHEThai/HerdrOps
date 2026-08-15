@@ -35,6 +35,22 @@ public sealed class UiLanguageCatalogTests
     }
 
     [TestMethod]
+    public void ThaiCatalogUsesThaiCoreTerminologyWithoutEnglishLabel()
+    {
+        var language = UiLanguageService.Shared;
+        var retainedCoreLabels = language.Keys(UiLanguage.Thai)
+            .Where(key => Regex.IsMatch(
+                language.Text(UiLanguage.Thai, key),
+                @"(?<![A-Za-z])Core(?![A-Za-z])",
+                RegexOptions.CultureInvariant | RegexOptions.IgnoreCase))
+            .ToArray();
+
+        Assert.IsEmpty(
+            retainedCoreLabels,
+            $"Thai UI catalog retained English Core labels: {string.Join(", ", retainedCoreLabels)}");
+    }
+
+    [TestMethod]
     public void EveryV01XamlLanguageBindingExistsAndNoBilingualLiteralRemains()
     {
         var root = FindRepositoryRoot();

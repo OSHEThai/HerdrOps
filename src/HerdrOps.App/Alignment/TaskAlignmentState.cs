@@ -133,6 +133,11 @@ public sealed class TaskAlignmentState : ObservableState
 
     public bool HasAnalysis => _analysis is not null;
 
+    public bool HasExactTask(string taskId) =>
+        _analysis is not null &&
+        !string.IsNullOrWhiteSpace(taskId) &&
+        string.Equals(_analysis.TaskId, taskId, StringComparison.Ordinal);
+
     public void ApplyAnalysis(
         TaskAlignmentAnalysisRequest request,
         string projectLabel,
@@ -154,19 +159,21 @@ public sealed class TaskAlignmentState : ObservableState
         RefreshProjection();
     }
 
-    public void MarkUnavailableFromCatalog(
+    public void MarkUnavailable(
         string projectLabel,
-        string sourceLocalizationKey,
-        string boundaryLocalizationKey)
+        string sourceLabel,
+        string evidenceBoundary)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(projectLabel);
+        ArgumentException.ThrowIfNullOrWhiteSpace(sourceLabel);
+        ArgumentException.ThrowIfNullOrWhiteSpace(evidenceBoundary);
         _request = null;
         _analysis = null;
-        _sourceLocalizationKey = sourceLocalizationKey;
-        _boundaryLocalizationKey = boundaryLocalizationKey;
+        _sourceLocalizationKey = null;
+        _boundaryLocalizationKey = null;
         ProjectLabel = projectLabel;
-        SourceLabel = UiLanguageService.Shared[sourceLocalizationKey];
-        EvidenceBoundary = UiLanguageService.Shared[boundaryLocalizationKey];
+        SourceLabel = sourceLabel;
+        EvidenceBoundary = evidenceBoundary;
         TraceLabel = UiLanguageService.Shared["AlignmentNoTrace"];
         Header = EmptyHeader();
         ContractItems = [];
@@ -178,6 +185,19 @@ public sealed class TaskAlignmentState : ObservableState
         DeviationRequests = [];
         EvidenceItems = [];
         Raise(nameof(HasAnalysis));
+    }
+
+    public void MarkUnavailableFromCatalog(
+        string projectLabel,
+        string sourceLocalizationKey,
+        string boundaryLocalizationKey)
+    {
+        MarkUnavailable(
+            projectLabel,
+            UiLanguageService.Shared[sourceLocalizationKey],
+            UiLanguageService.Shared[boundaryLocalizationKey]);
+        _sourceLocalizationKey = sourceLocalizationKey;
+        _boundaryLocalizationKey = boundaryLocalizationKey;
     }
 
     public void RefreshLanguage()
@@ -462,7 +482,7 @@ public sealed class TaskAlignmentState : ObservableState
     private void ApplySyntheticFixture()
     {
         var text = UiLanguageService.Shared;
-        var request = CreateSyntheticRequest();
+        var request = CreateSyntheticPreviewRequest();
         ApplyAnalysis(
             request,
             "HerdrOps",
@@ -472,7 +492,7 @@ public sealed class TaskAlignmentState : ObservableState
         _boundaryLocalizationKey = "AlignmentSyntheticBoundary";
     }
 
-    private static TaskAlignmentAnalysisRequest CreateSyntheticRequest()
+    public static TaskAlignmentAnalysisRequest CreateSyntheticPreviewRequest()
     {
         var text = UiLanguageService.Shared;
         var events = CreateSyntheticLifecycle();

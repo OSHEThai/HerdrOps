@@ -62,4 +62,64 @@ public static class HerdrOpsAssignmentLifecycleMapper
             submission.EvidenceSha256,
             submission.HandoffNote)).Event;
     }
+
+    public static HerdrOpsAcceptedSelfReport RestoreAccepted(
+        AssignmentLifecycleEvent lifecycleEvent)
+    {
+        lifecycleEvent = AssignmentLifecycleContract.NormalizeAndValidate(lifecycleEvent).Event;
+        var submission = new HerdrOpsSelfReportSubmission(
+            lifecycleEvent.ContractVersion,
+            lifecycleEvent.EventId,
+            EventType(lifecycleEvent.EventKind),
+            lifecycleEvent.TaskId,
+            lifecycleEvent.ActorId,
+            lifecycleEvent.ActorRole,
+            lifecycleEvent.OccurredUtc,
+            lifecycleEvent.Summary,
+            lifecycleEvent.ParentEventId,
+            lifecycleEvent.TargetAgentId,
+            lifecycleEvent.ProgressPercent,
+            lifecycleEvent.DeviationReason,
+            lifecycleEvent.EvidenceReference,
+            lifecycleEvent.EvidenceSha256,
+            lifecycleEvent.HandoffNote);
+        HerdrOpsSelfReportJson.ValidateSubmission(submission);
+        var submissionSha256 = HerdrOpsSelfReportJson.ComputeSha256(submission);
+        if (!string.Equals(
+                lifecycleEvent.EventSha256,
+                submissionSha256,
+                StringComparison.Ordinal))
+        {
+            throw new AssignmentLifecycleContractException(
+                "The persisted lifecycle event does not bind the original self-report submission.");
+        }
+
+        return new HerdrOpsAcceptedSelfReport(
+            lifecycleEvent.Sequence,
+            lifecycleEvent.AcceptedUtc,
+            lifecycleEvent.Source,
+            lifecycleEvent.CorrelationId,
+            lifecycleEvent.EventSha256,
+            submission);
+    }
+
+    private static string EventType(AssignmentLifecycleEventKind eventKind) => eventKind switch
+    {
+        AssignmentLifecycleEventKind.Assignment =>
+            HerdrOpsSelfReportProtocol.EventTypes.Assignment,
+        AssignmentLifecycleEventKind.Acknowledgement =>
+            HerdrOpsSelfReportProtocol.EventTypes.Acknowledgement,
+        AssignmentLifecycleEventKind.Delegation =>
+            HerdrOpsSelfReportProtocol.EventTypes.Delegation,
+        AssignmentLifecycleEventKind.Progress =>
+            HerdrOpsSelfReportProtocol.EventTypes.Progress,
+        AssignmentLifecycleEventKind.Deviation =>
+            HerdrOpsSelfReportProtocol.EventTypes.Deviation,
+        AssignmentLifecycleEventKind.Evidence =>
+            HerdrOpsSelfReportProtocol.EventTypes.Evidence,
+        AssignmentLifecycleEventKind.Handoff =>
+            HerdrOpsSelfReportProtocol.EventTypes.Handoff,
+        _ => throw new AssignmentLifecycleContractException(
+            $"Unsupported lifecycle event kind '{eventKind}'."),
+    };
 }

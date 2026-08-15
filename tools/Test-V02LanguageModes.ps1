@@ -32,6 +32,7 @@ $combinedTestLog = ($testResults | ForEach-Object {
 }) -join "`n"
 $requiredChecks = @(
     'ThaiIsTheDefaultAndBothCatalogsContainTheSameNonEmptyKeys',
+    'ThaiCatalogUsesThaiCoreTerminologyWithoutEnglishLabel',
     'EveryV01XamlLanguageBindingExistsAndNoBilingualLiteralRemains',
     'SyntheticOverviewAndWidgetCopyRebuildsAsOneSelectedLanguage',
     'LiveDashboardCopyRebuildsFromThaiToEnglishWithoutRetainingThaiText',

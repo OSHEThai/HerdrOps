@@ -329,7 +329,7 @@ $gateReport = @(
     'IntegrationEvidence: PASS',
     'BuiltProcessCliToCoreTrace: OBSERVED',
     'ActualHerdrAgentRuntime: NOT OBSERVED / NOT CLAIMED',
-    'DurableLifecyclePersistence: NOT IMPLEMENTED / NOT CLAIMED',
+    'DurableLifecyclePersistence: NOT ENABLED IN THIS ISSUE #18 TRACE / NOT CLAIMED',
     'IndependentReviewVerdict: UNAVAILABLE / NOT CLAIMED',
     'IssueStateRequired: OPEN',
     "Tests: $passedTests/$totalTests PASS",

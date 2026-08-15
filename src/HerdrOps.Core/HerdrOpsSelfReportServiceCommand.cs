@@ -1,6 +1,8 @@
 using System.Text;
 using HerdrOps.Contracts.SelfReport;
+using HerdrOps.Domain.Assignments;
 using HerdrOps.Infrastructure.StateIpc;
+using HerdrOps.Infrastructure.Storage;
 
 namespace HerdrOps.Core;
 
@@ -29,10 +31,12 @@ public static class HerdrOpsSelfReportServiceCommand
         var knownTasks = new List<string>();
         string? pipeName = null;
         string? tracePath = null;
+        string? databasePath = null;
         int? durationSeconds = null;
         var pipeOptionSeen = false;
         var traceOptionSeen = false;
         var durationOptionSeen = false;
+        var databaseOptionSeen = false;
         for (var index = 1; index < args.Length; index++)
         {
             switch (args[index])
@@ -60,6 +64,10 @@ public static class HerdrOpsSelfReportServiceCommand
                     durationSeconds = parsedDuration;
                     durationOptionSeen = true;
                     break;
+                case "--database" when index + 1 < args.Length && !databaseOptionSeen:
+                    databasePath = args[++index];
+                    databaseOptionSeen = true;
+                    break;
                 default:
                     error.WriteLine($"Invalid, duplicate, or incomplete option: {args[index]}");
                     WriteUsage(error);
@@ -71,6 +79,7 @@ public static class HerdrOpsSelfReportServiceCommand
             knownTasks.Any(string.IsNullOrWhiteSpace) ||
             (pipeName is not null && string.IsNullOrWhiteSpace(pipeName)) ||
             (tracePath is not null && string.IsNullOrWhiteSpace(tracePath)) ||
+            (databasePath is not null && string.IsNullOrWhiteSpace(databasePath)) ||
             ((tracePath is null) != (durationSeconds is null)))
         {
             error.WriteLine(
@@ -82,7 +91,17 @@ public static class HerdrOpsSelfReportServiceCommand
         try
         {
             var registry = new InMemoryHerdrOpsTaskRegistry(knownTasks);
-            var acceptance = new HerdrOpsSelfReportAcceptanceService(registry);
+            using var store = databasePath is null
+                ? null
+                : new SqliteHerdrStateStore(new HerdrStateStoreOptions(
+                    Path.GetFullPath(databasePath)));
+            var ingestion = store is null
+                ? null
+                : new AssignmentLifecycleIngestionCoordinator(store);
+            var acceptance = new HerdrOpsSelfReportAcceptanceService(
+                registry,
+                restoredAcceptedEvents: ingestion?.RestoredAcceptedEvents,
+                acceptanceCommit: accepted => ingestion?.Commit(accepted));
             var serverOptions = pipeName is null
                 ? HerdrOpsSelfReportPipeServerOptions.ForCurrentUser()
                 : new HerdrOpsSelfReportPipeServerOptions(pipeName);
@@ -99,7 +118,7 @@ public static class HerdrOpsSelfReportServiceCommand
             var serverTask = server.RunAsync(effectiveCancellationToken);
             await server.Ready.WaitAsync(effectiveCancellationToken).ConfigureAwait(false);
             output.WriteLine(
-                $"HerdrOps Core self-report service ready: protocol={HerdrOpsSelfReportProtocol.Version}, pipe={serverOptions.PipeName}, knownTasks={knownTasks.Distinct(StringComparer.Ordinal).Count()}.");
+                $"HerdrOps Core self-report service ready: protocol={HerdrOpsSelfReportProtocol.Version}, pipe={serverOptions.PipeName}, knownTasks={knownTasks.Distinct(StringComparer.Ordinal).Count()}, durableLifecycle={ingestion is not null}.");
             output.Flush();
             await serverTask.ConfigureAwait(false);
             var finishedUtc = DateTimeOffset.UtcNow;
@@ -109,6 +128,10 @@ public static class HerdrOpsSelfReportServiceCommand
             if (tracePath is not null)
             {
                 var acceptedEvents = acceptance.AcceptedEvents;
+                var lifecycleReplay = ingestion?.Snapshot();
+                var lifecycleGraph = lifecycleReplay is null
+                    ? null
+                    : AssignmentDelegationGraphProjector.Create(lifecycleReplay);
                 var report = new HerdrOpsSelfReportAcceptanceTrace(
                     acceptedEvents.Count > 0 ? "Runtime" : "NoRuntimeCredit",
                     HerdrOpsSelfReportProtocol.Version,
@@ -119,7 +142,13 @@ public static class HerdrOpsSelfReportServiceCommand
                     knownTasks.Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal).ToArray(),
                     acceptedEvents,
                     acceptance.LastSequence,
-                    "This trace proves only the local current-user CLI-to-Core self-report transport and Core acceptance identity. It does not prove Herdr session activity, task lifecycle persistence, UI rendering, independent review, or release readiness.");
+                    ingestion is not null,
+                    lifecycleReplay,
+                    lifecycleGraph?.GraphSha256,
+                    store?.GetDiagnostics(),
+                    ingestion is null
+                        ? "This trace proves only the local current-user CLI-to-Core self-report transport and Core acceptance identity. It does not prove durable lifecycle persistence, Herdr session activity, UI rendering, independent review, or release readiness."
+                        : "This trace proves local current-user CLI-to-Core acceptance and durable deterministic lifecycle persistence. It does not by itself prove that actor identities were actual running Herdr Agents, UI rendering, independent review, or release readiness.");
                 var json = HerdrOpsSelfReportJson.Serialize(report) + Environment.NewLine;
                 new AtomicSchemaOutputWriter().Write(
                     tracePath,
@@ -144,7 +173,7 @@ public static class HerdrOpsSelfReportServiceCommand
 
     private static void WriteUsage(TextWriter writer) =>
         writer.WriteLine(
-            "Usage: HerdrOps.Core serve-self-reports --known-task <task-id> [--known-task <task-id> ...] [--pipe-name <name>] [--seconds <1-3600> --trace <json-path>]");
+            "Usage: HerdrOps.Core serve-self-reports --known-task <task-id> [--known-task <task-id> ...] [--pipe-name <name>] [--database <absolute-path>] [--seconds <1-3600> --trace <json-path>]");
 }
 
 public sealed record HerdrOpsSelfReportAcceptanceTrace(
@@ -157,4 +186,8 @@ public sealed record HerdrOpsSelfReportAcceptanceTrace(
     IReadOnlyList<string> KnownTasks,
     IReadOnlyList<HerdrOpsAcceptedSelfReport> AcceptedEvents,
     long LastSequence,
+    bool DurableLifecycleEnabled,
+    AssignmentLifecycleReplayResult? LifecycleReplay,
+    string? LifecycleGraphSha256,
+    HerdrStateStoreDiagnostics? StoreDiagnostics,
     string EvidenceBoundary);

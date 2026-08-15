@@ -24,6 +24,7 @@ public sealed class LiveWidgetState : ObservableState, IInteractiveWidgetState
     private string _compactConnectionLabel = UiLanguageService.Shared["LiveWidgetWaitingCore"];
     private string _connectionBrushKey = OverviewBrushKeys.Offline;
     private string _galleryDescription = UiLanguageService.Shared["LiveWidgetGalleryOffline"];
+    private string _detailsSourceLabel = UiLanguageService.Shared["LiveWidgetDetailsSource"];
     private DateTimeOffset _snapshotAt;
     private long _sequence;
     private long _lastMeasuredSequence;
@@ -92,7 +93,11 @@ public sealed class LiveWidgetState : ObservableState, IInteractiveWidgetState
 
     public string WindowTitleSuffix => UiLanguageService.Shared["LiveWidgetWindowSuffix"];
 
-    public string DetailsSourceLabel => UiLanguageService.Shared["LiveWidgetDetailsSource"];
+    public string DetailsSourceLabel
+    {
+        get => _detailsSourceLabel;
+        private set => Set(ref _detailsSourceLabel, value);
+    }
 
     public DateTimeOffset SnapshotAt
     {
@@ -194,9 +199,11 @@ public sealed class LiveWidgetState : ObservableState, IInteractiveWidgetState
         DateTimeOffset snapshotAt,
         string? selectedTerminalId,
         TimeSpan? updateLatency,
-        bool recordLatency)
+        bool recordLatency,
+        WidgetAssignmentProjection assignmentProjection)
     {
         ArgumentNullException.ThrowIfNull(state);
+        ArgumentNullException.ThrowIfNull(assignmentProjection);
         _lastState = state;
         _lastIsCoreConnected = isCoreConnected;
         _lastIsLive = isLive;
@@ -244,6 +251,16 @@ public sealed class LiveWidgetState : ObservableState, IInteractiveWidgetState
                     ? text["LiveWidgetGalleryHerdrInterrupted"]
                     : text["LiveWidgetGalleryEmpty"]
                 : text["LiveWidgetGalleryOffline"];
+        DetailsSourceLabel = assignmentProjection.HasAdmittedLifecycle
+            ? assignmentProjection.Diagnostics.Count == 0
+                ? text.Format(
+                    "LiveWidgetLifecycleSourceFormat",
+                    ShortHash(assignmentProjection.LifecycleGraphSha256))
+                : text.Format(
+                    "LiveWidgetLifecycleMismatchSourceFormat",
+                    ShortHash(assignmentProjection.LifecycleGraphSha256),
+                    assignmentProjection.Diagnostics.Count)
+            : text["LiveWidgetDetailsSource"];
         SnapshotAt = snapshotAt;
         Sequence = state.LastIngestSequence;
         TotalAgents = state.Agents.Count;
@@ -259,10 +276,14 @@ public sealed class LiveWidgetState : ObservableState, IInteractiveWidgetState
         DoneCountLabel = hasAdmittedState
             ? DoneCount.ToString(System.Globalization.CultureInfo.InvariantCulture)
             : "—";
-        Agents = CreateAgents(state, hasAdmittedState);
+        Agents = CreateAgents(state, hasAdmittedState, assignmentProjection, snapshotAt);
         RefreshNotices();
         SelectedAgent = ResolveSelectedAgent(Agents, selectedTerminalId);
-        SelectedAgentActivity = CreateSelectedAgentFacts(state, SelectedAgent, snapshotAt);
+        SelectedAgentActivity = CreateSelectedAgentFacts(
+            state,
+            SelectedAgent,
+            snapshotAt,
+            assignmentProjection);
         RecordLatency(state.LastIngestSequence, isLive, updateLatency, recordLatency);
         Raise(nameof(DashboardPreviewLabel));
         Raise(nameof(WindowTitleSuffix));
@@ -339,7 +360,9 @@ public sealed class LiveWidgetState : ObservableState, IInteractiveWidgetState
 
     private static IReadOnlyList<WidgetAgent> CreateAgents(
         HerdrSessionStateContract state,
-        bool isLive) =>
+        bool isLive,
+        WidgetAssignmentProjection assignmentProjection,
+        DateTimeOffset snapshotAt) =>
         state.Agents
             .OrderBy(agent => StatusOrder(agent.AgentStatus))
             .ThenBy(AgentStatusPresentation.DisplayName, StringComparer.OrdinalIgnoreCase)
@@ -347,13 +370,27 @@ public sealed class LiveWidgetState : ObservableState, IInteractiveWidgetState
             {
                 var text = UiLanguageService.Shared;
                 var effectiveStatus = AgentStatusPresentation.EffectiveStatus(agent.AgentStatus, isLive);
+                var assignment = isLive
+                    ? assignmentProjection.FindExact(agent.TerminalId)
+                    : null;
                 return new WidgetAgent(
                     agent.TerminalId,
                     AgentStatusPresentation.Initials(agent),
-                    AgentStatusPresentation.DisplayName(agent),
-                    AgentStatusPresentation.FirstNonEmpty(agent.Title, agent.DisplayAgent, agent.Agent),
-                    text["ValueUnknown"],
-                    isLive
+                    assignment is null
+                        ? AgentStatusPresentation.DisplayName(agent)
+                        : DisplayAssignmentActor(agent, assignment.TerminalId),
+                    assignment is null
+                        ? AgentStatusPresentation.FirstNonEmpty(agent.Title, agent.DisplayAgent, agent.Agent)
+                        : DisplayAssignmentRole(assignment.ActorRole),
+                    assignment is null
+                        ? text["ValueUnknown"]
+                        : DisplayAssignmentActor(null, assignment.AssignedByActorId),
+                    assignment is not null
+                        ? text.Format(
+                            "LiveWidgetTaskActivityFormat",
+                            assignment.TaskId,
+                            assignment.Activity)
+                        : isLive
                         ? text.Format(
                             "LiveWidgetObservedStatusFormat",
                             AgentStatusPresentation.DisplayStatus(agent.AgentStatus),
@@ -362,11 +399,23 @@ public sealed class LiveWidgetState : ObservableState, IInteractiveWidgetState
                             "LiveWidgetObservedStatusFormat",
                             AgentStatusPresentation.DisplayStatus(AgentStatusPresentation.Offline),
                             agent.PaneId),
-                    text.Format("LiveWidgetSequenceFormat", agent.StateChangeSequence),
-                    Score: null,
+                    assignment is null
+                        ? text.Format("LiveWidgetSequenceFormat", agent.StateChangeSequence)
+                        : FormatElapsed(assignment.StartedUtc, snapshotAt),
+                    assignment?.Score,
                     AgentStatusPresentation.DisplayStatus(effectiveStatus),
                     AgentStatusPresentation.BrushKey(effectiveStatus),
-                    text["ValueUnknown"]);
+                    assignment is null
+                        ? text["ValueUnknown"]
+                        : assignment.StartedUtc.ToLocalTime().ToString(
+                            "HH:mm",
+                            System.Globalization.CultureInfo.InvariantCulture))
+                {
+                    TaskId = assignment?.TaskId,
+                    LifecycleProvenance = assignment?.LifecycleProvenanceSha256 ?? string.Empty,
+                    ScoreProvenance = assignment?.ScoreProvenanceSha256,
+                    HasTaskAlignment = assignment?.HasTaskAlignment ?? false,
+                };
             })
             .ToArray();
 
@@ -556,7 +605,8 @@ public sealed class LiveWidgetState : ObservableState, IInteractiveWidgetState
     private static IReadOnlyList<WidgetActivity> CreateSelectedAgentFacts(
         HerdrSessionStateContract state,
         WidgetAgent selectedAgent,
-        DateTimeOffset snapshotAt)
+        DateTimeOffset snapshotAt,
+        WidgetAssignmentProjection assignmentProjection)
     {
         if (selectedAgent.TerminalId.Length == 0)
         {
@@ -566,17 +616,72 @@ public sealed class LiveWidgetState : ObservableState, IInteractiveWidgetState
         var time = snapshotAt == default
             ? "—"
             : snapshotAt.ToLocalTime().ToString("HH:mm", System.Globalization.CultureInfo.InvariantCulture);
-        return
-        [
+        var facts = new List<WidgetActivity>
+        {
             new WidgetActivity(
                 time,
                 UiLanguageService.Shared.Format(
                     "LiveWidgetAcceptedSequenceFormat",
                     state.LastIngestSequence)),
             new WidgetActivity("—", selectedAgent.Activity),
-            new WidgetActivity("—", UiLanguageService.Shared["LiveWidgetUnknownHistory"]),
-        ];
+        };
+        var assignment = assignmentProjection.FindExact(selectedAgent.TerminalId);
+        facts.Add(assignment is null
+            ? new WidgetActivity("—", UiLanguageService.Shared["LiveWidgetUnknownHistory"])
+            : new WidgetActivity(
+                assignment.StartedUtc.ToLocalTime().ToString(
+                    "HH:mm",
+                    System.Globalization.CultureInfo.InvariantCulture),
+                UiLanguageService.Shared.Format(
+                    "LiveWidgetLifecycleProvenanceFormat",
+                    assignment.TaskId,
+                    ShortHash(assignment.LifecycleProvenanceSha256))));
+        return facts;
     }
+
+    private static string FormatElapsed(DateTimeOffset startedUtc, DateTimeOffset snapshotAt)
+    {
+        if (startedUtc.Offset != TimeSpan.Zero || snapshotAt == default || snapshotAt < startedUtc)
+        {
+            return "—";
+        }
+
+        var elapsed = snapshotAt.ToUniversalTime() - startedUtc;
+        return elapsed.TotalHours >= 1
+            ? $"{(int)elapsed.TotalHours}:{elapsed.Minutes:00}:{elapsed.Seconds:00}"
+            : $"{elapsed.Minutes:00}:{elapsed.Seconds:00}";
+    }
+
+    private static string ShortHash(string value) => value.Length < 12 ? value : value[..12];
+
+    private static string DisplayAssignmentActor(
+        HerdrAgentStateContract? agent,
+        string actorId)
+    {
+        var displayName = agent is null
+            ? actorId
+            : AgentStatusPresentation.DisplayName(agent);
+        return (actorId, displayName) switch
+        {
+            ("project-manager", _) or (_, "Project Manager") =>
+                UiLanguageService.Shared["AlignmentActorProjectManager"],
+            ("backend-worker-01", _) or (_, "Backend Worker 01") =>
+                UiLanguageService.Shared["AlignmentActorBackendWorker"],
+            _ => displayName,
+        };
+    }
+
+    private static string DisplayAssignmentRole(string role) => role switch
+    {
+        "Project Manager" => UiLanguageService.Shared["WidgetAgentPmRole"],
+        "PM Secretary" => UiLanguageService.Shared["WidgetAgentSecretaryRole"],
+        "Leader" => UiLanguageService.Shared["WidgetAgentLeaderRole"],
+        "Worker" => UiLanguageService.Shared["WidgetAgentWorkerRole"],
+        "Backend Leader" => UiLanguageService.Shared["WidgetAgentBackendLeaderRole"],
+        "Backend Worker" => UiLanguageService.Shared["WidgetAgentBackendWorkerRole"],
+        "Reviewer" => UiLanguageService.Shared["WidgetAgentReviewerRole"],
+        _ => role,
+    };
 
     private static WidgetAgent EmptyAgent() => new(
         string.Empty,

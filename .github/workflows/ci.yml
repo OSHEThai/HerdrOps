@@ -12,7 +12,7 @@ permissions:
 jobs:
   build-test:
     runs-on: windows-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
 
     steps:
       - name: Checkout
@@ -43,6 +43,14 @@ jobs:
         shell: pwsh
         run: ./tools/Test-V02LanguageModes.ps1 -Configuration Release -SkipBuild
 
+      - name: Run v0.4 CLI self-report implementation gate
+        shell: pwsh
+        run: ./tools/Test-V04SelfReportCli.ps1 -Configuration Release -SkipBuild
+
+      - name: Run v0.4 assignment lifecycle implementation gate
+        shell: pwsh
+        run: ./tools/Test-V04AssignmentLifecycle.ps1 -Configuration Release -SkipBuild
+
       - name: Run v0.4 Delegation Graph implementation gate
         shell: pwsh
         run: ./tools/Test-V04DelegationGraph.ps1 -Configuration Release -SkipBuild
@@ -50,6 +58,10 @@ jobs:
       - name: Run v0.4 Task Alignment implementation gate
         shell: pwsh
         run: ./tools/Test-V04TaskAlignment.ps1 -Configuration Release -SkipBuild
+
+      - name: Run v0.4 Expanded Widget implementation gate
+        shell: pwsh
+        run: ./tools/Test-V04ExpandedWidget.ps1 -Configuration Release -SkipBuild
 
       - name: Upload test results
         if: always()
@@ -123,10 +135,34 @@ jobs:
           path: artifacts/release-gates/v0.4.0/issue-20
           if-no-files-found: warn
 
+      - name: Upload v0.4 CLI self-report gate report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: v0.4-cli-self-report-gate-report
+          path: artifacts/release-gates/v0.4.0/issue-18
+          if-no-files-found: warn
+
+      - name: Upload v0.4 assignment lifecycle gate report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: v0.4-assignment-lifecycle-gate-report
+          path: artifacts/release-gates/v0.4.0/issue-19
+          if-no-files-found: warn
+
       - name: Upload v0.4 Task Alignment gate report
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: v0.4-task-alignment-gate-report
           path: artifacts/release-gates/v0.4.0/issue-21
+          if-no-files-found: warn
+
+      - name: Upload v0.4 Expanded Widget gate report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: v0.4-expanded-widget-gate-report
+          path: artifacts/release-gates/v0.4.0/issue-22
           if-no-files-found: warn

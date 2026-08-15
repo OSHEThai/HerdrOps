@@ -88,6 +88,17 @@ public sealed record WidgetAgent(
     string StatusBrushKey,
     string StartedLabel)
 {
+    public string? TaskId { get; init; }
+
+    public string LifecycleProvenance { get; init; } = string.Empty;
+
+    public string? ScoreProvenance { get; init; }
+
+    public bool HasTaskAlignment { get; init; }
+
+    public bool CanOpenTaskAlignment =>
+        HasTaskAlignment && !string.IsNullOrWhiteSpace(TaskId);
+
     public string ScoreLabel => Score is { } value
         ? value.ToString(System.Globalization.CultureInfo.InvariantCulture)
         : "—";
@@ -95,6 +106,16 @@ public sealed record WidgetAgent(
     public string ScoreWithMaximumLabel => Score is { } value
         ? $"{value}/100"
         : UiLanguageService.Shared["ValueUnknown"];
+
+    public string AgentDetailsAutomationName => UiLanguageService.Shared.Format(
+        "WidgetOpenAgentDetailsAutomationFormat",
+        Name);
+
+    public string TaskAlignmentAutomationName => CanOpenTaskAlignment
+        ? UiLanguageService.Shared.Format(
+            "WidgetOpenTaskAlignmentAutomationFormat",
+            TaskId!)
+        : UiLanguageService.Shared["WidgetTaskAlignmentUnavailableAutomation"];
 }
 
 public sealed record WidgetNotificationRoute(

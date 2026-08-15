@@ -46,6 +46,7 @@ public sealed class HerdrOpsSelfReportAcceptanceService
     private readonly IHerdrOpsTaskRegistry _taskRegistry;
     private readonly TimeProvider _timeProvider;
     private readonly int _maximumAcceptedEvents;
+    private readonly Action<HerdrOpsAcceptedSelfReport>? _acceptanceCommit;
     private readonly Dictionary<Guid, HerdrOpsAcceptedSelfReport> _acceptedByEventId = [];
     private readonly List<HerdrOpsAcceptedSelfReport> _acceptedEvents = [];
     private long _lastSequence;
@@ -54,7 +55,9 @@ public sealed class HerdrOpsSelfReportAcceptanceService
         IHerdrOpsTaskRegistry taskRegistry,
         TimeProvider? timeProvider = null,
         int maximumAcceptedEvents = 4096,
-        long initialSequence = 0)
+        long initialSequence = 0,
+        IEnumerable<HerdrOpsAcceptedSelfReport>? restoredAcceptedEvents = null,
+        Action<HerdrOpsAcceptedSelfReport>? acceptanceCommit = null)
     {
         _taskRegistry = taskRegistry ?? throw new ArgumentNullException(nameof(taskRegistry));
         _timeProvider = timeProvider ?? TimeProvider.System;
@@ -67,7 +70,8 @@ public sealed class HerdrOpsSelfReportAcceptanceService
 
         ArgumentOutOfRangeException.ThrowIfNegative(initialSequence);
         _maximumAcceptedEvents = maximumAcceptedEvents;
-        _lastSequence = initialSequence;
+        _acceptanceCommit = acceptanceCommit;
+        Restore(restoredAcceptedEvents ?? [], initialSequence);
     }
 
     public long LastSequence
@@ -167,20 +171,76 @@ public sealed class HerdrOpsSelfReportAcceptanceService
             }
 
             var accepted = new HerdrOpsAcceptedSelfReport(
-                checked(++_lastSequence),
+                checked(_lastSequence + 1),
                 acceptedUtc,
                 HerdrOpsSelfReportProtocol.CoreSource,
                 correlationId,
                 eventSha256,
                 submission);
+            _acceptanceCommit?.Invoke(accepted);
             _acceptedByEventId.Add(submission.EventId, accepted);
             _acceptedEvents.Add(accepted);
+            _lastSequence = accepted.Sequence;
             return AcceptedResult(
                 accepted,
                 correlationId,
                 HerdrOpsSelfReportProtocol.ResultCodes.Accepted,
                 "The self-report event was accepted by Core.");
         }
+    }
+
+    private void Restore(
+        IEnumerable<HerdrOpsAcceptedSelfReport> restoredAcceptedEvents,
+        long initialSequence)
+    {
+        ArgumentNullException.ThrowIfNull(restoredAcceptedEvents);
+        var restored = restoredAcceptedEvents
+            .OrderBy(item => item.Sequence)
+            .ToArray();
+        if (restored.Length > _maximumAcceptedEvents)
+        {
+            throw new ArgumentException(
+                "The restored self-report ledger exceeds the configured capacity.",
+                nameof(restoredAcceptedEvents));
+        }
+
+        long priorSequence = 0;
+        foreach (var accepted in restored)
+        {
+            ArgumentNullException.ThrowIfNull(accepted);
+            HerdrOpsSelfReportJson.ValidateSubmission(accepted.Submission);
+            if (accepted.Sequence <= priorSequence ||
+                accepted.AcceptedUtc.Offset != TimeSpan.Zero ||
+                accepted.AcceptedUtc < accepted.Submission.OccurredUtc ||
+                accepted.CorrelationId == Guid.Empty ||
+                !string.Equals(
+                    accepted.Source,
+                    HerdrOpsSelfReportProtocol.CoreSource,
+                    StringComparison.Ordinal) ||
+                !string.Equals(
+                    accepted.EventSha256,
+                    HerdrOpsSelfReportJson.ComputeSha256(accepted.Submission),
+                    StringComparison.Ordinal) ||
+                !_taskRegistry.Contains(accepted.Submission.TaskId) ||
+                !_acceptedByEventId.TryAdd(accepted.Submission.EventId, accepted))
+            {
+                throw new ArgumentException(
+                    "The restored self-report ledger contains invalid identity or ordering.",
+                    nameof(restoredAcceptedEvents));
+            }
+
+            _acceptedEvents.Add(accepted);
+            priorSequence = accepted.Sequence;
+        }
+
+        if (restored.Length > 0 && initialSequence != 0 && initialSequence != priorSequence)
+        {
+            throw new ArgumentException(
+                "The restored self-report sequence does not match the requested initial sequence.",
+                nameof(initialSequence));
+        }
+
+        _lastSequence = restored.Length == 0 ? initialSequence : priorSequence;
     }
 
     private static HerdrOpsSelfReportResult AcceptedResult(
