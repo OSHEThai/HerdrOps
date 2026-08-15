@@ -96,6 +96,11 @@ Build, verification, GitHub roadmap, evidence capture, and packaging helpers liv
   -CompositeRuntimeReport '<composite-runtime-acceptance.json>' `
   -RuntimeGateReport '<runtime-gate-report.txt>'
 
+# From a clean committed checkout, verify the fixed v0.5 rule definitions,
+# positive/negative corpus, explainability hashes, visible rule errors,
+# duplicate suppression, and deterministic product report.
+./tools/Test-V05ComplianceRuleEngine.ps1
+
 # From an authorized Herdr pane, capture actual bounded pane-read and
 # Herdr-PID-to-Windows-process evidence without controlling the session.
 dotnet artifacts/bin/HerdrOps.Core/release/HerdrOps.Core.dll trace-herdr-terminal-process `
@@ -116,3 +121,5 @@ The v0.3 notification implementation gate includes actual WPF rendering and inte
 The v0.4 Delegation Graph gate includes deterministic lifecycle projection, provenance validation, actual WPF rendering, interaction tests, and an accessible equivalent. It does not close Issue #20 without independent review or claim actual Herdr/Core lifecycle delivery.
 
 The v0.4 Expanded Widget implementation gate includes contract, synthetic, local SQLite, and actual WPF rendering evidence. Runtime credit exists only after the authorized harness binds four exact running Agent IDs and roles to an overlapping durable lifecycle. Current-user Named Pipe isolation does not prove which same-user process submitted each event.
+
+The v0.5 compliance-rule implementation gate is Contract plus Synthetic evidence. It verifies only suspected finding generation and cannot substitute for immutable evidence storage, role-authorized review actions, the Compliance Queue, retention/redaction, actual runtime review, or v0.5 release evidence.

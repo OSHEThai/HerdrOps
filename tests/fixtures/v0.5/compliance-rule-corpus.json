@@ -1,0 +1,279 @@
+{
+  "contractVersion": 1,
+  "cases": [
+    {
+      "caseId": "compliant-workflow",
+      "repeatCount": 1,
+      "request": {
+        "contractVersion": 1,
+        "taskId": "TASK-501",
+        "actorId": "backend-worker-01",
+        "scopeBoundaries": [
+          {
+            "inputId": "scope:backend",
+            "pathPrefix": "src/backend"
+          }
+        ],
+        "actions": [
+          {
+            "inputId": "action:implementation",
+            "targetPath": "src/backend/AuthService.cs",
+            "occurredUtc": "2026-08-15T07:01:00+00:00",
+            "deviationId": null
+          },
+          {
+            "inputId": "action:runbook",
+            "targetPath": "docs/runbook.md",
+            "occurredUtc": "2026-08-15T07:02:00+00:00",
+            "deviationId": "DEV-APPROVED"
+          }
+        ],
+        "deviations": [
+          {
+            "inputId": "deviation:approved",
+            "deviationId": "DEV-APPROVED",
+            "pathPrefix": "docs",
+            "decisionKind": "Approved",
+            "requestedUtc": "2026-08-15T06:50:00+00:00",
+            "decidedUtc": "2026-08-15T06:59:00+00:00"
+          }
+        ],
+        "evidenceRequirements": [
+          {
+            "inputId": "requirement:test",
+            "requirementId": "REQ-TEST",
+            "evidenceType": "test-result"
+          }
+        ],
+        "evidenceSubmissions": [
+          {
+            "inputId": "submission:test",
+            "submissionId": "EVIDENCE-TEST-1",
+            "requirementId": "REQ-TEST",
+            "isAdmitted": true
+          }
+        ],
+        "reviewObservations": [
+          {
+            "inputId": "review:send-leader",
+            "sequence": 1,
+            "actionKind": "SendToLeader",
+            "reviewerActorId": "project-manager",
+            "occurredUtc": "2026-08-15T07:10:00+00:00"
+          },
+          {
+            "inputId": "review:leader-decision",
+            "sequence": 2,
+            "actionKind": "LeaderDecision",
+            "reviewerActorId": "backend-leader",
+            "occurredUtc": "2026-08-15T07:11:00+00:00"
+          },
+          {
+            "inputId": "review:escalate-pm",
+            "sequence": 3,
+            "actionKind": "EscalateToProjectManager",
+            "reviewerActorId": "backend-leader",
+            "occurredUtc": "2026-08-15T07:12:00+00:00"
+          },
+          {
+            "inputId": "review:pm-decision",
+            "sequence": 4,
+            "actionKind": "ProjectManagerDecision",
+            "reviewerActorId": "project-manager",
+            "occurredUtc": "2026-08-15T07:13:00+00:00"
+          }
+        ]
+      },
+      "expectation": {
+        "firstRunFindingCount": 0,
+        "firstRunFindingRuleKinds": [],
+        "firstRunErrorRuleKinds": [],
+        "repeatedDuplicateDetectionCount": 0
+      }
+    },
+    {
+      "caseId": "scope-and-pending-deviation",
+      "repeatCount": 2,
+      "request": {
+        "contractVersion": 1,
+        "taskId": "TASK-502",
+        "actorId": "backend-worker-02",
+        "scopeBoundaries": [
+          {
+            "inputId": "scope:backend",
+            "pathPrefix": "src/backend"
+          }
+        ],
+        "actions": [
+          {
+            "inputId": "action:outside",
+            "targetPath": "docs/private/operator.md",
+            "occurredUtc": "2026-08-15T07:05:00+00:00",
+            "deviationId": "DEV-PENDING"
+          }
+        ],
+        "deviations": [
+          {
+            "inputId": "deviation:pending",
+            "deviationId": "DEV-PENDING",
+            "pathPrefix": "docs/private",
+            "decisionKind": "Pending",
+            "requestedUtc": "2026-08-15T07:00:00+00:00",
+            "decidedUtc": null
+          }
+        ],
+        "evidenceRequirements": [
+          {
+            "inputId": "requirement:test",
+            "requirementId": "REQ-TEST",
+            "evidenceType": "test-result"
+          }
+        ],
+        "evidenceSubmissions": [
+          {
+            "inputId": "submission:test",
+            "submissionId": "EVIDENCE-TEST-2",
+            "requirementId": "REQ-TEST",
+            "isAdmitted": true
+          }
+        ],
+        "reviewObservations": []
+      },
+      "expectation": {
+        "firstRunFindingCount": 2,
+        "firstRunFindingRuleKinds": [
+          "ScopeViolation",
+          "UnapprovedDeviation"
+        ],
+        "firstRunErrorRuleKinds": [],
+        "repeatedDuplicateDetectionCount": 2
+      }
+    },
+    {
+      "caseId": "missing-required-evidence",
+      "repeatCount": 1,
+      "request": {
+        "contractVersion": 1,
+        "taskId": "TASK-503",
+        "actorId": "test-worker-01",
+        "scopeBoundaries": [
+          {
+            "inputId": "scope:tests",
+            "pathPrefix": "tests/backend"
+          }
+        ],
+        "actions": [
+          {
+            "inputId": "action:test",
+            "targetPath": "tests/backend/AuthServiceTests.cs",
+            "occurredUtc": "2026-08-15T07:20:00+00:00",
+            "deviationId": null
+          }
+        ],
+        "deviations": [],
+        "evidenceRequirements": [
+          {
+            "inputId": "requirement:test-result",
+            "requirementId": "REQ-TEST-RESULT",
+            "evidenceType": "test-result"
+          }
+        ],
+        "evidenceSubmissions": [],
+        "reviewObservations": []
+      },
+      "expectation": {
+        "firstRunFindingCount": 1,
+        "firstRunFindingRuleKinds": [
+          "MissingEvidence"
+        ],
+        "firstRunErrorRuleKinds": [],
+        "repeatedDuplicateDetectionCount": 0
+      }
+    },
+    {
+      "caseId": "project-manager-review-before-leader",
+      "repeatCount": 1,
+      "request": {
+        "contractVersion": 1,
+        "taskId": "TASK-504",
+        "actorId": "frontend-worker-01",
+        "scopeBoundaries": [
+          {
+            "inputId": "scope:frontend",
+            "pathPrefix": "src/frontend"
+          }
+        ],
+        "actions": [
+          {
+            "inputId": "action:frontend",
+            "targetPath": "src/frontend/LoginView.cs",
+            "occurredUtc": "2026-08-15T07:30:00+00:00",
+            "deviationId": null
+          }
+        ],
+        "deviations": [],
+        "evidenceRequirements": [],
+        "evidenceSubmissions": [],
+        "reviewObservations": [
+          {
+            "inputId": "review:pm-first",
+            "sequence": 1,
+            "actionKind": "ProjectManagerDecision",
+            "reviewerActorId": "project-manager",
+            "occurredUtc": "2026-08-15T07:40:00+00:00"
+          }
+        ]
+      },
+      "expectation": {
+        "firstRunFindingCount": 1,
+        "firstRunFindingRuleKinds": [
+          "ReviewOrder"
+        ],
+        "firstRunErrorRuleKinds": [],
+        "repeatedDuplicateDetectionCount": 0
+      }
+    },
+    {
+      "caseId": "orphan-evidence-rule-error",
+      "repeatCount": 1,
+      "request": {
+        "contractVersion": 1,
+        "taskId": "TASK-505",
+        "actorId": "devops-worker-01",
+        "scopeBoundaries": [
+          {
+            "inputId": "scope:deployment",
+            "pathPrefix": "deploy"
+          }
+        ],
+        "actions": [
+          {
+            "inputId": "action:deployment",
+            "targetPath": "deploy/staging.ps1",
+            "occurredUtc": "2026-08-15T07:50:00+00:00",
+            "deviationId": null
+          }
+        ],
+        "deviations": [],
+        "evidenceRequirements": [],
+        "evidenceSubmissions": [
+          {
+            "inputId": "submission:orphan",
+            "submissionId": "EVIDENCE-ORPHAN",
+            "requirementId": "REQ-UNKNOWN",
+            "isAdmitted": true
+          }
+        ],
+        "reviewObservations": []
+      },
+      "expectation": {
+        "firstRunFindingCount": 0,
+        "firstRunFindingRuleKinds": [],
+        "firstRunErrorRuleKinds": [
+          "MissingEvidence"
+        ],
+        "repeatedDuplicateDetectionCount": 0
+      }
+    }
+  ]
+}

@@ -6,6 +6,12 @@ if (args.Length > 0 && string.Equals(args[0], "activity-replay", StringCompariso
 }
 
 if (args.Length > 0 &&
+    string.Equals(args[0], "compliance-rule-corpus", StringComparison.Ordinal))
+{
+    return ComplianceRuleCorpusCommand.Run(args, Console.Out, Console.Error);
+}
+
+if (args.Length > 0 &&
     string.Equals(args[0], "assignment-lifecycle-replay", StringComparison.Ordinal))
 {
     return AssignmentLifecycleReplayCommand.Run(args, Console.Out, Console.Error);
