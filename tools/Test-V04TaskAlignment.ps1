@@ -86,6 +86,7 @@ $requiredChecks = @(
     'LanguageRefreshRebuildsAllSyntheticCopyWithoutRetainingThaiText',
     'ProductionDashboardFailsClosedUntilAllAdmittedAnalysisInputsExist',
     'ThaiIsTheDefaultAndBothCatalogsContainTheSameNonEmptyKeys',
+    'ThaiCatalogUsesThaiCoreTerminologyWithoutEnglishLabel',
     'EveryV01XamlLanguageBindingExistsAndNoBilingualLiteralRemains',
     'SyntheticOverviewAndWidgetCopyRebuildsAsOneSelectedLanguage',
     'LiveDashboardCopyRebuildsFromThaiToEnglishWithoutRetainingThaiText',
