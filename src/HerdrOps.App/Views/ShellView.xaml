@@ -557,6 +557,9 @@
             <views:FileActivityView x:Name="FileActivityPage"
                                     Grid.Column="1"
                                     Visibility="Collapsed" />
+            <views:ComplianceQueueView x:Name="ComplianceQueuePage"
+                                       Grid.Column="1"
+                                       Visibility="Collapsed" />
             <views:AgentDetailView x:Name="AgentDetailPage"
                                    Grid.Column="1"
                                    Visibility="Collapsed" />

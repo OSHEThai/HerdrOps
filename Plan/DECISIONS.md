@@ -134,3 +134,13 @@
 - Authority boundary: Issue #25 does not authorize Leader or Project Manager actions, confirm incidents, enforce real-data redaction, render the Compliance Queue, or prove actual Herdr/runtime retention. Those remain Issues #26–#28.
 - Evidence boundary: Domain tests and local SQLite integration tests are Contract plus Integration evidence. They are not independent review, actual Herdr runtime, installed-product retention or v0.5 release evidence.
 - Status: Implemented for v0.5 Issue #25; independent review and the clean-checkout implementation gate remain pending.
+
+## D-016 — Compliance Queue presentation is synchronized but non-authoritative
+
+- Decision: Issue #26 renders the approved Compliance Queue hierarchy from one deterministic presentation state: summary cards, exact filters and sort, selected incident, evidence provenance, and role-labeled review actions.
+- State contract: `Suspected`, `Confirmed`, `PendingLeader`, `PendingProjectManager`, and `Dismissed` remain distinct presentation states. Severity and workflow state use separate semantic tokens and visible labels.
+- Selection contract: the selected visible incident is the only source for the detail, evidence, and action panels. Filtering a selected row out selects the first remaining row or clears all dependent panels. Unknown filter and sort values fail closed.
+- Authority contract: every Issue #26 review action is disabled and explains its required role and unavailable reason. Project Manager, Leader, and Observer applicability is presentation metadata only. The page has no transition command, storage write, or audit append; Issue #27 owns role authorization and mutation.
+- Language and accessibility contract: Thai and English are complete separate modes. Real WPF filters, selection, buttons, focus visuals, labels beyond color, readable disabled controls, disabled tooltips, distinct localized pagination automation names/help text, and a localized exact range/total/page footer are required at both reference and compact desktop sizes; review actions remain in the compact viewport while detail/evidence can scroll.
+- Evidence boundary: presentation-contract checks are Contract evidence; deterministic state and language-catalog tests are Integration evidence; actual WPF captures rendered from synthetic read-only state, including the primary, compact, and Missing-evidence variants, are Synthetic UI evidence. Actual Herdr Runtime, Independent Review, and Release evidence are NOT OBSERVED. These checks do not prove reviewer authority, incident mutation, actual Herdr operation, privacy/retention acceptance, or v0.5 release readiness.
+- Status: In implementation for v0.5 Issue #26.

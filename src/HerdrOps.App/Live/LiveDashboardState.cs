@@ -1,6 +1,7 @@
 using HerdrOps.App.Agents;
 using HerdrOps.App.Activity;
 using HerdrOps.App.Alignment;
+using HerdrOps.App.Compliance;
 using HerdrOps.App.Delegation;
 using HerdrOps.App.Localization;
 using HerdrOps.App.Organization;
@@ -28,7 +29,7 @@ public enum LiveDashboardConnectionStatus
     SyntheticPreview,
 }
 
-public sealed class LiveDashboardState : ObservableState
+public sealed class LiveDashboardState : ObservableState, IDisposable
 {
     private readonly List<LiveActivityRecord> _activities = [];
     private readonly bool _syntheticPreview;
@@ -52,6 +53,7 @@ public sealed class LiveDashboardState : ObservableState
     private HerdrOpsStateUpdateKind? _lastUpdateKind;
     private string? _lastOfflineExceptionType;
     private bool _clockMismatch;
+    private bool _disposed;
 
     public LiveDashboardState()
         : this(syntheticPreview: false)
@@ -75,6 +77,9 @@ public sealed class LiveDashboardState : ObservableState
         TaskAlignment = syntheticPreview
             ? TaskAlignmentState.CreateSyntheticPreview()
             : new TaskAlignmentState();
+        ComplianceQueue = syntheticPreview
+            ? ComplianceQueueState.CreateSyntheticPreview()
+            : ComplianceQueueState.CreateUnavailableLiveState();
         Organization.AgentSelectionRequested += (_, terminalId) => SelectAgent(terminalId);
         _connectionStatus = syntheticPreview
             ? LiveDashboardConnectionStatus.SyntheticPreview
@@ -110,6 +115,8 @@ public sealed class LiveDashboardState : ObservableState
     public DelegationGraphState DelegationGraph { get; }
 
     public TaskAlignmentState TaskAlignment { get; }
+
+    public ComplianceQueueState ComplianceQueue { get; }
 
     public HerdrSessionStateContract CurrentState
     {
@@ -345,15 +352,34 @@ public sealed class LiveDashboardState : ObservableState
 
     public void RefreshLanguage()
     {
+        if (_disposed)
+        {
+            return;
+        }
+
         RefreshPresentation();
         RefreshViews();
         RealtimeActivity.RefreshLanguage();
         DelegationGraph.RefreshLanguage();
         TaskAlignment.RefreshLanguage();
+        ComplianceQueue.RefreshLanguage();
         if (_syntheticPreview)
         {
             AgentDetail.ApplySyntheticPreviewProfile();
         }
+    }
+
+    public void Dispose()
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        _disposed = true;
+        // ComplianceQueue is owned by this dashboard state. Shell views can be
+        // unloaded and reloaded without ending the App-wide state lifetime.
+        ComplianceQueue.Dispose();
     }
 
     private void RefreshViews(bool recordWidgetLatency = false)

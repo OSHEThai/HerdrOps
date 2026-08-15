@@ -71,6 +71,10 @@ jobs:
         shell: pwsh
         run: ./tools/Test-V05EvidenceAuditStorage.ps1 -Configuration Release -SkipBuild
 
+      - name: Run v0.5 Compliance Queue implementation gate
+        shell: pwsh
+        run: ./tools/Test-V05ComplianceQueue.ps1 -Configuration Release -SkipBuild
+
       - name: Upload test results
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -189,4 +193,12 @@ jobs:
         with:
           name: v0.5-evidence-audit-storage-gate-report
           path: artifacts/release-gates/v0.5.0/issue-25
+          if-no-files-found: warn
+
+      - name: Upload v0.5 Compliance Queue gate report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: v0.5-compliance-queue-gate-report
+          path: artifacts/release-gates/v0.5.0/issue-26
           if-no-files-found: warn
