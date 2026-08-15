@@ -1,13 +1,15 @@
 using HerdrOps.Contracts.StateIpc;
 using HerdrOps.Domain.Assignments;
+using HerdrOps.Domain.Evidence;
 
 namespace HerdrOps.Infrastructure.Storage;
 
 public sealed record HerdrStateStoreOptions(
     string DatabasePath,
-    int BusyTimeoutSeconds = 5)
+    int BusyTimeoutSeconds = 5,
+    string? ManagedEvidenceRootPath = null)
 {
-    public const int CurrentSchemaVersion = 2;
+    public const int CurrentSchemaVersion = 3;
 
     public static HerdrStateStoreOptions ForCurrentUser()
     {
@@ -65,6 +67,47 @@ public sealed record HerdrStoredAssignmentLifecycleEvent(
 public sealed record HerdrAssignmentLifecycleWriteResult(
     HerdrStoredAssignmentLifecycleEvent StoredEvent,
     bool WasAlreadyPresent);
+
+public sealed record HerdrStoredEvidence(
+    EvidenceMetadata Metadata,
+    bool ManagedBytesAvailable,
+    bool RetentionCompleted);
+
+public sealed record HerdrEvidenceWriteResult(
+    HerdrStoredEvidence StoredEvidence,
+    bool WasAlreadyPresent);
+
+public sealed record HerdrReviewAuditWriteResult(
+    ReviewAuditEvent StoredEvent,
+    bool WasAlreadyPresent);
+
+public enum HerdrEvidenceRetentionOutcome
+{
+    Purged = 1,
+    AlreadyMissing = 2,
+    ProtectedByOpenReview = 3,
+}
+
+public sealed record HerdrEvidenceRetentionResult(
+    string EvidenceIdentitySha256,
+    HerdrEvidenceRetentionOutcome Outcome,
+    DateTimeOffset EvaluatedUtc,
+    Guid? RetentionEventId,
+    string? RetentionAuditSha256);
+
+public sealed record HerdrEvidenceRetentionAuditEvent(
+    Guid RetentionEventId,
+    string EvidenceIdentitySha256,
+    DateTimeOffset OccurredUtc,
+    HerdrEvidenceRetentionOutcome Outcome,
+    string ManagedRelativePath,
+    long ExpectedContentLength,
+    string ExpectedContentSha256,
+    string RetentionAuditSha256);
+
+public sealed record HerdrEvidenceRetentionBatchResult(
+    DateTimeOffset AsOfUtc,
+    IReadOnlyList<HerdrEvidenceRetentionResult> Results);
 
 public sealed class HerdrStateStoreException : IOException
 {

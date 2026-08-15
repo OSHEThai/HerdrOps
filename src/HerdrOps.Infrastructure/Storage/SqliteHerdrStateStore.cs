@@ -9,7 +9,7 @@ using Microsoft.Data.Sqlite;
 
 namespace HerdrOps.Infrastructure.Storage;
 
-public sealed class SqliteHerdrStateStore : IDisposable
+public sealed partial class SqliteHerdrStateStore : IDisposable
 {
     private const int MaximumPayloadBytes = HerdrOpsStateIpcProtocol.MaximumFrameBytes;
     private const string MigrationName = "initial-state-store";
@@ -280,6 +280,8 @@ public sealed class SqliteHerdrStateStore : IDisposable
             ValidateMigrationHistory(HerdrStateStoreOptions.CurrentSchemaVersion);
             EnsureIntegrity("after initialization");
             _assignmentLifecycleReducer = RestoreAssignmentLifecycleReducer();
+            Directory.CreateDirectory(_options.ManagedEvidenceRootPath!);
+            EnsureManagedVaultRootIsSafe();
         }
         catch
         {
@@ -290,6 +292,8 @@ public sealed class SqliteHerdrStateStore : IDisposable
     }
 
     public string DatabasePath => _options.DatabasePath;
+
+    public string ManagedEvidenceRootPath => _options.ManagedEvidenceRootPath!;
 
     public string? LastBackupPath { get; }
 
@@ -1459,7 +1463,35 @@ public sealed class SqliteHerdrStateStore : IDisposable
                 "The SQLite busy timeout must be between 1 and 60 seconds.");
         }
 
-        return options with { DatabasePath = Path.GetFullPath(options.DatabasePath) };
+        var databasePath = Path.GetFullPath(options.DatabasePath);
+        var evidenceRootPath = string.IsNullOrWhiteSpace(options.ManagedEvidenceRootPath)
+            ? Path.Combine(Path.GetDirectoryName(databasePath)!, "evidence")
+            : options.ManagedEvidenceRootPath;
+        if (!Path.IsPathFullyQualified(evidenceRootPath))
+        {
+            throw new ArgumentException(
+                "The managed-evidence root path must be absolute when specified.",
+                nameof(options));
+        }
+
+        evidenceRootPath = Path.GetFullPath(evidenceRootPath);
+        if (string.Equals(
+                evidenceRootPath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar),
+                Path.GetPathRoot(evidenceRootPath)?.TrimEnd(
+                    Path.DirectorySeparatorChar,
+                    Path.AltDirectorySeparatorChar),
+                StringComparison.OrdinalIgnoreCase))
+        {
+            throw new ArgumentException(
+                "The managed-evidence root cannot be a filesystem or share root.",
+                nameof(options));
+        }
+
+        return options with
+        {
+            DatabasePath = databasePath,
+            ManagedEvidenceRootPath = evidenceRootPath,
+        };
     }
 
     private static string CreateConnectionString(HerdrStateStoreOptions options) =>
@@ -1848,6 +1880,11 @@ public sealed class SqliteHerdrStateStore : IDisposable
             AssignmentLifecycleMigrationName,
             AssignmentLifecycleMigrationSql,
             ComputeMigrationSha256(AssignmentLifecycleMigrationSql)),
+        3 => new MigrationDefinition(
+            3,
+            EvidenceAuditMigrationName,
+            EvidenceAuditMigrationSql,
+            ComputeMigrationSha256(EvidenceAuditMigrationSql)),
         _ => throw new HerdrStateStoreException(
             $"No SQLite migration contract exists for v{version}."),
     };

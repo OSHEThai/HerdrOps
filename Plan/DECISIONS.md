@@ -122,3 +122,15 @@
 - Replay contract: `HerdrOps.Core compliance-rule-corpus` validates a strict bounded positive/negative corpus, declared outcomes, error visibility and repeated suppression, then atomically writes a deterministic Synthetic report.
 - Evidence boundary: Unit tests, strict product-command tests and byte-identical corpus reports are Contract plus Synthetic evidence. They do not prove evidence storage, authorized role transitions, Compliance Queue UI, retention/redaction, actual Herdr runtime or v0.5 release readiness.
 - Status: Implemented for v0.5 Issue #24; independent review and the clean-checkout implementation gate remain pending.
+
+## D-015 — Evidence bytes, immutable metadata, review history, and retention are separate ledgers
+
+- Decision: Store contract-v1 evidence metadata and canonical hashes in the Core-owned SQLite database while keeping optional managed artifact bytes in a bounded content vault outside SQLite.
+- Identity contract: The evidence identity binds Task, actor, source event, source, already-redacted reference, explicit availability, content length and content SHA-256. Changed bytes create a new identity. Observation, ingestion, retention, storage mode and managed path are bound by a separate metadata SHA-256.
+- Missing contract: An unavailable artifact becomes explicit `Missing` metadata with null content and managed-path fields. HerdrOps does not infer bytes or silently discard the capture.
+- Review contract: Every review event is append-only, caller-ID idempotent, sequence-bound, evidence-set-bound and hash-chained per review case. Cases open once, cannot regress time or reopen through ordinary appends, and close only through an explicit terminal event.
+- Retention contract: Open linked reviews protect managed bytes. Once unprotected and due, verified bytes are purged and a terminal hash-bound event is appended; metadata, links and audit history remain. Already-absent bytes are recorded explicitly.
+- Schema contract: Forward-only SQLite schema v3 creates separate evidence, review-link, review-event and retention-event ledgers. Ordinary updates and deletes are rejected by triggers, and migration keeps the existing integrity-check and pre-upgrade backup policy.
+- Authority boundary: Issue #25 does not authorize Leader or Project Manager actions, confirm incidents, enforce real-data redaction, render the Compliance Queue, or prove actual Herdr/runtime retention. Those remain Issues #26–#28.
+- Evidence boundary: Domain tests and local SQLite integration tests are Contract plus Integration evidence. They are not independent review, actual Herdr runtime, installed-product retention or v0.5 release evidence.
+- Status: Implemented for v0.5 Issue #25; independent review and the clean-checkout implementation gate remain pending.
