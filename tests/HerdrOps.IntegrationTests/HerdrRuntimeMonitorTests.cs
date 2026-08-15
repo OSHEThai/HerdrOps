@@ -141,6 +141,88 @@ public sealed class HerdrRuntimeMonitorTests
     }
 
     [TestMethod]
+    public async Task ThirtyAgentFreeReplayCyclesDoNotStartAReconciliationLoop()
+    {
+        var snapshot = CreateSnapshotWithAgentFreeShellPane();
+        var replayEvents = Enumerable.Range(0, 30)
+            .SelectMany(_ => new HerdrStateEvent[]
+            {
+                HerdrProtocolJsonCodec.ParseEvent(
+                    """
+                    {"event":"pane.agent_status_changed","data":{"pane_id":"pane-shell","workspace_id":"workspace-1","agent_status":"unknown","title":"Windows PowerShell"}}
+                    """),
+                HerdrProtocolJsonCodec.ParseEvent(
+                    """
+                    {"event":"pane_agent_detected","data":{"type":"pane_agent_detected","pane_id":"pane-shell","workspace_id":"workspace-1"}}
+                    """),
+            })
+            .ToArray();
+        var apiClient = new ScriptedApiClient(
+            [snapshot, snapshot],
+            [
+                ScriptedSubscription.WithEventsThenBlock(replayEvents),
+            ]);
+        var monitor = CreateMonitor(apiClient);
+        using var cancellation = new CancellationTokenSource();
+        var runTask = monitor.RunAsync(cancellation.Token);
+
+        await WaitForAsync(monitor, state => state.EventCount == 60);
+        cancellation.Cancel();
+        await Assert.ThrowsAsync<OperationCanceledException>(() => runTask);
+
+        Assert.AreEqual(1, monitor.Current.BootstrapCount);
+        Assert.AreEqual(0, monitor.Current.ReconciliationCount);
+        Assert.AreEqual(61, monitor.Current.State.LastIngestSequence);
+        Assert.HasCount(1, apiClient.SubscriptionPaneIds);
+        Assert.IsTrue(apiClient.SubscriptionPaneIds[0].SetEquals(["pane-1", "pane-shell"]));
+    }
+
+    [TestMethod]
+    public async Task UnreflectedActiveAgentDetectionPerformsOneAuthoritativeReconciliation()
+    {
+        var afterDetection = CreateSnapshot(revision: 1, HerdrAgentStatus.Working);
+        var beforeDetection = afterDetection with
+        {
+            Panes =
+            [
+                afterDetection.Panes[0] with
+                {
+                    AgentStatus = HerdrAgentStatus.Unknown,
+                    Agent = null,
+                    DisplayAgent = null,
+                    Title = null,
+                },
+            ],
+            Agents = [],
+        };
+        var detected = HerdrProtocolJsonCodec.ParseEvent(
+            """
+            {"event":"pane_agent_detected","data":{"type":"pane_agent_detected","pane_id":"pane-1","workspace_id":"workspace-1","agent":"codex","released":false}}
+            """);
+        var apiClient = new ScriptedApiClient(
+            [beforeDetection, beforeDetection, afterDetection, afterDetection],
+            [
+                ScriptedSubscription.WithEvents(detected),
+                ScriptedSubscription.BlockUntilCancelled(),
+            ]);
+        var monitor = CreateMonitor(apiClient);
+        using var cancellation = new CancellationTokenSource();
+        var runTask = monitor.RunAsync(cancellation.Token);
+
+        await WaitForAsync(
+            monitor,
+            state => state.BootstrapCount == 2 &&
+                     state.State.Agents.ContainsKey("terminal-1"));
+        cancellation.Cancel();
+        await Assert.ThrowsAsync<OperationCanceledException>(() => runTask);
+
+        Assert.AreEqual(1, monitor.Current.ReconciliationCount);
+        Assert.AreEqual(1, monitor.Current.EventCount);
+        Assert.HasCount(2, apiClient.SubscriptionPaneIds);
+        Assert.AreEqual(HerdrAgentStatus.Working, monitor.Current.State.Agents["terminal-1"].AgentStatus);
+    }
+
+    [TestMethod]
     public async Task TopologyEventReconcilesBeforePublishingIntermediateCounts()
     {
         var snapshot = CreateSnapshot(revision: 1, HerdrAgentStatus.Working);
@@ -453,8 +535,30 @@ public sealed class HerdrRuntimeMonitorTests
                     ScreenDetectionSkipped: false),
             ],
             "workspace-1",
-            "tab-1",
-            "pane-1");
+        "tab-1",
+        "pane-1");
+
+    private static HerdrSessionSnapshot CreateSnapshotWithAgentFreeShellPane()
+    {
+        var snapshot = CreateSnapshot(revision: 1, HerdrAgentStatus.Working);
+        var shellPane = snapshot.Panes[0] with
+        {
+            PaneId = "pane-shell",
+            TerminalId = "terminal-shell",
+            Focused = false,
+            AgentStatus = HerdrAgentStatus.Unknown,
+            Agent = null,
+            DisplayAgent = null,
+            Title = null,
+            TerminalTitle = "Windows PowerShell",
+        };
+        return snapshot with
+        {
+            Workspaces = [snapshot.Workspaces[0] with { PaneCount = 2 }],
+            Tabs = [snapshot.Tabs[0] with { PaneCount = 2 }],
+            Panes = [snapshot.Panes[0], shellPane],
+        };
+    }
 
     private static (HerdrSessionSnapshot Before, HerdrSessionSnapshot After)
         CreateCrossWorkspaceMoveSnapshots()

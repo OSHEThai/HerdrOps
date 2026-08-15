@@ -68,6 +68,7 @@ public sealed class HerdrStateReducer
             HerdrPaneFocusedEvent focused => ApplyPaneFocused(state, focused, ingestSequence),
             HerdrPaneRevisionChangedEvent changed => ApplyPaneRevisionChanged(state, changed, ingestSequence),
             HerdrPaneAgentStatusChangedEvent changed => ApplyPaneAgentStatusChanged(state, changed, ingestSequence),
+            HerdrPaneAgentDetectedEvent detected => ApplyPaneAgentDetected(state, detected, ingestSequence),
             HerdrNoStateChangeEvent => Result(
                 state with { LastIngestSequence = ingestSequence },
                 HerdrStateApplyDisposition.Ignored),
@@ -538,6 +539,16 @@ public sealed class HerdrStateReducer
             .ToArray();
         if (matchingAgents.Length == 0)
         {
+            if (IsAgentFreeUnknownStatus(pane, changed))
+            {
+                var agentFreeState = state with
+                {
+                    Panes = Freeze(panes),
+                    LastIngestSequence = ingestSequence,
+                };
+                return updatedPane != pane ? Applied(agentFreeState) : Duplicate(agentFreeState);
+            }
+
             return Reconcile(
                 state,
                 $"Agent status for pane '{pane.PaneId}' has no matching agent record.");
@@ -566,6 +577,63 @@ public sealed class HerdrStateReducer
         };
         return changedAnyValue ? Applied(nextState) : Duplicate(nextState);
     }
+
+    private static HerdrStateApplyResult ApplyPaneAgentDetected(
+        HerdrSessionState state,
+        HerdrPaneAgentDetectedEvent detected,
+        long ingestSequence)
+    {
+        if (!state.Panes.TryGetValue(detected.PaneId, out var pane) ||
+            !Equal(pane.WorkspaceId, detected.WorkspaceId))
+        {
+            return Reconcile(state, $"Agent detection arrived for unknown pane '{detected.PaneId}'.");
+        }
+
+        var matchingAgents = state.Agents.Values
+            .Where(agent => Equal(agent.PaneId, pane.PaneId))
+            .ToArray();
+        var paneHasNoAgent = string.IsNullOrEmpty(pane.Agent) &&
+                             string.IsNullOrEmpty(pane.DisplayAgent) &&
+                             matchingAgents.Length == 0;
+        if (detected.Released == true && paneHasNoAgent)
+        {
+            return Duplicate(state with { LastIngestSequence = ingestSequence });
+        }
+
+        if (detected.Released != true &&
+            string.IsNullOrEmpty(detected.Agent) &&
+            paneHasNoAgent &&
+            detected.FinalStatus is null or HerdrAgentStatus.Unknown)
+        {
+            return Duplicate(state with { LastIngestSequence = ingestSequence });
+        }
+
+        var matchingDetection = detected.Released != true &&
+                                !string.IsNullOrEmpty(detected.Agent) &&
+                                Equal(pane.Agent, detected.Agent) &&
+                                matchingAgents.Length > 0 &&
+                                matchingAgents.All(agent => Equal(agent.Agent, detected.Agent)) &&
+                                (detected.FinalStatus is null ||
+                                 (pane.AgentStatus == detected.FinalStatus &&
+                                  matchingAgents.All(agent => agent.AgentStatus == detected.FinalStatus)));
+        if (matchingDetection)
+        {
+            return Duplicate(state with { LastIngestSequence = ingestSequence });
+        }
+
+        return Reconcile(
+            state,
+            $"Agent detection for pane '{detected.PaneId}' is not reflected by the authoritative state.");
+    }
+
+    private static bool IsAgentFreeUnknownStatus(
+        HerdrPaneSnapshot pane,
+        HerdrPaneAgentStatusChangedEvent changed) =>
+        changed.AgentStatus == HerdrAgentStatus.Unknown &&
+        string.IsNullOrEmpty(changed.Agent) &&
+        string.IsNullOrEmpty(changed.DisplayAgent) &&
+        string.IsNullOrEmpty(pane.Agent) &&
+        string.IsNullOrEmpty(pane.DisplayAgent);
 
     private static Dictionary<string, HerdrAgentSnapshot> UpdateAgentsFromPane(
         IReadOnlyDictionary<string, HerdrAgentSnapshot> currentAgents,

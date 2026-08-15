@@ -83,6 +83,15 @@ public sealed record HerdrPaneAgentStatusChangedEvent(
     string? Title)
     : HerdrStateEvent(EventName);
 
+public sealed record HerdrPaneAgentDetectedEvent(
+    string EventName,
+    string WorkspaceId,
+    string PaneId,
+    string? Agent,
+    HerdrAgentStatus? FinalStatus,
+    bool? Released)
+    : HerdrStateEvent(EventName);
+
 public sealed record HerdrNoStateChangeEvent(string EventName)
     : HerdrStateEvent(EventName);
 

@@ -135,6 +135,45 @@ public sealed class HerdrProtocolJsonCodecContractTests
     }
 
     [TestMethod]
+    public void AgentDetectionEventRetainsIdentityReleaseAndFinalStatus()
+    {
+        var stateEvent = HerdrProtocolJsonCodec.ParseEvent(
+            """
+            {"event":"pane_agent_detected","data":{"type":"pane_agent_detected","pane_id":"pane-1","workspace_id":"workspace-1","agent":"codex","final_status":"done","released":true}}
+            """);
+
+        var detected = Assert.IsInstanceOfType<HerdrPaneAgentDetectedEvent>(stateEvent);
+        Assert.AreEqual("workspace-1", detected.WorkspaceId);
+        Assert.AreEqual("pane-1", detected.PaneId);
+        Assert.AreEqual("codex", detected.Agent);
+        Assert.AreEqual(HerdrAgentStatus.Done, detected.FinalStatus);
+        Assert.IsTrue(detected.Released);
+    }
+
+    [TestMethod]
+    public void MinimalAgentFreeReplayFramesRemainTypedWithoutInventingIdentity()
+    {
+        var status = HerdrProtocolJsonCodec.ParseEvent(
+            """
+            {"event":"pane.agent_status_changed","data":{"pane_id":"pane-shell","workspace_id":"workspace-1","agent_status":"unknown"}}
+            """);
+        var detection = HerdrProtocolJsonCodec.ParseEvent(
+            """
+            {"event":"pane_agent_detected","data":{"type":"pane_agent_detected","pane_id":"pane-shell","workspace_id":"workspace-1"}}
+            """);
+
+        var statusChanged = Assert.IsInstanceOfType<HerdrPaneAgentStatusChangedEvent>(status);
+        Assert.AreEqual(HerdrAgentStatus.Unknown, statusChanged.AgentStatus);
+        Assert.IsNull(statusChanged.Agent);
+        Assert.IsNull(statusChanged.DisplayAgent);
+        Assert.IsNull(statusChanged.Title);
+        var detected = Assert.IsInstanceOfType<HerdrPaneAgentDetectedEvent>(detection);
+        Assert.IsNull(detected.Agent);
+        Assert.IsNull(detected.FinalStatus);
+        Assert.IsNull(detected.Released);
+    }
+
+    [TestMethod]
     public void EventEnvelopeAndEmbeddedTypeMustAgree()
     {
         var exception = Assert.ThrowsExactly<HerdrProtocolException>(() =>
