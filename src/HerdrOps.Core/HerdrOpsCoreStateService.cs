@@ -35,7 +35,7 @@ public sealed class HerdrOpsCoreStateService
             {
                 var fault = await projection.Faulted.ConfigureAwait(false);
                 throw new HerdrOpsCoreStateServiceException(
-                    "The Core state projection failed closed.",
+                    $"The Core state projection failed closed: {fault.Message}",
                     fault);
             }
 

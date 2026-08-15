@@ -146,7 +146,8 @@ public sealed class HerdrRuntimeMonitor
                     if (!subscribedPaneIds.SetEquals(authoritativePaneIds))
                     {
                         RecordReconciliation(
-                            "Pane set changed while the subscription was being bootstrapped.");
+                            "Pane set changed while the subscription was being bootstrapped.",
+                            ingestSequence);
                         immediateReconciliation = true;
                     }
 
@@ -161,6 +162,7 @@ public sealed class HerdrRuntimeMonitor
                         {
                             RecordReconciliation(
                                 $"Topology event '{stateEvent.EventName}' requires an authoritative snapshot.",
+                                ingestSequence,
                                 incrementEventCount: true);
                             immediateReconciliation = true;
                             break;
@@ -171,6 +173,7 @@ public sealed class HerdrRuntimeMonitor
                         {
                             RecordReconciliation(
                                 result.Reason ?? $"Event '{stateEvent.EventName}' requested reconciliation.",
+                                ingestSequence,
                                 incrementEventCount: true);
                             immediateReconciliation = true;
                             break;
@@ -199,6 +202,7 @@ public sealed class HerdrRuntimeMonitor
                     {
                         RecordReconciliation(
                             exception.Message,
+                            ingestSequence,
                             incrementDisconnectCount: cycleBootstrapped && IsTransportDisconnect(exception));
                     }
                     else
@@ -247,13 +251,22 @@ public sealed class HerdrRuntimeMonitor
 
     private void RecordReconciliation(
         string reason,
+        long consumedIngestSequence,
         bool incrementEventCount = false,
         bool incrementDisconnectCount = false)
     {
         var current = Current;
+        if (consumedIngestSequence < current.State.LastIngestSequence ||
+            consumedIngestSequence > current.State.LastIngestSequence + 1)
+        {
+            throw new InvalidOperationException(
+                $"The reconciliation sequence must remain contiguous: current={current.State.LastIngestSequence}, consumed={consumedIngestSequence}.");
+        }
+
         Publish(current with
         {
             Status = HerdrRuntimeMonitorStatus.Reconnecting,
+            State = current.State with { LastIngestSequence = consumedIngestSequence },
             EventCount = current.EventCount + (incrementEventCount ? 1 : 0),
             DisconnectCount = current.DisconnectCount + (incrementDisconnectCount ? 1 : 0),
             ReconciliationCount = current.ReconciliationCount + 1,

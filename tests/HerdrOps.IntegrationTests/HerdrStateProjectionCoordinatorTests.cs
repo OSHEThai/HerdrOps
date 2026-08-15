@@ -65,4 +65,58 @@ public sealed class HerdrStateProjectionCoordinatorTests
         Assert.AreEqual(2, restartedStore.ReadCurrent()!.State.LastIngestSequence);
         Assert.AreEqual("Idle", restarted.PipeServer.CurrentSnapshot.State.Agents[0].AgentStatus);
     }
+
+    [TestMethod]
+    public void CoordinatorPersistsConsumedTopologyEventBeforeAuthoritativeReconciliation()
+    {
+        using var directory = new TemporaryDirectory();
+        using var store = new SqliteHerdrStateStore(new HerdrStateStoreOptions(
+            Path.Combine(directory.Path, "herdrops.db")));
+        var coordinator = new HerdrStateProjectionCoordinator(
+            store,
+            new HerdrOpsStatePipeServerOptions($"herdrops-projection-{Guid.NewGuid():N}"),
+            new FixedTimeProvider(HerdrStateTestData.ObservedUtc.AddMinutes(1)));
+
+        var initial = HerdrSessionStateContractMapper.ToDomain(
+            HerdrStateTestData.CreateState(sequence: 1, connectionEpoch: 1));
+        var consumedTopologyEvent = HerdrSessionStateContractMapper.ToDomain(
+            HerdrStateTestData.CreateState(sequence: 2, connectionEpoch: 1));
+        var authoritative = HerdrSessionStateContractMapper.ToDomain(
+            HerdrStateTestData.CreateState(sequence: 3, connectionEpoch: 2));
+
+        coordinator.Project(new HerdrRuntimeMonitorSnapshot(
+            HerdrRuntimeMonitorStatus.Connected,
+            initial,
+            null,
+            BootstrapCount: 1,
+            EventCount: 0,
+            DisconnectCount: 0,
+            ReconciliationCount: 0,
+            LastTransitionReason: null,
+            HerdrStateTestData.ObservedUtc.AddSeconds(1)));
+        coordinator.Project(new HerdrRuntimeMonitorSnapshot(
+            HerdrRuntimeMonitorStatus.Reconnecting,
+            consumedTopologyEvent,
+            null,
+            BootstrapCount: 1,
+            EventCount: 1,
+            DisconnectCount: 0,
+            ReconciliationCount: 1,
+            LastTransitionReason: "Topology event requires an authoritative snapshot.",
+            HerdrStateTestData.ObservedUtc.AddSeconds(2)));
+        coordinator.Project(new HerdrRuntimeMonitorSnapshot(
+            HerdrRuntimeMonitorStatus.Connected,
+            authoritative,
+            null,
+            BootstrapCount: 2,
+            EventCount: 1,
+            DisconnectCount: 0,
+            ReconciliationCount: 1,
+            LastTransitionReason: null,
+            HerdrStateTestData.ObservedUtc.AddSeconds(3)));
+
+        Assert.AreEqual(3, coordinator.CurrentState.LastIngestSequence);
+        Assert.AreEqual(2, coordinator.CurrentState.ConnectionEpoch);
+        Assert.AreEqual(3, store.ReadCurrent()!.State.LastIngestSequence);
+    }
 }
