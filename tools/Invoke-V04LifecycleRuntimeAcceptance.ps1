@@ -369,7 +369,7 @@ if ($compositeExitCode -ne 0) {
 $lifecycleTrace = Get-Content -LiteralPath $lifecycleTracePath -Raw | ConvertFrom-Json -Depth 128
 $herdrRuntime = Get-Content -LiteralPath $herdrRuntimeReportPath -Raw | ConvertFrom-Json -Depth 128
 $composite = Get-Content -LiteralPath $compositeReportPath -Raw | ConvertFrom-Json -Depth 128
-if ($lifecycleTrace.evidenceClassification -ne 'Runtime' -or
+if ($lifecycleTrace.evidenceClassification -ne 'BuiltProcessIntegration' -or
     -not [bool]$lifecycleTrace.durableLifecycleEnabled -or
     @($lifecycleTrace.acceptedEvents).Count -ne 10 -or
     [long]$lifecycleTrace.lifecycleReplay.diagnostics.orphanEventCount -lt 1 -or
