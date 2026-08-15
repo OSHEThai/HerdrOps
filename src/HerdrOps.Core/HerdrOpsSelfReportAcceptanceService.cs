@@ -156,9 +156,19 @@ public sealed class HerdrOpsSelfReportAcceptanceService
                     correlationId);
             }
 
+            var acceptedUtc = _timeProvider.GetUtcNow().ToUniversalTime();
+            if (acceptedUtc < submission.OccurredUtc)
+            {
+                return Reject(
+                    HerdrOpsSelfReportProtocol.ResultCodes.InvalidSchema,
+                    "The self-report occurrence time cannot be after the Core acceptance time.",
+                    submission,
+                    correlationId);
+            }
+
             var accepted = new HerdrOpsAcceptedSelfReport(
                 checked(++_lastSequence),
-                _timeProvider.GetUtcNow(),
+                acceptedUtc,
                 HerdrOpsSelfReportProtocol.CoreSource,
                 correlationId,
                 eventSha256,

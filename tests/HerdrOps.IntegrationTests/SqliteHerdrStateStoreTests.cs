@@ -22,7 +22,7 @@ public sealed class SqliteHerdrStateStoreTests
             Assert.IsFalse(write.WasAlreadyPresent);
             acceptedHash = write.StoredState.StateSha256;
             var diagnostics = store.GetDiagnostics();
-            Assert.AreEqual(1, diagnostics.SchemaVersion);
+            Assert.AreEqual(2, diagnostics.SchemaVersion);
             Assert.AreEqual("wal", diagnostics.JournalMode, ignoreCase: true);
             Assert.AreEqual(2, diagnostics.SynchronousMode);
             Assert.IsTrue(diagnostics.ForeignKeysEnabled);
@@ -93,7 +93,7 @@ public sealed class SqliteHerdrStateStoreTests
             backupPath = migrated.LastBackupPath!;
             Assert.IsFalse(string.IsNullOrWhiteSpace(backupPath));
             Assert.IsTrue(File.Exists(backupPath));
-            Assert.AreEqual(1, migrated.GetDiagnostics().SchemaVersion);
+            Assert.AreEqual(2, migrated.GetDiagnostics().SchemaVersion);
         }
 
         using (var backup = Open(backupPath))
@@ -110,6 +110,85 @@ public sealed class SqliteHerdrStateStoreTests
     }
 
     [TestMethod]
+    public void VersionOneDatabaseMigratesForwardWithoutLosingHistory()
+    {
+        using var directory = new TemporaryDirectory();
+        var databasePath = Path.Combine(directory.Path, "herdrops-v1.db");
+        var versionOne = SqliteHerdrStateStore.GetMigrationForTesting(1);
+        using (var legacy = Open(databasePath))
+        {
+            using (var migration = legacy.CreateCommand())
+            {
+                migration.CommandText = versionOne.Sql;
+                migration.ExecuteNonQuery();
+            }
+
+            using (var history = legacy.CreateCommand())
+            {
+                history.CommandText = """
+                    INSERT INTO schema_migrations(version, name, applied_utc, script_sha256)
+                    VALUES (1, $name, '2026-08-15T00:00:00.0000000+00:00', $hash);
+                    PRAGMA user_version = 1;
+                    """;
+                history.Parameters.AddWithValue("$name", versionOne.Name);
+                history.Parameters.AddWithValue("$hash", versionOne.ScriptSha256);
+                history.ExecuteNonQuery();
+            }
+
+            using var legacyEvent = legacy.CreateCommand();
+            legacyEvent.CommandText = """
+                INSERT INTO state_events(
+                    sequence, connection_epoch, observed_utc, ingested_utc,
+                    source, event_type, correlation_id, state_sha256,
+                    payload_json, payload_sha256)
+                VALUES (
+                    1, 1, '2026-08-15T00:00:00.0000000+00:00',
+                    '2026-08-15T00:00:01.0000000+00:00', 'v1-test', 'snapshot',
+                    '00000000-0000-0000-0000-000000000001', $stateHash,
+                    '{}', $payloadHash);
+                """;
+            legacyEvent.Parameters.AddWithValue("$stateHash", new string('A', 64));
+            legacyEvent.Parameters.AddWithValue("$payloadHash", new string('B', 64));
+            legacyEvent.ExecuteNonQuery();
+        }
+
+        string backupPath;
+        using (var migrated = new SqliteHerdrStateStore(
+                   new HerdrStateStoreOptions(databasePath)))
+        {
+            backupPath = migrated.LastBackupPath!;
+            Assert.IsTrue(File.Exists(backupPath));
+            var diagnostics = migrated.GetDiagnostics();
+            Assert.AreEqual(2, diagnostics.SchemaVersion);
+            Assert.AreEqual(1L, diagnostics.EventCount);
+            Assert.AreEqual(0L, diagnostics.LifecycleEventCount);
+        }
+
+        using (var current = Open(databasePath))
+        {
+            using var command = current.CreateCommand();
+            command.CommandText = "SELECT COUNT(*) FROM schema_migrations;";
+            Assert.AreEqual(2L, Convert.ToInt64(command.ExecuteScalar()));
+            command.CommandText = "SELECT script_sha256 FROM schema_migrations WHERE version = 1;";
+            Assert.AreEqual(versionOne.ScriptSha256, command.ExecuteScalar());
+            command.CommandText = "SELECT source FROM state_events WHERE sequence = 1;";
+            Assert.AreEqual("v1-test", command.ExecuteScalar());
+            command.CommandText = "SELECT COUNT(*) FROM assignment_lifecycle_events;";
+            Assert.AreEqual(0L, Convert.ToInt64(command.ExecuteScalar()));
+        }
+
+        using var backup = Open(backupPath);
+        using var backupCommand = backup.CreateCommand();
+        backupCommand.CommandText = "PRAGMA user_version;";
+        Assert.AreEqual(1L, Convert.ToInt64(backupCommand.ExecuteScalar()));
+        backupCommand.CommandText =
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'assignment_lifecycle_events';";
+        Assert.AreEqual(0L, Convert.ToInt64(backupCommand.ExecuteScalar()));
+        backupCommand.CommandText = "SELECT source FROM state_events WHERE sequence = 1;";
+        Assert.AreEqual("v1-test", backupCommand.ExecuteScalar());
+    }
+
+    [TestMethod]
     public void FutureSchemaFailsClosedWithoutMigration()
     {
         using var directory = new TemporaryDirectory();
@@ -117,7 +196,7 @@ public sealed class SqliteHerdrStateStoreTests
         using (var future = Open(databasePath))
         {
             using var command = future.CreateCommand();
-            command.CommandText = "PRAGMA user_version = 2;";
+            command.CommandText = "PRAGMA user_version = 3;";
             command.ExecuteNonQuery();
         }
 
@@ -159,7 +238,7 @@ public sealed class SqliteHerdrStateStoreTests
         }
 
         using var successor = new SqliteHerdrStateStore(options);
-        Assert.AreEqual(1, successor.GetDiagnostics().SchemaVersion);
+        Assert.AreEqual(2, successor.GetDiagnostics().SchemaVersion);
     }
 
     private static SqliteConnection Open(string path)
