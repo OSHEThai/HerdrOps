@@ -586,7 +586,7 @@ if (($captureEvidence | Where-Object { $_.Name -eq 'ComplianceQueueThai1672x941'
     throw 'Thai and English 1672x941 Compliance Queue PNG evidence rendered identical bytes.'
 }
 
-$finalCommit = (& git -C $repositoryRoot rev-parse --verify HEAD^{commit}).Trim()
+$finalCommit = (& git -C $repositoryRoot rev-parse --verify 'HEAD^{commit}').Trim()
 $finalStatus = @(Get-CleanCheckoutStatus)
 if ($LASTEXITCODE -ne 0 -or $finalCommit -ne $sourceCommit -or $finalStatus.Count -ne 0) {
     throw 'The source commit or clean-checkout state changed while the Issue #26 gate ran.'
