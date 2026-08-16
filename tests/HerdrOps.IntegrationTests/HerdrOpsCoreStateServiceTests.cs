@@ -220,7 +220,7 @@ public sealed class HerdrOpsCoreStateServiceTests
             admittedMonitorFactory: fixture.Create);
 
         await fixture.AuthoritativeSnapshotReady.Task.WaitAsync(TimeSpan.FromSeconds(5));
-        File.WriteAllText(signalPath, "AppExited");
+        File.WriteAllBytes(signalPath, []);
         var exitCode = await serviceTask.WaitAsync(TimeSpan.FromSeconds(5));
         stopwatch.Stop();
 
@@ -232,9 +232,39 @@ public sealed class HerdrOpsCoreStateServiceTests
         using var report = JsonDocument.Parse(File.ReadAllText(reportPath));
         var root = report.RootElement;
         Assert.IsTrue(root.GetProperty("CompletionSignalObserved").GetBoolean());
+        Assert.AreEqual(
+            "UniquePrevalidatedAbsolutePathContainingAnEmptyFileAfterAppExit",
+            root.GetProperty("CompletionSignalSemantics").GetString());
         Assert.IsTrue(root.GetProperty("RuntimeObserved").GetBoolean());
         Assert.IsFalse(root.GetProperty("EventObserved").GetBoolean());
         Assert.IsFalse(root.GetProperty("ReconnectObserved").GetBoolean());
+    }
+
+    [TestMethod]
+    public async Task CompletionSignalRejectsNonEmptyMarkerAndStopsService()
+    {
+        using var directory = new TemporaryDirectory();
+        var reportPath = Path.Combine(directory.Path, "runtime.json");
+        var signalPath = Path.Combine(directory.Path, "complete.signal");
+        var fixture = new BlockingRuntimeFixture();
+        var output = new StringWriter();
+        var error = new StringWriter();
+
+        var serviceTask = HerdrOpsCoreStateServiceCommand.RunAsync(
+            CreateEvidenceArguments(directory, signalPath, reportPath),
+            output,
+            error,
+            environmentVariableReader: _ => "1",
+            admittedMonitorFactory: fixture.Create);
+
+        await fixture.AuthoritativeSnapshotReady.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        File.WriteAllText(signalPath, "not-an-empty-marker");
+        var exitCode = await serviceTask.WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.AreEqual(2, exitCode);
+        Assert.IsFalse(File.Exists(reportPath));
+        Assert.IsTrue(fixture.SubscriptionDisposed);
+        StringAssert.Contains(error.ToString(), "empty marker file", StringComparison.Ordinal);
     }
 
     private static string[] CreateEvidenceArguments(

@@ -16,6 +16,8 @@ public static class HerdrOpsCoreStateServiceCommand
     private const int RuntimeFailureExitCode = 2;
     private const int UsageFailureExitCode = 64;
     private const int MaximumEvidenceTransitions = 2048;
+    private const string CompletionSignalContract =
+        "UniquePrevalidatedAbsolutePathContainingAnEmptyFileAfterAppExit";
 
     private static readonly JsonSerializerOptions EvidenceSerializerOptions = new()
     {
@@ -209,14 +211,28 @@ public static class HerdrOpsCoreStateServiceCommand
                     var completedTask = await Task
                         .WhenAny(serviceTask, completionSignalTask)
                         .ConfigureAwait(false);
-                    if (ReferenceEquals(completedTask, completionSignalTask) &&
-                        await completionSignalTask.ConfigureAwait(false))
+                    if (ReferenceEquals(completedTask, completionSignalTask))
                     {
-                        completionSignalObserved = true;
-                        durationCancellation!.Cancel();
+                        try
+                        {
+                            completionSignalObserved = await completionSignalTask
+                                .ConfigureAwait(false);
+                        }
+                        finally
+                        {
+                            durationCancellation!.Cancel();
+                            await serviceTask.ConfigureAwait(false);
+                        }
                     }
-
-                    await serviceTask.ConfigureAwait(false);
+                    else
+                    {
+                        await serviceTask.ConfigureAwait(false);
+                        if (completionSignalTask.IsCompletedSuccessfully &&
+                            completionSignalTask.Result)
+                        {
+                            completionSignalObserved = true;
+                        }
+                    }
                 }
             }
             finally
@@ -274,6 +290,9 @@ public static class HerdrOpsCoreStateServiceCommand
                         : "No exact-hash-bound Herdr snapshot was observed; this report receives no runtime credit.")
                 {
                     CompletionSignalObserved = completionSignalObserved,
+                    CompletionSignalSemantics = completionSignalPath is null
+                        ? null
+                        : CompletionSignalContract,
                 };
                 var reportJson = JsonSerializer.Serialize(report, EvidenceSerializerOptions);
                 new AtomicSchemaOutputWriter().Write(
@@ -393,6 +412,26 @@ public static class HerdrOpsCoreStateServiceCommand
         {
             if (File.Exists(path))
             {
+                if (HasReparsePointInExistingParent(path) ||
+                    (File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0)
+                {
+                    throw new InvalidOperationException(
+                        "The completion signal became a reparse-point alias after validation.");
+                }
+
+                using var signal = new FileStream(
+                    path,
+                    FileMode.Open,
+                    FileAccess.Read,
+                    FileShare.Read,
+                    bufferSize: 1,
+                    FileOptions.SequentialScan);
+                if (signal.Length != 0)
+                {
+                    throw new InvalidOperationException(
+                        "The completion signal must be an empty marker file created by the Acceptance gate after App exit.");
+                }
+
                 return true;
             }
 
@@ -433,4 +472,6 @@ public sealed record HerdrCoreRuntimeEvidenceReport(
     string Message)
 {
     public bool CompletionSignalObserved { get; init; }
+
+    public string? CompletionSignalSemantics { get; init; }
 }

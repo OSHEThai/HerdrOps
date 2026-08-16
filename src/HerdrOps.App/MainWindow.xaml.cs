@@ -9,6 +9,8 @@ namespace HerdrOps.App;
 /// </summary>
 public partial class MainWindow : Window
 {
+    private ShellView? _shell;
+
     public MainWindow()
         : this(new LiveDashboardState())
     {
@@ -18,9 +20,21 @@ public partial class MainWindow : Window
     {
         ArgumentNullException.ThrowIfNull(state);
         InitializeComponent();
-        Shell = new ShellView(state);
-        ShellHost.Content = Shell;
+        _shell = new ShellView(state);
+        ShellHost.Content = _shell;
+        Closed += OnClosed;
     }
 
-    public ShellView Shell { get; }
+    public ShellView Shell => _shell ?? throw new InvalidOperationException(
+        "The Dashboard visual tree has already been released.");
+
+    public bool DashboardResourcesReleased =>
+        _shell is null && ShellHost.Content is null;
+
+    private void OnClosed(object? sender, EventArgs e)
+    {
+        Closed -= OnClosed;
+        ShellHost.Content = null;
+        _shell = null;
+    }
 }

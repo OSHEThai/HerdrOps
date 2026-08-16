@@ -159,6 +159,8 @@ public sealed class LiveWidgetState : ObservableState, IInteractiveWidgetState
         private set => Set(ref _p95UpdateLatencyMilliseconds, value);
     }
 
+    public WidgetLatencySnapshot UpdateLatencySnapshot => _telemetry.Snapshot();
+
     public IReadOnlyList<WidgetAgent> Agents
     {
         get => _agents;
@@ -198,7 +200,7 @@ public sealed class LiveWidgetState : ObservableState, IInteractiveWidgetState
         string connectionLabel,
         DateTimeOffset snapshotAt,
         string? selectedTerminalId,
-        TimeSpan? updateLatency,
+        WidgetUpdateLatencySample? updateLatencySample,
         bool recordLatency,
         WidgetAssignmentProjection assignmentProjection)
     {
@@ -284,11 +286,20 @@ public sealed class LiveWidgetState : ObservableState, IInteractiveWidgetState
             SelectedAgent,
             snapshotAt,
             assignmentProjection);
-        RecordLatency(state.LastIngestSequence, isLive, updateLatency, recordLatency);
+        RecordLatency(state.LastIngestSequence, isLive, updateLatencySample, recordLatency);
         Raise(nameof(DashboardPreviewLabel));
         Raise(nameof(WindowTitleSuffix));
         Raise(nameof(DetailsSourceLabel));
         Raise(nameof(DailyScoreLabel));
+    }
+
+    public WidgetLatencySnapshot ResetUpdateLatencyMeasurement()
+    {
+        var previous = _telemetry.Snapshot();
+        _telemetry.Reset();
+        _lastMeasuredSequence = Sequence;
+        RefreshLatencyPresentation();
+        return previous;
     }
 
     public bool AcknowledgeNotificationGroup(string groupId, DateTimeOffset acknowledgedUtc)
@@ -336,19 +347,30 @@ public sealed class LiveWidgetState : ObservableState, IInteractiveWidgetState
     private void RecordLatency(
         long sequence,
         bool isLive,
-        TimeSpan? updateLatency,
+        WidgetUpdateLatencySample? updateLatencySample,
         bool recordLatency)
     {
         if (recordLatency &&
             isLive &&
             sequence > 0 &&
             sequence != _lastMeasuredSequence &&
-            updateLatency is { } latency)
+            updateLatencySample is { } sample)
         {
-            _telemetry.Record(latency);
+            if (sample.StateSequence != sequence)
+            {
+                throw new InvalidOperationException(
+                    "Widget latency sample sequence does not match the applied state.");
+            }
+
+            _telemetry.Record(sample);
             _lastMeasuredSequence = sequence;
         }
 
+        RefreshLatencyPresentation();
+    }
+
+    private void RefreshLatencyPresentation()
+    {
         var snapshot = _telemetry.Snapshot();
         UpdateSampleCount = snapshot.SampleCount;
         LastUpdateLatencyMilliseconds = snapshot.LastMilliseconds;

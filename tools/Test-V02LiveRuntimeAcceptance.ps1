@@ -132,6 +132,12 @@ function Assert-True {
     if (-not $Condition) { throw $Message }
 }
 
+function Test-FiniteNumber {
+    param([Parameter(Mandatory)][double]$Value)
+
+    return -not [double]::IsNaN($Value) -and -not [double]::IsInfinity($Value)
+}
+
 if ($env:HERDR_ENV -ne '1') {
     throw 'The composite runtime gate must run from an authorized Herdr pane with HERDR_ENV=1.'
 }
@@ -358,9 +364,10 @@ try {
     if ($appExitCode -ne 0) {
         $reportPresence = @(
             "AppReport=$([bool](Test-Path -LiteralPath $appReportPath -PathType Leaf))",
-            "CoreReport=$([bool](Test-Path -LiteralPath $coreReportPath -PathType Leaf))"
+            "CoreReport=$([bool](Test-Path -LiteralPath $coreReportPath -PathType Leaf))",
+            "GateReport=$([bool](Test-Path -LiteralPath $gateReportPath -PathType Leaf))"
         ) -join ', '
-        $appFailureMessage = "The App runtime-evidence process failed with exit code $appExitCode. Reports preserved at AppRuntimeReport=$appReportPath; CoreRuntimeReport=$coreReportPath; GateReport=$gateReportPath. ReportPresence: $reportPresence"
+        $appFailureMessage = "The App runtime-evidence process failed with exit code $appExitCode. Evidence paths: AppRuntimeReport=$appReportPath; CoreRuntimeReport=$coreReportPath; GateReport=$gateReportPath. ReportPresence: $reportPresence"
         if ($completionSignalWriteFailure) {
             $appFailureMessage += " Completion signal creation failed: $completionSignalWriteFailure"
         }
@@ -392,6 +399,8 @@ foreach ($requiredReport in @($coreReportPath, $appReportPath)) {
 }
 $coreReport = Get-Content -LiteralPath $coreReportPath -Raw | ConvertFrom-Json
 $appReport = Get-Content -LiteralPath $appReportPath -Raw | ConvertFrom-Json
+$coreExecutableHash = (Get-FileHash -LiteralPath $coreExecutable -Algorithm SHA256).Hash
+$appExecutableHash = (Get-FileHash -LiteralPath $appExecutable -Algorithm SHA256).Hash
 
 Assert-True ($coreReport.EvidenceClassification -eq 'Runtime') 'Core report did not earn Runtime classification.'
 Assert-True ([bool]$coreReport.RuntimeObserved) 'Actual Herdr runtime was not observed by Core.'
@@ -400,6 +409,7 @@ Assert-True ([bool]$coreReport.SnapshotObserved) 'Actual Herdr snapshot was not 
 Assert-True ([bool]$coreReport.EventObserved) 'Actual Herdr Agent-status event was not observed.'
 Assert-True ([bool]$coreReport.ReconnectObserved) 'Actual Herdr disconnect/reconnect was not observed.'
 Assert-True ([bool]$coreReport.CompletionSignalObserved) 'Core did not observe the post-App completion signal.'
+Assert-True ($coreReport.CompletionSignalSemantics -eq 'UniquePrevalidatedAbsolutePathContainingAnEmptyFileAfterAppExit') 'Unexpected Core completion-signal semantics.'
 Assert-True ($coreReport.Admission.ReleaseId -eq '0.8.0-preview.2026-08-04-d78e3d3b5126-x86_64-pc-windows-msvc') 'Unexpected Herdr release.'
 Assert-True ($coreReport.Admission.ExecutableSha256 -eq '6F470DA358D6713B6BEBAB922FFB1F5FE1D3D288CC6F374C7DCA1B4A9837A542') 'Unexpected Herdr executable hash.'
 Assert-True ($coreReport.Admission.BundledSchemaSha256 -eq '9449368D54BBECD4D4D0696EFFB9E9C002ECD63A5B8A48BBD901A305AF842982') 'Unexpected bundled schema hash.'
@@ -413,14 +423,90 @@ Assert-True ([bool]$appReport.DashboardClosed) 'Dashboard did not close during l
 Assert-True ([bool]$appReport.UpdateObservedAfterDashboardClose) 'No App-owned Widget update was observed after Dashboard close.'
 Assert-True ([bool]$appReport.CoreConnectedAfterDashboardClose) 'Core was not connected after Dashboard close.'
 Assert-True ([long]$appReport.PreCloseEventCount -gt [long]$appReport.InitialEventCount) 'The pre-close App update was not caused by a real Herdr Agent-status event.'
-Assert-True ([long]$appReport.PostCloseEventCount -gt [long]$appReport.PreCloseEventCount) 'The post-close Widget update was not caused by a second real Herdr Agent-status event.'
+Assert-True ([bool]$appReport.DisconnectObservedAfterDashboardClose) 'The App did not observe the target Agent Lab disconnect after Dashboard close.'
+Assert-True ([bool]$appReport.ReconnectObservedAfterDashboardClose) 'The App did not observe the target Agent Lab reconnect after Dashboard close.'
+$dashboardClosedUtc = [DateTimeOffset]$appReport.DashboardClosedUtc
+$disconnectObservedUtc = [DateTimeOffset]$appReport.DisconnectObservedUtc
+$reconnectObservedUtc = [DateTimeOffset]$appReport.ReconnectObservedUtc
+Assert-True ($disconnectObservedUtc -ge $dashboardClosedUtc) 'The App disconnect observation predates Dashboard closure.'
+Assert-True ($reconnectObservedUtc -ge $disconnectObservedUtc) 'The App reconnect observation predates its disconnect observation.'
+Assert-True ([long]$appReport.ReconnectedConnectionEpoch -gt [long]$appReport.PreRestartConnectionEpoch) 'The App reconnect did not advance the target connection epoch.'
+Assert-True ([long]$appReport.ReconnectedBootstrapCount -gt [long]$appReport.PreRestartBootstrapCount) 'The App reconnect did not advance the target bootstrap count.'
+Assert-True ([long]$appReport.ReconnectedDisconnectCount -gt [long]$appReport.PreRestartDisconnectCount) 'The App did not carry an incremented disconnect count after reconnect.'
+Assert-True ([long]$appReport.EventBBaselineEventCount -ge [long]$appReport.PreCloseEventCount) 'The Event B baseline predates Event A.'
+Assert-True ([long]$appReport.PostCloseEventCount -gt [long]$appReport.EventBBaselineEventCount) 'The post-close Widget update was not caused by Event B after reconnect.'
 Assert-True ($appReport.WidgetLatencyMeasurement -eq 'CoreAcceptedStateUtcToWpfStateApplied') 'Unexpected Widget latency measurement boundary.'
+Assert-True ([int]$appReport.WidgetLatencyMinimumSamples -eq 3) 'Unexpected Widget latency minimum sample count.'
+Assert-True ([double]$appReport.WidgetLatencyTargetMilliseconds -eq 250) 'Unexpected Widget latency target.'
+Assert-True ([long]$appReport.WidgetLatencyBaselineSequence -eq [long]$appReport.InitialSequence) 'Widget latency measurement did not begin after the coherent initial capture.'
+$warmupLatencySamples = @($appReport.WidgetLatencyWarmupExcludedSamples)
+Assert-True ([int]$appReport.WidgetLatencyWarmupSamplesExcluded -eq $warmupLatencySamples.Count) 'Warm-up latency sample count does not match its provenance list.'
+Assert-True ($warmupLatencySamples.Count -ge 1) 'The initial catch-up latency was not preserved as excluded diagnostic evidence.'
+foreach ($sample in $warmupLatencySamples) {
+    Assert-True ([long]$sample.StateSequence -le [long]$appReport.WidgetLatencyBaselineSequence) 'A post-baseline Widget latency sample was incorrectly excluded as warm-up.'
+}
+$includedLatencySamples = @($appReport.WidgetLatencyIncludedSamples)
+Assert-True ([int]$appReport.WidgetLatencySamples -eq $includedLatencySamples.Count) 'Included Widget latency sample count does not match its provenance list.'
+Assert-True ($includedLatencySamples.Count -ge [int]$appReport.WidgetLatencyMinimumSamples) 'Too few post-baseline Widget latency samples were observed.'
+$includedLatencyValues = @()
+foreach ($sample in $includedLatencySamples) {
+    Assert-True ([long]$sample.StateSequence -gt [long]$appReport.WidgetLatencyBaselineSequence) 'An initial catch-up sample contaminated the Widget latency result.'
+    Assert-True (@('Snapshot', 'Delta') -contains [string]$sample.UpdateKind) 'The Widget latency target must contain only post-baseline accepted Core snapshots or deltas.'
+    Assert-True ([long]$sample.EnvelopeSequence -eq [long]$sample.StateSequence) 'A Widget latency sample is not bound to its exact state envelope sequence.'
+    Assert-True ([Guid]$sample.EnvelopeCorrelationId -ne [Guid]::Empty) 'A Widget latency sample omitted its envelope correlation identity.'
+    Assert-True ([string]$sample.StateSha256 -match '^[0-9A-F]{64}$') 'A Widget latency sample omitted its exact state hash.'
+    $acceptedUtc = [DateTimeOffset]$sample.CoreAcceptedStateUtc
+    $sentUtc = [DateTimeOffset]$sample.IpcSentUtc
+    $appliedUtc = [DateTimeOffset]$sample.WpfAppliedUtc
+    Assert-True ($sentUtc -ge $acceptedUtc -and $appliedUtc -ge $sentUtc) 'A Widget latency sample contains an invalid timestamp order.'
+    $reportedLatency = [double]$sample.Milliseconds
+    $derivedLatency = ($appliedUtc - $acceptedUtc).TotalMilliseconds
+    Assert-True (Test-FiniteNumber $reportedLatency) 'A Widget latency sample is not finite.'
+    Assert-True ($reportedLatency -ge 0) 'A Widget latency sample is negative.'
+    Assert-True ([Math]::Abs($reportedLatency - $derivedLatency) -le 0.001) 'A Widget latency sample contradicts its timestamp provenance.'
+    $includedLatencyValues += $reportedLatency
+}
+$unsupportedLatencySamples = @($appReport.WidgetLatencyUnsupportedExcludedSamples)
+Assert-True ([int]$appReport.WidgetLatencyUnsupportedSamplesExcluded -eq $unsupportedLatencySamples.Count) 'Excluded unsupported latency count does not match its provenance list.'
+$orderedLatencyValues = @($includedLatencyValues | Sort-Object)
+$latencyP95Index = [Math]::Max(0, [int][Math]::Ceiling($orderedLatencyValues.Count * 0.95) - 1)
+$recomputedLatencyP95 = [double]$orderedLatencyValues[$latencyP95Index]
+Assert-True ([Math]::Abs($recomputedLatencyP95 - [double]$appReport.WidgetLatencyP95Milliseconds) -le 0.001) 'The reported Widget p95 does not match the included samples.'
+Assert-True ($recomputedLatencyP95 -le [double]$appReport.WidgetLatencyTargetMilliseconds) 'The independently recomputed Widget p95 exceeds the target.'
 Assert-True ([bool]$appReport.WidgetLatencyTargetPassed) 'Actual Widget latency target failed or had too few samples.'
+Assert-True ([double]$appReport.ResourceMeasurement.CpuTargetPercent -eq 1) 'Unexpected Core + App idle CPU target.'
+Assert-True ([double]$appReport.ResourceMeasurement.WorkingSetTargetMegabytes -eq 180) 'Unexpected Core + App working-set target.'
+Assert-True ([int]$appReport.ResourceMeasurement.SampleIntervalMilliseconds -eq 250) 'Unexpected idle resource sampling interval.'
+$expectedResourceSampleCount = [int]($IdleSeconds * 1000 / [int]$appReport.ResourceMeasurement.SampleIntervalMilliseconds) + 1
+Assert-True ([int]$appReport.ResourceMeasurement.SampleCount -eq $expectedResourceSampleCount) 'Idle resource samples do not include the post-preparation baseline plus the complete measurement window.'
 Assert-True ([bool]$appReport.ResourceMeasurement.StateSequenceStable) 'State changed during the idle resource sample.'
 Assert-True ([bool]$appReport.ResourceMeasurement.RuntimeEventCountStable) 'A Herdr event occurred during the idle resource sample.'
 Assert-True ([bool]$appReport.ResourceMeasurement.HerdrConnectedThroughoutSample) 'Herdr was not connected throughout the idle resource sample.'
+$combinedCpu = [double]$appReport.ResourceMeasurement.CombinedAverageCpuPercent
+$averageWorkingSet = [double]$appReport.ResourceMeasurement.CombinedAverageWorkingSetMegabytes
+$maximumWorkingSet = [double]$appReport.ResourceMeasurement.CombinedMaximumWorkingSetMegabytes
+Assert-True ((Test-FiniteNumber $combinedCpu) -and $combinedCpu -ge 0 -and $combinedCpu -le [double]$appReport.ResourceMeasurement.CpuTargetPercent) 'Measured Core + App idle CPU does not independently satisfy its target.'
+Assert-True ((Test-FiniteNumber $averageWorkingSet) -and $averageWorkingSet -ge 0) 'Measured average Core + App working set is invalid.'
+Assert-True ((Test-FiniteNumber $maximumWorkingSet) -and $maximumWorkingSet -ge $averageWorkingSet -and $maximumWorkingSet -le [double]$appReport.ResourceMeasurement.WorkingSetTargetMegabytes) 'Measured maximum Core + App working set does not independently satisfy its target.'
 Assert-True ([bool]$appReport.ResourceMeasurement.CpuTargetPassed) 'Combined Core + App idle CPU target failed.'
 Assert-True ([bool]$appReport.ResourceMeasurement.WorkingSetTargetPassed) 'Combined Core + App working-set target failed.'
+Assert-True ([bool]$appReport.ResourceMeasurement.Preparation.DashboardResourcesReleased) 'The closed Dashboard retained its visual tree during the idle resource sample.'
+Assert-True ([int]$appReport.ResourceMeasurement.Preparation.RetainedEvidenceWindows -eq 1) 'The evidence runner retained a closed Widget window during the idle sample.'
+Assert-True ([int]$appReport.ResourceMeasurement.Preparation.VisibleEvidenceWindows -eq 1) 'The Floating Vertical Widget was not the sole visible evidence window during the idle sample.'
+Assert-True ([int]$appReport.AppProcessId -eq [int]$appProcess.Id) 'The App report is not bound to the launched App process.'
+Assert-True ([int]$appReport.CoreProcessId -eq [int]$coreProcess.Id) 'The App report is not bound to the launched Core process.'
+Assert-True ([int]$appReport.ResourceMeasurement.App.ProcessId -eq [int]$appProcess.Id) 'App resource samples are not bound to the launched App process.'
+Assert-True ([int]$appReport.ResourceMeasurement.Core.ProcessId -eq [int]$coreProcess.Id) 'Core resource samples are not bound to the launched Core process.'
+Assert-True ([bool]$appReport.ResourceMeasurement.App.IdentityStable) 'App process identity changed during resource measurement.'
+Assert-True ([bool]$appReport.ResourceMeasurement.Core.IdentityStable) 'Core process identity changed during resource measurement.'
+Assert-True ([StringComparer]::OrdinalIgnoreCase.Equals([IO.Path]::GetFullPath([string]$appReport.ResourceMeasurement.App.ExecutablePath), [IO.Path]::GetFullPath($appExecutable))) 'App resource samples are bound to an unexpected executable path.'
+Assert-True ([StringComparer]::OrdinalIgnoreCase.Equals([IO.Path]::GetFullPath([string]$appReport.ResourceMeasurement.Core.ExecutablePath), [IO.Path]::GetFullPath($coreExecutable))) 'Core resource samples are bound to an unexpected executable path.'
+Assert-True ([string]$appReport.ResourceMeasurement.App.ExecutableSha256 -eq $appExecutableHash) 'App resource samples are bound to unexpected executable bytes.'
+Assert-True ([string]$appReport.ResourceMeasurement.Core.ExecutableSha256 -eq $coreExecutableHash) 'Core resource samples are bound to unexpected executable bytes.'
+$reportedAppStartUtc = ([DateTimeOffset]$appReport.ResourceMeasurement.App.ProcessStartUtc).ToUniversalTime()
+$reportedCoreStartUtc = ([DateTimeOffset]$appReport.ResourceMeasurement.Core.ProcessStartUtc).ToUniversalTime()
+Assert-True ($reportedAppStartUtc.UtcDateTime.Ticks -eq $appProcess.StartTime.ToUniversalTime().Ticks) 'App resource samples are bound to an unexpected process lifetime.'
+Assert-True ($reportedCoreStartUtc.UtcDateTime.Ticks -eq $coreProcess.StartTime.ToUniversalTime().Ticks) 'Core resource samples are bound to an unexpected process lifetime.'
 Assert-True ([bool]$appReport.CompositeCandidateChecksPassed) 'App runtime candidate checks did not all pass.'
 Assert-True ([long]$coreReport.FinalMonitorState.EventCount -ge 2) 'The Core trace requires at least two real Herdr events.'
 Assert-True ($tcpListeners.Count -eq 0) 'Core or App opened a TCP listener during normal runtime acceptance.'
@@ -428,15 +514,27 @@ Assert-True ($tcpListeners.Count -eq 0) 'Core or App opened a TCP listener durin
 Assert-True ($controlServerIdentity.ExecutableSha256 -eq $coreReport.Admission.ExecutableSha256) 'Acceptance control server executable hash does not match the admitted Herdr executable.'
 $coreTransitions = @($coreReport.Transitions)
 Assert-True ($coreTransitions.Count -gt 0) 'Core runtime report contains no transitions.'
+foreach ($sample in $includedLatencySamples) {
+    $matchingCoreTransitions = @($coreTransitions | Where-Object {
+        [long]$_.IngestSequence -eq [long]$sample.EnvelopeSequence -and
+        [long]$_.EventCount -eq [long]$sample.EventCount -and
+        [string]$_.ContractStateSha256 -eq [string]$sample.StateSha256
+    })
+    Assert-True ($matchingCoreTransitions.Count -ge 1) "No exact Core transition matches Widget latency envelope $($sample.EnvelopeSequence) / $($sample.EnvelopeCorrelationId)."
+}
 
 $eventATransitionIndex = -1
 for ($index = 0; $index -lt $coreTransitions.Count; $index++) {
-    if ([long]$coreTransitions[$index].EventCount -ge [long]$appReport.PreCloseEventCount) {
+    $candidate = $coreTransitions[$index]
+    if ([long]$candidate.EventCount -eq [long]$appReport.PreCloseEventCount -and
+        [long]$candidate.IngestSequence -eq [long]$appReport.PreCloseSequence -and
+        [long]$candidate.ConnectionEpoch -eq [long]$appReport.PreRestartConnectionEpoch -and
+        [string]$candidate.ContractStateSha256 -eq [string]$appReport.PreCloseStateSha256) {
         $eventATransitionIndex = $index
         break
     }
 }
-Assert-True ($eventATransitionIndex -ge 0) 'Core trace does not contain the Event A count rendered before Dashboard closure.'
+Assert-True ($eventATransitionIndex -ge 0) 'Core trace does not contain the exact App state rendered for Event A before Dashboard closure.'
 $eventATransition = $coreTransitions[$eventATransitionIndex]
 Assert-True ($null -ne $eventATransition.ServerIdentity) 'Event A is not bound to a verified target server identity.'
 Assert-True (-not (Test-SameHerdrServerProcess -Left $controlServerIdentity -Right $eventATransition.ServerIdentity)) 'Acceptance control and target Agent Lab resolved to the same Herdr server process.'
@@ -472,6 +570,7 @@ for ($index = $eventATransitionIndex + 1; $index -lt $coreTransitions.Count; $in
 }
 Assert-True ($targetDisconnectTransitionIndex -gt $eventATransitionIndex) 'No target transport disconnect occurred after Event A.'
 $targetDisconnectTransition = $coreTransitions[$targetDisconnectTransitionIndex]
+Assert-True ([DateTimeOffset]$targetDisconnectTransition.ObservedUtc -gt $dashboardClosedUtc) 'The target disconnect did not occur strictly after Dashboard closure.'
 
 $targetReconnectTransitionIndex = -1
 for ($index = $targetDisconnectTransitionIndex + 1; $index -lt $coreTransitions.Count; $index++) {
@@ -486,14 +585,16 @@ for ($index = $targetDisconnectTransitionIndex + 1; $index -lt $coreTransitions.
 }
 Assert-True ($targetReconnectTransitionIndex -gt $targetDisconnectTransitionIndex) 'No replacement target Herdr server connected after the post-Event-A disconnect.'
 $targetReconnectTransition = $coreTransitions[$targetReconnectTransitionIndex]
+Assert-True ([DateTimeOffset]$targetReconnectTransition.ObservedUtc -ge [DateTimeOffset]$targetDisconnectTransition.ObservedUtc) 'The target reconnect transition predates its disconnect.'
+Assert-True ([long]$targetReconnectTransition.ConnectionEpoch -eq [long]$appReport.ReconnectedConnectionEpoch) 'Core and App disagree on the reconnected target epoch.'
+Assert-True ([long]$targetReconnectTransition.BootstrapCount -eq [long]$appReport.ReconnectedBootstrapCount) 'Core and App disagree on the reconnected bootstrap count.'
+Assert-True ([long]$targetReconnectTransition.DisconnectCount -eq [long]$appReport.ReconnectedDisconnectCount) 'Core and App disagree on the reconnected disconnect count.'
 Assert-True (-not (Test-SameHerdrServerProcess -Left $controlServerIdentity -Right $targetReconnectTransition.ServerIdentity)) 'Restarted target Agent Lab resolved to the Acceptance control server process.'
 
 $eventBIncrementTransitionIndex = -1
 for ($index = $targetReconnectTransitionIndex + 1; $index -lt $coreTransitions.Count; $index++) {
     $candidate = $coreTransitions[$index]
-    $previous = $coreTransitions[$index - 1]
-    if ([long]$candidate.EventCount -gt [long]$previous.EventCount -and
-        [long]$candidate.EventCount -ge [long]$appReport.PostCloseEventCount -and
+    if ([long]$candidate.EventCount -gt [long]$appReport.EventBBaselineEventCount -and
         $null -ne $candidate.ServerIdentity -and
         (Test-SameHerdrServerProcess -Left $targetReconnectTransition.ServerIdentity -Right $candidate.ServerIdentity)) {
         $eventBIncrementTransitionIndex = $index
@@ -507,14 +608,17 @@ $eventBTransitionIndex = -1
 for ($index = $eventBIncrementTransitionIndex; $index -lt $coreTransitions.Count; $index++) {
     $candidate = $coreTransitions[$index]
     if ($candidate.Status -eq 'Connected' -and
-        [long]$candidate.EventCount -ge [long]$eventBIncrementTransition.EventCount -and
+        [long]$candidate.EventCount -eq [long]$appReport.PostCloseEventCount -and
+        [long]$candidate.IngestSequence -eq [long]$appReport.PostCloseSequence -and
+        [long]$candidate.ConnectionEpoch -eq [long]$appReport.ReconnectedConnectionEpoch -and
+        [string]$candidate.ContractStateSha256 -eq [string]$appReport.PostCloseStateSha256 -and
         $null -ne $candidate.ServerIdentity -and
         (Test-SameHerdrServerProcess -Left $targetReconnectTransition.ServerIdentity -Right $candidate.ServerIdentity)) {
         $eventBTransitionIndex = $index
         break
     }
 }
-Assert-True ($eventBTransitionIndex -ge $eventBIncrementTransitionIndex) 'No connected target state carried Event B after its post-reconnect increment.'
+Assert-True ($eventBTransitionIndex -ge $eventBIncrementTransitionIndex) 'No exact connected Core transition matches the App state rendered for Event B.'
 $eventBTransition = $coreTransitions[$eventBTransitionIndex]
 
 $controlProcessAfter = Get-Process -Id ([int]$controlServerIdentity.ProcessId) -ErrorAction SilentlyContinue
@@ -545,8 +649,6 @@ $finalSourceCommit = Get-CleanSourceCommit -Root $repositoryRoot
 if ($finalSourceCommit -ne $sourceCommit) {
     throw "Source commit changed during runtime acceptance: $sourceCommit -> $finalSourceCommit"
 }
-$coreExecutableHash = (Get-FileHash -LiteralPath $coreExecutable -Algorithm SHA256).Hash
-$appExecutableHash = (Get-FileHash -LiteralPath $appExecutable -Algorithm SHA256).Hash
 $coreReportHash = (Get-FileHash -LiteralPath $coreReportPath -Algorithm SHA256).Hash
 $appReportHash = (Get-FileHash -LiteralPath $appReportPath -Algorithm SHA256).Hash
 
@@ -582,19 +684,54 @@ $reportLines = @(
     "EventObserved: $($coreReport.EventObserved)",
     "ReconnectObserved: $($coreReport.ReconnectObserved)",
     "CompletionSignalObserved: $($coreReport.CompletionSignalObserved)",
+    "CompletionSignalSemantics: $($coreReport.CompletionSignalSemantics)",
     "DisconnectCount: $($coreReport.FinalMonitorState.DisconnectCount)",
     "BootstrapCount: $($coreReport.FinalMonitorState.BootstrapCount)",
     "DashboardClosed: $($appReport.DashboardClosed)",
+    "DashboardClosedUtc: $($appReport.DashboardClosedUtc)",
+    "DisconnectObservedUtc: $($appReport.DisconnectObservedUtc)",
+    "ReconnectObservedUtc: $($appReport.ReconnectObservedUtc)",
     "UpdateAfterDashboardClose: $($appReport.UpdateObservedAfterDashboardClose)",
     "InitialEventCount: $($appReport.InitialEventCount)",
     "PreCloseEventCount: $($appReport.PreCloseEventCount)",
+    "EventBBaselineEventCount: $($appReport.EventBBaselineEventCount)",
     "PostCloseEventCount: $($appReport.PostCloseEventCount)",
+    "PreRestartConnectionEpoch: $($appReport.PreRestartConnectionEpoch)",
+    "ReconnectedConnectionEpoch: $($appReport.ReconnectedConnectionEpoch)",
+    "PreRestartBootstrapCount: $($appReport.PreRestartBootstrapCount)",
+    "ReconnectedBootstrapCount: $($appReport.ReconnectedBootstrapCount)",
+    "PreRestartDisconnectCount: $($appReport.PreRestartDisconnectCount)",
+    "ReconnectedDisconnectCount: $($appReport.ReconnectedDisconnectCount)",
+    "WidgetLatencyBaselineSequence: $($appReport.WidgetLatencyBaselineSequence)",
+    "WidgetLatencyWarmupSamplesExcluded: $($appReport.WidgetLatencyWarmupSamplesExcluded)",
+    "WidgetLatencyUnsupportedSamplesExcluded: $($appReport.WidgetLatencyUnsupportedSamplesExcluded)",
     "WidgetLatencySamples: $($appReport.WidgetLatencySamples)",
+    "WidgetLatencyMinimumSamples: $($appReport.WidgetLatencyMinimumSamples)",
     "WidgetLatencyMeasurement: $($appReport.WidgetLatencyMeasurement)",
+    "WidgetLatencyTargetMs: $($appReport.WidgetLatencyTargetMilliseconds)",
     "WidgetLatencyP95Ms: $($appReport.WidgetLatencyP95Milliseconds)",
+    "IdleCpuTargetPercent: $($appReport.ResourceMeasurement.CpuTargetPercent)",
+    "IdleWorkingSetTargetMB: $($appReport.ResourceMeasurement.WorkingSetTargetMegabytes)",
+    "ResourceSampleIntervalMs: $($appReport.ResourceMeasurement.SampleIntervalMilliseconds)",
+    "ResourceSampleCount: $($appReport.ResourceMeasurement.SampleCount)",
     "CombinedIdleCpuPercent: $($appReport.ResourceMeasurement.CombinedAverageCpuPercent)",
     "CombinedAverageWorkingSetMB: $($appReport.ResourceMeasurement.CombinedAverageWorkingSetMegabytes)",
     "CombinedMaximumWorkingSetMB: $($appReport.ResourceMeasurement.CombinedMaximumWorkingSetMegabytes)",
+    "AppAverageCpuPercent: $($appReport.ResourceMeasurement.App.AverageCpuPercent)",
+    "AppAverageWorkingSetMB: $($appReport.ResourceMeasurement.App.AverageWorkingSetMegabytes)",
+    "AppMaximumWorkingSetMB: $($appReport.ResourceMeasurement.App.MaximumWorkingSetMegabytes)",
+    "AppAveragePrivateMemoryMB: $($appReport.ResourceMeasurement.App.AveragePrivateMemoryMegabytes)",
+    "AppResourceProcess: pid=$($appReport.ResourceMeasurement.App.ProcessId) start=$($appReport.ResourceMeasurement.App.ProcessStartUtc) path=$($appReport.ResourceMeasurement.App.ExecutablePath) sha256=$($appReport.ResourceMeasurement.App.ExecutableSha256) stable=$($appReport.ResourceMeasurement.App.IdentityStable)",
+    "CoreAverageCpuPercent: $($appReport.ResourceMeasurement.Core.AverageCpuPercent)",
+    "CoreAverageWorkingSetMB: $($appReport.ResourceMeasurement.Core.AverageWorkingSetMegabytes)",
+    "CoreMaximumWorkingSetMB: $($appReport.ResourceMeasurement.Core.MaximumWorkingSetMegabytes)",
+    "CoreAveragePrivateMemoryMB: $($appReport.ResourceMeasurement.Core.AveragePrivateMemoryMegabytes)",
+    "CoreResourceProcess: pid=$($appReport.ResourceMeasurement.Core.ProcessId) start=$($appReport.ResourceMeasurement.Core.ProcessStartUtc) path=$($appReport.ResourceMeasurement.Core.ExecutablePath) sha256=$($appReport.ResourceMeasurement.Core.ExecutableSha256) stable=$($appReport.ResourceMeasurement.Core.IdentityStable)",
+    "DashboardResourcesReleased: $($appReport.ResourceMeasurement.Preparation.DashboardResourcesReleased)",
+    "EvidenceWindowsDuringIdle: retained=$($appReport.ResourceMeasurement.Preparation.RetainedEvidenceWindows) visible=$($appReport.ResourceMeasurement.Preparation.VisibleEvidenceWindows)",
+    "AppWorkingSetPreparationMB: before=$($appReport.ResourceMeasurement.Preparation.AppWorkingSetBeforeMegabytes) after=$($appReport.ResourceMeasurement.Preparation.AppWorkingSetAfterMegabytes)",
+    "AppPrivateMemoryPreparationMB: before=$($appReport.ResourceMeasurement.Preparation.AppPrivateMemoryBeforeMegabytes) after=$($appReport.ResourceMeasurement.Preparation.AppPrivateMemoryAfterMegabytes)",
+    "ManagedHeapPreparationMB: before=$($appReport.ResourceMeasurement.Preparation.ManagedHeapBeforeMegabytes) after=$($appReport.ResourceMeasurement.Preparation.ManagedHeapAfterMegabytes)",
     "IdleStateSequence: $($appReport.ResourceMeasurement.StartSequence)",
     "IdleEventCount: $($appReport.ResourceMeasurement.StartEventCount)",
     "RuntimeWpfCaptures: $($captures.Count)",
@@ -605,6 +742,11 @@ $reportLines = @(
     "Initial: $($appReport.InitialSequence) $($appReport.InitialStateSha256)",
     "BeforeDashboardClose: $($appReport.PreCloseSequence) $($appReport.PreCloseStateSha256)",
     "AfterDashboardClose: $($appReport.PostCloseSequence) $($appReport.PostCloseStateSha256)",
+    '',
+    'WidgetLatencyIncludedSamples:'
+) + ($includedLatencySamples | ForEach-Object {
+    "sequence=$($_.StateSequence) event=$($_.EventCount) envelope=$($_.EnvelopeSequence) correlation=$($_.EnvelopeCorrelationId) stateSha256=$($_.StateSha256) kind=$($_.UpdateKind) accepted=$($_.CoreAcceptedStateUtc) sent=$($_.IpcSentUtc) applied=$($_.WpfAppliedUtc) milliseconds=$($_.Milliseconds)"
+}) + @(
     '',
     'CaptureHashes:'
 ) + ($captures | ForEach-Object { "SHA256 $($_.Sha256) $($_.Name)" }) + @(

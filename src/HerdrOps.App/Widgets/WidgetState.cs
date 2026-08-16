@@ -149,16 +149,70 @@ public sealed record WidgetNotice(
 
 public sealed record WidgetActivity(string Time, string Description);
 
+public sealed record WidgetUpdateLatencySample(
+    long StateSequence,
+    long EventCount,
+    long EnvelopeSequence,
+    Guid EnvelopeCorrelationId,
+    string StateSha256,
+    string UpdateKind,
+    DateTimeOffset CoreAcceptedStateUtc,
+    DateTimeOffset IpcSentUtc,
+    DateTimeOffset WpfAppliedUtc)
+{
+    public double Milliseconds =>
+        (WpfAppliedUtc - CoreAcceptedStateUtc).TotalMilliseconds;
+}
+
 public sealed record WidgetLatencySnapshot(
     int SampleCount,
     double? LastMilliseconds,
-    double? P95Milliseconds);
+    double? P95Milliseconds,
+    IReadOnlyList<WidgetUpdateLatencySample> Samples);
 
 public sealed class WidgetUpdateTelemetry
 {
     private const int MaximumSamples = 512;
     private readonly object _sync = new();
-    private readonly Queue<double> _samples = new(MaximumSamples);
+    private readonly Queue<WidgetUpdateLatencySample> _samples = new(MaximumSamples);
+
+    public void Record(WidgetUpdateLatencySample sample)
+    {
+        ArgumentNullException.ThrowIfNull(sample);
+        if (sample.StateSequence < 0 ||
+            sample.EventCount < 0 ||
+            sample.EnvelopeSequence < 0 ||
+            string.IsNullOrWhiteSpace(sample.UpdateKind) ||
+            (!string.Equals(sample.UpdateKind, "Unspecified", StringComparison.Ordinal) &&
+             (string.IsNullOrWhiteSpace(sample.StateSha256) ||
+              sample.StateSha256.Length != 64 ||
+              !sample.StateSha256.All(Uri.IsHexDigit))) ||
+            (sample.EnvelopeCorrelationId == Guid.Empty &&
+             !string.Equals(sample.UpdateKind, "Unspecified", StringComparison.Ordinal)) ||
+            (sample.UpdateKind is "Snapshot" or "Delta" &&
+             sample.EnvelopeSequence != sample.StateSequence) ||
+            sample.CoreAcceptedStateUtc.Offset != TimeSpan.Zero ||
+            sample.IpcSentUtc.Offset != TimeSpan.Zero ||
+            sample.WpfAppliedUtc.Offset != TimeSpan.Zero ||
+            sample.IpcSentUtc < sample.CoreAcceptedStateUtc ||
+            sample.WpfAppliedUtc < sample.IpcSentUtc ||
+            !double.IsFinite(sample.Milliseconds))
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(sample),
+                "Widget update latency samples require a matching envelope identity, non-negative counters, UTC timestamps in order, and a non-blank update kind.");
+        }
+
+        lock (_sync)
+        {
+            if (_samples.Count == MaximumSamples)
+            {
+                _samples.Dequeue();
+            }
+
+            _samples.Enqueue(sample);
+        }
+    }
 
     public void Record(TimeSpan latency)
     {
@@ -169,14 +223,23 @@ public sealed class WidgetUpdateTelemetry
                 "Widget update latency must be finite and non-negative.");
         }
 
+        Record(new WidgetUpdateLatencySample(
+            StateSequence: 0,
+            EventCount: 0,
+            EnvelopeSequence: 0,
+            EnvelopeCorrelationId: Guid.Empty,
+            StateSha256: string.Empty,
+            UpdateKind: "Unspecified",
+            DateTimeOffset.UnixEpoch,
+            DateTimeOffset.UnixEpoch,
+            DateTimeOffset.UnixEpoch.Add(latency)));
+    }
+
+    public void Reset()
+    {
         lock (_sync)
         {
-            if (_samples.Count == MaximumSamples)
-            {
-                _samples.Dequeue();
-            }
-
-            _samples.Enqueue(latency.TotalMilliseconds);
+            _samples.Clear();
         }
     }
 
@@ -186,15 +249,17 @@ public sealed class WidgetUpdateTelemetry
         {
             if (_samples.Count == 0)
             {
-                return new WidgetLatencySnapshot(0, null, null);
+                return new WidgetLatencySnapshot(0, null, null, []);
             }
 
-            var ordered = _samples.Order().ToArray();
+            var samples = _samples.ToArray();
+            var ordered = samples.Select(sample => sample.Milliseconds).Order().ToArray();
             var percentileIndex = Math.Max(0, (int)Math.Ceiling(ordered.Length * 0.95) - 1);
             return new WidgetLatencySnapshot(
                 ordered.Length,
-                _samples.Last(),
-                ordered[percentileIndex]);
+                samples[^1].Milliseconds,
+                ordered[percentileIndex],
+                samples);
         }
     }
 }
