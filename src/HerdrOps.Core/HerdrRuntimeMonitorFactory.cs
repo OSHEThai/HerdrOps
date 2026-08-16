@@ -1,4 +1,5 @@
 using HerdrOps.Infrastructure.Herdr;
+using System.Runtime;
 
 namespace HerdrOps.Core;
 
@@ -85,14 +86,35 @@ public sealed class HerdrRuntimeMonitorFactory
             schemaInspection.Protocol ?? throw new HerdrRuntimeAdmissionException(
                 "The admitted bundled schema did not report a protocol version."),
             endpoint);
+        var serverIdentityVerifier = new ExpectedHerdrServerIdentityVerifier(
+            admission.ExecutableSha256);
         var monitorClient = new HerdrNamedPipeApiClient(
-            serverIdentityVerifier: new ExpectedHerdrServerIdentityVerifier(admission.ExecutableSha256));
+            serverIdentityVerifier: serverIdentityVerifier);
         var paneInspectionClient = new HerdrNamedPipeApiClient(
-            serverIdentityVerifier: new ExpectedHerdrServerIdentityVerifier(admission.ExecutableSha256));
-        return new HerdrAdmittedRuntimeMonitor(
+            serverIdentityVerifier: serverIdentityVerifier);
+        var admitted = new HerdrAdmittedRuntimeMonitor(
             new HerdrRuntimeMonitor(monitorClient, endpoint, initialState: initialState),
             admission,
             paneInspectionClient);
+        ReleaseTransientAdmissionBuffers();
+        return admitted;
+    }
+
+    private static void ReleaseTransientAdmissionBuffers()
+    {
+        GCSettings.LargeObjectHeapCompactionMode =
+            GCLargeObjectHeapCompactionMode.CompactOnce;
+        GC.Collect(
+            GC.MaxGeneration,
+            GCCollectionMode.Forced,
+            blocking: true,
+            compacting: true);
+        GC.WaitForPendingFinalizers();
+        GC.Collect(
+            GC.MaxGeneration,
+            GCCollectionMode.Forced,
+            blocking: true,
+            compacting: true);
     }
 
     private static string Require(string? value, string description) =>

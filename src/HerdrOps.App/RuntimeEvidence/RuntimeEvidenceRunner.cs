@@ -26,6 +26,68 @@ public sealed record RuntimeEvidenceCapture(
     long StateSequence,
     string StateSha256);
 
+public sealed record RuntimeEvidenceProgress(
+    int Ordinal,
+    string Phase,
+    DateTimeOffset ObservedUtc,
+    long Sequence,
+    string RuntimeStatus,
+    long ConnectionEpoch,
+    long BootstrapCount,
+    long EventCount,
+    long DisconnectCount,
+    long ReconciliationCount,
+    string StateSha256,
+    string PreviousEntrySha256,
+    string CanonicalPayload,
+    string EntrySha256);
+
+public sealed record RuntimeStateFingerprint(
+    bool IsCoreConnected,
+    bool IsLive,
+    string RuntimeStatus,
+    DateTimeOffset LastTransitionUtc,
+    DateTimeOffset? LastAcceptedStateUtc,
+    long ConnectionEpoch,
+    long LastIngestSequence,
+    long BootstrapCount,
+    long EventCount,
+    long DisconnectCount,
+    long ReconciliationCount,
+    string StateSha256);
+
+public sealed record RuntimeFingerprintChange(
+    DateTimeOffset ObservedUtc,
+    RuntimeStateFingerprint Baseline,
+    RuntimeStateFingerprint Current);
+
+public sealed record RuntimeAgentStatusChange(
+    string TerminalId,
+    string WorkspaceId,
+    string TabId,
+    string PaneId,
+    string PreviousStatus,
+    string CurrentStatus,
+    ulong PreviousRevision,
+    ulong CurrentRevision,
+    ulong PreviousStateChangeSequence,
+    ulong CurrentStateChangeSequence);
+
+public sealed record RuntimeAgentStatusTransitionEvidence(
+    DateTimeOffset PhaseEnteredUtc,
+    DateTimeOffset ObservedUtc,
+    long BaselineSequence,
+    long CurrentSequence,
+    long BaselineEventCount,
+    long CurrentEventCount,
+    string BaselineStateSha256,
+    string CurrentStateSha256,
+    long ConnectionEpoch,
+    IReadOnlyList<RuntimeAgentStatusChange> Changes)
+{
+    public int ChangeCount => Changes.Count;
+}
+
 public sealed record RuntimeProcessResourceMeasurement(
     int ProcessId,
     DateTimeOffset ProcessStartUtc,
@@ -43,12 +105,144 @@ public sealed record RuntimeResourcePreparation(
     bool DashboardResourcesReleased,
     int RetainedEvidenceWindows,
     int VisibleEvidenceWindows,
+    bool DashboardWorkingSetCompactionAttempted,
+    bool DashboardWorkingSetCompactionSucceeded,
+    int? DashboardWorkingSetCompactionNativeErrorCode,
     double AppWorkingSetBeforeMegabytes,
     double AppWorkingSetAfterMegabytes,
     double AppPrivateMemoryBeforeMegabytes,
     double AppPrivateMemoryAfterMegabytes,
     double ManagedHeapBeforeMegabytes,
     double ManagedHeapAfterMegabytes);
+
+public sealed record RuntimeIdleQuiescence(
+    DateTimeOffset StartedUtc,
+    DateTimeOffset StableSinceUtc,
+    DateTimeOffset ReachedUtc,
+    int RequiredStableSeconds,
+    RuntimeStateFingerprint InitialFingerprint,
+    RuntimeStateFingerprint StableFingerprint,
+    IReadOnlyList<RuntimeIdleQuiescenceReset> Resets)
+{
+    public int ResetCount => Resets.Count;
+
+    public long InitialSequence => InitialFingerprint.LastIngestSequence;
+
+    public long InitialEventCount => InitialFingerprint.EventCount;
+
+    public long StableSequence => StableFingerprint.LastIngestSequence;
+
+    public long StableEventCount => StableFingerprint.EventCount;
+}
+
+public sealed record RuntimeIdleQuiescenceReset(
+    DateTimeOffset ObservedUtc,
+    string Reason,
+    RuntimeStateFingerprint PreviousFingerprint,
+    RuntimeStateFingerprint CurrentFingerprint)
+{
+    public long PreviousSequence => PreviousFingerprint.LastIngestSequence;
+
+    public long CurrentSequence => CurrentFingerprint.LastIngestSequence;
+
+    public long PreviousEventCount => PreviousFingerprint.EventCount;
+
+    public long CurrentEventCount => CurrentFingerprint.EventCount;
+}
+
+public sealed class RuntimeIdleQuiescenceTracker(int requiredStableSeconds)
+{
+    private readonly TimeSpan _requiredStableDuration = requiredStableSeconds > 0
+        ? TimeSpan.FromSeconds(requiredStableSeconds)
+        : throw new ArgumentOutOfRangeException(nameof(requiredStableSeconds));
+    private readonly List<RuntimeIdleQuiescenceReset> _resets = [];
+    private DateTimeOffset _startedUtc;
+    private DateTimeOffset _stableSinceUtc;
+    private RuntimeStateFingerprint? _initialFingerprint;
+    private RuntimeStateFingerprint? _observedFingerprint;
+    private DateTimeOffset _lastObservedUtc;
+    private bool _initialized;
+
+    public RuntimeIdleQuiescence? Observe(
+        DateTimeOffset observedUtc,
+        RuntimeStateFingerprint fingerprint)
+    {
+        ArgumentNullException.ThrowIfNull(fingerprint);
+        if (!_initialized)
+        {
+            _initialized = true;
+            _startedUtc = observedUtc;
+            _stableSinceUtc = observedUtc;
+            _initialFingerprint = fingerprint;
+            _observedFingerprint = fingerprint;
+            _lastObservedUtc = observedUtc;
+            return null;
+        }
+
+        if (observedUtc < _lastObservedUtc)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(observedUtc),
+                "Quiescence observations cannot move backward in time.");
+        }
+
+        _lastObservedUtc = observedUtc;
+
+        if (!fingerprint.IsCoreConnected || !fingerprint.IsLive)
+        {
+            if (_observedFingerprint!.IsCoreConnected && _observedFingerprint.IsLive)
+            {
+                Reset(observedUtc, "LiveStateLost", fingerprint);
+            }
+            else if (!_observedFingerprint.Equals(fingerprint))
+            {
+                Reset(observedUtc, "NonLiveFingerprintChanged", fingerprint);
+            }
+
+            return null;
+        }
+
+        if (!_observedFingerprint!.IsCoreConnected || !_observedFingerprint.IsLive)
+        {
+            Reset(observedUtc, "LiveStateRestored", fingerprint);
+            return null;
+        }
+
+        if (!_observedFingerprint.Equals(fingerprint))
+        {
+            Reset(observedUtc, "RuntimeFingerprintChanged", fingerprint);
+            return null;
+        }
+
+        if (observedUtc - _stableSinceUtc < _requiredStableDuration)
+        {
+            return null;
+        }
+
+        return new RuntimeIdleQuiescence(
+            _startedUtc,
+            _stableSinceUtc,
+            observedUtc,
+            (int)_requiredStableDuration.TotalSeconds,
+            _initialFingerprint!,
+            _observedFingerprint,
+            _resets.ToArray());
+    }
+
+    private void Reset(
+        DateTimeOffset observedUtc,
+        string reason,
+        RuntimeStateFingerprint fingerprint)
+    {
+        _resets.Add(new RuntimeIdleQuiescenceReset(
+            observedUtc,
+            reason,
+            _observedFingerprint!,
+            fingerprint));
+        _observedFingerprint = fingerprint;
+        _stableSinceUtc = observedUtc;
+    }
+}
 
 public sealed record RuntimeResourceMeasurement(
     int DurationSeconds,
@@ -69,6 +263,10 @@ public sealed record RuntimeResourceMeasurement(
     bool RuntimeEventCountStable,
     long StartEventCount,
     long FinishEventCount,
+    RuntimeStateFingerprint StartFingerprint,
+    RuntimeStateFingerprint FinishFingerprint,
+    bool RuntimeFingerprintStable,
+    RuntimeFingerprintChange? FirstFingerprintChange,
     bool HerdrConnectedThroughoutSample,
     bool CpuTargetPassed,
     bool WorkingSetTargetPassed);
@@ -111,6 +309,8 @@ public sealed record AppRuntimeEvidenceReport(
     bool ReconnectObservedAfterDashboardClose,
     long EventBBaselineSequence,
     long EventBBaselineEventCount,
+    RuntimeAgentStatusTransitionEvidence EventA,
+    RuntimeAgentStatusTransitionEvidence EventB,
     long WidgetLatencyBaselineSequence,
     int WidgetLatencyWarmupSamplesExcluded,
     IReadOnlyList<WidgetUpdateLatencySample> WidgetLatencyWarmupExcludedSamples,
@@ -123,10 +323,12 @@ public sealed record AppRuntimeEvidenceReport(
     IReadOnlyList<WidgetUpdateLatencySample> WidgetLatencyIncludedSamples,
     int WidgetLatencyUnsupportedSamplesExcluded,
     IReadOnlyList<WidgetUpdateLatencySample> WidgetLatencyUnsupportedExcludedSamples,
+    RuntimeIdleQuiescence IdleQuiescence,
     RuntimeResourceMeasurement ResourceMeasurement,
     IReadOnlyList<RuntimeEvidenceCapture> Captures,
     HerdrRuntimeHealthContract FinalRuntimeHealth,
     HerdrSessionStateContract FinalState,
+    IReadOnlyList<string> FailedCandidateChecks,
     bool CompositeCandidateChecksPassed,
     string Message);
 
@@ -139,6 +341,8 @@ public sealed class RuntimeEvidenceRunner(
     private const double WorkingSetTargetMegabytes = 180;
     private const double WidgetLatencyTargetMilliseconds = 250;
     private const int MinimumLatencySamples = 3;
+    private const int IdleQuiescenceSeconds = 5;
+    private const int IdleQuiescencePollMilliseconds = 100;
     private const int ResourceSampleIntervalMilliseconds = 250;
     private const string WidgetLatencyMeasurement =
         "CoreAcceptedStateUtcToWpfStateApplied";
@@ -153,6 +357,7 @@ public sealed class RuntimeEvidenceRunner(
     private readonly MainWindow _mainWindow = mainWindow ?? throw new ArgumentNullException(nameof(mainWindow));
     private readonly RuntimeEvidenceOptions _options = options ?? throw new ArgumentNullException(nameof(options));
     private readonly List<RuntimeEvidenceCapture> _captures = [];
+    private readonly List<RuntimeEvidenceProgress> _progressHistory = [];
     private readonly List<WidgetWindow> _widgetWindows = [];
 
     public async Task<AppRuntimeEvidenceReport> RunAsync(CancellationToken cancellationToken = default)
@@ -162,7 +367,7 @@ public sealed class RuntimeEvidenceRunner(
         Directory.CreateDirectory(_options.CaptureDirectory);
         UiLanguageService.Shared.SetLanguage(_options.Language);
         _state.RefreshLanguage();
-        WriteProgress("waiting-for-live-state", _state.CurrentState.LastIngestSequence);
+        _ = WriteProgress("waiting-for-live-state", _state.CurrentState.LastIngestSequence);
         await WaitUntilAsync(
             () => _state.IsCoreConnected &&
                   _state.IsLive &&
@@ -175,7 +380,7 @@ public sealed class RuntimeEvidenceRunner(
         var initialSequence = _state.CurrentState.LastIngestSequence;
         var initialEventCount = _state.CurrentRuntimeHealth.EventCount;
         var initialStateHash = CurrentStateHash();
-        WriteProgress("capturing-live-dashboard-and-widgets", initialSequence);
+        _ = WriteProgress("capturing-live-dashboard-and-widgets", initialSequence);
         await CaptureInitialSurfacesAsync(initialStateHash, cancellationToken);
         if (!string.Equals(initialStateHash, CurrentStateHash(), StringComparison.Ordinal))
         {
@@ -186,11 +391,15 @@ public sealed class RuntimeEvidenceRunner(
         var latencyWarmup = _state.Widgets.ResetUpdateLatencyMeasurement();
         var widgetLatencyBaselineSequence = _state.CurrentState.LastIngestSequence;
 
-        WriteProgress("waiting-for-pre-close-update", initialSequence);
-        await WaitUntilAsync(
-            () => _state.IsLive &&
-                  _state.CurrentState.LastIngestSequence > initialSequence &&
-                  _state.CurrentRuntimeHealth.EventCount > initialEventCount,
+        var eventABaselineState = _state.CurrentState;
+        var eventABaselineEventCount = _state.CurrentRuntimeHealth.EventCount;
+        var eventAProgress = WriteProgress(
+            "waiting-for-pre-close-update",
+            eventABaselineState.LastIngestSequence);
+        var eventA = await WaitForAgentStatusTransitionAsync(
+            eventABaselineState,
+            eventABaselineEventCount,
+            eventAProgress.ObservedUtc,
             deadline,
             "No live state update was observed before closing the Dashboard.",
             cancellationToken);
@@ -210,7 +419,8 @@ public sealed class RuntimeEvidenceRunner(
         _mainWindow.Close();
         var dashboardClosedUtc = DateTimeOffset.UtcNow;
         await Dispatcher.Yield(DispatcherPriority.ApplicationIdle);
-        WriteProgress("dashboard-closed-waiting-for-herdr-disconnect", preCloseSequence);
+        await _mainWindow.WaitForDashboardCleanupAsync(cancellationToken);
+        _ = WriteProgress("dashboard-closed-waiting-for-herdr-disconnect", preCloseSequence);
         await WaitUntilAsync(
             () => _state.CurrentRuntimeHealth.LastTransitionUtc > dashboardClosedUtc &&
                   (_state.CurrentRuntimeHealth.DisconnectCount > preRestartDisconnectCount ||
@@ -224,7 +434,7 @@ public sealed class RuntimeEvidenceRunner(
         var disconnectObservedAfterDashboardClose = true;
         var disconnectObservedUtc = DateTimeOffset.UtcNow;
 
-        WriteProgress("herdr-disconnected-waiting-for-reconnect", _state.CurrentState.LastIngestSequence);
+        _ = WriteProgress("herdr-disconnected-waiting-for-reconnect", _state.CurrentState.LastIngestSequence);
         await WaitUntilAsync(
             () => _state.IsCoreConnected &&
                   _state.IsLive &&
@@ -243,13 +453,14 @@ public sealed class RuntimeEvidenceRunner(
         var eventBBaselineSequence = _state.CurrentState.LastIngestSequence;
         var eventBBaselineEventCount = _state.CurrentRuntimeHealth.EventCount;
 
-        WriteProgress("herdr-reconnected-waiting-for-post-reconnect-update", eventBBaselineSequence);
-        await WaitUntilAsync(
-            () => _state.IsCoreConnected &&
-                  _state.IsLive &&
-                  _state.CurrentState.ConnectionEpoch >= reconnectedConnectionEpoch &&
-                  _state.CurrentState.LastIngestSequence > eventBBaselineSequence &&
-                  _state.CurrentRuntimeHealth.EventCount > eventBBaselineEventCount,
+        var eventBBaselineState = _state.CurrentState;
+        var eventBProgress = WriteProgress(
+            "herdr-reconnected-waiting-for-post-reconnect-update",
+            eventBBaselineSequence);
+        var eventB = await WaitForAgentStatusTransitionAsync(
+            eventBBaselineState,
+            eventBBaselineEventCount,
+            eventBProgress.ObservedUtc,
             deadline,
             "No genuine Agent-status update reached the App-owned Widget after the target Herdr reconnect.",
             cancellationToken);
@@ -261,7 +472,9 @@ public sealed class RuntimeEvidenceRunner(
             "widget-floating-vertical-after-dashboard-close.png",
             cancellationToken);
 
-        WriteProgress("measuring-idle-resources", postCloseSequence);
+        _ = WriteProgress("waiting-for-idle-stability", postCloseSequence);
+        var idleQuiescence = await WaitForIdleQuiescenceAsync(deadline, cancellationToken);
+        _ = WriteProgress("measuring-idle-resources", idleQuiescence.StableSequence);
         var resources = await MeasureResourcesAsync(cancellationToken);
         var latencySnapshot = _state.Widgets.UpdateLatencySnapshot;
         var includedLatencySamples = latencySnapshot.Samples
@@ -275,27 +488,41 @@ public sealed class RuntimeEvidenceRunner(
         var latencyPassed = latencySamples >= MinimumLatencySamples &&
                             latencyP95 is not null &&
                             latencyP95 <= WidgetLatencyTargetMilliseconds;
-        var checksPassed = resources.StateSequenceStable &&
-                           resources.RuntimeEventCountStable &&
-                           resources.HerdrConnectedThroughoutSample &&
-                           resources.CpuTargetPassed &&
-                           resources.WorkingSetTargetPassed &&
-                           resources.App.IdentityStable &&
-                           resources.Core.IdentityStable &&
-                           resources.Preparation.DashboardResourcesReleased &&
-                           resources.Preparation.RetainedEvidenceWindows == 1 &&
-                           resources.Preparation.VisibleEvidenceWindows == 1 &&
-                           preCloseEventCount > initialEventCount &&
-                           disconnectObservedAfterDashboardClose &&
-                           reconnectObservedAfterDashboardClose &&
-                           disconnectObservedUtc >= dashboardClosedUtc &&
-                           reconnectObservedUtc >= disconnectObservedUtc &&
-                           postCloseEventCount > eventBBaselineEventCount &&
-                           reconnectedConnectionEpoch > preRestartConnectionEpoch &&
-                           reconnectedBootstrapCount > preRestartBootstrapCount &&
-                           reconnectedDisconnectCount > preRestartDisconnectCount &&
-                           latencyPassed &&
-                           _captures.Count >= 8;
+        var candidateChecks = new (string Name, bool Passed)[]
+        {
+            ("IdleStateSequenceStable", resources.StateSequenceStable),
+            ("IdleRuntimeEventCountStable", resources.RuntimeEventCountStable),
+            ("IdleRuntimeFingerprintStable", resources.RuntimeFingerprintStable),
+            ("HerdrConnectedThroughoutIdleSample", resources.HerdrConnectedThroughoutSample),
+            ("IdleCpuTargetPassed", resources.CpuTargetPassed),
+            ("IdleWorkingSetTargetPassed", resources.WorkingSetTargetPassed),
+            ("AppProcessIdentityStable", resources.App.IdentityStable),
+            ("CoreProcessIdentityStable", resources.Core.IdentityStable),
+            ("DashboardResourcesReleased", resources.Preparation.DashboardResourcesReleased),
+            ("OneEvidenceWindowRetained", resources.Preparation.RetainedEvidenceWindows == 1),
+            ("OneEvidenceWindowVisible", resources.Preparation.VisibleEvidenceWindows == 1),
+            ("DashboardWorkingSetCompactionAttempted", resources.Preparation.DashboardWorkingSetCompactionAttempted),
+            ("DashboardWorkingSetCompactionSucceeded", resources.Preparation.DashboardWorkingSetCompactionSucceeded),
+            ("IdleSequenceMatchesQuiescence", resources.StartSequence == idleQuiescence.StableSequence),
+            ("IdleEventCountMatchesQuiescence", resources.StartEventCount == idleQuiescence.StableEventCount),
+            ("IdleFingerprintMatchesQuiescence", resources.StartFingerprint == idleQuiescence.StableFingerprint),
+            ("EventAObserved", eventA.ChangeCount > 0),
+            ("DisconnectObservedAfterDashboardClose", disconnectObservedAfterDashboardClose),
+            ("ReconnectObservedAfterDashboardClose", reconnectObservedAfterDashboardClose),
+            ("DisconnectTimestampOrdered", disconnectObservedUtc >= dashboardClosedUtc),
+            ("ReconnectTimestampOrdered", reconnectObservedUtc >= disconnectObservedUtc),
+            ("EventBObserved", eventB.ChangeCount > 0),
+            ("ConnectionEpochAdvanced", reconnectedConnectionEpoch > preRestartConnectionEpoch),
+            ("BootstrapCountAdvanced", reconnectedBootstrapCount > preRestartBootstrapCount),
+            ("DisconnectCountAdvanced", reconnectedDisconnectCount > preRestartDisconnectCount),
+            ("WidgetLatencyTargetPassed", latencyPassed),
+            ("RequiredCapturesPresent", _captures.Count >= 8),
+        };
+        var failedCandidateChecks = candidateChecks
+            .Where(check => !check.Passed)
+            .Select(check => check.Name)
+            .ToArray();
+        var checksPassed = failedCandidateChecks.Length == 0;
         var report = new AppRuntimeEvidenceReport(
             "RuntimeCandidate",
             CoreStateObserved: true,
@@ -335,6 +562,8 @@ public sealed class RuntimeEvidenceRunner(
             reconnectObservedAfterDashboardClose,
             eventBBaselineSequence,
             eventBBaselineEventCount,
+            eventA,
+            eventB,
             widgetLatencyBaselineSequence,
             latencyWarmup.SampleCount,
             latencyWarmup.Samples,
@@ -347,16 +576,18 @@ public sealed class RuntimeEvidenceRunner(
             includedLatencySamples,
             unsupportedLatencySamples.Length,
             unsupportedLatencySamples,
+            idleQuiescence,
             resources,
             _captures.ToArray(),
             _state.CurrentRuntimeHealth,
             _state.CurrentState,
+            failedCandidateChecks,
             checksPassed,
             checksPassed
                 ? "The production WPF views and Widgets consumed actual Core state through the App-wide subscription. Composite Runtime credit still requires the matching exact-Herdr Core report."
                 : "One or more App runtime candidate checks failed; this report does not independently earn Runtime credit.");
         WriteJsonAtomically(_options.ReportPath, report);
-        WriteProgress("complete", postCloseSequence);
+        _ = WriteProgress("complete", postCloseSequence);
         return report;
     }
 
@@ -613,28 +844,61 @@ public sealed class RuntimeEvidenceRunner(
     {
         cancellationToken.ThrowIfCancellationRequested();
         app.Refresh();
-        var appWorkingSetBefore = app.WorkingSet64;
-        var appPrivateMemoryBefore = app.PrivateMemorySize64;
-        var managedHeapBefore = GC.GetTotalMemory(forceFullCollection: false);
-
-        await Dispatcher.Yield(DispatcherPriority.ApplicationIdle);
-        GC.Collect(GC.MaxGeneration, GCCollectionMode.Forced, blocking: true, compacting: true);
-        GC.WaitForPendingFinalizers();
-        GC.Collect(GC.MaxGeneration, GCCollectionMode.Forced, blocking: true, compacting: true);
         await Dispatcher.Yield(DispatcherPriority.ApplicationIdle);
 
+        var dashboardResourcesReleased = _mainWindow.DashboardResourcesReleased;
+        var retainedEvidenceWindows = _widgetWindows.Count;
+        var visibleEvidenceWindows = _widgetWindows.Count(window => window.IsVisible);
         app.Refresh();
         return new RuntimeResourcePreparation(
             DateTimeOffset.UtcNow,
-            _mainWindow.DashboardResourcesReleased,
-            _widgetWindows.Count,
-            _widgetWindows.Count(window => window.IsVisible),
-            Math.Round(ToMegabytes(appWorkingSetBefore), 3),
-            Math.Round(ToMegabytes(app.WorkingSet64), 3),
-            Math.Round(ToMegabytes(appPrivateMemoryBefore), 3),
-            Math.Round(ToMegabytes(app.PrivateMemorySize64), 3),
-            Math.Round(ToMegabytes(managedHeapBefore), 3),
-            Math.Round(ToMegabytes(GC.GetTotalMemory(forceFullCollection: false)), 3));
+            dashboardResourcesReleased,
+            retainedEvidenceWindows,
+            visibleEvidenceWindows,
+            _mainWindow.DashboardWorkingSetCompactionAttempted,
+            _mainWindow.DashboardWorkingSetCompactionSucceeded,
+            _mainWindow.DashboardWorkingSetCompactionNativeErrorCode,
+            _mainWindow.DashboardWorkingSetBeforeMegabytes,
+            _mainWindow.DashboardWorkingSetAfterMegabytes,
+            _mainWindow.DashboardPrivateMemoryBeforeMegabytes,
+            _mainWindow.DashboardPrivateMemoryAfterMegabytes,
+            _mainWindow.DashboardManagedHeapBeforeMegabytes,
+            _mainWindow.DashboardManagedHeapAfterMegabytes);
+    }
+
+    private async Task<RuntimeIdleQuiescence> WaitForIdleQuiescenceAsync(
+        DateTimeOffset deadline,
+        CancellationToken cancellationToken)
+    {
+        var tracker = new RuntimeIdleQuiescenceTracker(IdleQuiescenceSeconds);
+
+        while (true)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var observedUtc = DateTimeOffset.UtcNow;
+            if (observedUtc >= deadline)
+            {
+                throw new TimeoutException(
+                    $"The live state did not remain unchanged for {IdleQuiescenceSeconds} seconds before the runtime-evidence timeout.");
+            }
+
+            var isLive = _state.IsCoreConnected && _state.IsLive;
+            var currentSequence = _state.CurrentState.LastIngestSequence;
+            var currentEventCount = _state.CurrentRuntimeHealth.EventCount;
+            var quiescence = tracker.Observe(
+                observedUtc,
+                isLive,
+                currentSequence,
+                currentEventCount);
+            if (quiescence is not null)
+            {
+                return quiescence;
+            }
+
+            await Task.Delay(
+                TimeSpan.FromMilliseconds(IdleQuiescencePollMilliseconds),
+                cancellationToken);
+        }
     }
 
     private static double ProcessCpuPercent(TimeSpan processorTime, TimeSpan elapsed) =>
@@ -713,6 +977,116 @@ public sealed class RuntimeEvidenceRunner(
                    StringComparison.Ordinal);
     }
 
+    private async Task<RuntimeAgentStatusTransitionEvidence> WaitForAgentStatusTransitionAsync(
+        HerdrSessionStateContract baselineState,
+        long baselineEventCount,
+        DateTimeOffset phaseEnteredUtc,
+        DateTimeOffset deadline,
+        string timeoutMessage,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(baselineState);
+        var baselineStateSha256 = HerdrOpsStateIpcJson.ComputeSha256(baselineState);
+        while (true)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var currentState = _state.CurrentState;
+            var currentHealth = _state.CurrentRuntimeHealth;
+            if (_state.IsCoreConnected &&
+                _state.IsLive &&
+                currentState.ConnectionEpoch == baselineState.ConnectionEpoch &&
+                currentState.LastIngestSequence > baselineState.LastIngestSequence &&
+                currentHealth.EventCount > baselineEventCount)
+            {
+                var changes = FindCorrelatedAgentStatusChanges(baselineState, currentState);
+                if (changes.Count > 0)
+                {
+                    return new RuntimeAgentStatusTransitionEvidence(
+                        phaseEnteredUtc,
+                        DateTimeOffset.UtcNow,
+                        baselineState.LastIngestSequence,
+                        currentState.LastIngestSequence,
+                        baselineEventCount,
+                        currentHealth.EventCount,
+                        baselineStateSha256,
+                        HerdrOpsStateIpcJson.ComputeSha256(currentState),
+                        currentState.ConnectionEpoch,
+                        changes);
+                }
+            }
+
+            if (DateTimeOffset.UtcNow >= deadline)
+            {
+                throw new TimeoutException(timeoutMessage);
+            }
+
+            await Task.Delay(100, cancellationToken);
+        }
+    }
+
+    private static IReadOnlyList<RuntimeAgentStatusChange> FindCorrelatedAgentStatusChanges(
+        HerdrSessionStateContract baseline,
+        HerdrSessionStateContract current)
+    {
+        var baselineAgents = baseline.Agents.ToDictionary(
+            agent => agent.TerminalId,
+            StringComparer.Ordinal);
+        var baselinePanes = baseline.Panes.ToDictionary(
+            pane => pane.PaneId,
+            StringComparer.Ordinal);
+        var currentPanes = current.Panes.ToDictionary(
+            pane => pane.PaneId,
+            StringComparer.Ordinal);
+        return current.Agents
+            .Where(agent =>
+                baselineAgents.TryGetValue(agent.TerminalId, out var previous) &&
+                string.Equals(previous.WorkspaceId, agent.WorkspaceId, StringComparison.Ordinal) &&
+                string.Equals(previous.TabId, agent.TabId, StringComparison.Ordinal) &&
+                string.Equals(previous.PaneId, agent.PaneId, StringComparison.Ordinal) &&
+                !string.Equals(previous.AgentStatus, agent.AgentStatus, StringComparison.Ordinal) &&
+                agent.StateChangeSequence > previous.StateChangeSequence &&
+                baselinePanes.TryGetValue(previous.PaneId, out var previousPane) &&
+                currentPanes.TryGetValue(agent.PaneId, out var currentPane) &&
+                string.Equals(previousPane.AgentStatus, previous.AgentStatus, StringComparison.Ordinal) &&
+                string.Equals(currentPane.AgentStatus, agent.AgentStatus, StringComparison.Ordinal))
+            .Select(agent =>
+            {
+                var previous = baselineAgents[agent.TerminalId];
+                return new RuntimeAgentStatusChange(
+                    agent.TerminalId,
+                    agent.WorkspaceId,
+                    agent.TabId,
+                    agent.PaneId,
+                    previous.AgentStatus,
+                    agent.AgentStatus,
+                    previous.Revision,
+                    agent.Revision,
+                    previous.StateChangeSequence,
+                    agent.StateChangeSequence);
+            })
+            .OrderBy(change => change.TerminalId, StringComparer.Ordinal)
+            .ToArray();
+    }
+
+    private RuntimeStateFingerprint CurrentFingerprint()
+    {
+        var state = _state.CurrentState;
+        var health = _state.CurrentRuntimeHealth;
+        return new RuntimeStateFingerprint(
+            _state.IsCoreConnected,
+            _state.IsLive,
+            health.Status,
+            health.LastTransitionUtc,
+            health.LastAcceptedStateUtc,
+            state.ConnectionEpoch,
+            state.LastIngestSequence,
+            health.BootstrapCount,
+            health.EventCount,
+            health.DisconnectCount,
+            health.ReconciliationCount,
+            HerdrOpsStateIpcJson.ComputeSha256(state));
+    }
+
     private async Task WaitUntilAsync(
         Func<bool> predicate,
         DateTimeOffset deadline,
@@ -734,18 +1108,33 @@ public sealed class RuntimeEvidenceRunner(
     private string CurrentStateHash() =>
         HerdrOpsStateIpcJson.ComputeSha256(_state.CurrentState);
 
-    private void WriteProgress(string phase, long sequence) =>
+    private void WriteProgress(string phase, long sequence)
+    {
+        var progress = new RuntimeEvidenceProgress(
+            _progressHistory.Count + 1,
+            phase,
+            DateTimeOffset.UtcNow,
+            sequence,
+            _state.CurrentRuntimeHealth.Status,
+            _state.CurrentState.ConnectionEpoch,
+            _state.CurrentRuntimeHealth.BootstrapCount,
+            _state.CurrentRuntimeHealth.EventCount,
+            _state.CurrentRuntimeHealth.DisconnectCount);
+        _progressHistory.Add(progress);
         WriteJsonAtomically(_options.ProgressPath, new
         {
-            Phase = phase,
-            ObservedUtc = DateTimeOffset.UtcNow,
-            Sequence = sequence,
-            RuntimeStatus = _state.CurrentRuntimeHealth.Status,
-            ConnectionEpoch = _state.CurrentState.ConnectionEpoch,
-            BootstrapCount = _state.CurrentRuntimeHealth.BootstrapCount,
-            EventCount = _state.CurrentRuntimeHealth.EventCount,
-            DisconnectCount = _state.CurrentRuntimeHealth.DisconnectCount,
+            progress.Ordinal,
+            progress.Phase,
+            progress.ObservedUtc,
+            progress.Sequence,
+            progress.RuntimeStatus,
+            progress.ConnectionEpoch,
+            progress.BootstrapCount,
+            progress.EventCount,
+            progress.DisconnectCount,
+            History = _progressHistory.ToArray(),
         });
+    }
 
     private static void WriteJsonAtomically<T>(string path, T value)
     {
@@ -775,4 +1164,5 @@ public sealed class RuntimeEvidenceRunner(
         DateTimeOffset ProcessStartUtc,
         string ExecutablePath,
         string ExecutableSha256);
+
 }

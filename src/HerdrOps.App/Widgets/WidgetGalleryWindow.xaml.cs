@@ -7,6 +7,7 @@ public partial class WidgetGalleryWindow : Window
 {
     private const double NativeGalleryContentWidth = 1536;
     private bool _hasAdjustedInitialWidth;
+    private bool _resourcesReleased;
 
     public WidgetGalleryWindow()
         : this(SyntheticWidgetState.Create())
@@ -28,6 +29,8 @@ public partial class WidgetGalleryWindow : Window
     }
 
     public WidgetGalleryView GalleryView { get; }
+
+    public bool ResourcesReleased => _resourcesReleased;
 
     protected override void OnContentRendered(EventArgs e)
     {
@@ -71,10 +74,23 @@ public partial class WidgetGalleryWindow : Window
 
     private void OnClosed(object? sender, EventArgs e)
     {
+        ReleaseResources();
+    }
+
+    internal void ReleaseResources()
+    {
+        if (_resourcesReleased)
+        {
+            return;
+        }
+
+        _resourcesReleased = true;
         WeakEventManager<UiLanguageService, EventArgs>.RemoveHandler(
             UiLanguageService.Shared,
             nameof(UiLanguageService.LanguageChanged),
             OnLanguageChanged);
         Closed -= OnClosed;
+        GalleryView.ReleaseResources();
+        GalleryHost.Content = null;
     }
 }

@@ -11,6 +11,11 @@ using HerdrOps.App.Widgets;
 
 namespace HerdrOps.App.Views;
 
+internal interface IPageResourceOwner
+{
+    void ReleaseResources();
+}
+
 /// <summary>
 /// Shared application chrome and navigation for all canonical pages.
 /// </summary>
@@ -21,6 +26,9 @@ public partial class ShellView : UserControl
     private const double ProjectSelectorBreakpoint = 1080;
     private const double StatusLegendBreakpoint = 1480;
     private readonly bool _syntheticPreview;
+    private string? _activeDestinationId;
+    private string? _activePageName;
+    private bool _resourcesReleased;
 
     public ShellView()
         : this(new LiveDashboardState(), syntheticPreview: false)
@@ -41,20 +49,6 @@ public partial class ShellView : UserControl
         Navigation = new ShellNavigationController();
         InitializeComponent();
         DataContext = Navigation;
-        RealtimeActivityPage.DataContext = LiveDashboard.RealtimeActivity;
-        DelegationGraphPage.DataContext = LiveDashboard.DelegationGraph;
-        TaskAlignmentPage.DataContext = LiveDashboard.TaskAlignment;
-        ComplianceQueuePage.DataContext = LiveDashboard.ComplianceQueue;
-        FileActivityPage.DataContext = syntheticPreview
-            ? FileActivityState.CreateSyntheticPreview()
-            : FileActivityState.CreateUnavailable();
-        if (!syntheticPreview)
-        {
-            OverviewPage.DataContext = LiveDashboard.Overview;
-            OverviewPage.UseWidgetState(LiveDashboard.Widgets);
-            LiveOrganizationPage.DataContext = LiveDashboard.Organization;
-            AgentDetailPage.DataContext = LiveDashboard.AgentDetail;
-        }
 
         Navigation.PropertyChanged += OnNavigationPropertyChanged;
         WeakEventManager<UiLanguageService, EventArgs>.AddHandler(
@@ -75,10 +69,19 @@ public partial class ShellView : UserControl
 
     public UiLanguageService LanguageService => UiLanguageService.Shared;
 
+    public int RetainedPageCount => PageHost.Content is null ? 0 : 1;
+
+    public string? ActivePageName => _activePageName;
+
     public void SetLanguage(UiLanguage language) => LanguageService.SetLanguage(language);
 
     public bool TryNavigateByKey(Key key, ModifierKeys modifiers)
     {
+        if (_resourcesReleased)
+        {
+            return false;
+        }
+
         var handled = Navigation.TryHandleKey(key, modifiers);
         if (handled)
         {
@@ -90,7 +93,7 @@ public partial class ShellView : UserControl
 
     public bool NavigateTo(string destinationId)
     {
-        if (string.IsNullOrWhiteSpace(destinationId))
+        if (_resourcesReleased || string.IsNullOrWhiteSpace(destinationId))
         {
             return false;
         }
@@ -152,90 +155,143 @@ public partial class ShellView : UserControl
         Navigation.NotifyLanguageChanged();
         NavigationList.Items.Refresh();
         LiveDashboard.RefreshLanguage();
-        if (FileActivityPage.DataContext is FileActivityState fileActivity)
+        if (PageHost.Content is FileActivityView
+            {
+                DataContext: FileActivityState fileActivity,
+            })
         {
             fileActivity.RefreshLanguage();
         }
-        if (_syntheticPreview)
+        if (_syntheticPreview && PageHost.Content is OverviewView overview)
         {
-            OverviewPage.DataContext = SyntheticOverviewState.Create();
-            OverviewPage.UseWidgetState(SyntheticWidgetState.Create());
+            overview.DataContext = SyntheticOverviewState.Create();
+            overview.UseWidgetState(SyntheticWidgetState.Create());
         }
     }
 
     private void OnUnloaded(object sender, RoutedEventArgs e)
     {
+        ReleaseResources();
+    }
+
+    internal void ReleaseResources()
+    {
+        if (_resourcesReleased)
+        {
+            return;
+        }
+
+        _resourcesReleased = true;
+        Navigation.PropertyChanged -= OnNavigationPropertyChanged;
         WeakEventManager<UiLanguageService, EventArgs>.RemoveHandler(
             LanguageService,
             nameof(UiLanguageService.LanguageChanged),
             OnLanguageChanged);
+        ReleaseActivePage();
         Unloaded -= OnUnloaded;
     }
 
     private void UpdatePageVisibility()
     {
-        var isOverview = string.Equals(
-            Navigation.SelectedDestination.Id,
-            "overview",
-            StringComparison.Ordinal);
-        var isLiveOrganization = !_syntheticPreview && string.Equals(
-            Navigation.SelectedDestination.Id,
-            "live-organization",
-            StringComparison.Ordinal);
-        var isAgentDetail = !_syntheticPreview && string.Equals(
-            Navigation.SelectedDestination.Id,
-            "agent-detail",
-            StringComparison.Ordinal);
-        var isRealtimeActivity = string.Equals(
-            Navigation.SelectedDestination.Id,
-            "realtime-activity",
-            StringComparison.Ordinal);
-        var isDelegationGraph = string.Equals(
-            Navigation.SelectedDestination.Id,
-            "delegation-graph",
-            StringComparison.Ordinal);
-        var isTaskAlignment = string.Equals(
-            Navigation.SelectedDestination.Id,
-            "task-alignment",
-            StringComparison.Ordinal);
-        var isFileActivity = string.Equals(
-            Navigation.SelectedDestination.Id,
-            "file-activity",
-            StringComparison.Ordinal);
-        var isComplianceQueue = string.Equals(
-            Navigation.SelectedDestination.Id,
-            "compliance-queue",
-            StringComparison.Ordinal);
-        OverviewPage.Visibility = isOverview ? Visibility.Visible : Visibility.Collapsed;
-        LiveOrganizationPage.Visibility = isLiveOrganization
-            ? Visibility.Visible
-            : Visibility.Collapsed;
-        AgentDetailPage.Visibility = isAgentDetail ? Visibility.Visible : Visibility.Collapsed;
-        RealtimeActivityPage.Visibility = isRealtimeActivity
-            ? Visibility.Visible
-            : Visibility.Collapsed;
-        DelegationGraphPage.Visibility = isDelegationGraph
-            ? Visibility.Visible
-            : Visibility.Collapsed;
-        TaskAlignmentPage.Visibility = isTaskAlignment
-            ? Visibility.Visible
-            : Visibility.Collapsed;
-        FileActivityPage.Visibility = isFileActivity
-            ? Visibility.Visible
-            : Visibility.Collapsed;
-        ComplianceQueuePage.Visibility = isComplianceQueue
-            ? Visibility.Visible
-            : Visibility.Collapsed;
-        PlaceholderPage.Visibility = isOverview ||
-            isLiveOrganization ||
-            isAgentDetail ||
-            isRealtimeActivity ||
-            isDelegationGraph ||
-            isTaskAlignment ||
-            isFileActivity ||
-            isComplianceQueue
-            ? Visibility.Collapsed
-            : Visibility.Visible;
+        var destinationId = Navigation.SelectedDestination.Id;
+        if (string.Equals(_activeDestinationId, destinationId, StringComparison.Ordinal) &&
+            PageHost.Content is not null)
+        {
+            PlaceholderPage.Visibility = Visibility.Collapsed;
+            return;
+        }
+
+        ReleaseActivePage();
+        var page = CreatePage(destinationId);
+        if (page is null)
+        {
+            PlaceholderPage.Visibility = Visibility.Visible;
+            return;
+        }
+
+        _activeDestinationId = destinationId;
+        _activePageName = page.Value.Name;
+        RegisterName(_activePageName, page.Value.Page);
+        PageHost.Content = page.Value.Page;
+        PlaceholderPage.Visibility = Visibility.Collapsed;
+    }
+
+    private (string Name, FrameworkElement Page)? CreatePage(string destinationId)
+    {
+        switch (destinationId)
+        {
+            case "overview":
+                {
+                    var page = new OverviewView
+                    {
+                        DataContext = _syntheticPreview
+                            ? SyntheticOverviewState.Create()
+                            : LiveDashboard.Overview,
+                    };
+                    page.UseWidgetState(
+                        _syntheticPreview
+                            ? SyntheticWidgetState.Create()
+                            : LiveDashboard.Widgets);
+                    return ("OverviewPage", page);
+                }
+
+            case "live-organization" when !_syntheticPreview:
+                return ("LiveOrganizationPage", new LiveOrganizationView
+                {
+                    DataContext = LiveDashboard.Organization,
+                });
+            case "realtime-activity":
+                return ("RealtimeActivityPage", new RealtimeActivityView
+                {
+                    DataContext = LiveDashboard.RealtimeActivity,
+                });
+            case "delegation-graph":
+                return ("DelegationGraphPage", new DelegationGraphView
+                {
+                    DataContext = LiveDashboard.DelegationGraph,
+                });
+            case "agent-detail" when !_syntheticPreview:
+                return ("AgentDetailPage", new AgentDetailView
+                {
+                    DataContext = LiveDashboard.AgentDetail,
+                });
+            case "task-alignment":
+                return ("TaskAlignmentPage", new TaskAlignmentView
+                {
+                    DataContext = LiveDashboard.TaskAlignment,
+                });
+            case "file-activity":
+                return ("FileActivityPage", new FileActivityView
+                {
+                    DataContext = _syntheticPreview
+                        ? FileActivityState.CreateSyntheticPreview()
+                        : FileActivityState.CreateUnavailable(),
+                });
+            case "compliance-queue":
+                return ("ComplianceQueuePage", new ComplianceQueueView
+                {
+                    DataContext = LiveDashboard.ComplianceQueue,
+                });
+            default:
+                return null;
+        }
+    }
+
+    private void ReleaseActivePage()
+    {
+        if (PageHost.Content is IPageResourceOwner resourceOwner)
+        {
+            resourceOwner.ReleaseResources();
+        }
+
+        if (_activePageName is not null)
+        {
+            UnregisterName(_activePageName);
+        }
+
+        PageHost.Content = null;
+        _activeDestinationId = null;
+        _activePageName = null;
     }
 
     private void OnShellSizeChanged(object sender, SizeChangedEventArgs e)

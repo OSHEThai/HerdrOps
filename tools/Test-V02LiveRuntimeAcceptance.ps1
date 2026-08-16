@@ -299,6 +299,9 @@ try {
                         'herdr-reconnected-waiting-for-post-reconnect-update' {
                             Write-Host 'The target Agent Lab has reconnected and the Widget is LIVE. Now trigger Event B with a second genuine Agent-status transition.'
                         }
+                        'waiting-for-idle-stability' {
+                            Write-Host 'Event B arrived. Leave Herdr, Core, and App untouched while the gate waits for five continuous seconds of stable live state.'
+                        }
                         'measuring-idle-resources' {
                             Write-Host "Leave Herdr, Core, and App untouched for the $IdleSeconds-second idle measurement."
                         }
@@ -368,6 +371,17 @@ try {
             "GateReport=$([bool](Test-Path -LiteralPath $gateReportPath -PathType Leaf))"
         ) -join ', '
         $appFailureMessage = "The App runtime-evidence process failed with exit code $appExitCode. Evidence paths: AppRuntimeReport=$appReportPath; CoreRuntimeReport=$coreReportPath; GateReport=$gateReportPath. ReportPresence: $reportPresence"
+        if (Test-Path -LiteralPath $appReportPath -PathType Leaf) {
+            try {
+                $failedAppReport = Get-Content -LiteralPath $appReportPath -Raw | ConvertFrom-Json
+                $failedChecks = @($failedAppReport.FailedCandidateChecks)
+                if ($failedChecks.Count -gt 0) {
+                    $appFailureMessage += " FailedCandidateChecks=$($failedChecks -join ',')"
+                }
+            } catch {
+                $appFailureMessage += ' App report could not be parsed for failed-check diagnostics.'
+            }
+        }
         if ($completionSignalWriteFailure) {
             $appFailureMessage += " Completion signal creation failed: $completionSignalWriteFailure"
         }
@@ -392,13 +406,14 @@ if ($appFailureMessage) {
     throw $appFailureMessage
 }
 
-foreach ($requiredReport in @($coreReportPath, $appReportPath)) {
+foreach ($requiredReport in @($coreReportPath, $appReportPath, $progressPath)) {
     if (-not (Test-Path -LiteralPath $requiredReport -PathType Leaf)) {
         throw "Required runtime report is missing: $requiredReport"
     }
 }
 $coreReport = Get-Content -LiteralPath $coreReportPath -Raw | ConvertFrom-Json
 $appReport = Get-Content -LiteralPath $appReportPath -Raw | ConvertFrom-Json
+$progressReport = Get-Content -LiteralPath $progressPath -Raw | ConvertFrom-Json
 $coreExecutableHash = (Get-FileHash -LiteralPath $coreExecutable -Algorithm SHA256).Hash
 $appExecutableHash = (Get-FileHash -LiteralPath $appExecutable -Algorithm SHA256).Hash
 
@@ -435,6 +450,30 @@ Assert-True ([long]$appReport.ReconnectedBootstrapCount -gt [long]$appReport.Pre
 Assert-True ([long]$appReport.ReconnectedDisconnectCount -gt [long]$appReport.PreRestartDisconnectCount) 'The App did not carry an incremented disconnect count after reconnect.'
 Assert-True ([long]$appReport.EventBBaselineEventCount -ge [long]$appReport.PreCloseEventCount) 'The Event B baseline predates Event A.'
 Assert-True ([long]$appReport.PostCloseEventCount -gt [long]$appReport.EventBBaselineEventCount) 'The post-close Widget update was not caused by Event B after reconnect.'
+$expectedProgressPhases = @(
+    'waiting-for-live-state',
+    'capturing-live-dashboard-and-widgets',
+    'waiting-for-pre-close-update',
+    'dashboard-closed-waiting-for-herdr-disconnect',
+    'herdr-disconnected-waiting-for-reconnect',
+    'herdr-reconnected-waiting-for-post-reconnect-update',
+    'waiting-for-idle-stability',
+    'measuring-idle-resources',
+    'complete'
+)
+$progressHistory = @($progressReport.History)
+Assert-True ($progressHistory.Count -eq $expectedProgressPhases.Count) 'The App progress history does not contain every required phase exactly once.'
+for ($index = 0; $index -lt $expectedProgressPhases.Count; $index++) {
+    $item = $progressHistory[$index]
+    Assert-True ([int]$item.Ordinal -eq ($index + 1)) 'The App progress history ordinal is not contiguous.'
+    Assert-True ([string]$item.Phase -eq $expectedProgressPhases[$index]) 'The App progress phases occurred out of order.'
+    if ($index -gt 0) {
+        $currentProgressUtc = [DateTimeOffset]$item.ObservedUtc
+        $priorProgressUtc = [DateTimeOffset]$progressHistory[$index - 1].ObservedUtc
+        Assert-True ($currentProgressUtc -ge $priorProgressUtc) 'The App progress timestamps moved backward.'
+    }
+}
+Assert-True ([string]$progressReport.Phase -eq 'complete') 'The final App progress phase is not complete.'
 Assert-True ($appReport.WidgetLatencyMeasurement -eq 'CoreAcceptedStateUtcToWpfStateApplied') 'Unexpected Widget latency measurement boundary.'
 Assert-True ([int]$appReport.WidgetLatencyMinimumSamples -eq 3) 'Unexpected Widget latency minimum sample count.'
 Assert-True ([double]$appReport.WidgetLatencyTargetMilliseconds -eq 250) 'Unexpected Widget latency target.'
@@ -474,6 +513,23 @@ $recomputedLatencyP95 = [double]$orderedLatencyValues[$latencyP95Index]
 Assert-True ([Math]::Abs($recomputedLatencyP95 - [double]$appReport.WidgetLatencyP95Milliseconds) -le 0.001) 'The reported Widget p95 does not match the included samples.'
 Assert-True ($recomputedLatencyP95 -le [double]$appReport.WidgetLatencyTargetMilliseconds) 'The independently recomputed Widget p95 exceeds the target.'
 Assert-True ([bool]$appReport.WidgetLatencyTargetPassed) 'Actual Widget latency target failed or had too few samples.'
+$idleQuiescence = $appReport.IdleQuiescence
+Assert-True ([int]$idleQuiescence.RequiredStableSeconds -eq 5) 'Unexpected pre-idle quiescence requirement.'
+$quiescenceStartedUtc = [DateTimeOffset]$idleQuiescence.StartedUtc
+$quiescenceStableSinceUtc = [DateTimeOffset]$idleQuiescence.StableSinceUtc
+$quiescenceReachedUtc = [DateTimeOffset]$idleQuiescence.ReachedUtc
+Assert-True ($quiescenceStableSinceUtc -ge $quiescenceStartedUtc) 'The quiescence stable interval began before observation.'
+Assert-True ($quiescenceReachedUtc -ge $quiescenceStableSinceUtc.AddSeconds([int]$idleQuiescence.RequiredStableSeconds)) 'The gate did not observe the complete quiescence interval.'
+Assert-True ([long]$idleQuiescence.StableSequence -ge [long]$idleQuiescence.InitialSequence) 'The quiescence sequence regressed.'
+Assert-True ([long]$idleQuiescence.StableEventCount -ge [long]$idleQuiescence.InitialEventCount) 'The quiescence event count regressed.'
+Assert-True ([int]$idleQuiescence.ResetCount -ge 0) 'The quiescence reset count is invalid.'
+$quiescenceResets = @($idleQuiescence.Resets)
+Assert-True ([int]$idleQuiescence.ResetCount -eq $quiescenceResets.Count) 'The quiescence reset count does not match its append-only provenance.'
+foreach ($reset in $quiescenceResets) {
+    Assert-True (@('LiveStateLost', 'LiveStateRestored', 'StateOrEventAdvanced') -contains [string]$reset.Reason) 'The quiescence history contains an unknown reset reason.'
+    Assert-True ([long]$reset.CurrentSequence -ge [long]$reset.PreviousSequence) 'A quiescence reset hid a sequence regression.'
+    Assert-True ([long]$reset.CurrentEventCount -ge [long]$reset.PreviousEventCount) 'A quiescence reset hid an event-count regression.'
+}
 Assert-True ([double]$appReport.ResourceMeasurement.CpuTargetPercent -eq 1) 'Unexpected Core + App idle CPU target.'
 Assert-True ([double]$appReport.ResourceMeasurement.WorkingSetTargetMegabytes -eq 180) 'Unexpected Core + App working-set target.'
 Assert-True ([int]$appReport.ResourceMeasurement.SampleIntervalMilliseconds -eq 250) 'Unexpected idle resource sampling interval.'
@@ -493,6 +549,11 @@ Assert-True ([bool]$appReport.ResourceMeasurement.WorkingSetTargetPassed) 'Combi
 Assert-True ([bool]$appReport.ResourceMeasurement.Preparation.DashboardResourcesReleased) 'The closed Dashboard retained its visual tree during the idle resource sample.'
 Assert-True ([int]$appReport.ResourceMeasurement.Preparation.RetainedEvidenceWindows -eq 1) 'The evidence runner retained a closed Widget window during the idle sample.'
 Assert-True ([int]$appReport.ResourceMeasurement.Preparation.VisibleEvidenceWindows -eq 1) 'The Floating Vertical Widget was not the sole visible evidence window during the idle sample.'
+Assert-True ([bool]$appReport.ResourceMeasurement.Preparation.DashboardWorkingSetCompactionAttempted) 'The App did not compact the released Dashboard working set while the Widget remained active.'
+Assert-True ([bool]$appReport.ResourceMeasurement.Preparation.DashboardWorkingSetCompactionSucceeded) 'The App could not compact the released Dashboard working set while the Widget remained active.'
+Assert-True ($null -eq $appReport.ResourceMeasurement.Preparation.DashboardWorkingSetCompactionNativeErrorCode) 'A native Dashboard working-set compaction error was reported despite success.'
+Assert-True ([long]$appReport.ResourceMeasurement.StartSequence -eq [long]$idleQuiescence.StableSequence) 'State changed between quiescence and the idle resource baseline.'
+Assert-True ([long]$appReport.ResourceMeasurement.StartEventCount -eq [long]$idleQuiescence.StableEventCount) 'A Herdr event occurred between quiescence and the idle resource baseline.'
 Assert-True ([int]$appReport.AppProcessId -eq [int]$appProcess.Id) 'The App report is not bound to the launched App process.'
 Assert-True ([int]$appReport.CoreProcessId -eq [int]$coreProcess.Id) 'The App report is not bound to the launched Core process.'
 Assert-True ([int]$appReport.ResourceMeasurement.App.ProcessId -eq [int]$appProcess.Id) 'App resource samples are not bound to the launched App process.'
@@ -507,6 +568,7 @@ $reportedAppStartUtc = ([DateTimeOffset]$appReport.ResourceMeasurement.App.Proce
 $reportedCoreStartUtc = ([DateTimeOffset]$appReport.ResourceMeasurement.Core.ProcessStartUtc).ToUniversalTime()
 Assert-True ($reportedAppStartUtc.UtcDateTime.Ticks -eq $appProcess.StartTime.ToUniversalTime().Ticks) 'App resource samples are bound to an unexpected process lifetime.'
 Assert-True ($reportedCoreStartUtc.UtcDateTime.Ticks -eq $coreProcess.StartTime.ToUniversalTime().Ticks) 'Core resource samples are bound to an unexpected process lifetime.'
+Assert-True (@($appReport.FailedCandidateChecks).Count -eq 0) 'The App report contains failed candidate checks.'
 Assert-True ([bool]$appReport.CompositeCandidateChecksPassed) 'App runtime candidate checks did not all pass.'
 Assert-True ([long]$coreReport.FinalMonitorState.EventCount -ge 2) 'The Core trace requires at least two real Herdr events.'
 Assert-True ($tcpListeners.Count -eq 0) 'Core or App opened a TCP listener during normal runtime acceptance.'
@@ -710,6 +772,9 @@ $reportLines = @(
     "WidgetLatencyMeasurement: $($appReport.WidgetLatencyMeasurement)",
     "WidgetLatencyTargetMs: $($appReport.WidgetLatencyTargetMilliseconds)",
     "WidgetLatencyP95Ms: $($appReport.WidgetLatencyP95Milliseconds)",
+    "IdleQuiescenceSeconds: $($appReport.IdleQuiescence.RequiredStableSeconds)",
+    "IdleQuiescenceWindow: $($appReport.IdleQuiescence.StableSinceUtc) -> $($appReport.IdleQuiescence.ReachedUtc)",
+    "IdleQuiescenceState: sequence=$($appReport.IdleQuiescence.StableSequence) event=$($appReport.IdleQuiescence.StableEventCount) resets=$($appReport.IdleQuiescence.ResetCount)",
     "IdleCpuTargetPercent: $($appReport.ResourceMeasurement.CpuTargetPercent)",
     "IdleWorkingSetTargetMB: $($appReport.ResourceMeasurement.WorkingSetTargetMegabytes)",
     "ResourceSampleIntervalMs: $($appReport.ResourceMeasurement.SampleIntervalMilliseconds)",
@@ -729,6 +794,7 @@ $reportLines = @(
     "CoreResourceProcess: pid=$($appReport.ResourceMeasurement.Core.ProcessId) start=$($appReport.ResourceMeasurement.Core.ProcessStartUtc) path=$($appReport.ResourceMeasurement.Core.ExecutablePath) sha256=$($appReport.ResourceMeasurement.Core.ExecutableSha256) stable=$($appReport.ResourceMeasurement.Core.IdentityStable)",
     "DashboardResourcesReleased: $($appReport.ResourceMeasurement.Preparation.DashboardResourcesReleased)",
     "EvidenceWindowsDuringIdle: retained=$($appReport.ResourceMeasurement.Preparation.RetainedEvidenceWindows) visible=$($appReport.ResourceMeasurement.Preparation.VisibleEvidenceWindows)",
+    "DashboardWorkingSetCompaction: attempted=$($appReport.ResourceMeasurement.Preparation.DashboardWorkingSetCompactionAttempted) succeeded=$($appReport.ResourceMeasurement.Preparation.DashboardWorkingSetCompactionSucceeded) nativeError=$($appReport.ResourceMeasurement.Preparation.DashboardWorkingSetCompactionNativeErrorCode)",
     "AppWorkingSetPreparationMB: before=$($appReport.ResourceMeasurement.Preparation.AppWorkingSetBeforeMegabytes) after=$($appReport.ResourceMeasurement.Preparation.AppWorkingSetAfterMegabytes)",
     "AppPrivateMemoryPreparationMB: before=$($appReport.ResourceMeasurement.Preparation.AppPrivateMemoryBeforeMegabytes) after=$($appReport.ResourceMeasurement.Preparation.AppPrivateMemoryAfterMegabytes)",
     "ManagedHeapPreparationMB: before=$($appReport.ResourceMeasurement.Preparation.ManagedHeapBeforeMegabytes) after=$($appReport.ResourceMeasurement.Preparation.ManagedHeapAfterMegabytes)",

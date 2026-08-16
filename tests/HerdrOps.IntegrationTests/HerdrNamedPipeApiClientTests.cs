@@ -48,6 +48,28 @@ public sealed class HerdrNamedPipeApiClientTests
     }
 
     [TestMethod]
+    public void ServerIdentityVerifierCachesAStreamingIdentityPerProcessLifetime()
+    {
+        using var currentProcess = Process.GetCurrentProcess();
+        var executablePath = currentProcess.MainModule!.FileName;
+        var expectedSha256 = new string('A', 64);
+        var reader = new RecordingIdentityReader(expectedSha256);
+        var verifier = new ExpectedHerdrServerIdentityVerifier(expectedSha256, reader);
+        var connection = new HerdrConnectedStream(
+            Stream.Null,
+            currentProcess.Id,
+            currentProcess.StartTime.ToUniversalTime(),
+            executablePath);
+
+        var first = verifier.Verify(connection);
+        var second = verifier.Verify(connection);
+
+        Assert.AreSame(first, second);
+        Assert.AreEqual(1, reader.ReadCount);
+        Assert.AreEqual(expectedSha256, first.ExecutableSha256);
+    }
+
+    [TestMethod]
     public async Task SnapshotRoundTripUsesNewlineFramingAndCorrelatesResponse()
     {
         var pipeName = CreatePipeName();
@@ -616,5 +638,22 @@ public sealed class HerdrNamedPipeApiClientTests
 
         public override void Write(byte[] buffer, int offset, int count) =>
             throw new NotSupportedException();
+    }
+
+    private sealed class RecordingIdentityReader(string sha256)
+        : IHerdrExecutableIdentityReader
+    {
+        public int ReadCount { get; private set; }
+
+        public HerdrExecutableIdentitySnapshot Read(
+            string requestedPath,
+            long maximumBytes)
+        {
+            ReadCount++;
+            return new HerdrExecutableIdentitySnapshot(
+                Path.GetFullPath(requestedPath),
+                maximumBytes,
+                sha256);
+        }
     }
 }

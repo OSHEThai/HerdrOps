@@ -127,7 +127,7 @@ dotnet artifacts/bin/HerdrOps.Core/release/HerdrOps.Core.dll trace-herdr-termina
   --seconds 120 --interval-ms 500 --lines 80
 ```
 
-The composite gate binds production WPF captures to exact state hashes from the admitted Herdr Core trace, verifies Dashboard-close Widget continuity, and measures Widget latency plus combined Core/App idle resources. It fails closed outside an authorized Herdr pane and does not control the Herdr session itself.
+The composite gate binds production WPF captures to exact state hashes from the admitted Herdr Core trace, verifies Dashboard-close Widget continuity, waits for five seconds of unchanged live state with append-only reset provenance, and then measures Widget latency plus combined Core/App idle resources. Dashboard-to-Widget working-set compaction and its before/after values are reported explicitly; the 180 MB target is unchanged. The gate fails closed outside an authorized Herdr pane and does not control the Herdr session itself.
 
 The v0.3 activity-pipeline gate is Contract plus Synthetic evidence only. It does not claim a live Herdr trace, process telemetry, file collection, bounded `pane.read`, redaction against actual data, or v0.3 release readiness.
 

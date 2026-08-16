@@ -541,28 +541,7 @@
                 </Border>
             </Grid>
 
-            <views:OverviewView x:Name="OverviewPage" Grid.Column="1" />
-            <views:LiveOrganizationView x:Name="LiveOrganizationPage"
-                                        Grid.Column="1"
-                                        Visibility="Collapsed" />
-            <views:RealtimeActivityView x:Name="RealtimeActivityPage"
-                                        Grid.Column="1"
-                                        Visibility="Collapsed" />
-            <views:DelegationGraphView x:Name="DelegationGraphPage"
-                                       Grid.Column="1"
-                                       Visibility="Collapsed" />
-            <views:TaskAlignmentView x:Name="TaskAlignmentPage"
-                                     Grid.Column="1"
-                                     Visibility="Collapsed" />
-            <views:FileActivityView x:Name="FileActivityPage"
-                                    Grid.Column="1"
-                                    Visibility="Collapsed" />
-            <views:ComplianceQueueView x:Name="ComplianceQueuePage"
-                                       Grid.Column="1"
-                                       Visibility="Collapsed" />
-            <views:AgentDetailView x:Name="AgentDetailPage"
-                                   Grid.Column="1"
-                                   Visibility="Collapsed" />
+            <ContentControl x:Name="PageHost" Grid.Column="1" />
         </Grid>
 
         <Border Grid.Row="2"

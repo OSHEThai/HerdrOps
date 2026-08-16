@@ -53,11 +53,11 @@ $expectedHashes = [ordered]@{
     }
     ShellView = [ordered]@{
         Path = $shellXamlPath
-        Sha256 = '56C6FD088C071277E98BD2C0D8FDB317C541724266DA9BC3945B0C2EBCD503C2'
+        Sha256 = 'B3728DDD6CA01D8676DA6831DE8433F685DDE964DDDE911041921BB5EF1917F8'
     }
     ShellViewCodeBehind = [ordered]@{
         Path = $shellCodeBehindPath
-        Sha256 = '61E70ACB99AC80EEEC125078E7D991F76595DEE96A2F2746568308280011C93C'
+        Sha256 = 'DA5F23DA8C38A4D04B5EDC7A39EFFF215E956E209160E639273D7CD6B6022A00'
     }
     LiveDashboardState = [ordered]@{
         Path = $dashboardStatePath

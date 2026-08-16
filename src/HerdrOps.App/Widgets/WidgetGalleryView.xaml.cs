@@ -14,10 +14,11 @@ public partial class WidgetGalleryView : UserControl, INotifyPropertyChanged
 {
     private const double AdaptiveWidthBreakpoint = 1536;
     private const double AdaptiveHeightBreakpoint = 900;
-    private IWidgetWindowLauncher _launcher;
-    private IWidgetState _state;
+    private IWidgetWindowLauncher? _launcher;
+    private IWidgetState? _state;
     private IReadOnlyList<WidgetGalleryItem> _adaptiveItems;
     private readonly bool _usesDefaultLauncher;
+    private bool _resourcesReleased;
 
     public WidgetGalleryView()
         : this(SyntheticWidgetState.Create(), launcher: null)
@@ -50,6 +51,8 @@ public partial class WidgetGalleryView : UserControl, INotifyPropertyChanged
 
     public event PropertyChangedEventHandler? PropertyChanged;
 
+    public bool ResourcesReleased => _resourcesReleased;
+
     public IReadOnlyList<WidgetVariantDescriptor> Variants => WidgetCatalog.All;
 
     public IReadOnlyList<WidgetGalleryItem> AdaptiveItems
@@ -64,7 +67,8 @@ public partial class WidgetGalleryView : UserControl, INotifyPropertyChanged
 
     public IWidgetState SharedState
     {
-        get => _state;
+        get => _state ?? throw new InvalidOperationException(
+            "The widget gallery resources have already been released.");
         private set
         {
             _state = value;
@@ -72,7 +76,13 @@ public partial class WidgetGalleryView : UserControl, INotifyPropertyChanged
         }
     }
 
-    public void OpenVariant(WidgetVariant variant) => _launcher.Open(variant);
+    public void OpenVariant(WidgetVariant variant)
+    {
+        if (!_resourcesReleased)
+        {
+            _launcher?.Open(variant);
+        }
+    }
 
     private IEnumerable<WidgetSurface> GetPreviews()
     {
@@ -163,11 +173,39 @@ public partial class WidgetGalleryView : UserControl, INotifyPropertyChanged
 
     private void OnUnloaded(object sender, RoutedEventArgs e)
     {
+        ReleaseResources();
+    }
+
+    public void ReleaseResources()
+    {
+        if (_resourcesReleased)
+        {
+            return;
+        }
+
+        _resourcesReleased = true;
         WeakEventManager<UiLanguageService, EventArgs>.RemoveHandler(
             UiLanguageService.Shared,
             nameof(UiLanguageService.LanguageChanged),
             OnLanguageChanged);
         Unloaded -= OnUnloaded;
+
+        foreach (var preview in GetPreviews())
+        {
+            preview.ReleaseResources();
+        }
+
+        if (DashboardPreviewHost.Content is ShellView shell)
+        {
+            shell.ReleaseResources();
+        }
+
+        DashboardPreviewHost.Content = null;
+        AdaptiveGalleryItems.ItemsSource = null;
+        DataContext = null;
+        _adaptiveItems = Array.Empty<WidgetGalleryItem>();
+        _launcher = null;
+        _state = null;
     }
 
     private void OnPropertyChanged([CallerMemberName] string? propertyName = null) =>

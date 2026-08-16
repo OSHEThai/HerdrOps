@@ -9,11 +9,12 @@ namespace HerdrOps.App.Views;
 /// Approved Overview composition. Standalone previews use the v0.1 fixture;
 /// the production shell supplies the live Core-backed state adapter.
 /// </summary>
-public partial class OverviewView : UserControl
+public partial class OverviewView : UserControl, IPageResourceOwner
 {
     private const double CompactHeightBreakpoint = 600;
     private WidgetGalleryWindow? _galleryWindow;
-    private IWidgetState _widgetState = SyntheticWidgetState.Create();
+    private IWidgetState? _widgetState = SyntheticWidgetState.Create();
+    private bool _resourcesReleased;
 
     public OverviewView()
         : this(SyntheticOverviewState.Create())
@@ -29,6 +30,7 @@ public partial class OverviewView : UserControl
     public void UseWidgetState(IWidgetState state)
     {
         ArgumentNullException.ThrowIfNull(state);
+        ObjectDisposedException.ThrowIf(_resourcesReleased, this);
         _widgetState = state;
     }
 
@@ -49,17 +51,54 @@ public partial class OverviewView : UserControl
 
     private void OnOpenWidgetGalleryClick(object sender, RoutedEventArgs e)
     {
+        if (_resourcesReleased || _widgetState is null)
+        {
+            return;
+        }
+
         if (_galleryWindow is null || !_galleryWindow.IsLoaded)
         {
             _galleryWindow = new WidgetGalleryWindow(_widgetState)
             {
                 Owner = Window.GetWindow(this),
             };
-            _galleryWindow.Closed += (_, _) => _galleryWindow = null;
+            _galleryWindow.Closed += OnGalleryClosed;
             _galleryWindow.Show();
             return;
         }
 
         _galleryWindow.Activate();
+    }
+
+    public void ReleaseResources()
+    {
+        if (_resourcesReleased)
+        {
+            return;
+        }
+
+        _resourcesReleased = true;
+        if (_galleryWindow is { } galleryWindow)
+        {
+            galleryWindow.Closed -= OnGalleryClosed;
+            galleryWindow.ReleaseResources();
+            if (galleryWindow.IsLoaded)
+            {
+                galleryWindow.Close();
+            }
+
+            _galleryWindow = null;
+        }
+
+        _widgetState = null;
+        DataContext = null;
+    }
+
+    private void OnGalleryClosed(object? sender, EventArgs e)
+    {
+        if (ReferenceEquals(sender, _galleryWindow))
+        {
+            _galleryWindow = null;
+        }
     }
 }
