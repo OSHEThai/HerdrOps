@@ -638,6 +638,11 @@ public sealed class HerdrRuntimeMonitor
 
     private static bool IsTransportDisconnect(Exception exception) =>
         exception is EndOfStreamException ||
+        (exception is HerdrApiErrorException apiError &&
+         string.Equals(
+             apiError.Code,
+             "server_unavailable",
+             StringComparison.Ordinal)) ||
         (exception is IOException &&
          exception is not HerdrProtocolException &&
          exception is not HerdrStateConsistencyException);

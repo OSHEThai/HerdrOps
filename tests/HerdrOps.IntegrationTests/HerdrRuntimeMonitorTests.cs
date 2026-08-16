@@ -43,6 +43,36 @@ public sealed class HerdrRuntimeMonitorTests
     }
 
     [TestMethod]
+    public async Task ServerUnavailableApiErrorCountsAsTransportDisconnect()
+    {
+        var initial = CreateSnapshot(revision: 1, HerdrAgentStatus.Working);
+        var recovered = CreateSnapshot(revision: 4, HerdrAgentStatus.Idle);
+        var apiClient = new ScriptedApiClient(
+            [initial, initial, recovered, recovered],
+            [
+                ScriptedSubscription.FailWith(
+                    new HerdrApiErrorException(
+                        "server_unavailable",
+                        "request handling failed: receiving on a closed channel")),
+                ScriptedSubscription.BlockUntilCancelled(),
+            ]);
+        var monitor = CreateMonitor(apiClient);
+        using var cancellation = new CancellationTokenSource();
+        var runTask = monitor.RunAsync(cancellation.Token);
+
+        await WaitForAsync(
+            monitor,
+            state => state.BootstrapCount >= 2 &&
+                     state.Status == HerdrRuntimeMonitorStatus.Connected);
+        cancellation.Cancel();
+        await Assert.ThrowsAsync<OperationCanceledException>(() => runTask);
+
+        Assert.AreEqual(2, monitor.Current.State.ConnectionEpoch);
+        Assert.AreEqual(2, monitor.Current.BootstrapCount);
+        Assert.AreEqual(1, monitor.Current.DisconnectCount);
+    }
+
+    [TestMethod]
     public async Task PaneRevisionGapTriggersFreshSnapshotReconciliation()
     {
         var beforeGap = CreateSnapshot(revision: 1, HerdrAgentStatus.Working);
@@ -1050,11 +1080,16 @@ public sealed class HerdrRuntimeMonitorTests
     {
         private readonly Queue<HerdrStateEvent> _events;
         private readonly bool _blockAfterEvents;
+        private readonly Exception? _terminalException;
 
-        private ScriptedSubscription(IEnumerable<HerdrStateEvent> events, bool blockAfterEvents)
+        private ScriptedSubscription(
+            IEnumerable<HerdrStateEvent> events,
+            bool blockAfterEvents,
+            Exception? terminalException = null)
         {
             _events = new Queue<HerdrStateEvent>(events);
             _blockAfterEvents = blockAfterEvents;
+            _terminalException = terminalException;
         }
 
         public static ScriptedSubscription EndImmediately() => new([], blockAfterEvents: false);
@@ -1067,6 +1102,9 @@ public sealed class HerdrRuntimeMonitorTests
         public static ScriptedSubscription WithEventsThenBlock(params HerdrStateEvent[] events) =>
             new(events, blockAfterEvents: true);
 
+        public static ScriptedSubscription FailWith(Exception exception) =>
+            new([], blockAfterEvents: false, exception);
+
         public bool IsDisposed { get; private set; }
 
         public async ValueTask<HerdrStateEvent> ReadNextAsync(CancellationToken cancellationToken)
@@ -1074,6 +1112,11 @@ public sealed class HerdrRuntimeMonitorTests
             if (_events.Count > 0)
             {
                 return _events.Dequeue();
+            }
+
+            if (_terminalException is not null)
+            {
+                throw _terminalException;
             }
 
             if (!_blockAfterEvents)
