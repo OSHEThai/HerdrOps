@@ -20,7 +20,6 @@ $referenceManifestPath = Join-Path $repositoryRoot 'docs\design\reference\MANIFE
 $contractPath = Join-Path $repositoryRoot 'docs\protocol\v0.6-daily-summary-contract.md'
 $fixturePath = Join-Path $repositoryRoot 'tests\fixtures\v0.6\daily-summary-aggregation.json'
 $ownedSourcePaths = [ordered]@{
-    DomainAggregator = Join-Path $repositoryRoot 'src\HerdrOps.Domain\Summaries\DailySummaryAggregation.cs'
     AppState = Join-Path $repositoryRoot 'src\HerdrOps.App\Summaries\DailySummaryState.cs'
     DailySummaryView = Join-Path $repositoryRoot 'src\HerdrOps.App\Views\DailySummaryView.xaml'
     DailySummaryViewCodeBehind = Join-Path $repositoryRoot 'src\HerdrOps.App\Views\DailySummaryView.xaml.cs'
@@ -29,6 +28,7 @@ $ownedSourcePaths = [ordered]@{
     RenderingTests = Join-Path $repositoryRoot 'tests\HerdrOps.RuntimeTests\DailySummaryRenderingTests.cs'
 }
 $sharedIntegrationPaths = [ordered]@{
+    DomainAggregator = Join-Path $repositoryRoot 'src\HerdrOps.Domain\Summaries\DailySummaryAggregation.cs'
     AppLocalization = Join-Path $repositoryRoot 'src\HerdrOps.App\Localization\UiLanguageService.cs'
     ShellView = Join-Path $repositoryRoot 'src\HerdrOps.App\Views\ShellView.xaml'
     ShellViewCodeBehind = Join-Path $repositoryRoot 'src\HerdrOps.App\Views\ShellView.xaml.cs'
@@ -40,7 +40,6 @@ $expectedInputSha256 = [ordered]@{
     ReferenceManifest = '69443149315192A8E18D326889B085509D9C834C65F69B304E74F325B31D7315'
     ContractFile = '96114EA15834899DE156B66E5AB2B44D075F3E1D8A95959C16B2BD105D366BDD'
     FixtureFile = 'E23B9CB2AD1ADA6F603311F8F2F5D25FB45DC03C2934860C0AF8039D6591F07F'
-    DomainAggregator = 'E22D26239663F5FB56BD117C0993D0785593E9C136073E90524BDB25BD1B498C'
     AppState = '1921FFA28810B496FA9FD9CC47592F73F693D3F3F1A433A84AB20BB75F537C3D'
     DailySummaryView = 'E4F3F22D736A706FBC8FE455551D0E041E1968546B3E9F62D61A6EEA20CD9B28'
     DailySummaryViewCodeBehind = '4E203E43A18041BF4BAC2A018AE4BEB0AEB0A1231B3087FC5BC2B9886F406E06'
@@ -164,6 +163,15 @@ foreach ($requiredPath in $requiredPaths) {
     }
 }
 
+Assert-ContainsText `
+    -Path $sharedIntegrationPaths.DomainAggregator `
+    -Description 'shared Daily Summary aggregation contract' `
+    -RequiredText @(
+        'public static class DailySummaryAggregator',
+        'public static DailySummarySnapshot Aggregate(',
+        'SourceSetSha256',
+        'AcceptedSources',
+        'ResultSha256')
 Assert-ContainsText `
     -Path $sharedIntegrationPaths.ShellView `
     -Description 'shared Shell XAML' `
