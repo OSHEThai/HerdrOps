@@ -211,7 +211,11 @@ $progressPath = Join-Path $evidenceDirectory 'app-progress.json'
 $coreOutputPath = Join-Path $evidenceDirectory 'core.stdout.log'
 $coreErrorPath = Join-Path $evidenceDirectory 'core.stderr.log'
 $gateReportPath = Join-Path $evidenceDirectory 'gate-report.txt'
+$completionSignalPath = Join-Path $evidenceDirectory "core-completion-$([guid]::NewGuid().ToString('N')).signal"
 New-Item -ItemType Directory -Path $captureDirectory -Force | Out-Null
+if (Test-Path -LiteralPath $completionSignalPath) {
+    throw "Completion signal path already exists: $completionSignalPath"
+}
 
 $coreDurationSeconds = [Math]::Min(3600, $DurationSeconds + $IdleSeconds + 30)
 $coreArguments = @(
@@ -220,7 +224,8 @@ $coreArguments = @(
     '--herdr', $HerdrExecutable,
     '--socket-path', $targetHerdrSocketPath,
     '--seconds', $coreDurationSeconds,
-    '--report', $coreReportPath
+    '--report', $coreReportPath,
+    '--completion-signal', $completionSignalPath
 )
 $appArguments = @(
     '--runtime-evidence-report', $appReportPath,
@@ -234,6 +239,9 @@ $appArguments = @(
 
 $coreProcess = $null
 $appProcess = $null
+$appFailureMessage = $null
+$completionSignalWriteFailure = $null
+$coreWaitFailure = $null
 $tcpListeners = @{}
 try {
     $coreProcess = Start-Process `
@@ -276,8 +284,14 @@ try {
                         'waiting-for-pre-close-update' {
                             Write-Host 'Event A: trigger one genuine Agent-status transition in the target Agent Lab. Focus, workspace, tab, and pane changes do not count. The Dashboard will close after the status event arrives.'
                         }
-                        'dashboard-closed-waiting-for-next-update' {
-                            Write-Host 'Dashboard closed; the Floating Vertical Widget remains. Restart only the target Agent Lab Herdr session, never the Acceptance control session. Wait for the Widget to return to LIVE, then trigger Event B with a second genuine Agent-status transition.'
+                        'dashboard-closed-waiting-for-herdr-disconnect' {
+                            Write-Host 'Dashboard closed; the Floating Vertical Widget remains. Restart only the target Agent Lab Herdr session now. Never restart the Acceptance control session. Do not trigger Event B yet.'
+                        }
+                        'herdr-disconnected-waiting-for-reconnect' {
+                            Write-Host 'The target Agent Lab is disconnected. Wait for the Floating Vertical Widget to return to LIVE. Do not trigger Event B until the reconnect phase appears.'
+                        }
+                        'herdr-reconnected-waiting-for-post-reconnect-update' {
+                            Write-Host 'The target Agent Lab has reconnected and the Widget is LIVE. Now trigger Event B with a second genuine Agent-status transition.'
                         }
                         'measuring-idle-resources' {
                             Write-Host "Leave Herdr, Core, and App untouched for the $IdleSeconds-second idle measurement."
@@ -301,18 +315,62 @@ try {
         $appProcess.Refresh()
     }
 
+    $appProcess.Refresh()
     if (-not $appProcess.HasExited) {
         throw 'The App runtime-evidence process exceeded the bounded gate duration.'
     }
-    if ($appProcess.ExitCode -ne 0) {
-        throw "The App runtime-evidence process failed with exit code $($appProcess.ExitCode)."
+
+    $appExitCode = $appProcess.ExitCode
+    try {
+        # The signal is created only after the App process has exited. Core observes
+        # appearance only, then performs its normal graceful report-writing path.
+        [System.IO.File]::WriteAllBytes($completionSignalPath, [byte[]]@())
+    } catch {
+        $completionSignalWriteFailure = $_.Exception.Message
     }
 
     $remainingSeconds = [Math]::Max(1, [int]($deadlineUtc - [DateTime]::UtcNow).TotalSeconds)
-    Wait-Process -Id $coreProcess.Id -Timeout $remainingSeconds
+    try {
+        Wait-Process -Id $coreProcess.Id -Timeout $remainingSeconds -ErrorAction Stop | Out-Null
+    } catch {
+        $coreWaitFailure = $_.Exception.Message
+    }
     $coreProcess.Refresh()
-    if (-not $coreProcess.HasExited -or $coreProcess.ExitCode -ne 0) {
-        throw "The Core runtime-evidence process did not exit cleanly. Exit=$($coreProcess.ExitCode)"
+    $coreExited = $coreProcess.HasExited
+    $coreExitCode = $null
+    if ($coreExited) {
+        $coreExitCode = $coreProcess.ExitCode
+    }
+
+    $reportWaitDeadlineUtc = [DateTime]::UtcNow.AddSeconds(5)
+    while ([DateTime]::UtcNow -lt $reportWaitDeadlineUtc -and
+           (-not $coreExited -or
+            -not (Test-Path -LiteralPath $coreReportPath -PathType Leaf) -or
+            -not (Test-Path -LiteralPath $appReportPath -PathType Leaf))) {
+        Start-Sleep -Milliseconds 100
+        $coreProcess.Refresh()
+        $coreExited = $coreProcess.HasExited
+        if ($coreExited) {
+            $coreExitCode = $coreProcess.ExitCode
+        }
+    }
+
+    if ($appExitCode -ne 0) {
+        $reportPresence = @(
+            "AppReport=$([bool](Test-Path -LiteralPath $appReportPath -PathType Leaf))",
+            "CoreReport=$([bool](Test-Path -LiteralPath $coreReportPath -PathType Leaf))"
+        ) -join ', '
+        $appFailureMessage = "The App runtime-evidence process failed with exit code $appExitCode. Reports preserved at AppRuntimeReport=$appReportPath; CoreRuntimeReport=$coreReportPath; GateReport=$gateReportPath. ReportPresence: $reportPresence"
+        if ($completionSignalWriteFailure) {
+            $appFailureMessage += " Completion signal creation failed: $completionSignalWriteFailure"
+        }
+        if ($coreWaitFailure) {
+            $appFailureMessage += " Core wait failed: $coreWaitFailure"
+        }
+    } elseif ($completionSignalWriteFailure) {
+        throw "The completion signal could not be created after the App exited. CoreRuntimeReport=$coreReportPath; AppRuntimeReport=$appReportPath; GateReport=$gateReportPath. Error: $completionSignalWriteFailure"
+    } elseif (-not $coreExited -or $coreExitCode -ne 0) {
+        throw "The Core runtime-evidence process did not exit cleanly. Exit=$coreExitCode. CoreRuntimeReport=$coreReportPath; AppRuntimeReport=$appReportPath; GateReport=$gateReportPath"
     }
 } finally {
     if ($appProcess -and -not $appProcess.HasExited) {
@@ -321,6 +379,10 @@ try {
     if ($coreProcess -and -not $coreProcess.HasExited) {
         Stop-Process -Id $coreProcess.Id -Force -ErrorAction SilentlyContinue
     }
+}
+
+if ($appFailureMessage) {
+    throw $appFailureMessage
 }
 
 foreach ($requiredReport in @($coreReportPath, $appReportPath)) {
@@ -337,6 +399,7 @@ Assert-True (-not [bool]$coreReport.SessionControlInvoked) 'Core must not invoke
 Assert-True ([bool]$coreReport.SnapshotObserved) 'Actual Herdr snapshot was not observed.'
 Assert-True ([bool]$coreReport.EventObserved) 'Actual Herdr Agent-status event was not observed.'
 Assert-True ([bool]$coreReport.ReconnectObserved) 'Actual Herdr disconnect/reconnect was not observed.'
+Assert-True ([bool]$coreReport.CompletionSignalObserved) 'Core did not observe the post-App completion signal.'
 Assert-True ($coreReport.Admission.ReleaseId -eq '0.8.0-preview.2026-08-04-d78e3d3b5126-x86_64-pc-windows-msvc') 'Unexpected Herdr release.'
 Assert-True ($coreReport.Admission.ExecutableSha256 -eq '6F470DA358D6713B6BEBAB922FFB1F5FE1D3D288CC6F374C7DCA1B4A9837A542') 'Unexpected Herdr executable hash.'
 Assert-True ($coreReport.Admission.BundledSchemaSha256 -eq '9449368D54BBECD4D4D0696EFFB9E9C002ECD63A5B8A48BBD901A305AF842982') 'Unexpected bundled schema hash.'
@@ -518,6 +581,7 @@ $reportLines = @(
     "SnapshotObserved: $($coreReport.SnapshotObserved)",
     "EventObserved: $($coreReport.EventObserved)",
     "ReconnectObserved: $($coreReport.ReconnectObserved)",
+    "CompletionSignalObserved: $($coreReport.CompletionSignalObserved)",
     "DisconnectCount: $($coreReport.FinalMonitorState.DisconnectCount)",
     "BootstrapCount: $($coreReport.FinalMonitorState.BootstrapCount)",
     "DashboardClosed: $($appReport.DashboardClosed)",
