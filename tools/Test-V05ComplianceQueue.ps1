@@ -334,7 +334,7 @@ Assert-ContainsText `
     -Description 'shared dashboard state' `
     -RequiredText @(
         'ComplianceQueueState.CreateSyntheticPreview()',
-        'ComplianceQueueState.CreateUnavailableLiveState()',
+        'ComplianceQueueState.CreateUnavailableLiveState(',
         'ComplianceQueue.RefreshLanguage();',
         'ComplianceQueue.Dispose();')
 Assert-ContainsText `
