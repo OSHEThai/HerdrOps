@@ -258,6 +258,119 @@ public sealed class LocalSnapshotExportPublisherTests
     }
 
     [TestMethod]
+    public void PublishRejectsHashConsistentForgedEvaluationAndDailyUnsafeContentBeforeStaging()
+    {
+        var unsafeValues = new[]
+        {
+            "C:\\private\\accepted.txt",
+            "/var/private/accepted.txt",
+            "\\\\server\\share\\accepted.txt",
+            "Bearer abcdefghijklmnopQRSTUV1234",
+            "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjMifQ.signatureabcdefgh",
+            "tokenUltraSecretValue123456",
+            "ghp_abcdefghijklmnopqrstuvwxyz1234567890",
+            "gho_abcdefghijklmnopqrstuvwxyz1234567890",
+            "github_pat_abcdefghijklmnopqrstuvwxyz1234567890",
+            "sk-proj-abcdefghijklmnopqrstuvwxyz1234567890",
+            "xoxb-abcdefghijklmnopqrstuvwxyz1234",
+            "AKIAIOSFODNN7EXAMPLE",
+            "ASIAIOSFODNN7EXAMPLE",
+            "AIzaSyabcdefghijklmnopqrstuvwxyz123456",
+            "glpat-abcdefghijklmnopqrstuvwxyz123456",
+            "npm_abcdefghijklmnopqrstuvwxyz123456",
+            "hf_abcdefghijklmnopqrstuvwxyz123456",
+            "dop_v1_abcdefghijklmnopqrstuvwxyz123456",
+            "relative/path.txt",
+            "C:relative\\private.txt",
+            "C:private",
+            "..\\private\\accepted.txt",
+            "../private",
+            "private/accepted.txt",
+            "\\private\\accepted.txt",
+            "/private",
+        };
+
+        foreach (var unsafeValue in unsafeValues)
+        {
+            var evaluation = CreateExport();
+            using (var evaluationDocument = JsonDocument.Parse(evaluation.Json))
+            {
+                var taskId = evaluationDocument.RootElement
+                    .GetProperty("acceptedSnapshot")
+                    .GetProperty("taskId")
+                    .GetString()
+                    ?? throw new AssertFailedException("The Evaluation task ID was missing.");
+                AssertRejectedBeforeStaging(
+                    ForgeJsonStringValue(evaluation, "taskId", taskId, unsafeValue),
+                    unsafeValue);
+            }
+
+            var daily = CreateDailyExport();
+            using (var dailyDocument = JsonDocument.Parse(daily.Json))
+            {
+                var summary = dailyDocument.RootElement
+                    .GetProperty("acceptedSnapshot")
+                    .GetProperty("timeline")[0]
+                    .GetProperty("summary")
+                    .GetString()
+                    ?? throw new AssertFailedException("The Daily Summary timeline summary was missing.");
+                AssertRejectedBeforeStaging(
+                    ForgeJsonStringValue(daily, "summary", summary, unsafeValue),
+                    unsafeValue);
+            }
+        }
+    }
+
+    [TestMethod]
+    public void PublishAcceptsHarmlessDailyTextAndPreservesDynamicBacktickDelimiter()
+    {
+        var backtick = (char)96;
+        var harmlessValues = new[]
+        {
+            "token refresh completed",
+            "secret wording is policy-safe",
+            "A/B",
+            "1/2",
+            "github_pat_ is a documented prefix",
+            "sk- is a documented prefix",
+            "Literal " + backtick + " one and " + new string(backtick, 2) + " two",
+        };
+
+        foreach (var harmlessValue in harmlessValues)
+        {
+            var export = CreateDailyExport(harmlessValue);
+            var root = CreateTemporaryDirectory();
+            try
+            {
+                var publication = new LocalSnapshotExportPublisher().Publish(export, root);
+                var json = File.ReadAllText(publication.JsonPath, Encoding.UTF8);
+                var markdown = File.ReadAllText(publication.MarkdownPath, Encoding.UTF8);
+
+                using var document = JsonDocument.Parse(json);
+                Assert.AreEqual(
+                    harmlessValue,
+                    document.RootElement
+                        .GetProperty("acceptedSnapshot")
+                        .GetProperty("timeline")[0]
+                        .GetProperty("summary")
+                        .GetString());
+                Assert.AreEqual(export.MarkdownSha256, Sha256(File.ReadAllBytes(publication.MarkdownPath)));
+                if (harmlessValue.IndexOf(backtick) >= 0)
+                {
+                    var delimiter = new string(backtick, 3);
+                    StringAssert.Contains(markdown, $"{delimiter}{harmlessValue}{delimiter}");
+                    Assert.IsFalse(
+                        markdown.Contains("Literal ' one and '' two", StringComparison.Ordinal));
+                }
+            }
+            finally
+            {
+                DeleteTemporaryDirectory(root);
+            }
+        }
+    }
+
+    [TestMethod]
     public void PublishRejectsHashConsistentForgedProjectionAndManifestVersionWithoutFinalFiles()
     {
         var export = CreateExport();
@@ -335,6 +448,27 @@ public sealed class LocalSnapshotExportPublisherTests
         return DeterministicSnapshotExporter.ExportEvaluation(accepted, GenerationUtc);
     }
 
+    private static DeterministicSnapshotExport CreateDailyExport(string? summary = null)
+    {
+        var fixture = ReadDailySummaryFixture();
+        var timeZone = TimeZoneInfo.CreateCustomTimeZone(
+            $"fixture-utc-{fixture.TimeZoneOffsetMinutes}",
+            TimeSpan.FromMinutes(fixture.TimeZoneOffsetMinutes),
+            "Daily Summary fixture",
+            "Daily Summary fixture");
+        var sources = summary is null
+            ? fixture.Sources
+            : [fixture.Sources[0] with { Summary = summary }, .. fixture.Sources.Skip(1)];
+        var accepted = DailySummaryAggregator.Aggregate(
+            fixture.LocalDate,
+            timeZone,
+            sources);
+        return DeterministicSnapshotExporter.ExportDailySummary(
+            accepted,
+            timeZone,
+            GenerationUtc);
+    }
+
     private static DailySummaryFixture ReadDailySummaryFixture()
     {
         var root = FindRepositoryRoot();
@@ -347,6 +481,40 @@ public sealed class LocalSnapshotExportPublisherTests
                        Path.Combine(root, "tests", "fixtures", "v0.6", "daily-summary-aggregation.json")),
                    options)
                ?? throw new AssertFailedException("The Daily Summary fixture was empty.");
+    }
+
+    private static DeterministicSnapshotExport ForgeJsonStringValue(
+        DeterministicSnapshotExport export,
+        string propertyName,
+        string originalValue,
+        string replacementValue)
+    {
+        var forgedJson = export.Json.Replace(
+            $"\"{propertyName}\": {JsonSerializer.Serialize(originalValue)}",
+            $"\"{propertyName}\": {JsonSerializer.Serialize(replacementValue)}",
+            StringComparison.Ordinal);
+        Assert.AreNotEqual(export.Json, forgedJson);
+        return RebindEnvelope(export, json: forgedJson);
+    }
+
+    private static void AssertRejectedBeforeStaging(
+        DeterministicSnapshotExport export,
+        string unsafeValue)
+    {
+        var root = CreateTemporaryDirectory();
+        var phaseCount = 0;
+        try
+        {
+            var exception = Assert.ThrowsExactly<SnapshotExportException>(() =>
+                new LocalSnapshotExportPublisher(_ => phaseCount++).Publish(export, root));
+            Assert.AreEqual(0, phaseCount);
+            Assert.DoesNotContain(unsafeValue, exception.Message);
+            AssertNoPublishedExport(root);
+        }
+        finally
+        {
+            DeleteTemporaryDirectory(root);
+        }
     }
 
     private static DeterministicSnapshotExport RebindEnvelope(

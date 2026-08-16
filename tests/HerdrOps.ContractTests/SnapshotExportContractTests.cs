@@ -3,6 +3,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using HerdrOps.Domain.Evaluation;
 using HerdrOps.Domain.Exports;
+using HerdrOps.Domain.Summaries;
 
 namespace HerdrOps.ContractTests;
 
@@ -104,6 +105,194 @@ public sealed class SnapshotExportContractTests
         }
     }
 
+    [TestMethod]
+    public void PublisherRejectsHashConsistentForgedEvaluationAndDailyUnsafeContentBeforeStaging()
+    {
+        var unsafeValues = new[]
+        {
+            "relative/path.txt",
+            "C:relative\\private.txt",
+            "..\\private\\accepted.txt",
+            "/private",
+            "ghp_abcdefghijklmnopqrstuvwxyz1234567890",
+            "github_pat_abcdefghijklmnopqrstuvwxyz1234567890",
+            "sk-proj-abcdefghijklmnopqrstuvwxyz1234567890",
+            "AKIAIOSFODNN7EXAMPLE",
+            "tokenUltraSecretValue123456",
+        };
+
+        var evaluation = CreateEvaluationExport();
+        using var evaluationDocument = JsonDocument.Parse(evaluation.Json);
+        var taskId = evaluationDocument.RootElement
+            .GetProperty("acceptedSnapshot")
+            .GetProperty("taskId")
+            .GetString();
+        Assert.IsNotNull(taskId);
+
+        var daily = CreateDailyExport("Contract baseline summary");
+        using var dailyDocument = JsonDocument.Parse(daily.Json);
+        var summary = dailyDocument.RootElement
+            .GetProperty("acceptedSnapshot")
+            .GetProperty("timeline")[0]
+            .GetProperty("summary")
+            .GetString();
+        Assert.IsNotNull(summary);
+
+        foreach (var unsafeValue in unsafeValues)
+        {
+            AssertRejectedBeforeStaging(
+                ForgeJsonStringValue(evaluation, "taskId", taskId!, unsafeValue),
+                unsafeValue);
+            AssertRejectedBeforeStaging(
+                ForgeJsonStringValue(daily, "summary", summary!, unsafeValue),
+                unsafeValue);
+        }
+    }
+
+    [TestMethod]
+    public void PublisherPreservesDynamicBacktickMarkdownValues()
+    {
+        var backtick = (char)96;
+        var value = "Contract literal " + backtick + " and " + new string(backtick, 2);
+        var export = CreateDailyExport(value);
+        var root = Path.Combine(
+            Path.GetTempPath(),
+            $"herdops-contract-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        try
+        {
+            var publication = new LocalSnapshotExportPublisher().Publish(export, root);
+            var json = File.ReadAllText(publication.JsonPath, Encoding.UTF8);
+            var markdown = File.ReadAllText(publication.MarkdownPath, Encoding.UTF8);
+            var delimiter = new string(backtick, 3);
+
+            using var document = JsonDocument.Parse(json);
+            Assert.AreEqual(
+                value,
+                document.RootElement
+                    .GetProperty("acceptedSnapshot")
+                    .GetProperty("timeline")[0]
+                    .GetProperty("summary")
+                    .GetString());
+            StringAssert.Contains(markdown, $"{delimiter}{value}{delimiter}");
+            Assert.IsFalse(
+                markdown.Contains("Contract literal ' and ''", StringComparison.Ordinal));
+            Assert.AreEqual(
+                export.MarkdownSha256,
+                Convert.ToHexString(
+                    System.Security.Cryptography.SHA256.HashData(
+                        File.ReadAllBytes(publication.MarkdownPath))));
+        }
+        finally
+        {
+            if (Directory.Exists(root))
+            {
+                Directory.Delete(root, recursive: true);
+            }
+        }
+    }
+
+    private static DeterministicSnapshotExport CreateEvaluationExport()
+    {
+        var fixture = ReadFixture();
+        var accepted = new EvaluationScoringEngine().Calculate(
+            fixture.Input,
+            EvaluationFormulaCatalog.Version1);
+        return DeterministicSnapshotExporter.ExportEvaluation(
+            accepted,
+            new DateTimeOffset(2026, 8, 16, 0, 0, 0, TimeSpan.Zero));
+    }
+
+    private static DeterministicSnapshotExport CreateDailyExport(string summary)
+    {
+        var fixture = ReadDailySummaryFixture();
+        var timeZone = TimeZoneInfo.CreateCustomTimeZone(
+            $"fixture-utc-{fixture.TimeZoneOffsetMinutes}",
+            TimeSpan.FromMinutes(fixture.TimeZoneOffsetMinutes),
+            "Daily Summary fixture",
+            "Daily Summary fixture");
+        DailySummarySource[] sources =
+        [
+            fixture.Sources[0] with { Summary = summary },
+            .. fixture.Sources.Skip(1),
+        ];
+        var accepted = DailySummaryAggregator.Aggregate(
+            fixture.LocalDate,
+            timeZone,
+            sources);
+        return DeterministicSnapshotExporter.ExportDailySummary(
+            accepted,
+            timeZone,
+            new DateTimeOffset(2026, 8, 16, 0, 0, 0, TimeSpan.Zero));
+    }
+
+    private static DailySummaryFixture ReadDailySummaryFixture()
+    {
+        var directory = new DirectoryInfo(AppContext.BaseDirectory);
+        while (directory is not null &&
+               !File.Exists(Path.Combine(directory.FullName, "HerdrOps.sln")))
+        {
+            directory = directory.Parent;
+        }
+
+        Assert.IsNotNull(directory);
+        var path = Path.Combine(
+            directory!.FullName,
+            "tests",
+            "fixtures",
+            "v0.6",
+            "daily-summary-aggregation.json");
+        var options = new JsonSerializerOptions
+        {
+            PropertyNameCaseInsensitive = true,
+        };
+        return JsonSerializer.Deserialize<DailySummaryFixture>(
+                   File.ReadAllText(path, Encoding.UTF8),
+                   options)
+               ?? throw new AssertFailedException("The Daily Summary fixture was empty.");
+    }
+
+    private static DeterministicSnapshotExport ForgeJsonStringValue(
+        DeterministicSnapshotExport export,
+        string propertyName,
+        string originalValue,
+        string replacementValue)
+    {
+        var forgedJson = export.Json.Replace(
+            $"\"{propertyName}\": {JsonSerializer.Serialize(originalValue)}",
+            $"\"{propertyName}\": {JsonSerializer.Serialize(replacementValue)}",
+            StringComparison.Ordinal);
+        Assert.AreNotEqual(export.Json, forgedJson);
+        return RebindEnvelope(export, forgedJson);
+    }
+
+    private static void AssertRejectedBeforeStaging(
+        DeterministicSnapshotExport export,
+        string unsafeValue)
+    {
+        var root = Path.Combine(
+            Path.GetTempPath(),
+            $"herdops-contract-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        var phaseCount = 0;
+        try
+        {
+            var exception = Assert.ThrowsExactly<SnapshotExportException>(() =>
+                new LocalSnapshotExportPublisher(_ => phaseCount++).Publish(export, root));
+            Assert.AreEqual(0, phaseCount);
+            Assert.DoesNotContain(unsafeValue, exception.Message);
+            Assert.HasCount(0, Directory.GetDirectories(root, "herdops-*"));
+            Assert.HasCount(0, Directory.GetDirectories(root, ".herdops-*"));
+        }
+        finally
+        {
+            if (Directory.Exists(root))
+            {
+                Directory.Delete(root, recursive: true);
+            }
+        }
+    }
+
     private static ScoringFixture ReadFixture()
     {
         var directory = new DirectoryInfo(AppContext.BaseDirectory);
@@ -155,6 +344,13 @@ public sealed class SnapshotExportContractTests
 
     private static string Sha256(byte[] bytes) =>
         Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(bytes));
+
+    private sealed record DailySummaryFixture(
+        int ContractVersion,
+        DateOnly LocalDate,
+        int TimeZoneOffsetMinutes,
+        DailySummarySource[] Sources,
+        object Expected);
 
     private sealed record ScoringFixture(
         EvaluationInputSnapshot Input,

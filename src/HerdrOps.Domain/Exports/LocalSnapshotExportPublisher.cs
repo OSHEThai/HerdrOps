@@ -51,8 +51,20 @@ public sealed class LocalSnapshotExportPublisher
         @"(?<![A-Za-z0-9_])(?:[A-Za-z]:[\\/]|\\\\[^\s\\/]+[\\/]|/(?!/)(?:[^\s/]+/)+[^\s/]+|~[\\/])",
         RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
+    private static readonly Regex PathCandidatePattern = new(
+        @"(?<![A-Za-z0-9_])(?<candidate>[^\s,;()\[\]{}<>]*[\\/][^\s,;()\[\]{}<>]*)(?![A-Za-z0-9_])",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant);
+
+    private static readonly Regex DriveRelativePathPattern = new(
+        @"(?<![A-Za-z0-9_])[A-Za-z]:[^\\/\s,;()\[\]{}<>]+",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant);
+
+    private static readonly Regex RelativeFilePathPattern = new(
+        @"(?<![A-Za-z0-9_])[A-Za-z0-9_-]+\.(?:txt|json|csv|log|xml|ya?ml|cs|fs|vb|ps1|dll|exe|zip|db|sqlite|md|png|jpe?g|config|env)(?![A-Za-z0-9_])",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
+
     private static readonly Regex SecretOrTokenPattern = new(
-        @"(?:\b(?:api[_-]?key|client[_-]?secret|access[_-]?token|refresh[_-]?token|id[_-]?token|password|passwd|secret|credential|authorization|bearer|jwt|token)\b\s*(?:[:=]|$)|\bBearer\s+[A-Za-z0-9._~+/=-]{12,}|\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b|(?<![A-Za-z0-9])(?:token|jwt)[A-Za-z0-9_-]{12,}(?![A-Za-z0-9]))",
+        @"(?:\b(?:api[_-]?key|client[_-]?secret|access[_-]?token|refresh[_-]?token|id[_-]?token|password|passwd|secret|credential|authorization|bearer|jwt|token)\b\s*(?:[:=]|$)|\bBearer\s+[A-Za-z0-9._~+/=-]{12,}|\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b|(?<![A-Za-z0-9])(?:token|jwt)[A-Za-z0-9_-]{12,}(?![A-Za-z0-9])|(?<![A-Za-z0-9])(?:gh[pousr]_[A-Za-z0-9]{8,}|github_pat_[A-Za-z0-9_]{8,}|sk-[A-Za-z0-9_-]{8,}|xox[baprs]-[A-Za-z0-9-]{12,}|(?:AKIA|ASIA)[A-Z0-9]{16}|AIza[A-Za-z0-9_-]{20,}|(?:glpat-|npm_|pypi-|hf_|dop_v1_)[A-Za-z0-9_-]{12,})(?![A-Za-z0-9_-]))",
         RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
 
     private static readonly Regex SensitivePropertyPattern = new(
@@ -837,7 +849,7 @@ public sealed class LocalSnapshotExportPublisher
                 var value = element.GetString();
                 if (value is not null &&
                     (SensitivePropertyPattern.IsMatch(path) ||
-                     FileSystemPathPattern.IsMatch(value) ||
+                     ContainsUnsafePath(value) ||
                      SecretOrTokenPattern.IsMatch(value)))
                 {
                     throw new SnapshotExportException(
@@ -847,6 +859,107 @@ public sealed class LocalSnapshotExportPublisher
                 break;
         }
     }
+
+    private static bool ContainsUnsafePath(string value)
+    {
+        if (UnsafePathPrefixes.Any(prefix =>
+                value.StartsWith(prefix, StringComparison.Ordinal)) ||
+            FileSystemPathPattern.IsMatch(value) ||
+            DriveRelativePathPattern.IsMatch(value) ||
+            RelativeFilePathPattern.IsMatch(value))
+        {
+            return true;
+        }
+
+        foreach (Match match in PathCandidatePattern.Matches(value))
+        {
+            if (IsUnsafePathCandidate(match.Groups["candidate"].Value))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool IsUnsafePathCandidate(string candidate)
+    {
+        var normalized = candidate.TrimEnd('.', ',', ';', ':', ')', ']', '}');
+        if (string.IsNullOrWhiteSpace(normalized))
+        {
+            return false;
+        }
+
+        if (UnsafePathPrefixes.Any(prefix =>
+                normalized.StartsWith(prefix, StringComparison.Ordinal)) ||
+            normalized.StartsWith("\\\\?\\", StringComparison.Ordinal) ||
+            normalized.StartsWith("\\\\.\\", StringComparison.Ordinal) ||
+            normalized.Contains("..", StringComparison.Ordinal))
+        {
+            return true;
+        }
+
+        if (Uri.TryCreate(normalized, UriKind.Absolute, out var uri) &&
+            !string.IsNullOrWhiteSpace(uri.Scheme))
+        {
+            return true;
+        }
+
+        if (normalized.Contains('\\'))
+        {
+            return true;
+        }
+
+        var segments = normalized.Split('/');
+        if (segments.Length < 2 || segments.Any(string.IsNullOrWhiteSpace))
+        {
+            return false;
+        }
+
+        if (segments.Any(segment => segment is "." or ".." || segment.Contains('.')))
+        {
+            return true;
+        }
+
+        if (segments.All(IsNumericPathSegment) ||
+            segments.All(segment => segment.Length <= 1) ||
+            HarmlessSlashValues.Contains(normalized))
+        {
+            return false;
+        }
+
+        return segments.All(IsPathSegment);
+    }
+
+    private static bool IsNumericPathSegment(string value) =>
+        value.Length > 0 && value.All(character => character is >= '0' and <= '9');
+
+    private static bool IsPathSegment(string value) =>
+        value.Length > 1 && value.All(character =>
+            char.IsLetterOrDigit(character) || character is '_' or '-');
+
+    private static readonly HashSet<string> HarmlessSlashValues = new(
+        StringComparer.OrdinalIgnoreCase)
+    {
+        "A/B",
+        "and/or",
+        "input/output",
+        "read/write",
+    };
+
+    private static readonly string[] UnsafePathPrefixes =
+    [
+        "/",
+        "\\",
+        "//",
+        "\\\\",
+        "~/",
+        "~\\",
+        "./",
+        ".\\",
+        "../",
+        "..\\",
+    ];
 
     private static void EnsureSerializedBounds(JsonElement root)
     {
@@ -1055,12 +1168,40 @@ public sealed class LocalSnapshotExportPublisher
         builder.AppendLine();
     }
 
-    private static string FormatMarkdownScalar(JsonElement element) =>
-        element.ValueKind == JsonValueKind.String
-            ? $"`{(element.GetString() ?? string.Empty).Replace("`", "'", StringComparison.Ordinal).Replace('\n', ' ').Replace('\r', ' ')}`"
-            : element.ValueKind == JsonValueKind.Null
-                ? "null"
-                : element.GetRawText();
+    private static string FormatMarkdownScalar(JsonElement element)
+    {
+        if (element.ValueKind == JsonValueKind.Null)
+        {
+            return "null";
+        }
+
+        if (element.ValueKind != JsonValueKind.String)
+        {
+            return element.GetRawText();
+        }
+
+        var value = element.GetString() ?? string.Empty;
+        var longestBacktickRun = 0;
+        var currentBacktickRun = 0;
+        foreach (var character in value)
+        {
+            if (character == '`')
+            {
+                currentBacktickRun++;
+                longestBacktickRun = Math.Max(longestBacktickRun, currentBacktickRun);
+            }
+            else
+            {
+                currentBacktickRun = 0;
+            }
+        }
+
+        var delimiter = new string('`', longestBacktickRun + 1);
+        var paddedValue = value.Length > 0 && (value[0] == ' ' || value[^1] == ' ')
+            ? $" {value} "
+            : value;
+        return $"{delimiter}{paddedValue}{delimiter}";
+    }
 
     private static string ToMarkdownLabel(string value)
     {
