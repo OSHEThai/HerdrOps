@@ -34,7 +34,7 @@
         </Style>
 
         <Style x:Key="EvaluationDataRow" TargetType="Border">
-            <Setter Property="Padding" Value="6,5" />
+            <Setter Property="Padding" Value="6,3" />
             <Setter Property="BorderBrush" Value="{DynamicResource HerdrOps.Brush.Border}" />
             <Setter Property="BorderThickness" Value="0,0,0,1" />
         </Style>
@@ -100,7 +100,7 @@
                 </ItemsControl.ItemsPanel>
                 <ItemsControl.ItemTemplate>
                     <DataTemplate>
-                        <Border MinHeight="112"
+                        <Border MinHeight="100"
                                 Style="{StaticResource EvaluationCard}"
                                 automation:AutomationProperties.Name="{Binding AccessibilityText}"
                                 automation:AutomationProperties.HelpText="{Binding StatusText}">
@@ -239,7 +239,7 @@
                                        Text="{Binding [EvaluationScoreTrendTitle], Source={x:Static localization:UiLanguageService.Shared}}" />
                         </DockPanel>
                         <controls:EvaluationScoreTrendChart Grid.Row="1"
-                                                            MinHeight="180"
+                                                            MinHeight="155"
                                                             Margin="0,6,0,0"
                                                             Foreground="{DynamicResource HerdrOps.Brush.TextPrimary}"
                                                             FontFamily="{DynamicResource HerdrOps.FontFamily.UI}"
@@ -322,13 +322,19 @@
                             <RowDefinition Height="*" />
                             <RowDefinition Height="Auto" />
                         </Grid.RowDefinitions>
-                        <DockPanel>
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
                             <TextBlock Style="{StaticResource EvaluationSectionTitle}"
                                        Text="{Binding [EvaluationScoreComparisonTitle], Source={x:Static localization:UiLanguageService.Shared}}" />
-                            <TextBlock DockPanel.Dock="Right"
+                            <TextBlock Grid.Column="1"
+                                       Margin="12,0,0,0"
+                                       HorizontalAlignment="Right"
                                        Style="{StaticResource EvaluationCaption}"
                                        Text="{Binding MissingScoreLabel}" />
-                        </DockPanel>
+                        </Grid>
                         <StackPanel Grid.Row="1" Margin="0,5,0,8" Orientation="Horizontal">
                             <TextBlock Foreground="{DynamicResource HerdrOps.Brush.PrimaryText}"
                                        Text="{Binding SelectedTaskLabel, StringFormat={}{0}}" />

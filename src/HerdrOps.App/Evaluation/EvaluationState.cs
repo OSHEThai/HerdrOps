@@ -312,10 +312,10 @@ public sealed class EvaluationState : ObservableState
         _missingScoreLabel = text.MissingScores(_missingScoreCount);
         _selectedTaskLabel = selected is null
             ? text.Unavailable
-            : selected.TaskLabel;
+            : text.SelectedTask($"{selected.TaskId} · {selected.TaskLabel}");
         _selectedAgentLabel = selected is null
             ? text.Unavailable
-            : selected.AgentLabel;
+            : text.SelectedAgent(selected.AgentLabel);
         _comparisonTotalScoreLabel = FormatScore(selected?.Result.TotalScore);
         _comparisonFormulaLabel = selected?.Result.Provenance.Formula.FormulaId ?? text.Unavailable;
         _comparisonSnapshotSha256 = selected?.Result.Provenance.InputSnapshotSha256 ?? string.Empty;
@@ -747,6 +747,10 @@ public sealed class EvaluationState : ObservableState
         public string MissingScores(int count) => _service.Format("EvaluationMissingScoreDetailFormat", count);
 
         public string FromTotal(int count) => _service.Format("EvaluationFromTotalFormat", count);
+
+        public string SelectedTask(string value) => _service.Format("EvaluationSelectedTaskFormat", value);
+
+        public string SelectedAgent(string value) => _service.Format("EvaluationSelectedAgentFormat", value);
 
         public string ScoreDelta(decimal? delta)
         {
