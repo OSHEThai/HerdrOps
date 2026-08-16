@@ -257,7 +257,7 @@ $allRequiredFiles = @($sourceFiles) + @($contractFiles) + @($fixtureFiles) +
 
 $expectedInputSha256 = [ordered]@{
     'src/HerdrOps.Domain/Exports/DeterministicSnapshotExporter.cs' = '1ECEC535072EC907906EBAEAF87C1DF1938F15B5D3DF7CCC7D7C2959BFAB2798'
-    'src/HerdrOps.Domain/Exports/LocalSnapshotExportPublisher.cs' = '64CF3B6A1A387908567D40B4F457EAE9DEDA39CEB6DBA671827EFF57B6F16CBC'
+    'src/HerdrOps.Domain/Exports/LocalSnapshotExportPublisher.cs' = 'FD5E04FFE32B345CE9B4A5337B4390EFD02C45260AFE4558AD13E0A305EDEB1D'
     'src/HerdrOps.Domain/Evaluation/ExplainableScoring.cs' = 'B719E368DCD01277FE1BEFE6B67B567D4DEF20F38B8F604448DE5D3219A01688'
     'src/HerdrOps.Domain/Summaries/DailySummaryAggregation.cs' = '18BCC81106544040AF99A57163105AFF3F172EB84B036811EE9F84BB3359B87C'
     'docs/protocol/v0.6-local-export-contract.md' = 'EC2CF5B82C05B3ABF877554C88071FC660043A5EF0CEFD2EFDD8757DEBD8DA48'
@@ -266,9 +266,9 @@ $expectedInputSha256 = [ordered]@{
     'tests/fixtures/v0.6/daily-summary-aggregation.json' = 'E23B9CB2AD1ADA6F603311F8F2F5D25FB45DC03C2934860C0AF8039D6591F07F'
     'tests/HerdrOps.UnitTests/ExplainableScoringTests.cs' = '54EFF2C86F32946EF402FCDB66181582C44824BF0DFD236594F4EB493D0235CD'
     'tests/HerdrOps.UnitTests/DeterministicSnapshotExporterTests.cs' = '081116840183DBC09F7C8B1CFAD0AB9E4FD5D35C7265D01C754AA5CB0D5A3264'
-    'tests/HerdrOps.UnitTests/LocalSnapshotExportPublisherTests.cs' = '864C7ABC9E1D2248DDF699A8A3ABBBE4971E268952A97160740FAE4F4FDAA543'
+    'tests/HerdrOps.UnitTests/LocalSnapshotExportPublisherTests.cs' = '2D60AEA6622143201814EB626B5556099A25C27F0812BBB7EDD553701F7107D0'
     'tests/HerdrOps.UnitTests/DailySummarySnapshotSemanticValidationTests.cs' = '380DD30341811049B3466C389C4F6A5D7119FEE0A185190089EAD7022C301E8F'
-    'tests/HerdrOps.ContractTests/SnapshotExportContractTests.cs' = '1A5EBFEE247B4E6BD1B8667237C653336263CED1F7F75B48AC90C93E99A54A18'
+    'tests/HerdrOps.ContractTests/SnapshotExportContractTests.cs' = '5100E87100F705E9EC0CC11FD75203E7A7C6CA89095A4EA8F59C41BF0B972C81'
 }
 
 $sourceCommit = (& git -C $repositoryRoot rev-parse --verify 'HEAD^{commit}').Trim()
