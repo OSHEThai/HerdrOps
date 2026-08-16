@@ -70,7 +70,7 @@ function Invoke-TargetedTest {
         --artifacts-path $artifactRoot `
         --results-directory $testResultDirectory `
         --filter $Filter `
-        --logger ("trx;LogFileName=" + $LogFileName)
+        --logger ("trx;LogFileName=" + $LogFileName) *> $null
     if ($LASTEXITCODE -ne 0) {
         throw "$EvidenceName failed with exit code $LASTEXITCODE."
     }
