@@ -1,4 +1,5 @@
 using System.Text;
+using System.Globalization;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Reflection;
@@ -259,6 +260,39 @@ public sealed class LocalSnapshotExportPublisherTests
     }
 
     [TestMethod]
+    public void PublishRejectsHashConsistentCredentialPhrasesInDailyFreeText()
+    {
+        var unsafeValues = new[]
+        {
+            "API key is 012345678901234567890123456789012345",
+            "password is S3cretValue-2026",
+            "private-key: <pem-credential>",
+            "Bearer abcdefghijklmnopQRSTUV1234",
+        };
+
+        foreach (var unsafeValue in unsafeValues)
+        {
+            var export = CreateDailyExport();
+            using var document = JsonDocument.Parse(export.Json);
+            var originalSummary = document.RootElement
+                .GetProperty("acceptedSnapshot")
+                .GetProperty("timeline")[0]
+                .GetProperty("summary")
+                .GetString()
+                ?? throw new AssertFailedException("The Daily Summary timeline summary was missing.");
+            var forgedJson = export.Json.Replace(
+                $"\"summary\": {JsonSerializer.Serialize(originalSummary)}",
+                $"\"summary\": {JsonSerializer.Serialize(unsafeValue)}",
+                StringComparison.Ordinal);
+            Assert.AreNotEqual(export.Json, forgedJson);
+
+            AssertRejectedBeforeStaging(
+                RebindDailyEnvelope(export, forgedJson),
+                unsafeValue);
+        }
+    }
+
+    [TestMethod]
     public void PublishRejectsHashConsistentForgedEvaluationAndDailyUnsafeContentBeforeStaging()
     {
         var unsafeValues = new[]
@@ -267,6 +301,10 @@ public sealed class LocalSnapshotExportPublisherTests
             "/var/private/accepted.txt",
             "\\\\server\\share\\accepted.txt",
             "Bearer abcdefghijklmnopQRSTUV1234",
+            "API key is 012345678901234567890123456789012345",
+            "password is S3cretValue-2026",
+            "private-key: <pem-credential>",
+            "-----BEGIN PRIVATE KEY-----",
             "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjMifQ.signatureabcdefgh",
             "tokenUltraSecretValue123456",
             "ghp_abcdefghijklmnopqrstuvwxyz1234567890",
@@ -457,6 +495,46 @@ public sealed class LocalSnapshotExportPublisherTests
         }
     }
 
+    [TestMethod]
+    public void PublishRejectsHashConsistentForgedDailyBoundaryAgainstTrustedTimeZoneRules()
+    {
+        var accepted = CreateDailyExport();
+        using var document = JsonDocument.Parse(accepted.Json);
+        var originalBoundary = document.RootElement
+            .GetProperty("source")
+            .GetProperty("utcDayStart")
+            .GetString()
+            ?? throw new AssertFailedException("The Daily Summary UTC start boundary was missing.");
+        var forgedBoundary = DateTimeOffset.ParseExact(
+                originalBoundary,
+                "yyyy-MM-dd'T'HH:mm:ss.fffffff'Z'",
+                CultureInfo.InvariantCulture,
+                DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal)
+            .AddHours(-1)
+            .ToString("yyyy-MM-dd'T'HH:mm:ss.fffffff'Z'", CultureInfo.InvariantCulture);
+        var forgedJson = accepted.Json.Replace(
+            $"\"utcDayStart\": \"{originalBoundary}\"",
+            $"\"utcDayStart\": \"{forgedBoundary}\"",
+            StringComparison.Ordinal);
+        Assert.AreNotEqual(accepted.Json, forgedJson);
+        var forged = RebindDailyEnvelope(accepted, forgedJson);
+        var root = CreateTemporaryDirectory();
+        var phaseCount = 0;
+        try
+        {
+            var exception = Assert.ThrowsExactly<SnapshotExportException>(() =>
+                new LocalSnapshotExportPublisher(_ => phaseCount++).Publish(forged, root));
+
+            StringAssert.Contains(exception.Message, "trusted time-zone rules");
+            Assert.AreEqual(0, phaseCount);
+            AssertNoPublishedExport(root);
+        }
+        finally
+        {
+            DeleteTemporaryDirectory(root);
+        }
+    }
+
     private static DeterministicSnapshotExport CreateExport()
     {
         var root = FindRepositoryRoot();
@@ -583,6 +661,47 @@ public sealed class LocalSnapshotExportPublisherTests
             JsonSha256 = manifest.JsonSha256,
             MarkdownSha256 = manifest.MarkdownSha256,
             CsvSha256 = manifest.CsvSha256,
+            Manifest = manifest,
+        };
+    }
+
+    private static DeterministicSnapshotExport RebindDailyEnvelope(
+        DeterministicSnapshotExport export,
+        string json)
+    {
+        using var document = JsonDocument.Parse(json);
+        var strictUtf8 = new UTF8Encoding(false, true);
+        var jsonBytes = strictUtf8.GetBytes(json);
+        var csv = InvokeCanonicalCsv(document.RootElement);
+        var csvBytes = strictUtf8.GetBytes(csv);
+        var jsonSha256 = Sha256(jsonBytes);
+        var csvSha256 = Sha256(csvBytes);
+        var markdown = InvokeCanonicalMarkdown(
+            document.RootElement,
+            export.ExportId,
+            export.SourceSnapshotSha256,
+            jsonSha256,
+            csvSha256);
+        var markdownBytes = strictUtf8.GetBytes(markdown);
+        var markdownSha256 = Sha256(markdownBytes);
+        var manifest = export.Manifest with
+        {
+            JsonSha256 = jsonSha256,
+            MarkdownSha256 = markdownSha256,
+            CsvSha256 = csvSha256,
+            JsonByteLength = jsonBytes.LongLength,
+            MarkdownByteLength = markdownBytes.LongLength,
+            CsvByteLength = csvBytes.LongLength,
+            TotalByteLength = (long)jsonBytes.Length + markdownBytes.Length + csvBytes.Length,
+        };
+        return export with
+        {
+            Json = json,
+            Csv = csv,
+            JsonSha256 = jsonSha256,
+            CsvSha256 = csvSha256,
+            Markdown = markdown,
+            MarkdownSha256 = markdownSha256,
             Manifest = manifest,
         };
     }

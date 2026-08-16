@@ -316,6 +316,10 @@ public sealed class DeterministicSnapshotExporterTests
             "/var/private/accepted.txt",
             "\\\\server\\share\\accepted.txt",
             "Bearer abcdefghijklmnopQRSTUV1234",
+            "API key is 012345678901234567890123456789012345",
+            "password is S3cretValue-2026",
+            "private-key: <pem-credential>",
+            "-----BEGIN PRIVATE KEY-----",
             "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjMifQ.signatureabcdefgh",
             "tokenUltraSecretValue123456",
             "ghp_abcdefghijklmnopqrstuvwxyz1234567890",
@@ -359,6 +363,7 @@ public sealed class DeterministicSnapshotExporterTests
             "1/2",
             "github_pat_ is a documented prefix",
             "sk- is a documented prefix",
+            "API key rotation completed",
         };
         foreach (var harmlessValue in harmlessValues)
         {

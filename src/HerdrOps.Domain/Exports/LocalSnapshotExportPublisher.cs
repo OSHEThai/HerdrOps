@@ -5,7 +5,6 @@ using System.Text;
 using System.Text.Encodings.Web;
 using System.Text.Json;
 using System.Text.Json.Serialization;
-using System.Text.RegularExpressions;
 using HerdrOps.Domain.Evaluation;
 using HerdrOps.Domain.Summaries;
 
@@ -46,30 +45,6 @@ public sealed class LocalSnapshotExportPublisher
             new JsonStringEnumConverter(JsonNamingPolicy.CamelCase, allowIntegerValues: false),
         },
     };
-
-    private static readonly Regex FileSystemPathPattern = new(
-        @"(?<![A-Za-z0-9_])(?:[A-Za-z]:[\\/]|\\\\[^\s\\/]+[\\/]|/(?!/)(?:[^\s/]+/)+[^\s/]+|~[\\/])",
-        RegexOptions.Compiled | RegexOptions.CultureInvariant);
-
-    private static readonly Regex PathCandidatePattern = new(
-        @"(?<![A-Za-z0-9_])(?<candidate>[^\s,;()\[\]{}<>]*[\\/][^\s,;()\[\]{}<>]*)(?![A-Za-z0-9_])",
-        RegexOptions.Compiled | RegexOptions.CultureInvariant);
-
-    private static readonly Regex DriveRelativePathPattern = new(
-        @"(?<![A-Za-z0-9_])[A-Za-z]:[^\\/\s,;()\[\]{}<>]+",
-        RegexOptions.Compiled | RegexOptions.CultureInvariant);
-
-    private static readonly Regex RelativeFilePathPattern = new(
-        @"(?<![A-Za-z0-9_])[A-Za-z0-9_-]+\.(?:txt|json|csv|log|xml|ya?ml|cs|fs|vb|ps1|dll|exe|zip|db|sqlite|md|png|jpe?g|config|env)(?![A-Za-z0-9_])",
-        RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
-
-    private static readonly Regex SecretOrTokenPattern = new(
-        @"(?:\b(?:api[_-]?key|client[_-]?secret|access[_-]?token|refresh[_-]?token|id[_-]?token|password|passwd|secret|credential|authorization|bearer|jwt|token)\b\s*(?:[:=]|$)|\bBearer\s+[A-Za-z0-9._~+/=-]{12,}|\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b|(?<![A-Za-z0-9])(?:token|jwt)[A-Za-z0-9_-]{12,}(?![A-Za-z0-9])|(?<![A-Za-z0-9])(?:gh[pousr]_[A-Za-z0-9]{8,}|github_pat_[A-Za-z0-9_]{8,}|sk-[A-Za-z0-9_-]{8,}|xox[baprs]-[A-Za-z0-9-]{12,}|(?:AKIA|ASIA)[A-Z0-9]{16}|AIza[A-Za-z0-9_-]{20,}|(?:glpat-|npm_|pypi-|hf_|dop_v1_)[A-Za-z0-9_-]{12,})(?![A-Za-z0-9_-]))",
-        RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
-
-    private static readonly Regex SensitivePropertyPattern = new(
-        @"(?:secret|password|passwd|credential|authorization|bearer|jwt|token|api[_-]?key)",
-        RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
 
     private readonly Action<SnapshotExportPublicationPhase>? _phaseObserver;
 
@@ -679,8 +654,19 @@ public sealed class LocalSnapshotExportPublisher
                 "The Daily Summary local-day boundaries are invalid or not canonical.");
         }
 
-        ValidateLocalUtcBoundary(localStart, utcStart, "start");
-        ValidateLocalUtcBoundary(localEnd, utcEnd, "end");
+        var trustedTimeZone = DailySummaryTimeZoneRules.ResolveTrusted(source.TimeZoneId);
+        DailySummaryTimeZoneRules.ValidateTimeline(snapshot, trustedTimeZone);
+        var trustedBoundaries = DailySummaryTimeZoneRules.CalculateDayBoundaries(
+            snapshot.LocalDate,
+            trustedTimeZone);
+        if (localStart != trustedBoundaries.LocalStart ||
+            localEnd != trustedBoundaries.LocalEndExclusive ||
+            utcStart != trustedBoundaries.UtcStart ||
+            utcEnd != trustedBoundaries.UtcEndExclusive)
+        {
+            throw new SnapshotExportException(
+                "The Daily Summary UTC boundaries do not match the declared trusted time-zone rules.");
+        }
     }
 
     private static void ValidateDailySummarySnapshot(DailySummarySnapshot snapshot)
@@ -746,36 +732,6 @@ public sealed class LocalSnapshotExportPublisher
         {
             throw new SnapshotExportException(
                 $"The export field {label} exceeds reference bounds or contains duplicates.");
-        }
-    }
-
-    private static void ValidateLocalUtcBoundary(
-        DateTime local,
-        DateTimeOffset utc,
-        string label)
-    {
-        var offset = local - utc.UtcDateTime;
-        if (offset.Duration() > TimeSpan.FromHours(14) ||
-            offset.Ticks % TimeSpan.TicksPerMinute != 0)
-        {
-            throw new SnapshotExportException(
-                $"The Daily Summary {label} boundary has an invalid time-zone offset.");
-        }
-
-        try
-        {
-            var reconstructed = new DateTimeOffset(local, offset).ToUniversalTime();
-            if (reconstructed != utc)
-            {
-                throw new SnapshotExportException(
-                    $"The Daily Summary {label} boundary is not UTC-consistent.");
-            }
-        }
-        catch (ArgumentException exception)
-        {
-            throw new SnapshotExportException(
-                $"The Daily Summary {label} boundary has an invalid time-zone offset.",
-                exception);
         }
     }
 
@@ -852,10 +808,7 @@ public sealed class LocalSnapshotExportPublisher
                 break;
             case JsonValueKind.String:
                 var value = element.GetString();
-                if (value is not null &&
-                    (SensitivePropertyPattern.IsMatch(path) ||
-                     ContainsUnsafePath(value) ||
-                     SecretOrTokenPattern.IsMatch(value)))
+                if (value is not null && SnapshotExportContentPolicy.IsProhibited(path, value))
                 {
                     throw new SnapshotExportException(
                         $"Export rejected by the fail-closed redaction policy at {path}.");
@@ -864,107 +817,6 @@ public sealed class LocalSnapshotExportPublisher
                 break;
         }
     }
-
-    private static bool ContainsUnsafePath(string value)
-    {
-        if (UnsafePathPrefixes.Any(prefix =>
-                value.StartsWith(prefix, StringComparison.Ordinal)) ||
-            FileSystemPathPattern.IsMatch(value) ||
-            DriveRelativePathPattern.IsMatch(value) ||
-            RelativeFilePathPattern.IsMatch(value))
-        {
-            return true;
-        }
-
-        foreach (Match match in PathCandidatePattern.Matches(value))
-        {
-            if (IsUnsafePathCandidate(match.Groups["candidate"].Value))
-            {
-                return true;
-            }
-        }
-
-        return false;
-    }
-
-    private static bool IsUnsafePathCandidate(string candidate)
-    {
-        var normalized = candidate.TrimEnd('.', ',', ';', ':', ')', ']', '}');
-        if (string.IsNullOrWhiteSpace(normalized))
-        {
-            return false;
-        }
-
-        if (UnsafePathPrefixes.Any(prefix =>
-                normalized.StartsWith(prefix, StringComparison.Ordinal)) ||
-            normalized.StartsWith("\\\\?\\", StringComparison.Ordinal) ||
-            normalized.StartsWith("\\\\.\\", StringComparison.Ordinal) ||
-            normalized.Contains("..", StringComparison.Ordinal))
-        {
-            return true;
-        }
-
-        if (Uri.TryCreate(normalized, UriKind.Absolute, out var uri) &&
-            !string.IsNullOrWhiteSpace(uri.Scheme))
-        {
-            return true;
-        }
-
-        if (normalized.Contains('\\'))
-        {
-            return true;
-        }
-
-        var segments = normalized.Split('/');
-        if (segments.Length < 2 || segments.Any(string.IsNullOrWhiteSpace))
-        {
-            return false;
-        }
-
-        if (segments.Any(segment => segment is "." or ".." || segment.Contains('.')))
-        {
-            return true;
-        }
-
-        if (segments.All(IsNumericPathSegment) ||
-            segments.All(segment => segment.Length <= 1) ||
-            HarmlessSlashValues.Contains(normalized))
-        {
-            return false;
-        }
-
-        return segments.All(IsPathSegment);
-    }
-
-    private static bool IsNumericPathSegment(string value) =>
-        value.Length > 0 && value.All(character => character is >= '0' and <= '9');
-
-    private static bool IsPathSegment(string value) =>
-        value.Length > 1 && value.All(character =>
-            char.IsLetterOrDigit(character) || character is '_' or '-');
-
-    private static readonly HashSet<string> HarmlessSlashValues = new(
-        StringComparer.OrdinalIgnoreCase)
-    {
-        "A/B",
-        "and/or",
-        "input/output",
-        "read/write",
-    };
-
-    private static readonly string[] UnsafePathPrefixes =
-    [
-        "/",
-        "\\",
-        "//",
-        "\\\\",
-        "~/",
-        "~\\",
-        "./",
-        ".\\",
-        "../",
-        "..\\",
-    ];
 
     private static void EnsureSerializedBounds(JsonElement root)
     {
