@@ -4,7 +4,10 @@
 param(
     [Parameter(Mandatory = $true)][string]$OutputRoot,
     [string]$ProfilePath,
-    [AllowEmptyString()][string]$PackageVersion
+    [AllowEmptyString()][string]$PackageVersion,
+    [string]$TestFaultInjectionStage = 'None',
+    [switch]$TestInjectPrimaryFailure,
+    [switch]$TestInjectCleanupFailure
 )
 
 Set-StrictMode -Version Latest
@@ -28,15 +31,14 @@ if (Test-Path -LiteralPath $safeOutputRoot) {
     if (@(Get-ChildItem -LiteralPath $safeOutputRoot -Force).Count -ne 0) {
         throw "Output root must be missing or empty; refusing to overwrite: $safeOutputRoot"
     }
-} else {
-    $safeOutputParent = Split-Path -Path $safeOutputRoot -Parent
-    if (-not (Test-Path -LiteralPath $safeOutputParent -PathType Container)) {
-        New-Item -ItemType Directory -Path $safeOutputParent -Force | Out-Null
-    }
 }
 
 $publishWorkRoot = New-PackagingTempDirectory -Prefix 'HerdrOps-Publish-'
-try {
+$operationOutput = Invoke-PackagingOperationWithCleanup -Operation {
+    if ($TestInjectPrimaryFailure) {
+        throw 'Injected packaging primary operation failure.'
+    }
+
     $publishRoot = Join-Path $publishWorkRoot 'publish'
     $restoreRoot = Join-Path $publishWorkRoot 'restore'
     $isolatedLockPath = Join-Path $restoreRoot 'packages.lock.json'
@@ -111,33 +113,39 @@ try {
     $archive = New-DeterministicPackageArchive -PackageRoot $packageRoot -ArchivePath $archivePath
     $record = Write-PackageHashRecord -Profile $profile -PackageRoot $packageRoot -ArchivePath $archive -Path $hashRecordPath
 
-    if (-not (Test-Path -LiteralPath $safeOutputRoot)) {
-        New-Item -ItemType Directory -Path $safeOutputRoot -Force | Out-Null
-    }
-    $finalPackageRoot = Join-Path $safeOutputRoot 'package'
-    Copy-SafeDirectoryContents -Source $packageRoot -Destination $finalPackageRoot
-    Copy-Item -LiteralPath $archive -Destination (Join-Path $safeOutputRoot ([IO.Path]::GetFileName($archive)))
-    Copy-Item -LiteralPath $hashRecordPath -Destination (Join-Path $safeOutputRoot 'package-hashes.txt')
+    $publication = Publish-PackageArtifactsAtomically `
+        -PackageRoot $packageRoot `
+        -ArchivePath $archive `
+        -HashRecordPath $hashRecordPath `
+        -OutputRoot $safeOutputRoot `
+        -FaultInjectionStage $TestFaultInjectionStage
 
     [pscustomobject][ordered]@{
         EvidenceClass = 'Static'
         Issue = [int]$profile.issue
         PackageVersion = [string]$profile.packageVersion
         RuntimeIdentifier = [string]$profile.runtimeIdentifier
-        PackageRoot = (Get-FullPath -Path $finalPackageRoot)
-        ArchivePath = (Get-FullPath -Path (Join-Path $safeOutputRoot ([IO.Path]::GetFileName($archive))))
+        PackageRoot = $publication.PackageRoot
+        ArchivePath = $publication.ArchivePath
         ArchiveBytes = $record.ArchiveBytes
         ArchiveSha256 = $record.ArchiveSha256
-        ManifestPath = (Get-FullPath -Path (Join-Path $finalPackageRoot 'package-manifest.json'))
+        ManifestPath = (Get-FullPath -Path (Join-Path $publication.PackageRoot 'package-manifest.json'))
         ManifestSha256 = $record.ManifestSha256
         ContentSha256 = $record.ContentSha256
-        HashRecordPath = (Get-FullPath -Path (Join-Path $safeOutputRoot 'package-hashes.txt'))
+        HashRecordPath = $publication.HashRecordPath
         PublishMode = [string]$profile.publishMode
         AdministratorRequired = [bool]$profile.administratorRequired
         RuntimeUse = [string]$profile.runtimeUse
     }
-} finally {
+} -Cleanup {
+    if ($TestInjectCleanupFailure) {
+        if (Test-Path -LiteralPath $publishWorkRoot) {
+            Remove-PackagingTempDirectory -Path $publishWorkRoot
+        }
+        throw 'Injected packaging cleanup failure.'
+    }
     if (Test-Path -LiteralPath $publishWorkRoot) {
         Remove-PackagingTempDirectory -Path $publishWorkRoot
     }
 }
+$operationOutput

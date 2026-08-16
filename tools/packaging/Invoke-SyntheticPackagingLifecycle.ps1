@@ -4,7 +4,9 @@
 param(
     [string]$ProfilePath,
     [string]$FixtureRoot,
-    [switch]$KeepSimulationRoot
+    [switch]$KeepSimulationRoot,
+    [switch]$TestInjectPrimaryFailure,
+    [switch]$TestInjectCleanupFailure
 )
 
 Set-StrictMode -Version Latest
@@ -57,7 +59,11 @@ foreach ($fixture in @($initialFixture, $upgradeFixture)) {
 
 $upgradeProfile = New-SyntheticVersionProfile -BaseProfile $profile -Version $upgradeVersion
 $simulationRoot = New-PackagingTempDirectory -Prefix 'HerdrOps-Synthetic-'
-try {
+$operationOutput = Invoke-PackagingOperationWithCleanup -Operation {
+    if ($TestInjectPrimaryFailure) {
+        throw 'Injected synthetic lifecycle primary operation failure.'
+    }
+
     $initialPackageRoot = Join-Path $simulationRoot ('packages\' + $initialVersion)
     $upgradePackageRoot = Join-Path $simulationRoot ('packages\' + $upgradeVersion)
     $installRoot = Join-Path $simulationRoot 'install\HerdrOps'
@@ -137,8 +143,15 @@ try {
     $reportPath = Join-Path $simulationRoot 'synthetic-lifecycle-report.json'
     Write-DeterministicTextFile -Path $reportPath -Text ($report | ConvertTo-Json -Depth 20)
     [pscustomobject]$report
-} finally {
+} -Cleanup {
+    if ($TestInjectCleanupFailure) {
+        if (Test-Path -LiteralPath $simulationRoot) {
+            Remove-PackagingTempDirectory -Path $simulationRoot
+        }
+        throw 'Injected synthetic lifecycle cleanup failure.'
+    }
     if (-not $KeepSimulationRoot -and (Test-Path -LiteralPath $simulationRoot)) {
         Remove-PackagingTempDirectory -Path $simulationRoot
     }
 }
+$operationOutput

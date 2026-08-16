@@ -30,6 +30,31 @@ function Assert-ExpectedFailure {
     }
 }
 
+function Assert-ExpectedFailureContaining {
+    param(
+        [Parameter(Mandatory = $true)][scriptblock]$Action,
+        [Parameter(Mandatory = $true)][string]$Description,
+        [Parameter(Mandatory = $true)][string[]]$RequiredFragments
+    )
+
+    $message = $null
+    try {
+        & $Action | Out-Null
+    } catch {
+        $message = [string]$_.Exception.Message
+    }
+    if ([string]::IsNullOrWhiteSpace($message)) {
+        throw "Fail-closed check unexpectedly succeeded: $Description"
+    }
+    foreach ($fragment in $RequiredFragments) {
+        if ($message.IndexOf($fragment, [StringComparison]::OrdinalIgnoreCase) -lt 0) {
+            throw "Failure for '$Description' did not contain required context '$fragment': $message"
+        }
+    }
+
+    return $message
+}
+
 $profile = Read-PackageProfile -Path $ProfilePath
 $repositoryRoot = Get-PackagingRepositoryRoot
 Assert-ProjectMatchesPackageProfile -Profile $profile -RepositoryRoot $repositoryRoot
@@ -93,6 +118,111 @@ try {
         throw "Repeated deterministic archive generation drifted: $archiveHashOne vs $archiveHashTwo"
     }
 
+    $outsideProbeRoot = Join-Path (Split-Path -Path (Normalize-ComparablePath -Path ([IO.Path]::GetTempPath())) -Parent) `
+        ('HerdrOps-Packaging-OutOfScope-' + [Guid]::NewGuid().ToString('N'))
+    $outsideArchivePath = Join-Path $outsideProbeRoot 'archive.zip'
+    $outsideHashPath = Join-Path $outsideProbeRoot 'package-hashes.txt'
+    Assert-ExpectedFailure -Description 'archive destination outside authorized repo/temp policy has no side effects' -Action {
+        New-DeterministicPackageArchive -PackageRoot $packageOne -ArchivePath $outsideArchivePath | Out-Null
+    }
+    if (Test-Path -LiteralPath $outsideProbeRoot) {
+        throw "Unsafe archive destination created an outside path: $outsideProbeRoot"
+    }
+
+    $hashOne = Join-Path $testRoot 'one-hashes.txt'
+    Write-PackageHashRecord -Profile $profile -PackageRoot $packageOne -ArchivePath $archiveOne -Path $hashOne | Out-Null
+    Assert-ExpectedFailure -Description 'hash record destination outside authorized repo/temp policy has no side effects' -Action {
+        Write-PackageHashRecord -Profile $profile -PackageRoot $packageOne -ArchivePath $archiveOne -Path $outsideHashPath | Out-Null
+    }
+    if (Test-Path -LiteralPath $outsideProbeRoot) {
+        throw "Unsafe hash-record destination created an outside path: $outsideProbeRoot"
+    }
+
+    $atomicOutputRoot = Join-Path $testRoot 'atomic-output'
+    Assert-ExpectedFailureContaining -Description 'atomic publication fault injection leaves no partial output' -RequiredFragments @('Injected atomic publication failure after archive copy.') -Action {
+        Publish-PackageArtifactsAtomically `
+            -PackageRoot $packageOne `
+            -ArchivePath $archiveOne `
+            -HashRecordPath $hashOne `
+            -OutputRoot $atomicOutputRoot `
+            -FaultInjectionStage 'AfterArchive' | Out-Null
+    } | Out-Null
+    if (Test-Path -LiteralPath $atomicOutputRoot) {
+        if (@(Get-ChildItem -LiteralPath $atomicOutputRoot -Force).Count -ne 0) {
+            throw 'Atomic publication fault injection left partial output in the destination root.'
+        }
+        Remove-Item -LiteralPath $atomicOutputRoot -Force
+    }
+    $stagingLeftovers = @(Get-ChildItem -LiteralPath $testRoot -Force |
+        Where-Object { $_.Name -like '.atomic-output.staging-*' })
+    if ($stagingLeftovers.Count -ne 0) {
+        throw 'Atomic publication fault injection left a staging directory behind.'
+    }
+
+    $atomicPublication = Publish-PackageArtifactsAtomically `
+        -PackageRoot $packageOne `
+        -ArchivePath $archiveOne `
+        -HashRecordPath $hashOne `
+        -OutputRoot $atomicOutputRoot
+    if (-not (Test-Path -LiteralPath $atomicPublication.PackageRoot -PathType Container) -or
+        -not (Test-Path -LiteralPath $atomicPublication.ArchivePath -PathType Leaf) -or
+        -not (Test-Path -LiteralPath $atomicPublication.HashRecordPath -PathType Leaf)) {
+        throw 'Atomic publication retry did not produce one coherent package output.'
+    }
+    if (@(Get-ChildItem -LiteralPath $atomicOutputRoot -Force).Count -ne 3) {
+        throw 'Atomic publication output did not contain exactly package, archive, and hash record.'
+    }
+    Assert-PackageManifestMatchesRoot -Profile $profile -PackageRoot $atomicPublication.PackageRoot | Out-Null
+
+    $manifestOnePath = Join-Path $packageOne 'package-manifest.json'
+    $manifestOriginalText = [IO.File]::ReadAllText($manifestOnePath)
+    $metadataTamperCases = @(
+        @{ Name = 'schemaVersion'; Value = 999 },
+        @{ Name = 'issue'; Value = 999 },
+        @{ Name = 'productId'; Value = 'TamperedProduct' },
+        @{ Name = 'packageVersion'; Value = '0.7.99' },
+        @{ Name = 'targetFramework'; Value = 'net9.0-windows' },
+        @{ Name = 'runtimeIdentifier'; Value = 'win-arm64' },
+        @{ Name = 'deploymentModel'; Value = 'machine-wide' },
+        @{ Name = 'userDataPolicy'; Value = 'delete-on-uninstall' },
+        @{ Name = 'contentHashAlgorithm'; Value = 'MD5' },
+        @{ Name = 'fileCount'; Value = 999 },
+        @{ Name = 'totalBytes'; Value = 999999 },
+        @{ Name = 'contentSha256'; Value = ('0' * 64) -join '' },
+        @{ Name = 'evidenceClass'; Value = 'Runtime' })
+    foreach ($tamperCase in $metadataTamperCases) {
+        $tamperedManifest = $manifestOriginalText | ConvertFrom-Json
+        $tamperedManifest.($tamperCase.Name) = $tamperCase.Value
+        Write-DeterministicTextFile -Path $manifestOnePath -Text ($tamperedManifest | ConvertTo-Json -Depth 20)
+        Assert-ExpectedFailure -Description ("manifest metadata tamper: " + $tamperCase.Name) -Action {
+            Assert-PackageManifestMatchesRoot -Profile $profile -PackageRoot $packageOne | Out-Null
+        }
+        [IO.File]::WriteAllText($manifestOnePath, $manifestOriginalText, (New-Object System.Text.UTF8Encoding($false)))
+    }
+    Assert-PackageManifestMatchesRoot -Profile $profile -PackageRoot $packageOne | Out-Null
+
+    $syntheticOrderingError = Assert-ExpectedFailureContaining -Description 'synthetic cleanup error ordering' -RequiredFragments @(
+        'Injected synthetic lifecycle primary operation failure.',
+        'Cleanup also failed: Injected synthetic lifecycle cleanup failure.') -Action {
+        & (Join-Path $PSScriptRoot 'Invoke-SyntheticPackagingLifecycle.ps1') `
+            -ProfilePath $ProfilePath `
+            -TestInjectPrimaryFailure `
+            -TestInjectCleanupFailure | Out-Null
+    }
+    $publishOutputProbe = Join-Path $testRoot 'publish-output-probe'
+    $publishOrderingError = Assert-ExpectedFailureContaining -Description 'publish cleanup error ordering' -RequiredFragments @(
+        'Injected packaging primary operation failure.',
+        'Cleanup also failed: Injected packaging cleanup failure.') -Action {
+        & (Join-Path $PSScriptRoot 'Publish-HerdrOpsPackage.ps1') `
+            -OutputRoot $publishOutputProbe `
+            -ProfilePath $ProfilePath `
+            -TestInjectPrimaryFailure `
+            -TestInjectCleanupFailure | Out-Null
+    }
+    if (Test-Path -LiteralPath $publishOutputProbe) {
+        throw 'Injected publish failure created an output destination.'
+    }
+
     Write-DeterministicTextFile -Path (Join-Path $packageOne 'tampered.txt') -Text 'tamper'
     Assert-ExpectedFailure -Description 'tampered package manifest guard' -Action {
         Assert-PackageManifestMatchesRoot -Profile $profile -PackageRoot $packageOne | Out-Null
@@ -122,9 +252,13 @@ foreach ($boundary in @('CleanMachine', 'Runtime', 'Human', 'Release')) {
     Profile = 'PASS'
     ProjectIdentity = 'PASS'
     ProtectedPathGuards = 'PASS'
+    OutsidePathNoSideEffects = 'PASS'
     DeterministicManifestBytes = 'PASS'
     DeterministicArchiveBytes = 'PASS'
+    ManifestMetadataFailClosed = 'PASS'
     TamperAndVersionFailClosed = 'PASS'
+    CleanupErrorOrdering = 'PASS'
+    AtomicPublicationRetry = 'PASS'
     SyntheticLifecycle = 'PASS'
     CleanMachine = 'NOT OBSERVED'
     Runtime = 'NOT OBSERVED'
