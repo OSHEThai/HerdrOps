@@ -229,7 +229,7 @@ function Set-SafeText {
         $parent = Split-Path -LiteralPath $candidate -Parent
         $null = Get-SafeFullPath -Path $parent
         $text = $Lines -join [Environment]::NewLine
-        $utf8 = New-Object System.Text.UTF8Encoding($false)
+        $utf8 = New-Object -TypeName System.Text.UTF8Encoding -ArgumentList @($false)
         [IO.File]::WriteAllText($candidate, $text, $utf8)
         $null = Get-SafeFullPath -Path $candidate
         return $true
