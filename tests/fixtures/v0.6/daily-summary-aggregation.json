@@ -6,7 +6,7 @@
     {
       "sourceId": "activity-001",
       "kind": 1,
-      "sourceHashSha256": "1111111111111111111111111111111111111111111111111111111111111111",
+      "sourceHashSha256": "F25BAF92D990A89BEDF6A6D8BF2B9AD5F31407D9BE957F8E1C414344836E9CCE",
       "occurredUtc": "2026-08-14T17:00:00+00:00",
       "workstream": "Backend",
       "agentId": "backend-worker-01",
@@ -21,7 +21,7 @@
     {
       "sourceId": "activity-002",
       "kind": 1,
-      "sourceHashSha256": "2222222222222222222222222222222222222222222222222222222222222222",
+      "sourceHashSha256": "EA9AF501CFFBA1BEF5B571A25D866BE182779EF0087B1A736E575EFE0F517403",
       "occurredUtc": "2026-08-15T03:15:00+00:00",
       "workstream": "Backend",
       "agentId": "backend-leader",
@@ -36,7 +36,7 @@
     {
       "sourceId": "evidence-001",
       "kind": 2,
-      "sourceHashSha256": "3333333333333333333333333333333333333333333333333333333333333333",
+      "sourceHashSha256": "802E585E60CC66650B7FAA562270A8ABB623F3F95FF76C820996267386F70ECC",
       "occurredUtc": "2026-08-15T04:00:00+00:00",
       "workstream": "Backend",
       "agentId": "backend-worker-01",
@@ -51,7 +51,7 @@
     {
       "sourceId": "activity-003",
       "kind": 1,
-      "sourceHashSha256": "4444444444444444444444444444444444444444444444444444444444444444",
+      "sourceHashSha256": "CC1D83F2BF307607237B9129255A49F1A79F5AE5BDBB2B8CF72766206D9D0F54",
       "occurredUtc": "2026-08-15T09:30:00+00:00",
       "workstream": "Frontend",
       "agentId": "frontend-worker-01",
@@ -66,7 +66,7 @@
     {
       "sourceId": "activity-004",
       "kind": 1,
-      "sourceHashSha256": "5555555555555555555555555555555555555555555555555555555555555555",
+      "sourceHashSha256": "E025981D031AA6B6E7355A1A14BAD061E08B36F22FD898F35528B576D3729D3A",
       "occurredUtc": "2026-08-15T16:59:00+00:00",
       "workstream": "Testing",
       "agentId": "test-worker-01",
@@ -81,7 +81,7 @@
     {
       "sourceId": "evidence-002",
       "kind": 2,
-      "sourceHashSha256": "6666666666666666666666666666666666666666666666666666666666666666",
+      "sourceHashSha256": "0DF98A14B1C72EBF49534E627D531FDE99F708AA04A14BB93E2708503DC8EE06",
       "occurredUtc": "2026-08-15T17:00:00+00:00",
       "workstream": "DevOps",
       "agentId": "devops-worker-01",
@@ -96,7 +96,7 @@
     {
       "sourceId": "activity-005",
       "kind": 1,
-      "sourceHashSha256": "7777777777777777777777777777777777777777777777777777777777777777",
+      "sourceHashSha256": "4F5692954405866EE2C71EF2AFE779279E79956C1846D22273F12FA54A109CF7",
       "occurredUtc": "2026-08-15T05:00:00+00:00",
       "workstream": "Security",
       "agentId": "security-worker-01",
@@ -111,7 +111,7 @@
     {
       "sourceId": "activity-006",
       "kind": 1,
-      "sourceHashSha256": "8888888888888888888888888888888888888888888888888888888888888888",
+      "sourceHashSha256": "7DBFE073A97F486DCE7B54817C962622AB523DFAC17F32454CCE895DD6B14570",
       "occurredUtc": "2026-08-14T16:59:00+00:00",
       "workstream": "Backend",
       "agentId": "backend-worker-02",

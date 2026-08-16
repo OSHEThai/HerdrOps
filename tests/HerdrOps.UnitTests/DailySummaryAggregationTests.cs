@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -17,6 +18,14 @@ public sealed class DailySummaryAggregationTests
     public void FixtureAggregatesAcceptedSourcesAndLinksEveryMetricToSources()
     {
         var fixture = ReadFixture();
+        foreach (var source in fixture.Sources)
+        {
+            Assert.AreEqual(
+                CanonicalSourceHash(source),
+                source.SourceHashSha256,
+                $"Fixture source identity is not derived from its canonical synthetic bytes: {source.SourceId}");
+        }
+
         var snapshot = DailySummaryAggregator.Aggregate(
             fixture.LocalDate,
             CreateFixedOffsetTimeZone(fixture.TimeZoneOffsetMinutes),
@@ -221,6 +230,25 @@ public sealed class DailySummaryAggregationTests
 
     private static string Hash(string value) =>
         Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value)));
+
+    private static string CanonicalSourceHash(DailySummarySource source)
+    {
+        var canonical = string.Join(
+            '\u001F',
+            source.SourceId,
+            ((int)source.Kind).ToString(CultureInfo.InvariantCulture),
+            source.OccurredUtc.ToUniversalTime().ToString("O", CultureInfo.InvariantCulture),
+            source.Workstream,
+            source.AgentId,
+            source.TaskId,
+            source.Category,
+            source.Summary,
+            source.IsAccepted ? "1" : "0",
+            source.IsHighlight ? "1" : "0",
+            source.IssueKey ?? string.Empty,
+            source.RecommendedAction ?? string.Empty);
+        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(canonical)));
+    }
 
     private sealed record Fixture(
         int ContractVersion,

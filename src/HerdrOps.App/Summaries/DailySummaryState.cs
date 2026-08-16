@@ -1,4 +1,6 @@
 using System.Globalization;
+using System.Security.Cryptography;
+using System.Text;
 using HerdrOps.App.Live;
 using HerdrOps.App.Localization;
 using HerdrOps.Domain.Summaries;
@@ -446,12 +448,12 @@ public sealed class DailySummaryState : ObservableState
     {
         var sources = new DailySummarySource[]
         {
-            Source("activity-001", DailySummarySourceKind.ActivityEvent, "1111111111111111111111111111111111111111111111111111111111111111", "2026-08-14T17:00:00+00:00", "Backend", "backend-worker-01", "TASK-115", "TaskStarted", "Started Auth Service work", true, true, "api-latency", "Review API latency"),
-            Source("activity-002", DailySummarySourceKind.ActivityEvent, "2222222222222222222222222222222222222222222222222222222222222222", "2026-08-15T03:15:00+00:00", "Backend", "backend-leader", "TASK-115", "ReviewRequested", "API latency review requested", true, false, "api-latency", "Review API latency"),
-            Source("evidence-001", DailySummarySourceKind.Evidence, "3333333333333333333333333333333333333333333333333333333333333333", "2026-08-15T04:00:00+00:00", "Backend", "backend-worker-01", "TASK-115", "TestResult", "Authentication service tests passed", true, false, null, null),
-            Source("activity-003", DailySummarySourceKind.ActivityEvent, "4444444444444444444444444444444444444444444444444444444444444444", "2026-08-15T09:30:00+00:00", "Frontend", "frontend-worker-01", "TASK-118", "Review", "Login review found a missing test", true, true, "missing-test", "Add missing test"),
-            Source("activity-004", DailySummarySourceKind.ActivityEvent, "5555555555555555555555555555555555555555555555555555555555555555", "2026-08-15T16:59:00+00:00", "Testing", "test-worker-01", "TASK-120", "EvidenceSubmitted", "Unit test report submitted", true, false, null, null),
-            Source("evidence-002", DailySummarySourceKind.Evidence, "6666666666666666666666666666666666666666666666666666666666666666", "2026-08-15T17:00:00+00:00", "DevOps", "devops-worker-01", "TASK-122", "Deployment", "Deployment evidence belongs to the next local day", true, false, null, null),
+            Source("activity-001", DailySummarySourceKind.ActivityEvent, "2026-08-14T17:00:00+00:00", "Backend", "backend-worker-01", "TASK-115", "TaskStarted", "Started Auth Service work", true, true, "api-latency", "Review API latency"),
+            Source("activity-002", DailySummarySourceKind.ActivityEvent, "2026-08-15T03:15:00+00:00", "Backend", "backend-leader", "TASK-115", "ReviewRequested", "API latency review requested", true, false, "api-latency", "Review API latency"),
+            Source("evidence-001", DailySummarySourceKind.Evidence, "2026-08-15T04:00:00+00:00", "Backend", "backend-worker-01", "TASK-115", "TestResult", "Authentication service tests passed", true, false, null, null),
+            Source("activity-003", DailySummarySourceKind.ActivityEvent, "2026-08-15T09:30:00+00:00", "Frontend", "frontend-worker-01", "TASK-118", "Review", "Login review found a missing test", true, true, "missing-test", "Add missing test"),
+            Source("activity-004", DailySummarySourceKind.ActivityEvent, "2026-08-15T16:59:00+00:00", "Testing", "test-worker-01", "TASK-120", "EvidenceSubmitted", "Unit test report submitted", true, false, null, null),
+            Source("evidence-002", DailySummarySourceKind.Evidence, "2026-08-15T17:00:00+00:00", "DevOps", "devops-worker-01", "TASK-122", "Deployment", "Deployment evidence belongs to the next local day", true, false, null, null),
         };
 
         return DailySummaryAggregator.Aggregate(
@@ -463,7 +465,6 @@ public sealed class DailySummaryState : ObservableState
     private static DailySummarySource Source(
         string sourceId,
         DailySummarySourceKind kind,
-        string hash,
         string occurredUtc,
         string workstream,
         string agentId,
@@ -473,18 +474,40 @@ public sealed class DailySummaryState : ObservableState
         bool accepted,
         bool highlight,
         string? issueKey,
-        string? recommendedAction) => new(
-        sourceId,
-        kind,
-        hash,
-        DateTimeOffset.Parse(occurredUtc, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal),
-        workstream,
-        agentId,
-        taskId,
-        category,
-        summary,
-        accepted,
-        highlight,
-        issueKey,
-        recommendedAction);
+        string? recommendedAction)
+    {
+        var occurred = DateTimeOffset.Parse(
+            occurredUtc,
+            CultureInfo.InvariantCulture,
+            DateTimeStyles.AssumeUniversal);
+        var canonical = string.Join(
+            '\u001F',
+            sourceId,
+            ((int)kind).ToString(CultureInfo.InvariantCulture),
+            occurred.ToUniversalTime().ToString("O", CultureInfo.InvariantCulture),
+            workstream,
+            agentId,
+            taskId,
+            category,
+            summary,
+            accepted ? "1" : "0",
+            highlight ? "1" : "0",
+            issueKey ?? string.Empty,
+            recommendedAction ?? string.Empty);
+        var sourceHash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(canonical)));
+        return new DailySummarySource(
+            sourceId,
+            kind,
+            sourceHash,
+            occurred,
+            workstream,
+            agentId,
+            taskId,
+            category,
+            summary,
+            accepted,
+            highlight,
+            issueKey,
+            recommendedAction);
+    }
 }
