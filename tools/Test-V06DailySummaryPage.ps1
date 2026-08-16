@@ -19,14 +19,19 @@ $referencePath = Join-Path $repositoryRoot 'docs\design\reference\10-daily-summa
 $referenceManifestPath = Join-Path $repositoryRoot 'docs\design\reference\MANIFEST.md'
 $contractPath = Join-Path $repositoryRoot 'docs\protocol\v0.6-daily-summary-contract.md'
 $fixturePath = Join-Path $repositoryRoot 'tests\fixtures\v0.6\daily-summary-aggregation.json'
-$sourcePaths = [ordered]@{
+$ownedSourcePaths = [ordered]@{
     DomainAggregator = Join-Path $repositoryRoot 'src\HerdrOps.Domain\Summaries\DailySummaryAggregation.cs'
     AppState = Join-Path $repositoryRoot 'src\HerdrOps.App\Summaries\DailySummaryState.cs'
-    AppLocalization = Join-Path $repositoryRoot 'src\HerdrOps.App\Localization\UiLanguageService.cs'
     DailySummaryView = Join-Path $repositoryRoot 'src\HerdrOps.App\Views\DailySummaryView.xaml'
+    DailySummaryViewCodeBehind = Join-Path $repositoryRoot 'src\HerdrOps.App\Views\DailySummaryView.xaml.cs'
     AggregationTests = Join-Path $repositoryRoot 'tests\HerdrOps.UnitTests\DailySummaryAggregationTests.cs'
     StateTests = Join-Path $repositoryRoot 'tests\HerdrOps.IntegrationTests\DailySummaryStateTests.cs'
     RenderingTests = Join-Path $repositoryRoot 'tests\HerdrOps.RuntimeTests\DailySummaryRenderingTests.cs'
+}
+$sharedIntegrationPaths = [ordered]@{
+    AppLocalization = Join-Path $repositoryRoot 'src\HerdrOps.App\Localization\UiLanguageService.cs'
+    ShellView = Join-Path $repositoryRoot 'src\HerdrOps.App\Views\ShellView.xaml'
+    ShellViewCodeBehind = Join-Path $repositoryRoot 'src\HerdrOps.App\Views\ShellView.xaml.cs'
 }
 
 $expectedReferenceSha256 = 'A44CAFDFB9A8B34694B67B6AABAD86B8B65A99A8A947C7CAB83C11FE7464F693'
@@ -37,8 +42,8 @@ $expectedInputSha256 = [ordered]@{
     FixtureFile = 'E23B9CB2AD1ADA6F603311F8F2F5D25FB45DC03C2934860C0AF8039D6591F07F'
     DomainAggregator = 'E22D26239663F5FB56BD117C0993D0785593E9C136073E90524BDB25BD1B498C'
     AppState = 'ECC84C9554772642998686DDB32C845B1D12A4654C1C753BA07EB1962016B99E'
-    AppLocalization = '1A8278BBFD37CFEAC1A516C658EEA3D5877B66F06F4266D2B269333CB02E0EA1'
     DailySummaryView = '881A04EC1C19E530ED0E939461095AAD1C9502AA5B782BA53F1AC60244F6A1FF'
+    DailySummaryViewCodeBehind = '4E203E43A18041BF4BAC2A018AE4BEB0AEB0A1231B3087FC5BC2B9886F406E06'
     AggregationTests = '939A1C45EFADE646604CFB8D7BEABF25930B29BD083C1648A5BE4F21AEFA0495'
     StateTests = '662C9AB49E03FE507D9E13AD334AAB0A12BF8471E9DE2509D952E4733BD8AEAF'
     RenderingTests = '903D00A2C8C8C9B52D516FF6D5C2E191F47F7519E279BAC51DF7D4A5056EAFDC'
@@ -48,6 +53,45 @@ function Get-FileSha256 {
     param([Parameter(Mandatory = $true)][string]$Path)
 
     return ((Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash).ToUpperInvariant()
+}
+
+function Assert-ContainsText {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$Description,
+        [Parameter(Mandatory = $true)][string[]]$RequiredText
+    )
+
+    $content = Get-Content -LiteralPath $Path -Raw
+    foreach ($marker in $RequiredText) {
+        if ($content.IndexOf($marker, [StringComparison]::Ordinal) -lt 0) {
+            throw "$Description is missing required marker: $marker"
+        }
+    }
+}
+
+function Get-PngDimensions {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    $bytes = [IO.File]::ReadAllBytes($Path)
+    $signature = [byte[]](137, 80, 78, 71, 13, 10, 26, 10)
+    if ($bytes.Length -lt 24) {
+        throw "PNG evidence is too short: $Path"
+    }
+    for ($index = 0; $index -lt $signature.Length; $index++) {
+        if ($bytes[$index] -ne $signature[$index]) {
+            throw "PNG evidence has an invalid signature: $Path"
+        }
+    }
+    if ([Text.Encoding]::ASCII.GetString($bytes, 12, 4) -ne 'IHDR') {
+        throw "PNG evidence has no leading IHDR chunk: $Path"
+    }
+
+    $width = ([int]$bytes[16] -shl 24) -bor ([int]$bytes[17] -shl 16) -bor
+        ([int]$bytes[18] -shl 8) -bor [int]$bytes[19]
+    $height = ([int]$bytes[20] -shl 24) -bor ([int]$bytes[21] -shl 16) -bor
+        ([int]$bytes[22] -shl 8) -bor [int]$bytes[23]
+    return [pscustomobject]@{ Width = $width; Height = $height }
 }
 
 function Invoke-TargetedTest {
@@ -106,12 +150,38 @@ if ($workingTreeStatus.Count -ne 0) {
     throw "The v0.6 Daily Summary gate requires a clean committed checkout. Pending paths: $($workingTreeStatus -join ', ')"
 }
 
-$requiredPaths = @($referencePath, $referenceManifestPath, $contractPath, $fixturePath) + @($sourcePaths.Values)
+$requiredPaths = @($referencePath, $referenceManifestPath, $contractPath, $fixturePath) +
+    @($ownedSourcePaths.Values) + @($sharedIntegrationPaths.Values)
 foreach ($requiredPath in $requiredPaths) {
     if (-not (Test-Path -LiteralPath $requiredPath -PathType Leaf)) {
         throw "Required v0.6 Daily Summary input was not found: $requiredPath"
     }
+
+    $relativePath = $requiredPath.Substring($repositoryRoot.Length).TrimStart('\').Replace('\', '/')
+    & git -C $repositoryRoot ls-files --error-unmatch -- $relativePath *> $null
+    if ($LASTEXITCODE -ne 0) {
+        throw "Required v0.6 Daily Summary input is not tracked by HEAD: $relativePath"
+    }
 }
+
+Assert-ContainsText `
+    -Path $sharedIntegrationPaths.ShellView `
+    -Description 'shared Shell XAML' `
+    -RequiredText @('<views:DailySummaryView', 'x:Name="DailySummaryPage"')
+Assert-ContainsText `
+    -Path $sharedIntegrationPaths.ShellViewCodeBehind `
+    -Description 'shared Shell code-behind' `
+    -RequiredText @(
+        'DailySummaryPage.DataContext = syntheticPreview',
+        '"daily-summary"',
+        'DailySummaryPage.Visibility')
+Assert-ContainsText `
+    -Path $sharedIntegrationPaths.AppLocalization `
+    -Description 'shared UI language catalog' `
+    -RequiredText @(
+        '["DailySummaryPageTitle"]',
+        '["DailySummaryPageAutomation"]',
+        '["DailySummarySyntheticBoundary"]')
 
 if (-not $SkipBuild) {
     & (Join-Path $PSScriptRoot 'Invoke-Build.ps1') -Configuration $Configuration -SkipTests
@@ -187,8 +257,8 @@ $observedHashes = [ordered]@{
     ContractFile = Get-FileSha256 -Path $contractPath
     FixtureFile = Get-FileSha256 -Path $fixturePath
 }
-foreach ($sourceName in $sourcePaths.Keys) {
-    $observedHashes[$sourceName] = Get-FileSha256 -Path $sourcePaths[$sourceName]
+foreach ($sourceName in $ownedSourcePaths.Keys) {
+    $observedHashes[$sourceName] = Get-FileSha256 -Path $ownedSourcePaths[$sourceName]
 }
 foreach ($hashName in $expectedInputSha256.Keys) {
     if ($observedHashes[$hashName] -ne $expectedInputSha256[$hashName]) {
@@ -211,14 +281,51 @@ $contractTests = @(
     Invoke-TargetedTest -EvidenceName 'Immutable design reference contract tests' -ProjectPath $contractProject -Filter 'FullyQualifiedName~DesignReferenceIntegrityTests' -LogFileName 'daily-summary-reference-contract.trx'
 )
 
+$captureDirectory = Join-Path $artifactRoot 'design-evidence\v0.6.0\issue-32\daily-summary'
+$captureSpecifications = @(
+    [pscustomobject]@{ FileName = 'daily-summary-th-1672x941.png'; Width = 1672; Height = 941; Mode = 'Thai reference' }
+    [pscustomobject]@{ FileName = 'daily-summary-en-1672x941.png'; Width = 1672; Height = 941; Mode = 'English reference' }
+    [pscustomobject]@{ FileName = 'daily-summary-th-1366x768.png'; Width = 1366; Height = 768; Mode = 'Thai compact' }
+    [pscustomobject]@{ FileName = 'daily-summary-th-missing-1672x941.png'; Width = 1672; Height = 941; Mode = 'Thai missing-score' }
+)
+$captureEvidence = foreach ($capture in $captureSpecifications) {
+    $capturePath = Join-Path $captureDirectory $capture.FileName
+    if (-not (Test-Path -LiteralPath $capturePath -PathType Leaf)) {
+        throw "Daily Summary WPF test did not produce required PNG evidence: $capturePath"
+    }
+    $dimensions = Get-PngDimensions -Path $capturePath
+    if ($dimensions.Width -ne $capture.Width -or $dimensions.Height -ne $capture.Height) {
+        throw "Daily Summary PNG dimensions drifted for $($capture.FileName): expected $($capture.Width)x$($capture.Height) observed $($dimensions.Width)x$($dimensions.Height)"
+    }
+    $captureItem = Get-Item -LiteralPath $capturePath
+    if ($captureItem.Length -le 0) {
+        throw "Daily Summary PNG evidence is empty: $capturePath"
+    }
+    [pscustomobject]@{
+        FileName = $capture.FileName
+        Width = $dimensions.Width
+        Height = $dimensions.Height
+        Mode = $capture.Mode
+        Bytes = $captureItem.Length
+        Sha256 = Get-FileSha256 -Path $capturePath
+        RelativePath = $capturePath.Substring($repositoryRoot.Length).TrimStart('\').Replace('\', '/')
+    }
+}
+
 $hashLines = @(
     "ReferenceFileSha256: $referenceSha256"
     "ReferenceManifestSha256: $($observedHashes.ReferenceManifest)"
     "ContractFileSha256: $($observedHashes.ContractFile)"
     "FixtureFileSha256: $($observedHashes.FixtureFile)"
 )
-foreach ($sourceName in $sourcePaths.Keys) {
+foreach ($sourceName in $ownedSourcePaths.Keys) {
     $hashLines += "${sourceName}Sha256: $($observedHashes[$sourceName])"
+}
+$sharedHashLines = foreach ($sourceName in $sharedIntegrationPaths.Keys) {
+    "${sourceName}ObservedSha256: $(Get-FileSha256 -Path $sharedIntegrationPaths[$sourceName])"
+}
+$captureLines = $captureEvidence | ForEach-Object {
+    "PNG $($_.FileName) mode=$($_.Mode) dimensions=$($_.Width)x$($_.Height) bytes=$($_.Bytes) sha256=$($_.Sha256) path=$($_.RelativePath)"
 }
 
 $report = @(
@@ -229,11 +336,11 @@ $report = @(
     'VersionReleaseGate: PENDING'
     ''
     'StaticEvidence: PASS'
-    'StaticChecks: clean committed checkout; required source, fixture, contract and immutable reference inputs; fixture shape and expected counts; exact reference bytes and manifest pin'
+    'StaticChecks: clean committed checkout; tracked owned/shared integration inputs; exact Issue #32-owned hashes; shared Shell/localization markers; fixture shape and expected counts; exact reference bytes and manifest pin'
     ''
     'SyntheticEvidence: PASS'
     ('SyntheticTests: ' + (($syntheticTests | ForEach-Object { "$($_.Name) $($_.Passed)/$($_.Total) PASS" }) -join '; '))
-    'SyntheticBoundary: Deterministic fixture, state projection and in-process WPF rendering only'
+    'SyntheticBoundary: Deterministic fixture, state projection and in-process WPF rendering only; PNG dimensions and hashes are recorded below'
     ''
     'ContractEvidence: PASS'
     ('ContractTests: ' + (($contractTests | ForEach-Object { "$($_.Name) $($_.Passed)/$($_.Total) PASS" }) -join '; '))
@@ -246,6 +353,12 @@ $report = @(
     ''
     'PinnedHashes:'
 ) + $hashLines + @(
+    ''
+    'ObservedSharedIntegrationHashes:'
+) + $sharedHashLines + @(
+    ''
+    'FreshDesignEvidence:'
+) + $captureLines + @(
     ''
     'EvidenceBoundary:'
     'This gate proves only committed Static, Synthetic and Contract checks for Issue #32. It does not prove an installed Herdr session, live Agent events, runtime resource usage, independent acceptance, packaging, release readiness or v0.6 completion.'
