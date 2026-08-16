@@ -1,4 +1,3 @@
-using System.Collections.Concurrent;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -90,7 +89,7 @@ public sealed class JsonAppSettingsStore : IAppSettingsStore
         "refreshIntervalSeconds",
     ];
 
-    private static readonly ConcurrentDictionary<string, SemaphoreSlim> DestinationLocks =
+    private static readonly DestinationKeyedLockRegistry DestinationLocks =
         new(OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal);
 
     private readonly string _destinationPath;
@@ -99,6 +98,11 @@ public sealed class JsonAppSettingsStore : IAppSettingsStore
     private readonly ISettingsTemporaryFileCleanup _temporaryFileCleanup;
     private readonly ISettingsArtifactPathFactory _artifactPathFactory;
     private readonly int _maximumDocumentUtf8Bytes;
+
+    internal static int DestinationLockEntryCountForTesting => DestinationLocks.EntryCount;
+
+    internal int DestinationLockReferenceCountForTesting =>
+        DestinationLocks.GetReferenceCount(_destinationPath);
 
     public JsonAppSettingsStore(
         string destinationPath,
@@ -224,18 +228,10 @@ public sealed class JsonAppSettingsStore : IAppSettingsStore
 
     private async Task CommitAsync(byte[] bytes, CancellationToken cancellationToken)
     {
-        var destinationLock = DestinationLocks.GetOrAdd(
-            _destinationPath,
-            static _ => new SemaphoreSlim(1, 1));
-        await destinationLock.WaitAsync(cancellationToken).ConfigureAwait(false);
-        try
-        {
-            await CommitSerializedAsync(bytes, cancellationToken).ConfigureAwait(false);
-        }
-        finally
-        {
-            destinationLock.Release();
-        }
+        await using var destinationLock = await DestinationLocks
+            .AcquireAsync(_destinationPath, cancellationToken)
+            .ConfigureAwait(false);
+        await CommitSerializedAsync(bytes, cancellationToken).ConfigureAwait(false);
     }
 
     private async Task CommitSerializedAsync(byte[] bytes, CancellationToken cancellationToken)

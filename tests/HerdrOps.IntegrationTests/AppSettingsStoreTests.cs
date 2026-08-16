@@ -405,6 +405,104 @@ public sealed class AppSettingsStoreTests
     }
 
     [TestMethod]
+    public async Task CancelledWaitersReleaseReferencesAndEvictDestinationLock()
+    {
+        var commit = new BlockingAtomicCommit();
+        var firstStore = CreateStore(commit);
+        var firstTask = Task.Run(() => firstStore.SaveAsync(AppSettings.Defaults));
+        Assert.IsTrue(commit.FirstEntered.Wait(TimeSpan.FromSeconds(5)));
+
+        using var cancellation = new CancellationTokenSource();
+        var waiterStores = Enumerable.Range(0, 64)
+            .Select(_ => CreateStore())
+            .ToArray();
+        var waiterTasks = waiterStores
+            .Select((store, index) => Task.Run(() => store.SaveAsync(
+                AppSettings.Defaults with
+                {
+                    UserPreferences = AppSettings.Defaults.UserPreferences with
+                    {
+                        SelectedProjectId = $"cancelled-{index}",
+                    },
+                },
+                cancellation.Token)))
+            .ToArray();
+
+        try
+        {
+            Assert.IsTrue(
+                SpinWait.SpinUntil(
+                    () => firstStore.DestinationLockReferenceCountForTesting >= waiterTasks.Length + 1,
+                    TimeSpan.FromSeconds(5)),
+                "All cancelled waiters must be registered before cancellation.");
+
+            cancellation.Cancel();
+            foreach (var waiterTask in waiterTasks)
+            {
+                await Assert.ThrowsExactlyAsync<OperationCanceledException>(async () => await waiterTask);
+            }
+
+            Assert.IsFalse(firstTask.IsCompleted);
+            commit.ReleaseFirst.Set();
+            await firstTask;
+
+            Assert.AreEqual(0, firstStore.DestinationLockReferenceCountForTesting);
+            Assert.AreEqual(0, JsonAppSettingsStore.DestinationLockEntryCountForTesting);
+        }
+        finally
+        {
+            cancellation.Cancel();
+            commit.ReleaseFirst.Set();
+            try
+            {
+                await Task.WhenAll(waiterTasks);
+            }
+            catch (Exception)
+            {
+                // Preserve the assertion failure while ensuring cancelled
+                // synthetic waiters cannot outlive this test.
+            }
+
+            try
+            {
+                await firstTask;
+            }
+            catch (Exception)
+            {
+                // Preserve the assertion failure while ensuring the blocked
+                // synthetic commit cannot outlive this test.
+            }
+        }
+    }
+
+    [TestMethod]
+    public async Task DestinationLockRegistryEvictsEntriesAfterDistinctDestinationStress()
+    {
+        const int destinationCount = 96;
+        var stores = Enumerable.Range(0, destinationCount)
+            .Select(index => CreateStoreAt(Path.Combine(
+                _testDirectory,
+                $"destination-{index:D3}",
+                "appsettings.json")))
+            .ToArray();
+
+        await Task.WhenAll(stores.Select((store, index) => Task.Run(() => store.SaveAsync(
+            AppSettings.Defaults with
+            {
+                UserPreferences = AppSettings.Defaults.UserPreferences with
+                {
+                    SelectedProjectId = $"stress-{index}",
+                },
+            }))));
+
+        Assert.AreEqual(0, JsonAppSettingsStore.DestinationLockEntryCountForTesting);
+        foreach (var store in stores)
+        {
+            Assert.AreEqual(0, store.DestinationLockReferenceCountForTesting);
+        }
+    }
+
+    [TestMethod]
     public async Task TemporaryArtifactCollisionDoesNotDeletePreExistingFile()
     {
         Directory.CreateDirectory(_testDirectory);
@@ -703,6 +801,11 @@ public sealed class AppSettingsStoreTests
                 temporaryFileCleanup,
                 artifactPathFactory);
 
+    private JsonAppSettingsStore CreateStoreAt(string settingsPath) =>
+        new(
+            settingsPath,
+            allowedRootDirectory: Path.GetTempPath().TrimEnd(Path.DirectorySeparatorChar));
+
     private sealed class FailingAtomicCommit : ISettingsAtomicCommit
     {
         public string? TemporaryPath { get; private set; }
@@ -763,6 +866,24 @@ public sealed class AppSettingsStoreTests
                 ReleaseFirstFailure.Wait(TimeSpan.FromSeconds(5));
                 throw new IOException("Synthetic concurrent post-publication failure.");
             }
+        }
+    }
+
+    private sealed class BlockingAtomicCommit : ISettingsAtomicCommit
+    {
+        public ManualResetEventSlim FirstEntered { get; } = new();
+
+        public ManualResetEventSlim ReleaseFirst { get; } = new();
+
+        public void Commit(string temporaryPath, string destinationPath)
+        {
+            FirstEntered.Set();
+            if (!ReleaseFirst.Wait(TimeSpan.FromSeconds(5)))
+            {
+                throw new TimeoutException("Synthetic first commit was not released.");
+            }
+
+            new FileSystemSettingsAtomicCommit().Commit(temporaryPath, destinationPath);
         }
     }
 
