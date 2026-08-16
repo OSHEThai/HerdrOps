@@ -112,6 +112,7 @@ public sealed record EvaluationDistributionBin(
     int MaximumScore,
     int Count,
     decimal Percentage,
+    string PercentageLabel,
     string AccentBrushKey,
     string AccessibilityText,
     string StatusText);
@@ -189,8 +190,28 @@ public sealed record EvaluationRankingRow(
 /// </summary>
 public sealed class EvaluationState : ObservableState
 {
+    // The existing chart accepts a decimal only; keep this sentinel out of the
+    // visible label and expose the localized unavailable state separately.
+    private const decimal NotObservedPercentage = -1m;
+
     private static readonly IReadOnlyList<EvaluationDimension> Dimensions =
         Enum.GetValues<EvaluationDimension>();
+
+    private sealed record ReconciledEvaluation(
+        EvaluationSnapshotRecord Source,
+        EvaluationScoreResult? Result,
+        bool IsReconciliationFailed)
+    {
+        public string EvaluationId => Source.EvaluationId;
+
+        public string TaskId => Source.TaskId;
+
+        public string TaskLabel => Source.TaskLabel;
+
+        public string AgentId => Source.AgentId;
+
+        public string AgentLabel => Source.AgentLabel;
+    }
 
     private readonly EvaluationSnapshot _snapshot;
     private UiLanguage _language;
@@ -198,9 +219,13 @@ public sealed class EvaluationState : ObservableState
     private string _evidenceBoundaryLabel = string.Empty;
     private string _evaluationCountLabel = string.Empty;
     private int _evaluationCountTotal;
+    private int _evaluationCountScored;
     private IReadOnlyList<EvaluationSummaryCard> _summaryCards = [];
     private IReadOnlyList<EvaluationDistributionBin> _distributionBins = [];
     private string _distributionTotalLabel = string.Empty;
+    private string _distributionCenterValue = string.Empty;
+    private string _distributionCenterLabel = string.Empty;
+    private string _distributionCenterAccessibilityText = string.Empty;
     private IReadOnlyList<EvaluationTrendPoint> _trendPoints = [];
     private IReadOnlyList<EvaluationDimensionRow> _dimensionRows = [];
     private IReadOnlyList<EvaluationComparisonRow> _comparisonRows = [];
@@ -215,6 +240,7 @@ public sealed class EvaluationState : ObservableState
     private string _missingScoreLabel = string.Empty;
     private string _rankingEmptyLabel = string.Empty;
     private int _missingScoreCount;
+    private int _invalidScoreCount;
 
     public EvaluationState(EvaluationSnapshot snapshot)
     {
@@ -238,11 +264,19 @@ public sealed class EvaluationState : ObservableState
 
     public int EvaluationCount => _evaluationCountTotal;
 
+    public int EvaluationCountScored => _evaluationCountScored;
+
     public IReadOnlyList<EvaluationSummaryCard> SummaryCards => _summaryCards;
 
     public IReadOnlyList<EvaluationDistributionBin> DistributionBins => _distributionBins;
 
     public string DistributionTotalLabel => _distributionTotalLabel;
+
+    public string DistributionCenterValue => _distributionCenterValue;
+
+    public string DistributionCenterLabel => _distributionCenterLabel;
+
+    public string DistributionCenterAccessibilityText => _distributionCenterAccessibilityText;
 
     public IReadOnlyList<EvaluationTrendPoint> TrendPoints => _trendPoints;
 
@@ -269,6 +303,8 @@ public sealed class EvaluationState : ObservableState
     public string MissingScoreLabel => _missingScoreLabel;
 
     public int MissingScoreCount => _missingScoreCount;
+
+    public int InvalidScoreCount => _invalidScoreCount;
 
     public string RankingEmptyLabel => _rankingEmptyLabel;
 
@@ -308,11 +344,14 @@ public sealed class EvaluationState : ObservableState
     private void Render()
     {
         var text = new Copy(_language);
-        var selected = _snapshot.Evaluations
+        var evaluations = _snapshot.Evaluations
+            .Select(Reconcile)
+            .ToArray();
+        var selected = evaluations
             .FirstOrDefault(item =>
                 string.Equals(item.TaskId, _snapshot.SelectedTaskId, StringComparison.Ordinal) &&
                 string.Equals(item.AgentId, _snapshot.SelectedAgentId, StringComparison.Ordinal));
-        var scored = _snapshot.Evaluations
+        var scored = evaluations
             .Where(HasScore)
             .OrderBy(item => item.EvaluationId, StringComparer.Ordinal)
             .ToArray();
@@ -323,29 +362,58 @@ public sealed class EvaluationState : ObservableState
         _evidenceBoundaryLabel = _snapshot.Availability == EvaluationSnapshotAvailability.Unavailable
             ? text.LiveBoundary
             : text.SyntheticBoundary;
-        _evaluationCountTotal = _snapshot.Evaluations.Count;
+        _evaluationCountTotal = evaluations.Length;
+        _evaluationCountScored = scored.Length;
         _evaluationCountLabel = text.Count(_evaluationCountTotal);
-        _missingScoreCount = _snapshot.Evaluations.Count(item => !HasScore(item));
-        _missingScoreLabel = text.MissingScores(_missingScoreCount);
+        _missingScoreCount = _snapshot.Availability == EvaluationSnapshotAvailability.Unavailable
+            ? 0
+            : evaluations.Count(item => item.Result?.Status == EvaluationResultStatus.Incomplete);
+        _invalidScoreCount = _snapshot.Availability == EvaluationSnapshotAvailability.Unavailable
+            ? 0
+            : evaluations.Count(item => item.IsReconciliationFailed || item.Result?.Status == EvaluationResultStatus.Invalid);
+        _missingScoreLabel = _snapshot.Availability == EvaluationSnapshotAvailability.Unavailable
+            ? text.Unavailable
+            : _invalidScoreCount > 0
+                ? text.Invalid
+                : text.MissingScores(_missingScoreCount);
         _selectedTaskLabel = selected is null
             ? text.Unavailable
             : text.SelectedTask($"{selected.TaskId} · {selected.TaskLabel}");
         _selectedAgentLabel = selected is null
             ? text.Unavailable
             : text.SelectedAgent(selected.AgentLabel);
-        _comparisonTotalScoreLabel = FormatScore(selected?.Result.TotalScore);
+        _comparisonTotalScoreLabel = selected is null
+            ? text.Unavailable
+            : HasScore(selected)
+                ? FormatScore(selected.Result!.TotalScore)
+                : StatusFor(text, selected);
         var selectedFormulaAvailable = TryGetEmbeddedFormula(selected?.Result, out var selectedFormula);
         _comparisonFormulaLabel = selectedFormulaAvailable
             ? selectedFormula.FormulaId
             : text.Unavailable;
-        _comparisonSnapshotSha256 = selected?.Result.Provenance?.InputSnapshotSha256 ?? string.Empty;
+        _comparisonSnapshotSha256 = selectedFormulaAvailable
+            ? selected!.Result!.Provenance.InputSnapshotSha256
+            : string.Empty;
         _dimensionWeightedAverageLabel = scored.Length == 0
             ? text.Unavailable
-            : FormatScore(Round(scored.Average(item => item.Result.TotalScore!.Value)));
+            : FormatScore(Round(scored.Average(item => item.Result!.TotalScore!.Value)));
         _rankingEmptyLabel = text.RankingEmpty;
+        _distributionCenterValue = _snapshot.Availability == EvaluationSnapshotAvailability.Unavailable
+            ? text.Unavailable
+            : text.ScoreRatio(_evaluationCountScored, _evaluationCountTotal);
+        _distributionCenterLabel = _snapshot.Availability == EvaluationSnapshotAvailability.Unavailable
+            ? text.Unavailable
+            : text.ScoredCount(_evaluationCountScored);
+        _distributionCenterAccessibilityText = text.Accessibility(
+            text.DistributionTitle,
+            _snapshot.Availability == EvaluationSnapshotAvailability.Unavailable
+                ? text.Unavailable
+                : $"{text.ScoredCount(_evaluationCountScored)}, {text.Count(_evaluationCountTotal)}");
         _summaryCards = Freeze(BuildSummaryCards(text, scored));
         _distributionBins = Freeze(BuildDistribution(text, scored));
-        _distributionTotalLabel = text.ScoredCount(scored.Length);
+        _distributionTotalLabel = _snapshot.Availability == EvaluationSnapshotAvailability.Unavailable
+            ? text.Unavailable
+            : text.ScoredCount(scored.Length);
         _trendPoints = Freeze(BuildTrend(text));
         _dimensionRows = Freeze(BuildDimensions(text, selected));
         _comparisonRows = Freeze(BuildComparison(text, selected));
@@ -358,9 +426,13 @@ public sealed class EvaluationState : ObservableState
         Raise(nameof(EvaluationCountLabel));
         Raise(nameof(EvaluationCountTotal));
         Raise(nameof(EvaluationCount));
+        Raise(nameof(EvaluationCountScored));
         Raise(nameof(SummaryCards));
         Raise(nameof(DistributionBins));
         Raise(nameof(DistributionTotalLabel));
+        Raise(nameof(DistributionCenterValue));
+        Raise(nameof(DistributionCenterLabel));
+        Raise(nameof(DistributionCenterAccessibilityText));
         Raise(nameof(TrendPoints));
         Raise(nameof(DimensionRows));
         Raise(nameof(ComparisonRows));
@@ -374,22 +446,21 @@ public sealed class EvaluationState : ObservableState
         Raise(nameof(ComparisonSnapshotSha256));
         Raise(nameof(MissingScoreLabel));
         Raise(nameof(MissingScoreCount));
+        Raise(nameof(InvalidScoreCount));
         Raise(nameof(RankingEmptyLabel));
     }
 
     private IReadOnlyList<EvaluationSummaryCard> BuildSummaryCards(
         Copy text,
-        IReadOnlyList<EvaluationSnapshotRecord> scored)
+        IReadOnlyList<ReconciledEvaluation> scored)
     {
         var average = scored.Count == 0
             ? (decimal?)null
-            : Round(scored.Average(item => item.Result.TotalScore!.Value));
+            : Round(scored.Average(item => item.Result!.TotalScore!.Value));
         var averageDelta = average is null || _snapshot.PreviousAverageScore is null
             ? (decimal?)null
             : Round(average.Value - _snapshot.PreviousAverageScore.Value);
-        var status = _snapshot.Availability == EvaluationSnapshotAvailability.Unavailable
-            ? text.Unavailable
-            : text.SyntheticStatus;
+        var status = StatusFor(text);
 
         return
         [
@@ -433,7 +504,7 @@ public sealed class EvaluationState : ObservableState
 
     private IReadOnlyList<EvaluationDistributionBin> BuildDistribution(
         Copy text,
-        IReadOnlyList<EvaluationSnapshotRecord> scored)
+        IReadOnlyList<ReconciledEvaluation> scored)
     {
         var bins = new (string Id, int Min, int Max, string Brush)[]
         {
@@ -446,16 +517,36 @@ public sealed class EvaluationState : ObservableState
 
         return bins.Select(bin =>
         {
-            var count = scored.Count(item => bin.Id switch
+            var count = scored.Count(item =>
             {
-                "excellent" => item.Result.TotalScore >= 90,
-                "good" => item.Result.TotalScore >= 75 && item.Result.TotalScore < 90,
-                "pass" => item.Result.TotalScore >= 60 && item.Result.TotalScore < 75,
-                "improve" => item.Result.TotalScore >= 40 && item.Result.TotalScore < 60,
-                _ => item.Result.TotalScore < 40,
+                var score = item.Result!.TotalScore!.Value;
+                return bin.Id switch
+                {
+                    "excellent" => score >= 90,
+                    "good" => score >= 75 && score < 90,
+                    "pass" => score >= 60 && score < 75,
+                    "improve" => score >= 40 && score < 60,
+                    _ => score < 40,
+                };
             });
-            var percentage = scored.Count == 0 ? 0m : Round(count * 100m / scored.Count);
             var label = text.DistributionLabel(bin.Id);
+            var unavailable = _snapshot.Availability == EvaluationSnapshotAvailability.Unavailable;
+            var percentage = unavailable
+                ? NotObservedPercentage
+                : scored.Count == 0
+                    ? 0m
+                    : Round(count * 100m / scored.Count);
+            var percentageLabel = unavailable
+                ? text.Unavailable
+                : FormatPercentage(percentage);
+            var status = unavailable
+                ? text.Unavailable
+                : _invalidScoreCount > 0
+                    ? text.Invalid
+                    : text.SyntheticStatus;
+            var value = unavailable
+                ? text.Unavailable
+                : $"{count}, {FormatPercentage(percentage)}";
             return new EvaluationDistributionBin(
                 bin.Id,
                 label,
@@ -463,9 +554,10 @@ public sealed class EvaluationState : ObservableState
                 bin.Max,
                 count,
                 percentage,
+                percentageLabel,
                 bin.Brush,
-                text.Accessibility(label, $"{count}, {FormatPercentage(percentage)}"),
-                text.SyntheticStatus);
+                text.Accessibility(label, value),
+                status);
         }).ToArray();
     }
 
@@ -475,30 +567,37 @@ public sealed class EvaluationState : ObservableState
             .Take(7)
             .Select(item =>
             {
-                var scoreLabel = FormatScore(item.Score);
-                var status = item.Score is null ? text.MissingScore : text.Complete;
+                var score = _snapshot.Availability == EvaluationSnapshotAvailability.Unavailable
+                    ? (decimal?)null
+                    : item.Score;
+                var scoreLabel = FormatScore(score);
+                var status = _snapshot.Availability == EvaluationSnapshotAvailability.Unavailable
+                    ? text.Unavailable
+                    : score is null
+                        ? text.MissingScore
+                        : text.Complete;
                 var dateLabel = text.Date(item.Date);
                 return new EvaluationTrendPoint(
                     item.Date.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
                     item.Date,
                     dateLabel,
-                    item.Score,
+                    score,
                     scoreLabel,
-                    item.Score is null ? OverviewBrushKeys.Offline : OverviewBrushKeys.Primary,
-                    text.Accessibility(dateLabel, scoreLabel),
+                    score is null ? OverviewBrushKeys.Offline : OverviewBrushKeys.Primary,
+                    text.Accessibility(dateLabel, $"{scoreLabel}, {status}"),
                     status);
             })
             .ToArray();
 
     private IReadOnlyList<EvaluationDimensionRow> BuildDimensions(
         Copy text,
-        EvaluationSnapshotRecord? selected)
+        ReconciledEvaluation? selected)
     {
         var formulaAvailable = TryGetEmbeddedFormula(selected?.Result, out var formula);
         var formulaWeights = formulaAvailable
             ? formula.DimensionWeights.ToDictionary(item => item.Dimension, item => item.WeightBasisPoints)
             : null;
-        var resultByDimension = selected?.Result.Dimensions?
+        var resultByDimension = selected?.Result?.Dimensions?
             .GroupBy(item => item.Dimension)
             .ToDictionary(group => group.Key, group => group.Last());
 
@@ -511,9 +610,7 @@ public sealed class EvaluationState : ObservableState
             var score = result?.Status == EvaluationDimensionScoreStatus.Complete
                 ? result.DimensionScore
                 : null;
-            var status = selected is null
-                ? text.Unavailable
-                : text.DimensionStatus(result?.Status);
+            var status = StatusFor(text, selected, result?.Status);
             var label = text.Dimension(dimension);
             return new EvaluationDimensionRow(
                 dimension,
@@ -522,7 +619,9 @@ public sealed class EvaluationState : ObservableState
                 weight,
                 FormatScore(score),
                 status,
-                BrushFor(result?.Status),
+                BrushFor(selected?.IsReconciliationFailed == true
+                    ? EvaluationDimensionScoreStatus.Invalid
+                    : result?.Status),
                 text.Accessibility(label, $"{FormatScore(score)}, {status}"),
                 status);
         }).ToArray();
@@ -530,13 +629,13 @@ public sealed class EvaluationState : ObservableState
 
     private IReadOnlyList<EvaluationComparisonRow> BuildComparison(
         Copy text,
-        EvaluationSnapshotRecord? selected)
+        ReconciledEvaluation? selected)
     {
         var formulaAvailable = TryGetEmbeddedFormula(selected?.Result, out var formula);
         var weights = formulaAvailable
             ? formula.DimensionWeights.ToDictionary(item => item.Dimension, item => item.WeightBasisPoints / 100m)
             : null;
-        var results = selected?.Result.Dimensions?
+        var results = selected?.Result?.Dimensions?
             .GroupBy(item => item.Dimension)
             .ToDictionary(group => group.Key, group => group.Last());
 
@@ -549,10 +648,10 @@ public sealed class EvaluationState : ObservableState
             var leader = result?.Leader ?? new EvaluationScoreInput(null, null, null);
             var projectManager = result?.ProjectManager ?? new EvaluationScoreInput(null, null, null);
             var evidence = result?.ObjectiveEvidence ?? new EvaluationScoreInput(null, null, null);
-            var complete = formulaAvailable && result?.Status == EvaluationDimensionScoreStatus.Complete;
-            var status = selected is null
-                ? text.Unavailable
-                : text.DimensionStatus(result?.Status);
+            var complete = selected?.IsReconciliationFailed != true &&
+                formulaAvailable &&
+                result?.Status == EvaluationDimensionScoreStatus.Complete;
+            var status = StatusFor(text, selected, result?.Status);
             var label = text.Dimension(dimension);
             var weighted = complete ? result!.WeightedScore : null;
             return new EvaluationComparisonRow(
@@ -576,7 +675,9 @@ public sealed class EvaluationState : ObservableState
                 formulaAvailable
                     ? $"{FormatScore(weighted)} / {FormatScore(weight)}"
                     : text.Unavailable,
-                BrushFor(result?.Status),
+                BrushFor(selected?.IsReconciliationFailed == true
+                    ? EvaluationDimensionScoreStatus.Invalid
+                    : result?.Status),
                 text.Accessibility(
                     label,
                     $"{FormatScore(leader.Score)}, {FormatScore(projectManager.Score)}, {FormatScore(evidence.Score)}, {FormatScore(weighted)}, {status}"),
@@ -586,15 +687,15 @@ public sealed class EvaluationState : ObservableState
 
     private IReadOnlyList<EvaluationRankingRow> BuildRankings(
         Copy text,
-        IReadOnlyList<EvaluationSnapshotRecord> scored,
+        IReadOnlyList<ReconciledEvaluation> scored,
         bool descending)
     {
         var snapshotAverage = scored.Count == 0
             ? (decimal?)null
-            : Round(scored.Average(item => item.Result.TotalScore!.Value));
+            : Round(scored.Average(item => item.Result!.TotalScore!.Value));
         var ordered = (descending
-                ? scored.OrderByDescending(item => item.Result.TotalScore)
-                : scored.OrderBy(item => item.Result.TotalScore))
+                ? scored.OrderByDescending(item => item.Result!.TotalScore)
+                : scored.OrderBy(item => item.Result!.TotalScore))
             .ThenBy(item => item.AgentId, StringComparer.Ordinal)
             .ThenBy(item => item.EvaluationId, StringComparer.Ordinal)
             .ToArray();
@@ -602,16 +703,17 @@ public sealed class EvaluationState : ObservableState
         for (var index = 0; index < ordered.Length && rows.Count < 5; index++)
         {
             var item = ordered[index];
-            var score = item.Result.TotalScore!.Value;
-            var rank = index == 0 || ordered[index - 1].Result.TotalScore != score
+            var result = item.Result!;
+            var score = result.TotalScore!.Value;
+            var rank = index == 0 || ordered[index - 1].Result!.TotalScore != score
                 ? index + 1
                 : rows[^1].Rank;
-            var tie = ordered.Count(other => other.Result.TotalScore == score) > 1;
+            var tie = ordered.Count(other => other.Result!.TotalScore == score) > 1;
             var tieLabel = tie ? text.Tie(rank) : string.Empty;
             var trendDelta = snapshotAverage is null ? (decimal?)null : Round(score - snapshotAverage.Value);
-            var formulaAvailable = TryGetEmbeddedFormula(item.Result, out var formula);
+            var formulaAvailable = TryGetEmbeddedFormula(result, out var formula);
             var formulaId = formulaAvailable ? formula.FormulaId : text.Unavailable;
-            var rawInputSnapshotSha256 = item.Result.Provenance?.InputSnapshotSha256 ?? string.Empty;
+            var rawInputSnapshotSha256 = result.Provenance.InputSnapshotSha256;
             var inputSnapshotSha256 = IsSha256(rawInputSnapshotSha256)
                 ? rawInputSnapshotSha256
                 : string.Empty;
@@ -652,8 +754,10 @@ public sealed class EvaluationState : ObservableState
         return rows;
     }
 
-    private static bool HasScore(EvaluationSnapshotRecord item) =>
-        item.Result.Status == EvaluationResultStatus.Complete && item.Result.TotalScore is not null;
+    private static bool HasScore(ReconciledEvaluation item) =>
+        !item.IsReconciliationFailed &&
+        item.Result?.Status == EvaluationResultStatus.Complete &&
+        item.Result.TotalScore is not null;
 
     private static string FormatScore(decimal? score) => score?.ToString("0.##", CultureInfo.InvariantCulture) ?? "—";
 
@@ -721,6 +825,137 @@ public sealed class EvaluationState : ObservableState
         formula = normalized;
         return true;
     }
+
+    private static ReconciledEvaluation Reconcile(EvaluationSnapshotRecord record)
+    {
+        return TryReconcileScoreResult(record.Result, out var reproduced)
+            ? new ReconciledEvaluation(record, reproduced, false)
+            : new ReconciledEvaluation(record, null, true);
+    }
+
+    private static bool TryReconcileScoreResult(
+        EvaluationScoreResult? candidate,
+        out EvaluationScoreResult reproduced)
+    {
+        reproduced = null!;
+        if (candidate?.Provenance is not
+            {
+                Formula: { } embeddedFormula,
+                InputSnapshot: { } inputSnapshot,
+            })
+        {
+            return false;
+        }
+
+        try
+        {
+            var canonicalFormula = EvaluationFormulaContract.NormalizeAndValidate(embeddedFormula);
+            if (!string.Equals(
+                    candidate.Provenance.FormulaSha256,
+                    canonicalFormula.FormulaSha256,
+                    StringComparison.Ordinal))
+            {
+                return false;
+            }
+
+            var engine = new EvaluationScoringEngine();
+            var recalculated = engine.Recalculate(candidate);
+            var canonical = engine.Calculate(inputSnapshot, canonicalFormula);
+            if (!string.Equals(
+                    candidate.Provenance.InputSnapshotSha256,
+                    canonical.Provenance.InputSnapshotSha256,
+                    StringComparison.Ordinal) ||
+                !string.Equals(
+                    candidate.Provenance.FormulaSha256,
+                    canonical.Provenance.FormulaSha256,
+                    StringComparison.Ordinal) ||
+                !string.Equals(candidate.ResultSha256, canonical.ResultSha256, StringComparison.Ordinal) ||
+                !HasMatchingCalculatedValues(candidate, recalculated) ||
+                !HasMatchingCalculatedValues(recalculated, canonical))
+            {
+                return false;
+            }
+
+            reproduced = recalculated;
+            return true;
+        }
+        catch (Exception)
+        {
+            return false;
+        }
+    }
+
+    private static bool HasMatchingCalculatedValues(
+        EvaluationScoreResult first,
+        EvaluationScoreResult second)
+    {
+        if (first.Status != second.Status ||
+            first.TotalScore != second.TotalScore ||
+            first.AvailableWeightBasisPoints != second.AvailableWeightBasisPoints ||
+            first.Dimensions is null ||
+            second.Dimensions is null ||
+            first.Dimensions.Count != second.Dimensions.Count)
+        {
+            return false;
+        }
+
+        var secondByDimension = second.Dimensions
+            .GroupBy(item => item.Dimension)
+            .ToDictionary(group => group.Key, group => group.ToArray());
+        if (secondByDimension.Values.Any(group => group.Length != 1))
+        {
+            return false;
+        }
+
+        foreach (var dimension in first.Dimensions)
+        {
+            if (!secondByDimension.TryGetValue(dimension.Dimension, out var matches) ||
+                dimension.WeightBasisPoints != matches[0].WeightBasisPoints ||
+                dimension.DimensionScore != matches[0].DimensionScore ||
+                dimension.WeightedScore != matches[0].WeightedScore)
+            {
+                return false;
+            }
+        }
+
+        return first.Dimensions
+            .Select(item => item.Dimension)
+            .Distinct()
+            .Count() == first.Dimensions.Count;
+    }
+
+    private static string StatusFor(
+        Copy text,
+        ReconciledEvaluation? evaluation = null,
+        EvaluationDimensionScoreStatus? dimensionStatus = null)
+    {
+        if (evaluation is null)
+        {
+            return text.Unavailable;
+        }
+
+        if (evaluation.IsReconciliationFailed || evaluation.Result is null)
+        {
+            return text.Invalid;
+        }
+
+        return dimensionStatus is not null
+            ? text.DimensionStatus(dimensionStatus)
+            : evaluation.Result.Status switch
+            {
+                EvaluationResultStatus.Complete => text.Complete,
+                EvaluationResultStatus.Incomplete => text.MissingScore,
+                EvaluationResultStatus.Invalid => text.Invalid,
+                _ => text.Unavailable,
+            };
+    }
+
+    private string StatusFor(Copy text) =>
+        _snapshot.Availability == EvaluationSnapshotAvailability.Unavailable
+            ? text.Unavailable
+            : _invalidScoreCount > 0
+                ? text.Invalid
+                : text.SyntheticStatus;
 
     private static bool IsSha256(string? value) =>
         value is not null && value.Length == 64 && value.All(static character =>
@@ -855,6 +1090,8 @@ public sealed class EvaluationState : ObservableState
 
         public string Unavailable => _service["EvaluationUnavailableLabel"];
 
+        public string Invalid => _service["EvaluationInvalidLabel"];
+
         public string Complete => _service["EvaluationCompleteLabel"];
 
         public string MissingScore => _service["EvaluationMissingScoreLabel"];
@@ -871,6 +1108,8 @@ public sealed class EvaluationState : ObservableState
 
         public string RecurringIssues => _service["EvaluationRecurringIssues"];
 
+        public string DistributionTitle => _service["EvaluationScoreDistributionTitle"];
+
         public string Today => _service["EvaluationToday"];
 
         public string FromLastWeek => _service["EvaluationFromLastWeek"];
@@ -882,6 +1121,9 @@ public sealed class EvaluationState : ObservableState
         public string Count(int count) => _service.Format("EvaluationTotalEvaluationsFormat", count);
 
         public string ScoredCount(int count) => _service.Format("EvaluationScoredCountFormat", count);
+
+        public string ScoreRatio(int scored, int total) =>
+            _service.Format("EvaluationScoreOutOfFormat", scored, total);
 
         public string MissingScores(int count) => _service.Format("EvaluationMissingScoreDetailFormat", count);
 

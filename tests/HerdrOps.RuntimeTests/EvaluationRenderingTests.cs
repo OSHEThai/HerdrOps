@@ -143,12 +143,23 @@ public sealed class EvaluationRenderingTests
             Layout(missingShell, ReferenceWidth, ReferenceHeight);
             var missingState = Assert.IsInstanceOfType<EvaluationState>(missingPage.DataContext);
             Assert.AreEqual(1, missingState.MissingScoreCount);
+            Assert.AreEqual(5, missingState.EvaluationCountScored);
+            Assert.AreEqual("5 / 6", missingState.DistributionCenterValue);
             AssertRegions(missingShell, missingPage);
             AssertAccessibilityEquivalents(missingPage, missingState, language);
             AssertMissingAndInvalidStatuses(missingPage, missingState, language);
             var missingPath = Path.Combine(evidenceDirectory, "evaluation-th-missing-score-1672x941.png");
             RenderPng(missingShell, ReferenceWidth, ReferenceHeight, missingPath);
             AssertDifferentImages(thaiPath, missingPath);
+
+            var unavailableShell = CreateEvaluationShell();
+            var unavailablePage = Page(unavailableShell);
+            unavailablePage.DataContext = EvaluationState.CreateUnavailable();
+            Layout(unavailableShell, ReferenceWidth, ReferenceHeight);
+            var unavailableState = Assert.IsInstanceOfType<EvaluationState>(unavailablePage.DataContext);
+            AssertRegions(unavailableShell, unavailablePage);
+            AssertAccessibilityEquivalents(unavailablePage, unavailableState, language);
+            AssertUnavailablePresentation(unavailablePage, unavailableState, language);
 
             language.SetLanguage(UiLanguage.English);
             var englishShell = CreateEvaluationShell();
@@ -161,6 +172,15 @@ public sealed class EvaluationRenderingTests
             var englishPath = Path.Combine(evidenceDirectory, "evaluation-en-1672x941.png");
             RenderPng(englishShell, ReferenceWidth, ReferenceHeight, englishPath);
             AssertDifferentImages(thaiPath, englishPath);
+
+            var englishUnavailableShell = CreateEvaluationShell();
+            var englishUnavailablePage = Page(englishUnavailableShell);
+            englishUnavailablePage.DataContext = EvaluationState.CreateUnavailable();
+            Layout(englishUnavailableShell, ReferenceWidth, ReferenceHeight);
+            var englishUnavailableState = Assert.IsInstanceOfType<EvaluationState>(englishUnavailablePage.DataContext);
+            AssertRegions(englishUnavailableShell, englishUnavailablePage);
+            AssertAccessibilityEquivalents(englishUnavailablePage, englishUnavailableState, language);
+            AssertUnavailablePresentation(englishUnavailablePage, englishUnavailableState, language);
 
             var englishCompactShell = CreateEvaluationShell();
             Layout(englishCompactShell, CompactWidth, CompactHeight);
@@ -224,6 +244,11 @@ public sealed class EvaluationRenderingTests
             page,
             "EvaluationLowAgentsRegion",
             language["EvaluationLowPerformingAgentsAutomation"]);
+        var center = Assert.IsInstanceOfType<FrameworkElement>(page.FindName("EvaluationDistributionCenter"));
+        Assert.AreEqual(
+            state.DistributionCenterAccessibilityText,
+            AutomationProperties.GetName(center),
+            "Distribution center automation semantics must reconcile scored and total records.");
 
         AssertAccessibleItems(
             page,
@@ -307,6 +332,8 @@ public sealed class EvaluationRenderingTests
         UiLanguageService language)
     {
         var missingLabel = language["EvaluationMissingScoreLabel"];
+        AssertVisibleTextContains(missingPage, missingState.DistributionCenterValue);
+        AssertVisibleTextContains(missingPage, missingState.DistributionCenterLabel);
         Assert.IsTrue(
             missingState.DimensionRows.Any(item => item.StatusLabel == missingLabel),
             "The missing-score preview must expose a missing dimension status.");
@@ -324,6 +351,31 @@ public sealed class EvaluationRenderingTests
             "The invalid-score preview must expose an invalid dimension status.");
         AssertVisibleTextContains(invalidPage, invalidLabel);
         AssertAccessibilityEquivalents(invalidPage, invalidState, language);
+    }
+
+    private static void AssertUnavailablePresentation(
+        EvaluationView page,
+        EvaluationState state,
+        UiLanguageService language)
+    {
+        var unavailable = language["EvaluationUnavailableLabel"];
+        var synthetic = language["EvaluationSyntheticStatus"];
+        var missing = language["EvaluationMissingScoreLabel"];
+        Assert.AreEqual(unavailable, state.DistributionCenterValue);
+        Assert.AreEqual(unavailable, state.DistributionCenterLabel);
+        Assert.AreEqual(unavailable, state.DistributionTotalLabel);
+        Assert.IsTrue(state.DistributionBins.All(item =>
+            item.Percentage == -1m &&
+            item.PercentageLabel == unavailable &&
+            item.StatusText == unavailable));
+        Assert.IsTrue(state.TrendPoints.All(item =>
+            item.Score is null &&
+            item.ScoreLabel == "—" &&
+            item.StatusText == unavailable));
+        Assert.IsFalse(state.DistributionBins.Any(item => item.StatusText == synthetic));
+        AssertVisibleTextContains(page, unavailable);
+        AssertVisibleTextDoesNotContain(page, synthetic);
+        AssertVisibleTextDoesNotContain(page, missing);
     }
 
     private static EvaluationState CreateInvalidScorePreview(EvaluationState sourceState)

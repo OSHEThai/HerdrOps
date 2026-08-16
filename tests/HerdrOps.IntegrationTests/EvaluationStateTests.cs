@@ -90,6 +90,11 @@ public sealed class EvaluationStateTests
             StringAssert.Contains(state.MissingScoreLabel, "excluded from ranking");
             Assert.AreEqual(6, state.SummaryCards.Single(item => item.Id == "evaluations").Count);
             Assert.AreEqual(5, state.DistributionBins.Sum(item => item.Count));
+            Assert.AreEqual(5, state.EvaluationCountScored);
+            Assert.AreEqual("5 / 6", state.DistributionCenterValue);
+            Assert.AreEqual("5 complete scored evaluations", state.DistributionCenterLabel);
+            StringAssert.Contains(state.DistributionCenterAccessibilityText, "5 complete scored evaluations");
+            StringAssert.Contains(state.DistributionCenterAccessibilityText, "6 evaluations");
             Assert.IsFalse(state.TopAgents.Any(item => item.AgentId == "agent-security-worker"));
             Assert.IsFalse(state.LowAgents.Any(item => item.AgentId == "agent-security-worker"));
             Assert.IsTrue(state.DimensionRows.Any(item => item.StatusLabel == "Missing score"));
@@ -172,6 +177,57 @@ public sealed class EvaluationStateTests
             Assert.IsNull(failClosed.ComparisonRows.Single(item => item.Dimension == EvaluationDimension.GoalAlignment).WeightPercentage);
             Assert.AreEqual("Unavailable", failClosed.ComparisonRows.Single(item => item.Dimension == EvaluationDimension.GoalAlignment).WeightLabel);
             Assert.IsNull(failClosed.ComparisonRows.Single(item => item.Dimension == EvaluationDimension.GoalAlignment).WeightedScore);
+        });
+    }
+
+    [TestMethod]
+    public void TamperedAcceptedResultsAreRejectedBeforePresentation()
+    {
+        WithLanguage(UiLanguage.English, () =>
+        {
+            var record = CreateRecord(
+                "evaluation-tamper",
+                "TASK-TAMPER",
+                "Tamper task",
+                "agent-tamper",
+                "Tamper Agent",
+                [88, 86, 84, 82, 80, 78],
+                EvaluationFormulaCatalog.Version1);
+            var result = record.Result;
+            var tamperedResults = new (string Name, EvaluationScoreResult Result)[]
+            {
+                (
+                    "total",
+                    result with { TotalScore = result.TotalScore!.Value + 1m }),
+                (
+                    "weighted dimension",
+                    result with
+                    {
+                        Dimensions = result.Dimensions
+                            .Select((item, index) => index == 0
+                                ? item with { WeightedScore = item.WeightedScore!.Value + 1m }
+                                : item)
+                            .ToArray(),
+                    }),
+                (
+                    "input hash",
+                    result with
+                    {
+                        Provenance = result.Provenance with
+                        {
+                            InputSnapshotSha256 = new string('0', 64),
+                        },
+                    }),
+                (
+                    "result hash",
+                    result with { ResultSha256 = new string('0', 64) }),
+            };
+
+            foreach (var tampered in tamperedResults)
+            {
+                var state = new EvaluationState(CreateSnapshot(record with { Result = tampered.Result }));
+                AssertTamperedResultFailsClosed(state, tampered.Name);
+            }
         });
     }
 
@@ -291,21 +347,71 @@ public sealed class EvaluationStateTests
     [TestMethod]
     public void UnavailablePreview_ReportsUnavailableWithoutRankingData()
     {
-        WithLanguage(UiLanguage.English, () =>
+        foreach (var language in new[] { UiLanguage.English, UiLanguage.Thai })
         {
-            var state = EvaluationState.CreateUnavailable();
+            WithLanguage(language, () =>
+            {
+                var service = UiLanguageService.Shared;
+                var unavailable = service["EvaluationUnavailableLabel"];
+                var synthetic = service["EvaluationSyntheticStatus"];
+                var missing = service["EvaluationMissingScoreLabel"];
+                var state = EvaluationState.CreateUnavailable();
 
-            Assert.AreEqual(EvaluationSnapshotAvailability.Unavailable, state.Snapshot.Availability);
-            Assert.AreEqual(0, state.EvaluationCountTotal);
-            Assert.IsEmpty(state.TopAgents);
-            Assert.IsEmpty(state.LowAgents);
-            Assert.AreEqual("No ranking data is available", state.RankingEmptyLabel);
-            Assert.IsTrue(state.DimensionRows.All(item => item.StatusLabel == "Unavailable"));
-            Assert.IsTrue(state.ComparisonRows.All(item => item.StatusText == "Unavailable"));
-            Assert.IsTrue(state.TrendPoints.All(item => item.Score is null));
-            Assert.AreEqual("Live Evaluation source unavailable", state.SourceLabel);
-            Assert.AreEqual("No live Herdr state is available for Evaluation", state.EvidenceBoundaryLabel);
-        });
+                Assert.AreEqual(EvaluationSnapshotAvailability.Unavailable, state.Snapshot.Availability);
+                Assert.AreEqual(0, state.EvaluationCountTotal);
+                Assert.AreEqual(0, state.EvaluationCountScored);
+                Assert.IsEmpty(state.TopAgents);
+                Assert.IsEmpty(state.LowAgents);
+                Assert.AreEqual(service["EvaluationNoRankingData"], state.RankingEmptyLabel);
+                Assert.AreEqual(unavailable, state.MissingScoreLabel);
+                Assert.AreEqual(unavailable, state.DistributionTotalLabel);
+                Assert.AreEqual(unavailable, state.DistributionCenterValue);
+                Assert.AreEqual(unavailable, state.DistributionCenterLabel);
+                Assert.IsFalse(state.MissingScoreLabel.Contains(missing, StringComparison.Ordinal));
+                Assert.IsTrue(state.DimensionRows.All(item => item.StatusLabel == unavailable));
+                Assert.IsTrue(state.ComparisonRows.All(item => item.StatusText == unavailable));
+                Assert.IsTrue(state.TrendPoints.All(item =>
+                    item.Score is null &&
+                    item.ScoreLabel == "—" &&
+                    item.StatusText == unavailable));
+                Assert.IsTrue(state.DistributionBins.All(item =>
+                    item.Count == 0 &&
+                    item.Percentage == -1m &&
+                    item.PercentageLabel == unavailable &&
+                    item.StatusText == unavailable));
+                Assert.IsFalse(state.DistributionBins.Any(item => item.StatusText == synthetic));
+                Assert.AreEqual(
+                    language == UiLanguage.English
+                        ? "Live Evaluation source unavailable"
+                        : "ยังไม่มีแหล่งข้อมูลการประเมินแบบสด",
+                    state.SourceLabel);
+                Assert.AreEqual(
+                    language == UiLanguage.English
+                        ? "No live Herdr state is available for Evaluation"
+                        : "ยังไม่มีสถานะสดจาก Herdr สำหรับหน้าการประเมิน",
+                    state.EvidenceBoundaryLabel);
+            });
+        }
+    }
+
+    private static void AssertTamperedResultFailsClosed(EvaluationState state, string mutation)
+    {
+        var invalid = UiLanguageService.Shared["EvaluationInvalidLabel"];
+        var unavailable = UiLanguageService.Shared["EvaluationUnavailableLabel"];
+        Assert.AreEqual(1, state.EvaluationCountTotal, mutation);
+        Assert.AreEqual(0, state.EvaluationCountScored, mutation);
+        Assert.AreEqual(1, state.InvalidScoreCount, mutation);
+        Assert.IsEmpty(state.TopAgents, mutation);
+        Assert.IsEmpty(state.LowAgents, mutation);
+        Assert.AreEqual(invalid, state.ComparisonTotalScoreLabel, mutation);
+        Assert.AreEqual(unavailable, state.ComparisonFormulaLabel, mutation);
+        Assert.AreEqual(string.Empty, state.ComparisonSnapshotSha256, mutation);
+        Assert.IsTrue(state.DimensionRows.All(item =>
+            item.Score is null && item.StatusLabel == invalid), mutation);
+        Assert.IsTrue(state.ComparisonRows.All(item =>
+            item.WeightedScore is null && item.StatusText == invalid), mutation);
+        Assert.IsTrue(state.DistributionBins.All(item =>
+            item.Count == 0 && item.StatusText == invalid), mutation);
     }
 
     private static EvaluationFormulaDefinition CreateNonVersionOneFormula() =>

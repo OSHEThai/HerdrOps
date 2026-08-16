@@ -169,7 +169,11 @@
                                 <ColumnDefinition Width="138" />
                                 <ColumnDefinition Width="*" />
                             </Grid.ColumnDefinitions>
-                            <Grid Width="132" Height="132" VerticalAlignment="Center">
+                            <Grid x:Name="EvaluationDistributionCenter"
+                                  Width="132"
+                                  Height="132"
+                                  VerticalAlignment="Center"
+                                  automation:AutomationProperties.Name="{Binding DistributionCenterAccessibilityText}">
                                 <controls:EvaluationScoreDistributionChart ItemsSource="{Binding DistributionBins}"
                                                                             TrackBrush="{DynamicResource HerdrOps.Brush.SurfaceRaised}"
                                                                             StrokeThickness="20" />
@@ -178,10 +182,10 @@
                                                Foreground="{DynamicResource HerdrOps.Brush.TextPrimary}"
                                                FontSize="22"
                                                FontWeight="SemiBold"
-                                               Text="{Binding EvaluationCountTotal}" />
+                                               Text="{Binding DistributionCenterValue}" />
                                     <TextBlock HorizontalAlignment="Center"
                                                Style="{StaticResource EvaluationCaption}"
-                                               Text="{Binding [EvaluationEvaluations], Source={x:Static localization:UiLanguageService.Shared}}" />
+                                               Text="{Binding DistributionCenterLabel}" />
                                 </StackPanel>
                             </Grid>
                             <ItemsControl Grid.Column="1" Margin="8,0,0,0" ItemsSource="{Binding DistributionBins}">
@@ -212,7 +216,9 @@
                                                        Margin="8,0,0,0"
                                                        Foreground="{DynamicResource HerdrOps.Brush.TextSecondary}"
                                                        FontSize="10"
-                                                       Text="{Binding Percentage, StringFormat={}{0:0.##}%}" />
+                                                       Text="{Binding PercentageLabel}" />
+                                             <TextBlock Visibility="Collapsed"
+                                                        Text="{Binding Percentage, StringFormat={}{0:0.##}%}" />
                                         </Grid>
                                     </DataTemplate>
                                 </ItemsControl.ItemTemplate>
