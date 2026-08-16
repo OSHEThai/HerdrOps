@@ -176,4 +176,15 @@ hashes. Actual Herdr Runtime is explicitly NOT OBSERVED / NOT CLAIMED, and the
 gate does not prove independent review, production ingestion or v0.6 release
 readiness.
 
+# Run the four v0.6 version-local technical gates from one clean commit. This
+# performs one full build/test/format run, then executes the focused child gates
+# against the same unchanged checkout.
+./tools/Test-V06TechnicalGate.ps1 -Configuration Release
+
+The v0.6 technical gate consolidates only Static, Synthetic, and Contract
+evidence for Issues #30-#33. It deliberately reports actual Herdr Runtime,
+predecessor runtime gates, independent-review consolidation, GitHub milestone
+closure, package installation, and release publication as not observed or
+pending.
+
 The v0.6 Daily Summary gate reports Static, Synthetic, and Contract evidence separately. It pins the immutable `10-daily-summary.png` reference, the committed Daily Summary source/fixture/contract hashes, deterministic aggregation/state/rendering checks, and the design-reference contract test. It explicitly reports Actual Herdr Runtime, Independent Review, and Release Evidence as NOT OBSERVED; it does not claim live events, production ingestion, reviewer authority, export, or v0.6 release readiness.
