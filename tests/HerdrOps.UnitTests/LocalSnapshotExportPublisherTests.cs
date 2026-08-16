@@ -1,6 +1,7 @@
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Reflection;
 using HerdrOps.Domain.Evaluation;
 using HerdrOps.Domain.Exports;
 using HerdrOps.Domain.Summaries;
@@ -431,6 +432,31 @@ public sealed class LocalSnapshotExportPublisherTests
         }
     }
 
+    [TestMethod]
+    public void PublishRejectsDailyExportWhoseAcceptedSnapshotIsNotBoundToTopLevelSourceHash()
+    {
+        var accepted = CreateDailyExport();
+        var forgedIdentity = CreateDailyExport(
+            sourceHashSha256: Sha256(new UTF8Encoding(false).GetBytes("forged daily source identity")));
+        var forged = ForgeDailyTopLevelSourceSnapshot(accepted, forgedIdentity);
+        Assert.AreNotEqual(accepted.SourceSnapshotSha256, forged.SourceSnapshotSha256);
+        var root = CreateTemporaryDirectory();
+        var phaseCount = 0;
+        try
+        {
+            var exception = Assert.ThrowsExactly<SnapshotExportException>(() =>
+                new LocalSnapshotExportPublisher(_ => phaseCount++).Publish(forged, root));
+
+            StringAssert.Contains(exception.Message, "top-level source snapshot");
+            Assert.AreEqual(0, phaseCount);
+            AssertNoPublishedExport(root);
+        }
+        finally
+        {
+            DeleteTemporaryDirectory(root);
+        }
+    }
+
     private static DeterministicSnapshotExport CreateExport()
     {
         var root = FindRepositoryRoot();
@@ -448,7 +474,9 @@ public sealed class LocalSnapshotExportPublisherTests
         return DeterministicSnapshotExporter.ExportEvaluation(accepted, GenerationUtc);
     }
 
-    private static DeterministicSnapshotExport CreateDailyExport(string? summary = null)
+    private static DeterministicSnapshotExport CreateDailyExport(
+        string? summary = null,
+        string? sourceHashSha256 = null)
     {
         var fixture = ReadDailySummaryFixture();
         var timeZone = TimeZoneInfo.CreateCustomTimeZone(
@@ -456,9 +484,16 @@ public sealed class LocalSnapshotExportPublisherTests
             TimeSpan.FromMinutes(fixture.TimeZoneOffsetMinutes),
             "Daily Summary fixture",
             "Daily Summary fixture");
-        var sources = summary is null
+        var sources = summary is null && sourceHashSha256 is null
             ? fixture.Sources
-            : [fixture.Sources[0] with { Summary = summary }, .. fixture.Sources.Skip(1)];
+            : [
+                fixture.Sources[0] with
+                {
+                    Summary = summary ?? fixture.Sources[0].Summary,
+                    SourceHashSha256 = sourceHashSha256 ?? fixture.Sources[0].SourceHashSha256,
+                },
+                .. fixture.Sources.Skip(1),
+            ];
         var accepted = DailySummaryAggregator.Aggregate(
             fixture.LocalDate,
             timeZone,
@@ -550,6 +585,94 @@ public sealed class LocalSnapshotExportPublisherTests
             CsvSha256 = manifest.CsvSha256,
             Manifest = manifest,
         };
+    }
+
+    private static DeterministicSnapshotExport ForgeDailyTopLevelSourceSnapshot(
+        DeterministicSnapshotExport accepted,
+        DeterministicSnapshotExport forgedIdentity)
+    {
+        var forgedJson = accepted.Json
+            .Replace(
+                $"\"exportId\": \"{accepted.ExportId}\"",
+                $"\"exportId\": \"{forgedIdentity.ExportId}\"",
+                StringComparison.Ordinal)
+            .Replace(
+                $"\"sourceSnapshotSha256\": \"{accepted.SourceSnapshotSha256}\"",
+                $"\"sourceSnapshotSha256\": \"{forgedIdentity.SourceSnapshotSha256}\"",
+                StringComparison.Ordinal);
+        using var document = JsonDocument.Parse(forgedJson);
+        var strictUtf8 = new UTF8Encoding(false, true);
+        var jsonBytes = strictUtf8.GetBytes(forgedJson);
+        var csv = InvokeCanonicalCsv(document.RootElement);
+        var csvBytes = strictUtf8.GetBytes(csv);
+        var jsonSha256 = Sha256(jsonBytes);
+        var csvSha256 = Sha256(csvBytes);
+        var markdown = InvokeCanonicalMarkdown(
+            document.RootElement,
+            forgedIdentity.ExportId,
+            forgedIdentity.SourceSnapshotSha256,
+            jsonSha256,
+            csvSha256);
+        var markdownBytes = strictUtf8.GetBytes(markdown);
+        var markdownSha256 = Sha256(markdownBytes);
+        var manifest = accepted.Manifest with
+        {
+            ExportId = forgedIdentity.ExportId,
+            SourceSnapshotSha256 = forgedIdentity.SourceSnapshotSha256,
+            JsonSha256 = jsonSha256,
+            MarkdownSha256 = markdownSha256,
+            CsvSha256 = csvSha256,
+            JsonByteLength = jsonBytes.LongLength,
+            MarkdownByteLength = markdownBytes.LongLength,
+            CsvByteLength = csvBytes.LongLength,
+            TotalByteLength = (long)jsonBytes.Length + markdownBytes.Length + csvBytes.Length,
+        };
+        return accepted with
+        {
+            Json = forgedJson,
+            Csv = csv,
+            JsonSha256 = jsonSha256,
+            CsvSha256 = csvSha256,
+            Markdown = markdown,
+            MarkdownSha256 = markdownSha256,
+            ExportId = forgedIdentity.ExportId,
+            SourceSnapshotSha256 = forgedIdentity.SourceSnapshotSha256,
+            Manifest = manifest,
+        };
+    }
+
+    private static string InvokeCanonicalCsv(JsonElement root)
+    {
+        var method = typeof(LocalSnapshotExportPublisher).GetMethod(
+                         "BuildCanonicalCsv",
+                         BindingFlags.NonPublic | BindingFlags.Static)
+                     ?? throw new AssertFailedException("The canonical CSV builder was not found.");
+        return (string)(method.Invoke(null, [root])
+                        ?? throw new AssertFailedException("The canonical CSV builder returned no value."));
+    }
+
+    private static string InvokeCanonicalMarkdown(
+        JsonElement root,
+        string exportId,
+        string sourceSnapshotSha256,
+        string jsonSha256,
+        string csvSha256)
+    {
+        var method = typeof(LocalSnapshotExportPublisher).GetMethod(
+                         "BuildCanonicalMarkdown",
+                         BindingFlags.NonPublic | BindingFlags.Static)
+                     ?? throw new AssertFailedException("The canonical Markdown builder was not found.");
+        return (string)(method.Invoke(
+                            null,
+                            [
+                                SnapshotExportKind.DailySummary,
+                                root,
+                                exportId,
+                                sourceSnapshotSha256,
+                                jsonSha256,
+                                csvSha256,
+                            ])
+                        ?? throw new AssertFailedException("The canonical Markdown builder returned no value."));
     }
 
     private static void AssertNoPublishedExport(string root)

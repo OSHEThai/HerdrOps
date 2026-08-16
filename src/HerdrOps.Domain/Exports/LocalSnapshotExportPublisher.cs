@@ -298,7 +298,10 @@ public sealed class LocalSnapshotExportPublisher
                     _ = ValidateMetadata(document.Metadata, export, "daily-summary");
                     var accepted = ToDailySummarySnapshot(document);
                     ValidateDailySummarySnapshot(accepted);
-                    ValidateDailySummarySource(document.Source, accepted);
+                    ValidateDailySummarySource(
+                        document.Source,
+                        accepted,
+                        export.SourceSnapshotSha256);
                     EnsureCanonicalJson(document, json);
                     var jsonBytes = GetStrictUtf8Bytes(json, "JSON report");
                     var expectedCsv = BuildCanonicalCsv(parsed.RootElement);
@@ -601,7 +604,8 @@ public sealed class LocalSnapshotExportPublisher
 
     private static void ValidateDailySummarySource(
         DailySummaryExportSource? source,
-        DailySummarySnapshot snapshot)
+        DailySummarySnapshot snapshot,
+        string topLevelSourceSnapshotSha256)
     {
         if (source is null ||
             source.ContractVersion != snapshot.ContractVersion ||
@@ -609,10 +613,11 @@ public sealed class LocalSnapshotExportPublisher
             !string.Equals(source.LocalDate, snapshot.LocalDate.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture), StringComparison.Ordinal) ||
             !string.Equals(source.TimeZoneId, snapshot.TimeZoneId, StringComparison.Ordinal) ||
             !ShaEqual(source.SourceSetSha256, snapshot.SourceSetSha256) ||
+            !ShaEqual(snapshot.SourceSetSha256, topLevelSourceSnapshotSha256) ||
             !ShaEqual(source.ResultSha256, snapshot.ResultSha256))
         {
             throw new SnapshotExportException(
-                "The Daily Summary source metadata does not match its accepted snapshot.");
+                "The Daily Summary source metadata and accepted snapshot do not match the top-level source snapshot.");
         }
 
         if (source.SourceIdentities is null ||
