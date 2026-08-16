@@ -93,11 +93,15 @@ public sealed class DeterministicSnapshotExporterTests
             GenerationUtc);
 
         var manifest = ReadExportManifest();
-        Assert.AreEqual(manifest.DailyJsonSha256, export.JsonSha256);
-        Assert.AreEqual(manifest.DailyMarkdownSha256, export.MarkdownSha256);
-        Assert.AreEqual(manifest.DailyCsvSha256, export.CsvSha256);
-        Assert.AreEqual(manifest.DailyExportId, export.ExportId);
-        Assert.AreEqual(manifest.DailySourceSnapshotSha256, export.SourceSnapshotSha256);
+        var expectedIdentity =
+            $"json={manifest.DailyJsonSha256}; markdown={manifest.DailyMarkdownSha256}; " +
+            $"csv={manifest.DailyCsvSha256}; exportId={manifest.DailyExportId}; " +
+            $"sourceSnapshot={manifest.DailySourceSnapshotSha256}";
+        var observedIdentity =
+            $"json={export.JsonSha256}; markdown={export.MarkdownSha256}; " +
+            $"csv={export.CsvSha256}; exportId={export.ExportId}; " +
+            $"sourceSnapshot={export.SourceSnapshotSha256}";
+        Assert.AreEqual(expectedIdentity, observedIdentity);
         Assert.AreEqual(accepted.SourceSetSha256, export.SourceSnapshotSha256);
         Assert.AreEqual(export.ExportId, export.Manifest.ExportId);
         Assert.AreEqual(export.JsonSha256, Sha256(export.Json));

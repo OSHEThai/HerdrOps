@@ -228,22 +228,75 @@ function Invoke-ExportEvidenceTests {
     }
 }
 
-$sourceFiles = @(Get-DiscoveredFiles `
-    -Root (Join-Path $repositoryRoot 'src') `
-    -Extension '.cs' `
-    -NamePattern '(?i)export')
-$contractFiles = @(Get-DiscoveredFiles `
-    -Root (Join-Path $repositoryRoot 'docs\protocol') `
-    -Extension '.md' `
-    -NamePattern '(?i)export')
-$fixtureFiles = @(Get-DiscoveredFiles `
-    -Root (Join-Path $repositoryRoot 'tests\fixtures\v0.6') `
-    -Extension '.json' `
-    -NamePattern '(?i)export')
+$sourceFiles = @(
+    Get-Item -LiteralPath (Join-Path $repositoryRoot 'src\HerdrOps.Domain\Exports\DeterministicSnapshotExporter.cs')
+    Get-Item -LiteralPath (Join-Path $repositoryRoot 'src\HerdrOps.Domain\Exports\LocalSnapshotExportPublisher.cs')
+    Get-Item -LiteralPath (Join-Path $repositoryRoot 'src\HerdrOps.Domain\Evaluation\ExplainableScoring.cs')
+    Get-Item -LiteralPath (Join-Path $repositoryRoot 'src\HerdrOps.Domain\Summaries\DailySummaryAggregation.cs')
+)
+$contractFiles = @(
+    Get-Item -LiteralPath (Join-Path $repositoryRoot 'docs\protocol\v0.6-local-export-contract.md')
+)
+$fixtureFiles = @(
+    Get-Item -LiteralPath (Join-Path $repositoryRoot 'tests\fixtures\v0.6\snapshot-export-v1.json')
+    Get-Item -LiteralPath (Join-Path $repositoryRoot 'tests\fixtures\v0.6\scoring-golden-v1.json')
+    Get-Item -LiteralPath (Join-Path $repositoryRoot 'tests\fixtures\v0.6\daily-summary-aggregation.json')
+)
+$syntheticTestFiles = @(
+    Get-Item -LiteralPath (Join-Path $repositoryRoot 'tests\HerdrOps.UnitTests\DeterministicSnapshotExporterTests.cs')
+    Get-Item -LiteralPath (Join-Path $repositoryRoot 'tests\HerdrOps.UnitTests\LocalSnapshotExportPublisherTests.cs')
+    Get-Item -LiteralPath (Join-Path $repositoryRoot 'tests\HerdrOps.UnitTests\DailySummarySnapshotSemanticValidationTests.cs')
+)
+$contractTestFiles = @(
+    Get-Item -LiteralPath (Join-Path $repositoryRoot 'tests\HerdrOps.ContractTests\SnapshotExportContractTests.cs')
+)
+$allRequiredFiles = @($sourceFiles) + @($contractFiles) + @($fixtureFiles) +
+    @($syntheticTestFiles) + @($contractTestFiles)
+
+$expectedInputSha256 = [ordered]@{
+    'src/HerdrOps.Domain/Exports/DeterministicSnapshotExporter.cs' = '933B5667B95C30EEA3501B2A0BFA85F5A68A0713CCDE1B41B11EBA9256AFDFB2'
+    'src/HerdrOps.Domain/Exports/LocalSnapshotExportPublisher.cs' = '54ADB19A7ED702E26D9F13B3AC4AB1BAB165245B97D1541202F3449D9B7B3BA8'
+    'src/HerdrOps.Domain/Evaluation/ExplainableScoring.cs' = 'AD3BAA09E583F231075AEFF2FE4B0A8B170B0447A85DF7A4F38040221B6195F2'
+    'src/HerdrOps.Domain/Summaries/DailySummaryAggregation.cs' = '18BCC81106544040AF99A57163105AFF3F172EB84B036811EE9F84BB3359B87C'
+    'docs/protocol/v0.6-local-export-contract.md' = 'EC2CF5B82C05B3ABF877554C88071FC660043A5EF0CEFD2EFDD8757DEBD8DA48'
+    'tests/fixtures/v0.6/snapshot-export-v1.json' = '8B19A62BF71B045F9CA02623D209EB237D151E86B3D58E47885A35005EAE8040'
+    'tests/fixtures/v0.6/scoring-golden-v1.json' = '8A380239017528100B8B39305C7884C212B3E433535B5DE978366BDA6DCC586F'
+    'tests/fixtures/v0.6/daily-summary-aggregation.json' = 'E23B9CB2AD1ADA6F603311F8F2F5D25FB45DC03C2934860C0AF8039D6591F07F'
+    'tests/HerdrOps.UnitTests/DeterministicSnapshotExporterTests.cs' = '9286B1A804B07774D4B60EB0D832F749C864CCBFC457AAA51FD94C63EC7A1D1A'
+    'tests/HerdrOps.UnitTests/LocalSnapshotExportPublisherTests.cs' = 'C6E7D0AEE74064D8A835F5C9EEACB37B25B675FE4B3F0EC52A7B1B1C4DA906D0'
+    'tests/HerdrOps.UnitTests/DailySummarySnapshotSemanticValidationTests.cs' = '380DD30341811049B3466C389C4F6A5D7119FEE0A185190089EAD7022C301E8F'
+    'tests/HerdrOps.ContractTests/SnapshotExportContractTests.cs' = '76F2EEFD444CDB1E8A1C5CE716E47451B7E8EBB54856E50CD387106CC9635DEC'
+}
+
+$sourceCommit = (& git -C $repositoryRoot rev-parse --verify 'HEAD^{commit}').Trim()
+if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($sourceCommit)) {
+    throw 'Could not resolve the committed source for the Issue #33 gate.'
+}
+$initialStatus = @(& git -C $repositoryRoot status --porcelain=v1 --untracked-files=all)
+if ($LASTEXITCODE -ne 0) {
+    throw 'Could not inspect the Issue #33 source checkout.'
+}
+if ($initialStatus.Count -ne 0) {
+    throw "The Issue #33 gate requires a clean committed checkout. Pending paths: $($initialStatus -join '; ')"
+}
+
+foreach ($requiredFile in $allRequiredFiles) {
+    $relativePath = Get-RepositoryRelativePath -Path $requiredFile.FullName
+    & git -C $repositoryRoot ls-files --error-unmatch -- $relativePath *> $null
+    if ($LASTEXITCODE -ne 0) {
+        throw "Required Issue #33 input is not tracked at the source commit: $relativePath"
+    }
+    $observedHash = Get-ActualSha256 -Path $requiredFile.FullName
+    if (-not $expectedInputSha256.Contains($relativePath) -or
+        $observedHash -cne $expectedInputSha256[$relativePath]) {
+        throw "Pinned Issue #33 input drifted for $relativePath`: expected $($expectedInputSha256[$relativePath]) observed $observedHash"
+    }
+}
 
 $sourcePins = @()
 $contractPins = @()
 $fixturePins = @()
+$testPins = @()
 if ($sourceFiles.Count -gt 0) {
     $sourcePins = @(Get-FilePins -Files $sourceFiles)
 }
@@ -253,22 +306,19 @@ if ($contractFiles.Count -gt 0) {
 if ($fixtureFiles.Count -gt 0) {
     $fixturePins = @(Get-FilePins -Files $fixtureFiles)
 }
+if (($syntheticTestFiles.Count + $contractTestFiles.Count) -gt 0) {
+    $testPins = @(Get-FilePins -Files (@($syntheticTestFiles) + @($contractTestFiles)))
+}
 
 $notReadyReasons = New-Object 'System.Collections.Generic.List[string]'
 if ($sourceFiles.Count -eq 0) {
     [void]$notReadyReasons.Add('Exporter source was not discovered under src.')
 }
-if ($contractFiles.Count -eq 0) {
+if ($contractFiles.Count -ne 1) {
     [void]$notReadyReasons.Add('Local-export contract was not discovered under docs/protocol.')
 }
-elseif ($contractFiles.Count -gt 1) {
-    [void]$notReadyReasons.Add("Local-export contract discovery is ambiguous: found $($contractFiles.Count) files.")
-}
-if ($fixtureFiles.Count -eq 0) {
+if ($fixtureFiles.Count -ne 3) {
     [void]$notReadyReasons.Add('Local-export fixture was not discovered under tests/fixtures/v0.6.')
-}
-elseif ($fixtureFiles.Count -gt 1) {
-    [void]$notReadyReasons.Add("Local-export fixture discovery is ambiguous: found $($fixtureFiles.Count) files.")
 }
 
 if ($notReadyReasons.Count -gt 0) {
@@ -293,6 +343,7 @@ if ($notReadyReasons.Count -gt 0) {
     Add-PinReportLines -Lines $notReadyReport -Label 'Source' -Pins $sourcePins
     Add-PinReportLines -Lines $notReadyReport -Label 'Contract' -Pins $contractPins
     Add-PinReportLines -Lines $notReadyReport -Label 'Fixture' -Pins $fixturePins
+    Add-PinReportLines -Lines $notReadyReport -Label 'TestSource' -Pins $testPins
     [void]$notReadyReport.Add('EvidenceBoundary: No exporter acceptance credit is claimed until actual source, contract, fixture, synthetic, and contract evidence exists.')
     Write-GateReport -Lines $notReadyReport.ToArray()
     throw ('NOT READY: ' + ($notReadyReasons -join ' '))
@@ -306,19 +357,28 @@ $contractSummary = $null
 $finalSourcePins = @($sourcePins)
 $finalContractPins = @($contractPins)
 $finalFixturePins = @($fixturePins)
+$finalTestPins = @($testPins)
 
 try {
     if ($sourceFiles.Count -eq 0) {
         throw 'Exporter source discovery unexpectedly returned no files.'
     }
 
+    $requiredSourceMarkers = [ordered]@{
+        'DeterministicSnapshotExporter.cs' = 'public static class DeterministicSnapshotExporter'
+        'LocalSnapshotExportPublisher.cs' = 'public static class LocalSnapshotExportPublisher'
+        'ExplainableScoring.cs' = 'public sealed class EvaluationScoringEngine'
+        'DailySummaryAggregation.cs' = 'public static class DailySummaryAggregator'
+    }
     foreach ($sourceFile in @($sourceFiles)) {
         $sourceText = Get-Content -LiteralPath $sourceFile.FullName -Raw
         if ([string]::IsNullOrWhiteSpace($sourceText)) {
             throw "Discovered exporter source is empty: $($sourceFile.FullName)"
         }
-        if (-not [Regex]::IsMatch($sourceText, '(?i)\bexport\w*\b')) {
-            throw "Discovered exporter source has no export implementation marker: $($sourceFile.FullName)"
+        $requiredMarker = $requiredSourceMarkers[$sourceFile.Name]
+        if ([string]::IsNullOrWhiteSpace($requiredMarker) -or
+            $sourceText.IndexOf($requiredMarker, [StringComparison]::Ordinal) -lt 0) {
+            throw "Discovered Issue #33 dependency has no required implementation marker: $($sourceFile.FullName)"
         }
     }
 
@@ -332,18 +392,28 @@ try {
     foreach ($contractPattern in @(
             '(?i)human[-\s]readable',
             '(?i)machine[-\s]readable',
+            '(?i)markdown',
+            '(?i)csv',
             '(?i)sha[-\s]?256',
             '(?i)provenance',
-            '(?i)redact')) {
+            '(?i)redact',
+            '(?i)atomic',
+            '(?i)512',
+            '(?i)20,000',
+            '(?i)8,192')) {
         if (-not [Regex]::IsMatch($contractText, $contractPattern)) {
             throw "Local-export contract is missing required policy marker: $contractPattern"
         }
     }
 
-    if ($fixtureFiles.Count -ne 1) {
-        throw "Expected exactly one local-export fixture, found $($fixtureFiles.Count)."
+    if ($fixtureFiles.Count -ne 3) {
+        throw "Expected exactly three Issue #33 fixture dependencies, found $($fixtureFiles.Count)."
     }
-    $fixtureText = Get-Content -LiteralPath $fixtureFiles[0].FullName -Raw
+    $exportFixtureFile = $fixtureFiles | Where-Object { $_.Name -eq 'snapshot-export-v1.json' }
+    if (@($exportFixtureFile).Count -ne 1) {
+        throw 'The snapshot-export-v1.json manifest fixture is missing or ambiguous.'
+    }
+    $fixtureText = Get-Content -LiteralPath $exportFixtureFile.FullName -Raw
     if ([string]::IsNullOrWhiteSpace($fixtureText)) {
         throw "Discovered local-export fixture is empty: $($fixtureFiles[0].FullName)"
     }
@@ -357,6 +427,28 @@ try {
     }
     if (-not [Regex]::IsMatch($fixtureText, '(?i)"(?:fixtureId|sourceFixtures|expected|outputs?|reports?)"\s*:')) {
         throw 'Local-export fixture does not expose an explicit fixture or expected/output surface.'
+    }
+    foreach ($identityName in @(
+            'evaluationJsonSha256',
+            'evaluationMarkdownSha256',
+            'evaluationCsvSha256',
+            'evaluationExportId',
+            'evaluationSourceSnapshotSha256',
+            'dailyJsonSha256',
+            'dailyMarkdownSha256',
+            'dailyCsvSha256',
+            'dailyExportId',
+            'dailySourceSnapshotSha256')) {
+        $identity = [string]$fixture.$identityName
+        if ($identity -cnotmatch '^[0-9A-F]{64}$') {
+            throw "Local-export fixture identity $identityName is not canonical SHA-256."
+        }
+    }
+    $sourceFixtureNames = @($fixture.sourceFixtures)
+    if ($sourceFixtureNames.Count -ne 2 -or
+        $sourceFixtureNames[0] -cne 'scoring-golden-v1.json' -or
+        $sourceFixtureNames[1] -cne 'daily-summary-aggregation.json') {
+        throw 'Local-export fixture dependencies do not bind the exact scoring and Daily Summary fixtures.'
     }
 
     $staticStatus = 'PASS'
@@ -372,32 +464,24 @@ try {
         }
     }
 
-    $syntheticTestFiles = @(Get-DiscoveredFiles `
-        -Root (Join-Path $repositoryRoot 'tests\HerdrOps.UnitTests') `
-        -Extension '.cs' `
-        -NamePattern '(?i)export')
-    if ($syntheticTestFiles.Count -eq 0) {
-        throw 'Synthetic export evidence tests were not discovered under tests/HerdrOps.UnitTests.'
+    if ($syntheticTestFiles.Count -ne 3) {
+        throw 'The exact Issue #33 Unit evidence sources were not discovered.'
     }
     $syntheticStatus = 'FAIL'
     $syntheticSummary = Invoke-ExportEvidenceTests `
         -ProjectPath (Join-Path $repositoryRoot 'tests\HerdrOps.UnitTests\HerdrOps.UnitTests.csproj') `
-        -Filter 'FullyQualifiedName~Export' `
+        -Filter 'FullyQualifiedName~DeterministicSnapshotExporterTests|FullyQualifiedName~LocalSnapshotExportPublisherTests|FullyQualifiedName~DailySummarySnapshotSemanticValidationTests' `
         -LogFileName 'local-export-synthetic.trx' `
         -EvidenceLabel 'Synthetic'
     $syntheticStatus = 'PASS'
 
-    $contractTestFiles = @(Get-DiscoveredFiles `
-        -Root (Join-Path $repositoryRoot 'tests\HerdrOps.ContractTests') `
-        -Extension '.cs' `
-        -NamePattern '(?i)export')
-    if ($contractTestFiles.Count -eq 0) {
-        throw 'Contract export evidence tests were not discovered under tests/HerdrOps.ContractTests.'
+    if ($contractTestFiles.Count -ne 1) {
+        throw 'The exact Issue #33 Contract evidence source was not discovered.'
     }
     $contractStatus = 'FAIL'
     $contractSummary = Invoke-ExportEvidenceTests `
         -ProjectPath (Join-Path $repositoryRoot 'tests\HerdrOps.ContractTests\HerdrOps.ContractTests.csproj') `
-        -Filter 'FullyQualifiedName~Export' `
+        -Filter 'FullyQualifiedName~SnapshotExportContractTests' `
         -LogFileName 'local-export-contract.trx' `
         -EvidenceLabel 'Contract'
     $contractStatus = 'PASS'
@@ -405,17 +489,36 @@ try {
     $finalSourcePins = @(Get-FilePins -Files $sourceFiles)
     $finalContractPins = @(Get-FilePins -Files $contractFiles)
     $finalFixturePins = @(Get-FilePins -Files $fixtureFiles)
+    $finalTestPins = @(Get-FilePins -Files (@($syntheticTestFiles) + @($contractTestFiles)))
     if ((Get-PinFingerprint -Pins $finalSourcePins) -cne (Get-PinFingerprint -Pins $sourcePins) -or
         (Get-PinFingerprint -Pins $finalContractPins) -cne (Get-PinFingerprint -Pins $contractPins) -or
-        (Get-PinFingerprint -Pins $finalFixturePins) -cne (Get-PinFingerprint -Pins $fixturePins)) {
-        throw 'Pinned exporter, contract, or fixture bytes changed during the gate.'
+        (Get-PinFingerprint -Pins $finalFixturePins) -cne (Get-PinFingerprint -Pins $fixturePins) -or
+        (Get-PinFingerprint -Pins $finalTestPins) -cne (Get-PinFingerprint -Pins $testPins)) {
+        throw 'Pinned exporter dependency, contract, fixture, or test bytes changed during the gate.'
+    }
+
+    $finalCommit = (& git -C $repositoryRoot rev-parse --verify 'HEAD^{commit}').Trim()
+    $finalStatus = @(& git -C $repositoryRoot status --porcelain=v1 --untracked-files=all)
+    if ($LASTEXITCODE -ne 0 -or $finalCommit -cne $sourceCommit -or $finalStatus.Count -ne 0) {
+        throw 'The source commit or clean-checkout state changed during the Issue #33 gate.'
     }
 
     $passReport = New-Object 'System.Collections.Generic.List[string]'
     [void]$passReport.Add('HerdrOps v0.6 Issue #33 Local Export Acceptance Gate')
     [void]$passReport.Add("GeneratedUtc: $([DateTime]::UtcNow.ToString('O'))")
-    [void]$passReport.Add('Result: PASS')
-    [void]$passReport.Add('IssueAcceptance: PASS')
+    [void]$passReport.Add("SourceCommit: $sourceCommit")
+    if ($SkipBuild) {
+        [void]$passReport.Add('Result: NON-ACCEPTANCE CHECKS PASS')
+        [void]$passReport.Add('ImplementationAcceptance: NOT OBSERVED (SkipBuild permits stale binaries)')
+    }
+    else {
+        [void]$passReport.Add('Result: IMPLEMENTATION GATE PASS')
+        [void]$passReport.Add('ImplementationAcceptance: PASS')
+    }
+    [void]$passReport.Add('IssueAcceptance: PARTIAL / V0.6 RELEASE GATES PENDING')
+    [void]$passReport.Add('AcceptedUiQuerySnapshotMatch: PASS')
+    [void]$passReport.Add('SensitiveDataRedactionPolicy: PASS')
+    [void]$passReport.Add('AllV06ReleaseGates: PENDING')
     [void]$passReport.Add("SkipBuild: $SkipBuild")
     [void]$passReport.Add("Static: $staticStatus")
     [void]$passReport.Add("Synthetic: $syntheticStatus")
@@ -431,7 +534,19 @@ try {
     Add-PinReportLines -Lines $passReport -Label 'Source' -Pins $finalSourcePins
     Add-PinReportLines -Lines $passReport -Label 'Contract' -Pins $finalContractPins
     Add-PinReportLines -Lines $passReport -Label 'Fixture' -Pins $finalFixturePins
-    [void]$passReport.Add('EvidenceBoundary: This gate proves only the discovered export source/contract/fixture bytes plus bounded synthetic and contract evidence. It does not prove actual Herdr operation, installed-product behavior, independent acceptance, packaging, or v0.6 release readiness.')
+    Add-PinReportLines -Lines $passReport -Label 'TestSource' -Pins $finalTestPins
+    [void]$passReport.Add("EvaluationExportId: $($fixture.evaluationExportId)")
+    [void]$passReport.Add("EvaluationSourceSnapshotSha256: $($fixture.evaluationSourceSnapshotSha256)")
+    [void]$passReport.Add("EvaluationJsonSha256: $($fixture.evaluationJsonSha256)")
+    [void]$passReport.Add("EvaluationMarkdownSha256: $($fixture.evaluationMarkdownSha256)")
+    [void]$passReport.Add("EvaluationCsvSha256: $($fixture.evaluationCsvSha256)")
+    [void]$passReport.Add("DailyExportId: $($fixture.dailyExportId)")
+    [void]$passReport.Add("DailySourceSnapshotSha256: $($fixture.dailySourceSnapshotSha256)")
+    [void]$passReport.Add("DailyJsonSha256: $($fixture.dailyJsonSha256)")
+    [void]$passReport.Add("DailyMarkdownSha256: $($fixture.dailyMarkdownSha256)")
+    [void]$passReport.Add("DailyCsvSha256: $($fixture.dailyCsvSha256)")
+    [void]$passReport.Add('ReproducibilityReport: Fixed generationUtc plus identical canonical snapshot bytes produced the fixture-pinned JSON, Markdown, CSV, ExportId, and SourceSnapshotSha256 values verified by the focused tests.')
+    [void]$passReport.Add('EvidenceBoundary: This gate proves only the exact committed export dependencies, contract, fixtures, and bounded synthetic/contract evidence. SkipBuild runs are explicitly non-acceptance because they may execute stale binaries. The gate does not prove actual Herdr operation, installed-product behavior, independent acceptance, packaging, all v0.6 release gates, or v0.6 release readiness.')
     Write-GateReport -Lines $passReport.ToArray()
 }
 catch {
@@ -439,6 +554,7 @@ catch {
     $failureReport = New-Object 'System.Collections.Generic.List[string]'
     [void]$failureReport.Add('HerdrOps v0.6 Issue #33 Local Export Acceptance Gate')
     [void]$failureReport.Add("GeneratedUtc: $([DateTime]::UtcNow.ToString('O'))")
+    [void]$failureReport.Add("SourceCommit: $sourceCommit")
     [void]$failureReport.Add('Result: FAIL')
     [void]$failureReport.Add('IssueAcceptance: NOT OBSERVED')
     [void]$failureReport.Add("SkipBuild: $SkipBuild")
@@ -454,6 +570,7 @@ catch {
     Add-PinReportLines -Lines $failureReport -Label 'Source' -Pins $finalSourcePins
     Add-PinReportLines -Lines $failureReport -Label 'Contract' -Pins $finalContractPins
     Add-PinReportLines -Lines $failureReport -Label 'Fixture' -Pins $finalFixturePins
+    Add-PinReportLines -Lines $failureReport -Label 'TestSource' -Pins $finalTestPins
     [void]$failureReport.Add('EvidenceBoundary: Failed or incomplete export checks earn no v0.6 release credit. Actual Herdr Runtime and release evidence remain NOT OBSERVED.')
     Write-GateReport -Lines $failureReport.ToArray()
     throw

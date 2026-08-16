@@ -21,18 +21,35 @@ public sealed class SnapshotExportContractTests
             new DateTimeOffset(2026, 8, 16, 0, 0, 0, TimeSpan.Zero));
 
         var jsonBytes = Encoding.UTF8.GetBytes(export.Json);
+        var markdownBytes = Encoding.UTF8.GetBytes(export.Markdown);
         var csvBytes = Encoding.UTF8.GetBytes(export.Csv);
         CollectionAssert.AreNotEqual(new byte[] { 0xEF, 0xBB, 0xBF }, jsonBytes[..3]);
+        CollectionAssert.AreNotEqual(new byte[] { 0xEF, 0xBB, 0xBF }, markdownBytes[..3]);
         CollectionAssert.AreNotEqual(new byte[] { 0xEF, 0xBB, 0xBF }, csvBytes[..3]);
         Assert.DoesNotContain('\r', export.Json);
+        Assert.DoesNotContain('\r', export.Markdown);
         Assert.IsTrue(export.Csv.EndsWith("\r\n", StringComparison.Ordinal));
         Assert.AreEqual(
             Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(jsonBytes)),
             export.JsonSha256);
         Assert.AreEqual(
+            Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(markdownBytes)),
+            export.MarkdownSha256);
+        Assert.AreEqual(
             Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(csvBytes)),
             export.CsvSha256);
         Assert.AreEqual("UTF-8 without BOM; JSON LF; CSV CRLF", export.Encoding);
+        Assert.AreEqual(export.ExportId, export.Manifest.ExportId);
+        Assert.AreEqual(export.SourceSnapshotSha256, export.Manifest.SourceSnapshotSha256);
+        Assert.AreEqual(export.JsonSha256, export.Manifest.JsonSha256);
+        Assert.AreEqual(export.MarkdownSha256, export.Manifest.MarkdownSha256);
+        Assert.AreEqual(export.CsvSha256, export.Manifest.CsvSha256);
+        Assert.AreEqual(
+            jsonBytes.LongLength + markdownBytes.LongLength + csvBytes.LongLength,
+            export.Manifest.TotalByteLength);
+        Assert.IsLessThanOrEqualTo(
+            DeterministicSnapshotExporter.MaximumTotalOutputBytes,
+            export.Manifest.TotalByteLength);
 
         using var document = JsonDocument.Parse(export.Json);
         var root = document.RootElement;

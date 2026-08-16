@@ -243,9 +243,11 @@ public static class DeterministicSnapshotExporter
 
     public const int MaximumTotalOutputBytes = 4 * 1024 * 1024;
     public const int MaximumCollectionItems = 10_000;
-    public const int MaximumReferenceItems = 20_000;
+    public const int MaximumReferenceItems = 512;
+    public const int MaximumTotalReferenceItems = 20_000;
     public const int MaximumIdentifierLength = 256;
-    public const int MaximumTextLength = 4_096;
+    public const int MaximumTextLength = 8_192;
+    public const int MaximumTextBytes = 8_192;
     public const int MaximumObjectProperties = 128;
     public const int MaximumSerializedNodes = 100_000;
 
@@ -556,6 +558,7 @@ public static class DeterministicSnapshotExporter
     {
         if (string.IsNullOrWhiteSpace(value) ||
             value.Length > maximumLength ||
+            Encoding.UTF8.GetByteCount(value) > MaximumTextBytes ||
             value.Any(char.IsControl) ||
             !string.Equals(value, value.Trim(), StringComparison.Ordinal))
         {
@@ -1093,10 +1096,10 @@ public static class DeterministicSnapshotExporter
                 if (IsReferencePath(path))
                 {
                     referenceCount += element.GetArrayLength();
-                    if (referenceCount > MaximumReferenceItems)
+                    if (referenceCount > MaximumTotalReferenceItems)
                     {
                         throw new SnapshotExportException(
-                            $"The export exceeds the maximum reference cardinality of {MaximumReferenceItems}.");
+                            $"The export exceeds the maximum total reference cardinality of {MaximumTotalReferenceItems}.");
                     }
                 }
 
@@ -1112,10 +1115,12 @@ public static class DeterministicSnapshotExporter
                 break;
             case JsonValueKind.String:
                 var value = element.GetString();
-                if (value is not null && value.Length > MaximumTextLength)
+                if (value is not null &&
+                    (value.Length > MaximumTextLength ||
+                     Encoding.UTF8.GetByteCount(value) > MaximumTextBytes))
                 {
                     throw new SnapshotExportException(
-                        $"The export exceeds the maximum text length of {MaximumTextLength} characters.");
+                        $"The export exceeds the maximum text bound of {MaximumTextLength} characters or {MaximumTextBytes} UTF-8 bytes.");
                 }
 
                 break;
