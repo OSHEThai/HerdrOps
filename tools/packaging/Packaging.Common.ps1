@@ -133,6 +133,242 @@ function Assert-V070PreparationProfile {
     }
 }
 
+function Skip-JsonWhitespace {
+    param(
+        [Parameter(Mandatory = $true)][string]$Json,
+        [Parameter(Mandatory = $true)][ref]$Index
+    )
+
+    while ($Index.Value -lt $Json.Length) {
+        $code = [int][char]$Json[$Index.Value]
+        if ($code -ne 32 -and $code -ne 9 -and $code -ne 10 -and $code -ne 13) {
+            break
+        }
+        $Index.Value = $Index.Value + 1
+    }
+}
+
+function Read-JsonStringToken {
+    param(
+        [Parameter(Mandatory = $true)][string]$Json,
+        [Parameter(Mandatory = $true)][ref]$Index
+    )
+
+    if ($Index.Value -ge $Json.Length -or $Json[$Index.Value] -ne '"') {
+        throw 'JSON property names and string values must start with a quote.'
+    }
+
+    $builder = New-Object System.Text.StringBuilder
+    $Index.Value = $Index.Value + 1
+    while ($Index.Value -lt $Json.Length) {
+        $character = [char]$Json[$Index.Value]
+        $Index.Value = $Index.Value + 1
+        if ($character -eq '"') {
+            return $builder.ToString()
+        }
+        if ($character -eq '\') {
+            if ($Index.Value -ge $Json.Length) {
+                throw 'JSON string ended after an escape character.'
+            }
+            $escape = [char]$Json[$Index.Value]
+            $Index.Value = $Index.Value + 1
+            switch ($escape) {
+                '"' { [void]$builder.Append('"') }
+                '\' { [void]$builder.Append('\') }
+                '/' { [void]$builder.Append('/') }
+                'b' { [void]$builder.Append([char]8) }
+                'f' { [void]$builder.Append([char]12) }
+                'n' { [void]$builder.Append([char]10) }
+                'r' { [void]$builder.Append([char]13) }
+                't' { [void]$builder.Append([char]9) }
+                'u' {
+                    if ($Index.Value + 4 -gt $Json.Length) {
+                        throw 'JSON Unicode escape is truncated.'
+                    }
+                    $hex = $Json.Substring($Index.Value, 4)
+                    if ($hex -notmatch '^[0-9A-Fa-f]{4}$') {
+                        throw "JSON Unicode escape is invalid: $hex"
+                    }
+                    [void]$builder.Append([char][Convert]::ToInt32($hex, 16))
+                    $Index.Value = $Index.Value + 4
+                }
+                default {
+                    throw "JSON string contains an invalid escape sequence: \$escape"
+                }
+            }
+            continue
+        }
+        if ([int][char]$character -lt 32) {
+            throw 'JSON strings must not contain unescaped control characters.'
+        }
+        [void]$builder.Append($character)
+    }
+
+    throw 'JSON string was not terminated.'
+}
+
+function Read-JsonValueForDuplicateScan {
+    param(
+        [Parameter(Mandatory = $true)][string]$Json,
+        [Parameter(Mandatory = $true)][ref]$Index,
+        [Parameter(Mandatory = $true)][string]$Description
+    )
+
+    Skip-JsonWhitespace -Json $Json -Index $Index
+    if ($Index.Value -ge $Json.Length) {
+        throw "$Description ended before a JSON value."
+    }
+
+    switch ([char]$Json[$Index.Value]) {
+        '{' {
+            Read-JsonObjectForDuplicateScan -Json $Json -Index $Index -Description $Description
+            return
+        }
+        '[' {
+            Read-JsonArrayForDuplicateScan -Json $Json -Index $Index -Description $Description
+            return
+        }
+        '"' {
+            [void](Read-JsonStringToken -Json $Json -Index $Index)
+            return
+        }
+        default {
+            $start = $Index.Value
+            while ($Index.Value -lt $Json.Length) {
+                $character = [char]$Json[$Index.Value]
+                if ($character -eq ',' -or $character -eq ']' -or $character -eq '}' -or
+                    [int][char]$character -eq 32 -or [int][char]$character -eq 9 -or
+                    [int][char]$character -eq 10 -or [int][char]$character -eq 13) {
+                    break
+                }
+                $Index.Value = $Index.Value + 1
+            }
+            if ($Index.Value -eq $start) {
+                throw "$Description contains an invalid JSON value."
+            }
+            $token = $Json.Substring($start, $Index.Value - $start)
+            if ($token -notmatch '^(true|false|null|-?(0|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[0-9]+)?)$') {
+                throw "$Description contains an invalid JSON token: $token"
+            }
+        }
+    }
+}
+
+function Read-JsonArrayForDuplicateScan {
+    param(
+        [Parameter(Mandatory = $true)][string]$Json,
+        [Parameter(Mandatory = $true)][ref]$Index,
+        [Parameter(Mandatory = $true)][string]$Description
+    )
+
+    $Index.Value = $Index.Value + 1
+    Skip-JsonWhitespace -Json $Json -Index $Index
+    if ($Index.Value -lt $Json.Length -and $Json[$Index.Value] -eq ']') {
+        $Index.Value = $Index.Value + 1
+        return
+    }
+
+    while ($true) {
+        Read-JsonValueForDuplicateScan -Json $Json -Index $Index -Description $Description
+        Skip-JsonWhitespace -Json $Json -Index $Index
+        if ($Index.Value -ge $Json.Length) {
+            throw "$Description array was not terminated."
+        }
+        if ($Json[$Index.Value] -eq ']') {
+            $Index.Value = $Index.Value + 1
+            return
+        }
+        if ($Json[$Index.Value] -ne ',') {
+            throw "$Description array requires a comma or closing bracket."
+        }
+        $Index.Value = $Index.Value + 1
+        Skip-JsonWhitespace -Json $Json -Index $Index
+        if ($Index.Value -lt $Json.Length -and $Json[$Index.Value] -eq ']') {
+            throw "$Description array contains a trailing comma."
+        }
+    }
+}
+
+function Read-JsonObjectForDuplicateScan {
+    param(
+        [Parameter(Mandatory = $true)][string]$Json,
+        [Parameter(Mandatory = $true)][ref]$Index,
+        [Parameter(Mandatory = $true)][string]$Description
+    )
+
+    $Index.Value = $Index.Value + 1
+    $propertyNames = @()
+    Skip-JsonWhitespace -Json $Json -Index $Index
+    if ($Index.Value -lt $Json.Length -and $Json[$Index.Value] -eq '}') {
+        $Index.Value = $Index.Value + 1
+        return
+    }
+
+    while ($true) {
+        Skip-JsonWhitespace -Json $Json -Index $Index
+        if ($Index.Value -ge $Json.Length -or $Json[$Index.Value] -ne '"') {
+            throw "$Description object requires a quoted property name."
+        }
+        $propertyName = Read-JsonStringToken -Json $Json -Index $Index
+        foreach ($existingName in @($propertyNames)) {
+            if ([StringComparer]::OrdinalIgnoreCase.Equals([string]$existingName, [string]$propertyName)) {
+                throw "Duplicate JSON object property '$propertyName' detected in $Description (property names are case-insensitive)."
+            }
+        }
+        $propertyNames += $propertyName
+        Skip-JsonWhitespace -Json $Json -Index $Index
+        if ($Index.Value -ge $Json.Length -or $Json[$Index.Value] -ne ':') {
+            throw "$Description property '$propertyName' is missing a colon."
+        }
+        $Index.Value = $Index.Value + 1
+        Read-JsonValueForDuplicateScan -Json $Json -Index $Index -Description "$Description property '$propertyName'"
+        Skip-JsonWhitespace -Json $Json -Index $Index
+        if ($Index.Value -ge $Json.Length) {
+            throw "$Description object was not terminated."
+        }
+        if ($Json[$Index.Value] -eq '}') {
+            $Index.Value = $Index.Value + 1
+            return
+        }
+        if ($Json[$Index.Value] -ne ',') {
+            throw "$Description object requires a comma or closing brace."
+        }
+        $Index.Value = $Index.Value + 1
+        Skip-JsonWhitespace -Json $Json -Index $Index
+        if ($Index.Value -lt $Json.Length -and $Json[$Index.Value] -eq '}') {
+            throw "$Description object contains a trailing comma."
+        }
+    }
+}
+
+function Assert-NoDuplicateJsonObjectProperties {
+    param(
+        [Parameter(Mandatory = $true)][string]$Json,
+        [Parameter(Mandatory = $true)][string]$Description
+    )
+
+    $index = 0
+    Read-JsonValueForDuplicateScan -Json $Json -Index ([ref]$index) -Description $Description
+    Skip-JsonWhitespace -Json $Json -Index ([ref]$index)
+    if ($index -ne $Json.Length) {
+        throw "$Description contains trailing JSON content."
+    }
+}
+
+function ConvertFrom-StrictPackageJson {
+    param(
+        [Parameter(Mandatory = $true)][string]$Json,
+        [Parameter(Mandatory = $true)][string]$Description
+    )
+
+    Assert-NoDuplicateJsonObjectProperties -Json $Json -Description $Description
+    try {
+        return ($Json | ConvertFrom-Json)
+    } catch {
+        throw "$Description is not valid JSON: $($_.Exception.Message)"
+    }
+}
+
 function Read-PackageProfile {
     param([Parameter(Mandatory = $true)][string]$Path)
 
@@ -141,11 +377,8 @@ function Read-PackageProfile {
         throw "Packaging profile was not found: $fullPath"
     }
 
-    try {
-        $profile = Get-Content -LiteralPath $fullPath -Raw | ConvertFrom-Json
-    } catch {
-        throw "Packaging profile is not valid JSON: $fullPath. $($_.Exception.Message)"
-    }
+    $profileText = [IO.File]::ReadAllText($fullPath)
+    $profile = ConvertFrom-StrictPackageJson -Json $profileText -Description "Packaging profile '$fullPath'"
 
     Assert-PackageProfile -Profile $profile
     return $profile
@@ -359,6 +592,21 @@ function Write-DeterministicTextFile {
 
     $encoding = New-Object System.Text.UTF8Encoding($false)
     [IO.File]::WriteAllText((Get-FullPath -Path $Path), $normalized, $encoding)
+}
+
+function Get-PackagingFileLength {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    $fullPath = Get-FullPath -Path $Path
+    if (-not [IO.File]::Exists($fullPath)) {
+        throw "Packaging file was not found: $fullPath"
+    }
+    $stream = [IO.File]::OpenRead($fullPath)
+    try {
+        return [int64]$stream.Length
+    } finally {
+        $stream.Dispose()
+    }
 }
 
 function Get-Sha256ForBytes {
@@ -617,11 +865,8 @@ function Read-PackageManifest {
         throw "Package manifest was not found: $manifestPath"
     }
 
-    try {
-        return Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
-    } catch {
-        throw "Package manifest is not valid JSON: $manifestPath. $($_.Exception.Message)"
-    }
+    $manifestText = [IO.File]::ReadAllText($manifestPath)
+    return (ConvertFrom-StrictPackageJson -Json $manifestText -Description "Package manifest '$manifestPath'")
 }
 
 function Get-RequiredManifestProperty {
@@ -820,8 +1065,20 @@ function Copy-PackagingFileDurably {
     param(
         [Parameter(Mandatory = $true)][string]$Source,
         [Parameter(Mandatory = $true)][string]$Destination,
-        [switch]$Overwrite
+        [switch]$Overwrite,
+        [string]$TestFaultInjectionStage = 'None',
+        [switch]$TestInjectCleanupFailure
     )
+
+    if ($TestFaultInjectionStage -notin @(
+            'None',
+            'Write',
+            'Verify',
+            'Replace',
+            'AfterReplace',
+            'Delete')) {
+        throw "Unsupported durable copy fault-injection stage: $TestFaultInjectionStage"
+    }
 
     $sourcePath = Normalize-ComparablePath -Path $Source
     $destinationPath = Normalize-ComparablePath -Path $Destination
@@ -833,7 +1090,11 @@ function Copy-PackagingFileDurably {
         [pscustomobject]@{ Name = 'copy source'; Path = $sourcePath },
         [pscustomobject]@{ Name = 'copy destination'; Path = $destinationPath })
 
-    if ((Test-Path -LiteralPath $destinationPath) -and -not $Overwrite) {
+    $destinationExistsAtStart = Test-Path -LiteralPath $destinationPath -PathType Leaf
+    if ((Test-Path -LiteralPath $destinationPath) -and -not $destinationExistsAtStart) {
+        throw "Copy destination is not a file: $destinationPath"
+    }
+    if ($destinationExistsAtStart -and -not $Overwrite) {
         throw "Refusing to overwrite package destination file: $destinationPath"
     }
     $destinationParent = Split-Path -Path $destinationPath -Parent
@@ -842,79 +1103,194 @@ function Copy-PackagingFileDurably {
     }
     Assert-NoReparsePath -Path $destinationParent
 
-    $sourceHashBefore = ((Get-FileHash -LiteralPath $sourcePath -Algorithm SHA256).Hash).ToUpperInvariant()
-    $sourceLengthBefore = [int64](Get-Item -LiteralPath $sourcePath -Force).Length
-    $sourceStream = $null
-    $destinationStream = $null
-    $destinationCreated = $false
-    $writeError = $null
-    try {
-        $sourceStream = [IO.File]::Open(
-            $sourcePath,
-            [IO.FileMode]::Open,
-            [IO.FileAccess]::Read,
-            [IO.FileShare]::Read)
-        $destinationMode = [IO.FileMode]::Create
-        if (-not $Overwrite) {
-            $destinationMode = [IO.FileMode]::CreateNew
-        }
-        $destinationStream = [IO.File]::Open(
-            $destinationPath,
-            $destinationMode,
-            [IO.FileAccess]::Write,
-            [IO.FileShare]::None)
-        $destinationCreated = $true
-        $buffer = New-Object byte[] 1048576
-        $read = $sourceStream.Read($buffer, 0, $buffer.Length)
-        while ($read -gt 0) {
-            $destinationStream.Write($buffer, 0, $read)
-            $read = $sourceStream.Read($buffer, 0, $buffer.Length)
-        }
-        $destinationStream.Flush($true)
-    } catch {
-        $writeError = $_
+    $stagingPath = New-PackagingStagingFilePath -DestinationPath $destinationPath
+    $backupPath = $null
+    if ($destinationExistsAtStart) {
+        $backupPath = New-PackagingBackupFilePath -DestinationPath $destinationPath
     }
+    $pathSpecs = @(
+        [pscustomobject]@{ Name = 'copy source'; Path = $sourcePath },
+        [pscustomobject]@{ Name = 'copy destination'; Path = $destinationPath },
+        [pscustomobject]@{ Name = 'copy staging'; Path = $stagingPath })
+    if ($null -ne $backupPath) {
+        $pathSpecs += [pscustomobject]@{ Name = 'copy backup'; Path = $backupPath }
+    }
+    Assert-PackagingPathsDoNotOverlap -Paths $pathSpecs
 
-    $disposeError = $null
-    if ($null -ne $destinationStream) {
+    $sourceHashBefore = ((Get-FileHash -LiteralPath $sourcePath -Algorithm SHA256).Hash).ToUpperInvariant()
+    $sourceLengthBefore = Get-PackagingFileLength -Path $sourcePath
+    $sourceStream = $null
+    $stagingStream = $null
+    $primaryError = $null
+    $cleanupErrors = @()
+    $destinationReplaced = $false
+    $destinationMoved = $false
+    $committed = $false
+    $rollbackPath = $null
+    try {
         try {
-            $destinationStream.Dispose()
+            $sourceStream = [IO.File]::Open(
+                $sourcePath,
+                [IO.FileMode]::Open,
+                [IO.FileAccess]::Read,
+                [IO.FileShare]::Read)
+            $stagingStream = [IO.File]::Open(
+                $stagingPath,
+                [IO.FileMode]::CreateNew,
+                [IO.FileAccess]::Write,
+                [IO.FileShare]::None)
+            $buffer = New-Object byte[] 1048576
+            $read = $sourceStream.Read($buffer, 0, $buffer.Length)
+            while ($read -gt 0) {
+                $stagingStream.Write($buffer, 0, $read)
+                if ($TestFaultInjectionStage -eq 'Write') {
+                    throw 'Injected durable copy write failure.'
+                }
+                $read = $sourceStream.Read($buffer, 0, $buffer.Length)
+            }
+            $stagingStream.Flush($true)
         } catch {
-            $disposeError = $_
+            $primaryError = $_
         }
-    }
-    if ($null -ne $sourceStream) {
-        try {
-            $sourceStream.Dispose()
-        } catch {
-            if ($null -eq $disposeError) {
-                $disposeError = $_
+
+        $disposeErrors = @()
+        if ($null -ne $stagingStream) {
+            try {
+                $stagingStream.Dispose()
+            } catch {
+                $disposeErrors += $_
+            }
+            $stagingStream = $null
+        }
+        if ($null -ne $sourceStream) {
+            try {
+                $sourceStream.Dispose()
+            } catch {
+                $disposeErrors += $_
+            }
+            $sourceStream = $null
+        }
+        if ($disposeErrors.Count -gt 0) {
+            if ($null -eq $primaryError) {
+                $primaryError = $disposeErrors[0]
+                if ($disposeErrors.Count -gt 1) {
+                    $cleanupErrors += @($disposeErrors | Select-Object -Skip 1)
+                }
+            } else {
+                $cleanupErrors += $disposeErrors
             }
         }
-    }
-    if ($null -ne $writeError -or $null -ne $disposeError) {
-        if ($destinationCreated -and -not $Overwrite -and (Test-Path -LiteralPath $destinationPath)) {
-            [IO.File]::Delete($destinationPath)
+
+        if ($null -eq $primaryError) {
+            if (-not (Test-Path -LiteralPath $stagingPath -PathType Leaf)) {
+                throw "Durable copy writer did not create its staging file: $stagingPath"
+            }
+            $sourceHashAfter = ((Get-FileHash -LiteralPath $sourcePath -Algorithm SHA256).Hash).ToUpperInvariant()
+            $sourceLengthAfter = Get-PackagingFileLength -Path $sourcePath
+            $stagingLength = Get-PackagingFileLength -Path $stagingPath
+            $stagingHash = ((Get-FileHash -LiteralPath $stagingPath -Algorithm SHA256).Hash).ToUpperInvariant()
+            if ($TestFaultInjectionStage -eq 'Verify') {
+                throw 'Injected durable copy verification failure.'
+            }
+            if ($sourceHashBefore -cne $sourceHashAfter -or $sourceLengthBefore -ne $sourceLengthAfter) {
+                throw "Copy source changed during durable copy: $sourcePath"
+            }
+            if ([int64]$stagingLength -ne $sourceLengthBefore -or
+                $stagingHash -cne $sourceHashBefore) {
+                throw "Durable staged copy verification failed for '$stagingPath'."
+            }
+
+            if (Test-Path -LiteralPath $destinationPath -PathType Leaf) {
+                if (-not $destinationExistsAtStart -or -not $Overwrite) {
+                    throw "Refusing to overwrite a package destination file that appeared during copy: $destinationPath"
+                }
+            } elseif (Test-Path -LiteralPath $destinationPath) {
+                throw "Copy destination changed into a non-file: $destinationPath"
+            }
+
+            if ($TestFaultInjectionStage -eq 'Replace') {
+                throw 'Injected durable copy replace failure.'
+            }
+            if ($destinationExistsAtStart) {
+                [IO.File]::Replace($stagingPath, $destinationPath, $backupPath, $true)
+                $destinationReplaced = $true
+            } else {
+                [IO.File]::Move($stagingPath, $destinationPath)
+                $destinationMoved = $true
+            }
+            if ($TestFaultInjectionStage -eq 'AfterReplace') {
+                throw 'Injected durable copy post-replace failure.'
+            }
+
+            Assert-PackagingFileMatchesSource -Source $sourcePath -Destination $destinationPath -Description 'durable copy destination'
+            if ($TestFaultInjectionStage -eq 'Delete') {
+                if (-not $destinationExistsAtStart) {
+                    throw 'Injected durable copy delete failure requires an overwrite destination.'
+                }
+                throw 'Injected durable copy backup delete failure.'
+            }
+            if ($destinationExistsAtStart -and (Test-Path -LiteralPath $backupPath -PathType Leaf)) {
+                [IO.File]::Delete($backupPath)
+            }
+            $committed = $true
         }
-        Throw-PackagingFailure -PrimaryError $writeError -CleanupError $disposeError
+    } catch {
+        if ($null -eq $primaryError) {
+            $primaryError = $_
+        } else {
+            $cleanupErrors += $_
+        }
     }
 
-    $sourceHashAfter = ((Get-FileHash -LiteralPath $sourcePath -Algorithm SHA256).Hash).ToUpperInvariant()
-    $sourceLengthAfter = [int64](Get-Item -LiteralPath $sourcePath -Force).Length
-    if ($sourceHashBefore -cne $sourceHashAfter -or $sourceLengthBefore -ne $sourceLengthAfter) {
-        if ($destinationCreated -and -not $Overwrite -and (Test-Path -LiteralPath $destinationPath)) {
-            [IO.File]::Delete($destinationPath)
-        }
-        throw "Copy source changed during durable copy: $sourcePath"
+    if (-not $destinationReplaced -and $destinationExistsAtStart -and
+        (Test-Path -LiteralPath $backupPath -PathType Leaf) -and
+        (Test-Path -LiteralPath $destinationPath -PathType Leaf)) {
+        $destinationReplaced = $true
+    }
+    if (-not $destinationMoved -and -not $destinationExistsAtStart -and
+        -not (Test-Path -LiteralPath $stagingPath) -and
+        (Test-Path -LiteralPath $destinationPath -PathType Leaf)) {
+        $destinationMoved = $true
     }
 
-    $destinationInfo = Get-Item -LiteralPath $destinationPath -Force
-    $destinationHash = ((Get-FileHash -LiteralPath $destinationPath -Algorithm SHA256).Hash).ToUpperInvariant()
-    if ([int64]$destinationInfo.Length -ne $sourceLengthBefore -or $destinationHash -cne $sourceHashBefore) {
-        if ($destinationCreated -and -not $Overwrite -and (Test-Path -LiteralPath $destinationPath)) {
-            [IO.File]::Delete($destinationPath)
+    if ($null -ne $primaryError -and -not $committed) {
+        try {
+            if ($destinationReplaced -and (Test-Path -LiteralPath $backupPath -PathType Leaf)) {
+                $rollbackPath = New-PackagingBackupFilePath -DestinationPath $destinationPath
+                [IO.File]::Replace($backupPath, $destinationPath, $rollbackPath, $true)
+                if (Test-Path -LiteralPath $rollbackPath -PathType Leaf) {
+                    [IO.File]::Delete($rollbackPath)
+                }
+            } elseif ($destinationMoved -and -not $destinationExistsAtStart -and
+                (Test-Path -LiteralPath $destinationPath -PathType Leaf)) {
+                $rollbackPath = New-PackagingBackupFilePath -DestinationPath $destinationPath
+                [IO.File]::Move($destinationPath, $rollbackPath)
+                if (Test-Path -LiteralPath $rollbackPath -PathType Leaf) {
+                    [IO.File]::Delete($rollbackPath)
+                }
+            }
+        } catch {
+            $cleanupErrors += $_
         }
-        throw "Durable copy verification failed for '$destinationPath'."
+    }
+
+    try {
+        if (Test-Path -LiteralPath $stagingPath -PathType Leaf) {
+            Remove-PackagingStagingFile -Path $stagingPath
+        }
+    } catch {
+        $cleanupErrors += $_
+    }
+    try {
+        if ($TestInjectCleanupFailure) {
+            throw 'Injected durable copy cleanup failure.'
+        }
+    } catch {
+        $cleanupErrors += $_
+    }
+
+    if ($null -ne $primaryError -or $cleanupErrors.Count -gt 0) {
+        Throw-PackagingFailure -PrimaryError $primaryError -CleanupErrors $cleanupErrors
     }
 
     return $destinationPath
@@ -933,11 +1309,11 @@ function Assert-PackagingFileMatchesSource {
         -not (Test-Path -LiteralPath $destinationPath -PathType Leaf)) {
         throw "Post-copy verification file is missing for $Description."
     }
-    $sourceInfo = Get-Item -LiteralPath $sourcePath -Force
-    $destinationInfo = Get-Item -LiteralPath $destinationPath -Force
+    $sourceLength = Get-PackagingFileLength -Path $sourcePath
+    $destinationLength = Get-PackagingFileLength -Path $destinationPath
     $sourceHash = ((Get-FileHash -LiteralPath $sourcePath -Algorithm SHA256).Hash).ToUpperInvariant()
     $destinationHash = ((Get-FileHash -LiteralPath $destinationPath -Algorithm SHA256).Hash).ToUpperInvariant()
-    if ([int64]$sourceInfo.Length -ne [int64]$destinationInfo.Length -or
+    if ([int64]$sourceLength -ne [int64]$destinationLength -or
         $sourceHash -cne $destinationHash) {
         throw "Post-copy hash verification failed for $Description."
     }
@@ -1007,26 +1383,53 @@ function Copy-SafeDirectoryContents {
 function Throw-PackagingFailure {
     param(
         [AllowNull()][System.Management.Automation.ErrorRecord]$PrimaryError,
-        [AllowNull()][System.Management.Automation.ErrorRecord]$CleanupError
+        [AllowNull()][System.Management.Automation.ErrorRecord]$CleanupError,
+        [AllowNull()][object[]]$CleanupErrors
     )
 
+    $allCleanupErrors = @()
+    if ($null -ne $CleanupError) {
+        $allCleanupErrors += $CleanupError
+    }
+    if ($null -ne $CleanupErrors) {
+        $allCleanupErrors += @($CleanupErrors)
+    }
+
+    $cleanupExceptions = @()
+    foreach ($cleanupRecord in @($allCleanupErrors)) {
+        if ($cleanupRecord -is [System.Management.Automation.ErrorRecord]) {
+            $cleanupExceptions += $cleanupRecord.Exception
+        } elseif ($cleanupRecord -is [System.Exception]) {
+            $cleanupExceptions += $cleanupRecord
+        } else {
+            $cleanupExceptions += (New-Object System.Exception -ArgumentList ([string]$cleanupRecord))
+        }
+    }
+
     if ($null -ne $PrimaryError) {
-        if ($null -ne $CleanupError) {
+        if ($cleanupExceptions.Count -gt 0) {
             $primaryMessage = [string]$PrimaryError.Exception.Message
-            $cleanupMessage = [string]$CleanupError.Exception.Message
+            $cleanupMessage = (($cleanupExceptions | ForEach-Object { [string]$_.Message }) -join ' | ')
             $combined = New-Object System.Exception -ArgumentList @(
                 ("$primaryMessage Cleanup also failed: $cleanupMessage"),
                 $PrimaryError.Exception)
             $combined.Data['PrimaryExceptionType'] = $PrimaryError.Exception.GetType().FullName
-            $combined.Data['CleanupExceptionType'] = $CleanupError.Exception.GetType().FullName
+            $combined.Data['CleanupExceptionTypes'] = (($cleanupExceptions | ForEach-Object {
+                    $_.GetType().FullName
+                }) -join ' | ')
             throw $combined
         }
 
         throw $PrimaryError.Exception
     }
 
-    if ($null -ne $CleanupError) {
-        throw $CleanupError.Exception
+    if ($cleanupExceptions.Count -gt 0) {
+        $cleanupMessage = (($cleanupExceptions | ForEach-Object { [string]$_.Message }) -join ' | ')
+        $combined = New-Object System.Exception -ArgumentList ("Packaging cleanup failed: $cleanupMessage")
+        $combined.Data['CleanupExceptionTypes'] = (($cleanupExceptions | ForEach-Object {
+                $_.GetType().FullName
+            }) -join ' | ')
+        throw $combined
     }
 }
 
@@ -1075,6 +1478,23 @@ function New-PackagingStagingFilePath {
     return $candidate
 }
 
+function New-PackagingBackupFilePath {
+    param(
+        [Parameter(Mandatory = $true)][string]$DestinationPath
+    )
+
+    $destination = Normalize-ComparablePath -Path $DestinationPath
+    $parent = Split-Path -Path $destination -Parent
+    $name = [IO.Path]::GetFileName($destination)
+    if ([string]::IsNullOrWhiteSpace($parent) -or [string]::IsNullOrWhiteSpace($name)) {
+        throw "Could not derive an atomic backup path from destination: $destination"
+    }
+
+    $candidate = Join-Path $parent ('.' + $name + '.backup-' + [Guid]::NewGuid().ToString('N'))
+    Assert-SafeDestination -Path $candidate -AllowRepositoryChild -AllowTempChild | Out-Null
+    return $candidate
+}
+
 function Get-PackagingStagingProbePath {
     param(
         [Parameter(Mandatory = $true)][string]$DestinationPath,
@@ -1113,7 +1533,14 @@ function Invoke-PackagingAtomicFileWrite {
         [switch]$TestInjectCleanupFailure
     )
 
-    if ($TestFaultInjectionStage -notin @('None', 'MidWrite', 'BeforeCommit')) {
+    if ($TestFaultInjectionStage -notin @(
+            'None',
+            'MidWrite',
+            'Verify',
+            'BeforeCommit',
+            'Replace',
+            'AfterReplace',
+            'Delete')) {
         throw "Unsupported $OperationName fault-injection stage: $TestFaultInjectionStage"
     }
 
@@ -1129,47 +1556,82 @@ function Invoke-PackagingAtomicFileWrite {
     }
     Assert-NoReparsePath -Path $parent
 
-    # The staging name is owned by this invocation. File.Delete is idempotent for
-    # a missing path, so cleanup can safely run even when opening the stage fails.
-    $stageCreated = $true
     $committed = $false
+    $destinationMoved = $false
     $primaryError = $null
+    $cleanupErrors = @()
     try {
-        $null = & $WriteStagedFile $stagingPath $TestFaultInjectionStage
+        & $WriteStagedFile $stagingPath $TestFaultInjectionStage | Out-Null
         if (-not [IO.File]::Exists($stagingPath)) {
             throw "$OperationName writer did not create its staging file: $stagingPath"
         }
+        $stagingLength = Get-PackagingFileLength -Path $stagingPath
+        $stagingHash = ((Get-FileHash -LiteralPath $stagingPath -Algorithm SHA256).Hash).ToUpperInvariant()
+        if ($TestFaultInjectionStage -eq 'Verify') {
+            throw "Injected $OperationName verification failure."
+        }
         if ($TestFaultInjectionStage -eq 'BeforeCommit') {
             throw "Injected $OperationName failure before atomic commit."
+        }
+        if ($TestFaultInjectionStage -eq 'Replace') {
+            throw "Injected $OperationName replace failure."
         }
         if (Test-Path -LiteralPath $destination) {
             throw "Refusing to overwrite an existing $OperationName destination: $destination"
         }
         [IO.File]::Move($stagingPath, $destination)
+        $destinationMoved = $true
+        if ($TestFaultInjectionStage -eq 'AfterReplace') {
+            throw "Injected $OperationName post-replace failure."
+        }
+        if ($TestFaultInjectionStage -eq 'Delete') {
+            throw "Injected $OperationName delete failure."
+        }
+        $destinationLength = Get-PackagingFileLength -Path $destination
+        $destinationHash = ((Get-FileHash -LiteralPath $destination -Algorithm SHA256).Hash).ToUpperInvariant()
+        if ([int64]$destinationLength -ne [int64]$stagingLength -or
+            $destinationHash -cne $stagingHash) {
+            throw "$OperationName post-commit hash verification failed."
+        }
         $committed = $true
     } catch {
         $primaryError = $_
     }
 
-    $cleanupError = $null
+    if (-not $destinationMoved -and
+        -not (Test-Path -LiteralPath $stagingPath) -and
+        (Test-Path -LiteralPath $destination -PathType Leaf)) {
+        $destinationMoved = $true
+    }
+
     try {
-        if (-not $committed -and $stageCreated) {
+        if (-not $committed -and $destinationMoved -and (Test-Path -LiteralPath $destination -PathType Leaf)) {
+            [IO.File]::Delete($destination)
+        }
+    } catch {
+        $cleanupErrors += $_
+    }
+    try {
+        if (-not $committed -and (Test-Path -LiteralPath $stagingPath -PathType Leaf)) {
             Remove-PackagingStagingFile -Path $stagingPath
         }
+    } catch {
+        $cleanupErrors += $_
+    }
+    try {
         if (-not $committed -and $TestInjectCleanupFailure) {
             throw "Injected $OperationName cleanup failure."
         }
     } catch {
-        $cleanupError = $_
+        $cleanupErrors += $_
     }
 
-    if ($null -ne $primaryError -or $null -ne $cleanupError) {
-        Throw-PackagingFailure -PrimaryError $primaryError -CleanupError $cleanupError
+    if ($null -ne $primaryError -or $cleanupErrors.Count -gt 0) {
+        Throw-PackagingFailure -PrimaryError $primaryError -CleanupErrors $cleanupErrors
     }
 
     return $destination
 }
-
 function Write-PackagingBytesToStagingFile {
     param(
         [Parameter(Mandatory = $true)][string]$Path,
@@ -1262,6 +1724,7 @@ function Remove-PackagingStagingDirectory {
 
 function Publish-PackageArtifactsAtomically {
     param(
+        [AllowNull()]$Profile,
         [Parameter(Mandatory = $true)][string]$PackageRoot,
         [Parameter(Mandatory = $true)][string]$ArchivePath,
         [Parameter(Mandatory = $true)][string]$HashRecordPath,
@@ -1287,6 +1750,7 @@ function Publish-PackageArtifactsAtomically {
     if (-not (Test-Path -LiteralPath $safeHashRecord -PathType Leaf)) {
         throw "Package hash record was not found: $safeHashRecord"
     }
+    Assert-PackageHashRecordMatchesArchive -Profile $Profile -PackageRoot $safePackageRoot -ArchivePath $safeArchive -HashRecordPath $safeHashRecord -ArchiveFileName ([IO.Path]::GetFileName($safeArchive)) | Out-Null
 
     $safeOutputRoot = Assert-SafeDestination -Path $OutputRoot -AllowRepositoryChild -AllowTempChild
     Assert-PackagingPathsDoNotOverlap -Paths @(
@@ -1351,6 +1815,7 @@ function Publish-PackageArtifactsAtomically {
             -Source $safeHashRecord `
             -Destination $stagingHashPath `
             -Description 'published hash record before commit'
+        Assert-PackageHashRecordMatchesArchive -Profile $Profile -PackageRoot $stagingPackageRoot -ArchivePath $stagingArchivePath -HashRecordPath $stagingHashPath -ArchiveFileName ([IO.Path]::GetFileName($safeArchive)) | Out-Null
         if ($FaultInjectionStage -eq 'BeforeCommit') {
             throw 'Injected atomic publication failure before directory commit.'
         }
@@ -1377,7 +1842,9 @@ function Publish-PackageArtifactsAtomically {
         Throw-PackagingFailure -PrimaryError $primaryError -CleanupError $cleanupError
     }
 
+    Assert-PackageHashRecordMatchesArchive -Profile $Profile -PackageRoot (Join-Path $safeOutputRoot 'package') -ArchivePath (Join-Path $safeOutputRoot ([IO.Path]::GetFileName($safeArchive))) -HashRecordPath (Join-Path $safeOutputRoot 'package-hashes.txt') -ArchiveFileName ([IO.Path]::GetFileName($safeArchive)) | Out-Null
     return [pscustomobject][ordered]@{
+        GenerationRoot = $safeOutputRoot
         PackageRoot = (Get-FullPath -Path (Join-Path $safeOutputRoot 'package'))
         ArchivePath = (Get-FullPath -Path (Join-Path $safeOutputRoot ([IO.Path]::GetFileName($safeArchive))))
         HashRecordPath = (Get-FullPath -Path (Join-Path $safeOutputRoot 'package-hashes.txt'))
@@ -1410,6 +1877,7 @@ function Assert-ProjectMatchesPackageProfile {
     if (-not (Test-Path -LiteralPath $projectPath -PathType Leaf)) {
         throw "Profile source project was not found: $projectPath"
     }
+    Assert-NoReparsePath -Path $projectPath
 
     try {
         [xml]$project = Get-Content -LiteralPath $projectPath -Raw
@@ -1420,6 +1888,61 @@ function Assert-ProjectMatchesPackageProfile {
     if ([string]$project.Project.Sdk -cne 'Microsoft.NET.Sdk') {
         throw 'The packaging source project must use Microsoft.NET.Sdk.'
     }
+    $projectLeaf = [IO.Path]::GetFileName($projectPath)
+    $assemblyNameNodes = @($project.Project.PropertyGroup | ForEach-Object {
+            $properties = @($_.PSObject.Properties | Where-Object { $_.Name -eq 'AssemblyName' })
+            foreach ($property in $properties) {
+                if ($null -ne $property.Value) {
+                    $property.Value
+                }
+            }
+        })
+    if ($assemblyNameNodes.Count -gt 1) {
+        throw 'The packaging source project must have at most one AssemblyName property.'
+    }
+    if ($assemblyNameNodes.Count -eq 1) {
+        if ([string]$assemblyNameNodes[0] -cne 'HerdrOps.App') {
+            throw "The packaging source project AssemblyName must be exactly HerdrOps.App: $($assemblyNameNodes[0])"
+        }
+    } elseif ($projectLeaf -cne 'HerdrOps.App.csproj') {
+        throw 'AssemblyName may be omitted only by the exact HerdrOps.App.csproj filename default.'
+    }
+
+    $rootNamespaceNodes = @($project.Project.PropertyGroup | ForEach-Object {
+            $properties = @($_.PSObject.Properties | Where-Object { $_.Name -eq 'RootNamespace' })
+            foreach ($property in $properties) {
+                if ($null -ne $property.Value) {
+                    $property.Value
+                }
+            }
+        })
+    if ($rootNamespaceNodes.Count -gt 1) {
+        throw 'The packaging source project must have at most one RootNamespace property.'
+    }
+    if ($rootNamespaceNodes.Count -eq 1 -and
+        [string]$rootNamespaceNodes[0] -cne 'HerdrOps.App') {
+        throw "The packaging source project RootNamespace must be exactly HerdrOps.App: $($rootNamespaceNodes[0])"
+    }
+    if ($rootNamespaceNodes.Count -eq 0 -and $projectLeaf -cne 'HerdrOps.App.csproj') {
+        throw 'RootNamespace may be omitted only by the exact HerdrOps.App.csproj filename default.'
+    }
+
+    $targetNameNodes = @($project.Project.PropertyGroup | ForEach-Object {
+            $properties = @($_.PSObject.Properties | Where-Object { $_.Name -eq 'TargetName' })
+            foreach ($property in $properties) {
+                if ($null -ne $property.Value) {
+                    $property.Value
+                }
+            }
+        })
+    if ($targetNameNodes.Count -gt 1) {
+        throw 'The packaging source project must have at most one TargetName property.'
+    }
+    if ($targetNameNodes.Count -eq 1 -and
+        [string]$targetNameNodes[0] -cne 'HerdrOps.App') {
+        throw "The packaging source project TargetName must be exactly HerdrOps.App: $($targetNameNodes[0])"
+    }
+
     $frameworks = @($project.Project.PropertyGroup.TargetFramework | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })
     if ($frameworks.Count -ne 1 -or [string]$frameworks[0] -cne [string]$Profile.targetFramework) {
         throw "Source project target framework does not match packaging profile: $($frameworks -join ', ')."
@@ -1447,9 +1970,13 @@ function Assert-PublishedVersionIdentity {
 
     $expected = [Version]$Profile.packageVersion
     try {
-        $assemblyVersion = [Reflection.AssemblyName]::GetAssemblyName($assemblyPath).Version
+        $assemblyIdentity = [Reflection.AssemblyName]::GetAssemblyName($assemblyPath)
+        $assemblyVersion = $assemblyIdentity.Version
     } catch {
         throw "Could not read the published assembly identity: $assemblyPath. $($_.Exception.Message)"
+    }
+    if ([string]$assemblyIdentity.Name -cne 'HerdrOps.App') {
+        throw "Published assembly identity must be exactly HerdrOps.App: $($assemblyIdentity.Name)"
     }
     if ($null -eq $assemblyVersion -or
         $assemblyVersion.Major -ne $expected.Major -or
@@ -1717,13 +2244,16 @@ function Write-PackageHashRecord {
     Assert-PackageManifestMatchesRoot -Profile $Profile -PackageRoot $safePackageRoot | Out-Null
     $manifestPath = Join-Path $safePackageRoot 'package-manifest.json'
     $manifest = Read-PackageManifest -PackageRoot $safePackageRoot
-    $archiveInfo = Get-Item -LiteralPath $safeArchive
-    $manifestInfo = Get-Item -LiteralPath $manifestPath
-    $archiveHash = ((Get-FileHash -LiteralPath $archiveInfo.FullName -Algorithm SHA256).Hash).ToUpperInvariant()
-    $manifestHash = ((Get-FileHash -LiteralPath $manifestInfo.FullName -Algorithm SHA256).Hash).ToUpperInvariant()
+    $archivePath = Get-FullPath -Path $safeArchive
+    $manifestFullPath = Get-FullPath -Path $manifestPath
+    $archiveName = [IO.Path]::GetFileName($archivePath)
+    $archiveBytes = Get-PackagingFileLength -Path $archivePath
+    $manifestBytes = Get-PackagingFileLength -Path $manifestFullPath
+    $archiveHash = ((Get-FileHash -LiteralPath $archivePath -Algorithm SHA256).Hash).ToUpperInvariant()
+    $manifestHash = ((Get-FileHash -LiteralPath $manifestFullPath -Algorithm SHA256).Hash).ToUpperInvariant()
 
     if ([string]::IsNullOrWhiteSpace($ArchiveFileName)) {
-        $ArchiveFileName = $archiveInfo.Name
+        $ArchiveFileName = $archiveName
     }
     if ($ArchiveFileName -match '[\\/]') {
         throw 'Package hash record archive file name must be a single file name.'
@@ -1735,10 +2265,10 @@ function Write-PackageHashRecord {
         "PackageVersion: $($Profile.packageVersion)",
         "RuntimeIdentifier: $($Profile.runtimeIdentifier)",
         "ArchiveFile: $ArchiveFileName",
-        "ArchiveBytes: $($archiveInfo.Length)",
+        "ArchiveBytes: $archiveBytes",
         "ArchiveSha256: $archiveHash",
         'ManifestFile: package-manifest.json',
-        "ManifestBytes: $($manifestInfo.Length)",
+        "ManifestBytes: $manifestBytes",
         "ManifestSha256: $manifestHash",
         "ContentSha256: $($manifest.contentSha256)",
         'EvidenceClass: Static')
@@ -1758,15 +2288,280 @@ function Write-PackageHashRecord {
                 -TestFaultInjectionStage $faultStage
         }
 
+    Assert-PackageHashRecordMatchesArchive -Profile $Profile -PackageRoot $safePackageRoot -ArchivePath $safeArchive -HashRecordPath $writtenHashPath -ArchiveFileName $ArchiveFileName | Out-Null
     return [pscustomobject][ordered]@{
-        ArchivePath = $archiveInfo.FullName
-        ArchiveBytes = [int64]$archiveInfo.Length
+        ArchivePath = $archivePath
+        ArchiveBytes = [int64]$archiveBytes
         ArchiveSha256 = $archiveHash
-        ManifestPath = (Get-FullPath -Path $manifestInfo.FullName)
-        ManifestBytes = [int64]$manifestInfo.Length
+        ManifestPath = $manifestFullPath
+        ManifestBytes = [int64]$manifestBytes
         ManifestSha256 = $manifestHash
         ContentSha256 = [string]$manifest.contentSha256
         HashRecordPath = $writtenHashPath
+    }
+}
+
+function Read-PackageKeyValueRecord {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$ExpectedHeader,
+        [Parameter(Mandatory = $true)][string[]]$ExpectedKeys,
+        [Parameter(Mandatory = $true)][string]$Description
+    )
+
+    $fullPath = Assert-SafeDestination -Path $Path -AllowRepositoryChild -AllowTempChild
+    if (-not (Test-Path -LiteralPath $fullPath -PathType Leaf)) {
+        throw "$Description was not found: $fullPath"
+    }
+    $text = [IO.File]::ReadAllText($fullPath)
+    $normalized = $text.Replace(([string][char]13 + [string][char]10), [string][char]10).Replace([string][char]13, [string][char]10)
+    if (-not $normalized.EndsWith([string][char]10, [StringComparison]::Ordinal)) {
+        throw "$Description must end with one newline."
+    }
+    $lines = @($normalized.Substring(0, $normalized.Length - 1).Split([char]10))
+    if ($lines.Count -ne ($ExpectedKeys.Count + 1) -or
+        [string]$lines[0] -cne $ExpectedHeader) {
+        throw "$Description has an unexpected header or line count."
+    }
+
+    $record = [ordered]@{}
+    for ($index = 0; $index -lt $ExpectedKeys.Count; $index++) {
+        $line = [string]$lines[$index + 1]
+        $separator = $line.IndexOf([char]58)
+        if ($separator -le 0 -or $separator + 1 -ge $line.Length -or
+            $line[$separator + 1] -cne ' ') {
+            throw "$Description line $($index + 1) is not a key-value line."
+        }
+        $key = $line.Substring(0, $separator)
+        if ($key -cne $ExpectedKeys[$index]) {
+            throw "$Description key order is not canonical at line $($index + 1)."
+        }
+        $record[$key] = $line.Substring($separator + 2)
+    }
+
+    return [pscustomobject]$record
+}
+
+function Read-PackageHashRecord {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    return (Read-PackageKeyValueRecord -Path $Path -ExpectedHeader 'HerdrOps package integrity record' -ExpectedKeys @(
+            'SchemaVersion',
+            'ProductId',
+            'PackageVersion',
+            'RuntimeIdentifier',
+            'ArchiveFile',
+            'ArchiveBytes',
+            'ArchiveSha256',
+            'ManifestFile',
+            'ManifestBytes',
+            'ManifestSha256',
+            'ContentSha256',
+            'EvidenceClass') -Description 'Package hash record')
+}
+
+function Assert-PackageHashRecordMatchesArchive {
+    param(
+        [AllowNull()]$Profile,
+        [Parameter(Mandatory = $true)][string]$PackageRoot,
+        [Parameter(Mandatory = $true)][string]$ArchivePath,
+        [Parameter(Mandatory = $true)][string]$HashRecordPath,
+        [string]$ArchiveFileName
+    )
+
+    $safePackageRoot = Assert-SafeDestination -Path $PackageRoot -AllowRepositoryChild -AllowTempChild
+    $safeArchive = Assert-SafeDestination -Path $ArchivePath -AllowRepositoryChild -AllowTempChild
+    $safeHashRecord = Assert-SafeDestination -Path $HashRecordPath -AllowRepositoryChild -AllowTempChild
+    if (-not (Test-Path -LiteralPath $safeArchive -PathType Leaf)) {
+        throw "Package archive was not found: $safeArchive"
+    }
+    if (-not (Test-Path -LiteralPath $safeHashRecord -PathType Leaf)) {
+        throw "Package hash record was not found: $safeHashRecord"
+    }
+    Assert-NoReparsePath -Path $safeArchive
+    Assert-NoReparsePath -Path $safeHashRecord
+    Assert-PackagingPathsDoNotOverlap -Paths @(
+        [pscustomobject]@{ Name = 'package root'; Path = $safePackageRoot },
+        [pscustomobject]@{ Name = 'archive'; Path = $safeArchive },
+        [pscustomobject]@{ Name = 'hash record'; Path = $safeHashRecord })
+
+    $archiveBytes = Get-PackagingFileLength -Path $safeArchive
+    if ([string]::IsNullOrWhiteSpace($ArchiveFileName)) {
+        $ArchiveFileName = [IO.Path]::GetFileName($safeArchive)
+    }
+    if ($ArchiveFileName -match '[\\/]') {
+        throw 'Package hash record archive file name must be a single file name.'
+    }
+
+    $record = Read-PackageHashRecord -Path $safeHashRecord
+    if ([string]$record.SchemaVersion -cne '1' -or
+        [string]$record.ArchiveFile -cne $ArchiveFileName -or
+        [string]$record.ManifestFile -cne 'package-manifest.json' -or
+        [string]$record.EvidenceClass -cne 'Static') {
+        throw 'Package hash record metadata is not bound to the expected package pair.'
+    }
+    if ([string]$record.ArchiveBytes -notmatch '^[0-9]+$' -or
+        [string]$record.ManifestBytes -notmatch '^[0-9]+$') {
+        throw 'Package hash record byte lengths are not unsigned decimal integers.'
+    }
+    if ([string]$record.ArchiveSha256 -notmatch '^[0-9A-F]{64}$' -or
+        [string]$record.ManifestSha256 -notmatch '^[0-9A-F]{64}$' -or
+        [string]$record.ContentSha256 -notmatch '^[0-9A-F]{64}$') {
+        throw 'Package hash record SHA-256 values must be uppercase 64-character values.'
+    }
+
+    if ($null -ne $Profile) {
+        Assert-PackageProfile -Profile $Profile
+        if ([string]$record.ProductId -cne [string]$Profile.productId -or
+            [string]$record.PackageVersion -cne [string]$Profile.packageVersion -or
+            [string]$record.RuntimeIdentifier -cne [string]$Profile.runtimeIdentifier) {
+            throw 'Package hash record product identity does not match the authorized profile.'
+        }
+    }
+
+    $actualArchiveHash = ((Get-FileHash -LiteralPath $safeArchive -Algorithm SHA256).Hash).ToUpperInvariant()
+    $actualArchiveBytes = [int64]$archiveBytes
+    if ([int64]$record.ArchiveBytes -ne $actualArchiveBytes -or
+        [string]$record.ArchiveSha256 -cne $actualArchiveHash) {
+        throw 'Package hash record does not match independently computed archive bytes.'
+    }
+
+    $manifestPath = Join-Path $safePackageRoot 'package-manifest.json'
+    if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) {
+        throw "Package manifest was not found for hash-record verification: $manifestPath"
+    }
+    if ($null -ne $Profile) {
+        Assert-PackageManifestMatchesRoot -Profile $Profile -PackageRoot $safePackageRoot | Out-Null
+    }
+    $manifest = Read-PackageManifest -PackageRoot $safePackageRoot
+    $manifestBytes = Get-PackagingFileLength -Path $manifestPath
+    $actualManifestHash = ((Get-FileHash -LiteralPath $manifestPath -Algorithm SHA256).Hash).ToUpperInvariant()
+    if ([int64]$record.ManifestBytes -ne [int64]$manifestBytes -or
+        [string]$record.ManifestSha256 -cne $actualManifestHash -or
+        [string]$record.ContentSha256 -cne [string]$manifest.contentSha256) {
+        throw 'Package hash record is not coherent with the independently verified package manifest.'
+    }
+
+    return [pscustomobject][ordered]@{
+        ArchivePath = $safeArchive
+        ArchiveBytes = $actualArchiveBytes
+        ArchiveSha256 = $actualArchiveHash
+        HashRecordPath = $safeHashRecord
+        ManifestPath = (Get-FullPath -Path $manifestPath)
+        ManifestBytes = [int64]$manifestBytes
+        ManifestSha256 = $actualManifestHash
+        ContentSha256 = [string]$manifest.contentSha256
+    }
+}
+
+function Get-PackagingPairCommitMarkerPath {
+    param(
+        [Parameter(Mandatory = $true)][string]$ArchivePath,
+        [Parameter(Mandatory = $true)][string]$HashRecordPath
+    )
+
+    $archive = Normalize-ComparablePath -Path $ArchivePath
+    $hashRecord = Normalize-ComparablePath -Path $HashRecordPath
+    $archiveParent = Normalize-ComparablePath -Path (Split-Path -Path $archive -Parent)
+    $hashParent = Normalize-ComparablePath -Path (Split-Path -Path $hashRecord -Parent)
+    if (-not $archiveParent.Equals($hashParent, [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'Archive and hash record must share one parent for a single atomic commit marker.'
+    }
+
+    $identity = [string]::Concat(
+        ([IO.Path]::GetFileName($archive)).ToUpperInvariant(),
+        [char]0,
+        ([IO.Path]::GetFileName($hashRecord)).ToUpperInvariant())
+    $token = (Get-Sha256ForText -Text $identity).Substring(0, 32)
+    $marker = Join-Path $archiveParent ('.herdrops-package-pair-' + $token + '.commit')
+    Assert-SafeDestination -Path $marker -AllowRepositoryChild -AllowTempChild | Out-Null
+    return $marker
+}
+
+function New-PackagePairCommitMarkerText {
+    param(
+        [Parameter(Mandatory = $true)][string]$ArchivePath,
+        [Parameter(Mandatory = $true)][string]$HashRecordPath
+    )
+
+    $archive = Get-FullPath -Path $ArchivePath
+    $hashRecord = Get-FullPath -Path $HashRecordPath
+    $archiveName = [IO.Path]::GetFileName($archive)
+    $hashRecordName = [IO.Path]::GetFileName($hashRecord)
+    $archiveBytes = Get-PackagingFileLength -Path $archive
+    $hashRecordBytes = Get-PackagingFileLength -Path $hashRecord
+    $archiveHash = ((Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash).ToUpperInvariant()
+    $hashRecordHash = ((Get-FileHash -LiteralPath $hashRecord -Algorithm SHA256).Hash).ToUpperInvariant()
+    $lines = @(
+        'HerdrOps package archive/hash commit marker',
+        'SchemaVersion: 1',
+        "ArchiveFile: $archiveName",
+        "HashRecordFile: $hashRecordName",
+        "ArchiveBytes: $archiveBytes",
+        "ArchiveSha256: $archiveHash",
+        "HashRecordBytes: $hashRecordBytes",
+        "HashRecordSha256: $hashRecordHash",
+        'EvidenceClass: Static')
+    return (($lines -join [char]10) + [char]10)
+}
+
+function Read-PackagePairCommitMarker {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    return (Read-PackageKeyValueRecord -Path $Path -ExpectedHeader 'HerdrOps package archive/hash commit marker' -ExpectedKeys @(
+            'SchemaVersion',
+            'ArchiveFile',
+            'HashRecordFile',
+            'ArchiveBytes',
+            'ArchiveSha256',
+            'HashRecordBytes',
+            'HashRecordSha256',
+            'EvidenceClass') -Description 'Package archive/hash commit marker')
+}
+
+function Assert-PackageArchiveHashPairCommitted {
+    param(
+        [AllowNull()]$Profile,
+        [Parameter(Mandatory = $true)][string]$PackageRoot,
+        [Parameter(Mandatory = $true)][string]$ArchivePath,
+        [Parameter(Mandatory = $true)][string]$HashRecordPath
+    )
+
+    $safeArchive = Assert-SafeDestination -Path $ArchivePath -AllowRepositoryChild -AllowTempChild
+    $safeHashRecord = Assert-SafeDestination -Path $HashRecordPath -AllowRepositoryChild -AllowTempChild
+    $markerPath = Get-PackagingPairCommitMarkerPath -ArchivePath $safeArchive -HashRecordPath $safeHashRecord
+    if (-not (Test-Path -LiteralPath $markerPath -PathType Leaf)) {
+        throw "Package archive/hash pair has no committed generation marker: $markerPath"
+    }
+    $marker = Read-PackagePairCommitMarker -Path $markerPath
+    $archiveName = [IO.Path]::GetFileName($safeArchive)
+    $hashRecordName = [IO.Path]::GetFileName($safeHashRecord)
+    $archiveBytes = Get-PackagingFileLength -Path $safeArchive
+    $hashRecordBytes = Get-PackagingFileLength -Path $safeHashRecord
+    $archiveHash = ((Get-FileHash -LiteralPath $safeArchive -Algorithm SHA256).Hash).ToUpperInvariant()
+    $hashRecordHash = ((Get-FileHash -LiteralPath $safeHashRecord -Algorithm SHA256).Hash).ToUpperInvariant()
+    if ([string]$marker.SchemaVersion -cne '1' -or
+        [string]$marker.ArchiveFile -cne $archiveName -or
+        [string]$marker.HashRecordFile -cne $hashRecordName -or
+        [string]$marker.ArchiveBytes -cne [string]$archiveBytes -or
+        [string]$marker.ArchiveSha256 -cne $archiveHash -or
+        [string]$marker.HashRecordBytes -cne [string]$hashRecordBytes -or
+        [string]$marker.HashRecordSha256 -cne $hashRecordHash -or
+        [string]$marker.EvidenceClass -cne 'Static') {
+        throw 'Package archive/hash commit marker does not match the visible pair bytes.'
+    }
+
+    $pair = Assert-PackageHashRecordMatchesArchive -Profile $Profile -PackageRoot $PackageRoot -ArchivePath $safeArchive -HashRecordPath $safeHashRecord -ArchiveFileName $archiveName
+    return [pscustomobject][ordered]@{
+        ArchivePath = $pair.ArchivePath
+        HashRecordPath = $pair.HashRecordPath
+        CommitMarkerPath = (Get-FullPath -Path $markerPath)
+        ArchiveBytes = $pair.ArchiveBytes
+        ArchiveSha256 = $pair.ArchiveSha256
+        ManifestPath = $pair.ManifestPath
+        ManifestBytes = $pair.ManifestBytes
+        ManifestSha256 = $pair.ManifestSha256
+        ContentSha256 = $pair.ContentSha256
     }
 }
 
@@ -1786,9 +2581,13 @@ function Publish-PackageArchiveAndHashAtomically {
             'Hash',
             'AfterArchive',
             'AfterHash',
+            'Verify',
             'BeforeCommit',
+            'AfterArchiveMove',
+            'AfterHashMove',
             'AfterArchiveCommit',
-            'AfterHashCommit')) {
+            'AfterHashCommit',
+            'CommitMarker')) {
         throw "Unsupported package archive pair fault-injection stage: $TestFaultInjectionStage"
     }
 
@@ -1799,47 +2598,46 @@ function Publish-PackageArchiveAndHashAtomically {
     }
     $safeArchive = Assert-SafeDestination -Path $ArchivePath -AllowRepositoryChild -AllowTempChild
     $safeHashRecord = Assert-SafeDestination -Path $HashRecordPath -AllowRepositoryChild -AllowTempChild
+    $markerPath = Get-PackagingPairCommitMarkerPath -ArchivePath $safeArchive -HashRecordPath $safeHashRecord
     Assert-PackagingPathsDoNotOverlap -Paths @(
         [pscustomobject]@{ Name = 'package root'; Path = $safePackageRoot },
         [pscustomobject]@{ Name = 'archive destination'; Path = $safeArchive },
         [pscustomobject]@{ Name = 'hash-record destination'; Path = $safeHashRecord },
-        [pscustomobject]@{ Name = 'archive staging probe'; Path = (Get-PackagingStagingProbePath -DestinationPath $safeArchive) },
-        [pscustomobject]@{ Name = 'hash-record staging probe'; Path = (Get-PackagingStagingProbePath -DestinationPath $safeHashRecord) })
-    if (Test-Path -LiteralPath $safeArchive) {
-        throw "Refusing to overwrite an existing package archive: $safeArchive"
-    }
-    if (Test-Path -LiteralPath $safeHashRecord) {
-        throw "Refusing to overwrite an existing package hash record: $safeHashRecord"
-    }
-
-    Assert-PackageManifestMatchesRoot -Profile $Profile -PackageRoot $safePackageRoot | Out-Null
-
-    $archiveParent = Split-Path -Path $safeArchive -Parent
-    $hashParent = Split-Path -Path $safeHashRecord -Parent
-    foreach ($parent in @($archiveParent, $hashParent)) {
-        if (-not (Test-Path -LiteralPath $parent -PathType Container)) {
-            New-Item -ItemType Directory -Path $parent -Force | Out-Null
+        [pscustomobject]@{ Name = 'commit marker'; Path = $markerPath },
+        [pscustomobject]@{ Name = 'pair staging probe'; Path = (Get-PackagingStagingProbePath -DestinationPath $markerPath -Directory) })
+    foreach ($existingPath in @($safeArchive, $safeHashRecord, $markerPath)) {
+        if (Test-Path -LiteralPath $existingPath) {
+            throw "Refusing to overwrite an existing package pair destination: $existingPath"
         }
-        Assert-NoReparsePath -Path $parent
     }
 
-    $stagingArchive = New-PackagingStagingFilePath -DestinationPath $safeArchive
-    $stagingHashRecord = New-PackagingStagingFilePath -DestinationPath $safeHashRecord
-    $archiveCommitted = $false
-    $hashCommitted = $false
+    $pairParent = Split-Path -Path $safeArchive -Parent
+    if (-not (Test-Path -LiteralPath $pairParent -PathType Container)) {
+        New-Item -ItemType Directory -Path $pairParent -Force | Out-Null
+    }
+    Assert-NoReparsePath -Path $pairParent
+
+    $stagingRoot = $null
+    $stagingArchive = $null
+    $stagingHashRecord = $null
+    $stagingMarker = $null
+    $archiveMoved = $false
+    $hashMoved = $false
+    $markerMoved = $false
     $committed = $false
     $primaryError = $null
-    $archiveHashBeforeCommit = $null
-    $hashHashBeforeCommit = $null
+    $cleanupErrors = @()
     try {
+        $stagingRoot = New-PackagingStagingDirectory -OutputRoot $markerPath
+        $stagingArchive = Join-Path $stagingRoot ([IO.Path]::GetFileName($safeArchive))
+        $stagingHashRecord = Join-Path $stagingRoot ([IO.Path]::GetFileName($safeHashRecord))
+        $stagingMarker = Join-Path $stagingRoot 'commit.marker'
+
         $archiveStage = 'None'
         if ($TestFaultInjectionStage -eq 'Archive') {
             $archiveStage = 'MidWrite'
         }
-        New-DeterministicPackageArchive `
-            -PackageRoot $safePackageRoot `
-            -ArchivePath $stagingArchive `
-            -TestFaultInjectionStage $archiveStage | Out-Null
+        New-DeterministicPackageArchive -PackageRoot $safePackageRoot -ArchivePath $stagingArchive -TestFaultInjectionStage $archiveStage | Out-Null
         if ($TestFaultInjectionStage -eq 'AfterArchive') {
             throw 'Injected package archive pair failure after archive staging.'
         }
@@ -1848,118 +2646,90 @@ function Publish-PackageArchiveAndHashAtomically {
         if ($TestFaultInjectionStage -eq 'Hash') {
             $hashStage = 'MidWrite'
         }
-        Write-PackageHashRecord `
-            -Profile $Profile `
-            -PackageRoot $safePackageRoot `
-            -ArchivePath $stagingArchive `
-            -ArchiveFileName ([IO.Path]::GetFileName($safeArchive)) `
-            -Path $stagingHashRecord `
-            -TestFaultInjectionStage $hashStage | Out-Null
+        Write-PackageHashRecord -Profile $Profile -PackageRoot $safePackageRoot -ArchivePath $stagingArchive -ArchiveFileName ([IO.Path]::GetFileName($safeArchive)) -Path $stagingHashRecord -TestFaultInjectionStage $hashStage | Out-Null
         if ($TestFaultInjectionStage -eq 'AfterHash') {
             throw 'Injected package archive pair failure after hash-record staging.'
         }
 
-        $archiveHashBeforeCommit = ((Get-FileHash -LiteralPath $stagingArchive -Algorithm SHA256).Hash).ToUpperInvariant()
-        $hashHashBeforeCommit = ((Get-FileHash -LiteralPath $stagingHashRecord -Algorithm SHA256).Hash).ToUpperInvariant()
-        Assert-PackagingFileMatchesSource `
-            -Source $stagingArchive `
-            -Destination $stagingArchive `
-            -Description 'archive pair archive before commit'
-        Assert-PackagingFileMatchesSource `
-            -Source $stagingHashRecord `
-            -Destination $stagingHashRecord `
-            -Description 'archive pair hash record before commit'
-        if ($TestFaultInjectionStage -eq 'BeforeCommit') {
-            throw 'Injected package archive pair failure before atomic commit.'
+        Assert-PackageHashRecordMatchesArchive -Profile $Profile -PackageRoot $safePackageRoot -ArchivePath $stagingArchive -HashRecordPath $stagingHashRecord -ArchiveFileName ([IO.Path]::GetFileName($safeArchive)) | Out-Null
+        if ($TestFaultInjectionStage -eq 'Verify') {
+            throw 'Injected package archive pair verification failure.'
         }
-        if ((Test-Path -LiteralPath $safeArchive) -or (Test-Path -LiteralPath $safeHashRecord)) {
-            throw 'Refusing to overwrite a package archive/hash-record destination that appeared during staging.'
+        $markerText = New-PackagePairCommitMarkerText -ArchivePath $stagingArchive -HashRecordPath $stagingHashRecord
+        $markerBytes = (New-Object System.Text.UTF8Encoding($false)).GetBytes($markerText)
+        Write-PackagingBytesToStagingFile -Path $stagingMarker -Bytes $markerBytes -OperationName 'package archive pair commit marker'
+        if ($TestFaultInjectionStage -eq 'BeforeCommit') {
+            throw 'Injected package archive pair failure before atomic commit marker.'
         }
 
+        foreach ($finalPath in @($safeArchive, $safeHashRecord, $markerPath)) {
+            if (Test-Path -LiteralPath $finalPath) {
+                throw "Refusing to overwrite a package pair destination that appeared during staging: $finalPath"
+            }
+        }
         [IO.File]::Move($stagingArchive, $safeArchive)
-        $archiveCommitted = $true
-        if ($TestFaultInjectionStage -eq 'AfterArchiveCommit') {
-            throw 'Injected package archive pair failure after archive commit.'
+        $archiveMoved = $true
+        if ($TestFaultInjectionStage -eq 'AfterArchiveMove' -or $TestFaultInjectionStage -eq 'AfterArchiveCommit') {
+            throw 'Injected package archive pair failure after archive move before commit marker.'
         }
         [IO.File]::Move($stagingHashRecord, $safeHashRecord)
-        $hashCommitted = $true
-        if ($TestFaultInjectionStage -eq 'AfterHashCommit') {
-            throw 'Injected package archive pair failure after hash-record commit.'
+        $hashMoved = $true
+        if ($TestFaultInjectionStage -eq 'AfterHashMove' -or $TestFaultInjectionStage -eq 'AfterHashCommit') {
+            throw 'Injected package archive pair failure after hash-record move before commit marker.'
         }
-
-        $archiveHashAfterCommit = ((Get-FileHash -LiteralPath $safeArchive -Algorithm SHA256).Hash).ToUpperInvariant()
-        $hashHashAfterCommit = ((Get-FileHash -LiteralPath $safeHashRecord -Algorithm SHA256).Hash).ToUpperInvariant()
-        if ($archiveHashAfterCommit -cne $archiveHashBeforeCommit -or
-            $hashHashAfterCommit -cne $hashHashBeforeCommit) {
-            throw 'Package archive/hash-record post-commit hash verification failed.'
+        if ($TestFaultInjectionStage -eq 'CommitMarker') {
+            throw 'Injected package archive pair failure before commit marker move.'
         }
+        [IO.File]::Move($stagingMarker, $markerPath)
+        $markerMoved = $true
+        Assert-PackageArchiveHashPairCommitted -Profile $Profile -PackageRoot $safePackageRoot -ArchivePath $safeArchive -HashRecordPath $safeHashRecord | Out-Null
         $committed = $true
     } catch {
         $primaryError = $_
     }
 
-    $cleanupError = $null
     try {
-        if (-not $committed -and $hashCommitted -and (Test-Path -LiteralPath $safeHashRecord)) {
+        if (-not $committed) {
+            if ($markerMoved -and (Test-Path -LiteralPath $markerPath -PathType Leaf)) {
+                [IO.File]::Delete($markerPath)
+            }
+        }
+    } catch {
+        $cleanupErrors += $_
+    }
+    try {
+        if (-not $committed -and $hashMoved -and (Test-Path -LiteralPath $safeHashRecord -PathType Leaf)) {
             [IO.File]::Delete($safeHashRecord)
         }
     } catch {
-        $cleanupError = $_
+        $cleanupErrors += $_
     }
     try {
-        if (-not $committed -and $archiveCommitted -and (Test-Path -LiteralPath $safeArchive)) {
+        if (-not $committed -and $archiveMoved -and (Test-Path -LiteralPath $safeArchive -PathType Leaf)) {
             [IO.File]::Delete($safeArchive)
         }
     } catch {
-        if ($null -eq $cleanupError) {
-            $cleanupError = $_
-        }
+        $cleanupErrors += $_
     }
     try {
-        if (-not $committed -and (Test-Path -LiteralPath $stagingHashRecord)) {
-            Remove-PackagingStagingFile -Path $stagingHashRecord
+        if ($null -ne $stagingRoot -and (Test-Path -LiteralPath $stagingRoot)) {
+            Remove-PackagingStagingDirectory -Path $stagingRoot
         }
     } catch {
-        if ($null -eq $cleanupError) {
-            $cleanupError = $_
-        }
-    }
-    try {
-        if (-not $committed -and (Test-Path -LiteralPath $stagingArchive)) {
-            Remove-PackagingStagingFile -Path $stagingArchive
-        }
-    } catch {
-        if ($null -eq $cleanupError) {
-            $cleanupError = $_
-        }
+        $cleanupErrors += $_
     }
     try {
         if (-not $committed -and $TestInjectCleanupFailure) {
             throw 'Injected package archive pair cleanup failure.'
         }
     } catch {
-        if ($null -eq $cleanupError) {
-            $cleanupError = $_
-        }
+        $cleanupErrors += $_
     }
 
-    if ($null -ne $primaryError -or $null -ne $cleanupError) {
-        Throw-PackagingFailure -PrimaryError $primaryError -CleanupError $cleanupError
+    if ($null -ne $primaryError -or $cleanupErrors.Count -gt 0) {
+        Throw-PackagingFailure -PrimaryError $primaryError -CleanupErrors $cleanupErrors
     }
 
-    $archiveInfo = Get-Item -LiteralPath $safeArchive -Force
-    $hashInfo = Get-Item -LiteralPath $safeHashRecord -Force
-    $manifestPath = Join-Path $safePackageRoot 'package-manifest.json'
-    $manifestInfo = Get-Item -LiteralPath $manifestPath -Force
-    $manifest = Read-PackageManifest -PackageRoot $safePackageRoot
-    return [pscustomobject][ordered]@{
-        ArchivePath = $archiveInfo.FullName
-        ArchiveBytes = [int64]$archiveInfo.Length
-        ArchiveSha256 = ((Get-FileHash -LiteralPath $archiveInfo.FullName -Algorithm SHA256).Hash).ToUpperInvariant()
-        ManifestPath = $manifestInfo.FullName
-        ManifestBytes = [int64]$manifestInfo.Length
-        ManifestSha256 = ((Get-FileHash -LiteralPath $manifestInfo.FullName -Algorithm SHA256).Hash).ToUpperInvariant()
-        ContentSha256 = [string]$manifest.contentSha256
-        HashRecordPath = $hashInfo.FullName
-    }
+    $pair = Assert-PackageArchiveHashPairCommitted -Profile $Profile -PackageRoot $safePackageRoot -ArchivePath $safeArchive -HashRecordPath $safeHashRecord
+    return $pair
 }

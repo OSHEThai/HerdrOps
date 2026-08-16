@@ -50,4 +50,5 @@ $record = Publish-PackageArchiveAndHashAtomically `
     ManifestSha256 = $record.ManifestSha256
     ContentSha256 = $record.ContentSha256
     HashRecordPath = $record.HashRecordPath
+    CommitMarkerPath = $record.CommitMarkerPath
 }

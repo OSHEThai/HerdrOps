@@ -26,7 +26,7 @@ function New-SyntheticVersionProfile {
         [Parameter(Mandatory = $true)][string]$Version
     )
 
-    $clone = ($BaseProfile | ConvertTo-Json -Depth 20 | ConvertFrom-Json)
+    $clone = ConvertFrom-StrictPackageJson -Json ($BaseProfile | ConvertTo-Json -Depth 20) -Description 'Synthetic profile clone'
     $upgradeProperty = @($clone.PSObject.Properties | Where-Object { $_.Name -eq 'syntheticUpgradeVersion' })
     if ($upgradeProperty.Count -eq 1) {
         $clone.PSObject.Properties.Remove('syntheticUpgradeVersion')

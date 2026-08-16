@@ -6,6 +6,7 @@ param(
     [string]$ProfilePath,
     [AllowEmptyString()][string]$PackageVersion,
     [string]$TestFaultInjectionStage = 'None',
+    [string]$TestDotnetCommandPath,
     [switch]$TestInjectPrimaryFailure,
     [switch]$TestInjectCleanupFailure
 )
@@ -79,7 +80,14 @@ $operationOutput = Invoke-PackagingOperationWithCleanup -Operation {
         '-p:RestorePackagesWithLockFile=false',
         ('-p:NuGetLockFilePath=' + $isolatedLockPath))
 
-    $publishOutput = @(& dotnet @publishArguments 2>&1)
+    $dotnetCommand = 'dotnet'
+    if (-not [string]::IsNullOrWhiteSpace($TestDotnetCommandPath)) {
+        $dotnetCommand = Get-FullPath -Path $TestDotnetCommandPath
+        if (-not (Test-Path -LiteralPath $dotnetCommand -PathType Leaf)) {
+            throw "Test dotnet command was not found: $dotnetCommand"
+        }
+    }
+    $publishOutput = @(& $dotnetCommand @publishArguments 2>&1)
     $publishExitCode = $LASTEXITCODE
     $publishOutput | ForEach-Object { Write-Verbose ([string]$_) }
     $lockDrift = @()
@@ -115,6 +123,7 @@ $operationOutput = Invoke-PackagingOperationWithCleanup -Operation {
     $record = Write-PackageHashRecord -Profile $profile -PackageRoot $packageRoot -ArchivePath $archive -Path $hashRecordPath
 
     $publication = Publish-PackageArtifactsAtomically `
+        -Profile $profile `
         -PackageRoot $packageRoot `
         -ArchivePath $archive `
         -HashRecordPath $hashRecordPath `
@@ -126,6 +135,7 @@ $operationOutput = Invoke-PackagingOperationWithCleanup -Operation {
         Issue = [int]$profile.issue
         PackageVersion = [string]$profile.packageVersion
         RuntimeIdentifier = [string]$profile.runtimeIdentifier
+        GenerationRoot = $publication.GenerationRoot
         PackageRoot = $publication.PackageRoot
         ArchivePath = $publication.ArchivePath
         ArchiveBytes = $record.ArchiveBytes

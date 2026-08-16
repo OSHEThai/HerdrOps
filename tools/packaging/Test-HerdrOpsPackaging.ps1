@@ -65,9 +65,9 @@ function Assert-NoPackagingStagingFiles {
         return
     }
     $leftovers = @(Get-ChildItem -LiteralPath $Parent -Force |
-        Where-Object { $_.Name -like '.*.staging-*' })
+        Where-Object { $_.Name -like '.*.staging-*' -or $_.Name -like '.*.backup-*' })
     if ($leftovers.Count -ne 0) {
-        throw "Atomic $Description left staging files: $($leftovers.Name -join ', ')"
+        throw "Atomic $Description left owned transient files: $($leftovers.Name -join ', ')"
     }
 }
 
@@ -203,7 +203,7 @@ try {
         throw "Unsafe hash destination validation created an outside path: $outsideProbeRoot"
     }
 
-    foreach ($pairStage in @('Archive', 'Hash', 'AfterArchive', 'AfterHash', 'BeforeCommit', 'AfterArchiveCommit', 'AfterHashCommit')) {
+    foreach ($pairStage in @('Archive', 'Hash', 'AfterArchive', 'AfterHash', 'Verify', 'BeforeCommit', 'AfterArchiveMove', 'AfterHashMove', 'CommitMarker')) {
         $pairFaultArchive = Join-Path $testRoot ("entry-point-fault-$pairStage.zip")
         $pairFaultHash = Join-Path $testRoot ("entry-point-fault-$pairStage-hashes.txt")
         Assert-ExpectedFailureContaining -Description ("New-PackageArchive pair fault stage $pairStage") -RequiredFragments @(
@@ -218,6 +218,10 @@ try {
         if ((Test-Path -LiteralPath $pairFaultArchive) -or (Test-Path -LiteralPath $pairFaultHash)) {
             throw "Archive pair fault stage $pairStage left a final file."
         }
+        $pairFaultMarker = Get-PackagingPairCommitMarkerPath -ArchivePath $pairFaultArchive -HashRecordPath $pairFaultHash
+        if (Test-Path -LiteralPath $pairFaultMarker) {
+            throw "Archive pair fault stage $pairStage left a visible committed marker."
+        }
         Assert-NoPackagingStagingFiles -Parent $testRoot -Description ("archive pair fault stage $pairStage")
         & (Join-Path $PSScriptRoot 'New-PackageArchive.ps1') `
             -PackageRoot $packageOne `
@@ -228,6 +232,10 @@ try {
             -not (Test-Path -LiteralPath $pairFaultHash -PathType Leaf)) {
             throw "Archive pair retry failed after fault stage $pairStage."
         }
+        if (-not (Test-Path -LiteralPath $pairFaultMarker -PathType Leaf)) {
+            throw "Archive pair retry after fault stage $pairStage did not publish one commit marker."
+        }
+        Assert-PackageArchiveHashPairCommitted -Profile $profile -PackageRoot $packageOne -ArchivePath $pairFaultArchive -HashRecordPath $pairFaultHash | Out-Null
         Assert-NoPackagingStagingFiles -Parent $testRoot -Description ("archive pair retry after $pairStage")
     }
     Assert-ExpectedFailureContaining -Description 'New-PackageArchive pair cleanup error ordering' -RequiredFragments @(
@@ -254,6 +262,11 @@ try {
     if ((Get-Content -LiteralPath $entryPointHash -Raw).IndexOf('ArchiveFile: entry-point.zip', [StringComparison]::Ordinal) -lt 0) {
         throw 'New-PackageArchive hash record did not bind to the final archive name.'
     }
+    $entryPointMarker = Get-PackagingPairCommitMarkerPath -ArchivePath $entryPointArchive -HashRecordPath $entryPointHash
+    if (-not (Test-Path -LiteralPath $entryPointMarker -PathType Leaf)) {
+        throw 'New-PackageArchive did not publish a single commit marker for the archive/hash pair.'
+    }
+    Assert-PackageArchiveHashPairCommitted -Profile $profile -PackageRoot $packageOne -ArchivePath $entryPointArchive -HashRecordPath $entryPointHash | Out-Null
     Assert-NoPackagingStagingFiles -Parent $testRoot -Description 'entry-point retry'
 
     Assert-ExpectedFailure -Description 'archive destination outside authorized repo/temp policy has no side effects' -Action {
@@ -265,6 +278,21 @@ try {
 
     $hashOne = Join-Path $testRoot 'one-hashes.txt'
     Write-PackageHashRecord -Profile $profile -PackageRoot $packageOne -ArchivePath $archiveOne -Path $hashOne | Out-Null
+    Assert-ExpectedFailure -Description 'uncommitted archive/hash pair is not readable' -Action {
+        Assert-PackageArchiveHashPairCommitted -Profile $profile -PackageRoot $packageOne -ArchivePath $archiveOne -HashRecordPath $hashOne | Out-Null
+    }
+    $hashOneOriginalText = [IO.File]::ReadAllText($hashOne)
+    $tamperedHashOneText = [Text.RegularExpressions.Regex]::Replace(
+        $hashOneOriginalText,
+        '(?m)^ArchiveSha256: [0-9A-F]{64}$',
+        ('ArchiveSha256: ' + ('0' * 64)))
+    Write-DeterministicTextFile -Path $hashOne -Text $tamperedHashOneText
+    Assert-ExpectedFailureContaining -Description 'hash record independent archive-byte binding' -RequiredFragments @(
+        'independently computed archive bytes') -Action {
+        Assert-PackageHashRecordMatchesArchive -Profile $profile -PackageRoot $packageOne -ArchivePath $archiveOne -HashRecordPath $hashOne | Out-Null
+    } | Out-Null
+    [IO.File]::WriteAllText($hashOne, $hashOneOriginalText, (New-Object System.Text.UTF8Encoding($false)))
+    Assert-PackageHashRecordMatchesArchive -Profile $profile -PackageRoot $packageOne -ArchivePath $archiveOne -HashRecordPath $hashOne | Out-Null
     Assert-ExpectedFailure -Description 'hash record destination outside authorized repo/temp policy has no side effects' -Action {
         Write-PackageHashRecord -Profile $profile -PackageRoot $packageOne -ArchivePath $archiveOne -Path $outsideHashPath | Out-Null
     }
@@ -394,6 +422,46 @@ try {
     Assert-NoPackagingStagingFiles -Parent $testRoot -Description 'hash-record before-commit failure'
     Write-PackageHashRecord -Profile $profile -PackageRoot $packageOne -ArchivePath $archiveOne -Path $hashBeforeCommitFault | Out-Null
 
+    $copyRollbackRoot = Join-Path $testRoot 'copy-rollback'
+    New-Item -ItemType Directory -Path $copyRollbackRoot -Force | Out-Null
+    $copySource = Join-Path $packageOne 'HerdrOps.App.payload'
+    $copyDestination = Join-Path $copyRollbackRoot 'HerdrOps.App.payload'
+    $copyOriginalText = 'original destination bytes'
+    foreach ($copyStage in @('Write', 'Verify', 'Replace', 'AfterReplace')) {
+        Write-DeterministicTextFile -Path $copyDestination -Text $copyOriginalText
+        $copyOriginalHash = ((Get-FileHash -LiteralPath $copyDestination -Algorithm SHA256).Hash).ToUpperInvariant()
+        Assert-ExpectedFailureContaining -Description ("overwrite rollback stage " + $copyStage) -RequiredFragments @(
+            'Injected durable copy') -Action {
+            Copy-PackagingFileDurably -Source $copySource -Destination $copyDestination -Overwrite -TestFaultInjectionStage $copyStage | Out-Null
+        } | Out-Null
+        if (-not (Test-Path -LiteralPath $copyDestination -PathType Leaf) -or
+            ((Get-FileHash -LiteralPath $copyDestination -Algorithm SHA256).Hash).ToUpperInvariant() -cne $copyOriginalHash) {
+            throw "Overwrite rollback stage $copyStage did not restore the original destination bytes."
+        }
+        Assert-NoPackagingStagingFiles -Parent $copyRollbackRoot -Description ("overwrite rollback stage " + $copyStage)
+    }
+    Write-DeterministicTextFile -Path $copyDestination -Text $copyOriginalText
+    $copyOriginalHash = ((Get-FileHash -LiteralPath $copyDestination -Algorithm SHA256).Hash).ToUpperInvariant()
+    Assert-ExpectedFailureContaining -Description 'overwrite rollback delete failure' -RequiredFragments @(
+        'Injected durable copy backup delete failure') -Action {
+        Copy-PackagingFileDurably -Source $copySource -Destination $copyDestination -Overwrite -TestFaultInjectionStage 'Delete' | Out-Null
+    } | Out-Null
+    if (-not (Test-Path -LiteralPath $copyDestination -PathType Leaf) -or
+        ((Get-FileHash -LiteralPath $copyDestination -Algorithm SHA256).Hash).ToUpperInvariant() -cne $copyOriginalHash) {
+        throw 'Overwrite rollback delete failure did not restore the original destination bytes.'
+    }
+    Assert-NoPackagingStagingFiles -Parent $copyRollbackRoot -Description 'overwrite rollback delete failure'
+
+    Write-DeterministicTextFile -Path $copyDestination -Text $copyOriginalText
+    Assert-ExpectedFailureContaining -Description 'overwrite rollback cleanup context' -RequiredFragments @(
+        'Injected durable copy verification failure.',
+        'Cleanup also failed: Injected durable copy cleanup failure.') -Action {
+        Copy-PackagingFileDurably -Source $copySource -Destination $copyDestination -Overwrite -TestFaultInjectionStage 'Verify' -TestInjectCleanupFailure | Out-Null
+    } | Out-Null
+    Copy-PackagingFileDurably -Source $copySource -Destination $copyDestination -Overwrite | Out-Null
+    Assert-PackagingFileMatchesSource -Source $copySource -Destination $copyDestination -Description 'overwrite rollback successful retry'
+    Assert-NoPackagingStagingFiles -Parent $copyRollbackRoot -Description 'overwrite rollback successful retry'
+
     foreach ($publicationStage in @('AfterPackage', 'AfterArchive', 'AfterHash', 'BeforeCommit')) {
         $faultOutputRoot = Join-Path $testRoot ("atomic-output-$publicationStage")
         Assert-ExpectedFailureContaining -Description ("atomic publication fault stage $publicationStage") -RequiredFragments @(
@@ -436,6 +504,60 @@ try {
 
     $manifestOnePath = Join-Path $packageOne 'package-manifest.json'
     $manifestOriginalText = [IO.File]::ReadAllText($manifestOnePath)
+    $duplicateJsonCases = @(
+        @{ Name = 'root exact duplicate'; Text = '{"name":1,"name":2}' },
+        @{ Name = 'root case-variant duplicate'; Text = '{"name":1,"Name":2}' },
+        @{ Name = 'nested exact duplicate'; Text = '{"outer":{"name":1,"name":2}}' },
+        @{ Name = 'nested case-variant file-entry duplicate'; Text = '{"files":[{"path":"a","Path":"b"}]}' })
+    foreach ($duplicateJsonCase in $duplicateJsonCases) {
+        Assert-ExpectedFailureContaining -Description $duplicateJsonCase.Name -RequiredFragments @(
+            'Duplicate JSON object property',
+            'case-insensitive') -Action {
+            ConvertFrom-StrictPackageJson -Json $duplicateJsonCase.Text -Description $duplicateJsonCase.Name | Out-Null
+        } | Out-Null
+    }
+
+    $duplicateProfileText = [IO.File]::ReadAllText((Get-FullPath -Path $ProfilePath))
+    $duplicateProfileText = $duplicateProfileText.Replace(
+        '"productId": "HerdrOps",',
+        [string]::Concat('"productId": "HerdrOps",', [char]10, '  "ProductId": "HerdrOps",'))
+    $duplicateProfilePath = Join-Path $testRoot 'duplicate-profile.json'
+    Write-DeterministicTextFile -Path $duplicateProfilePath -Text $duplicateProfileText
+    Assert-ExpectedFailureContaining -Description 'profile raw duplicate property rejection' -RequiredFragments @(
+        'Duplicate JSON object property',
+        'case-insensitive') -Action {
+        Read-PackageProfile -Path $duplicateProfilePath | Out-Null
+    } | Out-Null
+
+    $duplicateRootManifestText = $manifestOriginalText.Replace(
+        '"productId": "HerdrOps",',
+        [string]::Concat('"productId": "HerdrOps",', [char]10, '  "ProductId": "HerdrOps",'))
+    Write-DeterministicTextFile -Path $manifestOnePath -Text $duplicateRootManifestText
+    Assert-ExpectedFailureContaining -Description 'manifest raw root duplicate property rejection' -RequiredFragments @(
+        'Duplicate JSON object property',
+        'case-insensitive') -Action {
+        Assert-PackageManifestMatchesRoot -Profile $profile -PackageRoot $packageOne | Out-Null
+    } | Out-Null
+    [IO.File]::WriteAllText($manifestOnePath, $manifestOriginalText, (New-Object System.Text.UTF8Encoding($false)))
+
+    $pathMatch = [Text.RegularExpressions.Regex]::Match($manifestOriginalText, '"path": "([^"]+)"')
+    if (-not $pathMatch.Success) {
+        throw 'Could not locate a manifest file entry for the nested duplicate probe.'
+    }
+    $pathValue = $pathMatch.Groups[1].Value
+    $nestedDuplicateManifestText = $manifestOriginalText.Replace(
+        ('      "path": "' + $pathValue + '",'),
+        [string]::Concat(
+            '      "path": "', $pathValue, '",', [char]10,
+            '      "Path": "', $pathValue, '",'))
+    Write-DeterministicTextFile -Path $manifestOnePath -Text $nestedDuplicateManifestText
+    Assert-ExpectedFailureContaining -Description 'manifest raw nested file-entry duplicate property rejection' -RequiredFragments @(
+        'Duplicate JSON object property',
+        'case-insensitive') -Action {
+        Assert-PackageManifestMatchesRoot -Profile $profile -PackageRoot $packageOne | Out-Null
+    } | Out-Null
+    [IO.File]::WriteAllText($manifestOnePath, $manifestOriginalText, (New-Object System.Text.UTF8Encoding($false)))
+
     $metadataTamperCases = @(
         @{ Name = 'schemaVersion'; Value = 999 },
         @{ Name = 'issue'; Value = 999 },
@@ -451,7 +573,7 @@ try {
         @{ Name = 'contentSha256'; Value = ('0' * 64) -join '' },
         @{ Name = 'evidenceClass'; Value = 'Runtime' })
     foreach ($tamperCase in $metadataTamperCases) {
-        $tamperedManifest = $manifestOriginalText | ConvertFrom-Json
+        $tamperedManifest = ConvertFrom-StrictPackageJson -Json $manifestOriginalText -Description 'tamper fixture manifest'
         $tamperedManifest.($tamperCase.Name) = $tamperCase.Value
         Write-DeterministicTextFile -Path $manifestOnePath -Text ($tamperedManifest | ConvertTo-Json -Depth 20)
         Assert-ExpectedFailure -Description ("manifest metadata tamper: " + $tamperCase.Name) -Action {
@@ -462,7 +584,7 @@ try {
     Assert-PackageManifestMatchesRoot -Profile $profile -PackageRoot $packageOne | Out-Null
 
     foreach ($numericName in @('schemaVersion', 'issue', 'fileCount', 'totalBytes')) {
-        $numericStringManifest = $manifestOriginalText | ConvertFrom-Json
+        $numericStringManifest = ConvertFrom-StrictPackageJson -Json $manifestOriginalText -Description 'numeric fixture manifest'
         $numericStringManifest.($numericName) = [string]$numericStringManifest.($numericName)
         Write-DeterministicTextFile -Path $manifestOnePath -Text ($numericStringManifest | ConvertTo-Json -Depth 20)
         Assert-ExpectedFailure -Description ("manifest numeric string rejected: " + $numericName) -Action {
@@ -471,7 +593,7 @@ try {
         [IO.File]::WriteAllText($manifestOnePath, $manifestOriginalText, (New-Object System.Text.UTF8Encoding($false)))
     }
 
-    $nestedNumericStringManifest = $manifestOriginalText | ConvertFrom-Json
+    $nestedNumericStringManifest = ConvertFrom-StrictPackageJson -Json $manifestOriginalText -Description 'nested numeric fixture manifest'
     $nestedNumericStringManifest.files[0].length = [string]$nestedNumericStringManifest.files[0].length
     Write-DeterministicTextFile -Path $manifestOnePath -Text ($nestedNumericStringManifest | ConvertTo-Json -Depth 20)
     Assert-ExpectedFailure -Description 'manifest file length numeric string rejected' -Action {
@@ -479,7 +601,7 @@ try {
     }
     [IO.File]::WriteAllText($manifestOnePath, $manifestOriginalText, (New-Object System.Text.UTF8Encoding($false)))
 
-    $unknownPropertyManifest = $manifestOriginalText | ConvertFrom-Json
+    $unknownPropertyManifest = ConvertFrom-StrictPackageJson -Json $manifestOriginalText -Description 'unknown-property fixture manifest'
     Add-Member -InputObject $unknownPropertyManifest -MemberType NoteProperty -Name unknownProperty -Value 'must reject'
     Write-DeterministicTextFile -Path $manifestOnePath -Text ($unknownPropertyManifest | ConvertTo-Json -Depth 20)
     Assert-ExpectedFailure -Description 'manifest unknown property rejected' -Action {
@@ -487,7 +609,7 @@ try {
     }
     [IO.File]::WriteAllText($manifestOnePath, $manifestOriginalText, (New-Object System.Text.UTF8Encoding($false)))
 
-    $reorderedFilesManifest = $manifestOriginalText | ConvertFrom-Json
+    $reorderedFilesManifest = ConvertFrom-StrictPackageJson -Json $manifestOriginalText -Description 'reordered-files fixture manifest'
     $reorderedFiles = @($reorderedFilesManifest.files)
     [array]::Reverse($reorderedFiles)
     $reorderedFilesManifest.files = $reorderedFiles
@@ -498,7 +620,7 @@ try {
     [IO.File]::WriteAllText($manifestOnePath, $manifestOriginalText, (New-Object System.Text.UTF8Encoding($false)))
     Assert-PackageManifestMatchesRoot -Profile $profile -PackageRoot $packageOne | Out-Null
 
-    $customVersionProfile = $profile | ConvertTo-Json -Depth 20 | ConvertFrom-Json
+    $customVersionProfile = ConvertFrom-StrictPackageJson -Json ($profile | ConvertTo-Json -Depth 20) -Description 'custom version profile'
     $customVersionProfile.packageVersion = '0.7.1'
     $customVersionProfile.syntheticUpgradeVersion = '0.7.2'
     $customVersionProfilePath = Join-Path $testRoot 'custom-version-profile.json'
@@ -514,7 +636,7 @@ try {
         throw 'A non-v0.7.0 custom profile created a publish output path.'
     }
 
-    $customProjectProfile = $profile | ConvertTo-Json -Depth 20 | ConvertFrom-Json
+    $customProjectProfile = ConvertFrom-StrictPackageJson -Json ($profile | ConvertTo-Json -Depth 20) -Description 'custom project profile'
     $customProjectProfile.sourceProject = '..\outside\HerdrOps.App.csproj'
     $customProjectProfilePath = Join-Path $testRoot 'custom-project-profile.json'
     Write-DeterministicTextFile -Path $customProjectProfilePath -Text ($customProjectProfile | ConvertTo-Json -Depth 20)
@@ -527,6 +649,59 @@ try {
     }
     if (Test-Path -LiteralPath $customProjectOutput) {
         throw 'An outside sourceProject custom profile created a publish output path.'
+    }
+
+    $projectPath = Join-Path $repositoryRoot 'src\HerdrOps.App\HerdrOps.App.csproj'
+    $projectOriginalBytes = [IO.File]::ReadAllBytes($projectPath)
+    $dotnetProbeCommand = Join-Path $testRoot 'dotnet-probe.cmd'
+    $dotnetProbeMarker = Join-Path $testRoot 'dotnet-reached.marker'
+    Write-DeterministicTextFile -Path $dotnetProbeCommand -Text ('@echo DOTNET_REACHED>"' + $dotnetProbeMarker + '"')
+    $maliciousProjectText = [Text.Encoding]::UTF8.GetString($projectOriginalBytes)
+    $maliciousProjectText = $maliciousProjectText.Replace(
+        '<PropertyGroup>',
+        '<PropertyGroup><AssemblyName>Malicious.Product</AssemblyName>')
+    try {
+        [IO.File]::WriteAllText($projectPath, $maliciousProjectText, (New-Object System.Text.UTF8Encoding($false)))
+        Assert-ExpectedFailureContaining -Description 'malicious AssemblyName rejected before dotnet' -RequiredFragments @(
+            'AssemblyName',
+            'exactly HerdrOps.App') -Action {
+            & (Join-Path $PSScriptRoot 'Publish-HerdrOpsPackage.ps1') -OutputRoot (Join-Path $testRoot 'malicious-assembly-output') -ProfilePath $ProfilePath -TestDotnetCommandPath $dotnetProbeCommand | Out-Null
+        } | Out-Null
+        if (Test-Path -LiteralPath $dotnetProbeMarker) {
+            throw 'The malicious AssemblyName probe reached the dotnet command.'
+        }
+    } finally {
+        [IO.File]::WriteAllBytes($projectPath, $projectOriginalBytes)
+        if (Test-Path -LiteralPath $dotnetProbeMarker) {
+            Remove-Item -LiteralPath $dotnetProbeMarker -Force
+        }
+    }
+
+    $projectDirectory = Split-Path -Path $projectPath -Parent
+    $reparseTarget = Join-Path (Split-Path -Path $projectDirectory -Parent) ('HerdrOps.App.reparse-target-' + [Guid]::NewGuid().ToString('N'))
+    try {
+        Move-Item -LiteralPath $projectDirectory -Destination $reparseTarget
+        New-Item -ItemType Junction -Path $projectDirectory -Target $reparseTarget | Out-Null
+        Assert-ExpectedFailureContaining -Description 'reparse source-project component rejected before dotnet' -RequiredFragments @(
+            'Reparse points are not allowed') -Action {
+            & (Join-Path $PSScriptRoot 'Publish-HerdrOpsPackage.ps1') -OutputRoot (Join-Path $testRoot 'reparse-project-output') -ProfilePath $ProfilePath -TestDotnetCommandPath $dotnetProbeCommand | Out-Null
+        } | Out-Null
+        if (Test-Path -LiteralPath $dotnetProbeMarker) {
+            throw 'The reparse source-project probe reached the dotnet command.'
+        }
+    } finally {
+        if (Test-Path -LiteralPath $projectDirectory) {
+            $projectDirectoryItem = Get-Item -LiteralPath $projectDirectory -Force
+            if (($projectDirectoryItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+                [IO.Directory]::Delete($projectDirectory)
+            }
+        }
+        if (Test-Path -LiteralPath $reparseTarget -PathType Container) {
+            Move-Item -LiteralPath $reparseTarget -Destination $projectDirectory
+        }
+        if (Test-Path -LiteralPath $dotnetProbeMarker) {
+            Remove-Item -LiteralPath $dotnetProbeMarker -Force
+        }
     }
 
     $syntheticOrderingError = Assert-ExpectedFailureContaining -Description 'synthetic cleanup error ordering' -RequiredFragments @(
@@ -586,6 +761,11 @@ foreach ($boundary in @('CleanMachine', 'Runtime', 'Human', 'Release')) {
     DeterministicManifestBytes = 'PASS'
     DeterministicArchiveBytes = 'PASS'
     ManifestMetadataFailClosed = 'PASS'
+    DuplicateJsonPropertiesFailClosed = 'PASS'
+    SourceIdentityAndReparsePreflight = 'PASS'
+    OverwriteRollback = 'PASS'
+    ArchiveHashCoherence = 'PASS'
+    AtomicPairCommitMarker = 'PASS'
     TamperAndVersionFailClosed = 'PASS'
     CleanupErrorOrdering = 'PASS'
     AtomicPublicationRetry = 'PASS'
