@@ -27,13 +27,26 @@ public sealed class DeterministicSnapshotExporterTests
         var second = DeterministicSnapshotExporter.ExportEvaluation(accepted, GenerationUtc);
 
         Assert.AreEqual(first.Json, second.Json);
+        Assert.AreEqual(first.Markdown, second.Markdown);
         Assert.AreEqual(first.Csv, second.Csv);
         Assert.AreEqual(manifest.EvaluationJsonSha256, first.JsonSha256);
+        Assert.AreEqual(manifest.EvaluationMarkdownSha256, first.MarkdownSha256);
         Assert.AreEqual(manifest.EvaluationCsvSha256, first.CsvSha256);
+        Assert.AreEqual(manifest.EvaluationExportId, first.ExportId);
+        Assert.AreEqual(manifest.EvaluationSourceSnapshotSha256, first.SourceSnapshotSha256);
+        Assert.AreEqual(accepted.Provenance.InputSnapshotSha256, first.SourceSnapshotSha256);
+        Assert.AreEqual(first.ExportId, first.Manifest.ExportId);
+        Assert.AreEqual(first.SourceSnapshotSha256, first.Manifest.SourceSnapshotSha256);
         Assert.AreEqual(first.JsonSha256, Sha256(first.Json));
+        Assert.AreEqual(first.MarkdownSha256, Sha256(first.Markdown));
         Assert.AreEqual(first.CsvSha256, Sha256(first.Csv));
+        Assert.AreEqual(first.Manifest.TotalByteLength, Encoding.UTF8.GetByteCount(first.Json) +
+            Encoding.UTF8.GetByteCount(first.Markdown) +
+            Encoding.UTF8.GetByteCount(first.Csv));
         StringAssert.Contains(first.Json, "HERDROPS-EVALUATION-V1");
         StringAssert.Contains(first.Json, accepted.ResultSha256);
+        StringAssert.Contains(first.Markdown, "# HerdrOps Snapshot Export");
+        StringAssert.Contains(first.Markdown, first.ExportId);
         StringAssert.Contains(first.Csv, "$.acceptedSnapshot.dimensions[0].weightedScore");
 
         using var document = JsonDocument.Parse(first.Json);
@@ -41,6 +54,10 @@ public sealed class DeterministicSnapshotExporterTests
         Assert.AreEqual("evaluation-score-result", root.GetProperty("metadata").GetProperty("exportKind").GetString());
         Assert.AreEqual(manifest.GenerationUtc, root.GetProperty("metadata").GetProperty("generatedUtc").GetString());
         Assert.AreEqual(manifest.Encoding, first.Encoding);
+        Assert.AreEqual(first.ExportId, root.GetProperty("metadata").GetProperty("exportId").GetString());
+        Assert.AreEqual(
+            first.SourceSnapshotSha256,
+            root.GetProperty("metadata").GetProperty("sourceSnapshotSha256").GetString());
         Assert.AreEqual(manifest.RedactionPolicyId, root
             .GetProperty("metadata")
             .GetProperty("redactionPolicy")
@@ -77,9 +94,16 @@ public sealed class DeterministicSnapshotExporterTests
 
         var manifest = ReadExportManifest();
         Assert.AreEqual(manifest.DailyJsonSha256, export.JsonSha256);
+        Assert.AreEqual(manifest.DailyMarkdownSha256, export.MarkdownSha256);
         Assert.AreEqual(manifest.DailyCsvSha256, export.CsvSha256);
+        Assert.AreEqual(manifest.DailyExportId, export.ExportId);
+        Assert.AreEqual(manifest.DailySourceSnapshotSha256, export.SourceSnapshotSha256);
+        Assert.AreEqual(accepted.SourceSetSha256, export.SourceSnapshotSha256);
+        Assert.AreEqual(export.ExportId, export.Manifest.ExportId);
         Assert.AreEqual(export.JsonSha256, Sha256(export.Json));
+        Assert.AreEqual(export.MarkdownSha256, Sha256(export.Markdown));
         Assert.AreEqual(export.CsvSha256, Sha256(export.Csv));
+        StringAssert.Contains(export.Markdown, "## Source");
         StringAssert.Contains(export.Json, "2026-08-14T17:00:00.0000000Z");
         StringAssert.Contains(export.Json, "2026-08-15T17:00:00.0000000Z");
         StringAssert.Contains(export.Csv, "$.acceptedSnapshot.acceptedSources[0].sourceId");
@@ -101,7 +125,7 @@ public sealed class DeterministicSnapshotExporterTests
     }
 
     [TestMethod]
-    public void ExportRejectsIncompleteTamperedAndNonUtcInputs()
+    public void ExportPreservesValidIncompleteAndRejectsInvalidOrNonUtcInputs()
     {
         var scoring = ReadScoringFixture();
         var engine = new EvaluationScoringEngine();
@@ -117,8 +141,36 @@ public sealed class DeterministicSnapshotExporterTests
             },
             EvaluationFormulaCatalog.Version1);
 
+        var incompleteExport = DeterministicSnapshotExporter.ExportEvaluation(incomplete, GenerationUtc);
+        using (var incompleteDocument = JsonDocument.Parse(incompleteExport.Json))
+        {
+            var incompleteSnapshot = incompleteDocument.RootElement.GetProperty("acceptedSnapshot");
+            Assert.AreEqual("incomplete", incompleteSnapshot.GetProperty("status").GetString());
+            Assert.AreEqual(JsonValueKind.Null, incompleteSnapshot.GetProperty("totalScore").ValueKind);
+            Assert.AreEqual(
+                "missing",
+                incompleteSnapshot.GetProperty("dimensions")[5].GetProperty("status").GetString());
+            Assert.AreEqual(
+                JsonValueKind.Null,
+                incompleteSnapshot.GetProperty("dimensions")[5].GetProperty("dimensionScore").ValueKind);
+        }
+
+        var invalid = engine.Calculate(
+            scoring.Input with
+            {
+                Dimensions = scoring.Input.Dimensions
+                    .Select(item => item.Dimension == EvaluationDimension.Evidence
+                        ? item with
+                        {
+                            ObjectiveEvidence = item.ObjectiveEvidence with { Score = 101 },
+                        }
+                        : item)
+                    .ToArray(),
+            },
+            EvaluationFormulaCatalog.Version1);
+        Assert.AreEqual(EvaluationResultStatus.Invalid, invalid.Status);
         Assert.ThrowsExactly<SnapshotExportException>(() =>
-            DeterministicSnapshotExporter.ExportEvaluation(incomplete, GenerationUtc));
+            DeterministicSnapshotExporter.ExportEvaluation(invalid, GenerationUtc));
         Assert.ThrowsExactly<SnapshotExportException>(() =>
             DeterministicSnapshotExporter.ExportEvaluation(
                 accepted with { ResultSha256 = new string('0', 64) },
@@ -151,20 +203,86 @@ public sealed class DeterministicSnapshotExporterTests
     {
         var fixture = ReadDailySummaryFixture();
         var timeZone = CreateFixedOffsetTimeZone(fixture.TimeZoneOffsetMinutes);
-        var source = fixture.Sources[0] with { Summary = "C:\\private\\accepted.txt" };
-        var accepted = DailySummaryAggregator.Aggregate(
-            fixture.LocalDate,
-            timeZone,
-            [source, .. fixture.Sources.Skip(1)]);
+        var adversarialValues = new[]
+        {
+            "C:\\private\\accepted.txt",
+            "/var/private/accepted.txt",
+            "\\\\server\\share\\accepted.txt",
+            "Bearer abcdefghijklmnopQRSTUV1234",
+            "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjMifQ.signatureabcdefgh",
+            "tokenUltraSecretValue123456",
+        };
 
-        var exception = Assert.ThrowsExactly<SnapshotExportException>(() =>
+        foreach (var adversarialValue in adversarialValues)
+        {
+            var source = fixture.Sources[0] with { Summary = adversarialValue };
+            var accepted = DailySummaryAggregator.Aggregate(
+                fixture.LocalDate,
+                timeZone,
+                [source, .. fixture.Sources.Skip(1)]);
+
+            var exception = Assert.ThrowsExactly<SnapshotExportException>(() =>
+                DeterministicSnapshotExporter.ExportDailySummary(
+                    accepted,
+                    timeZone,
+                    GenerationUtc));
+
+            StringAssert.Contains(exception.Message, "fail-closed");
+            Assert.DoesNotContain(adversarialValue, exception.Message);
+        }
+    }
+
+    [TestMethod]
+    public void ExportRejectsIdentifierCollectionAndTotalOutputBounds()
+    {
+        var scoring = ReadScoringFixture();
+        var engine = new EvaluationScoringEngine();
+        var oversizedIdentifier = engine.Calculate(
+            scoring.Input with { TaskId = new string('T', DeterministicSnapshotExporter.MaximumIdentifierLength + 1) },
+            EvaluationFormulaCatalog.Version1);
+        Assert.ThrowsExactly<SnapshotExportException>(() =>
+            DeterministicSnapshotExporter.ExportEvaluation(oversizedIdentifier, GenerationUtc));
+
+        var oversizedCollection = engine.Calculate(
+            scoring.Input with
+            {
+                Dimensions = Enumerable.Repeat(
+                        scoring.Input.Dimensions[0],
+                        DeterministicSnapshotExporter.MaximumCollectionItems + 1)
+                    .ToArray(),
+            },
+            EvaluationFormulaCatalog.Version1);
+        Assert.ThrowsExactly<SnapshotExportException>(() =>
+            DeterministicSnapshotExporter.ExportEvaluation(oversizedCollection, GenerationUtc));
+
+        var dailyFixture = ReadDailySummaryFixture();
+        var timeZone = CreateFixedOffsetTimeZone(dailyFixture.TimeZoneOffsetMinutes);
+        var largeSummary = new string('x', 2_048);
+        var largeSources = Enumerable.Range(0, 2_100)
+            .Select(index => new DailySummarySource(
+                $"large-{index:D5}",
+                DailySummarySourceKind.ActivityEvent,
+                new string('A', 64),
+                new DateTimeOffset(2026, 8, 15, 3, 0, 0, TimeSpan.Zero),
+                "Backend",
+                "backend-worker-01",
+                "TASK-115",
+                "TaskStarted",
+                largeSummary,
+                true,
+                false,
+                null,
+                null))
+            .ToArray();
+        var largeDaily = DailySummaryAggregator.Aggregate(
+            dailyFixture.LocalDate,
+            timeZone,
+            largeSources);
+        Assert.ThrowsExactly<SnapshotExportException>(() =>
             DeterministicSnapshotExporter.ExportDailySummary(
-                accepted,
+                largeDaily,
                 timeZone,
                 GenerationUtc));
-
-        StringAssert.Contains(exception.Message, "fail-closed");
-        Assert.DoesNotContain("accepted.txt", exception.Message);
     }
 
     private static ScoringFixture ReadScoringFixture() =>
@@ -259,8 +377,14 @@ public sealed class DeterministicSnapshotExporterTests
         string Encoding,
         string RedactionPolicyId,
         string EvaluationJsonSha256,
+        string EvaluationMarkdownSha256,
         string EvaluationCsvSha256,
+        string EvaluationExportId,
+        string EvaluationSourceSnapshotSha256,
         string DailyJsonSha256,
+        string DailyMarkdownSha256,
         string DailyCsvSha256,
+        string DailyExportId,
+        string DailySourceSnapshotSha256,
         string[] SourceFixtures);
 }

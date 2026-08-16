@@ -27,6 +27,8 @@ public sealed record SnapshotExportMetadata(
     string ExportKind,
     string GeneratedUtc,
     string Encoding,
+    string ExportId,
+    string SourceSnapshotSha256,
     SnapshotExportRedactionPolicy RedactionPolicy);
 
 public sealed record EvaluationExportSourceIdentity(
@@ -194,13 +196,31 @@ public sealed record DailySummarySnapshotExportDocument(
     DailySummaryExportSource Source,
     DailySummarySnapshotExport AcceptedSnapshot);
 
+public sealed record SnapshotExportManifest(
+    int ContractVersion,
+    SnapshotExportKind Kind,
+    string ExportId,
+    string SourceSnapshotSha256,
+    string JsonSha256,
+    string MarkdownSha256,
+    string CsvSha256,
+    long JsonByteLength,
+    long MarkdownByteLength,
+    long CsvByteLength,
+    long TotalByteLength);
+
 public sealed record DeterministicSnapshotExport(
     SnapshotExportKind Kind,
     string Json,
     string Csv,
     string JsonSha256,
     string CsvSha256,
-    string Encoding);
+    string Encoding,
+    string Markdown,
+    string MarkdownSha256,
+    string ExportId,
+    string SourceSnapshotSha256,
+    SnapshotExportManifest Manifest);
 
 public sealed class SnapshotExportException : InvalidOperationException
 {
@@ -221,12 +241,23 @@ public static class DeterministicSnapshotExporter
     public const string ExporterId = "HERDROPS-LOCAL-SNAPSHOT-EXPORT-V1";
     public const string RedactionPolicyId = "HERDROPS-LOCAL-EXPORT-REDACTION-V1";
 
+    public const int MaximumTotalOutputBytes = 4 * 1024 * 1024;
+    public const int MaximumCollectionItems = 10_000;
+    public const int MaximumReferenceItems = 20_000;
+    public const int MaximumIdentifierLength = 256;
+    public const int MaximumTextLength = 4_096;
+    public const int MaximumObjectProperties = 128;
+    public const int MaximumSerializedNodes = 100_000;
+
     private static readonly JsonSerializerOptions JsonOptions = CreateJsonOptions();
     private static readonly Regex FileSystemPathPattern = new(
-        @"(?:[A-Za-z]:[\\/]|\\\\|(?:^|[\s])/(?:etc|home|Users|var|tmp|private)(?:[\\/]|$)|(?:^|[\s])~[\\/])",
+        @"(?<![A-Za-z0-9_])(?:[A-Za-z]:[\\/]|\\\\[^\s\\/]+[\\/]|/(?!/)(?:[^\s/]+/)+[^\s/]+|~[\\/])",
         RegexOptions.Compiled | RegexOptions.CultureInvariant);
     private static readonly Regex SecretOrTokenPattern = new(
-        @"\b(?:api[_-]?key|client[_-]?secret|access[_-]?token|refresh[_-]?token|id[_-]?token|password|passwd|secret|credential|authorization|bearer|jwt|token)\b\s*(?:[:=]|$)",
+        @"(?:\b(?:api[_-]?key|client[_-]?secret|access[_-]?token|refresh[_-]?token|id[_-]?token|password|passwd|secret|credential|authorization|bearer|jwt|token)\b\s*(?:[:=]|$)|\bBearer\s+[A-Za-z0-9._~+/=-]{12,}|\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b|(?<![A-Za-z0-9])(?:token|jwt)[A-Za-z0-9_-]{12,}(?![A-Za-z0-9]))",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
+    private static readonly Regex SensitivePropertyPattern = new(
+        @"(?:secret|password|passwd|credential|authorization|bearer|jwt|token|api[_-]?key)",
         RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
 
     public static DeterministicSnapshotExport ExportEvaluation(
@@ -235,9 +266,18 @@ public static class DeterministicSnapshotExporter
     {
         var normalizedGeneratedUtc = NormalizeGeneratedUtc(generatedUtc);
         var accepted = ValidateEvaluation(acceptedSnapshot);
+        var sourceSnapshotSha256 = RequireSha256(
+            accepted.Provenance.InputSnapshotSha256,
+            "Evaluation input snapshot SHA-256");
+        var exportId = CreateExportId(
+            SnapshotExportKind.EvaluationScoreResult,
+            sourceSnapshotSha256,
+            normalizedGeneratedUtc);
         var metadata = CreateMetadata(
             "evaluation-score-result",
-            normalizedGeneratedUtc);
+            normalizedGeneratedUtc,
+            exportId,
+            sourceSnapshotSha256);
         var source = new EvaluationExportSource(
             accepted.ContractVersion,
             accepted.Provenance.Formula.FormulaId,
@@ -251,7 +291,11 @@ public static class DeterministicSnapshotExporter
             source,
             MapEvaluation(accepted));
 
-        return CreateExport(SnapshotExportKind.EvaluationScoreResult, document);
+        return CreateExport(
+            SnapshotExportKind.EvaluationScoreResult,
+            document,
+            exportId,
+            sourceSnapshotSha256);
     }
 
     public static DeterministicSnapshotExport ExportDailySummary(
@@ -279,8 +323,21 @@ public static class DeterministicSnapshotExporter
                 "The supplied Daily Summary time zone does not match the accepted snapshot.");
         }
 
+        ValidateDailySummaryForExport(accepted);
+        var sourceSnapshotSha256 = RequireSha256(
+            accepted.SourceSetSha256,
+            "Daily Summary source-set SHA-256");
+        var exportId = CreateExportId(
+            SnapshotExportKind.DailySummary,
+            sourceSnapshotSha256,
+            normalizedGeneratedUtc);
+
         var boundaries = CalculateDayBoundaries(accepted.LocalDate, timeZone);
-        var metadata = CreateMetadata("daily-summary", normalizedGeneratedUtc);
+        var metadata = CreateMetadata(
+            "daily-summary",
+            normalizedGeneratedUtc,
+            exportId,
+            sourceSnapshotSha256);
         var source = new DailySummaryExportSource(
             accepted.ContractVersion,
             accepted.AggregatorId,
@@ -303,27 +360,53 @@ public static class DeterministicSnapshotExporter
             source,
             MapDailySummary(accepted));
 
-        return CreateExport(SnapshotExportKind.DailySummary, document);
+        return CreateExport(
+            SnapshotExportKind.DailySummary,
+            document,
+            exportId,
+            sourceSnapshotSha256);
     }
 
     private static EvaluationScoreResult ValidateEvaluation(
         EvaluationScoreResult snapshot)
     {
         ArgumentNullException.ThrowIfNull(snapshot);
-        EnsureEvaluationShape(snapshot);
         try
         {
+            EnsureEvaluationShape(snapshot);
             var reproduced = new EvaluationScoringEngine().Recalculate(snapshot);
-            if (snapshot.Status != EvaluationResultStatus.Complete ||
-                snapshot.TotalScore is null ||
-                snapshot.InputIssues.Count != 0 ||
-                snapshot.Dimensions.Any(item =>
-                    item.Status != EvaluationDimensionScoreStatus.Complete ||
-                    item.DimensionScore is null ||
-                    item.WeightedScore is null))
+            if (!Enum.IsDefined(snapshot.Status) ||
+                snapshot.Status == EvaluationResultStatus.Invalid)
             {
                 throw new SnapshotExportException(
-                    "Only complete, issue-free Evaluation Score Results can be exported.");
+                    "The Evaluation Score Result has an invalid or unsupported status.");
+            }
+
+            if (snapshot.Status == EvaluationResultStatus.Complete)
+            {
+                if (snapshot.TotalScore is null ||
+                    snapshot.InputIssues.Count != 0 ||
+                    snapshot.Dimensions.Any(item =>
+                        item.Status != EvaluationDimensionScoreStatus.Complete ||
+                        item.DimensionScore is null ||
+                        item.WeightedScore is null))
+                {
+                    throw new SnapshotExportException(
+                        "The complete Evaluation Score Result has unexplained missing data.");
+                }
+            }
+            else if (snapshot.TotalScore is not null ||
+                     snapshot.InputIssues.Count != 0 ||
+                     !snapshot.Dimensions.Any(item =>
+                         item.Status == EvaluationDimensionScoreStatus.Missing) ||
+                     snapshot.Dimensions.Any(item =>
+                         item.Status == EvaluationDimensionScoreStatus.Invalid ||
+                         item.Issues.Any(issue => issue.Code.StartsWith(
+                             "invalid-",
+                             StringComparison.Ordinal))))
+            {
+                throw new SnapshotExportException(
+                    "The incomplete Evaluation Score Result contains invalid or unexplained data.");
             }
 
             if (!string.Equals(reproduced.ResultSha256, snapshot.ResultSha256, StringComparison.Ordinal))
@@ -339,7 +422,8 @@ public static class DeterministicSnapshotExporter
         catch (Exception exception) when (
             exception is EvaluationScoringContractException ||
             exception is ArgumentException ||
-            exception is NullReferenceException)
+            exception is NullReferenceException ||
+            exception is InvalidOperationException)
         {
             throw new SnapshotExportException(
                 "The Evaluation Score Result is not an accepted deterministic result.",
@@ -351,6 +435,14 @@ public static class DeterministicSnapshotExporter
 
     private static void EnsureEvaluationShape(EvaluationScoreResult snapshot)
     {
+        EnsureText(snapshot.EvaluationId, nameof(snapshot.EvaluationId), MaximumIdentifierLength);
+        EnsureText(snapshot.TaskId, nameof(snapshot.TaskId), MaximumIdentifierLength);
+        EnsureText(snapshot.AgentId, nameof(snapshot.AgentId), MaximumIdentifierLength);
+        if (!Enum.IsDefined(snapshot.Status))
+        {
+            throw new SnapshotExportException("The Evaluation Score Result status is not defined.");
+        }
+
         ArgumentNullException.ThrowIfNull(snapshot.Provenance);
         ArgumentNullException.ThrowIfNull(snapshot.Provenance.Formula);
         ArgumentNullException.ThrowIfNull(snapshot.Provenance.Formula.DimensionWeights);
@@ -359,15 +451,34 @@ public static class DeterministicSnapshotExporter
         ArgumentNullException.ThrowIfNull(snapshot.Provenance.InputSnapshot.Dimensions);
         ArgumentNullException.ThrowIfNull(snapshot.InputIssues);
         ArgumentNullException.ThrowIfNull(snapshot.Dimensions);
+        EnsureCollectionCount(
+            snapshot.Provenance.Formula.DimensionWeights,
+            "evaluation formula dimensions");
+        EnsureCollectionCount(snapshot.Provenance.Formula.SourceWeights, "evaluation formula sources");
+        EnsureCollectionCount(snapshot.Provenance.InputSnapshot.Dimensions, "evaluation input dimensions");
+        EnsureCollectionCount(snapshot.Dimensions, "evaluation result dimensions");
+        EnsureSha256(snapshot.Provenance.FormulaSha256, "evaluation formula SHA-256");
+        EnsureSha256(snapshot.Provenance.InputSnapshotSha256, "evaluation input snapshot SHA-256");
+        EnsureSha256(snapshot.ResultSha256, "evaluation result SHA-256");
+        EnsureText(
+            snapshot.Provenance.Formula.FormulaId,
+            nameof(snapshot.Provenance.Formula.FormulaId),
+            MaximumIdentifierLength);
 
         foreach (var issue in snapshot.InputIssues)
         {
             ArgumentNullException.ThrowIfNull(issue);
+            EnsureIssue(issue);
         }
 
         foreach (var dimension in snapshot.Provenance.InputSnapshot.Dimensions)
         {
             ArgumentNullException.ThrowIfNull(dimension);
+            if (!Enum.IsDefined(dimension.Dimension))
+            {
+                throw new SnapshotExportException("The evaluation input has an unsupported dimension.");
+            }
+
             EnsureScoreInput(dimension.Leader);
             EnsureScoreInput(dimension.ProjectManager);
             EnsureScoreInput(dimension.ObjectiveEvidence);
@@ -376,8 +487,15 @@ public static class DeterministicSnapshotExporter
         foreach (var dimension in snapshot.Dimensions)
         {
             ArgumentNullException.ThrowIfNull(dimension);
+            if (!Enum.IsDefined(dimension.Dimension) || !Enum.IsDefined(dimension.Status))
+            {
+                throw new SnapshotExportException("The evaluation result has an unsupported dimension or status.");
+            }
+
             ArgumentNullException.ThrowIfNull(dimension.ObservedInputs);
             ArgumentNullException.ThrowIfNull(dimension.Issues);
+            EnsureCollectionCount(dimension.ObservedInputs, "evaluation observed inputs");
+            EnsureCollectionCount(dimension.Issues, "evaluation dimension issues");
             EnsureScoreInput(dimension.Leader);
             EnsureScoreInput(dimension.ProjectManager);
             EnsureScoreInput(dimension.ObjectiveEvidence);
@@ -392,6 +510,7 @@ public static class DeterministicSnapshotExporter
             foreach (var issue in dimension.Issues)
             {
                 ArgumentNullException.ThrowIfNull(issue);
+                EnsureIssue(issue);
             }
         }
     }
@@ -399,6 +518,64 @@ public static class DeterministicSnapshotExporter
     private static void EnsureScoreInput(EvaluationScoreInput input)
     {
         ArgumentNullException.ThrowIfNull(input);
+        if (input.ProvenanceId is not null)
+        {
+            EnsureText(input.ProvenanceId, nameof(input.ProvenanceId), MaximumIdentifierLength);
+        }
+
+        if (input.EvidenceIdentitySha256 is not null)
+        {
+            EnsureSha256(input.EvidenceIdentitySha256, nameof(input.EvidenceIdentitySha256));
+        }
+    }
+
+    private static void EnsureIssue(EvaluationInputIssue issue)
+    {
+        if (issue.Dimension is not null && !Enum.IsDefined(issue.Dimension.Value) ||
+            issue.Source is not null && !Enum.IsDefined(issue.Source.Value))
+        {
+            throw new SnapshotExportException("The evaluation contains an unsupported issue identity.");
+        }
+
+        EnsureText(issue.Code, nameof(issue.Code), MaximumIdentifierLength);
+        EnsureText(issue.Message, nameof(issue.Message), MaximumTextLength);
+    }
+
+    private static void EnsureCollectionCount<T>(
+        IReadOnlyCollection<T> collection,
+        string name)
+    {
+        if (collection.Count > MaximumCollectionItems)
+        {
+            throw new SnapshotExportException(
+                $"The export exceeds the maximum {name} cardinality of {MaximumCollectionItems}.");
+        }
+    }
+
+    private static void EnsureText(string? value, string name, int maximumLength)
+    {
+        if (string.IsNullOrWhiteSpace(value) ||
+            value.Length > maximumLength ||
+            value.Any(char.IsControl) ||
+            !string.Equals(value, value.Trim(), StringComparison.Ordinal))
+        {
+            throw new SnapshotExportException(
+                $"The export field {name} exceeds its text bound or is not normalized.");
+        }
+    }
+
+    private static void EnsureSha256(string? value, string name)
+    {
+        if (value is not { Length: 64 } || !value.All(Uri.IsHexDigit))
+        {
+            throw new SnapshotExportException($"The export field {name} is not a SHA-256 identity.");
+        }
+    }
+
+    private static string RequireSha256(string? value, string name)
+    {
+        EnsureSha256(value, name);
+        return value!.ToUpperInvariant();
     }
 
     private static EvaluationScoreResultExport MapEvaluation(EvaluationScoreResult snapshot) =>
@@ -485,6 +662,209 @@ public static class DeterministicSnapshotExporter
             })
             .ToArray();
 
+    private static void ValidateDailySummaryForExport(DailySummarySnapshot snapshot)
+    {
+        try
+        {
+            EnsureCollectionCount(snapshot.AcceptedSources, "daily accepted sources");
+            EnsureCollectionCount(snapshot.Metrics, "daily metrics");
+            EnsureCollectionCount(snapshot.Workstreams, "daily workstreams");
+            EnsureCollectionCount(snapshot.Highlights, "daily highlights");
+            EnsureCollectionCount(snapshot.RepeatedIssues, "daily repeated issues");
+            EnsureCollectionCount(snapshot.RecommendedActions, "daily recommended actions");
+            EnsureCollectionCount(snapshot.Timeline, "daily timeline");
+            var acceptedSources = snapshot.AcceptedSources.ToArray();
+            var sourceById = acceptedSources.ToDictionary(
+                item => item.SourceId,
+                StringComparer.Ordinal);
+            EnsureReferenceIds(
+                acceptedSources.Select(item => item.SourceId).ToArray(),
+                "daily accepted source IDs",
+                requireSorted: false);
+
+            if (!acceptedSources.Select(item => item.SourceId)
+                    .SequenceEqual(snapshot.Timeline.Select(item => item.SourceId), StringComparer.Ordinal))
+            {
+                throw new SnapshotExportException(
+                    "Daily Summary accepted sources and timeline are not canonically reconciled.");
+            }
+
+            var timelineById = snapshot.Timeline.ToDictionary(
+                item => item.SourceId,
+                StringComparer.Ordinal);
+            foreach (var source in acceptedSources)
+            {
+                if (!Enum.IsDefined(source.Kind) ||
+                    !IsSha256(source.SourceHashSha256) ||
+                    !timelineById.TryGetValue(source.SourceId, out var timeline) ||
+                    timeline.Kind != source.Kind ||
+                    !string.Equals(timeline.SourceHashSha256, source.SourceHashSha256, StringComparison.Ordinal))
+                {
+                    throw new SnapshotExportException(
+                        "Daily Summary source references do not reconcile to the accepted source set.");
+                }
+            }
+
+            var expectedWorkstreams = snapshot.Timeline
+                .GroupBy(item => item.Workstream, StringComparer.Ordinal)
+                .OrderBy(group => group.Key, StringComparer.Ordinal)
+                .Select(group => new
+                {
+                    Workstream = group.Key,
+                    SourceIds = group.Select(item => item.SourceId).OrderBy(item => item, StringComparer.Ordinal).ToArray(),
+                    ActivityCount = group.Count(item => item.Kind == DailySummarySourceKind.ActivityEvent),
+                    EvidenceCount = group.Count(item => item.Kind == DailySummarySourceKind.Evidence),
+                })
+                .ToArray();
+            if (snapshot.Workstreams.Count != expectedWorkstreams.Length ||
+                !snapshot.Workstreams.Select(item => item.Workstream)
+                    .SequenceEqual(expectedWorkstreams.Select(item => item.Workstream), StringComparer.Ordinal))
+            {
+                throw new SnapshotExportException("Daily Summary workstream ordering or cardinality is invalid.");
+            }
+
+            for (var index = 0; index < expectedWorkstreams.Length; index++)
+            {
+                var actual = snapshot.Workstreams[index];
+                var expected = expectedWorkstreams[index];
+                EnsureReferenceIds(actual.SourceIds, "daily workstream references");
+                if (actual.AcceptedSourceCount != actual.SourceIds.Count ||
+                    actual.ActivityCount != expected.ActivityCount ||
+                    actual.EvidenceCount != expected.EvidenceCount ||
+                    !actual.SourceIds.SequenceEqual(expected.SourceIds, StringComparer.Ordinal))
+                {
+                    throw new SnapshotExportException(
+                        "Daily Summary workstream counts do not reconcile to the timeline.");
+                }
+            }
+
+            var expectedMetricValues = new (string Id, int Value, string[] SourceIds)[]
+            {
+                ("accepted-sources", acceptedSources.Length, acceptedSources.Select(item => item.SourceId).OrderBy(item => item, StringComparer.Ordinal).ToArray()),
+                ("activity-events", snapshot.Timeline.Count(item => item.Kind == DailySummarySourceKind.ActivityEvent), snapshot.Timeline.Where(item => item.Kind == DailySummarySourceKind.ActivityEvent).Select(item => item.SourceId).OrderBy(item => item, StringComparer.Ordinal).ToArray()),
+                ("evidence-items", snapshot.Timeline.Count(item => item.Kind == DailySummarySourceKind.Evidence), snapshot.Timeline.Where(item => item.Kind == DailySummarySourceKind.Evidence).Select(item => item.SourceId).OrderBy(item => item, StringComparer.Ordinal).ToArray()),
+                ("workstreams", snapshot.Workstreams.Count, acceptedSources.Select(item => item.SourceId).OrderBy(item => item, StringComparer.Ordinal).ToArray()),
+                ("timeline-items", snapshot.Timeline.Count, acceptedSources.Select(item => item.SourceId).OrderBy(item => item, StringComparer.Ordinal).ToArray()),
+                ("highlights", snapshot.Highlights.Count, snapshot.Highlights.SelectMany(item => item.SourceIds).OrderBy(item => item, StringComparer.Ordinal).ToArray()),
+                ("repeated-issues", snapshot.RepeatedIssues.Count, snapshot.RepeatedIssues.SelectMany(item => item.SourceIds).OrderBy(item => item, StringComparer.Ordinal).ToArray()),
+                ("recommended-actions", snapshot.RecommendedActions.Count, snapshot.RecommendedActions.SelectMany(item => item.SourceIds).OrderBy(item => item, StringComparer.Ordinal).ToArray()),
+            };
+            if (snapshot.Metrics.Count != expectedMetricValues.Length ||
+                !snapshot.Metrics.Select(item => item.MetricId)
+                    .SequenceEqual(expectedMetricValues.Select(item => item.Id), StringComparer.Ordinal))
+            {
+                throw new SnapshotExportException("Daily Summary metrics are not in the canonical order.");
+            }
+
+            for (var index = 0; index < expectedMetricValues.Length; index++)
+            {
+                var actual = snapshot.Metrics[index];
+                var expected = expectedMetricValues[index];
+                EnsureReferenceIds(actual.SourceIds, "daily metric references");
+                if (actual.Value != expected.Value ||
+                    !actual.SourceIds.SequenceEqual(expected.SourceIds, StringComparer.Ordinal))
+                {
+                    throw new SnapshotExportException(
+                        "Daily Summary metric values do not reconcile to accepted references.");
+                }
+            }
+
+            var expectedHighlightIds = snapshot.Timeline
+                .Where(item => snapshot.Highlights.Any(highlight => highlight.SourceId == item.SourceId))
+                .Select(item => item.SourceId)
+                .ToArray();
+            if (!snapshot.Highlights.Select(item => item.SourceId)
+                    .SequenceEqual(expectedHighlightIds, StringComparer.Ordinal))
+            {
+                throw new SnapshotExportException("Daily Summary highlight ordering is not canonical.");
+            }
+
+            foreach (var highlight in snapshot.Highlights)
+            {
+                EnsureReferenceIds(highlight.SourceIds, "daily highlight references");
+                if (!sourceById.ContainsKey(highlight.SourceId) ||
+                    highlight.SourceIds.Count != 1 ||
+                    !string.Equals(highlight.SourceIds[0], highlight.SourceId, StringComparison.Ordinal))
+                {
+                    throw new SnapshotExportException("Daily Summary highlight references are invalid.");
+                }
+            }
+
+            var expectedIssueKeys = snapshot.RepeatedIssues
+                .Select(item => item.IssueKey)
+                .OrderBy(item => item, StringComparer.Ordinal)
+                .ToArray();
+            if (!snapshot.RepeatedIssues.Select(item => item.IssueKey)
+                    .SequenceEqual(expectedIssueKeys, StringComparer.Ordinal))
+            {
+                throw new SnapshotExportException("Daily Summary repeated-issue ordering is not canonical.");
+            }
+
+            foreach (var issue in snapshot.RepeatedIssues)
+            {
+                EnsureReferenceIds(issue.SourceIds, "daily repeated-issue references");
+                if (issue.OccurrenceCount < 2 || issue.OccurrenceCount != issue.SourceIds.Count ||
+                    issue.SourceIds.Any(item => !sourceById.ContainsKey(item)))
+                {
+                    throw new SnapshotExportException("Daily Summary repeated-issue references are invalid.");
+                }
+            }
+
+            var expectedActionKeys = snapshot.RecommendedActions
+                .Select(item => item.ActionKey)
+                .OrderBy(item => item, StringComparer.Ordinal)
+                .ToArray();
+            if (!snapshot.RecommendedActions.Select(item => item.ActionKey)
+                    .SequenceEqual(expectedActionKeys, StringComparer.Ordinal))
+            {
+                throw new SnapshotExportException("Daily Summary recommended-action ordering is not canonical.");
+            }
+
+            foreach (var action in snapshot.RecommendedActions)
+            {
+                EnsureReferenceIds(action.SourceIds, "daily recommended-action references");
+                if (action.SourceIds.Any(item => !sourceById.ContainsKey(item)))
+                {
+                    throw new SnapshotExportException("Daily Summary recommended-action references are invalid.");
+                }
+            }
+        }
+        catch (SnapshotExportException)
+        {
+            throw;
+        }
+        catch (Exception exception) when (
+            exception is ArgumentException ||
+            exception is InvalidOperationException ||
+            exception is KeyNotFoundException)
+        {
+            throw new SnapshotExportException(
+                "The Daily Summary contains invalid or unreconciled accepted data.",
+                exception);
+        }
+    }
+
+    private static void EnsureReferenceIds(
+        IReadOnlyList<string> ids,
+        string name,
+        bool requireSorted = true)
+    {
+        ArgumentNullException.ThrowIfNull(ids);
+        if (ids.Count > MaximumReferenceItems ||
+            ids.Any(string.IsNullOrWhiteSpace) ||
+            ids.Any(item => item.Length > MaximumIdentifierLength) ||
+            ids.Distinct(StringComparer.Ordinal).Count() != ids.Count)
+        {
+            throw new SnapshotExportException(
+                $"The export field {name} exceeds reference bounds or contains duplicates.");
+        }
+
+        if (requireSorted && !ids.SequenceEqual(ids.OrderBy(item => item, StringComparer.Ordinal), StringComparer.Ordinal))
+        {
+            throw new SnapshotExportException($"The export field {name} is not canonically ordered.");
+        }
+    }
+
     private static DailySummarySnapshotExport MapDailySummary(
         DailySummarySnapshot snapshot) =>
         new(
@@ -548,13 +928,17 @@ public static class DeterministicSnapshotExporter
 
     private static SnapshotExportMetadata CreateMetadata(
         string exportKind,
-        DateTimeOffset generatedUtc) =>
+        DateTimeOffset generatedUtc,
+        string exportId,
+        string sourceSnapshotSha256) =>
         new(
             ExportContractVersion,
             ExporterId,
             exportKind,
             FormatUtc(generatedUtc),
             "UTF-8 without BOM",
+            exportId,
+            sourceSnapshotSha256,
             new SnapshotExportRedactionPolicy(
                 RedactionPolicyId,
                 "fail-closed",
@@ -563,23 +947,61 @@ public static class DeterministicSnapshotExporter
 
     private static DeterministicSnapshotExport CreateExport<TDocument>(
         SnapshotExportKind kind,
-        TDocument document)
+        TDocument document,
+        string exportId,
+        string sourceSnapshotSha256)
     {
         var json = JsonSerializer.Serialize(document, JsonOptions)
             .Replace("\r\n", "\n", StringComparison.Ordinal)
             .Replace("\r", "\n", StringComparison.Ordinal);
         using var jsonDocument = JsonDocument.Parse(json);
         EnsureNoProhibitedContent(jsonDocument.RootElement, "$");
+        EnsureSerializedBounds(jsonDocument.RootElement);
         var csv = BuildCsv(jsonDocument.RootElement);
         var jsonBytes = Encoding.UTF8.GetBytes(json);
         var csvBytes = Encoding.UTF8.GetBytes(csv);
+        var jsonSha256 = ComputeSha256(jsonBytes);
+        var csvSha256 = ComputeSha256(csvBytes);
+        var markdown = BuildMarkdown(
+            kind,
+            jsonDocument.RootElement,
+            exportId,
+            sourceSnapshotSha256,
+            jsonSha256,
+            csvSha256);
+        var markdownBytes = Encoding.UTF8.GetBytes(markdown);
+        var markdownSha256 = ComputeSha256(markdownBytes);
+        var totalByteLength = (long)jsonBytes.Length + markdownBytes.Length + csvBytes.Length;
+        if (totalByteLength > MaximumTotalOutputBytes)
+        {
+            throw new SnapshotExportException(
+                $"The export exceeds the maximum total output size of {MaximumTotalOutputBytes} bytes.");
+        }
+
+        var manifest = new SnapshotExportManifest(
+            ExportContractVersion,
+            kind,
+            exportId,
+            sourceSnapshotSha256,
+            jsonSha256,
+            markdownSha256,
+            csvSha256,
+            jsonBytes.Length,
+            markdownBytes.Length,
+            csvBytes.Length,
+            totalByteLength);
         return new DeterministicSnapshotExport(
             kind,
             json,
             csv,
-            ComputeSha256(jsonBytes),
-            ComputeSha256(csvBytes),
-            "UTF-8 without BOM; JSON LF; CSV CRLF");
+            jsonSha256,
+            csvSha256,
+            "UTF-8 without BOM; JSON LF; CSV CRLF",
+            markdown,
+            markdownSha256,
+            exportId,
+            sourceSnapshotSha256,
+            manifest);
     }
 
     private static void EnsureNoProhibitedContent(JsonElement element, string path)
@@ -609,7 +1031,9 @@ public static class DeterministicSnapshotExporter
             case JsonValueKind.String:
                 var value = element.GetString();
                 if (value is not null &&
-                    (FileSystemPathPattern.IsMatch(value) || SecretOrTokenPattern.IsMatch(value)))
+                    (SensitivePropertyPattern.IsMatch(path) ||
+                     FileSystemPathPattern.IsMatch(value) ||
+                     SecretOrTokenPattern.IsMatch(value)))
                 {
                     throw new SnapshotExportException(
                         $"Export rejected by the fail-closed redaction policy at {path}.");
@@ -617,6 +1041,236 @@ public static class DeterministicSnapshotExporter
 
                 break;
         }
+    }
+
+    private static void EnsureSerializedBounds(JsonElement root)
+    {
+        var nodeCount = 0;
+        var referenceCount = 0;
+        WalkSerializedElement(root, "$", ref nodeCount, ref referenceCount);
+    }
+
+    private static void WalkSerializedElement(
+        JsonElement element,
+        string path,
+        ref int nodeCount,
+        ref int referenceCount)
+    {
+        nodeCount++;
+        if (nodeCount > MaximumSerializedNodes)
+        {
+            throw new SnapshotExportException(
+                $"The export exceeds the maximum serialized node count of {MaximumSerializedNodes}.");
+        }
+
+        switch (element.ValueKind)
+        {
+            case JsonValueKind.Object:
+                var properties = element.EnumerateObject().ToArray();
+                if (properties.Length > MaximumObjectProperties)
+                {
+                    throw new SnapshotExportException(
+                        $"The export exceeds the maximum object property count of {MaximumObjectProperties}.");
+                }
+
+                foreach (var property in properties)
+                {
+                    WalkSerializedElement(
+                        property.Value,
+                        $"{path}.{property.Name}",
+                        ref nodeCount,
+                        ref referenceCount);
+                }
+
+                break;
+            case JsonValueKind.Array:
+                if (element.GetArrayLength() > MaximumCollectionItems)
+                {
+                    throw new SnapshotExportException(
+                        $"The export exceeds the maximum collection cardinality of {MaximumCollectionItems}.");
+                }
+
+                if (IsReferencePath(path))
+                {
+                    referenceCount += element.GetArrayLength();
+                    if (referenceCount > MaximumReferenceItems)
+                    {
+                        throw new SnapshotExportException(
+                            $"The export exceeds the maximum reference cardinality of {MaximumReferenceItems}.");
+                    }
+                }
+
+                for (var index = 0; index < element.GetArrayLength(); index++)
+                {
+                    WalkSerializedElement(
+                        element[index],
+                        $"{path}[{index}]",
+                        ref nodeCount,
+                        ref referenceCount);
+                }
+
+                break;
+            case JsonValueKind.String:
+                var value = element.GetString();
+                if (value is not null && value.Length > MaximumTextLength)
+                {
+                    throw new SnapshotExportException(
+                        $"The export exceeds the maximum text length of {MaximumTextLength} characters.");
+                }
+
+                break;
+        }
+    }
+
+    private static bool IsReferencePath(string path) =>
+        path.Contains("sourceIds", StringComparison.Ordinal) ||
+        path.Contains("sourceIdentities", StringComparison.Ordinal) ||
+        path.EndsWith(".dimensions", StringComparison.Ordinal) ||
+        path.EndsWith(".observedInputs", StringComparison.Ordinal) ||
+        path.EndsWith(".acceptedSources", StringComparison.Ordinal) ||
+        path.EndsWith(".timeline", StringComparison.Ordinal) ||
+        path.EndsWith(".metrics", StringComparison.Ordinal) ||
+        path.EndsWith(".workstreams", StringComparison.Ordinal) ||
+        path.EndsWith(".highlights", StringComparison.Ordinal) ||
+        path.EndsWith(".repeatedIssues", StringComparison.Ordinal) ||
+        path.EndsWith(".recommendedActions", StringComparison.Ordinal);
+
+    private static string BuildMarkdown(
+        SnapshotExportKind kind,
+        JsonElement root,
+        string exportId,
+        string sourceSnapshotSha256,
+        string jsonSha256,
+        string csvSha256)
+    {
+        var builder = new StringBuilder();
+        builder.AppendLine("# HerdrOps Snapshot Export");
+        builder.AppendLine();
+        builder.AppendLine($"- Export ID: `{exportId}`");
+        builder.AppendLine($"- Kind: `{kind}`");
+        builder.AppendLine($"- Source Snapshot SHA-256: `{sourceSnapshotSha256}`");
+        builder.AppendLine($"- JSON SHA-256: `{jsonSha256}`");
+        builder.AppendLine($"- CSV SHA-256: `{csvSha256}`");
+        builder.AppendLine("- Markdown SHA-256: recorded in `manifest.json`");
+        builder.AppendLine();
+
+        AppendMarkdownObject(builder, "Metadata", root.GetProperty("metadata"), 2);
+        AppendMarkdownObject(builder, "Source", root.GetProperty("source"), 2);
+        AppendMarkdownObject(builder, "Accepted Snapshot", root.GetProperty("acceptedSnapshot"), 2);
+        return builder.ToString().Replace("\r\n", "\n", StringComparison.Ordinal)
+            .Replace("\r", "\n", StringComparison.Ordinal);
+    }
+
+    private static void AppendMarkdownObject(
+        StringBuilder builder,
+        string title,
+        JsonElement element,
+        int headingLevel)
+    {
+        builder.Append(new string('#', Math.Min(headingLevel, 6)));
+        builder.Append(' ');
+        builder.AppendLine(title);
+        builder.AppendLine();
+        AppendMarkdownObjectFields(builder, element, headingLevel);
+    }
+
+    private static void AppendMarkdownObjectFields(
+        StringBuilder builder,
+        JsonElement element,
+        int headingLevel)
+    {
+        foreach (var property in element.EnumerateObject())
+        {
+            var label = ToMarkdownLabel(property.Name);
+            switch (property.Value.ValueKind)
+            {
+                case JsonValueKind.Object:
+                    AppendMarkdownObject(builder, label, property.Value, headingLevel + 1);
+                    break;
+                case JsonValueKind.Array:
+                    AppendMarkdownArray(builder, label, property.Value, headingLevel + 1);
+                    break;
+                default:
+                    builder.Append("- ");
+                    builder.Append(label);
+                    builder.Append(": ");
+                    builder.AppendLine(FormatMarkdownScalar(property.Value));
+                    break;
+            }
+        }
+
+        builder.AppendLine();
+    }
+
+    private static void AppendMarkdownArray(
+        StringBuilder builder,
+        string label,
+        JsonElement array,
+        int headingLevel)
+    {
+        builder.Append(new string('#', Math.Min(headingLevel, 6)));
+        builder.Append(' ');
+        builder.AppendLine(label);
+        builder.AppendLine();
+        if (array.GetArrayLength() == 0)
+        {
+            builder.AppendLine("- None");
+            builder.AppendLine();
+            return;
+        }
+
+        var index = 0;
+        foreach (var item in array.EnumerateArray())
+        {
+            index++;
+            if (item.ValueKind == JsonValueKind.Object)
+            {
+                builder.Append(new string('#', Math.Min(headingLevel + 1, 6)));
+                builder.Append(" Item ");
+                builder.AppendLine(index.ToString(CultureInfo.InvariantCulture));
+                builder.AppendLine();
+                AppendMarkdownObjectFields(builder, item, headingLevel + 1);
+            }
+            else
+            {
+                builder.Append("- ");
+                builder.AppendLine(FormatMarkdownScalar(item));
+            }
+        }
+
+        builder.AppendLine();
+    }
+
+    private static string FormatMarkdownScalar(JsonElement element) =>
+        element.ValueKind == JsonValueKind.String
+            ? $"`{(element.GetString() ?? string.Empty).Replace("`", "'", StringComparison.Ordinal).Replace('\n', ' ').Replace('\r', ' ')}`"
+            : element.ValueKind == JsonValueKind.Null
+                ? "null"
+                : element.GetRawText();
+
+    private static string ToMarkdownLabel(string value)
+    {
+        var builder = new StringBuilder(value.Length + 8);
+        for (var index = 0; index < value.Length; index++)
+        {
+            var character = value[index];
+            if (character is '_' or '-')
+            {
+                builder.Append(' ');
+                continue;
+            }
+
+            if (index > 0 && char.IsUpper(character) && char.IsLower(value[index - 1]))
+            {
+                builder.Append(' ');
+            }
+
+            builder.Append(character);
+        }
+
+        return builder.ToString() is { Length: > 0 } label
+            ? char.ToUpperInvariant(label[0]) + label[1..]
+            : value;
     }
 
     private static string BuildCsv(JsonElement root)
@@ -745,6 +1399,31 @@ public static class DeterministicSnapshotExporter
 
     private static string FormatUtc(DateTimeOffset value) =>
         value.ToUniversalTime().ToString("yyyy-MM-dd'T'HH:mm:ss.fffffff'Z'", CultureInfo.InvariantCulture);
+
+    public static string SerializeManifest(SnapshotExportManifest manifest)
+    {
+        ArgumentNullException.ThrowIfNull(manifest);
+        var json = JsonSerializer.Serialize(manifest, JsonOptions);
+        return json.Replace("\r\n", "\n", StringComparison.Ordinal)
+            .Replace("\r", "\n", StringComparison.Ordinal);
+    }
+
+    private static string CreateExportId(
+        SnapshotExportKind kind,
+        string sourceSnapshotSha256,
+        DateTimeOffset generatedUtc)
+    {
+        var identity = string.Join(
+            "|",
+            "HerdrOps.SnapshotExport.v1",
+            ((int)kind).ToString(CultureInfo.InvariantCulture),
+            sourceSnapshotSha256,
+            FormatUtc(generatedUtc));
+        return ComputeSha256(Encoding.UTF8.GetBytes(identity));
+    }
+
+    private static bool IsSha256(string? value) =>
+        value is { Length: 64 } && value.All(Uri.IsHexDigit);
 
     private static string ComputeSha256(byte[] bytes) =>
         Convert.ToHexString(SHA256.HashData(bytes));
