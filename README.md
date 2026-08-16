@@ -73,13 +73,17 @@ Design checklists อยู่ที่ [`v0.1 Issue #2`](docs/design/implementa
 
 ผลผ่านยังคงเป็น Contract evidence จาก executable bytes เท่านั้น ไม่ใช่หลักฐาน live Herdr runtime
 
-เมื่อเปิด PowerShell จาก Herdr pane ที่มี `HERDR_ENV=1` และ `HERDR_SOCKET_PATH` แล้ว ให้รัน composite runtime gate สำหรับ Issues #7, #9 และ #10 ด้วย:
+ให้เปิด PowerShell แบบไม่ใช้สิทธิ์ผู้ดูแลระบบจาก Pane ใหม่ที่ยังไม่เคยย้ายตำแหน่งใน Named Session `acceptance` โดยคง `HERDR_SOCKET_PATH` ของ Pane ให้ชี้ไปที่ Control Session นี้ ส่วน Session `default` ใช้เป็น Agent Lab เป้าหมาย จากนั้นรัน Composite Runtime Gate สำหรับ Issues #7, #9 และ #10 ด้วย:
 
 ```powershell
-./tools/Test-V02LiveRuntimeAcceptance.ps1
+$targetAgentLabSocket = Join-Path $env:APPDATA 'herdr\herdr.sock'
+./tools/Test-V02LiveRuntimeAcceptance.ps1 `
+    -TargetHerdrSocketPath $targetAgentLabSocket `
+    -Language Thai `
+    -DurationSeconds 600
 ```
 
-ระหว่างรัน Gate จะขอให้สร้าง Herdr event จริง ปิด/เชื่อมต่อ Herdr ใหม่โดยผู้ใช้ และสร้าง event อีกครั้ง โปรแกรมจะเก็บ exact Core trace, production WPF captures, Dashboard-close continuity, Widget latency, Core+App resource usage และ owned TCP listener evidence ไว้ใน `artifacts/runtime-evidence/` ผลจากสภาพแวดล้อมที่ไม่มี Herdr authorization จะ fail closed และไม่ได้ Runtime credit
+Control Session กับ Agent Lab ต้องใช้ Socket และ Herdr Server Process คนละตัว เพราะการหยุด Herdr Server จะปิด Process ของทุก Pane ใน Session นั้น ระหว่างรัน Gate ให้สร้าง Event A ด้วยการเปลี่ยนสถานะ Agent จริงใน Agent Lab เมื่อ Dashboard ปิดแล้วจึงหยุดและเปิดใหม่เฉพาะ Session `default` รอจน Floating Widget กลับมาเป็น `LIVE` แล้วสร้าง Event B ด้วยการเปลี่ยนสถานะ Agent จริงอีกครั้ง Gate จะตรวจลำดับ Event A → Disconnect → PID/เวลาเริ่ม Process ใหม่ → Event B การสลับ Focus หรือสร้าง Workspace, Tab หรือ Pane ไม่นับเป็น Event โปรแกรมจะเก็บ Exact Core Trace, Production WPF Captures, Dashboard-close continuity, Widget latency, Core+App resource usage และ owned TCP listener evidence ไว้ใน `artifacts/runtime-evidence/` ผลจากสภาพแวดล้อมที่ไม่มี Herdr authorization จะ fail closed และไม่ได้ Runtime credit
 
 งานพื้นฐานของ v0.3 Issue #12 มีคำสั่ง replay สำหรับตรวจการเรียงลำดับ การตัดข้อมูลซ้ำ การรวมเหตุการณ์ถี่ และ sequence gap แบบ deterministic:
 
