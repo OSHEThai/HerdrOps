@@ -130,7 +130,7 @@ public sealed record EvaluationDimensionRow(
     EvaluationDimension Dimension,
     string Label,
     decimal? Score,
-    decimal WeightPercentage,
+    decimal? WeightPercentage,
     string ScoreLabel,
     string StatusLabel,
     string AccentBrushKey,
@@ -140,7 +140,7 @@ public sealed record EvaluationDimensionRow(
 public sealed record EvaluationComparisonRow(
     EvaluationDimension Dimension,
     string Label,
-    decimal WeightPercentage,
+    decimal? WeightPercentage,
     string WeightLabel,
     int? LeaderScore,
     string LeaderScoreLabel,
@@ -170,7 +170,18 @@ public sealed record EvaluationRankingRow(
     string TieLabel,
     string AccentBrushKey,
     string AccessibilityText,
-    string StatusText);
+    string StatusText,
+    string TaskId,
+    string TaskLabel,
+    string EvaluationId,
+    string ContextLabel,
+    string FormulaId,
+    string InputSnapshotSha256,
+    string InputSnapshotSha256Display,
+    string InputSnapshotSha256AccessibilityValue,
+    decimal? TrendDelta,
+    string TrendLabel,
+    string ProvenanceLabel);
 
 /// <summary>
 /// Presentation-only Evaluation state. It accepts synthetic/contract data and
@@ -198,9 +209,11 @@ public sealed class EvaluationState : ObservableState
     private string _selectedTaskLabel = string.Empty;
     private string _selectedAgentLabel = string.Empty;
     private string _comparisonTotalScoreLabel = string.Empty;
+    private string _dimensionWeightedAverageLabel = string.Empty;
     private string _comparisonFormulaLabel = string.Empty;
     private string _comparisonSnapshotSha256 = string.Empty;
     private string _missingScoreLabel = string.Empty;
+    private string _rankingEmptyLabel = string.Empty;
     private int _missingScoreCount;
 
     public EvaluationState(EvaluationSnapshot snapshot)
@@ -247,6 +260,8 @@ public sealed class EvaluationState : ObservableState
 
     public string ComparisonTotalScoreLabel => _comparisonTotalScoreLabel;
 
+    public string DimensionWeightedAverageLabel => _dimensionWeightedAverageLabel;
+
     public string ComparisonFormulaLabel => _comparisonFormulaLabel;
 
     public string ComparisonSnapshotSha256 => _comparisonSnapshotSha256;
@@ -254,6 +269,8 @@ public sealed class EvaluationState : ObservableState
     public string MissingScoreLabel => _missingScoreLabel;
 
     public int MissingScoreCount => _missingScoreCount;
+
+    public string RankingEmptyLabel => _rankingEmptyLabel;
 
     public static EvaluationState CreateSyntheticPreview() =>
         new(CreateSyntheticSnapshot(includeMissingScore: false));
@@ -317,8 +334,15 @@ public sealed class EvaluationState : ObservableState
             ? text.Unavailable
             : text.SelectedAgent(selected.AgentLabel);
         _comparisonTotalScoreLabel = FormatScore(selected?.Result.TotalScore);
-        _comparisonFormulaLabel = selected?.Result.Provenance.Formula.FormulaId ?? text.Unavailable;
-        _comparisonSnapshotSha256 = selected?.Result.Provenance.InputSnapshotSha256 ?? string.Empty;
+        var selectedFormulaAvailable = TryGetEmbeddedFormula(selected?.Result, out var selectedFormula);
+        _comparisonFormulaLabel = selectedFormulaAvailable
+            ? selectedFormula.FormulaId
+            : text.Unavailable;
+        _comparisonSnapshotSha256 = selected?.Result.Provenance?.InputSnapshotSha256 ?? string.Empty;
+        _dimensionWeightedAverageLabel = scored.Length == 0
+            ? text.Unavailable
+            : FormatScore(Round(scored.Average(item => item.Result.TotalScore!.Value)));
+        _rankingEmptyLabel = text.RankingEmpty;
         _summaryCards = Freeze(BuildSummaryCards(text, scored));
         _distributionBins = Freeze(BuildDistribution(text, scored));
         _distributionTotalLabel = text.ScoredCount(scored.Length);
@@ -345,10 +369,12 @@ public sealed class EvaluationState : ObservableState
         Raise(nameof(SelectedTaskLabel));
         Raise(nameof(SelectedAgentLabel));
         Raise(nameof(ComparisonTotalScoreLabel));
+        Raise(nameof(DimensionWeightedAverageLabel));
         Raise(nameof(ComparisonFormulaLabel));
         Raise(nameof(ComparisonSnapshotSha256));
         Raise(nameof(MissingScoreLabel));
         Raise(nameof(MissingScoreCount));
+        Raise(nameof(RankingEmptyLabel));
     }
 
     private IReadOnlyList<EvaluationSummaryCard> BuildSummaryCards(
@@ -468,14 +494,19 @@ public sealed class EvaluationState : ObservableState
         Copy text,
         EvaluationSnapshotRecord? selected)
     {
-        var formulaWeights = EvaluationFormulaCatalog.Version1.DimensionWeights
-            .ToDictionary(item => item.Dimension, item => item.WeightBasisPoints);
-        var resultByDimension = selected?.Result.Dimensions
-            .ToDictionary(item => item.Dimension);
+        var formulaAvailable = TryGetEmbeddedFormula(selected?.Result, out var formula);
+        var formulaWeights = formulaAvailable
+            ? formula.DimensionWeights.ToDictionary(item => item.Dimension, item => item.WeightBasisPoints)
+            : null;
+        var resultByDimension = selected?.Result.Dimensions?
+            .GroupBy(item => item.Dimension)
+            .ToDictionary(group => group.Key, group => group.Last());
 
         return Dimensions.Select(dimension =>
         {
-            var weight = formulaWeights[dimension] / 100m;
+            var weight = formulaWeights is not null && formulaWeights.TryGetValue(dimension, out var weightBasisPoints)
+                ? weightBasisPoints / 100m
+                : (decimal?)null;
             var result = resultByDimension?.GetValueOrDefault(dimension);
             var score = result?.Status == EvaluationDimensionScoreStatus.Complete
                 ? result.DimensionScore
@@ -501,19 +532,24 @@ public sealed class EvaluationState : ObservableState
         Copy text,
         EvaluationSnapshotRecord? selected)
     {
-        var weights = EvaluationFormulaCatalog.Version1.DimensionWeights
-            .ToDictionary(item => item.Dimension, item => item.WeightBasisPoints / 100m);
-        var results = selected?.Result.Dimensions
-            .ToDictionary(item => item.Dimension);
+        var formulaAvailable = TryGetEmbeddedFormula(selected?.Result, out var formula);
+        var weights = formulaAvailable
+            ? formula.DimensionWeights.ToDictionary(item => item.Dimension, item => item.WeightBasisPoints / 100m)
+            : null;
+        var results = selected?.Result.Dimensions?
+            .GroupBy(item => item.Dimension)
+            .ToDictionary(group => group.Key, group => group.Last());
 
         return Dimensions.Select(dimension =>
         {
             var result = results?.GetValueOrDefault(dimension);
-            var weight = weights[dimension];
+            var weight = weights is not null && weights.TryGetValue(dimension, out var resolvedWeight)
+                ? resolvedWeight
+                : (decimal?)null;
             var leader = result?.Leader ?? new EvaluationScoreInput(null, null, null);
             var projectManager = result?.ProjectManager ?? new EvaluationScoreInput(null, null, null);
             var evidence = result?.ObjectiveEvidence ?? new EvaluationScoreInput(null, null, null);
-            var complete = result?.Status == EvaluationDimensionScoreStatus.Complete;
+            var complete = formulaAvailable && result?.Status == EvaluationDimensionScoreStatus.Complete;
             var status = selected is null
                 ? text.Unavailable
                 : text.DimensionStatus(result?.Status);
@@ -523,7 +559,7 @@ public sealed class EvaluationState : ObservableState
                 dimension,
                 label,
                 weight,
-                FormatPercentage(weight),
+                weight is null ? text.Unavailable : FormatPercentage(weight),
                 leader.Score,
                 FormatScore(leader.Score),
                 leader.ProvenanceId ?? string.Empty,
@@ -537,7 +573,9 @@ public sealed class EvaluationState : ObservableState
                 evidence.ProvenanceId ?? string.Empty,
                 evidence.EvidenceIdentitySha256 ?? string.Empty,
                 weighted,
-                $"{FormatScore(weighted)} / {FormatScore(weight)}",
+                formulaAvailable
+                    ? $"{FormatScore(weighted)} / {FormatScore(weight)}"
+                    : text.Unavailable,
                 BrushFor(result?.Status),
                 text.Accessibility(
                     label,
@@ -551,6 +589,9 @@ public sealed class EvaluationState : ObservableState
         IReadOnlyList<EvaluationSnapshotRecord> scored,
         bool descending)
     {
+        var snapshotAverage = scored.Count == 0
+            ? (decimal?)null
+            : Round(scored.Average(item => item.Result.TotalScore!.Value));
         var ordered = (descending
                 ? scored.OrderByDescending(item => item.Result.TotalScore)
                 : scored.OrderBy(item => item.Result.TotalScore))
@@ -567,6 +608,20 @@ public sealed class EvaluationState : ObservableState
                 : rows[^1].Rank;
             var tie = ordered.Count(other => other.Result.TotalScore == score) > 1;
             var tieLabel = tie ? text.Tie(rank) : string.Empty;
+            var trendDelta = snapshotAverage is null ? (decimal?)null : Round(score - snapshotAverage.Value);
+            var formulaAvailable = TryGetEmbeddedFormula(item.Result, out var formula);
+            var formulaId = formulaAvailable ? formula.FormulaId : text.Unavailable;
+            var rawInputSnapshotSha256 = item.Result.Provenance?.InputSnapshotSha256 ?? string.Empty;
+            var inputSnapshotSha256 = IsSha256(rawInputSnapshotSha256)
+                ? rawInputSnapshotSha256
+                : string.Empty;
+            var inputSnapshotSha256Display = ShortHash(inputSnapshotSha256, text.Unavailable);
+            var inputSnapshotSha256AccessibilityValue = string.IsNullOrWhiteSpace(inputSnapshotSha256)
+                ? text.Unavailable
+                : inputSnapshotSha256;
+            var contextLabel = text.RankingContext(item.TaskId, item.TaskLabel, item.EvaluationId);
+            var provenanceLabel = text.RankingProvenance(formulaId, inputSnapshotSha256Display);
+            var trendLabel = text.RankingTrend(trendDelta);
             rows.Add(new EvaluationRankingRow(
                 rank,
                 item.AgentId,
@@ -576,8 +631,22 @@ public sealed class EvaluationState : ObservableState
                 tie,
                 tieLabel,
                 descending ? OverviewBrushKeys.Primary : OverviewBrushKeys.Review,
-                text.Accessibility(item.AgentLabel, $"{FormatScore(score)}, {tieLabel}"),
-                tie ? tieLabel : text.Complete));
+                text.Accessibility(
+                    item.AgentLabel,
+                    $"{FormatScore(score)}, {tieLabel}, {contextLabel}, {trendLabel}, " +
+                    $"{provenanceLabel}, {inputSnapshotSha256AccessibilityValue}"),
+                tie ? $"{tieLabel} · {trendLabel}" : $"{text.Complete} · {trendLabel}",
+                item.TaskId,
+                item.TaskLabel,
+                item.EvaluationId,
+                contextLabel,
+                formulaId,
+                inputSnapshotSha256,
+                inputSnapshotSha256Display,
+                inputSnapshotSha256AccessibilityValue,
+                trendDelta,
+                trendLabel,
+                provenanceLabel));
         }
 
         return rows;
@@ -590,6 +659,74 @@ public sealed class EvaluationState : ObservableState
 
     private static string FormatPercentage(decimal? percentage) =>
         percentage is null ? "—" : $"{percentage.Value:0.##}%";
+
+    private static string ShortHash(string value, string unavailable)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return unavailable;
+        }
+
+        return value.Length <= 12 ? value : $"{value[..12]}…";
+    }
+
+    private static bool TryGetEmbeddedFormula(
+        EvaluationScoreResult? result,
+        out EvaluationFormulaDefinition formula)
+    {
+        formula = null!;
+        if (result?.Provenance is not { } provenance ||
+            provenance.Formula is null ||
+            provenance.InputSnapshot is null ||
+            result.Dimensions is null)
+        {
+            return false;
+        }
+
+        EvaluationFormulaDefinition normalized;
+        try
+        {
+            normalized = EvaluationFormulaContract.NormalizeAndValidate(provenance.Formula);
+        }
+        catch (Exception exception) when (
+            exception is ArgumentNullException or
+            EvaluationScoringContractException or
+            InvalidOperationException)
+        {
+            return false;
+        }
+
+        if (result.ContractVersion != normalized.ContractVersion ||
+            !IsSha256(provenance.InputSnapshotSha256) ||
+            !string.Equals(provenance.FormulaSha256, normalized.FormulaSha256, StringComparison.Ordinal) ||
+            !string.Equals(provenance.InputSnapshot.EvaluationId, result.EvaluationId, StringComparison.Ordinal) ||
+            !string.Equals(provenance.InputSnapshot.TaskId, result.TaskId, StringComparison.Ordinal) ||
+            !string.Equals(provenance.InputSnapshot.AgentId, result.AgentId, StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        var formulaWeights = normalized.DimensionWeights.ToDictionary(
+            item => item.Dimension,
+            item => item.WeightBasisPoints);
+        if (result.Dimensions.Count != Dimensions.Count ||
+            result.Dimensions.Select(item => item.Dimension).Distinct().Count() != Dimensions.Count ||
+            result.Dimensions.Any(item =>
+                !formulaWeights.TryGetValue(item.Dimension, out var expectedWeight) ||
+                item.WeightBasisPoints != expectedWeight))
+        {
+            return false;
+        }
+
+        formula = normalized;
+        return true;
+    }
+
+    private static bool IsSha256(string? value) =>
+        value is not null && value.Length == 64 && value.All(static character =>
+            (character >= '0' && character <= '9') ||
+            (character >= 'A' && character <= 'F') ||
+            (character >= 'a' && character <= 'f'));
 
     private static decimal Round(decimal value) => decimal.Round(value, 2, MidpointRounding.AwayFromZero);
 
@@ -722,6 +859,8 @@ public sealed class EvaluationState : ObservableState
 
         public string MissingScore => _service["EvaluationMissingScoreLabel"];
 
+        public string RankingEmpty => _service["EvaluationRankingEmptyLabel"];
+
         public string AverageScore => _service["EvaluationAverageScoreToday"];
 
         public string TotalEvaluations => _service["EvaluationTotalEvaluations"];
@@ -800,6 +939,30 @@ public sealed class EvaluationState : ObservableState
 
         public string Tie(int rank) =>
             $"{_service["EvaluationTieLabel"]} · {_service.Format("EvaluationRankFormat", rank)}";
+
+        public string RankingContext(string taskId, string taskLabel, string evaluationId) =>
+            _service.Format("EvaluationRankingContextFormat", taskId, taskLabel, evaluationId);
+
+        public string RankingProvenance(string formulaId, string snapshotHashDisplay) =>
+            _service.Format("EvaluationRankingProvenanceFormat", formulaId, snapshotHashDisplay);
+
+        public string RankingTrend(decimal? delta)
+        {
+            if (delta is null)
+            {
+                return Unavailable;
+            }
+
+            if (delta == 0m)
+            {
+                return _service["EvaluationRankingTrendAtAverage"];
+            }
+
+            var key = delta > 0m
+                ? "EvaluationRankingTrendAboveAverageFormat"
+                : "EvaluationRankingTrendBelowAverageFormat";
+            return _service.Format(key, Math.Abs(delta.Value).ToString("0.##", CultureInfo.InvariantCulture));
+        }
     }
 }
 

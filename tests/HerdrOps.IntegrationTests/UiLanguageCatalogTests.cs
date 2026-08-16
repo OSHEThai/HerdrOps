@@ -51,6 +51,32 @@ public sealed class UiLanguageCatalogTests
     }
 
     [TestMethod]
+    public void EvaluationAggregateAndRankingKeysHaveThaiEnglishParity()
+    {
+        var language = UiLanguageService.Shared;
+        var keys = new[]
+        {
+            "EvaluationDimensionWeightedAverage",
+            "EvaluationRankingEmptyLabel",
+            "EvaluationRankingContextFormat",
+            "EvaluationRankingProvenanceFormat",
+            "EvaluationRankingTrendAboveAverageFormat",
+            "EvaluationRankingTrendBelowAverageFormat",
+            "EvaluationRankingTrendAtAverage",
+        };
+
+        foreach (var key in keys)
+        {
+            var thai = language.Text(UiLanguage.Thai, key);
+            var english = language.Text(UiLanguage.English, key);
+
+            Assert.IsFalse(string.IsNullOrWhiteSpace(thai), $"Thai Evaluation key is empty: {key}");
+            Assert.IsFalse(string.IsNullOrWhiteSpace(english), $"English Evaluation key is empty: {key}");
+            Assert.IsFalse(ContainsThai(english), $"English Evaluation key contains Thai copy: {key}");
+        }
+    }
+
+    [TestMethod]
     public void EveryV01XamlLanguageBindingExistsAndNoBilingualLiteralRemains()
     {
         var root = FindRepositoryRoot();

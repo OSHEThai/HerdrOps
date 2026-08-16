@@ -1,3 +1,5 @@
+using System.Security.Cryptography;
+using System.Text;
 using HerdrOps.App.Evaluation;
 using HerdrOps.App.Localization;
 using HerdrOps.Domain.Evaluation;
@@ -129,6 +131,136 @@ public sealed class EvaluationStateTests
     }
 
     [TestMethod]
+    public void EmbeddedFormulaWeightsAreUsedAndInconsistentWeightsFailClosed()
+    {
+        WithLanguage(UiLanguage.English, () =>
+        {
+            var formula = CreateNonVersionOneFormula();
+            var record = CreateRecord(
+                "evaluation-custom-formula",
+                "TASK-CUSTOM",
+                "Custom formula task",
+                "agent-custom",
+                "Custom Agent",
+                [20, 40, 60, 80, 70, 50],
+                formula);
+            var state = new EvaluationState(CreateSnapshot(record));
+
+            Assert.AreEqual(formula.FormulaId, state.ComparisonFormulaLabel);
+            Assert.AreEqual(
+                formula.DimensionWeights.Single(item => item.Dimension == EvaluationDimension.GoalAlignment).WeightBasisPoints / 100m,
+                state.DimensionRows.Single(item => item.Dimension == EvaluationDimension.GoalAlignment).WeightPercentage);
+            Assert.AreEqual(
+                formula.DimensionWeights.Single(item => item.Dimension == EvaluationDimension.GoalAlignment).WeightBasisPoints / 100m,
+                state.ComparisonRows.Single(item => item.Dimension == EvaluationDimension.GoalAlignment).WeightPercentage);
+
+            var tampered = record with
+            {
+                Result = record.Result with
+                {
+                    Dimensions = record.Result.Dimensions
+                        .Select((item, index) => index == 0
+                            ? item with { WeightBasisPoints = item.WeightBasisPoints + 1 }
+                            : item)
+                        .ToArray(),
+                },
+            };
+            var failClosed = new EvaluationState(CreateSnapshot(tampered));
+
+            Assert.AreEqual("Unavailable", failClosed.ComparisonFormulaLabel);
+            Assert.IsNull(failClosed.DimensionRows.Single(item => item.Dimension == EvaluationDimension.GoalAlignment).WeightPercentage);
+            Assert.IsNull(failClosed.ComparisonRows.Single(item => item.Dimension == EvaluationDimension.GoalAlignment).WeightPercentage);
+            Assert.AreEqual("Unavailable", failClosed.ComparisonRows.Single(item => item.Dimension == EvaluationDimension.GoalAlignment).WeightLabel);
+            Assert.IsNull(failClosed.ComparisonRows.Single(item => item.Dimension == EvaluationDimension.GoalAlignment).WeightedScore);
+        });
+    }
+
+    [TestMethod]
+    public void DimensionWeightedAverageUsesEveryCompleteRecordAndKeepsSelectedTotalSeparate()
+    {
+        WithLanguage(UiLanguage.English, () =>
+        {
+            var formula = CreateNonVersionOneFormula();
+            var selected = CreateRecord(
+                "evaluation-selected",
+                "TASK-SELECTED",
+                "Selected task",
+                "agent-selected",
+                "Selected Agent",
+                [50, 50, 50, 50, 50, 50],
+                formula);
+            var other = CreateRecord(
+                "evaluation-other",
+                "TASK-OTHER",
+                "Other task",
+                "agent-other",
+                "Other Agent",
+                [90, 90, 90, 90, 90, 90],
+                formula);
+            var state = new EvaluationState(CreateSnapshot(selected, other));
+
+            Assert.AreEqual("50", state.ComparisonTotalScoreLabel);
+            Assert.AreEqual("70", state.DimensionWeightedAverageLabel);
+            Assert.AreNotEqual(state.ComparisonTotalScoreLabel, state.DimensionWeightedAverageLabel);
+        });
+    }
+
+    [TestMethod]
+    public void RankingsExposeLocalizedContextTrendAndTraceableProvenance()
+    {
+        var formula = CreateNonVersionOneFormula();
+        var high = CreateRecord(
+            "evaluation-high",
+            "TASK-HIGH",
+            "High task",
+            "agent-high",
+            "High Agent",
+            [90, 90, 90, 90, 90, 90],
+            formula);
+        var low = CreateRecord(
+            "evaluation-low",
+            "TASK-LOW",
+            "Low task",
+            "agent-low",
+            "Low Agent",
+            [60, 60, 60, 60, 60, 60],
+            formula);
+
+        WithLanguage(UiLanguage.English, () =>
+        {
+            var state = new EvaluationState(CreateSnapshot(high, low));
+            var row = state.TopAgents.Single(item => item.AgentId == "agent-high");
+            var expectedHash = high.Result.Provenance.InputSnapshotSha256;
+
+            Assert.AreEqual("TASK-HIGH", row.TaskId);
+            Assert.AreEqual("High task", row.TaskLabel);
+            Assert.AreEqual("evaluation-high", row.EvaluationId);
+            StringAssert.Contains(row.ContextLabel, "Task TASK-HIGH: High task");
+            StringAssert.Contains(row.ContextLabel, "evaluation evaluation-high");
+            Assert.AreEqual(formula.FormulaId, row.FormulaId);
+            Assert.AreEqual(expectedHash, row.InputSnapshotSha256);
+            Assert.AreEqual($"{expectedHash[..12]}…", row.InputSnapshotSha256Display);
+            Assert.AreEqual(expectedHash, row.InputSnapshotSha256AccessibilityValue);
+            Assert.AreEqual(15m, row.TrendDelta);
+            StringAssert.Contains(row.TrendLabel, "above snapshot average");
+            StringAssert.Contains(row.ProvenanceLabel, formula.FormulaId);
+            StringAssert.Contains(row.AccessibilityText, expectedHash);
+            Assert.IsFalse(row.TrendLabel.Contains("history", StringComparison.OrdinalIgnoreCase));
+        });
+
+        WithLanguage(UiLanguage.Thai, () =>
+        {
+            var state = new EvaluationState(CreateSnapshot(high, low));
+            var row = state.TopAgents.Single(item => item.AgentId == "agent-high");
+
+            StringAssert.Contains(row.ContextLabel, "งาน");
+            Assert.IsFalse(row.ContextLabel.Contains("Task ", StringComparison.Ordinal));
+            StringAssert.Contains(row.TrendLabel, "สูงกว่าค่าเฉลี่ยชุดข้อมูล");
+            Assert.IsFalse(row.TrendLabel.Contains("snapshot average", StringComparison.Ordinal));
+        });
+    }
+
+    [TestMethod]
     public void RefreshLanguage_RendersExactlyOneSelectedLanguage()
     {
         var service = UiLanguageService.Shared;
@@ -167,6 +299,7 @@ public sealed class EvaluationStateTests
             Assert.AreEqual(0, state.EvaluationCountTotal);
             Assert.IsEmpty(state.TopAgents);
             Assert.IsEmpty(state.LowAgents);
+            Assert.AreEqual("No ranking data is available", state.RankingEmptyLabel);
             Assert.IsTrue(state.DimensionRows.All(item => item.StatusLabel == "Unavailable"));
             Assert.IsTrue(state.ComparisonRows.All(item => item.StatusText == "Unavailable"));
             Assert.IsTrue(state.TrendPoints.All(item => item.Score is null));
@@ -174,6 +307,72 @@ public sealed class EvaluationStateTests
             Assert.AreEqual("No live Herdr state is available for Evaluation", state.EvidenceBoundaryLabel);
         });
     }
+
+    private static EvaluationFormulaDefinition CreateNonVersionOneFormula() =>
+        EvaluationFormulaContract.Create(
+            "HERDROPS-EVALUATION-TEST-V2",
+            formulaVersion: 2,
+            dimensionWeights:
+            [
+                new(EvaluationDimension.GoalAlignment, 1_000),
+                new(EvaluationDimension.AcceptanceCriteria, 2_500),
+                new(EvaluationDimension.TechnicalQuality, 1_500),
+                new(EvaluationDimension.ScopeCompliance, 2_000),
+                new(EvaluationDimension.Evidence, 2_000),
+                new(EvaluationDimension.Communication, 1_000),
+            ],
+            sourceWeights:
+            [
+                new(EvaluationScoreSource.Leader, 2_000),
+                new(EvaluationScoreSource.ProjectManager, 3_500),
+                new(EvaluationScoreSource.ObjectiveEvidence, 4_500),
+            ]);
+
+    private static EvaluationSnapshotRecord CreateRecord(
+        string evaluationId,
+        string taskId,
+        string taskLabel,
+        string agentId,
+        string agentLabel,
+        IReadOnlyList<int> scores,
+        EvaluationFormulaDefinition formula)
+    {
+        var dimensions = Enum.GetValues<EvaluationDimension>()
+            .Select((dimension, index) => new EvaluationDimensionInput(
+                dimension,
+                Score(scores[index], $"{evaluationId}:leader:{index}"),
+                Score(scores[index], $"{evaluationId}:pm:{index}"),
+                Score(scores[index], $"{evaluationId}:evidence:{index}")))
+            .ToArray();
+        var result = new EvaluationScoringEngine().Calculate(
+            new EvaluationInputSnapshot(
+                EvaluationFormulaCatalog.ContractVersion,
+                evaluationId,
+                taskId,
+                agentId,
+                dimensions),
+            formula);
+        return new EvaluationSnapshotRecord(evaluationId, taskId, taskLabel, agentId, agentLabel, result);
+    }
+
+    private static EvaluationSnapshot CreateSnapshot(params EvaluationSnapshotRecord[] records) =>
+        new(
+            EvaluationSnapshotAvailability.Available,
+            records,
+            [],
+            records[0].TaskId,
+            records[0].AgentId,
+            new DateOnly(2026, 8, 17),
+            previousAverageScore: null,
+            leaderReviewsPending: 0,
+            projectManagerReviewsPending: 0,
+            recurringIssueCount: 0);
+
+    private static EvaluationScoreInput Score(int score, string provenanceId) =>
+        new(
+            score,
+            provenanceId,
+            Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(provenanceId))));
 
     private static void WithLanguage(UiLanguage language, Action action)
     {
