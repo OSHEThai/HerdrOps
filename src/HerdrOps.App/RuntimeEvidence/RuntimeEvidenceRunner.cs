@@ -11,6 +11,7 @@ using System.Windows.Media.Imaging;
 using System.Windows.Threading;
 using HerdrOps.App.Live;
 using HerdrOps.App.Localization;
+using HerdrOps.App.StateIpc;
 using HerdrOps.App.Widgets;
 using HerdrOps.Contracts.StateIpc;
 
@@ -25,12 +26,43 @@ public sealed record RuntimeEvidenceCapture(
     long StateSequence,
     string StateSha256);
 
+public sealed record RuntimeProcessResourceMeasurement(
+    int ProcessId,
+    DateTimeOffset ProcessStartUtc,
+    string ExecutablePath,
+    string ExecutableSha256,
+    bool IdentityStable,
+    double AverageCpuPercent,
+    double AverageWorkingSetMegabytes,
+    double MaximumWorkingSetMegabytes,
+    double AveragePrivateMemoryMegabytes,
+    double MaximumPrivateMemoryMegabytes);
+
+public sealed record RuntimeResourcePreparation(
+    DateTimeOffset ObservedUtc,
+    bool DashboardResourcesReleased,
+    int RetainedEvidenceWindows,
+    int VisibleEvidenceWindows,
+    double AppWorkingSetBeforeMegabytes,
+    double AppWorkingSetAfterMegabytes,
+    double AppPrivateMemoryBeforeMegabytes,
+    double AppPrivateMemoryAfterMegabytes,
+    double ManagedHeapBeforeMegabytes,
+    double ManagedHeapAfterMegabytes);
+
 public sealed record RuntimeResourceMeasurement(
     int DurationSeconds,
+    int SampleIntervalMilliseconds,
+    int SampleCount,
     int ProcessorCount,
+    double CpuTargetPercent,
+    double WorkingSetTargetMegabytes,
     double CombinedAverageCpuPercent,
     double CombinedAverageWorkingSetMegabytes,
     double CombinedMaximumWorkingSetMegabytes,
+    RuntimeProcessResourceMeasurement App,
+    RuntimeProcessResourceMeasurement Core,
+    RuntimeResourcePreparation Preparation,
     bool StateSequenceStable,
     long StartSequence,
     long FinishSequence,
@@ -63,13 +95,34 @@ public sealed record AppRuntimeEvidenceReport(
     bool DashboardClosed,
     bool UpdateObservedAfterDashboardClose,
     bool CoreConnectedAfterDashboardClose,
+    DateTimeOffset DashboardClosedUtc,
+    DateTimeOffset DisconnectObservedUtc,
+    DateTimeOffset ReconnectObservedUtc,
     long InitialEventCount,
     long PreCloseEventCount,
     long PostCloseEventCount,
+    long PreRestartConnectionEpoch,
+    long ReconnectedConnectionEpoch,
+    long PreRestartBootstrapCount,
+    long ReconnectedBootstrapCount,
+    long PreRestartDisconnectCount,
+    long ReconnectedDisconnectCount,
+    bool DisconnectObservedAfterDashboardClose,
+    bool ReconnectObservedAfterDashboardClose,
+    long EventBBaselineSequence,
+    long EventBBaselineEventCount,
+    long WidgetLatencyBaselineSequence,
+    int WidgetLatencyWarmupSamplesExcluded,
+    IReadOnlyList<WidgetUpdateLatencySample> WidgetLatencyWarmupExcludedSamples,
     int WidgetLatencySamples,
+    int WidgetLatencyMinimumSamples,
     string WidgetLatencyMeasurement,
+    double WidgetLatencyTargetMilliseconds,
     double? WidgetLatencyP95Milliseconds,
     bool WidgetLatencyTargetPassed,
+    IReadOnlyList<WidgetUpdateLatencySample> WidgetLatencyIncludedSamples,
+    int WidgetLatencyUnsupportedSamplesExcluded,
+    IReadOnlyList<WidgetUpdateLatencySample> WidgetLatencyUnsupportedExcludedSamples,
     RuntimeResourceMeasurement ResourceMeasurement,
     IReadOnlyList<RuntimeEvidenceCapture> Captures,
     HerdrRuntimeHealthContract FinalRuntimeHealth,
@@ -86,6 +139,7 @@ public sealed class RuntimeEvidenceRunner(
     private const double WorkingSetTargetMegabytes = 180;
     private const double WidgetLatencyTargetMilliseconds = 250;
     private const int MinimumLatencySamples = 3;
+    private const int ResourceSampleIntervalMilliseconds = 250;
     private const string WidgetLatencyMeasurement =
         "CoreAcceptedStateUtcToWpfStateApplied";
 
@@ -129,6 +183,9 @@ public sealed class RuntimeEvidenceRunner(
                 "The live state changed while the initial Dashboard and Widget captures were being rendered; rerun for one coherent snapshot.");
         }
 
+        var latencyWarmup = _state.Widgets.ResetUpdateLatencyMeasurement();
+        var widgetLatencyBaselineSequence = _state.CurrentState.LastIngestSequence;
+
         WriteProgress("waiting-for-pre-close-update", initialSequence);
         await WaitUntilAsync(
             () => _state.IsLive &&
@@ -147,16 +204,54 @@ public sealed class RuntimeEvidenceRunner(
 
         var verticalWidget = _widgetWindows.Single(window =>
             window.Descriptor.Variant == WidgetVariant.FloatingVertical);
+        var preRestartConnectionEpoch = _state.CurrentState.ConnectionEpoch;
+        var preRestartBootstrapCount = _state.CurrentRuntimeHealth.BootstrapCount;
+        var preRestartDisconnectCount = _state.CurrentRuntimeHealth.DisconnectCount;
         _mainWindow.Close();
+        var dashboardClosedUtc = DateTimeOffset.UtcNow;
         await Dispatcher.Yield(DispatcherPriority.ApplicationIdle);
-        WriteProgress("dashboard-closed-waiting-for-next-update", preCloseSequence);
+        WriteProgress("dashboard-closed-waiting-for-herdr-disconnect", preCloseSequence);
+        await WaitUntilAsync(
+            () => _state.CurrentRuntimeHealth.LastTransitionUtc > dashboardClosedUtc &&
+                  (_state.CurrentRuntimeHealth.DisconnectCount > preRestartDisconnectCount ||
+                   string.Equals(
+                       _state.CurrentRuntimeHealth.Status,
+                       "Reconnecting",
+                       StringComparison.Ordinal)),
+            deadline,
+            "No target Herdr disconnect was observed after the Dashboard closed.",
+            cancellationToken);
+        var disconnectObservedAfterDashboardClose = true;
+        var disconnectObservedUtc = DateTimeOffset.UtcNow;
+
+        WriteProgress("herdr-disconnected-waiting-for-reconnect", _state.CurrentState.LastIngestSequence);
         await WaitUntilAsync(
             () => _state.IsCoreConnected &&
                   _state.IsLive &&
-                  _state.CurrentState.LastIngestSequence > preCloseSequence &&
-                  _state.CurrentRuntimeHealth.EventCount > preCloseEventCount,
+                  _state.CurrentRuntimeHealth.LastTransitionUtc > dashboardClosedUtc &&
+                  _state.CurrentState.ConnectionEpoch > preRestartConnectionEpoch &&
+                  _state.CurrentRuntimeHealth.BootstrapCount > preRestartBootstrapCount &&
+                  _state.CurrentRuntimeHealth.DisconnectCount > preRestartDisconnectCount,
             deadline,
-            "No live state update reached the App-owned Widget after the Dashboard closed.",
+            "The target Herdr session did not reconnect with a new connection epoch and bootstrap after the observed disconnect.",
+            cancellationToken);
+        var reconnectObservedAfterDashboardClose = true;
+        var reconnectObservedUtc = DateTimeOffset.UtcNow;
+        var reconnectedConnectionEpoch = _state.CurrentState.ConnectionEpoch;
+        var reconnectedBootstrapCount = _state.CurrentRuntimeHealth.BootstrapCount;
+        var reconnectedDisconnectCount = _state.CurrentRuntimeHealth.DisconnectCount;
+        var eventBBaselineSequence = _state.CurrentState.LastIngestSequence;
+        var eventBBaselineEventCount = _state.CurrentRuntimeHealth.EventCount;
+
+        WriteProgress("herdr-reconnected-waiting-for-post-reconnect-update", eventBBaselineSequence);
+        await WaitUntilAsync(
+            () => _state.IsCoreConnected &&
+                  _state.IsLive &&
+                  _state.CurrentState.ConnectionEpoch >= reconnectedConnectionEpoch &&
+                  _state.CurrentState.LastIngestSequence > eventBBaselineSequence &&
+                  _state.CurrentRuntimeHealth.EventCount > eventBBaselineEventCount,
+            deadline,
+            "No genuine Agent-status update reached the App-owned Widget after the target Herdr reconnect.",
             cancellationToken);
         var postCloseSequence = _state.CurrentState.LastIngestSequence;
         var postCloseEventCount = _state.CurrentRuntimeHealth.EventCount;
@@ -168,8 +263,15 @@ public sealed class RuntimeEvidenceRunner(
 
         WriteProgress("measuring-idle-resources", postCloseSequence);
         var resources = await MeasureResourcesAsync(cancellationToken);
-        var latencySamples = _state.Widgets.UpdateSampleCount;
-        var latencyP95 = _state.Widgets.P95UpdateLatencyMilliseconds;
+        var latencySnapshot = _state.Widgets.UpdateLatencySnapshot;
+        var includedLatencySamples = latencySnapshot.Samples
+            .Where(IsMeasuredLatencyUpdate)
+            .ToArray();
+        var unsupportedLatencySamples = latencySnapshot.Samples
+            .Where(sample => !IsMeasuredLatencyUpdate(sample))
+            .ToArray();
+        var latencySamples = includedLatencySamples.Length;
+        var latencyP95 = CalculateP95(includedLatencySamples);
         var latencyPassed = latencySamples >= MinimumLatencySamples &&
                             latencyP95 is not null &&
                             latencyP95 <= WidgetLatencyTargetMilliseconds;
@@ -178,8 +280,20 @@ public sealed class RuntimeEvidenceRunner(
                            resources.HerdrConnectedThroughoutSample &&
                            resources.CpuTargetPassed &&
                            resources.WorkingSetTargetPassed &&
+                           resources.App.IdentityStable &&
+                           resources.Core.IdentityStable &&
+                           resources.Preparation.DashboardResourcesReleased &&
+                           resources.Preparation.RetainedEvidenceWindows == 1 &&
+                           resources.Preparation.VisibleEvidenceWindows == 1 &&
                            preCloseEventCount > initialEventCount &&
-                           postCloseEventCount > preCloseEventCount &&
+                           disconnectObservedAfterDashboardClose &&
+                           reconnectObservedAfterDashboardClose &&
+                           disconnectObservedUtc >= dashboardClosedUtc &&
+                           reconnectObservedUtc >= disconnectObservedUtc &&
+                           postCloseEventCount > eventBBaselineEventCount &&
+                           reconnectedConnectionEpoch > preRestartConnectionEpoch &&
+                           reconnectedBootstrapCount > preRestartBootstrapCount &&
+                           reconnectedDisconnectCount > preRestartDisconnectCount &&
                            latencyPassed &&
                            _captures.Count >= 8;
         var report = new AppRuntimeEvidenceReport(
@@ -201,16 +315,38 @@ public sealed class RuntimeEvidenceRunner(
             postCloseSequence,
             postCloseStateHash,
             UpdateObservedBeforeDashboardClose: preCloseSequence > initialSequence,
-            DashboardClosed: !_mainWindow.IsVisible,
+            DashboardClosed: !_mainWindow.IsVisible &&
+                             resources.Preparation.DashboardResourcesReleased,
             UpdateObservedAfterDashboardClose: postCloseSequence > preCloseSequence,
             CoreConnectedAfterDashboardClose: _state.IsCoreConnected,
+            dashboardClosedUtc,
+            disconnectObservedUtc,
+            reconnectObservedUtc,
             initialEventCount,
             preCloseEventCount,
             postCloseEventCount,
+            preRestartConnectionEpoch,
+            reconnectedConnectionEpoch,
+            preRestartBootstrapCount,
+            reconnectedBootstrapCount,
+            preRestartDisconnectCount,
+            reconnectedDisconnectCount,
+            disconnectObservedAfterDashboardClose,
+            reconnectObservedAfterDashboardClose,
+            eventBBaselineSequence,
+            eventBBaselineEventCount,
+            widgetLatencyBaselineSequence,
+            latencyWarmup.SampleCount,
+            latencyWarmup.Samples,
             latencySamples,
+            MinimumLatencySamples,
             WidgetLatencyMeasurement,
+            WidgetLatencyTargetMilliseconds,
             latencyP95,
             latencyPassed,
+            includedLatencySamples,
+            unsupportedLatencySamples.Length,
+            unsupportedLatencySamples,
             resources,
             _captures.ToArray(),
             _state.CurrentRuntimeHealth,
@@ -226,10 +362,15 @@ public sealed class RuntimeEvidenceRunner(
 
     public void CloseEvidenceWindows()
     {
-        foreach (var window in _widgetWindows.Where(window => window.IsVisible).ToArray())
+        foreach (var window in _widgetWindows.ToArray())
         {
-            window.Close();
+            if (window.IsLoaded || window.IsVisible)
+            {
+                window.Close();
+            }
         }
+
+        _widgetWindows.Clear();
     }
 
     public static void WriteFailure(
@@ -285,6 +426,8 @@ public sealed class RuntimeEvidenceRunner(
             if (variant != WidgetVariant.FloatingVertical)
             {
                 window.Close();
+                await Dispatcher.Yield(DispatcherPriority.ApplicationIdle);
+                _widgetWindows.Remove(window);
             }
         }
 
@@ -360,18 +503,31 @@ public sealed class RuntimeEvidenceRunner(
     {
         using var app = Process.GetCurrentProcess();
         using var core = Process.GetProcessById(_options.CoreProcessId);
+        var preparation = await PrepareForResourceMeasurementAsync(app, cancellationToken);
+        var appIdentity = ObserveProcessIdentity(app);
+        var coreIdentity = ObserveProcessIdentity(core);
         app.Refresh();
         core.Refresh();
         var appCpuStart = app.TotalProcessorTime;
         var coreCpuStart = core.TotalProcessorTime;
         var stopwatch = Stopwatch.StartNew();
-        var workingSetSamples = new List<long>(_options.IdleSeconds);
+        var timedSampleCount = checked(
+            _options.IdleSeconds * 1000 / ResourceSampleIntervalMilliseconds);
+        var sampleCapacity = checked(timedSampleCount + 1);
+        var appWorkingSetSamples = new List<long>(sampleCapacity);
+        var coreWorkingSetSamples = new List<long>(sampleCapacity);
+        var appPrivateMemorySamples = new List<long>(sampleCapacity);
+        var corePrivateMemorySamples = new List<long>(sampleCapacity);
         var startSequence = _state.CurrentState.LastIngestSequence;
         var startEventCount = _state.CurrentRuntimeHealth.EventCount;
         var connectedThroughout = _state.IsLive;
-        for (var second = 0; second < _options.IdleSeconds; second++)
+
+        CaptureResourceSample();
+        for (var sample = 0; sample < timedSampleCount; sample++)
         {
-            await Task.Delay(TimeSpan.FromSeconds(1), cancellationToken);
+            await Task.Delay(
+                TimeSpan.FromMilliseconds(ResourceSampleIntervalMilliseconds),
+                cancellationToken);
             app.Refresh();
             core.Refresh();
             if (app.HasExited || core.HasExited)
@@ -380,29 +536,57 @@ public sealed class RuntimeEvidenceRunner(
                     "The App or Core process exited during the resource measurement.");
             }
 
-            workingSetSamples.Add(app.WorkingSet64 + core.WorkingSet64);
-            connectedThroughout &= _state.IsLive;
+            CaptureResourceSample();
         }
 
         stopwatch.Stop();
         app.Refresh();
         core.Refresh();
-        var cpu = (app.TotalProcessorTime - appCpuStart) +
-                  (core.TotalProcessorTime - coreCpuStart);
-        var averageCpu = cpu.TotalMilliseconds /
-                         stopwatch.Elapsed.TotalMilliseconds /
-                         Environment.ProcessorCount * 100;
-        var megabyte = 1024d * 1024d;
-        var averageWorkingSet = workingSetSamples.Average() / megabyte;
-        var maximumWorkingSet = workingSetSamples.Max() / megabyte;
+        var appCpu = ProcessCpuPercent(app.TotalProcessorTime - appCpuStart, stopwatch.Elapsed);
+        var coreCpu = ProcessCpuPercent(core.TotalProcessorTime - coreCpuStart, stopwatch.Elapsed);
+        var averageCpu = appCpu + coreCpu;
+        var combinedWorkingSetSamples = appWorkingSetSamples
+            .Zip(coreWorkingSetSamples, (appValue, coreValue) => appValue + coreValue)
+            .ToArray();
+        var averageWorkingSet = AverageMegabytes(combinedWorkingSetSamples);
+        var maximumWorkingSet = MaximumMegabytes(combinedWorkingSetSamples);
         var finishSequence = _state.CurrentState.LastIngestSequence;
         var finishEventCount = _state.CurrentRuntimeHealth.EventCount;
+        var appIdentityStable = MatchesProcessIdentity(app, appIdentity);
+        var coreIdentityStable = MatchesProcessIdentity(core, coreIdentity);
         return new RuntimeResourceMeasurement(
             _options.IdleSeconds,
+            ResourceSampleIntervalMilliseconds,
+            appWorkingSetSamples.Count,
             Environment.ProcessorCount,
+            CpuTargetPercent,
+            WorkingSetTargetMegabytes,
             Math.Round(averageCpu, 3),
             Math.Round(averageWorkingSet, 3),
             Math.Round(maximumWorkingSet, 3),
+            new RuntimeProcessResourceMeasurement(
+                appIdentity.ProcessId,
+                appIdentity.ProcessStartUtc,
+                appIdentity.ExecutablePath,
+                appIdentity.ExecutableSha256,
+                appIdentityStable,
+                Math.Round(appCpu, 3),
+                Math.Round(AverageMegabytes(appWorkingSetSamples), 3),
+                Math.Round(MaximumMegabytes(appWorkingSetSamples), 3),
+                Math.Round(AverageMegabytes(appPrivateMemorySamples), 3),
+                Math.Round(MaximumMegabytes(appPrivateMemorySamples), 3)),
+            new RuntimeProcessResourceMeasurement(
+                coreIdentity.ProcessId,
+                coreIdentity.ProcessStartUtc,
+                coreIdentity.ExecutablePath,
+                coreIdentity.ExecutableSha256,
+                coreIdentityStable,
+                Math.Round(coreCpu, 3),
+                Math.Round(AverageMegabytes(coreWorkingSetSamples), 3),
+                Math.Round(MaximumMegabytes(coreWorkingSetSamples), 3),
+                Math.Round(AverageMegabytes(corePrivateMemorySamples), 3),
+                Math.Round(MaximumMegabytes(corePrivateMemorySamples), 3)),
+            preparation,
             startSequence == finishSequence,
             startSequence,
             finishSequence,
@@ -412,6 +596,121 @@ public sealed class RuntimeEvidenceRunner(
             connectedThroughout,
             averageCpu <= CpuTargetPercent,
             maximumWorkingSet <= WorkingSetTargetMegabytes);
+
+        void CaptureResourceSample()
+        {
+            appWorkingSetSamples.Add(app.WorkingSet64);
+            coreWorkingSetSamples.Add(core.WorkingSet64);
+            appPrivateMemorySamples.Add(app.PrivateMemorySize64);
+            corePrivateMemorySamples.Add(core.PrivateMemorySize64);
+            connectedThroughout &= _state.IsLive;
+        }
+    }
+
+    private async Task<RuntimeResourcePreparation> PrepareForResourceMeasurementAsync(
+        Process app,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        app.Refresh();
+        var appWorkingSetBefore = app.WorkingSet64;
+        var appPrivateMemoryBefore = app.PrivateMemorySize64;
+        var managedHeapBefore = GC.GetTotalMemory(forceFullCollection: false);
+
+        await Dispatcher.Yield(DispatcherPriority.ApplicationIdle);
+        GC.Collect(GC.MaxGeneration, GCCollectionMode.Forced, blocking: true, compacting: true);
+        GC.WaitForPendingFinalizers();
+        GC.Collect(GC.MaxGeneration, GCCollectionMode.Forced, blocking: true, compacting: true);
+        await Dispatcher.Yield(DispatcherPriority.ApplicationIdle);
+
+        app.Refresh();
+        return new RuntimeResourcePreparation(
+            DateTimeOffset.UtcNow,
+            _mainWindow.DashboardResourcesReleased,
+            _widgetWindows.Count,
+            _widgetWindows.Count(window => window.IsVisible),
+            Math.Round(ToMegabytes(appWorkingSetBefore), 3),
+            Math.Round(ToMegabytes(app.WorkingSet64), 3),
+            Math.Round(ToMegabytes(appPrivateMemoryBefore), 3),
+            Math.Round(ToMegabytes(app.PrivateMemorySize64), 3),
+            Math.Round(ToMegabytes(managedHeapBefore), 3),
+            Math.Round(ToMegabytes(GC.GetTotalMemory(forceFullCollection: false)), 3));
+    }
+
+    private static double ProcessCpuPercent(TimeSpan processorTime, TimeSpan elapsed) =>
+        processorTime.TotalMilliseconds /
+        elapsed.TotalMilliseconds /
+        Environment.ProcessorCount * 100;
+
+    private static double? CalculateP95(
+        IReadOnlyCollection<WidgetUpdateLatencySample> samples)
+    {
+        if (samples.Count == 0)
+        {
+            return null;
+        }
+
+        var ordered = samples
+            .Select(sample => sample.Milliseconds)
+            .Order()
+            .ToArray();
+        var percentileIndex = Math.Max(0, (int)Math.Ceiling(ordered.Length * 0.95) - 1);
+        return ordered[percentileIndex];
+    }
+
+    private static bool IsMeasuredLatencyUpdate(WidgetUpdateLatencySample sample) =>
+        string.Equals(
+            sample.UpdateKind,
+            HerdrOpsStateUpdateKind.Snapshot.ToString(),
+            StringComparison.Ordinal) ||
+        string.Equals(
+            sample.UpdateKind,
+            HerdrOpsStateUpdateKind.Delta.ToString(),
+            StringComparison.Ordinal);
+
+    private static double AverageMegabytes(IReadOnlyCollection<long> samples) =>
+        ToMegabytes(samples.Average());
+
+    private static double MaximumMegabytes(IReadOnlyCollection<long> samples) =>
+        ToMegabytes(samples.Max());
+
+    private static double ToMegabytes(double bytes) => bytes / (1024d * 1024d);
+
+    private static ObservedProcessIdentity ObserveProcessIdentity(Process process)
+    {
+        process.Refresh();
+        if (process.HasExited)
+        {
+            throw new InvalidOperationException(
+                $"Process {process.Id} exited before its resource identity was captured.");
+        }
+
+        var executablePath = Path.GetFullPath(
+            process.MainModule?.FileName ?? throw new InvalidOperationException(
+                $"Process {process.Id} did not expose an executable path."));
+        using var executable = File.OpenRead(executablePath);
+        return new ObservedProcessIdentity(
+            process.Id,
+            new DateTimeOffset(process.StartTime.ToUniversalTime()),
+            executablePath,
+            Convert.ToHexString(SHA256.HashData(executable)));
+    }
+
+    private static bool MatchesProcessIdentity(
+        Process process,
+        ObservedProcessIdentity expected)
+    {
+        var observed = ObserveProcessIdentity(process);
+        return observed.ProcessId == expected.ProcessId &&
+               observed.ProcessStartUtc == expected.ProcessStartUtc &&
+               string.Equals(
+                   observed.ExecutablePath,
+                   expected.ExecutablePath,
+                   StringComparison.OrdinalIgnoreCase) &&
+               string.Equals(
+                   observed.ExecutableSha256,
+                   expected.ExecutableSha256,
+                   StringComparison.Ordinal);
     }
 
     private async Task WaitUntilAsync(
@@ -442,6 +741,10 @@ public sealed class RuntimeEvidenceRunner(
             ObservedUtc = DateTimeOffset.UtcNow,
             Sequence = sequence,
             RuntimeStatus = _state.CurrentRuntimeHealth.Status,
+            ConnectionEpoch = _state.CurrentState.ConnectionEpoch,
+            BootstrapCount = _state.CurrentRuntimeHealth.BootstrapCount,
+            EventCount = _state.CurrentRuntimeHealth.EventCount,
+            DisconnectCount = _state.CurrentRuntimeHealth.DisconnectCount,
         });
 
     private static void WriteJsonAtomically<T>(string path, T value)
@@ -466,4 +769,10 @@ public sealed class RuntimeEvidenceRunner(
             }
         }
     }
+
+    private sealed record ObservedProcessIdentity(
+        int ProcessId,
+        DateTimeOffset ProcessStartUtc,
+        string ExecutablePath,
+        string ExecutableSha256);
 }

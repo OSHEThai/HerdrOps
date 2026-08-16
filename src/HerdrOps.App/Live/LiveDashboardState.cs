@@ -211,6 +211,7 @@ public sealed class LiveDashboardState : ObservableState, IDisposable
         _lastOfflineExceptionType = null;
         LastSourceTimestamp = update.RuntimeHealth.LastAcceptedStateUtc ??
             (LastSourceTimestamp == default ? update.Envelope.SentUtc : LastSourceTimestamp);
+        WidgetUpdateLatencySample? widgetLatencySample = null;
         if (update.Kind != HerdrOpsStateUpdateKind.RuntimeHealth)
         {
             var acceptedStateUtc = update.RuntimeHealth.LastAcceptedStateUtc ??
@@ -218,6 +219,20 @@ public sealed class LiveDashboardState : ObservableState, IDisposable
             var latency = receivedUtc - acceptedStateUtc;
             _clockMismatch = latency < TimeSpan.Zero;
             LastUpdateLatency = latency < TimeSpan.Zero ? null : latency;
+            if (update.Envelope.SentUtc >= acceptedStateUtc &&
+                receivedUtc >= update.Envelope.SentUtc)
+            {
+                widgetLatencySample = new WidgetUpdateLatencySample(
+                    normalized.LastIngestSequence,
+                    update.RuntimeHealth.EventCount,
+                    update.Envelope.Sequence,
+                    update.Envelope.CorrelationId,
+                    HerdrOpsStateIpcJson.ComputeSha256(normalized),
+                    update.Kind.ToString(),
+                    acceptedStateUtc,
+                    update.Envelope.SentUtc,
+                    receivedUtc);
+            }
         }
         if (update.Kind != HerdrOpsStateUpdateKind.RuntimeHealth)
         {
@@ -227,7 +242,8 @@ public sealed class LiveDashboardState : ObservableState, IDisposable
         RefreshPresentation();
         RefreshViews(recordWidgetLatency: update.Kind is
             HerdrOpsStateUpdateKind.Snapshot or
-            HerdrOpsStateUpdateKind.Delta);
+            HerdrOpsStateUpdateKind.Delta,
+            widgetLatencySample: widgetLatencySample);
     }
 
     public void MarkConnecting(bool reconnecting)
@@ -289,7 +305,7 @@ public sealed class LiveDashboardState : ObservableState, IDisposable
             ConnectionLabel,
             LastSourceTimestamp,
             resolved,
-            LastUpdateLatency,
+            updateLatencySample: null,
             recordLatency: false,
             CreateWidgetAssignmentProjection());
     }
@@ -382,7 +398,9 @@ public sealed class LiveDashboardState : ObservableState, IDisposable
         ComplianceQueue.Dispose();
     }
 
-    private void RefreshViews(bool recordWidgetLatency = false)
+    private void RefreshViews(
+        bool recordWidgetLatency = false,
+        WidgetUpdateLatencySample? widgetLatencySample = null)
     {
         Overview.Update(
             CurrentState,
@@ -413,7 +431,7 @@ public sealed class LiveDashboardState : ObservableState, IDisposable
             ConnectionLabel,
             LastSourceTimestamp,
             SelectedTerminalId,
-            LastUpdateLatency,
+            widgetLatencySample,
             recordWidgetLatency,
             CreateWidgetAssignmentProjection());
         if (!DelegationGraph.HasGraph)

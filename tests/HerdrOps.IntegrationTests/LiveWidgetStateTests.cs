@@ -45,6 +45,16 @@ public sealed class LiveWidgetStateTests
         Assert.AreEqual(1, dashboard.Widgets.UpdateSampleCount);
         Assert.AreEqual(18d, dashboard.Widgets.LastUpdateLatencyMilliseconds);
         Assert.AreEqual(18d, dashboard.Widgets.P95UpdateLatencyMilliseconds);
+        var sample = dashboard.Widgets.UpdateLatencySnapshot.Samples.Single();
+        Assert.AreEqual(12L, sample.StateSequence);
+        Assert.AreEqual(update.RuntimeHealth.EventCount, sample.EventCount);
+        Assert.AreEqual(update.Envelope.Sequence, sample.EnvelopeSequence);
+        Assert.AreEqual(update.Envelope.CorrelationId, sample.EnvelopeCorrelationId);
+        Assert.AreEqual(HerdrOpsStateIpcJson.ComputeSha256(state), sample.StateSha256);
+        Assert.AreEqual(HerdrOpsStateUpdateKind.Snapshot.ToString(), sample.UpdateKind);
+        Assert.AreEqual(acceptedStateUtc, sample.CoreAcceptedStateUtc);
+        Assert.AreEqual(acceptedStateUtc.AddMilliseconds(10), sample.IpcSentUtc);
+        Assert.AreEqual(acceptedStateUtc.AddMilliseconds(18), sample.WpfAppliedUtc);
 
         dashboard.SelectAgent("terminal-3");
 
@@ -131,6 +141,70 @@ public sealed class LiveWidgetStateTests
         Assert.AreEqual(512, snapshot.SampleCount);
         Assert.AreEqual(600d, snapshot.LastMilliseconds);
         Assert.AreEqual(575d, snapshot.P95Milliseconds);
+    }
+
+    [TestMethod]
+    public void RuntimeLatencyBaselineExcludesInitialCatchupAndKeepsProvenance()
+    {
+        var dashboard = new LiveDashboardState();
+        var initial = SnapshotUpdate(CreateState(sequence: 1));
+        var initialAcceptedUtc = initial.RuntimeHealth.LastAcceptedStateUtc!.Value;
+        initial = initial with
+        {
+            Envelope = initial.Envelope with
+            {
+                SentUtc = initialAcceptedUtc.AddMilliseconds(5),
+            },
+        };
+        dashboard.ApplyUpdate(initial, initialAcceptedUtc.AddMilliseconds(1_200));
+
+        var excluded = dashboard.Widgets.ResetUpdateLatencyMeasurement();
+
+        Assert.AreEqual(1, excluded.SampleCount);
+        Assert.AreEqual(1_200d, excluded.P95Milliseconds);
+        Assert.AreEqual(0, dashboard.Widgets.UpdateSampleCount);
+
+        foreach (var sequence in new long[] { 2, 3, 4 })
+        {
+            var update = SnapshotUpdate(CreateState(sequence));
+            var acceptedUtc = update.RuntimeHealth.LastAcceptedStateUtc!.Value;
+            update = update with
+            {
+                Envelope = update.Envelope with
+                {
+                    SentUtc = acceptedUtc.AddMilliseconds(2),
+                },
+            };
+            dashboard.ApplyUpdate(update, acceptedUtc.AddMilliseconds(10));
+        }
+
+        var candidate = dashboard.Widgets.UpdateLatencySnapshot;
+        Assert.AreEqual(3, candidate.SampleCount);
+        Assert.AreEqual(10d, candidate.P95Milliseconds);
+        CollectionAssert.AreEqual(
+            new long[] { 2, 3, 4 },
+            candidate.Samples.Select(sample => sample.StateSequence).ToArray());
+        Assert.IsTrue(candidate.Samples.All(sample => sample.UpdateKind == "Snapshot"));
+        Assert.IsTrue(candidate.Samples.All(sample => sample.Milliseconds == 10d));
+    }
+
+    [TestMethod]
+    public void RuntimeLatencyRejectsAnUnboundEnvelopeIdentity()
+    {
+        var telemetry = new WidgetUpdateTelemetry();
+        var acceptedUtc = HerdrStateTestData.ObservedUtc;
+
+        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => telemetry.Record(
+            new WidgetUpdateLatencySample(
+                StateSequence: 12,
+                EventCount: 4,
+                EnvelopeSequence: 12,
+                EnvelopeCorrelationId: Guid.Empty,
+                StateSha256: HerdrOpsStateIpcJson.ComputeSha256(CreateState(sequence: 12)),
+                UpdateKind: "Delta",
+                acceptedUtc,
+                acceptedUtc.AddMilliseconds(2),
+                acceptedUtc.AddMilliseconds(9))));
     }
 
     [TestMethod]
