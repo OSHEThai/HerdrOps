@@ -125,6 +125,11 @@ $targetAgentLabSocket = Join-Path $env:APPDATA 'herdr\herdr.sock'
 # tamper rejection, and historical recalculation for v0.6 Issue #30.
 ./tools/Test-V06ScoringEngine.ps1
 
+# From a clean committed checkout, verify the v0.6 Daily Summary contract,
+# immutable reference, deterministic fixture, synthetic state/WPF projection,
+# and separate Static/Synthetic/Contract evidence for Issue #32.
+./tools/Test-V06DailySummaryPage.ps1
+
 # From an authorized Herdr pane, capture actual bounded pane-read and
 # Herdr-PID-to-Windows-process evidence without controlling the session.
 dotnet artifacts/bin/HerdrOps.Core/release/HerdrOps.Core.dll trace-herdr-terminal-process `
@@ -166,3 +171,5 @@ TRX hashes and Thai/English reference-size, compact and missing-score PNG
 hashes. Actual Herdr Runtime is explicitly NOT OBSERVED / NOT CLAIMED, and the
 gate does not prove independent review, production ingestion or v0.6 release
 readiness.
+
+The v0.6 Daily Summary gate reports Static, Synthetic, and Contract evidence separately. It pins the immutable `10-daily-summary.png` reference, the committed Daily Summary source/fixture/contract hashes, deterministic aggregation/state/rendering checks, and the design-reference contract test. It explicitly reports Actual Herdr Runtime, Independent Review, and Release Evidence as NOT OBSERVED; it does not claim live events, production ingestion, reviewer authority, export, or v0.6 release readiness.
