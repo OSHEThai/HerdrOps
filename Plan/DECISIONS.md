@@ -155,3 +155,12 @@
 - Arithmetic contract: Source-weighted dimension values and dimension contributions use decimal arithmetic and round to four places away from zero. A complete total rounds to two places away from zero. Input order is normalized before hashing.
 - Recalculation contract: Every result embeds the normalized formula definition and normalized input snapshot, plus separate formula, input, and result SHA-256 values. Historical recalculation uses the embedded formula rather than the current catalog, so later formula changes cannot rewrite earlier scores.
 - Evidence boundary: Golden fixtures, deterministic tests, evidence-metadata identity tests, malformed/missing/invalid tests, and recalculation tests are Static, Contract, Synthetic, and Unit evidence for Issue #30 only. They do not prove production evidence-byte admission, reviewer authority, production ingestion, Evaluation UI, actual Herdr Runtime, or v0.6 release readiness.
+
+## D-018 — Evaluation presentation is snapshot-bound and non-runtime
+
+- Decision: Issue #31 presents the approved `09-evaluation.png` hierarchy from one immutable Evaluation snapshot: five summary cards, score distribution, seven-day trend, six dimension rows, selected task/Agent source comparison, and top/low Agent rankings.
+- Reconciliation contract: Every card, chart, dimension row, comparison value, and ranking derives from the same retained scoring result and input snapshot. Missing, malformed, invalid, and unavailable values remain explicit and fail closed; they are never converted to zero or a passing score. Equal scores use stable identities as tie-breakers and expose tied status.
+- Language and accessibility contract: Thai and English are separate selected modes. Technical identities remain literal, while every selected-language label, chart textual equivalent, status, automation name, and evidence-boundary marker is localized without bilingual stacking. Color is never the only meaning.
+- Authority boundary: The Evaluation page is read-only presentation metadata. It does not authorize review actions, mutate records, ingest evidence, or infer live Herdr state.
+- Evidence boundary: Reference identity, source/test hashes, contract checks, deterministic state checks, and WPF captures are reported as Static, Contract, and Synthetic evidence for Issue #31. Actual Herdr Runtime, Independent Review, and Release evidence remain NOT OBSERVED / NOT CLAIMED and cannot be inferred from screenshots or local tests.
+- Status: In implementation for v0.6 Issue #31; not release-ready.

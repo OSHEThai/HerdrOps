@@ -153,3 +153,16 @@ The v0.5 evidence/audit storage implementation gate is Contract plus local SQLit
 The v0.5 Compliance Queue implementation gate reports Contract evidence for the presentation contract and source markers, Integration evidence for deterministic filtering/selection and language-catalog behavior, and Synthetic UI evidence for synchronized WPF rendering in separate Thai and English modes, including primary, compact, and explicit Missing-evidence captures. Its disabled role-labelled actions do not authorize or execute transitions and cannot substitute for Issue #27, actual Herdr runtime, privacy/retention acceptance, independent review, or the v0.5 release gate. Actual Herdr Runtime, Independent Review, and Release evidence remain NOT OBSERVED until their separate gates pass.
 
 The v0.6 explainable-scoring gate reports Static, Contract, Synthetic, and Unit evidence. It proves the committed formula and golden result are reproducible, all three source classes remain distinct, golden evidence identities revalidate through the evidence-metadata contract, malformed/duplicate/absent/invalid inputs remain visible and fail closed, retained provenance rejects tampering, and historical results recalculate from their retained formula. It does not claim production evidence-byte admission, production score ingestion, reviewer authority, Evaluation or Daily Summary rendering, actual Herdr Runtime, independent acceptance, or v0.6 release readiness.
+
+# Verify the v0.6 Evaluation page implementation gate from a built or clean
+# checkout. `-SkipBuild` skips only the build; contract, integration and
+# synthetic WPF tests still run and fresh screenshots are required.
+./tools/Test-V06EvaluationPage.ps1 -Configuration Release
+./tools/Test-V06EvaluationPage.ps1 -Configuration Release -SkipBuild
+
+The v0.6 Evaluation page gate reports Static, Contract and Synthetic evidence
+separately, pins the immutable `09-evaluation.png` identity, source/test hashes,
+TRX hashes and Thai/English reference-size, compact and missing-score PNG
+hashes. Actual Herdr Runtime is explicitly NOT OBSERVED / NOT CLAIMED, and the
+gate does not prove independent review, production ingestion or v0.6 release
+readiness.
