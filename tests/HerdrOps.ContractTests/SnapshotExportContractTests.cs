@@ -69,6 +69,41 @@ public sealed class SnapshotExportContractTests
         StringAssert.StartsWith(export.Csv, "path,type,value\r\n");
     }
 
+    [TestMethod]
+    public void PublisherRejectsHashConsistentForgedEnvelopeAndUnsafeDestinationWithoutPublication()
+    {
+        var fixture = ReadFixture();
+        var accepted = new EvaluationScoringEngine().Calculate(
+            fixture.Input,
+            EvaluationFormulaCatalog.Version1);
+        var export = DeterministicSnapshotExporter.ExportEvaluation(
+            accepted,
+            new DateTimeOffset(2026, 8, 16, 0, 0, 0, TimeSpan.Zero));
+        var forgedJson = export.Json.Replace(
+            "\"acceptedSnapshot\":",
+            "\"unknownField\":true,\"acceptedSnapshot\":",
+            StringComparison.Ordinal);
+        var forged = RebindEnvelope(export, forgedJson);
+        var root = Path.Combine(Path.GetTempPath(), $"herdops-contract-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        try
+        {
+            Assert.ThrowsExactly<SnapshotExportException>(() =>
+                new LocalSnapshotExportPublisher().Publish(forged, root));
+            Assert.ThrowsExactly<SnapshotExportException>(() =>
+                new LocalSnapshotExportPublisher().Publish(export, Path.Combine(root, ".", "child")));
+            Assert.HasCount(0, Directory.GetDirectories(root, "herdops-*"));
+            Assert.HasCount(0, Directory.GetDirectories(root, ".herdops-*"));
+        }
+        finally
+        {
+            if (Directory.Exists(root))
+            {
+                Directory.Delete(root, recursive: true);
+            }
+        }
+    }
+
     private static ScoringFixture ReadFixture()
     {
         var directory = new DirectoryInfo(AppContext.BaseDirectory);
@@ -93,8 +128,33 @@ public sealed class SnapshotExportContractTests
         return JsonSerializer.Deserialize<ScoringFixture>(
                    File.ReadAllText(path, Encoding.UTF8),
                    options)
-               ?? throw new AssertFailedException("The scoring fixture was empty.");
+                   ?? throw new AssertFailedException("The scoring fixture was empty.");
     }
+
+    private static DeterministicSnapshotExport RebindEnvelope(
+        DeterministicSnapshotExport export,
+        string json)
+    {
+        var strictUtf8 = new UTF8Encoding(false, true);
+        var jsonBytes = strictUtf8.GetBytes(json);
+        var manifest = export.Manifest with
+        {
+            JsonSha256 = Sha256(jsonBytes),
+            JsonByteLength = jsonBytes.LongLength,
+            TotalByteLength = jsonBytes.LongLength +
+                export.Manifest.MarkdownByteLength +
+                export.Manifest.CsvByteLength,
+        };
+        return export with
+        {
+            Json = json,
+            JsonSha256 = manifest.JsonSha256,
+            Manifest = manifest,
+        };
+    }
+
+    private static string Sha256(byte[] bytes) =>
+        Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(bytes));
 
     private sealed record ScoringFixture(
         EvaluationInputSnapshot Input,

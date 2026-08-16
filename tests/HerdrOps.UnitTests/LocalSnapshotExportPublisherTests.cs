@@ -3,6 +3,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using HerdrOps.Domain.Evaluation;
 using HerdrOps.Domain.Exports;
+using HerdrOps.Domain.Summaries;
 
 namespace HerdrOps.UnitTests;
 
@@ -98,6 +99,225 @@ public sealed class LocalSnapshotExportPublisherTests
         }
     }
 
+    [TestMethod]
+    public void PublishRejectsInvalidUtf8MutationBeforeAtomicCommit()
+    {
+        var export = CreateExport();
+        var root = CreateTemporaryDirectory();
+        try
+        {
+            var publisher = new LocalSnapshotExportPublisher(phase =>
+            {
+                if (phase == SnapshotExportPublicationPhase.FilesWritten)
+                {
+                    var stagingDirectory = Directory.GetDirectories(root, ".herdops-*").Single();
+                    File.WriteAllBytes(Path.Combine(stagingDirectory, "snapshot.md"), [0xFF]);
+                }
+            });
+
+            Assert.ThrowsExactly<SnapshotExportException>(() => publisher.Publish(export, root));
+            AssertNoPublishedExport(root);
+        }
+        finally
+        {
+            DeleteTemporaryDirectory(root);
+        }
+    }
+
+    [TestMethod]
+    public void PublishRejectsRelativeRootDotParentDriveRelativeNetworkAndDeviceDestinations()
+    {
+        var export = CreateExport();
+        var root = CreateTemporaryDirectory();
+        try
+        {
+            var driveRoot = Path.GetPathRoot(root) ??
+                throw new AssertFailedException("The test path has no drive root.");
+            var driveRelative = driveRoot.TrimEnd(
+                Path.DirectorySeparatorChar,
+                Path.AltDirectorySeparatorChar) + "relative-export";
+            var invalidDestinations = new[]
+            {
+                "relative-export",
+                Path.Combine(root, ".", "child"),
+                Path.Combine(root, "..", "child"),
+                driveRelative,
+                driveRoot,
+                @"\\server\share\herdops",
+                @"\\?\C:\herdops",
+                @"\\.\pipe\herdops",
+                @"\??\C:\herdops",
+            };
+
+            foreach (var destination in invalidDestinations)
+            {
+                Assert.ThrowsExactly<SnapshotExportException>(() =>
+                    new LocalSnapshotExportPublisher().Publish(export, destination));
+            }
+
+            AssertNoPublishedExport(root);
+        }
+        finally
+        {
+            DeleteTemporaryDirectory(root);
+        }
+    }
+
+    [TestMethod]
+    public void PublishRejectsExistingReparsePointAncestorDestinationAndCollision()
+    {
+        var export = CreateExport();
+        var root = CreateTemporaryDirectory();
+        var target = Path.Combine(root, "reparse-target");
+        var link = Path.Combine(root, "reparse-link");
+        var finalLink = Path.Combine(
+            root,
+            $"herdops-{export.Kind.ToString().ToLowerInvariant()}-{export.ExportId}");
+        try
+        {
+            Directory.CreateDirectory(target);
+            if (!TryCreateDirectoryReparsePoint(link, target))
+            {
+                Assert.Inconclusive(
+                    "The test environment cannot create a directory symlink or junction; reparse-point rejection is not treated as passing.");
+            }
+
+            Assert.ThrowsExactly<SnapshotExportException>(() =>
+                new LocalSnapshotExportPublisher().Publish(export, link));
+            Assert.ThrowsExactly<SnapshotExportException>(() =>
+                new LocalSnapshotExportPublisher().Publish(export, Path.Combine(link, "child")));
+            RemoveReparsePoint(link);
+
+            if (!TryCreateDirectoryReparsePoint(finalLink, target))
+            {
+                Assert.Inconclusive(
+                    "The test environment cannot create a final-directory reparse fixture; reparse-point rejection is not treated as passing.");
+            }
+
+            Assert.ThrowsExactly<SnapshotExportException>(() =>
+                new LocalSnapshotExportPublisher().Publish(export, root));
+            Assert.IsFalse(File.Exists(Path.Combine(target, "snapshot.json")));
+            Assert.IsFalse(File.Exists(Path.Combine(finalLink, "snapshot.json")));
+        }
+        finally
+        {
+            RemoveReparsePoint(link);
+            RemoveReparsePoint(finalLink);
+            DeleteTemporaryDirectory(root);
+        }
+    }
+
+    [TestMethod]
+    public void PublishRejectsInvalidUtf16SurrogatesBeforeCreatingStaging()
+    {
+        foreach (var report in new[] { "json", "markdown", "csv" })
+        {
+            var export = CreateExport();
+            var invalid = "\uD800";
+            export = report switch
+            {
+                "json" => export with { Json = invalid },
+                "markdown" => export with { Markdown = invalid },
+                "csv" => export with { Csv = invalid },
+                _ => throw new AssertFailedException($"Unknown report: {report}"),
+            };
+            var root = CreateTemporaryDirectory();
+            try
+            {
+                Assert.ThrowsExactly<SnapshotExportException>(() =>
+                    new LocalSnapshotExportPublisher().Publish(export, root));
+                AssertNoPublishedExport(root);
+            }
+            finally
+            {
+                DeleteTemporaryDirectory(root);
+            }
+        }
+    }
+
+    [TestMethod]
+    public void PublishRejectsHashConsistentForgedSensitiveEnvelopeWithoutFinalFiles()
+    {
+        var export = CreateExport();
+        var forgedJson = export.Json.Replace(
+            "\"acceptedSnapshot\":",
+            "\"password\":\"tokenUltraSecretValue123456789\",\"acceptedSnapshot\":",
+            StringComparison.Ordinal);
+        var forged = RebindEnvelope(export, json: forgedJson);
+        var root = CreateTemporaryDirectory();
+        try
+        {
+            Assert.ThrowsExactly<SnapshotExportException>(() =>
+                new LocalSnapshotExportPublisher().Publish(forged, root));
+            AssertNoPublishedExport(root);
+        }
+        finally
+        {
+            DeleteTemporaryDirectory(root);
+        }
+    }
+
+    [TestMethod]
+    public void PublishRejectsHashConsistentForgedProjectionAndManifestVersionWithoutFinalFiles()
+    {
+        var export = CreateExport();
+        var forgedProjection = RebindEnvelope(
+            export,
+            markdown: export.Markdown + "forged\n");
+        var forgedManifest = export with
+        {
+            Manifest = export.Manifest with { ContractVersion = 99 },
+        };
+        var root = CreateTemporaryDirectory();
+        try
+        {
+            Assert.ThrowsExactly<SnapshotExportException>(() =>
+                new LocalSnapshotExportPublisher().Publish(forgedProjection, root));
+            Assert.ThrowsExactly<SnapshotExportException>(() =>
+                new LocalSnapshotExportPublisher().Publish(forgedManifest, root));
+            AssertNoPublishedExport(root);
+        }
+        finally
+        {
+            DeleteTemporaryDirectory(root);
+        }
+    }
+
+    [TestMethod]
+    public void PublishRevalidatesDailySummaryEnvelopeWithCustomTimeZone()
+    {
+        var fixture = ReadDailySummaryFixture();
+        var timeZone = TimeZoneInfo.CreateCustomTimeZone(
+            $"fixture-utc-{fixture.TimeZoneOffsetMinutes}",
+            TimeSpan.FromMinutes(fixture.TimeZoneOffsetMinutes),
+            "Daily Summary fixture",
+            "Daily Summary fixture");
+        var accepted = DailySummaryAggregator.Aggregate(
+            fixture.LocalDate,
+            timeZone,
+            fixture.Sources);
+        var export = DeterministicSnapshotExporter.ExportDailySummary(
+            accepted,
+            timeZone,
+            GenerationUtc);
+        var root = CreateTemporaryDirectory();
+        try
+        {
+            var publication = new LocalSnapshotExportPublisher().Publish(export, root);
+
+            Assert.IsTrue(File.Exists(publication.JsonPath));
+            Assert.IsTrue(File.Exists(publication.MarkdownPath));
+            Assert.IsTrue(File.Exists(publication.CsvPath));
+            Assert.AreEqual(export.JsonSha256, Sha256(File.ReadAllBytes(publication.JsonPath)));
+            Assert.AreEqual(export.MarkdownSha256, Sha256(File.ReadAllBytes(publication.MarkdownPath)));
+            Assert.AreEqual(export.CsvSha256, Sha256(File.ReadAllBytes(publication.CsvPath)));
+        }
+        finally
+        {
+            DeleteTemporaryDirectory(root);
+        }
+    }
+
     private static DeterministicSnapshotExport CreateExport()
     {
         var root = FindRepositoryRoot();
@@ -113,6 +333,126 @@ public sealed class LocalSnapshotExportPublisherTests
             fixture.Input,
             EvaluationFormulaCatalog.Version1);
         return DeterministicSnapshotExporter.ExportEvaluation(accepted, GenerationUtc);
+    }
+
+    private static DailySummaryFixture ReadDailySummaryFixture()
+    {
+        var root = FindRepositoryRoot();
+        var options = new JsonSerializerOptions
+        {
+            PropertyNameCaseInsensitive = true,
+        };
+        return JsonSerializer.Deserialize<DailySummaryFixture>(
+                   File.ReadAllText(
+                       Path.Combine(root, "tests", "fixtures", "v0.6", "daily-summary-aggregation.json")),
+                   options)
+               ?? throw new AssertFailedException("The Daily Summary fixture was empty.");
+    }
+
+    private static DeterministicSnapshotExport RebindEnvelope(
+        DeterministicSnapshotExport export,
+        string? json = null,
+        string? markdown = null,
+        string? csv = null)
+    {
+        var nextJson = json ?? export.Json;
+        var nextMarkdown = markdown ?? export.Markdown;
+        var nextCsv = csv ?? export.Csv;
+        var strictUtf8 = new UTF8Encoding(false, true);
+        var jsonBytes = strictUtf8.GetBytes(nextJson);
+        var markdownBytes = strictUtf8.GetBytes(nextMarkdown);
+        var csvBytes = strictUtf8.GetBytes(nextCsv);
+        var manifest = export.Manifest with
+        {
+            JsonSha256 = Sha256(jsonBytes),
+            MarkdownSha256 = Sha256(markdownBytes),
+            CsvSha256 = Sha256(csvBytes),
+            JsonByteLength = jsonBytes.LongLength,
+            MarkdownByteLength = markdownBytes.LongLength,
+            CsvByteLength = csvBytes.LongLength,
+            TotalByteLength = (long)jsonBytes.Length + markdownBytes.Length + csvBytes.Length,
+        };
+        return export with
+        {
+            Json = nextJson,
+            Markdown = nextMarkdown,
+            Csv = nextCsv,
+            JsonSha256 = manifest.JsonSha256,
+            MarkdownSha256 = manifest.MarkdownSha256,
+            CsvSha256 = manifest.CsvSha256,
+            Manifest = manifest,
+        };
+    }
+
+    private static void AssertNoPublishedExport(string root)
+    {
+        Assert.HasCount(0, Directory.GetDirectories(root, "herdops-*"));
+        Assert.HasCount(0, Directory.GetDirectories(root, ".herdops-*"));
+    }
+
+    private static bool TryCreateDirectoryReparsePoint(string linkPath, string targetPath)
+    {
+        try
+        {
+            Directory.CreateSymbolicLink(linkPath, targetPath);
+            return true;
+        }
+        catch (Exception) when (
+            OperatingSystem.IsWindows() ||
+            OperatingSystem.IsLinux() ||
+            OperatingSystem.IsMacOS())
+        {
+            try
+            {
+                var startInfo = new System.Diagnostics.ProcessStartInfo
+                {
+                    FileName = Environment.GetEnvironmentVariable("ComSpec") ??
+                        Path.Combine(Environment.SystemDirectory, "cmd.exe"),
+                    CreateNoWindow = true,
+                    RedirectStandardError = true,
+                    RedirectStandardOutput = true,
+                    UseShellExecute = false,
+                };
+                startInfo.ArgumentList.Add("/d");
+                startInfo.ArgumentList.Add("/c");
+                startInfo.ArgumentList.Add("mklink");
+                startInfo.ArgumentList.Add("/J");
+                startInfo.ArgumentList.Add(linkPath);
+                startInfo.ArgumentList.Add(targetPath);
+                using var process = System.Diagnostics.Process.Start(startInfo);
+                if (process is null)
+                {
+                    return false;
+                }
+
+                _ = process.StandardOutput.ReadToEnd();
+                _ = process.StandardError.ReadToEnd();
+                process.WaitForExit();
+                return process.ExitCode == 0;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+    }
+
+    private static void RemoveReparsePoint(string path)
+    {
+        try
+        {
+            var attributes = File.GetAttributes(path);
+            if (attributes.HasFlag(FileAttributes.ReparsePoint))
+            {
+                Directory.Delete(path, recursive: false);
+            }
+        }
+        catch (Exception) when (
+            OperatingSystem.IsWindows() ||
+            OperatingSystem.IsLinux() ||
+            OperatingSystem.IsMacOS())
+        {
+        }
     }
 
     private static string CreateTemporaryDirectory()
@@ -156,4 +496,23 @@ public sealed class LocalSnapshotExportPublisherTests
         string ExpectedFormulaSha256,
         string ExpectedInputSnapshotSha256,
         string ExpectedResultSha256);
+
+    private sealed record DailySummaryFixture(
+        int ContractVersion,
+        DateOnly LocalDate,
+        int TimeZoneOffsetMinutes,
+        DailySummarySource[] Sources,
+        ExpectedCounts Expected);
+
+    private sealed record ExpectedCounts(
+        int AcceptedSourceCount,
+        int ActivityCount,
+        int EvidenceCount,
+        int WorkstreamCount,
+        int HighlightCount,
+        int RepeatedIssueCount,
+        int RecommendedActionCount,
+        int TimelineCount,
+        string RepeatedIssueKey,
+        string[] RepeatedIssueSourceIds);
 }
