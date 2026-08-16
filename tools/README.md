@@ -130,6 +130,10 @@ $targetAgentLabSocket = Join-Path $env:APPDATA 'herdr\herdr.sock'
 # and separate Static/Synthetic/Contract evidence for Issue #32.
 ./tools/Test-V06DailySummaryPage.ps1
 
+# Discover and verify the Issue #33 local-export source, contract, fixture,
+# synthetic evidence, contract evidence, and actual-byte SHA-256 pins.
+./tools/Test-V06LocalExport.ps1 -SkipBuild
+
 # From an authorized Herdr pane, capture actual bounded pane-read and
 # Herdr-PID-to-Windows-process evidence without controlling the session.
 dotnet artifacts/bin/HerdrOps.Core/release/HerdrOps.Core.dll trace-herdr-terminal-process `
