@@ -63,6 +63,7 @@ public sealed class UiLanguageCatalogTests
             "src/HerdrOps.App/Views/DelegationGraphView.xaml",
             "src/HerdrOps.App/Views/TaskAlignmentView.xaml",
             "src/HerdrOps.App/Views/ComplianceQueueView.xaml",
+            "src/HerdrOps.App/Views/EvaluationView.xaml",
             "src/HerdrOps.App/Widgets/WidgetGalleryView.xaml",
             "src/HerdrOps.App/Widgets/WidgetSurface.xaml",
         };

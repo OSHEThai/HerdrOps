@@ -1,5 +1,7 @@
 using System.Collections.ObjectModel;
 using System.Globalization;
+using System.Security.Cryptography;
+using System.Text;
 using HerdrOps.App.Live;
 using HerdrOps.App.Localization;
 using HerdrOps.App.Overview;
@@ -26,7 +28,11 @@ public sealed class EvaluationSnapshot
         IReadOnlyList<EvaluationTrendValue> trend,
         string selectedTaskId,
         string selectedAgentId,
-        DateOnly snapshotDate)
+        DateOnly snapshotDate,
+        decimal? previousAverageScore,
+        int leaderReviewsPending,
+        int projectManagerReviewsPending,
+        int recurringIssueCount)
     {
         ArgumentNullException.ThrowIfNull(evaluations);
         ArgumentNullException.ThrowIfNull(trend);
@@ -46,6 +52,10 @@ public sealed class EvaluationSnapshot
         SelectedTaskId = selectedTaskId;
         SelectedAgentId = selectedAgentId;
         SnapshotDate = snapshotDate;
+        PreviousAverageScore = previousAverageScore;
+        LeaderReviewsPending = Math.Max(0, leaderReviewsPending);
+        ProjectManagerReviewsPending = Math.Max(0, projectManagerReviewsPending);
+        RecurringIssueCount = Math.Max(0, recurringIssueCount);
     }
 
     public EvaluationSnapshotAvailability Availability { get; }
@@ -59,6 +69,14 @@ public sealed class EvaluationSnapshot
     public string SelectedAgentId { get; }
 
     public DateOnly SnapshotDate { get; }
+
+    public decimal? PreviousAverageScore { get; }
+
+    public int LeaderReviewsPending { get; }
+
+    public int ProjectManagerReviewsPending { get; }
+
+    public int RecurringIssueCount { get; }
 
     private static IReadOnlyList<T> Freeze<T>(IEnumerable<T> values) =>
         new ReadOnlyCollection<T>(values.ToArray());
@@ -120,14 +138,24 @@ public sealed record EvaluationDimensionRow(
     string StatusText);
 
 public sealed record EvaluationComparisonRow(
-    EvaluationScoreSource Source,
+    EvaluationDimension Dimension,
     string Label,
-    decimal? Score,
-    int Count,
-    decimal Percentage,
-    string ScoreLabel,
-    string ProvenanceId,
-    string ProvenanceSha256,
+    decimal WeightPercentage,
+    string WeightLabel,
+    int? LeaderScore,
+    string LeaderScoreLabel,
+    string LeaderProvenanceId,
+    string LeaderEvidenceIdentitySha256,
+    int? ProjectManagerScore,
+    string ProjectManagerScoreLabel,
+    string ProjectManagerProvenanceId,
+    string ProjectManagerEvidenceIdentitySha256,
+    int? ObjectiveEvidenceScore,
+    string ObjectiveEvidenceScoreLabel,
+    string ObjectiveEvidenceProvenanceId,
+    string ObjectiveEvidenceIdentitySha256,
+    decimal? WeightedScore,
+    string WeightedScoreLabel,
     string AccentBrushKey,
     string AccessibilityText,
     string StatusText);
@@ -150,13 +178,8 @@ public sealed record EvaluationRankingRow(
 /// </summary>
 public sealed class EvaluationState : ObservableState
 {
-    private const int PassScore = 60;
-
     private static readonly IReadOnlyList<EvaluationDimension> Dimensions =
         Enum.GetValues<EvaluationDimension>();
-
-    private static readonly IReadOnlyList<EvaluationScoreSource> Sources =
-        Enum.GetValues<EvaluationScoreSource>();
 
     private readonly EvaluationSnapshot _snapshot;
     private UiLanguage _language;
@@ -174,6 +197,9 @@ public sealed class EvaluationState : ObservableState
     private IReadOnlyList<EvaluationRankingRow> _lowAgents = [];
     private string _selectedTaskLabel = string.Empty;
     private string _selectedAgentLabel = string.Empty;
+    private string _comparisonTotalScoreLabel = string.Empty;
+    private string _comparisonFormulaLabel = string.Empty;
+    private string _comparisonSnapshotSha256 = string.Empty;
     private string _missingScoreLabel = string.Empty;
     private int _missingScoreCount;
 
@@ -219,6 +245,12 @@ public sealed class EvaluationState : ObservableState
 
     public string SelectedAgentLabel => _selectedAgentLabel;
 
+    public string ComparisonTotalScoreLabel => _comparisonTotalScoreLabel;
+
+    public string ComparisonFormulaLabel => _comparisonFormulaLabel;
+
+    public string ComparisonSnapshotSha256 => _comparisonSnapshotSha256;
+
     public string MissingScoreLabel => _missingScoreLabel;
 
     public int MissingScoreCount => _missingScoreCount;
@@ -240,7 +272,11 @@ public sealed class EvaluationState : ObservableState
                 .ToArray(),
             "TASK-118",
             "agent-project-manager",
-            new DateOnly(2026, 8, 14)));
+            new DateOnly(2026, 8, 14),
+            previousAverageScore: null,
+            leaderReviewsPending: 0,
+            projectManagerReviewsPending: 0,
+            recurringIssueCount: 0));
 
     /// <summary>
     /// Re-renders all localized labels from the same immutable snapshot.
@@ -267,7 +303,9 @@ public sealed class EvaluationState : ObservableState
         _sourceLabel = _snapshot.Availability == EvaluationSnapshotAvailability.Unavailable
             ? text.UnavailableSource
             : text.SyntheticSource;
-        _evidenceBoundaryLabel = text.EvidenceBoundary;
+        _evidenceBoundaryLabel = _snapshot.Availability == EvaluationSnapshotAvailability.Unavailable
+            ? text.LiveBoundary
+            : text.SyntheticBoundary;
         _evaluationCountTotal = _snapshot.Evaluations.Count;
         _evaluationCountLabel = text.Count(_evaluationCountTotal);
         _missingScoreCount = _snapshot.Evaluations.Count(item => !HasScore(item));
@@ -278,6 +316,9 @@ public sealed class EvaluationState : ObservableState
         _selectedAgentLabel = selected is null
             ? text.Unavailable
             : selected.AgentLabel;
+        _comparisonTotalScoreLabel = FormatScore(selected?.Result.TotalScore);
+        _comparisonFormulaLabel = selected?.Result.Provenance.Formula.FormulaId ?? text.Unavailable;
+        _comparisonSnapshotSha256 = selected?.Result.Provenance.InputSnapshotSha256 ?? string.Empty;
         _summaryCards = Freeze(BuildSummaryCards(text, scored));
         _distributionBins = Freeze(BuildDistribution(text, scored));
         _distributionTotalLabel = text.ScoredCount(scored.Length);
@@ -303,6 +344,9 @@ public sealed class EvaluationState : ObservableState
         Raise(nameof(LowAgents));
         Raise(nameof(SelectedTaskLabel));
         Raise(nameof(SelectedAgentLabel));
+        Raise(nameof(ComparisonTotalScoreLabel));
+        Raise(nameof(ComparisonFormulaLabel));
+        Raise(nameof(ComparisonSnapshotSha256));
         Raise(nameof(MissingScoreLabel));
         Raise(nameof(MissingScoreCount));
     }
@@ -314,10 +358,9 @@ public sealed class EvaluationState : ObservableState
         var average = scored.Count == 0
             ? (decimal?)null
             : Round(scored.Average(item => item.Result.TotalScore!.Value));
-        var passed = scored.Count(item => item.Result.TotalScore >= PassScore);
-        var passRate = scored.Count == 0
+        var averageDelta = average is null || _snapshot.PreviousAverageScore is null
             ? (decimal?)null
-            : Round(passed * 100m / scored.Count);
+            : Round(average.Value - _snapshot.PreviousAverageScore.Value);
         var status = _snapshot.Availability == EvaluationSnapshotAvailability.Unavailable
             ? text.Unavailable
             : text.SyntheticStatus;
@@ -325,21 +368,26 @@ public sealed class EvaluationState : ObservableState
         return
         [
             Card("average-score", text.AverageScore, FormatScore(average), text.OutOf100,
-                text.AverageScoreStatus(average), average, null, null,
+                text.ScoreDelta(averageDelta), average, null, null,
                 OverviewBrushKeys.Primary, text.Accessibility(text.AverageScore, FormatScore(average)), status),
             Card("evaluations", text.TotalEvaluations, _evaluationCountTotal.ToString(CultureInfo.InvariantCulture),
-                text.Records, text.Count(_evaluationCountTotal), null, _evaluationCountTotal, null,
+                text.Records, text.Today, null, _evaluationCountTotal, null,
                 OverviewBrushKeys.Working, text.Accessibility(text.TotalEvaluations, _evaluationCountTotal.ToString(CultureInfo.InvariantCulture)), status),
-            Card("scored", text.ScoredEvaluations, scored.Count.ToString(CultureInfo.InvariantCulture),
-                text.Records, text.ScoredCount(scored.Count), null, scored.Count, null,
-                OverviewBrushKeys.Done, text.Accessibility(text.ScoredEvaluations, scored.Count.ToString(CultureInfo.InvariantCulture)), status),
-            Card("missing", text.MissingScoresLabel, _missingScoreCount.ToString(CultureInfo.InvariantCulture),
-                text.Records, _missingScoreLabel, null, _missingScoreCount, null,
-                _missingScoreCount == 0 ? OverviewBrushKeys.Done : OverviewBrushKeys.Idle,
-                text.Accessibility(text.MissingScoresLabel, _missingScoreCount.ToString(CultureInfo.InvariantCulture)), status),
-            Card("pass-rate", text.PassRate, FormatPercentage(passRate), text.Percent,
-                text.PassRateStatus(passed, scored.Count), passRate is null ? null : (decimal?)passed, scored.Count,
-                passRate, OverviewBrushKeys.Review, text.Accessibility(text.PassRate, FormatPercentage(passRate)), status),
+            Card("leader-pending", text.LeaderReviewsPending,
+                _snapshot.LeaderReviewsPending.ToString(CultureInfo.InvariantCulture),
+                text.Records, text.FromTotal(_evaluationCountTotal), null,
+                _snapshot.LeaderReviewsPending, null, OverviewBrushKeys.Idle,
+                text.Accessibility(text.LeaderReviewsPending, _snapshot.LeaderReviewsPending.ToString(CultureInfo.InvariantCulture)), status),
+            Card("pm-pending", text.ProjectManagerReviewsPending,
+                _snapshot.ProjectManagerReviewsPending.ToString(CultureInfo.InvariantCulture),
+                text.Records, text.FromTotal(_evaluationCountTotal), null,
+                _snapshot.ProjectManagerReviewsPending, null, OverviewBrushKeys.Review,
+                text.Accessibility(text.ProjectManagerReviewsPending, _snapshot.ProjectManagerReviewsPending.ToString(CultureInfo.InvariantCulture)), status),
+            Card("recurring", text.RecurringIssues,
+                _snapshot.RecurringIssueCount.ToString(CultureInfo.InvariantCulture),
+                text.Records, text.FromLastWeek, null, _snapshot.RecurringIssueCount, null,
+                OverviewBrushKeys.Blocked,
+                text.Accessibility(text.RecurringIssues, _snapshot.RecurringIssueCount.ToString(CultureInfo.InvariantCulture)), status),
         ];
     }
 
@@ -453,56 +501,47 @@ public sealed class EvaluationState : ObservableState
         Copy text,
         EvaluationSnapshotRecord? selected)
     {
-        var sourceWeights = EvaluationFormulaCatalog.Version1.SourceWeights
-            .ToDictionary(item => item.Source, item => item.WeightBasisPoints / 100m);
+        var weights = EvaluationFormulaCatalog.Version1.DimensionWeights
+            .ToDictionary(item => item.Dimension, item => item.WeightBasisPoints / 100m);
+        var results = selected?.Result.Dimensions
+            .ToDictionary(item => item.Dimension);
 
-        return Sources.Select(source =>
+        return Dimensions.Select(dimension =>
         {
-            var label = text.Source(source);
-            if (selected is null)
-            {
-                return new EvaluationComparisonRow(
-                    source,
-                    label,
-                    null,
-                    0,
-                    sourceWeights[source],
-                    FormatScore(null),
-                    string.Empty,
-                    string.Empty,
-                    OverviewBrushKeys.Offline,
-                    text.Accessibility(label, text.Unavailable),
-                    text.Unavailable);
-            }
-
-            var values = selected.Result.Dimensions
-                .Select(item => SourceInput(item, source))
-                .Where(item => item.Score is not null)
-                .Select(item => item.Score!.Value)
-                .ToArray();
-            var complete = selected.Result.Status == EvaluationResultStatus.Complete &&
-                           values.Length == Dimensions.Count;
-            var score = complete
-                ? (decimal?)Round(selected.Result.Dimensions
-                    .Zip(EvaluationFormulaCatalog.Version1.DimensionWeights)
-                    .Sum(pair => (SourceInput(pair.First, source).Score ?? 0) * pair.Second.WeightBasisPoints) /
-                        10_000m)
-                : null;
-            var provenance = selected.Result.Dimensions
-                .Select(item => SourceInput(item, source))
-                .FirstOrDefault(item => item.ProvenanceId is not null);
-            var status = complete ? text.Complete : text.MissingScore;
+            var result = results?.GetValueOrDefault(dimension);
+            var weight = weights[dimension];
+            var leader = result?.Leader ?? new EvaluationScoreInput(null, null, null);
+            var projectManager = result?.ProjectManager ?? new EvaluationScoreInput(null, null, null);
+            var evidence = result?.ObjectiveEvidence ?? new EvaluationScoreInput(null, null, null);
+            var complete = result?.Status == EvaluationDimensionScoreStatus.Complete;
+            var status = selected is null
+                ? text.Unavailable
+                : text.DimensionStatus(result?.Status);
+            var label = text.Dimension(dimension);
+            var weighted = complete ? result!.WeightedScore : null;
             return new EvaluationComparisonRow(
-                source,
+                dimension,
                 label,
-                score,
-                values.Length,
-                sourceWeights[source],
-                FormatScore(score),
-                provenance?.ProvenanceId ?? string.Empty,
-                provenance?.ProvenanceSha256 ?? string.Empty,
-                complete ? OverviewBrushKeys.Primary : OverviewBrushKeys.Idle,
-                text.Accessibility(label, $"{FormatScore(score)}, {status}"),
+                weight,
+                FormatPercentage(weight),
+                leader.Score,
+                FormatScore(leader.Score),
+                leader.ProvenanceId ?? string.Empty,
+                leader.EvidenceIdentitySha256 ?? string.Empty,
+                projectManager.Score,
+                FormatScore(projectManager.Score),
+                projectManager.ProvenanceId ?? string.Empty,
+                projectManager.EvidenceIdentitySha256 ?? string.Empty,
+                evidence.Score,
+                FormatScore(evidence.Score),
+                evidence.ProvenanceId ?? string.Empty,
+                evidence.EvidenceIdentitySha256 ?? string.Empty,
+                weighted,
+                $"{FormatScore(weighted)} / {FormatScore(weight)}",
+                BrushFor(result?.Status),
+                text.Accessibility(
+                    label,
+                    $"{FormatScore(leader.Score)}, {FormatScore(projectManager.Score)}, {FormatScore(evidence.Score)}, {FormatScore(weighted)}, {status}"),
                 status);
         }).ToArray();
     }
@@ -515,8 +554,8 @@ public sealed class EvaluationState : ObservableState
         var ordered = (descending
                 ? scored.OrderByDescending(item => item.Result.TotalScore)
                 : scored.OrderBy(item => item.Result.TotalScore))
-            .ThenBy(item => item.AgentLabel, StringComparer.Ordinal)
             .ThenBy(item => item.AgentId, StringComparer.Ordinal)
+            .ThenBy(item => item.EvaluationId, StringComparer.Ordinal)
             .ToArray();
         var rows = new List<EvaluationRankingRow>(Math.Min(5, ordered.Length));
         for (var index = 0; index < ordered.Length && rows.Count < 5; index++)
@@ -543,16 +582,6 @@ public sealed class EvaluationState : ObservableState
 
         return rows;
     }
-
-    private static EvaluationScoreInput SourceInput(
-        EvaluationDimensionScore dimension,
-        EvaluationScoreSource source) => source switch
-        {
-            EvaluationScoreSource.Leader => dimension.Leader,
-            EvaluationScoreSource.ProjectManager => dimension.ProjectManager,
-            EvaluationScoreSource.ObjectiveEvidence => dimension.ObjectiveEvidence,
-            _ => throw new ArgumentOutOfRangeException(nameof(source)),
-        };
 
     private static bool HasScore(EvaluationSnapshotRecord item) =>
         item.Result.Status == EvaluationResultStatus.Complete && item.Result.TotalScore is not null;
@@ -607,7 +636,11 @@ public sealed class EvaluationState : ObservableState
             trend,
             includeMissingScore ? "TASK-125" : "TASK-118",
             includeMissingScore ? "agent-security-worker" : "agent-pm-secretary",
-            new DateOnly(2026, 8, 14));
+            new DateOnly(2026, 8, 14),
+            previousAverageScore: 82m,
+            leaderReviewsPending: 2,
+            projectManagerReviewsPending: 1,
+            recurringIssueCount: 1);
     }
 
     private static EvaluationSnapshotRecord Record(
@@ -662,150 +695,107 @@ public sealed class EvaluationState : ObservableState
     private static EvaluationScoreInput Score(int? score, string provenanceId) =>
         score is null
             ? new EvaluationScoreInput(null, null, null)
-            : new EvaluationScoreInput(score, provenanceId, new string('A', 64));
+            : new EvaluationScoreInput(
+                score,
+                provenanceId,
+                Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(provenanceId))));
 
     private sealed class Copy(UiLanguage language)
     {
-        private readonly UiLanguage _language = language;
+        private readonly UiLanguageService _service = UiLanguageService.Shared;
+        private readonly CultureInfo _culture = CultureInfo.GetCultureInfo(
+            language == UiLanguage.Thai ? "th-TH" : "en-US");
 
-        public string SyntheticSource => _language == UiLanguage.Thai ? "ข้อมูลจำลอง" : "Synthetic data";
+        public string SyntheticSource => _service["EvaluationSyntheticSource"];
 
-        public string UnavailableSource => _language == UiLanguage.Thai ? "ยังไม่มีข้อมูลการประเมิน" : "Evaluation data unavailable";
+        public string UnavailableSource => _service["EvaluationLiveSourceUnavailable"];
 
-        public string EvidenceBoundary => _language == UiLanguage.Thai
-            ? "หลักฐานสังเคราะห์และสัญญาเท่านั้น · ไม่ใช่ Runtime ของ Herdr"
-            : "Synthetic and contract evidence only · not Herdr runtime";
+        public string SyntheticBoundary => _service["EvaluationSyntheticBoundary"];
 
-        public string SyntheticStatus => _language == UiLanguage.Thai ? "ข้อมูลจำลอง" : "Synthetic";
+        public string LiveBoundary => _service["EvaluationLiveBoundary"];
 
-        public string Unavailable => _language == UiLanguage.Thai ? "ไม่พร้อมใช้งาน" : "Unavailable";
+        public string SyntheticStatus => _service["EvaluationSyntheticStatus"];
 
-        public string Complete => _language == UiLanguage.Thai ? "มีคะแนนครบ" : "Complete";
+        public string Unavailable => _service["EvaluationUnavailableLabel"];
 
-        public string MissingScore => _language == UiLanguage.Thai ? "ไม่มีคะแนน" : "Missing score";
+        public string Complete => _service["EvaluationCompleteLabel"];
 
-        public string AverageScore => _language == UiLanguage.Thai ? "คะแนนเฉลี่ย" : "Average Score";
+        public string MissingScore => _service["EvaluationMissingScoreLabel"];
 
-        public string TotalEvaluations => _language == UiLanguage.Thai ? "การประเมินทั้งหมด" : "Total Evaluations";
+        public string AverageScore => _service["EvaluationAverageScoreToday"];
 
-        public string ScoredEvaluations => _language == UiLanguage.Thai ? "การประเมินที่มีคะแนน" : "Scored Evaluations";
+        public string TotalEvaluations => _service["EvaluationTotalEvaluations"];
 
-        public string MissingScoresLabel => _language == UiLanguage.Thai ? "คะแนนที่ขาดหาย" : "Missing Scores";
+        public string LeaderReviewsPending => _service["EvaluationLeaderReviewsPending"];
 
-        public string PassRate => _language == UiLanguage.Thai ? "อัตราผ่าน" : "Pass Rate";
+        public string ProjectManagerReviewsPending => _service["EvaluationPmReviewsPending"];
+
+        public string RecurringIssues => _service["EvaluationRecurringIssues"];
+
+        public string Today => _service["EvaluationToday"];
+
+        public string FromLastWeek => _service["EvaluationFromLastWeek"];
 
         public string OutOf100 => "/100";
 
-        public string Records => _language == UiLanguage.Thai ? "รายการ" : "records";
+        public string Records => _service["EvaluationEvaluations"];
 
-        public string Percent => "%";
+        public string Count(int count) => _service.Format("EvaluationTotalEvaluationsFormat", count);
 
-        public string Count(int count) => _language == UiLanguage.Thai
-            ? $"{count.ToString(CultureInfo.InvariantCulture)} รายการ"
-            : $"{count.ToString(CultureInfo.InvariantCulture)} records";
+        public string ScoredCount(int count) => _service.Format("EvaluationScoredCountFormat", count);
 
-        public string ScoredCount(int count) => _language == UiLanguage.Thai
-            ? $"มีคะแนน {count.ToString(CultureInfo.InvariantCulture)} รายการ"
-            : $"{count.ToString(CultureInfo.InvariantCulture)} scored evaluations";
+        public string MissingScores(int count) => _service.Format("EvaluationMissingScoreDetailFormat", count);
 
-        public string MissingScores(int count) => _language == UiLanguage.Thai
-            ? $"ขาดคะแนน {count.ToString(CultureInfo.InvariantCulture)} รายการ · ไม่นำไปจัดอันดับหรือคำนวณผ่าน"
-            : $"{count.ToString(CultureInfo.InvariantCulture)} missing-score records · excluded from ranking and pass rate";
+        public string FromTotal(int count) => _service.Format("EvaluationFromTotalFormat", count);
 
-        public string AverageScoreStatus(decimal? score) => score is null ? Unavailable : SyntheticStatus;
+        public string ScoreDelta(decimal? delta)
+        {
+            if (delta is null)
+            {
+                return Unavailable;
+            }
 
-        public string PassRateStatus(int passed, int total) => total == 0
-            ? Unavailable
-            : _language == UiLanguage.Thai
-                ? $"ผ่าน {passed} จาก {total} รายการที่มีคะแนน"
-                : $"{passed} of {total} scored evaluations passed";
+            var key = delta >= 0m ? "EvaluationDeltaUpFormat" : "EvaluationDeltaDownFormat";
+            var value = Math.Abs(delta.Value).ToString("0.##", CultureInfo.InvariantCulture);
+            return $"{_service.Format(key, value)} · {_service["EvaluationComparedToYesterday"]}";
+        }
 
         public string Accessibility(string label, string value) =>
-            _language == UiLanguage.Thai ? $"{label}: {value}" : $"{label}: {value}";
+            $"{label}: {value}";
 
-        public string DistributionLabel(string id) => _language == UiLanguage.Thai
-            ? id switch
-            {
-                "excellent" => "90–100 ดีเยี่ยม",
-                "good" => "75–89 ดี",
-                "pass" => "60–74 ผ่าน",
-                "improve" => "40–59 ต้องปรับปรุง",
-                _ => "0–39 ไม่ผ่าน",
-            }
-            : id switch
-            {
-                "excellent" => "90–100 Excellent",
-                "good" => "75–89 Good",
-                "pass" => "60–74 Pass",
-                "improve" => "40–59 Improve",
-                _ => "0–39 Fail",
-            };
+        public string DistributionLabel(string id) => _service[id switch
+        {
+            "excellent" => "EvaluationScoreBandExcellent",
+            "good" => "EvaluationScoreBandGood",
+            "pass" => "EvaluationScoreBandAcceptable",
+            "improve" => "EvaluationScoreBandNeedsImprovement",
+            _ => "EvaluationScoreBandFail",
+        }];
 
-        public string Date(DateOnly date) => _language == UiLanguage.Thai
-            ? $"{date.Day} {ThaiMonth(date.Month)}"
-            : date.ToString("MMM d", CultureInfo.GetCultureInfo("en-US"));
+        public string Date(DateOnly date) => date
+            .ToDateTime(TimeOnly.MinValue)
+            .ToString("d MMM", _culture);
 
-        public string Dimension(EvaluationDimension dimension) => _language == UiLanguage.Thai
-            ? dimension switch
-            {
-                EvaluationDimension.GoalAlignment => "ความสอดคล้องกับเป้าหมาย",
-                EvaluationDimension.AcceptanceCriteria => "เกณฑ์การยอมรับ",
-                EvaluationDimension.TechnicalQuality => "คุณภาพทางเทคนิค",
-                EvaluationDimension.ScopeCompliance => "การปฏิบัติตามขอบเขต",
-                EvaluationDimension.Evidence => "หลักฐาน",
-                _ => "การสื่อสาร",
-            }
-            : dimension switch
-            {
-                EvaluationDimension.GoalAlignment => "Goal Alignment",
-                EvaluationDimension.AcceptanceCriteria => "Acceptance Criteria",
-                EvaluationDimension.TechnicalQuality => "Technical Quality",
-                EvaluationDimension.ScopeCompliance => "Scope Compliance",
-                EvaluationDimension.Evidence => "Evidence",
-                _ => "Communication",
-            };
-
-        public string Source(EvaluationScoreSource source) => _language == UiLanguage.Thai
-            ? source switch
-            {
-                EvaluationScoreSource.Leader => "หัวหน้าทีม",
-                EvaluationScoreSource.ProjectManager => "ผู้จัดการโครงการ",
-                _ => "หลักฐานตามวัตถุประสงค์",
-            }
-            : source switch
-            {
-                EvaluationScoreSource.Leader => "Leader",
-                EvaluationScoreSource.ProjectManager => "Project Manager",
-                _ => "Objective Evidence",
-            };
+        public string Dimension(EvaluationDimension dimension) => _service[dimension switch
+        {
+            EvaluationDimension.GoalAlignment => "EvaluationDimensionGoalAlignment",
+            EvaluationDimension.AcceptanceCriteria => "EvaluationDimensionAcceptanceCriteria",
+            EvaluationDimension.TechnicalQuality => "EvaluationDimensionTechnicalQuality",
+            EvaluationDimension.ScopeCompliance => "EvaluationDimensionScopeCompliance",
+            EvaluationDimension.Evidence => "EvaluationDimensionEvidence",
+            _ => "EvaluationDimensionCommunication",
+        }];
 
         public string DimensionStatus(EvaluationDimensionScoreStatus? status) => status switch
         {
             EvaluationDimensionScoreStatus.Complete => Complete,
             EvaluationDimensionScoreStatus.Missing => MissingScore,
-            EvaluationDimensionScoreStatus.Invalid => _language == UiLanguage.Thai ? "ข้อมูลไม่ถูกต้อง" : "Invalid",
+            EvaluationDimensionScoreStatus.Invalid => _service["EvaluationInvalidLabel"],
             _ => Unavailable,
         };
 
-        public string Tie(int rank) => _language == UiLanguage.Thai
-            ? $"เสมอที่อันดับ {rank}"
-            : $"Tied at rank {rank}";
-
-        private static string ThaiMonth(int month) => month switch
-        {
-            1 => "ม.ค.",
-            2 => "ก.พ.",
-            3 => "มี.ค.",
-            4 => "เม.ย.",
-            5 => "พ.ค.",
-            6 => "มิ.ย.",
-            7 => "ก.ค.",
-            8 => "ส.ค.",
-            9 => "ก.ย.",
-            10 => "ต.ค.",
-            11 => "พ.ย.",
-            _ => "ธ.ค.",
-        };
+        public string Tie(int rank) =>
+            $"{_service["EvaluationTieLabel"]} · {_service.Format("EvaluationRankFormat", rank)}";
     }
 }
 

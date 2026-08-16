@@ -2,6 +2,7 @@ using System.ComponentModel;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
+using HerdrOps.App.Evaluation;
 using HerdrOps.App.Files;
 using HerdrOps.App.Live;
 using HerdrOps.App.Localization;
@@ -45,6 +46,9 @@ public partial class ShellView : UserControl
         DelegationGraphPage.DataContext = LiveDashboard.DelegationGraph;
         TaskAlignmentPage.DataContext = LiveDashboard.TaskAlignment;
         ComplianceQueuePage.DataContext = LiveDashboard.ComplianceQueue;
+        EvaluationPage.DataContext = syntheticPreview
+            ? EvaluationState.CreateSyntheticPreview()
+            : EvaluationState.CreateUnavailable();
         FileActivityPage.DataContext = syntheticPreview
             ? FileActivityState.CreateSyntheticPreview()
             : FileActivityState.CreateUnavailable();
@@ -156,6 +160,10 @@ public partial class ShellView : UserControl
         {
             fileActivity.RefreshLanguage();
         }
+        if (EvaluationPage.DataContext is EvaluationState evaluation)
+        {
+            evaluation.RefreshLanguage();
+        }
         if (_syntheticPreview)
         {
             OverviewPage.DataContext = SyntheticOverviewState.Create();
@@ -206,6 +214,10 @@ public partial class ShellView : UserControl
             Navigation.SelectedDestination.Id,
             "compliance-queue",
             StringComparison.Ordinal);
+        var isEvaluation = string.Equals(
+            Navigation.SelectedDestination.Id,
+            "evaluation",
+            StringComparison.Ordinal);
         OverviewPage.Visibility = isOverview ? Visibility.Visible : Visibility.Collapsed;
         LiveOrganizationPage.Visibility = isLiveOrganization
             ? Visibility.Visible
@@ -226,6 +238,9 @@ public partial class ShellView : UserControl
         ComplianceQueuePage.Visibility = isComplianceQueue
             ? Visibility.Visible
             : Visibility.Collapsed;
+        EvaluationPage.Visibility = isEvaluation
+            ? Visibility.Visible
+            : Visibility.Collapsed;
         PlaceholderPage.Visibility = isOverview ||
             isLiveOrganization ||
             isAgentDetail ||
@@ -233,7 +248,8 @@ public partial class ShellView : UserControl
             isDelegationGraph ||
             isTaskAlignment ||
             isFileActivity ||
-            isComplianceQueue
+            isComplianceQueue ||
+            isEvaluation
             ? Visibility.Collapsed
             : Visibility.Visible;
     }

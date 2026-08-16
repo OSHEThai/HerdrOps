@@ -560,6 +560,9 @@
             <views:ComplianceQueueView x:Name="ComplianceQueuePage"
                                        Grid.Column="1"
                                        Visibility="Collapsed" />
+            <views:EvaluationView x:Name="EvaluationPage"
+                                  Grid.Column="1"
+                                  Visibility="Collapsed" />
             <views:AgentDetailView x:Name="AgentDetailPage"
                                    Grid.Column="1"
                                    Visibility="Collapsed" />
