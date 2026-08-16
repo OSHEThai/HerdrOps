@@ -226,7 +226,7 @@ function Set-SafeText {
 
     try {
         $candidate = Get-SafeFullPath -Path $Path -AllowMissingLeaf
-        $parent = Split-Path -LiteralPath $candidate -Parent
+        $parent = [IO.Directory]::GetParent($candidate).FullName
         $null = Get-SafeFullPath -Path $parent
         $text = $Lines -join [Environment]::NewLine
         $utf8 = New-Object -TypeName System.Text.UTF8Encoding -ArgumentList @($false)
