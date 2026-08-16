@@ -61,7 +61,7 @@ $expectedHashes = [ordered]@{
     }
     LiveDashboardState = [ordered]@{
         Path = $dashboardStatePath
-        Sha256 = '24B97DAF4391FA25A8D0424D89551745A3754EFF3E8E38ECFC55E9CE0F36F8E5'
+        Sha256 = '69ADD7909B9485B68BD16BF8B6D6491D2F5FF4E85B36607A4918C1394C025BF2'
     }
     LiveDashboardRuntime = [ordered]@{
         Path = $dashboardRuntimePath
@@ -97,7 +97,7 @@ $expectedHashes = [ordered]@{
     }
     LiveWidgetStateTest = [ordered]@{
         Path = $liveWidgetStateTestSourcePath
-        Sha256 = '1DA809AD5FD9B15A01E82B7CED763ACBB6DC55F0BC2DBE9DFF648C693409F5C9'
+        Sha256 = '584F528C9929B8CF6733EC873E8A1E24E196E7650841873AB44A3DE7F80662AC'
     }
     ComplianceQueueRuntimeTest = [ordered]@{
         Path = $runtimeTestSourcePath
@@ -152,6 +152,25 @@ function Assert-RequiredFile {
     }
 }
 
+function Get-RepositoryRelativePath {
+    param(
+        [Parameter(Mandatory)]
+        [string]$Path
+    )
+
+    $separatorChars = [char[]]@(
+        [IO.Path]::DirectorySeparatorChar,
+        [IO.Path]::AltDirectorySeparatorChar)
+    $normalizedRoot = [IO.Path]::GetFullPath($repositoryRoot).TrimEnd($separatorChars)
+    $normalizedPath = [IO.Path]::GetFullPath($Path)
+    $rootPrefix = $normalizedRoot + [IO.Path]::DirectorySeparatorChar
+    if (-not $normalizedPath.StartsWith($rootPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "Path is outside the repository root: $normalizedPath"
+    }
+
+    return $normalizedPath.Substring($rootPrefix.Length).Replace('\', '/')
+}
+
 function Assert-TrackedAtHead {
     param(
         [Parameter(Mandatory)]
@@ -165,7 +184,7 @@ function Assert-TrackedAtHead {
     )
 
     Assert-RequiredFile -Path $Path -Description $Description
-    $relativePath = [IO.Path]::GetRelativePath($repositoryRoot, $Path).Replace('\', '/')
+    $relativePath = Get-RepositoryRelativePath -Path $Path
     $tracked = @(& git -C $repositoryRoot ls-files --error-unmatch -- $relativePath 2>$null)
     if ($LASTEXITCODE -ne 0 -or $tracked.Count -ne 1 -or $tracked[0] -ne $relativePath) {
         throw "Required Issue #26 $Description is not tracked in the index: $relativePath"
@@ -308,7 +327,7 @@ function Invoke-FreshTestRun {
 $sourceCommit = Assert-CleanCommittedCheckout
 
 foreach ($requiredTrackedPath in $requiredTrackedPaths) {
-    $relativeRequiredPath = [IO.Path]::GetRelativePath($repositoryRoot, $requiredTrackedPath)
+    $relativeRequiredPath = Get-RepositoryRelativePath -Path $requiredTrackedPath
     [void](Assert-TrackedAtHead `
         -Path $requiredTrackedPath `
         -Description $relativeRequiredPath `
@@ -596,7 +615,7 @@ $gateReportPath = Join-Path $gateDirectory 'gate-report.txt'
 $hashReport = $expectedHashes.GetEnumerator() | ForEach-Object {
     $hashEntry = $_
     $hashValue = ([string]$hashEntry.Value.Sha256).ToUpperInvariant()
-    "SHA256 $hashValue $($hashEntry.Key) $([IO.Path]::GetRelativePath($repositoryRoot, $hashEntry.Value.Path))"
+    "SHA256 $hashValue $($hashEntry.Key) $(Get-RepositoryRelativePath -Path $hashEntry.Value.Path)"
 }
 $counterReport = $testCounterEvidence | ForEach-Object {
     $values = $_.Counters
