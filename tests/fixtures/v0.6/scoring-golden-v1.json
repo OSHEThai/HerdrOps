@@ -1,0 +1,50 @@
+{
+  "input": {
+    "contractVersion": 1,
+    "evaluationId": "evaluation:TASK-118:agent-backend-leader",
+    "taskId": "TASK-118",
+    "agentId": "agent-backend-leader",
+    "dimensions": [
+      {
+        "dimension": "GoalAlignment",
+        "leader": { "score": 90, "provenanceId": "GoalAlignment:Leader", "provenanceSha256": "0101AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" },
+        "projectManager": { "score": 85, "provenanceId": "GoalAlignment:ProjectManager", "provenanceSha256": "0102AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" },
+        "objectiveEvidence": { "score": 92, "provenanceId": "GoalAlignment:ObjectiveEvidence", "provenanceSha256": "0103AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" }
+      },
+      {
+        "dimension": "AcceptanceCriteria",
+        "leader": { "score": 85, "provenanceId": "AcceptanceCriteria:Leader", "provenanceSha256": "0201AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" },
+        "projectManager": { "score": 88, "provenanceId": "AcceptanceCriteria:ProjectManager", "provenanceSha256": "0202AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" },
+        "objectiveEvidence": { "score": 90, "provenanceId": "AcceptanceCriteria:ObjectiveEvidence", "provenanceSha256": "0203AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" }
+      },
+      {
+        "dimension": "TechnicalQuality",
+        "leader": { "score": 80, "provenanceId": "TechnicalQuality:Leader", "provenanceSha256": "0301AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" },
+        "projectManager": { "score": 75, "provenanceId": "TechnicalQuality:ProjectManager", "provenanceSha256": "0302AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" },
+        "objectiveEvidence": { "score": 78, "provenanceId": "TechnicalQuality:ObjectiveEvidence", "provenanceSha256": "0303AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" }
+      },
+      {
+        "dimension": "ScopeCompliance",
+        "leader": { "score": 75, "provenanceId": "ScopeCompliance:Leader", "provenanceSha256": "0401AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" },
+        "projectManager": { "score": 80, "provenanceId": "ScopeCompliance:ProjectManager", "provenanceSha256": "0402AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" },
+        "objectiveEvidence": { "score": 82, "provenanceId": "ScopeCompliance:ObjectiveEvidence", "provenanceSha256": "0403AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" }
+      },
+      {
+        "dimension": "Evidence",
+        "leader": { "score": 70, "provenanceId": "Evidence:Leader", "provenanceSha256": "0501AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" },
+        "projectManager": { "score": 75, "provenanceId": "Evidence:ProjectManager", "provenanceSha256": "0502AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" },
+        "objectiveEvidence": { "score": 88, "provenanceId": "Evidence:ObjectiveEvidence", "provenanceSha256": "0503AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" }
+      },
+      {
+        "dimension": "Communication",
+        "leader": { "score": 70, "provenanceId": "Communication:Leader", "provenanceSha256": "0601AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" },
+        "projectManager": { "score": 75, "provenanceId": "Communication:ProjectManager", "provenanceSha256": "0602AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" },
+        "objectiveEvidence": { "score": 80, "provenanceId": "Communication:ObjectiveEvidence", "provenanceSha256": "0603AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" }
+      }
+    ]
+  },
+  "expectedTotalScore": 82.23,
+  "expectedFormulaSha256": "3CF788794C58DA11408E8D3E8F3876C88B3F48F4D19082DBCDEE4FE8B8874DFB",
+  "expectedInputSnapshotSha256": "574776C1E31A4A9E994AA9B19FD920453DBD6EE669F9E5516B3137FD77CFC5A1",
+  "expectedResultSha256": "9A123504715F1041673FED0E801D9224EBA51A9A21517B4C89FE4CBBF6F5AFD5"
+}

@@ -16,4 +16,10 @@
   <ItemGroup>
     <Using Include="Microsoft.VisualStudio.TestTools.UnitTesting" />
   </ItemGroup>
+
+  <ItemGroup>
+    <None Include="..\fixtures\v0.6\scoring-golden-v1.json"
+          Link="Fixtures\scoring-golden-v1.json"
+          CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
 </Project>
