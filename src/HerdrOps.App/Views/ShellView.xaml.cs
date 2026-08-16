@@ -8,6 +8,7 @@ using HerdrOps.App.Live;
 using HerdrOps.App.Localization;
 using HerdrOps.App.Overview;
 using HerdrOps.App.Shell;
+using HerdrOps.App.Summaries;
 using HerdrOps.App.Widgets;
 
 namespace HerdrOps.App.Views;
@@ -52,6 +53,9 @@ public partial class ShellView : UserControl
         FileActivityPage.DataContext = syntheticPreview
             ? FileActivityState.CreateSyntheticPreview()
             : FileActivityState.CreateUnavailable();
+        DailySummaryPage.DataContext = syntheticPreview
+            ? DailySummaryState.CreateSyntheticPreview()
+            : DailySummaryState.CreateUnavailable();
         if (!syntheticPreview)
         {
             OverviewPage.DataContext = LiveDashboard.Overview;
@@ -164,6 +168,10 @@ public partial class ShellView : UserControl
         {
             evaluation.RefreshLanguage();
         }
+        if (DailySummaryPage.DataContext is DailySummaryState dailySummary)
+        {
+            dailySummary.RefreshLanguage();
+        }
         if (_syntheticPreview)
         {
             OverviewPage.DataContext = SyntheticOverviewState.Create();
@@ -218,6 +226,10 @@ public partial class ShellView : UserControl
             Navigation.SelectedDestination.Id,
             "evaluation",
             StringComparison.Ordinal);
+        var isDailySummary = string.Equals(
+            Navigation.SelectedDestination.Id,
+            "daily-summary",
+            StringComparison.Ordinal);
         OverviewPage.Visibility = isOverview ? Visibility.Visible : Visibility.Collapsed;
         LiveOrganizationPage.Visibility = isLiveOrganization
             ? Visibility.Visible
@@ -241,6 +253,9 @@ public partial class ShellView : UserControl
         EvaluationPage.Visibility = isEvaluation
             ? Visibility.Visible
             : Visibility.Collapsed;
+        DailySummaryPage.Visibility = isDailySummary
+            ? Visibility.Visible
+            : Visibility.Collapsed;
         PlaceholderPage.Visibility = isOverview ||
             isLiveOrganization ||
             isAgentDetail ||
@@ -249,7 +264,8 @@ public partial class ShellView : UserControl
             isTaskAlignment ||
             isFileActivity ||
             isComplianceQueue ||
-            isEvaluation
+            isEvaluation ||
+            isDailySummary
             ? Visibility.Collapsed
             : Visibility.Visible;
     }
