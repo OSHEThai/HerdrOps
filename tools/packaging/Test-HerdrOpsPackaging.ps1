@@ -72,6 +72,7 @@ function Assert-NoPackagingStagingFiles {
 }
 
 $profile = Read-PackageProfile -Path $ProfilePath
+$null = Assert-V070PreparationProfile -Profile $profile
 $repositoryRoot = Get-PackagingRepositoryRoot
 Assert-ProjectMatchesPackageProfile -Profile $profile -RepositoryRoot $repositoryRoot
 
@@ -116,6 +117,25 @@ try {
     Assert-PackageManifestMatchesRoot -Profile $profile -PackageRoot $packageOne | Out-Null
     Assert-PackageManifestMatchesRoot -Profile $profile -PackageRoot $packageTwo | Out-Null
 
+    $singlePackageRoot = Join-Path $testRoot 'single-file-package'
+    Copy-SafeDirectoryContents -Source $fixture -Destination $singlePackageRoot
+    [IO.File]::Delete((Join-Path $singlePackageRoot 'HerdrOps.App.payload'))
+    [IO.File]::Delete((Join-Path $singlePackageRoot 'HerdrOps.Core.payload'))
+    $singleManifest = New-PackageManifestObject -Profile $profile -PackageRoot $singlePackageRoot
+    Write-PackageManifest -Manifest $singleManifest -PackageRoot $singlePackageRoot | Out-Null
+    Assert-PackageManifestMatchesRoot -Profile $profile -PackageRoot $singlePackageRoot | Out-Null
+
+    $manifestEntryRoot = Join-Path $testRoot 'manifest-entry-point'
+    Copy-SafeDirectoryContents -Source $fixture -Destination $manifestEntryRoot
+    $manifestEntryResult = @(& (Join-Path $PSScriptRoot 'New-PackageManifest.ps1') `
+        -PackageRoot $manifestEntryRoot `
+        -ProfilePath $ProfilePath)
+    if ($manifestEntryResult.Count -ne 1 -or
+        [string]$manifestEntryResult[0].EvidenceClass -cne 'Static' -or
+        -not (Test-Path -LiteralPath (Join-Path $manifestEntryRoot 'package-manifest.json') -PathType Leaf)) {
+        throw 'New-PackageManifest entry point did not produce one static manifest result.'
+    }
+
     $manifestOnePath = Join-Path $packageOne 'package-manifest.json'
     $manifestTwoPath = Join-Path $packageTwo 'package-manifest.json'
     $manifestOneBytes = [IO.File]::ReadAllBytes($manifestOnePath)
@@ -140,6 +160,35 @@ try {
     $outsideHashPath = Join-Path $outsideProbeRoot 'package-hashes.txt'
     $entryPointArchive = Join-Path $testRoot 'entry-point.zip'
     $entryPointHash = Join-Path $testRoot 'entry-point-hashes.txt'
+    $overlapOutputUnderPackage = Join-Path $packageOne 'output'
+    Assert-ExpectedFailure -Description 'publication rejects output nested under package root before side effects' -Action {
+        Publish-PackageArtifactsAtomically `
+            -PackageRoot $packageOne `
+            -ArchivePath $archiveOne `
+            -HashRecordPath (Join-Path $testRoot 'one-overlap-hashes.txt') `
+            -OutputRoot $overlapOutputUnderPackage | Out-Null
+    }
+    if (Test-Path -LiteralPath $overlapOutputUnderPackage) {
+        throw 'Nested output overlap validation created an output path.'
+    }
+    $overlapReverseRoot = Join-Path $testRoot 'overlap-reverse'
+    $overlapReversePackage = Join-Path $overlapReverseRoot 'package'
+    $overlapCases = @(
+        @{ Name = 'output under package'; LeftName = 'package'; Left = $packageOne; RightName = 'output'; Right = $overlapOutputUnderPackage },
+        @{ Name = 'package under output'; LeftName = 'package'; Left = $overlapReversePackage; RightName = 'output'; Right = $overlapReverseRoot },
+        @{ Name = 'equivalent package/output'; LeftName = 'package'; Left = $packageOne; RightName = 'output'; Right = $packageOne },
+        @{ Name = 'nested archive/hash'; LeftName = 'archive'; Left = (Join-Path $testRoot 'nested'); RightName = 'hash'; Right = (Join-Path $testRoot 'nested\hash.txt') })
+    foreach ($overlapCase in $overlapCases) {
+        Assert-ExpectedFailure -Description $overlapCase.Name -Action {
+            Assert-PackagingPathsDoNotOverlap -Paths @(
+                [pscustomobject]@{ Name = $overlapCase.LeftName; Path = $overlapCase.Left },
+                [pscustomobject]@{ Name = $overlapCase.RightName; Path = $overlapCase.Right },
+                [pscustomobject]@{ Name = 'staging'; Path = (Get-PackagingStagingProbePath -DestinationPath $overlapCase.Right -Directory) })
+        }
+    }
+    if (Test-Path -LiteralPath $overlapReverseRoot) {
+        throw 'Reverse overlap validation created a path.'
+    }
     Assert-ExpectedFailure -Description 'New-PackageArchive validates hash destination before archive side effects' -Action {
         & (Join-Path $PSScriptRoot 'New-PackageArchive.ps1') `
             -PackageRoot $packageOne `
@@ -153,6 +202,46 @@ try {
     if (Test-Path -LiteralPath $outsideProbeRoot) {
         throw "Unsafe hash destination validation created an outside path: $outsideProbeRoot"
     }
+
+    foreach ($pairStage in @('Archive', 'Hash', 'AfterArchive', 'AfterHash', 'BeforeCommit', 'AfterArchiveCommit', 'AfterHashCommit')) {
+        $pairFaultArchive = Join-Path $testRoot ("entry-point-fault-$pairStage.zip")
+        $pairFaultHash = Join-Path $testRoot ("entry-point-fault-$pairStage-hashes.txt")
+        Assert-ExpectedFailureContaining -Description ("New-PackageArchive pair fault stage $pairStage") -RequiredFragments @(
+            'Injected package') -Action {
+            & (Join-Path $PSScriptRoot 'New-PackageArchive.ps1') `
+                -PackageRoot $packageOne `
+                -ProfilePath $ProfilePath `
+                -ArchivePath $pairFaultArchive `
+                -HashRecordPath $pairFaultHash `
+                -TestFaultInjectionStage $pairStage | Out-Null
+        } | Out-Null
+        if ((Test-Path -LiteralPath $pairFaultArchive) -or (Test-Path -LiteralPath $pairFaultHash)) {
+            throw "Archive pair fault stage $pairStage left a final file."
+        }
+        Assert-NoPackagingStagingFiles -Parent $testRoot -Description ("archive pair fault stage $pairStage")
+        & (Join-Path $PSScriptRoot 'New-PackageArchive.ps1') `
+            -PackageRoot $packageOne `
+            -ProfilePath $ProfilePath `
+            -ArchivePath $pairFaultArchive `
+            -HashRecordPath $pairFaultHash | Out-Null
+        if (-not (Test-Path -LiteralPath $pairFaultArchive -PathType Leaf) -or
+            -not (Test-Path -LiteralPath $pairFaultHash -PathType Leaf)) {
+            throw "Archive pair retry failed after fault stage $pairStage."
+        }
+        Assert-NoPackagingStagingFiles -Parent $testRoot -Description ("archive pair retry after $pairStage")
+    }
+    Assert-ExpectedFailureContaining -Description 'New-PackageArchive pair cleanup error ordering' -RequiredFragments @(
+        'Injected package archive pair failure after archive staging.',
+        'Cleanup also failed: Injected package archive pair cleanup failure.') -Action {
+        & (Join-Path $PSScriptRoot 'New-PackageArchive.ps1') `
+            -PackageRoot $packageOne `
+            -ProfilePath $ProfilePath `
+            -ArchivePath (Join-Path $testRoot 'entry-point-cleanup.zip') `
+            -HashRecordPath (Join-Path $testRoot 'entry-point-cleanup-hashes.txt') `
+            -TestFaultInjectionStage 'AfterArchive' `
+            -TestInjectCleanupFailure | Out-Null
+    } | Out-Null
+    Assert-NoPackagingStagingFiles -Parent $testRoot -Description 'archive pair cleanup error ordering'
     & (Join-Path $PSScriptRoot 'New-PackageArchive.ps1') `
         -PackageRoot $packageOne `
         -ProfilePath $ProfilePath `
@@ -161,6 +250,9 @@ try {
     if (-not (Test-Path -LiteralPath $entryPointArchive -PathType Leaf) -or
         -not (Test-Path -LiteralPath $entryPointHash -PathType Leaf)) {
         throw 'New-PackageArchive retry did not create archive and hash record.'
+    }
+    if ((Get-Content -LiteralPath $entryPointHash -Raw).IndexOf('ArchiveFile: entry-point.zip', [StringComparison]::Ordinal) -lt 0) {
+        throw 'New-PackageArchive hash record did not bind to the final archive name.'
     }
     Assert-NoPackagingStagingFiles -Parent $testRoot -Description 'entry-point retry'
 
@@ -197,6 +289,24 @@ try {
     Assert-NoPackagingStagingFiles -Parent $manifestFaultRoot -Description 'manifest mid-write failure'
     Write-PackageManifest -Manifest $manifestFault -PackageRoot $manifestFaultRoot | Out-Null
     Assert-PackageManifestMatchesRoot -Profile $profile -PackageRoot $manifestFaultRoot | Out-Null
+
+    $manifestBeforeCommitRoot = Join-Path $testRoot 'manifest-before-commit-fault'
+    Copy-SafeDirectoryContents -Source $fixture -Destination $manifestBeforeCommitRoot
+    $manifestBeforeCommit = New-PackageManifestObject -Profile $profile -PackageRoot $manifestBeforeCommitRoot
+    $manifestBeforeCommitPath = Join-Path $manifestBeforeCommitRoot 'package-manifest.json'
+    Assert-ExpectedFailureContaining -Description 'manifest before-commit rollback' -RequiredFragments @(
+        'Injected package manifest failure before atomic commit.') -Action {
+        Write-PackageManifest `
+            -Manifest $manifestBeforeCommit `
+            -PackageRoot $manifestBeforeCommitRoot `
+            -TestFaultInjectionStage 'BeforeCommit' | Out-Null
+    } | Out-Null
+    if (Test-Path -LiteralPath $manifestBeforeCommitPath) {
+        throw 'Manifest before-commit fault left a final destination.'
+    }
+    Assert-NoPackagingStagingFiles -Parent $manifestBeforeCommitRoot -Description 'manifest before-commit failure'
+    Write-PackageManifest -Manifest $manifestBeforeCommit -PackageRoot $manifestBeforeCommitRoot | Out-Null
+    Assert-PackageManifestMatchesRoot -Profile $profile -PackageRoot $manifestBeforeCommitRoot | Out-Null
 
     $manifestCleanupRoot = Join-Path $testRoot 'manifest-cleanup-fault'
     Copy-SafeDirectoryContents -Source $fixture -Destination $manifestCleanupRoot
@@ -235,6 +345,20 @@ try {
         throw 'Archive retry did not create the destination.'
     }
 
+    $archiveBeforeCommitFault = Join-Path $testRoot 'archive-before-commit-fault.zip'
+    Assert-ExpectedFailureContaining -Description 'archive before-commit rollback' -RequiredFragments @(
+        'Injected package archive failure before atomic commit.') -Action {
+        New-DeterministicPackageArchive `
+            -PackageRoot $packageOne `
+            -ArchivePath $archiveBeforeCommitFault `
+            -TestFaultInjectionStage 'BeforeCommit' | Out-Null
+    } | Out-Null
+    if (Test-Path -LiteralPath $archiveBeforeCommitFault) {
+        throw 'Archive before-commit fault left a final destination.'
+    }
+    Assert-NoPackagingStagingFiles -Parent $testRoot -Description 'archive before-commit failure'
+    New-DeterministicPackageArchive -PackageRoot $packageOne -ArchivePath $archiveBeforeCommitFault | Out-Null
+
     $hashFault = Join-Path $testRoot 'hash-fault.txt'
     Assert-ExpectedFailureContaining -Description 'hash-record mid-write rollback' -RequiredFragments @(
         'Injected package hash record failure during staged write.') -Action {
@@ -254,26 +378,40 @@ try {
         throw 'Hash-record retry did not create the destination.'
     }
 
-    $atomicOutputRoot = Join-Path $testRoot 'atomic-output'
-    Assert-ExpectedFailureContaining -Description 'atomic publication fault injection leaves no partial output' -RequiredFragments @('Injected atomic publication failure after archive copy.') -Action {
-        Publish-PackageArtifactsAtomically `
+    $hashBeforeCommitFault = Join-Path $testRoot 'hash-before-commit-fault.txt'
+    Assert-ExpectedFailureContaining -Description 'hash-record before-commit rollback' -RequiredFragments @(
+        'Injected package hash record failure before atomic commit.') -Action {
+        Write-PackageHashRecord `
+            -Profile $profile `
             -PackageRoot $packageOne `
             -ArchivePath $archiveOne `
-            -HashRecordPath $hashOne `
-            -OutputRoot $atomicOutputRoot `
-            -FaultInjectionStage 'AfterArchive' | Out-Null
+            -Path $hashBeforeCommitFault `
+            -TestFaultInjectionStage 'BeforeCommit' | Out-Null
     } | Out-Null
-    if (Test-Path -LiteralPath $atomicOutputRoot) {
-        if (@(Get-ChildItem -LiteralPath $atomicOutputRoot -Force).Count -ne 0) {
-            throw 'Atomic publication fault injection left partial output in the destination root.'
+    if (Test-Path -LiteralPath $hashBeforeCommitFault) {
+        throw 'Hash-record before-commit fault left a final destination.'
+    }
+    Assert-NoPackagingStagingFiles -Parent $testRoot -Description 'hash-record before-commit failure'
+    Write-PackageHashRecord -Profile $profile -PackageRoot $packageOne -ArchivePath $archiveOne -Path $hashBeforeCommitFault | Out-Null
+
+    foreach ($publicationStage in @('AfterPackage', 'AfterArchive', 'AfterHash', 'BeforeCommit')) {
+        $faultOutputRoot = Join-Path $testRoot ("atomic-output-$publicationStage")
+        Assert-ExpectedFailureContaining -Description ("atomic publication fault stage $publicationStage") -RequiredFragments @(
+            'Injected atomic publication failure') -Action {
+            Publish-PackageArtifactsAtomically `
+                -PackageRoot $packageOne `
+                -ArchivePath $archiveOne `
+                -HashRecordPath $hashOne `
+                -OutputRoot $faultOutputRoot `
+                -FaultInjectionStage $publicationStage | Out-Null
+        } | Out-Null
+        if (Test-Path -LiteralPath $faultOutputRoot) {
+            throw "Atomic publication fault stage $publicationStage left an output root."
         }
-        Remove-Item -LiteralPath $atomicOutputRoot -Force
+        Assert-NoPackagingStagingFiles -Parent $testRoot -Description ("publication fault stage $publicationStage")
     }
-    $stagingLeftovers = @(Get-ChildItem -LiteralPath $testRoot -Force |
-        Where-Object { $_.Name -like '.atomic-output.staging-*' })
-    if ($stagingLeftovers.Count -ne 0) {
-        throw 'Atomic publication fault injection left a staging directory behind.'
-    }
+
+    $atomicOutputRoot = Join-Path $testRoot 'atomic-output'
 
     $atomicPublication = Publish-PackageArtifactsAtomically `
         -PackageRoot $packageOne `
@@ -287,6 +425,12 @@ try {
     }
     if (@(Get-ChildItem -LiteralPath $atomicOutputRoot -Force).Count -ne 3) {
         throw 'Atomic publication output did not contain exactly package, archive, and hash record.'
+    }
+    if (((Get-FileHash -LiteralPath $atomicPublication.ArchivePath -Algorithm SHA256).Hash).ToUpperInvariant() -cne
+        ((Get-FileHash -LiteralPath $archiveOne -Algorithm SHA256).Hash).ToUpperInvariant() -or
+        ((Get-FileHash -LiteralPath $atomicPublication.HashRecordPath -Algorithm SHA256).Hash).ToUpperInvariant() -cne
+        ((Get-FileHash -LiteralPath $hashOne -Algorithm SHA256).Hash).ToUpperInvariant()) {
+        throw 'Atomic publication output hashes did not match the staged source bytes.'
     }
     Assert-PackageManifestMatchesRoot -Profile $profile -PackageRoot $atomicPublication.PackageRoot | Out-Null
 
@@ -316,6 +460,74 @@ try {
         [IO.File]::WriteAllText($manifestOnePath, $manifestOriginalText, (New-Object System.Text.UTF8Encoding($false)))
     }
     Assert-PackageManifestMatchesRoot -Profile $profile -PackageRoot $packageOne | Out-Null
+
+    foreach ($numericName in @('schemaVersion', 'issue', 'fileCount', 'totalBytes')) {
+        $numericStringManifest = $manifestOriginalText | ConvertFrom-Json
+        $numericStringManifest.($numericName) = [string]$numericStringManifest.($numericName)
+        Write-DeterministicTextFile -Path $manifestOnePath -Text ($numericStringManifest | ConvertTo-Json -Depth 20)
+        Assert-ExpectedFailure -Description ("manifest numeric string rejected: " + $numericName) -Action {
+            Assert-PackageManifestMatchesRoot -Profile $profile -PackageRoot $packageOne | Out-Null
+        }
+        [IO.File]::WriteAllText($manifestOnePath, $manifestOriginalText, (New-Object System.Text.UTF8Encoding($false)))
+    }
+
+    $nestedNumericStringManifest = $manifestOriginalText | ConvertFrom-Json
+    $nestedNumericStringManifest.files[0].length = [string]$nestedNumericStringManifest.files[0].length
+    Write-DeterministicTextFile -Path $manifestOnePath -Text ($nestedNumericStringManifest | ConvertTo-Json -Depth 20)
+    Assert-ExpectedFailure -Description 'manifest file length numeric string rejected' -Action {
+        Assert-PackageManifestMatchesRoot -Profile $profile -PackageRoot $packageOne | Out-Null
+    }
+    [IO.File]::WriteAllText($manifestOnePath, $manifestOriginalText, (New-Object System.Text.UTF8Encoding($false)))
+
+    $unknownPropertyManifest = $manifestOriginalText | ConvertFrom-Json
+    Add-Member -InputObject $unknownPropertyManifest -MemberType NoteProperty -Name unknownProperty -Value 'must reject'
+    Write-DeterministicTextFile -Path $manifestOnePath -Text ($unknownPropertyManifest | ConvertTo-Json -Depth 20)
+    Assert-ExpectedFailure -Description 'manifest unknown property rejected' -Action {
+        Assert-PackageManifestMatchesRoot -Profile $profile -PackageRoot $packageOne | Out-Null
+    }
+    [IO.File]::WriteAllText($manifestOnePath, $manifestOriginalText, (New-Object System.Text.UTF8Encoding($false)))
+
+    $reorderedFilesManifest = $manifestOriginalText | ConvertFrom-Json
+    $reorderedFiles = @($reorderedFilesManifest.files)
+    [array]::Reverse($reorderedFiles)
+    $reorderedFilesManifest.files = $reorderedFiles
+    Write-DeterministicTextFile -Path $manifestOnePath -Text ($reorderedFilesManifest | ConvertTo-Json -Depth 20)
+    Assert-ExpectedFailure -Description 'manifest reordered files rejected' -Action {
+        Assert-PackageManifestMatchesRoot -Profile $profile -PackageRoot $packageOne | Out-Null
+    }
+    [IO.File]::WriteAllText($manifestOnePath, $manifestOriginalText, (New-Object System.Text.UTF8Encoding($false)))
+    Assert-PackageManifestMatchesRoot -Profile $profile -PackageRoot $packageOne | Out-Null
+
+    $customVersionProfile = $profile | ConvertTo-Json -Depth 20 | ConvertFrom-Json
+    $customVersionProfile.packageVersion = '0.7.1'
+    $customVersionProfile.syntheticUpgradeVersion = '0.7.2'
+    $customVersionProfilePath = Join-Path $testRoot 'custom-version-profile.json'
+    Write-DeterministicTextFile -Path $customVersionProfilePath -Text ($customVersionProfile | ConvertTo-Json -Depth 20)
+    $customVersionOutput = Join-Path $testRoot 'custom-version-output'
+    Assert-ExpectedFailure -Description 'custom profile version fence before publish effects' -Action {
+        & (Join-Path $PSScriptRoot 'Publish-HerdrOpsPackage.ps1') `
+            -OutputRoot $customVersionOutput `
+            -ProfilePath $customVersionProfilePath `
+            -TestInjectPrimaryFailure | Out-Null
+    }
+    if (Test-Path -LiteralPath $customVersionOutput) {
+        throw 'A non-v0.7.0 custom profile created a publish output path.'
+    }
+
+    $customProjectProfile = $profile | ConvertTo-Json -Depth 20 | ConvertFrom-Json
+    $customProjectProfile.sourceProject = '..\outside\HerdrOps.App.csproj'
+    $customProjectProfilePath = Join-Path $testRoot 'custom-project-profile.json'
+    Write-DeterministicTextFile -Path $customProjectProfilePath -Text ($customProjectProfile | ConvertTo-Json -Depth 20)
+    $customProjectOutput = Join-Path $testRoot 'custom-project-output'
+    Assert-ExpectedFailure -Description 'custom profile project fence before publish effects' -Action {
+        & (Join-Path $PSScriptRoot 'Publish-HerdrOpsPackage.ps1') `
+            -OutputRoot $customProjectOutput `
+            -ProfilePath $customProjectProfilePath `
+            -TestInjectPrimaryFailure | Out-Null
+    }
+    if (Test-Path -LiteralPath $customProjectOutput) {
+        throw 'An outside sourceProject custom profile created a publish output path.'
+    }
 
     $syntheticOrderingError = Assert-ExpectedFailureContaining -Description 'synthetic cleanup error ordering' -RequiredFragments @(
         'Injected synthetic lifecycle primary operation failure.',
@@ -365,6 +577,8 @@ foreach ($boundary in @('CleanMachine', 'Runtime', 'Human', 'Release')) {
 [pscustomobject][ordered]@{
     EvidenceClass = 'Static/Synthetic'
     Issue = [int]$profile.issue
+    PowerShellEdition = [string]$PSVersionTable.PSEdition
+    PowerShellVersion = [string]$PSVersionTable.PSVersion
     Profile = 'PASS'
     ProjectIdentity = 'PASS'
     ProtectedPathGuards = 'PASS'

@@ -18,6 +18,7 @@ if ([string]::IsNullOrWhiteSpace($ProfilePath)) {
     $ProfilePath = Join-Path $PSScriptRoot 'package-profile.json'
 }
 $profile = Read-PackageProfile -Path $ProfilePath
+$null = Assert-V070PreparationProfile -Profile $profile
 $resolvedVersion = Resolve-RequestedPackageVersion -Profile $profile -RequestedVersion $PackageVersion
 $repositoryRoot = Get-PackagingRepositoryRoot
 Assert-ProjectMatchesPackageProfile -Profile $profile -RepositoryRoot $repositoryRoot

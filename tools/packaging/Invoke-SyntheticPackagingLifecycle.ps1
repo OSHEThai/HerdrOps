@@ -37,6 +37,7 @@ function New-SyntheticVersionProfile {
 }
 
 $profile = Read-PackageProfile -Path $ProfilePath
+$null = Assert-V070PreparationProfile -Profile $profile
 $repositoryRoot = Get-PackagingRepositoryRoot
 $fixtureRootFull = Normalize-ComparablePath -Path $FixtureRoot
 if (-not (Test-Path -LiteralPath $fixtureRootFull -PathType Container)) {

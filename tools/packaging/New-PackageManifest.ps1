@@ -15,6 +15,7 @@ if ([string]::IsNullOrWhiteSpace($ProfilePath)) {
     $ProfilePath = Join-Path $PSScriptRoot 'package-profile.json'
 }
 $profile = Read-PackageProfile -Path $ProfilePath
+Assert-V070PreparationProfile -Profile $profile
 $resolvedVersion = Resolve-RequestedPackageVersion -Profile $profile -RequestedVersion $PackageVersion
 if ($resolvedVersion -cne [string]$profile.packageVersion) {
     throw 'Manifest generation cannot create a package identity different from the profile.'
