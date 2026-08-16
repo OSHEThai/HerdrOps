@@ -2,7 +2,6 @@ using HerdrOps.App;
 using HerdrOps.App.Live;
 using HerdrOps.App.Views;
 using HerdrOps.App.Widgets;
-using System.Windows.Threading;
 
 namespace HerdrOps.RuntimeTests;
 
@@ -27,7 +26,6 @@ public sealed class RuntimeEvidenceResourceLifecycleTests
             window.Close();
 
             Assert.IsTrue(window.DashboardResourcesReleased);
-            Assert.IsFalse(window.DashboardWorkingSetCompactionAttempted);
             Assert.AreEqual(0, shell.RetainedPageCount);
             Assert.IsNull(shell.ActivePageName);
             Assert.ThrowsExactly<InvalidOperationException>(() => _ = window.Shell);
@@ -36,7 +34,7 @@ public sealed class RuntimeEvidenceResourceLifecycleTests
     }
 
     [TestMethod]
-    public void ClosingDashboardCompactsWorkingSetWhenAWidgetRemainsVisible()
+    public void ClosingDashboardReleasesItsTreeWhileAWidgetRemainsVisible()
     {
         WpfTestHost.Run(() =>
         {
@@ -53,16 +51,13 @@ public sealed class RuntimeEvidenceResourceLifecycleTests
             window.UpdateLayout();
 
             window.Close();
-            PumpDispatcherUntil(window.WaitForDashboardCleanupAsync(CancellationToken.None));
 
             Assert.IsTrue(window.DashboardResourcesReleased);
-            Assert.IsTrue(window.DashboardWorkingSetCompactionAttempted);
-            Assert.IsTrue(window.DashboardWorkingSetCompactionSucceeded);
-            Assert.IsNull(window.DashboardWorkingSetCompactionNativeErrorCode);
-            Assert.IsGreaterThan(0, window.DashboardWorkingSetBeforeMegabytes);
-            Assert.IsGreaterThan(0, window.DashboardWorkingSetAfterMegabytes);
+            Assert.IsTrue(widget.IsVisible);
+            Assert.IsFalse(widget.ResourcesReleased);
 
             widget.Close();
+            Assert.IsTrue(widget.ResourcesReleased);
         }, TimeSpan.FromSeconds(30));
     }
 
@@ -100,21 +95,43 @@ public sealed class RuntimeEvidenceResourceLifecycleTests
         }, TimeSpan.FromSeconds(30));
     }
 
-    private static void PumpDispatcherUntil(Task task)
+    [TestMethod]
+    public void QueuedGalleryLanguageCallbackIsIgnoredAfterResourcesAreReleased()
     {
-        if (task.IsCompleted)
+        WpfTestHost.Run(() =>
         {
-            task.GetAwaiter().GetResult();
-            return;
-        }
+            var view = new WidgetGalleryView();
+            var callback = typeof(WidgetGalleryView).GetMethod(
+                "ApplyLanguageChange",
+                System.Reflection.BindingFlags.Instance |
+                System.Reflection.BindingFlags.NonPublic) ??
+                throw new InvalidOperationException("Gallery language callback was not found.");
 
-        var frame = new DispatcherFrame();
-        _ = task.ContinueWith(
-            _ => frame.Continue = false,
-            CancellationToken.None,
-            TaskContinuationOptions.ExecuteSynchronously,
-            TaskScheduler.FromCurrentSynchronizationContext());
-        Dispatcher.PushFrame(frame);
-        task.GetAwaiter().GetResult();
+            view.ReleaseResources();
+            callback.Invoke(view, [0]);
+
+            Assert.IsTrue(view.ResourcesReleased);
+        }, TimeSpan.FromSeconds(30));
+    }
+
+    [TestMethod]
+    public void QueuedGalleryTitleCallbackIsIgnoredAfterWindowIsClosed()
+    {
+        WpfTestHost.Run(() =>
+        {
+            var window = new WidgetGalleryWindow();
+            var callback = typeof(WidgetGalleryWindow).GetMethod(
+                "RefreshTitle",
+                System.Reflection.BindingFlags.Instance |
+                System.Reflection.BindingFlags.NonPublic) ??
+                throw new InvalidOperationException("Gallery title callback was not found.");
+            window.Show();
+
+            window.Close();
+            callback.Invoke(window, [0]);
+
+            Assert.IsTrue(window.ResourcesReleased);
+            Assert.IsTrue(window.GalleryView.ResourcesReleased);
+        }, TimeSpan.FromSeconds(30));
     }
 }

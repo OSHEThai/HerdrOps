@@ -19,18 +19,14 @@ public sealed class RuntimeEvidenceQuiescenceTests
     {
         var tracker = new RuntimeIdleQuiescenceTracker(requiredStableSeconds: 5);
 
-        Assert.IsNull(tracker.Observe(Start, isLive: true, sequence: 13, eventCount: 3));
+        Assert.IsNull(tracker.Observe(Start, Fingerprint()));
         Assert.IsNull(tracker.Observe(
             Start.AddMilliseconds(4999),
-            isLive: true,
-            sequence: 13,
-            eventCount: 3));
+            Fingerprint()));
 
         var result = tracker.Observe(
             Start.AddSeconds(5),
-            isLive: true,
-            sequence: 13,
-            eventCount: 3);
+            Fingerprint());
 
         Assert.IsNotNull(result);
         Assert.AreEqual(13, result.StableSequence);
@@ -42,27 +38,21 @@ public sealed class RuntimeEvidenceQuiescenceTests
     public void SequenceAdvanceResetsTheWindowAndPreservesItsProvenance()
     {
         var tracker = new RuntimeIdleQuiescenceTracker(requiredStableSeconds: 5);
-        _ = tracker.Observe(Start, isLive: true, sequence: 13, eventCount: 3);
+        _ = tracker.Observe(Start, Fingerprint());
         Assert.IsNull(tracker.Observe(
             Start.AddSeconds(4),
-            isLive: true,
-            sequence: 14,
-            eventCount: 3));
+            Fingerprint(sequence: 14)));
         Assert.IsNull(tracker.Observe(
             Start.AddSeconds(8),
-            isLive: true,
-            sequence: 14,
-            eventCount: 3));
+            Fingerprint(sequence: 14)));
 
         var result = tracker.Observe(
             Start.AddSeconds(9),
-            isLive: true,
-            sequence: 14,
-            eventCount: 3);
+            Fingerprint(sequence: 14));
 
         Assert.IsNotNull(result);
         Assert.AreEqual(1, result.ResetCount);
-        Assert.AreEqual("StateOrEventAdvanced", result.Resets[0].Reason);
+        Assert.AreEqual("RuntimeFingerprintChanged", result.Resets[0].Reason);
         Assert.AreEqual(13, result.Resets[0].PreviousSequence);
         Assert.AreEqual(14, result.Resets[0].CurrentSequence);
     }
@@ -71,18 +61,14 @@ public sealed class RuntimeEvidenceQuiescenceTests
     public void EventAdvanceResetsTheWindowWithoutSubtractingEventCredit()
     {
         var tracker = new RuntimeIdleQuiescenceTracker(requiredStableSeconds: 5);
-        _ = tracker.Observe(Start, isLive: true, sequence: 13, eventCount: 3);
+        _ = tracker.Observe(Start, Fingerprint());
         Assert.IsNull(tracker.Observe(
             Start.AddSeconds(2),
-            isLive: true,
-            sequence: 17,
-            eventCount: 4));
+            Fingerprint(sequence: 17, eventCount: 4)));
 
         var result = tracker.Observe(
             Start.AddSeconds(7),
-            isLive: true,
-            sequence: 17,
-            eventCount: 4);
+            Fingerprint(sequence: 17, eventCount: 4));
 
         Assert.IsNotNull(result);
         Assert.AreEqual(4, result.StableEventCount);
@@ -94,23 +80,17 @@ public sealed class RuntimeEvidenceQuiescenceTests
     public void LostAndRestoredLiveStateEachResetTheWindow()
     {
         var tracker = new RuntimeIdleQuiescenceTracker(requiredStableSeconds: 5);
-        _ = tracker.Observe(Start, isLive: true, sequence: 13, eventCount: 3);
+        _ = tracker.Observe(Start, Fingerprint());
         Assert.IsNull(tracker.Observe(
             Start.AddSeconds(2),
-            isLive: false,
-            sequence: 13,
-            eventCount: 3));
+            Fingerprint(isLive: false)));
         Assert.IsNull(tracker.Observe(
             Start.AddSeconds(3),
-            isLive: true,
-            sequence: 18,
-            eventCount: 4));
+            Fingerprint(sequence: 18, eventCount: 4)));
 
         var result = tracker.Observe(
             Start.AddSeconds(8),
-            isLive: true,
-            sequence: 18,
-            eventCount: 4);
+            Fingerprint(sequence: 18, eventCount: 4));
 
         Assert.IsNotNull(result);
         CollectionAssert.AreEqual(
@@ -119,20 +99,54 @@ public sealed class RuntimeEvidenceQuiescenceTests
     }
 
     [TestMethod]
+    public void NonSequenceFingerprintChangeResetsTheWindow()
+    {
+        var tracker = new RuntimeIdleQuiescenceTracker(requiredStableSeconds: 5);
+        _ = tracker.Observe(Start, Fingerprint());
+        Assert.IsNull(tracker.Observe(
+            Start.AddSeconds(4),
+            Fingerprint(reconciliationCount: 2)));
+
+        var result = tracker.Observe(
+            Start.AddSeconds(9),
+            Fingerprint(reconciliationCount: 2));
+
+        Assert.IsNotNull(result);
+        Assert.AreEqual(1, result.ResetCount);
+        Assert.AreEqual(
+            2,
+            result.Resets[0].CurrentFingerprint.ReconciliationCount);
+    }
+
+    [TestMethod]
     public void ObservationTimeCannotMoveBackward()
     {
         var tracker = new RuntimeIdleQuiescenceTracker(requiredStableSeconds: 5);
-        _ = tracker.Observe(Start, isLive: true, sequence: 13, eventCount: 3);
+        _ = tracker.Observe(Start, Fingerprint());
         _ = tracker.Observe(
             Start.AddSeconds(4),
-            isLive: true,
-            sequence: 13,
-            eventCount: 3);
+            Fingerprint());
 
         Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => tracker.Observe(
             Start.AddSeconds(3),
-            isLive: true,
-            sequence: 13,
-            eventCount: 3));
+            Fingerprint()));
     }
+
+    private static RuntimeStateFingerprint Fingerprint(
+        bool isLive = true,
+        long sequence = 13,
+        long eventCount = 3,
+        long reconciliationCount = 1) => new(
+            IsCoreConnected: isLive,
+            IsLive: isLive,
+            RuntimeStatus: isLive ? "Live" : "Reconnecting",
+            LastTransitionUtc: Start.AddMinutes(-1),
+            LastAcceptedStateUtc: isLive ? Start.AddMinutes(-1) : null,
+            ConnectionEpoch: 1,
+            LastIngestSequence: sequence,
+            BootstrapCount: 1,
+            EventCount: eventCount,
+            DisconnectCount: isLive ? 0 : 1,
+            ReconciliationCount: reconciliationCount,
+            StateSha256: new string(isLive ? 'A' : 'B', 64));
 }

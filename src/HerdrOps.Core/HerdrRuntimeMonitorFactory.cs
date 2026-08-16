@@ -1,5 +1,5 @@
+using HerdrOps.Contracts;
 using HerdrOps.Infrastructure.Herdr;
-using System.Runtime;
 
 namespace HerdrOps.Core;
 
@@ -30,6 +30,14 @@ public sealed class HerdrRuntimeAdmissionException : IOException
 
 public sealed class HerdrRuntimeMonitorFactory
 {
+    private readonly IHerdrExecutableAdmissionScanner _admissionScanner;
+
+    public HerdrRuntimeMonitorFactory(
+        IHerdrExecutableAdmissionScanner? admissionScanner = null)
+    {
+        _admissionScanner = admissionScanner ?? new HerdrExecutableAdmissionScanner();
+    }
+
     public HerdrAdmittedRuntimeMonitor Create(
         string? explicitExecutablePath = null,
         string? explicitSocketPath = null,
@@ -42,14 +50,32 @@ public sealed class HerdrRuntimeMonitorFactory
                 "Herdr executable was not discovered for runtime admission.");
         }
 
-        var protocolInspection = new HerdrProtocolInspector().Inspect(executablePath);
+        var binaryPolicy = HerdrProtocolContractV080Preview.Policy;
+        HerdrExecutableAdmissionSnapshot executableSnapshot;
+        try
+        {
+            executableSnapshot = _admissionScanner.Scan(
+                executablePath,
+                binaryPolicy,
+                captureBundledSchema: true);
+        }
+        catch (HerdrExecutableAdmissionScanException exception)
+        {
+            throw new HerdrRuntimeAdmissionException(
+                $"Herdr protocol admission failed: {exception.Message}");
+        }
+
+        var protocolInspection = new HerdrProtocolInspector(binaryPolicy)
+            .Inspect(executableSnapshot);
         if (!protocolInspection.IsCompatible)
         {
             throw new HerdrRuntimeAdmissionException(
                 $"Herdr protocol admission failed: {protocolInspection.Message}");
         }
 
-        var schemaInspection = new HerdrBundledSchemaExtractor().Extract(executablePath).Inspection;
+        var schemaInspection = new HerdrBundledSchemaExtractor(binaryPolicy)
+            .Extract(executableSnapshot)
+            .Inspection;
         if (!schemaInspection.IsCompatible)
         {
             throw new HerdrRuntimeAdmissionException(
@@ -92,29 +118,10 @@ public sealed class HerdrRuntimeMonitorFactory
             serverIdentityVerifier: serverIdentityVerifier);
         var paneInspectionClient = new HerdrNamedPipeApiClient(
             serverIdentityVerifier: serverIdentityVerifier);
-        var admitted = new HerdrAdmittedRuntimeMonitor(
+        return new HerdrAdmittedRuntimeMonitor(
             new HerdrRuntimeMonitor(monitorClient, endpoint, initialState: initialState),
             admission,
             paneInspectionClient);
-        ReleaseTransientAdmissionBuffers();
-        return admitted;
-    }
-
-    private static void ReleaseTransientAdmissionBuffers()
-    {
-        GCSettings.LargeObjectHeapCompactionMode =
-            GCLargeObjectHeapCompactionMode.CompactOnce;
-        GC.Collect(
-            GC.MaxGeneration,
-            GCCollectionMode.Forced,
-            blocking: true,
-            compacting: true);
-        GC.WaitForPendingFinalizers();
-        GC.Collect(
-            GC.MaxGeneration,
-            GCCollectionMode.Forced,
-            blocking: true,
-            compacting: true);
     }
 
     private static string Require(string? value, string description) =>

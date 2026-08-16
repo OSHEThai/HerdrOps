@@ -1,17 +1,18 @@
-using System.Security.Cryptography;
-using System.Text;
 using HerdrOps.Contracts;
 
 namespace HerdrOps.Infrastructure.Herdr;
 
 public sealed class HerdrProtocolInspector
 {
-    private const long MaximumExecutableBytes = 128L * 1024 * 1024;
     private readonly HerdrProtocolSupportPolicy _policy;
+    private readonly IHerdrExecutableAdmissionScanner _scanner;
 
-    public HerdrProtocolInspector(HerdrProtocolSupportPolicy? policy = null)
+    public HerdrProtocolInspector(
+        HerdrProtocolSupportPolicy? policy = null,
+        IHerdrExecutableAdmissionScanner? scanner = null)
     {
         _policy = policy ?? HerdrProtocolContractV080Preview.Policy;
+        _scanner = scanner ?? new HerdrExecutableAdmissionScanner();
     }
 
     public HerdrProtocolInspection Inspect(string executablePath)
@@ -31,117 +32,92 @@ public sealed class HerdrProtocolInspector
                 message: $"Herdr executable was not found: {requestedPath}");
         }
 
-        string resolvedPath;
         try
         {
-            resolvedPath = ResolveExecutablePath(requestedPath);
-        }
-        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
-        {
-            return Failure(
-                HerdrProtocolCompatibilityStatus.ExecutableUnreadable,
+            return Inspect(_scanner.Scan(
                 requestedPath,
-                resolvedPath: null,
-                releaseId: null,
-                executableLength: null,
-                executableSha256: null,
-                message: $"Herdr executable path could not be resolved: {exception.Message}");
+                _policy,
+                captureBundledSchema: false));
         }
+        catch (HerdrExecutableAdmissionScanException exception)
+        {
+            return InspectFailure(exception);
+        }
+    }
 
-        FileInfo file;
-        try
-        {
-            file = new FileInfo(resolvedPath);
-            if (file.Length is < 2 or > MaximumExecutableBytes)
-            {
-                return Failure(
-                    HerdrProtocolCompatibilityStatus.ExecutableUnreadable,
-                    requestedPath,
-                    resolvedPath,
-                    file.Directory?.Name,
-                    file.Length,
-                    executableSha256: null,
-                    message: $"Herdr executable length {file.Length} is outside the accepted inspection bounds.");
-            }
-        }
-        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
-        {
-            return Failure(
-                HerdrProtocolCompatibilityStatus.ExecutableUnreadable,
-                requestedPath,
-                resolvedPath,
-                releaseId: null,
-                executableLength: null,
-                executableSha256: null,
-                message: $"Herdr executable metadata could not be read: {exception.Message}");
-        }
+    internal HerdrProtocolInspection InspectFailure(
+        HerdrExecutableAdmissionScanException exception)
+    {
+        ArgumentNullException.ThrowIfNull(exception);
+        return Failure(
+            exception.Failure == HerdrExecutableAdmissionScanFailure.NotFound
+                ? HerdrProtocolCompatibilityStatus.ExecutableNotFound
+                : HerdrProtocolCompatibilityStatus.ExecutableUnreadable,
+            exception.RequestedPath,
+            exception.FinalPath,
+            exception.ReleaseId,
+            exception.Length,
+            executableSha256: null,
+            exception.Message);
+    }
 
-        byte[] executableBytes;
-        string executableSha256;
-        try
-        {
-            executableBytes = File.ReadAllBytes(resolvedPath);
-            executableSha256 = Convert.ToHexString(SHA256.HashData(executableBytes));
-        }
-        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
-        {
-            return Failure(
-                HerdrProtocolCompatibilityStatus.ExecutableUnreadable,
-                requestedPath,
-                resolvedPath,
-                file.Directory?.Name,
-                file.Length,
-                executableSha256: null,
-                message: $"Herdr executable bytes could not be read: {exception.Message}");
-        }
-
-        var releaseId = file.Directory?.Name ?? string.Empty;
-        if (executableBytes[0] != (byte)'M' || executableBytes[1] != (byte)'Z')
+    public HerdrProtocolInspection Inspect(HerdrExecutableAdmissionSnapshot snapshot)
+    {
+        ArgumentNullException.ThrowIfNull(snapshot);
+        if (!snapshot.HasMzHeader)
         {
             return Failure(
                 HerdrProtocolCompatibilityStatus.InvalidPortableExecutable,
-                requestedPath,
-                resolvedPath,
-                releaseId,
-                file.Length,
-                executableSha256,
+                snapshot.RequestedPath,
+                snapshot.FinalPath,
+                snapshot.ReleaseId,
+                snapshot.Length,
+                snapshot.Sha256,
                 message: "Herdr executable does not begin with a Windows PE MZ header.");
         }
 
         var compatibleRelease = _policy.CompatibleBinaries
-            .Where(identity => string.Equals(identity.ReleaseId, releaseId, StringComparison.Ordinal))
+            .Where(identity => string.Equals(
+                identity.ReleaseId,
+                snapshot.ReleaseId,
+                StringComparison.Ordinal))
             .ToArray();
         if (compatibleRelease.Length == 0)
         {
             return Failure(
                 HerdrProtocolCompatibilityStatus.UnsupportedRelease,
-                requestedPath,
-                resolvedPath,
-                releaseId,
-                file.Length,
-                executableSha256,
-                message: $"Herdr release '{releaseId}' is not admitted by contract '{_policy.ContractId}'.");
+                snapshot.RequestedPath,
+                snapshot.FinalPath,
+                snapshot.ReleaseId,
+                snapshot.Length,
+                snapshot.Sha256,
+                message: $"Herdr release '{snapshot.ReleaseId}' is not admitted by contract '{_policy.ContractId}'.");
         }
 
-        if (!compatibleRelease.Any(
-                identity => string.Equals(identity.Sha256, executableSha256, StringComparison.OrdinalIgnoreCase)))
+        if (!compatibleRelease.Any(identity => string.Equals(
+                identity.Sha256,
+                snapshot.Sha256,
+                StringComparison.OrdinalIgnoreCase)))
         {
             return Failure(
                 HerdrProtocolCompatibilityStatus.UnsupportedBinaryHash,
-                requestedPath,
-                resolvedPath,
-                releaseId,
-                file.Length,
-                executableSha256,
-                message: $"Herdr release '{releaseId}' has an unrecognized SHA-256 and requires a successor contract review.");
+                snapshot.RequestedPath,
+                snapshot.FinalPath,
+                snapshot.ReleaseId,
+                snapshot.Length,
+                snapshot.Sha256,
+                message: $"Herdr release '{snapshot.ReleaseId}' has an unrecognized SHA-256 and requires a successor contract review.");
         }
 
-        var missingRpcMethods = MissingMarkers(executableBytes, _policy.RequiredRpcMethods);
+        var missingRpcMethods = MissingMarkers(
+            snapshot.FoundAsciiMarkers,
+            _policy.RequiredRpcMethods);
         var missingProtocolShapes = MissingMarkers(
-            executableBytes,
+            snapshot.FoundAsciiMarkers,
             _policy.RequiredShapes.Select(shape => shape.BinaryMarker));
-        var missingTransportMarkers = MissingMarkers(executableBytes, _policy.RequiredTransportMarkers);
-
+        var missingTransportMarkers = MissingMarkers(
+            snapshot.FoundAsciiMarkers,
+            _policy.RequiredTransportMarkers);
         if (missingRpcMethods.Count > 0 ||
             missingProtocolShapes.Count > 0 ||
             missingTransportMarkers.Count > 0)
@@ -152,11 +128,11 @@ public sealed class HerdrProtocolInspector
                 RuntimeObserved: false,
                 _policy.ContractId,
                 _policy.Revision,
-                requestedPath,
-                resolvedPath,
-                releaseId,
-                file.Length,
-                executableSha256,
+                snapshot.RequestedPath,
+                snapshot.FinalPath,
+                snapshot.ReleaseId,
+                snapshot.Length,
+                snapshot.Sha256,
                 ContractSchemaFingerprintSha256: null,
                 missingRpcMethods,
                 missingProtocolShapes,
@@ -170,12 +146,12 @@ public sealed class HerdrProtocolInspector
             RuntimeObserved: false,
             _policy.ContractId,
             _policy.Revision,
-            requestedPath,
-            resolvedPath,
-            releaseId,
-            file.Length,
-            executableSha256,
-            HerdrProtocolContractFingerprint.Compute(_policy, releaseId),
+            snapshot.RequestedPath,
+            snapshot.FinalPath,
+            snapshot.ReleaseId,
+            snapshot.Length,
+            snapshot.Sha256,
+            HerdrProtocolContractFingerprint.Compute(_policy, snapshot.ReleaseId),
             Array.Empty<string>(),
             Array.Empty<string>(),
             Array.Empty<string>(),
@@ -208,25 +184,9 @@ public sealed class HerdrProtocolInspector
             message);
 
     private static IReadOnlyList<string> MissingMarkers(
-        byte[] executableBytes,
+        IReadOnlySet<string> foundMarkers,
         IEnumerable<string> requiredMarkers) =>
         requiredMarkers
-            .Where(marker => executableBytes.AsSpan().IndexOf(Encoding.ASCII.GetBytes(marker)) < 0)
+            .Where(marker => !foundMarkers.Contains(marker))
             .ToArray();
-
-    private static string ResolveExecutablePath(string requestedPath)
-    {
-        var file = new FileInfo(requestedPath);
-        var containingDirectory = file.Directory;
-        if (containingDirectory is null ||
-            (containingDirectory.Attributes & FileAttributes.ReparsePoint) == 0)
-        {
-            return file.FullName;
-        }
-
-        var targetDirectory = containingDirectory.ResolveLinkTarget(returnFinalTarget: true);
-        return targetDirectory is null
-            ? file.FullName
-            : Path.Combine(targetDirectory.FullName, file.Name);
-    }
 }

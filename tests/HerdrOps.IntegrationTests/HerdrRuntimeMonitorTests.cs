@@ -176,6 +176,14 @@ public sealed class HerdrRuntimeMonitorTests
                         "Waiting")),
             ]);
         var monitor = CreateMonitor(apiClient);
+        HerdrRuntimeMonitorSnapshot? acceptedEventTransition = null;
+        monitor.StateChanged += (_, state) =>
+        {
+            if (state.AcceptedEventKind is not null)
+            {
+                acceptedEventTransition = state;
+            }
+        };
         using var cancellation = new CancellationTokenSource();
         var runTask = monitor.RunAsync(cancellation.Token);
 
@@ -191,6 +199,11 @@ public sealed class HerdrRuntimeMonitorTests
         Assert.AreEqual("Waiting", monitor.Current.State.Agents["terminal-1"].Title);
         Assert.AreEqual(1, monitor.Current.EventCount);
         Assert.AreEqual(1, monitor.Current.ReconciliationCount);
+        Assert.IsNotNull(acceptedEventTransition);
+        Assert.AreEqual(
+            HerdrRuntimeMonitor.AcceptedAgentStatusEventKind,
+            acceptedEventTransition.AcceptedEventKind);
+        Assert.AreEqual(HerdrRuntimeMonitorStatus.Connected, acceptedEventTransition.Status);
     }
 
     [TestMethod]
@@ -226,6 +239,49 @@ public sealed class HerdrRuntimeMonitorTests
         Assert.AreEqual(0, monitor.Current.EventCount);
         Assert.AreEqual(1, monitor.Current.ReconciliationCount);
         Assert.AreEqual(HerdrAgentStatus.Working, monitor.Current.State.Panes["pane-1"].AgentStatus);
+    }
+
+    [TestMethod]
+    public async Task UnknownPaneStatusEventIsCountedButNeverLabelledAccepted()
+    {
+        var snapshot = CreateSnapshot(revision: 1, HerdrAgentStatus.Working);
+        var apiClient = new ScriptedApiClient(
+            [snapshot, snapshot, snapshot, snapshot],
+            [
+                ScriptedSubscription.WithEvents(
+                    new HerdrPaneAgentStatusChangedEvent(
+                        "pane.agent_status_changed",
+                        "workspace-1",
+                        "pane-missing",
+                        HerdrAgentStatus.Blocked,
+                        "codex",
+                        "Codex",
+                        "Waiting")),
+                ScriptedSubscription.BlockUntilCancelled(),
+            ]);
+        var monitor = CreateMonitor(apiClient);
+        HerdrRuntimeMonitorSnapshot? unknownPaneTransition = null;
+        monitor.StateChanged += (_, state) =>
+        {
+            if (state.Status == HerdrRuntimeMonitorStatus.Reconnecting &&
+                state.EventCount == 1)
+            {
+                unknownPaneTransition = state;
+            }
+        };
+        using var cancellation = new CancellationTokenSource();
+        var runTask = monitor.RunAsync(cancellation.Token);
+
+        await WaitForAsync(
+            monitor,
+            state => state.BootstrapCount == 2 &&
+                     state.Status == HerdrRuntimeMonitorStatus.Connected);
+        cancellation.Cancel();
+        await Assert.ThrowsAsync<OperationCanceledException>(() => runTask);
+
+        Assert.IsNotNull(unknownPaneTransition);
+        Assert.AreEqual(1, unknownPaneTransition.EventCount);
+        Assert.IsNull(unknownPaneTransition.AcceptedEventKind);
     }
 
     [TestMethod]
@@ -429,6 +485,9 @@ public sealed class HerdrRuntimeMonitorTests
             [snapshot, snapshot],
             [subscription]);
         var monitor = CreateMonitor(apiClient, reconnectDelay);
+        var acceptedEventKindObserved = false;
+        monitor.StateChanged += (_, state) =>
+            acceptedEventKindObserved |= state.AcceptedEventKind is not null;
         using var cancellation = new CancellationTokenSource();
         var runTask = monitor.RunAsync(cancellation.Token);
 
@@ -445,6 +504,7 @@ public sealed class HerdrRuntimeMonitorTests
         Assert.AreEqual(1, monitor.Current.EventCount);
         Assert.AreEqual(2, monitor.Current.State.LastIngestSequence);
         Assert.AreEqual(1, monitor.Current.BootstrapCount);
+        Assert.IsFalse(acceptedEventKindObserved);
     }
 
     [TestMethod]

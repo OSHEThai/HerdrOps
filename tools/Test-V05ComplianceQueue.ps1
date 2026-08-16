@@ -57,7 +57,7 @@ $expectedHashes = [ordered]@{
     }
     ShellViewCodeBehind = [ordered]@{
         Path = $shellCodeBehindPath
-        Sha256 = 'DA5F23DA8C38A4D04B5EDC7A39EFFF215E956E209160E639273D7CD6B6022A00'
+        Sha256 = 'C6CDF49388FF7F185B14043B2FF328C3539EA453C620605131BFB233C757AEC3'
     }
     LiveDashboardState = [ordered]@{
         Path = $dashboardStatePath

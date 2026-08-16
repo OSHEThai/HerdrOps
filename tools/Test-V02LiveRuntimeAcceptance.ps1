@@ -138,7 +138,462 @@ function Test-FiniteNumber {
     return -not [double]::IsNaN($Value) -and -not [double]::IsInfinity($Value)
 }
 
-if ($env:HERDR_ENV -ne '1') {
+function Get-TextSha256 {
+    param([Parameter(Mandatory)][AllowEmptyString()][string]$Text)
+
+    $sha256 = [Security.Cryptography.SHA256]::Create()
+    try {
+        $bytes = [Text.Encoding]::UTF8.GetBytes($Text)
+        return ([BitConverter]::ToString($sha256.ComputeHash($bytes))).Replace('-', '').ToUpperInvariant()
+    } finally {
+        $sha256.Dispose()
+    }
+}
+
+function Get-OptionalFileSha256 {
+    param([AllowEmptyString()][string]$Path)
+
+    if ([string]::IsNullOrWhiteSpace($Path) -or
+        -not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        return 'MISSING'
+    }
+
+    try {
+        return ((Get-FileHash -LiteralPath $Path -Algorithm SHA256 -ErrorAction Stop).Hash).ToUpperInvariant()
+    } catch {
+        return 'UNAVAILABLE'
+    }
+}
+
+function Write-FailureGateReport {
+    param(
+        [Parameter(Mandatory)][string]$GateReportPath,
+        [Parameter(Mandatory)][AllowEmptyString()][string]$FailureMessage,
+        [AllowEmptyString()][string]$SourceCommit = 'UNRESOLVED',
+        [AllowEmptyString()][string]$CoreReportPath = '',
+        [AllowEmptyString()][string]$AppReportPath = '',
+        [AllowEmptyString()][string]$ProgressHistoryPath = '',
+        [AllowEmptyString()][string]$CoreExecutableHashBeforeLaunch = 'NOT_OBSERVED',
+        [AllowEmptyString()][string]$CoreExecutableHashAfterRun = 'NOT_OBSERVED',
+        [AllowEmptyString()][string]$AppExecutableHashBeforeLaunch = 'NOT_OBSERVED',
+        [AllowEmptyString()][string]$AppExecutableHashAfterRun = 'NOT_OBSERVED',
+        [AllowEmptyString()][string]$AppExitCode = 'NOT_OBSERVED',
+        [AllowEmptyString()][string]$CoreExitCode = 'NOT_OBSERVED',
+        [AllowEmptyString()][string]$CoreAcceptedEventKindCheck = 'NOT_EVALUATED',
+        [AllowEmptyString()][string]$FailureType = 'TerminatingFailure'
+    )
+
+    try {
+        $parentDirectory = Split-Path -Parent $GateReportPath
+        if (-not [string]::IsNullOrWhiteSpace($parentDirectory)) {
+            New-Item -ItemType Directory -Path $parentDirectory -Force -ErrorAction SilentlyContinue | Out-Null
+        }
+
+        $reportLines = @(
+            'HerdrOps v0.2 Composite Actual Herdr Runtime Acceptance',
+            "GeneratedUtc: $([DateTimeOffset]::UtcNow.ToString('O'))",
+            "SourceCommit: $SourceCommit",
+            'Result: FAIL',
+            'EvidenceClass: NoRuntimeCredit',
+            'SessionControlInvoked: false',
+            "FailureType: $FailureType",
+            "OriginalAppExitCode: $AppExitCode",
+            "OriginalCoreExitCode: $CoreExitCode",
+            "CoreAcceptedEventKindCheck: $CoreAcceptedEventKindCheck",
+            "CoreRuntimeReportPath: $CoreReportPath",
+            "CoreRuntimeReportSha256: $(Get-OptionalFileSha256 -Path $CoreReportPath)",
+            "AppRuntimeReportPath: $AppReportPath",
+            "AppRuntimeReportSha256: $(Get-OptionalFileSha256 -Path $AppReportPath)",
+            "ProgressHistoryPath: $ProgressHistoryPath",
+            "ProgressHistorySha256: $(Get-OptionalFileSha256 -Path $ProgressHistoryPath)",
+            "HerdrOpsCoreExecutableSha256BeforeLaunch: $CoreExecutableHashBeforeLaunch",
+            "HerdrOpsCoreExecutableSha256AfterRun: $CoreExecutableHashAfterRun",
+            "HerdrOpsAppExecutableSha256BeforeLaunch: $AppExecutableHashBeforeLaunch",
+            "HerdrOpsAppExecutableSha256AfterRun: $AppExecutableHashAfterRun",
+            "Failure: $FailureMessage"
+        )
+        $reportLines | Set-Content -LiteralPath $GateReportPath -Encoding UTF8 -ErrorAction Stop
+    } catch {
+        # Never mask the original failure when the diagnostic report itself cannot be written.
+        Write-Warning "Could not write failure gate report '$GateReportPath': $($_.Exception.Message)"
+    }
+}
+
+function Test-ObjectHasProperty {
+    param(
+        [Parameter(Mandatory)]$Object,
+        [Parameter(Mandatory)][string]$Name
+    )
+
+    return $null -ne $Object.PSObject.Properties[$Name]
+}
+
+function Get-ProgressUtcTicks {
+    param([AllowNull()]$Value)
+
+    if ($null -eq $Value -or [string]::IsNullOrWhiteSpace([string]$Value)) {
+        return $null
+    }
+    return ([DateTimeOffset]$Value).ToUniversalTime().UtcDateTime.Ticks
+}
+
+function Assert-ProgressEntryIntegrity {
+    param(
+        [Parameter(Mandatory)]$Entry,
+        [Parameter(Mandatory)][int]$ExpectedOrdinal,
+        [Parameter(Mandatory)][string]$ExpectedPreviousEntrySha256,
+        [Parameter(Mandatory)][string]$Context
+    )
+
+    foreach ($field in @(
+        'Ordinal',
+        'Phase',
+        'ObservedUtc',
+        'Sequence',
+        'IsCoreConnected',
+        'IsLive',
+        'RuntimeStatus',
+        'LastTransitionUtc',
+        'LastAcceptedStateUtc',
+        'ConnectionEpoch',
+        'BootstrapCount',
+        'EventCount',
+        'DisconnectCount',
+        'ReconciliationCount',
+        'StateSha256',
+        'PreviousEntrySha256',
+        'CanonicalPayload',
+        'EntrySha256'
+    )) {
+        Assert-True (Test-ObjectHasProperty -Object $Entry -Name $field) "$Context omitted required field '$field'."
+    }
+
+    Assert-True ($Entry.IsCoreConnected -is [bool]) "$Context IsCoreConnected is not a JSON boolean."
+    Assert-True ($Entry.IsLive -is [bool]) "$Context IsLive is not a JSON boolean."
+    Assert-True ([int]$Entry.Ordinal -eq $ExpectedOrdinal) "$Context ordinal is not $ExpectedOrdinal."
+    Assert-True (-not [string]::IsNullOrWhiteSpace([string]$Entry.Phase)) "$Context phase is empty."
+    Assert-True (-not [string]::IsNullOrWhiteSpace([string]$Entry.RuntimeStatus)) "$Context runtime status is empty."
+    Assert-True ([string]$Entry.StateSha256 -match '^[0-9A-Fa-f]{64}$') "$Context state SHA-256 is invalid."
+    Assert-True ([string]$Entry.PreviousEntrySha256 -match '^[0-9A-Fa-f]{64}$') "$Context previous-entry SHA-256 is invalid."
+    Assert-True ([string]$Entry.PreviousEntrySha256 -eq $ExpectedPreviousEntrySha256) "$Context previous-entry SHA-256 is not bound to the preceding record."
+    Assert-True ([string]$Entry.EntrySha256 -match '^[0-9A-Fa-f]{64}$') "$Context entry SHA-256 is invalid."
+
+    try {
+        $null = [DateTimeOffset]$Entry.ObservedUtc
+        $null = [DateTimeOffset]$Entry.LastTransitionUtc
+        if ($null -ne $Entry.LastAcceptedStateUtc) {
+            $null = [DateTimeOffset]$Entry.LastAcceptedStateUtc
+        }
+        $null = [long]$Entry.Sequence
+        $null = [long]$Entry.ConnectionEpoch
+        $null = [long]$Entry.BootstrapCount
+        $null = [long]$Entry.EventCount
+        $null = [long]$Entry.DisconnectCount
+        $null = [long]$Entry.ReconciliationCount
+    } catch {
+        throw "$Context contains a non-canonical typed value: $($_.Exception.Message)"
+    }
+
+    $reconstructedPayload = Get-ProgressCanonicalPayload -Entry $Entry
+    Assert-True ([string]$Entry.CanonicalPayload -eq $reconstructedPayload) "$Context canonical payload does not match all visible fields."
+    $computedEntrySha256 = Get-TextSha256 -Text ([string]$Entry.CanonicalPayload)
+    Assert-True ($computedEntrySha256 -eq ([string]$Entry.EntrySha256).ToUpperInvariant()) "$Context entry SHA-256 does not match its canonical payload."
+}
+
+function Assert-ProgressEntryEquals {
+    param(
+        [Parameter(Mandatory)]$Expected,
+        [Parameter(Mandatory)]$Actual,
+        [Parameter(Mandatory)][string]$Context,
+        [switch]$IncludeChainFields
+    )
+
+    foreach ($field in @(
+        'Ordinal',
+        'Sequence',
+        'ConnectionEpoch',
+        'BootstrapCount',
+        'EventCount',
+        'DisconnectCount',
+        'ReconciliationCount'
+    )) {
+        Assert-True ([long]$Expected.$field -eq [long]$Actual.$field) "$Context field '$field' differs."
+    }
+    $stringFields = @('Phase', 'RuntimeStatus', 'StateSha256', 'EntrySha256')
+    if ($IncludeChainFields) {
+        $stringFields += @('PreviousEntrySha256', 'CanonicalPayload')
+    }
+    foreach ($field in $stringFields) {
+        Assert-True ([string]$Expected.$field -eq [string]$Actual.$field) "$Context field '$field' differs."
+    }
+    Assert-True ([bool]$Expected.IsCoreConnected -eq [bool]$Actual.IsCoreConnected) "$Context field 'IsCoreConnected' differs."
+    Assert-True ([bool]$Expected.IsLive -eq [bool]$Actual.IsLive) "$Context field 'IsLive' differs."
+    Assert-True ((Get-ProgressUtcTicks $Expected.ObservedUtc) -eq (Get-ProgressUtcTicks $Actual.ObservedUtc)) "$Context field 'ObservedUtc' differs."
+    Assert-True ((Get-ProgressUtcTicks $Expected.LastTransitionUtc) -eq (Get-ProgressUtcTicks $Actual.LastTransitionUtc)) "$Context field 'LastTransitionUtc' differs."
+    Assert-True ((Get-ProgressUtcTicks $Expected.LastAcceptedStateUtc) -eq (Get-ProgressUtcTicks $Actual.LastAcceptedStateUtc)) "$Context field 'LastAcceptedStateUtc' differs."
+}
+
+function Assert-ProgressTopLevelPointer {
+    param(
+        [Parameter(Mandatory)]$ProgressReport,
+        [Parameter(Mandatory)]$FinalEntry
+    )
+
+    $pointerFields = @(
+        'Ordinal',
+        'Phase',
+        'ObservedUtc',
+        'Sequence',
+        'IsCoreConnected',
+        'IsLive',
+        'RuntimeStatus',
+        'LastTransitionUtc',
+        'LastAcceptedStateUtc',
+        'ConnectionEpoch',
+        'BootstrapCount',
+        'EventCount',
+        'DisconnectCount',
+        'ReconciliationCount',
+        'StateSha256',
+        'PreviousEntrySha256',
+        'CanonicalPayload',
+        'EntrySha256'
+    )
+    foreach ($field in $pointerFields) {
+        Assert-True (Test-ObjectHasProperty -Object $ProgressReport -Name $field) "The final App progress report omitted pointer field '$field'."
+        Assert-True (Test-ObjectHasProperty -Object $FinalEntry -Name $field) "The final App progress history omitted pointer field '$field'."
+    }
+
+    Assert-ProgressEntryEquals `
+        -Expected $FinalEntry `
+        -Actual $ProgressReport `
+        -Context 'Final App progress pointer' `
+        -IncludeChainFields
+}
+
+function Get-ProgressCanonicalPayload {
+    param([Parameter(Mandatory)]$Entry)
+
+    $culture = [Globalization.CultureInfo]::InvariantCulture
+    $lastAcceptedStateUtc = ''
+    if ($null -ne $Entry.LastAcceptedStateUtc) {
+        $lastAcceptedStateUtc = ([DateTimeOffset]$Entry.LastAcceptedStateUtc).ToUniversalTime().ToString('O', $culture)
+    }
+    $isCoreConnected = if ([bool]$Entry.IsCoreConnected) { 'True' } else { 'False' }
+    $isLive = if ([bool]$Entry.IsLive) { 'True' } else { 'False' }
+    return @(
+        ([int]$Entry.Ordinal).ToString($culture),
+        [string]$Entry.Phase,
+        ([DateTimeOffset]$Entry.ObservedUtc).ToUniversalTime().ToString('O', $culture),
+        ([long]$Entry.Sequence).ToString($culture),
+        $isCoreConnected,
+        $isLive,
+        [string]$Entry.RuntimeStatus,
+        ([DateTimeOffset]$Entry.LastTransitionUtc).ToUniversalTime().ToString('O', $culture),
+        $lastAcceptedStateUtc,
+        ([long]$Entry.ConnectionEpoch).ToString($culture),
+        ([long]$Entry.BootstrapCount).ToString($culture),
+        ([long]$Entry.EventCount).ToString($culture),
+        ([long]$Entry.DisconnectCount).ToString($culture),
+        ([long]$Entry.ReconciliationCount).ToString($culture),
+        [string]$Entry.StateSha256,
+        [string]$Entry.PreviousEntrySha256
+    ) -join '|'
+}
+
+function Assert-ProgressCanonicalKnownVector {
+    $entry = [pscustomobject]@{
+        Ordinal = 7
+        Phase = 'herdr-reconnected-waiting-for-post-reconnect-update'
+        ObservedUtc = [DateTimeOffset]::Parse('2026-08-16T03:04:05.6789012Z')
+        Sequence = 42L
+        IsCoreConnected = $true
+        IsLive = $true
+        RuntimeStatus = 'Connected'
+        LastTransitionUtc = [DateTimeOffset]::Parse('2026-08-16T03:04:04Z')
+        LastAcceptedStateUtc = [DateTimeOffset]::Parse('2026-08-16T03:04:04.1Z')
+        ConnectionEpoch = 2L
+        BootstrapCount = 2L
+        EventCount = 5L
+        DisconnectCount = 1L
+        ReconciliationCount = 4L
+        StateSha256 = ('A' * 64)
+        PreviousEntrySha256 = ('B' * 64)
+    }
+    $expectedCanonicalPayload = '7|herdr-reconnected-waiting-for-post-reconnect-update|2026-08-16T03:04:05.6789012+00:00|42|True|True|Connected|2026-08-16T03:04:04.0000000+00:00|2026-08-16T03:04:04.1000000+00:00|2|2|5|1|4|AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA|BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB'
+    $expectedEntrySha256 = '611438DAE5CDE605590DF7DA1FB2B48F78F9EE3675F62588E34D849E46E9B564'
+    $canonicalPayload = Get-ProgressCanonicalPayload -Entry $entry
+    Assert-True ($canonicalPayload -eq $expectedCanonicalPayload) 'PowerShell 5.1 progress canonicalization differs from the C# known vector.'
+    Assert-True ((Get-TextSha256 -Text $canonicalPayload) -eq $expectedEntrySha256) 'PowerShell 5.1 progress SHA-256 differs from the C# known vector.'
+
+    $entry.EventCount = 6L
+    Assert-True ((Get-ProgressCanonicalPayload -Entry $entry) -ne $expectedCanonicalPayload) 'Progress canonicalization did not expose visible-field tampering.'
+}
+
+function Assert-RuntimeFingerprintEqual {
+    param(
+        [Parameter(Mandatory)]$Expected,
+        [Parameter(Mandatory)]$Actual,
+        [Parameter(Mandatory)][string]$Context
+    )
+
+    foreach ($field in @(
+        'IsCoreConnected',
+        'IsLive',
+        'RuntimeStatus',
+        'ConnectionEpoch',
+        'LastIngestSequence',
+        'BootstrapCount',
+        'EventCount',
+        'DisconnectCount',
+        'ReconciliationCount',
+        'StateSha256'
+    )) {
+        Assert-True ($Expected.$field -eq $Actual.$field) "$Context fingerprint field '$field' differs."
+    }
+
+    $expectedTransitionUtc = ([DateTimeOffset]$Expected.LastTransitionUtc).UtcDateTime.Ticks
+    $actualTransitionUtc = ([DateTimeOffset]$Actual.LastTransitionUtc).UtcDateTime.Ticks
+    Assert-True ($expectedTransitionUtc -eq $actualTransitionUtc) "$Context fingerprint LastTransitionUtc differs."
+
+    if ($null -eq $Expected.LastAcceptedStateUtc -or $null -eq $Actual.LastAcceptedStateUtc) {
+        Assert-True ($null -eq $Expected.LastAcceptedStateUtc -and $null -eq $Actual.LastAcceptedStateUtc) "$Context fingerprint LastAcceptedStateUtc differs."
+    } else {
+        $expectedAcceptedUtc = ([DateTimeOffset]$Expected.LastAcceptedStateUtc).UtcDateTime.Ticks
+        $actualAcceptedUtc = ([DateTimeOffset]$Actual.LastAcceptedStateUtc).UtcDateTime.Ticks
+        Assert-True ($expectedAcceptedUtc -eq $actualAcceptedUtc) "$Context fingerprint LastAcceptedStateUtc differs."
+    }
+
+    Assert-True ([string]$Expected.StateSha256 -match '^[0-9A-Fa-f]{64}$') "$Context expected fingerprint state hash is invalid."
+    Assert-True ([string]$Actual.StateSha256 -match '^[0-9A-Fa-f]{64}$') "$Context actual fingerprint state hash is invalid."
+}
+
+function Assert-AgentStatusTransitionEvidence {
+    param(
+        [Parameter(Mandatory)]$Evidence,
+        [Parameter(Mandatory)][string]$Name,
+        [Parameter(Mandatory)][array]$CoreTransitions,
+        [Parameter(Mandatory)]$BaselineProgress
+    )
+
+    Assert-True ($null -ne $Evidence) "$Name evidence is missing from the App report."
+    Assert-True ([string]$Evidence.AcceptedEventKind -eq 'pane.agent_status_changed') "$Name did not declare the accepted Agent-status event kind."
+    $changes = @($Evidence.Changes)
+    Assert-True ($changes.Count -gt 0) "$Name did not contain a genuine Agent-status change."
+
+    foreach ($change in $changes) {
+        $changeIdentity = @(
+            [string]$change.TerminalId,
+            [string]$change.WorkspaceId,
+            [string]$change.TabId,
+            [string]$change.PaneId
+        ) -join '|'
+        Assert-True (-not [string]::IsNullOrWhiteSpace($changeIdentity.Replace('|', ''))) "$Name did not identify a concrete Agent terminal/pane."
+        Assert-True (-not [string]::IsNullOrWhiteSpace([string]$change.PreviousStatus)) "$Name omitted the previous Agent status."
+        Assert-True (-not [string]::IsNullOrWhiteSpace([string]$change.CurrentStatus)) "$Name omitted the current Agent status."
+        Assert-True ([string]$change.PreviousStatus -ne [string]$change.CurrentStatus) "$Name did not change the Agent status."
+        Assert-True ([UInt64]$change.CurrentStateChangeSequence -gt [UInt64]$change.PreviousStateChangeSequence) "$Name did not advance the Agent state-change sequence."
+        Assert-True ([UInt64]$change.CurrentRevision -ge [UInt64]$change.PreviousRevision) "$Name regressed the Agent revision."
+    }
+
+    $phaseEnteredUtc = ([DateTimeOffset]$Evidence.PhaseEnteredUtc).ToUniversalTime()
+    $observedUtc = ([DateTimeOffset]$Evidence.ObservedUtc).ToUniversalTime()
+    Assert-True ($observedUtc -ge $phaseEnteredUtc) "$Name was observed before its phase began."
+    Assert-True (([DateTimeOffset]$BaselineProgress.ObservedUtc).ToUniversalTime().UtcDateTime.Ticks -eq $phaseEnteredUtc.UtcDateTime.Ticks) "$Name phase entry is not bound to its progress record."
+    Assert-True ([long]$Evidence.BaselineSequence -eq [long]$BaselineProgress.Sequence) "$Name baseline sequence is not bound to its progress record."
+    Assert-True ([long]$Evidence.BaselineEventCount -eq [long]$BaselineProgress.EventCount) "$Name baseline event count is not bound to its progress record."
+    Assert-True ([long]$Evidence.BaselineBootstrapCount -eq [long]$BaselineProgress.BootstrapCount) "$Name baseline bootstrap count is not bound to its progress record."
+    Assert-True ([long]$Evidence.BaselineDisconnectCount -eq [long]$BaselineProgress.DisconnectCount) "$Name baseline disconnect count is not bound to its progress record."
+    Assert-True ([long]$Evidence.BaselineReconciliationCount -eq [long]$BaselineProgress.ReconciliationCount) "$Name baseline reconciliation count is not bound to its progress record."
+    Assert-True ([string]$Evidence.BaselineStateSha256 -eq [string]$BaselineProgress.StateSha256) "$Name baseline state hash is not bound to its progress record."
+    Assert-True ([long]$Evidence.CurrentSequence -eq ([long]$Evidence.BaselineSequence + 1)) "$Name did not advance the state sequence by exactly one."
+    Assert-True ([long]$Evidence.CurrentEventCount -eq ([long]$Evidence.BaselineEventCount + 1)) "$Name did not advance the runtime event count by exactly one."
+    Assert-True ([long]$Evidence.CurrentBootstrapCount -eq [long]$Evidence.BaselineBootstrapCount) "$Name changed BootstrapCount during the Agent-status transition."
+    Assert-True ([long]$Evidence.CurrentDisconnectCount -eq [long]$Evidence.BaselineDisconnectCount) "$Name changed DisconnectCount during the Agent-status transition."
+    $reconciliationDelta = [long]$Evidence.CurrentReconciliationCount - [long]$Evidence.BaselineReconciliationCount
+    Assert-True ($reconciliationDelta -ge 0 -and $reconciliationDelta -le 1) "$Name reconciliation count delta was outside the allowed range 0..1."
+    Assert-True ([string]$Evidence.BaselineStateSha256 -match '^[0-9A-Fa-f]{64}$') "$Name baseline state hash is invalid."
+    Assert-True ([string]$Evidence.CurrentStateSha256 -match '^[0-9A-Fa-f]{64}$') "$Name current state hash is invalid."
+    Assert-True ([string]$Evidence.BaselineStateSha256 -ne [string]$Evidence.CurrentStateSha256) "$Name did not change the full state hash."
+
+    $matchingBaselineTransitions = @($CoreTransitions | Where-Object {
+        $_.Status -eq 'Connected' -and
+        [long]$_.IngestSequence -eq [long]$Evidence.BaselineSequence -and
+        [long]$_.EventCount -eq [long]$Evidence.BaselineEventCount -and
+        [long]$_.ConnectionEpoch -eq [long]$Evidence.ConnectionEpoch -and
+        [string]$_.ContractStateSha256 -eq [string]$Evidence.BaselineStateSha256 -and
+        ([DateTimeOffset]$_.ObservedUtc).ToUniversalTime() -le $phaseEnteredUtc
+    })
+    Assert-True ($matchingBaselineTransitions.Count -ge 1) "$Name has no exact Core transition correlation for its progress-bound baseline."
+    $baselineTransition = $matchingBaselineTransitions[$matchingBaselineTransitions.Count - 1]
+    Assert-True ([long]$baselineTransition.BootstrapCount -eq [long]$Evidence.BaselineBootstrapCount) "$Name Core baseline BootstrapCount differs from App evidence."
+    Assert-True ([long]$baselineTransition.DisconnectCount -eq [long]$Evidence.BaselineDisconnectCount) "$Name Core baseline DisconnectCount differs from App evidence."
+    Assert-True ([long]$baselineTransition.ReconciliationCount -eq [long]$Evidence.BaselineReconciliationCount) "$Name Core baseline ReconciliationCount differs from App evidence."
+
+    $matchingTransitions = @($CoreTransitions | Where-Object {
+        $_.Status -eq 'Connected' -and
+        [long]$_.IngestSequence -eq [long]$Evidence.CurrentSequence -and
+        [long]$_.EventCount -eq [long]$Evidence.CurrentEventCount -and
+        [long]$_.ConnectionEpoch -eq [long]$Evidence.ConnectionEpoch -and
+        [string]$_.ContractStateSha256 -eq [string]$Evidence.CurrentStateSha256 -and
+        ([DateTimeOffset]$_.ObservedUtc).ToUniversalTime() -ge $phaseEnteredUtc -and
+        ([DateTimeOffset]$_.ObservedUtc).ToUniversalTime() -le $observedUtc
+    })
+    Assert-True ($matchingTransitions.Count -ge 1) "$Name has no exact Core transition correlation for its same-Agent status change."
+    $currentTransition = $matchingTransitions[0]
+    Assert-True ([long]$currentTransition.BootstrapCount -eq [long]$Evidence.CurrentBootstrapCount) "$Name Core current BootstrapCount differs from App evidence."
+    Assert-True ([long]$currentTransition.DisconnectCount -eq [long]$Evidence.CurrentDisconnectCount) "$Name Core current DisconnectCount differs from App evidence."
+    Assert-True ([long]$currentTransition.ReconciliationCount -eq [long]$Evidence.CurrentReconciliationCount) "$Name Core current ReconciliationCount differs from App evidence."
+    Assert-True ([long]$currentTransition.ConnectionEpoch -eq [long]$baselineTransition.ConnectionEpoch) "$Name changed ConnectionEpoch during the Agent-status transition."
+    Assert-True (Test-ObjectHasProperty -Object $currentTransition -Name 'AcceptedEventKind') "$Name Core transition omitted AcceptedEventKind."
+    Assert-True ([string]$currentTransition.AcceptedEventKind -eq 'pane.agent_status_changed') "$Name Core transition AcceptedEventKind was not pane.agent_status_changed."
+    return [pscustomobject]@{
+        Baseline = $baselineTransition
+        Current = $currentTransition
+        ReconciliationDelta = $reconciliationDelta
+    }
+}
+
+$repositoryRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
+$artifactRoot = Join-Path $repositoryRoot 'artifacts'
+$configurationDirectory = $Configuration.ToLowerInvariant()
+$coreExecutable = Join-Path $artifactRoot "bin\HerdrOps.Core\$configurationDirectory\HerdrOps.Core.exe"
+$appExecutable = Join-Path $artifactRoot "bin\HerdrOps.App\$configurationDirectory\HerdrOps.App.exe"
+$runId = [DateTimeOffset]::UtcNow.ToString('yyyyMMddTHHmmssZ')
+$evidenceDirectory = Join-Path $artifactRoot "runtime-evidence\v0.2\issues-7-9-10\$runId"
+$captureDirectory = Join-Path $evidenceDirectory 'captures'
+$databasePath = Join-Path $evidenceDirectory 'herdrops-runtime.db'
+$coreReportPath = Join-Path $evidenceDirectory 'core-runtime.json'
+$appReportPath = Join-Path $evidenceDirectory 'app-runtime.json'
+$progressPath = Join-Path $evidenceDirectory 'app-progress.json'
+$progressHistoryPath = $progressPath + '.history.jsonl'
+$coreOutputPath = Join-Path $evidenceDirectory 'core.stdout.log'
+$coreErrorPath = Join-Path $evidenceDirectory 'core.stderr.log'
+$gateReportPath = Join-Path $evidenceDirectory 'gate-report.txt'
+$completionSignalPath = Join-Path $evidenceDirectory "core-completion-$([guid]::NewGuid().ToString('N')).signal"
+$sourceCommit = 'UNRESOLVED'
+$coreExecutableHashBeforeLaunch = 'NOT_OBSERVED'
+$appExecutableHashBeforeLaunch = 'NOT_OBSERVED'
+$coreExecutableHashAfterRun = 'NOT_OBSERVED'
+$appExecutableHashAfterRun = 'NOT_OBSERVED'
+$coreProcess = $null
+$appProcess = $null
+$appFailureMessage = $null
+$completionSignalWriteFailure = $null
+$coreWaitFailure = $null
+$coreExitCode = $null
+$appExitCode = $null
+$tcpListeners = @{}
+$coreAcceptedEventKindCheck = 'NOT_EVALUATED'
+
+try {
+    New-Item -ItemType Directory -Path $captureDirectory -Force | Out-Null
+    Assert-ProgressCanonicalKnownVector
+    if (Test-Path -LiteralPath $completionSignalPath) {
+        throw "Completion signal path already exists: $completionSignalPath"
+    }
+
+    if ($env:HERDR_ENV -ne '1') {
     throw 'The composite runtime gate must run from an authorized Herdr pane with HERDR_ENV=1.'
 }
 if ([string]::IsNullOrWhiteSpace($env:HERDR_SOCKET_PATH)) {
@@ -190,38 +645,19 @@ if ($observedControlPaneId -ne $env:HERDR_PANE_ID) {
 }
 $controlServerIdentity = Get-ControlHerdrServerIdentity -ExpectedExecutablePath $HerdrExecutable
 
-$repositoryRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
-$artifactRoot = Join-Path $repositoryRoot 'artifacts'
 $sourceCommit = Get-CleanSourceCommit -Root $repositoryRoot
 $buildStartedUtc = [DateTime]::UtcNow
 & (Join-Path $PSScriptRoot 'Invoke-Build.ps1') -Configuration $Configuration -VerifyFormat
 if ($LASTEXITCODE -ne 0) { throw 'Build and automated tests failed before runtime acceptance.' }
 $testCounts = Get-FreshTestCounts -Directory (Join-Path $artifactRoot 'test-results') -StartedUtc $buildStartedUtc
 
-$configurationDirectory = $Configuration.ToLowerInvariant()
-$coreExecutable = Join-Path $artifactRoot "bin\HerdrOps.Core\$configurationDirectory\HerdrOps.Core.exe"
-$appExecutable = Join-Path $artifactRoot "bin\HerdrOps.App\$configurationDirectory\HerdrOps.App.exe"
 foreach ($executable in @($coreExecutable, $appExecutable)) {
     if (-not (Test-Path -LiteralPath $executable -PathType Leaf)) {
         throw "Runtime executable not found: $executable"
     }
 }
-
-$runId = [DateTimeOffset]::UtcNow.ToString('yyyyMMddTHHmmssZ')
-$evidenceDirectory = Join-Path $artifactRoot "runtime-evidence\v0.2\issues-7-9-10\$runId"
-$captureDirectory = Join-Path $evidenceDirectory 'captures'
-$databasePath = Join-Path $evidenceDirectory 'herdrops-runtime.db'
-$coreReportPath = Join-Path $evidenceDirectory 'core-runtime.json'
-$appReportPath = Join-Path $evidenceDirectory 'app-runtime.json'
-$progressPath = Join-Path $evidenceDirectory 'app-progress.json'
-$coreOutputPath = Join-Path $evidenceDirectory 'core.stdout.log'
-$coreErrorPath = Join-Path $evidenceDirectory 'core.stderr.log'
-$gateReportPath = Join-Path $evidenceDirectory 'gate-report.txt'
-$completionSignalPath = Join-Path $evidenceDirectory "core-completion-$([guid]::NewGuid().ToString('N')).signal"
-New-Item -ItemType Directory -Path $captureDirectory -Force | Out-Null
-if (Test-Path -LiteralPath $completionSignalPath) {
-    throw "Completion signal path already exists: $completionSignalPath"
-}
+$coreExecutableHashBeforeLaunch = ((Get-FileHash -LiteralPath $coreExecutable -Algorithm SHA256).Hash).ToUpperInvariant()
+$appExecutableHashBeforeLaunch = ((Get-FileHash -LiteralPath $appExecutable -Algorithm SHA256).Hash).ToUpperInvariant()
 
 $coreDurationSeconds = [Math]::Min(3600, $DurationSeconds + $IdleSeconds + 30)
 $coreArguments = @(
@@ -243,11 +679,6 @@ $appArguments = @(
     '--language', $Language
 )
 
-$coreProcess = $null
-$appProcess = $null
-$appFailureMessage = $null
-$completionSignalWriteFailure = $null
-$coreWaitFailure = $null
 $tcpListeners = @{}
 try {
     $coreProcess = Start-Process `
@@ -368,7 +799,7 @@ try {
         $reportPresence = @(
             "AppReport=$([bool](Test-Path -LiteralPath $appReportPath -PathType Leaf))",
             "CoreReport=$([bool](Test-Path -LiteralPath $coreReportPath -PathType Leaf))",
-            "GateReport=$([bool](Test-Path -LiteralPath $gateReportPath -PathType Leaf))"
+            "ProgressHistory=$([bool](Test-Path -LiteralPath $progressHistoryPath -PathType Leaf))"
         ) -join ', '
         $appFailureMessage = "The App runtime-evidence process failed with exit code $appExitCode. Evidence paths: AppRuntimeReport=$appReportPath; CoreRuntimeReport=$coreReportPath; GateReport=$gateReportPath. ReportPresence: $reportPresence"
         if (Test-Path -LiteralPath $appReportPath -PathType Leaf) {
@@ -402,11 +833,26 @@ try {
     }
 }
 
-if ($appFailureMessage) {
-    throw $appFailureMessage
+$coreExecutableHashAfterRun = Get-OptionalFileSha256 -Path $coreExecutable
+$appExecutableHashAfterRun = Get-OptionalFileSha256 -Path $appExecutable
+$executableHashMismatch = @()
+if ($coreExecutableHashAfterRun -ne $coreExecutableHashBeforeLaunch) {
+    $executableHashMismatch += 'HerdrOps.Core executable bytes changed during runtime acceptance.'
+}
+if ($appExecutableHashAfterRun -ne $appExecutableHashBeforeLaunch) {
+    $executableHashMismatch += 'HerdrOps.App executable bytes changed during runtime acceptance.'
+}
+if ($executableHashMismatch.Count -gt 0 -and $appFailureMessage) {
+    $appFailureMessage += " ExecutableHashMismatch=$($executableHashMismatch -join ',')"
+} elseif ($executableHashMismatch.Count -gt 0) {
+    $appFailureMessage = $executableHashMismatch -join ' '
 }
 
-foreach ($requiredReport in @($coreReportPath, $appReportPath, $progressPath)) {
+if ($appFailureMessage) {
+    throw "$appFailureMessage Failure gate report: $gateReportPath"
+}
+
+foreach ($requiredReport in @($coreReportPath, $appReportPath, $progressPath, $progressHistoryPath)) {
     if (-not (Test-Path -LiteralPath $requiredReport -PathType Leaf)) {
         throw "Required runtime report is missing: $requiredReport"
     }
@@ -414,8 +860,8 @@ foreach ($requiredReport in @($coreReportPath, $appReportPath, $progressPath)) {
 $coreReport = Get-Content -LiteralPath $coreReportPath -Raw | ConvertFrom-Json
 $appReport = Get-Content -LiteralPath $appReportPath -Raw | ConvertFrom-Json
 $progressReport = Get-Content -LiteralPath $progressPath -Raw | ConvertFrom-Json
-$coreExecutableHash = (Get-FileHash -LiteralPath $coreExecutable -Algorithm SHA256).Hash
-$appExecutableHash = (Get-FileHash -LiteralPath $appExecutable -Algorithm SHA256).Hash
+$coreExecutableHash = $coreExecutableHashBeforeLaunch
+$appExecutableHash = $appExecutableHashBeforeLaunch
 
 Assert-True ($coreReport.EvidenceClassification -eq 'Runtime') 'Core report did not earn Runtime classification.'
 Assert-True ([bool]$coreReport.RuntimeObserved) 'Actual Herdr runtime was not observed by Core.'
@@ -461,19 +907,65 @@ $expectedProgressPhases = @(
     'measuring-idle-resources',
     'complete'
 )
+$progressHistoryLines = [IO.File]::ReadAllLines($progressHistoryPath)
+Assert-True ($progressHistoryLines.Count -eq $expectedProgressPhases.Count) 'The append-only App progress history does not contain every required phase exactly once.'
+$progressHistoryEntries = @()
+$expectedPreviousEntrySha256 = ('0' * 64)
+$previousProgressUtc = $null
+$lineOrdinal = 0
+foreach ($line in $progressHistoryLines) {
+    $lineOrdinal++
+    Assert-True (-not [string]::IsNullOrWhiteSpace($line)) 'The append-only App progress history contains a blank line.'
+    try {
+        $entry = $line | ConvertFrom-Json
+    } catch {
+        throw "The append-only App progress history contains invalid JSON: $($_.Exception.Message)"
+    }
+    Assert-ProgressEntryIntegrity `
+        -Entry $entry `
+        -ExpectedOrdinal $lineOrdinal `
+        -ExpectedPreviousEntrySha256 $expectedPreviousEntrySha256 `
+        -Context "Append-only progress record $lineOrdinal"
+    $entryUtc = ([DateTimeOffset]$entry.ObservedUtc).ToUniversalTime()
+    if ($null -ne $previousProgressUtc) {
+        Assert-True ($entryUtc -ge $previousProgressUtc) 'The append-only App progress history timestamps moved backward.'
+    }
+    $previousProgressUtc = $entryUtc
+    $expectedPreviousEntrySha256 = ([string]$entry.EntrySha256).ToUpperInvariant()
+    $progressHistoryEntries += $entry
+}
+
+$finalHistoryEntry = $progressHistoryEntries[$progressHistoryEntries.Count - 1]
+Assert-True (Test-ObjectHasProperty -Object $progressReport -Name 'History') 'The final App progress report omitted its History collection.'
 $progressHistory = @($progressReport.History)
-Assert-True ($progressHistory.Count -eq $expectedProgressPhases.Count) 'The App progress history does not contain every required phase exactly once.'
+Assert-True ($progressHistory.Count -eq $progressHistoryEntries.Count) 'The latest App progress report history does not match the append-only history line count.'
+Assert-True (Test-ObjectHasProperty -Object $progressReport -Name 'ProgressHistoryPath') 'The final App progress report omitted ProgressHistoryPath.'
+$reportedProgressHistoryPath = [IO.Path]::GetFullPath([string]$progressReport.ProgressHistoryPath)
+$expectedProgressHistoryPath = [IO.Path]::GetFullPath($progressHistoryPath)
+Assert-True ([StringComparer]::OrdinalIgnoreCase.Equals($reportedProgressHistoryPath, $expectedProgressHistoryPath)) 'The App progress report is bound to an unexpected progress history path.'
 for ($index = 0; $index -lt $expectedProgressPhases.Count; $index++) {
     $item = $progressHistory[$index]
-    Assert-True ([int]$item.Ordinal -eq ($index + 1)) 'The App progress history ordinal is not contiguous.'
-    Assert-True ([string]$item.Phase -eq $expectedProgressPhases[$index]) 'The App progress phases occurred out of order.'
-    if ($index -gt 0) {
-        $currentProgressUtc = [DateTimeOffset]$item.ObservedUtc
-        $priorProgressUtc = [DateTimeOffset]$progressHistory[$index - 1].ObservedUtc
-        Assert-True ($currentProgressUtc -ge $priorProgressUtc) 'The App progress timestamps moved backward.'
+    $historyEntry = $progressHistoryEntries[$index]
+    $itemExpectedPreviousEntrySha256 = if ($index -eq 0) {
+        ('0' * 64)
+    } else {
+        ([string]$progressHistoryEntries[$index - 1].EntrySha256).ToUpperInvariant()
     }
+    Assert-ProgressEntryIntegrity `
+        -Entry $item `
+        -ExpectedOrdinal ($index + 1) `
+        -ExpectedPreviousEntrySha256 $itemExpectedPreviousEntrySha256 `
+        -Context "Latest progress History record $($index + 1)"
+    Assert-True ([string]$item.Phase -eq $expectedProgressPhases[$index]) 'The App progress phases occurred out of order.'
+    Assert-ProgressEntryEquals `
+        -Expected $historyEntry `
+        -Actual $item `
+        -Context "Latest progress History record $($index + 1)" `
+        -IncludeChainFields
 }
+Assert-ProgressTopLevelPointer -ProgressReport $progressReport -FinalEntry $finalHistoryEntry
 Assert-True ([string]$progressReport.Phase -eq 'complete') 'The final App progress phase is not complete.'
+$progressHistoryHash = ((Get-FileHash -LiteralPath $progressHistoryPath -Algorithm SHA256).Hash).ToUpperInvariant()
 Assert-True ($appReport.WidgetLatencyMeasurement -eq 'CoreAcceptedStateUtcToWpfStateApplied') 'Unexpected Widget latency measurement boundary.'
 Assert-True ([int]$appReport.WidgetLatencyMinimumSamples -eq 3) 'Unexpected Widget latency minimum sample count.'
 Assert-True ([double]$appReport.WidgetLatencyTargetMilliseconds -eq 250) 'Unexpected Widget latency target.'
@@ -526,7 +1018,7 @@ Assert-True ([int]$idleQuiescence.ResetCount -ge 0) 'The quiescence reset count 
 $quiescenceResets = @($idleQuiescence.Resets)
 Assert-True ([int]$idleQuiescence.ResetCount -eq $quiescenceResets.Count) 'The quiescence reset count does not match its append-only provenance.'
 foreach ($reset in $quiescenceResets) {
-    Assert-True (@('LiveStateLost', 'LiveStateRestored', 'StateOrEventAdvanced') -contains [string]$reset.Reason) 'The quiescence history contains an unknown reset reason.'
+    Assert-True (@('LiveStateLost', 'LiveStateRestored', 'RuntimeFingerprintChanged', 'NonLiveFingerprintChanged') -contains [string]$reset.Reason) 'The quiescence history contains an unknown reset reason.'
     Assert-True ([long]$reset.CurrentSequence -ge [long]$reset.PreviousSequence) 'A quiescence reset hid a sequence regression.'
     Assert-True ([long]$reset.CurrentEventCount -ge [long]$reset.PreviousEventCount) 'A quiescence reset hid an event-count regression.'
 }
@@ -537,6 +1029,8 @@ $expectedResourceSampleCount = [int]($IdleSeconds * 1000 / [int]$appReport.Resou
 Assert-True ([int]$appReport.ResourceMeasurement.SampleCount -eq $expectedResourceSampleCount) 'Idle resource samples do not include the post-preparation baseline plus the complete measurement window.'
 Assert-True ([bool]$appReport.ResourceMeasurement.StateSequenceStable) 'State changed during the idle resource sample.'
 Assert-True ([bool]$appReport.ResourceMeasurement.RuntimeEventCountStable) 'A Herdr event occurred during the idle resource sample.'
+Assert-True ([bool]$appReport.ResourceMeasurement.RuntimeFingerprintStable) 'The full runtime fingerprint changed during the idle resource sample.'
+Assert-True ($null -eq $appReport.ResourceMeasurement.FirstFingerprintChange) 'The idle resource report recorded an unexpected runtime fingerprint change.'
 Assert-True ([bool]$appReport.ResourceMeasurement.HerdrConnectedThroughoutSample) 'Herdr was not connected throughout the idle resource sample.'
 $combinedCpu = [double]$appReport.ResourceMeasurement.CombinedAverageCpuPercent
 $averageWorkingSet = [double]$appReport.ResourceMeasurement.CombinedAverageWorkingSetMegabytes
@@ -549,11 +1043,18 @@ Assert-True ([bool]$appReport.ResourceMeasurement.WorkingSetTargetPassed) 'Combi
 Assert-True ([bool]$appReport.ResourceMeasurement.Preparation.DashboardResourcesReleased) 'The closed Dashboard retained its visual tree during the idle resource sample.'
 Assert-True ([int]$appReport.ResourceMeasurement.Preparation.RetainedEvidenceWindows -eq 1) 'The evidence runner retained a closed Widget window during the idle sample.'
 Assert-True ([int]$appReport.ResourceMeasurement.Preparation.VisibleEvidenceWindows -eq 1) 'The Floating Vertical Widget was not the sole visible evidence window during the idle sample.'
-Assert-True ([bool]$appReport.ResourceMeasurement.Preparation.DashboardWorkingSetCompactionAttempted) 'The App did not compact the released Dashboard working set while the Widget remained active.'
-Assert-True ([bool]$appReport.ResourceMeasurement.Preparation.DashboardWorkingSetCompactionSucceeded) 'The App could not compact the released Dashboard working set while the Widget remained active.'
-Assert-True ($null -eq $appReport.ResourceMeasurement.Preparation.DashboardWorkingSetCompactionNativeErrorCode) 'A native Dashboard working-set compaction error was reported despite success.'
+Assert-True ([bool]$appReport.ResourceMeasurement.Preparation.ManagedCaptureCleanupAttempted) 'The App did not attempt managed capture cleanup before the idle sample.'
+Assert-True ([bool]$appReport.ResourceMeasurement.Preparation.ManagedCaptureCleanupCompleted) 'Managed capture cleanup did not complete before the idle sample.'
+Assert-True ([int]$appReport.ResourceMeasurement.Preparation.TrackedCaptureBitmapCount -gt 0) 'The App did not track any runtime capture bitmap for managed cleanup verification.'
+Assert-True ([int]$appReport.ResourceMeasurement.Preparation.ReleasedCaptureBitmapCount -eq [int]$appReport.ResourceMeasurement.Preparation.TrackedCaptureBitmapCount) 'Not every tracked runtime capture bitmap was released before the idle sample.'
 Assert-True ([long]$appReport.ResourceMeasurement.StartSequence -eq [long]$idleQuiescence.StableSequence) 'State changed between quiescence and the idle resource baseline.'
 Assert-True ([long]$appReport.ResourceMeasurement.StartEventCount -eq [long]$idleQuiescence.StableEventCount) 'A Herdr event occurred between quiescence and the idle resource baseline.'
+Assert-True ([long]$appReport.ResourceMeasurement.StartSequence -eq [long]$appReport.ResourceMeasurement.StartFingerprint.LastIngestSequence) 'The resource start sequence is not bound to its full start fingerprint.'
+Assert-True ([long]$appReport.ResourceMeasurement.FinishSequence -eq [long]$appReport.ResourceMeasurement.FinishFingerprint.LastIngestSequence) 'The resource finish sequence is not bound to its full finish fingerprint.'
+Assert-True ([long]$appReport.ResourceMeasurement.StartEventCount -eq [long]$appReport.ResourceMeasurement.StartFingerprint.EventCount) 'The resource start event count is not bound to its full start fingerprint.'
+Assert-True ([long]$appReport.ResourceMeasurement.FinishEventCount -eq [long]$appReport.ResourceMeasurement.FinishFingerprint.EventCount) 'The resource finish event count is not bound to its full finish fingerprint.'
+Assert-RuntimeFingerprintEqual -Expected $idleQuiescence.StableFingerprint -Actual $appReport.ResourceMeasurement.StartFingerprint -Context 'Idle resource start'
+Assert-RuntimeFingerprintEqual -Expected $appReport.ResourceMeasurement.StartFingerprint -Actual $appReport.ResourceMeasurement.FinishFingerprint -Context 'Idle resource sample'
 Assert-True ([int]$appReport.AppProcessId -eq [int]$appProcess.Id) 'The App report is not bound to the launched App process.'
 Assert-True ([int]$appReport.CoreProcessId -eq [int]$coreProcess.Id) 'The App report is not bound to the launched Core process.'
 Assert-True ([int]$appReport.ResourceMeasurement.App.ProcessId -eq [int]$appProcess.Id) 'App resource samples are not bound to the launched App process.'
@@ -576,6 +1077,12 @@ Assert-True ($tcpListeners.Count -eq 0) 'Core or App opened a TCP listener durin
 Assert-True ($controlServerIdentity.ExecutableSha256 -eq $coreReport.Admission.ExecutableSha256) 'Acceptance control server executable hash does not match the admitted Herdr executable.'
 $coreTransitions = @($coreReport.Transitions)
 Assert-True ($coreTransitions.Count -gt 0) 'Core runtime report contains no transitions.'
+$eventABaselineProgressCandidates = @($progressHistoryEntries | Where-Object { $_.Phase -eq 'waiting-for-pre-close-update' })
+Assert-True ($eventABaselineProgressCandidates.Count -eq 1) 'The App progress history does not contain exactly one Event A baseline phase.'
+$eventABaselineProgress = $eventABaselineProgressCandidates[0]
+$eventBBaselineProgressCandidates = @($progressHistoryEntries | Where-Object { $_.Phase -eq 'herdr-reconnected-waiting-for-post-reconnect-update' })
+Assert-True ($eventBBaselineProgressCandidates.Count -eq 1) 'The App progress history does not contain exactly one Event B baseline phase.'
+$eventBBaselineProgress = $eventBBaselineProgressCandidates[0]
 foreach ($sample in $includedLatencySamples) {
     $matchingCoreTransitions = @($coreTransitions | Where-Object {
         [long]$_.IngestSequence -eq [long]$sample.EnvelopeSequence -and
@@ -598,6 +1105,16 @@ for ($index = 0; $index -lt $coreTransitions.Count; $index++) {
 }
 Assert-True ($eventATransitionIndex -ge 0) 'Core trace does not contain the exact App state rendered for Event A before Dashboard closure.'
 $eventATransition = $coreTransitions[$eventATransitionIndex]
+Assert-True ([long]$appReport.EventA.CurrentSequence -eq [long]$appReport.PreCloseSequence) 'Event A evidence is not bound to the App pre-close sequence.'
+Assert-True ([long]$appReport.EventA.CurrentEventCount -eq [long]$appReport.PreCloseEventCount) 'Event A evidence is not bound to the App pre-close event count.'
+Assert-True ([string]$appReport.EventA.CurrentStateSha256 -eq [string]$appReport.PreCloseStateSha256) 'Event A evidence is not bound to the App pre-close state hash.'
+$eventACorrelation = Assert-AgentStatusTransitionEvidence `
+    -Evidence $appReport.EventA `
+    -Name 'Event A' `
+    -CoreTransitions $coreTransitions `
+    -BaselineProgress $eventABaselineProgress
+$eventACorrelatedTransition = $eventACorrelation.Current
+Assert-True ([long]$eventACorrelatedTransition.IngestSequence -eq [long]$eventATransition.IngestSequence) 'Event A evidence correlated to a different Core transition than the rendered pre-close state.'
 Assert-True ($null -ne $eventATransition.ServerIdentity) 'Event A is not bound to a verified target server identity.'
 Assert-True (-not (Test-SameHerdrServerProcess -Left $controlServerIdentity -Right $eventATransition.ServerIdentity)) 'Acceptance control and target Agent Lab resolved to the same Herdr server process.'
 
@@ -682,6 +1199,24 @@ for ($index = $eventBIncrementTransitionIndex; $index -lt $coreTransitions.Count
 }
 Assert-True ($eventBTransitionIndex -ge $eventBIncrementTransitionIndex) 'No exact connected Core transition matches the App state rendered for Event B.'
 $eventBTransition = $coreTransitions[$eventBTransitionIndex]
+Assert-True ([long]$appReport.EventB.CurrentSequence -eq [long]$appReport.PostCloseSequence) 'Event B evidence is not bound to the App post-close sequence.'
+Assert-True ([long]$appReport.EventB.CurrentEventCount -eq [long]$appReport.PostCloseEventCount) 'Event B evidence is not bound to the App post-close event count.'
+Assert-True ([string]$appReport.EventB.CurrentStateSha256 -eq [string]$appReport.PostCloseStateSha256) 'Event B evidence is not bound to the App post-close state hash.'
+$eventBCorrelation = Assert-AgentStatusTransitionEvidence `
+    -Evidence $appReport.EventB `
+    -Name 'Event B' `
+    -CoreTransitions $coreTransitions `
+    -BaselineProgress $eventBBaselineProgress
+$eventBCorrelatedTransition = $eventBCorrelation.Current
+Assert-True ([long]$eventBCorrelatedTransition.IngestSequence -eq [long]$eventBTransition.IngestSequence) 'Event B evidence correlated to a different Core transition than the rendered post-close state.'
+$eventAChange = @($appReport.EventA.Changes)[0]
+$eventBChange = @($appReport.EventB.Changes)[0]
+
+Assert-True (Test-ObjectHasProperty -Object $eventATransition -Name 'AcceptedEventKind') 'Core Event A transition omitted AcceptedEventKind.'
+Assert-True ([string]$eventATransition.AcceptedEventKind -eq 'pane.agent_status_changed') 'Core Event A transition AcceptedEventKind was not pane.agent_status_changed.'
+Assert-True (Test-ObjectHasProperty -Object $eventBTransition -Name 'AcceptedEventKind') 'Core Event B transition omitted AcceptedEventKind.'
+Assert-True ([string]$eventBTransition.AcceptedEventKind -eq 'pane.agent_status_changed') 'Core Event B transition AcceptedEventKind was not pane.agent_status_changed.'
+$coreAcceptedEventKindCheck = 'Core report AcceptedEventKind present and validated as pane.agent_status_changed for Event A and Event B.'
 
 $controlProcessAfter = Get-Process -Id ([int]$controlServerIdentity.ProcessId) -ErrorAction SilentlyContinue
 Assert-True ($null -ne $controlProcessAfter) 'Acceptance control Herdr server did not survive the target restart.'
@@ -733,13 +1268,26 @@ $reportLines = @(
     "TargetReconnectTransition: index=$targetReconnectTransitionIndex utc=$($targetReconnectTransition.ObservedUtc) bootstrapCount=$($targetReconnectTransition.BootstrapCount) targetPid=$($targetReconnectTransition.ServerIdentity.ProcessId) targetStart=$($targetReconnectTransition.ServerIdentity.ProcessStartUtc)",
     "EventBIncrementTransition: index=$eventBIncrementTransitionIndex utc=$($eventBIncrementTransition.ObservedUtc) eventCount=$($eventBIncrementTransition.EventCount)",
     "EventBTransition: index=$eventBTransitionIndex utc=$($eventBTransition.ObservedUtc) eventCount=$($eventBTransition.EventCount)",
+    "CoreAcceptedEventKindCheck: $coreAcceptedEventKindCheck",
+    "EventAIntegrity: sequenceDelta=$($appReport.EventA.CurrentSequence - $appReport.EventA.BaselineSequence) eventCountDelta=$($appReport.EventA.CurrentEventCount - $appReport.EventA.BaselineEventCount) connectionEpoch=$($appReport.EventA.ConnectionEpoch) bootstrapDelta=$($appReport.EventA.CurrentBootstrapCount - $appReport.EventA.BaselineBootstrapCount) disconnectDelta=$($appReport.EventA.CurrentDisconnectCount - $appReport.EventA.BaselineDisconnectCount) reconciliationDelta=$($eventACorrelation.ReconciliationDelta)",
+    "EventBIntegrity: sequenceDelta=$($appReport.EventB.CurrentSequence - $appReport.EventB.BaselineSequence) eventCountDelta=$($appReport.EventB.CurrentEventCount - $appReport.EventB.BaselineEventCount) connectionEpoch=$($appReport.EventB.ConnectionEpoch) bootstrapDelta=$($appReport.EventB.CurrentBootstrapCount - $appReport.EventB.BaselineBootstrapCount) disconnectDelta=$($appReport.EventB.CurrentDisconnectCount - $appReport.EventB.BaselineDisconnectCount) reconciliationDelta=$($eventBCorrelation.ReconciliationDelta)",
+    "EventAAgentStatusTransition: terminal=$($eventAChange.TerminalId) workspace=$($eventAChange.WorkspaceId) tab=$($eventAChange.TabId) pane=$($eventAChange.PaneId) previous=$($eventAChange.PreviousStatus) current=$($eventAChange.CurrentStatus) stateChangeSequence=$($eventAChange.PreviousStateChangeSequence)->$($eventAChange.CurrentStateChangeSequence)",
+    "EventBAgentStatusTransition: terminal=$($eventBChange.TerminalId) workspace=$($eventBChange.WorkspaceId) tab=$($eventBChange.TabId) pane=$($eventBChange.PaneId) previous=$($eventBChange.PreviousStatus) current=$($eventBChange.CurrentStatus) stateChangeSequence=$($eventBChange.PreviousStateChangeSequence)->$($eventBChange.CurrentStateChangeSequence)",
     "AutomatedTests: $($testCounts.Passed)/$($testCounts.Total) PASS",
     "HerdrReleaseId: $($coreReport.Admission.ReleaseId)",
     "HerdrExecutableSha256: $($coreReport.Admission.ExecutableSha256)",
-    "HerdrOpsCoreExecutableSha256: $coreExecutableHash",
-    "HerdrOpsAppExecutableSha256: $appExecutableHash",
+    "HerdrOpsCoreExecutableSha256BeforeLaunch: $coreExecutableHashBeforeLaunch",
+    "HerdrOpsCoreExecutableSha256AfterRun: $coreExecutableHashAfterRun",
+    "HerdrOpsAppExecutableSha256BeforeLaunch: $appExecutableHashBeforeLaunch",
+    "HerdrOpsAppExecutableSha256AfterRun: $appExecutableHashAfterRun",
+    "HerdrOpsCoreExecutableSha256BoundToReports: $coreExecutableHash",
+    "HerdrOpsAppExecutableSha256BoundToReports: $appExecutableHash",
     "CoreRuntimeReportSha256: $coreReportHash",
     "AppRuntimeReportSha256: $appReportHash",
+    "ProgressHistoryPath: $progressHistoryPath",
+    "ProgressHistorySha256: $progressHistoryHash",
+    "ProgressHistoryEntries: $($progressHistoryEntries.Count)",
+    "ProgressHistoryLastEntrySha256: $expectedPreviousEntrySha256",
     "BundledSchemaSha256: $($coreReport.Admission.BundledSchemaSha256)",
     "HerdrProtocol: $($coreReport.Admission.Protocol)",
     "SnapshotObserved: $($coreReport.SnapshotObserved)",
@@ -794,7 +1342,10 @@ $reportLines = @(
     "CoreResourceProcess: pid=$($appReport.ResourceMeasurement.Core.ProcessId) start=$($appReport.ResourceMeasurement.Core.ProcessStartUtc) path=$($appReport.ResourceMeasurement.Core.ExecutablePath) sha256=$($appReport.ResourceMeasurement.Core.ExecutableSha256) stable=$($appReport.ResourceMeasurement.Core.IdentityStable)",
     "DashboardResourcesReleased: $($appReport.ResourceMeasurement.Preparation.DashboardResourcesReleased)",
     "EvidenceWindowsDuringIdle: retained=$($appReport.ResourceMeasurement.Preparation.RetainedEvidenceWindows) visible=$($appReport.ResourceMeasurement.Preparation.VisibleEvidenceWindows)",
-    "DashboardWorkingSetCompaction: attempted=$($appReport.ResourceMeasurement.Preparation.DashboardWorkingSetCompactionAttempted) succeeded=$($appReport.ResourceMeasurement.Preparation.DashboardWorkingSetCompactionSucceeded) nativeError=$($appReport.ResourceMeasurement.Preparation.DashboardWorkingSetCompactionNativeErrorCode)",
+    "ManagedCaptureCleanup: attempted=$($appReport.ResourceMeasurement.Preparation.ManagedCaptureCleanupAttempted) completed=$($appReport.ResourceMeasurement.Preparation.ManagedCaptureCleanupCompleted) tracked=$($appReport.ResourceMeasurement.Preparation.TrackedCaptureBitmapCount) released=$($appReport.ResourceMeasurement.Preparation.ReleasedCaptureBitmapCount)",
+    "RuntimeFingerprintStable: $($appReport.ResourceMeasurement.RuntimeFingerprintStable)",
+    "RuntimeFingerprintStart: connected=$($appReport.ResourceMeasurement.StartFingerprint.IsCoreConnected) live=$($appReport.ResourceMeasurement.StartFingerprint.IsLive) status=$($appReport.ResourceMeasurement.StartFingerprint.RuntimeStatus) epoch=$($appReport.ResourceMeasurement.StartFingerprint.ConnectionEpoch) sequence=$($appReport.ResourceMeasurement.StartFingerprint.LastIngestSequence) bootstrap=$($appReport.ResourceMeasurement.StartFingerprint.BootstrapCount) event=$($appReport.ResourceMeasurement.StartFingerprint.EventCount) disconnect=$($appReport.ResourceMeasurement.StartFingerprint.DisconnectCount) reconciliation=$($appReport.ResourceMeasurement.StartFingerprint.ReconciliationCount) stateSha256=$($appReport.ResourceMeasurement.StartFingerprint.StateSha256)",
+    "RuntimeFingerprintFinish: connected=$($appReport.ResourceMeasurement.FinishFingerprint.IsCoreConnected) live=$($appReport.ResourceMeasurement.FinishFingerprint.IsLive) status=$($appReport.ResourceMeasurement.FinishFingerprint.RuntimeStatus) epoch=$($appReport.ResourceMeasurement.FinishFingerprint.ConnectionEpoch) sequence=$($appReport.ResourceMeasurement.FinishFingerprint.LastIngestSequence) bootstrap=$($appReport.ResourceMeasurement.FinishFingerprint.BootstrapCount) event=$($appReport.ResourceMeasurement.FinishFingerprint.EventCount) disconnect=$($appReport.ResourceMeasurement.FinishFingerprint.DisconnectCount) reconciliation=$($appReport.ResourceMeasurement.FinishFingerprint.ReconciliationCount) stateSha256=$($appReport.ResourceMeasurement.FinishFingerprint.StateSha256)",
     "AppWorkingSetPreparationMB: before=$($appReport.ResourceMeasurement.Preparation.AppWorkingSetBeforeMegabytes) after=$($appReport.ResourceMeasurement.Preparation.AppWorkingSetAfterMegabytes)",
     "AppPrivateMemoryPreparationMB: before=$($appReport.ResourceMeasurement.Preparation.AppPrivateMemoryBeforeMegabytes) after=$($appReport.ResourceMeasurement.Preparation.AppPrivateMemoryAfterMegabytes)",
     "ManagedHeapPreparationMB: before=$($appReport.ResourceMeasurement.Preparation.ManagedHeapBeforeMegabytes) after=$($appReport.ResourceMeasurement.Preparation.ManagedHeapAfterMegabytes)",
@@ -829,3 +1380,37 @@ Write-Output "GateReport: $gateReportPath"
 Write-Output "GateReportSha256: $gateHash"
 Write-Output "CoreRuntimeReport: $coreReportPath"
 Write-Output "AppRuntimeReport: $appReportPath"
+} catch {
+    $failureRecord = $_
+    $failureMessage = [string]$failureRecord.Exception.Message
+    if ([string]::IsNullOrWhiteSpace($failureMessage)) {
+        $failureMessage = [string]$failureRecord
+    }
+    $failureType = $failureRecord.Exception.GetType().FullName
+    $reportedAppExitCode = if ($null -eq $appExitCode) {
+        'NOT_OBSERVED'
+    } else {
+        [string]$appExitCode
+    }
+    $reportedCoreExitCode = if ($null -eq $coreExitCode) {
+        'NOT_OBSERVED'
+    } else {
+        [string]$coreExitCode
+    }
+    Write-FailureGateReport `
+        -GateReportPath $gateReportPath `
+        -FailureMessage $failureMessage `
+        -SourceCommit $sourceCommit `
+        -CoreReportPath $coreReportPath `
+        -AppReportPath $appReportPath `
+        -ProgressHistoryPath $progressHistoryPath `
+        -CoreExecutableHashBeforeLaunch $coreExecutableHashBeforeLaunch `
+        -CoreExecutableHashAfterRun $coreExecutableHashAfterRun `
+        -AppExecutableHashBeforeLaunch $appExecutableHashBeforeLaunch `
+        -AppExecutableHashAfterRun $appExecutableHashAfterRun `
+        -AppExitCode $reportedAppExitCode `
+        -CoreExitCode $reportedCoreExitCode `
+        -CoreAcceptedEventKindCheck $coreAcceptedEventKindCheck `
+        -FailureType $failureType
+    throw $failureRecord
+}

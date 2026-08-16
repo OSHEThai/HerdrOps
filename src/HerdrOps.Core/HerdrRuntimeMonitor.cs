@@ -20,7 +20,10 @@ public sealed record HerdrRuntimeMonitorSnapshot(
     long DisconnectCount,
     long ReconciliationCount,
     string? LastTransitionReason,
-    DateTimeOffset LastTransitionUtc);
+    DateTimeOffset LastTransitionUtc)
+{
+    public string? AcceptedEventKind { get; init; }
+}
 
 public sealed record HerdrRuntimeMonitorOptions(
     TimeSpan AuthoritativeSnapshotPollInterval)
@@ -50,6 +53,9 @@ public sealed record HerdrRuntimeMonitorOptions(
 
 public sealed class HerdrRuntimeMonitor
 {
+    public const string AcceptedAgentStatusEventKind =
+        "pane.agent_status_changed";
+
     private readonly object _stateLock = new();
     private readonly IHerdrApiClient _apiClient;
     private readonly HerdrPipeEndpoint _endpoint;
@@ -168,20 +174,21 @@ public sealed class HerdrRuntimeMonitor
                             .ToHashSet(StringComparer.Ordinal);
                         var paneSetChanged = !subscribedPaneIds.SetEquals(authoritativePaneIds);
                         var current = Current;
-                        Publish(current with
-                        {
-                            Status = paneSetChanged
+                        Publish(
+                            current with
+                            {
+                                Status = paneSetChanged
                                 ? HerdrRuntimeMonitorStatus.Reconnecting
                                 : HerdrRuntimeMonitorStatus.Connected,
-                            State = state,
-                            ServerIdentity = bootstrapServerIdentity,
-                            BootstrapCount = current.BootstrapCount + 1,
-                            ReconciliationCount = current.ReconciliationCount + (paneSetChanged ? 1 : 0),
-                            LastTransitionReason = paneSetChanged
+                                State = state,
+                                ServerIdentity = bootstrapServerIdentity,
+                                BootstrapCount = current.BootstrapCount + 1,
+                                ReconciliationCount = current.ReconciliationCount + (paneSetChanged ? 1 : 0),
+                                LastTransitionReason = paneSetChanged
                                 ? "Pane set changed while the subscription was being bootstrapped."
                                 : null,
-                            LastTransitionUtc = snapshotReceivedUtc,
-                        });
+                                LastTransitionUtc = snapshotReceivedUtc,
+                            });
                         hasBootstrapped = true;
                         cycleBootstrapped = true;
                         consecutiveFailures = 0;
@@ -394,19 +401,21 @@ public sealed class HerdrRuntimeMonitor
                         var current = Current;
                         var stateChanged = !HasSameAuthoritativeContent(current.State, candidate);
                         var paneSetChanged = !subscribedPaneIds.SetEquals(candidate.Panes.Keys);
-                        Publish(current with
-                        {
-                            Status = paneSetChanged
-                                ? HerdrRuntimeMonitorStatus.Reconnecting
-                                : HerdrRuntimeMonitorStatus.Connected,
-                            State = candidate,
-                            EventCount = current.EventCount + 1,
-                            ReconciliationCount = current.ReconciliationCount + (stateChanged ? 1 : 0),
-                            LastTransitionReason = paneSetChanged
-                                ? "Pane set changed while reconciling an observed live Agent status."
-                                : null,
-                            LastTransitionUtc = statusSnapshotReceivedUtc,
-                        });
+                        Publish(
+                            current with
+                            {
+                                Status = paneSetChanged
+                                    ? HerdrRuntimeMonitorStatus.Reconnecting
+                                    : HerdrRuntimeMonitorStatus.Connected,
+                                State = candidate,
+                                EventCount = current.EventCount + 1,
+                                ReconciliationCount = current.ReconciliationCount + (stateChanged ? 1 : 0),
+                                LastTransitionReason = paneSetChanged
+                                    ? "Pane set changed while reconciling an observed live Agent status."
+                                    : null,
+                                LastTransitionUtc = statusSnapshotReceivedUtc,
+                            },
+                            paneSetChanged ? null : AcceptedAgentStatusEventKind);
 
                         if (paneSetChanged)
                         {
@@ -607,10 +616,25 @@ public sealed class HerdrRuntimeMonitor
         }
     }
 
-    private void Publish(HerdrRuntimeMonitorSnapshot snapshot)
+    private void Publish(
+        HerdrRuntimeMonitorSnapshot snapshot,
+        string? acceptedEventKind = null)
     {
         lock (_stateLock)
         {
+            if (acceptedEventKind is not null &&
+                (!string.Equals(
+                     acceptedEventKind,
+                     AcceptedAgentStatusEventKind,
+                     StringComparison.Ordinal) ||
+                 snapshot.Status != HerdrRuntimeMonitorStatus.Connected ||
+                 snapshot.EventCount != _current.EventCount + 1))
+            {
+                throw new InvalidOperationException(
+                    "An accepted runtime event must be a connected transition with exactly one Event-count increment.");
+            }
+
+            snapshot = snapshot with { AcceptedEventKind = acceptedEventKind };
             _current = snapshot;
         }
 

@@ -33,29 +33,6 @@ public partial class MainWindow : Window
     public bool DashboardResourcesReleased =>
         _shell is null && ShellHost.Content is null;
 
-    // Kept for the existing runtime report contract. Working-set compaction is
-    // intentionally not performed by the WPF process lifecycle.
-    public bool DashboardWorkingSetCompactionAttempted => false;
-
-    public bool DashboardWorkingSetCompactionSucceeded => false;
-
-    public int? DashboardWorkingSetCompactionNativeErrorCode => null;
-
-    public double DashboardWorkingSetBeforeMegabytes => 0;
-
-    public double DashboardWorkingSetAfterMegabytes => 0;
-
-    public double DashboardPrivateMemoryBeforeMegabytes => 0;
-
-    public double DashboardPrivateMemoryAfterMegabytes => 0;
-
-    public double DashboardManagedHeapBeforeMegabytes => 0;
-
-    public double DashboardManagedHeapAfterMegabytes => 0;
-
-    public Task WaitForDashboardCleanupAsync(CancellationToken cancellationToken) =>
-        Task.CompletedTask.WaitAsync(cancellationToken);
-
     private void OnClosed(object? sender, EventArgs e)
     {
         if (_resourcesReleased)

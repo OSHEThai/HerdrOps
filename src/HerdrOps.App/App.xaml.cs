@@ -63,7 +63,8 @@ public partial class App : Application
                 options.ReportPath,
                 startedUtc,
                 new UnauthorizedAccessException(
-                    "Runtime evidence mode requires HERDR_ENV=1 and HERDR_SOCKET_PATH from an authorized Herdr pane."));
+                    "Runtime evidence mode requires HERDR_ENV=1 and HERDR_SOCKET_PATH from an authorized Herdr pane."),
+                options.ProgressPath);
             Shutdown(3);
             return;
         }
@@ -88,7 +89,11 @@ public partial class App : Application
         }
         catch (Exception exception)
         {
-            RuntimeEvidenceRunner.WriteFailure(options.ReportPath, startedUtc, exception);
+            RuntimeEvidenceRunner.WriteFailure(
+                options.ReportPath,
+                startedUtc,
+                exception,
+                options.ProgressPath);
         }
         finally
         {

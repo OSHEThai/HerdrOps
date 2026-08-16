@@ -19,6 +19,7 @@ public partial class WidgetGalleryView : UserControl, INotifyPropertyChanged
     private IReadOnlyList<WidgetGalleryItem> _adaptiveItems;
     private readonly bool _usesDefaultLauncher;
     private bool _resourcesReleased;
+    private int _resourceGeneration;
 
     public WidgetGalleryView()
         : this(SyntheticWidgetState.Create(), launcher: null)
@@ -139,22 +140,33 @@ public partial class WidgetGalleryView : UserControl, INotifyPropertyChanged
 
     private void OnLanguageChanged(object? sender, EventArgs e)
     {
+        if (_resourcesReleased)
+        {
+            return;
+        }
+
+        var generation = _resourceGeneration;
         if (!Dispatcher.CheckAccess())
         {
             if (!Dispatcher.HasShutdownStarted && !Dispatcher.HasShutdownFinished)
             {
-                _ = Dispatcher.InvokeAsync(ApplyLanguageChange);
+                _ = Dispatcher.InvokeAsync(() => ApplyLanguageChange(generation));
             }
 
             return;
         }
 
-        ApplyLanguageChange();
+        ApplyLanguageChange(generation);
     }
 
-    private void ApplyLanguageChange()
+    private void ApplyLanguageChange(int generation)
     {
-        if (SharedState.EvidenceClass == HerdrOps.Contracts.EvidenceClass.Synthetic)
+        if (_resourcesReleased || generation != _resourceGeneration || _state is not { } state)
+        {
+            return;
+        }
+
+        if (state.EvidenceClass == HerdrOps.Contracts.EvidenceClass.Synthetic)
         {
             SharedState = SyntheticWidgetState.Create();
             if (_usesDefaultLauncher)
@@ -184,6 +196,7 @@ public partial class WidgetGalleryView : UserControl, INotifyPropertyChanged
         }
 
         _resourcesReleased = true;
+        _resourceGeneration++;
         WeakEventManager<UiLanguageService, EventArgs>.RemoveHandler(
             UiLanguageService.Shared,
             nameof(UiLanguageService.LanguageChanged),
