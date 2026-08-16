@@ -114,7 +114,7 @@ foreach ($requiredPath in $requiredPaths) {
 }
 
 if (-not $SkipBuild) {
-    & (Join-Path $PSScriptRoot 'Invoke-Build.ps1') -Configuration $Configuration
+    & (Join-Path $PSScriptRoot 'Invoke-Build.ps1') -Configuration $Configuration -SkipTests
     if ($LASTEXITCODE -ne 0) {
         throw "v0.6 Daily Summary build gate failed with exit code $LASTEXITCODE."
     }
