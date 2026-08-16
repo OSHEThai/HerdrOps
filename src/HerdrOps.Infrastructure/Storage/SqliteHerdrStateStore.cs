@@ -247,26 +247,59 @@ public sealed partial class SqliteHerdrStateStore : IDisposable
         _timeProvider = timeProvider ?? TimeProvider.System;
         _recoveryOptions = recoveryOptions ?? new StateStoreRecoveryOptions();
         StateStoreRecoveryPathPolicy.EnsureDatabaseParent(_options.DatabasePath);
-        var primaryExisted = File.Exists(_options.DatabasePath);
-        var shouldBackUpBeforeMigration = primaryExisted &&
-            new FileInfo(_options.DatabasePath).Length > 0;
+        var primaryExisted = false;
+        var shouldBackUpBeforeMigration = false;
+        StateStoreRecoveryFileIdentity? boundaryIdentity = null;
         var primaryValidationPassed = false;
         _ownershipLock = AcquireOwnershipLock(_options.DatabasePath);
         try
         {
+            _recoveryOptions.EffectiveFaultInjector.OnPhase(
+                new StateStoreRecoveryPhaseContext(
+                    StateStoreRecoveryPhase.AfterOwnershipLock,
+                    0,
+                    HerdrStateStoreOptions.CurrentSchemaVersion,
+                    _options.DatabasePath));
+
+            var observedIdentity = InspectDatabaseLeaf(_options.DatabasePath);
+            _recoveryOptions.EffectiveFaultInjector.OnPhase(
+                new StateStoreRecoveryPhaseContext(
+                    StateStoreRecoveryPhase.AfterDatabaseLeafInspection,
+                    0,
+                    HerdrStateStoreOptions.CurrentSchemaVersion,
+                    _options.DatabasePath));
+            boundaryIdentity = InspectDatabaseLeaf(_options.DatabasePath);
+            if (!AreSameIdentity(observedIdentity, boundaryIdentity))
+            {
+                throw new HerdrStateStoreException(
+                    "The database leaf identity changed at the ownership boundary; SQLite was not opened.");
+            }
+
+            primaryExisted = boundaryIdentity is not null;
+            shouldBackUpBeforeMigration = boundaryIdentity is not null && boundaryIdentity.Length > 0;
             _connection = new SqliteConnection(CreateConnectionString(_options));
         }
-        catch
+        catch (Exception exception)
         {
             _ownershipLock.Dispose();
+            if (exception is StateStoreCorruptionException corruption)
+            {
+                throw new HerdrStateStoreException(
+                    StateStoreRecoveryDiagnostics.SanitizeMessage(corruption.Message),
+                    corruption);
+            }
+
             throw;
         }
 
         try
         {
-            if (primaryExisted)
+            StateStoreRecoveryPathPolicy.ValidateExistingPrimary(_options.DatabasePath);
+            var postValidationIdentity = InspectDatabaseLeaf(_options.DatabasePath);
+            if (!AreSameIdentity(boundaryIdentity, postValidationIdentity))
             {
-                StateStoreRecoveryPathPolicy.ValidateExistingPrimary(_options.DatabasePath);
+                throw new HerdrStateStoreException(
+                    "The database leaf identity changed during admission; SQLite was not opened.");
             }
 
             _connection.Open();
@@ -351,10 +384,7 @@ public sealed partial class SqliteHerdrStateStore : IDisposable
 
             if (primaryExisted && !primaryValidationPassed && exception is SqliteException)
             {
-                TryQuarantineCorruptedPrimary(
-                    new StateStoreCorruptionException(
-                        "SQLite rejected the existing state-store during admission.",
-                        exception));
+                TryQuarantineCorruptedPrimary(exception);
             }
 
             throw;
@@ -377,10 +407,37 @@ public sealed partial class SqliteHerdrStateStore : IDisposable
         }
         catch (Exception quarantineFailure)
         {
+            StateStoreRecoveryDiagnostics.AttachCleanupFailure(
+                failure,
+                "quarantine-cleanup",
+                _options.DatabasePath,
+                quarantineFailure);
             failure.Data["HerdrOps.QuarantineFailure"] =
                 StateStoreRecoveryDiagnostics.SanitizeMessage(quarantineFailure.Message);
         }
     }
+
+    private static StateStoreRecoveryFileIdentity? InspectDatabaseLeaf(string databasePath)
+    {
+        StateStoreRecoveryPathPolicy.EnsureNoReparseComponents(databasePath, includeLeaf: true);
+        if (Directory.Exists(databasePath))
+        {
+            throw new StateStoreCorruptionException(
+                $"The state-store path '{databasePath}' is a directory, not a SQLite database.");
+        }
+
+        return File.Exists(databasePath)
+            ? StateStoreRecoveryArtifacts.IdentifyFile(databasePath)
+            : null;
+    }
+
+    private static bool AreSameIdentity(
+        StateStoreRecoveryFileIdentity? left,
+        StateStoreRecoveryFileIdentity? right) =>
+        left is null && right is null ||
+        left is not null && right is not null &&
+        left.Length == right.Length &&
+        string.Equals(left.Sha256, right.Sha256, StringComparison.Ordinal);
 
     public string DatabasePath => _options.DatabasePath;
 

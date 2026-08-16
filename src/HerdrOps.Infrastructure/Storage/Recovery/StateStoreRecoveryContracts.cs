@@ -16,6 +16,12 @@ internal enum StateStoreRecoveryPhase
     BeforeRollback,
     AfterRestoreReplacement,
     AfterRollback,
+    AfterOwnershipLock,
+    AfterDatabaseLeafInspection,
+    BeforeRestoreRollback,
+    AfterRestoreRollbackOperation,
+    AfterTraceTemporaryCreated,
+    BeforeQuarantineMove,
 }
 
 internal sealed record StateStoreRecoveryPhaseContext(
@@ -215,19 +221,65 @@ internal static class StateStoreRecoveryDiagnostics
         string path,
         Exception cleanupFailure)
     {
-        var entry =
-            operation + ":" + TokenizePath(path) + ":" + SanitizeMessage(cleanupFailure.Message);
-        var existing = primary.Data["HerdrOps.RecoveryCleanupFailure"] as string;
-        var combined = string.IsNullOrWhiteSpace(existing)
-            ? entry
-            : existing + " | " + entry;
-        primary.Data["HerdrOps.RecoveryCleanupFailure"] =
-            Encoding.UTF8.GetByteCount(combined) <= MaximumCleanupContextUtf8Bytes
-                ? combined
-                : "[RECOVERY_CLEANUP_CONTEXT_OMITTED:" + HashToken(combined) + "]";
+        AppendFailureContext(
+            primary,
+            "HerdrOps.RecoveryCleanupFailures",
+            "HerdrOps.RecoveryCleanupFailure",
+            operation,
+            path,
+            cleanupFailure);
         primary.Data["HerdrOps.RecoveryCleanupEvidence"] =
             "Primary exception retained; cleanup failure prevented removal of one or more recovery artifacts.";
     }
+
+    public static void AttachRollbackStateFailure(
+        Exception primary,
+        string path,
+        Exception rollbackStateFailure)
+    {
+        AppendFailureContext(
+            primary,
+            "HerdrOps.RecoveryRollbackStateFailures",
+            "HerdrOps.RecoveryRollbackStateFailure",
+            "restore-rollback-state",
+            path,
+            rollbackStateFailure);
+        primary.Data["HerdrOps.RecoveryRollbackStateEvidence"] =
+            "The original destination identity or absence could not be proven after rollback.";
+    }
+
+    private static void AppendFailureContext(
+        Exception primary,
+        string collectionKey,
+        string summaryKey,
+        string operation,
+        string path,
+        Exception failure)
+    {
+        var entry = BoundFailureContext(
+            operation + ":" + TokenizePath(path) + ":" + SanitizeMessage(failure.Message));
+        var existing = primary.Data[collectionKey] switch
+        {
+            string[] entries => entries,
+            string entryValue => new[] { entryValue },
+            _ => Array.Empty<string>(),
+        };
+        var updated = new string[existing.Length + 1];
+        Array.Copy(existing, updated, existing.Length);
+        updated[^1] = entry;
+        primary.Data[collectionKey] = updated;
+
+        var combined = string.Join(" | ", updated);
+        primary.Data[summaryKey] =
+            Encoding.UTF8.GetByteCount(combined) <= MaximumCleanupContextUtf8Bytes
+                ? combined
+                : "[RECOVERY_CLEANUP_CONTEXT_OMITTED:" + HashToken(combined) + "]";
+    }
+
+    private static string BoundFailureContext(string value) =>
+        Encoding.UTF8.GetByteCount(value) <= MaximumCleanupContextUtf8Bytes
+            ? value
+            : "[RECOVERY_CLEANUP_CONTEXT_OMITTED:" + HashToken(value) + "]";
 
     private static string HashToken(string value)
     {

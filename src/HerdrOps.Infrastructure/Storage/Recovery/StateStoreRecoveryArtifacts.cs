@@ -79,10 +79,17 @@ internal static class StateStoreRecoveryArtifacts
                 if (!TryMoveWithoutOverwrite(temporaryPath, backupPath))
                 {
                     temporaryOwned = false;
-                    CleanupFileOrThrow(
-                        temporaryPath,
-                        recoveryOptions,
-                        "backup-collision-cleanup");
+                    var collisionFailure = new IOException(
+                        "A backup artifact collision prevented atomic publication.");
+                    if (!TryCleanupFile(
+                            temporaryPath,
+                            recoveryOptions,
+                            collisionFailure,
+                            "backup-collision-cleanup"))
+                    {
+                        throw collisionFailure;
+                    }
+
                     continue;
                 }
                 temporaryOwned = false;
@@ -161,11 +168,12 @@ internal static class StateStoreRecoveryArtifacts
         var destinationWasPresent = IdentifyExpectedDestination(
             normalizedDatabasePath,
             expectedDestinationIdentity,
-            out _);
+            out var originalDestinationIdentity);
 
         string? temporaryPath = null;
         string? priorPath = null;
         var movedIntoPlace = false;
+        var replacementAttempted = false;
         var restoreCompleted = false;
         try
         {
@@ -214,6 +222,7 @@ internal static class StateStoreRecoveryArtifacts
 
                 if (destinationWasPresent)
                 {
+                    replacementAttempted = true;
                     File.Replace(
                         temporaryPath,
                         normalizedDatabasePath,
@@ -223,6 +232,7 @@ internal static class StateStoreRecoveryArtifacts
                 }
                 else
                 {
+                    replacementAttempted = true;
                     File.Move(temporaryPath, normalizedDatabasePath, overwrite: false);
                     movedIntoPlace = true;
                     priorPath = null;
@@ -284,11 +294,11 @@ internal static class StateStoreRecoveryArtifacts
         }
         catch (Exception primary)
         {
-            if (movedIntoPlace && !restoreCompleted)
+            if (replacementAttempted && !restoreCompleted)
             {
                 RollbackDestination(
                     normalizedDatabasePath,
-                    destinationWasPresent,
+                    originalDestinationIdentity,
                     priorPath,
                     recoveryOptions,
                     primary);
@@ -356,7 +366,7 @@ internal static class StateStoreRecoveryArtifacts
 
     private static void RollbackDestination(
         string databasePath,
-        bool destinationWasPresent,
+        StateStoreRecoveryFileIdentity? originalDestinationIdentity,
         string? priorPath,
         StateStoreRecoveryOptions recoveryOptions,
         Exception primary)
@@ -367,7 +377,14 @@ internal static class StateStoreRecoveryArtifacts
                 databasePath,
                 includeLeaf: true);
 
-            if (destinationWasPresent)
+            recoveryOptions.EffectiveFaultInjector.OnPhase(
+                new StateStoreRecoveryPhaseContext(
+                    StateStoreRecoveryPhase.BeforeRestoreRollback,
+                    0,
+                    0,
+                    databasePath));
+
+            if (originalDestinationIdentity is not null)
             {
                 if (priorPath is null)
                 {
@@ -390,28 +407,50 @@ internal static class StateStoreRecoveryArtifacts
                 {
                     File.Move(priorPath, databasePath, overwrite: false);
                 }
-
-                return;
             }
-
-            if (Directory.Exists(databasePath))
+            else
             {
-                throw new HerdrStateStoreException(
-                    "The restore destination became a directory while rolling back.");
+                if (Directory.Exists(databasePath))
+                {
+                    throw new HerdrStateStoreException(
+                        "The restore destination became a directory while rolling back.");
+                }
+
+                if (File.Exists(databasePath))
+                {
+                    recoveryOptions.EffectiveCleanup.DeleteFile(databasePath);
+                }
             }
 
-            if (File.Exists(databasePath))
-            {
-                recoveryOptions.EffectiveCleanup.DeleteFile(databasePath);
-            }
+            recoveryOptions.EffectiveFaultInjector.OnPhase(
+                new StateStoreRecoveryPhaseContext(
+                    StateStoreRecoveryPhase.AfterRestoreRollbackOperation,
+                    0,
+                    0,
+                    databasePath));
         }
         catch (Exception rollbackFailure)
         {
             StateStoreRecoveryDiagnostics.AttachCleanupFailure(
                 primary,
-                "restore-rollback",
+                "restore-rollback-operation",
                 databasePath,
                 rollbackFailure);
+        }
+
+        try
+        {
+            _ = IdentifyExpectedDestination(
+                databasePath,
+                originalDestinationIdentity,
+                out _);
+        }
+        catch (Exception rollbackStateFailure)
+        {
+            StateStoreRecoveryDiagnostics.AttachRollbackStateFailure(
+                primary,
+                databasePath,
+                rollbackStateFailure);
         }
     }
 
@@ -532,16 +571,31 @@ internal static class StateStoreRecoveryArtifacts
                     Path.Combine(stagingPath, "recovery-trace.json"),
                     trace);
 
+                recoveryOptions.EffectiveFaultInjector.OnPhase(
+                    new StateStoreRecoveryPhaseContext(
+                        StateStoreRecoveryPhase.BeforeQuarantineMove,
+                        schemaVersion ?? 0,
+                        null,
+                        quarantinePath));
                 try
                 {
                     Directory.Move(stagingPath, quarantinePath);
                 }
-                catch (IOException)
+                catch (IOException moveFailure) when (
+                    File.Exists(quarantinePath) || Directory.Exists(quarantinePath))
                 {
-                    CleanupDirectoryOrThrow(
-                        stagingPath,
-                        recoveryOptions,
-                        "quarantine-collision-cleanup");
+                    var collisionFailure = new IOException(
+                        "A quarantine artifact collision prevented atomic publication.",
+                        moveFailure);
+                    if (!TryCleanupDirectory(
+                            stagingPath,
+                            recoveryOptions,
+                            collisionFailure,
+                            "quarantine-collision-cleanup"))
+                    {
+                        throw collisionFailure;
+                    }
+
                     continue;
                 }
 
@@ -653,16 +707,40 @@ internal static class StateStoreRecoveryArtifacts
                 continue;
             }
 
-            WriteBytes(temporaryPath, json);
-            if (TryMoveWithoutOverwrite(temporaryPath, tracePath))
+            try
             {
-                return tracePath;
-            }
+                WriteBytes(temporaryPath, json);
+                recoveryOptions.EffectiveFaultInjector.OnPhase(
+                    new StateStoreRecoveryPhaseContext(
+                        StateStoreRecoveryPhase.AfterTraceTemporaryCreated,
+                        trace.FromSchemaVersion ?? 0,
+                        trace.ToSchemaVersion,
+                        temporaryPath));
+                if (TryMoveWithoutOverwrite(temporaryPath, tracePath))
+                {
+                    return tracePath;
+                }
 
-            CleanupFileOrThrow(
-                temporaryPath,
-                recoveryOptions,
-                "trace-temporary-cleanup");
+                var collisionFailure = new IOException(
+                    "A recovery trace artifact collision prevented atomic publication.");
+                if (!TryCleanupFile(
+                        temporaryPath,
+                        recoveryOptions,
+                        collisionFailure,
+                        "trace-temporary-cleanup"))
+                {
+                    throw collisionFailure;
+                }
+            }
+            catch (Exception primary)
+            {
+                CleanupFilePreservingPrimary(
+                    temporaryPath,
+                    recoveryOptions,
+                    primary,
+                    "trace-temporary-cleanup");
+                throw;
+            }
         }
 
         throw new HerdrStateStoreException(
@@ -876,18 +954,7 @@ internal static class StateStoreRecoveryArtifacts
         Exception primary,
         string operation)
     {
-        try
-        {
-            recoveryOptions.EffectiveCleanup.DeleteFile(path);
-        }
-        catch (Exception cleanupFailure)
-        {
-            StateStoreRecoveryDiagnostics.AttachCleanupFailure(
-                primary,
-                operation,
-                path,
-                cleanupFailure);
-        }
+        _ = TryCleanupFile(path, recoveryOptions, primary, operation);
     }
 
     private static void CleanupDirectoryPreservingPrimary(
@@ -896,9 +963,19 @@ internal static class StateStoreRecoveryArtifacts
         Exception primary,
         string operation)
     {
+        _ = TryCleanupDirectory(path, recoveryOptions, primary, operation);
+    }
+
+    private static bool TryCleanupFile(
+        string path,
+        StateStoreRecoveryOptions recoveryOptions,
+        Exception primary,
+        string operation)
+    {
         try
         {
-            recoveryOptions.EffectiveCleanup.DeleteDirectoryTree(path);
+            recoveryOptions.EffectiveCleanup.DeleteFile(path);
+            return true;
         }
         catch (Exception cleanupFailure)
         {
@@ -907,52 +984,29 @@ internal static class StateStoreRecoveryArtifacts
                 operation,
                 path,
                 cleanupFailure);
+            return false;
         }
     }
 
-    private static void CleanupFileOrThrow(
+    private static bool TryCleanupDirectory(
         string path,
         StateStoreRecoveryOptions recoveryOptions,
-        string operation)
-    {
-        try
-        {
-            recoveryOptions.EffectiveCleanup.DeleteFile(path);
-        }
-        catch (Exception cleanupFailure)
-        {
-            var failure = new HerdrStateStoreException(
-                $"Recovery {operation} failed for {StateStoreRecoveryDiagnostics.TokenizePath(path)}.",
-                cleanupFailure);
-            StateStoreRecoveryDiagnostics.AttachCleanupFailure(
-                failure,
-                operation,
-                path,
-                cleanupFailure);
-            throw failure;
-        }
-    }
-
-    private static void CleanupDirectoryOrThrow(
-        string path,
-        StateStoreRecoveryOptions recoveryOptions,
+        Exception primary,
         string operation)
     {
         try
         {
             recoveryOptions.EffectiveCleanup.DeleteDirectoryTree(path);
+            return true;
         }
         catch (Exception cleanupFailure)
         {
-            var failure = new HerdrStateStoreException(
-                $"Recovery {operation} failed for {StateStoreRecoveryDiagnostics.TokenizePath(path)}.",
-                cleanupFailure);
             StateStoreRecoveryDiagnostics.AttachCleanupFailure(
-                failure,
+                primary,
                 operation,
                 path,
                 cleanupFailure);
-            throw failure;
+            return false;
         }
     }
 

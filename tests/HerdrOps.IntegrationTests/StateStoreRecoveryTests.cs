@@ -320,6 +320,274 @@ public sealed class StateStoreRecoveryTests
     }
 
     [TestMethod]
+    public void InjectedRollbackOperationFailurePreservesPrimaryAndRecordsRollbackStateFailure()
+    {
+        using var directory = new TemporaryDirectory();
+        var databasePath = Path.Combine(directory.Path, "rollback-operation-failure.db");
+        var changedPath = Path.Combine(directory.Path, "rollback-operation-changed.db");
+        CreateLegacyDatabase(databasePath, "original");
+        CreateLegacyDatabase(changedPath, "changed");
+        string backupPath;
+        using (var source = OpenDatabase(databasePath, SqliteOpenMode.ReadWrite))
+        {
+            backupPath = StateStoreRecoveryArtifacts.CreateBackup(
+                source,
+                databasePath,
+                fromVersion: 0,
+                toVersion: HerdrStateStoreOptions.CurrentSchemaVersion,
+                timeProvider: new FixedTimeProvider(FixedUtc),
+                recoveryOptions: new StateStoreRecoveryOptions(GuidFactory: () => FixedToken))
+                .BackupPath;
+        }
+
+        var backupIdentity = StateStoreRecoveryArtifacts.IdentifyFile(backupPath);
+        var destinationIdentity = StateStoreRecoveryArtifacts.IdentifyFile(databasePath);
+        var exception = Assert.Throws<HerdrStateStoreException>(() =>
+            StateStoreRecoveryArtifacts.RestoreBackup(
+                databasePath,
+                backupPath,
+                backupIdentity.Sha256,
+                destinationIdentity,
+                new FixedTimeProvider(FixedUtc),
+                new StateStoreRecoveryOptions(
+                    new DelegateStateStoreRecoveryFaultInjector(context =>
+                    {
+                        if (context.Phase == StateStoreRecoveryPhase.AfterRestoreReplacement)
+                        {
+                            File.Copy(changedPath, databasePath, overwrite: true);
+                        }
+                        else if (context.Phase == StateStoreRecoveryPhase.BeforeRestoreRollback)
+                        {
+                            throw new IOException("injected rollback operation failure");
+                        }
+                    }),
+                    () => FixedToken)));
+
+        StringAssert.Contains(exception.Message, "identity", StringComparison.OrdinalIgnoreCase);
+        var cleanupFailures = exception.Data["HerdrOps.RecoveryCleanupFailures"] as string[];
+        Assert.IsNotNull(cleanupFailures);
+        Assert.IsTrue(cleanupFailures!.Any(value => value.Contains("restore-rollback-operation", StringComparison.Ordinal)));
+        var stateFailures = exception.Data["HerdrOps.RecoveryRollbackStateFailures"] as string[];
+        Assert.IsNotNull(stateFailures);
+        Assert.IsTrue(stateFailures!.Any(value => value.Contains("restore-rollback-state", StringComparison.Ordinal)));
+        Assert.AreEqual(
+            StateStoreRecoveryArtifacts.IdentifyFile(changedPath).Sha256,
+            StateStoreRecoveryArtifacts.IdentifyFile(databasePath).Sha256);
+    }
+
+    [TestMethod]
+    public void InjectedPostRollbackCorruptionIsReportedWithoutReplacingPrimary()
+    {
+        using var directory = new TemporaryDirectory();
+        var databasePath = Path.Combine(directory.Path, "post-rollback-corruption.db");
+        var changedPath = Path.Combine(directory.Path, "post-rollback-corruption-source.db");
+        CreateLegacyDatabase(databasePath, "original");
+        CreateLegacyDatabase(changedPath, "changed");
+        string backupPath;
+        using (var source = OpenDatabase(databasePath, SqliteOpenMode.ReadWrite))
+        {
+            backupPath = StateStoreRecoveryArtifacts.CreateBackup(
+                source,
+                databasePath,
+                fromVersion: 0,
+                toVersion: HerdrStateStoreOptions.CurrentSchemaVersion,
+                timeProvider: new FixedTimeProvider(FixedUtc),
+                recoveryOptions: new StateStoreRecoveryOptions(GuidFactory: () => FixedToken))
+                .BackupPath;
+        }
+
+        var backupIdentity = StateStoreRecoveryArtifacts.IdentifyFile(backupPath);
+        var destinationIdentity = StateStoreRecoveryArtifacts.IdentifyFile(databasePath);
+        var exception = Assert.Throws<HerdrStateStoreException>(() =>
+            StateStoreRecoveryArtifacts.RestoreBackup(
+                databasePath,
+                backupPath,
+                backupIdentity.Sha256,
+                destinationIdentity,
+                new FixedTimeProvider(FixedUtc),
+                new StateStoreRecoveryOptions(
+                    new DelegateStateStoreRecoveryFaultInjector(context =>
+                    {
+                        if (context.Phase == StateStoreRecoveryPhase.AfterRestoreReplacement ||
+                            context.Phase == StateStoreRecoveryPhase.AfterRestoreRollbackOperation)
+                        {
+                            File.Copy(changedPath, databasePath, overwrite: true);
+                        }
+                    }),
+                    () => FixedToken)));
+
+        StringAssert.Contains(exception.Message, "identity", StringComparison.OrdinalIgnoreCase);
+        var stateFailures = exception.Data["HerdrOps.RecoveryRollbackStateFailures"] as string[];
+        Assert.IsNotNull(stateFailures);
+        Assert.IsTrue(stateFailures!.Any(value => value.Contains("restore-rollback-state", StringComparison.Ordinal)));
+        Assert.AreEqual(
+            StateStoreRecoveryArtifacts.IdentifyFile(changedPath).Sha256,
+            StateStoreRecoveryArtifacts.IdentifyFile(databasePath).Sha256);
+    }
+
+    [TestMethod]
+    public void RollbackCleanupFailurePreservesPrimaryAndRecordsEveryFailureContext()
+    {
+        using var directory = new TemporaryDirectory();
+        var sourcePath = Path.Combine(directory.Path, "rollback-cleanup-source.db");
+        var changedPath = Path.Combine(directory.Path, "rollback-cleanup-changed.db");
+        var databasePath = Path.Combine(directory.Path, "rollback-cleanup-absent.db");
+        CreateLegacyDatabase(sourcePath, "source");
+        CreateLegacyDatabase(changedPath, "changed");
+        Directory.CreateDirectory(Path.Combine(directory.Path, "backups"));
+        var backupPath = Path.Combine(directory.Path, "backups", "rollback-cleanup-absent.bak");
+        File.Copy(sourcePath, backupPath);
+        var backupIdentity = StateStoreRecoveryArtifacts.IdentifyFile(backupPath);
+
+        var exception = Assert.Throws<HerdrStateStoreException>(() =>
+            StateStoreRecoveryArtifacts.RestoreBackup(
+                databasePath,
+                backupPath,
+                backupIdentity.Sha256,
+                expectedDestinationIdentity: null,
+                new FixedTimeProvider(FixedUtc),
+                new StateStoreRecoveryOptions(
+                    new DelegateStateStoreRecoveryFaultInjector(context =>
+                    {
+                        if (context.Phase == StateStoreRecoveryPhase.AfterRestoreReplacement)
+                        {
+                            File.Copy(changedPath, databasePath, overwrite: true);
+                        }
+                    }),
+                    () => FixedToken,
+                    new ThrowingRecoveryCleanup())));
+
+        StringAssert.Contains(exception.Message, "identity", StringComparison.OrdinalIgnoreCase);
+        var cleanupFailures = exception.Data["HerdrOps.RecoveryCleanupFailures"] as string[];
+        Assert.IsNotNull(cleanupFailures);
+        Assert.IsTrue(cleanupFailures!.Any(value => value.Contains("restore-rollback-operation", StringComparison.Ordinal)));
+        var stateFailures = exception.Data["HerdrOps.RecoveryRollbackStateFailures"] as string[];
+        Assert.IsNotNull(stateFailures);
+        Assert.IsTrue(stateFailures!.Any(value => value.Contains("restore-rollback-state", StringComparison.Ordinal)));
+        Assert.IsTrue(File.Exists(databasePath));
+    }
+
+    [TestMethod]
+    public void BackupCollisionCleanupFailurePreservesCollisionPrimary()
+    {
+        using var directory = new TemporaryDirectory();
+        var databasePath = Path.Combine(directory.Path, "backup-collision.db");
+        CreateLegacyDatabase(databasePath, "backup-collision");
+        using var source = OpenDatabase(databasePath, SqliteOpenMode.ReadWrite);
+        var options = new StateStoreRecoveryOptions(
+            new DelegateStateStoreRecoveryFaultInjector(context =>
+            {
+                if (context.Phase == StateStoreRecoveryPhase.AfterBackupTemporaryCreated)
+                {
+                    var temporaryName = Path.GetFileName(context.ArtifactPath!)!;
+                    var baseName = temporaryName[1..^4];
+                    File.WriteAllText(
+                        Path.Combine(Path.GetDirectoryName(context.ArtifactPath!)!, baseName + ".bak"),
+                        "preserve-collision");
+                }
+            }),
+            () => FixedToken,
+            new ThrowingRecoveryCleanup());
+
+        var exception = Assert.Throws<IOException>(() =>
+            StateStoreRecoveryArtifacts.CreateBackup(
+                source,
+                databasePath,
+                fromVersion: 0,
+                toVersion: HerdrStateStoreOptions.CurrentSchemaVersion,
+                timeProvider: new FixedTimeProvider(FixedUtc),
+                recoveryOptions: options));
+
+        StringAssert.Contains(exception.Message, "collision", StringComparison.OrdinalIgnoreCase);
+        var cleanupFailures = exception.Data["HerdrOps.RecoveryCleanupFailures"] as string[];
+        Assert.IsNotNull(cleanupFailures);
+        Assert.IsTrue(cleanupFailures!.Any(value => value.Contains("backup-collision-cleanup", StringComparison.Ordinal)));
+        Assert.HasCount(
+            1,
+            Directory.GetFiles(Path.Combine(directory.Path, "backups"), "*.tmp"));
+    }
+
+    [TestMethod]
+    public void TraceCollisionCleanupFailurePreservesCollisionPrimary()
+    {
+        using var directory = new TemporaryDirectory();
+        var databasePath = Path.Combine(directory.Path, "trace-collision.db");
+        CreateLegacyDatabase(databasePath, "trace-collision");
+        using var source = OpenDatabase(databasePath, SqliteOpenMode.ReadWrite);
+        var options = new StateStoreRecoveryOptions(
+            new DelegateStateStoreRecoveryFaultInjector(context =>
+            {
+                if (context.Phase == StateStoreRecoveryPhase.AfterTraceTemporaryCreated)
+                {
+                    var temporaryName = Path.GetFileName(context.ArtifactPath!)!;
+                    var baseName = temporaryName[1..^4];
+                    File.WriteAllText(
+                        Path.Combine(Path.GetDirectoryName(context.ArtifactPath!)!, baseName + ".json"),
+                        "preserve-trace-collision");
+                }
+            }),
+            () => FixedToken,
+            new ThrowingRecoveryCleanup());
+
+        var exception = Assert.Throws<IOException>(() =>
+            StateStoreRecoveryArtifacts.CreateBackup(
+                source,
+                databasePath,
+                fromVersion: 0,
+                toVersion: HerdrStateStoreOptions.CurrentSchemaVersion,
+                timeProvider: new FixedTimeProvider(FixedUtc),
+                recoveryOptions: options));
+
+        StringAssert.Contains(exception.Message, "trace", StringComparison.OrdinalIgnoreCase);
+        var cleanupFailures = exception.Data["HerdrOps.RecoveryCleanupFailures"] as string[];
+        Assert.IsNotNull(cleanupFailures);
+        Assert.IsTrue(cleanupFailures!.Any(value => value.Contains("trace-temporary-cleanup", StringComparison.Ordinal)));
+    }
+
+    [TestMethod]
+    public void QuarantineCollisionCleanupFailurePreservesCollisionPrimary()
+    {
+        using var directory = new TemporaryDirectory();
+        var databasePath = Path.Combine(directory.Path, "quarantine-collision-cleanup.db");
+        File.WriteAllText(databasePath, "damaged-quarantine-collision");
+        var options = new StateStoreRecoveryOptions(
+            new DelegateStateStoreRecoveryFaultInjector(context =>
+            {
+                if (context.Phase == StateStoreRecoveryPhase.BeforeQuarantineMove)
+                {
+                    Directory.CreateDirectory(context.ArtifactPath!);
+                    File.WriteAllText(
+                        Path.Combine(context.ArtifactPath!, "keep.txt"),
+                        "preserve-quarantine-collision");
+                }
+            }),
+            () => FixedToken,
+            new ThrowingRecoveryCleanup());
+
+        var exception = Assert.Throws<IOException>(() =>
+            StateStoreRecoveryArtifacts.Quarantine(
+                databasePath,
+                new InvalidOperationException("primary quarantine failure"),
+                schemaVersion: null,
+                phase: "test",
+                timeProvider: new FixedTimeProvider(FixedUtc),
+                recoveryOptions: options));
+
+        StringAssert.Contains(exception.Message, "collision", StringComparison.OrdinalIgnoreCase);
+        var cleanupFailures = exception.Data["HerdrOps.RecoveryCleanupFailures"] as string[];
+        Assert.IsNotNull(cleanupFailures);
+        Assert.IsTrue(cleanupFailures!.Any(value => value.Contains("quarantine-collision-cleanup", StringComparison.Ordinal)));
+        var collisionPath = StateStoreRecoveryArtifacts.GetQuarantineCandidatePathForTesting(
+            databasePath,
+            FixedUtc,
+            FixedToken,
+            attempt: 0);
+        Assert.AreEqual(
+            "preserve-quarantine-collision",
+            File.ReadAllText(Path.Combine(collisionPath, "keep.txt")));
+    }
+
+    [TestMethod]
     public void DanglingLeafReparsePointIsRejectedEvenWhenFileExistsIsFalse()
     {
         if (!OperatingSystem.IsWindows())
@@ -379,6 +647,99 @@ public sealed class StateStoreRecoveryTests
         {
             File.Delete(lockPath);
         }
+    }
+
+    [TestMethod]
+    public void StoreConstructorRejectsDanglingDatabaseLeafAfterAcquiringAndReleasesLock()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            Assert.Inconclusive("The recovery target is Windows.");
+        }
+
+        using var directory = new TemporaryDirectory();
+        var databasePath = Path.Combine(directory.Path, "dangling-store.db");
+        var missingTargetPath = Path.Combine(directory.Path, "missing-target.db");
+        try
+        {
+            _ = Directory.CreateSymbolicLink(databasePath, missingTargetPath);
+        }
+        catch (Exception exception) when (
+            exception is UnauthorizedAccessException or IOException or PlatformNotSupportedException)
+        {
+            Assert.Inconclusive($"Symbolic-link creation is unavailable on this Windows host: {exception.GetType().Name}");
+        }
+
+        try
+        {
+            Assert.IsFalse(File.Exists(databasePath));
+            Assert.Throws<HerdrStateStoreException>(() =>
+                new SqliteHerdrStateStore(new HerdrStateStoreOptions(databasePath)));
+
+            AssertLockReleased(databasePath);
+            Assert.IsFalse(File.Exists(missingTargetPath));
+        }
+        finally
+        {
+            Directory.Delete(databasePath);
+        }
+    }
+
+    [TestMethod]
+    public void StoreConstructorRejectsDatabaseAppearanceAtPostLockAdmissionBoundary()
+    {
+        using var directory = new TemporaryDirectory();
+        var databasePath = Path.Combine(directory.Path, "appeared-store.db");
+        var options = new StateStoreRecoveryOptions(
+            new DelegateStateStoreRecoveryFaultInjector(context =>
+            {
+                if (context.Phase == StateStoreRecoveryPhase.AfterDatabaseLeafInspection)
+                {
+                    CreateLegacyDatabase(databasePath, "appeared-after-probe");
+                }
+            }),
+            () => FixedToken);
+
+        var exception = Assert.Throws<HerdrStateStoreException>(() =>
+            new SqliteHerdrStateStore(
+                new HerdrStateStoreOptions(databasePath),
+                new FixedTimeProvider(FixedUtc),
+                options));
+
+        StringAssert.Contains(exception.Message, "identity", StringComparison.OrdinalIgnoreCase);
+        Assert.AreEqual(0L, ReadUserVersion(databasePath));
+        AssertLockReleased(databasePath);
+    }
+
+    [TestMethod]
+    public void StoreConstructorRejectsDatabaseChangeAtPostLockAdmissionBoundary()
+    {
+        using var directory = new TemporaryDirectory();
+        var databasePath = Path.Combine(directory.Path, "changed-store.db");
+        var changedPath = Path.Combine(directory.Path, "changed-source.db");
+        CreateLegacyDatabase(databasePath, "original-before-probe");
+        CreateLegacyDatabase(changedPath, "changed-after-probe");
+        var originalIdentity = StateStoreRecoveryArtifacts.IdentifyFile(databasePath);
+        var options = new StateStoreRecoveryOptions(
+            new DelegateStateStoreRecoveryFaultInjector(context =>
+            {
+                if (context.Phase == StateStoreRecoveryPhase.AfterDatabaseLeafInspection)
+                {
+                    File.Copy(changedPath, databasePath, overwrite: true);
+                }
+            }),
+            () => FixedToken);
+
+        var exception = Assert.Throws<HerdrStateStoreException>(() =>
+            new SqliteHerdrStateStore(
+                new HerdrStateStoreOptions(databasePath),
+                new FixedTimeProvider(FixedUtc),
+                options));
+
+        StringAssert.Contains(exception.Message, "identity", StringComparison.OrdinalIgnoreCase);
+        Assert.AreNotEqual(originalIdentity.Sha256, StateStoreRecoveryArtifacts.IdentifyFile(databasePath).Sha256);
+        Assert.AreEqual(0L, ReadUserVersion(databasePath));
+        AssertLockReleased(databasePath);
     }
 
     [TestMethod]
@@ -602,6 +963,18 @@ public sealed class StateStoreRecoveryTests
 
     private static string ReadTextScalar(string path, string sql) =>
         Convert.ToString(ReadScalarObject(path, sql))!;
+
+    private static void AssertLockReleased(string databasePath)
+    {
+        var lockPath = databasePath + ".core.lock";
+        using var stream = new FileStream(
+            lockPath,
+            FileMode.OpenOrCreate,
+            FileAccess.ReadWrite,
+            FileShare.None,
+            bufferSize: 1,
+            FileOptions.None);
+    }
 
     private static object ReadScalarObject(string path, string sql)
     {

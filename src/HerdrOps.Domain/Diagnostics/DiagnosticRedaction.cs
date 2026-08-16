@@ -49,14 +49,12 @@ public sealed class DiagnosticTextRedactor
         "\\b(?:github_pat_[A-Z0-9_]{20,}|gh[pousr]_[A-Z0-9_]{16,}|ghs_[A-Z0-9_]+(?:\\.[A-Z0-9_-]{8,}){2}|sk-[A-Z0-9_-]{16,}|xox[baprs]-[A-Z0-9-]{16,}|npm_[A-Z0-9]{20,}|pypi-[A-Z0-9_-]{16,}|AKIA[0-9A-Z]{16}|ASIA[0-9A-Z]{16})\\b");
     private static readonly Regex JwtPattern = CreateRegex(
         "\\beyJ[A-Z0-9_-]{8,}\\.[A-Z0-9_-]{8,}\\.[A-Z0-9_-]{8,}\\b");
-    private static readonly Regex UserProfilePathPattern = CreateRegex(
-        "(?:\"(?:[A-Z]:[\\\\/]|/)(?:users|home)[\\\\/][^\\r\\n\"'<>|:*?;,]+(?::\\d+(?::\\d+)?)?\"(?::\\d+(?::\\d+)?)?|(?:[A-Z]:[\\\\/]|/)(?:users|home)[\\\\/][^\\r\\n\"'<>|:*?;,]+(?::\\d+(?::\\d+)?)?)");
     private static readonly Regex UserProfileVariablePattern = CreateRegex(
         "(?:\"(?:%USERPROFILE%|\\$env:USERPROFILE|\\$USERPROFILE)[\\\\/][^\\r\\n\"'<>|:*?;,]+(?::\\d+(?::\\d+)?)?\"(?::\\d+(?::\\d+)?)?|(?:%USERPROFILE%|\\$env:USERPROFILE|\\$USERPROFILE)[\\\\/][^\\r\\n\"'<>|:*?;,]+(?::\\d+(?::\\d+)?)?)");
-    private static readonly Regex SocketPathPattern = CreateRegex(
-        "(?:[A-Z]:[\\\\/][^\\r\\n\"'<>|:*?;,]*\\bherdr\\.sock\\b|/[^\\r\\n\"'<>|:*?;,]*/herdr\\.sock\\b|\\\\\\\\[^\\r\\n\"'<>|:*?;,]+\\\\(?:pipe|socket)[^\\r\\n\"'<>|:*?;,]*)");
-    private static readonly Regex LocalAbsolutePathPattern = CreateRegex(
-        "(?:\"(?:[A-Z]:[\\\\/]|\\\\\\\\)[^\\r\\n\"'<>|:*?;,]+(?::\\d+(?::\\d+)?)?\"(?::\\d+(?::\\d+)?)?|(?:[A-Z]:[\\\\/]|\\\\\\\\)[^\\r\\n\"'<>|:*?;,]+(?::\\d+(?::\\d+)?)?)");
+    private static readonly Regex UnixUserProfilePathPattern = CreateRegex(
+        "(?:\"/(?:users|home)/[^\\r\\n\"]+\"(?::\\d+(?::\\d+)?)?|/(?:users|home)/[^\\r\\n\"]+(?::\\d+(?::\\d+)?)?)");
+    private static readonly Regex UnixSocketPathPattern = CreateRegex(
+        "/[^\\r\\n\"]*\\bherdr\\.sock\\b");
 
     private readonly DiagnosticRedactionOptions _options;
     private readonly Regex? _configuredPattern;
@@ -102,9 +100,9 @@ public sealed class DiagnosticTextRedactor
         normalized = ReplaceWhole(KnownTokenPattern, normalized, ref replacementCount);
         normalized = ReplaceWhole(JwtPattern, normalized, ref replacementCount);
         normalized = ReplaceWhole(UserProfileVariablePattern, normalized, ref replacementCount, UserProfileReplacement);
-        normalized = ReplaceWhole(UserProfilePathPattern, normalized, ref replacementCount, UserProfileReplacement);
-        normalized = ReplaceWhole(SocketPathPattern, normalized, ref replacementCount, SocketReplacement);
-        normalized = ReplaceWhole(LocalAbsolutePathPattern, normalized, ref replacementCount, PathReplacement);
+        normalized = ReplaceWhole(UnixUserProfilePathPattern, normalized, ref replacementCount, UserProfileReplacement);
+        normalized = ReplaceWhole(UnixSocketPathPattern, normalized, ref replacementCount, SocketReplacement);
+        normalized = ReplaceWindowsPaths(normalized, ref replacementCount);
         if (string.IsNullOrWhiteSpace(normalized))
         {
             normalized = "[EMPTY]";
@@ -230,6 +228,370 @@ public sealed class DiagnosticTextRedactor
         });
         count += localCount;
         return result;
+    }
+
+    private static string ReplaceWindowsPaths(string value, ref int count)
+    {
+        StringBuilder? builder = null;
+        var copyStart = 0;
+        var index = 0;
+        while (index < value.Length)
+        {
+            if (!TryFindWindowsPath(value, index, out var end, out var replacement))
+            {
+                index++;
+                continue;
+            }
+
+            builder ??= new StringBuilder(value.Length);
+            builder.Append(value, copyStart, index - copyStart);
+            builder.Append(replacement);
+            copyStart = end;
+            index = end;
+            count++;
+        }
+
+        if (builder is null)
+        {
+            return value;
+        }
+
+        builder.Append(value, copyStart, value.Length - copyStart);
+        return builder.ToString();
+    }
+
+    private static bool TryFindWindowsPath(
+        string value,
+        int start,
+        out int end,
+        out string replacement)
+    {
+        end = start;
+        replacement = string.Empty;
+        var pathStart = start;
+        var quoted = false;
+        var quote = '\0';
+        if (value[start] is '"' or '\'' &&
+            TryGetWindowsPathKind(value, start + 1, out _))
+        {
+            quoted = true;
+            quote = value[start];
+            pathStart++;
+        }
+
+        if (!TryGetWindowsPathKind(value, pathStart, out var kind) ||
+            !HasPathBoundaryBefore(value, start, quoted))
+        {
+            return false;
+        }
+
+        var bodyStart = GetWindowsPathBodyStart(pathStart, kind);
+        var cursor = bodyStart;
+        if (quoted)
+        {
+            while (cursor < value.Length && value[cursor] != quote)
+            {
+                if (value[cursor] is '\r' or '\n' || char.IsControl(value[cursor]))
+                {
+                    break;
+                }
+
+                cursor++;
+            }
+
+            if (!HasValidWindowsPathBody(value, bodyStart, cursor, kind))
+            {
+                return false;
+            }
+
+            end = cursor < value.Length && value[cursor] == quote
+                ? ConsumeLineColumnSuffix(value, cursor + 1)
+                : cursor;
+        }
+        else
+        {
+            while (cursor < value.Length)
+            {
+                var character = value[cursor];
+                if (character is '\r' or '\n' or '\t' || char.IsControl(character))
+                {
+                    break;
+                }
+
+                if (character == '"' ||
+                    (character is ',' or ';' && IsFieldDelimiter(value, cursor)))
+                {
+                    break;
+                }
+
+                cursor++;
+            }
+
+            if (cursor <= bodyStart || !HasValidWindowsPathBody(value, bodyStart, cursor, kind))
+            {
+                return false;
+            }
+
+            end = ConsumeLineColumnSuffix(value, cursor);
+        }
+
+        var candidateLength = end - pathStart;
+        var candidate = value.Substring(pathStart, candidateLength);
+        replacement = ClassifyWindowsPath(candidate);
+        return true;
+    }
+
+    private static bool TryGetWindowsPathKind(
+        string value,
+        int start,
+        out WindowsPathKind kind)
+    {
+        kind = default;
+        if (start < 0 || start >= value.Length)
+        {
+            return false;
+        }
+
+        if (start + 2 < value.Length &&
+            IsAsciiLetter(value[start]) &&
+            value[start + 1] == ':' &&
+            IsWindowsSeparator(value[start + 2]))
+        {
+            kind = WindowsPathKind.Drive;
+            return true;
+        }
+
+        if (start + 3 < value.Length &&
+            value[start] == '\\' &&
+            value[start + 1] == '\\' &&
+            value[start + 2] == '?' &&
+            IsWindowsSeparator(value[start + 3]))
+        {
+            if (StartsWith(value, start + 4, "UNC") &&
+                start + 7 < value.Length &&
+                IsWindowsSeparator(value[start + 7]))
+            {
+                kind = WindowsPathKind.ExtendedUnc;
+            }
+            else if (start + 6 < value.Length &&
+                     IsAsciiLetter(value[start + 4]) &&
+                     value[start + 5] == ':' &&
+                     IsWindowsSeparator(value[start + 6]))
+            {
+                kind = WindowsPathKind.ExtendedDrive;
+            }
+            else
+            {
+                kind = WindowsPathKind.Extended;
+            }
+
+            return true;
+        }
+
+        if (start + 1 < value.Length &&
+            (value[start] == '\\' || value[start] == '/') &&
+            value[start + 1] == value[start])
+        {
+            kind = WindowsPathKind.Unc;
+            return true;
+        }
+
+        return false;
+    }
+
+    private static int GetWindowsPathBodyStart(
+        int pathStart,
+        WindowsPathKind kind) =>
+        kind switch
+        {
+            WindowsPathKind.Drive => pathStart + 3,
+            WindowsPathKind.ExtendedDrive => pathStart + 7,
+            WindowsPathKind.ExtendedUnc => pathStart + 8,
+            WindowsPathKind.Extended => pathStart + 4,
+            _ => pathStart + 2,
+        };
+
+    private static bool HasValidWindowsPathBody(
+        string value,
+        int bodyStart,
+        int end,
+        WindowsPathKind kind)
+    {
+        if (end < bodyStart)
+        {
+            return false;
+        }
+
+        if (kind is WindowsPathKind.Unc or WindowsPathKind.ExtendedUnc)
+        {
+            var separatorCount = 0;
+            var componentLength = 0;
+            for (var index = bodyStart; index < end; index++)
+            {
+                if (IsWindowsSeparator(value[index]))
+                {
+                    if (componentLength == 0)
+                    {
+                        return false;
+                    }
+
+                    separatorCount++;
+                    componentLength = 0;
+                }
+                else
+                {
+                    componentLength++;
+                }
+            }
+
+            return separatorCount >= 1 && componentLength > 0;
+        }
+
+        return kind is WindowsPathKind.Extended || end > bodyStart || end == bodyStart;
+    }
+
+    private static bool HasPathBoundaryBefore(string value, int start, bool quoted) =>
+        quoted ||
+        start == 0 ||
+        !(char.IsLetterOrDigit(value[start - 1]) || value[start - 1] is '_' or '$');
+
+    private static bool IsFieldDelimiter(string value, int index)
+    {
+        var cursor = index + 1;
+        if (cursor < value.Length &&
+            value[cursor] is not ' ' and not '\t' and not '"' and not '\'')
+        {
+            return false;
+        }
+
+        while (cursor < value.Length && (value[cursor] == ' ' || value[cursor] == '\t'))
+        {
+            cursor++;
+        }
+
+        if (cursor >= value.Length || value[cursor] is '\r' or '\n')
+        {
+            return true;
+        }
+
+        if (value[cursor] == '"')
+        {
+            return true;
+        }
+
+        var identifierStart = cursor;
+        while (cursor < value.Length &&
+               (char.IsLetterOrDigit(value[cursor]) || value[cursor] is '_' or '-' or '.'))
+        {
+            cursor++;
+        }
+
+        if (cursor <= identifierStart || cursor >= value.Length || value[cursor] != '=')
+        {
+            return false;
+        }
+
+        cursor++;
+        while (cursor < value.Length && (value[cursor] == ' ' || value[cursor] == '\t'))
+        {
+            cursor++;
+        }
+
+        return cursor >= value.Length || value[cursor] is '"' or '\'';
+    }
+
+    private static int ConsumeLineColumnSuffix(string value, int start)
+    {
+        var cursor = start;
+        if (cursor >= value.Length || value[cursor] != ':')
+        {
+            return start;
+        }
+
+        cursor++;
+        var firstDigits = cursor;
+        while (cursor < value.Length && char.IsAsciiDigit(value[cursor]))
+        {
+            cursor++;
+        }
+
+        if (cursor == firstDigits)
+        {
+            return start;
+        }
+
+        if (cursor < value.Length && value[cursor] == ':')
+        {
+            var secondDigits = ++cursor;
+            while (cursor < value.Length && char.IsAsciiDigit(value[cursor]))
+            {
+                cursor++;
+            }
+
+            if (cursor == secondDigits)
+            {
+                return start;
+            }
+        }
+
+        return cursor;
+    }
+
+    private static string ClassifyWindowsPath(string candidate)
+    {
+        if (candidate.Contains("herdr.sock", StringComparison.OrdinalIgnoreCase) ||
+            candidate.Contains("\\pipe\\", StringComparison.OrdinalIgnoreCase) ||
+            candidate.Contains("/pipe/", StringComparison.OrdinalIgnoreCase) ||
+            candidate.Contains("\\socket\\", StringComparison.OrdinalIgnoreCase) ||
+            candidate.Contains("/socket/", StringComparison.OrdinalIgnoreCase))
+        {
+            return SocketReplacement;
+        }
+
+        var path = candidate.Trim('"', '\'');
+        if (ContainsProfileComponent(path))
+        {
+            return UserProfileReplacement;
+        }
+
+        return PathReplacement;
+    }
+
+    private static bool ContainsProfileComponent(string path)
+    {
+        var normalized = path.Replace('/', '\\');
+        if (normalized.StartsWith("\\\\?\\", StringComparison.Ordinal))
+        {
+            normalized = normalized[4..];
+            if (normalized.StartsWith("UNC\\", StringComparison.OrdinalIgnoreCase))
+            {
+                normalized = normalized[4..];
+            }
+        }
+
+        return normalized.Contains("\\Users\\", StringComparison.OrdinalIgnoreCase) ||
+            normalized.Contains("\\Home\\", StringComparison.OrdinalIgnoreCase) ||
+            normalized.StartsWith("Users\\", StringComparison.OrdinalIgnoreCase) ||
+            normalized.StartsWith("Home\\", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool StartsWith(string value, int start, string expected) =>
+        start >= 0 &&
+        start + expected.Length <= value.Length &&
+        value.AsSpan(start, expected.Length).Equals(expected, StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsWindowsSeparator(char value) => value is '\\' or '/';
+
+    private static bool IsAsciiLetter(char value) =>
+        value is >= 'A' and <= 'Z' or >= 'a' and <= 'z';
+
+    private enum WindowsPathKind
+    {
+        Drive,
+        Unc,
+        ExtendedDrive,
+        ExtendedUnc,
+        Extended,
     }
 
     private static string NormalizeControls(string value)

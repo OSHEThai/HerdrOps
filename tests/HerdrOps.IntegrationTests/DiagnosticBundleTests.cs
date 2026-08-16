@@ -190,6 +190,60 @@ public sealed class DiagnosticBundleTests
     }
 
     [TestMethod]
+    public void RedactorClosesPunctuatedUncAndExtendedWindowsPathsWithoutResidualFragments()
+    {
+        var paths = new[]
+        {
+            @"C:\Users\O'Brien,; Smith\source file.cs:42:17",
+            @"\\server\share\O'Brien,; Smith\source file.cs:42",
+            @"//server/share/O'Brien,; Smith/source file.cs:42",
+            @"\\?\C:\Program Files\O'Brien,; Smith\source file.cs:42:17",
+            @"\\?\UNC\server\share\O'Brien,; Smith\source file.cs:42",
+        };
+        var redactor = new DiagnosticTextRedactor();
+
+        foreach (var path in paths)
+        {
+            var result = redactor.Redact($"diagnostic-path=\"{path}\"");
+
+            Assert.IsFalse(result.Text.Contains(path, StringComparison.Ordinal), path);
+            Assert.IsFalse(result.Text.Contains("O'Brien", StringComparison.Ordinal), path);
+            Assert.IsFalse(result.Text.Contains("source file.cs", StringComparison.Ordinal), path);
+            Assert.IsFalse(result.Text.Contains("42:17", StringComparison.Ordinal), path);
+            Assert.IsFalse(result.Text.Contains("\\?\\", StringComparison.Ordinal), path);
+            Assert.IsGreaterThan(0, result.ReplacementCount, path);
+
+            var unquoted = redactor.Redact($"diagnostic-path={path}\n");
+            Assert.IsFalse(unquoted.Text.Contains(path, StringComparison.Ordinal), path);
+            Assert.IsFalse(unquoted.Text.Contains("O'Brien", StringComparison.Ordinal), path);
+            Assert.IsFalse(unquoted.Text.Contains("source file.cs", StringComparison.Ordinal), path);
+        }
+
+        var singleQuoted = redactor.Redact(
+            @"diagnostic-path='\\?\UNC\server\share\Program Files\output,; file.dll:7:11'");
+        Assert.IsFalse(singleQuoted.Text.Contains("Program Files", StringComparison.Ordinal));
+        Assert.IsFalse(singleQuoted.Text.Contains("output,; file.dll:7:11", StringComparison.Ordinal));
+    }
+
+    [TestMethod]
+    public void RedactorWindowsPathScannerHandlesRepeatedAdversarialLinesWithinBound()
+    {
+        const string path = @"\\?\UNC\server\share\O'Brien,; folder with spaces\source file.cs:12:34";
+        var input = string.Join(
+            "\n",
+            Enumerable.Range(0, 384).Select(index => $"line={index:D3}; path=\"{path}\""));
+        var redactor = new DiagnosticTextRedactor();
+
+        var result = redactor.Redact(input);
+
+        Assert.AreEqual(384, result.ReplacementCount);
+        Assert.IsFalse(result.Text.Contains("O'Brien", StringComparison.Ordinal));
+        Assert.IsFalse(result.Text.Contains("source file.cs:12:34", StringComparison.Ordinal));
+        Assert.IsFalse(result.Text.Contains("\\?\\UNC", StringComparison.Ordinal));
+        Assert.IsTrue(result.WasTruncated);
+    }
+
+    [TestMethod]
     public void ConfiguredSecretRedactionUsesOneBoundedPassForRepeatedInput()
     {
         const string secret = "repeated-configured-secret-42";

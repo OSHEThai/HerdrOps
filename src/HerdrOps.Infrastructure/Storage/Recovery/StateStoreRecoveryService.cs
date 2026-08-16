@@ -162,9 +162,15 @@ public sealed class StateStoreRecoveryService
         }
         catch (Exception exception)
         {
-            throw new StateStoreRestoreRejectedException(
+            var rejected = new StateStoreRestoreRejectedException(
                 StateStoreRecoveryDiagnostics.SanitizeMessage(exception.Message),
                 exception);
+            foreach (System.Collections.DictionaryEntry entry in exception.Data)
+            {
+                rejected.Data[entry.Key] = entry.Value;
+            }
+
+            throw rejected;
         }
     }
 
