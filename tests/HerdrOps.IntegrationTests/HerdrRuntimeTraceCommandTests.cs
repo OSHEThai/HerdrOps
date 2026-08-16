@@ -9,7 +9,7 @@ namespace HerdrOps.IntegrationTests;
 public sealed class HerdrRuntimeTraceCommandTests
 {
     [TestMethod]
-    public void TraceTransitionCopiesOnlyTheMonitorAcceptedEventKind()
+    public void TraceTransitionCopiesOnlyTheMonitorAcceptedEventProvenance()
     {
         var snapshot = new HerdrRuntimeMonitorSnapshot(
             HerdrRuntimeMonitorStatus.Connected,
@@ -31,13 +31,25 @@ public sealed class HerdrRuntimeTraceCommandTests
         var eventTransition = HerdrRuntimeEvidence.CreateTransition(snapshot with
         {
             AcceptedEventKind = HerdrRuntimeMonitor.AcceptedAgentStatusEventKind,
+            AcceptedAgentStatusEvent = new HerdrAcceptedAgentStatusEvent(
+                "workspace-1",
+                "pane-1",
+                HerdrAgentStatus.Working,
+                "codex",
+                "Codex",
+                "Working"),
         });
         var nonEventTransition = HerdrRuntimeEvidence.CreateTransition(snapshot);
 
         Assert.AreEqual(
             "pane.agent_status_changed",
             eventTransition.AcceptedEventKind);
+        Assert.IsNotNull(eventTransition.AcceptedAgentStatusEvent);
+        Assert.AreEqual("workspace-1", eventTransition.AcceptedAgentStatusEvent.WorkspaceId);
+        Assert.AreEqual("pane-1", eventTransition.AcceptedAgentStatusEvent.PaneId);
+        Assert.AreEqual(HerdrAgentStatus.Working, eventTransition.AcceptedAgentStatusEvent.AgentStatus);
         Assert.IsNull(nonEventTransition.AcceptedEventKind);
+        Assert.IsNull(nonEventTransition.AcceptedAgentStatusEvent);
         Assert.IsTrue(HerdrRuntimeEvidence.HasAcceptedAgentStatusEvent(
             [nonEventTransition, eventTransition]));
         Assert.IsFalse(HerdrRuntimeEvidence.HasAcceptedAgentStatusEvent(

@@ -82,6 +82,11 @@ public sealed record RuntimeAgentStatusTransitionEvidence(
     DateTimeOffset PhaseEnteredUtc,
     DateTimeOffset ObservedUtc,
     string AcceptedEventKind,
+    string AdmissionPath,
+    long BaselineConnectionEpoch,
+    bool CurrentIsCoreConnected,
+    bool CurrentIsLive,
+    string CurrentRuntimeStatus,
     long BaselineSequence,
     long CurrentSequence,
     long BaselineEventCount,
@@ -363,6 +368,8 @@ public sealed class RuntimeEvidenceRunner(
         "CoreAcceptedStateUtcToWpfStateApplied";
     private const string AcceptedAgentStatusEventKind =
         "pane.agent_status_changed";
+    public const string DirectEventAdmissionPath = "direct-event";
+    public const string SnapshotBeforeEventAdmissionPath = "snapshot-before-event";
 
     private static readonly JsonSerializerOptions SerializerOptions = new()
     {
@@ -1064,13 +1071,31 @@ public sealed class RuntimeEvidenceRunner(
             evidence.AcceptedEventKind,
             AcceptedAgentStatusEventKind,
             StringComparison.Ordinal) &&
-        evidence.CurrentSequence == evidence.BaselineSequence + 1 &&
         evidence.CurrentEventCount == evidence.BaselineEventCount + 1 &&
+        evidence.ConnectionEpoch == evidence.BaselineConnectionEpoch &&
+        evidence.CurrentIsCoreConnected &&
+        evidence.CurrentIsLive &&
+        string.Equals(evidence.CurrentRuntimeStatus, "Connected", StringComparison.Ordinal) &&
         evidence.CurrentBootstrapCount == evidence.BaselineBootstrapCount &&
         evidence.CurrentDisconnectCount == evidence.BaselineDisconnectCount &&
-        evidence.CurrentReconciliationCount >= evidence.BaselineReconciliationCount &&
-        evidence.CurrentReconciliationCount <= evidence.BaselineReconciliationCount + 1 &&
-        evidence.ChangeCount > 0;
+        HasSupportedEventAdmissionPath(evidence) &&
+        evidence.ChangeCount == 1;
+
+    private static bool HasSupportedEventAdmissionPath(
+        RuntimeAgentStatusTransitionEvidence evidence)
+    {
+        var sequenceDelta = evidence.CurrentSequence - evidence.BaselineSequence;
+        var reconciliationDelta =
+            evidence.CurrentReconciliationCount - evidence.BaselineReconciliationCount;
+        return evidence.AdmissionPath switch
+        {
+            DirectEventAdmissionPath =>
+                sequenceDelta == 1 && reconciliationDelta == 1,
+            SnapshotBeforeEventAdmissionPath =>
+                sequenceDelta == 2 && reconciliationDelta is >= 1 and <= 2,
+            _ => false,
+        };
+    }
 
     private async Task<RuntimeAgentStatusTransitionEvidence> WaitForAgentStatusTransitionAsync(
         HerdrSessionStateContract baselineState,
@@ -1112,25 +1137,40 @@ public sealed class RuntimeEvidenceRunner(
             cancellationToken.ThrowIfCancellationRequested();
             var currentState = _state.CurrentState;
             var currentHealth = _state.CurrentRuntimeHealth;
+            var sequenceDelta =
+                currentState.LastIngestSequence - baselineState.LastIngestSequence;
+            var reconciliationDelta =
+                currentHealth.ReconciliationCount - baselineProgress.ReconciliationCount;
+            var admissionPath = sequenceDelta switch
+            {
+                1 when reconciliationDelta == 1 =>
+                    DirectEventAdmissionPath,
+                2 when reconciliationDelta is >= 1 and <= 2 =>
+                    SnapshotBeforeEventAdmissionPath,
+                _ => null,
+            };
             if (_state.IsCoreConnected &&
                 _state.IsLive &&
                 currentState.ConnectionEpoch == baselineState.ConnectionEpoch &&
-                currentState.LastIngestSequence == baselineState.LastIngestSequence + 1 &&
+                admissionPath is not null &&
                 currentHealth.EventCount == baselineProgress.EventCount + 1 &&
                 currentHealth.BootstrapCount == baselineProgress.BootstrapCount &&
                 currentHealth.DisconnectCount == baselineProgress.DisconnectCount &&
-                currentHealth.ReconciliationCount >= baselineProgress.ReconciliationCount &&
-                currentHealth.ReconciliationCount <= baselineProgress.ReconciliationCount + 1 &&
                 currentHealth.LastTransitionUtc >= baselineProgress.ObservedUtc &&
                 string.Equals(currentHealth.Status, "Connected", StringComparison.Ordinal))
             {
                 var changes = FindCorrelatedAgentStatusChanges(baselineState, currentState);
-                if (changes.Count > 0)
+                if (changes.Count == 1)
                 {
                     return new RuntimeAgentStatusTransitionEvidence(
                         baselineProgress.ObservedUtc,
                         DateTimeOffset.UtcNow,
                         AcceptedAgentStatusEventKind,
+                        admissionPath,
+                        baselineState.ConnectionEpoch,
+                        _state.IsCoreConnected,
+                        _state.IsLive,
+                        currentHealth.Status,
                         baselineState.LastIngestSequence,
                         currentState.LastIngestSequence,
                         baselineProgress.EventCount,

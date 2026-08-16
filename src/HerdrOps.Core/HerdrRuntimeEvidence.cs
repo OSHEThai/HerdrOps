@@ -39,7 +39,10 @@ internal static class HerdrRuntimeEvidence
             HerdrOpsStateIpcJson.ComputeSha256(contractState),
             snapshot.ServerIdentity,
             snapshot.AcceptedEventKind,
-            snapshot.LastTransitionReason);
+            snapshot.LastTransitionReason)
+        {
+            AcceptedAgentStatusEvent = snapshot.AcceptedAgentStatusEvent,
+        };
     }
 
     private static string ComputeStateFingerprint(HerdrSessionState state)

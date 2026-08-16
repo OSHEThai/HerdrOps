@@ -26,7 +26,10 @@ public sealed record HerdrRuntimeTraceTransition(
     string ContractStateSha256,
     HerdrServerProcessIdentity? ServerIdentity,
     string? AcceptedEventKind,
-    string? Reason);
+    string? Reason)
+{
+    public HerdrAcceptedAgentStatusEvent? AcceptedAgentStatusEvent { get; init; }
+}
 
 public sealed record HerdrRuntimeTraceReport(
     string EvidenceClassification,

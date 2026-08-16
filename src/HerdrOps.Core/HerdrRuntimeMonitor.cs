@@ -11,6 +11,14 @@ public enum HerdrRuntimeMonitorStatus
     Stopped,
 }
 
+public sealed record HerdrAcceptedAgentStatusEvent(
+    string WorkspaceId,
+    string PaneId,
+    HerdrAgentStatus AgentStatus,
+    string? Agent,
+    string? DisplayAgent,
+    string? Title);
+
 public sealed record HerdrRuntimeMonitorSnapshot(
     HerdrRuntimeMonitorStatus Status,
     HerdrSessionState State,
@@ -23,6 +31,8 @@ public sealed record HerdrRuntimeMonitorSnapshot(
     DateTimeOffset LastTransitionUtc)
 {
     public string? AcceptedEventKind { get; init; }
+
+    public HerdrAcceptedAgentStatusEvent? AcceptedAgentStatusEvent { get; init; }
 }
 
 public sealed record HerdrRuntimeMonitorOptions(
@@ -401,6 +411,16 @@ public sealed class HerdrRuntimeMonitor
                         var current = Current;
                         var stateChanged = !HasSameAuthoritativeContent(current.State, candidate);
                         var paneSetChanged = !subscribedPaneIds.SetEquals(candidate.Panes.Keys);
+                        var acceptedStatusEvent =
+                            !paneSetChanged &&
+                            candidate.Panes.TryGetValue(statusChanged.PaneId, out var acceptedPane) &&
+                            string.Equals(
+                                acceptedPane.WorkspaceId,
+                                statusChanged.WorkspaceId,
+                                StringComparison.Ordinal) &&
+                            acceptedPane.AgentStatus == statusChanged.AgentStatus
+                                ? statusChanged
+                                : null;
                         Publish(
                             current with
                             {
@@ -415,7 +435,7 @@ public sealed class HerdrRuntimeMonitor
                                     : null,
                                 LastTransitionUtc = statusSnapshotReceivedUtc,
                             },
-                            paneSetChanged ? null : AcceptedAgentStatusEventKind);
+                            acceptedStatusEvent);
 
                         if (paneSetChanged)
                         {
@@ -618,23 +638,43 @@ public sealed class HerdrRuntimeMonitor
 
     private void Publish(
         HerdrRuntimeMonitorSnapshot snapshot,
-        string? acceptedEventKind = null)
+        HerdrPaneAgentStatusChangedEvent? acceptedAgentStatusEvent = null)
     {
         lock (_stateLock)
         {
-            if (acceptedEventKind is not null &&
+            if (acceptedAgentStatusEvent is not null &&
                 (!string.Equals(
-                     acceptedEventKind,
+                     acceptedAgentStatusEvent.EventName,
                      AcceptedAgentStatusEventKind,
                      StringComparison.Ordinal) ||
                  snapshot.Status != HerdrRuntimeMonitorStatus.Connected ||
-                 snapshot.EventCount != _current.EventCount + 1))
+                 snapshot.EventCount != _current.EventCount + 1 ||
+                 !snapshot.State.Panes.TryGetValue(
+                     acceptedAgentStatusEvent.PaneId,
+                     out var acceptedPane) ||
+                 !string.Equals(
+                     acceptedPane.WorkspaceId,
+                     acceptedAgentStatusEvent.WorkspaceId,
+                     StringComparison.Ordinal) ||
+                 acceptedPane.AgentStatus != acceptedAgentStatusEvent.AgentStatus))
             {
                 throw new InvalidOperationException(
                     "An accepted runtime event must be a connected transition with exactly one Event-count increment.");
             }
 
-            snapshot = snapshot with { AcceptedEventKind = acceptedEventKind };
+            snapshot = snapshot with
+            {
+                AcceptedEventKind = acceptedAgentStatusEvent?.EventName,
+                AcceptedAgentStatusEvent = acceptedAgentStatusEvent is null
+                    ? null
+                    : new HerdrAcceptedAgentStatusEvent(
+                        acceptedAgentStatusEvent.WorkspaceId,
+                        acceptedAgentStatusEvent.PaneId,
+                        acceptedAgentStatusEvent.AgentStatus,
+                        acceptedAgentStatusEvent.Agent,
+                        acceptedAgentStatusEvent.DisplayAgent,
+                        acceptedAgentStatusEvent.Title),
+            };
             _current = snapshot;
         }
 

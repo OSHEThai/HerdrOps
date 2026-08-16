@@ -478,8 +478,10 @@ function Assert-AgentStatusTransitionEvidence {
 
     Assert-True ($null -ne $Evidence) "$Name evidence is missing from the App report."
     Assert-True ([string]$Evidence.AcceptedEventKind -eq 'pane.agent_status_changed') "$Name did not declare the accepted Agent-status event kind."
+    $admissionPath = [string]$Evidence.AdmissionPath
+    Assert-True ($admissionPath -in @('direct-event', 'snapshot-before-event')) "$Name declared an unsupported admission path."
     $changes = @($Evidence.Changes)
-    Assert-True ($changes.Count -gt 0) "$Name did not contain a genuine Agent-status change."
+    Assert-True ($changes.Count -eq 1) "$Name did not contain exactly one genuine Agent-status change."
 
     foreach ($change in $changes) {
         $changeIdentity = @(
@@ -506,12 +508,23 @@ function Assert-AgentStatusTransitionEvidence {
     Assert-True ([long]$Evidence.BaselineDisconnectCount -eq [long]$BaselineProgress.DisconnectCount) "$Name baseline disconnect count is not bound to its progress record."
     Assert-True ([long]$Evidence.BaselineReconciliationCount -eq [long]$BaselineProgress.ReconciliationCount) "$Name baseline reconciliation count is not bound to its progress record."
     Assert-True ([string]$Evidence.BaselineStateSha256 -eq [string]$BaselineProgress.StateSha256) "$Name baseline state hash is not bound to its progress record."
-    Assert-True ([long]$Evidence.CurrentSequence -eq ([long]$Evidence.BaselineSequence + 1)) "$Name did not advance the state sequence by exactly one."
+    Assert-True ([long]$Evidence.BaselineConnectionEpoch -eq [long]$BaselineProgress.ConnectionEpoch) "$Name baseline connection epoch is not bound to its progress record."
+    Assert-True ([long]$Evidence.ConnectionEpoch -eq [long]$Evidence.BaselineConnectionEpoch) "$Name changed connection epoch during Event admission."
+    Assert-True ([bool]$Evidence.CurrentIsCoreConnected) "$Name was admitted while the App was disconnected from Core."
+    Assert-True ([bool]$Evidence.CurrentIsLive) "$Name was admitted while the App was not live."
+    Assert-True ([string]$Evidence.CurrentRuntimeStatus -eq 'Connected') "$Name was admitted from a non-Connected runtime status."
+    $sequenceDelta = [long]$Evidence.CurrentSequence - [long]$Evidence.BaselineSequence
     Assert-True ([long]$Evidence.CurrentEventCount -eq ([long]$Evidence.BaselineEventCount + 1)) "$Name did not advance the runtime event count by exactly one."
     Assert-True ([long]$Evidence.CurrentBootstrapCount -eq [long]$Evidence.BaselineBootstrapCount) "$Name changed BootstrapCount during the Agent-status transition."
     Assert-True ([long]$Evidence.CurrentDisconnectCount -eq [long]$Evidence.BaselineDisconnectCount) "$Name changed DisconnectCount during the Agent-status transition."
     $reconciliationDelta = [long]$Evidence.CurrentReconciliationCount - [long]$Evidence.BaselineReconciliationCount
-    Assert-True ($reconciliationDelta -ge 0 -and $reconciliationDelta -le 1) "$Name reconciliation count delta was outside the allowed range 0..1."
+    if ($admissionPath -eq 'direct-event') {
+        Assert-True ($sequenceDelta -eq 1) "$Name direct Event did not advance the state sequence by exactly one."
+        Assert-True ($reconciliationDelta -eq 1) "$Name direct Event did not reconcile exactly once."
+    } else {
+        Assert-True ($sequenceDelta -eq 2) "$Name snapshot-before-event path did not contain exactly one leading state sequence."
+        Assert-True ($reconciliationDelta -ge 1 -and $reconciliationDelta -le 2) "$Name snapshot-before-event reconciliation delta was outside 1..2."
+    }
     Assert-True ([string]$Evidence.BaselineStateSha256 -match '^[0-9A-Fa-f]{64}$') "$Name baseline state hash is invalid."
     Assert-True ([string]$Evidence.CurrentStateSha256 -match '^[0-9A-Fa-f]{64}$') "$Name current state hash is invalid."
     Assert-True ([string]$Evidence.BaselineStateSha256 -ne [string]$Evidence.CurrentStateSha256) "$Name did not change the full state hash."
@@ -530,6 +543,46 @@ function Assert-AgentStatusTransitionEvidence {
     Assert-True ([long]$baselineTransition.DisconnectCount -eq [long]$Evidence.BaselineDisconnectCount) "$Name Core baseline DisconnectCount differs from App evidence."
     Assert-True ([long]$baselineTransition.ReconciliationCount -eq [long]$Evidence.BaselineReconciliationCount) "$Name Core baseline ReconciliationCount differs from App evidence."
 
+    $expectedTransitionCount = if ($admissionPath -eq 'direct-event') { 1 } else { 2 }
+    $phaseTransitions = @($CoreTransitions | Where-Object {
+        ([DateTimeOffset]$_.ObservedUtc).ToUniversalTime() -ge $phaseEnteredUtc -and
+        ([DateTimeOffset]$_.ObservedUtc).ToUniversalTime() -le $observedUtc
+    } | Sort-Object @{ Expression = { [long]$_.IngestSequence } }, @{ Expression = { ([DateTimeOffset]$_.ObservedUtc).UtcDateTime.Ticks } })
+    Assert-True ($phaseTransitions.Count -eq $expectedTransitionCount) "$Name contained an unexpected number of Core transitions after its progress-bound baseline."
+    for ($transitionIndex = 0; $transitionIndex -lt $phaseTransitions.Count; $transitionIndex++) {
+        $phaseTransition = $phaseTransitions[$transitionIndex]
+        Assert-True ($phaseTransition.Status -eq 'Connected') "$Name contained a non-Connected Core transition."
+        Assert-True ([long]$phaseTransition.IngestSequence -eq ([long]$Evidence.BaselineSequence + $transitionIndex + 1)) "$Name Core transition sequence was not contiguous."
+        Assert-True ([long]$phaseTransition.ConnectionEpoch -eq [long]$Evidence.ConnectionEpoch) "$Name Core transition changed ConnectionEpoch."
+        Assert-True ([long]$phaseTransition.BootstrapCount -eq [long]$Evidence.BaselineBootstrapCount) "$Name Core transition changed BootstrapCount."
+        Assert-True ([long]$phaseTransition.DisconnectCount -eq [long]$Evidence.BaselineDisconnectCount) "$Name Core transition changed DisconnectCount."
+        if ($null -ne $baselineTransition.ServerIdentity -and $null -ne $phaseTransition.ServerIdentity) {
+            Assert-True (Test-SameHerdrServerProcess -Left $baselineTransition.ServerIdentity -Right $phaseTransition.ServerIdentity) "$Name Core transition changed target server identity."
+        }
+    }
+
+    $leadingReconciliation = $null
+    if ($admissionPath -eq 'snapshot-before-event') {
+        $leadingCandidates = @($CoreTransitions | Where-Object {
+            $_.Status -eq 'Connected' -and
+            [long]$_.IngestSequence -eq ([long]$Evidence.BaselineSequence + 1) -and
+            [long]$_.EventCount -eq [long]$Evidence.BaselineEventCount -and
+            [long]$_.ConnectionEpoch -eq [long]$Evidence.ConnectionEpoch -and
+            ([DateTimeOffset]$_.ObservedUtc).ToUniversalTime() -ge $phaseEnteredUtc -and
+            ([DateTimeOffset]$_.ObservedUtc).ToUniversalTime() -le $observedUtc
+        })
+        Assert-True ($leadingCandidates.Count -eq 1) "$Name did not contain exactly one Core snapshot reconciliation before the Event."
+        $leadingReconciliation = $leadingCandidates[0]
+        Assert-True ([long]$leadingReconciliation.BootstrapCount -eq [long]$Evidence.BaselineBootstrapCount) "$Name leading reconciliation changed BootstrapCount."
+        Assert-True ([long]$leadingReconciliation.DisconnectCount -eq [long]$Evidence.BaselineDisconnectCount) "$Name leading reconciliation changed DisconnectCount."
+        Assert-True ([long]$leadingReconciliation.ReconciliationCount -eq ([long]$Evidence.BaselineReconciliationCount + 1)) "$Name leading reconciliation did not advance ReconciliationCount exactly once."
+        Assert-True ([long]$leadingReconciliation.ConnectionEpoch -eq [long]$baselineTransition.ConnectionEpoch) "$Name leading reconciliation changed ConnectionEpoch."
+        Assert-True ([string]$leadingReconciliation.ContractStateSha256 -match '^[0-9A-Fa-f]{64}$') "$Name leading reconciliation state hash is invalid."
+        Assert-True ([string]$leadingReconciliation.ContractStateSha256 -ne [string]$Evidence.BaselineStateSha256) "$Name leading reconciliation did not change state."
+        Assert-True ([string]::IsNullOrWhiteSpace([string]$leadingReconciliation.AcceptedEventKind)) "$Name leading reconciliation was incorrectly labelled as an accepted Event."
+        Assert-True ((-not (Test-ObjectHasProperty -Object $leadingReconciliation -Name 'AcceptedAgentStatusEvent')) -or $null -eq $leadingReconciliation.AcceptedAgentStatusEvent) "$Name leading reconciliation carried accepted Agent-event provenance."
+    }
+
     $matchingTransitions = @($CoreTransitions | Where-Object {
         $_.Status -eq 'Connected' -and
         [long]$_.IngestSequence -eq [long]$Evidence.CurrentSequence -and
@@ -539,7 +592,7 @@ function Assert-AgentStatusTransitionEvidence {
         ([DateTimeOffset]$_.ObservedUtc).ToUniversalTime() -ge $phaseEnteredUtc -and
         ([DateTimeOffset]$_.ObservedUtc).ToUniversalTime() -le $observedUtc
     })
-    Assert-True ($matchingTransitions.Count -ge 1) "$Name has no exact Core transition correlation for its same-Agent status change."
+    Assert-True ($matchingTransitions.Count -eq 1) "$Name does not have exactly one Core transition correlation for its same-Agent status change."
     $currentTransition = $matchingTransitions[0]
     Assert-True ([long]$currentTransition.BootstrapCount -eq [long]$Evidence.CurrentBootstrapCount) "$Name Core current BootstrapCount differs from App evidence."
     Assert-True ([long]$currentTransition.DisconnectCount -eq [long]$Evidence.CurrentDisconnectCount) "$Name Core current DisconnectCount differs from App evidence."
@@ -547,9 +600,29 @@ function Assert-AgentStatusTransitionEvidence {
     Assert-True ([long]$currentTransition.ConnectionEpoch -eq [long]$baselineTransition.ConnectionEpoch) "$Name changed ConnectionEpoch during the Agent-status transition."
     Assert-True (Test-ObjectHasProperty -Object $currentTransition -Name 'AcceptedEventKind') "$Name Core transition omitted AcceptedEventKind."
     Assert-True ([string]$currentTransition.AcceptedEventKind -eq 'pane.agent_status_changed') "$Name Core transition AcceptedEventKind was not pane.agent_status_changed."
+    Assert-True (Test-ObjectHasProperty -Object $currentTransition -Name 'AcceptedAgentStatusEvent') "$Name Core transition omitted accepted Agent-event provenance."
+    Assert-True ($null -ne $currentTransition.AcceptedAgentStatusEvent) "$Name Core transition has null accepted Agent-event provenance."
+    $acceptedAgentEvent = $currentTransition.AcceptedAgentStatusEvent
+    Assert-True (-not [string]::IsNullOrWhiteSpace([string]$acceptedAgentEvent.WorkspaceId)) "$Name accepted Agent Event omitted WorkspaceId."
+    Assert-True (-not [string]::IsNullOrWhiteSpace([string]$acceptedAgentEvent.PaneId)) "$Name accepted Agent Event omitted PaneId."
+    Assert-True (-not [string]::IsNullOrWhiteSpace([string]$acceptedAgentEvent.AgentStatus)) "$Name accepted Agent Event omitted AgentStatus."
+    $matchingAcceptedChanges = @($changes | Where-Object {
+        [string]$_.WorkspaceId -eq [string]$acceptedAgentEvent.WorkspaceId -and
+        [string]$_.PaneId -eq [string]$acceptedAgentEvent.PaneId -and
+        [string]$_.CurrentStatus -eq [string]$acceptedAgentEvent.AgentStatus
+    })
+    Assert-True ($matchingAcceptedChanges.Count -eq 1) "$Name accepted Event provenance does not identify exactly one same-pane App Agent-status change."
+    if ($null -ne $leadingReconciliation) {
+        Assert-True ([long]$currentTransition.ReconciliationCount -ge [long]$leadingReconciliation.ReconciliationCount) "$Name Event regressed ReconciliationCount after the leading snapshot."
+        Assert-True ([long]$currentTransition.ReconciliationCount -le ([long]$leadingReconciliation.ReconciliationCount + 1)) "$Name Event performed more than one reconciliation after the leading snapshot."
+        Assert-True (([DateTimeOffset]$currentTransition.ObservedUtc).ToUniversalTime() -ge ([DateTimeOffset]$leadingReconciliation.ObservedUtc).ToUniversalTime()) "$Name Event predates its leading snapshot reconciliation."
+    }
     return [pscustomobject]@{
         Baseline = $baselineTransition
+        LeadingReconciliation = $leadingReconciliation
         Current = $currentTransition
+        AdmissionPath = $admissionPath
+        ExpectedTransitionCount = if ($admissionPath -eq 'direct-event') { 1 } else { 2 }
         ReconciliationDelta = $reconciliationDelta
     }
 }
@@ -1269,8 +1342,8 @@ $reportLines = @(
     "EventBIncrementTransition: index=$eventBIncrementTransitionIndex utc=$($eventBIncrementTransition.ObservedUtc) eventCount=$($eventBIncrementTransition.EventCount)",
     "EventBTransition: index=$eventBTransitionIndex utc=$($eventBTransition.ObservedUtc) eventCount=$($eventBTransition.EventCount)",
     "CoreAcceptedEventKindCheck: $coreAcceptedEventKindCheck",
-    "EventAIntegrity: sequenceDelta=$($appReport.EventA.CurrentSequence - $appReport.EventA.BaselineSequence) eventCountDelta=$($appReport.EventA.CurrentEventCount - $appReport.EventA.BaselineEventCount) connectionEpoch=$($appReport.EventA.ConnectionEpoch) bootstrapDelta=$($appReport.EventA.CurrentBootstrapCount - $appReport.EventA.BaselineBootstrapCount) disconnectDelta=$($appReport.EventA.CurrentDisconnectCount - $appReport.EventA.BaselineDisconnectCount) reconciliationDelta=$($eventACorrelation.ReconciliationDelta)",
-    "EventBIntegrity: sequenceDelta=$($appReport.EventB.CurrentSequence - $appReport.EventB.BaselineSequence) eventCountDelta=$($appReport.EventB.CurrentEventCount - $appReport.EventB.BaselineEventCount) connectionEpoch=$($appReport.EventB.ConnectionEpoch) bootstrapDelta=$($appReport.EventB.CurrentBootstrapCount - $appReport.EventB.BaselineBootstrapCount) disconnectDelta=$($appReport.EventB.CurrentDisconnectCount - $appReport.EventB.BaselineDisconnectCount) reconciliationDelta=$($eventBCorrelation.ReconciliationDelta)",
+    "EventAIntegrity: admissionPath=$($eventACorrelation.AdmissionPath) sequenceDelta=$($appReport.EventA.CurrentSequence - $appReport.EventA.BaselineSequence) eventCountDelta=$($appReport.EventA.CurrentEventCount - $appReport.EventA.BaselineEventCount) connectionEpoch=$($appReport.EventA.ConnectionEpoch) bootstrapDelta=$($appReport.EventA.CurrentBootstrapCount - $appReport.EventA.BaselineBootstrapCount) disconnectDelta=$($appReport.EventA.CurrentDisconnectCount - $appReport.EventA.BaselineDisconnectCount) reconciliationDelta=$($eventACorrelation.ReconciliationDelta)",
+    "EventBIntegrity: admissionPath=$($eventBCorrelation.AdmissionPath) sequenceDelta=$($appReport.EventB.CurrentSequence - $appReport.EventB.BaselineSequence) eventCountDelta=$($appReport.EventB.CurrentEventCount - $appReport.EventB.BaselineEventCount) connectionEpoch=$($appReport.EventB.ConnectionEpoch) bootstrapDelta=$($appReport.EventB.CurrentBootstrapCount - $appReport.EventB.BaselineBootstrapCount) disconnectDelta=$($appReport.EventB.CurrentDisconnectCount - $appReport.EventB.BaselineDisconnectCount) reconciliationDelta=$($eventBCorrelation.ReconciliationDelta)",
     "EventAAgentStatusTransition: terminal=$($eventAChange.TerminalId) workspace=$($eventAChange.WorkspaceId) tab=$($eventAChange.TabId) pane=$($eventAChange.PaneId) previous=$($eventAChange.PreviousStatus) current=$($eventAChange.CurrentStatus) stateChangeSequence=$($eventAChange.PreviousStateChangeSequence)->$($eventAChange.CurrentStateChangeSequence)",
     "EventBAgentStatusTransition: terminal=$($eventBChange.TerminalId) workspace=$($eventBChange.WorkspaceId) tab=$($eventBChange.TabId) pane=$($eventBChange.PaneId) previous=$($eventBChange.PreviousStatus) current=$($eventBChange.CurrentStatus) stateChangeSequence=$($eventBChange.PreviousStateChangeSequence)->$($eventBChange.CurrentStateChangeSequence)",
     "AutomatedTests: $($testCounts.Passed)/$($testCounts.Total) PASS",

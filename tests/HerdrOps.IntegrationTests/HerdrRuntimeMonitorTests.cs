@@ -203,6 +203,16 @@ public sealed class HerdrRuntimeMonitorTests
         Assert.AreEqual(
             HerdrRuntimeMonitor.AcceptedAgentStatusEventKind,
             acceptedEventTransition.AcceptedEventKind);
+        Assert.IsNotNull(acceptedEventTransition.AcceptedAgentStatusEvent);
+        Assert.AreEqual(
+            "workspace-1",
+            acceptedEventTransition.AcceptedAgentStatusEvent.WorkspaceId);
+        Assert.AreEqual(
+            "pane-1",
+            acceptedEventTransition.AcceptedAgentStatusEvent.PaneId);
+        Assert.AreEqual(
+            HerdrAgentStatus.Blocked,
+            acceptedEventTransition.AcceptedAgentStatusEvent.AgentStatus);
         Assert.AreEqual(HerdrRuntimeMonitorStatus.Connected, acceptedEventTransition.Status);
     }
 
@@ -238,6 +248,42 @@ public sealed class HerdrRuntimeMonitorTests
 
         Assert.AreEqual(0, monitor.Current.EventCount);
         Assert.AreEqual(1, monitor.Current.ReconciliationCount);
+        Assert.AreEqual(HerdrAgentStatus.Working, monitor.Current.State.Panes["pane-1"].AgentStatus);
+    }
+
+    [TestMethod]
+    public async Task StaleStatusEventCannotEarnAcceptedEventProvenance()
+    {
+        var snapshot = CreateSnapshot(revision: 1, HerdrAgentStatus.Working);
+        var apiClient = new ScriptedApiClient(
+            [snapshot, snapshot, snapshot],
+            [
+                ScriptedSubscription.WithEventsThenBlock(
+                    new HerdrPaneAgentStatusChangedEvent(
+                        "pane.agent_status_changed",
+                        "workspace-1",
+                        "pane-1",
+                        HerdrAgentStatus.Blocked,
+                        "codex",
+                        "Codex",
+                        "Waiting")),
+            ]);
+        var monitor = CreateMonitor(apiClient);
+        var acceptedProvenanceObserved = false;
+        monitor.StateChanged += (_, state) =>
+            acceptedProvenanceObserved |=
+                state.AcceptedEventKind is not null ||
+                state.AcceptedAgentStatusEvent is not null;
+        using var cancellation = new CancellationTokenSource();
+        var runTask = monitor.RunAsync(cancellation.Token);
+
+        await WaitForAsync(monitor, state => state.EventCount == 1);
+        cancellation.Cancel();
+        await Assert.ThrowsAsync<OperationCanceledException>(() => runTask);
+
+        Assert.IsFalse(acceptedProvenanceObserved);
+        Assert.IsNull(monitor.Current.AcceptedEventKind);
+        Assert.IsNull(monitor.Current.AcceptedAgentStatusEvent);
         Assert.AreEqual(HerdrAgentStatus.Working, monitor.Current.State.Panes["pane-1"].AgentStatus);
     }
 

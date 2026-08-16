@@ -54,6 +54,22 @@ public sealed class RuntimeEvidenceFailureTests
     }
 
     [TestMethod]
+    [DataRow(1L)]
+    [DataRow(2L)]
+    public void AgentStatusEventEvidenceAcceptsOneSnapshotBeforeBoundEvent(
+        long reconciliationDelta)
+    {
+        var evidence = CreateAgentStatusEvidence() with
+        {
+            AdmissionPath = RuntimeEvidenceRunner.SnapshotBeforeEventAdmissionPath,
+            CurrentSequence = 12,
+            CurrentReconciliationCount = 4 + reconciliationDelta,
+        };
+
+        Assert.IsTrue(RuntimeEvidenceRunner.IsExactAgentStatusEvent(evidence));
+    }
+
+    [TestMethod]
     public void AgentStatusEventEvidenceRejectsAnInterveningSequence()
     {
         var evidence = CreateAgentStatusEvidence() with
@@ -62,6 +78,63 @@ public sealed class RuntimeEvidenceFailureTests
         };
 
         Assert.IsFalse(RuntimeEvidenceRunner.IsExactAgentStatusEvent(evidence));
+    }
+
+    [TestMethod]
+    [DataRow("direct-event", 12L, 5L)]
+    [DataRow("snapshot-before-event", 11L, 5L)]
+    [DataRow("snapshot-before-event", 13L, 6L)]
+    [DataRow("snapshot-before-event", 12L, 4L)]
+    [DataRow("snapshot-before-event", 12L, 7L)]
+    [DataRow("unknown", 11L, 5L)]
+    public void AgentStatusEventEvidenceRejectsAdmissionPathDrift(
+        string admissionPath,
+        long currentSequence,
+        long currentReconciliationCount)
+    {
+        var evidence = CreateAgentStatusEvidence() with
+        {
+            AdmissionPath = admissionPath,
+            CurrentSequence = currentSequence,
+            CurrentReconciliationCount = currentReconciliationCount,
+        };
+
+        Assert.IsFalse(RuntimeEvidenceRunner.IsExactAgentStatusEvent(evidence));
+    }
+
+    [TestMethod]
+    public void AgentStatusEventEvidenceRejectsMultipleAgentChanges()
+    {
+        var original = CreateAgentStatusEvidence();
+        var evidence = original with
+        {
+            Changes =
+            [
+                original.Changes[0],
+                original.Changes[0] with
+                {
+                    TerminalId = "term-2",
+                    PaneId = "p2",
+                },
+            ],
+        };
+
+        Assert.IsFalse(RuntimeEvidenceRunner.IsExactAgentStatusEvent(evidence));
+    }
+
+    [TestMethod]
+    public void AgentStatusEventEvidenceRejectsDisconnectedOrEpochDrift()
+    {
+        var evidence = CreateAgentStatusEvidence();
+
+        Assert.IsFalse(RuntimeEvidenceRunner.IsExactAgentStatusEvent(
+            evidence with { BaselineConnectionEpoch = 1 }));
+        Assert.IsFalse(RuntimeEvidenceRunner.IsExactAgentStatusEvent(
+            evidence with { CurrentIsCoreConnected = false }));
+        Assert.IsFalse(RuntimeEvidenceRunner.IsExactAgentStatusEvent(
+            evidence with { CurrentIsLive = false }));
+        Assert.IsFalse(RuntimeEvidenceRunner.IsExactAgentStatusEvent(
+            evidence with { CurrentRuntimeStatus = "Reconnecting" }));
     }
 
     [TestMethod]
@@ -179,6 +252,11 @@ public sealed class RuntimeEvidenceFailureTests
         PhaseEnteredUtc: DateTimeOffset.Parse("2026-08-16T03:04:00Z"),
         ObservedUtc: DateTimeOffset.Parse("2026-08-16T03:04:01Z"),
         AcceptedEventKind: "pane.agent_status_changed",
+        AdmissionPath: RuntimeEvidenceRunner.DirectEventAdmissionPath,
+        BaselineConnectionEpoch: 2,
+        CurrentIsCoreConnected: true,
+        CurrentIsLive: true,
+        CurrentRuntimeStatus: "Connected",
         BaselineSequence: 10,
         CurrentSequence: 11,
         BaselineEventCount: 5,
