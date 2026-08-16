@@ -287,26 +287,19 @@ public sealed class DiagnosticTextRedactor
 
         var bodyStart = GetWindowsPathBodyStart(pathStart, kind);
         var cursor = bodyStart;
+        var pathEnd = cursor;
+        var hasClosingQuote = false;
         if (quoted)
         {
-            while (cursor < value.Length && value[cursor] != quote)
-            {
-                if (value[cursor] is '\r' or '\n' || char.IsControl(value[cursor]))
-                {
-                    break;
-                }
-
-                cursor++;
-            }
-
-            if (!HasValidWindowsPathBody(value, bodyStart, cursor, kind))
+            pathEnd = FindQuotedWindowsPathEnd(value, bodyStart, quote, kind, out hasClosingQuote);
+            if (!HasValidWindowsPathBody(value, bodyStart, pathEnd, kind))
             {
                 return false;
             }
 
-            end = cursor < value.Length && value[cursor] == quote
-                ? ConsumeLineColumnSuffix(value, cursor + 1)
-                : cursor;
+            end = hasClosingQuote
+                ? ConsumeLineColumnSuffix(value, pathEnd + 1)
+                : pathEnd;
         }
         else
         {
@@ -327,18 +320,124 @@ public sealed class DiagnosticTextRedactor
                 cursor++;
             }
 
-            if (cursor <= bodyStart || !HasValidWindowsPathBody(value, bodyStart, cursor, kind))
+            pathEnd = cursor;
+            if (pathEnd <= bodyStart || !HasValidWindowsPathBody(value, bodyStart, pathEnd, kind))
             {
                 return false;
             }
 
-            end = ConsumeLineColumnSuffix(value, cursor);
+            end = ConsumeLineColumnSuffix(value, pathEnd);
         }
 
-        var candidateLength = end - pathStart;
-        var candidate = value.Substring(pathStart, candidateLength);
+        var candidate = value.Substring(pathStart, pathEnd - pathStart);
         replacement = ClassifyWindowsPath(candidate);
         return true;
+    }
+
+    private static int FindQuotedWindowsPathEnd(
+        string value,
+        int bodyStart,
+        char quote,
+        WindowsPathKind kind,
+        out bool hasClosingQuote)
+    {
+        var cursor = bodyStart;
+        while (cursor < value.Length)
+        {
+            if (value[cursor] is '\r' or '\n' || char.IsControl(value[cursor]))
+            {
+                break;
+            }
+
+            if (value[cursor] == quote &&
+                HasValidWindowsPathBody(value, bodyStart, cursor, kind) &&
+                IsSafeQuotedWindowsPathClose(value, cursor))
+            {
+                hasClosingQuote = true;
+                return cursor;
+            }
+
+            cursor++;
+        }
+
+        hasClosingQuote = false;
+        return cursor;
+    }
+
+    private static bool IsSafeQuotedWindowsPathClose(string value, int quoteIndex)
+    {
+        var suffixEnd = ConsumeLineColumnSuffix(value, quoteIndex + 1);
+        return IsSafeQuotedWindowsPathBoundary(value, suffixEnd);
+    }
+
+    private static bool IsSafeQuotedWindowsPathBoundary(string value, int start)
+    {
+        if (start >= value.Length || value[start] is '\r' or '\n')
+        {
+            return true;
+        }
+
+        var character = value[start];
+        if (character is ' ' or '\t')
+        {
+            var cursor = start;
+            while (cursor < value.Length && value[cursor] is ' ' or '\t')
+            {
+                cursor++;
+            }
+
+            if (cursor >= value.Length || value[cursor] is '\r' or '\n')
+            {
+                return true;
+            }
+
+            if (value[cursor] is ')' or ']' or '}' or '>' or '&' or '|' or '"' or '\'' ||
+                StartsWithAssignment(value, cursor))
+            {
+                return true;
+            }
+
+            return !LooksLikeWindowsPathContinuation(value, cursor);
+        }
+
+        if (character is ',' or ';')
+        {
+            return IsFieldDelimiter(value, start) ||
+                !LooksLikeWindowsPathContinuation(value, start + 1);
+        }
+
+        return character is ')' or ']' or '}' or '>' or '&' or '|' or '"' or '\'';
+    }
+
+    private static bool StartsWithAssignment(string value, int start)
+    {
+        var cursor = start;
+        while (cursor < value.Length &&
+               (char.IsLetterOrDigit(value[cursor]) || value[cursor] is '_' or '-' or '.'))
+        {
+            cursor++;
+        }
+
+        return cursor > start && cursor < value.Length && value[cursor] == '=';
+    }
+
+    private static bool LooksLikeWindowsPathContinuation(string value, int start)
+    {
+        for (var cursor = start; cursor < value.Length; cursor++)
+        {
+            var character = value[cursor];
+            if (character is '\r' or '\n' || char.IsControl(character) || character is '"' or '\'' || character == '=')
+            {
+                return false;
+            }
+
+            if (IsWindowsSeparator(character))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private static bool TryGetWindowsPathKind(

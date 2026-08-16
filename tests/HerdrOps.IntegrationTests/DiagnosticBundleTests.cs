@@ -226,6 +226,44 @@ public sealed class DiagnosticBundleTests
     }
 
     [TestMethod]
+    public void RedactorClosesSingleQuotedWindowsPathsWithoutSwallowingNearbyQuotedProse()
+    {
+        var paths = new[]
+        {
+            @"C:\Users\O'Brien,; Smith\source file.cs:42:17",
+            @"\\server\share\O'Brien,; Smith\source file.cs:42",
+            @"\\?\C:\Program Files\O'Brien,; Smith\source file.cs:42:17",
+            @"\\?\UNC\server\share\O'Brien,; Smith\source file.cs:42",
+        };
+        var redactor = new DiagnosticTextRedactor();
+
+        foreach (var path in paths)
+        {
+            var input =
+                $"before='unrelated quoted prose' diagnostic-path='{path}' after='keep this unrelated prose'";
+            var result = redactor.Redact(input);
+
+            Assert.IsFalse(result.Text.Contains(path, StringComparison.Ordinal), path);
+            Assert.IsFalse(result.Text.Contains("O'Brien", StringComparison.Ordinal), path);
+            Assert.IsFalse(result.Text.Contains("source file.cs", StringComparison.Ordinal), path);
+            Assert.IsFalse(result.Text.Contains("42:17", StringComparison.Ordinal), path);
+            Assert.IsTrue(result.Text.Contains("before='unrelated quoted prose'", StringComparison.Ordinal), path);
+            Assert.IsTrue(result.Text.Contains("after='keep this unrelated prose'", StringComparison.Ordinal), path);
+            Assert.AreEqual(1, result.ReplacementCount, path);
+
+            var doubleQuoted = redactor.Redact(
+                $"diagnostic-path=\"{path}\" after=\"keep this unrelated prose\"");
+            Assert.IsFalse(doubleQuoted.Text.Contains(path, StringComparison.Ordinal), path);
+            Assert.IsTrue(doubleQuoted.Text.Contains("after=\"keep this unrelated prose\"", StringComparison.Ordinal), path);
+
+            var unquoted = redactor.Redact(
+                $"diagnostic-path={path}\nquote='keep this unrelated prose'");
+            Assert.IsFalse(unquoted.Text.Contains(path, StringComparison.Ordinal), path);
+            Assert.IsTrue(unquoted.Text.Contains("quote='keep this unrelated prose'", StringComparison.Ordinal), path);
+        }
+    }
+
+    [TestMethod]
     public void RedactorWindowsPathScannerHandlesRepeatedAdversarialLinesWithinBound()
     {
         const string path = @"\\?\UNC\server\share\O'Brien,; folder with spaces\source file.cs:12:34";
