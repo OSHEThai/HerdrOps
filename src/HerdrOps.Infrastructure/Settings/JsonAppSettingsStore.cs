@@ -7,6 +7,8 @@ using HerdrOps.Domain.Settings;
 
 namespace HerdrOps.Infrastructure.Settings;
 
+internal readonly record struct BoundedSettingsDocument(byte[] Buffer, int Length);
+
 public interface ISettingsAtomicCommit
 {
     void Commit(string temporaryPath, string destinationPath);
@@ -84,9 +86,12 @@ public sealed class JsonAppSettingsStore : IAppSettingsStore
         int maximumDocumentUtf8Bytes = AppSettingsContract.MaximumDocumentUtf8Bytes,
         ISettingsTemporaryFileCleanup? temporaryFileCleanup = null)
     {
-        if (maximumDocumentUtf8Bytes <= 0)
+        if (maximumDocumentUtf8Bytes is <= 0 or > AppSettingsContract.MaximumDocumentUtf8Bytes)
         {
-            throw new ArgumentOutOfRangeException(nameof(maximumDocumentUtf8Bytes));
+            throw new ArgumentOutOfRangeException(
+                nameof(maximumDocumentUtf8Bytes),
+                maximumDocumentUtf8Bytes,
+                $"The document bound must be between 1 and {AppSettingsContract.MaximumDocumentUtf8Bytes} bytes.");
         }
 
         _destinationPath = NormalizeDestinationFile(destinationPath, allowedRootDirectory);
@@ -100,22 +105,25 @@ public sealed class JsonAppSettingsStore : IAppSettingsStore
     public async Task<AppSettingsSnapshot?> LoadAsync(CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        if (!File.Exists(_destinationPath))
-        {
-            return null;
-        }
 
-        byte[] bytes;
+        BoundedSettingsDocument document;
         try
         {
-            var fileInfo = new FileInfo(_destinationPath);
-            if (fileInfo.Length > _maximumDocumentUtf8Bytes)
-            {
-                throw new SettingsValidationException(
-                    $"The settings document exceeds its {_maximumDocumentUtf8Bytes}-byte UTF-8 bound.");
-            }
-
-            bytes = await File.ReadAllBytesAsync(_destinationPath, cancellationToken).ConfigureAwait(false);
+            await using var stream = new FileStream(
+                _destinationPath,
+                FileMode.Open,
+                FileAccess.Read,
+                FileShare.ReadWrite | FileShare.Delete,
+                bufferSize: 4096,
+                options: FileOptions.SequentialScan | FileOptions.Asynchronous);
+            document = await ReadBoundedDocumentAsync(
+                stream,
+                _maximumDocumentUtf8Bytes,
+                cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception exception) when (exception is FileNotFoundException or DirectoryNotFoundException)
+        {
+            return null;
         }
         catch (SettingsValidationException)
         {
@@ -126,13 +134,7 @@ public sealed class JsonAppSettingsStore : IAppSettingsStore
             throw new SettingsValidationException("The settings document could not be read.", exception);
         }
 
-        if (bytes.Length > _maximumDocumentUtf8Bytes)
-        {
-            throw new SettingsValidationException(
-                $"The settings document exceeds its {_maximumDocumentUtf8Bytes}-byte UTF-8 bound.");
-        }
-
-        var json = DecodeStrictUtf8(bytes);
+        var json = DecodeStrictUtf8(document.Buffer.AsSpan(0, document.Length));
         cancellationToken.ThrowIfCancellationRequested();
         var settings = ParseAndValidate(json);
         cancellationToken.ThrowIfCancellationRequested();
@@ -184,17 +186,29 @@ public sealed class JsonAppSettingsStore : IAppSettingsStore
     private async Task CommitAsync(byte[] bytes, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        SettingsPathPolicy.EnsureNoExistingReparsePointComponents(_destinationDirectory);
+        SettingsPathPolicy.RejectExistingReparsePointComponentsBestEffort(_destinationDirectory);
         Directory.CreateDirectory(_destinationDirectory);
-        SettingsPathPolicy.EnsureNoExistingReparsePointComponents(_destinationDirectory);
-        SettingsPathPolicy.EnsureNoExistingReparsePointComponents(_destinationPath);
+        SettingsPathPolicy.RejectExistingReparsePointComponentsBestEffort(_destinationDirectory);
+        SettingsPathPolicy.RejectExistingReparsePointComponentsBestEffort(_destinationPath);
         var temporaryPath = Path.Combine(
             _destinationDirectory,
             $".{Path.GetFileName(_destinationPath)}.{Guid.NewGuid():N}.tmp");
+        var destinationExisted = File.Exists(_destinationPath);
+        var backupPath = destinationExisted
+            ? Path.Combine(
+                _destinationDirectory,
+                $".{Path.GetFileName(_destinationPath)}.{Guid.NewGuid():N}.bak")
+            : null;
 
         Exception? primaryException = null;
+        var commitInvoked = false;
         try
         {
+            if (backupPath is not null)
+            {
+                File.Copy(_destinationPath, backupPath, overwrite: false);
+            }
+
             await using (var stream = new FileStream(
                 temporaryPath,
                 FileMode.CreateNew,
@@ -209,13 +223,30 @@ public sealed class JsonAppSettingsStore : IAppSettingsStore
             }
 
             cancellationToken.ThrowIfCancellationRequested();
-            SettingsPathPolicy.EnsureNoExistingReparsePointComponents(_destinationDirectory);
-            SettingsPathPolicy.EnsureNoExistingReparsePointComponents(_destinationPath);
+            SettingsPathPolicy.RejectExistingReparsePointComponentsBestEffort(_destinationDirectory);
+            SettingsPathPolicy.RejectExistingReparsePointComponentsBestEffort(_destinationPath);
+            commitInvoked = true;
             _atomicCommit.Commit(temporaryPath, _destinationPath);
+            cancellationToken.ThrowIfCancellationRequested();
         }
         catch (Exception exception)
         {
             primaryException = NormalizeCommitException(exception);
+        }
+
+        if (commitInvoked && cancellationToken.IsCancellationRequested)
+        {
+            var rollbackException = TryRollback(
+                destinationExisted,
+                backupPath,
+                bytes);
+            primaryException = rollbackException is null
+                ? new OperationCanceledException(
+                    "Cancellation was requested after the settings commit; the previous file was restored.",
+                    cancellationToken)
+                : new SettingsValidationException(
+                    "Cancellation was requested after the settings commit, but safe rollback did not complete.",
+                    rollbackException);
         }
 
         Exception? cleanupException = null;
@@ -226,6 +257,23 @@ public sealed class JsonAppSettingsStore : IAppSettingsStore
         catch (Exception exception)
         {
             cleanupException = exception;
+        }
+
+        if (backupPath is not null && File.Exists(backupPath))
+        {
+            try
+            {
+                _temporaryFileCleanup.Delete(backupPath);
+            }
+            catch (Exception exception)
+            {
+                cleanupException = cleanupException is null
+                    ? exception
+                    : new AggregateException(
+                        "Multiple settings temporary-file cleanup operations failed.",
+                        cleanupException,
+                        exception);
+            }
         }
 
         if (primaryException is not null && cleanupException is not null)
@@ -244,8 +292,190 @@ public sealed class JsonAppSettingsStore : IAppSettingsStore
         if (cleanupException is not null)
         {
             throw new SettingsValidationException(
-                "The settings document was committed, but temporary-file cleanup failed.",
+                "The settings document commit completed, but temporary-file cleanup failed.",
                 cleanupException);
+        }
+    }
+
+    internal static async Task<BoundedSettingsDocument> ReadBoundedDocumentAsync(
+        Stream source,
+        int maximumDocumentUtf8Bytes,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(source);
+        if (maximumDocumentUtf8Bytes is <= 0 or > AppSettingsContract.MaximumDocumentUtf8Bytes)
+        {
+            throw new ArgumentOutOfRangeException(nameof(maximumDocumentUtf8Bytes));
+        }
+
+        cancellationToken.ThrowIfCancellationRequested();
+        var buffer = new byte[maximumDocumentUtf8Bytes + 1];
+        var length = 0;
+        while (length < buffer.Length)
+        {
+            var read = await source.ReadAsync(
+                buffer.AsMemory(length, buffer.Length - length),
+                cancellationToken).ConfigureAwait(false);
+            if (read == 0)
+            {
+                return new BoundedSettingsDocument(buffer, length);
+            }
+
+            length += read;
+        }
+
+        throw new SettingsValidationException(
+            $"The settings document exceeds its {maximumDocumentUtf8Bytes}-byte UTF-8 bound.");
+    }
+
+    private Exception? TryRollback(
+        bool destinationExisted,
+        string? backupPath,
+        ReadOnlySpan<byte> expectedCommittedBytes)
+    {
+        try
+        {
+            SettingsPathPolicy.RejectExistingReparsePointComponentsBestEffort(_destinationDirectory);
+            SettingsPathPolicy.RejectExistingReparsePointComponentsBestEffort(_destinationPath);
+
+            if (!destinationExisted)
+            {
+                if (!File.Exists(_destinationPath))
+                {
+                    return null;
+                }
+
+                if (!FileMatchesBytes(_destinationPath, expectedCommittedBytes))
+                {
+                    return new IOException(
+                        "The destination changed after commit, so the newly committed file was not removed.");
+                }
+
+                File.Delete(_destinationPath);
+                return File.Exists(_destinationPath)
+                    ? new IOException("The newly committed settings file could not be removed during rollback.")
+                    : null;
+            }
+
+            if (backupPath is null || !File.Exists(backupPath))
+            {
+                return new IOException("The previous settings file backup is unavailable for rollback.");
+            }
+
+            if (FileMatchesBytes(_destinationPath, expectedCommittedBytes))
+            {
+                if (File.Exists(_destinationPath))
+                {
+                    File.Replace(
+                        backupPath,
+                        _destinationPath,
+                        destinationBackupFileName: null,
+                        ignoreMetadataErrors: true);
+                }
+                else
+                {
+                    File.Move(backupPath, _destinationPath);
+                }
+
+                return null;
+            }
+
+            return FilesEqual(_destinationPath, backupPath)
+                ? null
+                : new IOException(
+                    "The destination changed after commit, so the previous settings file was not restored.");
+        }
+        catch (Exception exception)
+        {
+            return exception;
+        }
+    }
+
+    private static bool FileMatchesBytes(string path, ReadOnlySpan<byte> expected)
+    {
+        try
+        {
+            using var stream = new FileStream(
+                path,
+                FileMode.Open,
+                FileAccess.Read,
+                FileShare.ReadWrite | FileShare.Delete,
+                bufferSize: 4096,
+                options: FileOptions.SequentialScan);
+            if (stream.Length != expected.Length)
+            {
+                return false;
+            }
+
+            var buffer = new byte[Math.Min(4096, Math.Max(1, expected.Length))];
+            var offset = 0;
+            while (offset < expected.Length)
+            {
+                var read = stream.Read(buffer, 0, Math.Min(buffer.Length, expected.Length - offset));
+                if (read == 0 || !expected.Slice(offset, read).SequenceEqual(buffer.AsSpan(0, read)))
+                {
+                    return false;
+                }
+
+                offset += read;
+            }
+
+            return stream.ReadByte() == -1;
+        }
+        catch (Exception exception) when (exception is FileNotFoundException or DirectoryNotFoundException)
+        {
+            return false;
+        }
+    }
+
+    private static bool FilesEqual(string leftPath, string rightPath)
+    {
+        try
+        {
+            using var left = new FileStream(
+                leftPath,
+                FileMode.Open,
+                FileAccess.Read,
+                FileShare.ReadWrite | FileShare.Delete,
+                bufferSize: 4096,
+                options: FileOptions.SequentialScan);
+            using var right = new FileStream(
+                rightPath,
+                FileMode.Open,
+                FileAccess.Read,
+                FileShare.ReadWrite | FileShare.Delete,
+                bufferSize: 4096,
+                options: FileOptions.SequentialScan);
+            if (left.Length != right.Length)
+            {
+                return false;
+            }
+
+            var leftBuffer = new byte[4096];
+            var rightBuffer = new byte[4096];
+            while (true)
+            {
+                var leftRead = left.Read(leftBuffer, 0, leftBuffer.Length);
+                var rightRead = right.Read(rightBuffer, 0, rightBuffer.Length);
+                if (leftRead != rightRead)
+                {
+                    return false;
+                }
+
+                if (leftRead == 0)
+                {
+                    return true;
+                }
+
+                if (!leftBuffer.AsSpan(0, leftRead).SequenceEqual(rightBuffer.AsSpan(0, rightRead)))
+                {
+                    return false;
+                }
+            }
+        }
+        catch (Exception exception) when (exception is FileNotFoundException or DirectoryNotFoundException)
+        {
+            return false;
         }
     }
 
@@ -359,7 +589,7 @@ public sealed class JsonAppSettingsStore : IAppSettingsStore
         }
     }
 
-    private static string DecodeStrictUtf8(byte[] bytes)
+    private static string DecodeStrictUtf8(ReadOnlySpan<byte> bytes)
     {
         if (bytes.Length >= 3
             && bytes[0] == 0xEF

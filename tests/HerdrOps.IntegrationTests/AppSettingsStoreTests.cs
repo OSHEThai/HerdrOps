@@ -208,6 +208,20 @@ public sealed class AppSettingsStoreTests
     }
 
     [TestMethod]
+    public void ConstructorDoesNotPermitDocumentBoundAboveContractMaximum()
+    {
+        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() =>
+            new JsonAppSettingsStore(
+                _settingsPath,
+                maximumDocumentUtf8Bytes: AppSettingsContract.MaximumDocumentUtf8Bytes + 1));
+
+        var smallBoundStore = new JsonAppSettingsStore(
+            _settingsPath,
+            maximumDocumentUtf8Bytes: 1024);
+        Assert.IsNotNull(smallBoundStore);
+    }
+
+    [TestMethod]
     public async Task StrictParserRejectsInvalidUtf8BomDuplicateUnknownAndMissingProperties()
     {
         var store = CreateStore();
@@ -283,6 +297,27 @@ public sealed class AppSettingsStoreTests
         Assert.IsFalse(File.Exists(failingCommit.TemporaryPath));
         var loaded = await firstStore.LoadAsync();
         Assert.AreEqual(admitted.Settings, loaded!.Settings);
+    }
+
+    [TestMethod]
+    public async Task CancellationAfterAtomicCommitRestoresPreviousFileBeforeThrowing()
+    {
+        var initialStore = CreateStore();
+        await initialStore.SaveAsync(AppSettings.Defaults);
+        var previousBytes = await File.ReadAllBytesAsync(_settingsPath);
+        using var cancellation = new CancellationTokenSource();
+        var cancellingCommit = new CancellingAtomicCommit(cancellation);
+        var store = CreateStore(cancellingCommit);
+
+        await Assert.ThrowsExactlyAsync<OperationCanceledException>(() =>
+            store.SaveAsync(
+                AppSettings.Defaults with { Language = AppSettingsLanguage.English },
+                cancellation.Token));
+
+        CollectionAssert.AreEqual(previousBytes, await File.ReadAllBytesAsync(_settingsPath));
+        Assert.AreEqual(1, cancellingCommit.CommitCount);
+        Assert.IsFalse(Directory.EnumerateFiles(_testDirectory, "*.tmp").Any());
+        Assert.IsFalse(Directory.EnumerateFiles(_testDirectory, "*.bak").Any());
     }
 
     [TestMethod]
@@ -490,6 +525,22 @@ public sealed class AppSettingsStoreTests
         Assert.AreEqual(admitted.Settings, loaded!.Settings);
     }
 
+    [TestMethod]
+    public async Task BoundedReaderRejectsConcurrentGrowthAfterReadingOnlyMaximumPlusOne()
+    {
+        var source = new GrowingChunkStream(
+        [
+            Encoding.UTF8.GetBytes("12345678"),
+            Encoding.UTF8.GetBytes("9"),
+            Encoding.UTF8.GetBytes("more bytes that must not be read"),
+        ]);
+
+        await Assert.ThrowsExactlyAsync<SettingsValidationException>(() =>
+            JsonAppSettingsStore.ReadBoundedDocumentAsync(source, maximumDocumentUtf8Bytes: 8));
+
+        Assert.AreEqual(9, source.BytesReturned);
+    }
+
     private JsonAppSettingsStore CreateStore(
         ISettingsAtomicCommit? atomicCommit = null,
         ISettingsTemporaryFileCleanup? temporaryFileCleanup = null) =>
@@ -510,11 +561,104 @@ public sealed class AppSettingsStoreTests
         }
     }
 
+    private sealed class CancellingAtomicCommit : ISettingsAtomicCommit
+    {
+        private readonly CancellationTokenSource _cancellation;
+
+        public CancellingAtomicCommit(CancellationTokenSource cancellation)
+        {
+            _cancellation = cancellation;
+        }
+
+        public int CommitCount { get; private set; }
+
+        public void Commit(string temporaryPath, string destinationPath)
+        {
+            CommitCount++;
+            new FileSystemSettingsAtomicCommit().Commit(temporaryPath, destinationPath);
+            _cancellation.Cancel();
+        }
+    }
+
     private sealed class FailingTemporaryFileCleanup : ISettingsTemporaryFileCleanup
     {
         public void Delete(string temporaryPath)
         {
             throw new IOException("Synthetic temporary-file cleanup failure.");
         }
+    }
+
+    private sealed class GrowingChunkStream : Stream
+    {
+        private readonly byte[][] _chunks;
+        private int _chunkIndex;
+        private int _chunkOffset;
+
+        public GrowingChunkStream(byte[][] chunks)
+        {
+            _chunks = chunks;
+        }
+
+        public int BytesReturned { get; private set; }
+
+        public override bool CanRead => true;
+
+        public override bool CanSeek => false;
+
+        public override bool CanWrite => false;
+
+        public override long Length => throw new NotSupportedException();
+
+        public override long Position
+        {
+            get => throw new NotSupportedException();
+            set => throw new NotSupportedException();
+        }
+
+        public override void Flush() => throw new NotSupportedException();
+
+        public override int Read(byte[] buffer, int offset, int count) =>
+            Read(buffer.AsSpan(offset, count));
+
+        public override int Read(Span<byte> buffer)
+        {
+            if (buffer.Length == 0)
+            {
+                return 0;
+            }
+
+            while (_chunkIndex < _chunks.Length && _chunkOffset == _chunks[_chunkIndex].Length)
+            {
+                _chunkIndex++;
+                _chunkOffset = 0;
+            }
+
+            if (_chunkIndex == _chunks.Length)
+            {
+                return 0;
+            }
+
+            var chunk = _chunks[_chunkIndex];
+            var count = Math.Min(buffer.Length, chunk.Length - _chunkOffset);
+            chunk.AsSpan(_chunkOffset, count).CopyTo(buffer);
+            _chunkOffset += count;
+            BytesReturned += count;
+            return count;
+        }
+
+        public override ValueTask<int> ReadAsync(
+            Memory<byte> buffer,
+            CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return ValueTask.FromResult(Read(buffer.Span));
+        }
+
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+
+        public override void SetLength(long value) => throw new NotSupportedException();
+
+        public override void Write(byte[] buffer, int offset, int count) =>
+            throw new NotSupportedException();
     }
 }

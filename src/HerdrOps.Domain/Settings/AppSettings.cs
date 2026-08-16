@@ -84,8 +84,8 @@ public sealed record AppSettings
     public AppUserPreferences UserPreferences { get; init; }
 
     /// <summary>
-    /// Optional local directory for non-secret exports. It must pass the safe
-    /// absolute destination policy before admission.
+    /// Optional local directory for non-secret exports. It must pass the
+    /// best-effort absolute destination policy before admission.
     /// </summary>
     public string? LocalExportDirectory { get; init; }
 
@@ -210,9 +210,16 @@ public static class AppSettingsContract
 }
 
 /// <summary>
-/// Safe local destination policy. Paths must be absolute, local, non-root,
+/// Best-effort local destination policy. Paths must be absolute, local, non-root,
 /// traversal-free, and optionally contained by a caller-supplied local root.
 /// </summary>
+/// <remarks>
+/// Existing reparse-point components are inspected before path operations, but
+/// this policy is not a handle-relative/no-follow containment boundary. It does
+/// not claim to prevent a concurrent same-user reparse-point swap. Callers that
+/// require an adversarial containment boundary must use a Windows handle-based
+/// no-follow implementation outside this contract.
+/// </remarks>
 public static class SettingsPathPolicy
 {
     public static string NormalizeAbsoluteDirectory(string path, int maximumUtf8Bytes)
@@ -234,7 +241,7 @@ public static class SettingsPathPolicy
         }
 
         var normalized = fullPath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-        EnsureNoExistingReparsePointComponents(normalized);
+        RejectExistingReparsePointComponentsBestEffort(normalized);
         return normalized;
     }
 
@@ -260,7 +267,7 @@ public static class SettingsPathPolicy
             throw new SettingsValidationException("The settings file cannot be placed at a filesystem root.");
         }
 
-        EnsureNoExistingReparsePointComponents(fullPath);
+        RejectExistingReparsePointComponentsBestEffort(fullPath);
         return fullPath;
     }
 
@@ -280,7 +287,12 @@ public static class SettingsPathPolicy
         }
     }
 
-    public static void EnsureNoExistingReparsePointComponents(string path)
+    /// <summary>
+    /// Rejects existing reparse-point components observed at the time of the
+    /// check. This is deterministic best-effort rejection, not race-free
+    /// no-follow validation.
+    /// </summary>
+    public static void RejectExistingReparsePointComponentsBestEffort(string path)
     {
         var fullPath = Path.GetFullPath(path);
         var root = Path.GetPathRoot(fullPath);
@@ -290,7 +302,7 @@ public static class SettingsPathPolicy
         }
 
         var current = root;
-        EnsureComponentIsNotReparsePoint(current);
+        RejectComponentIfReparsePoint(current);
 
         var relative = fullPath[root.Length..];
         foreach (var segment in relative.Split(
@@ -448,7 +460,7 @@ public static class SettingsPathPolicy
         return candidate.StartsWith(prefix, StringComparison.OrdinalIgnoreCase);
     }
 
-    private static void EnsureComponentIsNotReparsePoint(string path)
+    private static void RejectComponentIfReparsePoint(string path)
     {
         if (TryGetAttributes(path, out var attributes)
             && (attributes & FileAttributes.ReparsePoint) != 0)
