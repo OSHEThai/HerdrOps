@@ -125,6 +125,8 @@ public sealed class StateStoreRecoveryService
             var restored = StateStoreRecoveryArtifacts.RestoreBackup(
                 databasePath,
                 backupPath,
+                expectedBackupSha256,
+                destinationAfterLockIdentity,
                 timeProvider ?? TimeProvider.System,
                 new StateStoreRecoveryOptions());
             var restoredIdentity = StateStoreRecoveryArtifacts.IdentifyFile(databasePath);
@@ -252,6 +254,9 @@ public sealed class StateStoreRecoveryService
         var lockPath = databasePath + ".core.lock";
         StateStoreRecoveryPathPolicy.EnsureNoReparseComponents(
             Path.GetDirectoryName(lockPath)!,
+            includeLeaf: true);
+        StateStoreRecoveryPathPolicy.EnsureNoReparseComponents(
+            lockPath,
             includeLeaf: true);
         try
         {

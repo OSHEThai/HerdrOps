@@ -130,9 +130,18 @@ internal static class StateStoreRecoveryArtifacts
     public static StateStoreRecoveryRestoreResult RestoreBackup(
         string databasePath,
         string backupPath,
+        string expectedBackupSha256,
+        StateStoreRecoveryFileIdentity? expectedDestinationIdentity,
         TimeProvider timeProvider,
         StateStoreRecoveryOptions recoveryOptions)
     {
+        if (string.IsNullOrWhiteSpace(expectedBackupSha256))
+        {
+            throw new ArgumentException(
+                "The expected backup SHA-256 identity is required.",
+                nameof(expectedBackupSha256));
+        }
+
         ArgumentNullException.ThrowIfNull(timeProvider);
         ArgumentNullException.ThrowIfNull(recoveryOptions);
 
@@ -144,22 +153,20 @@ internal static class StateStoreRecoveryArtifacts
         StateStoreRecoveryPathPolicy.EnsureContainedPath(
             backupDirectory,
             normalizedBackupPath);
-        StateStoreRecoveryPathPolicy.ValidateExistingPrimary(normalizedBackupPath);
+        StateStoreRecoveryPathPolicy.ValidateExistingCopySource(normalizedBackupPath);
         var backupVersion = ValidateSqliteFile(normalizedBackupPath);
         var backupIdentity = ComputeFileIdentity(normalizedBackupPath);
+        EnsureExpectedIdentity("backup source", expectedBackupSha256, backupIdentity);
 
-        var primaryExists = File.Exists(normalizedDatabasePath);
-        if (primaryExists)
-        {
-            StateStoreRecoveryPathPolicy.EnsureNoReparseComponents(
-                normalizedDatabasePath,
-                includeLeaf: true);
-        }
+        var destinationWasPresent = IdentifyExpectedDestination(
+            normalizedDatabasePath,
+            expectedDestinationIdentity,
+            out _);
 
         string? temporaryPath = null;
         string? priorPath = null;
         var movedIntoPlace = false;
-        var validatedAfterReplacement = false;
+        var restoreCompleted = false;
         try
         {
             for (var attempt = 0; attempt < MaximumArtifactAttempts; attempt++)
@@ -189,9 +196,23 @@ internal static class StateStoreRecoveryArtifacts
                         StateStoreRecoveryPhase.BeforeRollback,
                         backupVersion,
                         backupVersion,
-                        normalizedBackupPath));
+                        temporaryPath));
 
-                if (primaryExists)
+                var stagedIdentity = ComputeFileIdentity(temporaryPath);
+                EnsureExpectedIdentity("staged backup", expectedBackupSha256, stagedIdentity);
+                backupIdentity = ComputeFileIdentity(normalizedBackupPath);
+                EnsureExpectedIdentity("backup source", expectedBackupSha256, backupIdentity);
+                var destinationStillPresent = IdentifyExpectedDestination(
+                    normalizedDatabasePath,
+                    expectedDestinationIdentity,
+                    out _);
+                if (destinationStillPresent != destinationWasPresent)
+                {
+                    throw new HerdrStateStoreException(
+                        "The destination presence changed before atomic restore.");
+                }
+
+                if (destinationWasPresent)
                 {
                     File.Replace(
                         temporaryPath,
@@ -207,11 +228,30 @@ internal static class StateStoreRecoveryArtifacts
                     priorPath = null;
                 }
 
+                recoveryOptions.EffectiveFaultInjector.OnPhase(
+                    new StateStoreRecoveryPhaseContext(
+                        StateStoreRecoveryPhase.AfterRestoreReplacement,
+                        backupVersion,
+                        backupVersion,
+                        normalizedDatabasePath));
+
                 var restoredVersion = ValidateSqliteFile(
                     normalizedDatabasePath,
                     expectedUserVersion: backupVersion);
-                validatedAfterReplacement = true;
                 var restoredIdentity = ComputeFileIdentity(normalizedDatabasePath);
+                EnsureExpectedIdentity(
+                    "restored destination",
+                    expectedBackupSha256,
+                    restoredIdentity);
+                backupIdentity = ComputeFileIdentity(normalizedBackupPath);
+                EnsureExpectedIdentity("backup source", expectedBackupSha256, backupIdentity);
+                recoveryOptions.EffectiveFaultInjector.OnPhase(
+                    new StateStoreRecoveryPhaseContext(
+                        StateStoreRecoveryPhase.AfterRollback,
+                        backupVersion,
+                        restoredVersion,
+                        normalizedBackupPath));
+
                 var trace = CreateTrace(
                     operation: "BackupRestore",
                     outcome: "BackupRestored",
@@ -230,12 +270,7 @@ internal static class StateStoreRecoveryArtifacts
                     trace,
                     timeProvider,
                     recoveryOptions);
-                recoveryOptions.EffectiveFaultInjector.OnPhase(
-                    new StateStoreRecoveryPhaseContext(
-                        StateStoreRecoveryPhase.AfterRollback,
-                        backupVersion,
-                        restoredVersion,
-                        normalizedBackupPath));
+                restoreCompleted = true;
                 return new StateStoreRecoveryRestoreResult(
                     normalizedDatabasePath,
                     normalizedBackupPath,
@@ -249,27 +284,14 @@ internal static class StateStoreRecoveryArtifacts
         }
         catch (Exception primary)
         {
-            if (movedIntoPlace && !validatedAfterReplacement && priorPath is not null)
+            if (movedIntoPlace && !restoreCompleted)
             {
-                try
-                {
-                    if (File.Exists(priorPath))
-                    {
-                        File.Replace(
-                            priorPath,
-                            normalizedDatabasePath,
-                            destinationBackupFileName: null,
-                            ignoreMetadataErrors: true);
-                    }
-                }
-                catch (Exception rollbackFailure)
-                {
-                    StateStoreRecoveryDiagnostics.AttachCleanupFailure(
-                        primary,
-                        "restore-rollback",
-                        priorPath,
-                        rollbackFailure);
-                }
+                RollbackDestination(
+                    normalizedDatabasePath,
+                    destinationWasPresent,
+                    priorPath,
+                    recoveryOptions,
+                    primary);
             }
 
             if (!movedIntoPlace && temporaryPath is not null)
@@ -282,6 +304,114 @@ internal static class StateStoreRecoveryArtifacts
             }
 
             throw;
+        }
+    }
+
+    private static bool IdentifyExpectedDestination(
+        string databasePath,
+        StateStoreRecoveryFileIdentity? expectedIdentity,
+        out StateStoreRecoveryFileIdentity? actualIdentity)
+    {
+        StateStoreRecoveryPathPolicy.EnsureNoReparseComponents(
+            databasePath,
+            includeLeaf: true);
+        if (Directory.Exists(databasePath))
+        {
+            throw new StateStoreCorruptionException(
+                $"The state-store path '{databasePath}' is a directory, not a SQLite database.");
+        }
+
+        if (!File.Exists(databasePath))
+        {
+            actualIdentity = null;
+        }
+        else
+        {
+            actualIdentity = ComputeFileIdentity(databasePath);
+        }
+
+        if (!AreIdentical(expectedIdentity, actualIdentity))
+        {
+            throw new HerdrStateStoreException(
+                "The destination file identity changed before atomic restore.");
+        }
+
+        return actualIdentity is not null;
+    }
+
+    private static void EnsureExpectedIdentity(
+        string label,
+        string expectedSha256,
+        StateStoreRecoveryFileIdentity actualIdentity)
+    {
+        if (!string.Equals(
+                expectedSha256,
+                actualIdentity.Sha256,
+                StringComparison.OrdinalIgnoreCase))
+        {
+            throw new HerdrStateStoreException(
+                $"The {label} file identity changed before atomic restore.");
+        }
+    }
+
+    private static void RollbackDestination(
+        string databasePath,
+        bool destinationWasPresent,
+        string? priorPath,
+        StateStoreRecoveryOptions recoveryOptions,
+        Exception primary)
+    {
+        try
+        {
+            StateStoreRecoveryPathPolicy.EnsureNoReparseComponents(
+                databasePath,
+                includeLeaf: true);
+
+            if (destinationWasPresent)
+            {
+                if (priorPath is null)
+                {
+                    throw new HerdrStateStoreException(
+                        "The original destination artifact was not retained for restore rollback.");
+                }
+
+                StateStoreRecoveryPathPolicy.EnsureNoReparseComponents(
+                    priorPath,
+                    includeLeaf: true);
+                if (File.Exists(databasePath))
+                {
+                    File.Replace(
+                        priorPath,
+                        databasePath,
+                        destinationBackupFileName: null,
+                        ignoreMetadataErrors: true);
+                }
+                else
+                {
+                    File.Move(priorPath, databasePath, overwrite: false);
+                }
+
+                return;
+            }
+
+            if (Directory.Exists(databasePath))
+            {
+                throw new HerdrStateStoreException(
+                    "The restore destination became a directory while rolling back.");
+            }
+
+            if (File.Exists(databasePath))
+            {
+                recoveryOptions.EffectiveCleanup.DeleteFile(databasePath);
+            }
+        }
+        catch (Exception rollbackFailure)
+        {
+            StateStoreRecoveryDiagnostics.AttachCleanupFailure(
+                primary,
+                "restore-rollback",
+                databasePath,
+                rollbackFailure);
         }
     }
 
@@ -733,8 +863,10 @@ internal static class StateStoreRecoveryArtifacts
     }
 
     private static bool AreIdentical(
-        StateStoreRecoveryFileIdentity left,
-        StateStoreRecoveryFileIdentity right) =>
+        StateStoreRecoveryFileIdentity? left,
+        StateStoreRecoveryFileIdentity? right) =>
+        left is null && right is null ||
+        left is not null && right is not null &&
         left.Length == right.Length &&
         string.Equals(left.Sha256, right.Sha256, StringComparison.Ordinal);
 

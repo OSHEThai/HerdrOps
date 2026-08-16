@@ -14,6 +14,7 @@ internal enum StateStoreRecoveryPhase
     AfterMigrationBeforeCommit,
     AfterMigrationCommit,
     BeforeRollback,
+    AfterRestoreReplacement,
     AfterRollback,
 }
 

@@ -92,6 +92,69 @@ public sealed class StateStoreRestoreCommandTests
         StringAssert.Contains(error.ToString(), "confirmation", StringComparison.OrdinalIgnoreCase);
     }
 
+    [TestMethod]
+    public void RestoreRejectsOwnershipLockReparsePointBeforeOpeningIt()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            Assert.Inconclusive("The recovery target is Windows.");
+        }
+
+        using var directory = TemporaryDirectory.Create();
+        var databasePath = Path.Combine(directory.Path, "lock-reparse.db");
+        var outsideLockPath = Path.Combine(directory.Path, "outside.lock");
+        CreateLegacyDatabase(databasePath, "lock-reparse");
+        File.WriteAllText(outsideLockPath, "outside-lock");
+
+        string backupPath;
+        using (var source = OpenDatabase(databasePath, SqliteOpenMode.ReadWrite))
+        {
+            backupPath = StateStoreRecoveryArtifacts.CreateBackup(
+                source,
+                databasePath,
+                fromVersion: 0,
+                toVersion: HerdrStateStoreOptions.CurrentSchemaVersion,
+                timeProvider: new FixedTimeProvider(FixedUtc),
+                recoveryOptions: new StateStoreRecoveryOptions(GuidFactory: () => FixedToken))
+                .BackupPath;
+        }
+
+        var lockPath = databasePath + ".core.lock";
+        try
+        {
+            _ = File.CreateSymbolicLink(lockPath, outsideLockPath);
+        }
+        catch (Exception exception) when (
+            exception is UnauthorizedAccessException or IOException or PlatformNotSupportedException)
+        {
+            Assert.Inconclusive($"Symbolic-link creation is unavailable on this Windows host: {exception.GetType().Name}");
+        }
+
+        try
+        {
+            var originalDestinationBytes = File.ReadAllBytes(databasePath);
+            var expectedBackupSha256 = StateStoreRecoveryArtifacts.IdentifyFile(backupPath).Sha256;
+            var expectedDestinationIdentity = StateStoreRecoveryArtifacts.IdentifyFile(databasePath);
+
+            Assert.Throws<StateStoreRestoreRejectedException>(() =>
+                new StateStoreRecoveryService().Restore(
+                    new StateStoreRestoreRequest(
+                        databasePath,
+                        backupPath,
+                        expectedBackupSha256,
+                        expectedDestinationIdentity.Sha256,
+                        StateStoreRestoreContract.ConfirmationPhrase),
+                    new FixedTimeProvider(FixedUtc)));
+
+            CollectionAssert.AreEqual(originalDestinationBytes, File.ReadAllBytes(databasePath));
+            Assert.AreEqual("outside-lock", File.ReadAllText(outsideLockPath));
+        }
+        finally
+        {
+            File.Delete(lockPath);
+        }
+    }
+
     private static SqliteConnection OpenDatabase(string path, SqliteOpenMode mode)
     {
         var connection = new SqliteConnection(new SqliteConnectionStringBuilder

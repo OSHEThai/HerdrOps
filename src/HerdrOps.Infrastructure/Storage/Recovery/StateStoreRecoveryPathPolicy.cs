@@ -71,6 +71,7 @@ internal static class StateStoreRecoveryPathPolicy
         var cursor = fullPath;
         while (!Directory.Exists(cursor))
         {
+            EnsureNoReparseComponents(cursor, includeLeaf: true);
             if (File.Exists(cursor))
             {
                 throw new HerdrStateStoreException(
@@ -129,6 +130,7 @@ internal static class StateStoreRecoveryPathPolicy
 
     public static void ValidateExistingPrimary(string databasePath)
     {
+        EnsureNoReparseComponents(databasePath, includeLeaf: true);
         if (Directory.Exists(databasePath))
         {
             throw new StateStoreCorruptionException(
@@ -166,13 +168,12 @@ internal static class StateStoreRecoveryPathPolicy
 
     public static void ValidateExistingCopySource(string path)
     {
+        EnsureNoReparseComponents(path, includeLeaf: true);
         if (!File.Exists(path) || Directory.Exists(path))
         {
             throw new StateStoreCorruptionException(
                 $"Recovery source '{path}' is not an existing regular file.");
         }
-
-        EnsureNoReparseComponents(path, includeLeaf: true);
     }
 
     public static void ValidateFileName(string fileName, string parameterName)
@@ -213,14 +214,63 @@ internal static class StateStoreRecoveryPathPolicy
             cursor = parent;
         }
 
-        if (includeLeaf && (File.Exists(fullPath) || Directory.Exists(fullPath)))
+        if (includeLeaf)
         {
-            var attributes = File.GetAttributes(fullPath);
+            if (HasLinkTarget(fullPath))
+            {
+                throw new HerdrStateStoreException(
+                    $"Recovery file '{fullPath}' is a reparse point.");
+            }
+
+            FileAttributes attributes;
+            try
+            {
+                attributes = File.GetAttributes(fullPath);
+            }
+            catch (FileNotFoundException)
+            {
+                return;
+            }
+            catch (DirectoryNotFoundException)
+            {
+                return;
+            }
+
             if ((attributes & FileAttributes.ReparsePoint) != 0)
             {
                 throw new HerdrStateStoreException(
                     $"Recovery file '{fullPath}' is a reparse point.");
             }
+        }
+    }
+
+    private static bool HasLinkTarget(string path)
+    {
+        try
+        {
+            if (new FileInfo(path).LinkTarget is not null)
+            {
+                return true;
+            }
+        }
+        catch (FileNotFoundException)
+        {
+        }
+        catch (DirectoryNotFoundException)
+        {
+        }
+
+        try
+        {
+            return new DirectoryInfo(path).LinkTarget is not null;
+        }
+        catch (FileNotFoundException)
+        {
+            return false;
+        }
+        catch (DirectoryNotFoundException)
+        {
+            return false;
         }
     }
 

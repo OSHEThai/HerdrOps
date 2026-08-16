@@ -26,7 +26,7 @@ public sealed class DiagnosticTextRedactor
 
     private static readonly TimeSpan RegexTimeout = TimeSpan.FromSeconds(1);
     private static readonly Regex ProseAssignmentPattern = CreateRegex(
-        "(?<prefix>\\b(?:api[\\s_-]?key|password|passwd|token|secret|private[\\s_-]?key|client[\\s_-]?secret|access[\\s_-]?key|authorization|credential)\\s+(?:is|equals?)\\s+)(?:\"[^\"\\r\\n]*\"|'[^'\\r\\n]*'|[^\\s,;&\\r\\n]+)");
+        "(?<prefix>\\b(?:api[ \\t_-]*key|password|passwd|token|secret|private[ \\t_-]*key|client[ \\t_-]*secret|access[ \\t_-]*key|authorization|credential|connection[ \\t_-]*string)\\b[ \\t]*(?:(?:is|equals?)[ \\t]+|[:=][ \\t]*|[ \\t]+))(?:\"[^\"\\r\\n]*\"|'[^'\\r\\n]*'|[^\\s,;&\\r\\n]+)");
     private static readonly Regex AssignmentPattern = CreateRegex(
         "(?<prefix>\\b[A-Z0-9][A-Z0-9_.-]*(?:TOKEN|SECRET|PASSWORD|PASSWD|API[_-]?KEY|PRIVATE[_-]?KEY|CLIENT[_-]?SECRET|ACCESS[_-]?KEY|AUTH(?:ORIZATION)?|CREDENTIAL|CONNECTION(?:[_-]?STRING)?|SOCKET(?:[_-]?PATH)?|COOKIE)[A-Z0-9_.-]*\\s*[:=]\\s*)(?:\"[^\"\\r\\n]*\"|'[^'\\r\\n]*'|[^\\s,;&\\r\\n]+)");
     private static readonly Regex CommandAssignmentPattern = CreateRegex(
@@ -50,17 +50,13 @@ public sealed class DiagnosticTextRedactor
     private static readonly Regex JwtPattern = CreateRegex(
         "\\beyJ[A-Z0-9_-]{8,}\\.[A-Z0-9_-]{8,}\\.[A-Z0-9_-]{8,}\\b");
     private static readonly Regex UserProfilePathPattern = CreateRegex(
-        "(?:[A-Z]:[\\\\/]|/)(?:users|home)[\\\\/][^\\\\/\\s:*?\"<>|]+(?:[\\\\/][^\\\\/\\s:*?\"<>|]+)*",
-        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.NonBacktracking);
+        "(?:\"(?:[A-Z]:[\\\\/]|/)(?:users|home)[\\\\/][^\\r\\n\"'<>|:*?;,]+(?::\\d+(?::\\d+)?)?\"(?::\\d+(?::\\d+)?)?|(?:[A-Z]:[\\\\/]|/)(?:users|home)[\\\\/][^\\r\\n\"'<>|:*?;,]+(?::\\d+(?::\\d+)?)?)");
     private static readonly Regex UserProfileVariablePattern = CreateRegex(
-        "(?:%USERPROFILE%|\\$env:USERPROFILE|\\$USERPROFILE)(?:[\\\\/][^\\\\/\\s:*?\"<>|]+)*",
-        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.NonBacktracking);
+        "(?:\"(?:%USERPROFILE%|\\$env:USERPROFILE|\\$USERPROFILE)[\\\\/][^\\r\\n\"'<>|:*?;,]+(?::\\d+(?::\\d+)?)?\"(?::\\d+(?::\\d+)?)?|(?:%USERPROFILE%|\\$env:USERPROFILE|\\$USERPROFILE)[\\\\/][^\\r\\n\"'<>|:*?;,]+(?::\\d+(?::\\d+)?)?)");
     private static readonly Regex SocketPathPattern = CreateRegex(
-        "(?:[A-Z]:[\\\\/][^\\s\"']*\\bherdr\\.sock\\b|/[^\\s\"']*/herdr\\.sock\\b|\\\\\\\\[^\\s\"']+\\\\(?:pipe|socket)[^\\s\"']*)",
-        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.NonBacktracking);
-    private static readonly Regex LocalAbsolutePathPattern = CreateBacktrackingRegex(
-        "(?<![A-Za-z0-9])(?:[A-Z]:[\\\\/]|\\\\\\\\)[^\\s\"'<>|]+",
-        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+        "(?:[A-Z]:[\\\\/][^\\r\\n\"'<>|:*?;,]*\\bherdr\\.sock\\b|/[^\\r\\n\"'<>|:*?;,]*/herdr\\.sock\\b|\\\\\\\\[^\\r\\n\"'<>|:*?;,]+\\\\(?:pipe|socket)[^\\r\\n\"'<>|:*?;,]*)");
+    private static readonly Regex LocalAbsolutePathPattern = CreateRegex(
+        "(?:\"(?:[A-Z]:[\\\\/]|\\\\\\\\)[^\\r\\n\"'<>|:*?;,]+(?::\\d+(?::\\d+)?)?\"(?::\\d+(?::\\d+)?)?|(?:[A-Z]:[\\\\/]|\\\\\\\\)[^\\r\\n\"'<>|:*?;,]+(?::\\d+(?::\\d+)?)?)");
 
     private readonly DiagnosticRedactionOptions _options;
     private readonly Regex? _configuredPattern;

@@ -160,6 +160,36 @@ public sealed class DiagnosticBundleTests
     }
 
     [TestMethod]
+    public void RedactorClosesAdversarialCredentialLabelsAndSpacedWindowsPathsWithoutFragments()
+    {
+        const string secret = "api-secret";
+        const string userPath = @"C:\Users\Alice Smith\source.cs:42";
+        const string quotedPath = @"C:\Program Files\HerdrOps\build output\app.dll:7:11";
+        var redactor = new DiagnosticTextRedactor(new DiagnosticRedactionOptions([secret]));
+
+        var result = redactor.Redact(
+            $"API key: {secret}; API   key = '{secret}'; api-key {secret}; " +
+            $"user={userPath}; quoted=\"{quotedPath}\"");
+
+        foreach (var fragment in new[]
+        {
+            secret,
+            "API key: api-secret",
+            "Alice Smith",
+            "source.cs:42",
+            "Program Files",
+            "build output",
+            "app.dll:7:11",
+        })
+        {
+            Assert.IsFalse(result.Text.Contains(fragment, StringComparison.Ordinal), fragment);
+        }
+
+        Assert.IsGreaterThanOrEqualTo(5, result.ReplacementCount);
+        StringAssert.Contains(result.Text, DiagnosticTextRedactor.Replacement);
+    }
+
+    [TestMethod]
     public void ConfiguredSecretRedactionUsesOneBoundedPassForRepeatedInput()
     {
         const string secret = "repeated-configured-secret-42";

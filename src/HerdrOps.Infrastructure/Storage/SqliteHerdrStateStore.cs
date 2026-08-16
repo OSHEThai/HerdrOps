@@ -1599,6 +1599,12 @@ public sealed partial class SqliteHerdrStateStore : IDisposable
     private static FileStream AcquireOwnershipLock(string databasePath)
     {
         var lockPath = databasePath + ".core.lock";
+        StateStoreRecoveryPathPolicy.EnsureNoReparseComponents(
+            Path.GetDirectoryName(lockPath)!,
+            includeLeaf: true);
+        StateStoreRecoveryPathPolicy.EnsureNoReparseComponents(
+            lockPath,
+            includeLeaf: true);
         try
         {
             return new FileStream(
