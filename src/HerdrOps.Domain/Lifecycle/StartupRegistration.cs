@@ -112,25 +112,36 @@ public static class StartupRegistrationContract
             throw new StartupRegistrationException("The startup executable path is malformed.");
         }
 
-        if (executablePath.IndexOf('"') >= 0 ||
-            executablePath.IndexOfAny(Path.GetInvalidPathChars()) >= 0)
-        {
-            throw new StartupRegistrationException("The startup executable path contains invalid characters.");
-        }
-
-        if (IsUnsupportedNamespace(executablePath) ||
-            executablePath.StartsWith(@"\\", StringComparison.Ordinal) ||
-            !Path.IsPathFullyQualified(executablePath))
+        if (!IsLocalDriveAbsolutePath(executablePath))
         {
             throw new StartupRegistrationException(
                 "The startup executable path must be a local, fully qualified Windows path.");
         }
 
-        if (ContainsTraversalSegment(executablePath) ||
-            executablePath.EndsWith(Path.DirectorySeparatorChar) ||
-            executablePath.EndsWith(Path.AltDirectorySeparatorChar))
+        if (executablePath.IndexOf(':', 2) >= 0 ||
+            executablePath.IndexOfAny(['"', '<', '>', '|', '?', '*']) >= 0)
         {
-            throw new StartupRegistrationException("The startup executable path must identify an executable file.");
+            throw new StartupRegistrationException(
+                "The startup executable path contains invalid Windows path syntax.");
+        }
+
+        var components = executablePath[3..].Split(['\\', '/'], StringSplitOptions.None);
+        if (components.Length == 0 || components.Any(component => component.Length == 0))
+        {
+            throw new StartupRegistrationException("The startup executable path is malformed.");
+        }
+
+        foreach (var component in components)
+        {
+            if (component is "." or ".." ||
+                component.EndsWith(' ') ||
+                component.EndsWith('.') ||
+                component.Any(IsInvalidWindowsComponentCharacter) ||
+                IsReservedWindowsDeviceName(component))
+            {
+                throw new StartupRegistrationException(
+                    "The startup executable path contains an invalid Windows path component.");
+            }
         }
 
         string normalizedPath;
@@ -144,14 +155,13 @@ public static class StartupRegistrationContract
             throw new StartupRegistrationException("The startup executable path is malformed.", exception);
         }
 
-        var fileName = Path.GetFileName(normalizedPath);
+        var normalizedComponents = normalizedPath.Split(['\\', '/'], StringSplitOptions.RemoveEmptyEntries);
+        var fileName = normalizedComponents[^1];
         if (string.IsNullOrWhiteSpace(fileName) ||
             !string.Equals(Path.GetExtension(fileName), ".exe", StringComparison.OrdinalIgnoreCase) ||
-            fileName.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0 ||
-            fileName.IndexOf(':') >= 0 ||
-            normalizedPath
-                .Split(['\\', '/'], StringSplitOptions.RemoveEmptyEntries)
-                .Any(IsReservedWindowsDeviceName))
+            normalizedComponents.Skip(1).Any(component =>
+                component.Any(IsInvalidWindowsComponentCharacter) ||
+                IsReservedWindowsDeviceName(component)))
         {
             throw new StartupRegistrationException(
                 "The startup executable path must name a local .exe file.");
@@ -160,15 +170,20 @@ public static class StartupRegistrationContract
         return $"\"{normalizedPath}\"";
     }
 
-    private static bool IsUnsupportedNamespace(string path) =>
-        path.StartsWith(@"\\?\", StringComparison.OrdinalIgnoreCase) ||
-        path.StartsWith(@"\\.\", StringComparison.OrdinalIgnoreCase) ||
-        path.StartsWith(@"\??\", StringComparison.OrdinalIgnoreCase) ||
-        path.StartsWith(@"\Device\", StringComparison.OrdinalIgnoreCase);
+    private static bool IsLocalDriveAbsolutePath(string path) =>
+        path.Length >= 4 &&
+        IsAsciiLetter(path[0]) &&
+        path[1] == ':' &&
+        IsWindowsSeparator(path[2]);
 
-    private static bool ContainsTraversalSegment(string path) =>
-        path.Split(['\\', '/'], StringSplitOptions.RemoveEmptyEntries)
-            .Any(segment => segment is "." or "..");
+    private static bool IsWindowsSeparator(char character) => character is '\\' or '/';
+
+    private static bool IsAsciiLetter(char character) =>
+        character is (>= 'A' and <= 'Z') or (>= 'a' and <= 'z');
+
+    private static bool IsInvalidWindowsComponentCharacter(char character) =>
+        char.IsControl(character) ||
+        character is '"' or '<' or '>' or '|' or '?' or '*' or ':';
 
     private static bool IsReservedWindowsDeviceName(string component)
     {

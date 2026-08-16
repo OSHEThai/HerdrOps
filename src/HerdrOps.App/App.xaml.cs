@@ -23,7 +23,7 @@ public partial class App : Application
     private AppLifecycleController? _lifecycle;
     private WidgetWindowLauncher? _widgetLauncher;
     private DashboardWindowManager? _dashboardWindows;
-    private IApplicationInstanceGate? _instanceGate;
+    private ApplicationInstanceGateLease? _instanceGate;
     private StartupTransaction? _startupTransaction;
     private Exception? _startupFailure;
     private readonly Func<IApplicationInstanceGate> _instanceGateFactory;
@@ -65,34 +65,16 @@ public partial class App : Application
         _startupTransaction = transaction;
         try
         {
-            var gate = _instanceGateFactory();
-            var gateAcquired = false;
-            var gateDisposed = false;
-            try
+            var gate = ApplicationInstanceGateStartup.Acquire(_instanceGateFactory, transaction);
+            if (gate is null)
             {
-                if (!gate.TryAcquire())
-                {
-                    gateDisposed = true;
-                    gate.Dispose();
-                    transaction.Commit(static () => { });
-                    _startupTransaction = null;
-                    Shutdown(0);
-                    return;
-                }
-
-                gateAcquired = true;
-                _instanceGate = gate;
-                transaction.AddCleanup("single-instance", ReleaseInstanceGate);
+                transaction.Commit(static () => { });
+                _startupTransaction = null;
+                Shutdown(0);
+                return;
             }
-            catch
-            {
-                if (!gateAcquired && !gateDisposed)
-                {
-                    gate.Dispose();
-                }
 
-                throw;
-            }
+            _instanceGate = gate;
 
             var reviewState = new ComplianceReviewStateHub();
             _reviewCommands = new ComplianceReviewCommandCoordinator(

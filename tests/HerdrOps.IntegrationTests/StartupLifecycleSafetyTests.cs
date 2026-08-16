@@ -116,6 +116,59 @@ public sealed class StartupLifecycleSafetyTests
         Assert.IsFalse(transaction.HasPendingCleanup);
     }
 
+    [TestMethod]
+    public void GateAcquisitionFailurePreservesPrimaryWhenTransactionalDisposeAlsoFails()
+    {
+        var acquisitionFailure = new InvalidOperationException("Synthetic gate acquisition failure.");
+        var disposeFailure = new IOException("Synthetic gate dispose failure.");
+        var gate = new FaultInjectingInstanceGate(acquisitionFailure)
+        {
+            DisposeFailure = disposeFailure,
+        };
+        var transaction = new StartupTransaction();
+
+        var primary = Assert.ThrowsExactly<InvalidOperationException>(() =>
+            ApplicationInstanceGateStartup.Acquire(() => gate, transaction));
+
+        var combined = Assert.ThrowsExactly<StartupTransactionException>(() =>
+            transaction.Rollback(primary));
+
+        Assert.AreSame(acquisitionFailure, combined.PrimaryException);
+        Assert.AreSame(disposeFailure, combined.CleanupException.Failures.Single().Exception);
+        var aggregate = Assert.IsInstanceOfType<AggregateException>(combined.InnerException);
+        Assert.AreSame(acquisitionFailure, aggregate.InnerExceptions[0]);
+        Assert.AreSame(combined.CleanupException, aggregate.InnerExceptions[1]);
+        Assert.AreEqual(1, gate.DisposeAttempts);
+        Assert.IsTrue(transaction.HasPendingCleanup);
+
+        gate.DisposeFailure = null;
+        transaction.RetryCleanup();
+        transaction.RetryCleanup();
+
+        Assert.AreEqual(2, gate.DisposeAttempts);
+        Assert.IsTrue(gate.IsDisposed);
+        Assert.IsFalse(transaction.HasPendingCleanup);
+    }
+
+    [TestMethod]
+    public void GateThatDoesNotAcquireIsDisposedBeforeTheStartupTransactionCommits()
+    {
+        var gate = new FaultInjectingInstanceGate(acquisitionFailure: null, acquired: false);
+        var transaction = new StartupTransaction();
+
+        var lease = ApplicationInstanceGateStartup.Acquire(() => gate, transaction);
+
+        Assert.IsNull(lease);
+        Assert.IsTrue(gate.IsDisposed);
+        Assert.AreEqual(1, gate.DisposeAttempts);
+
+        transaction.Commit(static () => { });
+        transaction.RetryCleanup();
+
+        Assert.AreEqual(1, gate.DisposeAttempts);
+        Assert.IsFalse(transaction.HasPendingCleanup);
+    }
+
     private sealed class InMemoryInstanceGate(
         IDictionary<string, object> registry,
         string name) : IApplicationInstanceGate
@@ -154,6 +207,40 @@ public sealed class StartupLifecycleSafetyTests
                 registry.Remove(name);
                 _acquired = false;
             }
+        }
+    }
+
+    private sealed class FaultInjectingInstanceGate(
+        Exception? acquisitionFailure,
+        bool acquired = true) : IApplicationInstanceGate
+    {
+        private readonly Exception? _acquisitionFailure = acquisitionFailure;
+
+        public Exception? DisposeFailure { get; set; }
+
+        public int DisposeAttempts { get; private set; }
+
+        public bool IsDisposed { get; private set; }
+
+        public bool TryAcquire()
+        {
+            if (_acquisitionFailure is not null)
+            {
+                throw _acquisitionFailure;
+            }
+
+            return acquired;
+        }
+
+        public void Dispose()
+        {
+            DisposeAttempts++;
+            if (DisposeFailure is not null)
+            {
+                throw DisposeFailure;
+            }
+
+            IsDisposed = true;
         }
     }
 }

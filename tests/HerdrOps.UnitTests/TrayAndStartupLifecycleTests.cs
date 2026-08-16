@@ -143,6 +143,12 @@ public sealed class TrayAndStartupLifecycleTests
             @"C:\HerdrOps\",
             @"C:\HerdrOps\HerdrOps.dll",
             @"C:\HerdrOps\HerdrOps.exe:startup",
+            @"C:\HerdrOps\HerdrOps.exe:alt",
+            @"C:\HerdrOps?\HerdrOps.exe",
+            @"C:\HerdrOps*\HerdrOps.exe",
+            @"C:\HerdrOps \HerdrOps.exe",
+            @"C:\HerdrOps.\HerdrOps.exe",
+            @"C:\HerdrOps\HerdrOps.exe.",
             @"C:\HerdrOps\bad""name.exe",
             @"C:\HerdrOps\.\HerdrOps.exe",
             @"C:\HerdrOps\CON.exe",
@@ -157,6 +163,27 @@ public sealed class TrayAndStartupLifecycleTests
             Assert.ThrowsExactly<StartupRegistrationException>(() =>
                 new StartAtLogonService(new InMemoryStartupBackend(), malformedPath),
                 malformedPath);
+        }
+    }
+
+    [TestMethod]
+    public void StartAtLogonQuotesValidAbsoluteWindowsExecutableControls()
+    {
+        var validPaths = new[]
+        {
+            @"C:\HerdrOps\HerdrOps.exe",
+            @"C:\Program Files\HerdrOps\HerdrOps.App.exe",
+            @"D:/Agents/HerdrOps/HerdrOps.Agent.exe",
+        };
+
+        foreach (var validPath in validPaths)
+        {
+            var expected = $"\"{Path.GetFullPath(validPath)}\"";
+            var actual = new StartAtLogonService(
+                new InMemoryStartupBackend(),
+                validPath).ExpectedCommand;
+
+            Assert.AreEqual(expected, actual, validPath);
         }
     }
 
