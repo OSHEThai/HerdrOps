@@ -22,6 +22,32 @@ public sealed record HerdrRuntimeMonitorSnapshot(
     string? LastTransitionReason,
     DateTimeOffset LastTransitionUtc);
 
+public sealed record HerdrRuntimeMonitorOptions(
+    TimeSpan AuthoritativeSnapshotPollInterval)
+{
+    public static HerdrRuntimeMonitorOptions Default { get; } = new(
+        TimeSpan.FromSeconds(1));
+
+    public static HerdrRuntimeMonitorOptions EventOnlyForTests { get; } = new(
+        Timeout.InfiniteTimeSpan);
+
+    public void Validate()
+    {
+        if (AuthoritativeSnapshotPollInterval == Timeout.InfiniteTimeSpan)
+        {
+            return;
+        }
+
+        if (AuthoritativeSnapshotPollInterval <= TimeSpan.Zero ||
+            AuthoritativeSnapshotPollInterval > TimeSpan.FromMinutes(1))
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(AuthoritativeSnapshotPollInterval),
+                "The authoritative snapshot poll interval must be positive, no longer than one minute, or infinite for a synthetic test.");
+        }
+    }
+}
+
 public sealed class HerdrRuntimeMonitor
 {
     private readonly object _stateLock = new();
@@ -30,7 +56,9 @@ public sealed class HerdrRuntimeMonitor
     private readonly HerdrStateReducer _reducer;
     private readonly IHerdrReconnectDelay _reconnectDelay;
     private readonly TimeProvider _timeProvider;
+    private readonly HerdrRuntimeMonitorOptions _options;
     private HerdrRuntimeMonitorSnapshot _current;
+    private int _runActive;
 
     public HerdrRuntimeMonitor(
         IHerdrApiClient apiClient,
@@ -38,13 +66,16 @@ public sealed class HerdrRuntimeMonitor
         HerdrStateReducer? reducer = null,
         IHerdrReconnectDelay? reconnectDelay = null,
         TimeProvider? timeProvider = null,
-        HerdrSessionState? initialState = null)
+        HerdrSessionState? initialState = null,
+        HerdrRuntimeMonitorOptions? options = null)
     {
         _apiClient = apiClient ?? throw new ArgumentNullException(nameof(apiClient));
         _endpoint = endpoint ?? throw new ArgumentNullException(nameof(endpoint));
         _reducer = reducer ?? new HerdrStateReducer();
         _reconnectDelay = reconnectDelay ?? new HerdrExponentialReconnectDelay();
         _timeProvider = timeProvider ?? TimeProvider.System;
+        _options = options ?? HerdrRuntimeMonitorOptions.Default;
+        _options.Validate();
         initialState ??= HerdrSessionState.Empty;
         if (initialState.ConnectionEpoch < 0 || initialState.LastIngestSequence < 0)
         {
@@ -83,6 +114,11 @@ public sealed class HerdrRuntimeMonitor
 
     public async Task RunAsync(CancellationToken cancellationToken)
     {
+        if (Interlocked.CompareExchange(ref _runActive, 1, 0) != 0)
+        {
+            throw new InvalidOperationException("The Herdr runtime monitor is already running.");
+        }
+
         var connectionEpoch = Current.State.ConnectionEpoch;
         var ingestSequence = Current.State.LastIngestSequence;
         var consecutiveFailures = 0;
@@ -96,127 +132,106 @@ public sealed class HerdrRuntimeMonitor
                 cancellationToken.ThrowIfCancellationRequested();
                 var immediateReconciliation = false;
                 var cycleBootstrapped = false;
-                await using var subscriptionScope = new DeferredSubscriptionScope();
-                try
                 {
-                    var discoverySnapshot = await _apiClient
+                    await using var subscriptionScope = new DeferredSubscriptionScope();
+                    try
+                    {
+                        var discoverySnapshot = await _apiClient
                         .GetSnapshotAsync(_endpoint, cancellationToken)
                         .ConfigureAwait(false);
-                    var discoveryServerIdentity = _apiClient.LastVerifiedServerIdentity;
-                    var subscribedPaneIds = discoverySnapshot.Panes
-                        .Select(pane => pane.PaneId)
-                        .ToHashSet(StringComparer.Ordinal);
-                    subscriptionScope.Subscription = await _apiClient
-                        .SubscribeAsync(_endpoint, subscribedPaneIds, cancellationToken)
-                        .ConfigureAwait(false);
-                    var subscriptionServerIdentity = _apiClient.LastVerifiedServerIdentity;
-
-                    var authoritativeSnapshot = await _apiClient
-                        .GetSnapshotAsync(_endpoint, cancellationToken)
-                        .ConfigureAwait(false);
-                    var snapshotReceivedUtc = _timeProvider.GetUtcNow();
-                    var authoritativeServerIdentity = _apiClient.LastVerifiedServerIdentity;
-                    var bootstrapServerIdentity = ValidateBootstrapServerIdentities(
-                        discoveryServerIdentity,
-                        subscriptionServerIdentity,
-                        authoritativeServerIdentity);
-                    connectionEpoch++;
-                    ingestSequence++;
-                    var state = _reducer.Reconcile(
-                        authoritativeSnapshot,
-                        connectionEpoch,
-                        ingestSequence);
-                    var current = Current;
-                    Publish(current with
-                    {
-                        Status = HerdrRuntimeMonitorStatus.Connected,
-                        State = state,
-                        ServerIdentity = bootstrapServerIdentity,
-                        BootstrapCount = current.BootstrapCount + 1,
-                        LastTransitionReason = null,
-                        LastTransitionUtc = snapshotReceivedUtc,
-                    });
-                    hasBootstrapped = true;
-                    cycleBootstrapped = true;
-                    consecutiveFailures = 0;
-
-                    var authoritativePaneIds = authoritativeSnapshot.Panes
-                        .Select(pane => pane.PaneId)
-                        .ToHashSet(StringComparer.Ordinal);
-                    if (!subscribedPaneIds.SetEquals(authoritativePaneIds))
-                    {
-                        RecordReconciliation(
-                            "Pane set changed while the subscription was being bootstrapped.",
-                            ingestSequence);
-                        immediateReconciliation = true;
-                    }
-
-                    while (!immediateReconciliation)
-                    {
-                        var stateEvent = await subscriptionScope.Subscription
-                            .ReadNextAsync(cancellationToken)
+                        var discoveryServerIdentity = _apiClient.LastVerifiedServerIdentity;
+                        var subscribedPaneIds = discoverySnapshot.Panes
+                            .Select(pane => pane.PaneId)
+                            .ToHashSet(StringComparer.Ordinal);
+                        subscriptionScope.Subscription = await _apiClient
+                            .SubscribeAsync(_endpoint, subscribedPaneIds, cancellationToken)
                             .ConfigureAwait(false);
-                        var eventReceivedUtc = _timeProvider.GetUtcNow();
+                        var subscriptionServerIdentity = _apiClient.LastVerifiedServerIdentity;
+
+                        var authoritativeSnapshot = await _apiClient
+                            .GetSnapshotAsync(_endpoint, cancellationToken)
+                            .ConfigureAwait(false);
+                        var snapshotReceivedUtc = _timeProvider.GetUtcNow();
+                        var authoritativeServerIdentity = _apiClient.LastVerifiedServerIdentity;
+                        var bootstrapServerIdentity = ValidateBootstrapServerIdentities(
+                            discoveryServerIdentity,
+                            subscriptionServerIdentity,
+                            authoritativeServerIdentity);
+                        connectionEpoch++;
                         ingestSequence++;
-                        if (RequiresTopologyReconciliation(stateEvent.EventName))
-                        {
-                            RecordReconciliation(
-                                $"Topology event '{stateEvent.EventName}' requires an authoritative snapshot.",
-                                ingestSequence,
-                                incrementEventCount: true);
-                            immediateReconciliation = true;
-                            break;
-                        }
-
-                        var result = _reducer.Apply(Current.State, stateEvent, ingestSequence);
-                        if (result.Disposition == HerdrStateApplyDisposition.ReconciliationRequired)
-                        {
-                            RecordReconciliation(
-                                result.Reason ?? $"Event '{stateEvent.EventName}' requested reconciliation.",
-                                ingestSequence,
-                                incrementEventCount: true);
-                            immediateReconciliation = true;
-                            break;
-                        }
-
-                        current = Current;
-                        Publish(current with
-                        {
-                            Status = HerdrRuntimeMonitorStatus.Connected,
-                            State = result.State,
-                            EventCount = current.EventCount + 1,
-                            LastTransitionReason = null,
-                            LastTransitionUtc = eventReceivedUtc,
-                        });
-                        consecutiveImmediateReconciliations = 0;
-
-                    }
-                }
-                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-                {
-                    throw;
-                }
-                catch (Exception exception) when (IsRecoverable(exception))
-                {
-                    if (hasBootstrapped)
-                    {
-                        RecordReconciliation(
-                            exception.Message,
-                            ingestSequence,
-                            incrementDisconnectCount: cycleBootstrapped && IsTransportDisconnect(exception));
-                    }
-                    else
-                    {
+                        var state = _reducer.Reconcile(
+                            authoritativeSnapshot,
+                            connectionEpoch,
+                            ingestSequence);
+                        var authoritativePaneIds = authoritativeSnapshot.Panes
+                            .Select(pane => pane.PaneId)
+                            .ToHashSet(StringComparer.Ordinal);
+                        var paneSetChanged = !subscribedPaneIds.SetEquals(authoritativePaneIds);
                         var current = Current;
                         Publish(current with
                         {
-                            Status = HerdrRuntimeMonitorStatus.Reconnecting,
-                            LastTransitionReason = exception.Message,
-                            LastTransitionUtc = _timeProvider.GetUtcNow(),
+                            Status = paneSetChanged
+                                ? HerdrRuntimeMonitorStatus.Reconnecting
+                                : HerdrRuntimeMonitorStatus.Connected,
+                            State = state,
+                            ServerIdentity = bootstrapServerIdentity,
+                            BootstrapCount = current.BootstrapCount + 1,
+                            ReconciliationCount = current.ReconciliationCount + (paneSetChanged ? 1 : 0),
+                            LastTransitionReason = paneSetChanged
+                                ? "Pane set changed while the subscription was being bootstrapped."
+                                : null,
+                            LastTransitionUtc = snapshotReceivedUtc,
                         });
-                    }
+                        hasBootstrapped = true;
+                        cycleBootstrapped = true;
+                        consecutiveFailures = 0;
+                        immediateReconciliation = paneSetChanged;
 
-                    consecutiveFailures++;
+                        if (!immediateReconciliation)
+                        {
+                            var connectedResult = await MonitorConnectedCycleAsync(
+                                    subscriptionScope.Subscription,
+                                    subscribedPaneIds,
+                                    bootstrapServerIdentity,
+                                    connectionEpoch,
+                                    ingestSequence,
+                                    cancellationToken)
+                                .ConfigureAwait(false);
+                            ingestSequence = connectedResult.IngestSequence;
+                            immediateReconciliation = connectedResult.ImmediateReconciliation;
+                            if (connectedResult.StableProgressObserved)
+                            {
+                                consecutiveImmediateReconciliations = 0;
+                            }
+                        }
+                    }
+                    catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                    {
+                        throw;
+                    }
+                    catch (Exception exception) when (IsRecoverable(exception))
+                    {
+                        ingestSequence = Current.State.LastIngestSequence;
+                        if (hasBootstrapped)
+                        {
+                            RecordReconciliation(
+                                exception.Message,
+                                ingestSequence,
+                                incrementDisconnectCount: cycleBootstrapped && IsTransportDisconnect(exception));
+                        }
+                        else
+                        {
+                            var current = Current;
+                            Publish(current with
+                            {
+                                Status = HerdrRuntimeMonitorStatus.Reconnecting,
+                                LastTransitionReason = exception.Message,
+                                LastTransitionUtc = _timeProvider.GetUtcNow(),
+                            });
+                        }
+
+                        consecutiveFailures++;
+                    }
                 }
 
                 if (immediateReconciliation)
@@ -237,15 +252,22 @@ public sealed class HerdrRuntimeMonitor
         }
         finally
         {
-            var current = Current;
-            Publish(current with
+            try
             {
-                Status = HerdrRuntimeMonitorStatus.Stopped,
-                LastTransitionReason = cancellationToken.IsCancellationRequested
-                    ? "Monitoring was cancelled."
-                    : current.LastTransitionReason,
-                LastTransitionUtc = _timeProvider.GetUtcNow(),
-            });
+                var current = Current;
+                Publish(current with
+                {
+                    Status = HerdrRuntimeMonitorStatus.Stopped,
+                    LastTransitionReason = cancellationToken.IsCancellationRequested
+                        ? "Monitoring was cancelled."
+                        : current.LastTransitionReason,
+                    LastTransitionUtc = _timeProvider.GetUtcNow(),
+                });
+            }
+            finally
+            {
+                Volatile.Write(ref _runActive, 0);
+            }
         }
     }
 
@@ -273,6 +295,316 @@ public sealed class HerdrRuntimeMonitor
             LastTransitionReason = reason,
             LastTransitionUtc = _timeProvider.GetUtcNow(),
         });
+    }
+
+    private async Task<ConnectedCycleResult> MonitorConnectedCycleAsync(
+        IHerdrEventSubscription subscription,
+        IReadOnlySet<string> subscribedPaneIds,
+        HerdrServerProcessIdentity? bootstrapServerIdentity,
+        long connectionEpoch,
+        long ingestSequence,
+        CancellationToken cancellationToken)
+    {
+        using var cycleCancellation = CancellationTokenSource.CreateLinkedTokenSource(
+            cancellationToken);
+        var (readCancellation, eventTask) = StartSubscriptionRead(
+            subscription,
+            cycleCancellation.Token);
+        var pollDelayTask = CreateSnapshotPollDelayAsync(cycleCancellation.Token);
+        var stableProgressObserved = false;
+
+        try
+        {
+            while (true)
+            {
+                var completedTask = await Task
+                    .WhenAny(eventTask, pollDelayTask)
+                    .ConfigureAwait(false);
+
+                // Prefer an already-buffered live event when the poll timer and
+                // subscription complete together. Status payloads do not expose
+                // an ordering sequence, so a fresh authoritative snapshot is
+                // fetched after every admitted live status event before state is
+                // published.
+                if (eventTask.IsCompleted || ReferenceEquals(completedTask, eventTask))
+                {
+                    var stateEvent = await eventTask.ConfigureAwait(false);
+                    var eventReceivedUtc = _timeProvider.GetUtcNow();
+                    var nextIngestSequence = checked(ingestSequence + 1);
+
+                    if (stateEvent is HerdrPaneAgentStatusChangedEvent statusChanged &&
+                        string.Equals(
+                            stateEvent.EventName,
+                            "pane.agent_status_changed",
+                            StringComparison.Ordinal))
+                    {
+                        if (!Current.State.Panes.TryGetValue(statusChanged.PaneId, out var pane) ||
+                            !string.Equals(
+                                pane.WorkspaceId,
+                                statusChanged.WorkspaceId,
+                                StringComparison.Ordinal))
+                        {
+                            ingestSequence = nextIngestSequence;
+                            RecordReconciliation(
+                                $"Live Agent status referenced unknown pane '{statusChanged.PaneId}'.",
+                                ingestSequence,
+                                incrementEventCount: true);
+                            return new ConnectedCycleResult(
+                                ingestSequence,
+                                ImmediateReconciliation: true,
+                                stableProgressObserved);
+                        }
+
+                        ingestSequence = nextIngestSequence;
+                        HerdrSessionState candidate;
+                        DateTimeOffset statusSnapshotReceivedUtc;
+                        try
+                        {
+                            var snapshot = await _apiClient
+                                .GetSnapshotAsync(_endpoint, cycleCancellation.Token)
+                                .ConfigureAwait(false);
+                            statusSnapshotReceivedUtc = _timeProvider.GetUtcNow();
+                            ValidateConnectedServerIdentity(bootstrapServerIdentity);
+                            candidate = _reducer.Reconcile(
+                                snapshot,
+                                connectionEpoch,
+                                ingestSequence);
+                        }
+                        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                        {
+                            RecordReconciliation(
+                                "Monitoring was cancelled after a live Agent status was consumed but before its authoritative snapshot completed.",
+                                ingestSequence,
+                                incrementEventCount: true);
+                            throw;
+                        }
+                        catch (Exception exception) when (IsRecoverable(exception))
+                        {
+                            RecordReconciliation(
+                                exception.Message,
+                                ingestSequence,
+                                incrementEventCount: true,
+                                incrementDisconnectCount: IsTransportDisconnect(exception));
+                            return new ConnectedCycleResult(
+                                ingestSequence,
+                                ImmediateReconciliation: true,
+                                stableProgressObserved);
+                        }
+
+                        var current = Current;
+                        var stateChanged = !HasSameAuthoritativeContent(current.State, candidate);
+                        var paneSetChanged = !subscribedPaneIds.SetEquals(candidate.Panes.Keys);
+                        Publish(current with
+                        {
+                            Status = paneSetChanged
+                                ? HerdrRuntimeMonitorStatus.Reconnecting
+                                : HerdrRuntimeMonitorStatus.Connected,
+                            State = candidate,
+                            EventCount = current.EventCount + 1,
+                            ReconciliationCount = current.ReconciliationCount + (stateChanged ? 1 : 0),
+                            LastTransitionReason = paneSetChanged
+                                ? "Pane set changed while reconciling an observed live Agent status."
+                                : null,
+                            LastTransitionUtc = statusSnapshotReceivedUtc,
+                        });
+
+                        if (paneSetChanged)
+                        {
+                            return new ConnectedCycleResult(
+                                ingestSequence,
+                                ImmediateReconciliation: true,
+                                stableProgressObserved);
+                        }
+
+                        stableProgressObserved = true;
+                        if (pollDelayTask.IsCompleted)
+                        {
+                            // The post-event authoritative snapshot also
+                            // satisfies a due topology poll.
+                            pollDelayTask = CreateSnapshotPollDelayAsync(cycleCancellation.Token);
+                        }
+
+                        readCancellation.Dispose();
+                        (readCancellation, eventTask) = StartSubscriptionRead(
+                            subscription,
+                            cycleCancellation.Token);
+                        continue;
+                    }
+
+                    ingestSequence = nextIngestSequence;
+                    RecordReconciliation(
+                        $"Unexpected subscription event '{stateEvent.EventName}' requires an authoritative snapshot and refreshed live filters.",
+                        ingestSequence);
+                    return new ConnectedCycleResult(
+                        ingestSequence,
+                        ImmediateReconciliation: true,
+                        stableProgressObserved);
+                }
+
+                await pollDelayTask.ConfigureAwait(false);
+                if (!eventTask.IsCompleted)
+                {
+                    readCancellation.Cancel();
+                }
+
+                try
+                {
+                    _ = await eventTask.ConfigureAwait(false);
+                    // A frame won the cancellation race. Process that exact
+                    // task at the top of the loop before polling.
+                    continue;
+                }
+                catch (OperationCanceledException) when (
+                    readCancellation.IsCancellationRequested &&
+                    !cycleCancellation.IsCancellationRequested)
+                {
+                    // No frame was consumed. The JSON-line reader retains any
+                    // partial bytes for the next read on this subscription.
+                }
+
+                var polledSnapshot = await _apiClient
+                    .GetSnapshotAsync(_endpoint, cycleCancellation.Token)
+                    .ConfigureAwait(false);
+                var snapshotReceivedUtc = _timeProvider.GetUtcNow();
+                ValidateConnectedServerIdentity(bootstrapServerIdentity);
+
+                var candidateSequence = checked(ingestSequence + 1);
+                var polledCandidate = _reducer.Reconcile(
+                    polledSnapshot,
+                    connectionEpoch,
+                    candidateSequence);
+                var pollCurrent = Current;
+                if (HasSameAuthoritativeContent(pollCurrent.State, polledCandidate))
+                {
+                    stableProgressObserved = true;
+                    readCancellation.Dispose();
+                    (readCancellation, eventTask) = StartSubscriptionRead(
+                        subscription,
+                        cycleCancellation.Token);
+                    pollDelayTask = CreateSnapshotPollDelayAsync(cycleCancellation.Token);
+                    continue;
+                }
+
+                var polledPaneSetChanged = !subscribedPaneIds.SetEquals(polledCandidate.Panes.Keys);
+                ingestSequence = candidateSequence;
+                Publish(pollCurrent with
+                {
+                    Status = polledPaneSetChanged
+                        ? HerdrRuntimeMonitorStatus.Reconnecting
+                        : HerdrRuntimeMonitorStatus.Connected,
+                    State = polledCandidate,
+                    ReconciliationCount = pollCurrent.ReconciliationCount + 1,
+                    LastTransitionReason = polledPaneSetChanged
+                        ? "Pane set changed during authoritative snapshot polling; refreshing live status filters."
+                        : null,
+                    LastTransitionUtc = snapshotReceivedUtc,
+                });
+
+                if (polledPaneSetChanged)
+                {
+                    return new ConnectedCycleResult(
+                        ingestSequence,
+                        ImmediateReconciliation: true,
+                        stableProgressObserved);
+                }
+
+                stableProgressObserved = true;
+                readCancellation.Dispose();
+                (readCancellation, eventTask) = StartSubscriptionRead(
+                    subscription,
+                    cycleCancellation.Token);
+                pollDelayTask = CreateSnapshotPollDelayAsync(cycleCancellation.Token);
+            }
+        }
+        finally
+        {
+            cycleCancellation.Cancel();
+            readCancellation.Cancel();
+            await ObserveTaskCompletionAsync(eventTask).ConfigureAwait(false);
+            await ObserveTaskCompletionAsync(pollDelayTask).ConfigureAwait(false);
+            readCancellation.Dispose();
+        }
+    }
+
+    private static (CancellationTokenSource Cancellation, Task<HerdrStateEvent> ReadTask)
+        StartSubscriptionRead(
+            IHerdrEventSubscription subscription,
+            CancellationToken cycleCancellationToken)
+    {
+        var readCancellation = CancellationTokenSource.CreateLinkedTokenSource(
+            cycleCancellationToken);
+        return (
+            readCancellation,
+            subscription.ReadNextAsync(readCancellation.Token).AsTask());
+    }
+
+    private Task CreateSnapshotPollDelayAsync(CancellationToken cancellationToken) =>
+        Task.Delay(
+            _options.AuthoritativeSnapshotPollInterval,
+            _timeProvider,
+            cancellationToken);
+
+    private void ValidateConnectedServerIdentity(HerdrServerProcessIdentity? expected)
+    {
+        var observed = _apiClient.LastVerifiedServerIdentity;
+        if (expected is null && observed is null)
+        {
+            return;
+        }
+
+        if (expected is null || observed is null || !SameServerProcess(expected, observed))
+        {
+            throw new HerdrServerIdentityException(
+                "Herdr server process changed while the live subscription was connected.");
+        }
+    }
+
+    private static bool HasSameAuthoritativeContent(
+        HerdrSessionState first,
+        HerdrSessionState second) =>
+        string.Equals(first.Version, second.Version, StringComparison.Ordinal) &&
+        first.Protocol == second.Protocol &&
+        first.ConnectionEpoch == second.ConnectionEpoch &&
+        DictionariesEqual(first.Workspaces, second.Workspaces) &&
+        DictionariesEqual(first.Tabs, second.Tabs) &&
+        DictionariesEqual(first.Panes, second.Panes) &&
+        DictionariesEqual(first.Agents, second.Agents) &&
+        string.Equals(first.FocusedWorkspaceId, second.FocusedWorkspaceId, StringComparison.Ordinal) &&
+        string.Equals(first.FocusedTabId, second.FocusedTabId, StringComparison.Ordinal) &&
+        string.Equals(first.FocusedPaneId, second.FocusedPaneId, StringComparison.Ordinal);
+
+    private static bool DictionariesEqual<T>(
+        IReadOnlyDictionary<string, T> first,
+        IReadOnlyDictionary<string, T> second)
+    {
+        if (first.Count != second.Count)
+        {
+            return false;
+        }
+
+        foreach (var item in first)
+        {
+            if (!second.TryGetValue(item.Key, out var candidate) ||
+                !EqualityComparer<T>.Default.Equals(item.Value, candidate))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static async Task ObserveTaskCompletionAsync(Task task)
+    {
+        try
+        {
+            await task.ConfigureAwait(false);
+        }
+        catch
+        {
+            // The connected-cycle result or its primary exception owns the
+            // transition. This await only observes a losing/cancelled task.
+        }
     }
 
     private void Publish(HerdrRuntimeMonitorSnapshot snapshot)
@@ -310,20 +642,6 @@ public sealed class HerdrRuntimeMonitor
          exception is not HerdrProtocolException &&
          exception is not HerdrStateConsistencyException);
 
-    private static bool RequiresTopologyReconciliation(string eventName) => eventName is
-        "workspace_created" or
-        "workspace_closed" or
-        "worktree_created" or
-        "worktree_opened" or
-        "worktree_removed" or
-        "tab_created" or
-        "tab_closed" or
-        "tab_moved" or
-        "pane_created" or
-        "pane_closed" or
-        "pane_moved" or
-        "pane_exited";
-
     private static HerdrServerProcessIdentity? ValidateBootstrapServerIdentities(
         HerdrServerProcessIdentity? discovery,
         HerdrServerProcessIdentity? subscription,
@@ -357,6 +675,11 @@ public sealed class HerdrRuntimeMonitor
         first.ProcessStartUtc == second.ProcessStartUtc &&
         string.Equals(first.ExecutablePath, second.ExecutablePath, StringComparison.OrdinalIgnoreCase) &&
         string.Equals(first.ExecutableSha256, second.ExecutableSha256, StringComparison.Ordinal);
+
+    private sealed record ConnectedCycleResult(
+        long IngestSequence,
+        bool ImmediateReconciliation,
+        bool StableProgressObserved);
 
     private sealed class DeferredSubscriptionScope : IAsyncDisposable
     {

@@ -7,34 +7,6 @@ namespace HerdrOps.Infrastructure.Herdr;
 
 public static class HerdrProtocolJsonCodec
 {
-    private static readonly string[] GeneralSubscriptionTypes =
-    [
-        "workspace.created",
-        "workspace.updated",
-        "workspace.metadata_updated",
-        "workspace.renamed",
-        "workspace.moved",
-        "workspace.reordered",
-        "workspace.closed",
-        "workspace.focused",
-        "worktree.created",
-        "worktree.opened",
-        "worktree.removed",
-        "tab.created",
-        "tab.closed",
-        "tab.focused",
-        "tab.renamed",
-        "tab.moved",
-        "pane.created",
-        "pane.closed",
-        "pane.updated",
-        "pane.focused",
-        "pane.moved",
-        "pane.exited",
-        "pane.agent_detected",
-        "layout.updated",
-    ];
-
     private static readonly JsonDocumentOptions DocumentOptions = new()
     {
         AllowTrailingCommas = false,
@@ -76,13 +48,6 @@ public static class HerdrProtocolJsonCodec
         writer.WriteString("method", "events.subscribe");
         writer.WriteStartObject("params");
         writer.WriteStartArray("subscriptions");
-        foreach (var subscriptionType in GeneralSubscriptionTypes)
-        {
-            writer.WriteStartObject();
-            writer.WriteString("type", subscriptionType);
-            writer.WriteEndObject();
-        }
-
         foreach (var paneId in normalizedPaneIds)
         {
             writer.WriteStartObject();
