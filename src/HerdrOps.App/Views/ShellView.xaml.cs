@@ -263,6 +263,12 @@ public partial class ShellView : UserControl
             Navigation.SelectedDestination.Id,
             "daily-summary",
             StringComparison.Ordinal);
+        StatusReviewLegendItem.Visibility = isLiveOrganization
+            ? Visibility.Collapsed
+            : Visibility.Visible;
+        StatusDoneLegendItem.Visibility = isLiveOrganization
+            ? Visibility.Visible
+            : Visibility.Collapsed;
         OverviewPage.Visibility = isOverview ? Visibility.Visible : Visibility.Collapsed;
         LiveOrganizationPage.Visibility = isLiveOrganization
             ? Visibility.Visible

@@ -4,8 +4,11 @@
              xmlns:automation="clr-namespace:System.Windows.Automation;assembly=PresentationCore"
              xmlns:converters="clr-namespace:HerdrOps.App.Converters"
              xmlns:localization="clr-namespace:HerdrOps.App.Localization"
+             automation:AutomationProperties.Name="{Binding [AgentDetailPageAutomationName], Source={x:Static localization:UiLanguageService.Shared}}"
              Background="{DynamicResource HerdrOps.Brush.Background}"
              ClipToBounds="True"
+             Focusable="True"
+             IsTabStop="True"
              SizeChanged="OnViewSizeChanged">
     <UserControl.Resources>
         <converters:ResourceKeyToBrushConverter x:Key="ResourceBrush" />

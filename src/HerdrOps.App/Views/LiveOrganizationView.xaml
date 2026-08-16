@@ -4,6 +4,7 @@
              xmlns:automation="clr-namespace:System.Windows.Automation;assembly=PresentationCore"
              xmlns:converters="clr-namespace:HerdrOps.App.Converters"
              xmlns:localization="clr-namespace:HerdrOps.App.Localization"
+             xmlns:organization="clr-namespace:HerdrOps.App.Organization"
              Background="{DynamicResource HerdrOps.Brush.Background}"
              ClipToBounds="True"
              SizeChanged="OnViewSizeChanged">
@@ -11,17 +12,22 @@
         <converters:ResourceKeyToBrushConverter x:Key="ResourceBrush" />
         <Style x:Key="OrganizationNodeItem" TargetType="ListBoxItem">
             <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+            <Setter Property="VerticalContentAlignment" Value="Stretch" />
             <Setter Property="Padding" Value="0" />
-            <Setter Property="Margin" Value="0,0,0,4" />
-            <Setter Property="Background" Value="Transparent" />
-            <Setter Property="BorderBrush" Value="Transparent" />
+            <Setter Property="Margin" Value="0" />
+            <Setter Property="MinHeight" Value="52" />
+            <Setter Property="Background" Value="{DynamicResource HerdrOps.Brush.SurfaceRaised}" />
+            <Setter Property="BorderBrush" Value="{DynamicResource HerdrOps.Brush.Border}" />
             <Setter Property="BorderThickness" Value="1" />
             <Setter Property="Focusable" Value="True" />
+            <Setter Property="IsTabStop" Value="True" />
+            <Setter Property="automation:AutomationProperties.Name" Value="{Binding Name}" />
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="ListBoxItem">
                         <Border x:Name="NodeBorder"
                                 Padding="8,6"
+                                SnapsToDevicePixels="True"
                                 Background="{TemplateBinding Background}"
                                 BorderBrush="{TemplateBinding BorderBrush}"
                                 BorderThickness="{TemplateBinding BorderThickness}"
@@ -171,23 +177,36 @@
                              Padding="0"
                              Background="Transparent"
                              BorderThickness="0"
+                             Focusable="True"
+                             IsTabStop="True"
                              ScrollViewer.HorizontalScrollBarVisibility="Disabled"
                              ScrollViewer.VerticalScrollBarVisibility="Auto"
+                             ScrollViewer.CanContentScroll="False"
+                             KeyboardNavigation.DirectionalNavigation="Contained"
+                             KeyboardNavigation.TabNavigation="Local"
                              ItemContainerStyle="{StaticResource OrganizationNodeItem}"
                              ItemsSource="{Binding Nodes}"
                              SelectedItem="{Binding SelectedNode, Mode=TwoWay}"
                              SelectionChanged="OnNodeSelectionChanged"
                              automation:AutomationProperties.Name="{Binding [OrganizationHierarchyAutomation], Source={x:Static localization:UiLanguageService.Shared}}">
+                        <ListBox.ItemsPanel>
+                            <ItemsPanelTemplate>
+                                <organization:OrganizationHierarchyPanel />
+                            </ItemsPanelTemplate>
+                        </ListBox.ItemsPanel>
                         <ListBox.ItemTemplate>
                             <DataTemplate>
                                 <Grid>
                                     <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="Auto" />
+                                        <ColumnDefinition Width="3" />
                                         <ColumnDefinition Width="34" />
                                         <ColumnDefinition Width="*" />
                                         <ColumnDefinition Width="Auto" />
                                     </Grid.ColumnDefinitions>
-                                    <Border Width="{Binding IndentWidth}" />
+                                    <Border Width="3"
+                                            Margin="0,2,8,2"
+                                            Background="{Binding AccentBrushKey, Converter={StaticResource ResourceBrush}}"
+                                            CornerRadius="2" />
                                     <Border Grid.Column="1"
                                             Width="28"
                                             Height="28"
@@ -195,19 +214,22 @@
                                             CornerRadius="14">
                                         <TextBlock HorizontalAlignment="Center"
                                                    VerticalAlignment="Center"
+                                                   Foreground="{DynamicResource HerdrOps.Brush.TextPrimary}"
                                                    FontSize="9"
                                                    FontWeight="SemiBold"
                                                    Text="{Binding Initials}" />
                                     </Border>
                                     <StackPanel Grid.Column="2" Margin="7,0,8,0">
-                                        <TextBlock FontSize="12"
+                                        <TextBlock Foreground="{DynamicResource HerdrOps.Brush.TextPrimary}"
+                                                   FontSize="12"
                                                    FontWeight="SemiBold"
                                                    Text="{Binding Name}"
                                                    TextTrimming="CharacterEllipsis" />
-                                        <TextBlock Foreground="{DynamicResource HerdrOps.Brush.TextMuted}"
+                                        <TextBlock Foreground="{DynamicResource HerdrOps.Brush.TextSecondary}"
                                                    FontSize="10"
                                                    Text="{Binding Subtitle}"
-                                                   TextTrimming="CharacterEllipsis" />
+                                                   TextTrimming="CharacterEllipsis"
+                                                   ToolTip="{Binding Subtitle}" />
                                     </StackPanel>
                                     <StackPanel Grid.Column="3"
                                                 VerticalAlignment="Center"

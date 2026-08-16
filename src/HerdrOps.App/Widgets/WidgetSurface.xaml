@@ -188,7 +188,7 @@
                                    Foreground="{DynamicResource HerdrOps.Brush.PrimaryText}"
                                    FontSize="14"
                                    FontWeight="Bold"
-                                   Text="HERDROPS" />
+                                   Text="HerdrOps" />
                         <Ellipse x:Name="HeaderStatusDot"
                                  Width="7"
                                  Height="7"

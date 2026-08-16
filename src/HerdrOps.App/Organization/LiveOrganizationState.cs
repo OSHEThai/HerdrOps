@@ -25,6 +25,23 @@ public sealed record OrganizationNode(
     public double IndentWidth => Level * 24d;
 
     public bool IsAgent => AgentTerminalId is not null;
+
+    /// <summary>
+    /// The direct reporting node used by the organization layout. It is optional
+    /// so ordinary topology nodes remain valid when a producer has no parent data.
+    /// </summary>
+    public string? ParentNodeId { get; init; }
+
+    /// <summary>
+    /// A presentation row that may differ from the source topology depth. The
+    /// synthetic preview uses this to keep the assistant and leader bands clear.
+    /// </summary>
+    public int LayoutRow { get; init; }
+
+    /// <summary>
+    /// Reserved for small, semantic layout hints that do not change node meaning.
+    /// </summary>
+    public string? LayoutHint { get; init; }
 }
 
 public sealed record OrganizationAgentDetail(
@@ -49,6 +66,9 @@ public sealed record OrganizationAttentionItem(
 
 public sealed class LiveOrganizationState : ObservableState
 {
+    public const string SyntheticProjectManagerTerminalId =
+        "synthetic-terminal-project-manager";
+
     private bool _suppressSelection;
     private string _sourceLabel = UiLanguageService.Shared["CoreWaitingSource"];
     private string _connectionLabel = UiLanguageService.Shared["CoreNotConnected"];
@@ -62,6 +82,43 @@ public sealed class LiveOrganizationState : ObservableState
     private string _hierarchyLabel = UiLanguageService.Shared["OrganizationNoTopology"];
 
     public event EventHandler<string>? AgentSelectionRequested;
+
+    internal string ApplySyntheticPreview(
+        string sourceLabel,
+        string connectionLabel,
+        string? selectedTerminalId)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(sourceLabel);
+        ArgumentException.ThrowIfNullOrWhiteSpace(connectionLabel);
+
+        var text = UiLanguageService.Shared;
+        var nodes = CreateSyntheticNodes(text);
+        SourceLabel = sourceLabel;
+        ConnectionLabel = connectionLabel;
+        SummaryCards = CreateSyntheticSummaryCards(text, nodes);
+        Nodes = nodes;
+        HierarchyLabel = text["SyntheticSnapshot"];
+        AttentionItems = CreateSyntheticAttentionItems(text);
+
+        var selectedNode = selectedTerminalId is null
+            ? null
+            : nodes.FirstOrDefault(item =>
+                string.Equals(item.AgentTerminalId, selectedTerminalId, StringComparison.Ordinal));
+        selectedNode ??=
+            nodes.First(item => item.AgentTerminalId == SyntheticProjectManagerTerminalId);
+        _suppressSelection = true;
+        try
+        {
+            SelectedNode = selectedNode;
+        }
+        finally
+        {
+            _suppressSelection = false;
+        }
+
+        SelectedAgent = CreateSyntheticDetail(selectedNode, text);
+        return selectedNode.AgentTerminalId!;
+    }
 
     public string SourceLabel { get => _sourceLabel; private set => Set(ref _sourceLabel, value); }
 
@@ -136,6 +193,246 @@ public sealed class LiveOrganizationState : ObservableState
         AttentionItems = CreateAttentionItems(state, isCoreConnected, isLive);
         SelectWithoutRequest(state, isCoreConnected, isLive, selectedTerminalId);
     }
+
+    private static IReadOnlyList<OrganizationSummaryCard> CreateSyntheticSummaryCards(
+        UiLanguageService text,
+        IReadOnlyList<OrganizationNode> nodes)
+    {
+        var agentCount = nodes.Count(item => item.IsAgent);
+        return
+        [
+            new(
+                text["OrganizationWorkspaces"],
+                "1",
+                text["SyntheticSnapshot"],
+                "\uE8B7",
+                Overview.OverviewBrushKeys.Primary),
+            new(
+                text["OrganizationTabs"],
+                "6",
+                text["OrganizationCurrentTopology"],
+                "\uE7C5",
+                Overview.OverviewBrushKeys.Working),
+            new(
+                text["OrganizationObservedAgents"],
+                agentCount.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                text["SyntheticRoster"],
+                "\uE716",
+                Overview.OverviewBrushKeys.Working),
+            new(
+                text["OrganizationUnassignedPanes"],
+                "2",
+                text["OrganizationAttentionUnassignedDetail"],
+                "\uE77B",
+                Overview.OverviewBrushKeys.Idle),
+            new(
+                text["OrganizationUnknownStatus"],
+                "1",
+                text["DelegationDispositionIdentityConflict"],
+                "\uE814",
+                Overview.OverviewBrushKeys.Review),
+        ];
+    }
+
+    private static IReadOnlyList<OrganizationNode> CreateSyntheticNodes(UiLanguageService text) =>
+        ApplyHierarchyMetadata(
+        [
+        SyntheticAgent(
+            "synthetic-project-manager",
+            0,
+            "PM",
+            "Project Manager",
+            text["DelegationRoleProjectManager"],
+            "Working"),
+        SyntheticAgent(
+            "synthetic-pm-secretary",
+            1,
+            "PS",
+            "PM Secretary",
+            text["WidgetAgentSecretaryRole"],
+            "Working",
+            "assistant"),
+        SyntheticAgent(
+            "synthetic-backend-leader",
+            1,
+            "BL",
+            "Backend Leader",
+            text["DelegationRoleBackendLeader"],
+            "Working"),
+        SyntheticAgent(
+            "synthetic-backend-worker-01",
+            2,
+            "BW",
+            "Backend Worker 01",
+            text["DelegationRoleBackendWorker"],
+            "Working"),
+        SyntheticAgent(
+            "synthetic-backend-worker-02",
+            2,
+            "BW",
+            "Backend Worker 02",
+            text["DelegationRoleBackendWorker"],
+            "Idle"),
+        SyntheticAgent(
+            "synthetic-backend-worker-03",
+            2,
+            "BW",
+            "Backend Worker 03",
+            text["DelegationRoleBackendWorker"],
+            "Done"),
+        SyntheticAgent(
+            "synthetic-frontend-leader",
+            1,
+            "FL",
+            "Frontend Leader",
+            text["DelegationRoleFrontendLeader"],
+            "Working"),
+        SyntheticAgent(
+            "synthetic-frontend-worker-01",
+            2,
+            "FW",
+            "Frontend Worker 01",
+            text["DelegationRoleFrontendWorker"],
+            "Working"),
+        SyntheticAgent(
+            "synthetic-frontend-worker-02",
+            2,
+            "FW",
+            "Frontend Worker 02",
+            text["DelegationRoleFrontendWorker"],
+            "Blocked"),
+        SyntheticAgent(
+            "synthetic-test-leader",
+            1,
+            "TL",
+            "Test Leader",
+            text["DelegationRoleTestLeader"],
+            "Idle"),
+        SyntheticAgent(
+            "synthetic-test-worker-01",
+            2,
+            "TW",
+            "Test Worker 01",
+            text["DelegationRoleTestWorker"],
+            "Working"),
+        SyntheticAgent(
+            "synthetic-test-worker-02",
+            2,
+            "TW",
+            "Test Worker 02",
+            text["DelegationRoleTestWorker"],
+            "Done"),
+        SyntheticAgent(
+            "synthetic-devops-leader",
+            1,
+            "DL",
+            "DevOps Leader",
+            text["WidgetAgentLeaderRole"],
+            "Blocked"),
+        SyntheticAgent(
+            "synthetic-devops-worker-01",
+            2,
+            "DW",
+            "DevOps Worker 01",
+            text["WidgetAgentWorkerRole"],
+            "Idle"),
+        SyntheticAgent(
+            "synthetic-devops-worker-02",
+            2,
+            "DW",
+            "DevOps Worker 02",
+            text["WidgetAgentWorkerRole"],
+            "Blocked"),
+        new OrganizationNode(
+            "synthetic-vacant-backend-worker-04",
+            2,
+            text["OrganizationUnassignedPaneType"],
+            "!",
+            SyntheticLabel("ตำแหน่งว่าง", "Vacant role"),
+            SyntheticLabel("ผู้ปฏิบัติงานระบบเบื้องหลัง", "Backend worker slot"),
+            SyntheticLabel("ว่าง", "Vacant"),
+            Overview.OverviewBrushKeys.Idle,
+            null)
+        {
+            ParentNodeId = "synthetic-backend-leader",
+        },
+        new OrganizationNode(
+            "synthetic-vacant-devops-worker-03",
+            2,
+            text["OrganizationUnassignedPaneType"],
+            "!",
+            SyntheticLabel("ตำแหน่งว่าง", "Vacant role"),
+            SyntheticLabel("ผู้ปฏิบัติงานส่งมอบระบบ", "DevOps worker slot"),
+            SyntheticLabel("ว่าง", "Vacant"),
+            Overview.OverviewBrushKeys.Idle,
+            null)
+        {
+            ParentNodeId = "synthetic-devops-leader",
+        },
+        ],
+        useSyntheticBands: true);
+
+    private static OrganizationNode SyntheticAgent(
+        string nodeId,
+        int level,
+        string initials,
+        string name,
+        string role,
+        string status,
+        string? layoutHint = null) => new(
+        nodeId,
+        level,
+        role,
+        initials,
+        name,
+        role,
+        AgentStatusPresentation.DisplayStatus(status),
+        AgentStatusPresentation.BrushKey(status),
+        $"synthetic-terminal-{nodeId["synthetic-".Length..]}")
+        {
+            LayoutHint = layoutHint,
+        };
+
+    private static IReadOnlyList<OrganizationAttentionItem> CreateSyntheticAttentionItems(
+        UiLanguageService text) =>
+    [
+        new(
+            "\uEA39",
+            text.Format("OrganizationAttentionBlockedFormat", 3),
+            text["OrganizationAttentionBlockedDetail"],
+            Overview.OverviewBrushKeys.Blocked),
+        new(
+            "\uE77B",
+            text.Format("OrganizationAttentionUnassignedFormat", 2),
+            text["OrganizationAttentionUnassignedDetail"],
+            Overview.OverviewBrushKeys.Idle),
+        new(
+            "\uE711",
+            text["DelegationDispositionIdentityConflict"],
+            text["DelegationDispositionSequenceConflict"],
+            Overview.OverviewBrushKeys.Review),
+    ];
+
+    private static OrganizationAgentDetail CreateSyntheticDetail(
+        OrganizationNode node,
+        UiLanguageService text) => new(
+        node.Initials,
+        node.Name,
+        node.Initials == "PM" ? "PM" : node.NodeType,
+        node.Status,
+        node.AccentBrushKey,
+        "MyAwesomeProject",
+        "Project Management",
+        node.AgentTerminalId is null
+            ? text["ValueUnknown"]
+            : $"synthetic-pane-{node.NodeId["synthetic-".Length..]}",
+        node.AgentTerminalId ?? text["ValueUnknown"],
+        "Z:\\HerdrOps\\synthetic-preview",
+        "98",
+        $"{text["SyntheticData"]} · {text["SyntheticProfile"]}");
+
+    private static string SyntheticLabel(string thai, string english) =>
+        UiLanguageService.Shared.CurrentLanguage == UiLanguage.Thai ? thai : english;
 
     internal void SelectAgent(
         HerdrSessionStateContract state,
@@ -274,7 +571,61 @@ public sealed class LiveOrganizationState : ObservableState
             }
         }
 
-        return nodes;
+        return ApplyHierarchyMetadata(nodes);
+    }
+
+    private static IReadOnlyList<OrganizationNode> ApplyHierarchyMetadata(
+        IReadOnlyList<OrganizationNode> nodes,
+        bool useSyntheticBands = false)
+    {
+        var lastByLevel = new Dictionary<int, OrganizationNode>();
+        var result = new List<OrganizationNode>(nodes.Count);
+
+        foreach (var node in nodes)
+        {
+            if (node.Level == 0)
+            {
+                lastByLevel.Clear();
+            }
+            else
+            {
+                foreach (var level in lastByLevel.Keys.Where(level => level >= node.Level).ToArray())
+                {
+                    lastByLevel.Remove(level);
+                }
+            }
+
+            OrganizationNode? parent = null;
+            for (var parentLevel = node.Level - 1; parentLevel >= 0; parentLevel--)
+            {
+                if (lastByLevel.TryGetValue(parentLevel, out parent))
+                {
+                    break;
+                }
+            }
+
+            var layoutRow = node.Level;
+            if (useSyntheticBands)
+            {
+                layoutRow = node.LayoutHint == "assistant"
+                    ? 1
+                    : node.Level == 0
+                        ? 0
+                        : node.Level == 1
+                            ? 2
+                            : 3;
+            }
+
+            var linked = node with
+            {
+                ParentNodeId = node.ParentNodeId ?? parent?.NodeId,
+                LayoutRow = layoutRow,
+            };
+            result.Add(linked);
+            lastByLevel[node.Level] = linked;
+        }
+
+        return result;
     }
 
     private static OrganizationAgentDetail CreateDetail(

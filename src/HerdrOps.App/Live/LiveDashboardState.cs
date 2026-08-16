@@ -343,6 +343,16 @@ public sealed class LiveDashboardState : ObservableState, IDisposable
 
     public void SelectAgent(string? terminalId)
     {
+        if (_syntheticPreview)
+        {
+            SelectedTerminalId = Organization.ApplySyntheticPreview(
+                SourceLabel,
+                ConnectionLabel,
+                terminalId);
+            AgentDetail.ApplySyntheticPreviewProfile();
+            return;
+        }
+
         var resolved = ResolveSelection(CurrentState, terminalId);
         SelectedTerminalId = resolved;
         Organization.SelectAgent(CurrentState, IsCoreConnected, IsLive, resolved);
@@ -472,13 +482,23 @@ public sealed class LiveDashboardState : ObservableState, IDisposable
             ConnectionLabel,
             LastSourceTimestamp,
             _activities.Select(RenderActivity).ToArray());
-        Organization.Update(
-            CurrentState,
-            IsCoreConnected,
-            IsLive,
-            SourceLabel,
-            ConnectionLabel,
-            SelectedTerminalId);
+        if (_syntheticPreview)
+        {
+            SelectedTerminalId = Organization.ApplySyntheticPreview(
+                SourceLabel,
+                ConnectionLabel,
+                SelectedTerminalId);
+        }
+        else
+        {
+            Organization.Update(
+                CurrentState,
+                IsCoreConnected,
+                IsLive,
+                SourceLabel,
+                ConnectionLabel,
+                SelectedTerminalId);
+        }
         AgentDetail.Update(
             CurrentState,
             IsCoreConnected,
@@ -486,6 +506,10 @@ public sealed class LiveDashboardState : ObservableState, IDisposable
             SourceLabel,
             ConnectionLabel,
             SelectedTerminalId);
+        if (_syntheticPreview)
+        {
+            AgentDetail.ApplySyntheticPreviewProfile();
+        }
         Widgets.Update(
             CurrentState,
             IsCoreConnected,

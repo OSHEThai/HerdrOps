@@ -30,6 +30,7 @@ public static class AgentStatusPresentation
         "Working" => "HerdrOps.Brush.Status.Working",
         "Idle" => "HerdrOps.Brush.Status.Idle",
         "Blocked" => "HerdrOps.Brush.Status.Blocked",
+        "Review" => "HerdrOps.Brush.Status.Review",
         "Done" => "HerdrOps.Brush.Status.Done",
         _ => "HerdrOps.Brush.Status.Offline",
     };

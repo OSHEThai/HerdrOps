@@ -7,6 +7,7 @@ using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using HerdrOps.App.Live;
 using HerdrOps.App.Localization;
+using HerdrOps.App.Organization;
 using HerdrOps.App.StateIpc;
 using HerdrOps.App.Views;
 using HerdrOps.Contracts.StateIpc;
@@ -99,6 +100,56 @@ public sealed class LiveDashboardRenderingTests
                 .ToArray();
             Assert.IsTrue(visibleText.Contains(UiLanguageService.Shared["ValueUnknown"], StringComparer.Ordinal));
             Assert.IsFalse(visibleText.Contains("100", StringComparer.Ordinal));
+        });
+    }
+
+    [TestMethod]
+    public void SyntheticOrganizationUsesCardTreeLayoutAndKeepsNodesKeyboardAccessible()
+    {
+        WpfTestHost.Run(() =>
+        {
+            using var dashboard = LiveDashboardState.CreateSyntheticPreview();
+            var shell = new ShellView(dashboard);
+            shell.Navigation.SelectedIndex = 1;
+            Layout(shell, new Size(1680, 941));
+
+            var panel = EnumerateDescendants(shell)
+                .OfType<OrganizationHierarchyPanel>()
+                .Single();
+            Assert.IsGreaterThan(0d, panel.ActualWidth);
+            Assert.IsGreaterThan(0d, panel.ActualHeight);
+
+            var positionedNodes = panel.Children
+                .OfType<FrameworkElement>()
+                .Where(child => child.DataContext is OrganizationNode)
+                .Select(child =>
+                {
+                    var node = (OrganizationNode)child.DataContext!;
+                    var origin = child.TranslatePoint(new Point(0, 0), panel);
+                    return (node, origin.X, origin.Y, child);
+                })
+                .ToArray();
+            Assert.HasCount(dashboard.Organization.Nodes.Count, positionedNodes);
+            Assert.IsGreaterThanOrEqualTo(
+                4,
+                positionedNodes.Select(item => Math.Round(item.X)).Distinct().Count(),
+                "The organization hierarchy is still arranged as one flat x-coordinate.");
+
+            var projectManager = positionedNodes.Single(item => item.node.Name == "Project Manager");
+            var backendLeader = positionedNodes.Single(item => item.node.Name == "Backend Leader");
+            var backendWorker = positionedNodes.Single(item => item.node.Name == "Backend Worker 01");
+            Assert.IsLessThan(
+                backendLeader.Y,
+                projectManager.Y,
+                $"Unexpected tree order: PM={projectManager.X},{projectManager.Y}; BL={backendLeader.X},{backendLeader.Y}; BW={backendWorker.X},{backendWorker.Y}");
+            Assert.IsLessThan(
+                backendWorker.Y,
+                backendLeader.Y,
+                $"Unexpected worker order: BL={backendLeader.X},{backendLeader.Y}; BW={backendWorker.X},{backendWorker.Y}");
+            Assert.AreNotEqual(projectManager.X, backendLeader.X);
+            Assert.IsTrue(positionedNodes.All(item => item.child is Control { Focusable: true, IsTabStop: true }));
+            Assert.IsTrue(positionedNodes.All(item =>
+                !string.IsNullOrWhiteSpace(AutomationProperties.GetName(item.child))));
         });
     }
 
