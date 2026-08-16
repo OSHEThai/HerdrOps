@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -42,6 +43,22 @@ public sealed class FileSystemSettingsAtomicCommit : ISettingsAtomicCommit
     }
 }
 
+internal interface ISettingsArtifactPathFactory
+{
+    string CreateTemporaryPath(string destinationDirectory, string destinationFileName);
+
+    string CreateBackupPath(string destinationDirectory, string destinationFileName);
+}
+
+internal sealed class GuidSettingsArtifactPathFactory : ISettingsArtifactPathFactory
+{
+    public string CreateTemporaryPath(string destinationDirectory, string destinationFileName) =>
+        Path.Combine(destinationDirectory, $".{destinationFileName}.{Guid.NewGuid():N}.tmp");
+
+    public string CreateBackupPath(string destinationDirectory, string destinationFileName) =>
+        Path.Combine(destinationDirectory, $".{destinationFileName}.{Guid.NewGuid():N}.bak");
+}
+
 public sealed class JsonAppSettingsStore : IAppSettingsStore
 {
     private static readonly UTF8Encoding StrictUtf8 = new(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true);
@@ -73,10 +90,14 @@ public sealed class JsonAppSettingsStore : IAppSettingsStore
         "refreshIntervalSeconds",
     ];
 
+    private static readonly ConcurrentDictionary<string, SemaphoreSlim> DestinationLocks =
+        new(OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal);
+
     private readonly string _destinationPath;
     private readonly string _destinationDirectory;
     private readonly ISettingsAtomicCommit _atomicCommit;
     private readonly ISettingsTemporaryFileCleanup _temporaryFileCleanup;
+    private readonly ISettingsArtifactPathFactory _artifactPathFactory;
     private readonly int _maximumDocumentUtf8Bytes;
 
     public JsonAppSettingsStore(
@@ -85,6 +106,23 @@ public sealed class JsonAppSettingsStore : IAppSettingsStore
         ISettingsAtomicCommit? atomicCommit = null,
         int maximumDocumentUtf8Bytes = AppSettingsContract.MaximumDocumentUtf8Bytes,
         ISettingsTemporaryFileCleanup? temporaryFileCleanup = null)
+        : this(
+            destinationPath,
+            allowedRootDirectory,
+            atomicCommit,
+            maximumDocumentUtf8Bytes,
+            temporaryFileCleanup,
+            new GuidSettingsArtifactPathFactory())
+    {
+    }
+
+    internal JsonAppSettingsStore(
+        string destinationPath,
+        string? allowedRootDirectory,
+        ISettingsAtomicCommit? atomicCommit,
+        int maximumDocumentUtf8Bytes,
+        ISettingsTemporaryFileCleanup? temporaryFileCleanup,
+        ISettingsArtifactPathFactory artifactPathFactory)
     {
         if (maximumDocumentUtf8Bytes is <= 0 or > AppSettingsContract.MaximumDocumentUtf8Bytes)
         {
@@ -99,6 +137,7 @@ public sealed class JsonAppSettingsStore : IAppSettingsStore
             ?? throw new SettingsValidationException("The settings file must have a destination directory.");
         _atomicCommit = atomicCommit ?? new FileSystemSettingsAtomicCommit();
         _temporaryFileCleanup = temporaryFileCleanup ?? new FileSystemSettingsTemporaryFileCleanup();
+        _artifactPathFactory = artifactPathFactory ?? throw new ArgumentNullException(nameof(artifactPathFactory));
         _maximumDocumentUtf8Bytes = maximumDocumentUtf8Bytes;
     }
 
@@ -185,28 +224,62 @@ public sealed class JsonAppSettingsStore : IAppSettingsStore
 
     private async Task CommitAsync(byte[] bytes, CancellationToken cancellationToken)
     {
+        var destinationLock = DestinationLocks.GetOrAdd(
+            _destinationPath,
+            static _ => new SemaphoreSlim(1, 1));
+        await destinationLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await CommitSerializedAsync(bytes, cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            destinationLock.Release();
+        }
+    }
+
+    private async Task CommitSerializedAsync(byte[] bytes, CancellationToken cancellationToken)
+    {
         cancellationToken.ThrowIfCancellationRequested();
         SettingsPathPolicy.RejectExistingReparsePointComponentsBestEffort(_destinationDirectory);
         Directory.CreateDirectory(_destinationDirectory);
         SettingsPathPolicy.RejectExistingReparsePointComponentsBestEffort(_destinationDirectory);
         SettingsPathPolicy.RejectExistingReparsePointComponentsBestEffort(_destinationPath);
-        var temporaryPath = Path.Combine(
+        var destinationFileName = Path.GetFileName(_destinationPath);
+        var temporaryPath = _artifactPathFactory.CreateTemporaryPath(
             _destinationDirectory,
-            $".{Path.GetFileName(_destinationPath)}.{Guid.NewGuid():N}.tmp");
+            destinationFileName);
         var destinationExisted = File.Exists(_destinationPath);
         var backupPath = destinationExisted
-            ? Path.Combine(
-                _destinationDirectory,
-                $".{Path.GetFileName(_destinationPath)}.{Guid.NewGuid():N}.bak")
+            ? _artifactPathFactory.CreateBackupPath(_destinationDirectory, destinationFileName)
             : null;
 
         Exception? primaryException = null;
         var commitInvoked = false;
+        var temporaryOwned = false;
+        var backupOwned = false;
         try
         {
             if (backupPath is not null)
             {
-                File.Copy(_destinationPath, backupPath, overwrite: false);
+                await using var source = new FileStream(
+                    _destinationPath,
+                    FileMode.Open,
+                    FileAccess.Read,
+                    FileShare.ReadWrite | FileShare.Delete,
+                    bufferSize: 4096,
+                    options: FileOptions.SequentialScan | FileOptions.Asynchronous);
+                await using var backup = new FileStream(
+                    backupPath,
+                    FileMode.CreateNew,
+                    FileAccess.Write,
+                    FileShare.None,
+                    bufferSize: 4096,
+                    options: FileOptions.SequentialScan | FileOptions.Asynchronous);
+                backupOwned = true;
+                await source.CopyToAsync(backup, cancellationToken).ConfigureAwait(false);
+                await backup.FlushAsync(cancellationToken).ConfigureAwait(false);
+                backup.Flush(flushToDisk: true);
             }
 
             await using (var stream = new FileStream(
@@ -217,6 +290,7 @@ public sealed class JsonAppSettingsStore : IAppSettingsStore
                 bufferSize: 4096,
                 options: FileOptions.SequentialScan))
             {
+                temporaryOwned = true;
                 await stream.WriteAsync(bytes, cancellationToken).ConfigureAwait(false);
                 await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
                 stream.Flush(flushToDisk: true);
@@ -234,32 +308,34 @@ public sealed class JsonAppSettingsStore : IAppSettingsStore
             primaryException = NormalizeCommitException(exception);
         }
 
-        if (commitInvoked && cancellationToken.IsCancellationRequested)
+        if (commitInvoked && primaryException is not null)
         {
             var rollbackException = TryRollback(
                 destinationExisted,
                 backupPath,
                 bytes);
-            primaryException = rollbackException is null
-                ? new OperationCanceledException(
-                    "Cancellation was requested after the settings commit; the previous file was restored.",
-                    cancellationToken)
-                : new SettingsValidationException(
-                    "Cancellation was requested after the settings commit, but safe rollback did not complete.",
-                    rollbackException);
+            if (rollbackException is not null)
+            {
+                primaryException = new SettingsValidationException(
+                    "The settings commit failed after publication, and safe rollback did not complete.",
+                    new AggregateException(primaryException, rollbackException));
+            }
         }
 
         Exception? cleanupException = null;
-        try
+        if (temporaryOwned)
         {
-            _temporaryFileCleanup.Delete(temporaryPath);
-        }
-        catch (Exception exception)
-        {
-            cleanupException = exception;
+            try
+            {
+                _temporaryFileCleanup.Delete(temporaryPath);
+            }
+            catch (Exception exception)
+            {
+                cleanupException = exception;
+            }
         }
 
-        if (backupPath is not null && File.Exists(backupPath))
+        if (backupPath is not null && backupOwned)
         {
             try
             {

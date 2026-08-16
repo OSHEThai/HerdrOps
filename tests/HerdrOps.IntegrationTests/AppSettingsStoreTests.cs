@@ -321,6 +321,150 @@ public sealed class AppSettingsStoreTests
     }
 
     [TestMethod]
+    public async Task CancellationAfterAtomicCommitWithNoPreviousFileRemovesPublishedFileBeforeThrowing()
+    {
+        using var cancellation = new CancellationTokenSource();
+        var cancellingCommit = new CancellingAtomicCommit(cancellation);
+        var store = CreateStore(cancellingCommit);
+
+        await Assert.ThrowsExactlyAsync<OperationCanceledException>(() =>
+            store.SaveAsync(
+                AppSettings.Defaults with { Language = AppSettingsLanguage.English },
+                cancellation.Token));
+
+        Assert.IsFalse(File.Exists(_settingsPath));
+        Assert.AreEqual(1, cancellingCommit.CommitCount);
+        Assert.IsFalse(Directory.EnumerateFiles(_testDirectory, "*.tmp").Any());
+        Assert.IsFalse(Directory.EnumerateFiles(_testDirectory, "*.bak").Any());
+    }
+
+    [TestMethod]
+    public async Task PostPublicationExceptionRollsBackPreviousFileBeforeFailureEscapes()
+    {
+        var initialStore = CreateStore();
+        await initialStore.SaveAsync(AppSettings.Defaults);
+        var previousBytes = await File.ReadAllBytesAsync(_settingsPath);
+        var throwingCommit = new PublishThenThrowAtomicCommit();
+        var store = CreateStore(throwingCommit);
+
+        await Assert.ThrowsExactlyAsync<SettingsValidationException>(() =>
+            store.SaveAsync(AppSettings.Defaults with
+            {
+                Language = AppSettingsLanguage.English,
+                WidgetVariant = AppSettingsWidgetVariant.Compact,
+            }));
+
+        Assert.IsTrue(throwingCommit.Published);
+        CollectionAssert.AreEqual(previousBytes, await File.ReadAllBytesAsync(_settingsPath));
+        Assert.IsFalse(Directory.EnumerateFiles(_testDirectory, "*.tmp").Any());
+        Assert.IsFalse(Directory.EnumerateFiles(_testDirectory, "*.bak").Any());
+    }
+
+    [TestMethod]
+    public async Task ConcurrentSaveWaitsForFailedRollbackAndCannotOverwriteSuccessfulSave()
+    {
+        var initialStore = CreateStore();
+        await initialStore.SaveAsync(AppSettings.Defaults);
+        var commit = new BlockingPublishThenThrowAtomicCommit();
+        var firstStore = CreateStore(commit);
+        var secondStore = CreateStore(commit);
+
+        var firstTask = Task.Run(() => firstStore.SaveAsync(AppSettings.Defaults with
+        {
+            Language = AppSettingsLanguage.English,
+            WidgetVariant = AppSettingsWidgetVariant.Compact,
+        }));
+        Assert.IsTrue(commit.FirstPublished.Wait(TimeSpan.FromSeconds(5)));
+
+        var secondTask = Task.Run(() => secondStore.SaveAsync(AppSettings.Defaults with
+        {
+            Language = AppSettingsLanguage.Thai,
+            WidgetVariant = AppSettingsWidgetVariant.Expanded,
+        }));
+        await Task.Delay(TimeSpan.FromMilliseconds(100));
+        Assert.IsFalse(secondTask.IsCompleted, "The second save must wait for the first rollback.");
+
+        commit.ReleaseFirstFailure.Set();
+        try
+        {
+            await Assert.ThrowsExactlyAsync<SettingsValidationException>(async () => await firstTask);
+        }
+        finally
+        {
+            commit.ReleaseFirstFailure.Set();
+        }
+
+        var second = await secondTask;
+        var loaded = await CreateStore().LoadAsync();
+
+        Assert.AreEqual(AppSettingsLanguage.Thai, second.Settings.Language);
+        Assert.AreEqual(AppSettingsWidgetVariant.Expanded, loaded!.Settings.WidgetVariant);
+        Assert.AreEqual(AppSettingsLanguage.Thai, loaded.Settings.Language);
+        Assert.IsFalse(Directory.EnumerateFiles(_testDirectory, "*.tmp").Any());
+        Assert.IsFalse(Directory.EnumerateFiles(_testDirectory, "*.bak").Any());
+    }
+
+    [TestMethod]
+    public async Task TemporaryArtifactCollisionDoesNotDeletePreExistingFile()
+    {
+        Directory.CreateDirectory(_testDirectory);
+        var temporaryPath = Path.Combine(_testDirectory, "fixed.tmp");
+        var sentinel = Encoding.UTF8.GetBytes("pre-existing temporary artifact");
+        await File.WriteAllBytesAsync(temporaryPath, sentinel);
+        var store = CreateStore(
+            artifactPathFactory: new FixedArtifactPathFactory(
+                temporaryPath,
+                Path.Combine(_testDirectory, "fixed.bak")));
+
+        await Assert.ThrowsExactlyAsync<SettingsValidationException>(() =>
+            store.SaveAsync(AppSettings.Defaults));
+
+        CollectionAssert.AreEqual(sentinel, await File.ReadAllBytesAsync(temporaryPath));
+        Assert.IsFalse(File.Exists(_settingsPath));
+    }
+
+    [TestMethod]
+    public async Task BackupArtifactCollisionDoesNotDeletePreExistingFile()
+    {
+        var initialStore = CreateStore();
+        await initialStore.SaveAsync(AppSettings.Defaults);
+        var previousBytes = await File.ReadAllBytesAsync(_settingsPath);
+        Directory.CreateDirectory(_testDirectory);
+        var backupPath = Path.Combine(_testDirectory, "fixed.bak");
+        var sentinel = Encoding.UTF8.GetBytes("pre-existing backup artifact");
+        await File.WriteAllBytesAsync(backupPath, sentinel);
+        var store = CreateStore(
+            artifactPathFactory: new FixedArtifactPathFactory(
+                Path.Combine(_testDirectory, "fixed.tmp"),
+                backupPath));
+
+        await Assert.ThrowsExactlyAsync<SettingsValidationException>(() =>
+            store.SaveAsync(AppSettings.Defaults with { Language = AppSettingsLanguage.English }));
+
+        CollectionAssert.AreEqual(previousBytes, await File.ReadAllBytesAsync(_settingsPath));
+        CollectionAssert.AreEqual(sentinel, await File.ReadAllBytesAsync(backupPath));
+        Assert.IsFalse(File.Exists(Path.Combine(_testDirectory, "fixed.tmp")));
+    }
+
+    [TestMethod]
+    public async Task CleanupFailureAfterRollbackIsVisibleAndRollbackPrecedesCleanup()
+    {
+        var initialStore = CreateStore();
+        await initialStore.SaveAsync(AppSettings.Defaults);
+        var previousBytes = await File.ReadAllBytesAsync(_settingsPath);
+        var cleanup = new ObserveRollbackThenFailBackupCleanup(_settingsPath, previousBytes);
+        var store = CreateStore(new PublishThenThrowAtomicCommit(), cleanup);
+
+        var exception = await Assert.ThrowsExactlyAsync<AggregateException>(() =>
+            store.SaveAsync(AppSettings.Defaults with { Language = AppSettingsLanguage.English }));
+
+        Assert.HasCount(2, exception.InnerExceptions);
+        Assert.IsTrue(cleanup.SawBackupArtifact);
+        Assert.IsTrue(cleanup.DestinationWasRestoredBeforeBackupCleanup);
+        CollectionAssert.AreEqual(previousBytes, await File.ReadAllBytesAsync(_settingsPath));
+    }
+
+    [TestMethod]
     public async Task CleanupFailureIsSurfacedAlongsidePrimaryCommitFailure()
     {
         var failingCommit = new FailingAtomicCommit();
@@ -543,12 +687,21 @@ public sealed class AppSettingsStoreTests
 
     private JsonAppSettingsStore CreateStore(
         ISettingsAtomicCommit? atomicCommit = null,
-        ISettingsTemporaryFileCleanup? temporaryFileCleanup = null) =>
-        new(
-            _settingsPath,
-            allowedRootDirectory: Path.GetTempPath().TrimEnd(Path.DirectorySeparatorChar),
-            atomicCommit,
-            temporaryFileCleanup: temporaryFileCleanup);
+        ISettingsTemporaryFileCleanup? temporaryFileCleanup = null,
+        ISettingsArtifactPathFactory? artifactPathFactory = null) =>
+        artifactPathFactory is null
+            ? new(
+                _settingsPath,
+                allowedRootDirectory: Path.GetTempPath().TrimEnd(Path.DirectorySeparatorChar),
+                atomicCommit,
+                temporaryFileCleanup: temporaryFileCleanup)
+            : new JsonAppSettingsStore(
+                _settingsPath,
+                allowedRootDirectory: Path.GetTempPath().TrimEnd(Path.DirectorySeparatorChar),
+                atomicCommit,
+                AppSettingsContract.MaximumDocumentUtf8Bytes,
+                temporaryFileCleanup,
+                artifactPathFactory);
 
     private sealed class FailingAtomicCommit : ISettingsAtomicCommit
     {
@@ -577,6 +730,85 @@ public sealed class AppSettingsStoreTests
             CommitCount++;
             new FileSystemSettingsAtomicCommit().Commit(temporaryPath, destinationPath);
             _cancellation.Cancel();
+        }
+    }
+
+    private sealed class PublishThenThrowAtomicCommit : ISettingsAtomicCommit
+    {
+        public bool Published { get; private set; }
+
+        public void Commit(string temporaryPath, string destinationPath)
+        {
+            new FileSystemSettingsAtomicCommit().Commit(temporaryPath, destinationPath);
+            Published = true;
+            throw new IOException("Synthetic post-publication failure.");
+        }
+    }
+
+    private sealed class BlockingPublishThenThrowAtomicCommit : ISettingsAtomicCommit
+    {
+        private int _commitCount;
+
+        public ManualResetEventSlim FirstPublished { get; } = new();
+
+        public ManualResetEventSlim ReleaseFirstFailure { get; } = new();
+
+        public void Commit(string temporaryPath, string destinationPath)
+        {
+            var commitNumber = Interlocked.Increment(ref _commitCount);
+            new FileSystemSettingsAtomicCommit().Commit(temporaryPath, destinationPath);
+            if (commitNumber == 1)
+            {
+                FirstPublished.Set();
+                ReleaseFirstFailure.Wait(TimeSpan.FromSeconds(5));
+                throw new IOException("Synthetic concurrent post-publication failure.");
+            }
+        }
+    }
+
+    private sealed class FixedArtifactPathFactory : ISettingsArtifactPathFactory
+    {
+        private readonly string _temporaryPath;
+        private readonly string _backupPath;
+
+        public FixedArtifactPathFactory(string temporaryPath, string backupPath)
+        {
+            _temporaryPath = temporaryPath;
+            _backupPath = backupPath;
+        }
+
+        public string CreateTemporaryPath(string destinationDirectory, string destinationFileName) => _temporaryPath;
+
+        public string CreateBackupPath(string destinationDirectory, string destinationFileName) => _backupPath;
+    }
+
+    private sealed class ObserveRollbackThenFailBackupCleanup : ISettingsTemporaryFileCleanup
+    {
+        private readonly string _destinationPath;
+        private readonly byte[] _previousBytes;
+
+        public ObserveRollbackThenFailBackupCleanup(string destinationPath, byte[] previousBytes)
+        {
+            _destinationPath = destinationPath;
+            _previousBytes = previousBytes;
+        }
+
+        public bool SawBackupArtifact { get; private set; }
+
+        public bool DestinationWasRestoredBeforeBackupCleanup { get; private set; }
+
+        public void Delete(string temporaryPath)
+        {
+            if (temporaryPath.EndsWith(".bak", StringComparison.OrdinalIgnoreCase))
+            {
+                SawBackupArtifact = true;
+                DestinationWasRestoredBeforeBackupCleanup =
+                    File.Exists(_destinationPath)
+                    && _previousBytes.AsSpan().SequenceEqual(File.ReadAllBytes(_destinationPath));
+                throw new UnauthorizedAccessException("Synthetic inaccessible backup cleanup.");
+            }
+
+            File.Delete(temporaryPath);
         }
     }
 
