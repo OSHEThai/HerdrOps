@@ -21,12 +21,21 @@ Build, verification, GitHub roadmap, evidence capture, and packaging helpers liv
 # Extract and validate the exact bundled Herdr JSON Schema successor contract
 ./tools/Test-V02BundledSchemaContract.ps1
 
-# From an authorized live Herdr environment, capture snapshot/event/reconnect evidence
-./tools/Test-V02HerdrRuntime.ps1 -DurationSeconds 120
+# From a fresh, unmoved pane in the authorized Acceptance control session,
+# capture target Agent Lab
+# snapshot/Agent-status-event/reconnect evidence. The two sockets must differ.
+$targetAgentLabSocket = Join-Path $env:APPDATA 'herdr\herdr.sock'
+./tools/Test-V02HerdrRuntime.ps1 `
+    -TargetHerdrSocketPath $targetAgentLabSocket `
+    -DurationSeconds 120
 
-# From a standard non-elevated authorized Herdr pane, run the composite v0.2
-# actual-runtime gate for Issues #7, #9, and #10. Follow its event/restart prompts.
-./tools/Test-V02LiveRuntimeAcceptance.ps1
+# From a standard non-elevated pane in the separate Acceptance control session,
+# run the composite v0.2 actual-runtime gate for Issues #7, #9, and #10.
+# Restart only the target Agent Lab session when the gate prompts for it.
+./tools/Test-V02LiveRuntimeAcceptance.ps1 `
+    -TargetHerdrSocketPath $targetAgentLabSocket `
+    -Language Thai `
+    -DurationSeconds 600
 
 # Verify SQLite WAL restart/migration and current-user Core-to-App IPC evidence
 ./tools/Test-V02StateStoreIpc.ps1
