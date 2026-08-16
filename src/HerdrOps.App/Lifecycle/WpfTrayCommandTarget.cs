@@ -10,7 +10,7 @@ namespace HerdrOps.App.Lifecycle;
 /// Adapts tray commands to the existing WPF Dashboard and widget launcher.
 /// All external effects are supplied by the application composition root.
 /// </summary>
-public sealed class WpfTrayCommandTarget : ITrayCommandTarget
+public sealed class WpfTrayCommandTarget : ITrayCommandTarget, IStartAtLogonTrayCommandTarget
 {
     private readonly Func<MainWindow?> _dashboardProvider;
     private readonly IWidgetWindowLauncher _widgetLauncher;
@@ -18,6 +18,7 @@ public sealed class WpfTrayCommandTarget : ITrayCommandTarget
     private readonly Action<AppSettingsLanguage> _languageSelected;
     private readonly Action _exit;
     private readonly UiLanguageService _languageService;
+    private readonly Action _startAtLogonToggled;
 
     public WpfTrayCommandTarget(
         Func<MainWindow?> dashboardProvider,
@@ -25,7 +26,8 @@ public sealed class WpfTrayCommandTarget : ITrayCommandTarget
         Func<AppSettings> settingsProvider,
         Action<AppSettingsLanguage> languageSelected,
         Action exit,
-        UiLanguageService? languageService = null)
+        UiLanguageService? languageService = null,
+        Action? startAtLogonToggled = null)
     {
         _dashboardProvider = dashboardProvider ?? throw new ArgumentNullException(nameof(dashboardProvider));
         _widgetLauncher = widgetLauncher ?? throw new ArgumentNullException(nameof(widgetLauncher));
@@ -33,6 +35,9 @@ public sealed class WpfTrayCommandTarget : ITrayCommandTarget
         _languageSelected = languageSelected ?? throw new ArgumentNullException(nameof(languageSelected));
         _exit = exit ?? throw new ArgumentNullException(nameof(exit));
         _languageService = languageService ?? UiLanguageService.Shared;
+        _startAtLogonToggled = startAtLogonToggled ??
+            (() => throw new InvalidOperationException(
+                "The WPF tray target has no start-at-logon handler."));
     }
 
     public void ShowDashboard()
@@ -61,10 +66,12 @@ public sealed class WpfTrayCommandTarget : ITrayCommandTarget
     {
         InvokeOnDashboard(() =>
         {
-            _languageService.SetLanguage(AppSettingsLifecycleMapping.ToUiLanguage(language));
             _languageSelected(language);
+            _languageService.SetLanguage(AppSettingsLifecycleMapping.ToUiLanguage(language));
         });
     }
+
+    public void ToggleStartAtLogon() => InvokeOnDashboard(_startAtLogonToggled);
 
     public void Exit() => _exit();
 

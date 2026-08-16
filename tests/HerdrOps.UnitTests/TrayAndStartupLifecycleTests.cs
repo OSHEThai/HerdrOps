@@ -108,6 +108,25 @@ public sealed class TrayAndStartupLifecycleTests
     }
 
     [TestMethod]
+    public void StartAtLogonConflictFailsClosedAndDisablePreservesTheOtherCommand()
+    {
+        var backend = new InMemoryStartupBackend();
+        var service = new StartAtLogonService(
+            backend,
+            @"C:\HerdrOps\HerdrOps.App.exe");
+        const string otherCommand = @"""C:\Other\Other.exe""";
+        backend.Values[service.ValueName] = otherCommand;
+
+        Assert.ThrowsExactly<StartupRegistrationException>(() => service.Enable());
+        service.Disable();
+
+        Assert.AreEqual(0, backend.WriteCount);
+        Assert.AreEqual(0, backend.DeleteCount);
+        Assert.AreEqual(otherCommand, backend.Values[service.ValueName]);
+        Assert.AreEqual(StartupRegistrationState.Conflicting, service.GetStatus().State);
+    }
+
+    [TestMethod]
     public void StartAtLogonRejectsMalformedExecutablePaths()
     {
         var malformedPaths = new[]
@@ -122,6 +141,11 @@ public sealed class TrayAndStartupLifecycleTests
             @"C:\HerdrOps\HerdrOps.exe:startup",
             @"C:\HerdrOps\bad""name.exe",
             @"C:\HerdrOps\.\HerdrOps.exe",
+            @"C:\HerdrOps\CON.exe",
+            @"C:\HerdrOps\PRN.txt.exe",
+            @"C:\HerdrOps\COM1.bin.exe",
+            @"C:\HerdrOps\folder\NUL.exe",
+            @"C:\HerdrOps\LPT9.exe",
         };
 
         foreach (var malformedPath in malformedPaths)

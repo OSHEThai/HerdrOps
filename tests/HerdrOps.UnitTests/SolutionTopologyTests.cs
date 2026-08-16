@@ -8,7 +8,7 @@ public sealed class SolutionTopologyTests
     private static readonly IReadOnlyDictionary<string, string[]> ExpectedReferences =
         new Dictionary<string, string[]>(StringComparer.Ordinal)
         {
-            ["HerdrOps.App"] = ["HerdrOps.Contracts", "HerdrOps.Domain"],
+            ["HerdrOps.App"] = ["HerdrOps.Contracts", "HerdrOps.Domain", "HerdrOps.Infrastructure"],
             ["HerdrOps.Cli"] = ["HerdrOps.Contracts"],
             ["HerdrOps.Contracts"] = [],
             ["HerdrOps.Core"] = ["HerdrOps.Contracts", "HerdrOps.Domain", "HerdrOps.Infrastructure"],
@@ -87,7 +87,6 @@ public sealed class SolutionTopologyTests
         var forbiddenLifecycleTokens = new[]
         {
             "HerdrOps.Core",
-            "HerdrOps.Infrastructure",
             "Process.Start(",
             ".Kill(",
         };

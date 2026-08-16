@@ -11,6 +11,7 @@ public enum TrayCommand
     ShowConfiguredWidget,
     SelectThaiLanguage,
     SelectEnglishLanguage,
+    ToggleStartAtLogon,
     Exit,
 }
 
@@ -102,6 +103,16 @@ public interface ITrayCommandTarget
     void Exit();
 }
 
+/// <summary>
+/// Optional extension for hosts that expose the current-user start-at-logon
+/// setting. Keeping this separate preserves the existing tray target seam for
+/// hosts that do not own startup registration.
+/// </summary>
+public interface IStartAtLogonTrayCommandTarget
+{
+    void ToggleStartAtLogon();
+}
+
 public interface ITrayController : IDisposable
 {
     bool IsStarted { get; }
@@ -141,6 +152,15 @@ public sealed class TrayCommandRouter
                 break;
             case TrayCommand.SelectEnglishLanguage:
                 _target.SelectLanguage(AppSettingsLanguage.English);
+                break;
+            case TrayCommand.ToggleStartAtLogon:
+                if (_target is not IStartAtLogonTrayCommandTarget startAtLogonTarget)
+                {
+                    throw new InvalidOperationException(
+                        "The tray target does not support start-at-logon changes.");
+                }
+
+                startAtLogonTarget.ToggleStartAtLogon();
                 break;
             case TrayCommand.Exit:
                 _target.Exit();

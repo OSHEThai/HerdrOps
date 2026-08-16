@@ -101,7 +101,10 @@ public static class StartupRegistrationContract
         if (string.IsNullOrWhiteSpace(fileName) ||
             !string.Equals(Path.GetExtension(fileName), ".exe", StringComparison.OrdinalIgnoreCase) ||
             fileName.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0 ||
-            fileName.IndexOf(':') >= 0)
+            fileName.IndexOf(':') >= 0 ||
+            normalizedPath
+                .Split(['\\', '/'], StringSplitOptions.RemoveEmptyEntries)
+                .Any(IsReservedWindowsDeviceName))
         {
             throw new StartupRegistrationException(
                 "The startup executable path must name a local .exe file.");
@@ -119,6 +122,29 @@ public static class StartupRegistrationContract
     private static bool ContainsTraversalSegment(string path) =>
         path.Split(['\\', '/'], StringSplitOptions.RemoveEmptyEntries)
             .Any(segment => segment is "." or "..");
+
+    private static bool IsReservedWindowsDeviceName(string component)
+    {
+        var extensionIndex = component.IndexOf('.', StringComparison.Ordinal);
+        var stem = (extensionIndex < 0 ? component : component[..extensionIndex])
+            .TrimEnd(' ', '.');
+
+        if (stem.Equals("CON", StringComparison.OrdinalIgnoreCase) ||
+            stem.Equals("PRN", StringComparison.OrdinalIgnoreCase) ||
+            stem.Equals("AUX", StringComparison.OrdinalIgnoreCase) ||
+            stem.Equals("NUL", StringComparison.OrdinalIgnoreCase) ||
+            stem.Equals("CLOCK$", StringComparison.OrdinalIgnoreCase) ||
+            stem.Equals("CONIN$", StringComparison.OrdinalIgnoreCase) ||
+            stem.Equals("CONOUT$", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        return stem.Length == 4 &&
+            (stem.StartsWith("COM", StringComparison.OrdinalIgnoreCase) ||
+             stem.StartsWith("LPT", StringComparison.OrdinalIgnoreCase)) &&
+            (stem[3] is (>= '1' and <= '9') or '¹' or '²' or '³');
+    }
 }
 
 /// <summary>
@@ -148,12 +174,19 @@ public sealed class StartAtLogonService
             return;
         }
 
+        if (registeredCommand is not null)
+        {
+            throw new StartupRegistrationException(
+                $"The current-user startup value '{ValueName}' is owned by another command.");
+        }
+
         _backend.Write(ValueName, ExpectedCommand);
     }
 
     public void Disable()
     {
-        if (_backend.Read(ValueName) is null)
+        var registeredCommand = _backend.Read(ValueName);
+        if (!string.Equals(registeredCommand, ExpectedCommand, StringComparison.Ordinal))
         {
             return;
         }

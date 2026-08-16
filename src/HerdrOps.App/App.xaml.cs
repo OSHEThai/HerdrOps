@@ -21,7 +21,8 @@ public partial class App : Application
     private LiveDashboardRuntime? _runtime;
     private ComplianceReviewCommandCoordinator? _reviewCommands;
     private TrayLifecycleController? _tray;
-    private AppSettings _settings = AppSettings.Defaults;
+    private AppLifecycleController? _lifecycle;
+    private IWidgetWindowLauncher? _widgetLauncher;
 
     protected override async void OnStartup(StartupEventArgs e)
     {
@@ -81,6 +82,15 @@ public partial class App : Application
         var mainWindow = new MainWindow(state);
         MainWindow = mainWindow;
         mainWindow.Show();
+        _lifecycle = AppLifecycleComposition.CreateForCurrentUser(UiLanguageService.Shared);
+        await _lifecycle.InitializeAsync();
+        _widgetLauncher = new WidgetWindowLauncher(state.Widgets);
+        if (_lifecycle.Settings.WidgetEnabled)
+        {
+            _widgetLauncher.Open(
+                AppSettingsLifecycleMapping.ToWidgetVariant(_lifecycle.Settings.WidgetVariant));
+        }
+
         StartTray(state);
     }
 
@@ -113,6 +123,7 @@ public partial class App : Application
         RuntimeEvidenceRunner? runner = null;
         MainWindow? mainWindow = null;
         var exitCode = 2;
+        Exception? cleanupFailure = null;
         try
         {
             var state = new LiveDashboardState();
@@ -134,13 +145,35 @@ public partial class App : Application
         }
         finally
         {
-            runner?.CloseEvidenceWindows();
-            _runtime?.Dispose();
-            _runtime = null;
-            if (mainWindow?.IsVisible == true)
+            try
             {
-                mainWindow.Close();
+                ShutdownCleanup.Execute(
+                [
+                    new ShutdownCleanupAction(
+                        "runtime-evidence-windows",
+                        () => runner?.CloseEvidenceWindows()),
+                    new ShutdownCleanupAction("runtime", DisposeRuntime),
+                    new ShutdownCleanupAction(
+                        "dashboard",
+                        () =>
+                        {
+                            if (mainWindow?.IsVisible == true)
+                            {
+                                mainWindow.Close();
+                            }
+                        }),
+                ]);
             }
+            catch (Exception exception)
+            {
+                cleanupFailure = exception;
+            }
+        }
+
+        if (cleanupFailure is not null)
+        {
+            RuntimeEvidenceRunner.WriteFailure(options.ReportPath, startedUtc, cleanupFailure);
+            exitCode = 2;
         }
 
         Shutdown(exitCode);
@@ -148,36 +181,64 @@ public partial class App : Application
 
     protected override void OnExit(ExitEventArgs e)
     {
-        StopTray();
-        _runtime?.Dispose();
-        _reviewCommands = null;
-        base.OnExit(e);
+        ShutdownCleanup.Execute(
+        [
+            new ShutdownCleanupAction("tray", StopTray),
+            new ShutdownCleanupAction("runtime", DisposeRuntime),
+            new ShutdownCleanupAction("review-commands", () => _reviewCommands = null),
+            new ShutdownCleanupAction("application-base", () => base.OnExit(e)),
+        ]);
     }
 
     private void StartTray(LiveDashboardState state)
     {
-        UiLanguageService.Shared.SetLanguage(
-            AppSettingsLifecycleMapping.ToUiLanguage(_settings.Language));
+        var lifecycle = _lifecycle ?? throw new InvalidOperationException(
+            "The application lifecycle has not been initialized.");
         UiLanguageService.Shared.LanguageChanged += OnLanguageChanged;
-        var menuBuilder = new TrayMenuBuilder(() => _settings);
+        var menuBuilder = new TrayMenuBuilder(
+            () => lifecycle.Settings,
+            UiLanguageService.Shared,
+            () => lifecycle.StartAtLogonStatus);
 
         _tray = new TrayLifecycleController(
             new SystemTrayBackend(),
             menuBuilder.Build,
             new WpfTrayCommandTarget(
                 () => MainWindow as MainWindow,
-                new WidgetWindowLauncher(state.Widgets),
-                () => _settings,
-                language => _settings = _settings with { Language = language },
-                Shutdown));
+                _widgetLauncher ?? new WidgetWindowLauncher(state.Widgets),
+                () => lifecycle.Settings,
+                language =>
+                {
+                    lifecycle.SelectLanguage(language);
+                },
+                Shutdown,
+                UiLanguageService.Shared,
+                () =>
+                {
+                    lifecycle.ToggleStartAtLogon();
+                    _tray?.Refresh();
+                }));
         _tray.Start();
     }
 
     private void StopTray()
     {
         UiLanguageService.Shared.LanguageChanged -= OnLanguageChanged;
-        _tray?.Dispose();
-        _tray = null;
+        try
+        {
+            _tray?.Dispose();
+        }
+        finally
+        {
+            _tray = null;
+        }
+    }
+
+    private void DisposeRuntime()
+    {
+        var runtime = _runtime;
+        _runtime = null;
+        runtime?.Dispose();
     }
 
     private void OnLanguageChanged(object? sender, EventArgs e) => _tray?.Refresh();

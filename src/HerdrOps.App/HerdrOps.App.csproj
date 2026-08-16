@@ -9,6 +9,7 @@
   <ItemGroup>
     <ProjectReference Include="..\HerdrOps.Contracts\HerdrOps.Contracts.csproj" />
     <ProjectReference Include="..\HerdrOps.Domain\HerdrOps.Domain.csproj" />
+    <ProjectReference Include="..\HerdrOps.Infrastructure\HerdrOps.Infrastructure.csproj" />
   </ItemGroup>
 
   <ItemGroup>

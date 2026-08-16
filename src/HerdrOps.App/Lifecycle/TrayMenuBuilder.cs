@@ -12,13 +12,16 @@ public sealed class TrayMenuBuilder
 {
     private readonly Func<AppSettings> _settingsProvider;
     private readonly UiLanguageService _languageService;
+    private readonly Func<StartupRegistrationStatus>? _startupStatusProvider;
 
     public TrayMenuBuilder(
         Func<AppSettings> settingsProvider,
-        UiLanguageService? languageService = null)
+        UiLanguageService? languageService = null,
+        Func<StartupRegistrationStatus>? startupStatusProvider = null)
     {
         _settingsProvider = settingsProvider ?? throw new ArgumentNullException(nameof(settingsProvider));
         _languageService = languageService ?? UiLanguageService.Shared;
+        _startupStatusProvider = startupStatusProvider;
     }
 
     public TrayMenuModel Build()
@@ -28,23 +31,35 @@ public sealed class TrayMenuBuilder
         var widget = WidgetCatalog.Get(
             AppSettingsLifecycleMapping.ToWidgetVariant(settings.WidgetVariant));
 
-        return new TrayMenuModel(
-            toolTipText: "HerdrOps",
-            items:
-            [
-                new TrayMenuItem(TrayCommand.ShowDashboard, text["TrayShowDashboard"]),
-                new TrayMenuItem(
-                    TrayCommand.ShowConfiguredWidget,
-                    text.Format("TrayShowConfiguredWidgetFormat", widget.DisplayName)),
-                new TrayMenuItem(
-                    TrayCommand.SelectThaiLanguage,
-                    text["LanguageThai"],
-                    text.CurrentLanguage == UiLanguage.Thai),
-                new TrayMenuItem(
-                    TrayCommand.SelectEnglishLanguage,
-                    text["LanguageEnglish"],
-                    text.CurrentLanguage == UiLanguage.English),
-                new TrayMenuItem(TrayCommand.Exit, text["TrayExit"]),
-            ]);
+        var items = new List<TrayMenuItem>
+        {
+            new(TrayCommand.ShowDashboard, text["TrayShowDashboard"]),
+            new(
+                TrayCommand.ShowConfiguredWidget,
+                text.Format("TrayShowConfiguredWidgetFormat", widget.DisplayName)),
+            new(
+                TrayCommand.SelectThaiLanguage,
+                text["LanguageThai"],
+                text.CurrentLanguage == UiLanguage.Thai),
+            new(
+                TrayCommand.SelectEnglishLanguage,
+                text["LanguageEnglish"],
+                text.CurrentLanguage == UiLanguage.English),
+        };
+
+        if (_startupStatusProvider is not null)
+        {
+            var startupStatus = _startupStatusProvider();
+            items.Add(new TrayMenuItem(
+                TrayCommand.ToggleStartAtLogon,
+                startupStatus.State == StartupRegistrationState.Conflicting
+                    ? text["TrayStartAtLogonConflict"]
+                    : startupStatus.IsEnabled
+                        ? text["TrayStartAtLogonDisable"]
+                        : text["TrayStartAtLogonEnable"]));
+        }
+
+        items.Add(new TrayMenuItem(TrayCommand.Exit, text["TrayExit"]));
+        return new TrayMenuModel("HerdrOps", items);
     }
 }

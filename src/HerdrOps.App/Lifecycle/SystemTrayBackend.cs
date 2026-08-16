@@ -1,5 +1,6 @@
 using System.IO;
 using System.Windows;
+using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using Drawing = System.Drawing;
 using Forms = System.Windows.Forms;
@@ -96,7 +97,8 @@ public sealed class SystemTrayBackend : ITrayBackend
 
     private Forms.NotifyIcon CreateNotifyIcon()
     {
-        _icon = CreateApprovedBrandIcon();
+        _icon = CreateApprovedBrandIcon(
+            TrayIconContract.PixelSizeForDpi(GetSystemDpiScale()));
         var notifyIcon = new Forms.NotifyIcon
         {
             Icon = _icon,
@@ -106,7 +108,7 @@ public sealed class SystemTrayBackend : ITrayBackend
         return notifyIcon;
     }
 
-    private static Drawing.Icon CreateApprovedBrandIcon()
+    private static Drawing.Icon CreateApprovedBrandIcon(int pixelSize)
     {
         var source = new BitmapImage();
         source.BeginInit();
@@ -115,9 +117,42 @@ public sealed class SystemTrayBackend : ITrayBackend
             "pack://application:,,,/HerdrOps.App;component/Assets/Brand/ApprovedOverviewReference.png",
             UriKind.Absolute);
         source.EndInit();
-        var cropped = new CroppedBitmap(source, new Int32Rect(16, 8, 48, 48));
+
+        var cropped = new CroppedBitmap(
+            source,
+            new Int32Rect(
+                TrayIconContract.ReferenceCropLeft,
+                TrayIconContract.ReferenceCropTop,
+                TrayIconContract.ReferenceCropSize,
+                TrayIconContract.ReferenceCropSize));
+        var bgra = new FormatConvertedBitmap(cropped, PixelFormats.Bgra32, null, 0);
+        var pixels = new byte[bgra.PixelWidth * bgra.PixelHeight * 4];
+        bgra.CopyPixels(pixels, bgra.PixelWidth * 4, 0);
+        var transparentPixels = TrayIconContract.ToTransparentPbgra32(
+            pixels,
+            bgra.PixelWidth,
+            bgra.PixelHeight);
+        var transparentSource = BitmapSource.Create(
+            bgra.PixelWidth,
+            bgra.PixelHeight,
+            96,
+            96,
+            PixelFormats.Pbgra32,
+            null,
+            transparentPixels,
+            bgra.PixelWidth * 4);
+        transparentSource.Freeze();
+        var scaledSource = pixelSize == TrayIconContract.ReferenceCropSize
+            ? transparentSource
+            : new TransformedBitmap(
+                transparentSource,
+                new ScaleTransform(
+                    (double)pixelSize / TrayIconContract.ReferenceCropSize,
+                    (double)pixelSize / TrayIconContract.ReferenceCropSize));
+        scaledSource.Freeze();
+
         var encoder = new PngBitmapEncoder();
-        encoder.Frames.Add(BitmapFrame.Create(cropped));
+        encoder.Frames.Add(BitmapFrame.Create(scaledSource));
         using var stream = new MemoryStream();
         encoder.Save(stream);
         stream.Position = 0;
@@ -133,6 +168,12 @@ public sealed class SystemTrayBackend : ITrayBackend
         {
             _ = DestroyIcon(iconHandle);
         }
+    }
+
+    private static double GetSystemDpiScale()
+    {
+        var dpi = GetDpiForSystem();
+        return dpi == 0 ? 1.0 : dpi / 96.0;
     }
 
     private void OnMenuItemClick(object? sender, EventArgs e)
@@ -154,4 +195,7 @@ public sealed class SystemTrayBackend : ITrayBackend
     [DllImport("user32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool DestroyIcon(IntPtr iconHandle);
+
+    [DllImport("user32.dll")]
+    private static extern uint GetDpiForSystem();
 }
