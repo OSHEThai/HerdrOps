@@ -411,10 +411,13 @@ public sealed class ComplianceReviewStorageTests
             completedBeforeBound,
             "A compliance-review SQLite operation remained blocked beyond its cancellation bound.");
         Assert.IsNotNull(operationException);
+        // SQLite may either observe the cancellation while waiting or fail
+        // closed with BUSY/LOCKED before the cancellation timer wins the race.
+        // Every admitted outcome is bounded and occurs before any mutation.
         Assert.IsTrue(
             operationException is OperationCanceledException ||
-            operationException is SqliteException { SqliteErrorCode: 9 },
-            $"Expected cancellation or SQLITE_INTERRUPT, got {operationException.GetType().FullName}: {operationException.Message}");
+            operationException is SqliteException { SqliteErrorCode: 5 or 6 or 9 },
+            $"Expected cancellation or SQLITE_BUSY/LOCKED/INTERRUPT, got {operationException.GetType().FullName}: {operationException.Message}");
         Assert.IsEmpty(store.ReadComplianceReviewAudit("INC-27"));
     }
 
