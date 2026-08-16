@@ -872,11 +872,11 @@ public static class DailySummaryAggregator
                 sourceIds,
                 timelineById,
                 $"repeated issue '{key}'");
-            var expectedDescription = timelineById[sourceIds[0]].Summary;
+            var expectedDescription = key;
             if (!string.Equals(issue.Description, expectedDescription, StringComparison.Ordinal))
             {
                 throw new DailySummaryAggregationException(
-                    $"Repeated issue '{key}' description does not match its canonical first source summary.");
+                    $"Repeated issue '{key}' description does not match its canonical issue key.");
             }
 
             _ = RequireCanonicalText(issue.Workstream, nameof(issue.Workstream), MaximumIdentifierLength);

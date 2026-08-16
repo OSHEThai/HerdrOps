@@ -176,6 +176,16 @@ public sealed class DailySummarySnapshotSemanticValidationTests
         issues[0] = issue;
         ExpectFailure(snapshot with { RepeatedIssues = issues }, "Repeated issue 'api-latency' must reference");
 
+        var wrongDescription = snapshot.RepeatedIssues[0] with
+        {
+            Description = snapshot.Timeline[0].Summary,
+        };
+        var issuesWithWrongDescription = snapshot.RepeatedIssues.ToArray();
+        issuesWithWrongDescription[0] = wrongDescription;
+        ExpectFailure(
+            snapshot with { RepeatedIssues = issuesWithWrongDescription },
+            "canonical issue key");
+
         var action = snapshot.RecommendedActions[0] with
         {
             SourceIds = [],

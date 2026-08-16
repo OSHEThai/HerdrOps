@@ -156,7 +156,10 @@ public sealed class DeterministicSnapshotExporterTests
             $"json={export.JsonSha256}; markdown={export.MarkdownSha256}; " +
             $"csv={export.CsvSha256}; exportId={export.ExportId}; " +
             $"sourceSnapshot={export.SourceSnapshotSha256}";
-        Assert.AreEqual(expectedIdentity, observedIdentity);
+        Assert.AreEqual(
+            expectedIdentity,
+            observedIdentity,
+            $"Observed deterministic Daily Summary export identity: {observedIdentity}");
         Assert.AreEqual(accepted.SourceSetSha256, export.SourceSnapshotSha256);
         Assert.AreEqual(export.ExportId, export.Manifest.ExportId);
         Assert.AreEqual(export.JsonSha256, Sha256(export.Json));
