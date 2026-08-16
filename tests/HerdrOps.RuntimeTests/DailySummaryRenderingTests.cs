@@ -10,6 +10,7 @@ using System.Windows.Media.Imaging;
 using HerdrOps.App.Localization;
 using HerdrOps.App.Summaries;
 using HerdrOps.App.Views;
+using HerdrOps.Domain.Summaries;
 
 namespace HerdrOps.RuntimeTests;
 
@@ -125,8 +126,18 @@ public sealed class DailySummaryRenderingTests
         AssertVisibleTextContains(shell, language["DailySummaryPageTitle"]);
         AssertVisibleTextContains(page, expectMissing ? "—" : state.SourceLabel);
 
-        var automation = AutomationProperties.GetName(page);
-        Assert.AreEqual(state.BoundaryLabel, automation);
+        var boundary = Assert.IsInstanceOfType<FrameworkElement>(page.FindName("DailySummaryEvidenceBoundary"));
+        var boundaryAutomation = AutomationProperties.GetName(boundary);
+        Assert.AreEqual(state.BoundaryLabel, boundaryAutomation);
+        if (expectMissing)
+        {
+            Assert.AreNotEqual(language["DailySummarySyntheticBoundary"], boundaryAutomation);
+            Assert.IsFalse(
+                boundaryAutomation.Contains("synthetic", StringComparison.OrdinalIgnoreCase),
+                "Unavailable Daily Summary must not announce synthetic evidence.");
+        }
+
+        AssertProvenanceAffordances(page, state);
         foreach (var sourceId in state.Strengths
                      .SelectMany(row => row.SourceIds)
                      .Concat(state.Timeline.SelectMany(row => row.SourceIds))
@@ -254,6 +265,181 @@ public sealed class DailySummaryRenderingTests
         Assert.IsTrue(
             bottomBounds.Bottom <= viewportBounds.Bottom + 1 && bottomBounds.Bottom > 0,
             $"The final Daily Summary region is not reachable at scroll end: {bottomBounds} / {viewportBounds}");
+
+        AssertWorkstreamRows(page, Assert.IsInstanceOfType<DailySummaryState>(page.DataContext));
+    }
+
+    private static void AssertProvenanceAffordances(DailySummaryView page, DailySummaryState state)
+    {
+        var summaryCardsRegion = Assert.IsInstanceOfType<FrameworkElement>(page.FindName("DailySummarySummaryCardsRegion"));
+        AssertRegionProvenance(summaryCardsRegion, state.SourceSetLabel, "summary cards");
+
+        var workstreamRegion = Assert.IsInstanceOfType<FrameworkElement>(page.FindName("DailySummaryWorkstreamRegion"));
+        AssertRegionProvenance(workstreamRegion, state.SourceSetLabel, "workstream group");
+
+        var dayOverviewRegion = Assert.IsInstanceOfType<FrameworkElement>(page.FindName("DailySummaryDayOverviewRegion"));
+        AssertRegionProvenance(dayOverviewRegion, state.SourceSetLabel, "day overview");
+
+        var groups = new[]
+        {
+            (Name: "summary cards", Items: state.SummaryCards.Cast<object>().ToArray()),
+            (Name: "highlights", Items: state.Highlights.Cast<object>().ToArray()),
+            (Name: "strengths", Items: state.Strengths.Cast<object>().ToArray()),
+            (Name: "areas to improve", Items: state.AreasToImprove.Cast<object>().ToArray()),
+            (Name: "repeated issues", Items: state.RepeatedIssues.Cast<object>().ToArray()),
+            (Name: "recommended actions", Items: state.RecommendedActions.Cast<object>().ToArray()),
+            (Name: "timeline", Items: state.Timeline.Cast<object>().ToArray()),
+            (Name: "workstreams", Items: state.Workstreams.Cast<object>().ToArray()),
+        };
+
+        foreach (var group in groups)
+        {
+            if (group.Items.Length == 0)
+            {
+                continue;
+            }
+
+            var itemsControl = FindItemsControlFor(page, group.Items, group.Name);
+            foreach (var item in group.Items)
+            {
+                var provenance = ProvenanceOf(item);
+                AssertDeterministicProvenance(item, provenance, group.Name);
+
+                var container = itemsControl.ItemContainerGenerator.ContainerFromItem(item);
+                Assert.IsNotNull(container, $"No rendered item container for {group.Name}.");
+                var affordance = EnumerateDescendants(container!)
+                    .OfType<FrameworkElement>()
+                    .FirstOrDefault(element =>
+                        element.Focusable &&
+                        AutomationProperties.GetHelpText(element) == provenance.Label &&
+                        string.Equals(element.ToolTip?.ToString(), provenance.Label, StringComparison.Ordinal));
+                Assert.IsNotNull(affordance, $"{group.Name} item has no keyboard/assistive provenance affordance.");
+
+                var provenanceLines = EnumerateDescendants(container!)
+                    .OfType<TextBlock>()
+                    .Where(IsEffectivelyVisible)
+                    .Where(text => text.Text == provenance.Label)
+                    .ToArray();
+                Assert.IsNotEmpty(provenanceLines, $"{group.Name} item has no visible provenance line.");
+                Assert.IsTrue(
+                    provenanceLines.Any(text => text.TextTrimming == TextTrimming.CharacterEllipsis),
+                    $"{group.Name} provenance line must use deterministic ellipsis for compact layouts.");
+            }
+        }
+    }
+
+    private static void AssertRegionProvenance(FrameworkElement region, string provenance, string regionName)
+    {
+        Assert.AreEqual(provenance, AutomationProperties.GetHelpText(region), $"Missing {regionName} provenance help text.");
+        Assert.AreEqual(provenance, region.ToolTip?.ToString(), $"Missing {regionName} provenance tooltip.");
+    }
+
+    private static void AssertDeterministicProvenance(
+        object item,
+        (IReadOnlyList<string> SourceIds, IReadOnlyList<DailySummarySourceReference> References, string Label) provenance,
+        string groupName)
+    {
+        Assert.IsFalse(string.IsNullOrWhiteSpace(provenance.Label), $"{groupName} item has empty provenance.");
+        Assert.IsTrue(
+            provenance.SourceIds.SequenceEqual(provenance.References.Select(reference => reference.SourceId)),
+            $"{groupName} item source IDs do not match its source references.");
+        foreach (var reference in provenance.References)
+        {
+            Assert.IsTrue(
+                Regex.IsMatch(reference.SourceHashSha256, "^[0-9A-Fa-f]{64}$", RegexOptions.CultureInvariant),
+                $"{groupName} item has a non-SHA-256 source hash.");
+        }
+
+        if (provenance.References.Count > 0)
+        {
+            var expected = string.Join(
+                " · ",
+                provenance.References.Select(reference => $"{reference.SourceId}#{reference.SourceHashSha256}"));
+            Assert.AreEqual(expected, provenance.Label, $"{groupName} item provenance is not deterministic.");
+        }
+    }
+
+    private static (IReadOnlyList<string> SourceIds, IReadOnlyList<DailySummarySourceReference> References, string Label) ProvenanceOf(object item) =>
+        item switch
+        {
+            DailySummarySummaryCard value => (value.SourceIds, value.SourceReferences, value.SourceProvenanceLabel),
+            DailySummaryHighlightRow value => (value.SourceIds, value.SourceReferences, value.SourceProvenanceLabel),
+            DailySummaryIssueRow value => (value.SourceIds, value.SourceReferences, value.SourceProvenanceLabel),
+            DailySummaryActionRow value => (value.SourceIds, value.SourceReferences, value.SourceProvenanceLabel),
+            DailySummaryTimelineRow value => (value.SourceIds, value.SourceReferences, value.SourceProvenanceLabel),
+            DailySummaryWorkstreamRow value => (value.SourceIds, value.SourceReferences, value.SourceProvenanceLabel),
+            _ => throw new AssertFailedException($"Unsupported Daily Summary row type: {item.GetType().FullName}"),
+        };
+
+    private static ItemsControl FindItemsControlFor(
+        DependencyObject root,
+        IReadOnlyList<object> expectedItems,
+        string groupName)
+    {
+        var matches = EnumerateDescendants(root)
+            .OfType<ItemsControl>()
+            .Where(control => control.Items.Count == expectedItems.Count)
+            .Where(control => expectedItems
+                .Select((item, index) => ReferenceEquals(control.Items[index], item))
+                .All(matches => matches))
+            .ToArray();
+        Assert.HasCount(1, matches, $"Could not identify the rendered ItemsControl for {groupName}.");
+        return matches[0];
+    }
+
+    private static void AssertWorkstreamRows(DailySummaryView page, DailySummaryState state)
+    {
+        if (state.Workstreams.Count == 0)
+        {
+            return;
+        }
+
+        var itemsControl = FindItemsControlFor(
+            page,
+            state.Workstreams.Cast<object>().ToArray(),
+            "workstreams");
+        foreach (var item in state.Workstreams)
+        {
+            var container = itemsControl.ItemContainerGenerator.ContainerFromItem(item);
+            Assert.IsNotNull(container, "No rendered workstream item container.");
+            var row = EnumerateDescendants(container!)
+                .OfType<Grid>()
+                .FirstOrDefault(element =>
+                    element.Focusable &&
+                    AutomationProperties.GetHelpText(element) == item.SourceProvenanceLabel);
+            Assert.IsNotNull(row, "Workstream row has no provenance-aware root grid.");
+            Assert.IsGreaterThan(0d, row!.ActualWidth, "Workstream row has no rendered width.");
+            Assert.IsLessThanOrEqualTo(
+                row.ActualWidth + 1,
+                row.DesiredSize.Width,
+                $"Workstream row desired width exceeds its compact layout width: {row.DesiredSize.Width} / {row.ActualWidth}.");
+
+            var cells = row.Children
+                .OfType<TextBlock>()
+                .Where(text => Grid.GetRow(text) == 0)
+                .ToArray();
+            Assert.HasCount(7, cells, "Workstream row must retain all seven hierarchy columns.");
+            foreach (var cell in cells)
+            {
+                Assert.IsGreaterThan(0d, cell.ActualWidth, "Workstream cell has no rendered width.");
+                Assert.IsTrue(
+                    cell.DesiredSize.Width <= cell.ActualWidth + 1 ||
+                    cell.TextTrimming == TextTrimming.CharacterEllipsis ||
+                    cell.TextWrapping != TextWrapping.NoWrap,
+                    $"Workstream cell has no compact overflow policy: {cell.Text} ({cell.DesiredSize.Width} / {cell.ActualWidth}).");
+            }
+
+            var bounds = cells.Select(cell => BoundsRelativeTo(cell, row)).ToArray();
+            for (var index = 0; index < bounds.Length; index++)
+            {
+                for (var other = index + 1; other < bounds.Length; other++)
+                {
+                    Assert.IsFalse(
+                        HasPositiveAreaOverlap(bounds[index], bounds[other]),
+                        $"Workstream sibling text overlaps in compact layout: {cells[index].Text} / {cells[other].Text}.");
+                }
+            }
+        }
     }
 
     private static string TextOf(TextBlock text) =>
