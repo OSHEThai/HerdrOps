@@ -480,6 +480,587 @@ public static class DailySummaryAggregator
         return snapshot;
     }
 
+    public static DailySummarySnapshot Validate(DailySummarySnapshot snapshot)
+    {
+        ArgumentNullException.ThrowIfNull(snapshot);
+        if (snapshot.ContractVersion != ContractVersion)
+        {
+            throw new DailySummaryAggregationException(
+                $"Unsupported Daily Summary contract v{snapshot.ContractVersion}.");
+        }
+
+        if (!string.Equals(snapshot.AggregatorId, AggregatorId, StringComparison.Ordinal))
+        {
+            throw new DailySummaryAggregationException(
+                "Daily Summary aggregator identity does not match the accepted contract.");
+        }
+
+        _ = RequireCanonicalText(snapshot.TimeZoneId, nameof(snapshot.TimeZoneId), MaximumIdentifierLength);
+        ValidateSnapshotCollections(snapshot);
+
+        _ = RequireCanonicalSha256(snapshot.SourceSetSha256, nameof(snapshot.SourceSetSha256));
+        var expectedSourceSet = ComputeSourceSetSha256(snapshot.AcceptedSources);
+        if (!string.Equals(expectedSourceSet, snapshot.SourceSetSha256, StringComparison.Ordinal))
+        {
+            throw new DailySummaryAggregationException(
+                "Daily Summary source-set SHA-256 does not match its accepted sources.");
+        }
+
+        _ = RequireCanonicalSha256(snapshot.ResultSha256, nameof(snapshot.ResultSha256));
+        var expectedResult = ComputeResultSha256(snapshot);
+        if (!string.Equals(expectedResult, snapshot.ResultSha256, StringComparison.Ordinal))
+        {
+            throw new DailySummaryAggregationException(
+                "Daily Summary result SHA-256 does not match its accepted values.");
+        }
+
+        return snapshot;
+    }
+
+    private static void ValidateSnapshotCollections(DailySummarySnapshot snapshot)
+    {
+        RequireCollection(snapshot.AcceptedSources, nameof(snapshot.AcceptedSources));
+        RequireCollection(snapshot.Metrics, nameof(snapshot.Metrics));
+        RequireCollection(snapshot.Workstreams, nameof(snapshot.Workstreams));
+        RequireCollection(snapshot.Highlights, nameof(snapshot.Highlights));
+        RequireCollection(snapshot.RepeatedIssues, nameof(snapshot.RepeatedIssues));
+        RequireCollection(snapshot.RecommendedActions, nameof(snapshot.RecommendedActions));
+        RequireCollection(snapshot.Timeline, nameof(snapshot.Timeline));
+        if (snapshot.AcceptedSources.Count > MaximumSourceCount)
+        {
+            throw new DailySummaryAggregationException(
+                $"Daily Summary contains {snapshot.AcceptedSources.Count} accepted sources; the maximum is {MaximumSourceCount}.");
+        }
+
+        var acceptedById = new Dictionary<string, DailySummarySourceReference>(StringComparer.Ordinal);
+        foreach (var source in snapshot.AcceptedSources)
+        {
+            if (source is null)
+            {
+                throw new DailySummaryAggregationException(
+                    "Daily Summary accepted source collection contains a null record.");
+            }
+
+            var sourceId = RequireCanonicalText(source.SourceId, nameof(source.SourceId), MaximumIdentifierLength);
+            if (!Enum.IsDefined(source.Kind))
+            {
+                throw new DailySummaryAggregationException(
+                    $"Daily Summary accepted source '{sourceId}' contains an unsupported source kind.");
+            }
+
+            var sourceHash = RequireCanonicalSha256(source.SourceHashSha256, nameof(source.SourceHashSha256));
+            if (!acceptedById.TryAdd(sourceId, source))
+            {
+                throw new DailySummaryAggregationException(
+                    $"Daily Summary contains a duplicate accepted source ID '{sourceId}'.");
+            }
+
+            if (!string.Equals(sourceHash, source.SourceHashSha256, StringComparison.Ordinal))
+            {
+                throw new DailySummaryAggregationException(
+                    $"Daily Summary accepted source '{sourceId}' is not canonically normalized.");
+            }
+        }
+
+        var timelineById = new Dictionary<string, DailySummaryTimelineEntry>(StringComparer.Ordinal);
+        foreach (var entry in snapshot.Timeline)
+        {
+            if (entry is null)
+            {
+                throw new DailySummaryAggregationException(
+                    "Daily Summary timeline collection contains a null record.");
+            }
+
+            var sourceId = RequireCanonicalText(entry.SourceId, nameof(entry.SourceId), MaximumIdentifierLength);
+            if (!Enum.IsDefined(entry.Kind))
+            {
+                throw new DailySummaryAggregationException(
+                    $"Daily Summary timeline entry '{sourceId}' contains an unsupported source kind.");
+            }
+
+            if (entry.OccurredLocal.Date != snapshot.LocalDate.ToDateTime(TimeOnly.MinValue).Date)
+            {
+                throw new DailySummaryAggregationException(
+                    $"Daily Summary timeline entry '{sourceId}' falls outside local date {snapshot.LocalDate:yyyy-MM-dd}.");
+            }
+
+            _ = RequireCanonicalText(entry.Workstream, nameof(entry.Workstream), MaximumIdentifierLength);
+            _ = RequireCanonicalText(entry.Category, nameof(entry.Category), MaximumIdentifierLength);
+            _ = RequireCanonicalText(entry.Summary, nameof(entry.Summary), MaximumTextLength);
+            _ = RequireCanonicalSha256(entry.SourceHashSha256, nameof(entry.SourceHashSha256));
+            if (!timelineById.TryAdd(sourceId, entry))
+            {
+                throw new DailySummaryAggregationException(
+                    $"Daily Summary contains a duplicate timeline source ID '{sourceId}'.");
+            }
+        }
+
+        if (timelineById.Count != acceptedById.Count)
+        {
+            throw new DailySummaryAggregationException(
+                $"Daily Summary timeline count {timelineById.Count} does not match accepted source count {acceptedById.Count}.");
+        }
+
+        foreach (var source in snapshot.AcceptedSources)
+        {
+            if (!timelineById.TryGetValue(source.SourceId, out var entry))
+            {
+                throw new DailySummaryAggregationException(
+                    $"Accepted source '{source.SourceId}' has no timeline reference.");
+            }
+
+            if (entry.Kind != source.Kind ||
+                !string.Equals(entry.SourceHashSha256, source.SourceHashSha256, StringComparison.Ordinal))
+            {
+                throw new DailySummaryAggregationException(
+                    $"Timeline reference '{source.SourceId}' does not match its accepted source kind/hash.");
+            }
+        }
+
+        foreach (var entry in snapshot.Timeline)
+        {
+            if (!acceptedById.ContainsKey(entry.SourceId))
+            {
+                throw new DailySummaryAggregationException(
+                    $"Timeline source reference '{entry.SourceId}' does not resolve to an accepted source.");
+            }
+        }
+
+        var acceptedIds = snapshot.AcceptedSources.Select(item => item.SourceId).ToArray();
+        var timelineIds = snapshot.Timeline.Select(item => item.SourceId).ToArray();
+        EnsureSequenceEqual(acceptedIds, timelineIds, "accepted source and timeline order");
+        EnsureSequenceEqual(
+            timelineIds,
+            snapshot.Timeline
+                .OrderBy(item => item.OccurredLocal)
+                .ThenBy(item => item.SourceId, StringComparer.Ordinal)
+                .Select(item => item.SourceId),
+            "timeline");
+
+        var metrics = ValidateMetrics(snapshot.Metrics, acceptedById);
+        ValidateWorkstreams(snapshot.Workstreams, acceptedById, snapshot.Timeline);
+        ValidateHighlights(snapshot.Highlights, acceptedById, timelineById, timelineIds);
+        ValidateRepeatedIssues(snapshot.RepeatedIssues, acceptedById, timelineById);
+        ValidateRecommendedActions(snapshot.RecommendedActions, acceptedById);
+
+        var expectedActivityIds = acceptedById.Values
+            .Where(item => item.Kind == DailySummarySourceKind.ActivityEvent)
+            .Select(item => item.SourceId)
+            .OrderBy(item => item, StringComparer.Ordinal)
+            .ToArray();
+        var expectedEvidenceIds = acceptedById.Values
+            .Where(item => item.Kind == DailySummarySourceKind.Evidence)
+            .Select(item => item.SourceId)
+            .OrderBy(item => item, StringComparer.Ordinal)
+            .ToArray();
+        EnsureMetric(metrics, "accepted-sources", acceptedById.Count, acceptedIds);
+        EnsureMetric(metrics, "activity-events", expectedActivityIds.Length, expectedActivityIds);
+        EnsureMetric(metrics, "evidence-items", expectedEvidenceIds.Length, expectedEvidenceIds);
+        EnsureMetric(metrics, "workstreams", snapshot.Workstreams.Count, acceptedIds);
+        EnsureMetric(metrics, "timeline-items", snapshot.Timeline.Count, acceptedIds);
+        EnsureMetric(
+            metrics,
+            "highlights",
+            snapshot.Highlights.Count,
+            snapshot.Highlights.SelectMany(item => item.SourceIds));
+        EnsureMetric(
+            metrics,
+            "repeated-issues",
+            snapshot.RepeatedIssues.Count,
+            snapshot.RepeatedIssues.SelectMany(item => item.SourceIds));
+        EnsureMetric(
+            metrics,
+            "recommended-actions",
+            snapshot.RecommendedActions.Count,
+            snapshot.RecommendedActions.SelectMany(item => item.SourceIds));
+    }
+
+    private static IReadOnlyDictionary<string, (DailySummaryMetric Metric, string[] SourceIds)> ValidateMetrics(
+        IReadOnlyList<DailySummaryMetric> metrics,
+        IReadOnlyDictionary<string, DailySummarySourceReference> acceptedById)
+    {
+        if (metrics.Count != FixedMetricIds.Length)
+        {
+            throw new DailySummaryAggregationException(
+                $"Daily Summary must contain exactly {FixedMetricIds.Length} metrics; found {metrics.Count}.");
+        }
+
+        var normalized = new Dictionary<string, (DailySummaryMetric Metric, string[] SourceIds)>(StringComparer.Ordinal);
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        for (var index = 0; index < metrics.Count; index++)
+        {
+            var metric = metrics[index];
+            if (metric is null)
+            {
+                throw new DailySummaryAggregationException(
+                    $"Daily Summary metric index {index} is null.");
+            }
+
+            var metricId = RequireCanonicalText(metric.MetricId, nameof(metric.MetricId), MaximumIdentifierLength);
+            if (!seen.Add(metricId))
+            {
+                throw new DailySummaryAggregationException(
+                    $"Daily Summary contains a duplicate metric ID '{metricId}'.");
+            }
+
+            if (!string.Equals(metricId, FixedMetricIds[index], StringComparison.Ordinal))
+            {
+                throw new DailySummaryAggregationException(
+                    $"Daily Summary metric '{metricId}' is not in canonical position {index}.");
+            }
+
+            var sourceIds = ValidateSourceIds(metric.SourceIds, $"metric '{metricId}'", acceptedById);
+            normalized.Add(metricId, (metric, sourceIds));
+        }
+
+        return normalized;
+    }
+
+    private static void ValidateWorkstreams(
+        IReadOnlyList<DailySummaryWorkstream> workstreams,
+        IReadOnlyDictionary<string, DailySummarySourceReference> acceptedById,
+        IReadOnlyList<DailySummaryTimelineEntry> timeline)
+    {
+        var expectedNames = timeline
+            .Select(item => item.Workstream)
+            .Distinct(StringComparer.Ordinal)
+            .OrderBy(item => item, StringComparer.Ordinal)
+            .ToArray();
+        if (workstreams.Count != expectedNames.Length)
+        {
+            throw new DailySummaryAggregationException(
+                $"Daily Summary workstream count {workstreams.Count} does not match timeline workstream count {expectedNames.Length}.");
+        }
+
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        for (var index = 0; index < workstreams.Count; index++)
+        {
+            var workstream = workstreams[index];
+            if (workstream is null)
+            {
+                throw new DailySummaryAggregationException(
+                    $"Daily Summary workstream index {index} is null.");
+            }
+
+            var name = RequireCanonicalText(workstream.Workstream, nameof(workstream.Workstream), MaximumIdentifierLength);
+            if (!seen.Add(name))
+            {
+                throw new DailySummaryAggregationException(
+                    $"Daily Summary contains a duplicate workstream ID '{name}'.");
+            }
+
+            if (!string.Equals(name, expectedNames[index], StringComparison.Ordinal))
+            {
+                throw new DailySummaryAggregationException(
+                    $"Daily Summary workstream '{name}' is not in canonical position {index}.");
+            }
+
+            var sourceIds = ValidateSourceIds(
+                workstream.SourceIds,
+                $"workstream '{name}'",
+                acceptedById);
+            var expectedIds = timeline
+                .Where(item => string.Equals(item.Workstream, name, StringComparison.Ordinal))
+                .Select(item => item.SourceId)
+                .OrderBy(item => item, StringComparer.Ordinal)
+                .ToArray();
+            EnsureIdsEqual(sourceIds, expectedIds, $"workstream '{name}' source set");
+
+            EnsureValue(
+                workstream.AcceptedSourceCount,
+                expectedIds.Length,
+                $"workstream '{name}' accepted source count");
+            EnsureValue(
+                workstream.ActivityCount,
+                expectedIds.Count(item => acceptedById[item].Kind == DailySummarySourceKind.ActivityEvent),
+                $"workstream '{name}' activity count");
+            EnsureValue(
+                workstream.EvidenceCount,
+                expectedIds.Count(item => acceptedById[item].Kind == DailySummarySourceKind.Evidence),
+                $"workstream '{name}' evidence count");
+        }
+    }
+
+    private static void ValidateHighlights(
+        IReadOnlyList<DailySummaryHighlight> highlights,
+        IReadOnlyDictionary<string, DailySummarySourceReference> acceptedById,
+        IReadOnlyDictionary<string, DailySummaryTimelineEntry> timelineById,
+        IReadOnlyList<string> timelineIds)
+    {
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var highlight in highlights)
+        {
+            if (highlight is null)
+            {
+                throw new DailySummaryAggregationException(
+                    "Daily Summary highlight collection contains a null record.");
+            }
+
+            var sourceId = RequireCanonicalText(highlight.SourceId, nameof(highlight.SourceId), MaximumIdentifierLength);
+            if (!seen.Add(sourceId))
+            {
+                throw new DailySummaryAggregationException(
+                    $"Daily Summary contains a duplicate highlight source ID '{sourceId}'.");
+            }
+
+            if (!timelineById.ContainsKey(sourceId))
+            {
+                throw new DailySummaryAggregationException(
+                    $"Highlight '{sourceId}' does not resolve to an accepted timeline source.");
+            }
+
+            var sourceIds = ValidateSourceIds(highlight.SourceIds, $"highlight '{sourceId}'", acceptedById);
+            if (sourceIds.Length != 1 || !string.Equals(sourceIds[0], sourceId, StringComparison.Ordinal))
+            {
+                throw new DailySummaryAggregationException(
+                    $"Highlight '{sourceId}' must reference itself exactly once.");
+            }
+
+            var timeline = timelineById[sourceId];
+            if (!string.Equals(highlight.Workstream, timeline.Workstream, StringComparison.Ordinal) ||
+                !string.Equals(highlight.Summary, timeline.Summary, StringComparison.Ordinal))
+            {
+                throw new DailySummaryAggregationException(
+                    $"Highlight '{sourceId}' does not match its timeline workstream/summary.");
+            }
+
+            _ = RequireCanonicalText(highlight.Workstream, nameof(highlight.Workstream), MaximumIdentifierLength);
+            _ = RequireCanonicalText(highlight.Summary, nameof(highlight.Summary), MaximumTextLength);
+        }
+
+        EnsureSequenceEqual(
+            highlights.Select(item => item.SourceId),
+            timelineIds.Where(seen.Contains),
+            "highlight");
+    }
+
+    private static void ValidateRepeatedIssues(
+        IReadOnlyList<DailySummaryRepeatedIssue> issues,
+        IReadOnlyDictionary<string, DailySummarySourceReference> acceptedById,
+        IReadOnlyDictionary<string, DailySummaryTimelineEntry> timelineById)
+    {
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        var keys = new List<string>(issues.Count);
+        foreach (var issue in issues)
+        {
+            if (issue is null)
+            {
+                throw new DailySummaryAggregationException(
+                    "Daily Summary repeated-issue collection contains a null record.");
+            }
+
+            var key = RequireCanonicalText(issue.IssueKey, nameof(issue.IssueKey), MaximumIdentifierLength);
+            if (!seen.Add(key))
+            {
+                throw new DailySummaryAggregationException(
+                    $"Daily Summary contains a duplicate repeated-issue ID '{key}'.");
+            }
+
+            var sourceIds = ValidateSourceIds(
+                issue.SourceIds,
+                $"repeated issue '{key}'",
+                acceptedById);
+            if (sourceIds.Length == 0)
+            {
+                throw new DailySummaryAggregationException(
+                    $"Repeated issue '{key}' must reference at least one source.");
+            }
+
+            EnsureValue(issue.OccurrenceCount, sourceIds.Length, $"repeated issue '{key}' occurrence count");
+            EnsureReferenceWorkstream(
+                issue.Workstream,
+                sourceIds,
+                timelineById,
+                $"repeated issue '{key}'");
+            var expectedDescription = key;
+            if (!string.Equals(issue.Description, expectedDescription, StringComparison.Ordinal))
+            {
+                throw new DailySummaryAggregationException(
+                    $"Repeated issue '{key}' description does not match its canonical issue key.");
+            }
+
+            _ = RequireCanonicalText(issue.Workstream, nameof(issue.Workstream), MaximumIdentifierLength);
+            _ = RequireCanonicalText(issue.Description, nameof(issue.Description), MaximumTextLength);
+            keys.Add(key);
+        }
+
+        EnsureSequenceEqual(keys, keys.OrderBy(item => item, StringComparer.Ordinal), "repeated issue");
+    }
+
+    private static void ValidateRecommendedActions(
+        IReadOnlyList<DailySummaryRecommendedAction> actions,
+        IReadOnlyDictionary<string, DailySummarySourceReference> acceptedById)
+    {
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        var keys = new List<string>(actions.Count);
+        foreach (var action in actions)
+        {
+            if (action is null)
+            {
+                throw new DailySummaryAggregationException(
+                    "Daily Summary recommended-action collection contains a null record.");
+            }
+
+            var key = RequireCanonicalText(action.ActionKey, nameof(action.ActionKey), MaximumIdentifierLength);
+            if (!seen.Add(key))
+            {
+                throw new DailySummaryAggregationException(
+                    $"Daily Summary contains a duplicate recommended-action ID '{key}'.");
+            }
+
+            var sourceIds = ValidateSourceIds(action.SourceIds, $"recommended action '{key}'", acceptedById);
+            if (sourceIds.Length == 0)
+            {
+                throw new DailySummaryAggregationException(
+                    $"Recommended action '{key}' must reference at least one source.");
+            }
+            if (!string.Equals(action.Description, key, StringComparison.Ordinal))
+            {
+                throw new DailySummaryAggregationException(
+                    $"Recommended action '{key}' description does not match its canonical action ID.");
+            }
+
+            _ = RequireCanonicalText(action.Description, nameof(action.Description), MaximumTextLength);
+            keys.Add(key);
+        }
+
+        EnsureSequenceEqual(keys, keys.OrderBy(item => item, StringComparer.Ordinal), "recommended action");
+    }
+
+    private static string[] ValidateSourceIds(
+        IReadOnlyList<string> ids,
+        string label,
+        IReadOnlyDictionary<string, DailySummarySourceReference> acceptedById)
+    {
+        if (ids is null)
+        {
+            throw new DailySummaryAggregationException(
+                $"Daily Summary {label} source reference collection is null.");
+        }
+
+        var normalized = new string[ids.Count];
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        for (var index = 0; index < ids.Count; index++)
+        {
+            var id = RequireCanonicalText(ids[index], $"{label} source ID", MaximumIdentifierLength);
+            if (!seen.Add(id))
+            {
+                throw new DailySummaryAggregationException(
+                    $"Daily Summary {label} contains a duplicate source reference ID '{id}'.");
+            }
+
+            if (!acceptedById.ContainsKey(id))
+            {
+                throw new DailySummaryAggregationException(
+                    $"Daily Summary {label} source reference '{id}' does not resolve exactly once to an accepted source.");
+            }
+
+            normalized[index] = id;
+        }
+
+        EnsureSequenceEqual(
+            normalized,
+            normalized.OrderBy(item => item, StringComparer.Ordinal),
+            $"{label} source references");
+        return normalized;
+    }
+
+    private static void EnsureReferenceWorkstream(
+        string workstream,
+        IReadOnlyList<string> sourceIds,
+        IReadOnlyDictionary<string, DailySummaryTimelineEntry> timelineById,
+        string label)
+    {
+        var expected = sourceIds
+            .Select(item => timelineById[item].Workstream)
+            .Distinct(StringComparer.Ordinal)
+            .OrderBy(item => item, StringComparer.Ordinal)
+            .ToArray();
+        var expectedLabel = expected.Length == 1 ? expected[0] : "Multiple";
+        var normalized = RequireCanonicalText(workstream, $"{label} workstream", MaximumIdentifierLength);
+        if (!string.Equals(normalized, expectedLabel, StringComparison.Ordinal))
+        {
+            throw new DailySummaryAggregationException(
+                $"{label} workstream '{normalized}' does not reconcile with its source set.");
+        }
+    }
+
+    private static void EnsureMetric(
+        IReadOnlyDictionary<string, (DailySummaryMetric Metric, string[] SourceIds)> metrics,
+        string metricId,
+        int expectedValue,
+        IEnumerable<string> expectedSourceIds)
+    {
+        var metric = metrics[metricId];
+        EnsureValue(metric.Metric.Value, expectedValue, $"metric '{metricId}' value");
+        EnsureIdsEqual(
+            metric.SourceIds,
+            expectedSourceIds.OrderBy(item => item, StringComparer.Ordinal),
+            $"metric '{metricId}' source set");
+    }
+
+    private static void EnsureValue(int actual, int expected, string label)
+    {
+        if (actual != expected)
+        {
+            throw new DailySummaryAggregationException(
+                $"Daily Summary {label} {actual} does not reconcile with expected value {expected}.");
+        }
+    }
+
+    private static void EnsureIdsEqual(
+        IReadOnlyList<string> actual,
+        IEnumerable<string> expected,
+        string label) =>
+        EnsureSequenceEqual(actual, expected, label);
+
+    private static void EnsureSequenceEqual(
+        IEnumerable<string> actual,
+        IEnumerable<string> expected,
+        string label)
+    {
+        var actualArray = actual.ToArray();
+        var expectedArray = expected.ToArray();
+        if (!actualArray.SequenceEqual(expectedArray, StringComparer.Ordinal))
+        {
+            throw new DailySummaryAggregationException(
+                $"Daily Summary {label} is not canonical or does not reconcile.");
+        }
+    }
+
+    private static void RequireCollection<T>(IReadOnlyList<T> collection, string name)
+    {
+        if (collection is null)
+        {
+            throw new DailySummaryAggregationException(
+                $"Daily Summary collection {name} is null.");
+        }
+    }
+
+    private static string RequireCanonicalText(string? value, string name, int maximumLength)
+    {
+        var normalized = NormalizeText(value!, name, maximumLength);
+        if (!string.Equals(value, normalized, StringComparison.Ordinal))
+        {
+            throw new DailySummaryAggregationException(
+                $"Daily Summary field {name} is not in canonical normalized form.");
+        }
+
+        return normalized;
+    }
+
+    private static string RequireCanonicalSha256(string? value, string name)
+    {
+        var normalized = NormalizeSha256(value!, name);
+        if (!string.Equals(value, normalized, StringComparison.Ordinal))
+        {
+            throw new DailySummaryAggregationException(
+                $"Daily Summary field {name} must use uppercase canonical SHA-256.");
+        }
+
+        return normalized;
+    }
+
     private static DailySummarySource NormalizeSource(DailySummarySource source)
     {
         ArgumentNullException.ThrowIfNull(source);

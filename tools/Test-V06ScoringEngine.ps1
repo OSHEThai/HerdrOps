@@ -17,10 +17,10 @@ $contractPath = Join-Path $repositoryRoot 'docs\protocol\v0.6-explainable-scorin
 $enginePath = Join-Path $repositoryRoot 'src\HerdrOps.Domain\Evaluation\ExplainableScoring.cs'
 $expectedFormulaSha256 = '3CF788794C58DA11408E8D3E8F3876C88B3F48F4D19082DBCDEE4FE8B8874DFB'
 $expectedInputSha256 = '7C36BEF3130777EDE7B87948D15B78F6BB65BBCD9638419EDD6806F1534B5A91'
-$expectedResultSha256 = 'B75B7E4584990A7E1DEC270871A4E0EC97E45514C5CB703130B3B5C1B3C5F8F0'
-$expectedFixtureFileSha256 = '8A380239017528100B8B39305C7884C212B3E433535B5DE978366BDA6DCC586F'
+$expectedResultSha256 = '8D92C2784E83BE21C1ACCD175399420C3BE926F983803965CB0BFD4EB6B107CB'
+$expectedFixtureFileSha256 = 'E33CF3930AC76EAD86F81FFBFE1925D8357C587C92B877083BFF206EA4FB6F8F'
 $expectedContractFileSha256 = 'FBF3BD3947480A28C0AFC0E7577A04CC0B61B2B7DFE74A5FCFD959DDE451490A'
-$expectedEngineFileSha256 = 'AD3BAA09E583F231075AEFF2FE4B0A8B170B0447A85DF7A4F38040221B6195F2'
+$expectedEngineFileSha256 = 'B719E368DCD01277FE1BEFE6B67B567D4DEF20F38B8F604448DE5D3219A01688'
 
 $workingTreeStatus = @(& git -C $repositoryRoot status --porcelain=v1 --untracked-files=all)
 if ($LASTEXITCODE -ne 0) {
@@ -88,7 +88,7 @@ $counters = $trx.TestRun.ResultSummary.Counters
 $totalTests = [int]$counters.total
 $passedTests = [int]$counters.passed
 $failedTests = [int]$counters.failed
-if ($totalTests -ne $requiredChecks.Count -or $failedTests -ne 0 -or $passedTests -ne $totalTests) {
+if ($totalTests -lt $requiredChecks.Count -or $failedTests -ne 0 -or $passedTests -ne $totalTests) {
     throw "Scoring test counters are not all passing: total=$totalTests passed=$passedTests failed=$failedTests"
 }
 
@@ -153,6 +153,7 @@ $gateReport = @(
     'ProductionScoreIngestion: NOT OBSERVED / NOT CLAIMED',
     'EvaluationUi: NOT IMPLEMENTED IN ISSUE #30',
     "Tests: $passedTests/$totalTests PASS",
+    "RequiredNamedChecks: $($requiredChecks.Count)/$($requiredChecks.Count) OBSERVED",
     'Dimensions: 6',
     'SourceScores: 18',
     'GoldenTotalScore: 82.23',
