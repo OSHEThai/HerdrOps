@@ -244,6 +244,7 @@ $fixtureFiles = @(
     Get-Item -LiteralPath (Join-Path $repositoryRoot 'tests\fixtures\v0.6\daily-summary-aggregation.json')
 )
 $syntheticTestFiles = @(
+    Get-Item -LiteralPath (Join-Path $repositoryRoot 'tests\HerdrOps.UnitTests\ExplainableScoringTests.cs')
     Get-Item -LiteralPath (Join-Path $repositoryRoot 'tests\HerdrOps.UnitTests\DeterministicSnapshotExporterTests.cs')
     Get-Item -LiteralPath (Join-Path $repositoryRoot 'tests\HerdrOps.UnitTests\LocalSnapshotExportPublisherTests.cs')
     Get-Item -LiteralPath (Join-Path $repositoryRoot 'tests\HerdrOps.UnitTests\DailySummarySnapshotSemanticValidationTests.cs')
@@ -255,18 +256,19 @@ $allRequiredFiles = @($sourceFiles) + @($contractFiles) + @($fixtureFiles) +
     @($syntheticTestFiles) + @($contractTestFiles)
 
 $expectedInputSha256 = [ordered]@{
-    'src/HerdrOps.Domain/Exports/DeterministicSnapshotExporter.cs' = '933B5667B95C30EEA3501B2A0BFA85F5A68A0713CCDE1B41B11EBA9256AFDFB2'
-    'src/HerdrOps.Domain/Exports/LocalSnapshotExportPublisher.cs' = '54ADB19A7ED702E26D9F13B3AC4AB1BAB165245B97D1541202F3449D9B7B3BA8'
-    'src/HerdrOps.Domain/Evaluation/ExplainableScoring.cs' = 'AD3BAA09E583F231075AEFF2FE4B0A8B170B0447A85DF7A4F38040221B6195F2'
+    'src/HerdrOps.Domain/Exports/DeterministicSnapshotExporter.cs' = '1ECEC535072EC907906EBAEAF87C1DF1938F15B5D3DF7CCC7D7C2959BFAB2798'
+    'src/HerdrOps.Domain/Exports/LocalSnapshotExportPublisher.cs' = '64CF3B6A1A387908567D40B4F457EAE9DEDA39CEB6DBA671827EFF57B6F16CBC'
+    'src/HerdrOps.Domain/Evaluation/ExplainableScoring.cs' = 'B719E368DCD01277FE1BEFE6B67B567D4DEF20F38B8F604448DE5D3219A01688'
     'src/HerdrOps.Domain/Summaries/DailySummaryAggregation.cs' = '18BCC81106544040AF99A57163105AFF3F172EB84B036811EE9F84BB3359B87C'
     'docs/protocol/v0.6-local-export-contract.md' = 'EC2CF5B82C05B3ABF877554C88071FC660043A5EF0CEFD2EFDD8757DEBD8DA48'
-    'tests/fixtures/v0.6/snapshot-export-v1.json' = '8B19A62BF71B045F9CA02623D209EB237D151E86B3D58E47885A35005EAE8040'
-    'tests/fixtures/v0.6/scoring-golden-v1.json' = '8A380239017528100B8B39305C7884C212B3E433535B5DE978366BDA6DCC586F'
+    'tests/fixtures/v0.6/snapshot-export-v1.json' = 'F85B4816C414C05F5EBE82A419899D1663ACA158FA52E8E46BCF2CC3C7CDE908'
+    'tests/fixtures/v0.6/scoring-golden-v1.json' = 'E33CF3930AC76EAD86F81FFBFE1925D8357C587C92B877083BFF206EA4FB6F8F'
     'tests/fixtures/v0.6/daily-summary-aggregation.json' = 'E23B9CB2AD1ADA6F603311F8F2F5D25FB45DC03C2934860C0AF8039D6591F07F'
-    'tests/HerdrOps.UnitTests/DeterministicSnapshotExporterTests.cs' = '9286B1A804B07774D4B60EB0D832F749C864CCBFC457AAA51FD94C63EC7A1D1A'
-    'tests/HerdrOps.UnitTests/LocalSnapshotExportPublisherTests.cs' = 'C6E7D0AEE74064D8A835F5C9EEACB37B25B675FE4B3F0EC52A7B1B1C4DA906D0'
+    'tests/HerdrOps.UnitTests/ExplainableScoringTests.cs' = '54EFF2C86F32946EF402FCDB66181582C44824BF0DFD236594F4EB493D0235CD'
+    'tests/HerdrOps.UnitTests/DeterministicSnapshotExporterTests.cs' = '081116840183DBC09F7C8B1CFAD0AB9E4FD5D35C7265D01C754AA5CB0D5A3264'
+    'tests/HerdrOps.UnitTests/LocalSnapshotExportPublisherTests.cs' = '864C7ABC9E1D2248DDF699A8A3ABBBE4971E268952A97160740FAE4F4FDAA543'
     'tests/HerdrOps.UnitTests/DailySummarySnapshotSemanticValidationTests.cs' = '380DD30341811049B3466C389C4F6A5D7119FEE0A185190089EAD7022C301E8F'
-    'tests/HerdrOps.ContractTests/SnapshotExportContractTests.cs' = '76F2EEFD444CDB1E8A1C5CE716E47451B7E8EBB54856E50CD387106CC9635DEC'
+    'tests/HerdrOps.ContractTests/SnapshotExportContractTests.cs' = '1A5EBFEE247B4E6BD1B8667237C653336263CED1F7F75B48AC90C93E99A54A18'
 }
 
 $sourceCommit = (& git -C $repositoryRoot rev-parse --verify 'HEAD^{commit}').Trim()
@@ -465,13 +467,13 @@ try {
         }
     }
 
-    if ($syntheticTestFiles.Count -ne 3) {
+    if ($syntheticTestFiles.Count -ne 4) {
         throw 'The exact Issue #33 Unit evidence sources were not discovered.'
     }
     $syntheticStatus = 'FAIL'
     $syntheticSummary = Invoke-ExportEvidenceTests `
         -ProjectPath (Join-Path $repositoryRoot 'tests\HerdrOps.UnitTests\HerdrOps.UnitTests.csproj') `
-        -Filter 'FullyQualifiedName~DeterministicSnapshotExporterTests|FullyQualifiedName~LocalSnapshotExportPublisherTests|FullyQualifiedName~DailySummarySnapshotSemanticValidationTests' `
+        -Filter 'FullyQualifiedName~ExplainableScoringTests|FullyQualifiedName~DeterministicSnapshotExporterTests|FullyQualifiedName~LocalSnapshotExportPublisherTests|FullyQualifiedName~DailySummarySnapshotSemanticValidationTests' `
         -LogFileName 'local-export-synthetic.trx' `
         -EvidenceLabel 'Synthetic'
     $syntheticStatus = 'PASS'
