@@ -111,8 +111,9 @@ $targetAgentLabSocket = Join-Path $env:APPDATA 'herdr\herdr.sock'
 ./tools/Test-V05ComplianceRuleEngine.ps1
 
 # From a clean committed checkout, verify evidence SHA-256 identity, explicit
-# missing artifacts, SQLite schema v3, immutable review history, managed-byte
-# separation, open-review retention protection, and terminal retention audit.
+# missing artifacts, the SQLite schema v3 evidence foundation under the current
+# forward schema, immutable review history, managed-byte separation,
+# open-review retention protection, and terminal retention audit.
 ./tools/Test-V05EvidenceAuditStorage.ps1
 
 # From a clean committed checkout, verify the approved Compliance Queue hierarchy,
@@ -133,6 +134,23 @@ $targetAgentLabSocket = Join-Path $env:APPDATA 'herdr\herdr.sock'
 # Discover and verify the Issue #33 local-export source, contract, fixture,
 # synthetic evidence, contract evidence, and actual-byte SHA-256 pins.
 ./tools/Test-V06LocalExport.ps1 -SkipBuild
+
+# From a clean committed checkout, verify Core-owned Project Manager/Leader
+# authorization, atomic ExpectedState+ExpectedSequence concurrency, Core-assigned
+# TimeProvider audit timestamps, immutable latest-role observations and guarded
+# projections, Core-connection audit JSON/domain/scalar validation, evidence-link
+# declaration for immutable registration/event JSON via json_each plus complete-history
+# validation on registration retry and before append, complete held Windows process
+# chains with GetProcessTimes, parent recapture, and strict creation-time ordering,
+# one operation-read-to-response server deadline, bounded detached delegates and
+# shutdown drain, App/CLI validator budgets, cooperative lock waits, a one-second
+# compliance-review provider/PRAGMA lock-wait ceiling plus a cancellation request,
+# fresh client phase deadlines and timeout classification, strict CLI dispatch/identity,
+# exact result/evidence binding, same-incident generation and single-flight guards,
+# isolated nonfatal StateHub subscriber-failure delivery,
+# post-commit App publication, the shared Widget incident route, and schema v4
+# migration.
+./tools/Test-V05RoleDistinctReview.ps1
 
 # From an authorized Herdr pane, capture actual bounded pane-read and
 # Herdr-PID-to-Windows-process evidence without controlling the session.
@@ -191,3 +209,7 @@ closure, package installation, and release publication as not observed or
 pending.
 
 The v0.6 Daily Summary gate reports Static, Synthetic, and Contract evidence separately. It pins the immutable `10-daily-summary.png` reference, the committed Daily Summary source/fixture/contract hashes, deterministic aggregation/state/rendering checks, and the design-reference contract test. It explicitly reports Actual Herdr Runtime, Independent Review, and Release Evidence as NOT OBSERVED; it does not claim live events, production ingestion, reviewer authority, export, or v0.6 release readiness.
+
+The v0.5 role-distinct review implementation gate is Contract plus BuiltProcess Integration plus local SQLite Integration evidence. It verifies the built CLI rejects public pipe override, Core-owned authority, same-transaction mutation, immutable role attribution, current-authority SQL guards, strict App/CLI IPC, complete held Windows process chains with parent recapture and strict creation-time ordering, operational client-process-to-Herdr-pane correlation, incident and event evidence-link declaration through `json_each`, registration-retry and pre-append complete-history validation, live Core-capability-gated Queue actions, one operation-frame-read-to-response server deadline, a bounded four-slot detached-delegate budget with shutdown drain, cooperative workflow/store lock waits, a one-second compliance-review command/provider/PRAGMA lock-wait ceiling plus an operation-token cancellation request, structured SQLite provider failures, fresh App/CLI connect-validation-handshake-operation deadlines with internal `TimeoutException` versus caller `OperationCanceledException`, process-wide App/CLI validator budgets of four and two, exact accepted command/result/reason/evidence binding, rejection without snapshots, accepted-only shared-state publication, same-incident generation and single-flight guards, isolated StateHub subscriber delivery, and shared Queue/Widget projection. The production App and CLI clients additionally bind the connected server to the OS-reported Core PID and validate its executable metadata, hash, start, and file stability before the handshake; no hello is sent before validation succeeds. Synchronous server delegates and client validators cannot be force-cancelled; their bounded permits and cancellation sources or pipe references remain retained until actual completion, and late faults are observed. A cancellation request to `SqliteCommand.Cancel` is cooperative and does not guarantee immediate interruption of a provider busy wait. Transaction acquisition or a mutation already executing synchronously cannot be promised immediate cancellation or rollback. Review commands use `ExpectedState` and `ExpectedSequence` together; clients do not supply `OccurredUtc`, because Core assigns it with `TimeProvider`. The Core connection validates the audit JSON hash, Domain event, and persisted scalar projection before insert. App publication after an accepted authoritative response is not suppressed by caller cancellation, while cancellation before a response still cancels transport. Process and executable checks establish operational identity continuity/correlation only; they are not cryptographic publisher authentication, signing, or provenance proof. A sufficiently privileged same-user process may forge parentage with `PROC_THREAD_ATTRIBUTE_PARENT_PROCESS`, and Herdr protocol 19 does not bind pane root PIDs to creation identities, so pre-snapshot PID recycling remains a residual. A deliberate same-user SQLite writer can register or spoof its own validation function and remains a trust-boundary residual.
+
+The gate reports `NoRuntimeCredit`. No actual Herdr runtime credit exists until this behavior is captured from a standard, non-elevated Herdr pane and the exact pane/process observations, role observations, Core responses, and immutable database audit hashes are bound in one fresh runtime record. The gate cannot close Issue #27, provide independent acceptance, or pass the v0.5 release gate.

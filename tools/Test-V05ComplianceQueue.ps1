@@ -41,27 +41,27 @@ $runtimeProject = Join-Path $repositoryRoot 'tests\HerdrOps.RuntimeTests\HerdrOp
 $expectedHashes = [ordered]@{
     ComplianceQueueState = [ordered]@{
         Path = $sourceCommitPath
-        Sha256 = '64295ED9546787EB9C213DC773D21E116547AD46BE1AC068813359EFFBBA7833'
+        Sha256 = '54A5BE3C3839FAE6E69CC63770B1D34BAB7A2C3AEE56CAAB033F0D34A04FCBC0'
     }
     ComplianceQueueView = [ordered]@{
         Path = $viewPath
-        Sha256 = '9A4929B5EB72D81DC049F894A08C1052429E30B0D93B8525591D67DB4C027A13'
+        Sha256 = '9F08B33E35CBEBA24C9673CA9B5410849BF6E12406416B08535DE8D6E2375307'
     }
     ComplianceQueueViewCodeBehind = [ordered]@{
         Path = $viewCodeBehindPath
-        Sha256 = '841E9F67CB760044A8E1D442889235B6FA4461E99C6409215CE12245BE2DEBCD'
+        Sha256 = 'C106BD54CA8E85B75BB119898523C0D26D12BA1F51894177C2EEC218D8AE0AD4'
     }
     Contract = [ordered]@{
         Path = $contractPath
-        Sha256 = '6627170B41D472780B32C2E9E7AA2AE07B47AE4536B113A045CCE2C8A237693A'
+        Sha256 = 'D4573C51520F8764D1C7E89DFBA7CB406C3D83DB77F59BA8F1DE29B64334AF40'
     }
     ComplianceQueuePresentationContractTest = [ordered]@{
         Path = $contractTestSourcePath
-        Sha256 = '778E5E8EF3F6FFEFB6DBE970032F4DFB670D486F32B082918FE08EC38827D909'
+        Sha256 = 'B2AC371E511B6D393E29EEC5613F7651A9880FF63238C094ADCFC37272A6AE57'
     }
     ComplianceQueueStateTest = [ordered]@{
         Path = $stateTestSourcePath
-        Sha256 = '2EDA7C77C1C52C82D0C2F52BA3F27832ACA29BD3B0D2BEAF37F6EBD8D528AE5A'
+        Sha256 = 'F83A7BF8D668B80D65F15AC527117F9893F45AE7F6C43C4D47927FAA7363AFEB'
     }
     ComplianceQueueRuntimeTest = [ordered]@{
         Path = $runtimeTestSourcePath
@@ -334,7 +334,7 @@ Assert-ContainsText `
     -Description 'shared dashboard state' `
     -RequiredText @(
         'ComplianceQueueState.CreateSyntheticPreview()',
-        'ComplianceQueueState.CreateUnavailableLiveState()',
+        'ComplianceQueueState.CreateUnavailableLiveState(',
         'ComplianceQueue.RefreshLanguage();',
         'ComplianceQueue.Dispose();')
 Assert-ContainsText `
@@ -374,6 +374,7 @@ Assert-ContainsText `
     -RequiredText @(
         'LocalizedPaginationRangeTracksFilteredVisibleCount',
         'SyntheticPreviewCoversEveryIncidentStateAndKeepsDetailEvidenceAndActionsAligned',
+        'SyntheticReviewActionsRejectDirectExecutionWithoutIpc',
         'SeverityAndReviewPresentationUseDedicatedSemanticBrushKeys',
         'EvidenceProjectionCarriesIssue25ProvenanceAndOneExplicitMissingItem',
         'SelectionRejectsRowsOutsideVisibleIncidentsAndFailsClosed',
@@ -488,6 +489,7 @@ $requiredChecks = @(
     'WrittenContractKeepsSyntheticUiSeparateFromAuthorizationAndRuntime',
     'LocalizedPaginationRangeTracksFilteredVisibleCount',
     'SyntheticPreviewCoversEveryIncidentStateAndKeepsDetailEvidenceAndActionsAligned',
+    'SyntheticReviewActionsRejectDirectExecutionWithoutIpc',
     'SeverityAndReviewPresentationUseDedicatedSemanticBrushKeys',
     'EvidenceProjectionCarriesIssue25ProvenanceAndOneExplicitMissingItem',
     'SelectionRejectsRowsOutsideVisibleIncidentsAndFailsClosed',

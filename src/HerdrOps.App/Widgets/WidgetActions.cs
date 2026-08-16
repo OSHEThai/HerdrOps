@@ -36,6 +36,8 @@ public interface IWidgetActionRouter
 /// </summary>
 public sealed class ApplicationWidgetActionRouter : IWidgetActionRouter
 {
+    private const string ComplianceReviewRoutePrefix = "compliance-review:";
+
     public static ApplicationWidgetActionRouter Shared { get; } = new();
 
     private ApplicationWidgetActionRouter()
@@ -49,6 +51,21 @@ public sealed class ApplicationWidgetActionRouter : IWidgetActionRouter
         if (mainWindow is null)
         {
             return false;
+        }
+
+        if (route.SourceEventId.StartsWith(
+                ComplianceReviewRoutePrefix,
+                StringComparison.Ordinal))
+        {
+            var incidentId = route.SourceEventId[ComplianceReviewRoutePrefix.Length..];
+            if (!mainWindow.Shell.LiveDashboard.ComplianceQueue.TrySelectIncident(incidentId) ||
+                !mainWindow.Shell.NavigateTo("compliance-queue"))
+            {
+                return false;
+            }
+
+            Activate(mainWindow);
+            return true;
         }
 
         if (mainWindow.Shell.LiveDashboard.RealtimeActivity.TrySelectEvent(

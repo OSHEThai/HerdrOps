@@ -22,7 +22,7 @@ public sealed class SqliteHerdrStateStoreTests
             Assert.IsFalse(write.WasAlreadyPresent);
             acceptedHash = write.StoredState.StateSha256;
             var diagnostics = store.GetDiagnostics();
-            Assert.AreEqual(3, diagnostics.SchemaVersion);
+            Assert.AreEqual(HerdrStateStoreOptions.CurrentSchemaVersion, diagnostics.SchemaVersion);
             Assert.AreEqual("wal", diagnostics.JournalMode, ignoreCase: true);
             Assert.AreEqual(2, diagnostics.SynchronousMode);
             Assert.IsTrue(diagnostics.ForeignKeysEnabled);
@@ -93,7 +93,9 @@ public sealed class SqliteHerdrStateStoreTests
             backupPath = migrated.LastBackupPath!;
             Assert.IsFalse(string.IsNullOrWhiteSpace(backupPath));
             Assert.IsTrue(File.Exists(backupPath));
-            Assert.AreEqual(3, migrated.GetDiagnostics().SchemaVersion);
+            Assert.AreEqual(
+                HerdrStateStoreOptions.CurrentSchemaVersion,
+                migrated.GetDiagnostics().SchemaVersion);
         }
 
         using (var backup = Open(backupPath))
@@ -159,7 +161,7 @@ public sealed class SqliteHerdrStateStoreTests
             backupPath = migrated.LastBackupPath!;
             Assert.IsTrue(File.Exists(backupPath));
             var diagnostics = migrated.GetDiagnostics();
-            Assert.AreEqual(3, diagnostics.SchemaVersion);
+            Assert.AreEqual(HerdrStateStoreOptions.CurrentSchemaVersion, diagnostics.SchemaVersion);
             Assert.AreEqual(1L, diagnostics.EventCount);
             Assert.AreEqual(0L, diagnostics.LifecycleEventCount);
         }
@@ -168,7 +170,9 @@ public sealed class SqliteHerdrStateStoreTests
         {
             using var command = current.CreateCommand();
             command.CommandText = "SELECT COUNT(*) FROM schema_migrations;";
-            Assert.AreEqual(3L, Convert.ToInt64(command.ExecuteScalar()));
+            Assert.AreEqual(
+                (long)HerdrStateStoreOptions.CurrentSchemaVersion,
+                Convert.ToInt64(command.ExecuteScalar()));
             command.CommandText = "SELECT script_sha256 FROM schema_migrations WHERE version = 1;";
             Assert.AreEqual(versionOne.ScriptSha256, command.ExecuteScalar());
             command.CommandText = "SELECT source FROM state_events WHERE sequence = 1;";
@@ -262,7 +266,8 @@ public sealed class SqliteHerdrStateStoreTests
         using (var future = Open(databasePath))
         {
             using var command = future.CreateCommand();
-            command.CommandText = "PRAGMA user_version = 4;";
+            command.CommandText =
+                $"PRAGMA user_version = {HerdrStateStoreOptions.CurrentSchemaVersion + 1};";
             command.ExecuteNonQuery();
         }
 
@@ -304,7 +309,9 @@ public sealed class SqliteHerdrStateStoreTests
         }
 
         using var successor = new SqliteHerdrStateStore(options);
-        Assert.AreEqual(3, successor.GetDiagnostics().SchemaVersion);
+        Assert.AreEqual(
+            HerdrStateStoreOptions.CurrentSchemaVersion,
+            successor.GetDiagnostics().SchemaVersion);
     }
 
     private static SqliteConnection Open(string path)

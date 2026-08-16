@@ -1,6 +1,9 @@
 using HerdrOps.App.Compliance;
 using HerdrOps.App.Localization;
+using HerdrOps.App.ReviewIpc;
 using HerdrOps.Contracts;
+using HerdrOps.Contracts.ReviewIpc;
+using HerdrOps.Domain.Compliance;
 
 namespace HerdrOps.IntegrationTests;
 
@@ -8,6 +11,9 @@ namespace HerdrOps.IntegrationTests;
 [DoNotParallelize]
 public sealed class ComplianceQueueStateTests
 {
+    private static readonly DateTimeOffset BaseUtc =
+        new(2026, 8, 16, 5, 0, 0, TimeSpan.Zero);
+
     [TestMethod]
     public void SyntheticPreviewCoversEveryIncidentStateAndKeepsDetailEvidenceAndActionsAligned()
     {
@@ -34,6 +40,191 @@ public sealed class ComplianceQueueStateTests
         {
             language.SetLanguage(UiLanguage.Thai);
         }
+    }
+
+    [TestMethod]
+    public async Task SyntheticReviewActionsRejectDirectExecutionWithoutIpc()
+    {
+        using var state = ComplianceQueueState.CreateSyntheticPreview();
+        state.ReviewReason = "This text cannot authorize a synthetic action.";
+
+        foreach (var action in state.ReviewActions)
+        {
+            Assert.IsFalse(action.IsEnabled);
+            Assert.IsFalse(await state.ExecuteReviewActionAsync(action));
+        }
+    }
+
+    [TestMethod]
+    public async Task SameIncidentSequenceAdvanceInvalidatesLateRejectedUiResult()
+    {
+        using var fixture = await LiveReviewFixture.CreateAsync(
+            "INC-QUEUE-SEQUENCE-RACE");
+        var execution = fixture.StartReviewAsync();
+        var request = await fixture.Client.Started.Task.WaitAsync(
+            TimeSpan.FromSeconds(5));
+
+        var advanced = CreateTransitionResult(
+            fixture.InitialIncident,
+            ComplianceReviewDecisionKind.SendToLeader,
+            ComplianceReviewerRole.ProjectManager,
+            "project-manager",
+            Guid.Parse("11111111-1111-1111-1111-111111111111"),
+            Guid.Parse("22222222-2222-2222-2222-222222222222"),
+            BaseUtc.AddMinutes(2));
+        fixture.StateHub.Apply(advanced.Result);
+        var statusAfterAdvance = fixture.State.ReviewStatus;
+        var reasonAfterAdvance = fixture.State.ReviewReason;
+        fixture.Client.Complete(CreateRejectedResult(fixture.InitialIncident));
+
+        var returned = await execution;
+
+        Assert.IsFalse(returned);
+        Assert.AreEqual(statusAfterAdvance, fixture.State.ReviewStatus);
+        Assert.AreEqual(reasonAfterAdvance, fixture.State.ReviewReason);
+        Assert.AreEqual(
+            advanced.Incident.Sequence,
+            fixture.StateHub.Read(fixture.InitialIncident.IncidentId)!.Sequence);
+        Assert.IsFalse(fixture.State.IsReviewCommandPending);
+        _ = request;
+    }
+
+    [TestMethod]
+    public async Task SameSequenceLateRejectedResponseCannotReplaceNewerIncidentAfterGenerationAdvance()
+    {
+        using var fixture = await LiveReviewFixture.CreateAsync(
+            "INC-QUEUE-SAME-SEQUENCE-RACE");
+        var execution = fixture.StartReviewAsync();
+        var request = await fixture.Client.Started.Task.WaitAsync(
+            TimeSpan.FromSeconds(5));
+
+        var newer = CreateTransitionResult(
+            fixture.InitialIncident,
+            ComplianceReviewDecisionKind.SendToLeader,
+            ComplianceReviewerRole.ProjectManager,
+            "project-manager",
+            Guid.Parse("12121212-1212-1212-1212-121212121212"),
+            Guid.Parse("23232323-2323-2323-2323-232323232323"),
+            BaseUtc.AddMinutes(2));
+        fixture.StateHub.Apply(newer.Result);
+        var authoritative = fixture.StateHub.Read(fixture.InitialIncident.IncidentId)!;
+
+        var staleSameSequence = CreateTransitionResult(
+            fixture.InitialIncident,
+            ComplianceReviewDecisionKind.Dismiss,
+            ComplianceReviewerRole.ProjectManager,
+            "project-manager",
+            Guid.Parse("34343434-3434-3434-3434-343434343434"),
+            Guid.Parse("45454545-4545-4545-4545-454545454545"),
+            BaseUtc.AddMinutes(3));
+        fixture.Client.Complete(CreateRejectedResult(staleSameSequence.Incident));
+
+        var returned = await execution;
+        var current = fixture.StateHub.Read(fixture.InitialIncident.IncidentId)!;
+
+        Assert.IsFalse(returned);
+        Assert.AreEqual(authoritative.Sequence, current.Sequence);
+        Assert.AreEqual(authoritative.State, current.State);
+        Assert.AreEqual(authoritative.UpdatedUtc, current.UpdatedUtc);
+        Assert.AreEqual(authoritative.LastAuditEventId, current.LastAuditEventId);
+        Assert.AreEqual(authoritative.LastAuditSha256, current.LastAuditSha256);
+        Assert.IsFalse(fixture.State.IsReviewCommandPending);
+        _ = request;
+    }
+
+    [TestMethod]
+    public async Task StaleLateAcceptedResultCannotOverwriteAdvancedSameIncidentUiState()
+    {
+        using var fixture = await LiveReviewFixture.CreateAsync(
+            "INC-QUEUE-ACCEPTED-RACE");
+        var execution = fixture.StartReviewAsync();
+        var request = await fixture.Client.Started.Task.WaitAsync(
+            TimeSpan.FromSeconds(5));
+
+        var firstAdvance = CreateTransitionResult(
+            fixture.InitialIncident,
+            ComplianceReviewDecisionKind.SendToLeader,
+            ComplianceReviewerRole.ProjectManager,
+            "project-manager",
+            Guid.Parse("33333333-3333-3333-3333-333333333333"),
+            Guid.Parse("44444444-4444-4444-4444-444444444444"),
+            BaseUtc.AddMinutes(2));
+        fixture.StateHub.Apply(firstAdvance.Result);
+        var secondAdvance = CreateTransitionResult(
+            firstAdvance.Incident,
+            ComplianceReviewDecisionKind.EscalateToProjectManager,
+            ComplianceReviewerRole.Leader,
+            "backend-leader",
+            Guid.Parse("55555555-5555-5555-5555-555555555555"),
+            Guid.Parse("66666666-6666-6666-6666-666666666666"),
+            BaseUtc.AddMinutes(3));
+        fixture.StateHub.Apply(secondAdvance.Result);
+        var statusAfterAdvance = fixture.State.ReviewStatus;
+        var reasonAfterAdvance = fixture.State.ReviewReason;
+
+        fixture.Client.Complete(CreateAcceptedResult(fixture.InitialIncident, request));
+
+        var returned = await execution;
+
+        Assert.IsTrue(returned);
+        Assert.AreEqual(statusAfterAdvance, fixture.State.ReviewStatus);
+        Assert.AreEqual(reasonAfterAdvance, fixture.State.ReviewReason);
+        Assert.AreEqual(
+            secondAdvance.Incident.Sequence,
+            fixture.StateHub.Read(fixture.InitialIncident.IncidentId)!.Sequence);
+        Assert.IsFalse(fixture.State.IsReviewCommandPending);
+    }
+
+    [TestMethod]
+    public async Task SameIncidentReplacementInvalidatesLateUiResult()
+    {
+        using var fixture = await LiveReviewFixture.CreateAsync(
+            "INC-QUEUE-REPLACEMENT-RACE");
+        var execution = fixture.StartReviewAsync();
+        await fixture.Client.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        fixture.State.ApplyAuthoritativeReviewChange(
+            new ComplianceReviewStateChange(
+                fixture.InitialIncident with
+                {
+                    UpdatedUtc = BaseUtc.AddMinutes(1),
+                },
+                Decision: null,
+                WasAlreadyKnown: false));
+        var statusAfterReplacement = fixture.State.ReviewStatus;
+        var reasonAfterReplacement = fixture.State.ReviewReason;
+        fixture.Client.Complete(CreateRejectedResult(fixture.InitialIncident));
+
+        var returned = await execution;
+
+        Assert.IsFalse(returned);
+        Assert.AreEqual(statusAfterReplacement, fixture.State.ReviewStatus);
+        Assert.AreEqual(reasonAfterReplacement, fixture.State.ReviewReason);
+        Assert.IsFalse(fixture.State.IsReviewCommandPending);
+    }
+
+    [TestMethod]
+    public async Task ConcurrentReviewActionsAreSingleFlightAndDoNotOverwritePendingState()
+    {
+        using var fixture = await LiveReviewFixture.CreateAsync(
+            "INC-QUEUE-SINGLE-FLIGHT");
+        var action = fixture.State.ReviewActions.Single(item => item.Id == "confirm");
+        var firstExecution = fixture.State.ExecuteReviewActionAsync(action).AsTask();
+        var firstRequest = await fixture.Client.Started.Task.WaitAsync(
+            TimeSpan.FromSeconds(5));
+        var pendingStatus = fixture.State.ReviewStatus;
+
+        var secondReturned = await fixture.State.ExecuteReviewActionAsync(action);
+
+        Assert.IsFalse(secondReturned);
+        Assert.AreEqual(1, fixture.Client.ExecuteCallCount);
+        Assert.IsTrue(fixture.State.IsReviewCommandPending);
+        Assert.AreEqual(pendingStatus, fixture.State.ReviewStatus);
+
+        fixture.Client.Complete(CreateAcceptedResult(fixture.InitialIncident, firstRequest));
+        Assert.IsTrue(await firstExecution);
+        Assert.AreEqual(1, fixture.Client.ExecuteCallCount);
+        Assert.IsFalse(fixture.State.IsReviewCommandPending);
     }
 
     [TestMethod]
@@ -679,6 +870,8 @@ public sealed class ComplianceQueueStateTests
             Assert.IsNull(state.SelectedIncident);
             Assert.IsNull(state.SelectedDetail);
             Assert.IsEmpty(state.ReviewActions);
+            Assert.IsFalse(state.CanEditReviewReason);
+            Assert.IsFalse(state.TrySelectIncident("INC-MISSING"));
             Assert.AreEqual(language["ComplianceQueueLiveBoundary"], state.ConnectionLabel);
             Assert.HasCount(4, state.SummaryCards);
             Assert.IsTrue(state.SummaryCards.All(item => item.Value == "—"));
@@ -687,6 +880,264 @@ public sealed class ComplianceQueueStateTests
         {
             language.SetLanguage(UiLanguage.Thai);
         }
+    }
+
+    private static ComplianceReviewIncident CreateIncident(string incidentId) =>
+        ComplianceReviewWorkflowContract.CreateIncident(
+            new ComplianceReviewIncidentRegistration(
+                ComplianceReviewWorkflowContract.ContractVersion,
+                incidentId,
+                "TASK-QUEUE-RACE",
+                "backend-worker-01",
+                BaseUtc,
+                [new string('A', 64)]));
+
+    private static HerdrOpsReviewCommandResult CreateRejectedResult(
+        ComplianceReviewIncident incident) =>
+        new(
+            IsAccepted: false,
+            RejectionCode: (int)ComplianceReviewRejectionCode.UnknownAuthority,
+            Message: "The review command was rejected with the current incident snapshot.",
+            Incident: ToContract(incident),
+            AuditEvent: null,
+            WasAlreadyPresent: false);
+
+    private static HerdrOpsReviewCommandResult CreateAcceptedResult(
+        ComplianceReviewIncident incident,
+        HerdrOpsReviewCommandRequest request)
+    {
+        var command = new ComplianceReviewCommand(
+            request.ContractVersion,
+            request.CommandId,
+            incident.IncidentId,
+            (ComplianceReviewState)request.ExpectedState,
+            request.ExpectedSequence,
+            request.ReviewerActorId,
+            (ComplianceReviewDecisionKind)request.DecisionKind,
+            request.Reason,
+            BaseUtc.AddMinutes(4),
+            incident.InitialEvidenceIdentitySha256s);
+        var authority = new ComplianceReviewAuthority(
+            request.ReviewerActorId,
+            ComplianceReviewerRole.ProjectManager,
+            Guid.Parse("77777777-7777-7777-7777-777777777777"),
+            ProvenanceSequence: 20,
+            BaseUtc.AddMinutes(1),
+            new string('C', 64));
+        var auditEvent = ComplianceReviewWorkflowContract.CreateAuditEvent(
+            incident,
+            command,
+            authority);
+        var updated = ComplianceReviewWorkflowContract.Apply(incident, auditEvent);
+        return new(
+            IsAccepted: true,
+            RejectionCode: (int)ComplianceReviewRejectionCode.None,
+            Message: "The review command was accepted.",
+            Incident: ToContract(updated),
+            AuditEvent: ToContract(auditEvent),
+            WasAlreadyPresent: false);
+    }
+
+    private static (ComplianceReviewIncident Incident, HerdrOpsReviewCommandResult Result)
+        CreateTransitionResult(
+        ComplianceReviewIncident incident,
+        ComplianceReviewDecisionKind decision,
+        ComplianceReviewerRole role,
+        string reviewerActorId,
+        Guid commandId,
+        Guid provenanceEventId,
+        DateTimeOffset occurredUtc)
+    {
+        var command = new ComplianceReviewCommand(
+            ComplianceReviewWorkflowContract.ContractVersion,
+            commandId,
+            incident.IncidentId,
+            incident.State,
+            incident.Sequence,
+            reviewerActorId,
+            decision,
+            "The evidence and assigned scope were reviewed.",
+            occurredUtc,
+            incident.InitialEvidenceIdentitySha256s);
+        var authority = new ComplianceReviewAuthority(
+            reviewerActorId,
+            role,
+            provenanceEventId,
+            ProvenanceSequence: 30 + incident.Sequence,
+            BaseUtc.AddMinutes(1),
+            new string('C', 64));
+        var auditEvent = ComplianceReviewWorkflowContract.CreateAuditEvent(
+            incident,
+            command,
+            authority);
+        var updated = ComplianceReviewWorkflowContract.Apply(incident, auditEvent);
+        return (
+            updated,
+            new HerdrOpsReviewCommandResult(
+                IsAccepted: true,
+                RejectionCode: (int)ComplianceReviewRejectionCode.None,
+                Message: "The review command was accepted.",
+                Incident: ToContract(updated),
+                AuditEvent: ToContract(auditEvent),
+                WasAlreadyPresent: false));
+    }
+
+    private static HerdrOpsComplianceReviewIncident ToContract(
+        ComplianceReviewIncident incident) =>
+        new(
+            incident.ContractVersion,
+            incident.IncidentId,
+            incident.TaskId,
+            incident.SubjectActorId,
+            incident.RegisteredUtc,
+            incident.InitialEvidenceIdentitySha256s,
+            incident.RegistrationSha256,
+            (int)incident.State,
+            incident.Sequence,
+            incident.UpdatedUtc,
+            incident.LastAuditEventId,
+            incident.LastAuditSha256);
+
+    private static HerdrOpsComplianceReviewAuditEvent ToContract(
+        ComplianceReviewAuditEvent auditEvent) =>
+        new(
+            auditEvent.ContractVersion,
+            auditEvent.AuditEventId,
+            auditEvent.IncidentId,
+            auditEvent.TaskId,
+            auditEvent.SubjectActorId,
+            auditEvent.Sequence,
+            auditEvent.ReviewerActorId,
+            (int)auditEvent.ReviewerRole,
+            auditEvent.AuthorityProvenanceEventId,
+            auditEvent.AuthorityProvenanceSequence,
+            auditEvent.AuthorityProvenanceSha256,
+            (int)auditEvent.DecisionKind,
+            (int)auditEvent.PreviousState,
+            (int)auditEvent.ResultState,
+            auditEvent.Reason,
+            auditEvent.OccurredUtc,
+            auditEvent.EvidenceIdentitySha256s,
+            auditEvent.EvidenceSetSha256,
+            auditEvent.PreviousAuditSha256,
+            auditEvent.AuditSha256);
+
+    private sealed class LiveReviewFixture : IDisposable
+    {
+        private readonly EventHandler<ComplianceReviewStateChangedEventArgs> _stateChanged;
+
+        private LiveReviewFixture(
+            ComplianceQueueState state,
+            ComplianceReviewStateHub stateHub,
+            DeferredReviewClient client,
+            ComplianceReviewIncident initialIncident)
+        {
+            State = state;
+            StateHub = stateHub;
+            Client = client;
+            InitialIncident = initialIncident;
+            _stateChanged = (_, args) => State.ApplyAuthoritativeReviewChange(args.Change);
+            StateHub.StateChanged += _stateChanged;
+        }
+
+        public ComplianceQueueState State { get; }
+
+        public ComplianceReviewStateHub StateHub { get; }
+
+        public DeferredReviewClient Client { get; }
+
+        public ComplianceReviewIncident InitialIncident { get; }
+
+        public static async Task<LiveReviewFixture> CreateAsync(string incidentId)
+        {
+            var initialIncident = CreateIncident(incidentId);
+            var stateHub = new ComplianceReviewStateHub();
+            var client = new DeferredReviewClient();
+            var coordinator = new ComplianceReviewCommandCoordinator(
+                client,
+                stateHub);
+            var state = ComplianceQueueState.CreateUnavailableLiveState(
+                coordinator,
+                reviewerActorId: "project-manager");
+            var fixture = new LiveReviewFixture(
+                state,
+                stateHub,
+                client,
+                initialIncident);
+            stateHub.Apply(CreateRejectedResult(initialIncident));
+            if (!state.TrySelectIncident(incidentId))
+            {
+                throw new InvalidOperationException(
+                    "The live review fixture did not select its incident.");
+            }
+
+            await state.RefreshReviewCapabilitiesAsync();
+            state.ReviewReason = "Review the current evidence before deciding.";
+            if (!state.ReviewActions.Single(item => item.Id == "confirm").IsEnabled)
+            {
+                throw new InvalidOperationException(
+                    "The live review fixture did not enable the confirm action.");
+            }
+
+            return fixture;
+        }
+
+        public Task<bool> StartReviewAsync() =>
+            State.ExecuteReviewActionAsync(
+                    State.ReviewActions.Single(item => item.Id == "confirm"))
+                .AsTask();
+
+        public void Dispose()
+        {
+            StateHub.StateChanged -= _stateChanged;
+            State.Dispose();
+        }
+    }
+
+    private sealed class DeferredReviewClient : IHerdrOpsReviewCommandClient
+    {
+        private readonly TaskCompletionSource<HerdrOpsReviewCommandResult> _response =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private int _executeCallCount;
+
+        public TaskCompletionSource<HerdrOpsReviewCommandRequest> Started { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public int ExecuteCallCount => Volatile.Read(ref _executeCallCount);
+
+        public ValueTask<HerdrOpsReviewCommandResult> ExecuteAsync(
+            HerdrOpsReviewCommandRequest request,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            Interlocked.Increment(ref _executeCallCount);
+            Started.TrySetResult(request);
+            return new ValueTask<HerdrOpsReviewCommandResult>(_response.Task);
+        }
+
+        public ValueTask<HerdrOpsReviewCapabilitiesResult> ReadCapabilitiesAsync(
+            HerdrOpsReviewCapabilitiesRequest request,
+            CancellationToken cancellationToken)
+        {
+            _ = request;
+            cancellationToken.ThrowIfCancellationRequested();
+            return ValueTask.FromResult(
+                new HerdrOpsReviewCapabilitiesResult(
+                    HasCurrentAuthority: true,
+                    ReviewerRole: (int)ComplianceReviewerRole.ProjectManager,
+                    IncidentState: (int)ComplianceReviewState.Suspected,
+                    IncidentSequence: 0,
+                    AllowedDecisionKinds:
+                    [
+                        (int)ComplianceReviewDecisionKind.Confirm,
+                        (int)ComplianceReviewDecisionKind.SendToLeader,
+                        (int)ComplianceReviewDecisionKind.Dismiss,
+                    ],
+                    Message: "The fixture authority and incident state are current."));
+        }
+
+        public void Complete(HerdrOpsReviewCommandResult result) =>
+            _response.TrySetResult(result);
     }
 
     private static void ResetFilters(ComplianceQueueState state)

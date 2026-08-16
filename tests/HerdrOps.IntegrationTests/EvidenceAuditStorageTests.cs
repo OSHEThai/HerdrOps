@@ -24,7 +24,9 @@ public sealed class EvidenceAuditStorageTests
 
         using (var store = new SqliteHerdrStateStore(options))
         {
-            Assert.AreEqual(3, store.GetDiagnostics().SchemaVersion);
+            Assert.AreEqual(
+                HerdrStateStoreOptions.CurrentSchemaVersion,
+                store.GetDiagnostics().SchemaVersion);
         }
 
         using var connection = Open(options.DatabasePath);
@@ -55,6 +57,12 @@ public sealed class EvidenceAuditStorageTests
                   'evidence_retention_events_reject_delete');
             """;
         Assert.AreEqual(8L, Convert.ToInt64(command.ExecuteScalar()));
+        command.CommandText = "SELECT script_sha256 FROM schema_migrations WHERE version = 3;";
+        Assert.AreEqual(migration.ScriptSha256, Convert.ToString(command.ExecuteScalar()));
+        command.CommandText = "PRAGMA user_version;";
+        Assert.AreEqual(
+            (long)HerdrStateStoreOptions.CurrentSchemaVersion,
+            Convert.ToInt64(command.ExecuteScalar()));
     }
 
     [TestMethod]

@@ -12,17 +12,48 @@ public static class HerdrOpsCliCommand
     public const int CoreRejectedExitCode = 70;
     public const int MaximumInputBytes = 48 * 1024;
 
-    public static async Task<int> RunAsync(
+    public static Task<int> RunAsync(
         string[] args,
         TextReader input,
         TextWriter output,
         TextWriter error,
+        CancellationToken cancellationToken = default) =>
+        RunAsync(
+            args,
+            input,
+            output,
+            error,
+            environmentVariableReader: null,
+            reviewClient: null,
+            cancellationToken);
+
+    internal static async Task<int> RunAsync(
+        string[] args,
+        TextReader input,
+        TextWriter output,
+        TextWriter error,
+        Func<string, string?>? environmentVariableReader,
+        HerdrOpsReviewCommandPipeClient? reviewClient,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(args);
         ArgumentNullException.ThrowIfNull(input);
         ArgumentNullException.ThrowIfNull(output);
         ArgumentNullException.ThrowIfNull(error);
+
+        if (args.Length > 0 &&
+            string.Equals(args[0], ComplianceReviewCliCommand.CommandName, StringComparison.Ordinal))
+        {
+            return await ComplianceReviewCliCommand.RunAsync(
+                    args,
+                    input,
+                    output,
+                    error,
+                    cancellationToken,
+                    environmentVariableReader,
+                    reviewClient)
+                .ConfigureAwait(false);
+        }
 
         if (args.Length == 1 && string.Equals(args[0], "--help", StringComparison.Ordinal))
         {
@@ -234,5 +265,5 @@ public static class HerdrOpsCliCommand
 
     private static void WriteUsage(TextWriter writer) =>
         writer.WriteLine(
-            "Usage: HerdrOps.Cli <assignment|acknowledgement|delegation|progress|deviation|evidence|handoff> --input <json-path|-> [--pipe-name <name>] [--timeout-ms <100-60000>]");
+            "Usage: HerdrOps.Cli <assignment|acknowledgement|delegation|progress|deviation|evidence|handoff> --input <json-path|-> [--pipe-name <name>] [--timeout-ms <100-60000>]\n       HerdrOps.Cli review --input <json-path|-> [--timeout-ms <100-60000>]");
 }

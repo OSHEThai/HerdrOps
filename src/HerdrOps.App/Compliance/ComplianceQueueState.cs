@@ -1,9 +1,13 @@
 using System.Globalization;
+using System.IO;
 using System.Security.Cryptography;
 using System.Text;
 using HerdrOps.App.Live;
 using HerdrOps.App.Localization;
+using HerdrOps.App.ReviewIpc;
 using HerdrOps.Contracts;
+using HerdrOps.Contracts.ReviewIpc;
+using HerdrOps.Domain.Compliance;
 
 namespace HerdrOps.App.Compliance;
 
@@ -168,7 +172,14 @@ public sealed class ComplianceQueueState : ObservableState, IDisposable
         new(2026, 8, 15, 14, 32, 45, TimeSpan.FromHours(7));
 
     private readonly bool _syntheticPreview;
-    private readonly IReadOnlyList<RawIncident> _history;
+    private readonly List<RawIncident> _history;
+    private readonly Dictionary<string, ComplianceReviewIncident> _authoritativeIncidents =
+        new(StringComparer.Ordinal);
+    private readonly Dictionary<string, long> _authoritativeIncidentGenerations =
+        new(StringComparer.Ordinal);
+    private readonly ComplianceReviewCommandCoordinator? _reviewCommands;
+    private readonly string? _reviewerActorId;
+    private readonly TimeProvider _timeProvider;
     private IReadOnlyList<ComplianceQueueSummaryCard> _summaryCards = [];
     private IReadOnlyList<ComplianceQueueFilterOption> _severityFilters = [];
     private IReadOnlyList<ComplianceQueueFilterOption> _stateFilters = [];
@@ -190,11 +201,32 @@ public sealed class ComplianceQueueState : ObservableState, IDisposable
     private string _sourceLabel = string.Empty;
     private string _viewerRoleLabel = string.Empty;
     private string _visibleRangeLabel = string.Empty;
+    private string _reviewReason = string.Empty;
+    private string _reviewStatus = string.Empty;
+    private string? _reviewStatusKey;
+    private HerdrOpsReviewCapabilitiesResult? _reviewCapabilities;
+    private bool _isReviewCapabilityLoading;
+    private bool _isReviewCommandPending;
+    private long _reviewCapabilityRequestVersion;
+    private long _reviewCommandRequestVersion;
+    private int _reviewCommandInFlight;
+    private ReviewCommandGuard? _reviewCommandGuard;
     private bool _disposed;
+
+    private sealed record ReviewCommandGuard(
+        long RequestVersion,
+        Guid CommandId,
+        string IncidentId,
+        ComplianceReviewState ExpectedState,
+        long ExpectedSequence,
+        long IncidentGeneration);
 
     private ComplianceQueueState(
         bool syntheticPreview,
-        ComplianceQueueViewerRole viewerRole)
+        ComplianceQueueViewerRole viewerRole,
+        ComplianceReviewCommandCoordinator? reviewCommands,
+        string? reviewerActorId,
+        TimeProvider? timeProvider)
     {
         if (!Enum.IsDefined(viewerRole))
         {
@@ -202,7 +234,12 @@ public sealed class ComplianceQueueState : ObservableState, IDisposable
         }
 
         _syntheticPreview = syntheticPreview;
-        _history = syntheticPreview ? CreateFixture() : [];
+        _history = syntheticPreview ? [.. CreateFixture()] : [];
+        _reviewCommands = reviewCommands;
+        _reviewerActorId = string.IsNullOrWhiteSpace(reviewerActorId)
+            ? null
+            : ComplianceReviewWorkflowContract.NormalizeActorId(reviewerActorId);
+        _timeProvider = timeProvider ?? TimeProvider.System;
         EvidenceClass = syntheticPreview ? EvidenceClass.Synthetic : EvidenceClass.Contract;
         ViewerRole = viewerRole;
         RefreshLanguage();
@@ -210,11 +247,24 @@ public sealed class ComplianceQueueState : ObservableState, IDisposable
 
     public static ComplianceQueueState CreateSyntheticPreview(
         ComplianceQueueViewerRole viewerRole = ComplianceQueueViewerRole.ProjectManager) =>
-        new(syntheticPreview: true, viewerRole);
+        new(
+            syntheticPreview: true,
+            viewerRole,
+            reviewCommands: null,
+            reviewerActorId: null,
+            timeProvider: null);
 
     public static ComplianceQueueState CreateUnavailableLiveState(
-        ComplianceQueueViewerRole viewerRole = ComplianceQueueViewerRole.ProjectManager) =>
-        new(syntheticPreview: false, viewerRole);
+        ComplianceReviewCommandCoordinator? reviewCommands = null,
+        string? reviewerActorId = null,
+        ComplianceQueueViewerRole viewerRole = ComplianceQueueViewerRole.ProjectManager,
+        TimeProvider? timeProvider = null) =>
+        new(
+            syntheticPreview: false,
+            viewerRole,
+            reviewCommands,
+            reviewerActorId,
+            timeProvider);
 
     public static ComplianceQueueState CreateUnavailable() => CreateUnavailableLiveState();
 
@@ -369,12 +419,29 @@ public sealed class ComplianceQueueState : ObservableState, IDisposable
         get => _selectedIncident;
         set
         {
+            var previousIncidentId = _selectedIncident?.IncidentId;
             var accepted = value is null
                 ? null
                 : VisibleIncidents.FirstOrDefault(item =>
                     item.IncidentId == value.IncidentId);
-            Set(ref _selectedIncident, accepted);
+            var changed = Set(ref _selectedIncident, accepted);
+            if (changed && !string.Equals(
+                    previousIncidentId,
+                    accepted?.IncidentId,
+                    StringComparison.Ordinal))
+            {
+                Interlocked.Increment(ref _reviewCommandRequestVersion);
+                _reviewCapabilities = null;
+                _reviewReason = string.Empty;
+                Raise(nameof(ReviewReason));
+            }
+
+            Raise(nameof(CanEditReviewReason));
             SynchronizeSelection();
+            if (changed && !_syntheticPreview)
+            {
+                _ = RefreshReviewCapabilitiesAsync();
+            }
         }
     }
 
@@ -390,6 +457,398 @@ public sealed class ComplianceQueueState : ObservableState, IDisposable
         private set => Set(ref _reviewActions, value);
     }
 
+    public bool IsLiveReview => !_syntheticPreview;
+
+    public string ReviewReason
+    {
+        get => _reviewReason;
+        set
+        {
+            var normalized = value ?? string.Empty;
+            if (normalized.Length > ComplianceReviewWorkflowContract.MaximumReasonLength)
+            {
+                normalized = normalized[..ComplianceReviewWorkflowContract.MaximumReasonLength];
+            }
+
+            if (Set(ref _reviewReason, normalized))
+            {
+                SynchronizeSelection();
+            }
+        }
+    }
+
+    public string ReviewStatus
+    {
+        get => _reviewStatus;
+        private set => Set(ref _reviewStatus, value);
+    }
+
+    public bool IsReviewCommandPending
+    {
+        get => _isReviewCommandPending;
+        private set
+        {
+            if (Set(ref _isReviewCommandPending, value))
+            {
+                Raise(nameof(CanEditReviewReason));
+            }
+        }
+    }
+
+    public bool CanEditReviewReason =>
+        IsLiveReview &&
+        !IsReviewCommandPending &&
+        !_isReviewCapabilityLoading &&
+        SelectedIncident is { } selected &&
+        _reviewCommands is not null &&
+        _reviewerActorId is not null &&
+        HasCurrentReviewCapabilities(selected);
+
+    public int AuthoritativeIncidentCount => _syntheticPreview ? 0 : _history.Count;
+
+    public void ApplyAuthoritativeReviewChange(ComplianceReviewStateChange change)
+    {
+        ArgumentNullException.ThrowIfNull(change);
+        if (_syntheticPreview)
+        {
+            throw new InvalidOperationException(
+                "Authoritative review state cannot mutate the synthetic Compliance Queue preview.");
+        }
+
+        var incident = ComplianceReviewWorkflowContract.NormalizeAndValidateIncident(
+            change.Incident);
+        var existing = _authoritativeIncidents.GetValueOrDefault(incident.IncidentId);
+        var generation = _authoritativeIncidentGenerations.GetValueOrDefault(
+            incident.IncidentId);
+        if (existing is not null && incident.Sequence < existing.Sequence)
+        {
+            return;
+        }
+
+        if (existing is not null &&
+            HasSameAuthoritativeIncident(existing, incident))
+        {
+            return;
+        }
+
+        // Once a different authoritative generation has been observed for the
+        // same incident, a response from the older in-flight command cannot
+        // replace it merely because its sequence is equal.
+        if (_reviewCommandGuard is { } guard &&
+            string.Equals(
+                guard.IncidentId,
+                incident.IncidentId,
+                StringComparison.Ordinal) &&
+            guard.IncidentGeneration != generation &&
+            change.Decision?.AuditEventId == guard.CommandId)
+        {
+            return;
+        }
+
+        var affectsSelection = SelectedIncident is null || string.Equals(
+            SelectedIncident.IncidentId,
+            incident.IncidentId,
+            StringComparison.Ordinal);
+        _authoritativeIncidents[incident.IncidentId] = incident;
+        _authoritativeIncidentGenerations[incident.IncidentId] =
+            NextAuthoritativeGeneration(generation);
+        if (affectsSelection)
+        {
+            _reviewCapabilities = null;
+            Raise(nameof(CanEditReviewReason));
+        }
+        var replacement = CreateAuthoritativeIncident(incident, change.Decision);
+        var index = _history.FindIndex(item => string.Equals(
+            item.IncidentId,
+            replacement.IncidentId,
+            StringComparison.Ordinal));
+        if (index < 0)
+        {
+            _history.Add(replacement);
+        }
+        else if (_history[index].ObservedAt <= replacement.ObservedAt)
+        {
+            _history[index] = replacement;
+        }
+
+        Raise(nameof(AuthoritativeIncidentCount));
+        RefreshLanguage();
+    }
+
+    public async ValueTask RefreshReviewCapabilitiesAsync(
+        CancellationToken cancellationToken = default)
+    {
+        if (_disposed || _syntheticPreview)
+        {
+            return;
+        }
+
+        var requestVersion = Interlocked.Increment(
+            ref _reviewCapabilityRequestVersion);
+        var selectedIncidentId = SelectedIncident?.IncidentId;
+        if (selectedIncidentId is null ||
+            !_authoritativeIncidents.TryGetValue(selectedIncidentId, out var incident))
+        {
+            _reviewCapabilities = null;
+            _isReviewCapabilityLoading = false;
+            Raise(nameof(CanEditReviewReason));
+            SetReviewStatus(null);
+            SynchronizeSelection();
+            return;
+        }
+
+        var text = UiLanguageService.Shared;
+        if (_reviewCommands is null || _reviewerActorId is null)
+        {
+            _reviewCapabilities = null;
+            _isReviewCapabilityLoading = false;
+            Raise(nameof(CanEditReviewReason));
+            SetReviewStatus("ComplianceReviewIdentityUnavailable", text);
+            SynchronizeSelection();
+            return;
+        }
+
+        _isReviewCapabilityLoading = true;
+        Raise(nameof(CanEditReviewReason));
+        SetReviewStatus("ComplianceReviewCapabilitiesPending", text);
+        SynchronizeSelection();
+        try
+        {
+            var result = await _reviewCommands.ReadCapabilitiesAsync(
+                new HerdrOpsReviewCapabilitiesRequest(
+                    _reviewerActorId,
+                    incident.IncidentId,
+                    _timeProvider.GetUtcNow()),
+                cancellationToken);
+            ValidateCapabilitiesResult(result);
+            if (!IsCurrentCapabilityRequest(
+                    requestVersion,
+                    selectedIncidentId,
+                    incident.Sequence))
+            {
+                return;
+            }
+
+            _reviewCapabilities = result;
+            Raise(nameof(CanEditReviewReason));
+            SetReviewStatus(
+                result.IncidentState is null
+                    ? "ComplianceReviewRejectedUnknownIncident"
+                    : !result.HasCurrentAuthority
+                        ? "ComplianceReviewRejectedUnknownAuthority"
+                        : result.IncidentState != (int)incident.State ||
+                          result.IncidentSequence != incident.Sequence
+                            ? "ComplianceReviewRejectedStaleState"
+                            : result.AllowedDecisionKinds.Count == 0 &&
+                              incident.State is not (
+                                  ComplianceReviewState.Confirmed or
+                                  ComplianceReviewState.Dismissed)
+                                ? "ComplianceReviewActionNotAuthorized"
+                            : "ComplianceReviewStatusReady",
+                text);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            if (IsCurrentCapabilityRequest(
+                    requestVersion,
+                    selectedIncidentId,
+                    incident.Sequence))
+            {
+                _reviewCapabilities = null;
+                SetReviewStatus("ComplianceReviewCapabilitiesCancelled", text);
+            }
+        }
+        catch (Exception exception) when (
+            exception is IOException or TimeoutException or ArgumentException or InvalidOperationException)
+        {
+            _ = exception;
+            if (IsCurrentCapabilityRequest(
+                    requestVersion,
+                    selectedIncidentId,
+                    incident.Sequence))
+            {
+                _reviewCapabilities = null;
+                SetReviewStatus("ComplianceReviewCoreUnavailable", text);
+            }
+        }
+        finally
+        {
+            if (requestVersion == Volatile.Read(
+                    ref _reviewCapabilityRequestVersion))
+            {
+                _isReviewCapabilityLoading = false;
+                Raise(nameof(CanEditReviewReason));
+                SynchronizeSelection();
+            }
+        }
+    }
+
+    private bool IsCurrentCapabilityRequest(
+        long requestVersion,
+        string incidentId,
+        long incidentSequence) =>
+        !_disposed &&
+        requestVersion == Volatile.Read(ref _reviewCapabilityRequestVersion) &&
+        string.Equals(
+            SelectedIncident?.IncidentId,
+            incidentId,
+            StringComparison.Ordinal) &&
+        _authoritativeIncidents.TryGetValue(incidentId, out var current) &&
+        current.Sequence == incidentSequence;
+
+    public async ValueTask<bool> ExecuteReviewActionAsync(
+        ComplianceQueueReviewAction action,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(action);
+        if (_disposed || _syntheticPreview || _reviewCommands is null ||
+            _reviewerActorId is null || IsReviewCommandPending)
+        {
+            return false;
+        }
+
+        var canonicalAction = ReviewActions.FirstOrDefault(item =>
+            string.Equals(item.Id, action.Id, StringComparison.Ordinal));
+        var selectedIncidentId = SelectedIncident?.IncidentId;
+        if (canonicalAction is null || !canonicalAction.IsEnabled ||
+            selectedIncidentId is null ||
+            !_authoritativeIncidents.TryGetValue(selectedIncidentId, out var incident))
+        {
+            return false;
+        }
+
+        var text = UiLanguageService.Shared;
+        var reason = ReviewReason.Trim();
+        if (reason.Length == 0)
+        {
+            SetReviewStatus("ComplianceReviewReasonRequired", text);
+            SynchronizeSelection();
+            return false;
+        }
+
+        if (Interlocked.CompareExchange(ref _reviewCommandInFlight, 1, 0) != 0)
+        {
+            return false;
+        }
+
+        try
+        {
+            var requestVersion = Interlocked.Increment(ref _reviewCommandRequestVersion);
+            var request = new HerdrOpsReviewCommandRequest(
+                ComplianceReviewWorkflowContract.ContractVersion,
+                Guid.NewGuid(),
+                incident.IncidentId,
+                (int)incident.State,
+                incident.Sequence,
+                _reviewerActorId,
+                (int)DecisionForAction(canonicalAction.Id),
+                reason,
+                incident.InitialEvidenceIdentitySha256s);
+            var commandGuard = new ReviewCommandGuard(
+                requestVersion,
+                request.CommandId,
+                incident.IncidentId,
+                incident.State,
+                incident.Sequence,
+                _authoritativeIncidentGenerations.GetValueOrDefault(
+                    incident.IncidentId));
+            _reviewCommandGuard = commandGuard;
+            IsReviewCommandPending = true;
+            SetReviewStatus("ComplianceReviewStatusPending", text);
+            SynchronizeSelection();
+            try
+            {
+                var result = await _reviewCommands.ExecuteAsync(
+                    request,
+                    cancellationToken);
+                if (IsCurrentReviewCommand(commandGuard, result))
+                {
+                    SetReviewStatus(
+                        result.IsAccepted
+                            ? result.WasAlreadyPresent
+                                ? "ComplianceReviewStatusAlreadyAccepted"
+                                : "ComplianceReviewStatusAccepted"
+                            : RejectionStatusKey(result.RejectionCode),
+                        text);
+                    if (result.IsAccepted)
+                    {
+                        _reviewReason = string.Empty;
+                        Raise(nameof(ReviewReason));
+                    }
+                }
+
+                return result.IsAccepted;
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                if (IsCurrentReviewCommand(commandGuard))
+                {
+                    SetReviewStatus("ComplianceReviewCapabilitiesCancelled", text);
+                }
+
+                return false;
+            }
+            catch (Exception exception) when (
+                exception is IOException or TimeoutException or ArgumentException or InvalidOperationException)
+            {
+                _ = exception;
+                if (IsCurrentReviewCommand(commandGuard))
+                {
+                    SetReviewStatus("ComplianceReviewCoreUnavailable", text);
+                }
+
+                return false;
+            }
+            finally
+            {
+                if (ReferenceEquals(_reviewCommandGuard, commandGuard))
+                {
+                    _reviewCommandGuard = null;
+                }
+
+                IsReviewCommandPending = false;
+                SynchronizeSelection();
+            }
+        }
+        finally
+        {
+            Volatile.Write(ref _reviewCommandInFlight, 0);
+        }
+    }
+
+    public bool TrySelectIncident(string incidentId)
+    {
+        if (_disposed || string.IsNullOrWhiteSpace(incidentId))
+        {
+            return false;
+        }
+
+        var incident = VisibleIncidents.FirstOrDefault(item => string.Equals(
+            item.IncidentId,
+            incidentId,
+            StringComparison.Ordinal));
+        if (incident is null)
+        {
+            return false;
+        }
+
+        SelectedIncident = incident;
+        return string.Equals(
+            SelectedIncident?.IncidentId,
+            incidentId,
+            StringComparison.Ordinal);
+    }
+
+    private void SetReviewStatus(
+        string? key,
+        UiLanguageService? text = null)
+    {
+        _reviewStatusKey = key;
+        ReviewStatus = key is null
+            ? string.Empty
+            : (text ?? UiLanguageService.Shared)[key];
+    }
+
     public void RefreshLanguage()
     {
         if (_disposed)
@@ -398,6 +857,11 @@ public sealed class ComplianceQueueState : ObservableState, IDisposable
         }
 
         var text = UiLanguageService.Shared;
+        if (_reviewStatusKey is not null)
+        {
+            ReviewStatus = text[_reviewStatusKey];
+        }
+
         var selectedIncidentId = SelectedIncident?.IncidentId;
         var selectedSeverityId = SelectedSeverityFilter.Id;
         var selectedStateId = SelectedStateFilter.Id;
@@ -408,10 +872,14 @@ public sealed class ComplianceQueueState : ObservableState, IDisposable
 
         SourceLabel = _syntheticPreview
             ? text["ComplianceQueueSyntheticSource"]
-            : text["ComplianceQueueLiveSourceUnavailable"];
+            : _history.Count == 0
+                ? text["ComplianceQueueLiveSourceUnavailable"]
+                : text["ComplianceQueueCoreReviewSource"];
         ConnectionLabel = _syntheticPreview
             ? text["ComplianceQueueSyntheticBoundary"]
-            : text["ComplianceQueueLiveBoundary"];
+            : _history.Count == 0
+                ? text["ComplianceQueueLiveBoundary"]
+                : text["ComplianceQueueCoreReviewBoundary"];
         ViewerRoleLabel = text[ViewerRoleKey(ViewerRole)];
 
         SeverityFilters =
@@ -421,6 +889,11 @@ public sealed class ComplianceQueueState : ObservableState, IDisposable
             new("high", text["ComplianceQueueSeverityHigh"]),
             new("medium", text["ComplianceQueueSeverityMedium"]),
             new("low", text["ComplianceQueueSeverityLow"]),
+            .. _history.Any(item => item.SeverityId == "unavailable")
+                ? [new ComplianceQueueFilterOption(
+                    "unavailable",
+                    text["ComplianceQueueSeverityUnavailable"])]
+                : Array.Empty<ComplianceQueueFilterOption>(),
         ];
         StateFilters =
         [
@@ -504,6 +977,8 @@ public sealed class ComplianceQueueState : ObservableState, IDisposable
         }
 
         _disposed = true;
+        Interlocked.Increment(ref _reviewCapabilityRequestVersion);
+        Interlocked.Increment(ref _reviewCommandRequestVersion);
     }
 
     private void SetFilter(
@@ -626,7 +1101,9 @@ public sealed class ComplianceQueueState : ObservableState, IDisposable
         }
 
         SelectedDetail = RenderDetail(raw);
-        ReviewActions = _syntheticPreview ? CreateReviewActions() : [];
+        ReviewActions = _syntheticPreview
+            ? CreateReviewActions()
+            : CreateLiveReviewActions(raw);
     }
 
     private ComplianceQueueIncidentRow Render(RawIncident item)
@@ -711,11 +1188,76 @@ public sealed class ComplianceQueueState : ObservableState, IDisposable
         var reason = text["ComplianceQueueActionUnavailablePreview"];
         return
         [
-            Action("confirm", "ComplianceQueueActionConfirm", "\uE73E", ComplianceQueueBrushKeys.ReviewConfirmed, "ComplianceQueueRoleProjectManager", ComplianceQueueViewerRole.ProjectManager, reason, text),
-            Action("send-to-leader", "ComplianceQueueActionSendToLeader", "\uE8FA", ComplianceQueueBrushKeys.ReviewPendingLeader, "ComplianceQueueRoleProjectManager", ComplianceQueueViewerRole.ProjectManager, reason, text),
-            Action("escalate-to-pm", "ComplianceQueueActionEscalateToProjectManager", "\uE8A7", ComplianceQueueBrushKeys.ReviewPendingProjectManager, "ComplianceQueueRoleLeader", ComplianceQueueViewerRole.Leader, reason, text),
-            Action("dismiss", "ComplianceQueueActionDismiss", "\uE711", ComplianceQueueBrushKeys.ReviewDismissed, "ComplianceQueueRoleProjectManager", ComplianceQueueViewerRole.ProjectManager, reason, text),
+            Action("confirm", "ComplianceQueueActionConfirm", "\uE73E", ComplianceQueueBrushKeys.ReviewConfirmed, "ComplianceQueueRoleProjectManager", isEnabled: false, reason, ViewerRole == ComplianceQueueViewerRole.ProjectManager, text),
+            Action("send-to-leader", "ComplianceQueueActionSendToLeader", "\uE8FA", ComplianceQueueBrushKeys.ReviewPendingLeader, "ComplianceQueueRoleProjectManager", isEnabled: false, reason, ViewerRole == ComplianceQueueViewerRole.ProjectManager, text),
+            Action("escalate-to-pm", "ComplianceQueueActionEscalateToProjectManager", "\uE8A7", ComplianceQueueBrushKeys.ReviewPendingProjectManager, "ComplianceQueueRoleLeader", isEnabled: false, reason, ViewerRole == ComplianceQueueViewerRole.Leader, text),
+            Action("dismiss", "ComplianceQueueActionDismiss", "\uE711", ComplianceQueueBrushKeys.ReviewDismissed, "ComplianceQueueRoleProjectManager", isEnabled: false, reason, ViewerRole == ComplianceQueueViewerRole.ProjectManager, text),
         ];
+    }
+
+    private IReadOnlyList<ComplianceQueueReviewAction> CreateLiveReviewActions(
+        RawIncident raw)
+    {
+        var text = UiLanguageService.Shared;
+        if (!_authoritativeIncidents.TryGetValue(raw.IncidentId, out var incident))
+        {
+            return [];
+        }
+
+        var capabilitiesCurrent = _reviewCapabilities is not null &&
+            _reviewCapabilities.IncidentState == (int)incident.State &&
+            _reviewCapabilities.IncidentSequence == incident.Sequence;
+        var reviewerRole = capabilitiesCurrent && _reviewCapabilities!.ReviewerRole is int roleValue &&
+            Enum.IsDefined((ComplianceReviewerRole)roleValue)
+                ? (ComplianceReviewerRole?)roleValue
+                : null;
+        var reasonPresent = !string.IsNullOrWhiteSpace(ReviewReason);
+        return
+        [
+            LiveAction("confirm", "ComplianceQueueActionConfirm", "\uE73E", ComplianceQueueBrushKeys.ReviewConfirmed, "ComplianceQueueRoleProjectManager", ComplianceReviewerRole.ProjectManager, ComplianceReviewDecisionKind.Confirm),
+            LiveAction("send-to-leader", "ComplianceQueueActionSendToLeader", "\uE8FA", ComplianceQueueBrushKeys.ReviewPendingLeader, "ComplianceQueueRoleProjectManager", ComplianceReviewerRole.ProjectManager, ComplianceReviewDecisionKind.SendToLeader),
+            LiveAction("escalate-to-pm", "ComplianceQueueActionEscalateToProjectManager", "\uE8A7", ComplianceQueueBrushKeys.ReviewPendingProjectManager, "ComplianceQueueRoleLeader", ComplianceReviewerRole.Leader, ComplianceReviewDecisionKind.EscalateToProjectManager),
+            LiveAction("dismiss", "ComplianceQueueActionDismiss", "\uE711", ComplianceQueueBrushKeys.ReviewDismissed, "ComplianceQueueRoleProjectManager", ComplianceReviewerRole.ProjectManager, ComplianceReviewDecisionKind.Dismiss),
+        ];
+
+        ComplianceQueueReviewAction LiveAction(
+            string id,
+            string labelKey,
+            string iconGlyph,
+            string accentBrushKey,
+            string roleKey,
+            ComplianceReviewerRole requiredRole,
+            ComplianceReviewDecisionKind decision)
+        {
+            var roleApplicable = reviewerRole == requiredRole;
+            var allowed = capabilitiesCurrent &&
+                _reviewCapabilities!.AllowedDecisionKinds.Contains((int)decision);
+            var enabled = allowed && reasonPresent &&
+                !_isReviewCapabilityLoading && !IsReviewCommandPending;
+            var unavailableReason = enabled
+                ? text["ComplianceReviewActionReady"]
+                : _reviewCommands is null || _reviewerActorId is null
+                    ? text["ComplianceReviewIdentityUnavailable"]
+                    : _isReviewCapabilityLoading
+                        ? text["ComplianceReviewCapabilitiesPending"]
+                        : !capabilitiesCurrent
+                            ? text["ComplianceReviewCapabilitiesUnavailable"]
+                            : !allowed
+                                ? text["ComplianceReviewActionNotAuthorized"]
+                                : !reasonPresent
+                                    ? text["ComplianceReviewReasonRequired"]
+                                    : text["ComplianceReviewStatusPending"];
+            return Action(
+                id,
+                labelKey,
+                iconGlyph,
+                accentBrushKey,
+                roleKey,
+                enabled,
+                unavailableReason,
+                roleApplicable,
+                text);
+        }
     }
 
     private ComplianceQueueReviewAction Action(
@@ -724,8 +1266,9 @@ public sealed class ComplianceQueueState : ObservableState, IDisposable
         string iconGlyph,
         string accentBrushKey,
         string roleKey,
-        ComplianceQueueViewerRole requiredRole,
+        bool isEnabled,
         string unavailableReason,
+        bool isRoleApplicable,
         UiLanguageService text) =>
         new(
             id,
@@ -733,16 +1276,107 @@ public sealed class ComplianceQueueState : ObservableState, IDisposable
             iconGlyph,
             accentBrushKey,
             IsVisible: true,
-            IsEnabled: false,
+            isEnabled,
             unavailableReason,
             text[roleKey],
-            IsRoleApplicable: ViewerRole == requiredRole,
+            isRoleApplicable,
             text.Format("ComplianceQueueActionAutomationFormat", text[labelKey]));
+
+    private static ComplianceReviewDecisionKind DecisionForAction(string actionId) =>
+        actionId switch
+        {
+            "confirm" => ComplianceReviewDecisionKind.Confirm,
+            "send-to-leader" => ComplianceReviewDecisionKind.SendToLeader,
+            "escalate-to-pm" => ComplianceReviewDecisionKind.EscalateToProjectManager,
+            "dismiss" => ComplianceReviewDecisionKind.Dismiss,
+            _ => throw new ArgumentOutOfRangeException(
+                nameof(actionId),
+                actionId,
+                "Unsupported Compliance Queue review action."),
+        };
+
+    private static string RejectionStatusKey(int rejectionCode) =>
+        (ComplianceReviewRejectionCode)rejectionCode switch
+        {
+            ComplianceReviewRejectionCode.UnknownIncident =>
+                "ComplianceReviewRejectedUnknownIncident",
+            ComplianceReviewRejectionCode.UnknownAuthority =>
+                "ComplianceReviewRejectedUnknownAuthority",
+            ComplianceReviewRejectionCode.UnauthorizedRole =>
+                "ComplianceReviewRejectedUnauthorizedRole",
+            ComplianceReviewRejectionCode.SelfReview =>
+                "ComplianceReviewRejectedSelfReview",
+            ComplianceReviewRejectionCode.StaleState =>
+                "ComplianceReviewRejectedStaleState",
+            ComplianceReviewRejectionCode.InvalidTransition =>
+                "ComplianceReviewRejectedInvalidTransition",
+            ComplianceReviewRejectionCode.AuthorityNotYetEffective =>
+                "ComplianceReviewRejectedAuthorityNotEffective",
+            _ => "ComplianceReviewCoreUnavailable",
+        };
+
+    private static void ValidateCapabilitiesResult(
+        HerdrOpsReviewCapabilitiesResult result)
+    {
+        ArgumentNullException.ThrowIfNull(result);
+        if (result.AllowedDecisionKinds is null ||
+            result.HasCurrentAuthority != result.ReviewerRole.HasValue ||
+            result.IncidentState.HasValue != result.IncidentSequence.HasValue ||
+            (result.IncidentSequence.HasValue && result.IncidentSequence.Value < 0) ||
+            (result.ReviewerRole.HasValue &&
+             !Enum.IsDefined((ComplianceReviewerRole)result.ReviewerRole.Value)) ||
+            (result.IncidentState.HasValue &&
+             !Enum.IsDefined((ComplianceReviewState)result.IncidentState.Value)) ||
+            result.AllowedDecisionKinds.Distinct().Count() !=
+            result.AllowedDecisionKinds.Count ||
+            result.AllowedDecisionKinds.Any(item =>
+                !Enum.IsDefined((ComplianceReviewDecisionKind)item)) ||
+            ((!result.HasCurrentAuthority || !result.IncidentState.HasValue) &&
+             result.AllowedDecisionKinds.Count != 0) ||
+            result.AllowedDecisionKinds.Any(item => !IsCapabilityTupleValid(
+                (ComplianceReviewerRole)result.ReviewerRole!.Value,
+                (ComplianceReviewState)result.IncidentState!.Value,
+                (ComplianceReviewDecisionKind)item)))
+        {
+            throw new HerdrOpsReviewCommandProtocolException(
+                "Core returned an invalid review-capability result.");
+        }
+    }
+
+    private static bool IsCapabilityTupleValid(
+        ComplianceReviewerRole role,
+        ComplianceReviewState state,
+        ComplianceReviewDecisionKind decision) =>
+        (state, role, decision) switch
+        {
+            (ComplianceReviewState.Suspected, ComplianceReviewerRole.ProjectManager,
+                ComplianceReviewDecisionKind.Confirm or
+                ComplianceReviewDecisionKind.SendToLeader or
+                ComplianceReviewDecisionKind.Dismiss) => true,
+            (ComplianceReviewState.PendingLeader, ComplianceReviewerRole.Leader,
+                ComplianceReviewDecisionKind.EscalateToProjectManager) => true,
+            (ComplianceReviewState.PendingProjectManager, ComplianceReviewerRole.ProjectManager,
+                ComplianceReviewDecisionKind.Confirm or
+                ComplianceReviewDecisionKind.SendToLeader or
+                ComplianceReviewDecisionKind.Dismiss) => true,
+            _ => false,
+        };
 
     private IReadOnlyList<ComplianceQueueSummaryCard> CreateSummaryCards(UiLanguageService text)
     {
         if (!_syntheticPreview)
         {
+            if (_history.Count > 0)
+            {
+                return
+                [
+                    AuthoritativeSummary("suspected", "ComplianceQueueSummarySuspected", "suspected", "\uE7BA", ComplianceQueueBrushKeys.ReviewSuspected, text),
+                    AuthoritativeSummary("confirmed", "ComplianceQueueSummaryConfirmed", "confirmed", "\uE8FB", ComplianceQueueBrushKeys.ReviewConfirmed, text),
+                    AuthoritativeSummary("pending-leader", "ComplianceQueueSummaryPendingLeader", "pending-leader", "\uE77B", ComplianceQueueBrushKeys.ReviewPendingLeader, text),
+                    AuthoritativeSummary("pending-pm", "ComplianceQueueSummaryPendingProjectManager", "pending-pm", "\uE716", ComplianceQueueBrushKeys.ReviewPendingProjectManager, text),
+                ];
+            }
+
             return
             [
                 new("suspected", text["ComplianceQueueSummarySuspected"], "—", text["ComplianceQueueLiveBoundary"], "\uE7BA", ComplianceQueueBrushKeys.EvidenceUnavailable),
@@ -760,6 +1394,22 @@ public sealed class ComplianceQueueState : ObservableState, IDisposable
             Summary("pending-pm", "ComplianceQueueSummaryPendingProjectManager", "pending-pm", "\uE716", ComplianceQueueBrushKeys.ReviewPendingProjectManager, text),
         ];
     }
+
+    private ComplianceQueueSummaryCard AuthoritativeSummary(
+        string id,
+        string titleKey,
+        string stateId,
+        string glyph,
+        string brushKey,
+        UiLanguageService text) =>
+        new(
+            id,
+            text[titleKey],
+            _history.Count(item => item.StateId == stateId)
+                .ToString(CultureInfo.InvariantCulture),
+            text["ComplianceQueueCoreReviewBoundary"],
+            glyph,
+            brushKey);
 
     private ComplianceQueueSummaryCard Summary(
         string id,
@@ -779,9 +1429,9 @@ public sealed class ComplianceQueueState : ObservableState, IDisposable
             brushKey);
     }
 
-    private static string RelativeTime(DateTimeOffset observedAt, UiLanguageService text)
+    private string RelativeTime(DateTimeOffset observedAt, UiLanguageService text)
     {
-        var elapsed = FixtureNow - observedAt;
+        var elapsed = (_syntheticPreview ? FixtureNow : _timeProvider.GetUtcNow()) - observedAt;
         if (elapsed.TotalSeconds < 60)
         {
             return text.Format(
@@ -793,6 +1443,73 @@ public sealed class ComplianceQueueState : ObservableState, IDisposable
             "ComplianceQueueMinutesAgoFormat",
             Math.Max(1, (int)Math.Floor(elapsed.TotalMinutes)));
     }
+
+    private bool IsCurrentReviewCommand(
+        ReviewCommandGuard guard,
+        HerdrOpsReviewCommandResult? result = null)
+    {
+        if (_disposed ||
+            guard.RequestVersion != Volatile.Read(ref _reviewCommandRequestVersion) ||
+            !string.Equals(
+                SelectedIncident?.IncidentId,
+                guard.IncidentId,
+                StringComparison.Ordinal) ||
+            !_authoritativeIncidents.TryGetValue(guard.IncidentId, out var current))
+        {
+            return false;
+        }
+
+        var generation = _authoritativeIncidentGenerations.GetValueOrDefault(
+            guard.IncidentId);
+        if (generation == guard.IncidentGeneration &&
+            current.State == guard.ExpectedState &&
+            current.Sequence == guard.ExpectedSequence)
+        {
+            return true;
+        }
+
+        if (result?.IsAccepted != true ||
+            result.Incident is not { } resultIncident ||
+            resultIncident.Sequence < 0 ||
+            !Enum.IsDefined((ComplianceReviewState)resultIncident.State) ||
+            current.Sequence != resultIncident.Sequence ||
+            current.State != (ComplianceReviewState)resultIncident.State ||
+            current.LastAuditEventId != guard.CommandId ||
+            generation != NextAuthoritativeGeneration(guard.IncidentGeneration))
+        {
+            return false;
+        }
+
+        return true;
+    }
+
+    private static bool HasSameAuthoritativeIncident(
+        ComplianceReviewIncident first,
+        ComplianceReviewIncident second) =>
+        first.ContractVersion == second.ContractVersion &&
+        string.Equals(first.IncidentId, second.IncidentId, StringComparison.Ordinal) &&
+        string.Equals(first.TaskId, second.TaskId, StringComparison.Ordinal) &&
+        string.Equals(first.SubjectActorId, second.SubjectActorId, StringComparison.Ordinal) &&
+        first.RegisteredUtc == second.RegisteredUtc &&
+        first.InitialEvidenceIdentitySha256s.SequenceEqual(
+            second.InitialEvidenceIdentitySha256s,
+            StringComparer.Ordinal) &&
+        string.Equals(first.RegistrationSha256, second.RegistrationSha256, StringComparison.Ordinal) &&
+        first.State == second.State &&
+        first.Sequence == second.Sequence &&
+        first.UpdatedUtc == second.UpdatedUtc &&
+        first.LastAuditEventId == second.LastAuditEventId &&
+        string.Equals(first.LastAuditSha256, second.LastAuditSha256, StringComparison.Ordinal);
+
+    private static long NextAuthoritativeGeneration(long generation) =>
+        generation == long.MaxValue ? long.MaxValue : generation + 1;
+
+    private bool HasCurrentReviewCapabilities(ComplianceQueueIncidentRow incident) =>
+        _reviewCapabilities is { HasCurrentAuthority: true } capabilities &&
+        _authoritativeIncidents.TryGetValue(incident.IncidentId, out var current) &&
+        capabilities.IncidentState == (int)current.State &&
+        capabilities.IncidentSequence == current.Sequence &&
+        capabilities.AllowedDecisionKinds.Count > 0;
 
     private static string SeverityBrushKey(string severityId) => severityId switch
     {
@@ -1013,8 +1730,92 @@ public sealed class ComplianceQueueState : ObservableState, IDisposable
         "high" => "ComplianceQueueSeverityHigh",
         "medium" => "ComplianceQueueSeverityMedium",
         "low" => "ComplianceQueueSeverityLow",
+        "unavailable" => "ComplianceQueueSeverityUnavailable",
         _ => throw new ArgumentOutOfRangeException(nameof(severityId), severityId, "Unsupported fixture severity."),
     };
+
+    private static RawIncident CreateAuthoritativeIncident(
+        ComplianceReviewIncident incident,
+        ComplianceReviewAuditEvent? auditEvent)
+    {
+        var stateId = incident.State switch
+        {
+            ComplianceReviewState.Suspected => "suspected",
+            ComplianceReviewState.PendingLeader => "pending-leader",
+            ComplianceReviewState.PendingProjectManager => "pending-pm",
+            ComplianceReviewState.Confirmed => "confirmed",
+            ComplianceReviewState.Dismissed => "dismissed",
+            _ => throw new ArgumentOutOfRangeException(
+                nameof(incident),
+                incident.State,
+                "Unsupported authoritative review state."),
+        };
+        var evidence = incident.InitialEvidenceIdentitySha256s
+            .Concat(auditEvent?.EvidenceIdentitySha256s ?? [])
+            .Distinct(StringComparer.Ordinal)
+            .Order(StringComparer.Ordinal)
+            .Select(identity => new RawEvidence(
+                identity,
+                $"EVID-{identity[..12]}",
+                auditEvent?.OccurredUtc ?? incident.RegisteredUtc,
+                "—",
+                "ComplianceQueueEvidenceTypeIdentity",
+                "ComplianceQueueEvidenceSourceCoreReview",
+                identity,
+                Reference: null,
+                ComplianceQueueEvidenceAvailability.Present,
+                "\uE8A5",
+                ComplianceQueueBrushKeys.EvidenceReview))
+            .ToArray();
+        var reviewerRoleKey = auditEvent?.ReviewerRole switch
+        {
+            ComplianceReviewerRole.ProjectManager => "ComplianceQueueRoleProjectManager",
+            ComplianceReviewerRole.Leader => "ComplianceQueueRoleLeader",
+            _ => "ComplianceQueueRoleObserver",
+        };
+        var reviewer = auditEvent?.ReviewerActorId ?? "—";
+        return new RawIncident(
+            incident.IncidentId,
+            "unavailable",
+            SeverityRank: 0,
+            "ComplianceQueueSeverityUnavailable",
+            Initials(incident.SubjectActorId),
+            incident.SubjectActorId,
+            "ComplianceQueueRoleWorker",
+            incident.TaskId,
+            "ComplianceQueueTaskCoreReview",
+            "ComplianceQueueTitleCoreReview",
+            "ComplianceQueueDescriptionCoreReview",
+            stateId,
+            StateKeyFor((ComplianceQueueIncidentState)(incident.State switch
+            {
+                ComplianceReviewState.Suspected => 1,
+                ComplianceReviewState.Confirmed => 2,
+                ComplianceReviewState.PendingLeader => 3,
+                ComplianceReviewState.PendingProjectManager => 4,
+                ComplianceReviewState.Dismissed => 5,
+                _ => throw new ArgumentOutOfRangeException(nameof(incident)),
+            })),
+            incident.UpdatedUtc,
+            "HERDROPS-REVIEW-V1",
+            "ComplianceQueueRuleCoreReview",
+            "ComplianceQueueRuleCoreReviewDetail",
+            "ComplianceQueueDetectorCore",
+            Initials(reviewer),
+            reviewer,
+            reviewerRoleKey,
+            evidence);
+    }
+
+    private static string Initials(string value)
+    {
+        var characters = value
+            .Where(char.IsLetterOrDigit)
+            .Take(2)
+            .Select(char.ToUpperInvariant)
+            .ToArray();
+        return characters.Length == 0 ? "—" : new string(characters);
+    }
 
     private static string StateKeyFor(ComplianceQueueIncidentState state) => state switch
     {

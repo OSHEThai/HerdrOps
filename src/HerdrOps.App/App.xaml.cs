@@ -1,8 +1,10 @@
 using System.IO;
 using System.Windows;
 using HerdrOps.App.Live;
+using HerdrOps.App.ReviewIpc;
 using HerdrOps.App.RuntimeEvidence;
 using HerdrOps.App.StateIpc;
+using HerdrOps.Domain.Compliance;
 
 namespace HerdrOps.App;
 
@@ -12,6 +14,7 @@ namespace HerdrOps.App;
 public partial class App : Application
 {
     private LiveDashboardRuntime? _runtime;
+    private ComplianceReviewCommandCoordinator? _reviewCommands;
 
     protected override async void OnStartup(StartupEventArgs e)
     {
@@ -22,9 +25,38 @@ public partial class App : Application
             return;
         }
 
-        var state = new LiveDashboardState();
+        var reviewState = new ComplianceReviewStateHub();
+        LiveDashboardState? state = null;
         try
         {
+            _reviewCommands = new ComplianceReviewCommandCoordinator(
+                new HerdrOpsReviewCommandPipeClient(
+                    HerdrOpsReviewCommandPipeClientOptions.ForCurrentUser()),
+                reviewState,
+                new DispatcherComplianceReviewStateScheduler(Dispatcher));
+            var reviewerActorId = string.Equals(
+                    Environment.GetEnvironmentVariable("HERDR_ENV"),
+                    "1",
+                    StringComparison.Ordinal)
+                ? Environment.GetEnvironmentVariable("HERDR_PANE_ID")
+                : null;
+            if (!string.IsNullOrWhiteSpace(reviewerActorId))
+            {
+                try
+                {
+                    reviewerActorId = ComplianceReviewWorkflowContract.NormalizeActorId(
+                        reviewerActorId);
+                }
+                catch (ComplianceReviewContractException)
+                {
+                    reviewerActorId = null;
+                }
+            }
+
+            state = new LiveDashboardState(
+                reviewState,
+                _reviewCommands,
+                reviewerActorId);
             _runtime = new LiveDashboardRuntime(
                 new HerdrOpsStatePipeClient(HerdrOpsStatePipeClientOptions.ForCurrentUser()),
                 state,
@@ -32,11 +64,13 @@ public partial class App : Application
             _runtime.Start();
         }
         catch (Exception exception) when (
-            exception is IOException or InvalidOperationException or UnauthorizedAccessException)
+            exception is IOException or ArgumentException or InvalidOperationException or UnauthorizedAccessException)
         {
+            state ??= new LiveDashboardState(reviewState);
             state.MarkOffline(exception, DateTimeOffset.UtcNow);
         }
 
+        state ??= new LiveDashboardState(reviewState);
         var mainWindow = new MainWindow(state);
         MainWindow = mainWindow;
         mainWindow.Show();
@@ -107,6 +141,7 @@ public partial class App : Application
     protected override void OnExit(ExitEventArgs e)
     {
         _runtime?.Dispose();
+        _reviewCommands = null;
         base.OnExit(e);
     }
 }
