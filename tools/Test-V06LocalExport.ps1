@@ -366,7 +366,7 @@ try {
 
     $requiredSourceMarkers = [ordered]@{
         'DeterministicSnapshotExporter.cs' = 'public static class DeterministicSnapshotExporter'
-        'LocalSnapshotExportPublisher.cs' = 'public static class LocalSnapshotExportPublisher'
+        'LocalSnapshotExportPublisher.cs' = 'public sealed class LocalSnapshotExportPublisher'
         'ExplainableScoring.cs' = 'public sealed class EvaluationScoringEngine'
         'DailySummaryAggregation.cs' = 'public static class DailySummaryAggregator'
     }
