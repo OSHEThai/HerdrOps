@@ -1,0 +1,50 @@
+{
+  "input": {
+    "contractVersion": 1,
+    "evaluationId": "evaluation:TASK-118:agent-backend-leader",
+    "taskId": "TASK-118",
+    "agentId": "agent-backend-leader",
+    "dimensions": [
+      {
+        "dimension": "GoalAlignment",
+        "leader": { "score": 90, "provenanceId": "GoalAlignment:Leader", "evidenceIdentitySha256": "7F00DBDA0A298D6232A233BBB8A3D8C901684A2CDA906E135514C19ADDBCC2CF" },
+        "projectManager": { "score": 85, "provenanceId": "GoalAlignment:ProjectManager", "evidenceIdentitySha256": "137B8A02B50B3BBCF6497FA312C14706796F72B3087DDE0AE2B3AED5B2340C64" },
+        "objectiveEvidence": { "score": 92, "provenanceId": "GoalAlignment:ObjectiveEvidence", "evidenceIdentitySha256": "DCC7866DB7C5EA8387A2E4ED87F4BC66CAACCADC9089F878AF2E061FA6EF8055" }
+      },
+      {
+        "dimension": "AcceptanceCriteria",
+        "leader": { "score": 85, "provenanceId": "AcceptanceCriteria:Leader", "evidenceIdentitySha256": "5CCC7EEBD3B189E981316D0E97BB7BFED6590ED0183C3AD81F47D3FD5957994D" },
+        "projectManager": { "score": 88, "provenanceId": "AcceptanceCriteria:ProjectManager", "evidenceIdentitySha256": "806D870070B278146A67FA325BE6CB2266B8383E0D1CE5C86EB46961D05B4CF0" },
+        "objectiveEvidence": { "score": 90, "provenanceId": "AcceptanceCriteria:ObjectiveEvidence", "evidenceIdentitySha256": "ECE7BABB269C14CF625F73B297DB5D2C57712416E4641CB0AD51AA5E8989985B" }
+      },
+      {
+        "dimension": "TechnicalQuality",
+        "leader": { "score": 80, "provenanceId": "TechnicalQuality:Leader", "evidenceIdentitySha256": "725EE247784B19C650A86A0218FE9CB15108762DCD914E409F9056EECE86E22F" },
+        "projectManager": { "score": 75, "provenanceId": "TechnicalQuality:ProjectManager", "evidenceIdentitySha256": "3B2D24802C3223E7200AD39154BD49E0646CADBB383579B1CEE884B24F830939" },
+        "objectiveEvidence": { "score": 78, "provenanceId": "TechnicalQuality:ObjectiveEvidence", "evidenceIdentitySha256": "C25311CA2BB1CEF48E75E6A6DDDD9997B449DA4929BB52E6E60C46CBB6A0D0B1" }
+      },
+      {
+        "dimension": "ScopeCompliance",
+        "leader": { "score": 75, "provenanceId": "ScopeCompliance:Leader", "evidenceIdentitySha256": "71F08C082CC64011D425725C3138DEF553EA11933982CC5C1F50B3A8590205F2" },
+        "projectManager": { "score": 80, "provenanceId": "ScopeCompliance:ProjectManager", "evidenceIdentitySha256": "B500E7149F700FE5EDB1839FE5B216BB9CD23E9A2AB486A46BB044A7DD92C5B5" },
+        "objectiveEvidence": { "score": 82, "provenanceId": "ScopeCompliance:ObjectiveEvidence", "evidenceIdentitySha256": "6ACDCA1F157D5D555B8B79377E352602E942840E568C888F24AE1960CA923FFB" }
+      },
+      {
+        "dimension": "Evidence",
+        "leader": { "score": 70, "provenanceId": "Evidence:Leader", "evidenceIdentitySha256": "602A4097ACBD3BC31E38C37D801D7506261D35F45C46957A9632036FDF111621" },
+        "projectManager": { "score": 75, "provenanceId": "Evidence:ProjectManager", "evidenceIdentitySha256": "34988BFD02C22700A8A4B9F26B1E6AC280F1E84A1977977C3C885B1CC55D2B45" },
+        "objectiveEvidence": { "score": 88, "provenanceId": "Evidence:ObjectiveEvidence", "evidenceIdentitySha256": "88F813E21675232E12F87BC85899BA7E32EEAED2677D59961DFC29E86A9818E9" }
+      },
+      {
+        "dimension": "Communication",
+        "leader": { "score": 70, "provenanceId": "Communication:Leader", "evidenceIdentitySha256": "CA1E74215EF57C85F872EC825335923038E637FA272487253F206A91F20E60F7" },
+        "projectManager": { "score": 75, "provenanceId": "Communication:ProjectManager", "evidenceIdentitySha256": "7B3CCBA41F10833ECB247681C3FEBE894822F49173C217E0094FFEBB7CE41E66" },
+        "objectiveEvidence": { "score": 80, "provenanceId": "Communication:ObjectiveEvidence", "evidenceIdentitySha256": "D01AEF15098CC2C505CC95A8B1028D057D90FE99EF87A134435C74B4C7A2021E" }
+      }
+    ]
+  },
+  "expectedTotalScore": 82.23,
+  "expectedFormulaSha256": "3CF788794C58DA11408E8D3E8F3876C88B3F48F4D19082DBCDEE4FE8B8874DFB",
+  "expectedInputSnapshotSha256": "7C36BEF3130777EDE7B87948D15B78F6BB65BBCD9638419EDD6806F1534B5A91",
+  "expectedResultSha256": "B75B7E4584990A7E1DEC270871A4E0EC97E45514C5CB703130B3B5C1B3C5F8F0"
+}

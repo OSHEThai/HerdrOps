@@ -120,6 +120,11 @@ $targetAgentLabSocket = Join-Path $env:APPDATA 'herdr\herdr.sock'
 # actual WPF captures, and disabled role-action accessibility.
 ./tools/Test-V05ComplianceQueue.ps1
 
+# From a clean committed checkout, verify the versioned six-dimension formula,
+# source-distinct inputs, golden hashes, missing/invalid behavior, provenance,
+# tamper rejection, and historical recalculation for v0.6 Issue #30.
+./tools/Test-V06ScoringEngine.ps1
+
 # From an authorized Herdr pane, capture actual bounded pane-read and
 # Herdr-PID-to-Windows-process evidence without controlling the session.
 dotnet artifacts/bin/HerdrOps.Core/release/HerdrOps.Core.dll trace-herdr-terminal-process `
@@ -146,3 +151,5 @@ The v0.5 compliance-rule implementation gate is Contract plus Synthetic evidence
 The v0.5 evidence/audit storage implementation gate is Contract plus local SQLite Integration evidence. It proves deterministic hashes, immutable ledgers and synthetic retention behavior, but not reviewer authorization, Compliance Queue rendering, real-data redaction, installed-product retention, actual Herdr operation, independent acceptance, or v0.5 release readiness.
 
 The v0.5 Compliance Queue implementation gate reports Contract evidence for the presentation contract and source markers, Integration evidence for deterministic filtering/selection and language-catalog behavior, and Synthetic UI evidence for synchronized WPF rendering in separate Thai and English modes, including primary, compact, and explicit Missing-evidence captures. Its disabled role-labelled actions do not authorize or execute transitions and cannot substitute for Issue #27, actual Herdr runtime, privacy/retention acceptance, independent review, or the v0.5 release gate. Actual Herdr Runtime, Independent Review, and Release evidence remain NOT OBSERVED until their separate gates pass.
+
+The v0.6 explainable-scoring gate reports Static, Contract, Synthetic, and Unit evidence. It proves the committed formula and golden result are reproducible, all three source classes remain distinct, golden evidence identities revalidate through the evidence-metadata contract, malformed/duplicate/absent/invalid inputs remain visible and fail closed, retained provenance rejects tampering, and historical results recalculate from their retained formula. It does not claim production evidence-byte admission, production score ingestion, reviewer authority, Evaluation or Daily Summary rendering, actual Herdr Runtime, independent acceptance, or v0.6 release readiness.
