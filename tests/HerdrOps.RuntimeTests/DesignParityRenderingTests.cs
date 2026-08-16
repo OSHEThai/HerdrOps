@@ -614,9 +614,7 @@ public sealed class DesignParityRenderingTests
         }
 
         Assert.IsTrue(File.Exists(outputPath), $"Candidate capture was not written: {outputPath}");
-        var fileInfo = new FileInfo(outputPath);
-        Assert.IsGreaterThan(10_000L, fileInfo.Length, $"Candidate capture was unexpectedly small: {outputPath}");
-        AssertPngDimensions(outputPath, width, height);
+        var visual = PngEvidenceAssertions.AssertValid(outputPath, width, height);
 
         return new CandidateCapture(
             Path.GetRelativePath(Path.Combine(FindRepositoryRoot(), "artifacts", "design-evidence", "v0.7.0", "issue-35"), outputPath).Replace('\\', '/'),
@@ -625,7 +623,8 @@ public sealed class DesignParityRenderingTests
             captureKind,
             width,
             height,
-            GetDecodedPixelHash(outputPath));
+            visual.PixelCount,
+            visual.PixelSha256);
     }
 
     private static void ValidateApprovedReferenceSet(string repositoryRoot)
@@ -701,21 +700,54 @@ public sealed class DesignParityRenderingTests
         Assert.HasCount(expectedCount, captures, "Candidate capture count is incomplete.");
         var relativePaths = captures.Select(capture => capture.RelativePath).ToArray();
         Assert.HasCount(relativePaths.Length, relativePaths.Distinct(StringComparer.Ordinal), "Candidate capture paths collide.");
-        foreach (var capture in captures)
-        {
-            var path = Path.Combine(captureRoot, capture.RelativePath[(capture.RelativePath.IndexOf("captures/", StringComparison.Ordinal) + "captures/".Length)..].Replace('/', Path.DirectorySeparatorChar));
-            // Capture paths are verified below from the deterministic evidence root as well;
-            // this check intentionally fails if a record points outside the capture tree.
-            Assert.IsTrue(
-                Path.GetFullPath(path).StartsWith(Path.GetFullPath(captureRoot), StringComparison.OrdinalIgnoreCase),
-                $"Candidate capture escaped the evidence directory: {capture.RelativePath}");
-        }
 
         var allFiles = Directory.GetFiles(captureRoot, "*.png", SearchOption.AllDirectories);
         Assert.HasCount(expectedCount, allFiles, "Candidate capture directory contains a missing or unexpected PNG.");
+        var captureByPath = captures.ToDictionary(
+            capture => capture.RelativePath,
+            capture => capture,
+            StringComparer.Ordinal);
+        var captureDirectory = Path.GetFullPath(captureRoot);
+        foreach (var capture in captures)
+        {
+            var path = ResolveCapturePath(capture.RelativePath);
+            Assert.IsTrue(
+                File.Exists(path),
+                $"Candidate capture record points to a missing PNG: {capture.RelativePath}");
+            var visual = PngEvidenceAssertions.AssertValid(path, capture.Width, capture.Height);
+            Assert.AreEqual(
+                capture.DecodedPixelCount,
+                visual.PixelCount,
+                $"Decoded pixel count drifted: {capture.RelativePath}");
+            Assert.AreEqual(
+                capture.DecodedPixelSha256,
+                visual.PixelSha256,
+                $"Decoded pixel hash drifted: {capture.RelativePath}");
+        }
+
         foreach (var path in allFiles)
         {
-            Assert.IsGreaterThan(10_000L, new FileInfo(path).Length, $"Candidate capture is empty: {path}");
+            var relativePath = Path.GetRelativePath(captureDirectory, path).Replace('\\', '/');
+            var candidatePath = $"captures/{relativePath}";
+            Assert.IsTrue(
+                captureByPath.ContainsKey(candidatePath),
+                $"Candidate capture directory contains an unexpected PNG: {relativePath}");
+        }
+
+        string ResolveCapturePath(string relativePath)
+        {
+            const string capturePrefix = "captures/";
+            Assert.IsTrue(
+                relativePath.StartsWith(capturePrefix, StringComparison.Ordinal),
+                $"Candidate capture path is outside the capture namespace: {relativePath}");
+            var relativeCapturePath = relativePath[capturePrefix.Length..]
+                .Replace('/', Path.DirectorySeparatorChar);
+            var resolved = Path.GetFullPath(Path.Combine(captureDirectory, relativeCapturePath));
+            var rootWithSeparator = captureDirectory.TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
+            Assert.IsTrue(
+                resolved.StartsWith(rootWithSeparator, StringComparison.OrdinalIgnoreCase),
+                $"Candidate capture escaped the evidence directory: {relativePath}");
+            return resolved;
         }
     }
 
@@ -906,35 +938,6 @@ public sealed class DesignParityRenderingTests
         element.UpdateLayout();
     }
 
-    private static void AssertPngDimensions(string path, int width, int height)
-    {
-        using var input = File.OpenRead(path);
-        var decoder = new PngBitmapDecoder(
-            input,
-            BitmapCreateOptions.PreservePixelFormat,
-            BitmapCacheOption.OnLoad);
-        Assert.AreEqual(width, decoder.Frames[0].PixelWidth, $"Candidate width drifted: {path}");
-        Assert.AreEqual(height, decoder.Frames[0].PixelHeight, $"Candidate height drifted: {path}");
-    }
-
-    private static string GetDecodedPixelHash(string path)
-    {
-        using var input = File.OpenRead(path);
-        var decoder = new PngBitmapDecoder(
-            input,
-            BitmapCreateOptions.PreservePixelFormat,
-            BitmapCacheOption.OnLoad);
-        var converted = new FormatConvertedBitmap(
-            decoder.Frames[0],
-            PixelFormats.Bgra32,
-            destinationPalette: null,
-            alphaThreshold: 0);
-        var stride = converted.PixelWidth * 4;
-        var pixels = new byte[stride * converted.PixelHeight];
-        converted.CopyPixels(pixels, stride, 0);
-        return Convert.ToHexString(SHA256.HashData(pixels));
-    }
-
     private static string LanguageCode(UiLanguage language) =>
         language == UiLanguage.Thai ? "th" : "en";
 
@@ -980,6 +983,7 @@ public sealed class DesignParityRenderingTests
         string CaptureKind,
         int Width,
         int Height,
+        long DecodedPixelCount,
         string DecodedPixelSha256);
 
     private sealed record CandidateEvidenceManifest(

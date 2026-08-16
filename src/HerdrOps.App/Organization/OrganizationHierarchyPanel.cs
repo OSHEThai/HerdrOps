@@ -11,14 +11,8 @@ namespace HerdrOps.App.Organization;
 /// </summary>
 public sealed class OrganizationHierarchyPanel : Panel
 {
-    private const double CardHeight = 52;
-    private const double CardGap = 5;
-    private const double ColumnGap = 12;
-    private const double OuterPadding = 10;
-    private const double RootWidth = 276;
-    private const double MinimumCardWidth = 132;
-    private const double MaximumCardWidth = 230;
-    private const double BranchGap = 12;
+    private const double CompactWidthBreakpoint = 700;
+    private const double ReferenceMinimumCardWidth = 132;
 
     private readonly Dictionary<string, Rect> _arrangedNodes = new(StringComparer.Ordinal);
     private double _contentHeight;
@@ -26,12 +20,16 @@ public sealed class OrganizationHierarchyPanel : Panel
     protected override Size MeasureOverride(Size availableSize)
     {
         var width = ResolveWidth(availableSize.Width);
+        var metrics = ResolveMetrics(width);
+        var branchMeasureWidth = Math.Max(
+            metrics.MinimumCardWidth,
+            (width - (metrics.OuterPadding * 2) - (metrics.ColumnGap * 3)) / 4);
         foreach (UIElement child in InternalChildren)
         {
-            child.Measure(new Size(Math.Max(MinimumCardWidth, width), CardHeight));
+            child.Measure(new Size(branchMeasureWidth, metrics.CardHeight));
         }
 
-        var layout = CalculateLayout(width, arrange: false);
+        var layout = CalculateLayout(width, metrics, arrange: false);
         _contentHeight = layout.Height;
         return new Size(width, layout.Height);
     }
@@ -39,8 +37,13 @@ public sealed class OrganizationHierarchyPanel : Panel
     protected override Size ArrangeOverride(Size finalSize)
     {
         var width = ResolveWidth(finalSize.Width);
+        if (DesiredSize.Width > 0 && !double.IsInfinity(DesiredSize.Width))
+        {
+            width = Math.Min(width, DesiredSize.Width);
+        }
+        var metrics = ResolveMetrics(width);
         _arrangedNodes.Clear();
-        var layout = CalculateLayout(width, arrange: true);
+        var layout = CalculateLayout(width, metrics, arrange: true);
         _contentHeight = layout.Height;
 
         foreach (UIElement child in InternalChildren)
@@ -99,7 +102,7 @@ public sealed class OrganizationHierarchyPanel : Panel
         }
     }
 
-    private LayoutResult CalculateLayout(double width, bool arrange)
+    private LayoutResult CalculateLayout(double width, LayoutMetrics metrics, bool arrange)
     {
         var entries = InternalChildren
             .OfType<FrameworkElement>()
@@ -126,25 +129,25 @@ public sealed class OrganizationHierarchyPanel : Panel
             .OrderBy(entry => entry.Node.LayoutRow)
             .ToArray();
 
-        var left = OuterPadding;
-        var usableWidth = Math.Max(MinimumCardWidth, width - (OuterPadding * 2));
-        var y = OuterPadding;
+        var left = metrics.OuterPadding;
+        var usableWidth = Math.Max(metrics.MinimumCardWidth, width - (metrics.OuterPadding * 2));
+        var y = metrics.OuterPadding;
 
         if (roots.Length == 1)
         {
             var root = roots[0];
-            var rootWidth = FitCardWidth(usableWidth, RootWidth);
+            var rootWidth = FitCardWidth(usableWidth, metrics.RootWidth, metrics.MinimumCardWidth);
             Place(root, CenteredX(usableWidth, rootWidth), y, rootWidth, arrange);
-            y += CardHeight + BranchGap;
+            y += metrics.CardHeight + metrics.BranchGap;
 
             var directChildren = ChildrenOf(root.Node.NodeId, childrenByParent);
             var assistant = directChildren.FirstOrDefault(entry =>
                 string.Equals(entry.Node.LayoutHint, "assistant", StringComparison.OrdinalIgnoreCase));
             if (assistant.Element is not null)
             {
-                var assistantWidth = FitCardWidth(usableWidth, RootWidth);
+                var assistantWidth = FitCardWidth(usableWidth, metrics.RootWidth, metrics.MinimumCardWidth);
                 Place(assistant, CenteredX(usableWidth, assistantWidth), y, assistantWidth, arrange);
-                y += CardHeight + BranchGap;
+                y += metrics.CardHeight + metrics.BranchGap;
                 directChildren = directChildren
                     .Where(entry => !string.Equals(entry.Node.NodeId, assistant.Node.NodeId, StringComparison.Ordinal))
                     .ToArray();
@@ -152,18 +155,18 @@ public sealed class OrganizationHierarchyPanel : Panel
 
             if (directChildren.Count > 0)
             {
-                y += ArrangeColumns(directChildren, childrenByParent, left, usableWidth, y, arrange);
+                y += ArrangeColumns(directChildren, childrenByParent, left, usableWidth, y, metrics, arrange);
             }
 
-            return new LayoutResult(Math.Max(y + OuterPadding, CardHeight + (OuterPadding * 2)));
+            return new LayoutResult(Math.Max(y + metrics.OuterPadding, metrics.CardHeight + (metrics.OuterPadding * 2)));
         }
 
         if (roots.Length > 0)
         {
-            y += ArrangeColumns(roots, childrenByParent, left, usableWidth, y, arrange);
+            y += ArrangeColumns(roots, childrenByParent, left, usableWidth, y, metrics, arrange);
         }
 
-        return new LayoutResult(Math.Max(y + OuterPadding, CardHeight + (OuterPadding * 2)));
+        return new LayoutResult(Math.Max(y + metrics.OuterPadding, metrics.CardHeight + (metrics.OuterPadding * 2)));
 
         void Place(
             (FrameworkElement Element, OrganizationNode Node) entry,
@@ -177,7 +180,7 @@ public sealed class OrganizationHierarchyPanel : Panel
                 return;
             }
 
-            var bounds = new Rect(x, top, cardWidth, CardHeight);
+            var bounds = new Rect(x, top, cardWidth, metrics.CardHeight);
             _arrangedNodes[entry.Node.NodeId] = bounds;
         }
 
@@ -187,22 +190,23 @@ public sealed class OrganizationHierarchyPanel : Panel
             double originX,
             double availableWidth,
             double originY,
+            LayoutMetrics layoutMetrics,
             bool shouldArrange)
         {
-            var gapTotal = ColumnGap * Math.Max(0, branches.Count - 1);
+            var gapTotal = layoutMetrics.ColumnGap * Math.Max(0, branches.Count - 1);
             var cardWidth = Math.Min(
-                MaximumCardWidth,
-                Math.Max(MinimumCardWidth, (availableWidth - gapTotal) / Math.Max(1, branches.Count)));
+                layoutMetrics.MaximumCardWidth,
+                Math.Max(layoutMetrics.MinimumCardWidth, (availableWidth - gapTotal) / Math.Max(1, branches.Count)));
             var actualWidth = (cardWidth * branches.Count) + gapTotal;
             var startX = originX + Math.Max(0, (availableWidth - actualWidth) / 2);
             var maxHeight = 0d;
 
             for (var index = 0; index < branches.Count; index++)
             {
-                var branchX = startX + (index * (cardWidth + ColumnGap));
+                var branchX = startX + (index * (cardWidth + layoutMetrics.ColumnGap));
                 var branchHeight = SubtreeHeight(branches[index].Node.NodeId, childMap);
                 maxHeight = Math.Max(maxHeight, branchHeight);
-                ArrangeSubtree(branches[index], branchX, originY, cardWidth, childMap, shouldArrange);
+                ArrangeSubtree(branches[index], branchX, originY, cardWidth, childMap, layoutMetrics, shouldArrange);
             }
 
             return maxHeight;
@@ -214,14 +218,15 @@ public sealed class OrganizationHierarchyPanel : Panel
             double top,
             double cardWidth,
             IReadOnlyDictionary<string, (FrameworkElement Element, OrganizationNode Node)[]> childMap,
+            LayoutMetrics layoutMetrics,
             bool shouldArrange)
         {
             Place(entry, x, top, cardWidth, shouldArrange);
-            var nextTop = top + CardHeight;
+            var nextTop = top + layoutMetrics.CardHeight;
             foreach (var child in ChildrenOf(entry.Node.NodeId, childMap))
             {
-                nextTop += CardGap;
-                nextTop += ArrangeSubtree(child, x, nextTop, cardWidth, childMap, shouldArrange);
+                nextTop += layoutMetrics.CardGap;
+                nextTop += ArrangeSubtree(child, x, nextTop, cardWidth, childMap, layoutMetrics, shouldArrange);
             }
 
             return nextTop - top;
@@ -231,10 +236,10 @@ public sealed class OrganizationHierarchyPanel : Panel
             string nodeId,
             IReadOnlyDictionary<string, (FrameworkElement Element, OrganizationNode Node)[]> childMap)
         {
-            var height = CardHeight;
+            var height = metrics.CardHeight;
             foreach (var child in ChildrenOf(nodeId, childMap))
             {
-                height += CardGap + SubtreeHeight(child.Node.NodeId, childMap);
+                height += metrics.CardGap + SubtreeHeight(child.Node.NodeId, childMap);
             }
 
             return height;
@@ -245,15 +250,52 @@ public sealed class OrganizationHierarchyPanel : Panel
             IReadOnlyDictionary<string, (FrameworkElement Element, OrganizationNode Node)[]> childMap) =>
             childMap.TryGetValue(nodeId, out var children) ? children : [];
 
-        double CenteredX(double available, double cardWidth) => OuterPadding + Math.Max(0, (available - cardWidth) / 2);
+        double CenteredX(double available, double cardWidth) => metrics.OuterPadding + Math.Max(0, (available - cardWidth) / 2);
 
-        static double FitCardWidth(double available, double preferred) => Math.Min(preferred, Math.Max(MinimumCardWidth, available));
+        static double FitCardWidth(double available, double preferred, double minimum) =>
+            Math.Min(preferred, Math.Max(minimum, available));
     }
 
-    private static double ResolveWidth(double width) =>
-        double.IsInfinity(width) || double.IsNaN(width) || width <= 0
+    private double ResolveWidth(double width)
+    {
+        var resolved = double.IsInfinity(width) || double.IsNaN(width) || width <= 0
             ? 760
-            : Math.Max(MinimumCardWidth + (OuterPadding * 2), width);
+            : Math.Max(ReferenceMinimumCardWidth + (ResolveMetrics(width).OuterPadding * 2), width);
+        return !double.IsNaN(Width) && !double.IsInfinity(Width) && Width > 0
+            ? Math.Min(resolved, Width)
+            : resolved;
+    }
 
     private sealed record LayoutResult(double Height);
+
+    private static LayoutMetrics ResolveMetrics(double width) =>
+        width < CompactWidthBreakpoint
+            ? new(
+                CardHeight: 38,
+                CardGap: 1,
+                ColumnGap: 8,
+                OuterPadding: 2,
+                RootWidth: 236,
+                MinimumCardWidth: 132,
+                MaximumCardWidth: 210,
+                BranchGap: 3)
+            : new(
+                CardHeight: 52,
+                CardGap: 5,
+                ColumnGap: 12,
+                OuterPadding: 10,
+                RootWidth: 276,
+                MinimumCardWidth: ReferenceMinimumCardWidth,
+                MaximumCardWidth: 230,
+                BranchGap: 12);
+
+    private sealed record LayoutMetrics(
+        double CardHeight,
+        double CardGap,
+        double ColumnGap,
+        double OuterPadding,
+        double RootWidth,
+        double MinimumCardWidth,
+        double MaximumCardWidth,
+        double BranchGap);
 }
