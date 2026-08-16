@@ -35,10 +35,15 @@ public sealed class AppLifecycleIntegrationTests
         var original = lifecycle.Snapshot;
         lifecycle.SelectLanguage(AppSettingsLanguage.Thai);
         lifecycle.SelectWidget(AppSettingsWidgetVariant.Compact);
+        lifecycle.SetWidgetEnabled(false);
 
         Assert.AreEqual(AppSettingsLanguage.Thai, lifecycle.Settings.Language);
         Assert.AreEqual(AppSettingsWidgetVariant.Compact, lifecycle.Settings.WidgetVariant);
+        Assert.IsFalse(lifecycle.Settings.WidgetEnabled);
         Assert.IsGreaterThan(1, store.SaveCount);
+        Assert.AreEqual(AppSettingsLanguage.Thai, applied[^1].Language);
+        Assert.AreEqual(AppSettingsWidgetVariant.Compact, applied[^1].WidgetVariant);
+        Assert.IsFalse(applied[^1].WidgetEnabled);
 
         lifecycle.RestoreSettings(original);
 
@@ -55,6 +60,13 @@ public sealed class AppLifecycleIntegrationTests
         lifecycle.ToggleStartAtLogon();
         Assert.AreEqual(StartupRegistrationState.Disabled, lifecycle.StartAtLogonStatus.State);
         Assert.IsFalse(startupBackend.Values.ContainsKey(StartupRegistrationContract.ValueName));
+
+        startupBackend.Values[StartupRegistrationContract.ValueName] = @"""C:\Other\Other.exe""";
+        lifecycle.ToggleStartAtLogon();
+        Assert.AreEqual(StartupRegistrationState.Conflicting, lifecycle.StartAtLogonStatus.State);
+        Assert.AreEqual(
+            @"""C:\Other\Other.exe""",
+            startupBackend.Values[StartupRegistrationContract.ValueName]);
     }
 
     [TestMethod]
@@ -73,6 +85,7 @@ public sealed class AppLifecycleIntegrationTests
         Assert.AreEqual(
             "เริ่ม HerdrOps พร้อม Windows",
             menu.Items.Single(item => item.Command == TrayCommand.ToggleStartAtLogon).Label);
+        Assert.IsTrue(menu.Items.Any(item => item.Command == TrayCommand.HideDashboard));
         Assert.AreEqual(
             1,
             menu.Items.Count(item =>

@@ -8,7 +8,9 @@ namespace HerdrOps.Domain.Lifecycle;
 public enum TrayCommand
 {
     ShowDashboard,
+    HideDashboard,
     ShowConfiguredWidget,
+    ToggleWidgetEnabled,
     SelectThaiLanguage,
     SelectEnglishLanguage,
     ToggleStartAtLogon,
@@ -17,7 +19,11 @@ public enum TrayCommand
 
 public sealed record TrayMenuItem
 {
-    public TrayMenuItem(TrayCommand command, string label, bool isChecked = false)
+    public TrayMenuItem(
+        TrayCommand command,
+        string label,
+        bool isChecked = false,
+        bool isEnabled = true)
     {
         if (string.IsNullOrWhiteSpace(label))
         {
@@ -27,6 +33,7 @@ public sealed record TrayMenuItem
         Command = command;
         Label = label;
         IsChecked = isChecked;
+        IsEnabled = isEnabled;
     }
 
     public TrayCommand Command { get; }
@@ -34,6 +41,8 @@ public sealed record TrayMenuItem
     public string Label { get; }
 
     public bool IsChecked { get; }
+
+    public bool IsEnabled { get; }
 }
 
 /// <summary>
@@ -92,11 +101,35 @@ public interface ITrayBackend : IDisposable
     void Hide();
 }
 
+public sealed record TrayCleanupFailure(string Name, Exception Exception);
+
+public sealed class TrayCleanupException : Exception
+{
+    public TrayCleanupException(IReadOnlyList<TrayCleanupFailure> failures)
+        : base(
+            $"One or more tray cleanup actions failed: {string.Join(", ", failures.Select(failure => failure.Name))}.",
+            new AggregateException(failures.Select(failure => failure.Exception)))
+    {
+        if (failures.Count == 0)
+        {
+            throw new ArgumentException("At least one tray cleanup failure is required.", nameof(failures));
+        }
+
+        Failures = failures.ToArray();
+    }
+
+    public IReadOnlyList<TrayCleanupFailure> Failures { get; }
+}
+
 public interface ITrayCommandTarget
 {
     void ShowDashboard();
 
+    void HideDashboard();
+
     void ShowConfiguredWidget();
+
+    void ToggleWidgetEnabled();
 
     void SelectLanguage(AppSettingsLanguage language);
 
@@ -144,8 +177,14 @@ public sealed class TrayCommandRouter
             case TrayCommand.ShowDashboard:
                 _target.ShowDashboard();
                 break;
+            case TrayCommand.HideDashboard:
+                _target.HideDashboard();
+                break;
             case TrayCommand.ShowConfiguredWidget:
                 _target.ShowConfiguredWidget();
+                break;
+            case TrayCommand.ToggleWidgetEnabled:
+                _target.ToggleWidgetEnabled();
                 break;
             case TrayCommand.SelectThaiLanguage:
                 _target.SelectLanguage(AppSettingsLanguage.Thai);
@@ -222,8 +261,8 @@ public sealed class TrayLifecycleController : ITrayController
             return;
         }
 
-        IsStarted = false;
         _backend.Hide();
+        IsStarted = false;
     }
 
     public void Dispose()
@@ -233,15 +272,41 @@ public sealed class TrayLifecycleController : ITrayController
             return;
         }
 
+        var failures = new List<TrayCleanupFailure>();
         try
         {
             Stop();
         }
-        finally
+        catch (Exception exception)
         {
-            _disposed = true;
+            failures.Add(new TrayCleanupFailure("tray-hide", exception));
+        }
+
+        try
+        {
             _backend.Dispose();
         }
+        catch (Exception exception)
+        {
+            failures.Add(new TrayCleanupFailure("tray-dispose", exception));
+        }
+
+        if (failures.Count > 0)
+        {
+            // If backend disposal succeeded, no further retry is possible or
+            // needed for a failed hide. If disposal itself failed, leave the
+            // controller undisposed so a later shutdown pass can retry.
+            if (!failures.Any(failure => failure.Name == "tray-dispose"))
+            {
+                _disposed = true;
+                IsStarted = false;
+            }
+
+            throw new TrayCleanupException(failures);
+        }
+
+        _disposed = true;
+        IsStarted = false;
     }
 
     private void ThrowIfDisposed()

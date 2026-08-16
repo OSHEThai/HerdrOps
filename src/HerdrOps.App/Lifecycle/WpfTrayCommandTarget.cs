@@ -17,8 +17,10 @@ public sealed class WpfTrayCommandTarget : ITrayCommandTarget, IStartAtLogonTray
     private readonly Func<AppSettings> _settingsProvider;
     private readonly Action<AppSettingsLanguage> _languageSelected;
     private readonly Action _exit;
-    private readonly UiLanguageService _languageService;
     private readonly Action _startAtLogonToggled;
+    private readonly Action _widgetToggled;
+    private readonly Action? _hideDashboard;
+    private readonly Func<MainWindow?> _currentDashboardProvider;
 
     public WpfTrayCommandTarget(
         Func<MainWindow?> dashboardProvider,
@@ -27,17 +29,25 @@ public sealed class WpfTrayCommandTarget : ITrayCommandTarget, IStartAtLogonTray
         Action<AppSettingsLanguage> languageSelected,
         Action exit,
         UiLanguageService? languageService = null,
-        Action? startAtLogonToggled = null)
+        Action? startAtLogonToggled = null,
+        Action? widgetToggled = null,
+        Action? hideDashboard = null,
+        Func<MainWindow?>? currentDashboardProvider = null)
     {
         _dashboardProvider = dashboardProvider ?? throw new ArgumentNullException(nameof(dashboardProvider));
         _widgetLauncher = widgetLauncher ?? throw new ArgumentNullException(nameof(widgetLauncher));
         _settingsProvider = settingsProvider ?? throw new ArgumentNullException(nameof(settingsProvider));
         _languageSelected = languageSelected ?? throw new ArgumentNullException(nameof(languageSelected));
         _exit = exit ?? throw new ArgumentNullException(nameof(exit));
-        _languageService = languageService ?? UiLanguageService.Shared;
+        _ = languageService;
         _startAtLogonToggled = startAtLogonToggled ??
             (() => throw new InvalidOperationException(
                 "The WPF tray target has no start-at-logon handler."));
+        _widgetToggled = widgetToggled ??
+            (() => throw new InvalidOperationException(
+                "The WPF tray target has no widget-enabled handler."));
+        _hideDashboard = hideDashboard;
+        _currentDashboardProvider = currentDashboardProvider ?? _dashboardProvider;
     }
 
     public void ShowDashboard()
@@ -55,6 +65,19 @@ public sealed class WpfTrayCommandTarget : ITrayCommandTarget, IStartAtLogonTray
         });
     }
 
+    public void HideDashboard()
+    {
+        var dashboard = _currentDashboardProvider();
+        if (dashboard is null)
+        {
+            return;
+        }
+
+        InvokeOnDashboard(
+            _hideDashboard ?? dashboard.Hide,
+            dashboard);
+    }
+
     public void ShowConfiguredWidget()
     {
         var settings = AppSettingsContract.Admit(_settingsProvider());
@@ -62,12 +85,13 @@ public sealed class WpfTrayCommandTarget : ITrayCommandTarget, IStartAtLogonTray
         InvokeOnDashboard(() => _widgetLauncher.Open(variant));
     }
 
+    public void ToggleWidgetEnabled() => InvokeOnDashboard(_widgetToggled);
+
     public void SelectLanguage(AppSettingsLanguage language)
     {
         InvokeOnDashboard(() =>
         {
             _languageSelected(language);
-            _languageService.SetLanguage(AppSettingsLifecycleMapping.ToUiLanguage(language));
         });
     }
 
@@ -78,10 +102,10 @@ public sealed class WpfTrayCommandTarget : ITrayCommandTarget, IStartAtLogonTray
     private MainWindow RequireDashboard() => _dashboardProvider()
         ?? throw new InvalidOperationException("The HerdrOps Dashboard is unavailable.");
 
-    private void InvokeOnDashboard(Action action)
+    private void InvokeOnDashboard(Action action, MainWindow? knownDashboard = null)
     {
         ArgumentNullException.ThrowIfNull(action);
-        var dashboard = RequireDashboard();
+        var dashboard = knownDashboard ?? RequireDashboard();
         if (dashboard.Dispatcher.CheckAccess())
         {
             action();

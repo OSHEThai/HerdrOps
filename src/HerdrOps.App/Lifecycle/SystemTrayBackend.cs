@@ -47,6 +47,7 @@ public sealed class SystemTrayBackend : ITrayBackend
             var menuItem = new Forms.ToolStripMenuItem(item.Label)
             {
                 Checked = item.IsChecked,
+                Enabled = item.IsEnabled,
                 CheckOnClick = false,
                 Tag = item.Command,
             };
@@ -78,21 +79,56 @@ public sealed class SystemTrayBackend : ITrayBackend
             return;
         }
 
-        _disposed = true;
+        var failures = new List<ShutdownCleanupFailure>();
         if (_notifyIcon is not null)
         {
-            _notifyIcon.DoubleClick -= OnNotifyIconDoubleClick;
-            _notifyIcon.Visible = false;
-            _notifyIcon.ContextMenuStrip = null;
-            _notifyIcon.Dispose();
+            try
+            {
+                _notifyIcon.DoubleClick -= OnNotifyIconDoubleClick;
+                _notifyIcon.Visible = false;
+                _notifyIcon.ContextMenuStrip = null;
+                _notifyIcon.Dispose();
+                _notifyIcon = null;
+            }
+            catch (Exception exception)
+            {
+                failures.Add(new ShutdownCleanupFailure("tray-notify-icon", exception));
+            }
         }
 
-        _contextMenu?.Dispose();
-        _icon?.Dispose();
-        _notifyIcon = null;
-        _contextMenu = null;
-        _icon = null;
+        if (_contextMenu is not null)
+        {
+            try
+            {
+                _contextMenu.Dispose();
+                _contextMenu = null;
+            }
+            catch (Exception exception)
+            {
+                failures.Add(new ShutdownCleanupFailure("tray-context-menu", exception));
+            }
+        }
+
+        if (_icon is not null)
+        {
+            try
+            {
+                _icon.Dispose();
+                _icon = null;
+            }
+            catch (Exception exception)
+            {
+                failures.Add(new ShutdownCleanupFailure("tray-icon", exception));
+            }
+        }
+
+        if (failures.Count > 0)
+        {
+            throw new ShutdownCleanupException(failures);
+        }
+
         _commandHandler = null;
+        _disposed = true;
     }
 
     private Forms.NotifyIcon CreateNotifyIcon()

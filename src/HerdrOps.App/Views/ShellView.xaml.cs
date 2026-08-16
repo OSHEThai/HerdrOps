@@ -10,6 +10,7 @@ using HerdrOps.App.Overview;
 using HerdrOps.App.Shell;
 using HerdrOps.App.Summaries;
 using HerdrOps.App.Widgets;
+using HerdrOps.Domain.Settings;
 
 namespace HerdrOps.App.Views;
 
@@ -23,6 +24,7 @@ public partial class ShellView : UserControl
     private const double ProjectSelectorBreakpoint = 1080;
     private const double StatusLegendBreakpoint = 1480;
     private readonly bool _syntheticPreview;
+    private readonly Action<UiLanguage>? _languageSelector;
 
     public ShellView()
         : this(new LiveDashboardState(), syntheticPreview: false)
@@ -30,16 +32,37 @@ public partial class ShellView : UserControl
     }
 
     public ShellView(LiveDashboardState liveDashboard)
-        : this(liveDashboard, syntheticPreview: false)
+        : this(liveDashboard, null, null, null, null)
+    {
+    }
+
+    public ShellView(
+        LiveDashboardState liveDashboard,
+        Action<UiLanguage>? languageSelector,
+        Action<AppSettingsWidgetVariant>? widgetSelected,
+        Action<bool>? widgetEnabled,
+        IWidgetWindowLauncher? widgetLauncher)
+        : this(
+            liveDashboard,
+            syntheticPreview: false,
+            languageSelector,
+            widgetSelected,
+            widgetEnabled,
+            widgetLauncher)
     {
     }
 
     private ShellView(
         LiveDashboardState liveDashboard,
-        bool syntheticPreview)
+        bool syntheticPreview,
+        Action<UiLanguage>? languageSelector = null,
+        Action<AppSettingsWidgetVariant>? widgetSelected = null,
+        Action<bool>? widgetEnabled = null,
+        IWidgetWindowLauncher? widgetLauncher = null)
     {
         LiveDashboard = liveDashboard ?? throw new ArgumentNullException(nameof(liveDashboard));
         _syntheticPreview = syntheticPreview;
+        _languageSelector = languageSelector;
         Navigation = new ShellNavigationController();
         InitializeComponent();
         DataContext = Navigation;
@@ -59,7 +82,8 @@ public partial class ShellView : UserControl
         if (!syntheticPreview)
         {
             OverviewPage.DataContext = LiveDashboard.Overview;
-            OverviewPage.UseWidgetState(LiveDashboard.Widgets);
+            OverviewPage.UseWidgetState(LiveDashboard.Widgets, widgetLauncher);
+            OverviewPage.UseSettingsLifecycle(widgetSelected, widgetEnabled);
             LiveOrganizationPage.DataContext = LiveDashboard.Organization;
             AgentDetailPage.DataContext = LiveDashboard.AgentDetail;
         }
@@ -83,7 +107,16 @@ public partial class ShellView : UserControl
 
     public UiLanguageService LanguageService => UiLanguageService.Shared;
 
-    public void SetLanguage(UiLanguage language) => LanguageService.SetLanguage(language);
+    public void SetLanguage(UiLanguage language)
+    {
+        if (_languageSelector is not null)
+        {
+            _languageSelector(language);
+            return;
+        }
+
+        LanguageService.SetLanguage(language);
+    }
 
     public bool TryNavigateByKey(Key key, ModifierKeys modifiers)
     {

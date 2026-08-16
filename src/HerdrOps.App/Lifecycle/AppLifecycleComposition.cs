@@ -38,7 +38,8 @@ public static class AppLifecycleComposition
 
         var startAtLogon = new StartAtLogonService(
             new WindowsCurrentUserRunBackend(),
-            executablePath);
+            executablePath,
+            new WindowsPerUserStartupRegistrationCoordinator());
         var text = languageService ?? UiLanguageService.Shared;
         return new AppLifecycleController(
             store,

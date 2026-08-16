@@ -27,6 +27,9 @@ public sealed class TrayLifecycleIntegrationTests
         var thai = builder.Build();
         AssertLanguageSelection(thai, TrayCommand.SelectThaiLanguage);
         Assert.IsTrue(thai.Items.Any(item => item.Label.Contains("วิดเจ็ต", StringComparison.Ordinal)));
+        Assert.AreEqual(
+            TrayCommand.ToggleWidgetEnabled,
+            thai.Items.Single(item => item.Command == TrayCommand.ToggleWidgetEnabled).Command);
         Assert.IsFalse(thai.Items.Any(item => item.Label.Contains("Show Dashboard", StringComparison.Ordinal)));
         Assert.IsFalse(thai.Items.Any(item => item.Label.Contains("Exit HerdrOps", StringComparison.Ordinal)));
 
@@ -116,7 +119,11 @@ public sealed class TrayLifecycleIntegrationTests
 
         public void ShowDashboard() => Commands.Add(TrayCommand.ShowDashboard);
 
+        public void HideDashboard() => Commands.Add(TrayCommand.HideDashboard);
+
         public void ShowConfiguredWidget() => Commands.Add(TrayCommand.ShowConfiguredWidget);
+
+        public void ToggleWidgetEnabled() => Commands.Add(TrayCommand.ToggleWidgetEnabled);
 
         public void SelectLanguage(AppSettingsLanguage language) =>
             Commands.Add(language == AppSettingsLanguage.Thai

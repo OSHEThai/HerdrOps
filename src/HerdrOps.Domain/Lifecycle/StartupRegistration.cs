@@ -14,6 +14,10 @@ public sealed record StartupRegistrationStatus(
     string? RegisteredCommand)
 {
     public bool IsEnabled => State == StartupRegistrationState.Enabled;
+
+    public bool IsConflicting => State == StartupRegistrationState.Conflicting;
+
+    public bool CanToggle => !IsConflicting;
 }
 
 public interface ICurrentUserStartupBackend
@@ -23,6 +27,49 @@ public interface ICurrentUserStartupBackend
     void Write(string valueName, string command);
 
     void Delete(string valueName);
+}
+
+/// <summary>
+/// Coordinates cooperating current-user startup writers across processes.
+/// The Windows Registry has no conditional set-if-absent operation for a
+/// value, so this seam narrows the guarantee to writers that honor the same
+/// per-user coordination primitive and requires a read/recheck around writes.
+/// </summary>
+public interface IStartupRegistrationCoordinator
+{
+    IDisposable Enter();
+}
+
+/// <summary>
+/// Process-local fallback used by hermetic callers that do not supply the
+/// Windows cross-process coordinator. Production composition supplies the
+/// SID-scoped named-mutex implementation instead.
+/// </summary>
+public sealed class InProcessStartupRegistrationCoordinator : IStartupRegistrationCoordinator
+{
+    private static readonly object Sync = new();
+
+    public IDisposable Enter()
+    {
+        Monitor.Enter(Sync);
+        return new MonitorLease();
+    }
+
+    private sealed class MonitorLease : IDisposable
+    {
+        private bool _disposed;
+
+        public void Dispose()
+        {
+            if (_disposed)
+            {
+                return;
+            }
+
+            _disposed = true;
+            Monitor.Exit(Sync);
+        }
+    }
 }
 
 public sealed class StartupRegistrationException : Exception
@@ -155,10 +202,15 @@ public static class StartupRegistrationContract
 public sealed class StartAtLogonService
 {
     private readonly ICurrentUserStartupBackend _backend;
+    private readonly IStartupRegistrationCoordinator _coordinator;
 
-    public StartAtLogonService(ICurrentUserStartupBackend backend, string executablePath)
+    public StartAtLogonService(
+        ICurrentUserStartupBackend backend,
+        string executablePath,
+        IStartupRegistrationCoordinator? coordinator = null)
     {
         _backend = backend ?? throw new ArgumentNullException(nameof(backend));
+        _coordinator = coordinator ?? new InProcessStartupRegistrationCoordinator();
         ExpectedCommand = StartupRegistrationContract.QuoteExecutablePath(executablePath);
     }
 
@@ -166,37 +218,56 @@ public sealed class StartAtLogonService
 
     public string ExpectedCommand { get; }
 
-    public void Enable()
+    public StartupRegistrationStatus Enable()
     {
+        using var coordination = _coordinator.Enter();
         var registeredCommand = _backend.Read(ValueName);
-        if (string.Equals(registeredCommand, ExpectedCommand, StringComparison.Ordinal))
-        {
-            return;
-        }
-
         if (registeredCommand is not null)
         {
-            throw new StartupRegistrationException(
-                $"The current-user startup value '{ValueName}' is owned by another command.");
+            return CreateStatus(registeredCommand);
+        }
+
+        registeredCommand = _backend.Read(ValueName);
+        if (registeredCommand is not null)
+        {
+            return CreateStatus(registeredCommand);
         }
 
         _backend.Write(ValueName, ExpectedCommand);
+
+        // Registry value writes are not conditional. Re-read immediately so a
+        // cooperating or uncooperative writer that won the race is surfaced as
+        // controlled status instead of being reported as enabled.
+        return CreateStatus(_backend.Read(ValueName));
     }
 
-    public void Disable()
+    public StartupRegistrationStatus Disable()
     {
+        using var coordination = _coordinator.Enter();
         var registeredCommand = _backend.Read(ValueName);
         if (!string.Equals(registeredCommand, ExpectedCommand, StringComparison.Ordinal))
         {
-            return;
+            return CreateStatus(registeredCommand);
+        }
+
+        registeredCommand = _backend.Read(ValueName);
+        if (!string.Equals(registeredCommand, ExpectedCommand, StringComparison.Ordinal))
+        {
+            return CreateStatus(registeredCommand);
         }
 
         _backend.Delete(ValueName);
+        return CreateStatus(_backend.Read(ValueName));
     }
 
     public StartupRegistrationStatus GetStatus()
     {
-        var registeredCommand = _backend.Read(ValueName);
+        using var coordination = _coordinator.Enter();
+        return CreateStatus(_backend.Read(ValueName));
+    }
+
+    private StartupRegistrationStatus CreateStatus(string? registeredCommand)
+    {
         var state = registeredCommand switch
         {
             null => StartupRegistrationState.Disabled,

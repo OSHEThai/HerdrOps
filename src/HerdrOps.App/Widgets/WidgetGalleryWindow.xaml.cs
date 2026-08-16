@@ -1,5 +1,6 @@
 using System.Windows;
 using HerdrOps.App.Localization;
+using HerdrOps.Domain.Settings;
 
 namespace HerdrOps.App.Widgets;
 
@@ -9,15 +10,28 @@ public partial class WidgetGalleryWindow : Window
     private bool _hasAdjustedInitialWidth;
 
     public WidgetGalleryWindow()
-        : this(SyntheticWidgetState.Create())
+        : this(SyntheticWidgetState.Create(), null, null, null)
     {
     }
 
     public WidgetGalleryWindow(IWidgetState state)
+        : this(state, null, null, null)
+    {
+    }
+
+    public WidgetGalleryWindow(
+        IWidgetState state,
+        IWidgetWindowLauncher? launcher,
+        Action<AppSettingsWidgetVariant>? widgetSelected,
+        Action<bool>? widgetEnabled)
     {
         ArgumentNullException.ThrowIfNull(state);
         InitializeComponent();
-        GalleryView = new WidgetGalleryView(state, launcher: null);
+        GalleryView = new WidgetGalleryView(
+            state,
+            launcher,
+            widgetSelected,
+            widgetEnabled);
         GalleryHost.Content = GalleryView;
         RefreshTitle();
         WeakEventManager<UiLanguageService, EventArgs>.AddHandler(

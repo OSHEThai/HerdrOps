@@ -1,4 +1,3 @@
-using System.IO;
 using System.Windows;
 using HerdrOps.App.Lifecycle;
 using HerdrOps.App.Live;
@@ -22,26 +21,86 @@ public partial class App : Application
     private ComplianceReviewCommandCoordinator? _reviewCommands;
     private TrayLifecycleController? _tray;
     private AppLifecycleController? _lifecycle;
-    private IWidgetWindowLauncher? _widgetLauncher;
+    private WidgetWindowLauncher? _widgetLauncher;
+    private DashboardWindowManager? _dashboardWindows;
+    private IApplicationInstanceGate? _instanceGate;
+    private StartupTransaction? _startupTransaction;
+    private Exception? _startupFailure;
+    private readonly Func<IApplicationInstanceGate> _instanceGateFactory;
+
+    public App()
+        : this(() => new WindowsPerUserApplicationInstanceGate())
+    {
+    }
+
+    public App(Func<IApplicationInstanceGate> instanceGateFactory)
+    {
+        _instanceGateFactory = instanceGateFactory ?? throw new ArgumentNullException(nameof(instanceGateFactory));
+    }
 
     protected override async void OnStartup(StartupEventArgs e)
     {
         base.OnStartup(e);
+        ShutdownMode = ShutdownMode.OnExplicitShutdown;
         if (RuntimeEvidenceOptions.IsRequested(e.Args))
         {
             await RunRuntimeEvidenceAsync(e.Args);
             return;
         }
 
-        var reviewState = new ComplianceReviewStateHub();
-        LiveDashboardState? state = null;
         try
         {
+            await StartNormalAsync();
+        }
+        catch (Exception exception)
+        {
+            _startupFailure = exception;
+            Shutdown(1);
+        }
+    }
+
+    private async Task StartNormalAsync()
+    {
+        var transaction = new StartupTransaction();
+        _startupTransaction = transaction;
+        try
+        {
+            var gate = _instanceGateFactory();
+            var gateAcquired = false;
+            var gateDisposed = false;
+            try
+            {
+                if (!gate.TryAcquire())
+                {
+                    gateDisposed = true;
+                    gate.Dispose();
+                    transaction.Commit(static () => { });
+                    _startupTransaction = null;
+                    Shutdown(0);
+                    return;
+                }
+
+                gateAcquired = true;
+                _instanceGate = gate;
+                transaction.AddCleanup("single-instance", ReleaseInstanceGate);
+            }
+            catch
+            {
+                if (!gateAcquired && !gateDisposed)
+                {
+                    gate.Dispose();
+                }
+
+                throw;
+            }
+
+            var reviewState = new ComplianceReviewStateHub();
             _reviewCommands = new ComplianceReviewCommandCoordinator(
                 new HerdrOpsReviewCommandPipeClient(
                     HerdrOpsReviewCommandPipeClientOptions.ForCurrentUser()),
                 reviewState,
                 new DispatcherComplianceReviewStateScheduler(Dispatcher));
+            transaction.AddCleanup("review-commands", ClearReviewCommands);
             var reviewerActorId = string.Equals(
                     Environment.GetEnvironmentVariable("HERDR_ENV"),
                     "1",
@@ -61,7 +120,7 @@ public partial class App : Application
                 }
             }
 
-            state = new LiveDashboardState(
+            var state = new LiveDashboardState(
                 reviewState,
                 _reviewCommands,
                 reviewerActorId);
@@ -69,29 +128,54 @@ public partial class App : Application
                 new HerdrOpsStatePipeClient(HerdrOpsStatePipeClientOptions.ForCurrentUser()),
                 state,
                 new DispatcherLiveDashboardUiScheduler(Dispatcher));
+            transaction.AddCleanup("runtime", DisposeRuntime);
             _runtime.Start();
-        }
-        catch (Exception exception) when (
-            exception is IOException or ArgumentException or InvalidOperationException or UnauthorizedAccessException)
-        {
-            state ??= new LiveDashboardState(reviewState);
-            state.MarkOffline(exception, DateTimeOffset.UtcNow);
-        }
 
-        state ??= new LiveDashboardState(reviewState);
-        var mainWindow = new MainWindow(state);
-        MainWindow = mainWindow;
-        mainWindow.Show();
-        _lifecycle = AppLifecycleComposition.CreateForCurrentUser(UiLanguageService.Shared);
-        await _lifecycle.InitializeAsync();
-        _widgetLauncher = new WidgetWindowLauncher(state.Widgets);
-        if (_lifecycle.Settings.WidgetEnabled)
-        {
-            _widgetLauncher.Open(
-                AppSettingsLifecycleMapping.ToWidgetVariant(_lifecycle.Settings.WidgetVariant));
-        }
+            _widgetLauncher = new WidgetWindowLauncher(state.Widgets);
+            transaction.AddCleanup("widgets", DisposeWidgets);
 
-        StartTray(state);
+            _lifecycle = AppLifecycleComposition.CreateForCurrentUser(
+                UiLanguageService.Shared,
+                ApplySettings);
+            transaction.AddCleanup("lifecycle", () => _lifecycle = null);
+            await _lifecycle.InitializeAsync();
+
+            var lifecycle = _lifecycle;
+            _dashboardWindows = new DashboardWindowManager(() => new MainWindow(
+                state,
+                language => lifecycle.SelectLanguage(
+                    AppSettingsLifecycleMapping.ToAppSettingsLanguage(language)),
+                widget => lifecycle.SelectWidget(widget),
+                enabled => lifecycle.SetWidgetEnabled(enabled),
+                _widgetLauncher));
+            transaction.AddCleanup("dashboard", CloseDashboard);
+            _ = _dashboardWindows.GetOrCreate();
+
+            var tray = CreateTray(state, _dashboardWindows);
+            _tray = tray;
+            transaction.AddCleanup("tray", StopTray);
+            UiLanguageService.Shared.LanguageChanged += OnLanguageChanged;
+            tray.Start();
+
+            transaction.Commit(_dashboardWindows.Show);
+            _startupTransaction = null;
+        }
+        catch (Exception primaryException)
+        {
+            try
+            {
+                transaction.Rollback(primaryException);
+            }
+            catch
+            {
+                if (!transaction.HasPendingCleanup)
+                {
+                    _startupTransaction = null;
+                }
+
+                throw;
+            }
+        }
     }
 
     private async Task RunRuntimeEvidenceAsync(IReadOnlyList<string> args)
@@ -123,6 +207,7 @@ public partial class App : Application
         RuntimeEvidenceRunner? runner = null;
         MainWindow? mainWindow = null;
         var exitCode = 2;
+        Exception? primaryFailure = null;
         Exception? cleanupFailure = null;
         try
         {
@@ -141,7 +226,7 @@ public partial class App : Application
         }
         catch (Exception exception)
         {
-            RuntimeEvidenceRunner.WriteFailure(options.ReportPath, startedUtc, exception);
+            primaryFailure = exception;
         }
         finally
         {
@@ -157,9 +242,9 @@ public partial class App : Application
                         "dashboard",
                         () =>
                         {
-                            if (mainWindow?.IsVisible == true)
+                            if (mainWindow is { IsClosed: false })
                             {
-                                mainWindow.Close();
+                                mainWindow.CloseForShutdown();
                             }
                         }),
                 ]);
@@ -170,7 +255,20 @@ public partial class App : Application
             }
         }
 
-        if (cleanupFailure is not null)
+        if (primaryFailure is not null && cleanupFailure is ShutdownCleanupException cleanupException)
+        {
+            RuntimeEvidenceRunner.WriteFailure(
+                options.ReportPath,
+                startedUtc,
+                new StartupTransactionException(primaryFailure, cleanupException));
+            exitCode = 2;
+        }
+        else if (primaryFailure is not null)
+        {
+            RuntimeEvidenceRunner.WriteFailure(options.ReportPath, startedUtc, primaryFailure);
+            exitCode = 2;
+        }
+        else if (cleanupFailure is not null)
         {
             RuntimeEvidenceRunner.WriteFailure(options.ReportPath, startedUtc, cleanupFailure);
             exitCode = 2;
@@ -181,31 +279,46 @@ public partial class App : Application
 
     protected override void OnExit(ExitEventArgs e)
     {
-        ShutdownCleanup.Execute(
-        [
-            new ShutdownCleanupAction("tray", StopTray),
-            new ShutdownCleanupAction("runtime", DisposeRuntime),
-            new ShutdownCleanupAction("review-commands", () => _reviewCommands = null),
-            new ShutdownCleanupAction("application-base", () => base.OnExit(e)),
-        ]);
+        try
+        {
+            ShutdownCleanup.Execute(
+            [
+                new ShutdownCleanupAction(
+                    "startup-rollback",
+                    () => _startupTransaction?.RetryCleanup()),
+                new ShutdownCleanupAction("tray", StopTray),
+                new ShutdownCleanupAction("dashboard", CloseDashboard),
+                new ShutdownCleanupAction("widgets", DisposeWidgets),
+                new ShutdownCleanupAction("runtime", DisposeRuntime),
+                new ShutdownCleanupAction("review-commands", ClearReviewCommands),
+                new ShutdownCleanupAction("single-instance", ReleaseInstanceGate),
+                new ShutdownCleanupAction("application-base", () => base.OnExit(e)),
+            ]);
+        }
+        catch (ShutdownCleanupException cleanupException) when (_startupFailure is not null)
+        {
+            throw new StartupTransactionException(_startupFailure, cleanupException);
+        }
     }
 
-    private void StartTray(LiveDashboardState state)
+    private TrayLifecycleController CreateTray(
+        LiveDashboardState state,
+        DashboardWindowManager dashboardWindows)
     {
         var lifecycle = _lifecycle ?? throw new InvalidOperationException(
             "The application lifecycle has not been initialized.");
-        UiLanguageService.Shared.LanguageChanged += OnLanguageChanged;
         var menuBuilder = new TrayMenuBuilder(
             () => lifecycle.Settings,
             UiLanguageService.Shared,
             () => lifecycle.StartAtLogonStatus);
 
-        _tray = new TrayLifecycleController(
+        return new TrayLifecycleController(
             new SystemTrayBackend(),
             menuBuilder.Build,
             new WpfTrayCommandTarget(
-                () => MainWindow as MainWindow,
-                _widgetLauncher ?? new WidgetWindowLauncher(state.Widgets),
+                dashboardWindows.GetOrCreate,
+                _widgetLauncher ?? throw new InvalidOperationException(
+                    "The widget launcher has not been composed."),
                 () => lifecycle.Settings,
                 language =>
                 {
@@ -217,28 +330,85 @@ public partial class App : Application
                 {
                     lifecycle.ToggleStartAtLogon();
                     _tray?.Refresh();
-                }));
-        _tray.Start();
+                },
+                () =>
+                {
+                    lifecycle.SetWidgetEnabled(!lifecycle.Settings.WidgetEnabled);
+                    _tray?.Refresh();
+                },
+                dashboardWindows.Hide,
+                 () => dashboardWindows.Current));
     }
 
     private void StopTray()
     {
         UiLanguageService.Shared.LanguageChanged -= OnLanguageChanged;
-        try
+        var tray = _tray;
+        if (tray is null)
         {
-            _tray?.Dispose();
+            return;
         }
-        finally
-        {
-            _tray = null;
-        }
+
+        tray.Dispose();
+        _tray = null;
     }
 
     private void DisposeRuntime()
     {
         var runtime = _runtime;
+        if (runtime is null)
+        {
+            return;
+        }
+
+        runtime.Dispose();
         _runtime = null;
-        runtime?.Dispose();
+    }
+
+    private void ClearReviewCommands() => _reviewCommands = null;
+
+    private void DisposeWidgets()
+    {
+        var launcher = _widgetLauncher;
+        if (launcher is null)
+        {
+            return;
+        }
+
+        launcher.Dispose();
+        _widgetLauncher = null;
+    }
+
+    private void CloseDashboard()
+    {
+        var dashboard = _dashboardWindows;
+        if (dashboard is null)
+        {
+            return;
+        }
+
+        dashboard.Dispose();
+        _dashboardWindows = null;
+        MainWindow = null;
+    }
+
+    private void ReleaseInstanceGate()
+    {
+        var gate = _instanceGate;
+        if (gate is null)
+        {
+            return;
+        }
+
+        gate.Dispose();
+        _instanceGate = null;
+    }
+
+    private void ApplySettings(AppSettings settings)
+    {
+        UiLanguageService.Shared.SetLanguage(
+            AppSettingsLifecycleMapping.ToUiLanguage(settings.Language));
+        _widgetLauncher?.ApplySettings(settings);
     }
 
     private void OnLanguageChanged(object? sender, EventArgs e) => _tray?.Refresh();

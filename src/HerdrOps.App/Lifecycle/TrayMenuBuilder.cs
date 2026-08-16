@@ -34,9 +34,15 @@ public sealed class TrayMenuBuilder
         var items = new List<TrayMenuItem>
         {
             new(TrayCommand.ShowDashboard, text["TrayShowDashboard"]),
+            new(TrayCommand.HideDashboard, text["TrayHideDashboard"]),
             new(
                 TrayCommand.ShowConfiguredWidget,
                 text.Format("TrayShowConfiguredWidgetFormat", widget.DisplayName)),
+            new(
+                TrayCommand.ToggleWidgetEnabled,
+                settings.WidgetEnabled
+                    ? text["TrayWidgetDisable"]
+                    : text["TrayWidgetEnable"]),
             new(
                 TrayCommand.SelectThaiLanguage,
                 text["LanguageThai"],
@@ -56,7 +62,8 @@ public sealed class TrayMenuBuilder
                     ? text["TrayStartAtLogonConflict"]
                     : startupStatus.IsEnabled
                         ? text["TrayStartAtLogonDisable"]
-                        : text["TrayStartAtLogonEnable"]));
+                        : text["TrayStartAtLogonEnable"],
+                isEnabled: startupStatus.State != StartupRegistrationState.Conflicting));
         }
 
         items.Add(new TrayMenuItem(TrayCommand.Exit, text["TrayExit"]));

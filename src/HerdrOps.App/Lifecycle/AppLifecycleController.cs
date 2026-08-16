@@ -46,9 +46,9 @@ public sealed class AppLifecycleController
 
         var snapshot = await _settingsStore.LoadAsync(cancellationToken);
         snapshot ??= await _settingsStore.SaveAsync(AppSettings.Defaults, cancellationToken);
-        _snapshot = snapshot;
         _settingsApplier(snapshot.Settings);
         _startAtLogonStatus = _startAtLogon.GetStatus();
+        _snapshot = snapshot;
     }
 
     public AppSettingsSnapshot SelectLanguage(AppSettingsLanguage language) =>
@@ -86,18 +86,22 @@ public sealed class AppLifecycleController
     public void ToggleStartAtLogon()
     {
         EnsureInitialized();
+        if (StartAtLogonStatus.IsConflicting)
+        {
+            // A foreign command owns the deterministic value name. Keep the
+            // status visible and make a tray click a safe no-op.
+            _startAtLogonStatus = _startAtLogon.GetStatus();
+            return;
+        }
+
         if (StartAtLogonStatus.State == StartupRegistrationState.Enabled)
         {
-            _startAtLogon.Disable();
+            _startAtLogonStatus = _startAtLogon.Disable();
         }
         else
         {
-            // Enable is fail-closed for a conflict and therefore never
-            // overwrites another current-user Run value.
-            _startAtLogon.Enable();
+            _startAtLogonStatus = _startAtLogon.Enable();
         }
-
-        _startAtLogonStatus = _startAtLogon.GetStatus();
     }
 
     private AppSettingsSnapshot UpdateSettings(Func<AppSettings, AppSettings> update)
@@ -116,8 +120,9 @@ public sealed class AppLifecycleController
 
     private void ApplySnapshot(AppSettingsSnapshot snapshot)
     {
-        _snapshot = snapshot ?? throw new ArgumentNullException(nameof(snapshot));
+        ArgumentNullException.ThrowIfNull(snapshot);
         _settingsApplier(snapshot.Settings);
+        _snapshot = snapshot;
     }
 
     private AppSettingsSnapshot RequireSnapshot() => _snapshot ?? throw new InvalidOperationException(
