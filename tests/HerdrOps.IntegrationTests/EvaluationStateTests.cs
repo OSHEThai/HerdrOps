@@ -75,7 +75,42 @@ public sealed class EvaluationStateTests
 
             Assert.AreEqual(selected.Result.Provenance.InputSnapshotSha256, state.ComparisonSnapshotSha256);
             Assert.AreEqual(selected.Result.Provenance.Formula.FormulaId, state.ComparisonFormulaLabel);
+            Assert.AreEqual("84.51", state.DimensionWeightedAverageLabel);
+            Assert.AreEqual("93.25", state.ComparisonTotalScoreLabel);
+            Assert.AreEqual(100m, state.ComparisonTotal.TotalWeightPercentage);
+            Assert.AreEqual("100%", state.ComparisonTotal.TotalWeightLabel);
+            Assert.AreEqual(93.05m, state.ComparisonTotal.LeaderScore);
+            Assert.AreEqual(91.05m, state.ComparisonTotal.ProjectManagerScore);
+            Assert.AreEqual(95.05m, state.ComparisonTotal.ObjectiveEvidenceScore);
+            Assert.AreEqual("93.25", state.ComparisonTotal.WeightedScoreLabel);
         });
+    }
+
+    [TestMethod]
+    public void EvaluationView_UsesDistinctAggregateAndSelectedTotalBindings()
+    {
+        var source = File.ReadAllText(Path.Combine(
+            FindRepositoryRoot(),
+            "src",
+            "HerdrOps.App",
+            "Views",
+            "EvaluationView.xaml"));
+        var dimensionStart = source.IndexOf(
+            "x:Name=\"EvaluationDimensionRegion\"",
+            StringComparison.Ordinal);
+        var comparisonStart = source.IndexOf(
+            "x:Name=\"EvaluationComparisonRegion\"",
+            StringComparison.Ordinal);
+        Assert.IsGreaterThanOrEqualTo(0, dimensionStart);
+        Assert.IsGreaterThan(dimensionStart, comparisonStart);
+        var dimensionRegion = source[dimensionStart..comparisonStart];
+        var comparisonRegion = source[comparisonStart..];
+
+        StringAssert.Contains(dimensionRegion, "Text=\"{Binding DimensionWeightedAverageLabel}\"");
+        Assert.IsFalse(dimensionRegion.Contains(
+            "Text=\"{Binding ComparisonTotalScoreLabel}\"",
+            StringComparison.Ordinal));
+        StringAssert.Contains(comparisonRegion, "Text=\"{Binding ComparisonTotalScoreLabel}\"");
     }
 
     [TestMethod]
@@ -362,24 +397,52 @@ public sealed class EvaluationStateTests
                 Assert.AreEqual(0, state.EvaluationCountScored);
                 Assert.IsEmpty(state.TopAgents);
                 Assert.IsEmpty(state.LowAgents);
-                Assert.AreEqual(service["EvaluationNoRankingData"], state.RankingEmptyLabel);
+                Assert.AreEqual(service["EvaluationRankingUnavailable"], state.RankingEmptyLabel);
                 Assert.AreEqual(unavailable, state.MissingScoreLabel);
+                Assert.AreEqual(unavailable, state.EvaluationCountLabel);
                 Assert.AreEqual(unavailable, state.DistributionTotalLabel);
                 Assert.AreEqual(unavailable, state.DistributionCenterValue);
                 Assert.AreEqual(unavailable, state.DistributionCenterLabel);
                 Assert.IsFalse(state.MissingScoreLabel.Contains(missing, StringComparison.Ordinal));
+                Assert.IsTrue(state.SummaryCards.All(item =>
+                    item.Value == unavailable &&
+                    item.MetricLabel == unavailable &&
+                    item.TrendLabel == unavailable &&
+                    item.Score is null &&
+                    item.Count is null &&
+                    item.Percentage is null));
                 Assert.IsTrue(state.DimensionRows.All(item => item.StatusLabel == unavailable));
-                Assert.IsTrue(state.ComparisonRows.All(item => item.StatusText == unavailable));
+                Assert.IsTrue(state.DimensionRows.All(item => item.ScoreLabel == unavailable));
+                Assert.IsTrue(state.ComparisonRows.All(item =>
+                    item.WeightLabel == unavailable &&
+                    item.LeaderScoreLabel == unavailable &&
+                    item.ProjectManagerScoreLabel == unavailable &&
+                    item.ObjectiveEvidenceScoreLabel == unavailable &&
+                    item.WeightedScoreLabel == unavailable &&
+                    item.StatusText == unavailable &&
+                    !item.AccessibilityText.Contains("—", StringComparison.Ordinal)));
+                Assert.AreEqual(unavailable, state.ComparisonTotal.TotalWeightLabel);
+                Assert.AreEqual(unavailable, state.ComparisonTotal.LeaderScoreLabel);
+                Assert.AreEqual(unavailable, state.ComparisonTotal.ProjectManagerScoreLabel);
+                Assert.AreEqual(unavailable, state.ComparisonTotal.ObjectiveEvidenceScoreLabel);
+                Assert.AreEqual(unavailable, state.ComparisonTotal.WeightedScoreLabel);
+                Assert.AreEqual(unavailable, state.ComparisonTotal.StatusText);
                 Assert.IsTrue(state.TrendPoints.All(item =>
                     item.Score is null &&
-                    item.ScoreLabel == "—" &&
+                    item.ScoreLabel == unavailable &&
                     item.StatusText == unavailable));
                 Assert.IsTrue(state.DistributionBins.All(item =>
                     item.Count == 0 &&
+                    item.CountLabel == unavailable &&
                     item.Percentage == -1m &&
                     item.PercentageLabel == unavailable &&
                     item.StatusText == unavailable));
                 Assert.IsFalse(state.DistributionBins.Any(item => item.StatusText == synthetic));
+                Assert.IsFalse(state.SummaryCards.Any(item =>
+                    item.Value.Contains("0", StringComparison.Ordinal) ||
+                    item.MetricLabel.Contains("Today", StringComparison.Ordinal) ||
+                    item.TrendLabel.Contains("from 0", StringComparison.Ordinal) ||
+                    item.TrendLabel.Contains("Synthetic", StringComparison.Ordinal)));
                 Assert.AreEqual(
                     language == UiLanguage.English
                         ? "Live Evaluation source unavailable"
@@ -479,6 +542,23 @@ public sealed class EvaluationStateTests
             score,
             provenanceId,
             Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(provenanceId))));
+
+    private static string FindRepositoryRoot()
+    {
+        var directory = new DirectoryInfo(AppContext.BaseDirectory);
+        while (directory is not null)
+        {
+            if (File.Exists(Path.Combine(directory.FullName, "HerdrOps.sln")))
+            {
+                return directory.FullName;
+            }
+
+            directory = directory.Parent;
+        }
+
+        Assert.Fail("Could not locate HerdrOps.sln from the Integration test output directory.");
+        return string.Empty;
+    }
 
     private static void WithLanguage(UiLanguage language, Action action)
     {

@@ -34,7 +34,7 @@
         </Style>
 
         <Style x:Key="EvaluationDataRow" TargetType="Border">
-            <Setter Property="Padding" Value="6,3" />
+            <Setter Property="Padding" Value="5,1" />
             <Setter Property="BorderBrush" Value="{DynamicResource HerdrOps.Brush.Border}" />
             <Setter Property="BorderThickness" Value="0,0,0,1" />
         </Style>
@@ -211,12 +211,14 @@
                                                        Margin="5,0,0,0"
                                                        Foreground="{DynamicResource HerdrOps.Brush.TextPrimary}"
                                                        FontSize="10"
-                                                       Text="{Binding Count}" />
+                                                       Text="{Binding CountLabel}" />
                                             <TextBlock Grid.Column="3"
                                                        Margin="8,0,0,0"
                                                        Foreground="{DynamicResource HerdrOps.Brush.TextSecondary}"
                                                        FontSize="10"
                                                        Text="{Binding PercentageLabel}" />
+                                             <TextBlock Visibility="Collapsed"
+                                                        Text="{Binding Count}" />
                                              <TextBlock Visibility="Collapsed"
                                                         Text="{Binding Percentage, StringFormat={}{0:0.##}%}" />
                                         </Grid>
@@ -355,7 +357,7 @@
                                            Foreground="{DynamicResource HerdrOps.Brush.PrimaryText}"
                                            FontSize="18"
                                            FontWeight="SemiBold"
-                                           Text="{Binding ComparisonTotalScoreLabel}" />
+                                           Text="{Binding DimensionWeightedAverageLabel}" />
                             </DockPanel>
                         </Border>
                     </StackPanel>
@@ -364,8 +366,9 @@
 
             <Grid>
                 <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="1.9*" MinWidth="680" />
-                    <ColumnDefinition Width="1.1*" MinWidth="360" />
+                    <ColumnDefinition Width="2*" MinWidth="540" />
+                    <ColumnDefinition Width="1*" MinWidth="250" />
+                    <ColumnDefinition Width="1*" MinWidth="250" />
                 </Grid.ColumnDefinitions>
 
                 <Border x:Name="EvaluationComparisonRegion"
@@ -378,6 +381,7 @@
                             <RowDefinition Height="Auto" />
                             <RowDefinition Height="Auto" />
                             <RowDefinition Height="*" />
+                            <RowDefinition Height="Auto" />
                             <RowDefinition Height="Auto" />
                         </Grid.RowDefinitions>
                         <Grid>
@@ -437,20 +441,29 @@
                                                 <TextBlock Style="{StaticResource EvaluationCaption}" Text="{Binding WeightLabel}" />
                                             </StackPanel>
                                             <StackPanel Grid.Column="1" Margin="6,0">
-                                                <TextBlock Foreground="{DynamicResource HerdrOps.Brush.TextPrimary}" Text="{Binding LeaderScoreLabel}" />
+                                                <TextBlock Foreground="{DynamicResource HerdrOps.Brush.TextPrimary}"
+                                                           Text="{Binding LeaderScoreLabel}"
+                                                           ToolTip="{Binding LeaderEvidenceIdentitySha256}" />
                                                 <TextBlock Style="{StaticResource EvaluationCaption}"
+                                                           Visibility="Collapsed"
                                                            Text="{Binding LeaderProvenanceId}"
                                                            ToolTip="{Binding LeaderEvidenceIdentitySha256}" />
                                             </StackPanel>
                                             <StackPanel Grid.Column="2" Margin="6,0">
-                                                <TextBlock Foreground="{DynamicResource HerdrOps.Brush.TextPrimary}" Text="{Binding ProjectManagerScoreLabel}" />
+                                                <TextBlock Foreground="{DynamicResource HerdrOps.Brush.TextPrimary}"
+                                                           Text="{Binding ProjectManagerScoreLabel}"
+                                                           ToolTip="{Binding ProjectManagerEvidenceIdentitySha256}" />
                                                 <TextBlock Style="{StaticResource EvaluationCaption}"
+                                                           Visibility="Collapsed"
                                                            Text="{Binding ProjectManagerProvenanceId}"
                                                            ToolTip="{Binding ProjectManagerEvidenceIdentitySha256}" />
                                             </StackPanel>
                                             <StackPanel Grid.Column="3" Margin="6,0">
-                                                <TextBlock Foreground="{DynamicResource HerdrOps.Brush.TextPrimary}" Text="{Binding ObjectiveEvidenceScoreLabel}" />
+                                                <TextBlock Foreground="{DynamicResource HerdrOps.Brush.TextPrimary}"
+                                                           Text="{Binding ObjectiveEvidenceScoreLabel}"
+                                                           ToolTip="{Binding ObjectiveEvidenceIdentitySha256}" />
                                                 <TextBlock Style="{StaticResource EvaluationCaption}"
+                                                           Visibility="Collapsed"
                                                            Text="{Binding ObjectiveEvidenceProvenanceId}"
                                                            ToolTip="{Binding ObjectiveEvidenceIdentitySha256}" />
                                             </StackPanel>
@@ -464,7 +477,52 @@
                                 </DataTemplate>
                             </ItemsControl.ItemTemplate>
                         </ItemsControl>
-                        <Grid Grid.Row="4" Margin="0,8,0,0">
+                        <Border x:Name="EvaluationComparisonTotalRow"
+                                Grid.Row="4"
+                                Margin="0,3,0,0"
+                                Padding="6,1"
+                                Background="{DynamicResource HerdrOps.Brush.SurfaceRaised}"
+                                BorderBrush="{DynamicResource HerdrOps.Brush.Border}"
+                                BorderThickness="0,1,0,0"
+                                ToolTip="{Binding ComparisonSnapshotSha256}"
+                                automation:AutomationProperties.Name="{Binding ComparisonTotal.AccessibilityText}"
+                                automation:AutomationProperties.HelpText="{Binding ComparisonTotal.StatusText}">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="1.35*" />
+                                    <ColumnDefinition Width="1*" />
+                                    <ColumnDefinition Width="1*" />
+                                    <ColumnDefinition Width="1.15*" />
+                                    <ColumnDefinition Width="0.9*" />
+                                </Grid.ColumnDefinitions>
+                                <StackPanel>
+                                    <TextBlock Foreground="{DynamicResource HerdrOps.Brush.TextPrimary}"
+                                               FontSize="11"
+                                               FontWeight="SemiBold"
+                                               Text="{Binding ComparisonTotal.Label}" />
+                                    <TextBlock Style="{StaticResource EvaluationCaption}"
+                                               Text="{Binding ComparisonTotal.TotalWeightLabel}" />
+                                </StackPanel>
+                                <TextBlock Grid.Column="1"
+                                           VerticalAlignment="Center"
+                                           Foreground="{DynamicResource HerdrOps.Brush.TextPrimary}"
+                                           Text="{Binding ComparisonTotal.LeaderScoreLabel}" />
+                                <TextBlock Grid.Column="2"
+                                           VerticalAlignment="Center"
+                                           Foreground="{DynamicResource HerdrOps.Brush.TextPrimary}"
+                                           Text="{Binding ComparisonTotal.ProjectManagerScoreLabel}" />
+                                <TextBlock Grid.Column="3"
+                                           VerticalAlignment="Center"
+                                           Foreground="{DynamicResource HerdrOps.Brush.TextPrimary}"
+                                           Text="{Binding ComparisonTotal.ObjectiveEvidenceScoreLabel}" />
+                                <TextBlock Grid.Column="4"
+                                           VerticalAlignment="Center"
+                                           Foreground="{DynamicResource HerdrOps.Brush.PrimaryText}"
+                                           FontWeight="SemiBold"
+                                        Text="{Binding ComparisonTotalScoreLabel}" />
+                            </Grid>
+                        </Border>
+                        <Grid Grid.Row="5" Margin="0,4,0,0" Visibility="Collapsed">
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="Auto" />
                                 <ColumnDefinition Width="*" />
@@ -474,6 +532,7 @@
                                 <TextBlock Style="{StaticResource EvaluationCaption}" Text="{Binding ComparisonFormulaLabel}" />
                                 <TextBlock MaxWidth="420"
                                            Style="{StaticResource EvaluationCaption}"
+                                           Visibility="Collapsed"
                                            Text="{Binding ComparisonSnapshotSha256}"
                                            TextTrimming="CharacterEllipsis"
                                            ToolTip="{Binding ComparisonSnapshotSha256}" />
@@ -483,15 +542,15 @@
                                        Foreground="{DynamicResource HerdrOps.Brush.PrimaryText}"
                                        FontSize="20"
                                        FontWeight="SemiBold"
-                                       Text="{Binding DimensionWeightedAverageLabel}" />
+                                        Text="{Binding ComparisonTotalScoreLabel}" />
                         </Grid>
                     </Grid>
                 </Border>
 
-                <StackPanel Grid.Column="1">
-                    <Border x:Name="EvaluationTopAgentsRegion"
-                            Style="{StaticResource EvaluationCard}"
-                            automation:AutomationProperties.Name="{Binding [EvaluationTopPerformingAgentsAutomation], Source={x:Static localization:UiLanguageService.Shared}}">
+                <Border x:Name="EvaluationTopAgentsRegion"
+                        Grid.Column="1"
+                        Style="{StaticResource EvaluationCard}"
+                        automation:AutomationProperties.Name="{Binding [EvaluationTopPerformingAgentsAutomation], Source={x:Static localization:UiLanguageService.Shared}}">
                         <StackPanel>
                             <TextBlock Style="{StaticResource EvaluationSectionTitle}"
                                        Text="{Binding [EvaluationTopPerformingAgentsTitle], Source={x:Static localization:UiLanguageService.Shared}}" />
@@ -513,11 +572,15 @@
                                                     <TextBlock HorizontalAlignment="Center" VerticalAlignment="Center" FontSize="10" Text="{Binding Rank}" />
                                                 </Border>
                                                 <StackPanel Grid.Column="1" Margin="7,0">
-                                                    <TextBlock Foreground="{DynamicResource HerdrOps.Brush.TextPrimary}" FontSize="11" Text="{Binding AgentLabel}" TextTrimming="CharacterEllipsis" />
+                                                    <TextBlock Foreground="{DynamicResource HerdrOps.Brush.TextPrimary}"
+                                                               FontSize="11"
+                                                               Text="{Binding AgentLabel}"
+                                                               TextTrimming="CharacterEllipsis"
+                                                               ToolTip="{Binding AccessibilityText}" />
                                                     <TextBlock Style="{StaticResource EvaluationCaption}" Text="{Binding TieLabel}" />
                                                     <TextBlock Style="{StaticResource EvaluationCaption}" Text="{Binding TrendLabel}" TextTrimming="CharacterEllipsis" />
-                                                    <TextBlock Style="{StaticResource EvaluationCaption}" Text="{Binding ContextLabel}" TextTrimming="CharacterEllipsis" />
-                                                    <TextBlock Style="{StaticResource EvaluationCaption}" Text="{Binding ProvenanceLabel}" TextTrimming="CharacterEllipsis" ToolTip="{Binding ProvenanceLabel}" />
+                                                    <TextBlock Style="{StaticResource EvaluationCaption}" Visibility="Collapsed" Text="{Binding ContextLabel}" TextTrimming="CharacterEllipsis" />
+                                                    <TextBlock Style="{StaticResource EvaluationCaption}" Visibility="Collapsed" Text="{Binding ProvenanceLabel}" TextTrimming="CharacterEllipsis" ToolTip="{Binding ProvenanceLabel}" />
                                                 </StackPanel>
                                                 <TextBlock Grid.Column="2" VerticalAlignment="Center" Foreground="{Binding AccentBrushKey, Converter={StaticResource ResourceBrush}}" FontWeight="SemiBold" Text="{Binding ScoreLabel}" />
                                             </Grid>
@@ -543,9 +606,10 @@
                         </StackPanel>
                     </Border>
 
-                    <Border x:Name="EvaluationLowAgentsRegion"
-                            Style="{StaticResource EvaluationCard}"
-                            automation:AutomationProperties.Name="{Binding [EvaluationLowPerformingAgentsAutomation], Source={x:Static localization:UiLanguageService.Shared}}">
+                <Border x:Name="EvaluationLowAgentsRegion"
+                        Grid.Column="2"
+                        Style="{StaticResource EvaluationCard}"
+                        automation:AutomationProperties.Name="{Binding [EvaluationLowPerformingAgentsAutomation], Source={x:Static localization:UiLanguageService.Shared}}">
                         <StackPanel>
                             <TextBlock Style="{StaticResource EvaluationSectionTitle}"
                                        Text="{Binding [EvaluationLowPerformingAgentsTitle], Source={x:Static localization:UiLanguageService.Shared}}" />
@@ -567,11 +631,15 @@
                                                     <TextBlock HorizontalAlignment="Center" VerticalAlignment="Center" FontSize="10" Text="{Binding Rank}" />
                                                 </Border>
                                                 <StackPanel Grid.Column="1" Margin="7,0">
-                                                    <TextBlock Foreground="{DynamicResource HerdrOps.Brush.TextPrimary}" FontSize="11" Text="{Binding AgentLabel}" TextTrimming="CharacterEllipsis" />
+                                                    <TextBlock Foreground="{DynamicResource HerdrOps.Brush.TextPrimary}"
+                                                               FontSize="11"
+                                                               Text="{Binding AgentLabel}"
+                                                               TextTrimming="CharacterEllipsis"
+                                                               ToolTip="{Binding AccessibilityText}" />
                                                     <TextBlock Style="{StaticResource EvaluationCaption}" Text="{Binding TieLabel}" />
                                                     <TextBlock Style="{StaticResource EvaluationCaption}" Text="{Binding TrendLabel}" TextTrimming="CharacterEllipsis" />
-                                                    <TextBlock Style="{StaticResource EvaluationCaption}" Text="{Binding ContextLabel}" TextTrimming="CharacterEllipsis" />
-                                                    <TextBlock Style="{StaticResource EvaluationCaption}" Text="{Binding ProvenanceLabel}" TextTrimming="CharacterEllipsis" ToolTip="{Binding ProvenanceLabel}" />
+                                                    <TextBlock Style="{StaticResource EvaluationCaption}" Visibility="Collapsed" Text="{Binding ContextLabel}" TextTrimming="CharacterEllipsis" />
+                                                    <TextBlock Style="{StaticResource EvaluationCaption}" Visibility="Collapsed" Text="{Binding ProvenanceLabel}" TextTrimming="CharacterEllipsis" ToolTip="{Binding ProvenanceLabel}" />
                                                 </StackPanel>
                                                 <TextBlock Grid.Column="2" VerticalAlignment="Center" Foreground="{Binding AccentBrushKey, Converter={StaticResource ResourceBrush}}" FontWeight="SemiBold" Text="{Binding ScoreLabel}" />
                                             </Grid>
@@ -596,7 +664,6 @@
                             </TextBlock>
                         </StackPanel>
                     </Border>
-                </StackPanel>
             </Grid>
         </StackPanel>
     </ScrollViewer>

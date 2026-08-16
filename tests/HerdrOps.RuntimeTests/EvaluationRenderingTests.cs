@@ -122,6 +122,8 @@ public sealed class EvaluationRenderingTests
             var thaiState = Assert.IsInstanceOfType<EvaluationState>(thaiPage.DataContext);
             AssertAccessibilityEquivalents(thaiPage, thaiState, language);
             AssertThaiSurface(thaiPage, language);
+            AssertComparisonAggregateBindingsAndValues(thaiPage, thaiState);
+            AssertReferenceRankingGeometry(thaiPage);
             var thaiPath = Path.Combine(evidenceDirectory, "evaluation-th-1672x941.png");
             RenderPng(thaiShell, ReferenceWidth, ReferenceHeight, thaiPath);
 
@@ -169,6 +171,8 @@ public sealed class EvaluationRenderingTests
             var englishState = Assert.IsInstanceOfType<EvaluationState>(englishPage.DataContext);
             AssertAccessibilityEquivalents(englishPage, englishState, language);
             AssertEnglishSurface(englishPage, language);
+            AssertComparisonAggregateBindingsAndValues(englishPage, englishState);
+            AssertReferenceRankingGeometry(englishPage);
             var englishPath = Path.Combine(evidenceDirectory, "evaluation-en-1672x941.png");
             RenderPng(englishShell, ReferenceWidth, ReferenceHeight, englishPath);
             AssertDifferentImages(thaiPath, englishPath);
@@ -266,6 +270,16 @@ public sealed class EvaluationRenderingTests
             page,
             "EvaluationComparisonRegion",
             state.ComparisonRows.Select(item => item.AccessibilityText));
+        var comparisonTotal = Assert.IsInstanceOfType<FrameworkElement>(
+            page.FindName("EvaluationComparisonTotalRow"));
+        Assert.AreEqual(
+            state.ComparisonTotal.AccessibilityText,
+            AutomationProperties.GetName(comparisonTotal),
+            "The comparison total row must expose the same source-bound accessibility equivalent as its values.");
+        Assert.AreEqual(
+            state.ComparisonTotal.StatusText,
+            AutomationProperties.GetHelpText(comparisonTotal),
+            "The comparison total row must expose an explicit localized status.");
         AssertAccessibleItems(
             page,
             "EvaluationTopAgentsRegion",
@@ -326,6 +340,63 @@ public sealed class EvaluationRenderingTests
         }
     }
 
+    private static void AssertComparisonAggregateBindingsAndValues(
+        EvaluationView page,
+        EvaluationState state)
+    {
+        var dimensionRegion = Assert.IsInstanceOfType<FrameworkElement>(
+            page.FindName("EvaluationDimensionRegion"));
+        var comparisonRegion = Assert.IsInstanceOfType<FrameworkElement>(
+            page.FindName("EvaluationComparisonRegion"));
+        var totalRow = Assert.IsInstanceOfType<FrameworkElement>(
+            page.FindName("EvaluationComparisonTotalRow"));
+
+        AssertVisibleTextContains(dimensionRegion, state.DimensionWeightedAverageLabel);
+        AssertVisibleTextDoesNotContain(dimensionRegion, state.ComparisonTotalScoreLabel);
+        AssertVisibleTextContains(comparisonRegion, state.ComparisonTotalScoreLabel);
+        AssertVisibleTextContains(comparisonRegion, state.ComparisonTotal.LeaderScoreLabel);
+        AssertVisibleTextContains(comparisonRegion, state.ComparisonTotal.ProjectManagerScoreLabel);
+        AssertVisibleTextContains(comparisonRegion, state.ComparisonTotal.ObjectiveEvidenceScoreLabel);
+        AssertVisibleTextContains(comparisonRegion, state.ComparisonTotal.TotalWeightLabel);
+        Assert.AreEqual(
+            state.ComparisonTotal.AccessibilityText,
+            AutomationProperties.GetName(totalRow));
+    }
+
+    private static void AssertReferenceRankingGeometry(EvaluationView page)
+    {
+        var scroll = Assert.IsInstanceOfType<ScrollViewer>(
+            page.FindName("EvaluationScrollViewer"));
+        scroll.ScrollToHome();
+        scroll.UpdateLayout();
+
+        var viewport = BoundsRelativeTo(scroll, page);
+        var comparison = BoundsRelativeTo(
+            Assert.IsInstanceOfType<FrameworkElement>(page.FindName("EvaluationComparisonRegion")),
+            page);
+        var top = BoundsRelativeTo(
+            Assert.IsInstanceOfType<FrameworkElement>(page.FindName("EvaluationTopAgentsRegion")),
+            page);
+        var low = BoundsRelativeTo(
+            Assert.IsInstanceOfType<FrameworkElement>(page.FindName("EvaluationLowAgentsRegion")),
+            page);
+
+        Assert.IsTrue(
+            viewport.Contains(comparison) && viewport.Contains(top) && viewport.Contains(low),
+            $"Reference Evaluation layout must show comparison and both rankings in the viewport: viewport={viewport}, comparison={comparison}, top={top}, low={low}");
+        Assert.IsLessThanOrEqualTo(
+            low.Left + GeometryEpsilon,
+            top.Right,
+            $"Top and low ranking panels must be side by side: top={top}, low={low}");
+        Assert.IsLessThanOrEqualTo(
+            GeometryEpsilon,
+            Math.Abs(top.Top - low.Top),
+            $"Top and low ranking panels must share the comparison row: top={top}, low={low}");
+        Assert.IsFalse(
+            HasPositiveAreaOverlap(top, low),
+            $"Top and low ranking panels overlap at the reference viewport: top={top}, low={low}");
+    }
+
     private static void AssertMissingAndInvalidStatuses(
         EvaluationView missingPage,
         EvaluationState missingState,
@@ -361,21 +432,56 @@ public sealed class EvaluationRenderingTests
         var unavailable = language["EvaluationUnavailableLabel"];
         var synthetic = language["EvaluationSyntheticStatus"];
         var missing = language["EvaluationMissingScoreLabel"];
+        var rankingUnavailable = language["EvaluationRankingUnavailable"];
+        Assert.AreEqual(unavailable, state.EvaluationCountLabel);
+        Assert.AreEqual(rankingUnavailable, state.RankingEmptyLabel);
+        Assert.IsTrue(state.SummaryCards.All(item =>
+            item.Value == unavailable &&
+            item.MetricLabel == unavailable &&
+            item.TrendLabel == unavailable &&
+            item.Score is null &&
+            item.Count is null &&
+            item.Percentage is null));
         Assert.AreEqual(unavailable, state.DistributionCenterValue);
         Assert.AreEqual(unavailable, state.DistributionCenterLabel);
         Assert.AreEqual(unavailable, state.DistributionTotalLabel);
         Assert.IsTrue(state.DistributionBins.All(item =>
             item.Percentage == -1m &&
+            item.CountLabel == unavailable &&
             item.PercentageLabel == unavailable &&
             item.StatusText == unavailable));
         Assert.IsTrue(state.TrendPoints.All(item =>
             item.Score is null &&
-            item.ScoreLabel == "—" &&
+            item.ScoreLabel == unavailable &&
             item.StatusText == unavailable));
+        Assert.IsTrue(state.DimensionRows.All(item =>
+            item.ScoreLabel == unavailable &&
+            item.StatusLabel == unavailable));
+        Assert.IsTrue(state.ComparisonRows.All(item =>
+            item.WeightLabel == unavailable &&
+            item.LeaderScoreLabel == unavailable &&
+            item.ProjectManagerScoreLabel == unavailable &&
+            item.ObjectiveEvidenceScoreLabel == unavailable &&
+            item.WeightedScoreLabel == unavailable &&
+            item.StatusText == unavailable));
+        Assert.AreEqual(unavailable, state.ComparisonTotal.TotalWeightLabel);
+        Assert.AreEqual(unavailable, state.ComparisonTotal.LeaderScoreLabel);
+        Assert.AreEqual(unavailable, state.ComparisonTotal.ProjectManagerScoreLabel);
+        Assert.AreEqual(unavailable, state.ComparisonTotal.ObjectiveEvidenceScoreLabel);
+        Assert.AreEqual(unavailable, state.ComparisonTotal.WeightedScoreLabel);
+        Assert.AreEqual(unavailable, state.ComparisonTotal.StatusText);
         Assert.IsFalse(state.DistributionBins.Any(item => item.StatusText == synthetic));
         AssertVisibleTextContains(page, unavailable);
+        AssertVisibleTextContains(page, rankingUnavailable);
         AssertVisibleTextDoesNotContain(page, synthetic);
         AssertVisibleTextDoesNotContain(page, missing);
+        AssertVisibleTextDoesNotContain(page, "—");
+        Assert.IsFalse(VisibleText(page).Any(value =>
+            string.Equals(value, language["EvaluationToday"], StringComparison.Ordinal)));
+        Assert.IsFalse(VisibleText(page).Any(value =>
+            value.Contains("from 0", StringComparison.Ordinal)));
+        Assert.IsFalse(VisibleText(page).Any(value =>
+            value.Contains(language["EvaluationNoRankingData"], StringComparison.Ordinal)));
     }
 
     private static EvaluationState CreateInvalidScorePreview(EvaluationState sourceState)
@@ -580,7 +686,10 @@ public sealed class EvaluationRenderingTests
         foreach (var key in EvaluationCopyKeys)
         {
             var otherText = language.Text(otherLanguage, key);
-            if (string.IsNullOrWhiteSpace(otherText) || otherText.Contains("{", StringComparison.Ordinal))
+            var selectedText = language[key];
+            if (string.IsNullOrWhiteSpace(otherText) ||
+                otherText.Contains("{", StringComparison.Ordinal) ||
+                string.Equals(otherText, selectedText, StringComparison.Ordinal))
             {
                 continue;
             }
