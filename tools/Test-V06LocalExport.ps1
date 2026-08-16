@@ -203,7 +203,8 @@ function Invoke-ExportEvidenceTests {
         --artifacts-path $artifactRoot `
         --results-directory $testResultDirectory `
         --filter $Filter `
-        --logger "trx;LogFileName=$LogFileName"
+        --logger "trx;LogFileName=$LogFileName" |
+        Out-Host
     $exitCode = $LASTEXITCODE
     if ($exitCode -ne 0) {
         throw "$EvidenceLabel export evidence tests failed with exit code $exitCode."
