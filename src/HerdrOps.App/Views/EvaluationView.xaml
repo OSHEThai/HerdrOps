@@ -92,7 +92,8 @@
             </Border>
 
             <ItemsControl x:Name="EvaluationSummaryRegion"
-                          ItemsSource="{Binding SummaryCards}">
+                          ItemsSource="{Binding SummaryCards}"
+                          automation:AutomationProperties.Name="{Binding [EvaluationSummaryAutomation], Source={x:Static localization:UiLanguageService.Shared}}">
                 <ItemsControl.ItemsPanel>
                     <ItemsPanelTemplate>
                         <UniformGrid Rows="1" Columns="5" />
@@ -186,10 +187,13 @@
                             <ItemsControl Grid.Column="1" Margin="8,0,0,0" ItemsSource="{Binding DistributionBins}">
                                 <ItemsControl.ItemTemplate>
                                     <DataTemplate>
-                                        <Grid Margin="0,2">
+                                        <Grid Margin="0,2"
+                                              automation:AutomationProperties.Name="{Binding AccessibilityText}"
+                                              automation:AutomationProperties.HelpText="{Binding StatusText}">
                                             <Grid.ColumnDefinitions>
                                                 <ColumnDefinition Width="12" />
                                                 <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="Auto" />
                                                 <ColumnDefinition Width="Auto" />
                                             </Grid.ColumnDefinitions>
                                             <Ellipse Width="7" Height="7"
@@ -204,6 +208,11 @@
                                                        Foreground="{DynamicResource HerdrOps.Brush.TextPrimary}"
                                                        FontSize="10"
                                                        Text="{Binding Count}" />
+                                            <TextBlock Grid.Column="3"
+                                                       Margin="8,0,0,0"
+                                                       Foreground="{DynamicResource HerdrOps.Brush.TextSecondary}"
+                                                       FontSize="10"
+                                                       Text="{Binding Percentage, StringFormat={}{0:0.##}%}" />
                                         </Grid>
                                     </DataTemplate>
                                 </ItemsControl.ItemTemplate>
@@ -223,6 +232,7 @@
                         <Grid.RowDefinitions>
                             <RowDefinition Height="Auto" />
                             <RowDefinition Height="*" />
+                            <RowDefinition Height="Auto" />
                         </Grid.RowDefinitions>
                         <DockPanel>
                             <Border DockPanel.Dock="Right"
@@ -247,6 +257,39 @@
                                                             ItemsSource="{Binding TrendPoints}"
                                                             LabelBrush="{DynamicResource HerdrOps.Brush.TextMuted}"
                                                             LineBrush="{DynamicResource HerdrOps.Brush.Chart.Primary}" />
+                        <ItemsControl Grid.Row="2"
+                                      Margin="0,5,0,0"
+                                      ItemsSource="{Binding TrendPoints}">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <Grid Margin="0,1"
+                                          automation:AutomationProperties.Name="{Binding AccessibilityText}"
+                                          automation:AutomationProperties.HelpText="{Binding StatusText}">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="1.2*" />
+                                            <ColumnDefinition Width="0.8*" />
+                                            <ColumnDefinition Width="1.1*" />
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Foreground="{DynamicResource HerdrOps.Brush.TextSecondary}"
+                                                   FontSize="9"
+                                                   Text="{Binding DateLabel}"
+                                                   TextTrimming="CharacterEllipsis"
+                                                   ToolTip="{Binding DateLabel}" />
+                                        <TextBlock Grid.Column="1"
+                                                   Foreground="{DynamicResource HerdrOps.Brush.TextPrimary}"
+                                                   FontSize="9"
+                                                   Text="{Binding ScoreLabel}"
+                                                   TextTrimming="CharacterEllipsis" />
+                                        <TextBlock Grid.Column="2"
+                                                   Foreground="{DynamicResource HerdrOps.Brush.TextMuted}"
+                                                   FontSize="9"
+                                                   Text="{Binding StatusText}"
+                                                   TextTrimming="CharacterEllipsis"
+                                                   ToolTip="{Binding StatusText}" />
+                                    </Grid>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
                     </Grid>
                 </Border>
 
@@ -262,9 +305,10 @@
                                 <DataTemplate>
                                     <Grid Margin="0,3" automation:AutomationProperties.Name="{Binding AccessibilityText}">
                                         <Grid.ColumnDefinitions>
-                                            <ColumnDefinition Width="138" />
+                                            <ColumnDefinition Width="125" />
                                             <ColumnDefinition Width="*" />
-                                            <ColumnDefinition Width="34" />
+                                            <ColumnDefinition Width="42" />
+                                            <ColumnDefinition Width="Auto" />
                                         </Grid.ColumnDefinitions>
                                         <TextBlock Foreground="{DynamicResource HerdrOps.Brush.TextSecondary}"
                                                    FontSize="10"
@@ -281,6 +325,14 @@
                                                    Foreground="{Binding AccentBrushKey, Converter={StaticResource ResourceBrush}}"
                                                    FontSize="10"
                                                    Text="{Binding ScoreLabel}" />
+                                        <TextBlock Grid.Column="3"
+                                                   Margin="7,0,0,0"
+                                                   VerticalAlignment="Center"
+                                                   Foreground="{DynamicResource HerdrOps.Brush.TextMuted}"
+                                                   FontSize="9"
+                                                   Text="{Binding StatusLabel}"
+                                                   TextTrimming="CharacterEllipsis"
+                                                   ToolTip="{Binding StatusLabel}" />
                                     </Grid>
                                 </DataTemplate>
                             </ItemsControl.ItemTemplate>
@@ -425,7 +477,7 @@
                                        Foreground="{DynamicResource HerdrOps.Brush.PrimaryText}"
                                        FontSize="20"
                                        FontWeight="SemiBold"
-                                       Text="{Binding ComparisonTotalScoreLabel}" />
+                                       Text="{Binding DimensionWeightedAverageLabel}" />
                         </Grid>
                     </Grid>
                 </Border>
@@ -437,11 +489,14 @@
                         <StackPanel>
                             <TextBlock Style="{StaticResource EvaluationSectionTitle}"
                                        Text="{Binding [EvaluationTopPerformingAgentsTitle], Source={x:Static localization:UiLanguageService.Shared}}" />
-                            <ItemsControl Margin="0,5,0,0" ItemsSource="{Binding TopAgents}">
+                            <ItemsControl x:Name="EvaluationTopAgentsList"
+                                          Margin="0,5,0,0"
+                                          ItemsSource="{Binding TopAgents}">
                                 <ItemsControl.ItemTemplate>
                                     <DataTemplate>
                                         <Border Style="{StaticResource EvaluationDataRow}"
-                                                automation:AutomationProperties.Name="{Binding AccessibilityText}">
+                                                automation:AutomationProperties.Name="{Binding AccessibilityText}"
+                                                automation:AutomationProperties.HelpText="{Binding StatusText}">
                                             <Grid>
                                                 <Grid.ColumnDefinitions>
                                                     <ColumnDefinition Width="28" />
@@ -454,6 +509,9 @@
                                                 <StackPanel Grid.Column="1" Margin="7,0">
                                                     <TextBlock Foreground="{DynamicResource HerdrOps.Brush.TextPrimary}" FontSize="11" Text="{Binding AgentLabel}" TextTrimming="CharacterEllipsis" />
                                                     <TextBlock Style="{StaticResource EvaluationCaption}" Text="{Binding TieLabel}" />
+                                                    <TextBlock Style="{StaticResource EvaluationCaption}" Text="{Binding TrendLabel}" TextTrimming="CharacterEllipsis" />
+                                                    <TextBlock Style="{StaticResource EvaluationCaption}" Text="{Binding ContextLabel}" TextTrimming="CharacterEllipsis" />
+                                                    <TextBlock Style="{StaticResource EvaluationCaption}" Text="{Binding ProvenanceLabel}" TextTrimming="CharacterEllipsis" ToolTip="{Binding ProvenanceLabel}" />
                                                 </StackPanel>
                                                 <TextBlock Grid.Column="2" VerticalAlignment="Center" Foreground="{Binding AccentBrushKey, Converter={StaticResource ResourceBrush}}" FontWeight="SemiBold" Text="{Binding ScoreLabel}" />
                                             </Grid>
@@ -461,6 +519,21 @@
                                     </DataTemplate>
                                 </ItemsControl.ItemTemplate>
                             </ItemsControl>
+                            <TextBlock Margin="0,6,0,0"
+                                       Foreground="{DynamicResource HerdrOps.Brush.TextMuted}"
+                                       Text="{Binding RankingEmptyLabel}"
+                                       TextWrapping="Wrap">
+                                <TextBlock.Style>
+                                    <Style TargetType="TextBlock">
+                                        <Setter Property="Visibility" Value="Collapsed" />
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding ElementName=EvaluationTopAgentsList, Path=HasItems}" Value="False">
+                                                <Setter Property="Visibility" Value="Visible" />
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </TextBlock.Style>
+                            </TextBlock>
                         </StackPanel>
                     </Border>
 
@@ -470,11 +543,14 @@
                         <StackPanel>
                             <TextBlock Style="{StaticResource EvaluationSectionTitle}"
                                        Text="{Binding [EvaluationLowPerformingAgentsTitle], Source={x:Static localization:UiLanguageService.Shared}}" />
-                            <ItemsControl Margin="0,5,0,0" ItemsSource="{Binding LowAgents}">
+                            <ItemsControl x:Name="EvaluationLowAgentsList"
+                                          Margin="0,5,0,0"
+                                          ItemsSource="{Binding LowAgents}">
                                 <ItemsControl.ItemTemplate>
                                     <DataTemplate>
                                         <Border Style="{StaticResource EvaluationDataRow}"
-                                                automation:AutomationProperties.Name="{Binding AccessibilityText}">
+                                                automation:AutomationProperties.Name="{Binding AccessibilityText}"
+                                                automation:AutomationProperties.HelpText="{Binding StatusText}">
                                             <Grid>
                                                 <Grid.ColumnDefinitions>
                                                     <ColumnDefinition Width="28" />
@@ -487,6 +563,9 @@
                                                 <StackPanel Grid.Column="1" Margin="7,0">
                                                     <TextBlock Foreground="{DynamicResource HerdrOps.Brush.TextPrimary}" FontSize="11" Text="{Binding AgentLabel}" TextTrimming="CharacterEllipsis" />
                                                     <TextBlock Style="{StaticResource EvaluationCaption}" Text="{Binding TieLabel}" />
+                                                    <TextBlock Style="{StaticResource EvaluationCaption}" Text="{Binding TrendLabel}" TextTrimming="CharacterEllipsis" />
+                                                    <TextBlock Style="{StaticResource EvaluationCaption}" Text="{Binding ContextLabel}" TextTrimming="CharacterEllipsis" />
+                                                    <TextBlock Style="{StaticResource EvaluationCaption}" Text="{Binding ProvenanceLabel}" TextTrimming="CharacterEllipsis" ToolTip="{Binding ProvenanceLabel}" />
                                                 </StackPanel>
                                                 <TextBlock Grid.Column="2" VerticalAlignment="Center" Foreground="{Binding AccentBrushKey, Converter={StaticResource ResourceBrush}}" FontWeight="SemiBold" Text="{Binding ScoreLabel}" />
                                             </Grid>
@@ -494,6 +573,21 @@
                                     </DataTemplate>
                                 </ItemsControl.ItemTemplate>
                             </ItemsControl>
+                            <TextBlock Margin="0,6,0,0"
+                                       Foreground="{DynamicResource HerdrOps.Brush.TextMuted}"
+                                       Text="{Binding RankingEmptyLabel}"
+                                       TextWrapping="Wrap">
+                                <TextBlock.Style>
+                                    <Style TargetType="TextBlock">
+                                        <Setter Property="Visibility" Value="Collapsed" />
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding ElementName=EvaluationLowAgentsList, Path=HasItems}" Value="False">
+                                                <Setter Property="Visibility" Value="Visible" />
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </TextBlock.Style>
+                            </TextBlock>
                         </StackPanel>
                     </Border>
                 </StackPanel>

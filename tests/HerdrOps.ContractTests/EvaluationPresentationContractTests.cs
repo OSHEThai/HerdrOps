@@ -53,6 +53,29 @@ public sealed class EvaluationPresentationContractTests
         StringAssert.Contains(xaml, "ItemsSource=\"{Binding TrendPoints}\"");
         StringAssert.Contains(xaml, "ItemsSource=\"{Binding DimensionRows}\"");
         StringAssert.Contains(xaml, "ItemsSource=\"{Binding ComparisonRows}\"");
+        foreach (var accessibilityMarker in new[]
+                 {
+                     "EvaluationSummaryAutomation",
+                     "automation:AutomationProperties.Name=\"{Binding AccessibilityText}\"",
+                     "automation:AutomationProperties.HelpText=\"{Binding StatusText}\"",
+                     "Text=\"{Binding Count}\"",
+                     "Text=\"{Binding Percentage, StringFormat={}{0:0.##}%}\"",
+                     "Text=\"{Binding DateLabel}\"",
+                     "Text=\"{Binding ScoreLabel}\"",
+                     "Text=\"{Binding StatusText}\"",
+                     "Text=\"{Binding StatusLabel}\"",
+                     "Text=\"{Binding DimensionWeightedAverageLabel}\"",
+                     "Text=\"{Binding TrendLabel}\"",
+                     "Text=\"{Binding ContextLabel}\"",
+                     "Text=\"{Binding ProvenanceLabel}\"",
+                     "Text=\"{Binding RankingEmptyLabel}\"",
+                     "Path=HasItems",
+                     "EvaluationTopAgentsList",
+                     "EvaluationLowAgentsList",
+                 })
+        {
+            StringAssert.Contains(xaml, accessibilityMarker);
+        }
         Assert.IsFalse(
             Regex.IsMatch(xaml, @"#[0-9A-Fa-f]{6,8}\b", RegexOptions.CultureInvariant),
             "Evaluation must use shared semantic resources instead of page-local colors.");
