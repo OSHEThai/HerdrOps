@@ -23,7 +23,7 @@ public sealed class HerdrProtocolJsonCodecContractTests
     }
 
     [TestMethod]
-    public void SubscriptionRequestContainsGeneralEventsAndOneFilteredStatusPerUniquePane()
+    public void SubscriptionRequestContainsOnlyOneLiveStatusFilterPerUniquePane()
     {
         var bytes = HerdrProtocolJsonCodec.CreateSubscriptionRequest(
             "request-2",
@@ -36,10 +36,12 @@ public sealed class HerdrProtocolJsonCodecContractTests
             .ToArray();
 
         Assert.AreEqual("events.subscribe", document.RootElement.GetProperty("method").GetString());
-        Assert.HasCount(26, subscriptions);
-        Assert.IsTrue(subscriptions.Any(item => item.GetProperty("type").GetString() == "workspace.created"));
-        Assert.IsTrue(subscriptions.Any(item => item.GetProperty("type").GetString() == "pane.updated"));
-        Assert.IsTrue(subscriptions.Any(item => item.GetProperty("type").GetString() == "layout.updated"));
+        Assert.HasCount(2, subscriptions);
+        Assert.IsTrue(subscriptions.All(
+            item => item.GetProperty("type").GetString() == "pane.agent_status_changed"));
+        Assert.IsTrue(subscriptions.All(
+            item => !item.TryGetProperty("agent_status", out _)),
+            "Omitting agent_status prevents the admitted Herdr server from emitting a synthetic initial-match event.");
         var filtered = subscriptions
             .Where(item => item.GetProperty("type").GetString() == "pane.agent_status_changed")
             .Select(item => item.GetProperty("pane_id").GetString())
@@ -183,6 +185,26 @@ public sealed class HerdrProtocolJsonCodecContractTests
                 """));
 
         StringAssert.Contains(exception.Message, "disagrees with data type");
+    }
+
+    [TestMethod]
+    public void WorkspaceCreatedReplayRetainsTheCompleteWorkspaceSnapshot()
+    {
+        var stateEvent = HerdrProtocolJsonCodec.ParseEvent(
+            """
+            {"event":"workspace_created","data":{"type":"workspace_created","workspace":{"workspace_id":"w7","number":2,"label":"HerdrOps","focused":true,"pane_count":7,"tab_count":7,"active_tab_id":"w7:t1","agent_status":"done"}}}
+            """);
+
+        var changed = Assert.IsInstanceOfType<HerdrWorkspaceChangedEvent>(stateEvent);
+        Assert.AreEqual("workspace_created", changed.EventName);
+        Assert.AreEqual("w7", changed.Workspace.WorkspaceId);
+        Assert.AreEqual(2, changed.Workspace.Number);
+        Assert.AreEqual("HerdrOps", changed.Workspace.Label);
+        Assert.IsTrue(changed.Workspace.Focused);
+        Assert.AreEqual(7, changed.Workspace.PaneCount);
+        Assert.AreEqual(7, changed.Workspace.TabCount);
+        Assert.AreEqual("w7:t1", changed.Workspace.ActiveTabId);
+        Assert.AreEqual(HerdrAgentStatus.Done, changed.Workspace.AgentStatus);
     }
 
     [TestMethod]

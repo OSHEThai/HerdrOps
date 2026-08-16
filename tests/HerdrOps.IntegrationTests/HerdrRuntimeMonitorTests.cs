@@ -76,7 +76,7 @@ public sealed class HerdrRuntimeMonitorTests
     }
 
     [TestMethod]
-    public async Task StalePaneEventQueuedBeforeAuthoritativeSnapshotIsIgnoredWithoutReconciliation()
+    public async Task UnexpectedGeneralPaneEventCannotEarnRuntimeEventCredit()
     {
         var authoritative = CreateSnapshot(revision: 5, HerdrAgentStatus.Working);
         var stalePane = authoritative.Panes[0] with
@@ -86,21 +86,25 @@ public sealed class HerdrRuntimeMonitorTests
             Title = "stale",
         };
         var apiClient = new ScriptedApiClient(
-            [authoritative, authoritative],
+            [authoritative, authoritative, authoritative, authoritative],
             [
-                ScriptedSubscription.WithEventsThenBlock(
+                ScriptedSubscription.WithEvents(
                     new HerdrPaneChangedEvent("pane_updated", stalePane)),
+                ScriptedSubscription.BlockUntilCancelled(),
             ]);
         var monitor = CreateMonitor(apiClient);
         using var cancellation = new CancellationTokenSource();
         var runTask = monitor.RunAsync(cancellation.Token);
 
-        await WaitForAsync(monitor, state => state.EventCount == 1);
+        await WaitForAsync(
+            monitor,
+            state => state.BootstrapCount == 2 &&
+                     state.Status == HerdrRuntimeMonitorStatus.Connected);
         cancellation.Cancel();
         await Assert.ThrowsAsync<OperationCanceledException>(() => runTask);
 
-        Assert.AreEqual(1, monitor.Current.BootstrapCount);
-        Assert.AreEqual(0, monitor.Current.ReconciliationCount);
+        Assert.AreEqual(0, monitor.Current.EventCount);
+        Assert.AreEqual(1, monitor.Current.ReconciliationCount);
         Assert.AreEqual((ulong)5, monitor.Current.State.Panes["pane-1"].Revision);
         Assert.AreEqual(HerdrAgentStatus.Working, monitor.Current.State.Panes["pane-1"].AgentStatus);
         Assert.AreEqual("Worker", monitor.Current.State.Panes["pane-1"].Title);
@@ -110,8 +114,26 @@ public sealed class HerdrRuntimeMonitorTests
     public async Task FilteredAgentStatusEventUpdatesCurrentStateWithoutAnotherBootstrap()
     {
         var snapshot = CreateSnapshot(revision: 1, HerdrAgentStatus.Working);
+        var updatedSnapshot = CreateSnapshot(revision: 2, HerdrAgentStatus.Blocked);
+        updatedSnapshot = updatedSnapshot with
+        {
+            Panes =
+            [
+                updatedSnapshot.Panes[0] with
+                {
+                    Title = "Waiting",
+                },
+            ],
+            Agents =
+            [
+                updatedSnapshot.Agents[0] with
+                {
+                    Title = "Waiting",
+                },
+            ],
+        };
         var apiClient = new ScriptedApiClient(
-            [snapshot, snapshot],
+            [snapshot, snapshot, updatedSnapshot],
             [
                 ScriptedSubscription.WithEventsThenBlock(
                     new HerdrPaneAgentStatusChangedEvent(
@@ -138,43 +160,316 @@ public sealed class HerdrRuntimeMonitorTests
         Assert.AreEqual(HerdrAgentStatus.Blocked, monitor.Current.State.Panes["pane-1"].AgentStatus);
         Assert.AreEqual("Waiting", monitor.Current.State.Agents["terminal-1"].Title);
         Assert.AreEqual(1, monitor.Current.EventCount);
+        Assert.AreEqual(1, monitor.Current.ReconciliationCount);
     }
 
     [TestMethod]
-    public async Task ThirtyAgentFreeReplayCyclesDoNotStartAReconciliationLoop()
+    public async Task UnderscoreStatusEventCannotEarnFilteredRuntimeEventCredit()
     {
-        var snapshot = CreateSnapshotWithAgentFreeShellPane();
-        var replayEvents = Enumerable.Range(0, 30)
-            .SelectMany(_ => new HerdrStateEvent[]
-            {
-                HerdrProtocolJsonCodec.ParseEvent(
-                    """
-                    {"event":"pane.agent_status_changed","data":{"pane_id":"pane-shell","workspace_id":"workspace-1","agent_status":"unknown","title":"Windows PowerShell"}}
-                    """),
-                HerdrProtocolJsonCodec.ParseEvent(
-                    """
-                    {"event":"pane_agent_detected","data":{"type":"pane_agent_detected","pane_id":"pane-shell","workspace_id":"workspace-1"}}
-                    """),
-            })
-            .ToArray();
+        var snapshot = CreateSnapshot(revision: 1, HerdrAgentStatus.Working);
         var apiClient = new ScriptedApiClient(
-            [snapshot, snapshot],
+            [snapshot, snapshot, snapshot, snapshot],
             [
-                ScriptedSubscription.WithEventsThenBlock(replayEvents),
+                ScriptedSubscription.WithEvents(
+                    new HerdrPaneAgentStatusChangedEvent(
+                        "pane_agent_status_changed",
+                        "workspace-1",
+                        "pane-1",
+                        HerdrAgentStatus.Blocked,
+                        "codex",
+                        "Codex",
+                        "Waiting")),
+                ScriptedSubscription.BlockUntilCancelled(),
             ]);
         var monitor = CreateMonitor(apiClient);
         using var cancellation = new CancellationTokenSource();
         var runTask = monitor.RunAsync(cancellation.Token);
 
-        await WaitForAsync(monitor, state => state.EventCount == 60);
+        await WaitForAsync(
+            monitor,
+            state => state.BootstrapCount == 2 &&
+                     state.Status == HerdrRuntimeMonitorStatus.Connected);
+
+        cancellation.Cancel();
+        await Assert.ThrowsAsync<OperationCanceledException>(() => runTask);
+
+        Assert.AreEqual(0, monitor.Current.EventCount);
+        Assert.AreEqual(1, monitor.Current.ReconciliationCount);
+        Assert.AreEqual(HerdrAgentStatus.Working, monitor.Current.State.Panes["pane-1"].AgentStatus);
+    }
+
+    [TestMethod]
+    public async Task ThirtyLiveStatusEventsDoNotStartAResubscriptionLoop()
+    {
+        var snapshot = CreateSnapshot(revision: 1, HerdrAgentStatus.Working);
+        var liveEvents = Enumerable.Range(0, 30)
+            .Select(_ => (HerdrStateEvent)new HerdrPaneAgentStatusChangedEvent(
+                "pane.agent_status_changed",
+                "workspace-1",
+                "pane-1",
+                HerdrAgentStatus.Working,
+                "codex",
+                "Codex",
+                "Worker"))
+            .ToArray();
+        var apiClient = new ScriptedApiClient(
+            Enumerable.Repeat(snapshot, 32),
+            [
+                ScriptedSubscription.WithEventsThenBlock(liveEvents),
+            ]);
+        var monitor = CreateMonitor(apiClient);
+        using var cancellation = new CancellationTokenSource();
+        var runTask = monitor.RunAsync(cancellation.Token);
+
+        await WaitForAsync(monitor, state => state.EventCount == 30);
         cancellation.Cancel();
         await Assert.ThrowsAsync<OperationCanceledException>(() => runTask);
 
         Assert.AreEqual(1, monitor.Current.BootstrapCount);
         Assert.AreEqual(0, monitor.Current.ReconciliationCount);
-        Assert.AreEqual(61, monitor.Current.State.LastIngestSequence);
+        Assert.AreEqual(31, monitor.Current.State.LastIngestSequence);
         Assert.HasCount(1, apiClient.SubscriptionPaneIds);
-        Assert.IsTrue(apiClient.SubscriptionPaneIds[0].SetEquals(["pane-1", "pane-shell"]));
+        Assert.IsTrue(apiClient.SubscriptionPaneIds[0].SetEquals(["pane-1"]));
+    }
+
+    [TestMethod]
+    public async Task PeriodicSnapshotRefreshesChangedStateWithoutInventingAnEvent()
+    {
+        var authoritative = CreateSnapshot(revision: 1, HerdrAgentStatus.Working);
+        var refreshed = CreateSnapshot(revision: 2, HerdrAgentStatus.Idle);
+        var apiClient = new ScriptedApiClient(
+            Enumerable.Repeat(authoritative, 2)
+                .Concat(Enumerable.Repeat(refreshed, 20)),
+            [ScriptedSubscription.BlockUntilCancelled()]);
+        var monitor = CreateMonitor(
+            apiClient,
+            options: new HerdrRuntimeMonitorOptions(TimeSpan.FromMilliseconds(10)));
+        using var cancellation = new CancellationTokenSource();
+        var runTask = monitor.RunAsync(cancellation.Token);
+
+        await WaitForAsync(
+            monitor,
+            state => state.ReconciliationCount == 1 &&
+                     state.State.Panes["pane-1"].AgentStatus == HerdrAgentStatus.Idle);
+
+        cancellation.Cancel();
+        await Assert.ThrowsAsync<OperationCanceledException>(() => runTask);
+
+        Assert.AreEqual(1, monitor.Current.BootstrapCount);
+        Assert.AreEqual(0, monitor.Current.EventCount);
+        Assert.AreEqual(1, monitor.Current.ReconciliationCount);
+        Assert.AreEqual(HerdrAgentStatus.Idle, monitor.Current.State.Agents["terminal-1"].AgentStatus);
+        Assert.HasCount(1, apiClient.SubscriptionPaneIds);
+    }
+
+    [TestMethod]
+    public async Task PeriodicPaneSetChangeRefreshesTheLiveStatusFilters()
+    {
+        var authoritative = CreateSnapshot(revision: 1, HerdrAgentStatus.Working);
+        var expanded = AddSecondPane(authoritative);
+        var apiClient = new ScriptedApiClient(
+            new[] { authoritative, authoritative }
+                .Concat(Enumerable.Repeat(expanded, 24)),
+            [
+                ScriptedSubscription.BlockUntilCancelled(),
+                ScriptedSubscription.BlockUntilCancelled(),
+            ]);
+        var monitor = CreateMonitor(
+            apiClient,
+            options: new HerdrRuntimeMonitorOptions(TimeSpan.FromMilliseconds(10)));
+        using var cancellation = new CancellationTokenSource();
+        var runTask = monitor.RunAsync(cancellation.Token);
+
+        await WaitForAsync(
+            monitor,
+            state => state.BootstrapCount == 2 &&
+                     state.Status == HerdrRuntimeMonitorStatus.Connected &&
+                     state.State.Panes.ContainsKey("pane-2"));
+
+        cancellation.Cancel();
+        await Assert.ThrowsAsync<OperationCanceledException>(() => runTask);
+
+        Assert.AreEqual(0, monitor.Current.EventCount);
+        Assert.AreEqual(1, monitor.Current.ReconciliationCount);
+        Assert.HasCount(2, apiClient.SubscriptionPaneIds);
+        Assert.IsTrue(apiClient.SubscriptionPaneIds[0].SetEquals(["pane-1"]));
+        Assert.IsTrue(apiClient.SubscriptionPaneIds[1].SetEquals(["pane-1", "pane-2"]));
+    }
+
+    [TestMethod]
+    public async Task ContinuousLiveStatusTrafficStillObservesTopologyChanges()
+    {
+        var authoritative = CreateSnapshot(revision: 1, HerdrAgentStatus.Working);
+        var expanded = AddSecondPane(authoritative);
+        var liveEvents = Enumerable.Range(0, 20)
+            .Select(_ => (HerdrStateEvent)new HerdrPaneAgentStatusChangedEvent(
+                "pane.agent_status_changed",
+                "workspace-1",
+                "pane-1",
+                HerdrAgentStatus.Working,
+                "codex",
+                "Codex",
+                "Worker"))
+            .ToArray();
+        var apiClient = new ScriptedApiClient(
+            new[] { authoritative, authoritative, authoritative }
+                .Concat(Enumerable.Repeat(expanded, 24)),
+            [
+                ScriptedSubscription.WithEventsThenBlock(liveEvents),
+                ScriptedSubscription.BlockUntilCancelled(),
+            ]);
+        var monitor = CreateMonitor(
+            apiClient,
+            options: new HerdrRuntimeMonitorOptions(TimeSpan.FromMilliseconds(1)));
+        using var cancellation = new CancellationTokenSource();
+        var runTask = monitor.RunAsync(cancellation.Token);
+
+        await WaitForAsync(
+            monitor,
+            state => state.BootstrapCount == 2 &&
+                     state.Status == HerdrRuntimeMonitorStatus.Connected &&
+                     state.State.Panes.ContainsKey("pane-2"));
+
+        cancellation.Cancel();
+        await Assert.ThrowsAsync<OperationCanceledException>(() => runTask);
+
+        Assert.AreEqual(2, monitor.Current.EventCount);
+        Assert.AreEqual(1, monitor.Current.ReconciliationCount);
+        Assert.HasCount(2, apiClient.SubscriptionPaneIds);
+        Assert.IsTrue(apiClient.SubscriptionPaneIds[1].SetEquals(["pane-1", "pane-2"]));
+    }
+
+    [TestMethod]
+    public async Task EventWinningThePollReadBarrierIsProcessedBeforeReconnect()
+    {
+        var authoritative = CreateSnapshot(revision: 1, HerdrAgentStatus.Working);
+        var expanded = AddSecondPane(CreateSnapshot(revision: 2, HerdrAgentStatus.Blocked));
+        var raceSubscription = new CancellationWinningSubscription(
+            new HerdrPaneAgentStatusChangedEvent(
+                "pane.agent_status_changed",
+                "workspace-1",
+                "pane-1",
+                HerdrAgentStatus.Blocked,
+                "codex",
+                "Codex",
+                "Waiting"));
+        var apiClient = new ScriptedApiClient(
+            [authoritative, authoritative, expanded, expanded, expanded],
+            [
+                raceSubscription,
+                ScriptedSubscription.BlockUntilCancelled(),
+            ]);
+        var monitor = CreateMonitor(
+            apiClient,
+            options: new HerdrRuntimeMonitorOptions(TimeSpan.FromMilliseconds(5)));
+        using var cancellation = new CancellationTokenSource();
+        var runTask = monitor.RunAsync(cancellation.Token);
+
+        await WaitForAsync(
+            monitor,
+            state => state.BootstrapCount == 2 &&
+                     state.Status == HerdrRuntimeMonitorStatus.Connected &&
+                     state.State.Panes.ContainsKey("pane-2"));
+
+        cancellation.Cancel();
+        await Assert.ThrowsAsync<OperationCanceledException>(() => runTask);
+
+        Assert.AreEqual(1, monitor.Current.EventCount);
+        Assert.AreEqual(1, monitor.Current.ReconciliationCount);
+        Assert.IsTrue(raceSubscription.IsDisposed);
+        Assert.IsTrue(apiClient.SubscriptionPaneIds[1].SetEquals(["pane-1", "pane-2"]));
+    }
+
+    [TestMethod]
+    public async Task ConsumedLiveStatusRemainsCountedWhenItsSnapshotFails()
+    {
+        var snapshot = CreateSnapshot(revision: 1, HerdrAgentStatus.Working);
+        var subscription = ScriptedSubscription.WithEventsThenBlock(
+            new HerdrPaneAgentStatusChangedEvent(
+                "pane.agent_status_changed",
+                "workspace-1",
+                "pane-1",
+                HerdrAgentStatus.Blocked,
+                "codex",
+                "Codex",
+                "Waiting"));
+        var reconnectDelay = new DisposalAssertingReconnectDelay(
+            () => subscription.IsDisposed);
+        var apiClient = new ScriptedApiClient(
+            [snapshot, snapshot],
+            [subscription]);
+        var monitor = CreateMonitor(apiClient, reconnectDelay);
+        using var cancellation = new CancellationTokenSource();
+        var runTask = monitor.RunAsync(cancellation.Token);
+
+        await WaitForAsync(
+            monitor,
+            state => state.Status == HerdrRuntimeMonitorStatus.Reconnecting &&
+                     state.EventCount == 1 &&
+                     state.ReconciliationCount == 1);
+
+        cancellation.Cancel();
+        await Assert.ThrowsAsync<OperationCanceledException>(() => runTask);
+
+        Assert.IsTrue(subscription.IsDisposed);
+        Assert.AreEqual(1, monitor.Current.EventCount);
+        Assert.AreEqual(2, monitor.Current.State.LastIngestSequence);
+        Assert.AreEqual(1, monitor.Current.BootstrapCount);
+    }
+
+    [TestMethod]
+    public async Task BootstrapPaneMismatchNeverPublishesAnIncompleteConnectedEpoch()
+    {
+        var discovery = CreateSnapshot(revision: 1, HerdrAgentStatus.Working);
+        var expanded = AddSecondPane(discovery);
+        var apiClient = new ScriptedApiClient(
+            [discovery, expanded, expanded, expanded],
+            [
+                ScriptedSubscription.BlockUntilCancelled(),
+                ScriptedSubscription.BlockUntilCancelled(),
+            ]);
+        var monitor = CreateMonitor(apiClient);
+        var incompleteConnectedEpochObserved = false;
+        monitor.StateChanged += (_, state) =>
+            incompleteConnectedEpochObserved |=
+                state.Status == HerdrRuntimeMonitorStatus.Connected &&
+                state.State.ConnectionEpoch == 1;
+        using var cancellation = new CancellationTokenSource();
+        var runTask = monitor.RunAsync(cancellation.Token);
+
+        await WaitForAsync(
+            monitor,
+            state => state.BootstrapCount == 2 &&
+                     state.Status == HerdrRuntimeMonitorStatus.Connected);
+
+        cancellation.Cancel();
+        await Assert.ThrowsAsync<OperationCanceledException>(() => runTask);
+
+        Assert.IsFalse(incompleteConnectedEpochObserved);
+        Assert.AreEqual(1, monitor.Current.ReconciliationCount);
+        Assert.IsTrue(apiClient.SubscriptionPaneIds[0].SetEquals(["pane-1"]));
+        Assert.IsTrue(apiClient.SubscriptionPaneIds[1].SetEquals(["pane-1", "pane-2"]));
+    }
+
+    [TestMethod]
+    public async Task ConcurrentRunIsRejectedWithoutChangingTheActiveMonitor()
+    {
+        var snapshot = CreateSnapshot(revision: 1, HerdrAgentStatus.Working);
+        var apiClient = new ScriptedApiClient(
+            [snapshot, snapshot],
+            [ScriptedSubscription.BlockUntilCancelled()]);
+        var monitor = CreateMonitor(apiClient);
+        using var cancellation = new CancellationTokenSource();
+        var activeRun = monitor.RunAsync(cancellation.Token);
+        await WaitForAsync(monitor, state => state.BootstrapCount == 1);
+
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => monitor.RunAsync(CancellationToken.None));
+
+        StringAssert.Contains(exception.Message, "already running");
+        Assert.AreEqual(1, monitor.Current.BootstrapCount);
+        cancellation.Cancel();
+        await Assert.ThrowsAsync<OperationCanceledException>(() => activeRun);
     }
 
     [TestMethod]
@@ -217,7 +512,7 @@ public sealed class HerdrRuntimeMonitorTests
         await Assert.ThrowsAsync<OperationCanceledException>(() => runTask);
 
         Assert.AreEqual(1, monitor.Current.ReconciliationCount);
-        Assert.AreEqual(1, monitor.Current.EventCount);
+        Assert.AreEqual(0, monitor.Current.EventCount);
         Assert.HasCount(2, apiClient.SubscriptionPaneIds);
         Assert.AreEqual(HerdrAgentStatus.Working, monitor.Current.State.Agents["terminal-1"].AgentStatus);
     }
@@ -245,7 +540,9 @@ public sealed class HerdrRuntimeMonitorTests
         monitor.StateChanged += (_, state) =>
         {
             publishedIntermediatePane |= state.State.Panes.ContainsKey("pane-2");
-            if (state.Status == HerdrRuntimeMonitorStatus.Reconnecting && state.EventCount == 1)
+            if (state.Status == HerdrRuntimeMonitorStatus.Reconnecting &&
+                state.BootstrapCount == 1 &&
+                state.ReconciliationCount == 1)
             {
                 reconciliation = state;
             }
@@ -264,7 +561,7 @@ public sealed class HerdrRuntimeMonitorTests
         Assert.AreEqual(2, reconciliation.State.LastIngestSequence);
         Assert.AreEqual(3, monitor.Current.State.LastIngestSequence);
         Assert.HasCount(1, monitor.Current.State.Panes);
-        Assert.AreEqual(1, monitor.Current.EventCount);
+        Assert.AreEqual(0, monitor.Current.EventCount);
         Assert.IsGreaterThanOrEqualTo(1, monitor.Current.ReconciliationCount);
     }
 
@@ -431,11 +728,13 @@ public sealed class HerdrRuntimeMonitorTests
     private static HerdrRuntimeMonitor CreateMonitor(
         IHerdrApiClient apiClient,
         IHerdrReconnectDelay? reconnectDelay = null,
-        HerdrSessionState? initialState = null) => new(
+        HerdrSessionState? initialState = null,
+        HerdrRuntimeMonitorOptions? options = null) => new(
         apiClient,
         HerdrPipeEndpoint.FromSocketPath("herdrops-scripted-test"),
         reconnectDelay: reconnectDelay ?? new NoReconnectDelay(),
-        initialState: initialState);
+        initialState: initialState,
+        options: options ?? HerdrRuntimeMonitorOptions.EventOnlyForTests);
 
     private static async Task WaitForAsync(
         HerdrRuntimeMonitor monitor,
@@ -538,25 +837,29 @@ public sealed class HerdrRuntimeMonitorTests
         "tab-1",
         "pane-1");
 
-    private static HerdrSessionSnapshot CreateSnapshotWithAgentFreeShellPane()
+    private static HerdrSessionSnapshot AddSecondPane(HerdrSessionSnapshot snapshot)
     {
-        var snapshot = CreateSnapshot(revision: 1, HerdrAgentStatus.Working);
-        var shellPane = snapshot.Panes[0] with
+        var secondPane = snapshot.Panes[0] with
         {
-            PaneId = "pane-shell",
-            TerminalId = "terminal-shell",
+            PaneId = "pane-2",
+            TerminalId = "terminal-2",
             Focused = false,
-            AgentStatus = HerdrAgentStatus.Unknown,
-            Agent = null,
-            DisplayAgent = null,
-            Title = null,
-            TerminalTitle = "Windows PowerShell",
+            Title = "Worker 02",
+        };
+        var secondAgent = snapshot.Agents[0] with
+        {
+            TerminalId = "terminal-2",
+            PaneId = "pane-2",
+            Focused = false,
+            Name = "Worker 02",
+            Title = "Worker 02",
         };
         return snapshot with
         {
             Workspaces = [snapshot.Workspaces[0] with { PaneCount = 2 }],
             Tabs = [snapshot.Tabs[0] with { PaneCount = 2 }],
-            Panes = [snapshot.Panes[0], shellPane],
+            Panes = [snapshot.Panes[0], secondPane],
+            Agents = [snapshot.Agents[0], secondAgent],
         };
     }
 
@@ -641,6 +944,24 @@ public sealed class HerdrRuntimeMonitorTests
         }
     }
 
+    private sealed class DisposalAssertingReconnectDelay : IHerdrReconnectDelay
+    {
+        private readonly Func<bool> _isDisposed;
+
+        public DisposalAssertingReconnectDelay(Func<bool> isDisposed)
+        {
+            _isDisposed = isDisposed;
+        }
+
+        public async ValueTask DelayAsync(
+            int consecutiveFailureCount,
+            CancellationToken cancellationToken)
+        {
+            Assert.IsTrue(_isDisposed(), "The subscription must be disposed before reconnect backoff.");
+            await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+        }
+    }
+
     private sealed class ScriptedApiClient : IHerdrApiClient
     {
         private readonly Queue<HerdrSessionSnapshot> _snapshots;
@@ -689,6 +1010,42 @@ public sealed class HerdrRuntimeMonitorTests
         }
     }
 
+    private sealed class CancellationWinningSubscription : IHerdrEventSubscription
+    {
+        private readonly HerdrStateEvent _stateEvent;
+        private CancellationTokenRegistration _registration;
+        private int _readCount;
+
+        public CancellationWinningSubscription(HerdrStateEvent stateEvent)
+        {
+            _stateEvent = stateEvent;
+        }
+
+        public bool IsDisposed { get; private set; }
+
+        public ValueTask<HerdrStateEvent> ReadNextAsync(CancellationToken cancellationToken)
+        {
+            if (Interlocked.Increment(ref _readCount) != 1)
+            {
+                return ValueTask.FromException<HerdrStateEvent>(
+                    new InvalidOperationException("The cancellation-race subscription was read twice."));
+            }
+
+            var completion = new TaskCompletionSource<HerdrStateEvent>(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            _registration = cancellationToken.Register(
+                () => completion.TrySetResult(_stateEvent));
+            return new ValueTask<HerdrStateEvent>(completion.Task);
+        }
+
+        public ValueTask DisposeAsync()
+        {
+            IsDisposed = true;
+            _registration.Dispose();
+            return ValueTask.CompletedTask;
+        }
+    }
+
     private sealed class ScriptedSubscription : IHerdrEventSubscription
     {
         private readonly Queue<HerdrStateEvent> _events;
@@ -710,6 +1067,8 @@ public sealed class HerdrRuntimeMonitorTests
         public static ScriptedSubscription WithEventsThenBlock(params HerdrStateEvent[] events) =>
             new(events, blockAfterEvents: true);
 
+        public bool IsDisposed { get; private set; }
+
         public async ValueTask<HerdrStateEvent> ReadNextAsync(CancellationToken cancellationToken)
         {
             if (_events.Count > 0)
@@ -726,6 +1085,11 @@ public sealed class HerdrRuntimeMonitorTests
             throw new InvalidOperationException("The scripted blocking read unexpectedly resumed.");
         }
 
-        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+        public ValueTask DisposeAsync()
+        {
+            IsDisposed = true;
+            return ValueTask.CompletedTask;
+        }
     }
+
 }
