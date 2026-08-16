@@ -34,7 +34,7 @@ public sealed class AssignmentLifecycleStoreTests
             Assert.IsTrue(retry.WasAlreadyPresent);
 
             var diagnostics = store.GetDiagnostics();
-            Assert.AreEqual(3, diagnostics.SchemaVersion);
+            Assert.AreEqual(HerdrStateStoreOptions.CurrentSchemaVersion, diagnostics.SchemaVersion);
             Assert.AreEqual(7L, diagnostics.LifecycleEventCount);
             Assert.AreEqual(1L, diagnostics.AssignmentTaskCount);
             Assert.AreEqual(3L, diagnostics.AssignmentRelationshipCount);

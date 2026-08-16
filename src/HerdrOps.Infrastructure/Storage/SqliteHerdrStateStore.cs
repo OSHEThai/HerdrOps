@@ -1886,6 +1886,11 @@ public sealed partial class SqliteHerdrStateStore : IDisposable
             EvidenceAuditMigrationName,
             EvidenceAuditMigrationSql,
             ComputeMigrationSha256(EvidenceAuditMigrationSql)),
+        4 => new MigrationDefinition(
+            4,
+            ComplianceReviewMigrationName,
+            ComplianceReviewMigrationSql,
+            ComputeMigrationSha256(ComplianceReviewMigrationSql)),
         _ => throw new HerdrStateStoreException(
             $"No SQLite migration contract exists for v{version}."),
     };

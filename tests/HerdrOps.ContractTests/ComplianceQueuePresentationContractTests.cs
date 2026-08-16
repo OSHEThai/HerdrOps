@@ -36,7 +36,16 @@ public sealed class ComplianceQueuePresentationContractTests
         StringAssert.Contains(xaml, "x:Name=\"ComplianceDetailsEvidenceViewport\"");
         StringAssert.Contains(xaml, "ToolTipService.ShowOnDisabled=\"True\"");
         StringAssert.Contains(xaml, "AutomationProperties.HelpText=\"{Binding UnavailableReason}\"");
-        Assert.IsFalse(xaml.Contains(" Click=\"", StringComparison.Ordinal));
+        var clicks = Regex.Matches(
+                xaml,
+                @"\bClick\s*=\s*""([^""]+)""",
+                RegexOptions.CultureInvariant)
+            .Select(match => match.Groups[1].Value)
+            .ToArray();
+        CollectionAssert.AreEqual(
+            new[] { "OnReviewActionClick" },
+            clicks,
+            "The shared view may expose only the Issue #27 live-review handler; synthetic actions remain disabled.");
         var commands = Regex.Matches(xaml, @"\bCommand\s*=\s*""([^""]+)""", RegexOptions.CultureInvariant)
             .Select(match => match.Groups[1].Value)
             .ToArray();
