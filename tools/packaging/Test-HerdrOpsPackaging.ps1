@@ -55,6 +55,22 @@ function Assert-ExpectedFailureContaining {
     return $message
 }
 
+function Assert-NoPackagingStagingFiles {
+    param(
+        [Parameter(Mandatory = $true)][string]$Parent,
+        [Parameter(Mandatory = $true)][string]$Description
+    )
+
+    if (-not (Test-Path -LiteralPath $Parent -PathType Container)) {
+        return
+    }
+    $leftovers = @(Get-ChildItem -LiteralPath $Parent -Force |
+        Where-Object { $_.Name -like '.*.staging-*' })
+    if ($leftovers.Count -ne 0) {
+        throw "Atomic $Description left staging files: $($leftovers.Name -join ', ')"
+    }
+}
+
 $profile = Read-PackageProfile -Path $ProfilePath
 $repositoryRoot = Get-PackagingRepositoryRoot
 Assert-ProjectMatchesPackageProfile -Profile $profile -RepositoryRoot $repositoryRoot
@@ -122,6 +138,32 @@ try {
         ('HerdrOps-Packaging-OutOfScope-' + [Guid]::NewGuid().ToString('N'))
     $outsideArchivePath = Join-Path $outsideProbeRoot 'archive.zip'
     $outsideHashPath = Join-Path $outsideProbeRoot 'package-hashes.txt'
+    $entryPointArchive = Join-Path $testRoot 'entry-point.zip'
+    $entryPointHash = Join-Path $testRoot 'entry-point-hashes.txt'
+    Assert-ExpectedFailure -Description 'New-PackageArchive validates hash destination before archive side effects' -Action {
+        & (Join-Path $PSScriptRoot 'New-PackageArchive.ps1') `
+            -PackageRoot $packageOne `
+            -ProfilePath $ProfilePath `
+            -ArchivePath $entryPointArchive `
+            -HashRecordPath $outsideHashPath | Out-Null
+    }
+    if (Test-Path -LiteralPath $entryPointArchive) {
+        throw 'Unsafe hash destination validation left an archive behind.'
+    }
+    if (Test-Path -LiteralPath $outsideProbeRoot) {
+        throw "Unsafe hash destination validation created an outside path: $outsideProbeRoot"
+    }
+    & (Join-Path $PSScriptRoot 'New-PackageArchive.ps1') `
+        -PackageRoot $packageOne `
+        -ProfilePath $ProfilePath `
+        -ArchivePath $entryPointArchive `
+        -HashRecordPath $entryPointHash | Out-Null
+    if (-not (Test-Path -LiteralPath $entryPointArchive -PathType Leaf) -or
+        -not (Test-Path -LiteralPath $entryPointHash -PathType Leaf)) {
+        throw 'New-PackageArchive retry did not create archive and hash record.'
+    }
+    Assert-NoPackagingStagingFiles -Parent $testRoot -Description 'entry-point retry'
+
     Assert-ExpectedFailure -Description 'archive destination outside authorized repo/temp policy has no side effects' -Action {
         New-DeterministicPackageArchive -PackageRoot $packageOne -ArchivePath $outsideArchivePath | Out-Null
     }
@@ -136,6 +178,80 @@ try {
     }
     if (Test-Path -LiteralPath $outsideProbeRoot) {
         throw "Unsafe hash-record destination created an outside path: $outsideProbeRoot"
+    }
+
+    $manifestFaultRoot = Join-Path $testRoot 'manifest-fault'
+    Copy-SafeDirectoryContents -Source $fixture -Destination $manifestFaultRoot
+    $manifestFault = New-PackageManifestObject -Profile $profile -PackageRoot $manifestFaultRoot
+    $manifestFaultPath = Join-Path $manifestFaultRoot 'package-manifest.json'
+    Assert-ExpectedFailureContaining -Description 'manifest mid-write rollback' -RequiredFragments @(
+        'Injected package manifest failure during staged write.') -Action {
+        Write-PackageManifest `
+            -Manifest $manifestFault `
+            -PackageRoot $manifestFaultRoot `
+            -TestFaultInjectionStage 'MidWrite' | Out-Null
+    } | Out-Null
+    if (Test-Path -LiteralPath $manifestFaultPath) {
+        throw 'Manifest mid-write fault left a partial destination.'
+    }
+    Assert-NoPackagingStagingFiles -Parent $manifestFaultRoot -Description 'manifest mid-write failure'
+    Write-PackageManifest -Manifest $manifestFault -PackageRoot $manifestFaultRoot | Out-Null
+    Assert-PackageManifestMatchesRoot -Profile $profile -PackageRoot $manifestFaultRoot | Out-Null
+
+    $manifestCleanupRoot = Join-Path $testRoot 'manifest-cleanup-fault'
+    Copy-SafeDirectoryContents -Source $fixture -Destination $manifestCleanupRoot
+    $manifestCleanup = New-PackageManifestObject -Profile $profile -PackageRoot $manifestCleanupRoot
+    $manifestCleanupPath = Join-Path $manifestCleanupRoot 'package-manifest.json'
+    Assert-ExpectedFailureContaining -Description 'manifest cleanup error ordering' -RequiredFragments @(
+        'Injected package manifest failure during staged write.',
+        'Cleanup also failed: Injected package manifest cleanup failure.') -Action {
+        Write-PackageManifest `
+            -Manifest $manifestCleanup `
+            -PackageRoot $manifestCleanupRoot `
+            -TestFaultInjectionStage 'MidWrite' `
+            -TestInjectCleanupFailure | Out-Null
+    } | Out-Null
+    if (Test-Path -LiteralPath $manifestCleanupPath) {
+        throw 'Manifest cleanup fault left a partial destination.'
+    }
+    Assert-NoPackagingStagingFiles -Parent $manifestCleanupRoot -Description 'manifest cleanup failure'
+    Write-PackageManifest -Manifest $manifestCleanup -PackageRoot $manifestCleanupRoot | Out-Null
+    Assert-PackageManifestMatchesRoot -Profile $profile -PackageRoot $manifestCleanupRoot | Out-Null
+
+    $archiveFault = Join-Path $testRoot 'archive-fault.zip'
+    Assert-ExpectedFailureContaining -Description 'archive mid-write rollback' -RequiredFragments @(
+        'Injected package archive failure during staged write.') -Action {
+        New-DeterministicPackageArchive `
+            -PackageRoot $packageOne `
+            -ArchivePath $archiveFault `
+            -TestFaultInjectionStage 'MidWrite' | Out-Null
+    } | Out-Null
+    if (Test-Path -LiteralPath $archiveFault) {
+        throw 'Archive mid-write fault left a partial destination.'
+    }
+    Assert-NoPackagingStagingFiles -Parent $testRoot -Description 'archive mid-write failure'
+    New-DeterministicPackageArchive -PackageRoot $packageOne -ArchivePath $archiveFault | Out-Null
+    if (-not (Test-Path -LiteralPath $archiveFault -PathType Leaf)) {
+        throw 'Archive retry did not create the destination.'
+    }
+
+    $hashFault = Join-Path $testRoot 'hash-fault.txt'
+    Assert-ExpectedFailureContaining -Description 'hash-record mid-write rollback' -RequiredFragments @(
+        'Injected package hash record failure during staged write.') -Action {
+        Write-PackageHashRecord `
+            -Profile $profile `
+            -PackageRoot $packageOne `
+            -ArchivePath $archiveOne `
+            -Path $hashFault `
+            -TestFaultInjectionStage 'MidWrite' | Out-Null
+    } | Out-Null
+    if (Test-Path -LiteralPath $hashFault) {
+        throw 'Hash-record mid-write fault left a partial destination.'
+    }
+    Assert-NoPackagingStagingFiles -Parent $testRoot -Description 'hash-record mid-write failure'
+    Write-PackageHashRecord -Profile $profile -PackageRoot $packageOne -ArchivePath $archiveOne -Path $hashFault | Out-Null
+    if (-not (Test-Path -LiteralPath $hashFault -PathType Leaf)) {
+        throw 'Hash-record retry did not create the destination.'
     }
 
     $atomicOutputRoot = Join-Path $testRoot 'atomic-output'

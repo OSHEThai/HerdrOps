@@ -20,8 +20,6 @@ $safeRoot = Assert-SafeDestination -Path $PackageRoot -AllowRepositoryChild -All
 if (-not (Test-Path -LiteralPath $safeRoot -PathType Container)) {
     throw "Package root directory was not found: $safeRoot"
 }
-Assert-PackageManifestMatchesRoot -Profile $profile -PackageRoot $safeRoot | Out-Null
-
 $parent = Split-Path -Path $safeRoot -Parent
 if ([string]::IsNullOrWhiteSpace($ArchivePath)) {
     $ArchivePath = Join-Path $parent ("HerdrOps-$($profile.packageVersion)-$($profile.runtimeIdentifier).zip")
@@ -30,8 +28,25 @@ if ([string]::IsNullOrWhiteSpace($HashRecordPath)) {
     $HashRecordPath = Join-Path $parent 'package-hashes.txt'
 }
 
-$safeArchive = New-DeterministicPackageArchive -PackageRoot $safeRoot -ArchivePath $ArchivePath
-$record = Write-PackageHashRecord -Profile $profile -PackageRoot $safeRoot -ArchivePath $safeArchive -Path $HashRecordPath
+$safeArchive = Assert-SafeDestination -Path $ArchivePath -AllowRepositoryChild -AllowTempChild
+$safeHashRecord = Assert-SafeDestination -Path $HashRecordPath -AllowRepositoryChild -AllowTempChild
+if ((Test-PathWithin -ChildPath $safeArchive -RootPath $safeRoot) -or
+    (Test-PathWithin -ChildPath $safeHashRecord -RootPath $safeRoot)) {
+    throw 'Package archive and hash record must be outside the package root.'
+}
+if ($safeArchive.Equals($safeHashRecord, [StringComparison]::OrdinalIgnoreCase)) {
+    throw 'Package archive and hash record must use different destinations.'
+}
+if (Test-Path -LiteralPath $safeArchive) {
+    throw "Refusing to overwrite an existing package archive: $safeArchive"
+}
+if (Test-Path -LiteralPath $safeHashRecord) {
+    throw "Refusing to overwrite an existing package hash record: $safeHashRecord"
+}
+
+Assert-PackageManifestMatchesRoot -Profile $profile -PackageRoot $safeRoot | Out-Null
+$safeArchive = New-DeterministicPackageArchive -PackageRoot $safeRoot -ArchivePath $safeArchive
+$record = Write-PackageHashRecord -Profile $profile -PackageRoot $safeRoot -ArchivePath $safeArchive -Path $safeHashRecord
 [pscustomobject][ordered]@{
     EvidenceClass = 'Static'
     PackageVersion = [string]$profile.packageVersion

@@ -539,17 +539,32 @@ function ConvertTo-CanonicalPackageManifestJson {
 function Write-PackageManifest {
     param(
         [Parameter(Mandatory = $true)]$Manifest,
-        [Parameter(Mandatory = $true)][string]$PackageRoot
+        [Parameter(Mandatory = $true)][string]$PackageRoot,
+        [string]$TestFaultInjectionStage = 'None',
+        [switch]$TestInjectCleanupFailure
     )
 
-    $manifestPath = Join-Path (Normalize-ComparablePath -Path $PackageRoot) 'package-manifest.json'
-    if (Test-Path -LiteralPath $manifestPath) {
-        throw "Refusing to overwrite an existing package manifest: $manifestPath"
+    $safePackageRoot = Assert-SafeDestination -Path $PackageRoot -AllowRepositoryChild -AllowTempChild
+    if (-not (Test-Path -LiteralPath $safePackageRoot -PathType Container)) {
+        throw "Package root directory was not found: $safePackageRoot"
     }
-
+    $manifestPath = Join-Path $safePackageRoot 'package-manifest.json'
     $json = ConvertTo-CanonicalPackageManifestJson -Manifest $Manifest
-    Write-DeterministicTextFile -Path $manifestPath -Text $json
-    return $manifestPath
+    $encoding = New-Object System.Text.UTF8Encoding($false)
+    $bytes = $encoding.GetBytes(($json + "`n"))
+    return Invoke-PackagingAtomicFileWrite `
+        -DestinationPath $manifestPath `
+        -OperationName 'package manifest' `
+        -TestFaultInjectionStage $TestFaultInjectionStage `
+        -TestInjectCleanupFailure:$TestInjectCleanupFailure `
+        -WriteStagedFile {
+            param($stagingPath, $faultStage)
+            Write-PackagingBytesToStagingFile `
+                -Path $stagingPath `
+                -Bytes $bytes `
+                -OperationName 'package manifest' `
+                -TestFaultInjectionStage $faultStage
+        }
 }
 
 function Read-PackageManifest {
@@ -731,6 +746,153 @@ function Invoke-PackagingOperationWithCleanup {
     }
 
     return $operationOutput
+}
+
+function New-PackagingStagingFilePath {
+    param(
+        [Parameter(Mandatory = $true)][string]$DestinationPath
+    )
+
+    $destination = Normalize-ComparablePath -Path $DestinationPath
+    $parent = Split-Path -Path $destination -Parent
+    $name = [IO.Path]::GetFileName($destination)
+    if ([string]::IsNullOrWhiteSpace($parent) -or [string]::IsNullOrWhiteSpace($name)) {
+        throw "Could not derive an atomic staging path from destination: $destination"
+    }
+
+    $candidate = Join-Path $parent ('.' + $name + '.staging-' + [Guid]::NewGuid().ToString('N'))
+    Assert-SafeDestination -Path $candidate -AllowRepositoryChild -AllowTempChild | Out-Null
+    return $candidate
+}
+
+function Remove-PackagingStagingFile {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path
+    )
+
+    $fullPath = Normalize-ComparablePath -Path $Path
+    $name = [IO.Path]::GetFileName($fullPath)
+    if ($name -notmatch '^\.[^\\]+\.staging-[0-9a-f]{32}$') {
+        throw "Refusing to remove a non-owned packaging staging file: $fullPath"
+    }
+    Assert-SafeDestination -Path $fullPath -AllowRepositoryChild -AllowTempChild | Out-Null
+    [IO.File]::Delete($fullPath)
+}
+
+function Invoke-PackagingAtomicFileWrite {
+    param(
+        [Parameter(Mandatory = $true)][string]$DestinationPath,
+        [Parameter(Mandatory = $true)][scriptblock]$WriteStagedFile,
+        [Parameter(Mandatory = $true)][string]$OperationName,
+        [string]$TestFaultInjectionStage = 'None',
+        [switch]$TestInjectCleanupFailure
+    )
+
+    if ($TestFaultInjectionStage -notin @('None', 'MidWrite', 'BeforeCommit')) {
+        throw "Unsupported $OperationName fault-injection stage: $TestFaultInjectionStage"
+    }
+
+    $destination = Assert-SafeDestination -Path $DestinationPath -AllowRepositoryChild -AllowTempChild
+    if (Test-Path -LiteralPath $destination) {
+        throw "Refusing to overwrite an existing $OperationName destination: $destination"
+    }
+
+    $parent = Split-Path -Path $destination -Parent
+    $stagingPath = New-PackagingStagingFilePath -DestinationPath $destination
+    if (-not (Test-Path -LiteralPath $parent -PathType Container)) {
+        New-Item -ItemType Directory -Path $parent -Force | Out-Null
+    }
+    Assert-NoReparsePath -Path $parent
+
+    # The staging name is owned by this invocation. File.Delete is idempotent for
+    # a missing path, so cleanup can safely run even when opening the stage fails.
+    $stageCreated = $true
+    $committed = $false
+    $primaryError = $null
+    try {
+        $null = & $WriteStagedFile $stagingPath $TestFaultInjectionStage
+        if (-not [IO.File]::Exists($stagingPath)) {
+            throw "$OperationName writer did not create its staging file: $stagingPath"
+        }
+        if ($TestFaultInjectionStage -eq 'BeforeCommit') {
+            throw "Injected $OperationName failure before atomic commit."
+        }
+        if (Test-Path -LiteralPath $destination) {
+            throw "Refusing to overwrite an existing $OperationName destination: $destination"
+        }
+        [IO.File]::Move($stagingPath, $destination)
+        $committed = $true
+    } catch {
+        $primaryError = $_
+    }
+
+    $cleanupError = $null
+    try {
+        if (-not $committed -and $stageCreated) {
+            Remove-PackagingStagingFile -Path $stagingPath
+        }
+        if (-not $committed -and $TestInjectCleanupFailure) {
+            throw "Injected $OperationName cleanup failure."
+        }
+    } catch {
+        $cleanupError = $_
+    }
+
+    if ($null -ne $primaryError -or $null -ne $cleanupError) {
+        Throw-PackagingFailure -PrimaryError $primaryError -CleanupError $cleanupError
+    }
+
+    return $destination
+}
+
+function Write-PackagingBytesToStagingFile {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][byte[]]$Bytes,
+        [Parameter(Mandatory = $true)][string]$OperationName,
+        [string]$TestFaultInjectionStage = 'None'
+    )
+
+    $stream = $null
+    $writeError = $null
+    try {
+        $stream = [IO.File]::Open(
+            $Path,
+            [IO.FileMode]::CreateNew,
+            [IO.FileAccess]::Write,
+            [IO.FileShare]::None)
+        $split = 0
+        if ($Bytes.Length -gt 1) {
+            $split = [Math]::Max(1, [Math]::Min($Bytes.Length - 1, [int][Math]::Ceiling($Bytes.Length / 2.0)))
+        }
+        if ($split -gt 0) {
+            $stream.Write($Bytes, 0, $split)
+            if ($TestFaultInjectionStage -eq 'MidWrite') {
+                throw "Injected $OperationName failure during staged write."
+            }
+            $stream.Write($Bytes, $split, $Bytes.Length - $split)
+        } elseif ($Bytes.Length -gt 0) {
+            $stream.Write($Bytes, 0, $Bytes.Length)
+            if ($TestFaultInjectionStage -eq 'MidWrite') {
+                throw "Injected $OperationName failure during staged write."
+            }
+        }
+        $stream.Flush($true)
+    } catch {
+        $writeError = $_
+    }
+
+    $disposeError = $null
+    if ($null -ne $stream) {
+        try {
+            $stream.Dispose()
+        } catch {
+            $disposeError = $_
+        }
+    }
+    if ($null -ne $writeError -or $null -ne $disposeError) {
+        Throw-PackagingFailure -PrimaryError $writeError -CleanupError $disposeError
+    }
 }
 
 function New-PackagingStagingDirectory {
@@ -999,12 +1161,17 @@ public static class HerdrOpsPackagingCrc32
 function New-DeterministicPackageArchive {
     param(
         [Parameter(Mandatory = $true)][string]$PackageRoot,
-        [Parameter(Mandatory = $true)][string]$ArchivePath
+        [Parameter(Mandatory = $true)][string]$ArchivePath,
+        [string]$TestFaultInjectionStage = 'None',
+        [switch]$TestInjectCleanupFailure
     )
 
-    $root = Normalize-ComparablePath -Path $PackageRoot
-    $archive = Normalize-ComparablePath -Path $ArchivePath
-    Assert-SafeDestination -Path $archive -AllowRepositoryChild -AllowTempChild | Out-Null
+    $root = Assert-SafeDestination -Path $PackageRoot -AllowRepositoryChild -AllowTempChild
+    if (-not (Test-Path -LiteralPath $root -PathType Container)) {
+        throw "Package root directory was not found: $root"
+    }
+    Assert-NoReparsePath -Path $root
+    $archive = Assert-SafeDestination -Path $ArchivePath -AllowRepositoryChild -AllowTempChild
     if (Test-Path -LiteralPath $archive) {
         throw "Refusing to overwrite an existing package archive: $archive"
     }
@@ -1012,115 +1179,145 @@ function New-DeterministicPackageArchive {
         throw 'The package archive must be outside the package root.'
     }
 
-    $archiveParent = Split-Path -Path $archive -Parent
-    if (-not (Test-Path -LiteralPath $archiveParent)) {
-        New-Item -ItemType Directory -Path $archiveParent -Force | Out-Null
-    }
     $entries = @(Get-PackageEntries -PackageRoot $root)
 
-    $archiveStream = [IO.File]::Open(
-        $archive,
-        [IO.FileMode]::CreateNew,
-        [IO.FileAccess]::ReadWrite,
-        [IO.FileShare]::None)
-    $writer = $null
-    try {
-        $writer = New-Object -TypeName System.IO.BinaryWriter -ArgumentList $archiveStream
-        $centralRecords = @()
-        $utf8 = New-Object System.Text.UTF8Encoding($false)
-        $fixedFlags = [uint16]0x0800
-        $fixedDosTime = [uint16]0
-        $fixedDosDate = [uint16]0x0021
-        $copyBuffer = New-Object byte[] 1048576
+    return Invoke-PackagingAtomicFileWrite `
+        -DestinationPath $archive `
+        -OperationName 'package archive' `
+        -TestFaultInjectionStage $TestFaultInjectionStage `
+        -TestInjectCleanupFailure:$TestInjectCleanupFailure `
+        -WriteStagedFile {
+            param($stagingPath, $faultStage)
 
-        foreach ($entry in $entries) {
-            $entryPath = Join-Path $root ($entry.Path.Replace('/', '\'))
-            $nameBytes = $utf8.GetBytes([string]$entry.Path)
-            if ($nameBytes.Length -gt [uint16]::MaxValue) {
-                throw "Package entry name is too long for a ZIP archive: $($entry.Path)"
-            }
-            if ([int64]$entry.Length -gt [uint32]::MaxValue) {
-                throw "Package entry is too large for a ZIP archive: $($entry.Path)"
-            }
-
-            $localOffset = [uint32]$writer.BaseStream.Position
-            $crc32 = Get-PackageCrc32 -Path $entryPath
-            $writer.Write([uint32]0x04034b50)
-            $writer.Write([uint16]20)
-            $writer.Write($fixedFlags)
-            $writer.Write([uint16]0)
-            $writer.Write($fixedDosTime)
-            $writer.Write($fixedDosDate)
-            $writer.Write($crc32)
-            $writer.Write([uint32]$entry.Length)
-            $writer.Write([uint32]$entry.Length)
-            $writer.Write([uint16]$nameBytes.Length)
-            $writer.Write([uint16]0)
-            $writer.Write($nameBytes)
-
-            $sourceStream = [IO.File]::OpenRead($entryPath)
+            $archiveStream = $null
+            $writer = $null
+            $writeError = $null
             try {
-                $read = $sourceStream.Read($copyBuffer, 0, $copyBuffer.Length)
-                while ($read -gt 0) {
-                    $writer.Write($copyBuffer, 0, $read)
-                    $read = $sourceStream.Read($copyBuffer, 0, $copyBuffer.Length)
+                $archiveStream = [IO.File]::Open(
+                    $stagingPath,
+                    [IO.FileMode]::CreateNew,
+                    [IO.FileAccess]::ReadWrite,
+                    [IO.FileShare]::None)
+                $writer = New-Object -TypeName System.IO.BinaryWriter -ArgumentList $archiveStream
+                $centralRecords = @()
+                $utf8 = New-Object System.Text.UTF8Encoding($false)
+                $fixedFlags = [uint16]0x0800
+                $fixedDosTime = [uint16]0
+                $fixedDosDate = [uint16]0x0021
+                $copyBuffer = New-Object byte[] 1048576
+                $injectedMidWrite = $false
+
+                foreach ($entry in $entries) {
+                    $entryPath = Join-Path $root ($entry.Path.Replace('/', '\'))
+                    $nameBytes = $utf8.GetBytes([string]$entry.Path)
+                    if ($nameBytes.Length -gt [uint16]::MaxValue) {
+                        throw "Package entry name is too long for a ZIP archive: $($entry.Path)"
+                    }
+                    if ([int64]$entry.Length -gt [uint32]::MaxValue) {
+                        throw "Package entry is too large for a ZIP archive: $($entry.Path)"
+                    }
+
+                    $localOffset = [uint32]$writer.BaseStream.Position
+                    $crc32 = Get-PackageCrc32 -Path $entryPath
+                    $writer.Write([uint32]0x04034b50)
+                    $writer.Write([uint16]20)
+                    $writer.Write($fixedFlags)
+                    $writer.Write([uint16]0)
+                    $writer.Write($fixedDosTime)
+                    $writer.Write($fixedDosDate)
+                    $writer.Write($crc32)
+                    $writer.Write([uint32]$entry.Length)
+                    $writer.Write([uint32]$entry.Length)
+                    $writer.Write([uint16]$nameBytes.Length)
+                    $writer.Write([uint16]0)
+                    $writer.Write($nameBytes)
+
+                    $sourceStream = [IO.File]::OpenRead($entryPath)
+                    try {
+                        $read = $sourceStream.Read($copyBuffer, 0, $copyBuffer.Length)
+                        while ($read -gt 0) {
+                            $writer.Write($copyBuffer, 0, $read)
+                            $read = $sourceStream.Read($copyBuffer, 0, $copyBuffer.Length)
+                        }
+                    } finally {
+                        $sourceStream.Dispose()
+                    }
+
+                    if ($faultStage -eq 'MidWrite' -and -not $injectedMidWrite) {
+                        $injectedMidWrite = $true
+                        throw 'Injected package archive failure during staged write.'
+                    }
+
+                    $centralRecords += [pscustomobject][ordered]@{
+                        NameBytes = $nameBytes
+                        Crc32 = $crc32
+                        Length = [uint32]$entry.Length
+                        LocalOffset = $localOffset
+                    }
                 }
-            } finally {
-                $sourceStream.Dispose()
+
+                $centralOffset = [uint32]$writer.BaseStream.Position
+                foreach ($record in $centralRecords) {
+                    $writer.Write([uint32]0x02014b50)
+                    $writer.Write([uint16]20)
+                    $writer.Write([uint16]20)
+                    $writer.Write($fixedFlags)
+                    $writer.Write([uint16]0)
+                    $writer.Write($fixedDosTime)
+                    $writer.Write($fixedDosDate)
+                    $writer.Write([uint32]$record.Crc32)
+                    $writer.Write([uint32]$record.Length)
+                    $writer.Write([uint32]$record.Length)
+                    $writer.Write([uint16]$record.NameBytes.Length)
+                    $writer.Write([uint16]0)
+                    $writer.Write([uint16]0)
+                    $writer.Write([uint16]0)
+                    $writer.Write([uint16]0)
+                    $writer.Write([uint32]0)
+                    $writer.Write([uint32]$record.LocalOffset)
+                    $writer.Write($record.NameBytes)
+                }
+
+                $centralSize = [uint32]($writer.BaseStream.Position - $centralOffset)
+                if ($centralRecords.Count -gt [uint16]::MaxValue) {
+                    throw 'The package has too many entries for a classic ZIP archive.'
+                }
+                $writer.Write([uint32]0x06054b50)
+                $writer.Write([uint16]0)
+                $writer.Write([uint16]0)
+                $writer.Write([uint16]$centralRecords.Count)
+                $writer.Write([uint16]$centralRecords.Count)
+                $writer.Write($centralSize)
+                $writer.Write($centralOffset)
+                $writer.Write([uint16]0)
+                $writer.Flush()
+                $archiveStream.Flush($true)
+            } catch {
+                $writeError = $_
             }
 
-            $centralRecords += [pscustomobject][ordered]@{
-                NameBytes = $nameBytes
-                Crc32 = $crc32
-                Length = [uint32]$entry.Length
-                LocalOffset = $localOffset
+            $disposeError = $null
+            if ($null -ne $writer) {
+                try {
+                    $writer.Dispose()
+                } catch {
+                    $disposeError = $_
+                }
+                $writer = $null
+            }
+            if ($null -ne $archiveStream) {
+                try {
+                    $archiveStream.Dispose()
+                } catch {
+                    if ($null -eq $disposeError) {
+                        $disposeError = $_
+                    }
+                }
+            }
+            if ($null -ne $writeError -or $null -ne $disposeError) {
+                Throw-PackagingFailure -PrimaryError $writeError -CleanupError $disposeError
             }
         }
-
-        $centralOffset = [uint32]$writer.BaseStream.Position
-        foreach ($record in $centralRecords) {
-            $writer.Write([uint32]0x02014b50)
-            $writer.Write([uint16]20)
-            $writer.Write([uint16]20)
-            $writer.Write($fixedFlags)
-            $writer.Write([uint16]0)
-            $writer.Write($fixedDosTime)
-            $writer.Write($fixedDosDate)
-            $writer.Write([uint32]$record.Crc32)
-            $writer.Write([uint32]$record.Length)
-            $writer.Write([uint32]$record.Length)
-            $writer.Write([uint16]$record.NameBytes.Length)
-            $writer.Write([uint16]0)
-            $writer.Write([uint16]0)
-            $writer.Write([uint16]0)
-            $writer.Write([uint16]0)
-            $writer.Write([uint32]0)
-            $writer.Write([uint32]$record.LocalOffset)
-            $writer.Write($record.NameBytes)
-        }
-
-        $centralSize = [uint32]($writer.BaseStream.Position - $centralOffset)
-        if ($centralRecords.Count -gt [uint16]::MaxValue) {
-            throw 'The package has too many entries for a classic ZIP archive.'
-        }
-        $writer.Write([uint32]0x06054b50)
-        $writer.Write([uint16]0)
-        $writer.Write([uint16]0)
-        $writer.Write([uint16]$centralRecords.Count)
-        $writer.Write([uint16]$centralRecords.Count)
-        $writer.Write($centralSize)
-        $writer.Write($centralOffset)
-        $writer.Write([uint16]0)
-        $writer.Flush()
-    } finally {
-        if ($null -ne $writer) {
-            $writer.Dispose()
-        } else {
-            $archiveStream.Dispose()
-        }
-    }
-
-    return $archive
 }
 
 function Write-PackageHashRecord {
@@ -1128,20 +1325,34 @@ function Write-PackageHashRecord {
         [Parameter(Mandatory = $true)]$Profile,
         [Parameter(Mandatory = $true)][string]$PackageRoot,
         [Parameter(Mandatory = $true)][string]$ArchivePath,
-        [Parameter(Mandatory = $true)][string]$Path
+        [Parameter(Mandatory = $true)][string]$Path,
+        [string]$TestFaultInjectionStage = 'None',
+        [switch]$TestInjectCleanupFailure
     )
 
-    $hashPath = Normalize-ComparablePath -Path $Path
-    Assert-SafeDestination -Path $hashPath -AllowRepositoryChild -AllowTempChild | Out-Null
+    $safePackageRoot = Assert-SafeDestination -Path $PackageRoot -AllowRepositoryChild -AllowTempChild
+    if (-not (Test-Path -LiteralPath $safePackageRoot -PathType Container)) {
+        throw "Package root directory was not found: $safePackageRoot"
+    }
+    $hashPath = Assert-SafeDestination -Path $Path -AllowRepositoryChild -AllowTempChild
     if (Test-Path -LiteralPath $hashPath) {
         throw "Refusing to overwrite an existing package hash record: $hashPath"
     }
-    Assert-PackageManifestMatchesRoot -Profile $Profile -PackageRoot $PackageRoot | Out-Null
-    $manifestPath = Join-Path (Normalize-ComparablePath -Path $PackageRoot) 'package-manifest.json'
-    $manifest = Read-PackageManifest -PackageRoot $PackageRoot
-    $archiveInfo = Get-Item -LiteralPath (Normalize-ComparablePath -Path $ArchivePath)
+    if (Test-PathWithin -ChildPath $hashPath -RootPath $safePackageRoot) {
+        throw 'The package hash record must be outside the package root.'
+    }
+
+    $safeArchive = Assert-SafeDestination -Path $ArchivePath -AllowRepositoryChild -AllowTempChild
+    if (-not (Test-Path -LiteralPath $safeArchive -PathType Leaf)) {
+        throw "Package archive was not found: $safeArchive"
+    }
+    Assert-PackageManifestMatchesRoot -Profile $Profile -PackageRoot $safePackageRoot | Out-Null
+    $manifestPath = Join-Path $safePackageRoot 'package-manifest.json'
+    $manifest = Read-PackageManifest -PackageRoot $safePackageRoot
+    $archiveInfo = Get-Item -LiteralPath $safeArchive
+    $manifestInfo = Get-Item -LiteralPath $manifestPath
     $archiveHash = ((Get-FileHash -LiteralPath $archiveInfo.FullName -Algorithm SHA256).Hash).ToUpperInvariant()
-    $manifestHash = ((Get-FileHash -LiteralPath $manifestPath -Algorithm SHA256).Hash).ToUpperInvariant()
+    $manifestHash = ((Get-FileHash -LiteralPath $manifestInfo.FullName -Algorithm SHA256).Hash).ToUpperInvariant()
 
     $lines = @(
         'HerdrOps package integrity record',
@@ -1153,20 +1364,34 @@ function Write-PackageHashRecord {
         "ArchiveBytes: $($archiveInfo.Length)",
         "ArchiveSha256: $archiveHash",
         'ManifestFile: package-manifest.json',
-        "ManifestBytes: $((Get-Item -LiteralPath $manifestPath).Length)",
+        "ManifestBytes: $($manifestInfo.Length)",
         "ManifestSha256: $manifestHash",
         "ContentSha256: $($manifest.contentSha256)",
         'EvidenceClass: Static')
-    Write-DeterministicTextFile -Path $hashPath -Text ($lines -join "`n")
+    $encoding = New-Object System.Text.UTF8Encoding($false)
+    $bytes = $encoding.GetBytes(($lines -join "`n") + "`n")
+    $writtenHashPath = Invoke-PackagingAtomicFileWrite `
+        -DestinationPath $hashPath `
+        -OperationName 'package hash record' `
+        -TestFaultInjectionStage $TestFaultInjectionStage `
+        -TestInjectCleanupFailure:$TestInjectCleanupFailure `
+        -WriteStagedFile {
+            param($stagingPath, $faultStage)
+            Write-PackagingBytesToStagingFile `
+                -Path $stagingPath `
+                -Bytes $bytes `
+                -OperationName 'package hash record' `
+                -TestFaultInjectionStage $faultStage
+        }
 
     return [pscustomobject][ordered]@{
         ArchivePath = $archiveInfo.FullName
         ArchiveBytes = [int64]$archiveInfo.Length
         ArchiveSha256 = $archiveHash
-        ManifestPath = (Get-FullPath -Path $manifestPath)
-        ManifestBytes = [int64](Get-Item -LiteralPath $manifestPath).Length
+        ManifestPath = (Get-FullPath -Path $manifestInfo.FullName)
+        ManifestBytes = [int64]$manifestInfo.Length
         ManifestSha256 = $manifestHash
         ContentSha256 = [string]$manifest.contentSha256
-        HashRecordPath = $hashPath
+        HashRecordPath = $writtenHashPath
     }
 }
