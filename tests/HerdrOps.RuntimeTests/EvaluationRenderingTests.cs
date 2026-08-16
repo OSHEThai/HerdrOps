@@ -1,6 +1,7 @@
 using System.IO;
 using System.Security.Cryptography;
 using System.Windows;
+using System.Windows.Automation;
 using System.Windows.Controls;
 using System.Windows.Documents;
 using System.Windows.Media;
@@ -8,6 +9,7 @@ using System.Windows.Media.Imaging;
 using HerdrOps.App.Evaluation;
 using HerdrOps.App.Localization;
 using HerdrOps.App.Views;
+using HerdrOps.Domain.Evaluation;
 
 namespace HerdrOps.RuntimeTests;
 
@@ -19,6 +21,7 @@ public sealed class EvaluationRenderingTests
     private const int ReferenceHeight = 941;
     private const int CompactWidth = 1366;
     private const int CompactHeight = 768;
+    private const double GeometryEpsilon = 0.5;
 
     private static readonly string[] RegionNames =
     [
@@ -116,6 +119,8 @@ public sealed class EvaluationRenderingTests
             Layout(thaiShell, ReferenceWidth, ReferenceHeight);
             var thaiPage = Page(thaiShell);
             AssertRegions(thaiShell, thaiPage);
+            var thaiState = Assert.IsInstanceOfType<EvaluationState>(thaiPage.DataContext);
+            AssertAccessibilityEquivalents(thaiPage, thaiState, language);
             AssertThaiSurface(thaiPage, language);
             var thaiPath = Path.Combine(evidenceDirectory, "evaluation-th-1672x941.png");
             RenderPng(thaiShell, ReferenceWidth, ReferenceHeight, thaiPath);
@@ -124,10 +129,11 @@ public sealed class EvaluationRenderingTests
             Layout(compactShell, CompactWidth, CompactHeight);
             var compactPage = Page(compactShell);
             AssertRegions(compactShell, compactPage);
+            var compactState = Assert.IsInstanceOfType<EvaluationState>(compactPage.DataContext);
+            AssertAccessibilityEquivalents(compactPage, compactState, language);
             AssertThaiSurface(compactPage, language);
             var scroll = Assert.IsInstanceOfType<ScrollViewer>(compactPage.FindName("EvaluationScrollViewer"));
-            Assert.IsGreaterThan(0d, scroll.ViewportHeight);
-            Assert.IsGreaterThanOrEqualTo(scroll.ViewportHeight, scroll.ExtentHeight);
+            AssertCompactGeometry(compactPage, scroll);
             var compactPath = Path.Combine(evidenceDirectory, "evaluation-th-1366x768.png");
             RenderPng(compactShell, CompactWidth, CompactHeight, compactPath);
 
@@ -137,7 +143,9 @@ public sealed class EvaluationRenderingTests
             Layout(missingShell, ReferenceWidth, ReferenceHeight);
             var missingState = Assert.IsInstanceOfType<EvaluationState>(missingPage.DataContext);
             Assert.AreEqual(1, missingState.MissingScoreCount);
-            AssertVisibleTextContains(missingPage, language["EvaluationMissingScoreLabel"]);
+            AssertRegions(missingShell, missingPage);
+            AssertAccessibilityEquivalents(missingPage, missingState, language);
+            AssertMissingAndInvalidStatuses(missingPage, missingState, language);
             var missingPath = Path.Combine(evidenceDirectory, "evaluation-th-missing-score-1672x941.png");
             RenderPng(missingShell, ReferenceWidth, ReferenceHeight, missingPath);
             AssertDifferentImages(thaiPath, missingPath);
@@ -147,6 +155,8 @@ public sealed class EvaluationRenderingTests
             Layout(englishShell, ReferenceWidth, ReferenceHeight);
             var englishPage = Page(englishShell);
             AssertRegions(englishShell, englishPage);
+            var englishState = Assert.IsInstanceOfType<EvaluationState>(englishPage.DataContext);
+            AssertAccessibilityEquivalents(englishPage, englishState, language);
             AssertEnglishSurface(englishPage, language);
             var englishPath = Path.Combine(evidenceDirectory, "evaluation-en-1672x941.png");
             RenderPng(englishShell, ReferenceWidth, ReferenceHeight, englishPath);
@@ -156,8 +166,11 @@ public sealed class EvaluationRenderingTests
             Layout(englishCompactShell, CompactWidth, CompactHeight);
             var englishCompactPage = Page(englishCompactShell);
             AssertRegions(englishCompactShell, englishCompactPage);
+            var englishCompactState = Assert.IsInstanceOfType<EvaluationState>(englishCompactPage.DataContext);
+            AssertAccessibilityEquivalents(englishCompactPage, englishCompactState, language);
             AssertEnglishSurface(englishCompactPage, language);
-            Assert.IsInstanceOfType<ScrollViewer>(englishCompactPage.FindName("EvaluationScrollViewer"));
+            var englishCompactScroll = Assert.IsInstanceOfType<ScrollViewer>(englishCompactPage.FindName("EvaluationScrollViewer"));
+            AssertCompactGeometry(englishCompactPage, englishCompactScroll);
             var englishCompactPath = Path.Combine(evidenceDirectory, "evaluation-en-1366x768.png");
             RenderPng(englishCompactShell, CompactWidth, CompactHeight, englishCompactPath);
             AssertDifferentImages(compactPath, englishCompactPath);
@@ -177,6 +190,292 @@ public sealed class EvaluationRenderingTests
 
     private static EvaluationView Page(ShellView shell) =>
         Assert.IsInstanceOfType<EvaluationView>(shell.FindName("EvaluationPage"));
+
+    private static void AssertAccessibilityEquivalents(
+        EvaluationView page,
+        EvaluationState state,
+        UiLanguageService language)
+    {
+        AssertRegionAccessibility(
+            page,
+            "EvaluationEvidenceBoundary",
+            language["EvaluationEvidenceBoundaryAutomation"]);
+        AssertRegionAccessibility(
+            page,
+            "EvaluationDistributionRegion",
+            language["EvaluationScoreDistributionAutomation"]);
+        AssertRegionAccessibility(
+            page,
+            "EvaluationTrendRegion",
+            language["EvaluationScoreTrendAutomation"]);
+        AssertRegionAccessibility(
+            page,
+            "EvaluationDimensionRegion",
+            language["EvaluationDimensionBreakdownAutomation"]);
+        AssertRegionAccessibility(
+            page,
+            "EvaluationComparisonRegion",
+            language["EvaluationComparisonTableAutomation"]);
+        AssertRegionAccessibility(
+            page,
+            "EvaluationTopAgentsRegion",
+            language["EvaluationTopPerformingAgentsAutomation"]);
+        AssertRegionAccessibility(
+            page,
+            "EvaluationLowAgentsRegion",
+            language["EvaluationLowPerformingAgentsAutomation"]);
+
+        AssertAccessibleItems(
+            page,
+            "EvaluationSummaryRegion",
+            state.SummaryCards.Select(item => item.AccessibilityText));
+        AssertAccessibleItems(
+            page,
+            "EvaluationDistributionRegion",
+            state.DistributionBins.Select(item => item.AccessibilityText));
+        AssertAccessibleItems(
+            page,
+            "EvaluationDimensionRegion",
+            state.DimensionRows.Select(item => item.AccessibilityText));
+        AssertAccessibleItems(
+            page,
+            "EvaluationComparisonRegion",
+            state.ComparisonRows.Select(item => item.AccessibilityText));
+        AssertAccessibleItems(
+            page,
+            "EvaluationTopAgentsRegion",
+            state.TopAgents.Select(item => item.AccessibilityText));
+        AssertAccessibleItems(
+            page,
+            "EvaluationLowAgentsRegion",
+            state.LowAgents.Select(item => item.AccessibilityText));
+
+        Assert.IsTrue(
+            state.TrendPoints.All(item =>
+                !string.IsNullOrWhiteSpace(item.AccessibilityText) &&
+                !string.IsNullOrWhiteSpace(item.StatusText)),
+            "Every trend point must retain a localized accessibility and status equivalent.");
+        Assert.IsTrue(
+            state.DistributionBins.All(item => !string.IsNullOrWhiteSpace(item.StatusText)),
+            "Every distribution bin must retain a localized status equivalent.");
+        Assert.IsTrue(
+            state.DimensionRows.All(item => !string.IsNullOrWhiteSpace(item.StatusText)),
+            "Every dimension row must retain a localized status equivalent.");
+        Assert.IsTrue(
+            state.TopAgents.Concat(state.LowAgents).All(item =>
+                !string.IsNullOrWhiteSpace(item.AccessibilityText) &&
+                !string.IsNullOrWhiteSpace(item.StatusText)),
+            "Every ranking row must retain a localized accessibility and status equivalent.");
+    }
+
+    private static void AssertRegionAccessibility(
+        EvaluationView page,
+        string regionName,
+        string expectedName)
+    {
+        var region = Assert.IsInstanceOfType<FrameworkElement>(page.FindName(regionName));
+        var observedName = AutomationProperties.GetName(region);
+        Assert.IsFalse(
+            string.IsNullOrWhiteSpace(observedName),
+            $"Accessibility name is missing for {regionName}.");
+        Assert.AreEqual(expectedName, observedName, regionName);
+    }
+
+    private static void AssertAccessibleItems(
+        EvaluationView page,
+        string regionName,
+        IEnumerable<string> expectedNames)
+    {
+        var region = Assert.IsInstanceOfType<FrameworkElement>(page.FindName(regionName));
+        var observedNames = EnumerateDescendants(region)
+            .OfType<FrameworkElement>()
+            .Select(AutomationProperties.GetName)
+            .Where(name => !string.IsNullOrWhiteSpace(name))
+            .ToArray();
+
+        foreach (var expectedName in expectedNames)
+        {
+            Assert.IsTrue(
+                observedNames.Contains(expectedName, StringComparer.Ordinal),
+                $"Accessibility equivalent is missing from {regionName}: {expectedName}");
+        }
+    }
+
+    private static void AssertMissingAndInvalidStatuses(
+        EvaluationView missingPage,
+        EvaluationState missingState,
+        UiLanguageService language)
+    {
+        var missingLabel = language["EvaluationMissingScoreLabel"];
+        Assert.IsTrue(
+            missingState.DimensionRows.Any(item => item.StatusLabel == missingLabel),
+            "The missing-score preview must expose a missing dimension status.");
+        AssertVisibleTextContains(missingPage, missingLabel);
+
+        var invalidState = CreateInvalidScorePreview(missingState);
+        var invalidShell = CreateEvaluationShell();
+        var invalidPage = Page(invalidShell);
+        invalidPage.DataContext = invalidState;
+        Layout(invalidShell, ReferenceWidth, ReferenceHeight);
+
+        var invalidLabel = language["EvaluationInvalidLabel"];
+        Assert.IsTrue(
+            invalidState.DimensionRows.Any(item => item.StatusLabel == invalidLabel),
+            "The invalid-score preview must expose an invalid dimension status.");
+        AssertVisibleTextContains(invalidPage, invalidLabel);
+        AssertAccessibilityEquivalents(invalidPage, invalidState, language);
+    }
+
+    private static EvaluationState CreateInvalidScorePreview(EvaluationState sourceState)
+    {
+        var sourceSnapshot = sourceState.Snapshot;
+        var selected = sourceSnapshot.Evaluations.Single(item =>
+            string.Equals(item.TaskId, sourceSnapshot.SelectedTaskId, StringComparison.Ordinal) &&
+            string.Equals(item.AgentId, sourceSnapshot.SelectedAgentId, StringComparison.Ordinal));
+        var invalidInputSnapshot = selected.Result.Provenance.InputSnapshot with
+        {
+            Dimensions = selected.Result.Provenance.InputSnapshot.Dimensions
+                .Select((item, index) => index == 0
+                    ? item with
+                    {
+                        Leader = new EvaluationScoreInput(101, "invalid:leader", "not-a-sha256")
+                    }
+                    : item)
+                .ToArray(),
+        };
+        var invalidResult = new EvaluationScoringEngine().Calculate(
+            invalidInputSnapshot,
+            selected.Result.Provenance.Formula);
+        Assert.AreEqual(EvaluationResultStatus.Invalid, invalidResult.Status);
+
+        var evaluations = sourceSnapshot.Evaluations
+            .Select(item => item.EvaluationId == selected.EvaluationId
+                ? item with { Result = invalidResult }
+                : item)
+            .ToArray();
+        return new EvaluationState(new EvaluationSnapshot(
+            sourceSnapshot.Availability,
+            evaluations,
+            sourceSnapshot.Trend,
+            sourceSnapshot.SelectedTaskId,
+            sourceSnapshot.SelectedAgentId,
+            sourceSnapshot.SnapshotDate,
+            sourceSnapshot.PreviousAverageScore,
+            sourceSnapshot.LeaderReviewsPending,
+            sourceSnapshot.ProjectManagerReviewsPending,
+            sourceSnapshot.RecurringIssueCount));
+    }
+
+    private static void AssertCompactGeometry(EvaluationView page, ScrollViewer scroll)
+    {
+        Assert.IsGreaterThan(0d, scroll.ViewportHeight, "Compact Evaluation viewport has no height.");
+        Assert.IsGreaterThan(0d, scroll.ViewportWidth, "Compact Evaluation viewport has no width.");
+        Assert.IsGreaterThanOrEqualTo(
+            scroll.ViewportHeight - GeometryEpsilon,
+            scroll.ExtentHeight,
+            $"Evaluation content extent must be at least the viewport: extent={scroll.ExtentHeight:0.##}, viewport={scroll.ViewportHeight:0.##}");
+        Assert.IsLessThanOrEqualTo(
+            scroll.ViewportWidth + GeometryEpsilon,
+            scroll.ExtentWidth,
+            $"Evaluation content exceeds the disabled horizontal viewport: extent={scroll.ExtentWidth:0.##}, viewport={scroll.ViewportWidth:0.##}");
+
+        var content = Assert.IsInstanceOfType<FrameworkElement>(scroll.Content);
+        Assert.IsGreaterThan(0d, content.ActualWidth, "Compact Evaluation content has no width.");
+        Assert.IsGreaterThan(0d, content.ActualHeight, "Compact Evaluation content has no height.");
+
+        var regions = RegionNames
+            .Select(name =>
+            {
+                var region = Assert.IsInstanceOfType<FrameworkElement>(page.FindName(name));
+                Assert.IsTrue(IsDescendantOf(region, page), $"Region left the Evaluation hierarchy: {name}");
+                var bounds = BoundsRelativeTo(region, content);
+                Assert.IsTrue(
+                    bounds.Left >= -GeometryEpsilon &&
+                    bounds.Right <= content.ActualWidth + GeometryEpsilon,
+                    $"Region is clipped horizontally by Evaluation content: {name} bounds={bounds} contentWidth={content.ActualWidth:0.##}");
+                Assert.IsTrue(
+                    bounds.Top >= -GeometryEpsilon &&
+                    bounds.Bottom <= content.ActualHeight + GeometryEpsilon,
+                    $"Region is clipped vertically by Evaluation content: {name} bounds={bounds} contentHeight={content.ActualHeight:0.##}");
+                return (Name: name, Bounds: bounds);
+            })
+            .ToArray();
+
+        for (var first = 0; first < regions.Length; first++)
+        {
+            for (var second = first + 1; second < regions.Length; second++)
+            {
+                Assert.IsFalse(
+                    HasPositiveAreaOverlap(regions[first].Bounds, regions[second].Bounds),
+                    $"Evaluation regions overlap: {regions[first].Name} and {regions[second].Name}");
+            }
+        }
+
+        var finalRanking = Assert.IsInstanceOfType<FrameworkElement>(page.FindName("EvaluationLowAgentsRegion"));
+        if (scroll.ScrollableHeight > GeometryEpsilon)
+        {
+            scroll.ScrollToEnd();
+            scroll.UpdateLayout();
+            var viewportBounds = BoundsRelativeTo(scroll, page);
+            var finalRankingBounds = BoundsRelativeTo(finalRanking, page);
+            Assert.IsTrue(
+                IsEffectivelyVisible(finalRanking),
+                "The final ranking region must remain visible after scrolling to the end.");
+            Assert.IsTrue(
+                finalRankingBounds.Top >= viewportBounds.Top - GeometryEpsilon &&
+                finalRankingBounds.Bottom <= viewportBounds.Bottom + GeometryEpsilon,
+                $"The final ranking region is not fully reachable at scroll end: ranking={finalRankingBounds}, viewport={viewportBounds}, offset={scroll.VerticalOffset:0.##}");
+            Assert.IsTrue(
+                viewportBounds.Contains(finalRankingBounds),
+                $"The final ranking region is outside the scroll viewport at scroll end: ranking={finalRankingBounds}, viewport={viewportBounds}");
+            Assert.IsNotEmpty(
+                VisibleText(finalRanking),
+                "The final ranking region has no visible text after scrolling to the end.");
+        }
+        else
+        {
+            var viewportBounds = BoundsRelativeTo(scroll, page);
+            var finalRankingBounds = BoundsRelativeTo(finalRanking, page);
+            Assert.IsTrue(
+                viewportBounds.Contains(finalRankingBounds),
+                $"The final ranking region is not visible without scrolling: ranking={finalRankingBounds}, viewport={viewportBounds}");
+        }
+
+        scroll.ScrollToHome();
+        scroll.UpdateLayout();
+        Assert.IsLessThanOrEqualTo(
+            GeometryEpsilon,
+            scroll.VerticalOffset,
+            "Compact Evaluation geometry must restore the viewport to the top after the reachability check.");
+    }
+
+    private static bool HasPositiveAreaOverlap(Rect first, Rect second)
+    {
+        var width = Math.Min(first.Right, second.Right) - Math.Max(first.Left, second.Left);
+        var height = Math.Min(first.Bottom, second.Bottom) - Math.Max(first.Top, second.Top);
+        return width > GeometryEpsilon && height > GeometryEpsilon;
+    }
+
+    private static bool IsDescendantOf(DependencyObject element, DependencyObject ancestor)
+    {
+        for (DependencyObject? current = element; current is not null; current = VisualTreeHelper.GetParent(current))
+        {
+            if (ReferenceEquals(current, ancestor))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static Rect BoundsRelativeTo(FrameworkElement element, FrameworkElement ancestor)
+    {
+        Assert.IsGreaterThan(0d, element.ActualWidth, "Geometry element has no rendered width.");
+        Assert.IsGreaterThan(0d, element.ActualHeight, "Geometry element has no rendered height.");
+        return element.TransformToAncestor(ancestor).TransformBounds(
+            new Rect(0, 0, element.ActualWidth, element.ActualHeight));
+    }
 
     private static void AssertRegions(ShellView shell, EvaluationView page)
     {

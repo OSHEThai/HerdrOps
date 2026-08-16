@@ -222,6 +222,83 @@ function Assert-TestResult {
     $TestResult | Add-Member -NotePropertyName Failed -NotePropertyValue $failed
 }
 
+function Get-CheckoutSnapshot {
+    $head = (& git -C $repositoryRoot rev-parse --verify 'HEAD^{commit}').Trim()
+    if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($head)) {
+        throw 'Could not resolve HEAD for the Issue #31 checkout-integrity gate.'
+    }
+
+    $statusLines = @(& git -C $repositoryRoot status --porcelain=v1 --untracked-files=all)
+    if ($LASTEXITCODE -ne 0) {
+        throw 'Could not inspect working-tree status for the Issue #31 checkout-integrity gate.'
+    }
+
+    return [pscustomobject]@{
+        Head = $head
+        StatusLines = $statusLines
+        StatusText = $statusLines -join "`n"
+    }
+}
+
+function Get-TrackedPathsAtCommit {
+    param(
+        [Parameter(Mandatory)]
+        [string]$Commit
+    )
+
+    $paths = @(& git -C $repositoryRoot ls-tree -r --name-only $Commit)
+    if ($LASTEXITCODE -ne 0) {
+        throw "Could not enumerate tracked paths at source commit $Commit."
+    }
+
+    return $paths
+}
+
+function Assert-CheckoutUnchanged {
+    param(
+        [Parameter(Mandatory)]
+        [pscustomobject]$Baseline,
+
+        [Parameter(Mandatory)]
+        [string]$Phase
+    )
+
+    $current = Get-CheckoutSnapshot
+    if ($current.Head -cne $Baseline.Head) {
+        throw "Issue #31 checkout integrity failed $Phase`: HEAD changed from $($Baseline.Head) to $($current.Head)."
+    }
+
+    if ($current.StatusText -cne $Baseline.StatusText) {
+        $observed = if ([string]::IsNullOrWhiteSpace($current.StatusText)) { '(clean)' } else { $current.StatusText }
+        throw "Issue #31 checkout integrity failed $Phase`: working-tree status changed. Observed: $observed"
+    }
+
+    if ($current.StatusLines.Count -ne 0) {
+        throw "Issue #31 checkout integrity failed $Phase`: checkout is not clean."
+    }
+
+    return $current
+}
+
+$initialCheckout = Get-CheckoutSnapshot
+if ($initialCheckout.StatusLines.Count -ne 0) {
+    throw "Issue #31 gate requires a clean checkout before build/tests. Observed: $($initialCheckout.StatusText)"
+}
+
+$sourceCommit = $initialCheckout.Head
+$requiredGitPaths = @(
+    $requiredSources | ForEach-Object { Get-RepositoryRelativePath -Path $_.Path }
+    $requiredTests | ForEach-Object { Get-RepositoryRelativePath -Path $_.Path }
+    Get-RepositoryRelativePath -Path $referencePath
+    Get-RepositoryRelativePath -Path (Join-Path $PSScriptRoot 'Test-V06EvaluationPage.ps1')
+) | Sort-Object -Unique
+$trackedPaths = Get-TrackedPathsAtCommit -Commit $sourceCommit
+foreach ($requiredGitPath in $requiredGitPaths) {
+    if (-not ($trackedPaths -contains $requiredGitPath)) {
+        throw "Issue #31 required file is not tracked at source commit $sourceCommit`: $requiredGitPath"
+    }
+}
+
 Assert-RequiredFile -Path $referencePath -Description 'immutable Evaluation reference'
 $referenceHash = (Get-FileHash -LiteralPath $referencePath -Algorithm SHA256).Hash.ToUpperInvariant()
 if ($referenceHash -ne $expectedReferenceSha256) {
@@ -300,14 +377,7 @@ $captureEvidence = @($captureRequirements | ForEach-Object {
     Get-PngEvidence -Requirement $_ -EvidenceStartedUtc $evidenceStartedUtc
 })
 
-$sourceCommit = (& git -C $repositoryRoot rev-parse --verify 'HEAD^{commit}').Trim()
-if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($sourceCommit)) {
-    throw 'Could not resolve the source commit for the Issue #31 gate.'
-}
-$workingTreeStatus = @(& git -C $repositoryRoot status --porcelain=v1 --untracked-files=all)
-if ($LASTEXITCODE -ne 0) {
-    throw 'Could not inspect working-tree status for the Issue #31 gate.'
-}
+$finalCheckout = Assert-CheckoutUnchanged -Baseline $initialCheckout -Phase 'after evidence capture'
 
 $sourceReport = $sourceEvidence | ForEach-Object {
     "SHA256 $($_.Sha256) $($_.Name) $($_.RelativePath) bytes=$($_.Length)"
@@ -321,7 +391,7 @@ $testReport = $testResults | ForEach-Object {
 $captureReport = $captureEvidence | ForEach-Object {
     "PNG $($_.FileName) $($_.Width)x$($_.Height) bytes=$($_.Length) sha256=$($_.Sha256) path=$($_.RelativePath)"
 }
-$statusReport = if ($workingTreeStatus.Count -eq 0) { '(clean)' } else { $workingTreeStatus -join '; ' }
+$statusReport = if ($finalCheckout.StatusLines.Count -eq 0) { '(clean)' } else { $finalCheckout.StatusText }
 
 $gateReportPath = Join-Path $gateDirectory 'gate-report.txt'
 $gateReport = @(
@@ -329,6 +399,8 @@ $gateReport = @(
     "GeneratedUtc: $([DateTime]::UtcNow.ToString('O'))",
     "SourceCommit: $sourceCommit",
     "WorkingTreeStatus: $statusReport",
+    'CheckoutIntegrity: PASS (HEAD and clean status unchanged after evidence)',
+    'RequiredFilesTrackedAtSourceCommit: PASS',
     'Result: PASS',
     'ImplementationGate: PASS',
     'IssueAcceptance: PENDING UI/INDEPENDENT REVIEW',
