@@ -117,7 +117,7 @@ public sealed class DailySummaryStateTests
         AssertGenericSnapshotProjection(
             UiLanguage.Thai,
             "สรุปจากแหล่งข้อมูลที่ไม่อยู่ในฟิกซ์เจอร์",
-            "การตรวจพบแบบกำหนดเอง",
+            "issue-arbitrary-42",
             "ส่งต่อให้เจ้าของระบบ");
     }
 
@@ -127,7 +127,7 @@ public sealed class DailySummaryStateTests
         AssertGenericSnapshotProjection(
             UiLanguage.English,
             "Summary from an arbitrary accepted source",
-            "Arbitrary repeated issue",
+            "issue-arbitrary-42",
             "Route to the service owner");
     }
 
@@ -136,7 +136,7 @@ public sealed class DailySummaryStateTests
     {
         var valid = CreateGenericSnapshot(
             "Accepted source summary",
-            "Arbitrary repeated issue",
+            "issue-arbitrary-42",
             "Route to the service owner");
         var malformed = valid with
         {
@@ -152,6 +152,49 @@ public sealed class DailySummaryStateTests
         Assert.IsNull(state.Snapshot);
         Assert.IsEmpty(state.RepeatedIssues);
         Assert.IsTrue(state.SummaryCards.All(card => card.Value == "—"));
+    }
+
+    [TestMethod]
+    public void TamperedCanonicalSnapshotBecomesExplicitlyUnavailableWithoutTrustedCards()
+    {
+        var valid = CreateGenericSnapshot(
+            "Accepted source summary",
+            "issue-arbitrary-42",
+            "Route to the service owner");
+        var metrics = valid.Metrics.ToArray();
+        var tamperedSnapshots = new[]
+        {
+            valid with { SourceSetSha256 = Hash("tampered-source-set") },
+            valid with { ResultSha256 = Hash("tampered-result") },
+            valid with
+            {
+                Metrics = metrics
+                    .Select(item => item.MetricId == "accepted-sources" ? item with { Value = item.Value + 1 } : item)
+                    .ToArray(),
+            },
+            valid with { Metrics = metrics.Skip(1).ToArray() },
+            valid with { Metrics = metrics.Take(7).Append(metrics[0]).ToArray() },
+            valid with { Timeline = valid.Timeline.Skip(1).ToArray() },
+        };
+
+        foreach (var tampered in tamperedSnapshots)
+        {
+            var state = DailySummaryState.CreateSyntheticPreview(tampered);
+
+            Assert.IsFalse(state.IsSyntheticPreview);
+            Assert.AreEqual(EvidenceClass.Contract, state.EvidenceClass);
+            Assert.IsNull(state.Snapshot);
+            Assert.AreEqual("—", state.SourceSetLabel);
+            Assert.AreEqual("—", state.ResultLabel);
+            Assert.HasCount(5, state.SummaryCards);
+            Assert.IsTrue(state.SummaryCards.All(card => card.Value == "—"));
+            Assert.IsTrue(state.SummaryCards.All(card => card.SourceReferences.Count == 0));
+            Assert.IsEmpty(state.Highlights);
+            Assert.IsEmpty(state.RepeatedIssues);
+            Assert.IsEmpty(state.RecommendedActions);
+            Assert.IsEmpty(state.Timeline);
+            Assert.IsEmpty(state.Workstreams);
+        }
     }
 
     [TestMethod]
@@ -191,6 +234,7 @@ public sealed class DailySummaryStateTests
         Assert.IsTrue(state.IsSyntheticPreview);
         Assert.AreEqual(snapshot.ResultSha256, state.Snapshot!.ResultSha256);
         Assert.AreEqual(issueDescription, state.RepeatedIssues.Single().Description);
+        Assert.AreNotEqual("Unrelated first source summary", state.RepeatedIssues.Single().Description);
         Assert.AreEqual(actionDescription, state.RecommendedActions.Single().Description);
         Assert.AreEqual(sourceSummary, state.Highlights.Single().Summary);
         Assert.AreEqual(sourceSummary, state.Timeline.Single(item => item.SourceIds.Contains(sourceId)).Summary);
@@ -225,7 +269,7 @@ public sealed class DailySummaryStateTests
                 "source-arbitrary-77",
                 new DateTimeOffset(2026, 8, 15, 1, 0, 0, TimeSpan.Zero),
                 "Unmapped Workstream",
-                issueDescription,
+                "Unrelated first source summary",
                 isHighlight: false,
                 issueKey: "issue-arbitrary-42",
                 recommendedAction: actionDescription),
@@ -235,7 +279,7 @@ public sealed class DailySummaryStateTests
                 "Unmapped Workstream",
                 sourceSummary,
                 isHighlight: true,
-                issueKey: "issue-arbitrary-42",
+                issueKey: issueDescription,
                 recommendedAction: actionDescription),
             GenericSource(
                 "source-arbitrary-99",

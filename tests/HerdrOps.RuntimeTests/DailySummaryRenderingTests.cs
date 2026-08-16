@@ -123,12 +123,21 @@ public sealed class DailySummaryRenderingTests
         Assert.HasCount(5, summary.Items);
         Assert.IsTrue(state.SummaryCards.All(card => card.SourceIds.All(
             sourceId => state.Snapshot is null || state.Snapshot.AcceptedSources.Any(item => item.SourceId == sourceId))));
+        Assert.AreEqual(
+            language["DailySummaryPageAutomation"],
+            AutomationProperties.GetName(page),
+            "Daily Summary root automation name must use the localized page description.");
+        Assert.AreEqual(
+            language["DailySummaryPageAutomation"],
+            AutomationProperties.GetHelpText(page),
+            "Daily Summary root automation help text must use the localized page description.");
         AssertVisibleTextContains(shell, language["DailySummaryPageTitle"]);
         AssertVisibleTextContains(page, expectMissing ? "—" : state.SourceLabel);
 
         var boundary = Assert.IsInstanceOfType<FrameworkElement>(page.FindName("DailySummaryEvidenceBoundary"));
         var boundaryAutomation = AutomationProperties.GetName(boundary);
         Assert.AreEqual(state.BoundaryLabel, boundaryAutomation);
+        Assert.AreNotEqual(language["DailySummaryPageAutomation"], boundaryAutomation);
         if (expectMissing)
         {
             Assert.AreNotEqual(language["DailySummarySyntheticBoundary"], boundaryAutomation);

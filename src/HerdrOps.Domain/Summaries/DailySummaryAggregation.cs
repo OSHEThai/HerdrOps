@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
@@ -92,6 +93,18 @@ public static class DailySummaryAggregator
     public const int MaximumIdentifierLength = 256;
     public const int MaximumTextLength = 2048;
 
+    private static readonly string[] FixedMetricIds =
+    [
+        "accepted-sources",
+        "activity-events",
+        "evidence-items",
+        "workstreams",
+        "timeline-items",
+        "highlights",
+        "repeated-issues",
+        "recommended-actions",
+    ];
+
     public static DailySummarySnapshot Aggregate(
         DateOnly localDate,
         TimeZoneInfo timeZone,
@@ -172,7 +185,7 @@ public static class DailySummaryAggregator
                 group.Key,
                 group.Count(),
                 WorkstreamLabel(group),
-                group.OrderBy(item => item.SourceId, StringComparer.Ordinal).First().Summary,
+                group.Key,
                 SourceIds(group)))
             .ToArray());
 
@@ -228,6 +241,245 @@ public static class DailySummaryAggregator
         return candidate with { ResultSha256 = ComputeResultSha256(candidate) };
     }
 
+    public static bool TryReconcileAcceptedSnapshot(DailySummarySnapshot? snapshot)
+    {
+        if (snapshot is null)
+        {
+            return false;
+        }
+
+        try
+        {
+            ReconcileAcceptedSnapshot(snapshot);
+            return true;
+        }
+        catch (DailySummaryAggregationException)
+        {
+            return false;
+        }
+    }
+
+    public static DailySummarySnapshot ReconcileAcceptedSnapshot(DailySummarySnapshot snapshot)
+    {
+        ArgumentNullException.ThrowIfNull(snapshot);
+
+        if (snapshot.ContractVersion != ContractVersion ||
+            !string.Equals(snapshot.AggregatorId, AggregatorId, StringComparison.Ordinal) ||
+            snapshot.LocalDate == default ||
+            !IsCanonicalText(snapshot.TimeZoneId, MaximumIdentifierLength) ||
+            !IsCanonicalSha256(snapshot.SourceSetSha256) ||
+            !IsCanonicalSha256(snapshot.ResultSha256) ||
+            snapshot.AcceptedSources is null ||
+            snapshot.AcceptedSources.Count > MaximumSourceCount ||
+            snapshot.Metrics is null ||
+            snapshot.Workstreams is null ||
+            snapshot.Highlights is null ||
+            snapshot.RepeatedIssues is null ||
+            snapshot.RecommendedActions is null ||
+            snapshot.Timeline is null)
+        {
+            RejectSnapshot("metadata or projection collections are invalid");
+        }
+
+        var accepted = new Dictionary<string, DailySummarySourceReference>(StringComparer.Ordinal);
+        foreach (var source in snapshot.AcceptedSources)
+        {
+            if (source is null ||
+                !Enum.IsDefined(source.Kind) ||
+                !IsCanonicalText(source.SourceId, MaximumIdentifierLength) ||
+                !IsCanonicalSha256(source.SourceHashSha256) ||
+                !accepted.TryAdd(source.SourceId, source))
+            {
+                RejectSnapshot("accepted source references are missing, invalid, or duplicated");
+            }
+        }
+
+        var timelineBySourceId = new Dictionary<string, DailySummaryTimelineEntry>(StringComparer.Ordinal);
+        foreach (var entry in snapshot.Timeline)
+        {
+            if (entry is null ||
+                !Enum.IsDefined(entry.Kind) ||
+                !IsCanonicalText(entry.SourceId, MaximumIdentifierLength) ||
+                !accepted.TryGetValue(entry.SourceId, out var acceptedSource) ||
+                entry.Kind != acceptedSource.Kind ||
+                !string.Equals(entry.SourceHashSha256, acceptedSource.SourceHashSha256, StringComparison.Ordinal) ||
+                entry.OccurredLocal == default ||
+                DateOnly.FromDateTime(entry.OccurredLocal.DateTime) != snapshot.LocalDate ||
+                !IsCanonicalText(entry.Workstream, MaximumIdentifierLength) ||
+                !IsCanonicalText(entry.Category, MaximumIdentifierLength) ||
+                !IsCanonicalText(entry.Summary, MaximumTextLength) ||
+                !timelineBySourceId.TryAdd(entry.SourceId, entry))
+            {
+                RejectSnapshot("timeline source references are missing, invalid, or duplicated");
+            }
+        }
+
+        if (timelineBySourceId.Count != accepted.Count ||
+            !snapshot.AcceptedSources
+                .Select(item => item.SourceId)
+                .SequenceEqual(snapshot.Timeline.Select(item => item.SourceId), StringComparer.Ordinal) ||
+            !IsOrderedTimeline(snapshot.Timeline))
+        {
+            RejectSnapshot("accepted sources and timeline do not reconcile");
+        }
+
+        var expectedWorkstreams = snapshot.Timeline
+            .GroupBy(item => item.Workstream, StringComparer.Ordinal)
+            .OrderBy(group => group.Key, StringComparer.Ordinal)
+            .ToArray();
+        if (snapshot.Workstreams.Count != expectedWorkstreams.Length)
+        {
+            RejectSnapshot("workstream cardinality does not reconcile");
+        }
+
+        var workstreamSourceIds = new HashSet<string>(StringComparer.Ordinal);
+        for (var index = 0; index < expectedWorkstreams.Length; index++)
+        {
+            var expected = expectedWorkstreams[index];
+            var actual = snapshot.Workstreams[index];
+            var expectedSourceIds = expected
+                .Select(item => item.SourceId)
+                .OrderBy(item => item, StringComparer.Ordinal)
+                .ToArray();
+            var expectedActivityCount = expected.Count(item => item.Kind == DailySummarySourceKind.ActivityEvent);
+            var expectedEvidenceCount = expected.Count(item => item.Kind == DailySummarySourceKind.Evidence);
+            if (actual is null ||
+                !string.Equals(actual.Workstream, expected.Key, StringComparison.Ordinal) ||
+                actual.AcceptedSourceCount != expectedSourceIds.Length ||
+                actual.ActivityCount != expectedActivityCount ||
+                actual.EvidenceCount != expectedEvidenceCount ||
+                !HasCanonicalSourceIds(actual.SourceIds, accepted) ||
+                !HasExactSourceIds(actual.SourceIds, expectedSourceIds) ||
+                expectedSourceIds.Any(sourceId => !workstreamSourceIds.Add(sourceId)))
+            {
+                RejectSnapshot("workstream values or source references do not reconcile");
+            }
+        }
+
+        var timelineIndex = snapshot.Timeline
+            .Select((entry, index) => (entry.SourceId, Index: index))
+            .ToDictionary(item => item.SourceId, item => item.Index, StringComparer.Ordinal);
+        var highlightSourceIds = new HashSet<string>(StringComparer.Ordinal);
+        var previousHighlightIndex = -1;
+        foreach (var highlight in snapshot.Highlights)
+        {
+            if (highlight is null ||
+                !accepted.ContainsKey(highlight.SourceId) ||
+                !timelineBySourceId.TryGetValue(highlight.SourceId, out var timelineEntry) ||
+                !string.Equals(highlight.Workstream, timelineEntry.Workstream, StringComparison.Ordinal) ||
+                !string.Equals(highlight.Summary, timelineEntry.Summary, StringComparison.Ordinal) ||
+                !HasCanonicalSourceIds(highlight.SourceIds, accepted, requireNonEmpty: true) ||
+                !HasExactSourceIds(highlight.SourceIds, [highlight.SourceId]) ||
+                !highlightSourceIds.Add(highlight.SourceId) ||
+                timelineIndex[highlight.SourceId] <= previousHighlightIndex)
+            {
+                RejectSnapshot("highlight values or source references do not reconcile");
+            }
+
+            previousHighlightIndex = timelineIndex[highlight.SourceId];
+        }
+
+        var issueSourceIds = new HashSet<string>(StringComparer.Ordinal);
+        string? previousIssueKey = null;
+        foreach (var issue in snapshot.RepeatedIssues)
+        {
+            if (issue is null ||
+                !IsCanonicalText(issue.IssueKey, MaximumIdentifierLength) ||
+                issue.OccurrenceCount < 2 ||
+                !string.Equals(issue.Description, issue.IssueKey, StringComparison.Ordinal) ||
+                !HasCanonicalSourceIds(issue.SourceIds, accepted, requireNonEmpty: true) ||
+                !HasExactSourceIds(issue.SourceIds, issue.SourceIds.OrderBy(item => item, StringComparer.Ordinal)) ||
+                issue.OccurrenceCount != issue.SourceIds.Count ||
+                !string.IsNullOrEmpty(previousIssueKey) &&
+                string.CompareOrdinal(previousIssueKey, issue.IssueKey) >= 0 ||
+                issue.SourceIds.Any(sourceId => !issueSourceIds.Add(sourceId)) ||
+                !string.Equals(
+                    issue.Workstream,
+                    WorkstreamLabel(issue.SourceIds.Select(sourceId => timelineBySourceId[sourceId].Workstream)),
+                    StringComparison.Ordinal))
+            {
+                RejectSnapshot("repeated issue values or source references do not reconcile");
+            }
+
+            previousIssueKey = issue.IssueKey;
+        }
+
+        var actionSourceIds = new HashSet<string>(StringComparer.Ordinal);
+        string? previousActionKey = null;
+        foreach (var action in snapshot.RecommendedActions)
+        {
+            if (action is null ||
+                !IsCanonicalText(action.ActionKey, MaximumTextLength) ||
+                !string.Equals(action.Description, action.ActionKey, StringComparison.Ordinal) ||
+                !HasCanonicalSourceIds(action.SourceIds, accepted, requireNonEmpty: true) ||
+                !HasExactSourceIds(action.SourceIds, action.SourceIds.OrderBy(item => item, StringComparer.Ordinal)) ||
+                !string.IsNullOrEmpty(previousActionKey) &&
+                string.CompareOrdinal(previousActionKey, action.ActionKey) >= 0 ||
+                action.SourceIds.Any(sourceId => !actionSourceIds.Add(sourceId)))
+            {
+                RejectSnapshot("recommended action values or source references do not reconcile");
+            }
+
+            previousActionKey = action.ActionKey;
+        }
+
+        var acceptedSourceIds = accepted.Keys.OrderBy(item => item, StringComparer.Ordinal).ToArray();
+        var activitySourceIds = accepted.Values
+            .Where(item => item.Kind == DailySummarySourceKind.ActivityEvent)
+            .Select(item => item.SourceId)
+            .OrderBy(item => item, StringComparer.Ordinal)
+            .ToArray();
+        var evidenceSourceIds = accepted.Values
+            .Where(item => item.Kind == DailySummarySourceKind.Evidence)
+            .Select(item => item.SourceId)
+            .OrderBy(item => item, StringComparer.Ordinal)
+            .ToArray();
+        var expectedMetrics = new[]
+        {
+            (MetricId: FixedMetricIds[0], Value: accepted.Count, SourceIds: acceptedSourceIds),
+            (MetricId: FixedMetricIds[1], Value: activitySourceIds.Length, SourceIds: activitySourceIds),
+            (MetricId: FixedMetricIds[2], Value: evidenceSourceIds.Length, SourceIds: evidenceSourceIds),
+            (MetricId: FixedMetricIds[3], Value: snapshot.Workstreams.Count, SourceIds: acceptedSourceIds),
+            (MetricId: FixedMetricIds[4], Value: snapshot.Timeline.Count, SourceIds: acceptedSourceIds),
+            (MetricId: FixedMetricIds[5], Value: snapshot.Highlights.Count, SourceIds: SourceIds(snapshot.Highlights.SelectMany(item => item.SourceIds))),
+            (MetricId: FixedMetricIds[6], Value: snapshot.RepeatedIssues.Count, SourceIds: SourceIds(snapshot.RepeatedIssues.SelectMany(item => item.SourceIds))),
+            (MetricId: FixedMetricIds[7], Value: snapshot.RecommendedActions.Count, SourceIds: SourceIds(snapshot.RecommendedActions.SelectMany(item => item.SourceIds))),
+        };
+
+        if (snapshot.Metrics.Count != expectedMetrics.Length)
+        {
+            RejectSnapshot("fixed metric cardinality does not reconcile");
+        }
+
+        for (var index = 0; index < expectedMetrics.Length; index++)
+        {
+            var actual = snapshot.Metrics[index];
+            var expected = expectedMetrics[index];
+            if (actual is null ||
+                !string.Equals(actual.MetricId, expected.MetricId, StringComparison.Ordinal) ||
+                actual.Value != expected.Value ||
+                !HasCanonicalSourceIds(actual.SourceIds, accepted) ||
+                !HasExactSourceIds(actual.SourceIds, expected.SourceIds))
+            {
+                RejectSnapshot("fixed metric keys, values, or source references do not reconcile");
+            }
+        }
+
+        var expectedSourceSetSha256 = ComputeSourceSetSha256(snapshot.AcceptedSources);
+        if (!string.Equals(snapshot.SourceSetSha256, expectedSourceSetSha256, StringComparison.Ordinal))
+        {
+            RejectSnapshot("SourceSetSha256 does not match canonical accepted source bytes");
+        }
+
+        var expectedResultSha256 = ComputeResultSha256(snapshot);
+        if (!string.Equals(snapshot.ResultSha256, expectedResultSha256, StringComparison.Ordinal))
+        {
+            RejectSnapshot("ResultSha256 does not match canonical accepted snapshot bytes");
+        }
+
+        return snapshot;
+    }
+
     private static DailySummarySource NormalizeSource(DailySummarySource source)
     {
         ArgumentNullException.ThrowIfNull(source);
@@ -260,10 +512,12 @@ public static class DailySummaryAggregator
         };
     }
 
-    private static string WorkstreamLabel(IEnumerable<DailySummarySource> sources)
+    private static string WorkstreamLabel(IEnumerable<DailySummarySource> sources) =>
+        WorkstreamLabel(sources.Select(item => item.Workstream));
+
+    private static string WorkstreamLabel(IEnumerable<string> workstreams)
     {
-        var labels = sources
-            .Select(item => item.Workstream)
+        var labels = workstreams
             .Distinct(StringComparer.Ordinal)
             .OrderBy(item => item, StringComparer.Ordinal)
             .ToArray();
@@ -304,6 +558,54 @@ public static class DailySummaryAggregator
             .SelectMany(item => item.SourceIds)
             .OrderBy(item => item, StringComparer.Ordinal)
             .ToArray();
+
+    private static bool HasCanonicalSourceIds(
+        IReadOnlyList<string>? sourceIds,
+        IReadOnlyDictionary<string, DailySummarySourceReference> accepted,
+        bool requireNonEmpty = false)
+    {
+        if (sourceIds is null || (requireNonEmpty && sourceIds.Count == 0))
+        {
+            return false;
+        }
+
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        return sourceIds.All(sourceId =>
+            IsCanonicalText(sourceId, MaximumIdentifierLength) &&
+            accepted.ContainsKey(sourceId) &&
+            seen.Add(sourceId));
+    }
+
+    private static bool HasExactSourceIds(
+        IReadOnlyList<string>? actual,
+        IEnumerable<string> expected)
+    {
+        if (actual is null)
+        {
+            return false;
+        }
+
+        var expectedArray = expected.ToArray();
+        return actual.Count == expectedArray.Length &&
+               actual.SequenceEqual(expectedArray, StringComparer.Ordinal);
+    }
+
+    private static bool IsOrderedTimeline(IReadOnlyList<DailySummaryTimelineEntry> timeline)
+    {
+        for (var index = 1; index < timeline.Count; index++)
+        {
+            var previous = timeline[index - 1];
+            var current = timeline[index];
+            var occurrenceComparison = previous.OccurredLocal.CompareTo(current.OccurredLocal);
+            if (occurrenceComparison > 0 ||
+                occurrenceComparison == 0 && string.CompareOrdinal(previous.SourceId, current.SourceId) >= 0)
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
 
     private static void EnsureUnique(IEnumerable<string> values, string label)
     {
@@ -356,6 +658,24 @@ public static class DailySummaryAggregator
 
     private static string NormalizeTimeZoneId(string value) =>
         NormalizeText(value, nameof(TimeZoneInfo.Id), MaximumIdentifierLength);
+
+    private static bool IsCanonicalText(string? value, int maximumLength) =>
+        !string.IsNullOrWhiteSpace(value) &&
+        value == value.Trim() &&
+        value == value.Normalize(NormalizationForm.FormC) &&
+        value.Length <= maximumLength &&
+        value.All(character => !char.IsControl(character));
+
+    private static bool IsCanonicalSha256(string? value) =>
+        value is not null &&
+        value.Length == 64 &&
+        value.All(IsHexCharacter) &&
+        value == value.ToUpperInvariant();
+
+    [DoesNotReturn]
+    private static void RejectSnapshot(string reason) =>
+        throw new DailySummaryAggregationException(
+            $"Daily Summary snapshot reconciliation failed: {reason}.");
 
     private static string ComputeSourceSetSha256(
         IReadOnlyList<DailySummarySourceReference> sources)

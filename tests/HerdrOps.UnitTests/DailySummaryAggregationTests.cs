@@ -53,6 +53,7 @@ public sealed class DailySummaryAggregationTests
 
         var repeatedIssue = snapshot.RepeatedIssues.Single();
         Assert.AreEqual(fixture.Expected.RepeatedIssueKey, repeatedIssue.IssueKey);
+        Assert.AreEqual(fixture.Expected.RepeatedIssueKey, repeatedIssue.Description);
         CollectionAssert.AreEquivalent(
             fixture.Expected.RepeatedIssueSourceIds,
             repeatedIssue.SourceIds.ToArray());
@@ -223,6 +224,89 @@ public sealed class DailySummaryAggregationTests
                 new DateOnly(2026, 8, 15),
                 TimeZoneInfo.Utc,
                 [invalid]));
+    }
+
+    [TestMethod]
+    public void CanonicalReconciliationRejectsTamperedHashesMetricsValuesAndReferences()
+    {
+        var fixture = ReadFixture();
+        var snapshot = DailySummaryAggregator.Aggregate(
+            fixture.LocalDate,
+            CreateFixedOffsetTimeZone(fixture.TimeZoneOffsetMinutes),
+            fixture.Sources);
+        var acceptedSources = snapshot.AcceptedSources.ToArray();
+        var metrics = snapshot.Metrics.ToArray();
+
+        var tamperedSnapshots = new[]
+        {
+            (Name: "source-set hash", Snapshot: snapshot with { SourceSetSha256 = Hash("tampered-source-set") }),
+            (Name: "result hash", Snapshot: snapshot with { ResultSha256 = Hash("tampered-result") }),
+            (
+                Name: "summary-card metric value",
+                Snapshot: snapshot with
+                {
+                    Metrics = metrics
+                        .Select(item => item.MetricId == "accepted-sources" ? item with { Value = item.Value + 1 } : item)
+                        .ToArray(),
+                }
+            ),
+            (
+                Name: "metric source reference",
+                Snapshot: snapshot with
+                {
+                    Metrics = metrics
+                        .Select(item => item.MetricId == "activity-events"
+                            ? item with { SourceIds = item.SourceIds.Skip(1).ToArray() }
+                            : item)
+                        .ToArray(),
+                }
+            ),
+            (Name: "missing metric", Snapshot: snapshot with { Metrics = metrics.Skip(1).ToArray() }),
+            (Name: "duplicate metric", Snapshot: snapshot with { Metrics = metrics.Take(7).Append(metrics[0]).ToArray() }),
+            (Name: "missing timeline reference", Snapshot: snapshot with { Timeline = snapshot.Timeline.Skip(1).ToArray() }),
+            (
+                Name: "duplicate accepted source reference",
+                Snapshot: snapshot with { AcceptedSources = acceptedSources.Append(acceptedSources[0]).ToArray() }
+            ),
+        };
+
+        foreach (var tampered in tamperedSnapshots)
+        {
+            Assert.IsFalse(
+                DailySummaryAggregator.TryReconcileAcceptedSnapshot(tampered.Snapshot),
+                tampered.Name);
+        }
+    }
+
+    [TestMethod]
+    public void RepeatedIssueDescriptionUsesIssueKeyWhenFirstSourceSummaryIsUnrelated()
+    {
+        var first = CreateSource(
+            "issue-first",
+            DailySummarySourceKind.ActivityEvent,
+            new DateTimeOffset(2026, 8, 15, 0, 0, 0, TimeSpan.Zero)) with
+        {
+            Summary = "Unrelated first source summary",
+            IssueKey = "issue-key-42",
+        };
+        var second = CreateSource(
+            "issue-second",
+            DailySummarySourceKind.ActivityEvent,
+            new DateTimeOffset(2026, 8, 15, 1, 0, 0, TimeSpan.Zero)) with
+        {
+            Summary = "Second source summary",
+            IssueKey = "issue-key-42",
+        };
+
+        var snapshot = DailySummaryAggregator.Aggregate(
+            new DateOnly(2026, 8, 15),
+            TimeZoneInfo.Utc,
+            [first, second]);
+
+        var issue = snapshot.RepeatedIssues.Single();
+        Assert.AreEqual("issue-key-42", issue.Description);
+        Assert.AreNotEqual(first.Summary, issue.Description);
+        CollectionAssert.AreEquivalent(new[] { first.SourceId, second.SourceId }, issue.SourceIds.ToArray());
     }
 
     private static DailySummaryMetric Metric(DailySummarySnapshot snapshot, string metricId) =>

@@ -285,130 +285,22 @@ public sealed class DailySummaryState : ObservableState
         acceptedSourceReferences = accepted;
         sourceSummaries = summaries;
 
-        if (snapshot.ContractVersion != DailySummaryAggregator.ContractVersion ||
-            !string.Equals(snapshot.AggregatorId, DailySummaryAggregator.AggregatorId, StringComparison.Ordinal) ||
-            snapshot.LocalDate == default ||
-            !IsValidText(snapshot.TimeZoneId, DailySummaryAggregator.MaximumIdentifierLength) ||
-            !IsValidHash(snapshot.SourceSetSha256) ||
-            !IsValidHash(snapshot.ResultSha256) ||
-            snapshot.AcceptedSources is null ||
-            snapshot.Metrics is null ||
-            snapshot.Workstreams is null ||
-            snapshot.Highlights is null ||
-            snapshot.RepeatedIssues is null ||
-            snapshot.RecommendedActions is null ||
-            snapshot.Timeline is null)
+        if (!DailySummaryAggregator.TryReconcileAcceptedSnapshot(snapshot))
         {
             return false;
         }
 
         foreach (var source in snapshot.AcceptedSources)
         {
-            if (source is null ||
-                !Enum.IsDefined(source.Kind) ||
-                !IsValidText(source.SourceId, DailySummaryAggregator.MaximumIdentifierLength) ||
-                !IsValidHash(source.SourceHashSha256) ||
-                !accepted.TryAdd(source.SourceId, source))
+            if (!accepted.TryAdd(source.SourceId, source))
             {
                 return false;
             }
-        }
-
-        if (snapshot.Timeline.Count != accepted.Count)
-        {
-            return false;
         }
 
         foreach (var entry in snapshot.Timeline)
         {
-            if (entry is null ||
-                !Enum.IsDefined(entry.Kind) ||
-                !accepted.TryGetValue(entry.SourceId, out var acceptedSource) ||
-                entry.Kind != acceptedSource.Kind ||
-                !string.Equals(entry.SourceHashSha256, acceptedSource.SourceHashSha256, StringComparison.Ordinal) ||
-                entry.OccurredLocal == default ||
-                !IsValidText(entry.Workstream, DailySummaryAggregator.MaximumIdentifierLength) ||
-                !IsValidText(entry.Category, DailySummaryAggregator.MaximumIdentifierLength) ||
-                !IsValidText(entry.Summary, DailySummaryAggregator.MaximumTextLength) ||
-                !summaries.TryAdd(entry.SourceId, entry.Summary))
-            {
-                return false;
-            }
-        }
-
-        var metricIds = new HashSet<string>(StringComparer.Ordinal);
-        foreach (var metric in snapshot.Metrics)
-        {
-            if (metric is null ||
-                !IsValidText(metric.MetricId, DailySummaryAggregator.MaximumIdentifierLength) ||
-                metric.Value < 0 ||
-                !metricIds.Add(metric.MetricId) ||
-                !HasAcceptedSourceIds(metric.SourceIds, accepted))
-            {
-                return false;
-            }
-        }
-
-        foreach (var requiredMetricId in new[]
-                 {
-                     "accepted-sources",
-                     "activity-events",
-                     "evidence-items",
-                     "highlights",
-                     "recommended-actions",
-                 })
-        {
-            if (!metricIds.Contains(requiredMetricId))
-            {
-                return false;
-            }
-        }
-
-        foreach (var workstream in snapshot.Workstreams)
-        {
-            if (workstream is null ||
-                !IsValidText(workstream.Workstream, DailySummaryAggregator.MaximumIdentifierLength) ||
-                workstream.AcceptedSourceCount < 0 ||
-                workstream.ActivityCount < 0 ||
-                workstream.EvidenceCount < 0 ||
-                !HasAcceptedSourceIds(workstream.SourceIds, accepted, requireNonEmpty: true))
-            {
-                return false;
-            }
-        }
-
-        foreach (var highlight in snapshot.Highlights)
-        {
-            if (highlight is null ||
-                !accepted.ContainsKey(highlight.SourceId) ||
-                !IsValidText(highlight.Workstream, DailySummaryAggregator.MaximumIdentifierLength) ||
-                !IsValidText(highlight.Summary, DailySummaryAggregator.MaximumTextLength) ||
-                !HasAcceptedSourceIds(highlight.SourceIds, accepted, requireNonEmpty: true) ||
-                !highlight.SourceIds.Contains(highlight.SourceId, StringComparer.Ordinal))
-            {
-                return false;
-            }
-        }
-
-        foreach (var issue in snapshot.RepeatedIssues)
-        {
-            if (issue is null ||
-                !IsValidText(issue.IssueKey, DailySummaryAggregator.MaximumIdentifierLength) ||
-                issue.OccurrenceCount <= 0 ||
-                !IsValidText(issue.Workstream, DailySummaryAggregator.MaximumIdentifierLength) ||
-                !IsValidText(issue.Description, DailySummaryAggregator.MaximumTextLength) ||
-                !HasAcceptedSourceIds(issue.SourceIds, accepted, requireNonEmpty: true))
-            {
-                return false;
-            }
-        }
-
-        foreach (var action in snapshot.RecommendedActions)
-        {
-            if (action is null ||
-                !IsValidText(action.ActionKey, DailySummaryAggregator.MaximumTextLength) ||
-                !IsValidText(action.Description, DailySummaryAggregator.MaximumTextLength) ||
-                !HasAcceptedSourceIds(action.SourceIds, accepted, requireNonEmpty: true))
+            if (!summaries.TryAdd(entry.SourceId, entry.Summary))
             {
                 return false;
             }
@@ -417,33 +309,11 @@ public sealed class DailySummaryState : ObservableState
         return true;
     }
 
-    private static bool HasAcceptedSourceIds(
-        IReadOnlyList<string>? sourceIds,
-        IReadOnlyDictionary<string, DailySummarySourceReference> accepted,
-        bool requireNonEmpty = false)
-    {
-        if (sourceIds is null || (requireNonEmpty && sourceIds.Count == 0))
-        {
-            return false;
-        }
-
-        var seen = new HashSet<string>(StringComparer.Ordinal);
-        return sourceIds.All(sourceId =>
-            IsValidText(sourceId, DailySummaryAggregator.MaximumIdentifierLength) &&
-            accepted.ContainsKey(sourceId) &&
-            seen.Add(sourceId));
-    }
-
     private static bool IsValidText(string? value, int maximumLength) =>
         !string.IsNullOrWhiteSpace(value) &&
         value == value.Trim() &&
         value.Length <= maximumLength &&
         value.All(character => !char.IsControl(character));
-
-    private static bool IsValidHash(string? value) =>
-        value is not null &&
-        value.Length == 64 &&
-        value.All(character => character is >= '0' and <= '9' or >= 'A' and <= 'F' or >= 'a' and <= 'f');
 
     private IReadOnlyList<DailySummarySummaryCard> CreateSummaryCards(UiLanguageService text)
     {
@@ -727,9 +597,7 @@ public sealed class DailySummaryState : ObservableState
         }
 
         return Array.AsReadOnly(sourceIds
-            .Distinct(StringComparer.Ordinal)
             .OrderBy(item => item, StringComparer.Ordinal)
-            .Where(_acceptedSourceReferences.ContainsKey)
             .Select(item => _acceptedSourceReferences[item])
             .ToArray());
     }

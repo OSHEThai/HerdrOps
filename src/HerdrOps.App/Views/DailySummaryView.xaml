@@ -9,7 +9,8 @@
              Background="{DynamicResource HerdrOps.Brush.Background}"
              Foreground="{DynamicResource HerdrOps.Brush.TextPrimary}"
              FontFamily="{DynamicResource HerdrOps.FontFamily.UI}"
-             automation:AutomationProperties.Name="{Binding BoundaryLabel}"
+             automation:AutomationProperties.Name="{Binding [DailySummaryPageAutomation], Source={x:Static localization:UiLanguageService.Shared}}"
+             automation:AutomationProperties.HelpText="{Binding [DailySummaryPageAutomation], Source={x:Static localization:UiLanguageService.Shared}}"
              SizeChanged="OnSizeChanged">
     <UserControl.Resources>
         <converters:ResourceKeyToBrushConverter x:Key="ResourceBrush" />
