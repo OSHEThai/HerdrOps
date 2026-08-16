@@ -480,6 +480,130 @@ public static class DailySummaryAggregator
         return snapshot;
     }
 
+    public static DailySummarySnapshot Validate(DailySummarySnapshot snapshot)
+    {
+        ArgumentNullException.ThrowIfNull(snapshot);
+        if (snapshot.ContractVersion != ContractVersion)
+        {
+            throw new DailySummaryAggregationException(
+                $"Unsupported Daily Summary contract v{snapshot.ContractVersion}.");
+        }
+
+        if (!string.Equals(snapshot.AggregatorId, AggregatorId, StringComparison.Ordinal))
+        {
+            throw new DailySummaryAggregationException(
+                "Daily Summary aggregator identity does not match the accepted contract.");
+        }
+
+        _ = NormalizeTimeZoneId(snapshot.TimeZoneId);
+        ValidateSnapshotCollections(snapshot);
+
+        var expectedSourceSet = ComputeSourceSetSha256(snapshot.AcceptedSources);
+        if (!string.Equals(expectedSourceSet, snapshot.SourceSetSha256, StringComparison.Ordinal))
+        {
+            throw new DailySummaryAggregationException(
+                "Daily Summary source-set SHA-256 does not match its accepted sources.");
+        }
+
+        var expectedResult = ComputeResultSha256(snapshot);
+        if (!string.Equals(expectedResult, snapshot.ResultSha256, StringComparison.Ordinal))
+        {
+            throw new DailySummaryAggregationException(
+                "Daily Summary result SHA-256 does not match its accepted values.");
+        }
+
+        return snapshot;
+    }
+
+    private static void ValidateSnapshotCollections(DailySummarySnapshot snapshot)
+    {
+        ArgumentNullException.ThrowIfNull(snapshot.AcceptedSources);
+        ArgumentNullException.ThrowIfNull(snapshot.Metrics);
+        ArgumentNullException.ThrowIfNull(snapshot.Workstreams);
+        ArgumentNullException.ThrowIfNull(snapshot.Highlights);
+        ArgumentNullException.ThrowIfNull(snapshot.RepeatedIssues);
+        ArgumentNullException.ThrowIfNull(snapshot.RecommendedActions);
+        ArgumentNullException.ThrowIfNull(snapshot.Timeline);
+
+        foreach (var source in snapshot.AcceptedSources)
+        {
+            ArgumentNullException.ThrowIfNull(source);
+            _ = NormalizeText(source.SourceId, nameof(source.SourceId), MaximumIdentifierLength);
+            if (!Enum.IsDefined(source.Kind))
+            {
+                throw new DailySummaryAggregationException(
+                    "Daily Summary contains an unsupported accepted source kind.");
+            }
+
+            _ = NormalizeSha256(source.SourceHashSha256, nameof(source.SourceHashSha256));
+        }
+
+        foreach (var metric in snapshot.Metrics)
+        {
+            ArgumentNullException.ThrowIfNull(metric);
+            _ = NormalizeText(metric.MetricId, nameof(metric.MetricId), MaximumIdentifierLength);
+            ValidateIds(metric.SourceIds, nameof(metric.SourceIds));
+        }
+
+        foreach (var workstream in snapshot.Workstreams)
+        {
+            ArgumentNullException.ThrowIfNull(workstream);
+            _ = NormalizeText(workstream.Workstream, nameof(workstream.Workstream), MaximumIdentifierLength);
+            ValidateIds(workstream.SourceIds, nameof(workstream.SourceIds));
+        }
+
+        foreach (var highlight in snapshot.Highlights)
+        {
+            ArgumentNullException.ThrowIfNull(highlight);
+            _ = NormalizeText(highlight.SourceId, nameof(highlight.SourceId), MaximumIdentifierLength);
+            _ = NormalizeText(highlight.Workstream, nameof(highlight.Workstream), MaximumIdentifierLength);
+            _ = NormalizeText(highlight.Summary, nameof(highlight.Summary), MaximumTextLength);
+            ValidateIds(highlight.SourceIds, nameof(highlight.SourceIds));
+        }
+
+        foreach (var issue in snapshot.RepeatedIssues)
+        {
+            ArgumentNullException.ThrowIfNull(issue);
+            _ = NormalizeText(issue.IssueKey, nameof(issue.IssueKey), MaximumIdentifierLength);
+            _ = NormalizeText(issue.Workstream, nameof(issue.Workstream), MaximumIdentifierLength);
+            _ = NormalizeText(issue.Description, nameof(issue.Description), MaximumTextLength);
+            ValidateIds(issue.SourceIds, nameof(issue.SourceIds));
+        }
+
+        foreach (var action in snapshot.RecommendedActions)
+        {
+            ArgumentNullException.ThrowIfNull(action);
+            _ = NormalizeText(action.ActionKey, nameof(action.ActionKey), MaximumIdentifierLength);
+            _ = NormalizeText(action.Description, nameof(action.Description), MaximumTextLength);
+            ValidateIds(action.SourceIds, nameof(action.SourceIds));
+        }
+
+        foreach (var entry in snapshot.Timeline)
+        {
+            ArgumentNullException.ThrowIfNull(entry);
+            _ = NormalizeText(entry.SourceId, nameof(entry.SourceId), MaximumIdentifierLength);
+            if (!Enum.IsDefined(entry.Kind))
+            {
+                throw new DailySummaryAggregationException(
+                    "Daily Summary timeline contains an unsupported source kind.");
+            }
+
+            _ = NormalizeText(entry.Workstream, nameof(entry.Workstream), MaximumIdentifierLength);
+            _ = NormalizeText(entry.Category, nameof(entry.Category), MaximumIdentifierLength);
+            _ = NormalizeText(entry.Summary, nameof(entry.Summary), MaximumTextLength);
+            _ = NormalizeSha256(entry.SourceHashSha256, nameof(entry.SourceHashSha256));
+        }
+    }
+
+    private static void ValidateIds(IReadOnlyList<string> ids, string name)
+    {
+        ArgumentNullException.ThrowIfNull(ids);
+        foreach (var id in ids)
+        {
+            _ = NormalizeText(id, name, MaximumIdentifierLength);
+        }
+    }
+
     private static DailySummarySource NormalizeSource(DailySummarySource source)
     {
         ArgumentNullException.ThrowIfNull(source);

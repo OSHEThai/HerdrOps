@@ -1,0 +1,16 @@
+{
+  "fixtureId": "v0.6-issue-33-snapshot-export",
+  "classification": "Synthetic",
+  "generationUtc": "2026-08-16T00:00:00.0000000Z",
+  "dailySummaryTimeZoneId": "fixture-utc-420",
+  "encoding": "UTF-8 without BOM; JSON LF; CSV CRLF",
+  "redactionPolicyId": "HERDROPS-LOCAL-EXPORT-REDACTION-V1",
+  "evaluationJsonSha256": "1441EB4BCD41A19A4CBD183313E996F6383875081F0B9C0257B9E0E4ADE1D389",
+  "evaluationCsvSha256": "0AF391E9BBC2D8A4DC6B9ADC98A411CDB976A4F9D959437CEBD5F1DABAE6FA1E",
+  "dailyJsonSha256": "54B8F3BB8C6E4E15F0DBA0A8257E348CE2019B7839398819468B39450FD8B2E2",
+  "dailyCsvSha256": "6C9DD3D13A77780F7160E69AF8BC447E3368CEA7B8DB4615643B2F2911E46130",
+  "sourceFixtures": [
+    "scoring-golden-v1.json",
+    "daily-summary-aggregation.json"
+  ]
+}
