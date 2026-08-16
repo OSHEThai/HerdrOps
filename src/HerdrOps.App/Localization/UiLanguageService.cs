@@ -15,6 +15,9 @@ public sealed class UiLanguageService : INotifyPropertyChanged
         {
             ["LanguageThai"] = "ไทย",
             ["LanguageEnglish"] = "อังกฤษ",
+            ["TrayShowDashboard"] = "เปิดแดชบอร์ด",
+            ["TrayShowConfiguredWidgetFormat"] = "เปิดวิดเจ็ต: {0}",
+            ["TrayExit"] = "ออกจาก HerdrOps",
             ["SelectThai"] = "เปลี่ยนภาษาเป็นภาษาไทย",
             ["SelectEnglish"] = "เปลี่ยนภาษาเป็นภาษาอังกฤษ",
             ["ToggleNavigation"] = "ย่อหรือขยายแถบนำทาง",
@@ -1043,6 +1046,9 @@ public sealed class UiLanguageService : INotifyPropertyChanged
         {
             ["LanguageThai"] = "Thai",
             ["LanguageEnglish"] = "English",
+            ["TrayShowDashboard"] = "Show Dashboard",
+            ["TrayShowConfiguredWidgetFormat"] = "Show widget: {0}",
+            ["TrayExit"] = "Exit HerdrOps",
             ["SelectThai"] = "Switch to Thai",
             ["SelectEnglish"] = "Switch to English",
             ["ToggleNavigation"] = "Collapse or expand navigation",

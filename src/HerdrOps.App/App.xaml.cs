@@ -1,10 +1,15 @@
 using System.IO;
 using System.Windows;
+using HerdrOps.App.Lifecycle;
 using HerdrOps.App.Live;
+using HerdrOps.App.Localization;
 using HerdrOps.App.ReviewIpc;
 using HerdrOps.App.RuntimeEvidence;
 using HerdrOps.App.StateIpc;
+using HerdrOps.App.Widgets;
 using HerdrOps.Domain.Compliance;
+using HerdrOps.Domain.Lifecycle;
+using HerdrOps.Domain.Settings;
 
 namespace HerdrOps.App;
 
@@ -15,6 +20,8 @@ public partial class App : Application
 {
     private LiveDashboardRuntime? _runtime;
     private ComplianceReviewCommandCoordinator? _reviewCommands;
+    private TrayLifecycleController? _tray;
+    private AppSettings _settings = AppSettings.Defaults;
 
     protected override async void OnStartup(StartupEventArgs e)
     {
@@ -74,6 +81,7 @@ public partial class App : Application
         var mainWindow = new MainWindow(state);
         MainWindow = mainWindow;
         mainWindow.Show();
+        StartTray(state);
     }
 
     private async Task RunRuntimeEvidenceAsync(IReadOnlyList<string> args)
@@ -140,8 +148,37 @@ public partial class App : Application
 
     protected override void OnExit(ExitEventArgs e)
     {
+        StopTray();
         _runtime?.Dispose();
         _reviewCommands = null;
         base.OnExit(e);
     }
+
+    private void StartTray(LiveDashboardState state)
+    {
+        UiLanguageService.Shared.SetLanguage(
+            AppSettingsLifecycleMapping.ToUiLanguage(_settings.Language));
+        UiLanguageService.Shared.LanguageChanged += OnLanguageChanged;
+        var menuBuilder = new TrayMenuBuilder(() => _settings);
+
+        _tray = new TrayLifecycleController(
+            new SystemTrayBackend(),
+            menuBuilder.Build,
+            new WpfTrayCommandTarget(
+                () => MainWindow as MainWindow,
+                new WidgetWindowLauncher(state.Widgets),
+                () => _settings,
+                language => _settings = _settings with { Language = language },
+                Shutdown));
+        _tray.Start();
+    }
+
+    private void StopTray()
+    {
+        UiLanguageService.Shared.LanguageChanged -= OnLanguageChanged;
+        _tray?.Dispose();
+        _tray = null;
+    }
+
+    private void OnLanguageChanged(object? sender, EventArgs e) => _tray?.Refresh();
 }
