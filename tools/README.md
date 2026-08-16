@@ -182,7 +182,10 @@ readiness.
 ./tools/Test-V06TechnicalGate.ps1 -Configuration Release
 
 The v0.6 technical gate consolidates only Static, Synthetic, and Contract
-evidence for Issues #30-#33. It deliberately reports actual Herdr Runtime,
+evidence and always performs the full build/test/format run; the parent gate
+does not expose a `-SkipBuild` acceptance path. Child gates may skip their own
+duplicate build only after the parent has completed that full run at the same
+unchanged commit. It deliberately reports actual Herdr Runtime,
 predecessor runtime gates, independent-review consolidation, GitHub milestone
 closure, package installation, and release publication as not observed or
 pending.

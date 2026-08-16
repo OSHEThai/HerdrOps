@@ -1,9 +1,7 @@
 [CmdletBinding()]
 param(
     [ValidateSet('Debug', 'Release')]
-    [string]$Configuration = 'Release',
-
-    [switch]$SkipBuild
+    [string]$Configuration = 'Release'
 )
 
 Set-StrictMode -Version Latest
@@ -93,13 +91,11 @@ function Invoke-ChildGate {
     }
 }
 
-if (-not $SkipBuild) {
-    & (Join-Path $PSScriptRoot 'Invoke-Build.ps1') `
-        -Configuration $Configuration `
-        -VerifyFormat
-    if ($LASTEXITCODE -ne 0) {
-        throw 'The full v0.6 technical-gate build and test suite failed.'
-    }
+& (Join-Path $PSScriptRoot 'Invoke-Build.ps1') `
+    -Configuration $Configuration `
+    -VerifyFormat
+if ($LASTEXITCODE -ne 0) {
+    throw 'The full v0.6 technical-gate build and test suite failed.'
 }
 
 $childGates = @(
@@ -168,7 +164,7 @@ $report = @(
     "SourceCommit: $sourceCommit",
     'Result: TECHNICAL GATE PASS',
     'VersionLocalTechnicalGates: 4/4 PASS',
-    "FullBuildExecuted: $(-not $SkipBuild)",
+    'FullBuildExecuted: True',
     '',
     'StaticEvidence: PASS',
     'SyntheticEvidence: PASS',
