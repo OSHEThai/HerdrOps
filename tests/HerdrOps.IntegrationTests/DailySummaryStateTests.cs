@@ -1,4 +1,6 @@
+using System.Security.Cryptography;
 using System.Text.RegularExpressions;
+using System.Text;
 using HerdrOps.App.Localization;
 using HerdrOps.App.Summaries;
 using HerdrOps.Contracts;
@@ -7,6 +9,7 @@ using HerdrOps.Domain.Summaries;
 namespace HerdrOps.IntegrationTests;
 
 [TestClass]
+[DoNotParallelize]
 public sealed class DailySummaryStateTests
 {
     [TestInitialize]
@@ -49,8 +52,11 @@ public sealed class DailySummaryStateTests
             item => item.SourceId,
             StringComparer.Ordinal);
 
-        var missingTest = state.AreasToImprove.Single(item => item.Id == "area-missing-test");
-        CollectionAssert.AreEqual(new[] { "activity-003" }, missingTest.SourceIds.ToArray());
+        var repeatedIssue = state.AreasToImprove.Single();
+        Assert.AreEqual(snapshot.RepeatedIssues.Single().Description, repeatedIssue.Summary);
+        CollectionAssert.AreEqual(
+            snapshot.RepeatedIssues.Single().SourceIds.OrderBy(item => item, StringComparer.Ordinal).ToArray(),
+            repeatedIssue.SourceIds.ToArray());
 
         var rows = state.SummaryCards.Select(item => (item.SourceIds, item.SourceReferences))
             .Concat(state.Highlights.Select(item => (item.SourceIds, item.SourceReferences)))
@@ -76,10 +82,8 @@ public sealed class DailySummaryStateTests
             }
         }
 
-        var activity003 = accepted["activity-003"];
-        StringAssert.Contains(
-            missingTest.SourceProvenanceLabel,
-            $"{activity003.SourceId}#{activity003.SourceHashSha256}");
+        var repeatedIssueSources = snapshot.RepeatedIssues.Single().SourceIds.ToHashSet(StringComparer.Ordinal);
+        Assert.IsTrue(repeatedIssue.SourceReferences.All(item => repeatedIssueSources.Contains(item.SourceId)));
     }
 
     [TestMethod]
@@ -101,9 +105,53 @@ public sealed class DailySummaryStateTests
         state.RefreshLanguage();
         Assert.AreEqual("สรุปรายวัน", UiLanguageService.Shared["DailySummaryPageTitle"]);
         Assert.IsTrue(state.SummaryCards.All(card => ContainsThai(card.Title + card.Detail)));
-        Assert.IsTrue(state.Highlights.All(item => ContainsThai(item.Summary)));
-        Assert.IsTrue(state.RecommendedActions.All(item => ContainsThai(item.Description)));
+        Assert.IsTrue(state.SummaryCards.Any(card => ContainsThai(card.Title + card.Detail)));
+        Assert.IsTrue(state.Highlights.All(item => !ContainsThai(item.Summary)));
+        Assert.IsTrue(state.RecommendedActions.All(item => !ContainsThai(item.Description)));
         Assert.IsTrue(state.AreasToImprove.All(item => ContainsThai(item.SourceLabel)));
+    }
+
+    [TestMethod]
+    public void GenericThaiSnapshotUsesAcceptedDescriptionsSummariesAndExactProvenance()
+    {
+        AssertGenericSnapshotProjection(
+            UiLanguage.Thai,
+            "สรุปจากแหล่งข้อมูลที่ไม่อยู่ในฟิกซ์เจอร์",
+            "การตรวจพบแบบกำหนดเอง",
+            "ส่งต่อให้เจ้าของระบบ");
+    }
+
+    [TestMethod]
+    public void GenericEnglishSnapshotUsesAcceptedDescriptionsSummariesAndExactProvenance()
+    {
+        AssertGenericSnapshotProjection(
+            UiLanguage.English,
+            "Summary from an arbitrary accepted source",
+            "Arbitrary repeated issue",
+            "Route to the service owner");
+    }
+
+    [TestMethod]
+    public void MalformedSnapshotFailsClosedBeforeProjection()
+    {
+        var valid = CreateGenericSnapshot(
+            "Accepted source summary",
+            "Arbitrary repeated issue",
+            "Route to the service owner");
+        var malformed = valid with
+        {
+            Timeline = valid.Timeline
+                .Select(item => item with { SourceHashSha256 = "not-a-sha256" })
+                .ToArray(),
+        };
+
+        var state = DailySummaryState.CreateSyntheticPreview(malformed);
+
+        Assert.IsFalse(state.IsSyntheticPreview);
+        Assert.AreEqual(EvidenceClass.Contract, state.EvidenceClass);
+        Assert.IsNull(state.Snapshot);
+        Assert.IsEmpty(state.RepeatedIssues);
+        Assert.IsTrue(state.SummaryCards.All(card => card.Value == "—"));
     }
 
     [TestMethod]
@@ -126,4 +174,109 @@ public sealed class DailySummaryStateTests
 
     private static bool ContainsThai(string value) =>
         Regex.IsMatch(value, "[ก-๙]", RegexOptions.CultureInvariant);
+
+    private static void AssertGenericSnapshotProjection(
+        UiLanguage language,
+        string sourceSummary,
+        string issueDescription,
+        string actionDescription)
+    {
+        UiLanguageService.Shared.SetLanguage(language);
+        var snapshot = CreateGenericSnapshot(sourceSummary, issueDescription, actionDescription);
+        var state = DailySummaryState.CreateSyntheticPreview(snapshot);
+        var accepted = snapshot.AcceptedSources.ToDictionary(item => item.SourceId, StringComparer.Ordinal);
+        var sourceId = "source-arbitrary-88";
+        var source = accepted[sourceId];
+
+        Assert.IsTrue(state.IsSyntheticPreview);
+        Assert.AreEqual(snapshot.ResultSha256, state.Snapshot!.ResultSha256);
+        Assert.AreEqual(issueDescription, state.RepeatedIssues.Single().Description);
+        Assert.AreEqual(actionDescription, state.RecommendedActions.Single().Description);
+        Assert.AreEqual(sourceSummary, state.Highlights.Single().Summary);
+        Assert.AreEqual(sourceSummary, state.Timeline.Single(item => item.SourceIds.Contains(sourceId)).Summary);
+        Assert.IsTrue(state.Strengths.Any(item => item.Summary == sourceSummary));
+        Assert.IsFalse(state.Timeline.Any(item => item.Summary == UiLanguageService.Shared["DailySummaryNoSummary"]));
+        Assert.IsFalse(state.RepeatedIssues.Single().Description.Contains("API latency", StringComparison.OrdinalIgnoreCase));
+        Assert.IsFalse(state.RecommendedActions.Single().Description.Contains("Login", StringComparison.OrdinalIgnoreCase));
+
+        var timelineRow = state.Timeline.Single(item => item.SourceIds.Contains(sourceId));
+        CollectionAssert.AreEqual(new[] { sourceId }, timelineRow.SourceIds.ToArray());
+        Assert.AreEqual(source.SourceHashSha256, timelineRow.SourceReferences.Single().SourceHashSha256);
+        StringAssert.Contains(timelineRow.SourceProvenanceLabel, $"{sourceId}#{source.SourceHashSha256}");
+        var pageTitle = UiLanguageService.Shared["DailySummaryPageTitle"];
+        if (language == UiLanguage.Thai)
+        {
+            Assert.IsTrue(ContainsThai(state.SourceLabel + pageTitle));
+        }
+        else
+        {
+            Assert.IsFalse(ContainsThai(pageTitle));
+        }
+    }
+
+    private static DailySummarySnapshot CreateGenericSnapshot(
+        string sourceSummary,
+        string issueDescription,
+        string actionDescription)
+    {
+        var sources = new[]
+        {
+            GenericSource(
+                "source-arbitrary-77",
+                new DateTimeOffset(2026, 8, 15, 1, 0, 0, TimeSpan.Zero),
+                "Unmapped Workstream",
+                issueDescription,
+                isHighlight: false,
+                issueKey: "issue-arbitrary-42",
+                recommendedAction: actionDescription),
+            GenericSource(
+                "source-arbitrary-88",
+                new DateTimeOffset(2026, 8, 15, 2, 0, 0, TimeSpan.Zero),
+                "Unmapped Workstream",
+                sourceSummary,
+                isHighlight: true,
+                issueKey: "issue-arbitrary-42",
+                recommendedAction: actionDescription),
+            GenericSource(
+                "source-arbitrary-99",
+                new DateTimeOffset(2026, 8, 15, 3, 0, 0, TimeSpan.Zero),
+                "Another Workstream",
+                "Another accepted arbitrary summary",
+                isHighlight: false,
+                issueKey: null,
+                recommendedAction: null),
+        };
+
+        var snapshot = DailySummaryAggregator.Aggregate(
+            new DateOnly(2026, 8, 15),
+            TimeZoneInfo.Utc,
+            sources);
+        return snapshot;
+    }
+
+    private static DailySummarySource GenericSource(
+        string sourceId,
+        DateTimeOffset occurredUtc,
+        string workstream,
+        string summary,
+        bool isHighlight,
+        string? issueKey,
+        string? recommendedAction) =>
+        new(
+            sourceId,
+            DailySummarySourceKind.ActivityEvent,
+            Hash(sourceId + summary),
+            occurredUtc,
+            workstream,
+            "arbitrary-agent",
+            "arbitrary-task",
+            "ArbitraryCategory",
+            summary,
+            IsAccepted: true,
+            IsHighlight: isHighlight,
+            IssueKey: issueKey,
+            RecommendedAction: recommendedAction);
+
+    private static string Hash(string value) =>
+        Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value)));
 }

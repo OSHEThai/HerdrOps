@@ -18,8 +18,8 @@
             <Setter Property="Margin" Value="0,0,10,10" />
         </Style>
         <Style x:Key="SectionCard" BasedOn="{StaticResource HerdrOps.Style.Card}" TargetType="Border">
-            <Setter Property="Padding" Value="14" />
-            <Setter Property="Margin" Value="0,0,10,10" />
+            <Setter Property="Padding" Value="12" />
+            <Setter Property="Margin" Value="0,0,8,8" />
         </Style>
         <Style x:Key="SmallCaption" BasedOn="{StaticResource HerdrOps.Style.Text.Caption}" TargetType="TextBlock">
             <Setter Property="FontSize" Value="10" />
@@ -136,10 +136,10 @@
                 <Border x:Name="DailySummaryHighlightsRegion" Width="420" Style="{StaticResource SectionCard}" automation:AutomationProperties.Name="{Binding [DailySummaryHighlightsTitle], Source={x:Static localization:UiLanguageService.Shared}}">
                     <StackPanel>
                         <TextBlock FontSize="15" FontWeight="SemiBold" Text="{Binding [DailySummaryHighlightsTitle], Source={x:Static localization:UiLanguageService.Shared}}" />
-                        <ItemsControl Margin="0,10,0,0" ItemsSource="{Binding Highlights}">
+                        <ItemsControl Margin="0,6,0,0" ItemsSource="{Binding Highlights}">
                             <ItemsControl.ItemTemplate>
                                 <DataTemplate>
-                                    <Grid Margin="0,5"
+                                    <Grid Margin="0,3"
                                           Focusable="True"
                                           automation:AutomationProperties.Name="{Binding Summary}"
                                           automation:AutomationProperties.HelpText="{Binding SourceProvenanceLabel}"
@@ -154,6 +154,7 @@
                                                        FontFamily="Consolas"
                                                        FontSize="8"
                                                        Text="{Binding SourceProvenanceLabel}"
+                                                       Visibility="Collapsed"
                                                        TextTrimming="CharacterEllipsis"
                                                        ToolTip="{Binding SourceProvenanceLabel}" />
                                         </StackPanel>
@@ -168,10 +169,10 @@
                 <Border x:Name="DailySummaryStrengthsRegion" Width="420" Style="{StaticResource SectionCard}" automation:AutomationProperties.Name="{Binding [DailySummaryStrengthsTitle], Source={x:Static localization:UiLanguageService.Shared}}">
                     <StackPanel>
                         <TextBlock FontSize="15" FontWeight="SemiBold" Text="{Binding [DailySummaryStrengthsTitle], Source={x:Static localization:UiLanguageService.Shared}}" />
-                        <ItemsControl Margin="0,10,0,0" ItemsSource="{Binding Strengths}">
+                        <ItemsControl Margin="0,6,0,0" ItemsSource="{Binding Strengths}">
                             <ItemsControl.ItemTemplate>
                                 <DataTemplate>
-                                    <Grid Margin="0,5"
+                                    <Grid Margin="0,3"
                                           Focusable="True"
                                           automation:AutomationProperties.Name="{Binding Summary}"
                                           automation:AutomationProperties.HelpText="{Binding SourceProvenanceLabel}"
@@ -180,30 +181,12 @@
                                         <TextBlock FontFamily="{DynamicResource HerdrOps.FontFamily.Icons}" FontSize="15" Foreground="{Binding AccentBrushKey, Converter={StaticResource ResourceBrush}}" Text="&#xE73E;" />
                                         <StackPanel Grid.Column="1">
                                             <TextBlock Text="{Binding Summary}" TextWrapping="Wrap" />
-                                            <ItemsControl Margin="0,2,0,0"
-                                                          ItemsSource="{Binding SourceIds}"
-                                                          AutomationProperties.Name="{Binding SourceLabel}">
-                                                <ItemsControl.ItemsPanel>
-                                                    <ItemsPanelTemplate>
-                                                        <WrapPanel />
-                                                    </ItemsPanelTemplate>
-                                                </ItemsControl.ItemsPanel>
-                                                <ItemsControl.ItemTemplate>
-                                                    <DataTemplate>
-                                                        <TextBlock Margin="0,0,6,0"
-                                                                   Foreground="{DynamicResource HerdrOps.Brush.TextMuted}"
-                                                                   FontFamily="Consolas"
-                                                                   FontSize="9"
-                                                                   Text="{Binding}"
-                                                                   AutomationProperties.Name="{Binding}" />
-                                                    </DataTemplate>
-                                                </ItemsControl.ItemTemplate>
-                                            </ItemsControl>
                                             <TextBlock Margin="0,2,0,0"
                                                        Foreground="{DynamicResource HerdrOps.Brush.TextMuted}"
                                                        FontFamily="Consolas"
                                                        FontSize="8"
                                                        Text="{Binding SourceProvenanceLabel}"
+                                                       Visibility="Collapsed"
                                                        TextTrimming="CharacterEllipsis"
                                                        ToolTip="{Binding SourceProvenanceLabel}" />
                                         </StackPanel>
@@ -217,10 +200,10 @@
                 <Border x:Name="DailySummaryAreasRegion" Width="420" Style="{StaticResource SectionCard}" automation:AutomationProperties.Name="{Binding [DailySummaryAreasTitle], Source={x:Static localization:UiLanguageService.Shared}}">
                     <StackPanel>
                         <TextBlock FontSize="15" FontWeight="SemiBold" Text="{Binding [DailySummaryAreasTitle], Source={x:Static localization:UiLanguageService.Shared}}" />
-                        <ItemsControl Margin="0,10,0,0" ItemsSource="{Binding AreasToImprove}">
+                        <ItemsControl Margin="0,6,0,0" ItemsSource="{Binding AreasToImprove}">
                             <ItemsControl.ItemTemplate>
                                 <DataTemplate>
-                                    <Grid Margin="0,5"
+                                    <Grid Margin="0,3"
                                           Focusable="True"
                                           automation:AutomationProperties.Name="{Binding Summary}"
                                           automation:AutomationProperties.HelpText="{Binding SourceProvenanceLabel}"
@@ -235,6 +218,7 @@
                                                        FontFamily="Consolas"
                                                        FontSize="8"
                                                        Text="{Binding SourceProvenanceLabel}"
+                                                       Visibility="Collapsed"
                                                        TextTrimming="CharacterEllipsis"
                                                        ToolTip="{Binding SourceProvenanceLabel}" />
                                         </StackPanel>
@@ -250,10 +234,10 @@
                 <Border x:Name="DailySummaryRepeatedIssuesRegion" Width="420" Style="{StaticResource SectionCard}" automation:AutomationProperties.Name="{Binding [DailySummaryRepeatedIssuesTitle], Source={x:Static localization:UiLanguageService.Shared}}">
                     <StackPanel>
                         <TextBlock FontSize="15" FontWeight="SemiBold" Text="{Binding [DailySummaryRepeatedIssuesTitle], Source={x:Static localization:UiLanguageService.Shared}}" />
-                        <ItemsControl Margin="0,10,0,0" ItemsSource="{Binding RepeatedIssues}">
+                        <ItemsControl Margin="0,6,0,0" ItemsSource="{Binding RepeatedIssues}">
                             <ItemsControl.ItemTemplate>
                                 <DataTemplate>
-                                    <Border Margin="0,3"
+                                    <Border Margin="0,2"
                                             Padding="9"
                                             Background="{DynamicResource HerdrOps.Brush.SurfaceRaised}"
                                             BorderBrush="{DynamicResource HerdrOps.Brush.Border}"
@@ -273,6 +257,7 @@
                                                            FontFamily="Consolas"
                                                            FontSize="8"
                                                            Text="{Binding SourceProvenanceLabel}"
+                                                           Visibility="Collapsed"
                                                            TextTrimming="CharacterEllipsis"
                                                            ToolTip="{Binding SourceProvenanceLabel}" />
                                             </StackPanel>
@@ -289,10 +274,10 @@
                 <Border x:Name="DailySummaryRecommendationsRegion" Width="420" Style="{StaticResource SectionCard}" automation:AutomationProperties.Name="{Binding [DailySummaryRecommendationsTitle], Source={x:Static localization:UiLanguageService.Shared}}">
                     <StackPanel>
                         <TextBlock FontSize="15" FontWeight="SemiBold" Text="{Binding [DailySummaryRecommendationsTitle], Source={x:Static localization:UiLanguageService.Shared}}" />
-                        <ItemsControl Margin="0,10,0,0" ItemsSource="{Binding RecommendedActions}">
+                        <ItemsControl Margin="0,6,0,0" ItemsSource="{Binding RecommendedActions}">
                             <ItemsControl.ItemTemplate>
                                 <DataTemplate>
-                                    <Grid Margin="0,5"
+                                    <Grid Margin="0,3"
                                           Focusable="True"
                                           automation:AutomationProperties.Name="{Binding Description}"
                                           automation:AutomationProperties.HelpText="{Binding SourceProvenanceLabel}"
@@ -309,6 +294,7 @@
                                                        FontFamily="Consolas"
                                                        FontSize="8"
                                                        Text="{Binding SourceProvenanceLabel}"
+                                                       Visibility="Collapsed"
                                                        TextTrimming="CharacterEllipsis"
                                                        ToolTip="{Binding SourceProvenanceLabel}" />
                                         </StackPanel>
@@ -322,10 +308,10 @@
                 <Border x:Name="DailySummaryTimelineRegion" Width="420" Style="{StaticResource SectionCard}" automation:AutomationProperties.Name="{Binding [DailySummaryTimelineTitle], Source={x:Static localization:UiLanguageService.Shared}}">
                     <StackPanel>
                         <TextBlock FontSize="15" FontWeight="SemiBold" Text="{Binding [DailySummaryTimelineTitle], Source={x:Static localization:UiLanguageService.Shared}}" />
-                        <ItemsControl Margin="0,10,0,0" ItemsSource="{Binding Timeline}">
+                        <ItemsControl Margin="0,6,0,0" ItemsSource="{Binding Timeline}">
                             <ItemsControl.ItemTemplate>
                                 <DataTemplate>
-                                    <Grid Margin="0,4"
+                                    <Grid Margin="0,2"
                                           Focusable="True"
                                           automation:AutomationProperties.Name="{Binding Summary}"
                                           automation:AutomationProperties.HelpText="{Binding SourceProvenanceLabel}"
@@ -336,24 +322,12 @@
                                         <StackPanel Grid.Column="2" Margin="6,0,0,0">
                                             <TextBlock Text="{Binding Category}" TextWrapping="Wrap" />
                                             <TextBlock Margin="0,2,0,0" Foreground="{DynamicResource HerdrOps.Brush.TextMuted}" FontSize="10" Text="{Binding Summary}" TextWrapping="Wrap" />
-                                            <ItemsControl Margin="0,2,0,0"
-                                                          ItemsSource="{Binding SourceIds}"
-                                                          AutomationProperties.Name="{Binding SourceLabel}">
-                                                <ItemsControl.ItemTemplate>
-                                                    <DataTemplate>
-                                                        <TextBlock Foreground="{DynamicResource HerdrOps.Brush.TextMuted}"
-                                                                   FontFamily="Consolas"
-                                                                   FontSize="9"
-                                                                   Text="{Binding}"
-                                                                   AutomationProperties.Name="{Binding}" />
-                                                    </DataTemplate>
-                                                </ItemsControl.ItemTemplate>
-                                            </ItemsControl>
                                             <TextBlock Margin="0,2,0,0"
                                                        Foreground="{DynamicResource HerdrOps.Brush.TextMuted}"
                                                        FontFamily="Consolas"
                                                        FontSize="8"
                                                        Text="{Binding SourceProvenanceLabel}"
+                                                       Visibility="Collapsed"
                                                        TextTrimming="CharacterEllipsis"
                                                        ToolTip="{Binding SourceProvenanceLabel}" />
                                         </StackPanel>
@@ -375,7 +349,7 @@
                         ToolTip="{Binding SourceSetLabel}">
                     <StackPanel>
                         <TextBlock FontSize="15" FontWeight="SemiBold" Text="{Binding [DailySummaryWorkstreamTitle], Source={x:Static localization:UiLanguageService.Shared}}" />
-                        <Grid Margin="0,10,0,0" Background="{DynamicResource HerdrOps.Brush.SurfaceRaised}">
+                        <Grid Margin="0,6,0,0" Background="{DynamicResource HerdrOps.Brush.SurfaceRaised}">
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="1.3*" /><ColumnDefinition Width="1.1*" /><ColumnDefinition Width="1.1*" /><ColumnDefinition Width="1.2*" /><ColumnDefinition Width="0.8*" /><ColumnDefinition Width="0.7*" /><ColumnDefinition Width="2*" />
                             </Grid.ColumnDefinitions>
@@ -390,7 +364,7 @@
                         <ItemsControl ItemsSource="{Binding Workstreams}">
                             <ItemsControl.ItemTemplate>
                                 <DataTemplate>
-                                    <Grid Margin="0,8,0,0"
+                                    <Grid Margin="0,5,0,0"
                                           Focusable="True"
                                           automation:AutomationProperties.Name="{Binding Workstream}"
                                           automation:AutomationProperties.HelpText="{Binding SourceProvenanceLabel}"
@@ -402,22 +376,23 @@
                                         <Grid.ColumnDefinitions>
                                             <ColumnDefinition Width="1.3*" /><ColumnDefinition Width="1.1*" /><ColumnDefinition Width="1.1*" /><ColumnDefinition Width="1.2*" /><ColumnDefinition Width="0.8*" /><ColumnDefinition Width="0.7*" /><ColumnDefinition Width="2*" />
                                         </Grid.ColumnDefinitions>
-                                        <TextBlock Margin="0,0,8,0" FontWeight="SemiBold" Text="{Binding Workstream}" TextWrapping="Wrap" TextTrimming="CharacterEllipsis" />
+                                        <TextBlock Margin="0,0,8,0" FontWeight="SemiBold" Text="{Binding Workstream}" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis" />
                                         <TextBlock Grid.Column="1" Margin="0,0,8,0" Foreground="{Binding AccentBrushKey, Converter={StaticResource ResourceBrush}}" Text="{Binding StatusLabel}" TextTrimming="CharacterEllipsis" ToolTip="{Binding StatusLabel}" />
                                         <TextBlock Grid.Column="2" Margin="0,0,8,0" Foreground="{DynamicResource HerdrOps.Brush.TextSecondary}" Text="{Binding SourceCountLabel}" TextTrimming="CharacterEllipsis" />
                                         <TextBlock Grid.Column="3" Margin="0,0,8,0" Foreground="{DynamicResource HerdrOps.Brush.TextSecondary}" Text="{Binding ActivityEvidenceLabel}" TextTrimming="CharacterEllipsis" />
                                         <TextBlock Grid.Column="4" Margin="0,0,8,0" Foreground="{DynamicResource HerdrOps.Brush.TextMuted}" Text="{Binding ProgressLabel}" TextTrimming="CharacterEllipsis" />
                                         <TextBlock Grid.Column="5" Margin="0,0,8,0" Foreground="{DynamicResource HerdrOps.Brush.TextMuted}" Text="{Binding ScoreLabel}" TextTrimming="CharacterEllipsis" />
-                                        <TextBlock Grid.Column="6" Text="{Binding ImportantLabel}" TextWrapping="Wrap" TextTrimming="CharacterEllipsis" />
-                                        <TextBlock Grid.Row="1"
-                                                   Grid.ColumnSpan="7"
-                                                   Margin="0,3,0,0"
-                                                   Foreground="{DynamicResource HerdrOps.Brush.TextMuted}"
-                                                   FontFamily="Consolas"
-                                                   FontSize="8"
-                                                   Text="{Binding SourceProvenanceLabel}"
-                                                   TextTrimming="CharacterEllipsis"
-                                                   ToolTip="{Binding SourceProvenanceLabel}" />
+                                        <TextBlock Grid.Column="6" Text="{Binding ImportantLabel}" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis" />
+                                            <TextBlock Grid.Row="1"
+                                                       Grid.ColumnSpan="7"
+                                                       Margin="0,3,0,0"
+                                                       Foreground="{DynamicResource HerdrOps.Brush.TextMuted}"
+                                                       FontFamily="Consolas"
+                                                       FontSize="8"
+                                                       Text="{Binding SourceProvenanceLabel}"
+                                                       Visibility="Collapsed"
+                                                       TextTrimming="CharacterEllipsis"
+                                                       ToolTip="{Binding SourceProvenanceLabel}" />
                                     </Grid>
                                 </DataTemplate>
                             </ItemsControl.ItemTemplate>
@@ -427,6 +402,7 @@
 
                 <Border x:Name="DailySummaryDayOverviewRegion"
                         Width="420"
+                        Padding="8"
                         Style="{StaticResource SectionCard}"
                         Focusable="True"
                         automation:AutomationProperties.Name="{Binding [DailySummaryDayOverviewTitle], Source={x:Static localization:UiLanguageService.Shared}}"
@@ -434,13 +410,13 @@
                         ToolTip="{Binding SourceSetLabel}">
                     <StackPanel>
                         <TextBlock FontSize="15" FontWeight="SemiBold" Text="{Binding [DailySummaryDayOverviewTitle], Source={x:Static localization:UiLanguageService.Shared}}" />
-                        <TextBlock Margin="0,18,0,0" HorizontalAlignment="Center" FontSize="34" FontWeight="SemiBold" Text="{Binding DailyScoreLabel}" />
-                        <TextBlock Margin="0,6,0,0" HorizontalAlignment="Center" Foreground="{DynamicResource HerdrOps.Brush.TextMuted}" FontSize="11" Text="{Binding DailyScoreDetail}" TextWrapping="Wrap" />
-                        <Border Margin="0,18,0,0" Padding="10" Background="{DynamicResource HerdrOps.Brush.SurfaceRaised}" BorderBrush="{DynamicResource HerdrOps.Brush.Border}" BorderThickness="1" CornerRadius="{DynamicResource HerdrOps.Radius.Default}">
+                        <TextBlock Margin="0,10,0,0" HorizontalAlignment="Center" FontSize="34" FontWeight="SemiBold" Text="{Binding DailyScoreLabel}" />
+                        <TextBlock Margin="0,6,0,0" HorizontalAlignment="Center" Foreground="{DynamicResource HerdrOps.Brush.TextMuted}" FontSize="11" Text="{Binding DailyScoreDetail}" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis" />
+                        <Border Margin="0,10,0,0" Padding="10" Background="{DynamicResource HerdrOps.Brush.SurfaceRaised}" BorderBrush="{DynamicResource HerdrOps.Brush.Border}" BorderThickness="1" CornerRadius="{DynamicResource HerdrOps.Radius.Default}">
                             <StackPanel>
                                 <TextBlock Style="{StaticResource SmallCaption}" Text="{Binding [DailySummarySourceLinks], Source={x:Static localization:UiLanguageService.Shared}}" />
-                                <TextBlock Margin="0,7,0,0" Foreground="{DynamicResource HerdrOps.Brush.TextMuted}" FontSize="10" Text="{Binding SourceSetLabel}" TextWrapping="Wrap" />
-                                <TextBlock Margin="0,4,0,0" Foreground="{DynamicResource HerdrOps.Brush.TextMuted}" FontSize="10" Text="{Binding ResultLabel}" TextWrapping="Wrap" />
+                                <TextBlock Margin="0,7,0,0" Foreground="{DynamicResource HerdrOps.Brush.TextMuted}" FontSize="10" Text="{Binding SourceSetLabel}" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis" ToolTip="{Binding SourceSetLabel}" />
+                                <TextBlock Margin="0,4,0,0" Foreground="{DynamicResource HerdrOps.Brush.TextMuted}" FontSize="10" Text="{Binding ResultLabel}" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis" ToolTip="{Binding ResultLabel}" />
                             </StackPanel>
                         </Border>
                     </StackPanel>

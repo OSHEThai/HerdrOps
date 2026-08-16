@@ -138,17 +138,14 @@ public sealed class DailySummaryRenderingTests
         }
 
         AssertProvenanceAffordances(page, state);
-        foreach (var sourceId in state.Strengths
-                     .SelectMany(row => row.SourceIds)
-                     .Concat(state.Timeline.SelectMany(row => row.SourceIds))
-                     .Distinct(StringComparer.Ordinal))
-        {
-            AssertVisibleTextContains(page, sourceId);
-        }
 
         if (assertCompact)
         {
             AssertCompactSurface(page);
+        }
+        else
+        {
+            AssertReferenceSurface(page);
         }
 
         if (expectMissing)
@@ -259,14 +256,65 @@ public sealed class DailySummaryRenderingTests
             Math.Abs(scrollViewer.VerticalOffset - scrollViewer.ScrollableHeight),
             "Compact Daily Summary did not reach the scroll extent.");
 
-        var bottomRegion = Assert.IsInstanceOfType<FrameworkElement>(page.FindName("DailySummaryDayOverviewRegion"));
-        var bottomBounds = BoundsRelativeTo(bottomRegion, scrollViewer);
         var viewportBounds = new Rect(0, 0, scrollViewer.ViewportWidth, scrollViewer.ViewportHeight);
-        Assert.IsTrue(
-            bottomBounds.Bottom <= viewportBounds.Bottom + 1 && bottomBounds.Bottom > 0,
-            $"The final Daily Summary region is not reachable at scroll end: {bottomBounds} / {viewportBounds}");
+        foreach (var name in new[] { "DailySummaryWorkstreamRegion", "DailySummaryDayOverviewRegion" })
+        {
+            var bottomRegion = Assert.IsInstanceOfType<FrameworkElement>(page.FindName(name));
+            var bottomBounds = BoundsRelativeTo(bottomRegion, scrollViewer);
+            Assert.IsTrue(
+                bottomBounds.Top < viewportBounds.Bottom &&
+                bottomBounds.Bottom <= viewportBounds.Bottom + 3 &&
+                bottomBounds.Bottom > 0,
+                $"The {name} region is not reachable at compact scroll end: {bottomBounds} / {viewportBounds}");
+        }
 
         AssertWorkstreamRows(page, Assert.IsInstanceOfType<DailySummaryState>(page.DataContext));
+    }
+
+    private static void AssertReferenceSurface(DailySummaryView page)
+    {
+        var scrollViewer = Assert.IsInstanceOfType<ScrollViewer>(page.FindName("DailySummaryScrollViewer"));
+        scrollViewer.ScrollToTop();
+        scrollViewer.UpdateLayout();
+
+        var viewport = new Rect(0, 0, scrollViewer.ViewportWidth, scrollViewer.ViewportHeight);
+        var lowerRegions = new[]
+        {
+            "DailySummaryWorkstreamRegion",
+            "DailySummaryDayOverviewRegion",
+        }
+            .Select(name => (Name: name, Element: Assert.IsInstanceOfType<FrameworkElement>(page.FindName(name))))
+            .ToArray();
+        var bounds = lowerRegions.ToDictionary(
+            item => item.Name,
+            item => BoundsRelativeTo(item.Element, scrollViewer),
+            StringComparer.Ordinal);
+
+        foreach (var (name, region) in lowerRegions)
+        {
+            Assert.IsTrue(
+                bounds[name].Left >= viewport.Left - 1 &&
+                bounds[name].Top >= viewport.Top - 1 &&
+                bounds[name].Right <= viewport.Right + 1 &&
+                bounds[name].Bottom <= viewport.Bottom + 1,
+                $"{name} is not fully represented in the 1672x941 reference viewport: {bounds[name]} / {viewport}");
+
+            foreach (var text in EnumerateDescendants(region).OfType<TextBlock>().Where(IsEffectivelyVisible))
+            {
+                var textBounds = BoundsRelativeTo(text, page);
+                var regionBounds = BoundsRelativeTo(region, page);
+                Assert.IsTrue(
+                    textBounds.Left >= regionBounds.Left - 1 &&
+                    textBounds.Top >= regionBounds.Top - 1 &&
+                    textBounds.Right <= regionBounds.Right + 1 &&
+                    textBounds.Bottom <= regionBounds.Bottom + 1,
+                    $"Text escapes its reference region in {name}: {TextOf(text)} / {regionBounds}");
+            }
+        }
+
+        Assert.IsFalse(
+            HasPositiveAreaOverlap(bounds["DailySummaryWorkstreamRegion"], bounds["DailySummaryDayOverviewRegion"]),
+            $"Reference Daily Summary lower regions overlap: {bounds["DailySummaryWorkstreamRegion"]} and {bounds["DailySummaryDayOverviewRegion"]}");
     }
 
     private static void AssertProvenanceAffordances(DailySummaryView page, DailySummaryState state)
@@ -315,15 +363,18 @@ public sealed class DailySummaryRenderingTests
                         string.Equals(element.ToolTip?.ToString(), provenance.Label, StringComparison.Ordinal));
                 Assert.IsNotNull(affordance, $"{group.Name} item has no keyboard/assistive provenance affordance.");
 
-                var provenanceLines = EnumerateDescendants(container!)
-                    .OfType<TextBlock>()
-                    .Where(IsEffectivelyVisible)
-                    .Where(text => text.Text == provenance.Label)
-                    .ToArray();
-                Assert.IsNotEmpty(provenanceLines, $"{group.Name} item has no visible provenance line.");
-                Assert.IsTrue(
-                    provenanceLines.Any(text => text.TextTrimming == TextTrimming.CharacterEllipsis),
-                    $"{group.Name} provenance line must use deterministic ellipsis for compact layouts.");
+                if (group.Name == "summary cards")
+                {
+                    var provenanceLines = EnumerateDescendants(container!)
+                        .OfType<TextBlock>()
+                        .Where(IsEffectivelyVisible)
+                        .Where(text => text.Text == provenance.Label)
+                        .ToArray();
+                    Assert.IsNotEmpty(provenanceLines, $"{group.Name} item has no visible provenance line.");
+                    Assert.IsTrue(
+                        provenanceLines.Any(text => text.TextTrimming == TextTrimming.CharacterEllipsis),
+                        $"{group.Name} provenance line must use deterministic ellipsis for compact layouts.");
+                }
             }
         }
     }

@@ -108,7 +108,8 @@ public sealed class DailySummaryState : ObservableState
 {
     private readonly bool _syntheticPreview;
     private readonly DailySummarySnapshot? _snapshot;
-    private readonly IReadOnlyDictionary<string, DailySummarySource> _sourceMetadata;
+    private readonly IReadOnlyDictionary<string, DailySummarySourceReference> _acceptedSourceReferences;
+    private readonly IReadOnlyDictionary<string, string> _sourceSummaries;
     private string _sourceLabel = string.Empty;
     private string _boundaryLabel = string.Empty;
     private string _dateLabel = string.Empty;
@@ -123,30 +124,39 @@ public sealed class DailySummaryState : ObservableState
     private IReadOnlyList<DailySummaryTimelineRow> _timeline = [];
     private IReadOnlyList<DailySummaryWorkstreamRow> _workstreams = [];
 
-    private DailySummaryState(bool syntheticPreview)
+    private DailySummaryState(bool syntheticPreview, DailySummarySnapshot? snapshot)
     {
-        _syntheticPreview = syntheticPreview;
-        EvidenceClass = syntheticPreview ? EvidenceClass.Synthetic : EvidenceClass.Contract;
-        if (syntheticPreview)
+        var acceptedSourceReferences =
+            (IReadOnlyDictionary<string, DailySummarySourceReference>)new Dictionary<string, DailySummarySourceReference>(StringComparer.Ordinal);
+        var sourceSummaries =
+            (IReadOnlyDictionary<string, string>)new Dictionary<string, string>(StringComparer.Ordinal);
+        var hasSnapshot = snapshot is not null && TryPrepareSnapshot(
+            snapshot,
+            out acceptedSourceReferences,
+            out sourceSummaries);
+        _syntheticPreview = syntheticPreview && hasSnapshot;
+        EvidenceClass = _syntheticPreview ? EvidenceClass.Synthetic : EvidenceClass.Contract;
+        if (hasSnapshot)
         {
-            var data = CreateSnapshot();
-            _snapshot = data.Snapshot;
-            _sourceMetadata = data.Sources.ToDictionary(
-                item => item.SourceId,
-                StringComparer.Ordinal);
+            _snapshot = snapshot!;
+            _acceptedSourceReferences = acceptedSourceReferences;
+            _sourceSummaries = sourceSummaries;
         }
         else
         {
             _snapshot = null;
-            _sourceMetadata = new Dictionary<string, DailySummarySource>(StringComparer.Ordinal);
+            _acceptedSourceReferences = acceptedSourceReferences;
+            _sourceSummaries = sourceSummaries;
         }
 
         RefreshLanguage();
     }
 
-    public static DailySummaryState CreateSyntheticPreview() => new(syntheticPreview: true);
+    public static DailySummaryState CreateSyntheticPreview() => new(true, CreateSnapshot());
 
-    public static DailySummaryState CreateUnavailable() => new(syntheticPreview: false);
+    public static DailySummaryState CreateSyntheticPreview(DailySummarySnapshot snapshot) => new(true, snapshot);
+
+    public static DailySummaryState CreateUnavailable() => new(false, snapshot: null);
 
     public EvidenceClass EvidenceClass { get; }
 
@@ -265,6 +275,176 @@ public sealed class DailySummaryState : ObservableState
         Raise(nameof(DailyScoreDetail));
     }
 
+    private static bool TryPrepareSnapshot(
+        DailySummarySnapshot snapshot,
+        out IReadOnlyDictionary<string, DailySummarySourceReference> acceptedSourceReferences,
+        out IReadOnlyDictionary<string, string> sourceSummaries)
+    {
+        var accepted = new Dictionary<string, DailySummarySourceReference>(StringComparer.Ordinal);
+        var summaries = new Dictionary<string, string>(StringComparer.Ordinal);
+        acceptedSourceReferences = accepted;
+        sourceSummaries = summaries;
+
+        if (snapshot.ContractVersion != DailySummaryAggregator.ContractVersion ||
+            !string.Equals(snapshot.AggregatorId, DailySummaryAggregator.AggregatorId, StringComparison.Ordinal) ||
+            snapshot.LocalDate == default ||
+            !IsValidText(snapshot.TimeZoneId, DailySummaryAggregator.MaximumIdentifierLength) ||
+            !IsValidHash(snapshot.SourceSetSha256) ||
+            !IsValidHash(snapshot.ResultSha256) ||
+            snapshot.AcceptedSources is null ||
+            snapshot.Metrics is null ||
+            snapshot.Workstreams is null ||
+            snapshot.Highlights is null ||
+            snapshot.RepeatedIssues is null ||
+            snapshot.RecommendedActions is null ||
+            snapshot.Timeline is null)
+        {
+            return false;
+        }
+
+        foreach (var source in snapshot.AcceptedSources)
+        {
+            if (source is null ||
+                !Enum.IsDefined(source.Kind) ||
+                !IsValidText(source.SourceId, DailySummaryAggregator.MaximumIdentifierLength) ||
+                !IsValidHash(source.SourceHashSha256) ||
+                !accepted.TryAdd(source.SourceId, source))
+            {
+                return false;
+            }
+        }
+
+        if (snapshot.Timeline.Count != accepted.Count)
+        {
+            return false;
+        }
+
+        foreach (var entry in snapshot.Timeline)
+        {
+            if (entry is null ||
+                !Enum.IsDefined(entry.Kind) ||
+                !accepted.TryGetValue(entry.SourceId, out var acceptedSource) ||
+                entry.Kind != acceptedSource.Kind ||
+                !string.Equals(entry.SourceHashSha256, acceptedSource.SourceHashSha256, StringComparison.Ordinal) ||
+                entry.OccurredLocal == default ||
+                !IsValidText(entry.Workstream, DailySummaryAggregator.MaximumIdentifierLength) ||
+                !IsValidText(entry.Category, DailySummaryAggregator.MaximumIdentifierLength) ||
+                !IsValidText(entry.Summary, DailySummaryAggregator.MaximumTextLength) ||
+                !summaries.TryAdd(entry.SourceId, entry.Summary))
+            {
+                return false;
+            }
+        }
+
+        var metricIds = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var metric in snapshot.Metrics)
+        {
+            if (metric is null ||
+                !IsValidText(metric.MetricId, DailySummaryAggregator.MaximumIdentifierLength) ||
+                metric.Value < 0 ||
+                !metricIds.Add(metric.MetricId) ||
+                !HasAcceptedSourceIds(metric.SourceIds, accepted))
+            {
+                return false;
+            }
+        }
+
+        foreach (var requiredMetricId in new[]
+                 {
+                     "accepted-sources",
+                     "activity-events",
+                     "evidence-items",
+                     "highlights",
+                     "recommended-actions",
+                 })
+        {
+            if (!metricIds.Contains(requiredMetricId))
+            {
+                return false;
+            }
+        }
+
+        foreach (var workstream in snapshot.Workstreams)
+        {
+            if (workstream is null ||
+                !IsValidText(workstream.Workstream, DailySummaryAggregator.MaximumIdentifierLength) ||
+                workstream.AcceptedSourceCount < 0 ||
+                workstream.ActivityCount < 0 ||
+                workstream.EvidenceCount < 0 ||
+                !HasAcceptedSourceIds(workstream.SourceIds, accepted, requireNonEmpty: true))
+            {
+                return false;
+            }
+        }
+
+        foreach (var highlight in snapshot.Highlights)
+        {
+            if (highlight is null ||
+                !accepted.ContainsKey(highlight.SourceId) ||
+                !IsValidText(highlight.Workstream, DailySummaryAggregator.MaximumIdentifierLength) ||
+                !IsValidText(highlight.Summary, DailySummaryAggregator.MaximumTextLength) ||
+                !HasAcceptedSourceIds(highlight.SourceIds, accepted, requireNonEmpty: true) ||
+                !highlight.SourceIds.Contains(highlight.SourceId, StringComparer.Ordinal))
+            {
+                return false;
+            }
+        }
+
+        foreach (var issue in snapshot.RepeatedIssues)
+        {
+            if (issue is null ||
+                !IsValidText(issue.IssueKey, DailySummaryAggregator.MaximumIdentifierLength) ||
+                issue.OccurrenceCount <= 0 ||
+                !IsValidText(issue.Workstream, DailySummaryAggregator.MaximumIdentifierLength) ||
+                !IsValidText(issue.Description, DailySummaryAggregator.MaximumTextLength) ||
+                !HasAcceptedSourceIds(issue.SourceIds, accepted, requireNonEmpty: true))
+            {
+                return false;
+            }
+        }
+
+        foreach (var action in snapshot.RecommendedActions)
+        {
+            if (action is null ||
+                !IsValidText(action.ActionKey, DailySummaryAggregator.MaximumTextLength) ||
+                !IsValidText(action.Description, DailySummaryAggregator.MaximumTextLength) ||
+                !HasAcceptedSourceIds(action.SourceIds, accepted, requireNonEmpty: true))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static bool HasAcceptedSourceIds(
+        IReadOnlyList<string>? sourceIds,
+        IReadOnlyDictionary<string, DailySummarySourceReference> accepted,
+        bool requireNonEmpty = false)
+    {
+        if (sourceIds is null || (requireNonEmpty && sourceIds.Count == 0))
+        {
+            return false;
+        }
+
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        return sourceIds.All(sourceId =>
+            IsValidText(sourceId, DailySummaryAggregator.MaximumIdentifierLength) &&
+            accepted.ContainsKey(sourceId) &&
+            seen.Add(sourceId));
+    }
+
+    private static bool IsValidText(string? value, int maximumLength) =>
+        !string.IsNullOrWhiteSpace(value) &&
+        value == value.Trim() &&
+        value.Length <= maximumLength &&
+        value.All(character => !char.IsControl(character));
+
+    private static bool IsValidHash(string? value) =>
+        value is not null &&
+        value.Length == 64 &&
+        value.All(character => character is >= '0' and <= '9' or >= 'A' and <= 'F' or >= 'a' and <= 'f');
+
     private IReadOnlyList<DailySummarySummaryCard> CreateSummaryCards(UiLanguageService text)
     {
         if (_snapshot is null)
@@ -347,7 +527,7 @@ public sealed class DailySummaryState : ObservableState
             .Select(item => CreateHighlightRow(
                 item.SourceId,
                 item.Workstream,
-                LocalizedSummary(item.SourceId, text),
+                SummaryFor(item.SourceId, item.Summary, text),
                 item.SourceIds,
                 DailySummaryBrushKeys.Working,
                 text))
@@ -361,12 +541,15 @@ public sealed class DailySummaryState : ObservableState
             return [];
         }
 
-        return
-        [
-            CreateHighlightRow("strength-backend", "Backend", text["DailySummaryStrengthBackend"], BackendSources(), DailySummaryBrushKeys.Working, text),
-            CreateHighlightRow("strength-evidence", "Evidence", text["DailySummaryStrengthEvidence"], EvidenceSources(), DailySummaryBrushKeys.Primary, text),
-            CreateHighlightRow("strength-review", "Review", text["DailySummaryStrengthReview"], ReviewSources(), DailySummaryBrushKeys.Review, text),
-        ];
+        return _snapshot.Workstreams
+            .Select(item => CreateHighlightRow(
+                $"strength-{item.Workstream}",
+                item.Workstream,
+                LatestWorkstreamSummary(item.Workstream, text),
+                item.SourceIds,
+                WorkstreamBrush(item.Workstream),
+                text))
+            .ToArray();
     }
 
     private IReadOnlyList<DailySummaryHighlightRow> CreateAreasToImprove(UiLanguageService text)
@@ -376,12 +559,15 @@ public sealed class DailySummaryState : ObservableState
             return [];
         }
 
-        return
-        [
-            CreateHighlightRow("area-api-latency", "Backend", text["DailySummaryAreaApiLatency"], SourcesForIssue("api-latency"), DailySummaryBrushKeys.Idle, text),
-            CreateHighlightRow("area-missing-test", "Frontend", text["DailySummaryAreaMissingTest"], SourcesForIssue("missing-test"), DailySummaryBrushKeys.Idle, text),
-            CreateHighlightRow("area-evidence", "Testing", text["DailySummaryAreaEvidence"], EvidenceSources(), DailySummaryBrushKeys.Idle, text),
-        ];
+        return _snapshot.RepeatedIssues
+            .Select(item => CreateHighlightRow(
+                $"area-{item.IssueKey}",
+                item.Workstream,
+                item.Description,
+                item.SourceIds,
+                DailySummaryBrushKeys.Idle,
+                text))
+            .ToArray();
     }
 
     private IReadOnlyList<DailySummaryIssueRow> CreateRepeatedIssues(UiLanguageService text) =>
@@ -437,7 +623,7 @@ public sealed class DailySummaryState : ObservableState
         var ids = SourceIdsFor(references);
         return new DailySummaryIssueRow(
             item.IssueKey,
-            text["DailySummaryIssueApiLatency"],
+            item.Description,
             text.Format("DailySummaryOccurrenceFormat", item.OccurrenceCount),
             SourceLabelFor(ids, text),
             ids,
@@ -457,9 +643,7 @@ public sealed class DailySummaryState : ObservableState
         var ids = SourceIdsFor(references);
         return new DailySummaryActionRow(
             number,
-            item.ActionKey == "Review API latency"
-                ? text["DailySummaryActionReviewApiLatency"]
-                : text["DailySummaryActionAddMissingTest"],
+            item.Description,
             SourceLabelFor(ids, text),
             ids,
             DailySummaryBrushKeys.Primary)
@@ -478,7 +662,7 @@ public sealed class DailySummaryState : ObservableState
         return new DailySummaryTimelineRow(
             item.OccurredLocal.ToString("HH:mm", CultureInfo.InvariantCulture),
             item.Category,
-            LocalizedSummary(item.SourceId, text),
+            SummaryFor(item.SourceId, item.Summary, text),
             SourceLabelFor(ids, text),
             ids,
             BrushForCategory(item.Category))
@@ -542,14 +726,11 @@ public sealed class DailySummaryState : ObservableState
             return [];
         }
 
-        var accepted = _snapshot.AcceptedSources.ToDictionary(
-            item => item.SourceId,
-            StringComparer.Ordinal);
         return Array.AsReadOnly(sourceIds
             .Distinct(StringComparer.Ordinal)
             .OrderBy(item => item, StringComparer.Ordinal)
-            .Where(accepted.ContainsKey)
-            .Select(item => accepted[item])
+            .Where(_acceptedSourceReferences.ContainsKey)
+            .Select(item => _acceptedSourceReferences[item])
             .ToArray());
     }
 
@@ -560,51 +741,22 @@ public sealed class DailySummaryState : ObservableState
             .OrderBy(item => item, StringComparer.Ordinal)
             .ToArray();
 
-    private string LocalizedSummary(string sourceId, UiLanguageService text) => sourceId switch
-    {
-        "activity-001" => text["DailySummaryActivity001"],
-        "activity-002" => text["DailySummaryActivity002"],
-        "activity-003" => text["DailySummaryActivity003"],
-        "activity-004" => text["DailySummaryActivity004"],
-        "evidence-001" => text["DailySummaryEvidence001"],
-        _ => text["DailySummaryNoSummary"],
-    };
+    private string SummaryFor(
+        string sourceId,
+        string snapshotSummary,
+        UiLanguageService text) =>
+        _sourceSummaries.TryGetValue(sourceId, out var summary)
+            ? summary
+            : IsValidText(snapshotSummary, DailySummaryAggregator.MaximumTextLength)
+                ? snapshotSummary
+                : text["DailySummaryNoSummary"];
 
     private string LatestWorkstreamSummary(string workstream, UiLanguageService text) =>
         _snapshot!.Timeline
             .Where(item => string.Equals(item.Workstream, workstream, StringComparison.Ordinal))
             .OrderByDescending(item => item.OccurredLocal)
-            .Select(item => LocalizedSummary(item.SourceId, text))
+            .Select(item => SummaryFor(item.SourceId, item.Summary, text))
             .FirstOrDefault() ?? text["DailySummaryNoSummary"];
-
-    private IReadOnlyList<string> BackendSources() => SourcesForWorkstream("Backend");
-
-    private IReadOnlyList<string> EvidenceSources() =>
-        _snapshot!.AcceptedSources
-            .Where(item => item.Kind == DailySummarySourceKind.Evidence)
-            .Select(item => item.SourceId)
-            .OrderBy(item => item, StringComparer.Ordinal)
-            .ToArray();
-
-    private IReadOnlyList<string> ReviewSources() =>
-        _snapshot!.Timeline
-            .Where(item => item.Category == "ReviewRequested" || item.Category == "Review")
-            .Select(item => item.SourceId)
-            .OrderBy(item => item, StringComparer.Ordinal)
-            .ToArray();
-
-    private IReadOnlyList<string> SourcesForIssue(string issueKey) =>
-        SourceIdsFor(SourceReferencesFor(_sourceMetadata.Values
-            .Where(item => item.IsAccepted && item.IssueKey == issueKey)
-            .Select(item => item.SourceId)));
-
-    private IReadOnlyList<string> SourcesForWorkstream(string workstream) =>
-        _snapshot!.Workstreams
-            .Where(item => item.Workstream == workstream)
-            .SelectMany(item => item.SourceIds)
-            .Distinct(StringComparer.Ordinal)
-            .OrderBy(item => item, StringComparer.Ordinal)
-            .ToArray();
 
     private static string BrushForCategory(string category) => category switch
     {
@@ -621,7 +773,7 @@ public sealed class DailySummaryState : ObservableState
         _ => DailySummaryBrushKeys.Evidence,
     };
 
-    private static (DailySummarySnapshot Snapshot, IReadOnlyList<DailySummarySource> Sources) CreateSnapshot()
+    private static DailySummarySnapshot CreateSnapshot()
     {
         var sources = new DailySummarySource[]
         {
@@ -633,11 +785,10 @@ public sealed class DailySummaryState : ObservableState
             Source("evidence-002", DailySummarySourceKind.Evidence, "2026-08-15T17:00:00+00:00", "DevOps", "devops-worker-01", "TASK-122", "Deployment", "Deployment evidence belongs to the next local day", true, false, null, null),
         };
 
-        var snapshot = DailySummaryAggregator.Aggregate(
+        return DailySummaryAggregator.Aggregate(
             new DateOnly(2026, 8, 15),
             TimeZoneInfo.CreateCustomTimeZone("Asia/Bangkok", TimeSpan.FromHours(7), "Bangkok", "Bangkok"),
             sources);
-        return (snapshot, sources);
     }
 
     private static DailySummarySource Source(
