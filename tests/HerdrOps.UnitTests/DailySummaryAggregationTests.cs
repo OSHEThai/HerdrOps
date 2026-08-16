@@ -124,6 +124,62 @@ public sealed class DailySummaryAggregationTests
     }
 
     [TestMethod]
+    public void EmptyAcceptedLocalDayEmitsCompleteZeroedContract()
+    {
+        var outsideLocalDay = CreateSource(
+            "outside-local-day",
+            DailySummarySourceKind.Evidence,
+            new DateTimeOffset(2026, 8, 15, 17, 0, 0, TimeSpan.Zero));
+        var rejected = CreateSource(
+            "rejected",
+            DailySummarySourceKind.ActivityEvent,
+            new DateTimeOffset(2026, 8, 15, 8, 0, 0, TimeSpan.Zero)) with
+        {
+            IsAccepted = false,
+        };
+        var timeZone = CreateFixedOffsetTimeZone(420);
+
+        var first = DailySummaryAggregator.Aggregate(
+            new DateOnly(2026, 8, 15),
+            timeZone,
+            [outsideLocalDay, rejected]);
+        var second = DailySummaryAggregator.Aggregate(
+            new DateOnly(2026, 8, 15),
+            timeZone,
+            [rejected, outsideLocalDay]);
+
+        CollectionAssert.AreEqual(
+            new[]
+            {
+                "accepted-sources",
+                "activity-events",
+                "evidence-items",
+                "workstreams",
+                "timeline-items",
+                "highlights",
+                "repeated-issues",
+                "recommended-actions",
+            },
+            first.Metrics.Select(item => item.MetricId).ToArray());
+        Assert.IsEmpty(first.AcceptedSources);
+        Assert.IsEmpty(first.Workstreams);
+        Assert.IsEmpty(first.Highlights);
+        Assert.IsEmpty(first.RepeatedIssues);
+        Assert.IsEmpty(first.RecommendedActions);
+        Assert.IsEmpty(first.Timeline);
+        foreach (var metric in first.Metrics)
+        {
+            Assert.AreEqual(0, metric.Value, metric.MetricId);
+            Assert.IsEmpty(metric.SourceIds, metric.MetricId);
+        }
+
+        Assert.AreEqual(first.SourceSetSha256, second.SourceSetSha256);
+        Assert.AreEqual(first.ResultSha256, second.ResultSha256);
+        Assert.AreEqual(64, first.SourceSetSha256.Length);
+        Assert.AreEqual(64, first.ResultSha256.Length);
+    }
+
+    [TestMethod]
     public void DuplicateSourceAndNonUtcTimestampFailClosed()
     {
         var first = CreateSource(

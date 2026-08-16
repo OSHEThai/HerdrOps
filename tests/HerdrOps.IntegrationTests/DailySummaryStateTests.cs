@@ -2,6 +2,7 @@ using System.Text.RegularExpressions;
 using HerdrOps.App.Localization;
 using HerdrOps.App.Summaries;
 using HerdrOps.Contracts;
+using HerdrOps.Domain.Summaries;
 
 namespace HerdrOps.IntegrationTests;
 
@@ -40,6 +41,48 @@ public sealed class DailySummaryStateTests
     }
 
     [TestMethod]
+    public void SyntheticProjectionResolvesAcceptedSourceReferencesForEveryRow()
+    {
+        var state = DailySummaryState.CreateSyntheticPreview();
+        var snapshot = state.Snapshot!;
+        var accepted = snapshot.AcceptedSources.ToDictionary(
+            item => item.SourceId,
+            StringComparer.Ordinal);
+
+        var missingTest = state.AreasToImprove.Single(item => item.Id == "area-missing-test");
+        CollectionAssert.AreEqual(new[] { "activity-003" }, missingTest.SourceIds.ToArray());
+
+        var rows = state.SummaryCards.Select(item => (item.SourceIds, item.SourceReferences))
+            .Concat(state.Highlights.Select(item => (item.SourceIds, item.SourceReferences)))
+            .Concat(state.Strengths.Select(item => (item.SourceIds, item.SourceReferences)))
+            .Concat(state.AreasToImprove.Select(item => (item.SourceIds, item.SourceReferences)))
+            .Concat(state.RepeatedIssues.Select(item => (item.SourceIds, item.SourceReferences)))
+            .Concat(state.RecommendedActions.Select(item => (item.SourceIds, item.SourceReferences)))
+            .Concat(state.Timeline.Select(item => (item.SourceIds, item.SourceReferences)))
+            .Concat(state.Workstreams.Select(item => (item.SourceIds, item.SourceReferences)))
+            .ToArray();
+
+        foreach (var row in rows)
+        {
+            CollectionAssert.AreEqual(
+                row.SourceIds.ToArray(),
+                row.SourceReferences.Select(item => item.SourceId).ToArray());
+            Assert.IsNotEmpty(row.SourceReferences);
+            foreach (var reference in row.SourceReferences)
+            {
+                Assert.IsTrue(accepted.TryGetValue(reference.SourceId, out var acceptedReference));
+                Assert.AreEqual(acceptedReference!.Kind, reference.Kind);
+                Assert.AreEqual(acceptedReference.SourceHashSha256, reference.SourceHashSha256);
+            }
+        }
+
+        var activity003 = accepted["activity-003"];
+        StringAssert.Contains(
+            missingTest.SourceProvenanceLabel,
+            $"{activity003.SourceId}#{activity003.SourceHashSha256}");
+    }
+
+    [TestMethod]
     public void LanguageRefreshKeepsTheSameAggregateAndUsesOneLanguageAtATime()
     {
         var state = DailySummaryState.CreateSyntheticPreview();
@@ -52,6 +95,7 @@ public sealed class DailySummaryStateTests
         Assert.IsTrue(state.SummaryCards.All(card => !ContainsThai(card.Title + card.Detail)));
         Assert.IsTrue(state.Highlights.All(item => !ContainsThai(item.Summary)));
         Assert.IsTrue(state.RecommendedActions.All(item => !ContainsThai(item.Description)));
+        Assert.IsTrue(state.AreasToImprove.All(item => !ContainsThai(item.SourceLabel + item.SourceProvenanceLabel)));
 
         UiLanguageService.Shared.SetLanguage(UiLanguage.Thai);
         state.RefreshLanguage();
@@ -59,6 +103,7 @@ public sealed class DailySummaryStateTests
         Assert.IsTrue(state.SummaryCards.All(card => ContainsThai(card.Title + card.Detail)));
         Assert.IsTrue(state.Highlights.All(item => ContainsThai(item.Summary)));
         Assert.IsTrue(state.RecommendedActions.All(item => ContainsThai(item.Description)));
+        Assert.IsTrue(state.AreasToImprove.All(item => ContainsThai(item.SourceLabel)));
     }
 
     [TestMethod]
@@ -71,6 +116,9 @@ public sealed class DailySummaryStateTests
         Assert.IsNull(state.Snapshot);
         Assert.HasCount(5, state.SummaryCards);
         Assert.IsTrue(state.SummaryCards.All(card => card.Value == "—"));
+        Assert.IsTrue(state.SummaryCards.All(card => card.SourceReferences.Count == 0));
+        Assert.IsTrue(state.SummaryCards.All(card =>
+            card.SourceProvenanceLabel == UiLanguageService.Shared["DailySummaryNoRecords"]));
         Assert.IsEmpty(state.Highlights);
         Assert.IsEmpty(state.Workstreams);
         StringAssert.Contains(state.BoundaryLabel, "สแนปช็อต");

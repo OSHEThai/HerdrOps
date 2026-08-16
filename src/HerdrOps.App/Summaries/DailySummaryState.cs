@@ -25,7 +25,12 @@ public sealed record DailySummarySummaryCard(
     string Detail,
     string IconGlyph,
     string AccentBrushKey,
-    IReadOnlyList<string> SourceIds);
+    IReadOnlyList<string> SourceIds)
+{
+    public IReadOnlyList<DailySummarySourceReference> SourceReferences { get; init; } = [];
+
+    public string SourceProvenanceLabel { get; init; } = string.Empty;
+}
 
 public sealed record DailySummaryHighlightRow(
     string Id,
@@ -33,7 +38,12 @@ public sealed record DailySummaryHighlightRow(
     string Summary,
     string SourceLabel,
     IReadOnlyList<string> SourceIds,
-    string AccentBrushKey);
+    string AccentBrushKey)
+{
+    public IReadOnlyList<DailySummarySourceReference> SourceReferences { get; init; } = [];
+
+    public string SourceProvenanceLabel { get; init; } = string.Empty;
+}
 
 public sealed record DailySummaryIssueRow(
     string Id,
@@ -41,14 +51,24 @@ public sealed record DailySummaryIssueRow(
     string OccurrenceLabel,
     string SourceLabel,
     IReadOnlyList<string> SourceIds,
-    string AccentBrushKey);
+    string AccentBrushKey)
+{
+    public IReadOnlyList<DailySummarySourceReference> SourceReferences { get; init; } = [];
+
+    public string SourceProvenanceLabel { get; init; } = string.Empty;
+}
 
 public sealed record DailySummaryActionRow(
     int Number,
     string Description,
     string SourceLabel,
     IReadOnlyList<string> SourceIds,
-    string AccentBrushKey);
+    string AccentBrushKey)
+{
+    public IReadOnlyList<DailySummarySourceReference> SourceReferences { get; init; } = [];
+
+    public string SourceProvenanceLabel { get; init; } = string.Empty;
+}
 
 public sealed record DailySummaryTimelineRow(
     string Time,
@@ -56,7 +76,12 @@ public sealed record DailySummaryTimelineRow(
     string Summary,
     string SourceLabel,
     IReadOnlyList<string> SourceIds,
-    string AccentBrushKey);
+    string AccentBrushKey)
+{
+    public IReadOnlyList<DailySummarySourceReference> SourceReferences { get; init; } = [];
+
+    public string SourceProvenanceLabel { get; init; } = string.Empty;
+}
 
 public sealed record DailySummaryWorkstreamRow(
     string Workstream,
@@ -67,7 +92,12 @@ public sealed record DailySummaryWorkstreamRow(
     string ScoreLabel,
     string ImportantLabel,
     IReadOnlyList<string> SourceIds,
-    string AccentBrushKey);
+    string AccentBrushKey)
+{
+    public IReadOnlyList<DailySummarySourceReference> SourceReferences { get; init; } = [];
+
+    public string SourceProvenanceLabel { get; init; } = string.Empty;
+}
 
 /// <summary>
 /// Presentation projection for the deterministic Daily Summary aggregate.
@@ -78,6 +108,7 @@ public sealed class DailySummaryState : ObservableState
 {
     private readonly bool _syntheticPreview;
     private readonly DailySummarySnapshot? _snapshot;
+    private readonly IReadOnlyDictionary<string, DailySummarySource> _sourceMetadata;
     private string _sourceLabel = string.Empty;
     private string _boundaryLabel = string.Empty;
     private string _dateLabel = string.Empty;
@@ -96,7 +127,20 @@ public sealed class DailySummaryState : ObservableState
     {
         _syntheticPreview = syntheticPreview;
         EvidenceClass = syntheticPreview ? EvidenceClass.Synthetic : EvidenceClass.Contract;
-        _snapshot = syntheticPreview ? CreateSnapshot() : null;
+        if (syntheticPreview)
+        {
+            var data = CreateSnapshot();
+            _snapshot = data.Snapshot;
+            _sourceMetadata = data.Sources.ToDictionary(
+                item => item.SourceId,
+                StringComparer.Ordinal);
+        }
+        else
+        {
+            _snapshot = null;
+            _sourceMetadata = new Dictionary<string, DailySummarySource>(StringComparer.Ordinal);
+        }
+
         RefreshLanguage();
     }
 
@@ -286,7 +330,11 @@ public sealed class DailySummaryState : ObservableState
                     : text.Format(detailKey, sourceCount.Value)),
             iconGlyph,
             brushKey,
-            sourceIds);
+            sourceIds)
+        {
+            SourceReferences = SourceReferencesFor(sourceIds),
+            SourceProvenanceLabel = SourceProvenanceLabelFor(sourceIds, text ?? UiLanguageService.Shared),
+        };
 
     private IReadOnlyList<DailySummaryHighlightRow> CreateHighlights(UiLanguageService text)
     {
@@ -296,89 +344,221 @@ public sealed class DailySummaryState : ObservableState
         }
 
         return _snapshot.Highlights
-            .Select(item => new DailySummaryHighlightRow(
+            .Select(item => CreateHighlightRow(
                 item.SourceId,
                 item.Workstream,
                 LocalizedSummary(item.SourceId, text),
-                SourceLabelFor(item.SourceIds, text),
                 item.SourceIds,
-                DailySummaryBrushKeys.Working))
+                DailySummaryBrushKeys.Working,
+                text))
             .ToArray();
     }
 
-    private IReadOnlyList<DailySummaryHighlightRow> CreateStrengths(UiLanguageService text) =>
-        _snapshot is null
-            ? []
-            : [
-                new("strength-backend", "Backend", text["DailySummaryStrengthBackend"], SourceLabelFor(BackendSources(), text), BackendSources(), DailySummaryBrushKeys.Working),
-                new("strength-evidence", "Evidence", text["DailySummaryStrengthEvidence"], SourceLabelFor(EvidenceSources(), text), EvidenceSources(), DailySummaryBrushKeys.Primary),
-                new("strength-review", "Review", text["DailySummaryStrengthReview"], SourceLabelFor(ReviewSources(), text), ReviewSources(), DailySummaryBrushKeys.Review),
-            ];
+    private IReadOnlyList<DailySummaryHighlightRow> CreateStrengths(UiLanguageService text)
+    {
+        if (_snapshot is null)
+        {
+            return [];
+        }
 
-    private IReadOnlyList<DailySummaryHighlightRow> CreateAreasToImprove(UiLanguageService text) =>
-        _snapshot is null
-            ? []
-            : [
-                new("area-api-latency", "Backend", text["DailySummaryAreaApiLatency"], SourceLabelFor(SourcesForIssue("api-latency"), text), SourcesForIssue("api-latency"), DailySummaryBrushKeys.Idle),
-                new("area-missing-test", "Frontend", text["DailySummaryAreaMissingTest"], SourceLabelFor(SourcesForIssue("missing-test"), text), SourcesForIssue("missing-test"), DailySummaryBrushKeys.Idle),
-                new("area-evidence", "Testing", text["DailySummaryAreaEvidence"], SourceLabelFor(EvidenceSources(), text), EvidenceSources(), DailySummaryBrushKeys.Idle),
-            ];
+        return
+        [
+            CreateHighlightRow("strength-backend", "Backend", text["DailySummaryStrengthBackend"], BackendSources(), DailySummaryBrushKeys.Working, text),
+            CreateHighlightRow("strength-evidence", "Evidence", text["DailySummaryStrengthEvidence"], EvidenceSources(), DailySummaryBrushKeys.Primary, text),
+            CreateHighlightRow("strength-review", "Review", text["DailySummaryStrengthReview"], ReviewSources(), DailySummaryBrushKeys.Review, text),
+        ];
+    }
+
+    private IReadOnlyList<DailySummaryHighlightRow> CreateAreasToImprove(UiLanguageService text)
+    {
+        if (_snapshot is null)
+        {
+            return [];
+        }
+
+        return
+        [
+            CreateHighlightRow("area-api-latency", "Backend", text["DailySummaryAreaApiLatency"], SourcesForIssue("api-latency"), DailySummaryBrushKeys.Idle, text),
+            CreateHighlightRow("area-missing-test", "Frontend", text["DailySummaryAreaMissingTest"], SourcesForIssue("missing-test"), DailySummaryBrushKeys.Idle, text),
+            CreateHighlightRow("area-evidence", "Testing", text["DailySummaryAreaEvidence"], EvidenceSources(), DailySummaryBrushKeys.Idle, text),
+        ];
+    }
 
     private IReadOnlyList<DailySummaryIssueRow> CreateRepeatedIssues(UiLanguageService text) =>
         _snapshot is null
             ? []
-            : _snapshot.RepeatedIssues.Select(item => new DailySummaryIssueRow(
-                item.IssueKey,
-                text["DailySummaryIssueApiLatency"],
-                text.Format("DailySummaryOccurrenceFormat", item.OccurrenceCount),
-                SourceLabelFor(item.SourceIds, text),
-                item.SourceIds,
-                DailySummaryBrushKeys.Blocked)).ToArray();
+            : _snapshot.RepeatedIssues.Select(item => CreateIssueRow(item, text)).ToArray();
 
     private IReadOnlyList<DailySummaryActionRow> CreateRecommendedActions(UiLanguageService text) =>
         _snapshot is null
             ? []
             : _snapshot.RecommendedActions
-                .Select((item, index) => new DailySummaryActionRow(
-                    index + 1,
-                    item.ActionKey == "Review API latency"
-                        ? text["DailySummaryActionReviewApiLatency"]
-                        : text["DailySummaryActionAddMissingTest"],
-                    SourceLabelFor(item.SourceIds, text),
-                    item.SourceIds,
-                    DailySummaryBrushKeys.Primary))
+                .Select((item, index) => CreateActionRow(item, index + 1, text))
                 .ToArray();
 
     private IReadOnlyList<DailySummaryTimelineRow> CreateTimeline(UiLanguageService text) =>
         _snapshot is null
             ? []
-            : _snapshot.Timeline.Select(item => new DailySummaryTimelineRow(
-                item.OccurredLocal.ToString("HH:mm", CultureInfo.InvariantCulture),
-                item.Category,
-                LocalizedSummary(item.SourceId, text),
-                SourceLabelFor([item.SourceId], text),
-                [item.SourceId],
-                BrushForCategory(item.Category))).ToArray();
+            : _snapshot.Timeline.Select(item => CreateTimelineRow(item, text)).ToArray();
 
     private IReadOnlyList<DailySummaryWorkstreamRow> CreateWorkstreams(UiLanguageService text) =>
         _snapshot is null
             ? []
-            : _snapshot.Workstreams.Select(item => new DailySummaryWorkstreamRow(
-                item.Workstream,
-                text["DailySummaryAcceptedStatus"],
-                text.Format("DailySummarySourceCountFormat", item.AcceptedSourceCount),
-                text.Format("DailySummaryActivityEvidenceFormat", item.ActivityCount, item.EvidenceCount),
-                text["DailySummaryProgressNotAvailable"],
-                text["DailySummaryNoScore"],
-                LatestWorkstreamSummary(item.Workstream, text),
-                item.SourceIds,
-                WorkstreamBrush(item.Workstream))).ToArray();
+            : _snapshot.Workstreams.Select(item => CreateWorkstreamRow(item, text)).ToArray();
+
+    private DailySummaryHighlightRow CreateHighlightRow(
+        string id,
+        string workstream,
+        string summary,
+        IEnumerable<string> sourceIds,
+        string accentBrushKey,
+        UiLanguageService text)
+    {
+        var references = SourceReferencesFor(sourceIds);
+        var ids = SourceIdsFor(references);
+        return new DailySummaryHighlightRow(
+            id,
+            workstream,
+            summary,
+            SourceLabelFor(ids, text),
+            ids,
+            accentBrushKey)
+        {
+            SourceReferences = references,
+            SourceProvenanceLabel = SourceProvenanceLabelFor(references, text),
+        };
+    }
+
+    private DailySummaryIssueRow CreateIssueRow(
+        DailySummaryRepeatedIssue item,
+        UiLanguageService text)
+    {
+        var references = SourceReferencesFor(item.SourceIds);
+        var ids = SourceIdsFor(references);
+        return new DailySummaryIssueRow(
+            item.IssueKey,
+            text["DailySummaryIssueApiLatency"],
+            text.Format("DailySummaryOccurrenceFormat", item.OccurrenceCount),
+            SourceLabelFor(ids, text),
+            ids,
+            DailySummaryBrushKeys.Blocked)
+        {
+            SourceReferences = references,
+            SourceProvenanceLabel = SourceProvenanceLabelFor(references, text),
+        };
+    }
+
+    private DailySummaryActionRow CreateActionRow(
+        DailySummaryRecommendedAction item,
+        int number,
+        UiLanguageService text)
+    {
+        var references = SourceReferencesFor(item.SourceIds);
+        var ids = SourceIdsFor(references);
+        return new DailySummaryActionRow(
+            number,
+            item.ActionKey == "Review API latency"
+                ? text["DailySummaryActionReviewApiLatency"]
+                : text["DailySummaryActionAddMissingTest"],
+            SourceLabelFor(ids, text),
+            ids,
+            DailySummaryBrushKeys.Primary)
+        {
+            SourceReferences = references,
+            SourceProvenanceLabel = SourceProvenanceLabelFor(references, text),
+        };
+    }
+
+    private DailySummaryTimelineRow CreateTimelineRow(
+        DailySummaryTimelineEntry item,
+        UiLanguageService text)
+    {
+        var references = SourceReferencesFor([item.SourceId]);
+        var ids = SourceIdsFor(references);
+        return new DailySummaryTimelineRow(
+            item.OccurredLocal.ToString("HH:mm", CultureInfo.InvariantCulture),
+            item.Category,
+            LocalizedSummary(item.SourceId, text),
+            SourceLabelFor(ids, text),
+            ids,
+            BrushForCategory(item.Category))
+        {
+            SourceReferences = references,
+            SourceProvenanceLabel = SourceProvenanceLabelFor(references, text),
+        };
+    }
+
+    private DailySummaryWorkstreamRow CreateWorkstreamRow(
+        DailySummaryWorkstream item,
+        UiLanguageService text)
+    {
+        var references = SourceReferencesFor(item.SourceIds);
+        var ids = SourceIdsFor(references);
+        return new DailySummaryWorkstreamRow(
+            item.Workstream,
+            text["DailySummaryAcceptedStatus"],
+            text.Format("DailySummarySourceCountFormat", item.AcceptedSourceCount),
+            text.Format("DailySummaryActivityEvidenceFormat", item.ActivityCount, item.EvidenceCount),
+            text["DailySummaryProgressNotAvailable"],
+            text["DailySummaryNoScore"],
+            LatestWorkstreamSummary(item.Workstream, text),
+            ids,
+            WorkstreamBrush(item.Workstream))
+        {
+            SourceReferences = references,
+            SourceProvenanceLabel = SourceProvenanceLabelFor(references, text),
+        };
+    }
 
     private string SourceLabelFor(IEnumerable<string> sourceIds, UiLanguageService text)
     {
-        var count = sourceIds.Distinct(StringComparer.Ordinal).Count();
-        return text.Format("DailySummarySourceCountFormat", count);
+        var references = SourceReferencesFor(sourceIds);
+        var countLabel = text.Format("DailySummarySourceCountFormat", references.Count);
+        return references.Count == 0
+            ? countLabel
+            : $"{countLabel} · {string.Join(", ", references.Select(item => item.SourceId))}";
     }
+
+    private string SourceProvenanceLabelFor(
+        IEnumerable<string> sourceIds,
+        UiLanguageService text) =>
+        SourceProvenanceLabelFor(SourceReferencesFor(sourceIds), text);
+
+    private string SourceProvenanceLabelFor(
+        IReadOnlyList<DailySummarySourceReference> references,
+        UiLanguageService text) =>
+        references.Count == 0
+            ? text["DailySummaryNoRecords"]
+            : string.Join(
+                " · ",
+                references.Select(item =>
+                    $"{item.SourceId}#{item.SourceHashSha256}"));
+
+    private IReadOnlyList<DailySummarySourceReference> SourceReferencesFor(
+        IEnumerable<string> sourceIds)
+    {
+        if (_snapshot is null)
+        {
+            return [];
+        }
+
+        var accepted = _snapshot.AcceptedSources.ToDictionary(
+            item => item.SourceId,
+            StringComparer.Ordinal);
+        return Array.AsReadOnly(sourceIds
+            .Distinct(StringComparer.Ordinal)
+            .OrderBy(item => item, StringComparer.Ordinal)
+            .Where(accepted.ContainsKey)
+            .Select(item => accepted[item])
+            .ToArray());
+    }
+
+    private static IReadOnlyList<string> SourceIdsFor(
+        IEnumerable<DailySummarySourceReference> references) =>
+        references
+            .Select(item => item.SourceId)
+            .OrderBy(item => item, StringComparer.Ordinal)
+            .ToArray();
 
     private string LocalizedSummary(string sourceId, UiLanguageService text) => sourceId switch
     {
@@ -414,12 +594,9 @@ public sealed class DailySummaryState : ObservableState
             .ToArray();
 
     private IReadOnlyList<string> SourcesForIssue(string issueKey) =>
-        _snapshot!.RepeatedIssues
-            .Where(item => item.IssueKey == issueKey)
-            .SelectMany(item => item.SourceIds)
-            .Distinct(StringComparer.Ordinal)
-            .OrderBy(item => item, StringComparer.Ordinal)
-            .ToArray();
+        SourceIdsFor(SourceReferencesFor(_sourceMetadata.Values
+            .Where(item => item.IsAccepted && item.IssueKey == issueKey)
+            .Select(item => item.SourceId)));
 
     private IReadOnlyList<string> SourcesForWorkstream(string workstream) =>
         _snapshot!.Workstreams
@@ -444,7 +621,7 @@ public sealed class DailySummaryState : ObservableState
         _ => DailySummaryBrushKeys.Evidence,
     };
 
-    private static DailySummarySnapshot CreateSnapshot()
+    private static (DailySummarySnapshot Snapshot, IReadOnlyList<DailySummarySource> Sources) CreateSnapshot()
     {
         var sources = new DailySummarySource[]
         {
@@ -456,10 +633,11 @@ public sealed class DailySummaryState : ObservableState
             Source("evidence-002", DailySummarySourceKind.Evidence, "2026-08-15T17:00:00+00:00", "DevOps", "devops-worker-01", "TASK-122", "Deployment", "Deployment evidence belongs to the next local day", true, false, null, null),
         };
 
-        return DailySummaryAggregator.Aggregate(
+        var snapshot = DailySummaryAggregator.Aggregate(
             new DateOnly(2026, 8, 15),
             TimeZoneInfo.CreateCustomTimeZone("Asia/Bangkok", TimeSpan.FromHours(7), "Bangkok", "Bangkok"),
             sources);
+        return (snapshot, sources);
     }
 
     private static DailySummarySource Source(
