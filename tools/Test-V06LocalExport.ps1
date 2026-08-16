@@ -257,7 +257,7 @@ $allRequiredFiles = @($sourceFiles) + @($contractFiles) + @($fixtureFiles) +
 
 $expectedInputSha256 = [ordered]@{
     'src/HerdrOps.Domain/Exports/DeterministicSnapshotExporter.cs' = '1ECEC535072EC907906EBAEAF87C1DF1938F15B5D3DF7CCC7D7C2959BFAB2798'
-    'src/HerdrOps.Domain/Exports/LocalSnapshotExportPublisher.cs' = 'FD5E04FFE32B345CE9B4A5337B4390EFD02C45260AFE4558AD13E0A305EDEB1D'
+    'src/HerdrOps.Domain/Exports/LocalSnapshotExportPublisher.cs' = '3FE702F9DB6B946DD22EBF5FB54FAD229280109C2CDB3F06EBDDBB3300118FDA'
     'src/HerdrOps.Domain/Evaluation/ExplainableScoring.cs' = 'B719E368DCD01277FE1BEFE6B67B567D4DEF20F38B8F604448DE5D3219A01688'
     'src/HerdrOps.Domain/Summaries/DailySummaryAggregation.cs' = '24FBC5205B67AC9819784BE092B8BC0A4CB7CED2255908327DC47A22B5D78393'
     'docs/protocol/v0.6-local-export-contract.md' = 'EC2CF5B82C05B3ABF877554C88071FC660043A5EF0CEFD2EFDD8757DEBD8DA48'
@@ -266,7 +266,7 @@ $expectedInputSha256 = [ordered]@{
     'tests/fixtures/v0.6/daily-summary-aggregation.json' = 'E23B9CB2AD1ADA6F603311F8F2F5D25FB45DC03C2934860C0AF8039D6591F07F'
     'tests/HerdrOps.UnitTests/ExplainableScoringTests.cs' = '54EFF2C86F32946EF402FCDB66181582C44824BF0DFD236594F4EB493D0235CD'
     'tests/HerdrOps.UnitTests/DeterministicSnapshotExporterTests.cs' = 'D02535343D8B5922250FA1BB25650DA7B25E8418C05CDBED096C2D1E1EBA451E'
-    'tests/HerdrOps.UnitTests/LocalSnapshotExportPublisherTests.cs' = '2D60AEA6622143201814EB626B5556099A25C27F0812BBB7EDD553701F7107D0'
+    'tests/HerdrOps.UnitTests/LocalSnapshotExportPublisherTests.cs' = '54CC0FAE27985A857BFFBFFA9D86BC0E7FB5221790CDE6AA488A425BF17E4605'
     'tests/HerdrOps.UnitTests/DailySummarySnapshotSemanticValidationTests.cs' = '3F86CB7C481E5002FD680B10EB34CB199E5C1030588D7247CE87265B137EDDC4'
     'tests/HerdrOps.ContractTests/SnapshotExportContractTests.cs' = '5100E87100F705E9EC0CC11FD75203E7A7C6CA89095A4EA8F59C41BF0B972C81'
 }
