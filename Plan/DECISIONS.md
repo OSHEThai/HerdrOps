@@ -164,3 +164,12 @@
 - Authority boundary: The Evaluation page is read-only presentation metadata. It does not authorize review actions, mutate records, ingest evidence, or infer live Herdr state.
 - Evidence boundary: Reference identity, source/test hashes, contract checks, deterministic state checks, and WPF captures are reported as Static, Contract, and Synthetic evidence for Issue #31. Actual Herdr Runtime, Independent Review, and Release evidence remain NOT OBSERVED / NOT CLAIMED and cannot be inferred from screenshots or local tests.
 - Status: In implementation for v0.6 Issue #31; not release-ready.
+
+## D-019 — Daily Summary uses one deterministic accepted-source set
+
+- Decision: Issue #32 aggregates only accepted `ActivityEvent` and `Evidence` records whose UTC timestamps convert into the requested local day through an explicit timezone. The fixed source set drives every count and projection; rejected, out-of-day, duplicate, malformed, or invalid records never become summary data.
+- Empty and missing contract: An empty accepted set is valid and emits the complete fixed metric schema with zero values, empty source links, empty projections, and deterministic hashes. Missing optional Agent, Task, issue, or action fields remain null. Missing upstream records or evidence bytes are not converted into synthetic zeros and remain the responsibility of their source/availability contract.
+- Determinism contract: Inputs are normalized with invariant rules; ordinal source/workstream/key ordering, explicit local-day conversion, UTC/SourceId timeline ordering, repeated-issue threshold, and length-prefixed canonical hashing produce byte-identical `SourceSetSha256` and `ResultSha256` for equivalent input sets.
+- Provenance contract: Each accepted source retains `SourceId`, `Kind`, and its upstream `SourceHashSha256`; every metric and projection retains source IDs. The aggregator does not collect or recompute artifact bytes, and digest-shaped synthetic fixture values are not production evidence.
+- Evidence boundary: Contract text, validation, deterministic fixture aggregation, timezone/empty behavior, and hash repeatability are Static, Contract, and Synthetic evidence. Actual Herdr Runtime NOT OBSERVED; production ingestion, live correlation, WPF rendering, independent acceptance, packaging, and v0.6 release evidence remain separate.
+- Status: Implemented for v0.6 Issue #32 aggregation support; Daily Summary UI, gate execution, actual Herdr Runtime, independent review, and release readiness remain pending.
