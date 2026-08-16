@@ -1,23 +1,44 @@
 [CmdletBinding()]
 param(
     [ValidateSet('Debug', 'Release')]
-    [string]$Configuration = 'Release'
+    [string]$Configuration = 'Release',
+
+    [Parameter(Mandatory = $true)]
+    [ValidatePattern('^[0-9a-fA-F]{40}$')]
+    [string]$CandidateCommit,
+
+    [Parameter(Mandatory = $true)]
+    [ValidatePattern('^[0-9a-fA-F]{40}$')]
+    [string]$DirectParentCommit
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-$repositoryRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
-$artifactRoot = Join-Path $repositoryRoot 'artifacts'
+$repositoryRoot = [IO.Path]::GetFullPath((Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path)
+$artifactRoot = [IO.Path]::GetFullPath((Join-Path $repositoryRoot 'artifacts'))
 $expectedBranch = 'codex/v10-issue-43-security-review'
-$expectedRecoveryHead = '628a9661ac301994b4829d52f26051246feb38fd'
+$version = 'v1.0.0'
+$issueNumber = '#43'
+$candidateIdentity = $CandidateCommit.ToLowerInvariant()
+$directParentIdentity = $DirectParentCommit.ToLowerInvariant()
 $runId = "$([DateTime]::UtcNow.ToString('yyyyMMddTHHmmssfffffffZ', [Globalization.CultureInfo]::InvariantCulture))-$([Guid]::NewGuid().ToString('N').Substring(0, 8))"
-$gateDirectory = Join-Path $artifactRoot "release-gates\v1.0.0\issue-43\$runId"
-$testDirectory = Join-Path $gateDirectory 'contract-tests'
+$gateDirectory = [IO.Path]::GetFullPath((Join-Path $artifactRoot "release-gates\v1.0.0\issue-43\$runId"))
+$testDirectory = [IO.Path]::GetFullPath((Join-Path $gateDirectory 'contract-tests'))
+$manifestPath = [IO.Path]::GetFullPath((Join-Path $gateDirectory 'reviewed-files.manifest.txt'))
+$schemaReportPath = [IO.Path]::GetFullPath((Join-Path $gateDirectory 'schema-migration-report.txt'))
+$gateReportPath = [IO.Path]::GetFullPath((Join-Path $gateDirectory 'gate-report.txt'))
+$reviewReportPath = [IO.Path]::GetFullPath((Join-Path $gateDirectory 'security-privacy-review-report.txt'))
+$canonicalRoot = $repositoryRoot.TrimEnd([char]92, [char]47)
+$rootPrefix = $canonicalRoot + [IO.Path]::DirectorySeparatorChar
 $checkResults = @()
 $failures = @()
+$pathSafetyFailures = @()
+$missingReviewFiles = @()
 $fileInventory = @()
 $testReports = @()
+$productScanPaths = @()
+$manifestPathSet = @{}
 
 function Record-Check {
     param(
@@ -25,6 +46,7 @@ function Record-Check {
         [string]$Id,
 
         [Parameter(Mandatory)]
+        [ValidateSet('PASS', 'FAIL', 'NOT RUN', 'NOT OBSERVED')]
         [string]$Status,
 
         [Parameter(Mandatory)]
@@ -45,18 +67,93 @@ function Record-Check {
     }
 }
 
+function Add-PathSafetyFailure {
+    param(
+        [Parameter(Mandatory)]
+        [string]$Detail
+    )
+
+    if ($script:pathSafetyFailures -notcontains $Detail) {
+        $script:pathSafetyFailures += $Detail
+    }
+}
+
+function Get-SafeFullPath {
+    param(
+        [Parameter(Mandatory)]
+        [string]$Path,
+
+        [switch]$AllowMissingLeaf
+    )
+
+    $full = [IO.Path]::GetFullPath($Path)
+    if ($full -ne $canonicalRoot -and -not $full.StartsWith($rootPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "path is outside the repository root: $Path"
+    }
+
+    $rootItem = Get-Item -LiteralPath $canonicalRoot -Force -ErrorAction Stop
+    if (($rootItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw 'repository root is a reparse point'
+    }
+
+    $relative = if ($full -eq $canonicalRoot) { '' } else { $full.Substring($rootPrefix.Length) }
+    $segments = @($relative -split '[\\/]' | Where-Object { -not [String]::IsNullOrWhiteSpace($_) })
+    $current = $canonicalRoot
+    $missingSeen = $false
+    for ($index = 0; $index -lt $segments.Count; $index++) {
+        $current = Join-Path $current $segments[$index]
+        if ($missingSeen) {
+            continue
+        }
+
+        $item = Get-Item -LiteralPath $current -Force -ErrorAction SilentlyContinue
+        if ($null -eq $item) {
+            if ($AllowMissingLeaf) {
+                $missingSeen = $true
+                continue
+            }
+            throw "path component is missing: $current"
+        }
+
+        if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw "reparse point is not allowed: $current"
+        }
+        if ($index -lt $segments.Count - 1 -and -not $item.PSIsContainer) {
+            throw "non-directory path component blocks containment: $current"
+        }
+    }
+
+    if (Test-Path -LiteralPath $full) {
+        $resolved = [IO.Path]::GetFullPath((Resolve-Path -LiteralPath $full -ErrorAction Stop).Path)
+        if ($resolved -ne $canonicalRoot -and -not $resolved.StartsWith($rootPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+            throw "resolved path escapes the repository root: $Path"
+        }
+        $resolvedItem = Get-Item -LiteralPath $full -Force -ErrorAction Stop
+        if (($resolvedItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw "reparse point is not allowed: $full"
+        }
+    }
+
+    return $full
+}
+
 function Get-RepositoryFile {
     param(
         [Parameter(Mandatory)]
         [string]$RelativePath
     )
 
-    $candidate = Join-Path $repositoryRoot $RelativePath
-    if (-not (Test-Path -LiteralPath $candidate -PathType Leaf)) {
+    try {
+        $candidate = Get-SafeFullPath -Path (Join-Path $repositoryRoot $RelativePath) -AllowMissingLeaf
+        $item = Get-Item -LiteralPath $candidate -Force -ErrorAction SilentlyContinue
+        if ($null -eq $item -or $item.PSIsContainer) {
+            return $null
+        }
+        return $candidate
+    } catch {
+        Add-PathSafetyFailure -Detail "${RelativePath}: $($_.Exception.Message)"
         return $null
     }
-
-    return (Resolve-Path -LiteralPath $candidate).Path
 }
 
 function Get-RelativeRepositoryPath {
@@ -65,33 +162,11 @@ function Get-RelativeRepositoryPath {
         [string]$Path
     )
 
-    $rootPrefix = $repositoryRoot.TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
-    if (-not $Path.StartsWith($rootPrefix, [StringComparison]::OrdinalIgnoreCase)) {
-        return $Path
+    $full = [IO.Path]::GetFullPath($Path)
+    if ($full.StartsWith($rootPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+        return $full.Substring($rootPrefix.Length).Replace([IO.Path]::AltDirectorySeparatorChar, [IO.Path]::DirectorySeparatorChar)
     }
-
-    return $Path.Substring($rootPrefix.Length).Replace([IO.Path]::AltDirectorySeparatorChar, [IO.Path]::DirectorySeparatorChar)
-}
-
-function Add-ReviewedFile {
-    param(
-        [Parameter(Mandatory)]
-        [string]$RelativePath
-    )
-
-    $path = Get-RepositoryFile -RelativePath $RelativePath
-    if ($null -eq $path) {
-        Record-Check -Id "FILE:$RelativePath" -Status 'FAIL' -EvidenceClass 'Static' -Detail 'required reviewed file is missing'
-        return
-    }
-
-    $item = Get-Item -LiteralPath $path
-    $hash = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToUpperInvariant()
-    $script:fileInventory += [pscustomobject]@{
-        Path = $RelativePath.Replace('\', '/')
-        Bytes = [int64]$item.Length
-        Sha256 = $hash
-    }
+    return $full
 }
 
 function Get-RepositoryText {
@@ -105,7 +180,160 @@ function Get-RepositoryText {
         return $null
     }
 
-    return Get-Content -LiteralPath $path -Raw
+    try {
+        return [IO.File]::ReadAllText($path)
+    } catch {
+        Add-PathSafetyFailure -Detail "$RelativePath could not be read safely: $($_.Exception.Message)"
+        return $null
+    }
+}
+
+function Ensure-SafeDirectory {
+    param(
+        [Parameter(Mandatory)]
+        [string]$Path
+    )
+
+    try {
+        $candidate = Get-SafeFullPath -Path $Path -AllowMissingLeaf
+        $item = Get-Item -LiteralPath $candidate -Force -ErrorAction SilentlyContinue
+        if ($null -ne $item -and -not $item.PSIsContainer) {
+            throw "artifact path is not a directory: $candidate"
+        }
+        if ($null -eq $item) {
+            New-Item -ItemType Directory -Path $candidate -Force -ErrorAction Stop | Out-Null
+        }
+        $verified = Get-SafeFullPath -Path $candidate
+        $verifiedItem = Get-Item -LiteralPath $verified -Force -ErrorAction Stop
+        if (-not $verifiedItem.PSIsContainer) {
+            throw "artifact path is not a directory after creation: $verified"
+        }
+        return $true
+    } catch {
+        Add-PathSafetyFailure -Detail "$Path could not be created or verified safely: $($_.Exception.Message)"
+        return $false
+    }
+}
+
+function Set-SafeText {
+    param(
+        [Parameter(Mandatory)]
+        [string]$Path,
+
+        [Parameter(Mandatory)]
+        [string[]]$Lines
+    )
+
+    try {
+        $candidate = Get-SafeFullPath -Path $Path -AllowMissingLeaf
+        $parent = Split-Path -LiteralPath $candidate -Parent
+        $null = Get-SafeFullPath -Path $parent
+        $text = $Lines -join [Environment]::NewLine
+        $utf8 = New-Object System.Text.UTF8Encoding($false)
+        [IO.File]::WriteAllText($candidate, $text, $utf8)
+        $null = Get-SafeFullPath -Path $candidate
+        return $true
+    } catch {
+        Add-PathSafetyFailure -Detail "$Path could not be written or verified safely: $($_.Exception.Message)"
+        return $false
+    }
+}
+
+function Get-SafeArtifactFile {
+    param(
+        [Parameter(Mandatory)]
+        [string]$Path
+    )
+
+    try {
+        $candidate = Get-SafeFullPath -Path $Path
+        $item = Get-Item -LiteralPath $candidate -Force -ErrorAction Stop
+        if ($item.PSIsContainer) {
+            throw "artifact path is a directory: $candidate"
+        }
+        return $candidate
+    } catch {
+        Add-PathSafetyFailure -Detail "$Path is not a safe artifact file: $($_.Exception.Message)"
+        return $null
+    }
+}
+
+function Assert-SafeArtifactTree {
+    param(
+        [Parameter(Mandatory)]
+        [string]$Path
+    )
+
+    $root = Get-SafeFullPath -Path $Path
+    $queue = New-Object System.Collections.Queue
+    $queue.Enqueue((Get-Item -LiteralPath $root -Force -ErrorAction Stop))
+    while ($queue.Count -gt 0) {
+        $item = $queue.Dequeue()
+        if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw "artifact tree contains a reparse point: $($item.FullName)"
+        }
+        if ($item.PSIsContainer) {
+            foreach ($child in @(Get-ChildItem -LiteralPath $item.FullName -Force -ErrorAction Stop)) {
+                if (($child.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+                    throw "artifact tree contains a reparse point: $($child.FullName)"
+                }
+                $queue.Enqueue($child)
+            }
+        }
+    }
+    return $true
+}
+
+function Get-TrackedPaths {
+    $output = @(& git -C $repositoryRoot ls-files --cached --full-name 2>&1)
+    $exitCode = $LASTEXITCODE
+    if ($exitCode -ne 0) {
+        Record-Check -Id 'BOUND-06' -Status 'FAIL' -EvidenceClass 'Static' -Detail "could not enumerate tracked inputs: $($output -join ' ')"
+        return @()
+    }
+    return @($output | ForEach-Object { ([string]$_).Trim() } | Where-Object { $_ -ne '' })
+}
+
+function Get-ReviewPurpose {
+    param([Parameter(Mandatory)][string]$Path)
+    if ($Path -like 'tests/*') { return 'selected test/config surface' }
+    if ($Path -like 'src/*') { return 'product source/config surface' }
+    if ($Path -like 'Plan/*' -or $Path -like 'docs/*') { return 'plan/protocol/review surface' }
+    if ($Path -like 'tools/*') { return 'review gate/tooling surface' }
+    return 'root build/repository configuration'
+}
+
+function Add-ReviewedFile {
+    param(
+        [Parameter(Mandatory)]
+        [string]$RelativePath,
+
+        [string]$Purpose
+    )
+
+    $normalized = $RelativePath.Replace('\\', '/')
+    if ($script:manifestPathSet.ContainsKey($normalized)) {
+        return
+    }
+    $script:manifestPathSet[$normalized] = $true
+    $path = Get-RepositoryFile -RelativePath $normalized
+    if ($null -eq $path) {
+        $script:missingReviewFiles += $normalized
+        return
+    }
+
+    try {
+        $item = Get-Item -LiteralPath $path -Force -ErrorAction Stop
+        $hash = (Get-FileHash -LiteralPath $path -Algorithm SHA256 -ErrorAction Stop).Hash.ToUpperInvariant()
+        $script:fileInventory += [pscustomobject]@{
+            Path = $normalized
+            Bytes = [int64]$item.Length
+            Sha256 = $hash
+            Purpose = if ([String]::IsNullOrWhiteSpace($Purpose)) { Get-ReviewPurpose -Path $normalized } else { $Purpose }
+        }
+    } catch {
+        Add-PathSafetyFailure -Detail "$normalized could not be hashed safely: $($_.Exception.Message)"
+    }
 }
 
 function Test-MarkerGroup {
@@ -114,7 +342,6 @@ function Test-MarkerGroup {
         [string]$Id,
 
         [Parameter(Mandatory)]
-        [ValidateSet('Static', 'Contract')]
         [string]$EvidenceClass,
 
         [Parameter(Mandatory)]
@@ -125,10 +352,9 @@ function Test-MarkerGroup {
     foreach ($file in $Files) {
         $text = Get-RepositoryText -RelativePath $file.Path
         if ($null -eq $text) {
-            $missing += "$($file.Path) [file missing]"
+            $missing += "$($file.Path) [file missing or unsafe]"
             continue
         }
-
         foreach ($marker in $file.Markers) {
             if ($text.IndexOf([string]$marker, [StringComparison]::Ordinal) -lt 0) {
                 $missing += "$($file.Path) [$marker]"
@@ -145,49 +371,52 @@ function Test-MarkerGroup {
     return $false
 }
 
-function Get-ProductTextFiles {
-    $extensions = @('.cs', '.csproj', '.json', '.xml', '.manifest', '.config', '.props', '.targets')
-    return @(Get-ChildItem -LiteralPath (Join-Path $repositoryRoot 'src') -Recurse -File |
-        Where-Object { $extensions -contains $_.Extension.ToLowerInvariant() } |
-        Sort-Object FullName)
-}
-
 function Test-ForbiddenProductPattern {
     param(
         [Parameter(Mandatory)]
         [string]$Id,
 
         [Parameter(Mandatory)]
-        [string]$Pattern,
+        [string]$CodePattern,
+
+        [Parameter(Mandatory)]
+        [string]$RawPattern,
 
         [Parameter(Mandatory)]
         [string]$Description
     )
 
     $hits = @()
-    foreach ($file in (Get-ProductTextFiles)) {
-        $hits += @(Select-String -LiteralPath $file.FullName -Pattern $Pattern)
+    foreach ($relativePath in $productScanPaths) {
+        $text = Get-RepositoryText -RelativePath $relativePath
+        if ($null -eq $text) {
+            continue
+        }
+        $result = Test-Issue43ForbiddenDeclaration -Text $text -CodePattern $CodePattern -RawPattern $RawPattern
+        if ($result.IsMatch) {
+            $hits += "$relativePath [$($result.Match)]"
+        }
     }
 
     if ($hits.Count -eq 0) {
-        Record-Check -Id $Id -Status 'PASS' -EvidenceClass 'Static' -Detail "${Description}: 0 declarations across product source/config"
+        Record-Check -Id $Id -Status 'PASS' -EvidenceClass 'Static' -Detail "${Description}: 0 declarations across tracked product source/config inputs"
         return $true
     }
 
-    $locations = $hits | ForEach-Object {
-        "$(Get-RelativeRepositoryPath -Path $_.Path):$($_.LineNumber)"
-    }
-    Record-Check -Id $Id -Status 'FAIL' -EvidenceClass 'Static' -Detail "${Description}: unexpected declarations at $($locations -join ', ')"
+    Record-Check -Id $Id -Status 'FAIL' -EvidenceClass 'Static' -Detail "${Description}: unexpected declarations at $($hits -join ', ')"
     return $false
 }
 
-function Test-ContractTestSelection {
+function Test-SelectedTest {
     param(
         [Parameter(Mandatory)]
         [string]$Id,
 
         [Parameter(Mandatory)]
         [string]$Name,
+
+        [Parameter(Mandatory)]
+        [string]$EvidenceClass,
 
         [Parameter(Mandatory)]
         [string]$Project,
@@ -198,7 +427,8 @@ function Test-ContractTestSelection {
 
     $projectPath = Get-RepositoryFile -RelativePath $Project
     if ($null -eq $projectPath) {
-        Record-Check -Id $Id -Status 'FAIL' -EvidenceClass 'Contract' -Detail "test project is missing: $Project"
+        $script:testReports += [pscustomobject]@{ Id = $Id; Name = $Name; EvidenceClass = $EvidenceClass; Status = 'FAIL'; Path = 'NOT RUN'; Sha256 = 'NOT AVAILABLE'; Total = 0; Passed = 0; Failed = 1 }
+        Record-Check -Id $Id -Status 'FAIL' -EvidenceClass $EvidenceClass -Detail "selected test project is missing or unsafe: $Project"
         return
     }
 
@@ -218,26 +448,50 @@ function Test-ContractTestSelection {
     $output = @(& dotnet @arguments 2>&1)
     $exitCode = $LASTEXITCODE
     if ($exitCode -ne 0) {
-        Record-Check -Id $Id -Status 'FAIL' -EvidenceClass 'Contract' -Detail "$Name selected tests exited $exitCode"
+        $script:testReports += [pscustomobject]@{ Id = $Id; Name = $Name; EvidenceClass = $EvidenceClass; Status = 'FAIL'; Path = 'NOT AVAILABLE'; Sha256 = 'NOT AVAILABLE'; Total = 0; Passed = 0; Failed = 1 }
+        Record-Check -Id $Id -Status 'FAIL' -EvidenceClass $EvidenceClass -Detail "$Name selected tests exited $exitCode"
         return
     }
 
-    $trxCandidates = @(Get-ChildItem -LiteralPath $testDirectory -Recurse -File -Filter $trxName -ErrorAction SilentlyContinue)
+    try {
+        Assert-SafeArtifactTree -Path $testDirectory | Out-Null
+    } catch {
+        Add-PathSafetyFailure -Detail "test output tree is unsafe after ${Name}: $($_.Exception.Message)"
+        $script:testReports += [pscustomobject]@{ Id = $Id; Name = $Name; EvidenceClass = $EvidenceClass; Status = 'FAIL'; Path = 'UNSAFE'; Sha256 = 'NOT AVAILABLE'; Total = 0; Passed = 0; Failed = 1 }
+        Record-Check -Id $Id -Status 'FAIL' -EvidenceClass $EvidenceClass -Detail "$Name produced an unsafe test-output tree"
+        return
+    }
+
+    $trxCandidates = @(
+        Get-ChildItem -LiteralPath $testDirectory -Recurse -File -Filter $trxName -ErrorAction SilentlyContinue |
+            Where-Object { $_.FullName.StartsWith($testDirectory + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase) }
+    )
     if ($trxCandidates.Count -ne 1) {
-        Record-Check -Id $Id -Status 'FAIL' -EvidenceClass 'Contract' -Detail "$Name did not produce exactly one TRX result (found $($trxCandidates.Count))"
+        $script:testReports += [pscustomobject]@{ Id = $Id; Name = $Name; EvidenceClass = $EvidenceClass; Status = 'FAIL'; Path = 'NOT AVAILABLE'; Sha256 = 'NOT AVAILABLE'; Total = 0; Passed = 0; Failed = 1 }
+        Record-Check -Id $Id -Status 'FAIL' -EvidenceClass $EvidenceClass -Detail "$Name did not produce exactly one TRX result (found $($trxCandidates.Count))"
         return
     }
 
-    [xml]$trx = Get-Content -LiteralPath $trxCandidates[0].FullName -Raw
+    $trxPath = Get-SafeArtifactFile -Path $trxCandidates[0].FullName
+    if ($null -eq $trxPath) {
+        $script:testReports += [pscustomobject]@{ Id = $Id; Name = $Name; EvidenceClass = $EvidenceClass; Status = 'FAIL'; Path = 'UNSAFE'; Sha256 = 'NOT AVAILABLE'; Total = 0; Passed = 0; Failed = 1 }
+        Record-Check -Id $Id -Status 'FAIL' -EvidenceClass $EvidenceClass -Detail "$Name TRX path was not safe"
+        return
+    }
+
+    [xml]$trx = [IO.File]::ReadAllText($trxPath)
     $counters = $trx.TestRun.ResultSummary.Counters
     $total = [int]$counters.total
     $passed = [int]$counters.passed
     $failed = [int]$counters.failed
-    $relativeTrx = Get-RelativeRepositoryPath -Path $trxCandidates[0].FullName
-    $trxHash = (Get-FileHash -LiteralPath $trxCandidates[0].FullName -Algorithm SHA256).Hash.ToUpperInvariant()
+    $relativeTrx = Get-RelativeRepositoryPath -Path $trxPath
+    $trxHash = (Get-FileHash -LiteralPath $trxPath -Algorithm SHA256).Hash.ToUpperInvariant()
+    $status = if ($total -gt 0 -and $failed -eq 0 -and $total -eq $passed) { 'PASS' } else { 'FAIL' }
     $script:testReports += [pscustomobject]@{
         Id = $Id
         Name = $Name
+        EvidenceClass = $EvidenceClass
+        Status = $status
         Path = $relativeTrx
         Sha256 = $trxHash
         Total = $total
@@ -245,29 +499,73 @@ function Test-ContractTestSelection {
         Failed = $failed
     }
 
-    if ($total -le 0 -or $failed -ne 0 -or $total -ne $passed) {
-        Record-Check -Id $Id -Status 'FAIL' -EvidenceClass 'Contract' -Detail "$Name counters are not all passing: total=$total passed=$passed failed=$failed"
+    if ($status -eq 'FAIL') {
+        Record-Check -Id $Id -Status 'FAIL' -EvidenceClass $EvidenceClass -Detail "$Name counters are not all passing: total=$total passed=$passed failed=$failed"
         return
     }
 
-    Record-Check -Id $Id -Status 'PASS' -EvidenceClass 'Contract' -Detail "$Name selected tests passed: $passed/$total; TRX=$relativeTrx; SHA256=$trxHash"
+    Record-Check -Id $Id -Status 'PASS' -EvidenceClass $EvidenceClass -Detail "$Name selected tests passed: $passed/$total; TRX=$relativeTrx; SHA256=$trxHash"
+}
+
+function Get-EvidenceClassStatus {
+    param([Parameter(Mandatory)][string]$EvidenceClass)
+    $items = @($checkResults | Where-Object { $_.EvidenceClass -eq $EvidenceClass })
+    if ($EvidenceClass -eq 'BuiltProcess') { return 'NOT RUN' }
+    if ($EvidenceClass -in @('Runtime', 'IndependentReview', 'Release')) { return 'NOT OBSERVED' }
+    if ($items.Count -eq 0) { return 'NOT RUN' }
+    if (@($items | Where-Object { $_.Status -eq 'FAIL' }).Count -gt 0) { return 'FAIL' }
+    if (@($items | Where-Object { $_.Status -eq 'NOT RUN' }).Count -gt 0) { return 'NOT RUN' }
+    return 'PASS'
+}
+
+function Get-CheckLines {
+    return @($checkResults | ForEach-Object {
+        "$($_.Status) $($_.Id) evidence=$($_.EvidenceClass) $($_.Detail)"
+    })
+}
+
+function Get-FileInventoryLines {
+    return @($fileInventory | Sort-Object Path | ForEach-Object {
+        "SHA256 $($_.Sha256) BYTES $($_.Bytes) PURPOSE=$($_.Purpose) $($_.Path)"
+    })
 }
 
 function Write-Reports {
     param(
         [Parameter(Mandatory)]
-        [string]$Result
+        [string]$Result,
+
+        [Parameter(Mandatory)]
+        [string]$SourceCommit,
+
+        [Parameter(Mandatory)]
+        [string]$Branch
     )
 
-    New-Item -ItemType Directory -Path $gateDirectory -Force | Out-Null
-    $schemaReportPath = Join-Path $gateDirectory 'schema-migration-report.txt'
-    $schemaReport = @(
+    $manifestLines = @(
+        "Issue: $issueNumber",
+        "Version: $version",
+        "CandidateCommit: $candidateIdentity",
+        "DirectParentCommit: $directParentIdentity",
+        'ReviewedFiles:'
+    ) + (Get-FileInventoryLines)
+    if (-not (Set-SafeText -Path $manifestPath -Lines $manifestLines)) {
+        throw 'The reviewed-file manifest could not be written safely.'
+    }
+    $manifestHash = (Get-FileHash -LiteralPath (Get-SafeArtifactFile -Path $manifestPath) -Algorithm SHA256).Hash.ToUpperInvariant()
+
+    $schemaLines = @(
         'HerdrOps v1.0.0 Issue #43 Schema and Migration Report',
         "GeneratedUtc: $([DateTime]::UtcNow.ToString('O'))",
-        "SourceCommit: $sourceCommit",
-        "Branch: $branch",
+        "Issue: $issueNumber",
+        "Version: $version",
+        "SourceCommit: $SourceCommit",
+        "CandidateCommit: $candidateIdentity",
+        "DirectParentCommit: $directParentIdentity",
+        "Branch: $Branch",
         "Result: $Result",
-        'EvidenceClass: Static plus Contract',
+        'EvidenceClass: Static plus LocalSQLiteIntegration',
+        "ReviewedManifestSha256: $manifestHash",
         '',
         'SchemaVersion: v3',
         'MigrationGraph: v1 initial-state-store -> v2 assignment-lifecycle-provenance -> v3 evidence-metadata-review-retention-audit',
@@ -279,82 +577,150 @@ function Write-Reports {
         'IntegrityChecks: quick_check and integrity_check are required at admission/recovery boundaries',
         'Quarantine: damaged primary retained and copied to collision-safe tokenized evidence',
         '',
-        'ReviewedMigrationFiles:'
-    ) + ($fileInventory | Where-Object { $_.Path -match 'SqliteHerdrStateStore|HerdrStateStoreModels|Storage/Recovery|state-recovery-contract' } | ForEach-Object {
-        "SHA256 $($_.Sha256) BYTES $($_.Bytes) $($_.Path)"
-    }) + @(
+        'Checks:',
+        (Get-CheckLines),
         '',
         'Boundary: This is repository static/local-contract evidence. It is not live database, installed product, runtime, independent-review, or release evidence.'
     )
-    $schemaReport | Set-Content -LiteralPath $schemaReportPath -Encoding utf8
-    $schemaReportHash = (Get-FileHash -LiteralPath $schemaReportPath -Algorithm SHA256).Hash.ToUpperInvariant()
+    if (-not (Set-SafeText -Path $schemaReportPath -Lines $schemaLines)) {
+        throw 'The schema report could not be written safely.'
+    }
+    $schemaHash = (Get-FileHash -LiteralPath (Get-SafeArtifactFile -Path $schemaReportPath) -Algorithm SHA256).Hash.ToUpperInvariant()
 
-    $gateReportPath = Join-Path $gateDirectory 'gate-report.txt'
-    $staticResult = if (@($checkResults | Where-Object { $_.EvidenceClass -eq 'Static' -and $_.Status -eq 'FAIL' }).Count -eq 0) { 'PASS' } else { 'FAIL' }
-    $contractResult = if (@($checkResults | Where-Object { $_.EvidenceClass -eq 'Contract' -and $_.Status -eq 'FAIL' }).Count -eq 0) { 'PASS' } else { 'FAIL' }
-    $highFindingResult = if ($failures.Count -eq 0) { 'NONE OBSERVED BY THIS STATIC/CONTRACT SLICE' } else { 'REVIEW REQUIRED; GATE FAILED' }
-    $report = @(
+    $evidenceClasses = @('Static', 'Synthetic', 'LocalSQLiteIntegration', 'Contract', 'BuiltProcess', 'Runtime', 'IndependentReview', 'Release')
+    $evidenceStatusLines = @($evidenceClasses | ForEach-Object { "$_`: $(Get-EvidenceClassStatus -EvidenceClass $_)" })
+    $highFindings = if ($failures.Count -eq 0) { 'NONE OBSERVED BY THIS STATIC/SYNTHETIC/LOCAL-INTEGRATION/CONTRACT SLICE' } else { $failures -join ' | ' }
+    $gateLines = @(
         'HerdrOps v1.0.0 Issue #43 Security and Privacy Review Gate',
         "GeneratedUtc: $([DateTime]::UtcNow.ToString('O'))",
-        "SourceCommit: $sourceCommit",
-        "Branch: $branch",
-        "RecoveryHead: $expectedRecoveryHead",
-        'Issue: #43',
+        "Issue: $issueNumber",
+        "Version: $version",
+        "SourceCommit: $SourceCommit",
+        "CandidateCommit: $candidateIdentity",
+        "DirectParentCommit: $directParentIdentity",
+        "Branch: $Branch",
         "Result: $Result",
-        'PreparationSlice: NON-RUNTIME STATIC+CONTRACT',
+        'PreparationSlice: NON-RUNTIME STATIC+SYNTHETIC+LOCAL-INTEGRATION+CONTRACT',
         "ReviewedFileCount: $($fileInventory.Count)",
-        "SchemaMigrationReportSha256: $schemaReportHash",
+        "ReviewedManifestSha256: $manifestHash",
+        "SchemaMigrationReportSha256: $schemaHash",
         '',
-        "StaticEvidence: $staticResult",
-        "ContractEvidence: $contractResult",
-        'LocalSyntheticOrIntegrationSupport: SELECTED LOCAL TESTS ONLY',
-        'ActualHerdrRuntime: NOT OBSERVED / NOT CLAIMED',
-        'LiveListeners: NOT OBSERVED / NOT CLAIMED',
-        'LivePipeAcls: NOT OBSERVED / NOT CLAIMED',
-        'LiveProcesses: NOT OBSERVED / NOT CLAIMED',
-        'RegistryAppDataLiveDatabase: NOT OBSERVED / NOT TOUCHED',
-        'AdministratorRuntimeProof: NOT OBSERVED / NOT CLAIMED',
-        'IndependentReview: NOT OBSERVED / NOT CLAIMED',
-        'ReleaseEvidence: NOT OBSERVED / NOT CLAIMED',
-        'IssueAcceptance: PENDING',
-        'VersionReleaseReady: false',
-        "HighFindings: $highFindingResult",
+        'EvidenceClassStatus:',
+        $evidenceStatusLines,
         '',
-        'Checks:'
-    ) + ($checkResults | ForEach-Object {
-        "$($_.Status) $($_.Id) evidence=$($_.EvidenceClass) $($_.Detail)"
-    }) + @(
+        'HighFindings:',
+        $highFindings,
         '',
-        'ReviewedFiles:'
-    ) + ($fileInventory | ForEach-Object {
-        "SHA256 $($_.Sha256) BYTES $($_.Bytes) $($_.Path)"
-    }) + @(
+        'Checks:',
+        (Get-CheckLines),
         '',
-        'ContractTestReports:'
-    ) + ($testReports | ForEach-Object {
-        "$($_.Id) $($_.Path) SHA256=$($_.Sha256) tests=$($_.Passed)/$($_.Total)"
-    }) + @(
+        'TestReports:',
+        ($testReports | ForEach-Object {
+            "$($_.Status) $($_.Id) evidence=$($_.EvidenceClass) path=$($_.Path) SHA256=$($_.Sha256) tests=$($_.Passed)/$($_.Total)"
+        }),
+        '',
+        'ReviewedFiles:',
+        (Get-FileInventoryLines),
         '',
         'EvidenceBoundary:',
-        'This gate statically inspects committed repository source/config/Plan/docs and runs only the selected local contract/privacy/storage tests.',
-        'It does not inspect live listeners, effective Windows ACLs, processes, Registry, AppData, a live database, installed Herdr, or a non-elevated host.',
-        'It does not establish independent review, Issue #43 acceptance, milestone closure, packaging, installation, upgrade, release, or human go/no-go.'
+        'Actual Herdr runtime: NOT OBSERVED / NOT CLAIMED.',
+        'Live listeners, effective Windows pipe ACLs, live processes, Registry, AppData, and live database: NOT OBSERVED / NOT CLAIMED.',
+        'Administrator non-elevated host proof: NOT OBSERVED / NOT CLAIMED.',
+        'BuiltProcess evidence: NOT RUN.',
+        'Independent review and human approval: NOT OBSERVED / NOT CLAIMED.',
+        'Release packaging, installation, upgrade, rollback acceptance, and publication: NOT OBSERVED / NOT CLAIMED.',
+        'Issue #43 acceptance, milestone closure, and v1.0 release readiness: PENDING.'
     )
-    $report | Set-Content -LiteralPath $gateReportPath -Encoding utf8
-    $report | Write-Output
-    Write-Output "SchemaMigrationReport: $schemaReportPath"
-    Write-Output "GateReport: $gateReportPath"
+    if (-not (Set-SafeText -Path $gateReportPath -Lines $gateLines)) {
+        throw 'The gate report could not be written safely.'
+    }
+    $gateHash = (Get-FileHash -LiteralPath (Get-SafeArtifactFile -Path $gateReportPath) -Algorithm SHA256).Hash.ToUpperInvariant()
+
+    $reviewLines = @(
+        '# HerdrOps v1.0 Issue #43 Security and Privacy Review Report',
+        '',
+        'Status: generated bounded preparation slice; it does not close Issue #43 or pass the v1.0 release gate.',
+        '',
+        'Identity:',
+        "Issue: $issueNumber",
+        "Version: $version",
+        "Branch: $Branch",
+        "SourceCommit: $SourceCommit",
+        "CandidateCommit: $candidateIdentity",
+        "DirectParentCommit: $directParentIdentity",
+        'CandidateHeadMatch: PASS',
+        'DirectParentMatch: PASS',
+        "GeneratedUtc: $([DateTime]::UtcNow.ToString('O'))",
+        'Gate: tools/Test-V10Issue43SecurityReview.ps1',
+        "GateReportPath: $(Get-RelativeRepositoryPath -Path $gateReportPath)",
+        "GateReportSha256: $gateHash",
+        "ReviewedManifestPath: $(Get-RelativeRepositoryPath -Path $manifestPath)",
+        "ReviewedManifestSha256: $manifestHash",
+        "SchemaMigrationReportSha256: $schemaHash",
+        '',
+        'Result:',
+        "Result: $Result",
+        "StaticEvidence: $(Get-EvidenceClassStatus -EvidenceClass 'Static')",
+        "SyntheticEvidence: $(Get-EvidenceClassStatus -EvidenceClass 'Synthetic')",
+        "LocalSQLiteIntegrationEvidence: $(Get-EvidenceClassStatus -EvidenceClass 'LocalSQLiteIntegration')",
+        "ContractEvidence: $(Get-EvidenceClassStatus -EvidenceClass 'Contract')",
+        'BuiltProcessEvidence: NOT RUN',
+        'RuntimeEvidence: NOT OBSERVED / NOT CLAIMED',
+        'IndependentReviewEvidence: NOT OBSERVED / NOT CLAIMED',
+        'ReleaseEvidence: NOT OBSERVED / NOT CLAIMED',
+        "HighFindings: $highFindings",
+        'IssueAcceptance: PENDING',
+        'VersionReleaseReady: false',
+        '',
+        'CheckResults:',
+        (Get-CheckLines),
+        '',
+        'ReviewedFileManifest:',
+        (Get-FileInventoryLines),
+        '',
+        'TestReports:',
+        ($testReports | ForEach-Object {
+            "$($_.Status) $($_.Id) evidence=$($_.EvidenceClass) path=$($_.Path) SHA256=$($_.Sha256) tests=$($_.Passed)/$($_.Total)"
+        }),
+        '',
+        'EvidenceBoundaries:',
+        'Actual Herdr runtime: NOT OBSERVED / NOT CLAIMED.',
+        'Installed Herdr compatibility, live listener inventory, effective Windows ACLs, and cross-account isolation: NOT OBSERVED / NOT CLAIMED.',
+        'Live processes, Registry, AppData, live database, and host elevation state: NOT OBSERVED / NOT CLAIMED.',
+        'Independent review and human go/no-go: NOT OBSERVED / NOT CLAIMED.',
+        'Release packaging, clean-machine installation, upgrade, rollback acceptance, and publication: NOT OBSERVED / NOT CLAIMED.',
+        'This report contains only bounded hashes, source/config facts, and local test results; it does not contain secrets or raw diagnostic payloads.'
+    )
+    if (-not (Set-SafeText -Path $reviewReportPath -Lines $reviewLines)) {
+        throw 'The security/privacy review report could not be written safely.'
+    }
+
+    $reviewHash = (Get-FileHash -LiteralPath (Get-SafeArtifactFile -Path $reviewReportPath) -Algorithm SHA256).Hash.ToUpperInvariant()
+    return [pscustomobject]@{
+        ManifestPath = $manifestPath
+        ManifestSha256 = $manifestHash
+        SchemaReportPath = $schemaReportPath
+        SchemaReportSha256 = $schemaHash
+        GateReportPath = $gateReportPath
+        GateReportSha256 = $gateHash
+        ReviewReportPath = $reviewReportPath
+        ReviewReportSha256 = $reviewHash
+    }
 }
 
-New-Item -ItemType Directory -Path $testDirectory -Force | Out-Null
+if (-not (Ensure-SafeDirectory -Path $artifactRoot) -or
+    -not (Ensure-SafeDirectory -Path $gateDirectory) -or
+    -not (Ensure-SafeDirectory -Path $testDirectory)) {
+    throw 'The Issue #43 artifact paths could not be established safely.'
+}
 
 $sourceCommitOutput = @(& git -C $repositoryRoot rev-parse --verify 'HEAD^{commit}' 2>&1)
-$sourceCommit = ($sourceCommitOutput -join '').Trim()
+$sourceCommit = ($sourceCommitOutput -join '').Trim().ToLowerInvariant()
 if ($LASTEXITCODE -ne 0 -or $sourceCommit -notmatch '^[0-9a-f]{40}$') {
     $sourceCommit = 'UNRESOLVED'
     Record-Check -Id 'BOUND-01' -Status 'FAIL' -EvidenceClass 'Static' -Detail 'could not resolve exact source commit'
 } else {
-    Record-Check -Id 'BOUND-01' -Status 'PASS' -EvidenceClass 'Static' -Detail "source commit is $sourceCommit"
+    Record-Check -Id 'BOUND-01' -Status 'PASS' -EvidenceClass 'Static' -Detail "source commit resolved as $sourceCommit"
 }
 
 $branchOutput = @(& git -C $repositoryRoot symbolic-ref --short HEAD 2>&1)
@@ -372,68 +738,93 @@ if ($LASTEXITCODE -ne 0 -or $initialStatus.Count -ne 0) {
     Record-Check -Id 'BOUND-03' -Status 'PASS' -EvidenceClass 'Static' -Detail 'clean committed checkout'
 }
 
-$ancestorExit = 1
-if ($sourceCommit -match '^[0-9a-f]{40}$') {
-    & git -C $repositoryRoot merge-base --is-ancestor $expectedRecoveryHead $sourceCommit 2>$null
-    $ancestorExit = $LASTEXITCODE
-}
-if ($ancestorExit -ne 0) {
-    Record-Check -Id 'BOUND-04' -Status 'FAIL' -EvidenceClass 'Static' -Detail "source is not descended from recovery head $expectedRecoveryHead"
+$candidateResolved = @(& git -C $repositoryRoot rev-parse --verify "$candidateIdentity^{commit}" 2>&1)
+$resolvedCandidate = ($candidateResolved -join '').Trim().ToLowerInvariant()
+$candidateExit = $LASTEXITCODE
+$candidateMatch = $sourceCommit -eq $candidateIdentity -and $resolvedCandidate -eq $candidateIdentity
+if ($candidateExit -ne 0 -or -not $candidateMatch) {
+    Record-Check -Id 'BOUND-04' -Status 'FAIL' -EvidenceClass 'Static' -Detail "explicit candidate $candidateIdentity does not match HEAD $sourceCommit"
 } else {
-    Record-Check -Id 'BOUND-04' -Status 'PASS' -EvidenceClass 'Static' -Detail "source descends from recovery head $expectedRecoveryHead"
+    Record-Check -Id 'BOUND-04' -Status 'PASS' -EvidenceClass 'Static' -Detail "explicit candidate identity matches HEAD: $candidateIdentity"
 }
 
-$requiredFiles = @(
-    'Plan/ARCHITECTURE.md',
-    'Plan/DECISIONS.md',
-    'Plan/RELEASE-GATES.md',
-    'Plan/ROADMAP.md',
-    'docs/protocol/v0.5-evidence-audit-storage-contract.md',
-    'docs/protocol/v0.6-local-export-contract.md',
-    'docs/protocol/v0.7-diagnostic-bundle-contract.md',
-    'docs/protocol/v0.7-state-recovery-contract.md',
-    'docs/protocol/v1.0-issue-43-security-privacy-review-contract.md',
-    'docs/reviews/v1.0-issue-43-security-privacy-checklist.md',
-    'docs/reviews/v1.0-issue-43-security-privacy-report-template.md',
-    'tools/Test-V10Issue43SecurityReview.ps1',
-    'src/HerdrOps.Infrastructure/Storage/HerdrStateStoreModels.cs',
-    'src/HerdrOps.Infrastructure/Storage/SqliteHerdrStateStore.cs',
-    'src/HerdrOps.Infrastructure/Storage/SqliteHerdrStateStore.EvidenceMigration.cs',
-    'src/HerdrOps.Infrastructure/Storage/SqliteHerdrStateStore.Evidence.cs',
-    'src/HerdrOps.Infrastructure/Storage/Recovery/StateStoreRecoveryContracts.cs',
-    'src/HerdrOps.Infrastructure/Storage/Recovery/StateStoreRecoveryArtifacts.cs',
-    'src/HerdrOps.Infrastructure/Storage/Recovery/StateStoreRecoveryPathPolicy.cs',
-    'src/HerdrOps.Infrastructure/Storage/Recovery/StateStoreRecoveryService.cs',
-    'src/HerdrOps.Infrastructure/StateIpc/HerdrOpsStatePipeServer.cs',
-    'src/HerdrOps.Infrastructure/StateIpc/HerdrOpsSelfReportPipeServer.cs',
-    'src/HerdrOps.Contracts/StateIpc/HerdrOpsStateIpcContract.cs',
-    'src/HerdrOps.Contracts/StateIpc/HerdrOpsStatePipeName.cs',
-    'src/HerdrOps.Contracts/SelfReport/HerdrOpsSelfReportPipeName.cs',
-    'src/HerdrOps.App/StateIpc/HerdrOpsStatePipeClient.cs',
-    'src/HerdrOps.Cli/HerdrOpsSelfReportPipeClient.cs',
-    'src/HerdrOps.Domain/Diagnostics/DiagnosticRedaction.cs',
-    'src/HerdrOps.Domain/Diagnostics/DiagnosticBundleModels.cs',
-    'src/HerdrOps.Domain/Diagnostics/DiagnosticBundleBuilder.cs',
-    'src/HerdrOps.Infrastructure/Diagnostics/DiagnosticBundlePublisher.cs',
-    'src/HerdrOps.Domain/Exports/DeterministicSnapshotExporter.cs',
-    'src/HerdrOps.Domain/Exports/LocalSnapshotExportPublisher.cs',
-    'src/HerdrOps.Domain/Activity/TerminalPreviewPolicy.cs',
-    'tests/HerdrOps.ContractTests/StateIpcContractTests.cs',
-    'tests/HerdrOps.ContractTests/SelfReportContractTests.cs',
-    'tests/HerdrOps.ContractTests/SnapshotExportContractTests.cs',
-    'tests/HerdrOps.UnitTests/TerminalPreviewPolicyTests.cs',
-    'tests/HerdrOps.UnitTests/DeterministicSnapshotExporterTests.cs',
-    'tests/HerdrOps.UnitTests/LocalSnapshotExportPublisherTests.cs',
-    'tests/HerdrOps.IntegrationTests/SqliteHerdrStateStoreTests.cs',
-    'tests/HerdrOps.IntegrationTests/StateStoreRecoveryTests.cs',
-    'tests/HerdrOps.IntegrationTests/StateStoreRestoreCommandTests.cs',
-    'tests/HerdrOps.IntegrationTests/EvidenceAuditStorageTests.cs',
-    'tests/HerdrOps.IntegrationTests/DiagnosticBundleTests.cs'
-)
-foreach ($file in $requiredFiles) {
-    Add-ReviewedFile -RelativePath $file
+$parentResolved = @(& git -C $repositoryRoot rev-parse --verify "$candidateIdentity^1" 2>&1)
+$resolvedParent = ($parentResolved -join '').Trim().ToLowerInvariant()
+$parentExit = $LASTEXITCODE
+$headParentResolved = @(& git -C $repositoryRoot rev-parse --verify 'HEAD^1' 2>&1)
+$headParent = ($headParentResolved -join '').Trim().ToLowerInvariant()
+$headParentExit = $LASTEXITCODE
+$parentMatch = $resolvedParent -eq $directParentIdentity -and $headParent -eq $directParentIdentity -and $directParentIdentity -ne $candidateIdentity
+if ($parentExit -ne 0 -or $headParentExit -ne 0 -or -not $parentMatch) {
+    Record-Check -Id 'BOUND-05' -Status 'FAIL' -EvidenceClass 'Static' -Detail "explicit direct parent $directParentIdentity does not match candidate parent $resolvedParent / HEAD parent $headParent"
+} else {
+    Record-Check -Id 'BOUND-05' -Status 'PASS' -EvidenceClass 'Static' -Detail "explicit direct-parent identity matches candidate^1 and HEAD^1: $directParentIdentity"
 }
-Record-Check -Id 'FILE-01' -Status 'PASS' -EvidenceClass 'Static' -Detail "hashed $($fileInventory.Count) required review files"
+
+$trackedPaths = Get-TrackedPaths
+$reviewExtensions = @('.cs', '.csproj', '.xaml', '.json', '.xml', '.props', '.targets', '.config', '.manifest', '.md', '.sln', '.editorconfig', '.gitattributes', '.yml', '.yaml')
+$rootReviewPaths = @(
+    '.editorconfig', '.gitattributes', 'AGENTS.md', 'Directory.Build.props',
+    'Directory.Packages.props', 'global.json', 'HerdrOps.sln', 'README.md',
+    '.github/workflows/ci.yml', '.github/workflows/build.yml'
+)
+$manifestCandidates = @()
+foreach ($path in $trackedPaths) {
+    $normalized = $path.Replace('\\', '/')
+    $extension = [IO.Path]::GetExtension($normalized).ToLowerInvariant()
+    $include = $rootReviewPaths -contains $normalized
+    if (-not $include -and $reviewExtensions -contains $extension) {
+        $include = $normalized -like 'Plan/*' -or
+            $normalized -like 'docs/protocol/*' -or
+            $normalized -like 'docs/reviews/v1.0-issue-43-*' -or
+            $normalized -like 'src/*' -or
+            $normalized -like 'tests/*' -or
+            $normalized -like 'tools/README.md' -or
+            $normalized -like 'tools/Issue43SecurityReviewPolicy.ps1' -or
+            $normalized -like 'tools/Test-V10Issue43SecurityReview.ps1' -or
+            $normalized -like 'tools/Test-V10Issue43SecurityReviewFixtures.ps1'
+    }
+    if ($include) {
+        $manifestCandidates += $normalized
+    }
+}
+foreach ($path in @($manifestCandidates | Sort-Object -Unique)) {
+    Add-ReviewedFile -RelativePath $path
+}
+
+$selectedProjects = @(
+    'tests/HerdrOps.ContractTests/HerdrOps.ContractTests.csproj',
+    'tests/HerdrOps.UnitTests/HerdrOps.UnitTests.csproj',
+    'tests/HerdrOps.IntegrationTests/HerdrOps.IntegrationTests.csproj'
+)
+foreach ($project in $selectedProjects) {
+    Add-ReviewedFile -RelativePath $project -Purpose 'selected test project configuration'
+}
+$missingSelectedProjects = @($selectedProjects | Where-Object { -not $manifestPathSet.ContainsKey($_) })
+if ($missingSelectedProjects.Count -gt 0) {
+    Record-Check -Id 'FILE-02' -Status 'FAIL' -EvidenceClass 'Static' -Detail "selected test projects were not bound by the manifest: $($missingSelectedProjects -join ', ')"
+} else {
+    Record-Check -Id 'FILE-02' -Status 'PASS' -EvidenceClass 'Static' -Detail 'every selected test project is present in the reviewed-file manifest'
+}
+
+if ($missingReviewFiles.Count -eq 0 -and $pathSafetyFailures.Count -eq 0 -and $fileInventory.Count -gt 0) {
+    Record-Check -Id 'FILE-01' -Status 'PASS' -EvidenceClass 'Static' -Detail "hashed $($fileInventory.Count) tracked review inputs without missing files or unsafe paths"
+} else {
+    Record-Check -Id 'FILE-01' -Status 'FAIL' -EvidenceClass 'Static' -Detail "manifest validation failed; missing=$($missingReviewFiles -join ', '); unsafe=$($pathSafetyFailures -join ' | ')"
+}
+
+$productExtensions = @('.cs', '.csproj', '.xaml', '.json', '.xml', '.props', '.targets', '.config', '.manifest', '.sln')
+$productScanPaths = @($manifestCandidates | Where-Object {
+    $normalized = $_.Replace('\\', '/')
+    $productExtensions -contains ([IO.Path]::GetExtension($normalized).ToLowerInvariant()) -and
+        ($normalized -like 'src/*' -or $rootReviewPaths -contains $normalized)
+} | Sort-Object -Unique)
+$policyPath = Get-RepositoryFile -RelativePath 'tools/Issue43SecurityReviewPolicy.ps1'
+if ($null -ne $policyPath) {
+    . $policyPath
+} else {
+    Record-Check -Id 'SAFE-02' -Status 'FAIL' -EvidenceClass 'Static' -Detail 'scanner policy helper is missing or unsafe'
+}
 
 $markerGroups = @(
     [pscustomobject]@{ Id = 'S-01'; EvidenceClass = 'Static'; Files = @(
@@ -446,11 +837,16 @@ $markerGroups = @(
         @{ Path = 'docs/protocol/v0.7-state-recovery-contract.md'; Markers = @('forward-only', 'BeforeBackup', 'AfterBackup', 'AfterMigrationBeforeCommit', 'RESTORE_STATE_STORE', 'quick_check', 'integrity_check', 'atomic', 'quarantine', 'NOT_OBSERVED') },
         @{ Path = 'src/HerdrOps.Infrastructure/Storage/Recovery/StateStoreRecoveryService.cs'; Markers = @('ConfirmationPhrase', 'ExpectedBackupSha256', 'RestoreBackup', 'sourceAfterRestore', 'RESTORE_STATE_STORE', 'NOT_OBSERVED') },
         @{ Path = 'src/HerdrOps.Infrastructure/Storage/Recovery/StateStoreRecoveryArtifacts.cs'; Markers = @('CreateBackup', 'RestoreBackup', 'FileMode.CreateNew', 'quick_check', 'integrity_check', 'File.Replace') },
+        @{ Path = 'src/HerdrOps.Core/StateStoreRestoreCommand.cs'; Markers = @('RESTORE_STATE_STORE', 'ExpectedBackupSha256') },
         @{ Path = 'tests/HerdrOps.IntegrationTests/StateStoreRecoveryTests.cs'; Markers = @('InterruptedMigrationRollsBackAndBackupCanBeRestoredWithIntegrityCheck', 'DamagedDatabaseIsQuarantinedWithoutSilentReset', 'RecoveryTraceAndQuarantineMetadataTokenizePathsAndRedactFailureMessages') },
         @{ Path = 'tests/HerdrOps.IntegrationTests/StateStoreRestoreCommandTests.cs'; Markers = @('CoreRestoreCommandFailsClosedWithoutExactConfirmation') }
     ) },
     [pscustomobject]@{ Id = 'S-03'; EvidenceClass = 'Static'; Files = @(
-        @{ Path = 'docs/protocol/v0.5-evidence-audit-storage-contract.md'; Markers = @('Retention evaluates only present managed copies', 'currently open', 'Purged', 'AlreadyMissing', 'Evidence metadata, review history, evidence links, and retention history remain', 'recoverable', 'Full policy defaults') },
+        @{ Path = 'docs/protocol/v0.5-evidence-audit-storage-contract.md'; Markers = @('Retention evaluates only present managed copies', 'currently open', 'Purged', 'AlreadyMissing', 'Evidence metadata, review history, evidence links, and retention history remain', 'recoverable') },
+        @{ Path = 'docs/protocol/v1.0-issue-43-security-privacy-review-contract.md'; Markers = @('30 days from', '365 days', 'Omitting the value resolves to the 30-day default', 'hash-bound terminal retention event') },
+        @{ Path = 'src/HerdrOps.Domain/Evidence/EvidenceContracts.cs'; Markers = @('EvidenceRetentionPolicy.ResolveRetainUntil') },
+        @{ Path = 'src/HerdrOps.Domain/Evidence/EvidenceRetentionPolicy.cs'; Markers = @('DefaultManagedArtifactRetentionDays = 30', 'MaximumManagedArtifactRetentionDays = 365', 'ResolveRetainUntil') },
+        @{ Path = 'tests/HerdrOps.UnitTests/EvidenceContractsTests.cs'; Markers = @('NullRetentionUsesTheVersionedThirtyDayDefault', 'RetentionOverrideIsBoundedToTheVersionedMaximum') },
         @{ Path = 'src/HerdrOps.Infrastructure/Storage/SqliteHerdrStateStore.Evidence.cs'; Markers = @('RetentionPendingDirectoryName', 'IsProtectedByOpenReview', 'HerdrEvidenceRetentionOutcome.Purged', 'HerdrEvidenceRetentionOutcome.AlreadyMissing', 'MoveManagedEvidenceToRetentionPending', 'RestorePendingRetentionFile', 'InsertRetentionAuditEvent', 'transaction.Commit()') },
         @{ Path = 'tests/HerdrOps.IntegrationTests/EvidenceAuditStorageTests.cs'; Markers = @('RetentionProtectsOpenReviewThenPurgesBytesAndPreservesHistory', 'FailedRetentionAuditWriteLeavesRecoverableBytesAndRetryCompletes', 'CommittedRetentionAuditWithPendingBytesRecoversCleanup') }
     ) },
@@ -476,6 +872,9 @@ $markerGroups = @(
         @{ Path = 'src/HerdrOps.Cli/HerdrOpsSelfReportPipeClient.cs'; Markers = @('CurrentUserOnly', 'RequiredPipeOptions', 'NamedPipeClientStream', 'HerdrOpsSelfReportPipeName.FromUserScope') },
         @{ Path = 'src/HerdrOps.Contracts/StateIpc/HerdrOpsStatePipeName.cs'; Markers = @('SHA256.HashData', 'HerdrOps.StateIpc.v2|', 'hash[..24]') },
         @{ Path = 'src/HerdrOps.Contracts/SelfReport/HerdrOpsSelfReportPipeName.cs'; Markers = @('SHA256.HashData', 'HerdrOps.SelfReport.v1|', 'hash[..24]') },
+        @{ Path = 'src/HerdrOps.Contracts/StateIpc/HerdrOpsStateIpcJson.cs'; Markers = @('ReadCommentHandling = JsonCommentHandling.Disallow', 'UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow', 'DeserializeEnvelope') },
+        @{ Path = 'src/HerdrOps.Contracts/SelfReport/HerdrOpsSelfReportJson.cs'; Markers = @('ReadCommentHandling = JsonCommentHandling.Disallow', 'UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow', 'DeserializeEnvelope') },
+        @{ Path = 'src/HerdrOps.Contracts/SelfReport/HerdrOpsSelfReportContract.cs'; Markers = @('HerdrOpsSelfReportSubmission', 'ValidateEnvelope') },
         @{ Path = 'Plan/DECISIONS.md'; Markers = @('PipeOptions.CurrentUserOnly', 'pipe name is scoped by a non-reversible hash of the Windows user SID', 'has not yet received a separate multi-account runtime acceptance run') },
         @{ Path = 'tests/HerdrOps.ContractTests/StateIpcContractTests.cs'; Markers = @('UserScopedPipeNameIsStableAndDoesNotExposeIdentity') },
         @{ Path = 'tests/HerdrOps.ContractTests/SelfReportContractTests.cs'; Markers = @('CurrentUserPipeNameIsStableVersionedAndScopeSpecific') }
@@ -490,8 +889,8 @@ $markerGroups = @(
         @{ Path = 'docs/protocol/v1.0-issue-43-security-privacy-review-contract.md'; Markers = @('no `requireAdministrator`, `runas`, administrator role', 'non-elevated runtime proof') }
     ) },
     [pscustomobject]@{ Id = 'S-09'; EvidenceClass = 'Static'; Files = @(
-        @{ Path = 'Plan/ARCHITECTURE.md'; Markers = @('Local-only data by default', 'Command lines, terminal output and files are treated as sensitive', 'Bounded reads, configurable retention and redaction before persistence/export', 'Optional elevated telemetry, remote aggregation and cloud sync are outside v1') },
-        @{ Path = 'docs/protocol/v1.0-issue-43-security-privacy-review-contract.md'; Markers = @('same-user process', 'Registry', 'AppData', 'Independent review', 'Release') },
+        @{ Path = 'Plan/ARCHITECTURE.md'; Markers = @('Local-only data by default', 'Command lines, terminal output and files are treated as sensitive', 'Bounded reads, configurable retention and redaction before persistence/export', 'v1 managed evidence bytes retain for 30 days', 'Optional elevated telemetry, remote aggregation and cloud sync are outside v1') },
+        @{ Path = 'docs/protocol/v1.0-issue-43-security-privacy-review-contract.md'; Markers = @('same-user process', 'Registry', 'AppData', '30 days from', '365 days', 'Independent review', 'Release') },
         @{ Path = 'docs/reviews/v1.0-issue-43-security-privacy-checklist.md'; Markers = @('NOT OBSERVED / NOT CLAIMED', 'Issue #43 acceptance and milestone closure: `PENDING`') }
     ) }
 )
@@ -500,33 +899,62 @@ foreach ($group in $markerGroups) {
     Test-MarkerGroup -Id $group.Id -EvidenceClass $group.EvidenceClass -Files $group.Files | Out-Null
 }
 
-$listenerPattern = '(?i)\b(?:TcpListener|HttpListener|Kestrel|WebApplication|ListenOptions)\b|\b(?:UseUrls|ListenAsync)\s*\(|\bSystem\.Net\.HttpListener\b'
-$loopbackEndpointPattern = '(?i)\b(?:https?|wss?)://(?:localhost|127\.0\.0\.1|\[?::1\]?)(?::\d+)?(?:/|\b)'
-Test-ForbiddenProductPattern -Id 'S-07-LISTENER' -Pattern $listenerPattern -Description 'unexpected network listener declarations' | Out-Null
-Test-ForbiddenProductPattern -Id 'S-07-LOOPBACK' -Pattern $loopbackEndpointPattern -Description 'loopback HTTP/Web endpoints' | Out-Null
+try {
+    Test-Issue43ScannerFixtures | Out-Null
+    Record-Check -Id 'S-10' -Status 'PASS' -EvidenceClass 'Static' -Detail 'adversarial scanner fixtures passed without live process or listener access'
+} catch {
+    Record-Check -Id 'S-10' -Status 'FAIL' -EvidenceClass 'Static' -Detail $_.Exception.Message
+}
 
-$administratorPattern = '(?i)requestedExecutionLevel|requireAdministrator|uiAccess\s*=\s*["'']?true|verb\s*=\s*["'']?runas|WindowsBuiltInRole\s*\.\s*Administrator|PrincipalPermission|IsInRole\s*\([^)]*\bAdministrator\b|\bAdministrator\b'
-Test-ForbiddenProductPattern -Id 'S-08-ADMIN' -Pattern $administratorPattern -Description 'Administrator/elevation declarations' | Out-Null
+$listenerCodePattern = '(?i)\b(?:TcpListener|HttpListener|Kestrel|WebApplication|ListenOptions|UdpClient|Socket\s*\.\s*Bind|\.\s*Bind\s*\()\b|\b(?:UseUrls|ListenAsync)\s*\('
+$listenerRawPattern = '(?i)(?:DllImport|LibraryImport)[^\r\n]*(?:ws2_32|wship6|httpapi|EntryPoint\s*=\s*["''](?:bind|listen|accept|WSABind|WSASocket)["''])|(?:NativeLibrary\s*\.\s*(?:Load|GetExport)|GetProcAddress)[^\r\n]*(?:bind|listen|accept|socket)|\b(?:WSAStartup|WSASocket|WSABind|HttpAddUrl|HttpCreateServerSession)\b'
+$loopbackCodePattern = '(?i)\b(?:https?|wss?)\s*:\s*//\s*(?:localhost|127\.0\.0\.1|\[?::1\]?)(?::\d+)?'
+$loopbackRawPattern = '(?i)(?:https?|wss?)\s*:\s*//\s*(?:localhost|127\.0\.0\.1|\[?::1\]?)(?::\d+)?'
+Test-ForbiddenProductPattern -Id 'S-07-LISTENER' -CodePattern $listenerCodePattern -RawPattern $listenerRawPattern -Description 'unexpected network listener declarations' | Out-Null
+Test-ForbiddenProductPattern -Id 'S-07-LOOPBACK' -CodePattern $loopbackCodePattern -RawPattern $loopbackRawPattern -Description 'loopback HTTP/Web endpoints' | Out-Null
 
-Test-ContractTestSelection -Id 'C-01' -Name 'ipc' -Project 'tests/HerdrOps.ContractTests/HerdrOps.ContractTests.csproj' -Filter 'FullyQualifiedName~StateIpcContractTests|FullyQualifiedName~SelfReportContractTests'
-Test-ContractTestSelection -Id 'C-02' -Name 'export' -Project 'tests/HerdrOps.ContractTests/HerdrOps.ContractTests.csproj' -Filter 'FullyQualifiedName~SnapshotExportContractTests'
-Test-ContractTestSelection -Id 'C-03' -Name 'redaction' -Project 'tests/HerdrOps.UnitTests/HerdrOps.UnitTests.csproj' -Filter 'FullyQualifiedName~TerminalPreviewPolicyTests|FullyQualifiedName~DeterministicSnapshotExporterTests|FullyQualifiedName~LocalSnapshotExportPublisherTests'
-Test-ContractTestSelection -Id 'C-04' -Name 'schema' -Project 'tests/HerdrOps.IntegrationTests/HerdrOps.IntegrationTests.csproj' -Filter 'FullyQualifiedName~SqliteHerdrStateStoreTests'
-Test-ContractTestSelection -Id 'C-05' -Name 'recovery' -Project 'tests/HerdrOps.IntegrationTests/HerdrOps.IntegrationTests.csproj' -Filter 'FullyQualifiedName~StateStoreRecoveryTests|FullyQualifiedName~StateStoreRestoreCommandTests'
-Test-ContractTestSelection -Id 'C-06' -Name 'retention' -Project 'tests/HerdrOps.IntegrationTests/HerdrOps.IntegrationTests.csproj' -Filter 'FullyQualifiedName~EvidenceAuditStorageTests'
-Test-ContractTestSelection -Id 'C-07' -Name 'diagnostic' -Project 'tests/HerdrOps.IntegrationTests/HerdrOps.IntegrationTests.csproj' -Filter 'FullyQualifiedName~DiagnosticBundleTests'
+$administratorCodePattern = '(?i)\b(?:requireAdministrator|highestAvailable|requestedExecutionLevel|uiAccess|runas|WindowsBuiltInRole\s*\.\s*Administrator|PrincipalPermission|IsInRole|AdjustTokenPrivileges|Se(?:Debug|Impersonate|TakeOwnership)Privilege|ShellExecute(?:Ex)?)\b'
+$administratorRawPattern = '(?i)(?:requestedExecutionLevel\b|uiAccess\s*=)|(?:Verb|verb)\s*=\s*["'']runas["'']|(?:DllImport|LibraryImport)[^\r\n]*(?:AdjustTokenPrivileges|ShellExecute|runas)'
+Test-ForbiddenProductPattern -Id 'S-08-ADMIN' -CodePattern $administratorCodePattern -RawPattern $administratorRawPattern -Description 'Administrator/elevation declarations' | Out-Null
+
+Test-SelectedTest -Id 'C-01' -Name 'ipc' -EvidenceClass 'Contract' -Project 'tests/HerdrOps.ContractTests/HerdrOps.ContractTests.csproj' -Filter 'FullyQualifiedName~StateIpcContractTests|FullyQualifiedName~SelfReportContractTests'
+Test-SelectedTest -Id 'C-02' -Name 'export' -EvidenceClass 'Contract' -Project 'tests/HerdrOps.ContractTests/HerdrOps.ContractTests.csproj' -Filter 'FullyQualifiedName~SnapshotExportContractTests'
+Test-SelectedTest -Id 'C-03' -Name 'redaction' -EvidenceClass 'Synthetic' -Project 'tests/HerdrOps.UnitTests/HerdrOps.UnitTests.csproj' -Filter 'FullyQualifiedName~TerminalPreviewPolicyTests|FullyQualifiedName~DeterministicSnapshotExporterTests|FullyQualifiedName~LocalSnapshotExportPublisherTests|FullyQualifiedName~EvidenceContractsTests'
+Test-SelectedTest -Id 'C-04' -Name 'schema' -EvidenceClass 'LocalSQLiteIntegration' -Project 'tests/HerdrOps.IntegrationTests/HerdrOps.IntegrationTests.csproj' -Filter 'FullyQualifiedName~SqliteHerdrStateStoreTests'
+Test-SelectedTest -Id 'C-05' -Name 'recovery' -EvidenceClass 'LocalSQLiteIntegration' -Project 'tests/HerdrOps.IntegrationTests/HerdrOps.IntegrationTests.csproj' -Filter 'FullyQualifiedName~StateStoreRecoveryTests|FullyQualifiedName~StateStoreRestoreCommandTests'
+Test-SelectedTest -Id 'C-06' -Name 'retention' -EvidenceClass 'LocalSQLiteIntegration' -Project 'tests/HerdrOps.IntegrationTests/HerdrOps.IntegrationTests.csproj' -Filter 'FullyQualifiedName~EvidenceAuditStorageTests'
+Test-SelectedTest -Id 'C-07' -Name 'diagnostic' -EvidenceClass 'Synthetic' -Project 'tests/HerdrOps.IntegrationTests/HerdrOps.IntegrationTests.csproj' -Filter 'FullyQualifiedName~DiagnosticBundleTests'
+
+Record-Check -Id 'EVIDENCE-BUILTPROCESS' -Status 'NOT RUN' -EvidenceClass 'BuiltProcess' -Detail 'no packaged or installed product process was started by this gate'
+Record-Check -Id 'EVIDENCE-RUNTIME' -Status 'NOT OBSERVED' -EvidenceClass 'Runtime' -Detail 'actual Herdr runtime, live listeners, Registry/AppData/live database, and host observation were not performed'
+Record-Check -Id 'EVIDENCE-INDEPENDENT' -Status 'NOT OBSERVED' -EvidenceClass 'IndependentReview' -Detail 'role-distinct independent approval is outside this builder gate'
+Record-Check -Id 'EVIDENCE-RELEASE' -Status 'NOT OBSERVED' -EvidenceClass 'Release' -Detail 'packaging, clean-machine installation, release, and publication were not performed'
+
+if ($pathSafetyFailures.Count -eq 0) {
+    Record-Check -Id 'SAFE-01' -Status 'PASS' -EvidenceClass 'Static' -Detail 'all repository reads and artifact/TRX/report paths passed canonical containment and reparse-point checks'
+} else {
+    Record-Check -Id 'SAFE-01' -Status 'FAIL' -EvidenceClass 'Static' -Detail ($pathSafetyFailures -join ' | ')
+}
 
 $finalCommitOutput = @(& git -C $repositoryRoot rev-parse --verify 'HEAD^{commit}' 2>&1)
-$finalCommit = ($finalCommitOutput -join '').Trim()
+$finalCommit = ($finalCommitOutput -join '').Trim().ToLowerInvariant()
 $finalStatus = @(& git -C $repositoryRoot status --porcelain=v1 --untracked-files=all 2>&1)
 if ($finalCommit -ne $sourceCommit -or $finalStatus.Count -ne 0) {
-    Record-Check -Id 'BOUND-05' -Status 'FAIL' -EvidenceClass 'Static' -Detail 'source commit or clean checkout changed during the gate'
+    Record-Check -Id 'BOUND-07' -Status 'FAIL' -EvidenceClass 'Static' -Detail 'source commit or clean checkout changed during the gate'
 } else {
-    Record-Check -Id 'BOUND-05' -Status 'PASS' -EvidenceClass 'Static' -Detail 'source commit and clean checkout remained unchanged'
+    Record-Check -Id 'BOUND-07' -Status 'PASS' -EvidenceClass 'Static' -Detail 'source commit and clean checkout remained unchanged'
 }
 
 $result = if ($failures.Count -eq 0) { 'PASS' } else { 'FAIL' }
-Write-Reports -Result $result
+$reports = Write-Reports -Result $result -SourceCommit $sourceCommit -Branch $branch
+Write-Output "Issue #43 gate result: $result"
+Write-Output "ReviewedManifest: $($reports.ManifestPath)"
+Write-Output "SchemaMigrationReport: $($reports.SchemaReportPath)"
+Write-Output "GateReport: $($reports.GateReportPath)"
+Write-Output "SecurityPrivacyReviewReport: $($reports.ReviewReportPath)"
+Write-Output "GateReportSha256: $($reports.GateReportSha256)"
+Write-Output "ReviewedManifestSha256: $($reports.ManifestSha256)"
+Write-Output "EvidenceClasses: Static=$(Get-EvidenceClassStatus -EvidenceClass 'Static'); Synthetic=$(Get-EvidenceClassStatus -EvidenceClass 'Synthetic'); LocalSQLiteIntegration=$(Get-EvidenceClassStatus -EvidenceClass 'LocalSQLiteIntegration'); Contract=$(Get-EvidenceClassStatus -EvidenceClass 'Contract'); BuiltProcess=NOT RUN; Runtime=NOT OBSERVED; IndependentReview=NOT OBSERVED; Release=NOT OBSERVED"
 if ($result -ne 'PASS') {
-    throw "Issue #43 static/contract gate failed: $($failures -join '; ')"
+    throw "Issue #43 security/privacy preparation gate failed: $($failures -join '; ')"
 }

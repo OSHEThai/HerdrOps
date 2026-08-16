@@ -1,0 +1,246 @@
+Set-StrictMode -Version Latest
+
+function Get-Issue43MaskedCharacter {
+    param(
+        [Parameter(Mandatory)]
+        [char]$Character
+    )
+
+    if ($Character -eq "`r" -or $Character -eq "`n") {
+        return $Character
+    }
+
+    return ' '
+}
+
+function ConvertTo-Issue43CommentFreeText {
+    param(
+        [Parameter(Mandatory)]
+        [string]$Text
+    )
+
+    $builder = New-Object System.Text.StringBuilder
+    $state = 'Code'
+    $index = 0
+    while ($index -lt $Text.Length) {
+        $character = $Text[$index]
+        $next = if ($index + 1 -lt $Text.Length) { $Text[$index + 1] } else { [char]0 }
+
+        if ($state -eq 'Code') {
+            if ($character -eq '/' -and $next -eq '/') {
+                [void]$builder.Append('  ')
+                $index += 2
+                $state = 'LineComment'
+                continue
+            }
+
+            if ($character -eq '/' -and $next -eq '*') {
+                [void]$builder.Append('  ')
+                $index += 2
+                $state = 'BlockComment'
+                continue
+            }
+
+            if ($character -eq '<' -and $next -eq '!' -and $index + 3 -lt $Text.Length -and
+                $Text.Substring($index, 4) -eq '<!--') {
+                [void]$builder.Append('    ')
+                $index += 4
+                $state = 'XmlComment'
+                continue
+            }
+
+            [void]$builder.Append($character)
+            $index++
+            continue
+        }
+
+        if ($state -eq 'LineComment') {
+            if ($character -eq "`r" -or $character -eq "`n") {
+                [void]$builder.Append($character)
+                $state = 'Code'
+            } else {
+                [void]$builder.Append(' ')
+            }
+            $index++
+            continue
+        }
+
+        if ($state -eq 'BlockComment') {
+            if ($character -eq '*' -and $next -eq '/') {
+                [void]$builder.Append('  ')
+                $index += 2
+                $state = 'Code'
+                continue
+            }
+
+            [void]$builder.Append((Get-Issue43MaskedCharacter -Character $character))
+            $index++
+            continue
+        }
+
+        if ($state -eq 'XmlComment') {
+            if ($character -eq '-' -and $index + 2 -lt $Text.Length -and
+                $Text.Substring($index, 3) -eq '-->') {
+                [void]$builder.Append('   ')
+                $index += 3
+                $state = 'Code'
+                continue
+            }
+
+            [void]$builder.Append((Get-Issue43MaskedCharacter -Character $character))
+            $index++
+            continue
+        }
+    }
+
+    return $builder.ToString()
+}
+
+function ConvertTo-Issue43CodeOnlyText {
+    param(
+        [Parameter(Mandatory)]
+        [string]$Text
+    )
+
+    $commentFree = ConvertTo-Issue43CommentFreeText -Text $Text
+    $builder = New-Object System.Text.StringBuilder
+    $state = 'Code'
+    $index = 0
+    while ($index -lt $commentFree.Length) {
+        $character = $commentFree[$index]
+
+        if ($state -eq 'Code') {
+            if ($character -eq '"' -or $character -eq "'") {
+                [void]$builder.Append(' ')
+                $state = if ($character -eq '"') { 'DoubleString' } else { 'CharLiteral' }
+                $index++
+                continue
+            }
+
+            [void]$builder.Append($character)
+            $index++
+            continue
+        }
+
+        if ($character -eq '\\') {
+            [void]$builder.Append(' ')
+            if ($index + 1 -lt $commentFree.Length) {
+                $index++
+                $escaped = $commentFree[$index]
+                [void]$builder.Append((Get-Issue43MaskedCharacter -Character $escaped))
+            }
+            $index++
+            continue
+        }
+
+        if (($state -eq 'DoubleString' -and $character -eq '"') -or
+            ($state -eq 'CharLiteral' -and $character -eq "'")) {
+            [void]$builder.Append(' ')
+            $state = 'Code'
+            $index++
+            continue
+        }
+
+        [void]$builder.Append((Get-Issue43MaskedCharacter -Character $character))
+        $index++
+    }
+
+    return $builder.ToString()
+}
+
+function Test-Issue43MatchOutsideQuotedText {
+    param(
+        [Parameter(Mandatory)]
+        [string]$Text,
+
+        [Parameter(Mandatory)]
+        [int]$Index
+    )
+
+    $quote = [char]0
+    $cursor = 0
+    while ($cursor -lt $Index) {
+        $character = $Text[$cursor]
+        if ($character -eq '\\' -and $cursor + 1 -lt $Index) {
+            $cursor += 2
+            continue
+        }
+
+        if ($quote -eq [char]0 -and ($character -eq '"' -or $character -eq "'")) {
+            $quote = $character
+        } elseif ($quote -ne [char]0 -and $character -eq $quote) {
+            $quote = [char]0
+        }
+        $cursor++
+    }
+
+    return $quote -eq [char]0
+}
+
+function Test-Issue43ForbiddenDeclaration {
+    param(
+        [Parameter(Mandatory)]
+        [string]$Text,
+
+        [Parameter(Mandatory)]
+        [string]$CodePattern,
+
+        [Parameter(Mandatory)]
+        [string]$RawPattern
+    )
+
+    $codeOnly = ConvertTo-Issue43CodeOnlyText -Text $Text
+    $commentFree = ConvertTo-Issue43CommentFreeText -Text $Text
+    $codeMatch = [regex]::Match($codeOnly, $CodePattern, [Text.RegularExpressions.RegexOptions]::IgnoreCase)
+    $rawMatch = $null
+    foreach ($candidate in [regex]::Matches($commentFree, $RawPattern, [Text.RegularExpressions.RegexOptions]::IgnoreCase)) {
+        if (Test-Issue43MatchOutsideQuotedText -Text $commentFree -Index $candidate.Index) {
+            $rawMatch = $candidate
+            break
+        }
+    }
+    return [pscustomobject]@{
+        IsMatch = $codeMatch.Success -or $null -ne $rawMatch
+        Match = if ($codeMatch.Success) { $codeMatch.Value } elseif ($null -ne $rawMatch) { $rawMatch.Value } else { '' }
+    }
+}
+
+function Test-Issue43ScannerFixtures {
+    $commentOnly = @"
+// TcpListener and requireAdministrator are prohibited declarations.
+/* Socket.Bind and [DllImport("ws2_32.dll")] are only documentation here. */
+var message = "HttpListener, runas, and NativeLibrary.Load(\"bind\")";
+"@
+    $listenerCode = 'var listener = new TcpListener(IPAddress.Loopback, 1234);'
+    $dynamicListener = '[DllImport("ws2_32.dll", EntryPoint = "bind")] static extern int NativeBind();'
+    $adminCode = '<requestedExecutionLevel level="requireAdministrator" />'
+    $adminDynamic = 'var verb = "runas";'
+
+    $commentResult = Test-Issue43ForbiddenDeclaration `
+        -Text $commentOnly `
+        -CodePattern '(?i)\b(?:TcpListener|HttpListener|Socket\s*\.\s*Bind|requireAdministrator)\b' `
+        -RawPattern '(?i)(?:DllImport|LibraryImport)[^\r\n]*(?:ws2_32|bind)|(?:NativeLibrary|GetProcAddress)[^\r\n]*(?:bind|listen)'
+    $listenerResult = Test-Issue43ForbiddenDeclaration `
+        -Text $listenerCode `
+        -CodePattern '(?i)\b(?:TcpListener|HttpListener|Socket\s*\.\s*Bind)\b' `
+        -RawPattern '(?i)(?:DllImport|LibraryImport)[^\r\n]*(?:ws2_32|bind)|(?:NativeLibrary|GetProcAddress)[^\r\n]*(?:bind|listen)'
+    $dynamicResult = Test-Issue43ForbiddenDeclaration `
+        -Text $dynamicListener `
+        -CodePattern '(?i)\b(?:TcpListener|HttpListener|Socket\s*\.\s*Bind)\b' `
+        -RawPattern '(?i)(?:DllImport|LibraryImport)[^\r\n]*(?:ws2_32|bind)|(?:NativeLibrary|GetProcAddress)[^\r\n]*(?:bind|listen)'
+    $adminResult = Test-Issue43ForbiddenDeclaration `
+        -Text $adminCode `
+        -CodePattern '(?i)\b(?:requireAdministrator|runas|WindowsBuiltInRole\s*\.\s*Administrator|IsInRole)\b' `
+        -RawPattern '(?i)(?:requestedExecutionLevel\b|uiAccess\s*=)|(?:Verb|verb)\s*=\s*["'']runas'
+    $adminDynamicResult = Test-Issue43ForbiddenDeclaration `
+        -Text $adminDynamic `
+        -CodePattern '(?i)\b(?:requireAdministrator|runas|WindowsBuiltInRole\s*\.\s*Administrator|IsInRole)\b' `
+        -RawPattern '(?i)(?:requestedExecutionLevel\b|uiAccess\s*=)|(?:Verb|verb)\s*=\s*["'']runas'
+
+    if ($commentResult.IsMatch -or -not $listenerResult.IsMatch -or -not $dynamicResult.IsMatch -or
+        -not $adminResult.IsMatch -or -not $adminDynamicResult.IsMatch) {
+        throw 'Issue #43 scanner fixtures did not preserve comment/string exclusions and dynamic declaration detection.'
+    }
+
+    return $true
+}
