@@ -1,4 +1,7 @@
 using HerdrOps.Domain.Evaluation;
+using HerdrOps.Domain.Evidence;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
@@ -30,13 +33,31 @@ public sealed class ExplainableScoringTests
         Assert.AreEqual(fixture.ExpectedFormulaSha256, first.Provenance.FormulaSha256);
         Assert.AreEqual(fixture.ExpectedInputSnapshotSha256, first.Provenance.InputSnapshotSha256);
         Assert.AreEqual(fixture.ExpectedResultSha256, first.ResultSha256);
+        Assert.IsEmpty(first.InputIssues);
         StringAssert.Matches(first.ResultSha256, new("^[0-9A-F]{64}$"));
         Assert.HasCount(6, first.Dimensions);
         Assert.IsTrue(first.Dimensions.All(item =>
             item.Status == EvaluationDimensionScoreStatus.Complete &&
+            item.ObservedInputs.Count == 1 &&
             item.Issues.Count == 0 &&
             item.DimensionScore is not null &&
             item.WeightedScore is not null));
+        var sourceEvidence = EnumerateSources(first.Provenance.InputSnapshot)
+            .Select(source => (
+                Source: source,
+                Evidence: CreateGoldenEvidence(
+                    first.Provenance.InputSnapshot,
+                    source.Dimension,
+                    source.Source,
+                    source.Input)))
+            .ToArray();
+        foreach (var item in sourceEvidence)
+        {
+            Assert.AreEqual(
+                item.Evidence.EvidenceIdentitySha256,
+                item.Source.Input.EvidenceIdentitySha256,
+                $"{item.Source.Dimension}/{item.Source.Source} does not bind to its deterministic evidence record.");
+        }
     }
 
     [TestMethod]
@@ -92,7 +113,7 @@ public sealed class ExplainableScoringTests
         var evidenceResult = result.Dimensions.Single(item =>
             item.Dimension == EvaluationDimension.Evidence);
         CollectionAssert.AreEquivalent(
-            new[] { "invalid-score-range", "invalid-provenance-sha256" },
+            new[] { "invalid-score-range", "invalid-evidence-identity-sha256" },
             evidenceResult.Issues.Select(item => item.Code).ToArray());
     }
 
@@ -120,9 +141,49 @@ public sealed class ExplainableScoringTests
             item.Dimension == EvaluationDimension.Communication &&
             item.Status == EvaluationDimensionScoreStatus.Missing));
         Assert.AreEqual(EvaluationResultStatus.Invalid, duplicate.Status);
-        Assert.IsTrue(duplicate.Dimensions.Any(item =>
-            item.Dimension == EvaluationDimension.GoalAlignment &&
-            item.Issues.Any(issue => issue.Code == "duplicate-dimension")));
+        var duplicateGoalResult = duplicate.Dimensions.Single(item =>
+            item.Dimension == EvaluationDimension.GoalAlignment);
+        Assert.IsTrue(duplicateGoalResult.Issues.Any(issue =>
+            issue.Code == "duplicate-dimension"));
+        Assert.HasCount(2, duplicateGoalResult.ObservedInputs);
+        Assert.IsTrue(duplicateGoalResult.ObservedInputs.All(item =>
+            item.Dimension == EvaluationDimension.GoalAlignment));
+    }
+
+    [TestMethod]
+    public void NullAndMalformedInputRecordsRemainVisibleAndFailClosed()
+    {
+        var snapshot = CompleteSnapshot();
+        var first = snapshot.Dimensions[0];
+        var malformed = snapshot with
+        {
+            EvaluationId = " ",
+            Dimensions =
+            [
+                first with { Leader = null! },
+                null!,
+                .. snapshot.Dimensions.Skip(1),
+            ],
+        };
+
+        var result = new EvaluationScoringEngine().Calculate(
+            malformed,
+            EvaluationFormulaCatalog.Version1);
+
+        Assert.AreEqual(EvaluationResultStatus.Invalid, result.Status);
+        Assert.IsNull(result.TotalScore);
+        CollectionAssert.AreEquivalent(
+            new[]
+            {
+                "invalid-missing-input-identity",
+                "invalid-null-source-record",
+                "invalid-null-dimension-record",
+            },
+            result.InputIssues.Select(item => item.Code).ToArray());
+        Assert.IsTrue(result.Dimensions.Single(item =>
+            item.Dimension == EvaluationDimension.GoalAlignment).Issues.Any(issue =>
+                issue.Source == EvaluationScoreSource.Leader &&
+                issue.Code == "missing-score"));
     }
 
     [TestMethod]
@@ -219,6 +280,74 @@ public sealed class ExplainableScoringTests
 
     private static EvaluationInputSnapshot CompleteSnapshot() =>
         LoadGoldenFixture().Input;
+
+    private static IEnumerable<(
+        EvaluationDimension Dimension,
+        EvaluationScoreSource Source,
+        EvaluationScoreInput Input)> EnumerateSources(EvaluationInputSnapshot snapshot)
+    {
+        foreach (var dimension in snapshot.Dimensions)
+        {
+            yield return (dimension.Dimension, EvaluationScoreSource.Leader, dimension.Leader);
+            yield return (
+                dimension.Dimension,
+                EvaluationScoreSource.ProjectManager,
+                dimension.ProjectManager);
+            yield return (
+                dimension.Dimension,
+                EvaluationScoreSource.ObjectiveEvidence,
+                dimension.ObjectiveEvidence);
+        }
+    }
+
+    private static EvidenceMetadata CreateGoldenEvidence(
+        EvaluationInputSnapshot snapshot,
+        EvaluationDimension dimension,
+        EvaluationScoreSource source,
+        EvaluationScoreInput input)
+    {
+        var payload = Encoding.UTF8.GetBytes(string.Join(
+            '\n',
+            snapshot.EvaluationId,
+            snapshot.TaskId,
+            snapshot.AgentId,
+            dimension,
+            source,
+            input.Score,
+            input.ProvenanceId));
+        var contentSha256 = Convert.ToHexString(SHA256.HashData(payload));
+        var observedUtc = new DateTimeOffset(
+            2026,
+            8,
+            15,
+            7,
+            0,
+            0,
+            TimeSpan.Zero).AddMinutes(((int)dimension * 10) + (int)source);
+        var actorId = source switch
+        {
+            EvaluationScoreSource.Leader => "agent-backend-leader",
+            EvaluationScoreSource.ProjectManager => "agent-project-manager",
+            EvaluationScoreSource.ObjectiveEvidence => "evaluation-rule-engine",
+            _ => throw new InvalidOperationException($"Unsupported score source {source}."),
+        };
+        return EvidenceMetadataContract.Create(
+            new EvidenceCaptureRequest(
+                EvidenceMetadataContract.ContractVersion,
+                snapshot.TaskId,
+                actorId,
+                $"evaluation-source:{dimension}:{source}",
+                "ScoringFixture",
+                $"fixture://v0.6/scoring/{dimension}/{source}",
+                observedUtc,
+                observedUtc.AddSeconds(1),
+                observedUtc.AddDays(30),
+                CreateManagedCopy: false),
+            EvidenceArtifactAvailability.Present,
+            payload.LongLength,
+            contentSha256,
+            managedRelativePath: null);
+    }
 
     private static GoldenFixture LoadGoldenFixture()
     {

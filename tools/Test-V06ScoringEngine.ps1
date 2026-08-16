@@ -16,8 +16,11 @@ $fixturePath = Join-Path $repositoryRoot 'tests\fixtures\v0.6\scoring-golden-v1.
 $contractPath = Join-Path $repositoryRoot 'docs\protocol\v0.6-explainable-scoring-contract.md'
 $enginePath = Join-Path $repositoryRoot 'src\HerdrOps.Domain\Evaluation\ExplainableScoring.cs'
 $expectedFormulaSha256 = '3CF788794C58DA11408E8D3E8F3876C88B3F48F4D19082DBCDEE4FE8B8874DFB'
-$expectedInputSha256 = '574776C1E31A4A9E994AA9B19FD920453DBD6EE669F9E5516B3137FD77CFC5A1'
-$expectedResultSha256 = '9A123504715F1041673FED0E801D9224EBA51A9A21517B4C89FE4CBBF6F5AFD5'
+$expectedInputSha256 = '7C36BEF3130777EDE7B87948D15B78F6BB65BBCD9638419EDD6806F1534B5A91'
+$expectedResultSha256 = 'B75B7E4584990A7E1DEC270871A4E0EC97E45514C5CB703130B3B5C1B3C5F8F0'
+$expectedFixtureFileSha256 = '8A380239017528100B8B39305C7884C212B3E433535B5DE978366BDA6DCC586F'
+$expectedContractFileSha256 = 'FBF3BD3947480A28C0AFC0E7577A04CC0B61B2B7DFE74A5FCFD959DDE451490A'
+$expectedEngineFileSha256 = 'AD3BAA09E583F231075AEFF2FE4B0A8B170B0447A85DF7A4F38040221B6195F2'
 
 $workingTreeStatus = @(& git -C $repositoryRoot status --porcelain=v1 --untracked-files=all)
 if ($LASTEXITCODE -ne 0) {
@@ -69,6 +72,7 @@ $requiredChecks = @(
     'MissingScoreRemainsVisibleAndCannotProduceAnOverallPass',
     'InvalidScoreAndProvenanceRemainVisibleAndCannotProduceAResult',
     'MissingAndDuplicateDimensionsFailClosed',
+    'NullAndMalformedInputRecordsRemainVisibleAndFailClosed',
     'HistoricalResultRecalculatesFromItsFrozenFormulaAfterCatalogChanges',
     'HistoricalRecalculationRejectsTamperedResultAndInputProvenance',
     'FormulaRejectsMissingDimensionsWeightDriftAndHashTampering'
@@ -109,7 +113,7 @@ foreach ($dimension in @($fixture.input.dimensions)) {
             [int]$source.score -lt 0 -or
             [int]$source.score -gt 100 -or
             [string]::IsNullOrWhiteSpace([string]$source.provenanceId) -or
-            [string]$source.provenanceSha256 -notmatch '^[0-9A-F]{64}$') {
+            [string]$source.evidenceIdentitySha256 -notmatch '^[0-9A-F]{64}$') {
             throw "Golden scoring fixture contains an invalid source: $($dimension.dimension)/$sourceName"
         }
         $scoreCount++
@@ -126,6 +130,15 @@ if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($sourceCommit)) {
 $fixtureSha256 = (Get-FileHash -LiteralPath $fixturePath -Algorithm SHA256).Hash
 $contractSha256 = (Get-FileHash -LiteralPath $contractPath -Algorithm SHA256).Hash
 $engineSha256 = (Get-FileHash -LiteralPath $enginePath -Algorithm SHA256).Hash
+if ($fixtureSha256 -ne $expectedFixtureFileSha256) {
+    throw "Golden scoring fixture SHA-256 drifted: expected $expectedFixtureFileSha256 observed $fixtureSha256"
+}
+if ($contractSha256 -ne $expectedContractFileSha256) {
+    throw "Scoring contract SHA-256 drifted: expected $expectedContractFileSha256 observed $contractSha256"
+}
+if ($engineSha256 -ne $expectedEngineFileSha256) {
+    throw "Scoring engine SHA-256 drifted: expected $expectedEngineFileSha256 observed $engineSha256"
+}
 $gateReportPath = Join-Path $gateDirectory 'gate-report.txt'
 $gateReport = @(
     'HerdrOps v0.6 Issue #30 Versioned Explainable Scoring Engine Gate',
@@ -154,8 +167,8 @@ $gateReport = @(
 ) + ($requiredChecks | ForEach-Object { "PASS $_" }) + @(
     '',
     'EvidenceBoundary:',
-    'This gate proves deterministic versioned scoring against a committed golden fixture, source-distinct weighted inputs, fail-closed missing and invalid data, hash-bound provenance, tamper rejection, and historical recalculation from the retained formula and input snapshot.',
-    'It does not prove production ingestion, reviewer authority, Evaluation or Daily Summary rendering, actual Herdr operation, independent acceptance, or v0.6 release readiness.'
+    'This gate proves deterministic versioned scoring against a committed golden fixture, source-distinct weighted inputs, evidence-metadata identity linkage for fixture inputs, visible fail-closed missing, malformed, duplicate, and invalid data, tamper rejection, and historical recalculation from the retained formula and input snapshot.',
+    'It does not prove production evidence-byte admission, production ingestion, reviewer authority, Evaluation or Daily Summary rendering, actual Herdr operation, independent acceptance, or v0.6 release readiness.'
 )
 $gateReport | Set-Content -LiteralPath $gateReportPath -Encoding utf8
 $gateReport | Write-Output

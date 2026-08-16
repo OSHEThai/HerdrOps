@@ -53,7 +53,7 @@ public sealed record EvaluationFormulaDefinition(
 public sealed record EvaluationScoreInput(
     int? Score,
     string? ProvenanceId,
-    string? ProvenanceSha256);
+    string? EvidenceIdentitySha256);
 
 public sealed record EvaluationDimensionInput(
     EvaluationDimension Dimension,
@@ -69,7 +69,7 @@ public sealed record EvaluationInputSnapshot(
     IReadOnlyList<EvaluationDimensionInput> Dimensions);
 
 public sealed record EvaluationInputIssue(
-    EvaluationDimension Dimension,
+    EvaluationDimension? Dimension,
     EvaluationScoreSource? Source,
     string Code,
     string Message);
@@ -78,6 +78,7 @@ public sealed record EvaluationDimensionScore(
     EvaluationDimension Dimension,
     int WeightBasisPoints,
     EvaluationDimensionScoreStatus Status,
+    IReadOnlyList<EvaluationDimensionInput> ObservedInputs,
     EvaluationScoreInput Leader,
     EvaluationScoreInput ProjectManager,
     EvaluationScoreInput ObjectiveEvidence,
@@ -99,6 +100,7 @@ public sealed record EvaluationScoreResult(
     EvaluationResultStatus Status,
     decimal? TotalScore,
     int AvailableWeightBasisPoints,
+    IReadOnlyList<EvaluationInputIssue> InputIssues,
     IReadOnlyList<EvaluationDimensionScore> Dimensions,
     EvaluationProvenanceRecord Provenance,
     string ResultSha256);
@@ -286,7 +288,8 @@ public sealed class EvaluationScoringEngine
         EvaluationFormulaDefinition formula)
     {
         var normalizedFormula = EvaluationFormulaContract.NormalizeAndValidate(formula);
-        var normalizedInput = NormalizeInput(input);
+        var normalized = NormalizeInput(input);
+        var normalizedInput = normalized.Input;
         var inputHash = ComputeInputSha256(normalizedInput);
         var sourceWeights = normalizedFormula.SourceWeights.ToDictionary(
             item => item.Source,
@@ -300,7 +303,8 @@ public sealed class EvaluationScoringEngine
                 groupedInputs.GetValueOrDefault(weight.Dimension) ?? [],
                 sourceWeights))
             .ToArray();
-        var status = scores.Any(item => item.Status == EvaluationDimensionScoreStatus.Invalid)
+        var status = normalized.Issues.Count > 0 ||
+            scores.Any(item => item.Status == EvaluationDimensionScoreStatus.Invalid)
             ? EvaluationResultStatus.Invalid
             : scores.Any(item => item.Status == EvaluationDimensionScoreStatus.Missing)
                 ? EvaluationResultStatus.Incomplete
@@ -326,6 +330,7 @@ public sealed class EvaluationScoringEngine
             scores
                 .Where(item => item.Status == EvaluationDimensionScoreStatus.Complete)
                 .Sum(item => item.WeightBasisPoints),
+            normalized.Issues,
             Array.AsReadOnly(scores),
             provenance,
             string.Empty);
@@ -378,7 +383,7 @@ public sealed class EvaluationScoringEngine
         return reproduced;
     }
 
-    private static EvaluationInputSnapshot NormalizeInput(EvaluationInputSnapshot input)
+    private static NormalizedEvaluationInput NormalizeInput(EvaluationInputSnapshot input)
     {
         ArgumentNullException.ThrowIfNull(input);
         if (input.ContractVersion != EvaluationFormulaCatalog.ContractVersion)
@@ -387,61 +392,137 @@ public sealed class EvaluationScoringEngine
                 $"Unsupported evaluation input contract v{input.ContractVersion}.");
         }
 
-        ArgumentNullException.ThrowIfNull(input.Dimensions);
-        var dimensions = input.Dimensions
-            .Select(item =>
-            {
-                ArgumentNullException.ThrowIfNull(item);
-                if (!Enum.IsDefined(item.Dimension))
-                {
-                    throw new EvaluationScoringContractException(
-                        $"Unknown evaluation dimension value {(int)item.Dimension}.");
-                }
+        var issues = new List<EvaluationInputIssue>();
+        var rawDimensions = input.Dimensions;
+        if (rawDimensions is null)
+        {
+            issues.Add(new(
+                null,
+                null,
+                "invalid-null-dimensions-collection",
+                "The evaluation input has no dimension collection."));
+            rawDimensions = [];
+        }
 
-                return item with
-                {
-                    Leader = NormalizeScoreInput(item.Leader),
-                    ProjectManager = NormalizeScoreInput(item.ProjectManager),
-                    ObjectiveEvidence = NormalizeScoreInput(item.ObjectiveEvidence),
-                };
-            })
+        var normalizedDimensions = new List<EvaluationDimensionInput>(rawDimensions.Count);
+        for (var index = 0; index < rawDimensions.Count; index++)
+        {
+            var item = rawDimensions[index];
+            if (item is null)
+            {
+                issues.Add(new(
+                    null,
+                    null,
+                    "invalid-null-dimension-record",
+                    $"Dimension input index {index} is null."));
+                continue;
+            }
+
+            if (!Enum.IsDefined(item.Dimension))
+            {
+                issues.Add(new(
+                    null,
+                    null,
+                    "invalid-unknown-dimension",
+                    $"Dimension input index {index} contains unknown value {(int)item.Dimension}."));
+                continue;
+            }
+
+            normalizedDimensions.Add(item with
+            {
+                Leader = NormalizeScoreInput(
+                    item.Leader,
+                    item.Dimension,
+                    EvaluationScoreSource.Leader,
+                    issues),
+                ProjectManager = NormalizeScoreInput(
+                    item.ProjectManager,
+                    item.Dimension,
+                    EvaluationScoreSource.ProjectManager,
+                    issues),
+                ObjectiveEvidence = NormalizeScoreInput(
+                    item.ObjectiveEvidence,
+                    item.Dimension,
+                    EvaluationScoreSource.ObjectiveEvidence,
+                    issues),
+            });
+        }
+
+        var dimensions = normalizedDimensions
             .OrderBy(item => item.Dimension)
             .ThenBy(item => item.Leader.Score)
             .ThenBy(item => item.Leader.ProvenanceId, StringComparer.Ordinal)
-            .ThenBy(item => item.Leader.ProvenanceSha256, StringComparer.Ordinal)
+            .ThenBy(item => item.Leader.EvidenceIdentitySha256, StringComparer.Ordinal)
             .ThenBy(item => item.ProjectManager.Score)
             .ThenBy(item => item.ProjectManager.ProvenanceId, StringComparer.Ordinal)
-            .ThenBy(item => item.ProjectManager.ProvenanceSha256, StringComparer.Ordinal)
+            .ThenBy(item => item.ProjectManager.EvidenceIdentitySha256, StringComparer.Ordinal)
             .ThenBy(item => item.ObjectiveEvidence.Score)
             .ThenBy(item => item.ObjectiveEvidence.ProvenanceId, StringComparer.Ordinal)
-            .ThenBy(item => item.ObjectiveEvidence.ProvenanceSha256, StringComparer.Ordinal)
+            .ThenBy(item => item.ObjectiveEvidence.EvidenceIdentitySha256, StringComparer.Ordinal)
             .ToArray();
-        return input with
+        var normalizedInput = input with
         {
-            EvaluationId = EvaluationFormulaContract.NormalizeRequired(
+            EvaluationId = NormalizeInputIdentifier(
                 input.EvaluationId,
-                nameof(input.EvaluationId)),
-            TaskId = EvaluationFormulaContract.NormalizeRequired(
+                nameof(input.EvaluationId),
+                issues),
+            TaskId = NormalizeInputIdentifier(
                 input.TaskId,
-                nameof(input.TaskId)),
-            AgentId = EvaluationFormulaContract.NormalizeRequired(
+                nameof(input.TaskId),
+                issues),
+            AgentId = NormalizeInputIdentifier(
                 input.AgentId,
-                nameof(input.AgentId)),
+                nameof(input.AgentId),
+                issues),
             Dimensions = Array.AsReadOnly(dimensions),
         };
+        return new(
+            normalizedInput,
+            Array.AsReadOnly(issues.ToArray()));
     }
 
-    private static EvaluationScoreInput NormalizeScoreInput(EvaluationScoreInput input)
+    private static string NormalizeInputIdentifier(
+        string? value,
+        string name,
+        ICollection<EvaluationInputIssue> issues)
     {
-        ArgumentNullException.ThrowIfNull(input);
+        if (!string.IsNullOrWhiteSpace(value))
+        {
+            return value.Trim();
+        }
+
+        issues.Add(new(
+            null,
+            null,
+            "invalid-missing-input-identity",
+            $"{name} is required."));
+        return string.Empty;
+    }
+
+    private static EvaluationScoreInput NormalizeScoreInput(
+        EvaluationScoreInput? input,
+        EvaluationDimension dimension,
+        EvaluationScoreSource source,
+        ICollection<EvaluationInputIssue> issues)
+    {
+        if (input is null)
+        {
+            issues.Add(new(
+                dimension,
+                source,
+                "invalid-null-source-record",
+                $"{source} has a null score input record."));
+            return MissingScoreInput();
+        }
+
         return input with
         {
             ProvenanceId = string.IsNullOrWhiteSpace(input.ProvenanceId)
                 ? null
                 : input.ProvenanceId.Trim(),
-            ProvenanceSha256 = string.IsNullOrWhiteSpace(input.ProvenanceSha256)
+            EvidenceIdentitySha256 = string.IsNullOrWhiteSpace(input.EvidenceIdentitySha256)
                 ? null
-                : input.ProvenanceSha256.Trim().ToUpperInvariant(),
+                : input.EvidenceIdentitySha256.Trim().ToUpperInvariant(),
         };
     }
 
@@ -457,6 +538,7 @@ public sealed class EvaluationScoringEngine
                 weight.Dimension,
                 weight.WeightBasisPoints,
                 EvaluationDimensionScoreStatus.Missing,
+                [],
                 missing,
                 missing,
                 missing,
@@ -472,6 +554,7 @@ public sealed class EvaluationScoringEngine
                 weight.Dimension,
                 weight.WeightBasisPoints,
                 EvaluationDimensionScoreStatus.Invalid,
+                Array.AsReadOnly(inputs.ToArray()),
                 duplicate.Leader,
                 duplicate.ProjectManager,
                 duplicate.ObjectiveEvidence,
@@ -504,6 +587,7 @@ public sealed class EvaluationScoringEngine
                 weight.Dimension,
                 weight.WeightBasisPoints,
                 status,
+                Array.AsReadOnly(inputs.ToArray()),
                 input.Leader,
                 input.ProjectManager,
                 input.ObjectiveEvidence,
@@ -527,6 +611,7 @@ public sealed class EvaluationScoringEngine
             weight.Dimension,
             weight.WeightBasisPoints,
             status,
+            Array.AsReadOnly(inputs.ToArray()),
             input.Leader,
             input.ProjectManager,
             input.ObjectiveEvidence,
@@ -548,7 +633,7 @@ public sealed class EvaluationScoringEngine
                 source,
                 "missing-score",
                 $"{source} has no score."));
-            if (input.ProvenanceId is not null || input.ProvenanceSha256 is not null)
+            if (input.ProvenanceId is not null || input.EvidenceIdentitySha256 is not null)
             {
                 issues.Add(new(
                     dimension,
@@ -578,13 +663,13 @@ public sealed class EvaluationScoringEngine
                 $"{source} score has no provenance identity."));
         }
 
-        if (!IsSha256(input.ProvenanceSha256))
+        if (!IsSha256(input.EvidenceIdentitySha256))
         {
             issues.Add(new(
                 dimension,
                 source,
-                "invalid-provenance-sha256",
-                $"{source} score has no valid provenance SHA-256."));
+                "invalid-evidence-identity-sha256",
+                $"{source} score has no valid evidence identity SHA-256."));
         }
     }
 
@@ -624,6 +709,12 @@ public sealed class EvaluationScoringEngine
         writer.Write(result.AvailableWeightBasisPoints);
         writer.Write(result.Provenance.FormulaSha256);
         writer.Write(result.Provenance.InputSnapshotSha256);
+        writer.Write(result.InputIssues.Count);
+        foreach (var issue in result.InputIssues)
+        {
+            WriteIssue(writer, issue);
+        }
+
         writer.Write(result.Dimensions.Count);
         foreach (var dimension in result.Dimensions)
         {
@@ -632,13 +723,19 @@ public sealed class EvaluationScoringEngine
             writer.Write((int)dimension.Status);
             writer.Write(dimension.DimensionScore?.ToString(CultureInfo.InvariantCulture));
             writer.Write(dimension.WeightedScore?.ToString(CultureInfo.InvariantCulture));
+            writer.Write(dimension.ObservedInputs.Count);
+            foreach (var observed in dimension.ObservedInputs)
+            {
+                writer.Write((int)observed.Dimension);
+                WriteScoreInput(writer, observed.Leader);
+                WriteScoreInput(writer, observed.ProjectManager);
+                WriteScoreInput(writer, observed.ObjectiveEvidence);
+            }
+
             writer.Write(dimension.Issues.Count);
             foreach (var issue in dimension.Issues)
             {
-                writer.Write((int)issue.Dimension);
-                writer.Write(issue.Source is null ? null : (int)issue.Source.Value);
-                writer.Write(issue.Code);
-                writer.Write(issue.Message);
+                WriteIssue(writer, issue);
             }
         }
 
@@ -651,6 +748,20 @@ public sealed class EvaluationScoringEngine
     {
         writer.Write(input.Score);
         writer.Write(input.ProvenanceId);
-        writer.Write(input.ProvenanceSha256);
+        writer.Write(input.EvidenceIdentitySha256);
     }
+
+    private static void WriteIssue(
+        CanonicalHashWriter writer,
+        EvaluationInputIssue issue)
+    {
+        writer.Write(issue.Dimension is null ? null : (int)issue.Dimension.Value);
+        writer.Write(issue.Source is null ? null : (int)issue.Source.Value);
+        writer.Write(issue.Code);
+        writer.Write(issue.Message);
+    }
+
+    private sealed record NormalizedEvaluationInput(
+        EvaluationInputSnapshot Input,
+        IReadOnlyList<EvaluationInputIssue> Issues);
 }
