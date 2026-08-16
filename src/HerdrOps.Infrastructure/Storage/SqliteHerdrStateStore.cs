@@ -339,7 +339,7 @@ public sealed partial class SqliteHerdrStateStore : IDisposable
                 }
 
                 var publicFailure = new HerdrStateStoreException(
-                    corruption.Message,
+                    StateStoreRecoveryDiagnostics.SanitizeMessage(corruption.Message),
                     corruption);
                 foreach (System.Collections.DictionaryEntry entry in corruption.Data)
                 {
@@ -372,11 +372,13 @@ public sealed partial class SqliteHerdrStateStore : IDisposable
                 phase: "initialization-validation",
                 timeProvider: _timeProvider,
                 recoveryOptions: _recoveryOptions);
-            failure.Data["HerdrOps.QuarantinePath"] = quarantinePath;
+            failure.Data["HerdrOps.QuarantinePath"] =
+                StateStoreRecoveryDiagnostics.TokenizePath(quarantinePath);
         }
         catch (Exception quarantineFailure)
         {
-            failure.Data["HerdrOps.QuarantineFailure"] = quarantineFailure.Message;
+            failure.Data["HerdrOps.QuarantineFailure"] =
+                StateStoreRecoveryDiagnostics.SanitizeMessage(quarantineFailure.Message);
         }
     }
 

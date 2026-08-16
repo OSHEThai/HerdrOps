@@ -22,8 +22,11 @@ public sealed class DiagnosticTextRedactor
     public const string Replacement = "[REDACTED]";
     public const string UserProfileReplacement = "[USER_PROFILE_PATH]";
     public const string SocketReplacement = "[SOCKET_PATH]";
+    public const string PathReplacement = "[PATH]";
 
     private static readonly TimeSpan RegexTimeout = TimeSpan.FromSeconds(1);
+    private static readonly Regex ProseAssignmentPattern = CreateRegex(
+        "(?<prefix>\\b(?:api[\\s_-]?key|password|passwd|token|secret|private[\\s_-]?key|client[\\s_-]?secret|access[\\s_-]?key|authorization|credential)\\s+(?:is|equals?)\\s+)(?:\"[^\"\\r\\n]*\"|'[^'\\r\\n]*'|[^\\s,;&\\r\\n]+)");
     private static readonly Regex AssignmentPattern = CreateRegex(
         "(?<prefix>\\b[A-Z0-9][A-Z0-9_.-]*(?:TOKEN|SECRET|PASSWORD|PASSWD|API[_-]?KEY|PRIVATE[_-]?KEY|CLIENT[_-]?SECRET|ACCESS[_-]?KEY|AUTH(?:ORIZATION)?|CREDENTIAL|CONNECTION(?:[_-]?STRING)?|SOCKET(?:[_-]?PATH)?|COOKIE)[A-Z0-9_.-]*\\s*[:=]\\s*)(?:\"[^\"\\r\\n]*\"|'[^'\\r\\n]*'|[^\\s,;&\\r\\n]+)");
     private static readonly Regex CommandAssignmentPattern = CreateRegex(
@@ -31,9 +34,9 @@ public sealed class DiagnosticTextRedactor
     private static readonly Regex JsonKeyPattern = CreateRegex(
         "(?<prefix>\"?(?:token|secret|password|passwd|api[_-]?key|private[_-]?key|client[_-]?secret|access[_-]?key|authorization|credential|connection(?:[_-]?string)?|socket(?:[_-]?path)?|cookie)\"?\\s*:\\s*)(?:\"[^\"\\r\\n]*\"|'[^'\\r\\n]*'|[^\\s,}\\r\\n]+)");
     private static readonly Regex HeaderPattern = CreateRegex(
-        "(?<prefix>\\b(?:authorization|proxy-authorization|cookie|set-cookie|x-api-key|x-auth-token|api-key)\\s*:\\s*)(?:\"[^\"\\r\\n]*\"|'[^'\\r\\n]*'|[^\\s,;\\r\\n]+)");
+        "(?<prefix>\\b(?:authorization|proxy-authorization|cookie|set-cookie|x-api-key|x-auth-token|api-key)\\s*:\\s*)(?:(?:bearer|basic)\\s+[^\\s,;\\r\\n]+|\"[^\"\\r\\n]*\"|'[^'\\r\\n]*'|[^\\s,;\\r\\n]+)");
     private static readonly Regex BearerPattern = CreateRegex(
-        "\\b(?:bearer|basic)\\s+[^\\s\\r\\n,;]+",
+        "(?<prefix>\\b(?:bearer|basic)\\s+)[^\\s\\r\\n,;]+",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.NonBacktracking);
     private static readonly Regex UriCredentialPattern = CreateRegex(
         "(?<prefix>://)[^/@\\s:]+(?::[^/@\\s]*)?(?<suffix>@)");
@@ -55,22 +58,25 @@ public sealed class DiagnosticTextRedactor
     private static readonly Regex SocketPathPattern = CreateRegex(
         "(?:[A-Z]:[\\\\/][^\\s\"']*\\bherdr\\.sock\\b|/[^\\s\"']*/herdr\\.sock\\b|\\\\\\\\[^\\s\"']+\\\\(?:pipe|socket)[^\\s\"']*)",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.NonBacktracking);
+    private static readonly Regex LocalAbsolutePathPattern = CreateBacktrackingRegex(
+        "(?<![A-Za-z0-9])(?:[A-Z]:[\\\\/]|\\\\\\\\)[^\\s\"'<>|]+",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
     private readonly DiagnosticRedactionOptions _options;
-    private readonly IReadOnlyList<string> _configuredVariants;
+    private readonly Regex? _configuredPattern;
 
     public DiagnosticTextRedactor(DiagnosticRedactionOptions? options = null)
     {
         _options = options ?? new DiagnosticRedactionOptions();
         _options.Validate();
-        _configuredVariants = BuildConfiguredVariants(_options.ConfiguredSecrets);
+        _configuredPattern = BuildConfiguredPattern(_options.ConfiguredSecrets);
     }
 
     public DiagnosticRedactionResult Redact(string value, int? maximumOutputUtf8Bytes = null)
     {
         ArgumentNullException.ThrowIfNull(value);
-        var originalBytes = Encoding.UTF8.GetBytes(value);
-        if (originalBytes.Length > _options.MaximumInputUtf8Bytes)
+        var originalUtf8Bytes = Encoding.UTF8.GetByteCount(value);
+        if (originalUtf8Bytes > _options.MaximumInputUtf8Bytes)
         {
             throw new ArgumentOutOfRangeException(
                 nameof(value),
@@ -88,19 +94,21 @@ public sealed class DiagnosticTextRedactor
         var normalized = NormalizeControls(value);
         var replacementCount = 0;
         normalized = ReplaceConfiguredValues(normalized, ref replacementCount);
+        normalized = ReplaceWhole(PrivateKeyPattern, normalized, ref replacementCount);
+        normalized = ReplaceWithGroups(HeaderPattern, normalized, ref replacementCount);
+        normalized = ReplaceWithGroups(ProseAssignmentPattern, normalized, ref replacementCount);
         normalized = ReplaceWithGroups(AssignmentPattern, normalized, ref replacementCount);
         normalized = ReplaceWithGroups(CommandAssignmentPattern, normalized, ref replacementCount);
         normalized = ReplaceWithGroups(JsonKeyPattern, normalized, ref replacementCount);
-        normalized = ReplaceWithGroups(HeaderPattern, normalized, ref replacementCount);
         normalized = ReplaceWhole(BearerPattern, normalized, ref replacementCount);
         normalized = ReplaceWithGroups(UriCredentialPattern, normalized, ref replacementCount);
         normalized = ReplaceWithGroups(QueryCredentialPattern, normalized, ref replacementCount);
-        normalized = ReplaceWhole(PrivateKeyPattern, normalized, ref replacementCount);
         normalized = ReplaceWhole(KnownTokenPattern, normalized, ref replacementCount);
         normalized = ReplaceWhole(JwtPattern, normalized, ref replacementCount);
         normalized = ReplaceWhole(UserProfileVariablePattern, normalized, ref replacementCount, UserProfileReplacement);
         normalized = ReplaceWhole(UserProfilePathPattern, normalized, ref replacementCount, UserProfileReplacement);
         normalized = ReplaceWhole(SocketPathPattern, normalized, ref replacementCount, SocketReplacement);
+        normalized = ReplaceWhole(LocalAbsolutePathPattern, normalized, ref replacementCount, PathReplacement);
         if (string.IsNullOrWhiteSpace(normalized))
         {
             normalized = "[EMPTY]";
@@ -112,11 +120,11 @@ public sealed class DiagnosticTextRedactor
             bounded,
             replacementCount,
             wasTruncated,
-            originalBytes.Length,
+            originalUtf8Bytes,
             redactedBytes.Length);
     }
 
-    private static IReadOnlyList<string> BuildConfiguredVariants(IReadOnlyList<string> secrets)
+    private static Regex? BuildConfiguredPattern(IReadOnlyList<string> secrets)
     {
         var variants = new HashSet<string>(StringComparer.Ordinal);
         foreach (var secret in secrets)
@@ -133,27 +141,44 @@ public sealed class DiagnosticTextRedactor
             variants.Add(WebUtility.UrlEncode(base64));
         }
 
-        return variants
+        var orderedVariants = variants
             .Where(value => value.Length > 0)
             .OrderByDescending(value => value.Length)
             .ThenBy(value => value, StringComparer.Ordinal)
             .ToArray();
+        if (orderedVariants.Length == 0)
+        {
+            return null;
+        }
+
+        const int maximumPatternCharacters = 512 * 1024;
+        var patternCharacters = orderedVariants.Sum(value => value.Length + 1);
+        if (patternCharacters > maximumPatternCharacters)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(secrets),
+                $"Configured diagnostic redaction patterns exceed the {maximumPatternCharacters}-character work bound.");
+        }
+
+        var pattern = "(?:" + string.Join('|', orderedVariants.Select(Regex.Escape)) + ")";
+        return CreateRegex(pattern);
     }
 
     private string ReplaceConfiguredValues(string value, ref int count)
     {
-        foreach (var secret in _configuredVariants)
+        if (_configuredPattern is null)
         {
-            var index = 0;
-            while ((index = value.IndexOf(secret, index, StringComparison.Ordinal)) >= 0)
-            {
-                value = value.Remove(index, secret.Length).Insert(index, Replacement);
-                index += Replacement.Length;
-                count++;
-            }
+            return value;
         }
 
-        return value;
+        var localCount = 0;
+        var result = _configuredPattern.Replace(value, _ =>
+        {
+            localCount++;
+            return Replacement;
+        });
+        count += localCount;
+        return result;
     }
 
     private static Regex CreateRegex(string pattern, RegexOptions additionalOptions = RegexOptions.None) => new(

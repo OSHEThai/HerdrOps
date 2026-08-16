@@ -132,6 +132,59 @@ public sealed class DiagnosticBundleTests
     }
 
     [TestMethod]
+    public void RedactorClosesProseHeaderBearerJwtAndPemSecretsWithoutPartialLeaks()
+    {
+        const string apiSecret = "api-prose-secret";
+        const string password = "password-prose-secret";
+        const string bearer = "bearer-prose-secret";
+        const string configuredPath = @"C:\Temp\Diagnostic Secrets\private key.pem";
+        const string jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.signature-value";
+        const string pem = "-----BEGIN PRIVATE KEY-----\nprivate-key-material\n-----END PRIVATE KEY-----";
+        var redactor = new DiagnosticTextRedactor(
+            new DiagnosticRedactionOptions([apiSecret, password, bearer, configuredPath]));
+
+        var result = redactor.Redact(
+            $"API key is {apiSecret}; password is {password}; Authorization: Bearer {bearer}; " +
+            $"Bearer {bearer}; JWT={jwt}; PEM={pem}; configured-path={configuredPath}; " +
+            "path=C:\\Temp\\diagnostic-secret.txt");
+
+        Assert.IsFalse(result.Text.Contains(apiSecret, StringComparison.Ordinal));
+        Assert.IsFalse(result.Text.Contains(password, StringComparison.Ordinal));
+        Assert.IsFalse(result.Text.Contains(bearer, StringComparison.Ordinal));
+        Assert.IsFalse(result.Text.Contains(jwt, StringComparison.Ordinal));
+        Assert.IsFalse(result.Text.Contains("private-key-material", StringComparison.Ordinal));
+        Assert.IsFalse(result.Text.Contains("BEGIN PRIVATE KEY", StringComparison.Ordinal));
+        Assert.IsFalse(result.Text.Contains("private key.pem", StringComparison.Ordinal));
+        Assert.IsFalse(result.Text.Contains("C:\\Temp\\diagnostic-secret.txt", StringComparison.Ordinal));
+        StringAssert.Contains(result.Text, DiagnosticTextRedactor.Replacement);
+    }
+
+    [TestMethod]
+    public void ConfiguredSecretRedactionUsesOneBoundedPassForRepeatedInput()
+    {
+        const string secret = "repeated-configured-secret-42";
+        var redactor = new DiagnosticTextRedactor(new DiagnosticRedactionOptions([secret]));
+        var input = string.Join('|', Enumerable.Repeat(secret, 400));
+
+        var result = redactor.Redact(input);
+
+        Assert.AreEqual(400, result.ReplacementCount);
+        Assert.IsFalse(result.Text.Contains(secret, StringComparison.Ordinal));
+        Assert.IsFalse(result.WasTruncated);
+    }
+
+    [TestMethod]
+    public void ConfiguredSecretPatternWorkBoundFailsBeforeProcessingInput()
+    {
+        var secrets = Enumerable.Range(0, 64)
+            .Select(index => $"{index:D2}-" + new string((char)('A' + index % 26), 4093))
+            .ToArray();
+
+        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() =>
+            new DiagnosticTextRedactor(new DiagnosticRedactionOptions(secrets)));
+    }
+
+    [TestMethod]
     public void CanonicalBytesAndHashesDoNotDependOnInputOrderOrDictionaryInsertionOrder()
     {
         var first = CreateDeterminismRequest(reverse: false);

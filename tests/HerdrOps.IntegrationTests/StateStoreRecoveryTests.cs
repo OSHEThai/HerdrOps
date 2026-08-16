@@ -158,6 +158,7 @@ public sealed class StateStoreRecoveryTests
         Assert.IsTrue(File.Exists(Path.Combine(quarantinePath, "metadata.json")));
         Assert.IsTrue(File.Exists(Path.Combine(quarantinePath, "recovery-trace.json")));
         StringAssert.Contains(exception.Message, "not a SQLite database", StringComparison.Ordinal);
+        Assert.IsFalse(exception.Message.Contains(databasePath, StringComparison.Ordinal));
     }
 
     [TestMethod]
@@ -226,6 +227,83 @@ public sealed class StateStoreRecoveryTests
         Assert.IsFalse(File.Exists(Path.Combine(directory.Path, "escaped.db")));
     }
 
+    [TestMethod]
+    public void RecoveryTraceAndQuarantineMetadataTokenizePathsAndRedactFailureMessages()
+    {
+        using var directory = new TemporaryDirectory();
+        var databasePath = Path.Combine(directory.Path, "sensitive-state.db");
+        File.WriteAllText(databasePath, "damaged");
+        const string apiSecret = "recovery-api-secret";
+        const string bearerSecret = "recovery-bearer-secret";
+        var failure = new InvalidOperationException(
+            $"API key is {apiSecret}; Authorization: Bearer {bearerSecret}; path={databasePath}");
+
+        var quarantinePath = StateStoreRecoveryArtifacts.Quarantine(
+            databasePath,
+            failure,
+            schemaVersion: null,
+            phase: "initialization-validation",
+            timeProvider: new FixedTimeProvider(FixedUtc),
+            recoveryOptions: new StateStoreRecoveryOptions(GuidFactory: () => FixedToken));
+        var files = Directory.GetFiles(quarantinePath, "*.json");
+
+        foreach (var file in files)
+        {
+            var text = File.ReadAllText(file);
+            Assert.IsFalse(text.Contains(databasePath, StringComparison.Ordinal), file);
+            Assert.IsFalse(text.Contains(apiSecret, StringComparison.Ordinal), file);
+            Assert.IsFalse(text.Contains(bearerSecret, StringComparison.Ordinal), file);
+            Assert.IsFalse(text.Contains("Authorization: Bearer", StringComparison.Ordinal), file);
+        }
+
+        var metadata = File.ReadAllText(Path.Combine(quarantinePath, "metadata.json"));
+        StringAssert.Contains(metadata, "DatabasePathToken");
+        Assert.IsFalse(metadata.Contains("OriginalDatabasePath", StringComparison.Ordinal));
+    }
+
+    [TestMethod]
+    public void CleanupFailurePreservesPrimaryExceptionAndRetainsTemporaryEvidence()
+    {
+        using var directory = new TemporaryDirectory();
+        var databasePath = Path.Combine(directory.Path, "cleanup-failure.db");
+        CreateLegacyDatabase(databasePath, "cleanup-failure");
+        using var source = new SqliteConnection(new SqliteConnectionStringBuilder
+        {
+            DataSource = databasePath,
+            Mode = SqliteOpenMode.ReadWrite,
+            Pooling = false,
+        }.ToString());
+        source.Open();
+
+        var options = new StateStoreRecoveryOptions(
+            new DelegateStateStoreRecoveryFaultInjector(context =>
+            {
+                if (context.Phase == StateStoreRecoveryPhase.AfterBackupTemporaryCreated)
+                {
+                    throw new StateStoreRecoveryInterruptionException(context);
+                }
+            }),
+            () => FixedToken,
+            new ThrowingRecoveryCleanup());
+
+        var exception = Assert.Throws<StateStoreRecoveryInterruptionException>(() =>
+            StateStoreRecoveryArtifacts.CreateBackup(
+                source,
+                databasePath,
+                fromVersion: 0,
+                toVersion: HerdrStateStoreOptions.CurrentSchemaVersion,
+                timeProvider: new FixedTimeProvider(FixedUtc),
+                recoveryOptions: options));
+
+        Assert.IsNotNull(exception.Data["HerdrOps.RecoveryCleanupFailure"]);
+        Assert.IsNotNull(exception.Data["HerdrOps.RecoveryCleanupEvidence"]);
+        var temporaryArtifacts = Directory.GetFiles(
+            Path.Combine(directory.Path, "backups"),
+            "*.tmp");
+        Assert.HasCount(1, temporaryArtifacts);
+        Assert.IsTrue(File.Exists(temporaryArtifacts[0]));
+    }
+
     private static StateStoreRecoveryOptions CreateRecoveryOptions(
         StateStoreRecoveryPhase phase) =>
         new(
@@ -278,5 +356,14 @@ public sealed class StateStoreRecoveryTests
         using var command = connection.CreateCommand();
         command.CommandText = sql;
         return command.ExecuteScalar()!;
+    }
+
+    private sealed class ThrowingRecoveryCleanup : IStateStoreRecoveryCleanup
+    {
+        public void DeleteFile(string path) =>
+            throw new IOException("synthetic cleanup failure");
+
+        public void DeleteDirectoryTree(string path) =>
+            throw new IOException("synthetic cleanup failure");
     }
 }
