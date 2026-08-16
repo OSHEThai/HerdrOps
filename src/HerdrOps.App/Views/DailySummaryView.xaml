@@ -9,7 +9,7 @@
              Background="{DynamicResource HerdrOps.Brush.Background}"
              Foreground="{DynamicResource HerdrOps.Brush.TextPrimary}"
              FontFamily="{DynamicResource HerdrOps.FontFamily.UI}"
-             automation:AutomationProperties.Name="{Binding [DailySummaryPageAutomation], Source={x:Static localization:UiLanguageService.Shared}}"
+             automation:AutomationProperties.Name="{Binding BoundaryLabel}"
              SizeChanged="OnSizeChanged">
     <UserControl.Resources>
         <converters:ResourceKeyToBrushConverter x:Key="ResourceBrush" />
@@ -150,7 +150,28 @@
                                     <Grid Margin="0,5">
                                         <Grid.ColumnDefinitions><ColumnDefinition Width="22" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
                                         <TextBlock FontFamily="{DynamicResource HerdrOps.FontFamily.Icons}" FontSize="15" Foreground="{Binding AccentBrushKey, Converter={StaticResource ResourceBrush}}" Text="&#xE73E;" />
-                                        <TextBlock Grid.Column="1" Text="{Binding Summary}" TextWrapping="Wrap" />
+                                        <StackPanel Grid.Column="1">
+                                            <TextBlock Text="{Binding Summary}" TextWrapping="Wrap" />
+                                            <ItemsControl Margin="0,2,0,0"
+                                                          ItemsSource="{Binding SourceIds}"
+                                                          AutomationProperties.Name="{Binding SourceLabel}">
+                                                <ItemsControl.ItemsPanel>
+                                                    <ItemsPanelTemplate>
+                                                        <WrapPanel />
+                                                    </ItemsPanelTemplate>
+                                                </ItemsControl.ItemsPanel>
+                                                <ItemsControl.ItemTemplate>
+                                                    <DataTemplate>
+                                                        <TextBlock Margin="0,0,6,0"
+                                                                   Foreground="{DynamicResource HerdrOps.Brush.TextMuted}"
+                                                                   FontFamily="Consolas"
+                                                                   FontSize="9"
+                                                                   Text="{Binding}"
+                                                                   AutomationProperties.Name="{Binding}" />
+                                                    </DataTemplate>
+                                                </ItemsControl.ItemTemplate>
+                                            </ItemsControl>
+                                        </StackPanel>
                                     </Grid>
                                 </DataTemplate>
                             </ItemsControl.ItemTemplate>
@@ -238,6 +259,19 @@
                                         <StackPanel Grid.Column="2" Margin="6,0,0,0">
                                             <TextBlock Text="{Binding Category}" TextWrapping="Wrap" />
                                             <TextBlock Margin="0,2,0,0" Foreground="{DynamicResource HerdrOps.Brush.TextMuted}" FontSize="10" Text="{Binding Summary}" TextWrapping="Wrap" />
+                                            <ItemsControl Margin="0,2,0,0"
+                                                          ItemsSource="{Binding SourceIds}"
+                                                          AutomationProperties.Name="{Binding SourceLabel}">
+                                                <ItemsControl.ItemTemplate>
+                                                    <DataTemplate>
+                                                        <TextBlock Foreground="{DynamicResource HerdrOps.Brush.TextMuted}"
+                                                                   FontFamily="Consolas"
+                                                                   FontSize="9"
+                                                                   Text="{Binding}"
+                                                                   AutomationProperties.Name="{Binding}" />
+                                                    </DataTemplate>
+                                                </ItemsControl.ItemTemplate>
+                                            </ItemsControl>
                                         </StackPanel>
                                     </Grid>
                                 </DataTemplate>

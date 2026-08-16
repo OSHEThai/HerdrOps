@@ -51,7 +51,7 @@ public sealed class DailySummaryRenderingTests
 
             var thaiCompact = CreateShell();
             Layout(thaiCompact, CompactWidth, CompactHeight);
-            AssertSurface(thaiCompact, thaiCompact.FindName("DailySummaryPage"), language, expectThai: true);
+            AssertSurface(thaiCompact, thaiCompact.FindName("DailySummaryPage"), language, expectThai: true, assertCompact: true);
             var compactPath = Path.Combine(evidenceDirectory, "daily-summary-th-1366x768.png");
             RenderPng(thaiCompact, CompactWidth, CompactHeight, compactPath);
 
@@ -90,7 +90,8 @@ public sealed class DailySummaryRenderingTests
         object? pageObject,
         UiLanguageService language,
         bool expectThai,
-        bool expectMissing = false)
+        bool expectMissing = false,
+        bool assertCompact = false)
     {
         var page = Assert.IsInstanceOfType<DailySummaryView>(pageObject);
         Assert.AreEqual(Visibility.Visible, page.Visibility);
@@ -125,7 +126,20 @@ public sealed class DailySummaryRenderingTests
         AssertVisibleTextContains(page, expectMissing ? "—" : state.SourceLabel);
 
         var automation = AutomationProperties.GetName(page);
-        Assert.AreEqual(language["DailySummaryPageAutomation"], automation);
+        Assert.AreEqual(state.BoundaryLabel, automation);
+        foreach (var sourceId in state.Strengths
+                     .SelectMany(row => row.SourceIds)
+                     .Concat(state.Timeline.SelectMany(row => row.SourceIds))
+                     .Distinct(StringComparer.Ordinal))
+        {
+            AssertVisibleTextContains(page, sourceId);
+        }
+
+        if (assertCompact)
+        {
+            AssertCompactSurface(page);
+        }
+
         if (expectMissing)
         {
             Assert.IsNull(state.Snapshot);
@@ -142,6 +156,114 @@ public sealed class DailySummaryRenderingTests
         {
             AssertNoVisibleThaiCopy(shell);
         }
+    }
+
+    private static void AssertCompactSurface(DailySummaryView page)
+    {
+        var scrollViewer = Assert.IsInstanceOfType<ScrollViewer>(page.FindName("DailySummaryScrollViewer"));
+        Assert.IsInstanceOfType<StackPanel>(scrollViewer.Content, "Daily Summary content must retain one vertical page hierarchy.");
+
+        var regionNames = new[]
+        {
+            "DailySummaryEvidenceBoundary",
+            "DailySummarySummaryCardsRegion",
+            "DailySummaryHighlightsRegion",
+            "DailySummaryStrengthsRegion",
+            "DailySummaryAreasRegion",
+            "DailySummaryRepeatedIssuesRegion",
+            "DailySummaryRecommendationsRegion",
+            "DailySummaryTimelineRegion",
+            "DailySummaryWorkstreamRegion",
+            "DailySummaryDayOverviewRegion",
+        };
+        var regions = regionNames
+            .Select(name => (Name: name, Element: Assert.IsInstanceOfType<FrameworkElement>(page.FindName(name))))
+            .ToArray();
+        var pageBounds = new Rect(0, 0, page.ActualWidth, page.ActualHeight);
+        var bounds = regions.ToDictionary(
+            item => item.Name,
+            item => BoundsRelativeTo(item.Element, page),
+            StringComparer.Ordinal);
+
+        foreach (var (name, element) in regions)
+        {
+            Assert.IsTrue(IsDescendantOf(element, scrollViewer), $"{name} escaped the Daily Summary scroll hierarchy.");
+            var regionBounds = bounds[name];
+            Assert.IsTrue(
+                regionBounds.Left >= pageBounds.Left - 1 && regionBounds.Right <= pageBounds.Right + 1,
+                $"{name} exceeds the compact page width: {regionBounds} / {pageBounds}");
+
+            foreach (var text in EnumerateDescendants(element).OfType<TextBlock>().Where(IsEffectivelyVisible))
+            {
+                var textBounds = BoundsRelativeTo(text, page);
+                Assert.IsTrue(
+                    textBounds.Left >= regionBounds.Left - 1 &&
+                    textBounds.Top >= regionBounds.Top - 1 &&
+                    textBounds.Right <= regionBounds.Right + 1 &&
+                    textBounds.Bottom <= regionBounds.Bottom + 1,
+                    $"Text escapes its compact region in {name}: {TextOf(text)} / {regionBounds}");
+            }
+        }
+
+        for (var index = 0; index < regions.Length; index++)
+        {
+            for (var other = index + 1; other < regions.Length; other++)
+            {
+                Assert.IsFalse(
+                    HasPositiveAreaOverlap(bounds[regions[index].Name], bounds[regions[other].Name]),
+                    $"Daily Summary regions overlap at compact size: {regions[index].Name} {bounds[regions[index].Name]} and {regions[other].Name} {bounds[regions[other].Name]}");
+            }
+        }
+
+        for (var index = 1; index < regions.Length; index++)
+        {
+            var previous = bounds[regions[index - 1].Name];
+            var current = bounds[regions[index].Name];
+            Assert.IsGreaterThanOrEqualTo(
+                previous.Top - 1,
+                current.Top,
+                $"Daily Summary region order changed at compact size: {regions[index - 1].Name} -> {regions[index].Name}");
+            if (Math.Abs(current.Top - previous.Top) <= 1)
+            {
+                Assert.IsGreaterThanOrEqualTo(
+                    previous.Left - 1,
+                    current.Left,
+                    $"Same-row Daily Summary regions are out of order: {regions[index - 1].Name} -> {regions[index].Name}");
+            }
+        }
+
+        Assert.IsGreaterThan(0d, scrollViewer.ViewportHeight, "The compact Daily Summary viewport must have height.");
+        Assert.IsGreaterThan(
+            scrollViewer.ViewportHeight + 1,
+            scrollViewer.ExtentHeight,
+            "The compact Daily Summary must expose content beyond the viewport for deterministic scrolling.");
+
+        scrollViewer.ScrollToTop();
+        scrollViewer.UpdateLayout();
+        Assert.IsLessThanOrEqualTo(1d, scrollViewer.VerticalOffset, "Compact Daily Summary did not start at the top.");
+        scrollViewer.ScrollToEnd();
+        scrollViewer.UpdateLayout();
+        Assert.IsLessThanOrEqualTo(
+            1d,
+            Math.Abs(scrollViewer.VerticalOffset - scrollViewer.ScrollableHeight),
+            "Compact Daily Summary did not reach the scroll extent.");
+
+        var bottomRegion = Assert.IsInstanceOfType<FrameworkElement>(page.FindName("DailySummaryDayOverviewRegion"));
+        var bottomBounds = BoundsRelativeTo(bottomRegion, scrollViewer);
+        var viewportBounds = new Rect(0, 0, scrollViewer.ViewportWidth, scrollViewer.ViewportHeight);
+        Assert.IsTrue(
+            bottomBounds.Bottom <= viewportBounds.Bottom + 1 && bottomBounds.Bottom > 0,
+            $"The final Daily Summary region is not reachable at scroll end: {bottomBounds} / {viewportBounds}");
+    }
+
+    private static string TextOf(TextBlock text) =>
+        new TextRange(text.ContentStart, text.ContentEnd).Text.Trim();
+
+    private static bool HasPositiveAreaOverlap(Rect first, Rect second)
+    {
+        var horizontal = Math.Min(first.Right, second.Right) - Math.Max(first.Left, second.Left);
+        var vertical = Math.Min(first.Bottom, second.Bottom) - Math.Max(first.Top, second.Top);
+        return horizontal > 1 && vertical > 1;
     }
 
     private static void AssertNoVisibleThaiCopy(DependencyObject root)
@@ -196,6 +318,19 @@ public sealed class DailySummaryRenderingTests
         }
     }
 
+    private static bool IsDescendantOf(DependencyObject element, DependencyObject ancestor)
+    {
+        for (DependencyObject? current = element; current is not null; current = VisualTreeHelper.GetParent(current))
+        {
+            if (ReferenceEquals(current, ancestor))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     private static bool IsEffectivelyVisible(DependencyObject element)
     {
         for (DependencyObject? current = element; current is not null; current = VisualTreeHelper.GetParent(current))
@@ -207,6 +342,14 @@ public sealed class DailySummaryRenderingTests
         }
 
         return true;
+    }
+
+    private static Rect BoundsRelativeTo(FrameworkElement element, FrameworkElement ancestor)
+    {
+        Assert.IsGreaterThan(0d, element.ActualWidth, "Element has no rendered width.");
+        Assert.IsGreaterThan(0d, element.ActualHeight, "Element has no rendered height.");
+        return element.TransformToAncestor(ancestor).TransformBounds(
+            new Rect(0, 0, element.ActualWidth, element.ActualHeight));
     }
 
     private static void Layout(FrameworkElement view, int width, int height)
