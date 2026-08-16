@@ -226,11 +226,11 @@ public sealed class LiveOrganizationState : ObservableState
                 "\uE77B",
                 Overview.OverviewBrushKeys.Idle),
             new(
-                text["OrganizationUnknownStatus"],
+                text["OrganizationRoleConflicts"],
                 "1",
-                text["DelegationDispositionIdentityConflict"],
+                text["OrganizationRoleConflictDetail"],
                 "\uE814",
-                Overview.OverviewBrushKeys.Review),
+                Overview.OverviewBrushKeys.Blocked),
         ];
     }
 
@@ -408,9 +408,9 @@ public sealed class LiveOrganizationState : ObservableState
             Overview.OverviewBrushKeys.Idle),
         new(
             "\uE711",
-            text["DelegationDispositionIdentityConflict"],
-            text["DelegationDispositionSequenceConflict"],
-            Overview.OverviewBrushKeys.Review),
+            text["OrganizationRoleConflicts"],
+            "DevOps Leader",
+            Overview.OverviewBrushKeys.Blocked),
     ];
 
     private static OrganizationAgentDetail CreateSyntheticDetail(

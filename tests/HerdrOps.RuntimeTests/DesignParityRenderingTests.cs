@@ -33,6 +33,8 @@ public sealed class DesignParityRenderingTests
     private const int CompactHeight = 768;
     private const int WidgetBoardWidth = 1536;
     private const int WidgetBoardHeight = 1024;
+    private const double HorizontalTextFitTolerance = 3;
+    private const double VerticalTextFitTolerance = 4;
 
     private static readonly IReadOnlyList<UiLanguage> Languages =
     [
@@ -102,6 +104,38 @@ public sealed class DesignParityRenderingTests
     public void SyntheticDesignParityCapturesAllReferenceDestinationsAndWidgetConcepts()
     {
         WpfTestHost.Run(RenderEvidence, TimeSpan.FromSeconds(180));
+    }
+
+    [TestMethod]
+    public void ClippingRegressionFailsWhenNoWrapTextIsDeliberatelyNarrow()
+    {
+        WpfTestHost.Run(() =>
+        {
+            var host = new Border
+            {
+                Width = 24,
+                Height = 32,
+                ClipToBounds = true,
+                Child = new TextBlock
+                {
+                    Text = "Deliberately clipped text",
+                    FontSize = 14,
+                    TextWrapping = TextWrapping.NoWrap,
+                    TextTrimming = TextTrimming.None,
+                },
+            };
+
+            Layout(host, 24, 32);
+
+            var intrinsicWidth = 100d;
+            Assert.Throws<AssertFailedException>(
+                () => AssertIntrinsicExtentFits(
+                    host.ActualWidth,
+                    intrinsicWidth,
+                    HorizontalTextFitTolerance,
+                    "Deliberately clipped text must fail the available-versus-intrinsic width assertion."),
+                "The clipping guard must fail when a no-wrap TextBlock is narrower than its intrinsic text.");
+        });
     }
 
     private static void RenderEvidence()
@@ -398,6 +432,11 @@ public sealed class DesignParityRenderingTests
         {
             Assert.IsTrue(visibleText.Any(ContainsThai), $"Thai mode rendered no Thai UI copy for {page.Id}.");
         }
+
+        UiLanguageRenderingAssertions.AssertOppositeUiTranslationsAbsent(
+            visibleText,
+            selectedLanguage,
+            $"design parity page {page.Id}");
     }
 
     private static void AssertWidgetGallery(
@@ -449,6 +488,10 @@ public sealed class DesignParityRenderingTests
         {
             Assert.IsTrue(galleryText.Any(ContainsThai), "Thai Widget mode rendered no Thai UI copy.");
         }
+        UiLanguageRenderingAssertions.AssertOppositeUiTranslationsAbsent(
+            galleryText,
+            UiLanguageService.Shared.CurrentLanguage,
+            $"widget gallery {width}x{height}");
         AssertStatusSemantics();
     }
 
@@ -481,6 +524,48 @@ public sealed class DesignParityRenderingTests
             "HerdrOps",
             wordmark.Text,
             "Widget wordmark must preserve the approved HerdrOps casing and spelling.");
+        var sourceText = FindNamed<TextBlock>(surface, "HeaderSourceText");
+        var dragSurface = FindNamed<FrameworkElement>(surface, "DragSurface");
+        var expectedSource = descriptor.Variant == WidgetVariant.FloatingVertical
+            ? UiLanguageService.Shared["SyntheticCompact"]
+            : UiLanguageService.Shared["SyntheticData"];
+        Assert.AreEqual(expectedSource, sourceText.Text, $"Widget source label drifted for {descriptor.Variant}.");
+        Assert.AreEqual(TextTrimming.CharacterEllipsis, sourceText.TextTrimming, $"Widget source label must have explicit trimming: {descriptor.Variant}.");
+        Assert.AreEqual(TextWrapping.NoWrap, sourceText.TextWrapping, $"Widget source label must not wrap in the header: {descriptor.Variant}.");
+        Assert.IsGreaterThan(0d, sourceText.ActualWidth, $"Widget source label has no bounded width: {descriptor.Variant}.");
+        AssertRectInside(sourceText, dragSurface, $"Widget source label exceeds its header: {descriptor.Variant}.");
+        if (descriptor.Variant == WidgetVariant.FloatingMini)
+        {
+            Assert.AreEqual(230, width, "Floating Mini must retain its exact approved width.");
+            Assert.AreEqual(220, height, "Floating Mini must retain its exact approved height.");
+            if (UiLanguageService.Shared.CurrentLanguage == UiLanguage.English)
+            {
+                Assert.AreEqual("SYNTHETIC DATA", sourceText.Text, "English Floating Mini source treatment drifted.");
+            }
+
+            var sourceMeasurement = new TextBlock
+            {
+                Text = sourceText.Text,
+                FontFamily = sourceText.FontFamily,
+                FontSize = sourceText.FontSize,
+                FontStretch = sourceText.FontStretch,
+                FontStyle = sourceText.FontStyle,
+                FontWeight = sourceText.FontWeight,
+                FlowDirection = sourceText.FlowDirection,
+                Language = sourceText.Language,
+                TextWrapping = TextWrapping.NoWrap,
+            };
+            sourceMeasurement.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
+            AssertIntrinsicExtentFits(
+                sourceText.ActualWidth,
+                sourceMeasurement.DesiredSize.Width,
+                HorizontalTextFitTolerance,
+                $"Floating Mini source label is clipped at 230x220: available width={sourceText.ActualWidth}, intrinsic width={sourceMeasurement.DesiredSize.Width}.");
+        }
+        UiLanguageRenderingAssertions.AssertOppositeUiTranslationsAbsent(
+            VisibleText(surface),
+            UiLanguageService.Shared.CurrentLanguage,
+            $"widget {descriptor.Variant}");
         AssertHasAutomationName(FindNamed<Button>(surface, "PinButton"), $"Widget pin action {descriptor.Variant}");
         AssertHasAutomationName(FindNamed<Button>(surface, "CloseButton"), $"Widget close action {descriptor.Variant}");
 
@@ -575,19 +660,33 @@ public sealed class DesignParityRenderingTests
             if (textBlock.TextWrapping == TextWrapping.NoWrap)
             {
                 measurement.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
-                Assert.IsLessThanOrEqualTo(
-                    textBlock.ActualWidth + 3,
+                AssertIntrinsicExtentFits(
+                    textBlock.ActualWidth,
                     measurement.DesiredSize.Width,
-                    $"Text is clipped at {size.Name}: {text}");
+                    HorizontalTextFitTolerance,
+                    $"Text is clipped at {size.Name}: available width={textBlock.ActualWidth}, intrinsic width={measurement.DesiredSize.Width}, text={text}");
                 continue;
             }
 
             measurement.Measure(new Size(Math.Max(1, textBlock.ActualWidth), double.PositiveInfinity));
-            Assert.IsLessThanOrEqualTo(
-                textBlock.ActualHeight + 4,
+            AssertIntrinsicExtentFits(
+                textBlock.ActualHeight,
                 measurement.DesiredSize.Height,
-                $"Wrapped text is clipped at {size.Name}: {text}");
+                VerticalTextFitTolerance,
+                $"Wrapped text is clipped at {size.Name}: available height={textBlock.ActualHeight}, intrinsic height={measurement.DesiredSize.Height}, text={text}");
         }
+    }
+
+    private static void AssertIntrinsicExtentFits(
+        double availableExtent,
+        double intrinsicExtent,
+        double tolerance,
+        string message)
+    {
+        Assert.IsGreaterThanOrEqualTo(
+            intrinsicExtent - tolerance,
+            availableExtent,
+            message);
     }
 
     private static CandidateCapture CapturePng(

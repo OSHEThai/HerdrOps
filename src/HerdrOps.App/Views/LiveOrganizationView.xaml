@@ -150,6 +150,7 @@
                     <Grid.RowDefinitions>
                         <RowDefinition Height="58" />
                         <RowDefinition Height="*" />
+                        <RowDefinition Height="26" />
                     </Grid.RowDefinitions>
                     <Grid Margin="16,0">
                         <Grid.ColumnDefinitions>
@@ -174,7 +175,7 @@
                     </Grid>
 
                     <ListBox Grid.Row="1"
-                             Margin="10,0,10,10"
+                             Margin="10,0,10,0"
                              Padding="0"
                              Background="Transparent"
                              BorderThickness="0"
@@ -269,6 +270,57 @@
                             </DataTemplate>
                         </ListBox.ItemTemplate>
                     </ListBox>
+
+                    <StackPanel x:Name="OrganizationStatusLegend"
+                                Grid.Row="2"
+                                Margin="16,0,16,6"
+                                HorizontalAlignment="Center"
+                                VerticalAlignment="Center"
+                                Orientation="Horizontal">
+                        <Ellipse Width="7"
+                                 Height="7"
+                                 Margin="0,0,4,0"
+                                 Fill="{DynamicResource HerdrOps.Brush.Status.Working}" />
+                        <TextBlock Margin="0,0,12,0"
+                                   VerticalAlignment="Center"
+                                   FontSize="9"
+                                   Text="{Binding [StatusWorking], Source={x:Static localization:UiLanguageService.Shared}}" />
+                        <Ellipse Width="7"
+                                 Height="7"
+                                 Margin="0,0,4,0"
+                                 Fill="{DynamicResource HerdrOps.Brush.Status.Idle}" />
+                        <TextBlock Margin="0,0,12,0"
+                                   VerticalAlignment="Center"
+                                   FontSize="9"
+                                   Text="{Binding [StatusIdle], Source={x:Static localization:UiLanguageService.Shared}}" />
+                        <Ellipse Width="7"
+                                 Height="7"
+                                 Margin="0,0,4,0"
+                                 Fill="{DynamicResource HerdrOps.Brush.Status.Blocked}" />
+                        <TextBlock Margin="0,0,12,0"
+                                   VerticalAlignment="Center"
+                                   FontSize="9"
+                                   Text="{Binding [StatusBlocked], Source={x:Static localization:UiLanguageService.Shared}}" />
+                        <Ellipse Width="7"
+                                 Height="7"
+                                 Margin="0,0,4,0"
+                                 Fill="{DynamicResource HerdrOps.Brush.Status.Done}" />
+                        <TextBlock Margin="0,0,12,0"
+                                   VerticalAlignment="Center"
+                                   FontSize="9"
+                                   Text="{Binding [StatusDone], Source={x:Static localization:UiLanguageService.Shared}}" />
+                        <TextBlock Margin="0,0,4,0"
+                                   VerticalAlignment="Center"
+                                   Foreground="{DynamicResource HerdrOps.Brush.Status.Blocked}"
+                                   FontFamily="{DynamicResource HerdrOps.FontFamily.Icons}"
+                                   FontSize="11"
+                                   Text="{Binding [OrganizationConflictIcon], Source={x:Static localization:UiLanguageService.Shared}}" />
+                        <TextBlock x:Name="OrganizationConflictLegendText"
+                                   VerticalAlignment="Center"
+                                   Foreground="{DynamicResource HerdrOps.Brush.Status.Blocked}"
+                                   FontSize="9"
+                                   Text="{Binding [OrganizationConflictLegend], Source={x:Static localization:UiLanguageService.Shared}}" />
+                    </StackPanel>
                 </Grid>
             </Border>
 

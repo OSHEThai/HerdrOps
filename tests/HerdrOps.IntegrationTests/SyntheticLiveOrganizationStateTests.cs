@@ -47,7 +47,7 @@ public sealed class SyntheticLiveOrganizationStateTests
         Assert.AreEqual("Project Manager", organization.SelectedAgent.Name);
         Assert.AreEqual(text["StatusWorking"], organization.SelectedAgent.Status);
         Assert.IsTrue(organization.AttentionItems.Any(item =>
-            item.Title == text["DelegationDispositionIdentityConflict"]));
+            item.Title == text["OrganizationRoleConflicts"]));
         Assert.IsTrue(organization.AttentionItems.Any(item =>
             item.Title == text.Format("OrganizationAttentionUnassignedFormat", 2)));
     }

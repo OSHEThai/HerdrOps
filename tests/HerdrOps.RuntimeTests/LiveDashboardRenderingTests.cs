@@ -8,6 +8,7 @@ using System.Windows.Media.Imaging;
 using HerdrOps.App.Live;
 using HerdrOps.App.Localization;
 using HerdrOps.App.Organization;
+using HerdrOps.App.Overview;
 using HerdrOps.App.StateIpc;
 using HerdrOps.App.Views;
 using HerdrOps.Contracts.StateIpc;
@@ -18,6 +19,9 @@ namespace HerdrOps.RuntimeTests;
 [DoNotParallelize]
 public sealed class LiveDashboardRenderingTests
 {
+    private const double HorizontalTextFitTolerance = 3;
+    private const double VerticalTextFitTolerance = 4;
+
     [TestMethod]
     public void LiveOverviewOrganizationAndAgentDetailRenderFromOneCoreSnapshot()
     {
@@ -175,6 +179,7 @@ public sealed class LiveDashboardRenderingTests
                         var shell = new ShellView(dashboard);
                         shell.Navigation.SelectedIndex = 1;
                         Layout(shell, size);
+                        AssertLiveOrganizationConflictSemantics(shell, dashboard, language, size);
                         AssertOrganizationCardsFit(shell, size, language);
                     }
                 }
@@ -240,6 +245,10 @@ public sealed class LiveDashboardRenderingTests
                             {
                                 Assert.IsTrue(visibleText.Any(ContainsThai), $"Thai {page.Name} did not render Thai UI copy.");
                             }
+                            UiLanguageRenderingAssertions.AssertOppositeUiTranslationsAbsent(
+                                visibleText,
+                                language,
+                                $"live dashboard page {page.Name}");
 
                             var languageName = language == UiLanguage.Thai ? "thai" : "english";
                             SavePng(shell, size, Path.Combine(outputDirectory, $"{languageName}-{page.Name}.png"));
@@ -420,11 +429,32 @@ public sealed class LiveDashboardRenderingTests
                 1);
             if (textBlock.TextWrapping == TextWrapping.NoWrap)
             {
-                Assert.IsLessThanOrEqualTo(
-                    textBlock.ActualWidth + 3,
-                    formatted.WidthIncludingTrailingWhitespace,
-                    $"Thai text clipped: {textBlock.Text}");
+                Assert.IsGreaterThanOrEqualTo(
+                    formatted.WidthIncludingTrailingWhitespace - HorizontalTextFitTolerance,
+                    textBlock.ActualWidth,
+                    $"Thai text clipped: available width={textBlock.ActualWidth}, intrinsic width={formatted.WidthIncludingTrailingWhitespace}, text={textBlock.Text}");
+                continue;
             }
+
+            var measurement = new TextBlock
+            {
+                Text = textBlock.Text,
+                FontFamily = textBlock.FontFamily,
+                FontSize = textBlock.FontSize,
+                FontStretch = textBlock.FontStretch,
+                FontStyle = textBlock.FontStyle,
+                FontWeight = textBlock.FontWeight,
+                FlowDirection = textBlock.FlowDirection,
+                Language = textBlock.Language,
+                LineHeight = textBlock.LineHeight,
+                LineStackingStrategy = textBlock.LineStackingStrategy,
+                TextWrapping = textBlock.TextWrapping,
+            };
+            measurement.Measure(new Size(Math.Max(1, textBlock.ActualWidth), double.PositiveInfinity));
+            Assert.IsGreaterThanOrEqualTo(
+                measurement.DesiredSize.Height - VerticalTextFitTolerance,
+                textBlock.ActualHeight,
+                $"Wrapped Thai text clipped: available height={textBlock.ActualHeight}, intrinsic height={measurement.DesiredSize.Height}, text={textBlock.Text}");
         }
     }
 
@@ -540,6 +570,52 @@ public sealed class LiveDashboardRenderingTests
                 cards.Any(card => ((OrganizationNode)card.DataContext!).Name == leaderName),
                 $"Leader branch is missing at {shellSize} in {language}: {leaderName}");
         }
+    }
+
+    private static void AssertLiveOrganizationConflictSemantics(
+        ShellView shell,
+        LiveDashboardState dashboard,
+        UiLanguage language,
+        Size shellSize)
+    {
+        var text = UiLanguageService.Shared;
+        var conflictCard = dashboard.Organization.SummaryCards
+            .Single(card => string.Equals(card.Title, text["OrganizationRoleConflicts"], StringComparison.Ordinal));
+        Assert.AreEqual("1", conflictCard.Value, $"Role conflict count drifted at {shellSize} in {language}.");
+        Assert.AreEqual(text["OrganizationRoleConflictDetail"], conflictCard.Detail);
+        Assert.AreEqual(OverviewBrushKeys.Blocked, conflictCard.AccentBrushKey, "Role conflicts must use red/coral severity.");
+        Assert.AreNotEqual(OverviewBrushKeys.Review, conflictCard.AccentBrushKey, "Role conflicts must not use the purple Review workflow.");
+
+        var conflictAttention = dashboard.Organization.AttentionItems
+            .Single(item => string.Equals(item.Title, text["OrganizationRoleConflicts"], StringComparison.Ordinal));
+        Assert.AreEqual("DevOps Leader", conflictAttention.Detail);
+        Assert.AreEqual(OverviewBrushKeys.Blocked, conflictAttention.AccentBrushKey);
+        Assert.AreNotEqual(OverviewBrushKeys.Review, conflictAttention.AccentBrushKey);
+
+        var legend = EnumerateDescendants(shell)
+            .OfType<TextBlock>()
+            .Single(block => string.Equals(block.Name, "OrganizationConflictLegendText", StringComparison.Ordinal));
+        Assert.AreEqual(text["OrganizationConflictLegend"], legend.Text);
+        Assert.AreEqual(
+            shell.FindResource("HerdrOps.Brush.Status.Blocked"),
+            legend.Foreground,
+            "The conflict legend must use the red/coral severity brush.");
+        Assert.AreNotEqual(
+            shell.FindResource("HerdrOps.Brush.Status.Review"),
+            legend.Foreground,
+            "The conflict legend must not reuse the purple Review brush.");
+        var hierarchyText = EnumerateDescendants(shell)
+            .OfType<TextBlock>()
+            .Where(block => IsEffectivelyVisible(block))
+            .Select(block => block.Text)
+            .ToArray();
+        Assert.IsFalse(
+            hierarchyText.Contains(text["StatusReview"], StringComparer.Ordinal),
+            "Live Organization must not expose Review as the conflict meaning.");
+        UiLanguageRenderingAssertions.AssertOppositeUiTranslationsAbsent(
+            hierarchyText,
+            language,
+            $"Live Organization conflict semantics {shellSize}");
     }
 
     private static void RunWithLanguage(UiLanguage language, Action action)

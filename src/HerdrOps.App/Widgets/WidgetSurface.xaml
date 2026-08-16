@@ -177,30 +177,42 @@
                     BorderBrush="{DynamicResource HerdrOps.Brush.Border}"
                     BorderThickness="0,0,0,1"
                     MouseLeftButtonDown="OnDragSurfaceMouseLeftButtonDown">
-                <Grid Margin="12,0,8,0">
+                <Grid Margin="8,0,4,0">
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="*" />
                         <ColumnDefinition Width="Auto" />
                         <ColumnDefinition Width="Auto" />
                     </Grid.ColumnDefinitions>
-                    <StackPanel VerticalAlignment="Center" Orientation="Horizontal">
+                    <Grid VerticalAlignment="Center">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
                         <TextBlock x:Name="HeaderWordmark"
                                    Foreground="{DynamicResource HerdrOps.Brush.PrimaryText}"
                                    FontSize="14"
                                    FontWeight="Bold"
                                    Text="HerdrOps" />
                         <Ellipse x:Name="HeaderStatusDot"
+                                 Grid.Column="1"
                                  Width="7"
                                  Height="7"
                                  Margin="9,0,5,0"
                                  Fill="{Binding ConnectionBrushKey, Converter={StaticResource ResourceBrush}}" />
                         <TextBlock x:Name="HeaderSourceText"
+                                   Grid.Column="2"
+                                   MinWidth="0"
                                    VerticalAlignment="Center"
                                    Foreground="{DynamicResource HerdrOps.Brush.TextMuted}"
                                    FontSize="9"
                                    FontWeight="SemiBold"
-                                   Text="{Binding SourceLabel}" />
-                    </StackPanel>
+                                   Margin="0,0,4,0"
+                                   Text="{Binding SourceLabel}"
+                                   TextTrimming="CharacterEllipsis"
+                                   TextWrapping="NoWrap"
+                                   ToolTip="{Binding SourceLabel}" />
+                    </Grid>
                     <Button x:Name="PinButton"
                             Grid.Column="1"
                             Style="{StaticResource WidgetHeaderButton}"
