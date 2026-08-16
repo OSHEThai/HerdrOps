@@ -78,6 +78,61 @@ public sealed class DeterministicSnapshotExporterTests
     }
 
     [TestMethod]
+    public void EvaluationExportRejectsTamperedTopLevelSourceFields()
+    {
+        var fixture = ReadScoringFixture();
+        var accepted = new EvaluationScoringEngine().Calculate(
+            fixture.Input,
+            EvaluationFormulaCatalog.Version1);
+        var firstDimension = accepted.Dimensions[0];
+        var tamperedResults = new[]
+        {
+            accepted with
+            {
+                Dimensions = accepted.Dimensions
+                    .Select(item => item.Dimension == firstDimension.Dimension
+                        ? item with { Leader = item.Leader with { Score = item.Leader.Score + 1 } }
+                        : item)
+                    .ToArray(),
+            },
+            accepted with
+            {
+                Dimensions = accepted.Dimensions
+                    .Select(item => item.Dimension == firstDimension.Dimension
+                        ? item with
+                        {
+                            ProjectManager = item.ProjectManager with
+                            {
+                                ProvenanceId = $"{item.ProjectManager.ProvenanceId}-tampered",
+                            },
+                        }
+                        : item)
+                    .ToArray(),
+            },
+            accepted with
+            {
+                Dimensions = accepted.Dimensions
+                    .Select(item => item.Dimension == firstDimension.Dimension
+                        ? item with
+                        {
+                            ObjectiveEvidence = item.ObjectiveEvidence with
+                            {
+                                EvidenceIdentitySha256 = new string('0', 64),
+                            },
+                        }
+                        : item)
+                    .ToArray(),
+            },
+        };
+
+        foreach (var tampered in tamperedResults)
+        {
+            Assert.ThrowsExactly<SnapshotExportException>(() =>
+                DeterministicSnapshotExporter.ExportEvaluation(tampered, GenerationUtc));
+        }
+    }
+
+    [TestMethod]
     public void DailySummaryExportIncludesUtcBoundariesAndAcceptedSourceIdentities()
     {
         var fixture = ReadDailySummaryFixture();
@@ -157,6 +212,13 @@ public sealed class DeterministicSnapshotExporterTests
             Assert.AreEqual(
                 JsonValueKind.Null,
                 incompleteSnapshot.GetProperty("dimensions")[5].GetProperty("dimensionScore").ValueKind);
+            var missingSourceIdentity = incompleteDocument.RootElement
+                .GetProperty("source")
+                .GetProperty("sourceIdentities")[15];
+            Assert.AreEqual(JsonValueKind.Null, missingSourceIdentity.GetProperty("provenanceId").ValueKind);
+            Assert.AreEqual(
+                JsonValueKind.Null,
+                missingSourceIdentity.GetProperty("evidenceIdentitySha256").ValueKind);
         }
 
         var invalid = engine.Calculate(
@@ -200,6 +262,44 @@ public sealed class DeterministicSnapshotExporterTests
                 daily,
                 TimeZoneInfo.Utc,
                 GenerationUtc));
+        var sameIdDifferentOffset = TimeZoneInfo.CreateCustomTimeZone(
+            timeZone.Id,
+            TimeSpan.FromHours(6),
+            "Mismatched Daily Summary fixture",
+            "Mismatched Daily Summary fixture");
+        Assert.ThrowsExactly<SnapshotExportException>(() =>
+            DeterministicSnapshotExporter.ExportDailySummary(
+                daily,
+                sameIdDifferentOffset,
+                GenerationUtc));
+    }
+
+    [TestMethod]
+    public void EvaluationExportRejectsDuplicateSourceIdentities()
+    {
+        var fixture = ReadScoringFixture();
+        var duplicateInput = fixture.Input with
+        {
+            Dimensions = fixture.Input.Dimensions
+                .Select(item => item.Dimension == EvaluationDimension.AcceptanceCriteria
+                    ? item with
+                    {
+                        Leader = item.Leader with
+                        {
+                            ProvenanceId = fixture.Input.Dimensions[0].Leader.ProvenanceId,
+                            EvidenceIdentitySha256 = fixture.Input.Dimensions[0].Leader.EvidenceIdentitySha256,
+                        },
+                    }
+                    : item)
+                .ToArray(),
+        };
+        var invalid = new EvaluationScoringEngine().Calculate(
+            duplicateInput,
+            EvaluationFormulaCatalog.Version1);
+
+        Assert.AreEqual(EvaluationResultStatus.Invalid, invalid.Status);
+        Assert.ThrowsExactly<SnapshotExportException>(() =>
+            DeterministicSnapshotExporter.ExportEvaluation(invalid, GenerationUtc));
     }
 
     [TestMethod]
@@ -215,6 +315,19 @@ public sealed class DeterministicSnapshotExporterTests
             "Bearer abcdefghijklmnopQRSTUV1234",
             "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjMifQ.signatureabcdefgh",
             "tokenUltraSecretValue123456",
+            "ghp_abcdefghijklmnopqrstuvwxyz1234567890",
+            "github_pat_abcdefghijklmnopqrstuvwxyz1234567890",
+            "sk-proj-abcdefghijklmnopqrstuvwxyz1234567890",
+            "xoxb-abcdefghijklmnopqrstuvwxyz1234",
+            "AKIAIOSFODNN7EXAMPLE",
+            "relative/path.txt",
+            "C:relative\\private.txt",
+            "C:private",
+            "..\\private\\accepted.txt",
+            "../private",
+            "private/accepted.txt",
+            "\\private\\accepted.txt",
+            "/private",
         };
 
         foreach (var adversarialValue in adversarialValues)
@@ -234,6 +347,67 @@ public sealed class DeterministicSnapshotExporterTests
             StringAssert.Contains(exception.Message, "fail-closed");
             Assert.DoesNotContain(adversarialValue, exception.Message);
         }
+
+        var harmlessValues = new[]
+        {
+            "token refresh completed",
+            "secret wording is policy-safe",
+            "A/B",
+            "1/2",
+            "github_pat_ is a documented prefix",
+            "sk- is a documented prefix",
+        };
+        foreach (var harmlessValue in harmlessValues)
+        {
+            var source = fixture.Sources[0] with { Summary = harmlessValue };
+            var accepted = DailySummaryAggregator.Aggregate(
+                fixture.LocalDate,
+                timeZone,
+                [source, .. fixture.Sources.Skip(1)]);
+
+            _ = DeterministicSnapshotExporter.ExportDailySummary(
+                accepted,
+                timeZone,
+                GenerationUtc);
+        }
+    }
+
+    [TestMethod]
+    public void MarkdownCsvAndJsonPreserveEscapedValuesAndStrictUtf8RejectsSurrogates()
+    {
+        var fixture = ReadDailySummaryFixture();
+        var timeZone = CreateFixedOffsetTimeZone(fixture.TimeZoneOffsetMinutes);
+        const string specialValue = "Backtick ` with, comma [brackets] <tag>";
+        var source = fixture.Sources[0] with { Summary = specialValue };
+        var accepted = DailySummaryAggregator.Aggregate(
+            fixture.LocalDate,
+            timeZone,
+            [source, .. fixture.Sources.Skip(1)]);
+        var export = DeterministicSnapshotExporter.ExportDailySummary(
+            accepted,
+            timeZone,
+            GenerationUtc);
+
+        using var document = JsonDocument.Parse(export.Json);
+        Assert.AreEqual(
+            specialValue,
+            document.RootElement
+                .GetProperty("acceptedSnapshot")
+                .GetProperty("timeline")[0]
+                .GetProperty("summary")
+                .GetString());
+        StringAssert.Contains(export.Markdown, specialValue);
+        StringAssert.Contains(export.Csv, specialValue);
+        Assert.IsFalse(export.Markdown.Contains("Backtick '", StringComparison.Ordinal));
+
+        var scoring = ReadScoringFixture();
+        var surrogateSnapshot = new EvaluationScoringEngine().Calculate(
+            scoring.Input with { TaskId = "TASK-\uD800" },
+            EvaluationFormulaCatalog.Version1);
+        Assert.ThrowsExactly<SnapshotExportException>(() =>
+            DeterministicSnapshotExporter.ExportEvaluation(
+                surrogateSnapshot,
+                GenerationUtc));
     }
 
     [TestMethod]

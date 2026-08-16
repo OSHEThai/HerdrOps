@@ -118,6 +118,42 @@ public sealed class ExplainableScoringTests
     }
 
     [TestMethod]
+    public void DuplicateProvenanceAndEvidenceIdentitiesInvalidateTheResult()
+    {
+        var fixture = LoadGoldenFixture();
+        var first = fixture.Input.Dimensions[0];
+        var duplicate = fixture.Input with
+        {
+            Dimensions = fixture.Input.Dimensions
+                .Select(item => item.Dimension == EvaluationDimension.AcceptanceCriteria
+                    ? item with
+                    {
+                        Leader = item.Leader with
+                        {
+                            ProvenanceId = first.Leader.ProvenanceId,
+                            EvidenceIdentitySha256 = first.Leader.EvidenceIdentitySha256,
+                        },
+                    }
+                    : item)
+                .ToArray(),
+        };
+
+        var result = new EvaluationScoringEngine().Calculate(
+            duplicate,
+            EvaluationFormulaCatalog.Version1);
+
+        Assert.AreEqual(EvaluationResultStatus.Invalid, result.Status);
+        Assert.IsNull(result.TotalScore);
+        CollectionAssert.AreEquivalent(
+            new[]
+            {
+                "invalid-duplicate-provenance-id",
+                "invalid-duplicate-evidence-identity-sha256",
+            },
+            result.InputIssues.Select(item => item.Code).ToArray());
+    }
+
+    [TestMethod]
     public void MissingAndDuplicateDimensionsFailClosed()
     {
         var snapshot = CompleteSnapshot();
@@ -245,11 +281,24 @@ public sealed class ExplainableScoringTests
             },
         };
         var tamperedResult = historical with { TotalScore = historical.TotalScore + 1m };
+        var tamperedTopLevelSource = historical with
+        {
+            Dimensions = historical.Dimensions
+                .Select(item => item.Dimension == firstDimension.Dimension
+                    ? item with
+                    {
+                        Leader = item.Leader with { Score = item.Leader.Score + 1 },
+                    }
+                    : item)
+                .ToArray(),
+        };
 
         Assert.ThrowsExactly<EvaluationScoringContractException>(() =>
             engine.Recalculate(tamperedInput));
         Assert.ThrowsExactly<EvaluationScoringContractException>(() =>
             engine.Recalculate(tamperedResult));
+        Assert.ThrowsExactly<EvaluationScoringContractException>(() =>
+            engine.Recalculate(tamperedTopLevelSource));
     }
 
     [TestMethod]

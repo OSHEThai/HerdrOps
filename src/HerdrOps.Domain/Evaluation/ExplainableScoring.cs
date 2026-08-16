@@ -476,6 +476,7 @@ public sealed class EvaluationScoringEngine
                 issues),
             Dimensions = Array.AsReadOnly(dimensions),
         };
+        AddDuplicateIdentityIssues(normalizedInput.Dimensions, issues);
         return new(
             normalizedInput,
             Array.AsReadOnly(issues.ToArray()));
@@ -524,6 +525,43 @@ public sealed class EvaluationScoringEngine
                 ? null
                 : input.EvidenceIdentitySha256.Trim().ToUpperInvariant(),
         };
+    }
+
+    private static void AddDuplicateIdentityIssues(
+        IReadOnlyList<EvaluationDimensionInput> dimensions,
+        ICollection<EvaluationInputIssue> issues)
+    {
+        var provenanceIds = new HashSet<string>(StringComparer.Ordinal);
+        var evidenceIdentities = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var dimension in dimensions)
+        {
+            foreach (var (source, input) in new[]
+            {
+                (EvaluationScoreSource.Leader, dimension.Leader),
+                (EvaluationScoreSource.ProjectManager, dimension.ProjectManager),
+                (EvaluationScoreSource.ObjectiveEvidence, dimension.ObjectiveEvidence),
+            })
+            {
+                if (input.ProvenanceId is not null && !provenanceIds.Add(input.ProvenanceId))
+                {
+                    issues.Add(new(
+                        dimension.Dimension,
+                        source,
+                        "invalid-duplicate-provenance-id",
+                        $"{source} reuses a provenance identity from another source slot."));
+                }
+
+                if (input.EvidenceIdentitySha256 is not null &&
+                    !evidenceIdentities.Add(input.EvidenceIdentitySha256))
+                {
+                    issues.Add(new(
+                        dimension.Dimension,
+                        source,
+                        "invalid-duplicate-evidence-identity-sha256",
+                        $"{source} reuses an evidence identity from another source slot."));
+                }
+            }
+        }
     }
 
     private static EvaluationDimensionScore EvaluateDimension(
@@ -723,6 +761,9 @@ public sealed class EvaluationScoringEngine
             writer.Write((int)dimension.Status);
             writer.Write(dimension.DimensionScore?.ToString(CultureInfo.InvariantCulture));
             writer.Write(dimension.WeightedScore?.ToString(CultureInfo.InvariantCulture));
+            WriteScoreInput(writer, dimension.Leader);
+            WriteScoreInput(writer, dimension.ProjectManager);
+            WriteScoreInput(writer, dimension.ObjectiveEvidence);
             writer.Write(dimension.ObservedInputs.Count);
             foreach (var observed in dimension.ObservedInputs)
             {
