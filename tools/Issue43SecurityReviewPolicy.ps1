@@ -359,10 +359,24 @@ function Assert-Issue43RequiredReportFields {
     return $true
 }
 
+function Get-Issue43SchemaReportContractLines {
+    return @(
+        'SchemaVersion: v4',
+        'MigrationGraph: v1 initial-state-store -> v2 assignment-lifecycle-provenance -> v3 evidence-metadata-review-retention-audit -> v4 role-distinct-compliance-review-workflow'
+    )
+}
+
 function Test-Issue43ReportWriterFixtures {
     $separatorLines = @(ConvertTo-Issue43ReportLines -Lines @('header', @('', 'body'), 'footer'))
     if ($separatorLines.Count -ne 4 -or $separatorLines[1] -ne '') {
         throw 'Issue #43 report writer fixture did not preserve the empty separator line.'
+    }
+
+    $schemaContractLines = @(Get-Issue43SchemaReportContractLines)
+    if ($schemaContractLines.Count -ne 2 -or
+        $schemaContractLines[0] -ne 'SchemaVersion: v4' -or
+        $schemaContractLines[1] -ne 'MigrationGraph: v1 initial-state-store -> v2 assignment-lifecycle-provenance -> v3 evidence-metadata-review-retention-audit -> v4 role-distinct-compliance-review-workflow') {
+        throw 'Issue #43 schema report contract fixture is not synchronized with the current four-migration graph.'
     }
 
     try {

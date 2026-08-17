@@ -668,8 +668,7 @@ function Write-Reports {
         'EvidenceClass: Static plus LocalSQLiteIntegration',
         "ReviewedManifestSha256: $manifestHash",
         '',
-        'SchemaVersion: v3',
-        'MigrationGraph: v1 initial-state-store -> v2 assignment-lifecycle-provenance -> v3 evidence-metadata-review-retention-audit',
+        (Get-Issue43SchemaReportContractLines),
         'ForwardOnly: PASS when S-01 is PASS',
         'FutureSchemaFailsClosed: PASS when S-01 is PASS',
         'PreMigrationBackup: PASS when S-02 is PASS',
@@ -681,7 +680,7 @@ function Write-Reports {
         'Checks:',
         (Get-CheckLines),
         '',
-        'Boundary: This is repository static/local-contract evidence. It is not live database, installed product, runtime, independent-review, or release evidence.'
+        'Boundary: This is repository static/local-contract evidence. It is not live database, installed product, runtime, independent-review, human, or release evidence.'
     )
     if (-not (Set-SafeText -Path $schemaReportPath -Lines $schemaLines)) {
         throw 'The schema report could not be written safely.'
