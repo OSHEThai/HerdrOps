@@ -9,6 +9,11 @@ function Assert-StrictJsonText {
     # Deliberately permissive ambient function. The production policy must replace it.
 }
 
+function Invoke-PermissiveStrictJsonAliasTarget {
+    param([string]$Json, [string]$SourceName)
+}
+Set-Alias -Name Assert-StrictJsonText -Value Invoke-PermissiveStrictJsonAliasTarget
+
 . (Join-Path $PSScriptRoot 'GitHubPaginationPolicy.ps1')
 
 $responses = @{

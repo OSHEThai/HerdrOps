@@ -67,7 +67,8 @@ function Read-BoundedGitHubJsonArrayPages {
             -not $trimmed.EndsWith(']', [StringComparison]::Ordinal)) {
             throw "GitHub paged endpoint did not return a JSON array: '$endpoint'."
         }
-        Assert-StrictJsonText -Json $raw -SourceName "GitHub page '$endpoint'"
+        $strictJsonValidator = Get-Command Assert-StrictJsonText -CommandType Function -ErrorAction Stop
+        & $strictJsonValidator -Json $raw -SourceName "GitHub page '$endpoint'"
 
         $responseEndpoint = [string]$response.Endpoint
         if ($responseEndpoint -cne $endpoint) {
