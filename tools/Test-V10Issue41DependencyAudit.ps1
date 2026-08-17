@@ -420,7 +420,7 @@ try {
             if ($missingGhResult.ExitCode -eq 0 -or (Test-Path -LiteralPath $missingGhOutput)) { throw "$($shell.Name) accepted missing gh." }
             [void]$completed.Add("$($shell.Name): gh failure -> rejected")
 
-            $dirtyProbe = Join-Path $repositoryRoot ("issue-41-dirty-probe-$($shell.Name).tmp")
+            $dirtyProbe = Join-Path $repositoryRoot ("issue-41-dirty-probe-$($shell.Name).txt")
             Write-Utf8NoBom -Path $dirtyProbe -Content 'dirty checkout probe'
             try {
                 $dirtyOutput = Join-Path $repositoryRoot ("artifacts\dependency-audit\fixture-$($shell.Name)-dirty")
