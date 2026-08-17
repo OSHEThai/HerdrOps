@@ -147,7 +147,6 @@ function Invoke-AuditCase {
         [Parameter(Mandatory)]
         [string]$ShellPath,
 
-        [Parameter(Mandatory)]
         [string]$FixturePath,
 
         [string]$EvidencePath,
