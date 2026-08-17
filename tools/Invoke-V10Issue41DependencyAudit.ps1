@@ -670,19 +670,24 @@ function Get-GitHubSnapshot {
     }
 
     $pageReader = {
-        param([string]$Endpoint)
-        return Invoke-GhApiReadOnly -Endpoint $Endpoint -Executable $GhCommand
-    }.GetNewClosure()
+        param(
+            [string]$Endpoint,
+            [string]$Executable
+        )
+        return Invoke-GhApiReadOnly -Endpoint $Endpoint -Executable $Executable
+    }
     $milestoneResponse = Read-V10Issue41PagedGitHubArray `
         -BaseEndpoint ("repos/{0}/milestones?state=all" -f $RepositoryName) `
         -PageSize $PageSize `
         -MaximumPages 100 `
-        -PageReader $pageReader
+        -PageReader $pageReader `
+        -PageReaderArguments @($GhCommand)
     $issueResponse = Read-V10Issue41PagedGitHubArray `
         -BaseEndpoint ("repos/{0}/issues?state=all&sort=created&direction=asc" -f $RepositoryName) `
         -PageSize $PageSize `
         -MaximumPages 100 `
-        -PageReader $pageReader
+        -PageReader $pageReader `
+        -PageReaderArguments @($GhCommand)
     return [ordered]@{
         Mode = 'GitHub'
         Repository = $RepositoryName
