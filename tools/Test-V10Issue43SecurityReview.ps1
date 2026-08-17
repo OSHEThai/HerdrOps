@@ -539,8 +539,16 @@ function Get-CheckLines {
 }
 
 function Get-FileInventoryLines {
-    return @($fileInventory | Sort-Object Path | ForEach-Object {
-        "SHA256 $($_.Sha256) BYTES $($_.Bytes) PURPOSE=$($_.Purpose) $($_.Path)"
+    $entriesByPath = @{}
+    $paths = [string[]]@($fileInventory | ForEach-Object {
+        $entriesByPath[$_.Path] = $_
+        $_.Path
+    })
+    [Array]::Sort($paths, [StringComparer]::Ordinal)
+
+    return @($paths | ForEach-Object {
+        $entry = $entriesByPath[$_]
+        "SHA256 $($entry.Sha256) BYTES $($entry.Bytes) PURPOSE=$($entry.Purpose) $($entry.Path)"
     })
 }
 
