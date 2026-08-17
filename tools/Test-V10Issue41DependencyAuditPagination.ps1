@@ -21,18 +21,22 @@ $responses = @{
     }
 }
 $reader = {
-    param([string]$Endpoint)
-    if (-not $responses.ContainsKey($Endpoint)) {
+    param(
+        [string]$Endpoint,
+        [hashtable]$ResponseMap
+    )
+    if (-not $ResponseMap.ContainsKey($Endpoint)) {
         throw "Unexpected pagination endpoint: $Endpoint"
     }
-    return $responses[$Endpoint]
-}.GetNewClosure()
+    return $ResponseMap[$Endpoint]
+}
 
 $result = Read-V10Issue41PagedGitHubArray `
     -BaseEndpoint 'repos/example/issues?state=all&sort=created&direction=asc' `
     -PageSize 2 `
     -MaximumPages 3 `
-    -PageReader $reader
+    -PageReader $reader `
+    -PageReaderArguments @($responses)
 if (@($result.Value).Count -ne 3 -or
     @($result.Endpoint).Count -ne 2 -or
     @($result.Sha256).Count -ne 2 -or

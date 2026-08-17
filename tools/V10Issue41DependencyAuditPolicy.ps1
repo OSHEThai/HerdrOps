@@ -14,7 +14,9 @@ function Read-V10Issue41PagedGitHubArray {
         [int]$MaximumPages,
 
         [Parameter(Mandatory)]
-        [scriptblock]$PageReader
+        [scriptblock]$PageReader,
+
+        [object[]]$PageReaderArguments = @()
     )
 
     if ($BaseEndpoint -match '(?i)(?:^|[?&])(?:page|per_page)=') {
@@ -28,7 +30,7 @@ function Read-V10Issue41PagedGitHubArray {
 
     for ($page = 1; $page -le $MaximumPages; $page++) {
         $endpoint = "${BaseEndpoint}${separator}per_page=${PageSize}&page=${page}"
-        $response = & $PageReader $endpoint
+        $response = & $PageReader $endpoint @PageReaderArguments
         if ($null -eq $response -or
             @($response.PSObject.Properties.Name) -notcontains 'Value' -or
             @($response.PSObject.Properties.Name) -notcontains 'Raw' -or
