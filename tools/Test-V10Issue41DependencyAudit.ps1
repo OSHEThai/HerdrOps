@@ -306,6 +306,29 @@ try {
             if ($malformedResult.ExitCode -eq 0 -or (Test-Path -LiteralPath $malformedOutput)) { throw "$($shell.Name) accepted malformed JSON." }
             [void]$completed.Add("$($shell.Name): malformed JSON -> rejected")
 
+            $duplicateNumberPath = Join-Path $caseDirectory 'github-duplicate-number.json'
+            $duplicateNumberFixture = Copy-JsonFixture -SourcePath $readyFixture -DestinationPath $duplicateNumberPath
+            $duplicateNumberFixture.issues += $duplicateNumberFixture.issues[0]
+            Write-Utf8NoBom -Path $duplicateNumberPath -Content (($duplicateNumberFixture | ConvertTo-Json -Depth 20) + "`r`n")
+            $duplicateNumberOutput = Join-Path $repositoryRoot ("artifacts\dependency-audit\fixture-$($shell.Name)-duplicate-number")
+            $duplicateNumberResult = Invoke-AuditCase -ShellPath $shell.Path -FixturePath $duplicateNumberPath -OutputPath $duplicateNumberOutput
+            Assert-CaseExit -Result $duplicateNumberResult -ExpectedExitCode 2 -CaseName "$($shell.Name) duplicate issue number fixture"
+            $duplicateNumberReport = Assert-Report -OutputPath $duplicateNumberOutput -CaseName "$($shell.Name) duplicate issue number fixture"
+            if (@($duplicateNumberReport.Blockers | Where-Object Code -eq 'DUPLICATE_OR_INVALID_ISSUE_NUMBER').Count -eq 0) { throw 'Duplicate issue number was not rejected.' }
+            [void]$completed.Add("$($shell.Name): duplicate issue number -> rejected")
+
+            $duplicateKeyPath = Join-Path $caseDirectory 'github-duplicate-issue-key.json'
+            $duplicateKeyFixture = Copy-JsonFixture -SourcePath $readyFixture -DestinationPath $duplicateKeyPath
+            ($duplicateKeyFixture.issues | Where-Object number -eq 1).body = '<!-- herdr-issue-key: DUPLICATE-KEY -->'
+            ($duplicateKeyFixture.issues | Where-Object number -eq 2).body = '<!-- herdr-issue-key: DUPLICATE-KEY -->'
+            Write-Utf8NoBom -Path $duplicateKeyPath -Content (($duplicateKeyFixture | ConvertTo-Json -Depth 20) + "`r`n")
+            $duplicateKeyOutput = Join-Path $repositoryRoot ("artifacts\dependency-audit\fixture-$($shell.Name)-duplicate-key")
+            $duplicateKeyResult = Invoke-AuditCase -ShellPath $shell.Path -FixturePath $duplicateKeyPath -OutputPath $duplicateKeyOutput
+            Assert-CaseExit -Result $duplicateKeyResult -ExpectedExitCode 2 -CaseName "$($shell.Name) duplicate issue key fixture"
+            $duplicateKeyReport = Assert-Report -OutputPath $duplicateKeyOutput -CaseName "$($shell.Name) duplicate issue key fixture"
+            if (@($duplicateKeyReport.Blockers | Where-Object Code -eq 'DUPLICATE_ISSUE_KEY').Count -eq 0) { throw 'Duplicate issue key was not rejected.' }
+            [void]$completed.Add("$($shell.Name): duplicate issue key -> rejected")
+
             $openFixturePath = Join-Path $caseDirectory 'github-open.json'
             $openFixture = Copy-JsonFixture -SourcePath $readyFixture -DestinationPath $openFixturePath
             ($openFixture.issues | Where-Object number -eq 7).state = 'open'
@@ -360,6 +383,19 @@ try {
             $conflationReport = Assert-Report -OutputPath $conflationOutput -CaseName "$($shell.Name) evidence-class conflation fixture"
             if (@($conflationReport.Blockers | Where-Object Code -eq 'SYNTHETIC_WPF_RUNTIME_CONFLATION').Count -eq 0) { throw 'RuntimeTests conflation was not rejected.' }
             [void]$completed.Add("$($shell.Name): RuntimeTests conflation -> rejected")
+
+            $reparseJunction = Join-Path $repositoryRoot ("artifacts\dependency-audit\fixture-$($shell.Name)-reparse")
+            if (Test-Path -LiteralPath $reparseJunction) { Remove-Item -LiteralPath $reparseJunction -Force }
+            New-Item -ItemType Junction -Path $reparseJunction -Target $caseDirectory -ErrorAction Stop | Out-Null
+            try {
+                $reparseOutput = Join-Path $reparseJunction 'nested'
+                $reparseResult = Invoke-AuditCase -ShellPath $shell.Path -FixturePath $readyFixture -OutputPath $reparseOutput
+                if ($reparseResult.ExitCode -eq 0 -or (Test-Path -LiteralPath $reparseOutput)) { throw "$($shell.Name) accepted a reparse output path." }
+            }
+            finally {
+                if (Test-Path -LiteralPath $reparseJunction) { Remove-Item -LiteralPath $reparseJunction -Force }
+            }
+            [void]$completed.Add("$($shell.Name): reparse output -> rejected")
 
             $traversalOutput = Join-Path $repositoryRoot 'artifacts\dependency-audit\..\issue-41-escape'
             $traversalResult = Invoke-AuditCase -ShellPath $shell.Path -FixturePath $readyFixture -OutputPath $traversalOutput
