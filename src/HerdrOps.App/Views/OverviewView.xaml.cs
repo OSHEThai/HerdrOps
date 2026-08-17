@@ -2,6 +2,7 @@ using System.Windows;
 using System.Windows.Controls;
 using HerdrOps.App.Overview;
 using HerdrOps.App.Widgets;
+using HerdrOps.Domain.Settings;
 
 namespace HerdrOps.App.Views;
 
@@ -14,6 +15,9 @@ public partial class OverviewView : UserControl
     private const double CompactHeightBreakpoint = 600;
     private WidgetGalleryWindow? _galleryWindow;
     private IWidgetState _widgetState = SyntheticWidgetState.Create();
+    private IWidgetWindowLauncher? _widgetLauncher;
+    private Action<AppSettingsWidgetVariant>? _widgetSelected;
+    private Action<bool>? _widgetEnabled;
 
     public OverviewView()
         : this(SyntheticOverviewState.Create())
@@ -26,10 +30,19 @@ public partial class OverviewView : UserControl
         DataContext = state;
     }
 
-    public void UseWidgetState(IWidgetState state)
+    public void UseWidgetState(IWidgetState state, IWidgetWindowLauncher? widgetLauncher = null)
     {
         ArgumentNullException.ThrowIfNull(state);
         _widgetState = state;
+        _widgetLauncher = widgetLauncher;
+    }
+
+    public void UseSettingsLifecycle(
+        Action<AppSettingsWidgetVariant>? widgetSelected,
+        Action<bool>? widgetEnabled)
+    {
+        _widgetSelected = widgetSelected;
+        _widgetEnabled = widgetEnabled;
     }
 
     private void OnOverviewSizeChanged(object sender, SizeChangedEventArgs e)
@@ -51,7 +64,11 @@ public partial class OverviewView : UserControl
     {
         if (_galleryWindow is null || !_galleryWindow.IsLoaded)
         {
-            _galleryWindow = new WidgetGalleryWindow(_widgetState)
+            _galleryWindow = new WidgetGalleryWindow(
+                _widgetState,
+                _widgetLauncher,
+                _widgetSelected,
+                _widgetEnabled)
             {
                 Owner = Window.GetWindow(this),
             };

@@ -182,7 +182,8 @@
         "type": "Project",
         "dependencies": {
           "HerdrOps.Contracts": "[0.1.0-dev, )",
-          "HerdrOps.Domain": "[0.1.0-dev, )"
+          "HerdrOps.Domain": "[0.1.0-dev, )",
+          "HerdrOps.Infrastructure": "[0.1.0-dev, )"
         }
       },
       "herdrops.cli": {

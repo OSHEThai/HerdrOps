@@ -10,6 +10,7 @@ namespace HerdrOps.App.Widgets;
 public partial class WidgetWindow : Window
 {
     private bool _isConstraining;
+    private bool _isClosed;
     private IWidgetState _state;
     private readonly IWidgetActionRouter _actionRouter;
 
@@ -62,6 +63,8 @@ public partial class WidgetWindow : Window
     public WidgetVariantDescriptor Descriptor { get; }
 
     public WidgetMotionPolicy MotionPolicy { get; }
+
+    public bool IsClosed => _isClosed;
 
     public bool IsDragEnabled => true;
 
@@ -165,6 +168,7 @@ public partial class WidgetWindow : Window
 
     private void OnClosed(object? sender, EventArgs e)
     {
+        _isClosed = true;
         Surface.NotificationOpenRequested -= OnNotificationOpenRequested;
         Surface.NotificationHistoryRequested -= OnNotificationHistoryRequested;
         Surface.AgentDetailsRequested -= OnAgentDetailsRequested;
