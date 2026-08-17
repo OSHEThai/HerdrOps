@@ -92,8 +92,8 @@ function New-ReadyEvidenceManifest {
         $artifactPath = Join-Path $artifactRoot ($version + '.bin')
         Write-Utf8NoBom -Path $reportPath -Content ("Fixture gate report for {0}`r`n" -f $version)
         Write-Utf8NoBom -Path $artifactPath -Content ("Fixture artifact for {0}`r`n" -f $version)
-        $reportRelative = $reportPath.Substring($repositoryRoot.Length).TrimStart([char[]]@('\\', '/')).Replace('\', '/')
-        $artifactRelative = $artifactPath.Substring($repositoryRoot.Length).TrimStart([char[]]@('\\', '/')).Replace('\', '/')
+        $reportRelative = $reportPath.Substring($repositoryRoot.Length).TrimStart([char[]]@([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)).Replace('\', '/')
+        $artifactRelative = $artifactPath.Substring($repositoryRoot.Length).TrimStart([char[]]@([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)).Replace('\', '/')
         [void]$entries.Add([ordered]@{
             version = $version
             gateId = 'version-local'

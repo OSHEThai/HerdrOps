@@ -591,7 +591,7 @@ function Get-PlanTruth {
 
     $planHashMap = [ordered]@{}
     foreach ($path in @($roadmapPath, $trackingPath, $releaseGatesPath)) {
-        $relative = $path.Substring($Root.Length).TrimStart([char[]]@('\\', '/')).Replace('\', '/')
+        $relative = $path.Substring($Root.Length).TrimStart([char[]]@([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)).Replace('\', '/')
         $planHashMap[$relative] = ((Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash).ToUpperInvariant()
     }
 
