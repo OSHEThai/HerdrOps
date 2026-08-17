@@ -90,7 +90,8 @@ function Read-StrictJsonFile {
         throw "JSON input file is empty: $Path"
     }
 
-    Assert-StrictJsonText -Json $raw -SourceName $item.FullName
+    $strictJsonValidator = Get-Command Assert-StrictJsonText -CommandType Function -ErrorAction Stop
+    & $strictJsonValidator -Json $raw -SourceName $item.FullName
     try {
         $value = $raw | ConvertFrom-Json
     }
@@ -300,7 +301,8 @@ function Invoke-GhApiReadOnly {
         throw "GitHub CLI returned an empty response for '$Endpoint'."
     }
 
-    Assert-StrictJsonText -Json $rawOutput -SourceName "gh api $Endpoint"
+    $strictJsonValidator = Get-Command Assert-StrictJsonText -CommandType Function -ErrorAction Stop
+    & $strictJsonValidator -Json $rawOutput -SourceName "gh api $Endpoint"
     try {
         $value = $rawOutput | ConvertFrom-Json
     }

@@ -4,7 +4,7 @@
 
 `github-duplicate-key.json` and `github-malformed.json` exercise strict JSON rejection before PowerShell's permissive object conversion can hide an error.
 
-`tools/Test-V10Issue41DependencyAuditPagination.ps1` supplies deterministic multi-page responses to the production pagination policy. It proves ordered aggregation, exact per-page endpoint/hash binding, caller-page rejection, bounded full-page failure, and rejection of comments, trailing commas, and leading-zero numbers without contacting GitHub.
+`tools/Test-V10Issue41DependencyAuditPagination.ps1` supplies deterministic multi-page responses to the production pagination policy. It proves ordered aggregation, exact per-page endpoint/hash binding, caller-page rejection, bounded full-page failure, replacement of ambient function/alias names, and rejection of comments, trailing commas, and leading-zero numbers without contacting GitHub.
 
 `fake-gh-multipage.ps1` drives the actual shared milestone verifier through one milestone page and two issue pages under both Windows PowerShell 5.1 and PowerShell 7. It is deterministic test input only and does not establish GitHub or release state.
 

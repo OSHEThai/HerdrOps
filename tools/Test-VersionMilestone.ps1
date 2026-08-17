@@ -47,7 +47,8 @@ function Read-GitHubJsonArrayPage {
         -not $trimmed.EndsWith(']', [StringComparison]::Ordinal)) {
         throw "GitHub endpoint '$Endpoint' did not return a JSON array."
     }
-    Assert-StrictJsonText -Json $trimmed -SourceName "gh api $Endpoint"
+    $strictJsonValidator = Get-Command Assert-StrictJsonText -CommandType Function -ErrorAction Stop
+    & $strictJsonValidator -Json $trimmed -SourceName "gh api $Endpoint"
 
     $parsed = $trimmed | ConvertFrom-Json
     $parsedItems = if ($null -eq $parsed) { @() } else { [object[]]$parsed }
