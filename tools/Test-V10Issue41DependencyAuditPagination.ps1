@@ -4,7 +4,7 @@ param()
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-. (Join-Path $PSScriptRoot 'V10Issue41DependencyAuditPolicy.ps1')
+. (Join-Path $PSScriptRoot 'GitHubPaginationPolicy.ps1')
 
 $responses = @{
     'repos/example/issues?state=all&sort=created&direction=asc&per_page=2&page=1' = [pscustomobject]@{
@@ -31,7 +31,7 @@ $reader = {
     return $ResponseMap[$Endpoint]
 }
 
-$result = Read-V10Issue41PagedGitHubArray `
+$result = Read-BoundedGitHubJsonArrayPages `
     -BaseEndpoint 'repos/example/issues?state=all&sort=created&direction=asc' `
     -PageSize 2 `
     -MaximumPages 3 `
@@ -56,7 +56,7 @@ $fullPageReader = {
     }
 }
 try {
-    Read-V10Issue41PagedGitHubArray `
+    Read-BoundedGitHubJsonArrayPages `
         -BaseEndpoint 'repos/example/issues?state=all' `
         -PageSize 1 `
         -MaximumPages 2 `
@@ -70,7 +70,7 @@ catch {
 }
 
 try {
-    Read-V10Issue41PagedGitHubArray `
+    Read-BoundedGitHubJsonArrayPages `
         -BaseEndpoint 'repos/example/issues?state=all&page=1' `
         -PageSize 100 `
         -MaximumPages 2 `

@@ -1,6 +1,6 @@
 Set-StrictMode -Version Latest
 
-function Read-V10Issue41PagedGitHubArray {
+function Read-BoundedGitHubJsonArrayPages {
     param(
         [Parameter(Mandatory)]
         [string]$BaseEndpoint,

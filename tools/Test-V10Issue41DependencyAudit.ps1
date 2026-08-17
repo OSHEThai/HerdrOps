@@ -6,8 +6,9 @@ $ErrorActionPreference = 'Stop'
 
 $repositoryRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
 $auditTool = Join-Path $PSScriptRoot 'Invoke-V10Issue41DependencyAudit.ps1'
-$paginationPolicy = Join-Path $PSScriptRoot 'V10Issue41DependencyAuditPolicy.ps1'
+$paginationPolicy = Join-Path $PSScriptRoot 'GitHubPaginationPolicy.ps1'
 $paginationFixture = Join-Path $PSScriptRoot 'Test-V10Issue41DependencyAuditPagination.ps1'
+$milestoneVerifier = Join-Path $PSScriptRoot 'Test-VersionMilestone.ps1'
 $fixtureRoot = Join-Path $repositoryRoot 'tests\fixtures\v1.0\issue-41'
 $readyFixture = Join-Path $fixtureRoot 'github-snapshot-ready.json'
 $duplicateFixture = Join-Path $fixtureRoot 'github-duplicate-key.json'
@@ -15,7 +16,7 @@ $malformedFixture = Join-Path $fixtureRoot 'github-malformed.json'
 $testRoot = Join-Path $repositoryRoot 'artifacts\dependency-audit-fixture-tests'
 $fixedObservedUtc = '2026-08-17T00:00:00.0000000Z'
 
-foreach ($path in @($auditTool, $paginationPolicy, $paginationFixture, $readyFixture, $duplicateFixture, $malformedFixture)) {
+foreach ($path in @($auditTool, $paginationPolicy, $paginationFixture, $milestoneVerifier, $readyFixture, $duplicateFixture, $malformedFixture)) {
     if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
         throw "Issue #41 fixture test input is missing: $path"
     }
@@ -286,11 +287,23 @@ if ($shells.Count -eq 0) {
 }
 
 $completed = New-Object System.Collections.ArrayList
+$milestoneSource = Get-Content -LiteralPath $milestoneVerifier -Raw
+$milestonePaginationCalls = [regex]::Matches(
+    $milestoneSource,
+    '(?m)^\s*\$(?:milestone|issue)Response\s*=\s*Read-BoundedGitHubJsonArrayPages\s*`?\s*$'
+).Count
+if ($milestonePaginationCalls -ne 2 -or
+    $milestoneSource -notmatch 'milestones\?state=all&sort=created&direction=asc' -or
+    $milestoneSource -notmatch 'issues\?state=all&sort=created&direction=asc') {
+    throw 'The shared milestone verifier is not bound to complete, stable GitHub pagination.'
+}
+[void]$completed.Add('version milestone verifier: bounded pagination -> bound')
 try {
     foreach ($shell in $shells) {
         Assert-ParsedInShell -ShellPath $shell.Path -Path $auditTool
         Assert-ParsedInShell -ShellPath $shell.Path -Path $paginationPolicy
         Assert-ParsedInShell -ShellPath $shell.Path -Path $paginationFixture
+        Assert-ParsedInShell -ShellPath $shell.Path -Path $milestoneVerifier
         $paginationOutput = @(& $shell.Path -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $paginationFixture 2>&1 | ForEach-Object { [string]$_ })
         if ($LASTEXITCODE -ne 0 -or ($paginationOutput -join "`n") -notmatch 'bounded pagination fixtures: PASS') {
             throw "$($shell.Name) pagination fixture failed: $($paginationOutput -join '; ')"
