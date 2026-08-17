@@ -19,6 +19,7 @@
     "runtimeIdentifier": "win-x64",
     "deploymentModel": "per-user-directory",
     "userDataPolicy": "retain-on-uninstall",
+    "sourceCommit": "replace_with_exact_lowercase_40_character_initial_artifact_commit_hash",
     "manifestSha256": "REPLACE_WITH_EXACT_UPPERCASE_64_CHAR_MANIFEST_HASH",
     "archiveSha256": "REPLACE_WITH_EXACT_UPPERCASE_64_CHAR_ARCHIVE_HASH",
     "contentSha256": "REPLACE_WITH_EXACT_UPPERCASE_64_CHAR_CONTENT_HASH"
@@ -35,6 +36,7 @@
     "runtimeIdentifier": "win-x64",
     "deploymentModel": "per-user-directory",
     "userDataPolicy": "retain-on-uninstall",
+    "sourceCommit": "replace_with_exact_lowercase_40_character_commit_hash",
     "manifestSha256": "REPLACE_WITH_EXACT_UPPERCASE_64_CHAR_MANIFEST_HASH",
     "archiveSha256": "REPLACE_WITH_EXACT_UPPERCASE_64_CHAR_ARCHIVE_HASH",
     "contentSha256": "REPLACE_WITH_EXACT_UPPERCASE_64_CHAR_CONTENT_HASH"

@@ -17,7 +17,7 @@
     "acceptanceVersion": { "const": "v1.0.0" },
     "status": { "enum": ["PASS", "FAIL", "CANCELLED"] },
     "mode": { "enum": ["DryRun", "Fixture", "Live"] },
-    "evidenceClass": { "enum": ["Static", "Synthetic", "Runtime"] },
+    "evidenceClass": { "enum": ["Static", "Synthetic", "CleanMachine"] },
     "startedAtUtc": { "type": "string", "format": "date-time" },
     "completedAtUtc": { "type": "string", "format": "date-time" },
     "runId": { "type": "string", "pattern": "^[0-9a-f]{32}$" },
@@ -36,8 +36,8 @@
       "type": "object", "additionalProperties": false,
       "required": ["initial", "upgrade"],
       "properties": {
-        "initial": { "$ref": "#/definitions/artifact" },
-        "upgrade": { "$ref": "#/definitions/artifact" }
+        "initial": { "oneOf": [{ "$ref": "#/definitions/artifact" }, { "type": "null" }] },
+        "upgrade": { "oneOf": [{ "$ref": "#/definitions/artifact" }, { "type": "null" }] }
       }
     },
     "targets": {
@@ -134,7 +134,10 @@
         "manifestBytes": { "type": "integer", "minimum": 0 },
         "manifestSha256": { "type": "string", "pattern": "^[0-9A-F]{64}$" },
         "contentSha256": { "type": "string", "pattern": "^[0-9A-F]{64}$" },
-        "sourceCommitBinding": { "type": "string" },
+        "sourceCommitBinding": {
+          "type": "string",
+          "pattern": "^([0-9a-f]{40}|NOT_BOUND_IN_SYNTHETIC_FIXTURE)$"
+        },
         "installedFileHashes": { "type": "array", "items": { "$ref": "#/definitions/hash" } }
       }
     },

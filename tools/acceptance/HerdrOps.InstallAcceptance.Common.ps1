@@ -82,6 +82,27 @@ function Assert-AcceptanceSha256 {
     }
 }
 
+function Assert-AcceptanceLiveSourceCommitBinding {
+    param(
+        [Parameter(Mandatory = $true)][string]$AcceptedSourceCommit,
+        [Parameter(Mandatory = $true)][string]$ExpectedSourceCommit,
+        [Parameter(Mandatory = $true)][string]$UpgradeArtifactSourceCommit
+    )
+
+    foreach ($binding in @(
+            [pscustomobject]@{ Name = 'accepted sourceCommit'; Value = $AcceptedSourceCommit },
+            [pscustomobject]@{ Name = 'expected sourceCommit'; Value = $ExpectedSourceCommit },
+            [pscustomobject]@{ Name = 'upgrade artifact sourceCommit'; Value = $UpgradeArtifactSourceCommit })) {
+        if ([string]$binding.Value -notmatch '^[0-9a-f]{40}$') {
+            throw "$($binding.Name) must be an exact 40-character lowercase commit."
+        }
+    }
+    if ($AcceptedSourceCommit -cne $ExpectedSourceCommit -or
+        $UpgradeArtifactSourceCommit -cne $AcceptedSourceCommit) {
+        throw 'Accepted, independently expected, and v1.0.0 upgrade artifact source commits must be identical.'
+    }
+}
+
 function Assert-AcceptanceNoReparsePath {
     param([Parameter(Mandatory = $true)][string]$Path)
 
@@ -235,7 +256,13 @@ function Read-AcceptanceJsonFile {
     }
     Assert-AcceptanceNoReparsePath -Path $fullPath
     try {
-        return Get-Content -LiteralPath $fullPath -Raw | ConvertFrom-Json
+        $json = [IO.File]::ReadAllText($fullPath)
+        Assert-NoDuplicateJsonObjectProperties -Json $json -Description $Context
+        $converter = Get-Command -Name ConvertFrom-Json -CommandType Cmdlet -ErrorAction Stop
+        if ($converter.Parameters.ContainsKey('DateKind')) {
+            return & $converter -InputObject $json -DateKind String
+        }
+        return & $converter -InputObject $json
     } catch {
         throw "$Context is not valid JSON: $fullPath. $($_.Exception.Message)"
     }
@@ -447,14 +474,24 @@ function Assert-AcceptanceArtifact {
     $expectedManifestSha256 = [string](Get-AcceptanceRequiredProperty -Object $Expected -Name 'manifestSha256' -Context "$Name binding")
     $expectedArchiveSha256 = [string](Get-AcceptanceRequiredProperty -Object $Expected -Name 'archiveSha256' -Context "$Name binding")
     $expectedContentSha256 = [string](Get-AcceptanceRequiredProperty -Object $Expected -Name 'contentSha256' -Context "$Name binding")
+    $sourceCommit = [string](Get-AcceptanceRequiredProperty -Object $Expected -Name 'sourceCommit' -Context "$Name binding")
     Assert-AcceptanceSha256 -Value $expectedManifestSha256 -Context "$Name binding manifestSha256"
     Assert-AcceptanceSha256 -Value $expectedArchiveSha256 -Context "$Name binding archiveSha256"
     Assert-AcceptanceSha256 -Value $expectedContentSha256 -Context "$Name binding contentSha256"
+    if ($sourceCommit -cne 'NOT_BOUND_IN_SYNTHETIC_FIXTURE' -and
+        $sourceCommit -notmatch '^[0-9a-f]{40}$') {
+        throw "$Name binding sourceCommit must be an exact lowercase commit or the synthetic non-binding marker."
+    }
     if ($expectedManifestSha256 -cne $manifestCheck.ManifestSha256 -or
         $expectedArchiveSha256 -cne $archiveSha256 -or
         $expectedContentSha256 -cne $manifestCheck.ContentSha256) {
         throw "$Name artifact bytes do not match the exact hash binding."
     }
+
+    Assert-AcceptanceArchiveMatchesPackageRoot `
+        -ArchivePath $archivePath `
+        -ManifestCheck $manifestCheck `
+        -Context $Name
 
     return [pscustomobject][ordered]@{
         Name = $Name
@@ -476,6 +513,97 @@ function Assert-AcceptanceArtifact {
         RuntimeIdentifier = [string]$manifestCheck.Manifest.runtimeIdentifier
         DeploymentModel = [string]$manifestCheck.Manifest.deploymentModel
         UserDataPolicy = [string]$manifestCheck.Manifest.userDataPolicy
+        SourceCommit = $sourceCommit
+    }
+}
+
+function Assert-AcceptanceArchiveMatchesPackageRoot {
+    param(
+        [Parameter(Mandatory = $true)][string]$ArchivePath,
+        [Parameter(Mandatory = $true)]$ManifestCheck,
+        [Parameter(Mandatory = $true)][string]$Context
+    )
+
+    try {
+        Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction Stop
+    } catch {
+        if ($null -eq ('System.IO.Compression.ZipFile' -as [type])) {
+            throw "$Context archive verification could not load ZIP support: $($_.Exception.Message)"
+        }
+    }
+
+    $expectedEntries = New-Object System.Collections.ArrayList
+    foreach ($entry in @($ManifestCheck.Entries)) {
+        [void]$expectedEntries.Add([pscustomobject][ordered]@{
+                Path = [string]$entry.Path
+                Length = [int64]$entry.Length
+                Sha256 = [string]$entry.Sha256
+            })
+    }
+    [void]$expectedEntries.Add([pscustomobject][ordered]@{
+            Path = 'package-manifest.json'
+            Length = [int64]$ManifestCheck.ManifestBytes
+            Sha256 = [string]$ManifestCheck.ManifestSha256
+        })
+    $expected = @(Sort-PackageEntriesOrdinal -Entries @($expectedEntries.ToArray()))
+
+    $archive = $null
+    try {
+        $archive = [IO.Compression.ZipFile]::OpenRead((Get-AcceptanceFullPath -Path $ArchivePath))
+        $metadata = New-Object System.Collections.ArrayList
+        $seenNames = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+        foreach ($entry in @($archive.Entries)) {
+            $entryName = [string]$entry.FullName
+            if ([string]::IsNullOrWhiteSpace($entryName) -or
+                $entryName.EndsWith('/', [StringComparison]::Ordinal) -or
+                $entryName.Contains('\') -or
+                $entryName.StartsWith('/', [StringComparison]::Ordinal) -or
+                $entryName.Contains('//') -or
+                $entryName -match '(^|/)\.\.?(/|$)' -or
+                $entryName -match '[\x00-\x1F<>:"|?*]' -or
+                [IO.Path]::IsPathRooted($entryName)) {
+                throw "$Context archive contains an unsafe or non-file entry: '$entryName'."
+            }
+            if (-not $seenNames.Add($entryName)) {
+                throw "$Context archive contains a duplicate Windows path: '$entryName'."
+            }
+            [void]$metadata.Add([pscustomobject][ordered]@{
+                    Path = $entryName
+                    Length = [int64]$entry.Length
+                    Entry = $entry
+                })
+        }
+
+        $actual = @(Sort-PackageEntriesOrdinal -Entries @($metadata.ToArray()))
+        if ($actual.Count -ne $expected.Count) {
+            throw "$Context archive entry count does not match the expanded package root."
+        }
+        for ($index = 0; $index -lt $expected.Count; $index++) {
+            if ([string]$actual[$index].Path -cne [string]$expected[$index].Path -or
+                [int64]$actual[$index].Length -ne [int64]$expected[$index].Length) {
+                throw "$Context archive metadata mismatch at index ${index}: '$($actual[$index].Path)'."
+            }
+        }
+
+        for ($index = 0; $index -lt $expected.Count; $index++) {
+            $stream = $null
+            $algorithm = $null
+            try {
+                $stream = $actual[$index].Entry.Open()
+                $algorithm = [Security.Cryptography.SHA256]::Create()
+                $hash = ([BitConverter]::ToString($algorithm.ComputeHash($stream))).Replace('-', '').ToUpperInvariant()
+            } finally {
+                if ($null -ne $algorithm) { $algorithm.Dispose() }
+                if ($null -ne $stream) { $stream.Dispose() }
+            }
+            if ($hash -cne [string]$expected[$index].Sha256) {
+                throw "$Context archive bytes differ from the expanded package root at '$($expected[$index].Path)'."
+            }
+        }
+    } catch {
+        throw "$Context archive is not an exact safe representation of its expanded package root. $($_.Exception.Message)"
+    } finally {
+        if ($null -ne $archive) { $archive.Dispose() }
     }
 }
 
@@ -553,8 +681,9 @@ function Copy-AcceptanceDirectoryContents {
     if (-not (Test-Path -LiteralPath $sourceRoot -PathType Container)) {
         throw "$Context source directory was not found: $sourceRoot"
     }
-    if ($sourceRoot.Equals($destinationRoot, [StringComparison]::OrdinalIgnoreCase)) {
-        throw "$Context source and destination must differ."
+    if ((Test-PathWithin -ChildPath $sourceRoot -RootPath $destinationRoot) -or
+        (Test-PathWithin -ChildPath $destinationRoot -RootPath $sourceRoot)) {
+        throw "$Context source and destination must not overlap."
     }
     Assert-AcceptanceTreeNoReparse -Path $sourceRoot -Context "$Context source"
     Assert-AcceptanceNoReparsePath -Path $destinationRoot
@@ -659,8 +788,10 @@ function Invoke-AcceptanceDirectoryTransition {
         [Parameter(Mandatory = $true)][string]$InstallRoot,
         [Parameter(Mandatory = $true)][string]$InstallParent,
         [Parameter(Mandatory = $true)][ValidateSet('CleanInstall', 'Upgrade', 'Rollback')][string]$Phase,
-        [Parameter(Mandatory = $true)][ValidateSet('None', 'BeforeCleanInstallCommit', 'AfterCleanInstallBackup', 'BeforeUpgradeCommit', 'AfterUpgradeBackup', 'BeforeRollbackCommit', 'AfterRollbackBackup')][string]$CancellationPoint,
-        [Parameter(Mandatory = $true)][ValidatePattern('^[0-9a-f]{32}$')][string]$RunId
+        [Parameter(Mandatory = $true)][ValidateSet('None', 'BeforeCleanInstallCommit', 'BeforeUpgradeCommit', 'AfterUpgradeBackup', 'BeforeRollbackCommit', 'AfterRollbackBackup', 'BeforeUninstallCommit')][string]$CancellationPoint,
+        [Parameter(Mandatory = $true)][ValidatePattern('^[0-9a-f]{32}$')][string]$RunId,
+        [scriptblock]$TestOnlyBeforeCommitHook,
+        [scriptblock]$TestOnlyBackupRetirementHook
     )
 
     $target = Get-AcceptanceFullPath -Path $InstallRoot
@@ -670,6 +801,7 @@ function Invoke-AcceptanceDirectoryTransition {
     $oldPresent = Test-Path -LiteralPath $target
     $oldMoved = $false
     $committed = $false
+    $validatedCommit = $false
     $preserveTransient = $false
     try {
         $stage = New-AcceptanceOwnedSiblingDirectory -InstallParent $parent -Role 'stage' -RunId $RunId
@@ -695,6 +827,9 @@ function Invoke-AcceptanceDirectoryTransition {
             }
         }
 
+        if ($null -ne $TestOnlyBeforeCommitHook) {
+            & $TestOnlyBeforeCommitHook $target $backup | Out-Null
+        }
         if (Test-Path -LiteralPath $target) {
             throw "$Phase install target was unexpectedly recreated before commit: $target"
         }
@@ -702,10 +837,19 @@ function Invoke-AcceptanceDirectoryTransition {
         $stage = $null
         $committed = $true
         $installedHashes = Assert-AcceptanceInstalledPayload -InstallRoot $target -Artifact $Artifact -Context "$Phase installed package"
+        $validatedCommit = $true
 
         if ($null -ne $backup -and (Test-Path -LiteralPath $backup)) {
-            Remove-AcceptanceOwnedSiblingDirectory -Path $backup -InstallParent $parent -Role 'backup' -RunId $RunId
-            $backup = $null
+            try {
+                if ($null -ne $TestOnlyBackupRetirementHook) {
+                    & $TestOnlyBackupRetirementHook $backup $target | Out-Null
+                }
+                Remove-AcceptanceOwnedSiblingDirectory -Path $backup -InstallParent $parent -Role 'backup' -RunId $RunId
+                $backup = $null
+            } catch {
+                $preserveTransient = $true
+                throw "$Phase installed payload is valid and remains committed, but owned backup retirement failed: $($_.Exception.Message)"
+            }
         }
 
         return [pscustomobject][ordered]@{
@@ -716,6 +860,10 @@ function Invoke-AcceptanceDirectoryTransition {
     } catch {
         $primaryException = $_.Exception
         $cleanupException = $null
+        if ($validatedCommit) {
+            $preserveTransient = $true
+            throw $primaryException
+        }
         try {
             if ($null -ne $stage -and (Test-Path -LiteralPath $stage)) {
                 Remove-AcceptanceOwnedSiblingDirectory -Path $stage -InstallParent $parent -Role 'stage' -RunId $RunId
@@ -733,8 +881,6 @@ function Invoke-AcceptanceDirectoryTransition {
             } elseif ($null -ne $backup -and (Test-Path -LiteralPath $backup)) {
                 Remove-AcceptanceOwnedSiblingDirectory -Path $backup -InstallParent $parent -Role 'backup' -RunId $RunId
                 $backup = $null
-            } elseif (-not $oldPresent -and (Test-Path -LiteralPath $target)) {
-                Remove-AcceptanceDirectoryTree -Path $target -Context "$Phase failed clean-install rollback"
             }
         } catch {
             $cleanupException = $_.Exception
@@ -751,6 +897,101 @@ function Invoke-AcceptanceDirectoryTransition {
         if (-not $preserveTransient -and $null -ne $stage -and (Test-Path -LiteralPath $stage)) {
             Remove-AcceptanceOwnedSiblingDirectory -Path $stage -InstallParent $parent -Role 'stage' -RunId $RunId
         }
+        if (-not $preserveTransient -and $null -ne $backup -and (Test-Path -LiteralPath $backup)) {
+            Remove-AcceptanceOwnedSiblingDirectory -Path $backup -InstallParent $parent -Role 'backup' -RunId $RunId
+        }
+    }
+}
+
+function Invoke-AcceptanceUninstallTransition {
+    param(
+        [Parameter(Mandatory = $true)]$Artifact,
+        [Parameter(Mandatory = $true)][string]$InstallRoot,
+        [Parameter(Mandatory = $true)][string]$InstallParent,
+        [Parameter(Mandatory = $true)][string]$RetainedDataPath,
+        [Parameter(Mandatory = $true)][string]$RetainedDataSha256,
+        [Parameter(Mandatory = $true)][ValidateSet('None', 'BeforeCleanInstallCommit', 'BeforeUpgradeCommit', 'AfterUpgradeBackup', 'BeforeRollbackCommit', 'AfterRollbackBackup', 'BeforeUninstallCommit')][string]$CancellationPoint,
+        [Parameter(Mandatory = $true)][ValidatePattern('^[0-9a-f]{32}$')][string]$RunId,
+        [scriptblock]$TestOnlyBackupRetirementHook
+    )
+
+    $target = Get-AcceptanceFullPath -Path $InstallRoot
+    $parent = Get-AcceptanceFullPath -Path $InstallParent
+    $retainedPath = Get-AcceptanceFullPath -Path $RetainedDataPath
+    Assert-AcceptanceSha256 -Value $RetainedDataSha256 -Context 'uninstall retained-data SHA-256'
+    $backup = $null
+    $oldMoved = $false
+    $validatedCommit = $false
+    $preserveTransient = $false
+    try {
+        $installedHashes = Assert-AcceptanceInstalledPayload -InstallRoot $target -Artifact $Artifact -Context 'Uninstall source package'
+        if ($CancellationPoint -ceq 'BeforeUninstallCommit') {
+            throw (New-AcceptanceCancellationException -Phase 'Uninstall')
+        }
+
+        $backup = New-AcceptanceOwnedSiblingDirectory -InstallParent $parent -Role 'backup' -RunId $RunId
+        Remove-AcceptanceDirectoryTree -Path $backup -Context 'Uninstall empty backup preparation'
+        Move-Item -LiteralPath $target -Destination $backup
+        $oldMoved = $true
+        if (Test-Path -LiteralPath $target) {
+            throw 'Uninstall target remained after the atomic directory move.'
+        }
+        if (-not (Test-Path -LiteralPath $retainedPath -PathType Leaf)) {
+            throw "Retained-data marker was not found after uninstall: $retainedPath"
+        }
+        Assert-AcceptanceNoReparsePath -Path $retainedPath
+        $retainedHash = ((Get-FileHash -LiteralPath $retainedPath -Algorithm SHA256).Hash).ToUpperInvariant()
+        if ($retainedHash -cne $RetainedDataSha256) {
+            throw 'Retained-data marker hash changed during uninstall.'
+        }
+        $validatedCommit = $true
+
+        try {
+            if ($null -ne $TestOnlyBackupRetirementHook) {
+                & $TestOnlyBackupRetirementHook $backup $target | Out-Null
+            }
+            Remove-AcceptanceOwnedSiblingDirectory -Path $backup -InstallParent $parent -Role 'backup' -RunId $RunId
+            $backup = $null
+        } catch {
+            $preserveTransient = $true
+            throw "Uninstall is committed and retained data is valid, but owned backup retirement failed: $($_.Exception.Message)"
+        }
+
+        return [pscustomobject][ordered]@{
+            RemovedFileHashes = $installedHashes
+            RetainedDataSha256 = $retainedHash
+            Committed = $true
+        }
+    } catch {
+        $primaryException = $_.Exception
+        if ($validatedCommit) {
+            $preserveTransient = $true
+            throw $primaryException
+        }
+
+        $cleanupException = $null
+        try {
+            if ($oldMoved -and $null -ne $backup -and (Test-Path -LiteralPath $backup)) {
+                if (Test-Path -LiteralPath $target) {
+                    throw 'Uninstall rollback target was not empty before backup restore.'
+                }
+                Move-Item -LiteralPath $backup -Destination $target
+                $backup = $null
+            } elseif ($null -ne $backup -and (Test-Path -LiteralPath $backup)) {
+                Remove-AcceptanceOwnedSiblingDirectory -Path $backup -InstallParent $parent -Role 'backup' -RunId $RunId
+                $backup = $null
+            }
+        } catch {
+            $cleanupException = $_.Exception
+        }
+        if ($null -ne $cleanupException) {
+            $preserveTransient = $true
+            throw (New-Object System.Exception -ArgumentList @(
+                    ("$($primaryException.Message) Uninstall rollback also failed: $($cleanupException.Message)"),
+                    $primaryException))
+        }
+        throw $primaryException
+    } finally {
         if (-not $preserveTransient -and $null -ne $backup -and (Test-Path -LiteralPath $backup)) {
             Remove-AcceptanceOwnedSiblingDirectory -Path $backup -InstallParent $parent -Role 'backup' -RunId $RunId
         }
@@ -800,4 +1041,240 @@ function Write-AcceptanceReportAtomically {
     }
 
     return $destination
+}
+
+function Assert-AcceptanceReportStringValue {
+    param(
+        [AllowNull()]$Value,
+        [Parameter(Mandatory = $true)][string]$Context
+    )
+
+    if ($null -eq $Value -or $Value -isnot [string]) {
+        throw "$Context must be a JSON string."
+    }
+}
+
+function Assert-AcceptanceReportHashList {
+    param(
+        [Parameter(Mandatory = $true)]$Hashes,
+        [Parameter(Mandatory = $true)][string]$Context
+    )
+
+    $index = 0
+    foreach ($hash in @($Hashes)) {
+        Assert-AcceptanceExactProperties -Object $hash -Names @('path', 'length', 'sha256') -Context "$Context hash $index"
+        Assert-AcceptanceReportStringValue -Value $hash.path -Context "$Context hash $index path"
+        Assert-JsonIntegerValue -Value $hash.length -Name "$Context hash $index length"
+        Assert-AcceptanceReportStringValue -Value $hash.sha256 -Context "$Context hash $index sha256"
+        if ([string]::IsNullOrWhiteSpace([string]$hash.path) -or
+            [int64]$hash.length -lt 0 -or
+            [string]$hash.sha256 -notmatch '^[0-9A-F]{64}$') {
+            throw "$Context hash $index is invalid."
+        }
+        $index++
+    }
+}
+
+function Assert-AcceptanceArtifactReportRecord {
+    param(
+        [AllowNull()]$Artifact,
+        [Parameter(Mandatory = $true)][string]$Context
+    )
+
+    if ($null -eq $Artifact) {
+        return
+    }
+    Assert-AcceptanceExactProperties -Object $Artifact -Names @(
+        'name', 'productId', 'displayName', 'packagingIssue', 'packageVersion',
+        'targetFramework', 'runtimeIdentifier', 'deploymentModel', 'userDataPolicy',
+        'packageRoot', 'archivePath', 'archiveBytes', 'archiveSha256', 'manifestPath',
+        'manifestBytes', 'manifestSha256', 'contentSha256', 'sourceCommitBinding',
+        'installedFileHashes') -Context $Context
+    foreach ($stringName in @(
+            'name', 'productId', 'displayName', 'packageVersion', 'targetFramework',
+            'runtimeIdentifier', 'deploymentModel', 'userDataPolicy', 'packageRoot',
+            'archivePath', 'archiveSha256', 'manifestPath', 'manifestSha256',
+            'contentSha256', 'sourceCommitBinding')) {
+        Assert-AcceptanceReportStringValue -Value (Get-AcceptanceRequiredProperty -Object $Artifact -Name $stringName -Context $Context) -Context "$Context $stringName"
+    }
+    Assert-JsonIntegerValue -Value $Artifact.packagingIssue -Name "$Context packagingIssue"
+    Assert-JsonIntegerValue -Value $Artifact.archiveBytes -Name "$Context archiveBytes"
+    Assert-JsonIntegerValue -Value $Artifact.manifestBytes -Name "$Context manifestBytes"
+    if ([string]$Artifact.productId -cne 'HerdrOps' -or
+        [string]$Artifact.displayName -cne 'HerdrOps' -or
+        [int]$Artifact.packagingIssue -lt 1 -or
+        [string]$Artifact.packageVersion -notmatch '^\d+\.\d+\.\d+$' -or
+        [string]$Artifact.targetFramework -cne 'net10.0-windows' -or
+        [string]$Artifact.runtimeIdentifier -cne 'win-x64' -or
+        [string]$Artifact.deploymentModel -cne 'per-user-directory' -or
+        [string]$Artifact.userDataPolicy -cne 'retain-on-uninstall' -or
+        [int64]$Artifact.archiveBytes -lt 0 -or
+        [int64]$Artifact.manifestBytes -lt 0) {
+        throw "$Context identity or byte-count fields are invalid."
+    }
+    foreach ($hashName in @('archiveSha256', 'manifestSha256', 'contentSha256')) {
+        Assert-AcceptanceSha256 -Value ([string](Get-AcceptanceRequiredProperty -Object $Artifact -Name $hashName -Context $Context)) -Context "$Context $hashName"
+    }
+    if ([string]$Artifact.sourceCommitBinding -cne 'NOT_BOUND_IN_SYNTHETIC_FIXTURE' -and
+        [string]$Artifact.sourceCommitBinding -notmatch '^[0-9a-f]{40}$') {
+        throw "$Context sourceCommitBinding is invalid."
+    }
+    Assert-AcceptanceReportHashList -Hashes $Artifact.installedFileHashes -Context "$Context installed files"
+}
+
+function Assert-AcceptanceReportMatchesSchema {
+    param(
+        [Parameter(Mandatory = $true)]$Report,
+        [Parameter(Mandatory = $true)][string]$SchemaPath
+    )
+
+    $schemaFullPath = Get-AcceptanceFullPath -Path $SchemaPath
+    $schema = Read-AcceptanceJsonFile -Path $schemaFullPath -Context 'Issue #44 acceptance report schema'
+    if ([string]$schema.'$schema' -notlike '*draft-07*' -or
+        [string]$schema.title -notlike '*Issue 44*') {
+        throw 'Issue #44 acceptance report schema identity is invalid.'
+    }
+
+    Assert-AcceptanceExactProperties -Object $Report -Names @(
+        'schemaVersion', 'reportKind', 'issue', 'acceptanceVersion', 'status',
+        'mode', 'evidenceClass', 'startedAtUtc', 'completedAtUtc', 'runId',
+        'machine', 'artifacts', 'targets', 'preflight', 'lifecycle', 'cleanup',
+        'failureDetails', 'transcript', 'boundaries') -Context 'Issue #44 acceptance report'
+    Assert-JsonIntegerValue -Value $Report.schemaVersion -Name 'acceptance report schemaVersion'
+    Assert-JsonIntegerValue -Value $Report.issue -Name 'acceptance report issue'
+    foreach ($topStringName in @(
+            'reportKind', 'acceptanceVersion', 'status', 'mode', 'evidenceClass',
+            'startedAtUtc', 'completedAtUtc', 'runId', 'failureDetails')) {
+        Assert-AcceptanceReportStringValue -Value (Get-AcceptanceRequiredProperty -Object $Report -Name $topStringName -Context 'acceptance report') -Context "acceptance report $topStringName"
+    }
+    if ([int]$Report.schemaVersion -ne 1 -or
+        [string]$Report.reportKind -cne 'HerdrOps.InstallAcceptanceReport' -or
+        [int]$Report.issue -ne 44 -or
+        [string]$Report.acceptanceVersion -cne 'v1.0.0' -or
+        [string]$Report.status -notin @('PASS', 'FAIL', 'CANCELLED') -or
+        [string]$Report.mode -notin @('DryRun', 'Fixture', 'Live') -or
+        [string]$Report.evidenceClass -notin @('Static', 'Synthetic', 'CleanMachine') -or
+        [string]$Report.runId -notmatch '^[0-9a-f]{32}$') {
+        throw 'Issue #44 acceptance report top-level identity is invalid.'
+    }
+    try {
+        [void][DateTimeOffset]::Parse([string]$Report.startedAtUtc, [Globalization.CultureInfo]::InvariantCulture)
+        [void][DateTimeOffset]::Parse([string]$Report.completedAtUtc, [Globalization.CultureInfo]::InvariantCulture)
+    } catch {
+        throw "Issue #44 acceptance report contains an invalid timestamp. $($_.Exception.Message)"
+    }
+
+    Assert-AcceptanceExactProperties -Object $Report.machine -Names @('name', 'expectedName', 'fingerprint', 'expectedFingerprint', 'elevated') -Context 'acceptance report machine'
+    foreach ($machineStringName in @('name', 'expectedName', 'fingerprint', 'expectedFingerprint')) {
+        Assert-AcceptanceReportStringValue -Value (Get-AcceptanceRequiredProperty -Object $Report.machine -Name $machineStringName -Context 'acceptance report machine') -Context "acceptance report machine $machineStringName"
+    }
+    Assert-AcceptanceSha256 -Value ([string]$Report.machine.fingerprint) -Context 'acceptance report machine fingerprint'
+    if ($Report.machine.elevated -isnot [bool]) {
+        throw 'Acceptance report machine elevated must be a JSON boolean.'
+    }
+
+    Assert-AcceptanceExactProperties -Object $Report.artifacts -Names @('initial', 'upgrade') -Context 'acceptance report artifacts'
+    Assert-AcceptanceArtifactReportRecord -Artifact $Report.artifacts.initial -Context 'acceptance report initial artifact'
+    Assert-AcceptanceArtifactReportRecord -Artifact $Report.artifacts.upgrade -Context 'acceptance report upgrade artifact'
+
+    Assert-AcceptanceExactProperties -Object $Report.targets -Names @(
+        'installRoot', 'userDataRoot', 'reportPath', 'simulationRoot',
+        'installPathPolicy', 'userDataPathPolicy', 'userDataPolicy') -Context 'acceptance report targets'
+    foreach ($targetStringName in @('installRoot', 'userDataRoot', 'reportPath', 'simulationRoot', 'installPathPolicy', 'userDataPathPolicy', 'userDataPolicy')) {
+        Assert-AcceptanceReportStringValue -Value (Get-AcceptanceRequiredProperty -Object $Report.targets -Name $targetStringName -Context 'acceptance report targets') -Context "acceptance report target $targetStringName"
+    }
+    if ([string]$Report.targets.installPathPolicy -cne '%LOCALAPPDATA%\Programs\HerdrOps' -or
+        [string]$Report.targets.userDataPathPolicy -cne '%LOCALAPPDATA%\HerdrOps' -or
+        [string]$Report.targets.userDataPolicy -cne 'retain-on-uninstall') {
+        throw 'Acceptance report target policies are invalid.'
+    }
+
+    Assert-AcceptanceExactProperties -Object $Report.preflight -Names @('status', 'checks') -Context 'acceptance report preflight'
+    if ([string]$Report.preflight.status -notin @('PASS', 'FAIL')) {
+        throw 'Acceptance report preflight status is invalid.'
+    }
+    $checkIndex = 0
+    foreach ($check in @($Report.preflight.checks)) {
+        Assert-AcceptanceExactProperties -Object $check -Names @('name', 'status', 'details') -Context "acceptance report preflight check $checkIndex"
+        foreach ($checkStringName in @('name', 'status', 'details')) {
+            Assert-AcceptanceReportStringValue -Value (Get-AcceptanceRequiredProperty -Object $check -Name $checkStringName -Context "acceptance report preflight check $checkIndex") -Context "acceptance report preflight check $checkIndex $checkStringName"
+        }
+        if ([string]$check.status -notin @('PASS', 'FAIL', 'NOT_APPLICABLE')) {
+            throw "Acceptance report preflight check $checkIndex status is invalid."
+        }
+        $checkIndex++
+    }
+
+    Assert-AcceptanceExactProperties -Object $Report.lifecycle -Names @('cleanInstall', 'upgrade', 'rollback', 'uninstall') -Context 'acceptance report lifecycle'
+    foreach ($stepName in @('cleanInstall', 'upgrade', 'rollback', 'uninstall')) {
+        $step = Get-AcceptanceRequiredProperty -Object $Report.lifecycle -Name $stepName -Context 'acceptance report lifecycle'
+        Assert-AcceptanceExactProperties -Object $step -Names @(
+            'status', 'expectedVersion', 'installedFileHashes', 'installRootPresent',
+            'packageVersionObserved', 'retainedDataStatus', 'retainedDataSha256',
+            'details') -Context "acceptance report lifecycle $stepName"
+        foreach ($stepStringName in @('status', 'expectedVersion', 'packageVersionObserved', 'retainedDataStatus', 'retainedDataSha256', 'details')) {
+            Assert-AcceptanceReportStringValue -Value (Get-AcceptanceRequiredProperty -Object $step -Name $stepStringName -Context "acceptance report lifecycle $stepName") -Context "acceptance report lifecycle $stepName $stepStringName"
+        }
+        if ([string]$step.status -notin @('PASS', 'FAIL', 'CANCELLED', 'NOT_RUN') -or
+            [string]$step.retainedDataStatus -notin @('PASS', 'FAIL', 'NOT_RUN', 'NOT_APPLICABLE') -or
+            $step.installRootPresent -isnot [bool]) {
+            throw "Acceptance report lifecycle $stepName state is invalid."
+        }
+        Assert-AcceptanceReportHashList -Hashes $step.installedFileHashes -Context "acceptance report lifecycle $stepName"
+    }
+
+    Assert-AcceptanceExactProperties -Object $Report.cleanup -Names @(
+        'status', 'attempted', 'simulationRoot', 'simulationRootRemoved',
+        'ownedStageRemoved', 'ownedBackupRemoved', 'harnessSeededDataMarkerRemoved',
+        'retainedDataLeftIntact', 'residuals', 'details') -Context 'acceptance report cleanup'
+    foreach ($cleanupStringName in @('simulationRoot', 'details')) {
+        Assert-AcceptanceReportStringValue -Value (Get-AcceptanceRequiredProperty -Object $Report.cleanup -Name $cleanupStringName -Context 'acceptance report cleanup') -Context "acceptance report cleanup $cleanupStringName"
+    }
+    foreach ($residual in @($Report.cleanup.residuals)) {
+        Assert-AcceptanceReportStringValue -Value $residual -Context 'acceptance report cleanup residual'
+    }
+    if ([string]$Report.cleanup.status -notin @('PASS', 'FAIL', 'NOT_RUN', 'NOT_APPLICABLE')) {
+        throw 'Acceptance report cleanup status is invalid.'
+    }
+    foreach ($booleanName in @('attempted', 'simulationRootRemoved', 'ownedStageRemoved', 'ownedBackupRemoved', 'harnessSeededDataMarkerRemoved', 'retainedDataLeftIntact')) {
+        $booleanValue = Get-AcceptanceRequiredProperty -Object $Report.cleanup -Name $booleanName -Context 'acceptance report cleanup'
+        if ($booleanValue -isnot [bool]) {
+            throw "Acceptance report cleanup $booleanName must be a JSON boolean."
+        }
+    }
+
+    $transcriptIndex = 0
+    foreach ($entry in @($Report.transcript)) {
+        Assert-AcceptanceExactProperties -Object $entry -Names @('sequence', 'phase', 'action', 'status', 'effect', 'details', 'pathBinding') -Context "acceptance report transcript $transcriptIndex"
+        Assert-JsonIntegerValue -Value $entry.sequence -Name "acceptance report transcript $transcriptIndex sequence"
+        foreach ($entryStringName in @('phase', 'action', 'status', 'effect', 'details', 'pathBinding')) {
+            Assert-AcceptanceReportStringValue -Value (Get-AcceptanceRequiredProperty -Object $entry -Name $entryStringName -Context "acceptance report transcript $transcriptIndex") -Context "acceptance report transcript $transcriptIndex $entryStringName"
+        }
+        if ([int]$entry.sequence -lt 1 -or
+            [string]$entry.status -notin @('PASS', 'FAIL', 'SKIPPED', 'CANCELLED', 'NOT_RUN') -or
+            [string]$entry.effect -notin @('None', 'FixtureTempOnly', 'LiveFilesystem')) {
+            throw "Acceptance report transcript $transcriptIndex is invalid."
+        }
+        $transcriptIndex++
+    }
+    Assert-AcceptanceExactProperties -Object $Report.boundaries -Names @(
+        'static', 'synthetic', 'contract', 'cleanMachine', 'runtime',
+        'independentReview', 'release') -Context 'acceptance report boundaries'
+    foreach ($boundaryName in @('static', 'synthetic', 'contract', 'cleanMachine', 'runtime', 'independentReview', 'release')) {
+        Assert-AcceptanceReportStringValue -Value (Get-AcceptanceRequiredProperty -Object $Report.boundaries -Name $boundaryName -Context 'acceptance report boundaries') -Context "acceptance report boundary $boundaryName"
+    }
+
+    $json = ($Report | ConvertTo-Json -Depth 50)
+    [void](ConvertFrom-StrictPackageJson -Json $json -Description 'serialized Issue #44 acceptance report')
+    $testJsonCommand = Get-Command -Name Test-Json -CommandType Cmdlet -ErrorAction SilentlyContinue
+    if ($null -ne $testJsonCommand) {
+        try {
+            $schemaPassed = & $testJsonCommand -Json $json -SchemaFile $schemaFullPath -ErrorAction Stop
+        } catch {
+            throw "Issue #44 acceptance report failed JSON Schema validation. $($_.Exception.Message)"
+        }
+        if (-not $schemaPassed) {
+            throw 'Issue #44 acceptance report failed JSON Schema validation.'
+        }
+    }
 }

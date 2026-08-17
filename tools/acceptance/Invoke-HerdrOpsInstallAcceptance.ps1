@@ -17,10 +17,11 @@ param(
     [string]$LiveConfirmationToken,
     [string]$ExpectedMachineName,
     [string]$ExpectedMachineFingerprint,
+    [string]$ExpectedSourceCommit,
     [string]$ExpectedInitialArtifactSha256,
     [string]$ExpectedUpgradeArtifactSha256,
     [switch]$AllowLiveRetainedDataSeed,
-    [ValidateSet('None', 'BeforeCleanInstallCommit', 'AfterCleanInstallBackup', 'BeforeUpgradeCommit', 'AfterUpgradeBackup', 'BeforeRollbackCommit', 'AfterRollbackBackup')][string]$TestCancelPoint = 'None',
+    [ValidateSet('None', 'BeforeCleanInstallCommit', 'BeforeUpgradeCommit', 'AfterUpgradeBackup', 'BeforeRollbackCommit', 'AfterRollbackBackup', 'BeforeUninstallCommit')][string]$TestCancelPoint = 'None',
     [ValidateSet('None', 'CleanInstall', 'Upgrade', 'Rollback', 'Uninstall')][string]$TestCancelAfter = 'None'
 )
 
@@ -40,6 +41,7 @@ $script:ReportDestination = $null
 $script:HarnessSeededDataMarker = $false
 $script:HarnessDataMarkerPath = $null
 $script:OwnedTransientPaths = New-Object System.Collections.ArrayList
+$script:CurrentLifecyclePhase = 'Preflight'
 
 function Get-AcceptanceUtcNow {
     return [DateTime]::UtcNow.ToString('o', [Globalization.CultureInfo]::InvariantCulture)
@@ -120,6 +122,14 @@ function New-AcceptanceReport {
         [Parameter(Mandatory = $true)][AllowEmptyString()][string]$FailureDetails
     )
 
+    $preflightPassed = ($script:PreflightChecks.Count -gt 0 -and
+        @($script:PreflightChecks | Where-Object { $_.status -eq 'FAIL' }).Count -eq 0)
+    $allLifecyclePassed = @(@('cleanInstall', 'upgrade', 'rollback', 'uninstall') | Where-Object {
+            [string]$Lifecycle[$_].status -cne 'PASS'
+        }).Count -eq 0
+    $fixturePassed = ($Mode -eq 'Fixture' -and $Status -ceq 'PASS' -and $allLifecyclePassed -and [string]$Cleanup.status -ceq 'PASS')
+    $cleanMachinePassed = ($Mode -eq 'Live' -and $Status -ceq 'PASS' -and $allLifecyclePassed -and [string]$Cleanup.status -ceq 'PASS')
+
     return [ordered]@{
         schemaVersion = 1
         reportKind = 'HerdrOps.InstallAcceptanceReport'
@@ -141,7 +151,7 @@ function New-AcceptanceReport {
         artifacts = $Artifacts
         targets = $Targets
         preflight = [ordered]@{
-            status = if ($script:PreflightChecks.Count -gt 0 -and @($script:PreflightChecks | Where-Object { $_.status -eq 'FAIL' }).Count -eq 0) { 'PASS' } else { 'FAIL' }
+            status = if ($preflightPassed) { 'PASS' } else { 'FAIL' }
             checks = @($script:PreflightChecks.ToArray())
         }
         lifecycle = $Lifecycle
@@ -149,10 +159,10 @@ function New-AcceptanceReport {
         failureDetails = $FailureDetails
         transcript = @($script:Transcript.ToArray())
         boundaries = [ordered]@{
-            static = if ($Mode -eq 'DryRun') { 'PASS: static preflight and orchestration plan only.' } else { 'PASS: acceptance source and artifact contracts were checked.' }
-            synthetic = if ($Mode -eq 'Fixture') { 'PASS: fixture-only lifecycle transitions and retained-data assertions.' } elseif ($Mode -eq 'DryRun') { 'NOT OBSERVED: no lifecycle transition was executed.' } else { 'NOT OBSERVED: live mode was not run in this preparation slice.' }
+            static = if ($preflightPassed) { 'PASS: acceptance source, path, archive, and artifact contracts were checked.' } else { "OBSERVED $Status`: static preflight did not complete successfully." }
+            synthetic = if ($fixturePassed) { 'PASS: fixture-only lifecycle transitions and retained-data assertions.' } elseif ($Mode -eq 'Fixture') { "OBSERVED $Status`: fixture lifecycle did not complete successfully." } else { 'NOT OBSERVED: no fixture lifecycle was executed.' }
             contract = 'NOT OBSERVED: no named-pipe or installed-Herdr compatibility work.'
-            cleanMachine = 'NOT OBSERVED: no clean-machine run was performed.'
+            cleanMachine = if ($cleanMachinePassed) { 'PASS: bound clean-machine filesystem install, upgrade, rollback, uninstall, and retained-data lifecycle.' } elseif ($Mode -eq 'Live') { "OBSERVED $Status`: bound clean-machine filesystem lifecycle did not complete successfully." } else { 'NOT OBSERVED: no clean-machine run was performed.' }
             runtime = 'NOT OBSERVED: no Herdr runtime or application process was started.'
             independentReview = 'NOT OBSERVED.'
             release = 'NOT OBSERVED: no release or publication action was performed.'
@@ -165,7 +175,7 @@ function Get-ArtifactBindingShape {
         'packageRoot', 'archivePath', 'hashRecordPath', 'productId', 'displayName',
         'packagingIssue', 'packageVersion', 'targetFramework', 'runtimeIdentifier',
         'deploymentModel', 'userDataPolicy', 'manifestSha256', 'archiveSha256',
-        'contentSha256')
+        'contentSha256', 'sourceCommit')
 }
 
 function Assert-LiveBinding {
@@ -193,9 +203,6 @@ function Assert-LiveBinding {
     if ([string]$binding.machineFingerprint -cne (Get-AcceptanceMachineFingerprint)) {
         throw 'Live binding machine fingerprint does not match this Windows host.'
     }
-    if ([string]$binding.sourceCommit -notmatch '^[0-9a-f]{40}$') {
-        throw 'Live binding sourceCommit must be an exact 40-character lowercase commit binding.'
-    }
     foreach ($artifactName in @('initialArtifact', 'upgradeArtifact')) {
         $artifactBinding = Get-AcceptanceRequiredProperty -Object $binding -Name $artifactName -Context 'Issue #44 live binding'
         Assert-AcceptanceExactProperties -Object $artifactBinding -Names (Get-ArtifactBindingShape) -Context "$artifactName binding"
@@ -210,7 +217,14 @@ function Assert-LiveBinding {
         foreach ($hashName in @('manifestSha256', 'archiveSha256', 'contentSha256')) {
             Assert-AcceptanceSha256 -Value ([string]$artifactBinding.$hashName) -Context "$artifactName $hashName binding"
         }
+        if ([string]$artifactBinding.sourceCommit -notmatch '^[0-9a-f]{40}$') {
+            throw "$artifactName sourceCommit must be an exact 40-character lowercase commit binding."
+        }
     }
+    Assert-AcceptanceLiveSourceCommitBinding `
+        -AcceptedSourceCommit ([string]$binding.sourceCommit) `
+        -ExpectedSourceCommit ([string]$ExpectedSourceCommit) `
+        -UpgradeArtifactSourceCommit ([string]$binding.upgradeArtifact.sourceCommit)
     Assert-PackageVersion -Version ([string]$binding.initialArtifact.packageVersion)
     Assert-PackageVersion -Version ([string]$binding.upgradeArtifact.packageVersion)
     if ([Version]$binding.upgradeArtifact.packageVersion -le [Version]$binding.initialArtifact.packageVersion) {
@@ -314,6 +328,7 @@ function New-SyntheticAcceptanceArtifacts {
             runtimeIdentifier = [string]$definition.Profile.runtimeIdentifier
             deploymentModel = [string]$definition.Profile.deploymentModel
             userDataPolicy = [string]$definition.Profile.userDataPolicy
+            sourceCommit = 'NOT_BOUND_IN_SYNTHETIC_FIXTURE'
             manifestSha256 = ('0' * 64) -join ''
             archiveSha256 = ('0' * 64) -join ''
             contentSha256 = ('0' * 64) -join ''
@@ -379,7 +394,7 @@ function Get-ArtifactReportRecord {
         manifestBytes = [int64]$Artifact.ManifestBytes
         manifestSha256 = [string]$Artifact.ManifestSha256
         contentSha256 = [string]$Artifact.ContentSha256
-        sourceCommitBinding = 'NOT_BOUND_IN_SYNTHETIC_FIXTURE'
+        sourceCommitBinding = [string]$Artifact.SourceCommit
         installedFileHashes = @()
     }
 }
@@ -438,29 +453,38 @@ function Invoke-AcceptancePreflight {
         [Parameter(Mandatory = $true)][string]$RetainedDataPath,
         [Parameter(Mandatory = $true)][string]$RetainedDataSha256,
         [Parameter(Mandatory = $true)][string]$RetainedDataMode,
-        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$ReportDestination
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$ReportDestination,
+        [Parameter(Mandatory = $true)]$ArtifactsReport
     )
 
+    $installParent = Split-Path -Path $InstallRoot -Parent
+    $pathSpecifications = New-Object System.Collections.ArrayList
+    $artifactIndex = 0
     foreach ($artifactBinding in @($InitialExpected, $UpgradeExpected)) {
+        $artifactIndex++
         foreach ($pathName in @('packageRoot', 'archivePath', 'hashRecordPath')) {
-            $boundPath = Get-AcceptanceFullPath -Path ([string](Get-AcceptanceRequiredProperty -Object $artifactBinding -Name $pathName -Context 'artifact binding'))
-            if ((Test-PathWithin -ChildPath $boundPath -RootPath $InstallRoot) -or
-                (Test-PathWithin -ChildPath $boundPath -RootPath $UserDataRoot)) {
-                throw "Artifact binding path is inside a destructive target: $boundPath"
-            }
-        }
-        if ($Mode -eq 'Live' -and -not [string]::IsNullOrWhiteSpace($ReportDestination)) {
-            $packageRoot = Get-AcceptanceFullPath -Path ([string](Get-AcceptanceRequiredProperty -Object $artifactBinding -Name 'packageRoot' -Context 'artifact binding'))
-            $artifactParent = Split-Path -Path $packageRoot -Parent
-            if ((Test-PathWithin -ChildPath $ReportDestination -RootPath $packageRoot) -or
-                (Test-PathWithin -ChildPath $ReportDestination -RootPath $artifactParent)) {
-                throw 'Live report destination must be separate from both exact artifact directories.'
-            }
+            [void]$pathSpecifications.Add([pscustomobject]@{
+                    Name = "artifact-$artifactIndex-$pathName"
+                    Path = Get-AcceptanceFullPath -Path ([string](Get-AcceptanceRequiredProperty -Object $artifactBinding -Name $pathName -Context 'artifact binding'))
+                })
         }
     }
+    foreach ($targetSpecification in @(
+            [pscustomobject]@{ Name = 'install-root'; Path = $InstallRoot },
+            [pscustomobject]@{ Name = 'retained-data-root'; Path = $UserDataRoot },
+            [pscustomobject]@{ Name = 'owned-stage-path'; Path = (Join-Path $installParent ("HerdrOps.issue-44.stage-$($script:RunId)")) },
+            [pscustomobject]@{ Name = 'owned-backup-path'; Path = (Join-Path $installParent ("HerdrOps.issue-44.backup-$($script:RunId)")) })) {
+        [void]$pathSpecifications.Add($targetSpecification)
+    }
+    if (-not [string]::IsNullOrWhiteSpace($ReportDestination)) {
+        [void]$pathSpecifications.Add([pscustomobject]@{ Name = 'report-destination'; Path = $ReportDestination })
+    }
+    Assert-PackagingPathsDoNotOverlap -Paths @($pathSpecifications.ToArray())
     $initialArtifact = Assert-AcceptanceArtifact -Expected $InitialExpected -Name 'initial'
+    $ArtifactsReport.initial = Get-ArtifactReportRecord -Artifact $initialArtifact
     Add-AcceptancePreflightCheck -Name 'initial-artifact-identity-hash-version' -Status 'PASS' -Details ("HerdrOps $($initialArtifact.PackageVersion); manifest/archive/content SHA-256 records match.")
     $upgradeArtifact = Assert-AcceptanceArtifact -Expected $UpgradeExpected -Name 'upgrade'
+    $ArtifactsReport.upgrade = Get-ArtifactReportRecord -Artifact $upgradeArtifact
     Add-AcceptancePreflightCheck -Name 'upgrade-artifact-identity-hash-version' -Status 'PASS' -Details ("HerdrOps $($upgradeArtifact.PackageVersion); manifest/archive/content SHA-256 records match.")
     if ([Version]$upgradeArtifact.PackageVersion -le [Version]$initialArtifact.PackageVersion) {
         throw 'Upgrade package version must be greater than the initial package version.'
@@ -562,19 +586,15 @@ function Invoke-AcceptanceLifecycle {
         [Parameter(Mandatory = $true)][string]$InstallRoot,
         [Parameter(Mandatory = $true)][string]$UserDataRoot,
         [Parameter(Mandatory = $true)][string]$RetainedDataPath,
-        [Parameter(Mandatory = $true)][string]$RetainedDataSha256
+        [Parameter(Mandatory = $true)][string]$RetainedDataSha256,
+        [Parameter(Mandatory = $true)]$Lifecycle
     )
 
-    $lifecycle = [ordered]@{
-        cleanInstall = New-AcceptanceLifecycleStep -ExpectedVersion $InitialArtifact.PackageVersion
-        upgrade = New-AcceptanceLifecycleStep -ExpectedVersion $UpgradeArtifact.PackageVersion
-        rollback = New-AcceptanceLifecycleStep -ExpectedVersion $InitialArtifact.PackageVersion
-        uninstall = New-AcceptanceLifecycleStep -ExpectedVersion 'none'
-    }
     $effect = if ($Mode -eq 'Fixture') { 'FixtureTempOnly' } else { 'LiveFilesystem' }
     $installParent = Split-Path -Path $InstallRoot -Parent
     Assert-AcceptanceDirectory -Path $installParent -Context 'install parent' -Create | Out-Null
 
+    $script:CurrentLifecyclePhase = 'CleanInstall'
     Add-AcceptanceTranscript -Phase 'CleanInstall' -Action 'install-initial-package' -Status 'NOT_RUN' -Effect $effect -Details 'Preparing exact staged directory transition.' -PathBinding 'installRoot'
     $cleanInstall = Invoke-AcceptanceDirectoryTransition `
         -Artifact $InitialArtifact `
@@ -593,6 +613,7 @@ function Invoke-AcceptanceLifecycle {
     Add-AcceptanceTranscript -Phase 'CleanInstall' -Action 'install-initial-package' -Status 'PASS' -Effect $effect -Details 'Installed file hashes match the exact initial artifact manifest.' -PathBinding 'installRoot'
     Invoke-AcceptanceTestCancellationAfter -Phase 'CleanInstall'
 
+    $script:CurrentLifecyclePhase = 'Upgrade'
     Add-AcceptanceTranscript -Phase 'Upgrade' -Action 'upgrade-to-candidate-package' -Status 'NOT_RUN' -Effect $effect -Details 'Preparing exact staged directory replacement while preserving retained data.' -PathBinding 'installRoot'
     $upgrade = Invoke-AcceptanceDirectoryTransition `
         -Artifact $UpgradeArtifact `
@@ -611,6 +632,7 @@ function Invoke-AcceptanceLifecycle {
     Add-AcceptanceTranscript -Phase 'Upgrade' -Action 'upgrade-to-candidate-package' -Status 'PASS' -Effect $effect -Details 'Upgrade file hashes match the exact candidate artifact manifest.' -PathBinding 'installRoot,userDataRoot'
     Invoke-AcceptanceTestCancellationAfter -Phase 'Upgrade'
 
+    $script:CurrentLifecyclePhase = 'Rollback'
     Add-AcceptanceTranscript -Phase 'Rollback' -Action 'rollback-to-initial-package' -Status 'NOT_RUN' -Effect $effect -Details 'Preparing exact staged rollback to the accepted initial artifact.' -PathBinding 'installRoot'
     $rollback = Invoke-AcceptanceDirectoryTransition `
         -Artifact $InitialArtifact `
@@ -629,24 +651,27 @@ function Invoke-AcceptanceLifecycle {
     Add-AcceptanceTranscript -Phase 'Rollback' -Action 'rollback-to-initial-package' -Status 'PASS' -Effect $effect -Details 'Rollback file hashes match the exact initial artifact manifest.' -PathBinding 'installRoot,userDataRoot'
     Invoke-AcceptanceTestCancellationAfter -Phase 'Rollback'
 
-    Add-AcceptanceTranscript -Phase 'Uninstall' -Action 'remove-package-retain-data' -Status 'NOT_RUN' -Effect $effect -Details 'Removing only the exact install directory; retained data is checked separately.' -PathBinding 'installRoot,userDataRoot'
-    if ($TestCancelPoint -ceq 'BeforeUninstallCommit') {
-        throw (New-AcceptanceCancellationException -Phase 'Uninstall')
-    }
-    Remove-AcceptanceDirectoryTree -Path $InstallRoot -Context 'uninstall package directory'
-    if (Test-Path -LiteralPath $InstallRoot) {
-        throw 'Uninstall left the exact install directory behind.'
-    }
-    $retainedHash = Get-RetainedDataHash -Path $RetainedDataPath -ExpectedSha256 $RetainedDataSha256
+    $script:CurrentLifecyclePhase = 'Uninstall'
+    Add-AcceptanceTranscript -Phase 'Uninstall' -Action 'remove-package-retain-data' -Status 'NOT_RUN' -Effect $effect -Details 'Atomically moving the exact install directory before validating retained data and retiring the owned backup.' -PathBinding 'installRoot,userDataRoot'
+    $uninstall = Invoke-AcceptanceUninstallTransition `
+        -Artifact $InitialArtifact `
+        -InstallRoot $InstallRoot `
+        -InstallParent $installParent `
+        -RetainedDataPath $RetainedDataPath `
+        -RetainedDataSha256 $RetainedDataSha256 `
+        -CancellationPoint $TestCancelPoint `
+        -RunId $script:RunId
     $lifecycle.uninstall.status = 'PASS'
     $lifecycle.uninstall.installRootPresent = $false
+    $lifecycle.uninstall.packageVersionObserved = [string]$InitialArtifact.PackageVersion
+    $lifecycle.uninstall.installedFileHashes = Convert-AcceptanceHashesForReport -Hashes $uninstall.RemovedFileHashes
     $lifecycle.uninstall.retainedDataStatus = 'PASS'
-    $lifecycle.uninstall.details = 'Exact install directory removed; retained-data marker remains byte-identical.'
-    $lifecycle.uninstall.retainedDataSha256 = $retainedHash
+    $lifecycle.uninstall.details = 'Exact install directory was atomically removed; retained-data marker remains byte-identical.'
+    $lifecycle.uninstall.retainedDataSha256 = [string]$uninstall.RetainedDataSha256
     Add-AcceptanceTranscript -Phase 'Uninstall' -Action 'remove-package-retain-data' -Status 'PASS' -Effect $effect -Details 'Package directory is absent and retained-data SHA-256 is unchanged.' -PathBinding 'installRoot,userDataRoot'
     Invoke-AcceptanceTestCancellationAfter -Phase 'Uninstall'
 
-    return $lifecycle
+    $script:CurrentLifecyclePhase = 'Complete'
 }
 
 function Invoke-AcceptanceCleanup {
@@ -737,8 +762,63 @@ function Invoke-AcceptanceCleanup {
         if (Test-Path -LiteralPath (Join-Path (Split-Path -Path $InstallRoot -Parent) ("HerdrOps.issue-44.backup-$($script:RunId)"))) {
             $cleanup.residuals += 'owned-backup-directory'
         }
+        if (@($cleanup.residuals).Count -gt 0) {
+            $cleanup.status = 'FAIL'
+            if ([string]::IsNullOrWhiteSpace([string]$cleanup.details)) {
+                $cleanup.details = 'Live cleanup preserved one or more explicit recovery residuals.'
+            }
+        }
     }
     return $cleanup
+}
+
+function Set-AcceptanceInterruptedLifecycleState {
+    param(
+        [Parameter(Mandatory = $true)]$Lifecycle,
+        [Parameter(Mandatory = $true)][string]$Phase,
+        [Parameter(Mandatory = $true)][ValidateSet('FAIL', 'CANCELLED')][string]$Status,
+        [Parameter(Mandatory = $true)][string]$Details,
+        [AllowNull()][string]$InstallRoot,
+        [AllowNull()][string]$RetainedDataPath,
+        [AllowNull()][string]$RetainedDataSha256
+    )
+
+    $stepName = switch ($Phase) {
+        'CleanInstall' { 'cleanInstall' }
+        'Upgrade' { 'upgrade' }
+        'Rollback' { 'rollback' }
+        'Uninstall' { 'uninstall' }
+        default { $null }
+    }
+    if ($null -eq $stepName -or [string]$Lifecycle[$stepName].status -cne 'NOT_RUN') {
+        return
+    }
+
+    $step = $Lifecycle[$stepName]
+    $step.status = $Status
+    $step.details = $Details
+    if (-not [string]::IsNullOrWhiteSpace($InstallRoot)) {
+        $step.installRootPresent = Test-Path -LiteralPath $InstallRoot -PathType Container
+        if ($step.installRootPresent) {
+            try {
+                $step.installedFileHashes = Convert-AcceptanceHashesForReport -Hashes (Get-AcceptanceInstalledFileHashes -InstallRoot $InstallRoot -Context "$Phase interrupted install observation")
+                $step.packageVersionObserved = Get-InstalledVersionFromManifest -InstallRoot $InstallRoot
+            } catch {
+                $step.packageVersionObserved = 'UNREADABLE'
+                $step.details = "$Details Observing the interrupted install failed: $($_.Exception.Message)"
+            }
+        }
+    }
+    if (-not [string]::IsNullOrWhiteSpace($RetainedDataPath) -and
+        -not [string]::IsNullOrWhiteSpace($RetainedDataSha256)) {
+        try {
+            $step.retainedDataSha256 = Get-RetainedDataHash -Path $RetainedDataPath -ExpectedSha256 $RetainedDataSha256
+            $step.retainedDataStatus = 'PASS'
+        } catch {
+            $step.retainedDataStatus = 'FAIL'
+            $step.details = "$($step.details) Retained-data observation failed: $($_.Exception.Message)"
+        }
+    }
 }
 
 function Get-DefaultFixtureRootForAcceptance {
@@ -777,8 +857,8 @@ $cleanup = [ordered]@{
     details = ''
 }
 $artifactsReport = [ordered]@{
-    initial = [ordered]@{}
-    upgrade = [ordered]@{}
+    initial = $null
+    upgrade = $null
 }
 $targetsReport = [ordered]@{
     installRoot = ''
@@ -798,9 +878,10 @@ try {
         if ([string]::IsNullOrWhiteSpace($BindingPath) -or
             [string]::IsNullOrWhiteSpace($ExpectedMachineName) -or
             [string]::IsNullOrWhiteSpace($ExpectedMachineFingerprint) -or
+            [string]::IsNullOrWhiteSpace($ExpectedSourceCommit) -or
             [string]::IsNullOrWhiteSpace($ExpectedInitialArtifactSha256) -or
             [string]::IsNullOrWhiteSpace($ExpectedUpgradeArtifactSha256)) {
-            throw 'Live mode requires the exact binding path, machine values, and both artifact SHA-256 values.'
+            throw 'Live mode requires the exact binding path, machine values, source commit, and both artifact SHA-256 values.'
         }
         if ($KeepSimulationRoot -or $TestCancelPoint -ne 'None' -or $TestCancelAfter -ne 'None') {
             throw 'Fixture cleanup/test-cancellation controls are not accepted in Live mode.'
@@ -867,14 +948,13 @@ try {
         -RetainedDataPath $retainedDataPath `
         -RetainedDataSha256 $retainedDataSha256 `
         -RetainedDataMode $retainedDataMode `
-        -ReportDestination $ReportDestination
+        -ReportDestination $ReportDestination `
+        -ArtifactsReport $artifactsReport
     $initialArtifact = $preflight.InitialArtifact
     $upgradeArtifact = $preflight.UpgradeArtifact
     $lifecycle.cleanInstall.expectedVersion = [string]$initialArtifact.PackageVersion
     $lifecycle.upgrade.expectedVersion = [string]$upgradeArtifact.PackageVersion
     $lifecycle.rollback.expectedVersion = [string]$initialArtifact.PackageVersion
-    $artifactsReport.initial = Get-ArtifactReportRecord -Artifact $initialArtifact
-    $artifactsReport.upgrade = Get-ArtifactReportRecord -Artifact $upgradeArtifact
     $targetsReport.installRoot = $installRoot
     $targetsReport.userDataRoot = $userDataRoot
     $targetsReport.reportPath = if ([string]::IsNullOrWhiteSpace($ReportDestination)) { '' } else { $ReportDestination }
@@ -904,13 +984,14 @@ try {
         if ($markerCreated) {
             Add-AcceptanceTranscript -Phase 'RetainedData' -Action 'seed-controlled-retained-data-marker' -Status 'PASS' -Effect $(if ($Mode -eq 'Fixture') { 'FixtureTempOnly' } else { 'LiveFilesystem' }) -Details 'A deterministic marker was created only after preflight and remains outside the package directory.' -PathBinding 'userDataRoot'
         }
-        $lifecycle = Invoke-AcceptanceLifecycle `
+        Invoke-AcceptanceLifecycle `
             -InitialArtifact $initialArtifact `
             -UpgradeArtifact $upgradeArtifact `
             -InstallRoot $installRoot `
             -UserDataRoot $userDataRoot `
             -RetainedDataPath $retainedDataPath `
-            -RetainedDataSha256 $retainedDataSha256
+            -RetainedDataSha256 $retainedDataSha256 `
+            -Lifecycle $lifecycle
         $artifactsReport.initial.installedFileHashes = $lifecycle.cleanInstall.installedFileHashes
         $artifactsReport.upgrade.installedFileHashes = $lifecycle.upgrade.installedFileHashes
         Add-AcceptanceTranscript -Phase 'Acceptance' -Action 'complete-lifecycle' -Status 'PASS' -Effect $(if ($Mode -eq 'Fixture') { 'FixtureTempOnly' } else { 'LiveFilesystem' }) -Details 'Clean install, upgrade, rollback, uninstall, installed hashes, and retained-data assertions completed.' -PathBinding 'all'
@@ -920,12 +1001,24 @@ try {
     if (Test-AcceptanceCancellationException -Exception $exception) {
         $status = 'CANCELLED'
         $failureDetails = $exception.Message
+        Set-AcceptanceInterruptedLifecycleState -Lifecycle $lifecycle -Phase $script:CurrentLifecyclePhase -Status 'CANCELLED' -Details $failureDetails -InstallRoot $installRoot -RetainedDataPath $retainedDataPath -RetainedDataSha256 $retainedDataSha256
         Add-AcceptanceTranscript -Phase 'Cancellation' -Action 'stop-and-clean-owned-transients' -Status 'CANCELLED' -Effect $(if ($Mode -eq 'Live') { 'LiveFilesystem' } elseif ($Mode -eq 'Fixture') { 'FixtureTempOnly' } else { 'None' }) -Details $failureDetails -PathBinding 'owned-stage,owned-backup,simulationRoot'
     } else {
         $status = 'FAIL'
         $failureDetails = $exception.Message
+        if ($script:CurrentLifecyclePhase -ceq 'Preflight') {
+            Add-AcceptancePreflightCheck -Name 'fail-closed-preflight-error' -Status 'FAIL' -Details $failureDetails
+        }
+        Set-AcceptanceInterruptedLifecycleState -Lifecycle $lifecycle -Phase $script:CurrentLifecyclePhase -Status 'FAIL' -Details $failureDetails -InstallRoot $installRoot -RetainedDataPath $retainedDataPath -RetainedDataSha256 $retainedDataSha256
         Add-AcceptanceTranscript -Phase 'Failure' -Action 'fail-closed' -Status 'FAIL' -Effect $(if ($Mode -eq 'Live') { 'LiveFilesystem' } elseif ($Mode -eq 'Fixture') { 'FixtureTempOnly' } else { 'None' }) -Details $failureDetails -PathBinding 'none'
     }
+}
+
+if ($null -ne $artifactsReport.initial -and @($lifecycle.cleanInstall.installedFileHashes).Count -gt 0) {
+    $artifactsReport.initial.installedFileHashes = $lifecycle.cleanInstall.installedFileHashes
+}
+if ($null -ne $artifactsReport.upgrade -and @($lifecycle.upgrade.installedFileHashes).Count -gt 0) {
+    $artifactsReport.upgrade.installedFileHashes = $lifecycle.upgrade.installedFileHashes
 }
 
 if ($null -ne $installRoot -and $null -ne $userDataRoot) {
@@ -944,7 +1037,7 @@ if ($null -ne $installRoot -and $null -ne $userDataRoot) {
 $machineFingerprint = Get-AcceptanceMachineFingerprint
 $report = New-AcceptanceReport `
     -Status $status `
-    -EvidenceClass $(if ($Mode -eq 'Fixture') { 'Synthetic' } elseif ($Mode -eq 'DryRun') { 'Static' } else { 'Runtime' }) `
+    -EvidenceClass $(if ($Mode -eq 'Fixture') { 'Synthetic' } elseif ($Mode -eq 'DryRun') { 'Static' } else { 'CleanMachine' }) `
     -MachineName $machineName `
     -MachineFingerprint $machineFingerprint `
     -Artifacts $artifactsReport `
@@ -952,6 +1045,9 @@ $report = New-AcceptanceReport `
     -Lifecycle $lifecycle `
     -Cleanup $cleanup `
     -FailureDetails $failureDetails
+
+$reportSchemaPath = Join-Path $PSScriptRoot '..\..\docs\acceptance\issue-44-install-acceptance-report.schema.json'
+Assert-AcceptanceReportMatchesSchema -Report $report -SchemaPath $reportSchemaPath
 
 if (-not [string]::IsNullOrWhiteSpace($ReportDestination) -and $null -ne $installRoot -and $null -ne $userDataRoot) {
     $allowExternal = ($Mode -eq 'Live')
