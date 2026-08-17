@@ -6,6 +6,8 @@ $ErrorActionPreference = 'Stop'
 
 $repositoryRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
 $auditTool = Join-Path $PSScriptRoot 'Invoke-V10Issue41DependencyAudit.ps1'
+$paginationPolicy = Join-Path $PSScriptRoot 'V10Issue41DependencyAuditPolicy.ps1'
+$paginationFixture = Join-Path $PSScriptRoot 'Test-V10Issue41DependencyAuditPagination.ps1'
 $fixtureRoot = Join-Path $repositoryRoot 'tests\fixtures\v1.0\issue-41'
 $readyFixture = Join-Path $fixtureRoot 'github-snapshot-ready.json'
 $duplicateFixture = Join-Path $fixtureRoot 'github-duplicate-key.json'
@@ -13,7 +15,7 @@ $malformedFixture = Join-Path $fixtureRoot 'github-malformed.json'
 $testRoot = Join-Path $repositoryRoot 'artifacts\dependency-audit-fixture-tests'
 $fixedObservedUtc = '2026-08-17T00:00:00.0000000Z'
 
-foreach ($path in @($auditTool, $readyFixture, $duplicateFixture, $malformedFixture)) {
+foreach ($path in @($auditTool, $paginationPolicy, $paginationFixture, $readyFixture, $duplicateFixture, $malformedFixture)) {
     if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
         throw "Issue #41 fixture test input is missing: $path"
     }
@@ -287,6 +289,13 @@ $completed = New-Object System.Collections.ArrayList
 try {
     foreach ($shell in $shells) {
         Assert-ParsedInShell -ShellPath $shell.Path -Path $auditTool
+        Assert-ParsedInShell -ShellPath $shell.Path -Path $paginationPolicy
+        Assert-ParsedInShell -ShellPath $shell.Path -Path $paginationFixture
+        $paginationOutput = @(& $shell.Path -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $paginationFixture 2>&1 | ForEach-Object { [string]$_ })
+        if ($LASTEXITCODE -ne 0 -or ($paginationOutput -join "`n") -notmatch 'bounded pagination fixtures: PASS') {
+            throw "$($shell.Name) pagination fixture failed: $($paginationOutput -join '; ')"
+        }
+        [void]$completed.Add("$($shell.Name): bounded pagination -> complete")
         $caseDirectory = New-CaseDirectory -ShellName $shell.Name
         try {
             $evidence = New-ReadyEvidenceManifest -CaseDirectory $caseDirectory -SourceCommit $sourceCommit
