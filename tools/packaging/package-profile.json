@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "issue": 38,
+  "productId": "HerdrOps",
+  "displayName": "HerdrOps",
+  "packageVersion": "0.7.0",
+  "targetFramework": "net10.0-windows",
+  "runtimeIdentifier": "win-x64",
+  "configuration": "Release",
+  "publishMode": "self-contained",
+  "sourceProject": "src\\HerdrOps.App\\HerdrOps.App.csproj",
+  "deploymentModel": "per-user-directory",
+  "installPathTemplate": "%LOCALAPPDATA%\\Programs\\HerdrOps",
+  "userDataPathTemplate": "%LOCALAPPDATA%\\HerdrOps",
+  "userDataPolicy": "retain-on-uninstall",
+  "startupPolicy": "no-startup-registration-in-preparation-slice",
+  "administratorRequired": false,
+  "runtimeUse": "not-used",
+  "syntheticUpgradeVersion": "0.7.1"
+}
