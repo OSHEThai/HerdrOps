@@ -9,7 +9,7 @@ Issue #44 requires the exact v1 candidate to be exercised on a designated clean 
 `tools/acceptance/Invoke-HerdrOpsInstallAcceptance.ps1` supports three modes:
 
 ```powershell
-# Static orchestration plan. No package or target directory is created.
+# Static orchestration plan. Fixture artifact copies are preflighted in owned temp storage; no install/data target lifecycle runs.
 ./tools/acceptance/Invoke-HerdrOpsInstallAcceptance.ps1 -Mode DryRun
 
 # Synthetic lifecycle against committed v0.7 fixture bytes in a generated temp child.
@@ -21,7 +21,7 @@ Issue #44 requires the exact v1 candidate to be exercised on a designated clean 
 
 Fixture mode performs directory copies only below an owned `[IO.Path]::GetTempPath()` child. It creates a deterministic retained-data marker, performs staged clean-install/upgrade/rollback transitions, verifies installed-file hashes after each transition, removes only the simulated package directory, verifies the marker, and removes the owned simulation root. It never starts HerdrOps, reads or writes the Registry, registers a service or startup entry, elevates, contacts Herdr, publishes anything, or modifies the repository.
 
-DryRun mode performs artifact/manifest/hash preflight and emits the same report shape, but every lifecycle action is `SKIPPED` and no simulated target is created. Both non-live modes intentionally use the current #38 v0.7 fixture bytes; the report marks the v1 target-version check `NOT_APPLICABLE` and must not be treated as v1 artifact evidence.
+DryRun mode materializes deterministic copies of the committed fixture artifacts only below an owned temporary root so artifact/manifest/archive/hash preflight can execute. It emits the same report shape, marks every install/data lifecycle action `SKIPPED`, and removes that temporary root during cleanup. It does not create the simulated install or retained-data targets. Both non-live modes intentionally use the current #38 v0.7 fixture bytes; the report marks the v1 target-version check `NOT_APPLICABLE` and must not be treated as v1 artifact evidence.
 
 ## Live-mode boundary
 
@@ -56,7 +56,7 @@ Do not run that command from this preparation task. A successful live report is 
 
 ## Effects and safety invariants
 
-All paths are canonicalized before use. Existing ancestors and package trees must contain no reparse points. Broad roots, wildcards, and non-owned transient names are rejected. Artifact, report, install, retained-data, stage, and backup paths are compared in both ancestor/descendant directions so no copy or destructive target can contain its source or be contained by it. Reports are new files and are atomically staged; existing reports are never overwritten.
+All paths are canonicalized before use. Existing ancestors and package trees must contain no reparse points. Broad roots, wildcards, and non-owned transient names are rejected. Artifact, report, install, retained-data, stage, and backup paths are compared in both ancestor/descendant directions so no copy or destructive target can contain its source or be contained by it. The retained-data marker must be an ordinary, normalized strict descendant file path: dot segments, alternate data streams, reserved Windows device names, invalid characters, and ambiguous trailing dots/spaces are rejected. Marker creation uses `FileMode.CreateNew`, so a foreign file that appears first is never overwritten. Reports are new files and are atomically staged; existing reports are never overwritten.
 
 The package transition is a staged directory move:
 
@@ -97,7 +97,7 @@ The machine-readable schema is [`issue-44-install-acceptance-report.schema.json`
 | `transcript` | Ordered action records with `sequence`, `phase`, `action`, `status`, `effect`, `details`, and `pathBinding` |
 | `boundaries` | Separate Static/Synthetic/Contract/CleanMachine/Runtime/IndependentReview/Release statements |
 
-Every lifecycle step is updated in place, so cancellation and failure reports retain completed `PASS` steps, the active `CANCELLED`/`FAIL` step, and later `NOT_RUN` steps. Each step records the expected/observed package version, exact installed-file hash list, whether the install root remains, retained-data status/hash, and details. Unobserved artifact records are JSON `null`, never empty objects. Every emitted pass, failure, and cancellation report is checked against the production shape validator and, when `Test-Json` is available, the Draft-07 schema before it is returned or written.
+Every lifecycle step is updated in place, and `PASS` is assigned only after all of that phase's version, hash, retained-data, and transcript evidence succeeds. Cancellation and failure reports therefore retain completed `PASS` steps, the active `CANCELLED`/`FAIL` step, and later `NOT_RUN` steps. Each step records the expected/observed package version, exact installed-file hash list, whether the install root remains, retained-data status/hash, and details. Unobserved artifact records are JSON `null`, never empty objects. Every emitted pass, failure, and cancellation report is checked against the production shape validator and, when `Test-Json` is available, the Draft-07 schema before it is returned or written. A Live invocation rejected before a validated filesystem lifecycle effect remains `Static` with CleanMachine `NOT OBSERVED`.
 
 ## Evidence boundary for this commit
 

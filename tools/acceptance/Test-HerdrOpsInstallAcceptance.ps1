@@ -262,6 +262,36 @@ try {
         $sourceCommitMismatchRejected = $true
     }
     Assert-TestCondition -Condition $sourceCommitMismatchRejected -Message 'An independently expected source-commit mismatch was accepted.'
+    Assert-TestCondition -Condition ((Get-AcceptanceEvidenceClassForObservation -Mode Live -CleanMachineFilesystemObserved $false) -ceq 'Static') -Message 'Rejected Live preflight was mislabeled CleanMachine.'
+    Assert-TestCondition -Condition ((Get-AcceptanceEvidenceClassForObservation -Mode Live -CleanMachineFilesystemObserved $true) -ceq 'CleanMachine') -Message 'Observed Live filesystem lifecycle was not classified CleanMachine.'
+
+    $retainedSafetyRoot = Join-Path $testRoot 'retained-path-safety'
+    foreach ($unsafeRelativePath in @('.', '..\escape.marker', 'state:stream', 'state\CON.txt', 'state\trailing.')) {
+        $unsafeRelativeRejected = $false
+        try {
+            Resolve-AcceptanceSafeRelativeFilePath -RootPath $retainedSafetyRoot -RelativePath $unsafeRelativePath -Context 'retained path test' | Out-Null
+        } catch {
+            $unsafeRelativeRejected = $true
+        }
+        Assert-TestCondition -Condition $unsafeRelativeRejected -Message "Unsafe retained-data relative path was accepted: $unsafeRelativePath"
+    }
+    $safeRetainedPath = Resolve-AcceptanceSafeRelativeFilePath -RootPath $retainedSafetyRoot -RelativePath 'state\safe.marker' -Context 'safe retained path test'
+    $markerText = "HerdrOps Issue #44 acceptance retained-data marker`n"
+    $markerExpectedHash = Get-Sha256ForText -Text $markerText
+    New-Item -ItemType Directory -Path (Split-Path -Path $safeRetainedPath -Parent) -Force | Out-Null
+    [IO.File]::WriteAllText($safeRetainedPath, 'foreign-owner', $utf8)
+    $foreignHashBefore = ((Get-FileHash -LiteralPath $safeRetainedPath -Algorithm SHA256).Hash).ToUpperInvariant()
+    $foreignMarkerRejected = $false
+    try {
+        New-AcceptanceRetainedDataMarker -UserDataRoot $retainedSafetyRoot -Path $safeRetainedPath -ExpectedSha256 $markerExpectedHash | Out-Null
+    } catch {
+        $foreignMarkerRejected = $true
+    }
+    Assert-TestCondition -Condition $foreignMarkerRejected -Message 'Atomic retained-data marker creation overwrote a foreign file.'
+    Assert-TestCondition -Condition (((Get-FileHash -LiteralPath $safeRetainedPath -Algorithm SHA256).Hash).ToUpperInvariant() -ceq $foreignHashBefore) -Message 'Foreign retained-data bytes changed after CreateNew rejection.'
+    $ownedMarkerPath = Resolve-AcceptanceSafeRelativeFilePath -RootPath $retainedSafetyRoot -RelativePath 'state\owned.marker' -Context 'owned retained path test'
+    New-AcceptanceRetainedDataMarker -UserDataRoot $retainedSafetyRoot -Path $ownedMarkerPath -ExpectedSha256 $markerExpectedHash | Out-Null
+    Assert-TestCondition -Condition (((Get-FileHash -LiteralPath $ownedMarkerPath -Algorithm SHA256).Hash).ToUpperInvariant() -ceq $markerExpectedHash) -Message 'Atomic retained-data marker bytes did not match their binding.'
 
     $fixtureRoot = Get-AcceptanceFullPath -Path (Join-Path $PSScriptRoot '..\..\tests\fixtures\v0.7\packaging')
     $baseProfile = Read-PackageProfile -Path (Join-Path $PSScriptRoot '..\packaging\package-profile.json')
@@ -396,6 +426,23 @@ try {
             Assert-TestCondition -Condition ([string]$observedStep.status -ceq $expectedStatus) -Message "Post-phase lifecycle truth drifted for $($cancelAfterCase.Phase)."
         }
     }
+
+    $postTransitionFailurePath = Join-Path $testRoot 'post-upgrade-transition-failure.json'
+    $postTransitionFailureCaught = $false
+    try {
+        & $harnessPath -Mode Fixture -TestFailurePoint AfterUpgradeTransition -ReportPath $postTransitionFailurePath | Out-Null
+    } catch {
+        $postTransitionFailureCaught = $true
+    }
+    Assert-TestCondition -Condition $postTransitionFailureCaught -Message 'Injected post-upgrade evidence failure unexpectedly completed.'
+    $postTransitionFailureReport = Read-AcceptanceJsonFile -Path $postTransitionFailurePath -Context 'post-upgrade transition failure report'
+    Assert-AcceptanceReportMatchesSchema -Report $postTransitionFailureReport -SchemaPath $reportSchemaPath
+    Assert-TestCondition -Condition ([string]$postTransitionFailureReport.status -ceq 'FAIL') -Message 'Injected post-transition report did not fail.'
+    Assert-TestCondition -Condition ([string]$postTransitionFailureReport.lifecycle.cleanInstall.status -ceq 'PASS') -Message 'Completed clean install lost PASS after later failure.'
+    Assert-TestCondition -Condition ([string]$postTransitionFailureReport.lifecycle.upgrade.status -ceq 'FAIL') -Message 'Active upgrade phase falsely remained PASS after evidence failure.'
+    Assert-TestCondition -Condition ([string]$postTransitionFailureReport.lifecycle.rollback.status -ceq 'NOT_RUN' -and [string]$postTransitionFailureReport.lifecycle.uninstall.status -ceq 'NOT_RUN') -Message 'Later phases ran after injected upgrade evidence failure.'
+    Assert-TestCondition -Condition (@($postTransitionFailureReport.lifecycle.upgrade.installedFileHashes).Count -gt 0) -Message 'Interrupted upgrade observation did not retain installed hashes.'
+    Assert-TestCondition -Condition ([string]$postTransitionFailureReport.boundaries.synthetic -like 'OBSERVED FAIL*') -Message 'Post-transition failure synthetic boundary was mislabeled.'
 
     $failureReportPath = Join-Path $testRoot 'preflight-failure-report.json'
     $failureCaught = $false
@@ -539,7 +586,10 @@ try {
         FixtureLifecycle = 'PASS'
         DryRunNoLifecycleEffects = 'PASS'
         StrictJsonAndArchiveBinding = 'PASS'
+        ObservedEvidenceClassification = 'PASS'
+        RetainedDataOwnership = 'PASS'
         AllCancellationPoints = 'PASS'
+        PostTransitionFailureTruth = 'PASS'
         FailureReportSchema = 'PASS'
         FailureAtomicTransitions = 'PASS'
         LiveModeNotExecuted = 'PASS'

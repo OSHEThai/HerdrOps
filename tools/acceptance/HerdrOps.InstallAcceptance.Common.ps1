@@ -103,6 +103,125 @@ function Assert-AcceptanceLiveSourceCommitBinding {
     }
 }
 
+function Get-AcceptanceEvidenceClassForObservation {
+    param(
+        [Parameter(Mandatory = $true)][ValidateSet('DryRun', 'Fixture', 'Live')][string]$Mode,
+        [Parameter(Mandatory = $true)][bool]$CleanMachineFilesystemObserved
+    )
+
+    if ($Mode -ceq 'Fixture') { return 'Synthetic' }
+    if ($Mode -ceq 'Live' -and $CleanMachineFilesystemObserved) { return 'CleanMachine' }
+    return 'Static'
+}
+
+function Resolve-AcceptanceSafeRelativeFilePath {
+    param(
+        [Parameter(Mandatory = $true)][string]$RootPath,
+        [Parameter(Mandatory = $true)][string]$RelativePath,
+        [Parameter(Mandatory = $true)][string]$Context
+    )
+
+    $root = Get-AcceptanceFullPath -Path $RootPath
+    if ([string]::IsNullOrWhiteSpace($RelativePath) -or
+        [IO.Path]::IsPathRooted($RelativePath) -or
+        $RelativePath.StartsWith('\', [StringComparison]::Ordinal) -or
+        $RelativePath.StartsWith('/', [StringComparison]::Ordinal) -or
+        $RelativePath.EndsWith('\', [StringComparison]::Ordinal) -or
+        $RelativePath.EndsWith('/', [StringComparison]::Ordinal)) {
+        throw "$Context must be a non-empty relative file path."
+    }
+
+    $normalizedRelative = $RelativePath.Replace('/', '\')
+    $segments = @($normalizedRelative.Split([char]'\'))
+    if ($segments.Count -eq 0) {
+        throw "$Context has no file-name segment."
+    }
+    foreach ($segment in $segments) {
+        if ([string]::IsNullOrWhiteSpace($segment) -or
+            $segment -ceq '.' -or
+            $segment -ceq '..' -or
+            $segment.TrimEnd([char[]]@(' ', '.')) -cne $segment -or
+            $segment.IndexOfAny([IO.Path]::GetInvalidFileNameChars()) -ge 0 -or
+            $segment -match '^[\x00-\x1F]+$') {
+            throw "$Context contains an unsafe path segment: '$segment'."
+        }
+        $deviceStem = [IO.Path]::GetFileNameWithoutExtension($segment)
+        if ($deviceStem -match '^(?i:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])$') {
+            throw "$Context contains a reserved Windows device name: '$segment'."
+        }
+    }
+
+    $resolved = Get-AcceptanceFullPath -Path (Join-Path $root $normalizedRelative)
+    if ($resolved.Equals($root, [StringComparison]::OrdinalIgnoreCase) -or
+        -not (Test-PathWithin -ChildPath $resolved -RootPath $root)) {
+        throw "$Context must resolve to a strict descendant of its root."
+    }
+    return $resolved
+}
+
+function Assert-AcceptanceSafeDescendantFilePath {
+    param(
+        [Parameter(Mandatory = $true)][string]$RootPath,
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$Context
+    )
+
+    $root = Get-AcceptanceFullPath -Path $RootPath
+    $fullPath = Get-AcceptanceFullPath -Path $Path
+    if ($fullPath.Equals($root, [StringComparison]::OrdinalIgnoreCase) -or
+        -not (Test-PathWithin -ChildPath $fullPath -RootPath $root)) {
+        throw "$Context must be a strict descendant of its root."
+    }
+    $relative = $fullPath.Substring($root.TrimEnd('\').Length).TrimStart('\')
+    $resolved = Resolve-AcceptanceSafeRelativeFilePath -RootPath $root -RelativePath $relative -Context $Context
+    if (-not $resolved.Equals($fullPath, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "$Context changed during canonical relative-path validation."
+    }
+    return $fullPath
+}
+
+function New-AcceptanceRetainedDataMarker {
+    param(
+        [Parameter(Mandatory = $true)][string]$UserDataRoot,
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$ExpectedSha256
+    )
+
+    $safePath = Assert-AcceptanceSafeDescendantFilePath -RootPath $UserDataRoot -Path $Path -Context 'retained-data marker path'
+    $content = "HerdrOps Issue #44 acceptance retained-data marker`n"
+    $bytes = (New-Object System.Text.UTF8Encoding($false)).GetBytes($content)
+    $actualSha256 = Get-Sha256ForBytes -Bytes $bytes
+    if ($actualSha256 -cne $ExpectedSha256) {
+        throw 'The retained-data marker content does not match its exact live binding hash.'
+    }
+    $parent = Split-Path -Path $safePath -Parent
+    Assert-AcceptanceDirectory -Path $parent -Context 'retained-data marker parent' -Create | Out-Null
+    Assert-AcceptanceNoReparsePath -Path $safePath
+    $stream = $null
+    $created = $false
+    try {
+        $stream = [IO.File]::Open($safePath, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+        $created = $true
+        $stream.Write($bytes, 0, $bytes.Length)
+        $stream.Flush($true)
+    } catch {
+        $writeException = $_.Exception
+        if ($null -ne $stream) {
+            $stream.Dispose()
+            $stream = $null
+        }
+        if ($created -and (Test-Path -LiteralPath $safePath -PathType Leaf)) {
+            Remove-Item -LiteralPath $safePath -Force
+        }
+        throw "Could not atomically create the owned retained-data marker: $($writeException.Message)"
+    } finally {
+        if ($null -ne $stream) {
+            $stream.Dispose()
+        }
+    }
+    return $true
+}
+
 function Assert-AcceptanceNoReparsePath {
     param([Parameter(Mandatory = $true)][string]$Path)
 
