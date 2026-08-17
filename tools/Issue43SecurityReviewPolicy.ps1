@@ -262,14 +262,30 @@ function ConvertTo-Issue43ReportLines {
     }
 
     $normalized = New-Object System.Collections.Generic.List[string]
-    foreach ($line in $Lines) {
+    $pending = New-Object 'System.Collections.Generic.Stack[object]'
+    for ($index = $Lines.Count - 1; $index -ge 0; $index--) {
+        $pending.Push($Lines[$index])
+    }
+
+    while ($pending.Count -gt 0) {
+        $line = $pending.Pop()
         if ($null -eq $line) {
             throw 'Issue #43 report lines cannot contain null values.'
         }
-        if ($line -isnot [string]) {
-            throw "Issue #43 report line must be a string, but was $($line.GetType().FullName)."
+        if ($line -is [string]) {
+            [void]$normalized.Add([string]$line)
+            continue
         }
-        [void]$normalized.Add([string]$line)
+        if ($line -is [Array]) {
+            if ($line.Length -eq 0) {
+                throw 'Issue #43 report lines cannot contain empty nested collections.'
+            }
+            for ($index = $line.Length - 1; $index -ge 0; $index--) {
+                $pending.Push($line[$index])
+            }
+            continue
+        }
+        throw "Issue #43 report line must be a string or line collection, but was $($line.GetType().FullName)."
     }
 
     return $normalized.ToArray()
@@ -306,8 +322,8 @@ function Assert-Issue43RequiredReportFields {
 }
 
 function Test-Issue43ReportWriterFixtures {
-    $separatorLines = @(ConvertTo-Issue43ReportLines -Lines @('header', '', 'footer'))
-    if ($separatorLines.Count -ne 3 -or $separatorLines[1] -ne '') {
+    $separatorLines = @(ConvertTo-Issue43ReportLines -Lines @('header', @('', 'body'), 'footer'))
+    if ($separatorLines.Count -ne 4 -or $separatorLines[1] -ne '') {
         throw 'Issue #43 report writer fixture did not preserve the empty separator line.'
     }
 
