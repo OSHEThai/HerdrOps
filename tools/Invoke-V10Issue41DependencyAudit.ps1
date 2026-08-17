@@ -596,7 +596,7 @@ function Get-PlanTruth {
     }
 
     return [ordered]@{
-        RoadmapIssues = @($roadmapIssues | Sort-Object Version, Key)
+        RoadmapIssues = @($roadmapIssues.ToArray() | Sort-Object Version, Key)
         Tracking = $tracking
         Versions = $versions
         GatePaths = $gatePaths
@@ -845,8 +845,8 @@ function New-DependencyAuditData {
 
     return [ordered]@{
         TargetIssue = $target
-        Issues = @($dependencyIssues | Sort-Object Version, IssueNumber)
-        Map = @($map | Sort-Object Version, IssueNumber)
+        Issues = @($dependencyIssues.ToArray() | Sort-Object Version, IssueNumber)
+        Map = @($map.ToArray() | Sort-Object Version, IssueNumber)
     }
 }
 
@@ -1031,7 +1031,7 @@ function Get-EvidenceManifestEntries {
         Source = 'EvidenceManifest'
         ManifestSha256 = $manifest.Sha256
         ManifestPath = $manifest.FullName
-        Entries = @($entries | Sort-Object Version, GateId)
+        Entries = @($entries.ToArray() | Sort-Object Version, GateId)
     }
 }
 
@@ -1085,15 +1085,15 @@ function Get-EvidenceStatusSummary {
         $summary[$className] = [ordered]@{
             Status = $statusValue
             RequiredByVersions = @($requiredVersions)
-            ObservedVersions = @($observedVersions | Sort-Object)
-            NotObservedVersions = @($notObservedVersions | Sort-Object)
+            ObservedVersions = @($observedVersions.ToArray() | Sort-Object)
+            NotObservedVersions = @($notObservedVersions.ToArray() | Sort-Object)
         }
     }
     return $summary
 }
 
 function Get-OrderedBlockers {
-    return @($script:AuditBlockers | Sort-Object `
+    return @($script:AuditBlockers.ToArray() | Sort-Object `
         @{ Expression = { if ([string]::IsNullOrWhiteSpace($_.Version)) { 'zzzz' } else { $_.Version } } }, `
         @{ Expression = { $_.IssueNumber } }, `
         @{ Expression = { $_.Code } }, `
