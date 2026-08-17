@@ -319,8 +319,8 @@ try {
 
             $duplicateKeyPath = Join-Path $caseDirectory 'github-duplicate-issue-key.json'
             $duplicateKeyFixture = Copy-JsonFixture -SourcePath $readyFixture -DestinationPath $duplicateKeyPath
-            ($duplicateKeyFixture.issues | Where-Object number -eq 1).body = '<!-- herdr-issue-key: DUPLICATE-KEY -->'
-            ($duplicateKeyFixture.issues | Where-Object number -eq 2).body = '<!-- herdr-issue-key: DUPLICATE-KEY -->'
+            $duplicateKeyFixture.issues | Where-Object number -eq 1 | Add-Member -MemberType NoteProperty -Name body -Value '<!-- herdr-issue-key: DUPLICATE-KEY -->' -Force
+            $duplicateKeyFixture.issues | Where-Object number -eq 2 | Add-Member -MemberType NoteProperty -Name body -Value '<!-- herdr-issue-key: DUPLICATE-KEY -->' -Force
             Write-Utf8NoBom -Path $duplicateKeyPath -Content (($duplicateKeyFixture | ConvertTo-Json -Depth 20) + "`r`n")
             $duplicateKeyOutput = Join-Path $repositoryRoot ("artifacts\dependency-audit\fixture-$($shell.Name)-duplicate-key")
             $duplicateKeyResult = Invoke-AuditCase -ShellPath $shell.Path -FixturePath $duplicateKeyPath -OutputPath $duplicateKeyOutput
