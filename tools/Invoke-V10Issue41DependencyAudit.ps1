@@ -15,11 +15,20 @@ param(
     [ValidatePattern('^[0-9a-fA-F]{40}$')]
     [string]$ReleaseCandidateCommit,
 
-    [string]$GhExecutable = 'gh'
+    [string]$GhExecutable = 'gh',
+
+    [ValidateRange(1, 100)]
+    [int]$GitHubPageSize = 100
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+
+$paginationPolicyPath = Join-Path $PSScriptRoot 'V10Issue41DependencyAuditPolicy.ps1'
+if (-not (Test-Path -LiteralPath $paginationPolicyPath -PathType Leaf)) {
+    throw "Issue #41 pagination policy is missing: $paginationPolicyPath"
+}
+. $paginationPolicyPath
 
 $script:AuditBlockers = New-Object System.Collections.ArrayList
 $script:AllEvidenceClasses = @(
@@ -631,7 +640,10 @@ function Get-GitHubSnapshot {
         [string]$OfflineFixture,
 
         [Parameter(Mandatory)]
-        [string]$GhCommand
+        [string]$GhCommand,
+
+        [Parameter(Mandatory)]
+        [int]$PageSize
     )
 
     if (-not [string]::IsNullOrWhiteSpace($OfflineFixture)) {
@@ -657,8 +669,20 @@ function Get-GitHubSnapshot {
         }
     }
 
-    $milestoneResponse = Invoke-GhApiReadOnly -Endpoint ("repos/{0}/milestones?state=all&per_page=100" -f $RepositoryName) -Executable $GhCommand
-    $issueResponse = Invoke-GhApiReadOnly -Endpoint ("repos/{0}/issues?state=all&per_page=100" -f $RepositoryName) -Executable $GhCommand
+    $pageReader = {
+        param([string]$Endpoint)
+        return Invoke-GhApiReadOnly -Endpoint $Endpoint -Executable $GhCommand
+    }.GetNewClosure()
+    $milestoneResponse = Read-V10Issue41PagedGitHubArray `
+        -BaseEndpoint ("repos/{0}/milestones?state=all" -f $RepositoryName) `
+        -PageSize $PageSize `
+        -MaximumPages 100 `
+        -PageReader $pageReader
+    $issueResponse = Read-V10Issue41PagedGitHubArray `
+        -BaseEndpoint ("repos/{0}/issues?state=all&sort=created&direction=asc" -f $RepositoryName) `
+        -PageSize $PageSize `
+        -MaximumPages 100 `
+        -PageReader $pageReader
     return [ordered]@{
         Mode = 'GitHub'
         Repository = $RepositoryName
@@ -668,8 +692,8 @@ function Get-GitHubSnapshot {
             Source = 'GitHub gh api (read-only)'
             FixturePath = ''
             FixtureSha256 = ''
-            Endpoint = @($milestoneResponse.Endpoint, $issueResponse.Endpoint)
-            ResponseSha256 = @($milestoneResponse.Sha256, $issueResponse.Sha256)
+            Endpoint = @($milestoneResponse.Endpoint) + @($issueResponse.Endpoint)
+            ResponseSha256 = @($milestoneResponse.Sha256) + @($issueResponse.Sha256)
         }
     }
 }
@@ -1148,7 +1172,7 @@ function New-HumanReport {
 $repositoryRoot = (Resolve-Path -LiteralPath $RepositoryRoot).Path
 $gitState = Get-GitState -Root $repositoryRoot
 $planTruth = Get-PlanTruth -Root $repositoryRoot
-$snapshot = Get-GitHubSnapshot -RepositoryName $Repository -OfflineFixture $FixturePath -GhCommand $GhExecutable
+$snapshot = Get-GitHubSnapshot -RepositoryName $Repository -OfflineFixture $FixturePath -GhCommand $GhExecutable -PageSize $GitHubPageSize
 $dependencyData = New-DependencyAuditData -PlanTruth $planTruth -GitHubSnapshot $snapshot
 $evidence = Get-EvidenceManifestEntries `
     -ManifestPath $EvidenceManifestPath `
