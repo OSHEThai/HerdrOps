@@ -743,6 +743,10 @@ function New-DependencyAuditData {
             Add-Blocker -Code 'DUPLICATE_ISSUE_KEY' -IssueNumber $number -Detail "GitHub issue key '$key' is duplicated."
         }
 
+        if (@($issue.PSObject.Properties.Name) -contains 'pull_request') {
+            continue
+        }
+
         [void]$validIssues.Add($issue)
     }
 
