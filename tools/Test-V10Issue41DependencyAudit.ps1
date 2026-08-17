@@ -6,6 +6,7 @@ $ErrorActionPreference = 'Stop'
 
 $repositoryRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
 $auditTool = Join-Path $PSScriptRoot 'Invoke-V10Issue41DependencyAudit.ps1'
+$strictJsonPolicy = Join-Path $PSScriptRoot 'StrictJsonPolicy.ps1'
 $paginationPolicy = Join-Path $PSScriptRoot 'GitHubPaginationPolicy.ps1'
 $paginationFixture = Join-Path $PSScriptRoot 'Test-V10Issue41DependencyAuditPagination.ps1'
 $milestoneVerifier = Join-Path $PSScriptRoot 'Test-VersionMilestone.ps1'
@@ -16,7 +17,7 @@ $malformedFixture = Join-Path $fixtureRoot 'github-malformed.json'
 $testRoot = Join-Path $repositoryRoot 'artifacts\dependency-audit-fixture-tests'
 $fixedObservedUtc = '2026-08-17T00:00:00.0000000Z'
 
-foreach ($path in @($auditTool, $paginationPolicy, $paginationFixture, $milestoneVerifier, $readyFixture, $duplicateFixture, $malformedFixture)) {
+foreach ($path in @($auditTool, $strictJsonPolicy, $paginationPolicy, $paginationFixture, $milestoneVerifier, $readyFixture, $duplicateFixture, $malformedFixture)) {
     if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
         throw "Issue #41 fixture test input is missing: $path"
     }
@@ -301,6 +302,7 @@ if ($milestonePaginationCalls -ne 2 -or
 try {
     foreach ($shell in $shells) {
         Assert-ParsedInShell -ShellPath $shell.Path -Path $auditTool
+        Assert-ParsedInShell -ShellPath $shell.Path -Path $strictJsonPolicy
         Assert-ParsedInShell -ShellPath $shell.Path -Path $paginationPolicy
         Assert-ParsedInShell -ShellPath $shell.Path -Path $paginationFixture
         Assert-ParsedInShell -ShellPath $shell.Path -Path $milestoneVerifier

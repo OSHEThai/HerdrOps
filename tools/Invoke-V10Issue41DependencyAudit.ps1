@@ -70,125 +70,6 @@ function Get-PropertyValue {
     return $DefaultValue
 }
 
-function ConvertTo-JsonStringValue {
-    param(
-        [Parameter(Mandatory)]
-        [string]$Json,
-
-        [Parameter(Mandatory)]
-        [int]$StartIndex,
-
-        [Parameter(Mandatory)]
-        [ref]$EndIndex
-    )
-
-    if ($Json[$StartIndex] -ne [char]34) {
-        throw "Expected a JSON string at character $StartIndex."
-    }
-
-    $builder = New-Object System.Text.StringBuilder
-    $index = $StartIndex + 1
-    while ($index -lt $Json.Length) {
-        $character = $Json[$index]
-        if ($character -eq [char]34) {
-            $EndIndex.Value = $index
-            return $builder.ToString()
-        }
-
-        if ([int][char]$character -lt 32) {
-            throw "Unescaped control character in JSON string at character $index."
-        }
-
-        if ($character -ne [char]92) {
-            [void]$builder.Append($character)
-            $index++
-            continue
-        }
-
-        $index++
-        if ($index -ge $Json.Length) {
-            throw 'JSON string ends after an escape character.'
-        }
-
-        $escape = $Json[$index]
-        switch ($escape) {
-            ([char]34) { [void]$builder.Append([char]34) }
-            ([char]92) { [void]$builder.Append([char]92) }
-            '/' { [void]$builder.Append('/') }
-            'b' { [void]$builder.Append([char]8) }
-            'f' { [void]$builder.Append([char]12) }
-            'n' { [void]$builder.Append("`n") }
-            'r' { [void]$builder.Append("`r") }
-            't' { [void]$builder.Append("`t") }
-            'u' {
-                if ($index + 4 -ge $Json.Length) {
-                    throw "Incomplete unicode escape at character $index."
-                }
-
-                $hex = $Json.Substring($index + 1, 4)
-                if ($hex -notmatch '^[0-9a-fA-F]{4}$') {
-                    throw "Invalid unicode escape at character $index."
-                }
-
-                [void]$builder.Append([char]([Convert]::ToInt32($hex, 16)))
-                $index += 4
-            }
-            default { throw "Unknown JSON escape '$escape' at character $index." }
-        }
-
-        $index++
-    }
-
-    throw "JSON string at character $StartIndex is not terminated."
-}
-
-function Assert-NoDuplicateJsonObjectKeys {
-    param(
-        [Parameter(Mandatory)]
-        [string]$Json,
-
-        [Parameter(Mandatory)]
-        [string]$SourceName
-    )
-
-    $objectKeySets = New-Object System.Collections.ArrayList
-    $index = 0
-    while ($index -lt $Json.Length) {
-        $character = $Json[$index]
-        if ($character -eq [char]34) {
-            $endIndex = 0
-            $key = ConvertTo-JsonStringValue -Json $Json -StartIndex $index -EndIndex ([ref]$endIndex)
-            $lookahead = $endIndex + 1
-            while ($lookahead -lt $Json.Length -and [char]::IsWhiteSpace($Json[$lookahead])) {
-                $lookahead++
-            }
-
-            if ($lookahead -lt $Json.Length -and $Json[$lookahead] -eq ':' -and $objectKeySets.Count -gt 0) {
-                $keys = $objectKeySets[$objectKeySets.Count - 1]
-                if (-not $keys.Add($key)) {
-                    throw "Duplicate JSON object key '$key' in $SourceName."
-                }
-            }
-
-            $index = $endIndex + 1
-            continue
-        }
-
-        if ($character -eq '{') {
-            [void]$objectKeySets.Add((New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::Ordinal)))
-        }
-        elseif ($character -eq '}' -and $objectKeySets.Count -gt 0) {
-            $objectKeySets.RemoveAt($objectKeySets.Count - 1)
-        }
-
-        $index++
-    }
-
-    if ($objectKeySets.Count -ne 0) {
-        throw "Unbalanced JSON object delimiters in $SourceName."
-    }
-}
-
 function Read-StrictJsonFile {
     param(
         [Parameter(Mandatory)]
@@ -209,7 +90,7 @@ function Read-StrictJsonFile {
         throw "JSON input file is empty: $Path"
     }
 
-    Assert-NoDuplicateJsonObjectKeys -Json $raw -SourceName $item.FullName
+    Assert-StrictJsonText -Json $raw -SourceName $item.FullName
     try {
         $value = $raw | ConvertFrom-Json
     }
@@ -419,7 +300,7 @@ function Invoke-GhApiReadOnly {
         throw "GitHub CLI returned an empty response for '$Endpoint'."
     }
 
-    Assert-NoDuplicateJsonObjectKeys -Json $rawOutput -SourceName "gh api $Endpoint"
+    Assert-StrictJsonText -Json $rawOutput -SourceName "gh api $Endpoint"
     try {
         $value = $rawOutput | ConvertFrom-Json
     }

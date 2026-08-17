@@ -21,22 +21,6 @@ if (-not (Test-Path -LiteralPath $paginationPolicyPath -PathType Leaf)) {
 }
 . $paginationPolicyPath
 
-function Get-StringSha256 {
-    param(
-        [Parameter(Mandatory)]
-        [string]$Value
-    )
-
-    $algorithm = [Security.Cryptography.SHA256]::Create()
-    try {
-        $bytes = [Text.Encoding]::UTF8.GetBytes($Value)
-        return ([BitConverter]::ToString($algorithm.ComputeHash($bytes))).Replace('-', '')
-    }
-    finally {
-        $algorithm.Dispose()
-    }
-}
-
 function Read-GitHubJsonArrayPage {
     param(
         [Parameter(Mandatory)]
@@ -57,11 +41,12 @@ function Read-GitHubJsonArrayPage {
         -not $trimmed.EndsWith(']', [StringComparison]::Ordinal)) {
         throw "GitHub endpoint '$Endpoint' did not return a JSON array."
     }
+    Assert-StrictJsonText -Json $trimmed -SourceName "gh api $Endpoint"
 
     return [pscustomobject]@{
         Value = @($trimmed | ConvertFrom-Json)
         Raw = $trimmed
-        Sha256 = Get-StringSha256 -Value $trimmed
+        Sha256 = Get-GitHubPaginationRawSha256 -Raw $trimmed
         Endpoint = $Endpoint
     }
 }
