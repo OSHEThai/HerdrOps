@@ -7,6 +7,7 @@ internal static class UiLanguageRenderingAssertions
     private static readonly IReadOnlySet<string> AllowedLiteralValues = new HashSet<string>(StringComparer.Ordinal)
     {
         "HerdrOps",
+        "HerdrOps Core",
         "Herdr",
         "Core",
         "Codex",
