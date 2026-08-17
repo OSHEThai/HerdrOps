@@ -104,6 +104,19 @@ public sealed class SelfReportContractTests
     }
 
     [TestMethod]
+    public void DuplicateJsonMemberFailsClosed()
+    {
+        var json = HerdrOpsSelfReportJson.Serialize(ValidInput());
+        var duplicateEventId = Guid.NewGuid();
+        var withDuplicateMember =
+            $"{json[..^1]},\"eventId\":\"{duplicateEventId:D}\"}}";
+
+        Assert.Throws<HerdrOpsSelfReportProtocolException>(() =>
+            HerdrOpsSelfReportJson.DeserializeCommandInput(
+                Encoding.UTF8.GetBytes(withDuplicateMember)));
+    }
+
+    [TestMethod]
     public void EventSpecificFieldsCannotLeakAcrossCommands()
     {
         var invalid = ValidInput() with

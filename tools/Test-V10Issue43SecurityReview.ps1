@@ -328,6 +328,11 @@ function Add-ReviewedFile {
 
     try {
         $item = Get-Item -LiteralPath $path -Force -ErrorAction Stop
+        $safePath = Get-SafeFullPath -Path $path
+        $observedRelative = (Get-RelativeRepositoryPath -Path $safePath).Replace('\\', '/')
+        if (-not [string]::Equals($observedRelative, $normalized, [StringComparison]::OrdinalIgnoreCase)) {
+            throw "safe path resolved to an unexpected relative path: $observedRelative"
+        }
         $hash = (Get-FileHash -LiteralPath $path -Algorithm SHA256 -ErrorAction Stop).Hash.ToUpperInvariant()
         $script:fileInventory += [pscustomobject]@{
             Path = $normalized
@@ -387,7 +392,9 @@ function Test-ForbiddenProductPattern {
         [string]$RawPattern,
 
         [Parameter(Mandatory)]
-        [string]$Description
+        [string]$Description,
+
+        [switch]$TreatJsonQuotedTextAsCode
     )
 
     $hits = @()
@@ -396,7 +403,8 @@ function Test-ForbiddenProductPattern {
         if ($null -eq $text) {
             continue
         }
-        $result = Test-Issue43ForbiddenDeclaration -Text $text -CodePattern $CodePattern -RawPattern $RawPattern
+        $isJson = [IO.Path]::GetExtension($relativePath).Equals('.json', [StringComparison]::OrdinalIgnoreCase)
+        $result = Test-Issue43ForbiddenDeclaration -Text $text -CodePattern $CodePattern -RawPattern $RawPattern -TreatQuotedTextAsCode:($TreatJsonQuotedTextAsCode -and $isJson)
         if ($result.IsMatch) {
             $hits += "$relativePath [$($result.Match)]"
         }
@@ -515,7 +523,7 @@ function Get-EvidenceClassStatus {
     param([Parameter(Mandatory)][string]$EvidenceClass)
     $items = @($checkResults | Where-Object { $_.EvidenceClass -eq $EvidenceClass })
     if ($EvidenceClass -eq 'BuiltProcess') { return 'NOT RUN' }
-    if ($EvidenceClass -in @('Runtime', 'IndependentReview', 'Release')) { return 'NOT OBSERVED' }
+    if ($EvidenceClass -in @('Runtime', 'IndependentReview', 'Human', 'Release')) { return 'NOT OBSERVED' }
     if ($items.Count -eq 0) { return 'NOT RUN' }
     if (@($items | Where-Object { $_.Status -eq 'FAIL' }).Count -gt 0) { return 'FAIL' }
     if (@($items | Where-Object { $_.Status -eq 'NOT RUN' }).Count -gt 0) { return 'NOT RUN' }
@@ -546,7 +554,15 @@ function Write-Reports {
 
         [Parameter(Mandatory)]
         [AllowEmptyString()]
-        [string]$Branch
+        [string]$Branch,
+
+        [Parameter(Mandatory)]
+        [ValidateSet('PASS', 'FAIL')]
+        [string]$CandidateHeadMatch,
+
+        [Parameter(Mandatory)]
+        [ValidateSet('PASS', 'FAIL')]
+        [string]$DirectParentMatch
     )
 
     Assert-Issue43RequiredReportFields -Fields @{
@@ -555,6 +571,8 @@ function Write-Reports {
         SourceCommit = $SourceCommit
         CandidateCommit = $candidateIdentity
         DirectParentCommit = $directParentIdentity
+        CandidateHeadMatch = $CandidateHeadMatch
+        DirectParentMatch = $DirectParentMatch
         Branch = $Branch
         Result = $Result
     } | Out-Null
@@ -564,6 +582,8 @@ function Write-Reports {
         "Version: $version",
         "CandidateCommit: $candidateIdentity",
         "DirectParentCommit: $directParentIdentity",
+        "CandidateHeadMatch: $CandidateHeadMatch",
+        "DirectParentMatch: $DirectParentMatch",
         'ReviewedFiles:'
     ) + (Get-FileInventoryLines)
     if (-not (Set-SafeText -Path $manifestPath -Lines $manifestLines)) {
@@ -579,6 +599,8 @@ function Write-Reports {
         "SourceCommit: $SourceCommit",
         "CandidateCommit: $candidateIdentity",
         "DirectParentCommit: $directParentIdentity",
+        "CandidateHeadMatch: $CandidateHeadMatch",
+        "DirectParentMatch: $DirectParentMatch",
         "Branch: $Branch",
         "Result: $Result",
         'EvidenceClass: Static plus LocalSQLiteIntegration',
@@ -604,7 +626,7 @@ function Write-Reports {
     }
     $schemaHash = (Get-FileHash -LiteralPath (Get-SafeArtifactFile -Path $schemaReportPath) -Algorithm SHA256).Hash.ToUpperInvariant()
 
-    $evidenceClasses = @('Static', 'Synthetic', 'LocalSQLiteIntegration', 'Contract', 'BuiltProcess', 'Runtime', 'IndependentReview', 'Release')
+    $evidenceClasses = @('Static', 'Synthetic', 'LocalSQLiteIntegration', 'Contract', 'BuiltProcess', 'Runtime', 'IndependentReview', 'Human', 'Release')
     $evidenceStatusLines = @($evidenceClasses | ForEach-Object { "$_`: $(Get-EvidenceClassStatus -EvidenceClass $_)" })
     $highFindings = if ($failures.Count -eq 0) { 'NONE OBSERVED BY THIS STATIC/SYNTHETIC/LOCAL-INTEGRATION/CONTRACT SLICE' } else { $failures -join ' | ' }
     $gateLines = @(
@@ -615,6 +637,8 @@ function Write-Reports {
         "SourceCommit: $SourceCommit",
         "CandidateCommit: $candidateIdentity",
         "DirectParentCommit: $directParentIdentity",
+        "CandidateHeadMatch: $CandidateHeadMatch",
+        "DirectParentMatch: $DirectParentMatch",
         "Branch: $Branch",
         "Result: $Result",
         'PreparationSlice: NON-RUNTIME STATIC+SYNTHETIC+LOCAL-INTEGRATION+CONTRACT',
@@ -644,7 +668,8 @@ function Write-Reports {
         'Live listeners, effective Windows pipe ACLs, live processes, Registry, AppData, and live database: NOT OBSERVED / NOT CLAIMED.',
         'Administrator non-elevated host proof: NOT OBSERVED / NOT CLAIMED.',
         'BuiltProcess evidence: NOT RUN.',
-        'Independent review and human approval: NOT OBSERVED / NOT CLAIMED.',
+        'Independent review: NOT OBSERVED / NOT CLAIMED.',
+        'Human approval and go/no-go: NOT OBSERVED / NOT CLAIMED.',
         'Release packaging, installation, upgrade, rollback acceptance, and publication: NOT OBSERVED / NOT CLAIMED.',
         'Issue #43 acceptance, milestone closure, and v1.0 release readiness: PENDING.'
     )
@@ -659,6 +684,8 @@ function Write-Reports {
         SourceCommit = $SourceCommit
         CandidateCommit = $candidateIdentity
         DirectParentCommit = $directParentIdentity
+        CandidateHeadMatch = $CandidateHeadMatch
+        DirectParentMatch = $DirectParentMatch
         Branch = $Branch
         Result = $Result
         ReviewedManifestSha256 = $manifestHash
@@ -678,8 +705,8 @@ function Write-Reports {
         "SourceCommit: $SourceCommit",
         "CandidateCommit: $candidateIdentity",
         "DirectParentCommit: $directParentIdentity",
-        'CandidateHeadMatch: PASS',
-        'DirectParentMatch: PASS',
+        "CandidateHeadMatch: $CandidateHeadMatch",
+        "DirectParentMatch: $DirectParentMatch",
         "GeneratedUtc: $([DateTime]::UtcNow.ToString('O'))",
         'Gate: tools/Test-V10Issue43SecurityReview.ps1',
         "GateReportPath: $(Get-RelativeRepositoryPath -Path $gateReportPath)",
@@ -697,6 +724,7 @@ function Write-Reports {
         'BuiltProcessEvidence: NOT RUN',
         'RuntimeEvidence: NOT OBSERVED / NOT CLAIMED',
         'IndependentReviewEvidence: NOT OBSERVED / NOT CLAIMED',
+        'HumanEvidence: NOT OBSERVED / NOT CLAIMED',
         'ReleaseEvidence: NOT OBSERVED / NOT CLAIMED',
         "HighFindings: $highFindings",
         'IssueAcceptance: PENDING',
@@ -717,7 +745,8 @@ function Write-Reports {
         'Actual Herdr runtime: NOT OBSERVED / NOT CLAIMED.',
         'Installed Herdr compatibility, live listener inventory, effective Windows ACLs, and cross-account isolation: NOT OBSERVED / NOT CLAIMED.',
         'Live processes, Registry, AppData, live database, and host elevation state: NOT OBSERVED / NOT CLAIMED.',
-        'Independent review and human go/no-go: NOT OBSERVED / NOT CLAIMED.',
+        'Independent review: NOT OBSERVED / NOT CLAIMED.',
+        'Human approval and go/no-go: NOT OBSERVED / NOT CLAIMED.',
         'Release packaging, clean-machine installation, upgrade, rollback acceptance, and publication: NOT OBSERVED / NOT CLAIMED.',
         'This report contains only bounded hashes, source/config facts, and local test results; it does not contain secrets or raw diagnostic payloads.'
     )
@@ -798,11 +827,18 @@ $rootReviewPaths = @(
     'Directory.Packages.props', 'global.json', 'HerdrOps.sln', 'README.md',
     '.github/workflows/ci.yml', '.github/workflows/build.yml'
 )
+$issue43ReviewScriptPaths = @(
+    'tools/Issue43SecurityReviewPolicy.ps1',
+    'tools/Test-V10Issue43SecurityReview.ps1',
+    'tools/Test-V10Issue43SecurityReviewFixtures.ps1'
+)
 $manifestCandidates = @()
 foreach ($path in $trackedPaths) {
     $normalized = $path.Replace('\\', '/')
     $extension = [IO.Path]::GetExtension($normalized).ToLowerInvariant()
-    $include = $rootReviewPaths -contains $normalized
+    $include = $rootReviewPaths -contains $normalized -or
+        $issue43ReviewScriptPaths -contains $normalized -or
+        ($extension -eq '.ps1' -and $normalized -match '(?i)(^|/)[^/]*fixture[^/]*\.ps1$')
     if (-not $include -and $reviewExtensions -contains $extension) {
         $include = $normalized -like 'Plan/*' -or
             $normalized -like 'docs/protocol/*' -or
@@ -835,6 +871,25 @@ if ($missingSelectedProjects.Count -gt 0) {
     Record-Check -Id 'FILE-02' -Status 'FAIL' -EvidenceClass 'Static' -Detail "selected test projects were not bound by the manifest: $($missingSelectedProjects -join ', ')"
 } else {
     Record-Check -Id 'FILE-02' -Status 'PASS' -EvidenceClass 'Static' -Detail 'every selected test project is present in the reviewed-file manifest'
+}
+
+$requiredReviewScripts = @($issue43ReviewScriptPaths + @(
+    $trackedPaths |
+        Where-Object {
+            $normalized = ([string]$_).Replace('\\', '/')
+            [IO.Path]::GetExtension($normalized).Equals('.ps1', [StringComparison]::OrdinalIgnoreCase) -and
+                $normalized -match '(?i)(^|/)[^/]*fixture[^/]*\.ps1$'
+        }
+)) | Sort-Object -Unique
+$reviewedFilePathSet = @{}
+foreach ($entry in $fileInventory) {
+    $reviewedFilePathSet[$entry.Path] = $true
+}
+$missingReviewScripts = @($requiredReviewScripts | Where-Object { -not $reviewedFilePathSet.ContainsKey($_) })
+if ($missingReviewScripts.Count -gt 0) {
+    Record-Check -Id 'FILE-03' -Status 'FAIL' -EvidenceClass 'Static' -Detail "Issue #43 gate/policy/fixture PowerShell scripts are missing from the path-contained SHA-256 manifest: $($missingReviewScripts -join ', ')"
+} else {
+    Record-Check -Id 'FILE-03' -Status 'PASS' -EvidenceClass 'Static' -Detail "all Issue #43 gate/policy/fixture PowerShell scripts are path-contained and deterministically SHA-256 hashed: $($requiredReviewScripts -join ', ')"
 }
 
 if ($missingReviewFiles.Count -eq 0 -and $pathSafetyFailures.Count -eq 0 -and $fileInventory.Count -gt 0) {
@@ -959,6 +1014,7 @@ Test-SelectedTest -Id 'C-07' -Name 'diagnostic' -EvidenceClass 'Synthetic' -Proj
 Record-Check -Id 'EVIDENCE-BUILTPROCESS' -Status 'NOT RUN' -EvidenceClass 'BuiltProcess' -Detail 'no packaged or installed product process was started by this gate'
 Record-Check -Id 'EVIDENCE-RUNTIME' -Status 'NOT OBSERVED' -EvidenceClass 'Runtime' -Detail 'actual Herdr runtime, live listeners, Registry/AppData/live database, and host observation were not performed'
 Record-Check -Id 'EVIDENCE-INDEPENDENT' -Status 'NOT OBSERVED' -EvidenceClass 'IndependentReview' -Detail 'role-distinct independent approval is outside this builder gate'
+Record-Check -Id 'EVIDENCE-HUMAN' -Status 'NOT OBSERVED' -EvidenceClass 'Human' -Detail 'human approval and go/no-go are outside this builder gate'
 Record-Check -Id 'EVIDENCE-RELEASE' -Status 'NOT OBSERVED' -EvidenceClass 'Release' -Detail 'packaging, clean-machine installation, release, and publication were not performed'
 
 if ($pathSafetyFailures.Count -eq 0) {
@@ -977,7 +1033,7 @@ if ($finalCommit -ne $sourceCommit -or $finalStatus.Count -ne 0) {
 }
 
 $result = if ($failures.Count -eq 0) { 'PASS' } else { 'FAIL' }
-$reports = Write-Reports -Result $result -SourceCommit $sourceCommit -Branch $branch
+$reports = Write-Reports -Result $result -SourceCommit $sourceCommit -Branch $branch -CandidateHeadMatch $(if ($candidateMatch) { 'PASS' } else { 'FAIL' }) -DirectParentMatch $(if ($parentMatch) { 'PASS' } else { 'FAIL' })
 Write-Output "Issue #43 gate result: $result"
 Write-Output "ReviewedManifest: $($reports.ManifestPath)"
 Write-Output "SchemaMigrationReport: $($reports.SchemaReportPath)"
@@ -985,7 +1041,7 @@ Write-Output "GateReport: $($reports.GateReportPath)"
 Write-Output "SecurityPrivacyReviewReport: $($reports.ReviewReportPath)"
 Write-Output "GateReportSha256: $($reports.GateReportSha256)"
 Write-Output "ReviewedManifestSha256: $($reports.ManifestSha256)"
-Write-Output "EvidenceClasses: Static=$(Get-EvidenceClassStatus -EvidenceClass 'Static'); Synthetic=$(Get-EvidenceClassStatus -EvidenceClass 'Synthetic'); LocalSQLiteIntegration=$(Get-EvidenceClassStatus -EvidenceClass 'LocalSQLiteIntegration'); Contract=$(Get-EvidenceClassStatus -EvidenceClass 'Contract'); BuiltProcess=NOT RUN; Runtime=NOT OBSERVED; IndependentReview=NOT OBSERVED; Release=NOT OBSERVED"
+Write-Output "EvidenceClasses: Static=$(Get-EvidenceClassStatus -EvidenceClass 'Static'); Synthetic=$(Get-EvidenceClassStatus -EvidenceClass 'Synthetic'); LocalSQLiteIntegration=$(Get-EvidenceClassStatus -EvidenceClass 'LocalSQLiteIntegration'); Contract=$(Get-EvidenceClassStatus -EvidenceClass 'Contract'); BuiltProcess=NOT RUN; Runtime=NOT OBSERVED; IndependentReview=NOT OBSERVED; Human=NOT OBSERVED; Release=NOT OBSERVED"
 if ($result -ne 'PASS') {
     throw "Issue #43 security/privacy preparation gate failed: $($failures -join '; ')"
 }

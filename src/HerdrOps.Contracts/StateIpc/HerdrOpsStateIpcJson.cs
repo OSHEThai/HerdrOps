@@ -10,6 +10,7 @@ public static class HerdrOpsStateIpcJson
     private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web)
     {
         AllowTrailingCommas = false,
+        AllowDuplicateProperties = false,
         MaxDepth = 64,
         PropertyNameCaseInsensitive = false,
         ReadCommentHandling = JsonCommentHandling.Disallow,

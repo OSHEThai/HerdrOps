@@ -27,6 +27,20 @@ function ConvertTo-Issue43CommentFreeText {
         $next = if ($index + 1 -lt $Text.Length) { $Text[$index + 1] } else { [char]0 }
 
         if ($state -eq 'Code') {
+            if ($character -eq '"') {
+                [void]$builder.Append($character)
+                $index++
+                $state = 'DoubleString'
+                continue
+            }
+
+            if ($character -eq "'") {
+                [void]$builder.Append($character)
+                $index++
+                $state = 'CharLiteral'
+                continue
+            }
+
             if ($character -eq '/' -and $next -eq '/') {
                 [void]$builder.Append('  ')
                 $index += 2
@@ -50,6 +64,19 @@ function ConvertTo-Issue43CommentFreeText {
             }
 
             [void]$builder.Append($character)
+            $index++
+            continue
+        }
+
+        if ($state -eq 'DoubleString' -or $state -eq 'CharLiteral') {
+            [void]$builder.Append($character)
+            if ($character -eq [char]92 -and $index + 1 -lt $Text.Length) {
+                $index++
+                [void]$builder.Append($Text[$index])
+            } elseif (($state -eq 'DoubleString' -and $character -eq '"') -or
+                ($state -eq 'CharLiteral' -and $character -eq "'")) {
+                $state = 'Code'
+            }
             $index++
             continue
         }
@@ -122,7 +149,7 @@ function ConvertTo-Issue43CodeOnlyText {
             continue
         }
 
-        if ($character -eq '\\') {
+        if ($character -eq [char]92) {
             [void]$builder.Append(' ')
             if ($index + 1 -lt $commentFree.Length) {
                 $index++
@@ -161,7 +188,7 @@ function Test-Issue43MatchOutsideQuotedText {
     $cursor = 0
     while ($cursor -lt $Index) {
         $character = $Text[$cursor]
-        if ($character -eq '\\' -and $cursor + 1 -lt $Index) {
+        if ($character -eq [char]92 -and $cursor + 1 -lt $Index) {
             $cursor += 2
             continue
         }
@@ -186,7 +213,9 @@ function Test-Issue43ForbiddenDeclaration {
         [string]$CodePattern,
 
         [Parameter(Mandatory)]
-        [string]$RawPattern
+        [string]$RawPattern,
+
+        [switch]$TreatQuotedTextAsCode
     )
 
     $codeOnly = ConvertTo-Issue43CodeOnlyText -Text $Text
@@ -194,7 +223,8 @@ function Test-Issue43ForbiddenDeclaration {
     $codeMatch = [regex]::Match($codeOnly, $CodePattern, [Text.RegularExpressions.RegexOptions]::IgnoreCase)
     $rawMatch = $null
     foreach ($candidate in [regex]::Matches($commentFree, $RawPattern, [Text.RegularExpressions.RegexOptions]::IgnoreCase)) {
-        if (Test-Issue43MatchOutsideQuotedText -Text $commentFree -Index $candidate.Index) {
+        if ($TreatQuotedTextAsCode -or
+            (Test-Issue43MatchOutsideQuotedText -Text $commentFree -Index $candidate.Index)) {
             $rawMatch = $candidate
             break
         }
@@ -215,6 +245,8 @@ var message = "HttpListener, runas, and NativeLibrary.Load(\"bind\")";
     $dynamicListener = '[DllImport("ws2_32.dll", EntryPoint = "bind")] static extern int NativeBind();'
     $adminCode = '<requestedExecutionLevel level="requireAdministrator" />'
     $adminDynamic = 'var verb = "runas";'
+    $jsonEndpoint = '{"urls":"http://localhost:5000"}'
+    $escapedCSharpJson = 'var configuration = "{\"urls\":\"http://localhost:5000\"}";'
 
     $commentResult = Test-Issue43ForbiddenDeclaration `
         -Text $commentOnly `
@@ -237,9 +269,13 @@ var message = "HttpListener, runas, and NativeLibrary.Load(\"bind\")";
         -CodePattern '(?i)\b(?:requireAdministrator|runas|WindowsBuiltInRole\s*\.\s*Administrator|IsInRole)\b' `
         -RawPattern '(?i)(?:requestedExecutionLevel\b|uiAccess\s*=)|(?:Verb|verb)\s*=\s*["'']runas'
 
+    $jsonEndpointResult = Test-Issue43ForbiddenDeclaration -Text $jsonEndpoint -CodePattern '(?i)\b(?:https?|wss?)\s*:\s*//\s*(?:localhost|127\.0\.0\.1|\[?::1\]?)(?::\d+)?' -RawPattern '(?i)(?:https?|wss?)\s*:\s*//\s*(?:localhost|127\.0\.0\.1|\[?::1\]?)(?::\d+)?' -TreatQuotedTextAsCode
+    $escapedCSharpJsonResult = Test-Issue43ForbiddenDeclaration -Text $escapedCSharpJson -CodePattern '(?i)\b(?:https?|wss?)\s*:\s*//\s*(?:localhost|127\.0\.0\.1|\[?::1\]?)(?::\d+)?' -RawPattern '(?i)(?:https?|wss?)\s*:\s*//\s*(?:localhost|127\.0\.0\.1|\[?::1\]?)(?::\d+)?'
+
     if ($commentResult.IsMatch -or -not $listenerResult.IsMatch -or -not $dynamicResult.IsMatch -or
-        -not $adminResult.IsMatch -or -not $adminDynamicResult.IsMatch) {
-        throw 'Issue #43 scanner fixtures did not preserve comment/string exclusions and dynamic declaration detection.'
+        -not $adminResult.IsMatch -or -not $adminDynamicResult.IsMatch -or
+        -not $jsonEndpointResult.IsMatch -or $escapedCSharpJsonResult.IsMatch) {
+        throw 'Issue #43 scanner fixtures did not preserve comment/string exclusions, JSON endpoint detection, and dynamic declaration detection.'
     }
 
     return $true
@@ -303,6 +339,8 @@ function Assert-Issue43RequiredReportFields {
         'SourceCommit',
         'CandidateCommit',
         'DirectParentCommit',
+        'CandidateHeadMatch',
+        'DirectParentMatch',
         'Branch',
         'Result'
     )
@@ -351,6 +389,8 @@ function Test-Issue43ReportWriterFixtures {
         SourceCommit = ('a' * 40)
         CandidateCommit = ('b' * 40)
         DirectParentCommit = ('c' * 40)
+        CandidateHeadMatch = 'PASS'
+        DirectParentMatch = 'PASS'
         Branch = 'codex/v10-issue-43-security-review'
         Result = 'PASS'
     }
