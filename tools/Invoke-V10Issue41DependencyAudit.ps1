@@ -558,7 +558,7 @@ function Get-GitHubSnapshot {
         return Invoke-GhApiReadOnly -Endpoint $Endpoint -Executable $Executable
     }
     $milestoneResponse = Read-BoundedGitHubJsonArrayPages `
-        -BaseEndpoint ("repos/{0}/milestones?state=all" -f $RepositoryName) `
+        -BaseEndpoint ("repos/{0}/milestones?state=all&sort=due_on&direction=asc" -f $RepositoryName) `
         -PageSize $PageSize `
         -MaximumPages 100 `
         -PageReader $pageReader `
