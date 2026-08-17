@@ -867,7 +867,7 @@ $markerGroups = @(
         @{ Path = 'docs/protocol/v0.7-state-recovery-contract.md'; Markers = @('forward-only', 'BeforeBackup', 'AfterBackup', 'AfterMigrationBeforeCommit', 'RESTORE_STATE_STORE', 'quick_check', 'integrity_check', 'atomic', 'quarantine', 'NOT_OBSERVED') },
         @{ Path = 'src/HerdrOps.Infrastructure/Storage/Recovery/StateStoreRecoveryService.cs'; Markers = @('ConfirmationPhrase', 'ExpectedBackupSha256', 'RestoreBackup', 'sourceAfterRestore', 'RESTORE_STATE_STORE', 'NOT_OBSERVED') },
         @{ Path = 'src/HerdrOps.Infrastructure/Storage/Recovery/StateStoreRecoveryArtifacts.cs'; Markers = @('CreateBackup', 'RestoreBackup', 'FileMode.CreateNew', 'quick_check', 'integrity_check', 'File.Replace') },
-        @{ Path = 'src/HerdrOps.Core/StateStoreRestoreCommand.cs'; Markers = @('RESTORE_STATE_STORE', 'ExpectedBackupSha256') },
+        @{ Path = 'src/HerdrOps.Core/StateStoreRestoreCommand.cs'; Markers = @('RESTORE_STATE_STORE', 'expectedBackupSha256') },
         @{ Path = 'tests/HerdrOps.IntegrationTests/StateStoreRecoveryTests.cs'; Markers = @('InterruptedMigrationRollsBackAndBackupCanBeRestoredWithIntegrityCheck', 'DamagedDatabaseIsQuarantinedWithoutSilentReset', 'RecoveryTraceAndQuarantineMetadataTokenizePathsAndRedactFailureMessages') },
         @{ Path = 'tests/HerdrOps.IntegrationTests/StateStoreRestoreCommandTests.cs'; Markers = @('CoreRestoreCommandFailsClosedWithoutExactConfirmation') }
     ) },
@@ -903,8 +903,8 @@ $markerGroups = @(
         @{ Path = 'src/HerdrOps.Contracts/StateIpc/HerdrOpsStatePipeName.cs'; Markers = @('SHA256.HashData', 'HerdrOps.StateIpc.v2|', 'hash[..24]') },
         @{ Path = 'src/HerdrOps.Contracts/SelfReport/HerdrOpsSelfReportPipeName.cs'; Markers = @('SHA256.HashData', 'HerdrOps.SelfReport.v1|', 'hash[..24]') },
         @{ Path = 'src/HerdrOps.Contracts/StateIpc/HerdrOpsStateIpcJson.cs'; Markers = @('ReadCommentHandling = JsonCommentHandling.Disallow', 'UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow', 'DeserializeEnvelope') },
-        @{ Path = 'src/HerdrOps.Contracts/SelfReport/HerdrOpsSelfReportJson.cs'; Markers = @('ReadCommentHandling = JsonCommentHandling.Disallow', 'UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow', 'DeserializeEnvelope') },
-        @{ Path = 'src/HerdrOps.Contracts/SelfReport/HerdrOpsSelfReportContract.cs'; Markers = @('HerdrOpsSelfReportSubmission', 'ValidateEnvelope') },
+        @{ Path = 'src/HerdrOps.Contracts/SelfReport/HerdrOpsSelfReportJson.cs'; Markers = @('ReadCommentHandling = JsonCommentHandling.Disallow', 'UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow', 'DeserializeEnvelope', 'ValidateEnvelope') },
+        @{ Path = 'src/HerdrOps.Contracts/SelfReport/HerdrOpsSelfReportContract.cs'; Markers = @('HerdrOpsSelfReportSubmission') },
         @{ Path = 'Plan/DECISIONS.md'; Markers = @('PipeOptions.CurrentUserOnly', 'pipe name is scoped by a non-reversible hash of the Windows user SID', 'has not yet received a separate multi-account runtime acceptance run') },
         @{ Path = 'tests/HerdrOps.ContractTests/StateIpcContractTests.cs'; Markers = @('UserScopedPipeNameIsStableAndDoesNotExposeIdentity') },
         @{ Path = 'tests/HerdrOps.ContractTests/SelfReportContractTests.cs'; Markers = @('CurrentUserPipeNameIsStableVersionedAndScopeSpecific') }
