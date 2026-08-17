@@ -382,6 +382,36 @@ function Test-MarkerGroup {
     return $false
 }
 
+function Find-ForbiddenProductPattern {
+    param(
+        [Parameter(Mandatory)]
+        [string[]]$ScanPaths,
+
+        [Parameter(Mandatory)]
+        [string]$CodePattern,
+
+        [Parameter(Mandatory)]
+        [string]$RawPattern,
+
+        [switch]$TreatJsonQuotedTextAsCode
+    )
+
+    $hits = @()
+    foreach ($relativePath in $ScanPaths) {
+        $text = Get-RepositoryText -RelativePath $relativePath
+        if ($null -eq $text) {
+            continue
+        }
+        $isJson = [IO.Path]::GetExtension($relativePath).Equals('.json', [StringComparison]::OrdinalIgnoreCase)
+        $result = Test-Issue43ForbiddenDeclaration -Text $text -CodePattern $CodePattern -RawPattern $RawPattern -TreatQuotedTextAsCode:($TreatJsonQuotedTextAsCode -and $isJson)
+        if ($result.IsMatch) {
+            $hits += "$relativePath [$($result.Match)]"
+        }
+    }
+
+    return @($hits)
+}
+
 function Test-ForbiddenProductPattern {
     param(
         [Parameter(Mandatory)]
@@ -399,18 +429,11 @@ function Test-ForbiddenProductPattern {
         [switch]$TreatJsonQuotedTextAsCode
     )
 
-    $hits = @()
-    foreach ($relativePath in $productScanPaths) {
-        $text = Get-RepositoryText -RelativePath $relativePath
-        if ($null -eq $text) {
-            continue
-        }
-        $isJson = [IO.Path]::GetExtension($relativePath).Equals('.json', [StringComparison]::OrdinalIgnoreCase)
-        $result = Test-Issue43ForbiddenDeclaration -Text $text -CodePattern $CodePattern -RawPattern $RawPattern -TreatQuotedTextAsCode:($TreatJsonQuotedTextAsCode -and $isJson)
-        if ($result.IsMatch) {
-            $hits += "$relativePath [$($result.Match)]"
-        }
-    }
+    $hits = @(Find-ForbiddenProductPattern `
+        -ScanPaths $productScanPaths `
+        -CodePattern $CodePattern `
+        -RawPattern $RawPattern `
+        -TreatJsonQuotedTextAsCode:$TreatJsonQuotedTextAsCode)
 
     if ($hits.Count -eq 0) {
         Record-Check -Id $Id -Status 'PASS' -EvidenceClass 'Static' -Detail "${Description}: 0 declarations across tracked product source/config inputs"
@@ -419,6 +442,35 @@ function Test-ForbiddenProductPattern {
 
     Record-Check -Id $Id -Status 'FAIL' -EvidenceClass 'Static' -Detail "${Description}: unexpected declarations at $($hits -join ', ')"
     return $false
+}
+
+function Test-Issue43ProductScannerWrapperFixtures {
+    param(
+        [Parameter(Mandatory)]
+        [string]$CodePattern,
+
+        [Parameter(Mandatory)]
+        [string]$RawPattern
+    )
+
+    $fixturePath = 'tests/fixtures/v1.0/issue-43/loopback-endpoint.json'
+    $withoutJsonHandling = @(Find-ForbiddenProductPattern `
+        -ScanPaths @($fixturePath) `
+        -CodePattern $CodePattern `
+        -RawPattern $RawPattern)
+    $withJsonHandling = @(Find-ForbiddenProductPattern `
+        -ScanPaths @($fixturePath) `
+        -CodePattern $CodePattern `
+        -RawPattern $RawPattern `
+        -TreatJsonQuotedTextAsCode)
+
+    if ($withoutJsonHandling.Count -ne 0 -or
+        $withJsonHandling.Count -ne 1 -or
+        -not $withJsonHandling[0].StartsWith("$fixturePath [", [StringComparison]::Ordinal)) {
+        throw 'Issue #43 product-scanner wrapper did not detect a loopback endpoint in a JSON string only when JSON quoted text handling was enabled.'
+    }
+
+    return $true
 }
 
 function Test-SelectedTest {
@@ -994,20 +1046,22 @@ foreach ($group in $markerGroups) {
     Test-MarkerGroup -Id $group.Id -EvidenceClass $group.EvidenceClass -Files $group.Files | Out-Null
 }
 
-try {
-    Test-Issue43ScannerFixtures | Out-Null
-    Test-Issue43ReportWriterFixtures | Out-Null
-    Record-Check -Id 'S-10' -Status 'PASS' -EvidenceClass 'Static' -Detail 'adversarial scanner and report-writer fixtures passed without live process or listener access'
-} catch {
-    Record-Check -Id 'S-10' -Status 'FAIL' -EvidenceClass 'Static' -Detail $_.Exception.Message
-}
-
 $listenerCodePattern = '(?i)\b(?:TcpListener|HttpListener|Kestrel|WebApplication|ListenOptions|UdpClient|Socket\s*\.\s*Bind|\.\s*Bind\s*\()\b|\b(?:UseUrls|ListenAsync)\s*\('
 $listenerRawPattern = '(?i)(?:DllImport|LibraryImport)[^\r\n]*(?:ws2_32|wship6|httpapi|EntryPoint\s*=\s*["''](?:bind|listen|accept|WSABind|WSASocket)["''])|(?:NativeLibrary\s*\.\s*(?:Load|GetExport)|GetProcAddress)[^\r\n]*(?:bind|listen|accept|socket)|\b(?:WSAStartup|WSASocket|WSABind|HttpAddUrl|HttpCreateServerSession)\b'
 $loopbackCodePattern = '(?i)\b(?:https?|wss?)\s*:\s*//\s*(?:localhost|127\.0\.0\.1|\[?::1\]?)(?::\d+)?'
 $loopbackRawPattern = '(?i)(?:https?|wss?)\s*:\s*//\s*(?:localhost|127\.0\.0\.1|\[?::1\]?)(?::\d+)?'
+
+try {
+    Test-Issue43ScannerFixtures | Out-Null
+    Test-Issue43ProductScannerWrapperFixtures -CodePattern $loopbackCodePattern -RawPattern $loopbackRawPattern | Out-Null
+    Test-Issue43ReportWriterFixtures | Out-Null
+    Record-Check -Id 'S-10' -Status 'PASS' -EvidenceClass 'Static' -Detail 'adversarial scanner, product-wrapper, and report-writer fixtures passed without live process or listener access'
+} catch {
+    Record-Check -Id 'S-10' -Status 'FAIL' -EvidenceClass 'Static' -Detail $_.Exception.Message
+}
+
 Test-ForbiddenProductPattern -Id 'S-07-LISTENER' -CodePattern $listenerCodePattern -RawPattern $listenerRawPattern -Description 'unexpected network listener declarations' | Out-Null
-Test-ForbiddenProductPattern -Id 'S-07-LOOPBACK' -CodePattern $loopbackCodePattern -RawPattern $loopbackRawPattern -Description 'loopback HTTP/Web endpoints' | Out-Null
+Test-ForbiddenProductPattern -Id 'S-07-LOOPBACK' -CodePattern $loopbackCodePattern -RawPattern $loopbackRawPattern -Description 'loopback HTTP/Web endpoints' -TreatJsonQuotedTextAsCode | Out-Null
 
 $administratorCodePattern = '(?i)\b(?:requireAdministrator|highestAvailable|requestedExecutionLevel|uiAccess|runas|WindowsBuiltInRole\s*\.\s*Administrator|PrincipalPermission|IsInRole|AdjustTokenPrivileges|Se(?:Debug|Impersonate|TakeOwnership)Privilege|ShellExecute(?:Ex)?)\b'
 $administratorRawPattern = '(?i)(?:requestedExecutionLevel\b|uiAccess\s*=)|(?:Verb|verb)\s*=\s*["'']runas["'']|(?:DllImport|LibraryImport)[^\r\n]*(?:AdjustTokenPrivileges|ShellExecute|runas)'
