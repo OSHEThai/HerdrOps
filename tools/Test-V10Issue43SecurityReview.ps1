@@ -164,7 +164,9 @@ function Get-RelativeRepositoryPath {
 
     $full = [IO.Path]::GetFullPath($Path)
     if ($full.StartsWith($rootPrefix, [StringComparison]::OrdinalIgnoreCase)) {
-        return $full.Substring($rootPrefix.Length).Replace([IO.Path]::AltDirectorySeparatorChar, [IO.Path]::DirectorySeparatorChar)
+        return $full.Substring($rootPrefix.Length).
+            Replace([IO.Path]::DirectorySeparatorChar, '/').
+            Replace([IO.Path]::AltDirectorySeparatorChar, '/')
     }
     return $full
 }
