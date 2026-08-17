@@ -154,6 +154,8 @@ function Invoke-AuditCase {
         [Parameter(Mandatory)]
         [string]$OutputPath,
 
+        [string]$CandidateCommit,
+
         [string]$GhCommand = 'gh'
     )
 
@@ -179,6 +181,9 @@ function Invoke-AuditCase {
     }
     if ($GhCommand -ne 'gh') {
         $arguments += @('-GhExecutable', $GhCommand)
+    }
+    if (-not [string]::IsNullOrWhiteSpace($CandidateCommit)) {
+        $arguments += @('-ReleaseCandidateCommit', $CandidateCommit)
     }
     $output = @(& $ShellPath @arguments 2>&1 | ForEach-Object { [string]$_ })
     return [pscustomobject]@{
@@ -296,6 +301,14 @@ try {
             Assert-Contains -Text (Get-Content -LiteralPath (Join-Path $readyOutput 'dependency-audit.txt') -Raw) -Needle 'OFFLINE_FIXTURE_NO_RELEASE_CREDIT' -CaseName "$($shell.Name) offline ready fixture"
             [void]$completed.Add("$($shell.Name): ready fixture -> NOT_READY")
 
+            $candidateOutput = Join-Path $repositoryRoot ("artifacts\dependency-audit\fixture-$($shell.Name)-candidate-mismatch")
+            $candidateResult = Invoke-AuditCase -ShellPath $shell.Path -FixturePath $readyFixture -EvidencePath $evidence.Path -OutputPath $candidateOutput -CandidateCommit ('A' * 40)
+            Assert-CaseExit -Result $candidateResult -ExpectedExitCode 2 -CaseName "$($shell.Name) candidate identity fixture"
+            $candidateReport = Assert-Report -OutputPath $candidateOutput -CaseName "$($shell.Name) candidate identity fixture"
+            if (@($candidateReport.Blockers | Where-Object Code -eq 'RELEASE_CANDIDATE_COMMIT_MISMATCH').Count -ne 1) { throw 'Mismatched RC commit was not rejected.' }
+            if ($candidateReport.ReleaseCandidate.Status -ne 'NOT_RECORDED') { throw 'Mismatched RC commit was recorded.' }
+            [void]$completed.Add("$($shell.Name): RC identity mismatch -> rejected")
+
             $duplicateOutput = Join-Path $repositoryRoot ("artifacts\dependency-audit\fixture-$($shell.Name)-duplicate")
             $duplicateResult = Invoke-AuditCase -ShellPath $shell.Path -FixturePath $duplicateFixture -OutputPath $duplicateOutput
             if ($duplicateResult.ExitCode -eq 0 -or (Test-Path -LiteralPath $duplicateOutput)) { throw "$($shell.Name) accepted duplicate JSON keys." }
@@ -406,6 +419,18 @@ try {
             $missingGhResult = Invoke-AuditCase -ShellPath $shell.Path -OutputPath $missingGhOutput -GhCommand 'herdops-command-that-does-not-exist'
             if ($missingGhResult.ExitCode -eq 0 -or (Test-Path -LiteralPath $missingGhOutput)) { throw "$($shell.Name) accepted missing gh." }
             [void]$completed.Add("$($shell.Name): gh failure -> rejected")
+
+            $dirtyProbe = Join-Path $repositoryRoot ("issue-41-dirty-probe-$($shell.Name).tmp")
+            Write-Utf8NoBom -Path $dirtyProbe -Content 'dirty checkout probe'
+            try {
+                $dirtyOutput = Join-Path $repositoryRoot ("artifacts\dependency-audit\fixture-$($shell.Name)-dirty")
+                $dirtyResult = Invoke-AuditCase -ShellPath $shell.Path -FixturePath $readyFixture -OutputPath $dirtyOutput
+                if ($dirtyResult.ExitCode -eq 0 -or (Test-Path -LiteralPath $dirtyOutput)) { throw "$($shell.Name) accepted a dirty checkout." }
+            }
+            finally {
+                if (Test-Path -LiteralPath $dirtyProbe) { Remove-Item -LiteralPath $dirtyProbe -Force }
+            }
+            [void]$completed.Add("$($shell.Name): dirty checkout -> rejected")
         }
         finally {
             if (Test-Path -LiteralPath $caseDirectory) { Remove-Item -LiteralPath $caseDirectory -Recurse -Force }
