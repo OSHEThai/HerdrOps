@@ -22,7 +22,7 @@ $profile = Read-PackageProfile -Path $ProfilePath
 $null = Assert-V070PreparationProfile -Profile $profile
 $resolvedVersion = Resolve-RequestedPackageVersion -Profile $profile -RequestedVersion $PackageVersion
 $repositoryRoot = Get-PackagingRepositoryRoot
-Assert-ProjectMatchesPackageProfile -Profile $profile -RepositoryRoot $repositoryRoot
+$null = Assert-ProjectMatchesPackageProfile -Profile $profile -RepositoryRoot $repositoryRoot
 
 $safeOutputRoot = Assert-SafeDestination -Path $OutputRoot -AllowRepositoryChild -AllowTempChild
 if (Test-Path -LiteralPath $safeOutputRoot) {

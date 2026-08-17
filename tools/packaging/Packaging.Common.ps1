@@ -497,6 +497,20 @@ function Assert-NoReparsePath {
     }
 }
 
+function Assert-NoReparseDescendants {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    $root = Normalize-ComparablePath -Path $Path
+    if (-not (Test-Path -LiteralPath $root -PathType Container)) {
+        return
+    }
+    foreach ($item in @(Get-ChildItem -LiteralPath $root -Recurse -Force)) {
+        if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw "Reparse points are not allowed inside packaging generations: $($item.FullName)"
+        }
+    }
+}
+
 function Assert-SafeDestination {
     param(
         [Parameter(Mandatory = $true)][string]$Path,
@@ -574,6 +588,7 @@ function Remove-PackagingTempDirectory {
     }
     if (Test-Path -LiteralPath $fullPath) {
         Assert-NoReparsePath -Path $fullPath
+        Assert-NoReparseDescendants -Path $fullPath
         Remove-Item -LiteralPath $fullPath -Recurse -Force
     }
 }
@@ -1722,6 +1737,51 @@ function Remove-PackagingStagingDirectory {
     }
 }
 
+function Remove-PackagingUncommittedGenerationDirectory {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$Description
+    )
+
+    $fullPath = Normalize-ComparablePath -Path $Path
+    Assert-SafeDestination -Path $fullPath -AllowRepositoryChild -AllowTempChild | Out-Null
+    if (-not (Test-Path -LiteralPath $fullPath)) {
+        return
+    }
+    $item = Get-Item -LiteralPath $fullPath -Force
+    if (-not $item.PSIsContainer -or
+        ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw "Refusing to clean an unsafe ${Description}: $fullPath"
+    }
+    $markerPath = Join-Path $fullPath 'commit.marker'
+    if (Test-Path -LiteralPath $markerPath -PathType Leaf) {
+        throw "Refusing to overwrite a committed ${Description}: $fullPath"
+    }
+    Assert-NoReparsePath -Path $fullPath
+    Assert-NoReparseDescendants -Path $fullPath
+    Remove-Item -LiteralPath $fullPath -Recurse -Force
+}
+
+function Remove-PackagingOrphanedStagingDirectories {
+    param(
+        [Parameter(Mandatory = $true)][string]$Parent,
+        [Parameter(Mandatory = $true)][string]$DestinationName,
+        [Parameter(Mandatory = $true)][string]$Description
+    )
+
+    $parentPath = Normalize-ComparablePath -Path $Parent
+    Assert-SafeDestination -Path $parentPath -AllowRepositoryChild -AllowTempChild | Out-Null
+    if (-not (Test-Path -LiteralPath $parentPath -PathType Container)) {
+        return
+    }
+    Assert-NoReparsePath -Path $parentPath
+    $pattern = '^\.' + [Text.RegularExpressions.Regex]::Escape($DestinationName) + '\.staging-[0-9a-f]{32}$'
+    foreach ($candidate in @(Get-ChildItem -LiteralPath $parentPath -Directory -Force |
+            Where-Object { $_.Name -match $pattern })) {
+        Remove-PackagingStagingDirectory -Path $candidate.FullName
+    }
+}
+
 function Publish-PackageArtifactsAtomically {
     param(
         [AllowNull()]$Profile,
@@ -1732,7 +1792,14 @@ function Publish-PackageArtifactsAtomically {
         [string]$FaultInjectionStage = 'None'
     )
 
-    if ($FaultInjectionStage -notin @('None', 'AfterPackage', 'AfterArchive', 'AfterHash', 'BeforeCommit')) {
+    if ($FaultInjectionStage -notin @(
+            'None',
+            'AfterPackage',
+            'AfterArchive',
+            'AfterHash',
+            'AfterMetadata',
+            'BeforeCommit',
+            'AfterRenameBeforeReturn')) {
         throw "Unsupported packaging publication fault-injection stage: $FaultInjectionStage"
     }
 
@@ -1765,15 +1832,28 @@ function Publish-PackageArtifactsAtomically {
     }
     Assert-NoReparsePath -Path $outputParent
 
+    $outputName = [IO.Path]::GetFileName($safeOutputRoot)
+    Remove-PackagingOrphanedStagingDirectories `
+        -Parent $outputParent `
+        -DestinationName $outputName `
+        -Description 'full-package publication'
+
     if (Test-Path -LiteralPath $safeOutputRoot) {
         $existingOutput = Get-Item -LiteralPath $safeOutputRoot -Force
         if (-not $existingOutput.PSIsContainer -or
             ($existingOutput.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
             throw "Atomic package output root must be a non-reparse directory: $safeOutputRoot"
         }
-        if (@(Get-ChildItem -LiteralPath $safeOutputRoot -Force).Count -ne 0) {
-            throw "Atomic package output root must be missing or empty: $safeOutputRoot"
+        $existingMarker = Join-Path $safeOutputRoot 'commit.marker'
+        if (Test-Path -LiteralPath $existingMarker -PathType Leaf) {
+            return (Assert-PackagedGenerationCommitted `
+                -Profile $Profile `
+                -GenerationRoot $safeOutputRoot `
+                -ExpectedGenerationKind 'FullPackage')
         }
+        Remove-PackagingUncommittedGenerationDirectory `
+            -Path $safeOutputRoot `
+            -Description 'full-package generation'
     }
 
     $stagingRoot = $null
@@ -1816,15 +1896,45 @@ function Publish-PackageArtifactsAtomically {
             -Destination $stagingHashPath `
             -Description 'published hash record before commit'
         Assert-PackageHashRecordMatchesArchive -Profile $Profile -PackageRoot $stagingPackageRoot -ArchivePath $stagingArchivePath -HashRecordPath $stagingHashPath -ArchiveFileName ([IO.Path]::GetFileName($safeArchive)) | Out-Null
+        $metadataPath = Join-Path $stagingRoot 'generation.metadata'
+        $metadataText = New-PackagingGenerationMetadataText `
+            -GenerationKind 'FullPackage' `
+            -PackageDirectory 'package' `
+            -ArchivePath $stagingArchivePath `
+            -HashRecordPath $stagingHashPath
+        $metadataBytes = (New-Object System.Text.UTF8Encoding($false)).GetBytes($metadataText)
+        Write-PackagingBytesToStagingFile `
+            -Path $metadataPath `
+            -Bytes $metadataBytes `
+            -OperationName 'full-package generation metadata'
+        if ($FaultInjectionStage -eq 'AfterMetadata') {
+            throw 'Injected atomic publication failure after generation metadata.'
+        }
+        $markerPath = Join-Path $stagingRoot 'commit.marker'
+        $markerText = New-PackagingGenerationCommitMarkerText `
+            -GenerationRoot $stagingRoot `
+            -GenerationKind 'FullPackage' `
+            -PackageDirectory 'package' `
+            -ArchivePath $stagingArchivePath `
+            -HashRecordPath $stagingHashPath
+        $markerBytes = (New-Object System.Text.UTF8Encoding($false)).GetBytes($markerText)
+        Write-PackagingBytesToStagingFile `
+            -Path $markerPath `
+            -Bytes $markerBytes `
+            -OperationName 'full-package generation commit marker'
         if ($FaultInjectionStage -eq 'BeforeCommit') {
             throw 'Injected atomic publication failure before directory commit.'
         }
 
         if (Test-Path -LiteralPath $safeOutputRoot) {
-            Remove-Item -LiteralPath $safeOutputRoot -Force
+            throw "Refusing to overwrite a full-package generation that appeared during staging: $safeOutputRoot"
         }
-        Move-Item -LiteralPath $stagingRoot -Destination $safeOutputRoot
+        [IO.Directory]::Move($stagingRoot, $safeOutputRoot)
         $committed = $true
+        $stagingRoot = $null
+        if ($FaultInjectionStage -eq 'AfterRenameBeforeReturn') {
+            throw 'Injected atomic publication failure after generation rename before caller return.'
+        }
     } catch {
         $primaryError = $_
     }
@@ -1842,22 +1952,354 @@ function Publish-PackageArtifactsAtomically {
         Throw-PackagingFailure -PrimaryError $primaryError -CleanupError $cleanupError
     }
 
-    Assert-PackageHashRecordMatchesArchive -Profile $Profile -PackageRoot (Join-Path $safeOutputRoot 'package') -ArchivePath (Join-Path $safeOutputRoot ([IO.Path]::GetFileName($safeArchive))) -HashRecordPath (Join-Path $safeOutputRoot 'package-hashes.txt') -ArchiveFileName ([IO.Path]::GetFileName($safeArchive)) | Out-Null
-    return [pscustomobject][ordered]@{
-        GenerationRoot = $safeOutputRoot
-        PackageRoot = (Get-FullPath -Path (Join-Path $safeOutputRoot 'package'))
-        ArchivePath = (Get-FullPath -Path (Join-Path $safeOutputRoot ([IO.Path]::GetFileName($safeArchive))))
-        HashRecordPath = (Get-FullPath -Path (Join-Path $safeOutputRoot 'package-hashes.txt'))
+    return (Assert-PackagedGenerationCommitted `
+        -Profile $Profile `
+        -GenerationRoot $safeOutputRoot `
+        -ExpectedGenerationKind 'FullPackage')
+}
+
+function Resolve-PackagingProjectImportPath {
+    param(
+        [Parameter(Mandatory = $true)][string]$ImportReference,
+        [Parameter(Mandatory = $true)][string]$ImportingFile,
+        [Parameter(Mandatory = $true)][string]$RepositoryRoot
+    )
+
+    if ([string]::IsNullOrWhiteSpace($ImportReference) -or
+        $ImportReference.IndexOf('$(', [StringComparison]::Ordinal) -ge 0 -or
+        $ImportReference.IndexOf('*', [StringComparison]::Ordinal) -ge 0 -or
+        $ImportReference.IndexOf('?', [StringComparison]::Ordinal) -ge 0) {
+        throw "Project import reference must be a concrete, non-wildcard path: '$ImportReference' in $ImportingFile"
+    }
+
+    $candidate = $ImportReference
+    if (-not [IO.Path]::IsPathRooted($candidate)) {
+        $candidate = Join-Path (Split-Path -Path $ImportingFile -Parent) $candidate
+    }
+    $resolved = Normalize-ComparablePath -Path $candidate
+    if (-not (Test-PathWithin -ChildPath $resolved -RootPath $RepositoryRoot)) {
+        throw "Project import is outside the authorized repository: $resolved"
+    }
+    if (-not (Test-Path -LiteralPath $resolved -PathType Leaf)) {
+        throw "Project import was not found: $resolved"
+    }
+    Assert-NoReparsePath -Path $resolved
+    return $resolved
+}
+
+function Get-PackagingProjectImportAncestry {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectPath,
+        [Parameter(Mandatory = $true)][string]$RepositoryRoot
+    )
+
+    $queue = New-Object System.Collections.Queue
+    $queue.Enqueue((Normalize-ComparablePath -Path $ProjectPath))
+    $projectDirectory = Normalize-ComparablePath -Path (Split-Path -Path $ProjectPath -Parent)
+    $directory = $projectDirectory
+    while ($true) {
+        foreach ($directoryBuildName in @('Directory.Build.props', 'Directory.Build.targets')) {
+            $directoryBuildPath = Join-Path $directory $directoryBuildName
+            if (Test-Path -LiteralPath $directoryBuildPath -PathType Leaf) {
+                $queue.Enqueue((Normalize-ComparablePath -Path $directoryBuildPath))
+            }
+        }
+        if ($directory.Equals($RepositoryRoot, [StringComparison]::OrdinalIgnoreCase)) {
+            break
+        }
+        $parent = Split-Path -Path $directory -Parent
+        if ([string]::IsNullOrWhiteSpace($parent) -or
+            $parent.Equals($directory, [StringComparison]::OrdinalIgnoreCase) -or
+            -not (Test-PathWithin -ChildPath $parent -RootPath $RepositoryRoot)) {
+            break
+        }
+        $directory = Normalize-ComparablePath -Path $parent
+    }
+
+    $visited = @{}
+    $ancestry = @()
+    while ($queue.Count -gt 0) {
+        $current = Normalize-ComparablePath -Path ([string]$queue.Dequeue())
+        if ($visited.ContainsKey($current)) {
+            continue
+        }
+        $visited[$current] = $true
+        if (-not (Test-PathWithin -ChildPath $current -RootPath $RepositoryRoot)) {
+            throw "Project import ancestry escaped the authorized repository: $current"
+        }
+        if (-not (Test-Path -LiteralPath $current -PathType Leaf)) {
+            throw "Project import ancestry file was not found: $current"
+        }
+        Assert-NoReparsePath -Path $current
+        $ancestry += $current
+
+        try {
+            [xml]$document = Get-Content -LiteralPath $current -Raw
+        } catch {
+            throw "Project import ancestry file is not valid XML: $current. $($_.Exception.Message)"
+        }
+
+        foreach ($importNode in @($document.SelectNodes('//*[local-name()="Import"]'))) {
+            if ($importNode.HasAttribute('Sdk')) {
+                $sdk = [string]$importNode.GetAttribute('Sdk')
+                if ($sdk -notmatch '^Microsoft\.NET\.Sdk(?:\.|$)') {
+                    throw "Only the trusted Microsoft.NET.Sdk import family is allowed: '$sdk' in $current"
+                }
+                continue
+            }
+            $reference = [string]$importNode.GetAttribute('Project')
+            $importedPath = Resolve-PackagingProjectImportPath `
+                -ImportReference $reference `
+                -ImportingFile $current `
+                -RepositoryRoot $RepositoryRoot
+            $queue.Enqueue($importedPath)
+        }
+    }
+
+    return @($ancestry | Sort-Object)
+}
+
+function Get-PackagingTrustedDotnetRoot {
+    param([string]$CommandPath)
+
+    $source = $CommandPath
+    if ([string]::IsNullOrWhiteSpace($source)) {
+        $command = Get-Command -Name 'dotnet' -CommandType Application -ErrorAction Stop | Select-Object -First 1
+        $source = [string]$command.Source
+    } elseif (-not [IO.Path]::IsPathRooted($source)) {
+        $command = Get-Command -Name $source -CommandType Application -ErrorAction Stop | Select-Object -First 1
+        $source = [string]$command.Source
+    }
+
+    if ([string]::IsNullOrWhiteSpace($source)) {
+        throw 'Could not resolve the dotnet command for trusted SDK import fencing.'
+    }
+    $source = Normalize-ComparablePath -Path $source
+    if (-not (Test-Path -LiteralPath $source -PathType Leaf)) {
+        throw "The dotnet command was not found: $source"
+    }
+    Assert-NoReparsePath -Path $source
+    return (Normalize-ComparablePath -Path (Split-Path -Path $source -Parent))
+}
+
+function ConvertFrom-StrictMSBuildPropertyJson {
+    param(
+        [Parameter(Mandatory = $true)][string]$Json,
+        [Parameter(Mandatory = $true)][string[]]$ExpectedPropertyNames
+    )
+
+    $document = ConvertFrom-StrictPackageJson -Json $Json -Description 'MSBuild property evaluation output'
+    $topNames = @($document.PSObject.Properties | ForEach-Object { [string]$_.Name })
+    if ($topNames.Count -ne 1 -or $topNames[0] -cne 'Properties') {
+        throw 'MSBuild property evaluation output must contain exactly one top-level Properties object.'
+    }
+    if ($null -eq $document.Properties) {
+        throw 'MSBuild property evaluation output Properties object must not be null.'
+    }
+
+    $propertyNames = @($document.Properties.PSObject.Properties | ForEach-Object { [string]$_.Name })
+    $missing = @($ExpectedPropertyNames | Where-Object { $propertyNames -notcontains $_ })
+    $unexpected = @($propertyNames | Where-Object { $ExpectedPropertyNames -notcontains $_ })
+    if ($missing.Count -gt 0 -or $unexpected.Count -gt 0 -or
+        $propertyNames.Count -ne $ExpectedPropertyNames.Count) {
+        throw "MSBuild property evaluation output schema drifted. Missing: $($missing -join ', '). Unexpected: $($unexpected -join ', ')."
+    }
+    foreach ($name in $ExpectedPropertyNames) {
+        $matches = @($document.Properties.PSObject.Properties | Where-Object { [string]$_.Name -ceq $name })
+        if ($matches.Count -ne 1) {
+            throw "MSBuild property evaluation output must contain exactly one '$name' property."
+        }
+    }
+    return $document.Properties
+}
+
+function Invoke-PackagingMSBuildPropertyEvaluation {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectPath,
+        [Parameter(Mandatory = $true)]$Profile,
+        [string]$TestDotnetCommandPath,
+        [int]$TimeoutMilliseconds = 15000
+    )
+
+    $propertyNames = @(
+        'AssemblyName',
+        'TargetName',
+        'RootNamespace',
+        'TargetFramework',
+        'TargetFrameworks',
+        'OutputType',
+        'UseWPF',
+        'TargetExt',
+        'TargetFileName',
+        'UseAppHost',
+        'AppHostName',
+        'PlatformTarget',
+        'Platform',
+        'RuntimeIdentifier',
+        'SelfContained',
+        'PublishSingleFile',
+        'PublishTrimmed',
+        'PublishReadyToRun',
+        'GenerateAssemblyInfo',
+        'OutputPath',
+        'PublishDir',
+        'MSBuildProjectFullPath',
+        'MSBuildProjectDirectory',
+        'MSBuildAllProjects')
+
+    $commandPath = $TestDotnetCommandPath
+    if ([string]::IsNullOrWhiteSpace($commandPath)) {
+        $commandPath = 'dotnet'
+    } elseif ([IO.Path]::IsPathRooted($commandPath)) {
+        $commandPath = Normalize-ComparablePath -Path $commandPath
+        if (-not (Test-Path -LiteralPath $commandPath -PathType Leaf)) {
+            throw "The MSBuild evaluation command was not found: $commandPath"
+        }
+    }
+
+    $propertyRequest = '-getProperty:' + ($propertyNames -join ',')
+    $arguments = @(
+        'msbuild',
+        $ProjectPath,
+        $propertyRequest,
+        '-p:Configuration=Release',
+        ('-p:RuntimeIdentifier=' + [string]$Profile.runtimeIdentifier),
+        '-p:SelfContained=true',
+        '-nologo',
+        '-verbosity:quiet')
+    $quotedArguments = @($arguments | ForEach-Object {
+            '"' + ([string]$_).Replace('"', '\"') + '"'
+        }) -join ' '
+
+    $startInfo = New-Object Diagnostics.ProcessStartInfo
+    $startInfo.FileName = $commandPath
+    $startInfo.Arguments = $quotedArguments
+    $startInfo.WorkingDirectory = Split-Path -Path $ProjectPath -Parent
+    $startInfo.UseShellExecute = $false
+    $startInfo.CreateNoWindow = $true
+    $startInfo.RedirectStandardOutput = $true
+    $startInfo.RedirectStandardError = $true
+    $process = New-Object Diagnostics.Process
+    $process.StartInfo = $startInfo
+    $stdoutTask = $null
+    $stderrTask = $null
+    try {
+        if (-not $process.Start()) {
+            throw 'MSBuild property evaluation process could not be started.'
+        }
+        $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+        $stderrTask = $process.StandardError.ReadToEndAsync()
+        if (-not $process.WaitForExit($TimeoutMilliseconds)) {
+            try { $process.Kill() } catch { }
+            throw "MSBuild property evaluation exceeded the $TimeoutMilliseconds ms timeout."
+        }
+        $process.WaitForExit()
+        $stdout = $stdoutTask.GetAwaiter().GetResult()
+        $stderr = $stderrTask.GetAwaiter().GetResult()
+        if ($process.ExitCode -ne 0) {
+            throw "MSBuild property evaluation failed with exit code $($process.ExitCode): $stderr"
+        }
+        if (-not [string]::IsNullOrWhiteSpace($stderr)) {
+            throw "MSBuild property evaluation wrote unexpected stderr: $stderr"
+        }
+        return (ConvertFrom-StrictMSBuildPropertyJson -Json $stdout -ExpectedPropertyNames $propertyNames)
+    } finally {
+        $process.Dispose()
+    }
+}
+
+function Assert-PackagingEvaluatedImportPaths {
+    param(
+        [Parameter(Mandatory = $true)]$Properties,
+        [Parameter(Mandatory = $true)][string[]]$StaticAncestry,
+        [Parameter(Mandatory = $true)][string]$RepositoryRoot,
+        [Parameter(Mandatory = $true)][string]$TrustedDotnetRoot
+    )
+
+    $reported = @([string]$Properties.MSBuildAllProjects -split ';' |
+        Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    if ($reported.Count -eq 0) {
+        throw 'MSBuild property evaluation did not report an import ancestry.'
+    }
+    foreach ($reportedPath in $reported) {
+        if (-not [IO.Path]::IsPathRooted($reportedPath)) {
+            throw "MSBuild reported a non-rooted import ancestry path: $reportedPath"
+        }
+        $path = Normalize-ComparablePath -Path $reportedPath
+        if (Test-PathWithin -ChildPath $path -RootPath $RepositoryRoot) {
+            Assert-NoReparsePath -Path $path
+            if (@($StaticAncestry | Where-Object { $_.Equals($path, [StringComparison]::OrdinalIgnoreCase) }).Count -eq 0) {
+                throw "MSBuild reported an unverified repository import ancestry path: $path"
+            }
+            continue
+        }
+        if (Test-PathWithin -ChildPath $path -RootPath $TrustedDotnetRoot) {
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+                throw "MSBuild reported a missing trusted SDK import path: $path"
+            }
+            Assert-NoReparsePath -Path $path
+            continue
+        }
+        throw "MSBuild reported an import ancestry path outside the authorized repository or trusted SDK root: $path"
+    }
+}
+
+function Assert-PackagingEvaluatedIdentity {
+    param(
+        [Parameter(Mandatory = $true)]$Properties,
+        [Parameter(Mandatory = $true)]$Profile,
+        [Parameter(Mandatory = $true)][string]$ProjectPath,
+        [Parameter(Mandatory = $true)][string]$RepositoryRoot
+    )
+
+    $projectDirectory = Normalize-ComparablePath -Path (Split-Path -Path $ProjectPath -Parent)
+    $targetFramework = [string]$Profile.targetFramework
+    $expectedOutputPath = 'bin\Release\' + $targetFramework + '\' + [string]$Profile.runtimeIdentifier + '\'
+    $expectedPublishPath = $expectedOutputPath + 'publish\'
+    $expected = [ordered]@{
+        AssemblyName = 'HerdrOps.App'
+        TargetName = 'HerdrOps.App'
+        RootNamespace = 'HerdrOps.App'
+        TargetFramework = $targetFramework
+        TargetFrameworks = ''
+        OutputType = 'WinExe'
+        UseWPF = 'true'
+        TargetExt = '.dll'
+        TargetFileName = 'HerdrOps.App.dll'
+        UseAppHost = 'true'
+        AppHostName = ''
+        PlatformTarget = 'x64'
+        Platform = 'AnyCPU'
+        RuntimeIdentifier = [string]$Profile.runtimeIdentifier
+        SelfContained = 'true'
+        PublishSingleFile = ''
+        PublishTrimmed = ''
+        PublishReadyToRun = ''
+        GenerateAssemblyInfo = 'true'
+        OutputPath = $expectedOutputPath
+        PublishDir = $expectedPublishPath
+        MSBuildProjectFullPath = (Normalize-ComparablePath -Path $ProjectPath)
+        MSBuildProjectDirectory = $projectDirectory
+    }
+    foreach ($name in $expected.Keys) {
+        if ([string]$Properties.$name -cne [string]$expected[$name]) {
+            throw "Effective MSBuild property '$name' must be exactly '$($expected[$name])': '$($Properties.$name)'"
+        }
+    }
+    if (-not (Test-PathWithin -ChildPath (Normalize-ComparablePath -Path $projectDirectory) -RootPath $RepositoryRoot)) {
+        throw "Effective MSBuild project directory escaped the authorized repository: $projectDirectory"
     }
 }
 
 function Assert-ProjectMatchesPackageProfile {
     param(
         [Parameter(Mandatory = $true)]$Profile,
-        [Parameter(Mandatory = $true)][string]$RepositoryRoot
+        [Parameter(Mandatory = $true)][string]$RepositoryRoot,
+        [string]$TestDotnetCommandPath
     )
 
     $repositoryPath = Normalize-ComparablePath -Path $RepositoryRoot
+    Assert-NoReparsePath -Path $repositoryPath
     $relativeProject = ([string]$Profile.sourceProject).Replace('/', '\')
     $expectedRelativeProject = 'src\HerdrOps.App\HerdrOps.App.csproj'
     if ($relativeProject -cne $expectedRelativeProject -or
@@ -1884,76 +2326,31 @@ function Assert-ProjectMatchesPackageProfile {
     } catch {
         throw "Source project is not valid XML: $projectPath. $($_.Exception.Message)"
     }
-
     if ([string]$project.Project.Sdk -cne 'Microsoft.NET.Sdk') {
         throw 'The packaging source project must use Microsoft.NET.Sdk.'
     }
-    $projectLeaf = [IO.Path]::GetFileName($projectPath)
-    $assemblyNameNodes = @($project.Project.PropertyGroup | ForEach-Object {
-            $properties = @($_.PSObject.Properties | Where-Object { $_.Name -eq 'AssemblyName' })
-            foreach ($property in $properties) {
-                if ($null -ne $property.Value) {
-                    $property.Value
-                }
-            }
-        })
-    if ($assemblyNameNodes.Count -gt 1) {
-        throw 'The packaging source project must have at most one AssemblyName property.'
-    }
-    if ($assemblyNameNodes.Count -eq 1) {
-        if ([string]$assemblyNameNodes[0] -cne 'HerdrOps.App') {
-            throw "The packaging source project AssemblyName must be exactly HerdrOps.App: $($assemblyNameNodes[0])"
-        }
-    } elseif ($projectLeaf -cne 'HerdrOps.App.csproj') {
-        throw 'AssemblyName may be omitted only by the exact HerdrOps.App.csproj filename default.'
-    }
 
-    $rootNamespaceNodes = @($project.Project.PropertyGroup | ForEach-Object {
-            $properties = @($_.PSObject.Properties | Where-Object { $_.Name -eq 'RootNamespace' })
-            foreach ($property in $properties) {
-                if ($null -ne $property.Value) {
-                    $property.Value
-                }
-            }
-        })
-    if ($rootNamespaceNodes.Count -gt 1) {
-        throw 'The packaging source project must have at most one RootNamespace property.'
-    }
-    if ($rootNamespaceNodes.Count -eq 1 -and
-        [string]$rootNamespaceNodes[0] -cne 'HerdrOps.App') {
-        throw "The packaging source project RootNamespace must be exactly HerdrOps.App: $($rootNamespaceNodes[0])"
-    }
-    if ($rootNamespaceNodes.Count -eq 0 -and $projectLeaf -cne 'HerdrOps.App.csproj') {
-        throw 'RootNamespace may be omitted only by the exact HerdrOps.App.csproj filename default.'
-    }
+    $staticAncestry = @(Get-PackagingProjectImportAncestry -ProjectPath $projectPath -RepositoryRoot $repositoryPath)
+    $properties = Invoke-PackagingMSBuildPropertyEvaluation `
+        -ProjectPath $projectPath `
+        -Profile $Profile `
+        -TestDotnetCommandPath $TestDotnetCommandPath
+    Assert-PackagingEvaluatedIdentity `
+        -Properties $properties `
+        -Profile $Profile `
+        -ProjectPath $projectPath `
+        -RepositoryRoot $repositoryPath
+    $trustedDotnetRoot = Get-PackagingTrustedDotnetRoot -CommandPath $TestDotnetCommandPath
+    Assert-PackagingEvaluatedImportPaths `
+        -Properties $properties `
+        -StaticAncestry $staticAncestry `
+        -RepositoryRoot $repositoryPath `
+        -TrustedDotnetRoot $trustedDotnetRoot
 
-    $targetNameNodes = @($project.Project.PropertyGroup | ForEach-Object {
-            $properties = @($_.PSObject.Properties | Where-Object { $_.Name -eq 'TargetName' })
-            foreach ($property in $properties) {
-                if ($null -ne $property.Value) {
-                    $property.Value
-                }
-            }
-        })
-    if ($targetNameNodes.Count -gt 1) {
-        throw 'The packaging source project must have at most one TargetName property.'
-    }
-    if ($targetNameNodes.Count -eq 1 -and
-        [string]$targetNameNodes[0] -cne 'HerdrOps.App') {
-        throw "The packaging source project TargetName must be exactly HerdrOps.App: $($targetNameNodes[0])"
-    }
-
-    $frameworks = @($project.Project.PropertyGroup.TargetFramework | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })
-    if ($frameworks.Count -ne 1 -or [string]$frameworks[0] -cne [string]$Profile.targetFramework) {
-        throw "Source project target framework does not match packaging profile: $($frameworks -join ', ')."
-    }
-    $outputTypes = @($project.Project.PropertyGroup.OutputType | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })
-    if ($outputTypes.Count -ne 1 -or [string]$outputTypes[0] -cne 'WinExe') {
-        throw 'The packaging source project must remain a WPF WinExe.'
-    }
-    $wpfValues = @($project.Project.PropertyGroup.UseWPF | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })
-    if ($wpfValues.Count -ne 1 -or [string]$wpfValues[0] -cne 'true') {
-        throw 'The packaging source project must keep UseWPF=true.'
+    return [pscustomobject][ordered]@{
+        ProjectPath = $projectPath
+        ImportAncestry = $staticAncestry
+        Properties = $properties
     }
 }
 
@@ -1963,6 +2360,7 @@ function Assert-PublishedVersionIdentity {
         [Parameter(Mandatory = $true)][string]$PublishRoot
     )
 
+    Assert-StagedExecutableFileIdentities -Profile $Profile -PublishRoot $PublishRoot
     $assemblyPath = Join-Path (Normalize-ComparablePath -Path $PublishRoot) 'HerdrOps.App.dll'
     if (-not (Test-Path -LiteralPath $assemblyPath -PathType Leaf)) {
         throw "Published WPF assembly was not found: $assemblyPath"
@@ -1994,6 +2392,43 @@ function Assert-PublishedVersionIdentity {
         $fileVersionParsed.Minor -ne $expected.Minor -or
         $fileVersionParsed.Build -ne $expected.Build) {
         throw "Published file version '$fileVersion' does not match package version '$($Profile.packageVersion)'."
+    }
+}
+
+function Assert-StagedExecutableFileIdentities {
+    param(
+        [Parameter(Mandatory = $true)]$Profile,
+        [Parameter(Mandatory = $true)][string]$PublishRoot
+    )
+
+    $root = Assert-SafeDestination -Path $PublishRoot -AllowRepositoryChild -AllowTempChild
+    if (-not (Test-Path -LiteralPath $root -PathType Container)) {
+        throw "Synthetic or published package root was not found: $root"
+    }
+    Assert-NoReparsePath -Path $root
+    Assert-NoReparseDescendants -Path $root
+    $expectedAssemblyName = 'HerdrOps.App'
+    $expectedFiles = @(
+        [string]::Concat($expectedAssemblyName, '.dll'),
+        [string]::Concat($expectedAssemblyName, '.exe'))
+    foreach ($expectedFile in $expectedFiles) {
+        $path = Join-Path $root $expectedFile
+        if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+            throw "Staged package is missing the exact executable identity file: $expectedFile"
+        }
+        Assert-NoReparsePath -Path $path
+    }
+    $unexpectedIdentityFiles = @(Get-ChildItem -LiteralPath $root -Recurse -Force -File |
+        Where-Object {
+            $_.Name -match '^HerdrOps\.App\..+\.(?:dll|exe)$'
+        })
+    if ($unexpectedIdentityFiles.Count -gt 0) {
+        throw "Staged package contains unexpected HerdrOps executable identity files: $($unexpectedIdentityFiles.Name -join ', ')"
+    }
+    return [pscustomobject][ordered]@{
+        AssemblyName = $expectedAssemblyName
+        AssemblyPath = (Get-FullPath -Path (Join-Path $root ($expectedAssemblyName + '.dll')))
+        ExecutablePath = (Get-FullPath -Path (Join-Path $root ($expectedAssemblyName + '.exe')))
     }
 }
 
@@ -2454,7 +2889,7 @@ function Assert-PackageHashRecordMatchesArchive {
     }
 }
 
-function Get-PackagingPairCommitMarkerPath {
+function Get-PackagingPairGenerationPath {
     param(
         [Parameter(Mandatory = $true)][string]$ArchivePath,
         [Parameter(Mandatory = $true)][string]$HashRecordPath
@@ -2465,7 +2900,7 @@ function Get-PackagingPairCommitMarkerPath {
     $archiveParent = Normalize-ComparablePath -Path (Split-Path -Path $archive -Parent)
     $hashParent = Normalize-ComparablePath -Path (Split-Path -Path $hashRecord -Parent)
     if (-not $archiveParent.Equals($hashParent, [StringComparison]::OrdinalIgnoreCase)) {
-        throw 'Archive and hash record must share one parent for a single atomic commit marker.'
+        throw 'Archive and hash record must share one parent for a single committed generation.'
     }
 
     $identity = [string]::Concat(
@@ -2473,19 +2908,36 @@ function Get-PackagingPairCommitMarkerPath {
         [char]0,
         ([IO.Path]::GetFileName($hashRecord)).ToUpperInvariant())
     $token = (Get-Sha256ForText -Text $identity).Substring(0, 32)
-    $marker = Join-Path $archiveParent ('.herdrops-package-pair-' + $token + '.commit')
-    Assert-SafeDestination -Path $marker -AllowRepositoryChild -AllowTempChild | Out-Null
-    return $marker
+    $generation = Join-Path $archiveParent ('.herdrops-package-pair-' + $token + '.generation')
+    Assert-SafeDestination -Path $generation -AllowRepositoryChild -AllowTempChild | Out-Null
+    return $generation
 }
 
-function New-PackagePairCommitMarkerText {
+function Get-PackagingPairMetadataPath {
+    param([Parameter(Mandatory = $true)][string]$ArchivePath, [Parameter(Mandatory = $true)][string]$HashRecordPath)
+
+    return (Join-Path (Get-PackagingPairGenerationPath -ArchivePath $ArchivePath -HashRecordPath $HashRecordPath) 'generation.metadata')
+}
+
+function Get-PackagingPairCommitMarkerPath {
     param(
         [Parameter(Mandatory = $true)][string]$ArchivePath,
         [Parameter(Mandatory = $true)][string]$HashRecordPath
     )
 
-    $archive = Get-FullPath -Path $ArchivePath
-    $hashRecord = Get-FullPath -Path $HashRecordPath
+    return (Join-Path (Get-PackagingPairGenerationPath -ArchivePath $ArchivePath -HashRecordPath $HashRecordPath) 'commit.marker')
+}
+
+function New-PackagingGenerationMetadataText {
+    param(
+        [Parameter(Mandatory = $true)][string]$GenerationKind,
+        [Parameter(Mandatory = $true)][string]$PackageDirectory,
+        [Parameter(Mandatory = $true)][string]$ArchivePath,
+        [Parameter(Mandatory = $true)][string]$HashRecordPath
+    )
+
+    $archive = Normalize-ComparablePath -Path $ArchivePath
+    $hashRecord = Normalize-ComparablePath -Path $HashRecordPath
     $archiveName = [IO.Path]::GetFileName($archive)
     $hashRecordName = [IO.Path]::GetFileName($hashRecord)
     $archiveBytes = Get-PackagingFileLength -Path $archive
@@ -2493,8 +2945,10 @@ function New-PackagePairCommitMarkerText {
     $archiveHash = ((Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash).ToUpperInvariant()
     $hashRecordHash = ((Get-FileHash -LiteralPath $hashRecord -Algorithm SHA256).Hash).ToUpperInvariant()
     $lines = @(
-        'HerdrOps package archive/hash commit marker',
+        'HerdrOps package committed generation metadata',
         'SchemaVersion: 1',
+        "GenerationKind: $GenerationKind",
+        "PackageDirectory: $PackageDirectory",
         "ArchiveFile: $archiveName",
         "HashRecordFile: $hashRecordName",
         "ArchiveBytes: $archiveBytes",
@@ -2505,18 +2959,220 @@ function New-PackagePairCommitMarkerText {
     return (($lines -join [char]10) + [char]10)
 }
 
-function Read-PackagePairCommitMarker {
+function Read-PackagingGenerationMetadata {
     param([Parameter(Mandatory = $true)][string]$Path)
 
-    return (Read-PackageKeyValueRecord -Path $Path -ExpectedHeader 'HerdrOps package archive/hash commit marker' -ExpectedKeys @(
+    return (Read-PackageKeyValueRecord -Path $Path -ExpectedHeader 'HerdrOps package committed generation metadata' -ExpectedKeys @(
             'SchemaVersion',
+            'GenerationKind',
+            'PackageDirectory',
             'ArchiveFile',
             'HashRecordFile',
             'ArchiveBytes',
             'ArchiveSha256',
             'HashRecordBytes',
             'HashRecordSha256',
-            'EvidenceClass') -Description 'Package archive/hash commit marker')
+            'EvidenceClass') -Description 'Package generation metadata')
+}
+
+function New-PackagingGenerationCommitMarkerText {
+    param(
+        [Parameter(Mandatory = $true)][string]$GenerationRoot,
+        [Parameter(Mandatory = $true)][string]$GenerationKind,
+        [Parameter(Mandatory = $true)][string]$PackageDirectory,
+        [Parameter(Mandatory = $true)][string]$ArchivePath,
+        [Parameter(Mandatory = $true)][string]$HashRecordPath
+    )
+
+    $root = Normalize-ComparablePath -Path $GenerationRoot
+    $archive = Normalize-ComparablePath -Path $ArchivePath
+    $hashRecord = Normalize-ComparablePath -Path $HashRecordPath
+    $metadataPath = Join-Path $root 'generation.metadata'
+    if (-not (Test-Path -LiteralPath $metadataPath -PathType Leaf)) {
+        throw "Package generation metadata must be closed before its commit marker: $metadataPath"
+    }
+    $archiveName = [IO.Path]::GetFileName($archive)
+    $hashRecordName = [IO.Path]::GetFileName($hashRecord)
+    $archiveBytes = Get-PackagingFileLength -Path $archive
+    $hashRecordBytes = Get-PackagingFileLength -Path $hashRecord
+    $archiveHash = ((Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash).ToUpperInvariant()
+    $hashRecordHash = ((Get-FileHash -LiteralPath $hashRecord -Algorithm SHA256).Hash).ToUpperInvariant()
+    $metadataBytes = Get-PackagingFileLength -Path $metadataPath
+    $metadataHash = ((Get-FileHash -LiteralPath $metadataPath -Algorithm SHA256).Hash).ToUpperInvariant()
+    $lines = @(
+        'HerdrOps package generation commit marker',
+        'SchemaVersion: 1',
+        "GenerationKind: $GenerationKind",
+        'MetadataFile: generation.metadata',
+        "MetadataBytes: $metadataBytes",
+        "MetadataSha256: $metadataHash",
+        "PackageDirectory: $PackageDirectory",
+        "ArchiveFile: $archiveName",
+        "HashRecordFile: $hashRecordName",
+        "ArchiveBytes: $archiveBytes",
+        "ArchiveSha256: $archiveHash",
+        "HashRecordBytes: $hashRecordBytes",
+        "HashRecordSha256: $hashRecordHash",
+        'EvidenceClass: Static')
+    return (($lines -join [char]10) + [char]10)
+}
+
+function Read-PackagingGenerationCommitMarker {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    return (Read-PackageKeyValueRecord -Path $Path -ExpectedHeader 'HerdrOps package generation commit marker' -ExpectedKeys @(
+            'SchemaVersion',
+            'GenerationKind',
+            'MetadataFile',
+            'MetadataBytes',
+            'MetadataSha256',
+            'PackageDirectory',
+            'ArchiveFile',
+            'HashRecordFile',
+            'ArchiveBytes',
+            'ArchiveSha256',
+            'HashRecordBytes',
+            'HashRecordSha256',
+            'EvidenceClass') -Description 'Package generation commit marker')
+}
+
+function Read-PackagePairCommitMarker {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    return (Read-PackagingGenerationCommitMarker -Path $Path)
+}
+
+function Assert-PackagingGenerationCommitted {
+    param(
+        [AllowNull()]$Profile,
+        [Parameter(Mandatory = $true)][string]$GenerationRoot,
+        [Parameter(Mandatory = $true)][string]$ExpectedGenerationKind,
+        [Parameter(Mandatory = $true)][string]$ExpectedPackageDirectory,
+        [AllowNull()][string]$PackageRoot
+    )
+
+    $root = Assert-SafeDestination -Path $GenerationRoot -AllowRepositoryChild -AllowTempChild
+    if (-not (Test-Path -LiteralPath $root -PathType Container)) {
+        throw "Package generation directory was not found: $root"
+    }
+    Assert-NoReparsePath -Path $root
+    Assert-NoReparseDescendants -Path $root
+    $metadataPath = Join-Path $root 'generation.metadata'
+    $markerPath = Join-Path $root 'commit.marker'
+    if (-not (Test-Path -LiteralPath $markerPath -PathType Leaf)) {
+        throw "Package generation has no committed marker: $markerPath"
+    }
+    if (-not (Test-Path -LiteralPath $metadataPath -PathType Leaf)) {
+        throw "Package generation has no committed metadata: $metadataPath"
+    }
+
+    $metadata = Read-PackagingGenerationMetadata -Path $metadataPath
+    $marker = Read-PackagingGenerationCommitMarker -Path $markerPath
+    if ([string]$metadata.SchemaVersion -cne '1' -or
+        [string]$metadata.GenerationKind -cne $ExpectedGenerationKind -or
+        [string]$metadata.PackageDirectory -cne $ExpectedPackageDirectory -or
+        [string]$metadata.EvidenceClass -cne 'Static' -or
+        [string]$marker.SchemaVersion -cne '1' -or
+        [string]$marker.GenerationKind -cne $ExpectedGenerationKind -or
+        [string]$marker.MetadataFile -cne 'generation.metadata' -or
+        [string]$marker.PackageDirectory -cne $ExpectedPackageDirectory -or
+        [string]$marker.EvidenceClass -cne 'Static') {
+        throw 'Package generation metadata or commit marker identity is not exact.'
+    }
+    if ([string]::IsNullOrWhiteSpace([string]$metadata.ArchiveFile) -or
+        [string]::IsNullOrWhiteSpace([string]$metadata.HashRecordFile) -or
+        [string]$metadata.ArchiveFile -in @('.', '..') -or
+        [string]$metadata.HashRecordFile -in @('.', '..') -or
+        [string]$metadata.ArchiveFile -match '[\\/:*?"<>|]' -or
+        [string]$metadata.HashRecordFile -match '[\\/:*?"<>|]' -or
+        [string]$marker.ArchiveFile -cne [string]$metadata.ArchiveFile -or
+        [string]$marker.HashRecordFile -cne [string]$metadata.HashRecordFile) {
+        throw 'Package generation file identities are not exact single-file names.'
+    }
+
+    $archivePath = Join-Path $root ([string]$metadata.ArchiveFile)
+    $hashRecordPath = Join-Path $root ([string]$metadata.HashRecordFile)
+    if (-not (Test-PathWithin -ChildPath $archivePath -RootPath $root) -or
+        -not (Test-PathWithin -ChildPath $hashRecordPath -RootPath $root)) {
+        throw 'Package generation file identities escaped the committed generation directory.'
+    }
+    if (-not (Test-Path -LiteralPath $archivePath -PathType Leaf) -or
+        -not (Test-Path -LiteralPath $hashRecordPath -PathType Leaf)) {
+        throw 'Committed package generation is missing its archive or hash record.'
+    }
+    Assert-NoReparsePath -Path $archivePath
+    Assert-NoReparsePath -Path $hashRecordPath
+    $archiveBytes = Get-PackagingFileLength -Path $archivePath
+    $hashRecordBytes = Get-PackagingFileLength -Path $hashRecordPath
+    $archiveHash = ((Get-FileHash -LiteralPath $archivePath -Algorithm SHA256).Hash).ToUpperInvariant()
+    $hashRecordHash = ((Get-FileHash -LiteralPath $hashRecordPath -Algorithm SHA256).Hash).ToUpperInvariant()
+    $metadataBytes = Get-PackagingFileLength -Path $metadataPath
+    $metadataHash = ((Get-FileHash -LiteralPath $metadataPath -Algorithm SHA256).Hash).ToUpperInvariant()
+    if ([string]$metadata.ArchiveBytes -cne [string]$archiveBytes -or
+        [string]$metadata.ArchiveSha256 -cne $archiveHash -or
+        [string]$metadata.HashRecordBytes -cne [string]$hashRecordBytes -or
+        [string]$metadata.HashRecordSha256 -cne $hashRecordHash -or
+        [string]$marker.MetadataBytes -cne [string]$metadataBytes -or
+        [string]$marker.MetadataSha256 -cne $metadataHash -or
+        [string]$marker.ArchiveBytes -cne [string]$archiveBytes -or
+        [string]$marker.ArchiveSha256 -cne $archiveHash -or
+        [string]$marker.HashRecordBytes -cne [string]$hashRecordBytes -or
+        [string]$marker.HashRecordSha256 -cne $hashRecordHash) {
+        throw 'Package generation metadata or commit marker does not match independently computed bytes.'
+    }
+
+    $packageDirectoryPath = $null
+    if ($ExpectedPackageDirectory -ne '-') {
+        $packageDirectoryPath = Join-Path $root $ExpectedPackageDirectory
+        if (-not (Test-Path -LiteralPath $packageDirectoryPath -PathType Container)) {
+            throw "Committed package generation is missing its package directory: $packageDirectoryPath"
+        }
+        Assert-NoReparsePath -Path $packageDirectoryPath
+    }
+    if (-not [string]::IsNullOrWhiteSpace($PackageRoot)) {
+        $pair = Assert-PackageHashRecordMatchesArchive `
+            -Profile $Profile `
+            -PackageRoot $PackageRoot `
+            -ArchivePath $archivePath `
+            -HashRecordPath $hashRecordPath `
+            -ArchiveFileName ([IO.Path]::GetFileName($archivePath))
+    } else {
+        $pair = Assert-PackageHashRecordMatchesArchive `
+            -Profile $Profile `
+            -PackageRoot $packageDirectoryPath `
+            -ArchivePath $archivePath `
+            -HashRecordPath $hashRecordPath `
+            -ArchiveFileName ([IO.Path]::GetFileName($archivePath))
+    }
+
+    return [pscustomobject][ordered]@{
+        GenerationRoot = (Get-FullPath -Path $root)
+        PackageRoot = if ($null -ne $packageDirectoryPath) { Get-FullPath -Path $packageDirectoryPath } else { $null }
+        ArchivePath = $pair.ArchivePath
+        HashRecordPath = $pair.HashRecordPath
+        MetadataPath = (Get-FullPath -Path $metadataPath)
+        CommitMarkerPath = (Get-FullPath -Path $markerPath)
+        ArchiveBytes = $pair.ArchiveBytes
+        ArchiveSha256 = $pair.ArchiveSha256
+        ManifestPath = $pair.ManifestPath
+        ManifestBytes = $pair.ManifestBytes
+        ManifestSha256 = $pair.ManifestSha256
+        ContentSha256 = $pair.ContentSha256
+    }
+}
+
+function Assert-PackagedGenerationCommitted {
+    param(
+        [Parameter(Mandatory = $true)]$Profile,
+        [Parameter(Mandatory = $true)][string]$GenerationRoot,
+        [Parameter(Mandatory = $true)][string]$ExpectedGenerationKind
+    )
+
+    return (Assert-PackagingGenerationCommitted `
+        -Profile $Profile `
+        -GenerationRoot $GenerationRoot `
+        -ExpectedGenerationKind $ExpectedGenerationKind `
+        -ExpectedPackageDirectory 'package')
 }
 
 function Assert-PackageArchiveHashPairCommitted {
@@ -2529,40 +3185,13 @@ function Assert-PackageArchiveHashPairCommitted {
 
     $safeArchive = Assert-SafeDestination -Path $ArchivePath -AllowRepositoryChild -AllowTempChild
     $safeHashRecord = Assert-SafeDestination -Path $HashRecordPath -AllowRepositoryChild -AllowTempChild
-    $markerPath = Get-PackagingPairCommitMarkerPath -ArchivePath $safeArchive -HashRecordPath $safeHashRecord
-    if (-not (Test-Path -LiteralPath $markerPath -PathType Leaf)) {
-        throw "Package archive/hash pair has no committed generation marker: $markerPath"
-    }
-    $marker = Read-PackagePairCommitMarker -Path $markerPath
-    $archiveName = [IO.Path]::GetFileName($safeArchive)
-    $hashRecordName = [IO.Path]::GetFileName($safeHashRecord)
-    $archiveBytes = Get-PackagingFileLength -Path $safeArchive
-    $hashRecordBytes = Get-PackagingFileLength -Path $safeHashRecord
-    $archiveHash = ((Get-FileHash -LiteralPath $safeArchive -Algorithm SHA256).Hash).ToUpperInvariant()
-    $hashRecordHash = ((Get-FileHash -LiteralPath $safeHashRecord -Algorithm SHA256).Hash).ToUpperInvariant()
-    if ([string]$marker.SchemaVersion -cne '1' -or
-        [string]$marker.ArchiveFile -cne $archiveName -or
-        [string]$marker.HashRecordFile -cne $hashRecordName -or
-        [string]$marker.ArchiveBytes -cne [string]$archiveBytes -or
-        [string]$marker.ArchiveSha256 -cne $archiveHash -or
-        [string]$marker.HashRecordBytes -cne [string]$hashRecordBytes -or
-        [string]$marker.HashRecordSha256 -cne $hashRecordHash -or
-        [string]$marker.EvidenceClass -cne 'Static') {
-        throw 'Package archive/hash commit marker does not match the visible pair bytes.'
-    }
-
-    $pair = Assert-PackageHashRecordMatchesArchive -Profile $Profile -PackageRoot $PackageRoot -ArchivePath $safeArchive -HashRecordPath $safeHashRecord -ArchiveFileName $archiveName
-    return [pscustomobject][ordered]@{
-        ArchivePath = $pair.ArchivePath
-        HashRecordPath = $pair.HashRecordPath
-        CommitMarkerPath = (Get-FullPath -Path $markerPath)
-        ArchiveBytes = $pair.ArchiveBytes
-        ArchiveSha256 = $pair.ArchiveSha256
-        ManifestPath = $pair.ManifestPath
-        ManifestBytes = $pair.ManifestBytes
-        ManifestSha256 = $pair.ManifestSha256
-        ContentSha256 = $pair.ContentSha256
-    }
+    $generationPath = Get-PackagingPairGenerationPath -ArchivePath $safeArchive -HashRecordPath $safeHashRecord
+    return (Assert-PackagingGenerationCommitted `
+        -Profile $Profile `
+        -GenerationRoot $generationPath `
+        -ExpectedGenerationKind 'ArchiveHashPair' `
+        -ExpectedPackageDirectory '-' `
+        -PackageRoot $PackageRoot)
 }
 
 function Publish-PackageArchiveAndHashAtomically {
@@ -2581,13 +3210,15 @@ function Publish-PackageArchiveAndHashAtomically {
             'Hash',
             'AfterArchive',
             'AfterHash',
+            'AfterMetadata',
             'Verify',
             'BeforeCommit',
             'AfterArchiveMove',
             'AfterHashMove',
             'AfterArchiveCommit',
             'AfterHashCommit',
-            'CommitMarker')) {
+            'CommitMarker',
+            'AfterRenameBeforeReturn')) {
         throw "Unsupported package archive pair fault-injection stage: $TestFaultInjectionStage"
     }
 
@@ -2596,123 +3227,133 @@ function Publish-PackageArchiveAndHashAtomically {
     if (-not (Test-Path -LiteralPath $safePackageRoot -PathType Container)) {
         throw "Package root directory was not found: $safePackageRoot"
     }
+    Assert-NoReparsePath -Path $safePackageRoot
     $safeArchive = Assert-SafeDestination -Path $ArchivePath -AllowRepositoryChild -AllowTempChild
     $safeHashRecord = Assert-SafeDestination -Path $HashRecordPath -AllowRepositoryChild -AllowTempChild
-    $markerPath = Get-PackagingPairCommitMarkerPath -ArchivePath $safeArchive -HashRecordPath $safeHashRecord
-    Assert-PackagingPathsDoNotOverlap -Paths @(
-        [pscustomobject]@{ Name = 'package root'; Path = $safePackageRoot },
-        [pscustomobject]@{ Name = 'archive destination'; Path = $safeArchive },
-        [pscustomobject]@{ Name = 'hash-record destination'; Path = $safeHashRecord },
-        [pscustomobject]@{ Name = 'commit marker'; Path = $markerPath },
-        [pscustomobject]@{ Name = 'pair staging probe'; Path = (Get-PackagingStagingProbePath -DestinationPath $markerPath -Directory) })
-    foreach ($existingPath in @($safeArchive, $safeHashRecord, $markerPath)) {
-        if (Test-Path -LiteralPath $existingPath) {
-            throw "Refusing to overwrite an existing package pair destination: $existingPath"
-        }
-    }
-
+    $generationPath = Get-PackagingPairGenerationPath -ArchivePath $safeArchive -HashRecordPath $safeHashRecord
     $pairParent = Split-Path -Path $safeArchive -Parent
     if (-not (Test-Path -LiteralPath $pairParent -PathType Container)) {
         New-Item -ItemType Directory -Path $pairParent -Force | Out-Null
     }
     Assert-NoReparsePath -Path $pairParent
+    Assert-PackagingPathsDoNotOverlap -Paths @(
+        [pscustomobject]@{ Name = 'package root'; Path = $safePackageRoot },
+        [pscustomobject]@{ Name = 'archive destination'; Path = $safeArchive },
+        [pscustomobject]@{ Name = 'hash-record destination'; Path = $safeHashRecord },
+        [pscustomobject]@{ Name = 'committed generation'; Path = $generationPath },
+        [pscustomobject]@{ Name = 'pair staging probe'; Path = (Get-PackagingStagingProbePath -DestinationPath $generationPath -Directory) })
+
+    $generationName = [IO.Path]::GetFileName($generationPath)
+    Remove-PackagingOrphanedStagingDirectories `
+        -Parent $pairParent `
+        -DestinationName $generationName `
+        -Description 'archive/hash pair generation'
+    if (Test-Path -LiteralPath $generationPath) {
+        $existingGeneration = Get-Item -LiteralPath $generationPath -Force
+        if (-not $existingGeneration.PSIsContainer -or
+            ($existingGeneration.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw "Committed archive/hash generation path is not a safe directory: $generationPath"
+        }
+        if (Test-Path -LiteralPath (Join-Path $generationPath 'commit.marker') -PathType Leaf) {
+            return (Assert-PackageArchiveHashPairCommitted `
+                -Profile $Profile `
+                -PackageRoot $safePackageRoot `
+                -ArchivePath $safeArchive `
+                -HashRecordPath $safeHashRecord)
+        }
+        Remove-PackagingUncommittedGenerationDirectory `
+            -Path $generationPath `
+            -Description 'archive/hash pair generation'
+    }
+    foreach ($legacyPath in @($safeArchive, $safeHashRecord)) {
+        if (Test-Path -LiteralPath $legacyPath) {
+            throw "Refusing to overwrite an existing flat archive/hash path; use the committed generation lookup: $legacyPath"
+        }
+    }
 
     $stagingRoot = $null
-    $stagingArchive = $null
-    $stagingHashRecord = $null
-    $stagingMarker = $null
-    $archiveMoved = $false
-    $hashMoved = $false
-    $markerMoved = $false
     $committed = $false
     $primaryError = $null
     $cleanupErrors = @()
     try {
-        $stagingRoot = New-PackagingStagingDirectory -OutputRoot $markerPath
+        $stagingRoot = New-PackagingStagingDirectory -OutputRoot $generationPath
         $stagingArchive = Join-Path $stagingRoot ([IO.Path]::GetFileName($safeArchive))
         $stagingHashRecord = Join-Path $stagingRoot ([IO.Path]::GetFileName($safeHashRecord))
-        $stagingMarker = Join-Path $stagingRoot 'commit.marker'
 
-        $archiveStage = 'None'
-        if ($TestFaultInjectionStage -eq 'Archive') {
-            $archiveStage = 'MidWrite'
-        }
-        New-DeterministicPackageArchive -PackageRoot $safePackageRoot -ArchivePath $stagingArchive -TestFaultInjectionStage $archiveStage | Out-Null
+        $archiveStage = if ($TestFaultInjectionStage -eq 'Archive') { 'MidWrite' } else { 'None' }
+        New-DeterministicPackageArchive `
+            -PackageRoot $safePackageRoot `
+            -ArchivePath $stagingArchive `
+            -TestFaultInjectionStage $archiveStage | Out-Null
         if ($TestFaultInjectionStage -eq 'AfterArchive') {
             throw 'Injected package archive pair failure after archive staging.'
         }
 
-        $hashStage = 'None'
-        if ($TestFaultInjectionStage -eq 'Hash') {
-            $hashStage = 'MidWrite'
-        }
-        Write-PackageHashRecord -Profile $Profile -PackageRoot $safePackageRoot -ArchivePath $stagingArchive -ArchiveFileName ([IO.Path]::GetFileName($safeArchive)) -Path $stagingHashRecord -TestFaultInjectionStage $hashStage | Out-Null
+        $hashStage = if ($TestFaultInjectionStage -eq 'Hash') { 'MidWrite' } else { 'None' }
+        Write-PackageHashRecord `
+            -Profile $Profile `
+            -PackageRoot $safePackageRoot `
+            -ArchivePath $stagingArchive `
+            -ArchiveFileName ([IO.Path]::GetFileName($safeArchive)) `
+            -Path $stagingHashRecord `
+            -TestFaultInjectionStage $hashStage | Out-Null
         if ($TestFaultInjectionStage -eq 'AfterHash') {
             throw 'Injected package archive pair failure after hash-record staging.'
         }
 
-        Assert-PackageHashRecordMatchesArchive -Profile $Profile -PackageRoot $safePackageRoot -ArchivePath $stagingArchive -HashRecordPath $stagingHashRecord -ArchiveFileName ([IO.Path]::GetFileName($safeArchive)) | Out-Null
+        Assert-PackageHashRecordMatchesArchive `
+            -Profile $Profile `
+            -PackageRoot $safePackageRoot `
+            -ArchivePath $stagingArchive `
+            -HashRecordPath $stagingHashRecord `
+            -ArchiveFileName ([IO.Path]::GetFileName($safeArchive)) | Out-Null
         if ($TestFaultInjectionStage -eq 'Verify') {
             throw 'Injected package archive pair verification failure.'
         }
-        $markerText = New-PackagePairCommitMarkerText -ArchivePath $stagingArchive -HashRecordPath $stagingHashRecord
-        $markerBytes = (New-Object System.Text.UTF8Encoding($false)).GetBytes($markerText)
-        Write-PackagingBytesToStagingFile -Path $stagingMarker -Bytes $markerBytes -OperationName 'package archive pair commit marker'
-        if ($TestFaultInjectionStage -eq 'BeforeCommit') {
-            throw 'Injected package archive pair failure before atomic commit marker.'
+
+        $metadataPath = Join-Path $stagingRoot 'generation.metadata'
+        $metadataText = New-PackagingGenerationMetadataText `
+            -GenerationKind 'ArchiveHashPair' `
+            -PackageDirectory '-' `
+            -ArchivePath $stagingArchive `
+            -HashRecordPath $stagingHashRecord
+        Write-PackagingBytesToStagingFile `
+            -Path $metadataPath `
+            -Bytes (New-Object System.Text.UTF8Encoding($false)).GetBytes($metadataText) `
+            -OperationName 'package archive/hash generation metadata'
+        if ($TestFaultInjectionStage -eq 'AfterMetadata') {
+            throw 'Injected package archive pair failure after generation metadata.'
+        }
+        $markerPath = Join-Path $stagingRoot 'commit.marker'
+        $markerText = New-PackagingGenerationCommitMarkerText `
+            -GenerationRoot $stagingRoot `
+            -GenerationKind 'ArchiveHashPair' `
+            -PackageDirectory '-' `
+            -ArchivePath $stagingArchive `
+            -HashRecordPath $stagingHashRecord
+        Write-PackagingBytesToStagingFile `
+            -Path $markerPath `
+            -Bytes (New-Object System.Text.UTF8Encoding($false)).GetBytes($markerText) `
+            -OperationName 'package archive/hash generation commit marker'
+        if ($TestFaultInjectionStage -in @('BeforeCommit', 'AfterArchiveMove', 'AfterHashMove', 'AfterArchiveCommit', 'AfterHashCommit', 'CommitMarker')) {
+            throw 'Injected package archive pair failure before atomic generation rename.'
         }
 
-        foreach ($finalPath in @($safeArchive, $safeHashRecord, $markerPath)) {
-            if (Test-Path -LiteralPath $finalPath) {
-                throw "Refusing to overwrite a package pair destination that appeared during staging: $finalPath"
-            }
+        if (Test-Path -LiteralPath $generationPath) {
+            throw "Refusing to overwrite an archive/hash generation that appeared during staging: $generationPath"
         }
-        [IO.File]::Move($stagingArchive, $safeArchive)
-        $archiveMoved = $true
-        if ($TestFaultInjectionStage -eq 'AfterArchiveMove' -or $TestFaultInjectionStage -eq 'AfterArchiveCommit') {
-            throw 'Injected package archive pair failure after archive move before commit marker.'
-        }
-        [IO.File]::Move($stagingHashRecord, $safeHashRecord)
-        $hashMoved = $true
-        if ($TestFaultInjectionStage -eq 'AfterHashMove' -or $TestFaultInjectionStage -eq 'AfterHashCommit') {
-            throw 'Injected package archive pair failure after hash-record move before commit marker.'
-        }
-        if ($TestFaultInjectionStage -eq 'CommitMarker') {
-            throw 'Injected package archive pair failure before commit marker move.'
-        }
-        [IO.File]::Move($stagingMarker, $markerPath)
-        $markerMoved = $true
-        Assert-PackageArchiveHashPairCommitted -Profile $Profile -PackageRoot $safePackageRoot -ArchivePath $safeArchive -HashRecordPath $safeHashRecord | Out-Null
+        [IO.Directory]::Move($stagingRoot, $generationPath)
         $committed = $true
+        $stagingRoot = $null
+        if ($TestFaultInjectionStage -eq 'AfterRenameBeforeReturn') {
+            throw 'Injected package archive pair failure after generation rename before caller return.'
+        }
     } catch {
         $primaryError = $_
     }
 
     try {
-        if (-not $committed) {
-            if ($markerMoved -and (Test-Path -LiteralPath $markerPath -PathType Leaf)) {
-                [IO.File]::Delete($markerPath)
-            }
-        }
-    } catch {
-        $cleanupErrors += $_
-    }
-    try {
-        if (-not $committed -and $hashMoved -and (Test-Path -LiteralPath $safeHashRecord -PathType Leaf)) {
-            [IO.File]::Delete($safeHashRecord)
-        }
-    } catch {
-        $cleanupErrors += $_
-    }
-    try {
-        if (-not $committed -and $archiveMoved -and (Test-Path -LiteralPath $safeArchive -PathType Leaf)) {
-            [IO.File]::Delete($safeArchive)
-        }
-    } catch {
-        $cleanupErrors += $_
-    }
-    try {
-        if ($null -ne $stagingRoot -and (Test-Path -LiteralPath $stagingRoot)) {
+        if (-not $committed -and $null -ne $stagingRoot -and (Test-Path -LiteralPath $stagingRoot)) {
             Remove-PackagingStagingDirectory -Path $stagingRoot
         }
     } catch {
@@ -2730,6 +3371,9 @@ function Publish-PackageArchiveAndHashAtomically {
         Throw-PackagingFailure -PrimaryError $primaryError -CleanupErrors $cleanupErrors
     }
 
-    $pair = Assert-PackageArchiveHashPairCommitted -Profile $Profile -PackageRoot $safePackageRoot -ArchivePath $safeArchive -HashRecordPath $safeHashRecord
-    return $pair
+    return (Assert-PackageArchiveHashPairCommitted `
+        -Profile $Profile `
+        -PackageRoot $safePackageRoot `
+        -ArchivePath $safeArchive `
+        -HashRecordPath $safeHashRecord)
 }

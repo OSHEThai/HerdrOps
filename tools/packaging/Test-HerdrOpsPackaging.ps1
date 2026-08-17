@@ -74,7 +74,7 @@ function Assert-NoPackagingStagingFiles {
 $profile = Read-PackageProfile -Path $ProfilePath
 $null = Assert-V070PreparationProfile -Profile $profile
 $repositoryRoot = Get-PackagingRepositoryRoot
-Assert-ProjectMatchesPackageProfile -Profile $profile -RepositoryRoot $repositoryRoot
+$null = Assert-ProjectMatchesPackageProfile -Profile $profile -RepositoryRoot $repositoryRoot
 
 $implementationFiles = @(Get-ChildItem -LiteralPath $PSScriptRoot -Filter '*.ps1' -File |
     Where-Object { $_.Name -ne 'Test-HerdrOpsPackaging.ps1' })
@@ -144,6 +144,17 @@ try {
         throw 'Repeated manifest generation was not byte-identical.'
     }
 
+    $syntheticPublishRoot = Join-Path $testRoot 'synthetic-staged-publish'
+    New-Item -ItemType Directory -Path $syntheticPublishRoot -Force | Out-Null
+    Write-DeterministicTextFile -Path (Join-Path $syntheticPublishRoot 'HerdrOps.App.dll') -Text 'synthetic assembly identity'
+    Write-DeterministicTextFile -Path (Join-Path $syntheticPublishRoot 'HerdrOps.App.exe') -Text 'synthetic apphost identity'
+    Assert-StagedExecutableFileIdentities -Profile $profile -PublishRoot $syntheticPublishRoot | Out-Null
+    Write-DeterministicTextFile -Path (Join-Path $syntheticPublishRoot 'HerdrOps.App.malicious.exe') -Text 'wrong executable identity'
+    Assert-ExpectedFailureContaining -Description 'synthetic staged executable identity fence' -RequiredFragments @(
+        'unexpected HerdrOps executable identity') -Action {
+        Assert-StagedExecutableFileIdentities -Profile $profile -PublishRoot $syntheticPublishRoot | Out-Null
+    } | Out-Null
+
     $archiveOne = Join-Path $testRoot 'one.zip'
     $archiveTwo = Join-Path $testRoot 'two.zip'
     New-DeterministicPackageArchive -PackageRoot $packageOne -ArchivePath $archiveOne | Out-Null
@@ -163,6 +174,7 @@ try {
     $overlapOutputUnderPackage = Join-Path $packageOne 'output'
     Assert-ExpectedFailure -Description 'publication rejects output nested under package root before side effects' -Action {
         Publish-PackageArtifactsAtomically `
+            -Profile $profile `
             -PackageRoot $packageOne `
             -ArchivePath $archiveOne `
             -HashRecordPath (Join-Path $testRoot 'one-overlap-hashes.txt') `
@@ -203,9 +215,10 @@ try {
         throw "Unsafe hash destination validation created an outside path: $outsideProbeRoot"
     }
 
-    foreach ($pairStage in @('Archive', 'Hash', 'AfterArchive', 'AfterHash', 'Verify', 'BeforeCommit', 'AfterArchiveMove', 'AfterHashMove', 'CommitMarker')) {
+    foreach ($pairStage in @('Archive', 'Hash', 'AfterArchive', 'AfterHash', 'AfterMetadata', 'Verify', 'BeforeCommit', 'AfterArchiveMove', 'AfterHashMove', 'CommitMarker')) {
         $pairFaultArchive = Join-Path $testRoot ("entry-point-fault-$pairStage.zip")
         $pairFaultHash = Join-Path $testRoot ("entry-point-fault-$pairStage-hashes.txt")
+        $pairFaultGeneration = Get-PackagingPairGenerationPath -ArchivePath $pairFaultArchive -HashRecordPath $pairFaultHash
         Assert-ExpectedFailureContaining -Description ("New-PackageArchive pair fault stage $pairStage") -RequiredFragments @(
             'Injected package') -Action {
             & (Join-Path $PSScriptRoot 'New-PackageArchive.ps1') `
@@ -215,28 +228,58 @@ try {
                 -HashRecordPath $pairFaultHash `
                 -TestFaultInjectionStage $pairStage | Out-Null
         } | Out-Null
-        if ((Test-Path -LiteralPath $pairFaultArchive) -or (Test-Path -LiteralPath $pairFaultHash)) {
-            throw "Archive pair fault stage $pairStage left a final file."
-        }
-        $pairFaultMarker = Get-PackagingPairCommitMarkerPath -ArchivePath $pairFaultArchive -HashRecordPath $pairFaultHash
-        if (Test-Path -LiteralPath $pairFaultMarker) {
-            throw "Archive pair fault stage $pairStage left a visible committed marker."
+        if ((Test-Path -LiteralPath $pairFaultArchive) -or
+            (Test-Path -LiteralPath $pairFaultHash) -or
+            (Test-Path -LiteralPath $pairFaultGeneration)) {
+            throw "Archive pair fault stage $pairStage left a visible final path."
         }
         Assert-NoPackagingStagingFiles -Parent $testRoot -Description ("archive pair fault stage $pairStage")
-        & (Join-Path $PSScriptRoot 'New-PackageArchive.ps1') `
+        $pairRetry = @(& (Join-Path $PSScriptRoot 'New-PackageArchive.ps1') `
             -PackageRoot $packageOne `
             -ProfilePath $ProfilePath `
             -ArchivePath $pairFaultArchive `
-            -HashRecordPath $pairFaultHash | Out-Null
-        if (-not (Test-Path -LiteralPath $pairFaultArchive -PathType Leaf) -or
-            -not (Test-Path -LiteralPath $pairFaultHash -PathType Leaf)) {
+            -HashRecordPath $pairFaultHash)
+        if ($pairRetry.Count -ne 1 -or
+            -not (Test-Path -LiteralPath $pairRetry[0].ArchivePath -PathType Leaf) -or
+            -not (Test-Path -LiteralPath $pairRetry[0].HashRecordPath -PathType Leaf)) {
             throw "Archive pair retry failed after fault stage $pairStage."
         }
-        if (-not (Test-Path -LiteralPath $pairFaultMarker -PathType Leaf)) {
-            throw "Archive pair retry after fault stage $pairStage did not publish one commit marker."
+        if (-not (Test-Path -LiteralPath (Join-Path $pairFaultGeneration 'generation.metadata') -PathType Leaf) -or
+            -not (Test-Path -LiteralPath (Join-Path $pairFaultGeneration 'commit.marker') -PathType Leaf)) {
+            throw "Archive pair retry after fault stage $pairStage did not publish one committed generation."
         }
         Assert-PackageArchiveHashPairCommitted -Profile $profile -PackageRoot $packageOne -ArchivePath $pairFaultArchive -HashRecordPath $pairFaultHash | Out-Null
         Assert-NoPackagingStagingFiles -Parent $testRoot -Description ("archive pair retry after $pairStage")
+    }
+
+    $afterRenameArchive = Join-Path $testRoot 'entry-point-after-rename.zip'
+    $afterRenameHash = Join-Path $testRoot 'entry-point-after-rename-hashes.txt'
+    $afterRenameGeneration = Get-PackagingPairGenerationPath -ArchivePath $afterRenameArchive -HashRecordPath $afterRenameHash
+    Assert-ExpectedFailureContaining -Description 'New-PackageArchive termination after generation rename' -RequiredFragments @(
+        'after generation rename before caller return') -Action {
+        & (Join-Path $PSScriptRoot 'New-PackageArchive.ps1') `
+            -PackageRoot $packageOne `
+            -ProfilePath $ProfilePath `
+            -ArchivePath $afterRenameArchive `
+            -HashRecordPath $afterRenameHash `
+            -TestFaultInjectionStage 'AfterRenameBeforeReturn' | Out-Null
+    } | Out-Null
+    if (-not (Test-Path -LiteralPath (Join-Path $afterRenameGeneration 'commit.marker') -PathType Leaf)) {
+        throw 'Termination after generation rename did not leave a fully committed generation.'
+    }
+    Assert-PackageArchiveHashPairCommitted `
+        -Profile $profile `
+        -PackageRoot $packageOne `
+        -ArchivePath $afterRenameArchive `
+        -HashRecordPath $afterRenameHash | Out-Null
+    $afterRenameRetry = @(& (Join-Path $PSScriptRoot 'New-PackageArchive.ps1') `
+        -PackageRoot $packageOne `
+        -ProfilePath $ProfilePath `
+        -ArchivePath $afterRenameArchive `
+        -HashRecordPath $afterRenameHash)
+    if ($afterRenameRetry.Count -ne 1 -or
+        [string]$afterRenameRetry[0].GenerationRoot -cne (Normalize-ComparablePath -Path $afterRenameGeneration)) {
+        throw 'Retry after generation rename did not reuse the committed generation.'
     }
     Assert-ExpectedFailureContaining -Description 'New-PackageArchive pair cleanup error ordering' -RequiredFragments @(
         'Injected package archive pair failure after archive staging.',
@@ -250,21 +293,23 @@ try {
             -TestInjectCleanupFailure | Out-Null
     } | Out-Null
     Assert-NoPackagingStagingFiles -Parent $testRoot -Description 'archive pair cleanup error ordering'
-    & (Join-Path $PSScriptRoot 'New-PackageArchive.ps1') `
+    $entryPointResult = @(& (Join-Path $PSScriptRoot 'New-PackageArchive.ps1') `
         -PackageRoot $packageOne `
         -ProfilePath $ProfilePath `
         -ArchivePath $entryPointArchive `
-        -HashRecordPath $entryPointHash | Out-Null
-    if (-not (Test-Path -LiteralPath $entryPointArchive -PathType Leaf) -or
-        -not (Test-Path -LiteralPath $entryPointHash -PathType Leaf)) {
-        throw 'New-PackageArchive retry did not create archive and hash record.'
+        -HashRecordPath $entryPointHash)
+    if ($entryPointResult.Count -ne 1 -or
+        -not (Test-Path -LiteralPath $entryPointResult[0].ArchivePath -PathType Leaf) -or
+        -not (Test-Path -LiteralPath $entryPointResult[0].HashRecordPath -PathType Leaf)) {
+        throw 'New-PackageArchive retry did not create one committed archive/hash generation.'
     }
-    if ((Get-Content -LiteralPath $entryPointHash -Raw).IndexOf('ArchiveFile: entry-point.zip', [StringComparison]::Ordinal) -lt 0) {
+    if ((Get-Content -LiteralPath $entryPointResult[0].HashRecordPath -Raw).IndexOf('ArchiveFile: entry-point.zip', [StringComparison]::Ordinal) -lt 0) {
         throw 'New-PackageArchive hash record did not bind to the final archive name.'
     }
     $entryPointMarker = Get-PackagingPairCommitMarkerPath -ArchivePath $entryPointArchive -HashRecordPath $entryPointHash
-    if (-not (Test-Path -LiteralPath $entryPointMarker -PathType Leaf)) {
-        throw 'New-PackageArchive did not publish a single commit marker for the archive/hash pair.'
+    if (-not (Test-Path -LiteralPath $entryPointMarker -PathType Leaf) -or
+        -not (Test-Path -LiteralPath (Get-PackagingPairMetadataPath -ArchivePath $entryPointArchive -HashRecordPath $entryPointHash) -PathType Leaf)) {
+        throw 'New-PackageArchive did not publish one committed generation with metadata and marker.'
     }
     Assert-PackageArchiveHashPairCommitted -Profile $profile -PackageRoot $packageOne -ArchivePath $entryPointArchive -HashRecordPath $entryPointHash | Out-Null
     Assert-NoPackagingStagingFiles -Parent $testRoot -Description 'entry-point retry'
@@ -462,11 +507,12 @@ try {
     Assert-PackagingFileMatchesSource -Source $copySource -Destination $copyDestination -Description 'overwrite rollback successful retry'
     Assert-NoPackagingStagingFiles -Parent $copyRollbackRoot -Description 'overwrite rollback successful retry'
 
-    foreach ($publicationStage in @('AfterPackage', 'AfterArchive', 'AfterHash', 'BeforeCommit')) {
+    foreach ($publicationStage in @('AfterPackage', 'AfterArchive', 'AfterHash', 'AfterMetadata', 'BeforeCommit')) {
         $faultOutputRoot = Join-Path $testRoot ("atomic-output-$publicationStage")
         Assert-ExpectedFailureContaining -Description ("atomic publication fault stage $publicationStage") -RequiredFragments @(
             'Injected atomic publication failure') -Action {
             Publish-PackageArtifactsAtomically `
+                -Profile $profile `
                 -PackageRoot $packageOne `
                 -ArchivePath $archiveOne `
                 -HashRecordPath $hashOne `
@@ -482,6 +528,7 @@ try {
     $atomicOutputRoot = Join-Path $testRoot 'atomic-output'
 
     $atomicPublication = Publish-PackageArtifactsAtomically `
+        -Profile $profile `
         -PackageRoot $packageOne `
         -ArchivePath $archiveOne `
         -HashRecordPath $hashOne `
@@ -491,8 +538,10 @@ try {
         -not (Test-Path -LiteralPath $atomicPublication.HashRecordPath -PathType Leaf)) {
         throw 'Atomic publication retry did not produce one coherent package output.'
     }
-    if (@(Get-ChildItem -LiteralPath $atomicOutputRoot -Force).Count -ne 3) {
-        throw 'Atomic publication output did not contain exactly package, archive, and hash record.'
+    if (@(Get-ChildItem -LiteralPath $atomicOutputRoot -Force).Count -ne 5 -or
+        -not (Test-Path -LiteralPath (Join-Path $atomicOutputRoot 'generation.metadata') -PathType Leaf) -or
+        -not (Test-Path -LiteralPath (Join-Path $atomicOutputRoot 'commit.marker') -PathType Leaf)) {
+        throw 'Atomic publication output did not contain one complete package generation.'
     }
     if (((Get-FileHash -LiteralPath $atomicPublication.ArchivePath -Algorithm SHA256).Hash).ToUpperInvariant() -cne
         ((Get-FileHash -LiteralPath $archiveOne -Algorithm SHA256).Hash).ToUpperInvariant() -or
@@ -501,6 +550,46 @@ try {
         throw 'Atomic publication output hashes did not match the staged source bytes.'
     }
     Assert-PackageManifestMatchesRoot -Profile $profile -PackageRoot $atomicPublication.PackageRoot | Out-Null
+
+    $fullAfterRenameOutputRoot = Join-Path $testRoot 'atomic-output-after-rename'
+    Assert-ExpectedFailureContaining -Description 'full package termination after generation rename' -RequiredFragments @(
+        'after generation rename before caller return') -Action {
+        Publish-PackageArtifactsAtomically `
+            -Profile $profile `
+            -PackageRoot $packageOne `
+            -ArchivePath $archiveOne `
+            -HashRecordPath $hashOne `
+            -OutputRoot $fullAfterRenameOutputRoot `
+            -FaultInjectionStage 'AfterRenameBeforeReturn' | Out-Null
+    } | Out-Null
+    if (-not (Test-Path -LiteralPath (Join-Path $fullAfterRenameOutputRoot 'commit.marker') -PathType Leaf)) {
+        throw 'Full package termination after generation rename did not leave a committed generation.'
+    }
+    $fullAfterRenameRetry = Publish-PackageArtifactsAtomically `
+        -Profile $profile `
+        -PackageRoot $packageOne `
+        -ArchivePath $archiveOne `
+        -HashRecordPath $hashOne `
+        -OutputRoot $fullAfterRenameOutputRoot
+    if ([string]$fullAfterRenameRetry.GenerationRoot -cne (Normalize-ComparablePath -Path $fullAfterRenameOutputRoot)) {
+        throw 'Full package retry after generation rename did not reuse the committed generation.'
+    }
+
+    $orphanArchive = Join-Path $testRoot 'orphan-recovery.zip'
+    $orphanHash = Join-Path $testRoot 'orphan-recovery-hashes.txt'
+    $orphanGeneration = Get-PackagingPairGenerationPath -ArchivePath $orphanArchive -HashRecordPath $orphanHash
+    New-Item -ItemType Directory -Path $orphanGeneration -Force | Out-Null
+    Write-DeterministicTextFile -Path (Join-Path $orphanGeneration 'orphan.partial') -Text 'uncommitted orphan'
+    $orphanRecovery = @(& (Join-Path $PSScriptRoot 'New-PackageArchive.ps1') `
+        -PackageRoot $packageOne `
+        -ProfilePath $ProfilePath `
+        -ArchivePath $orphanArchive `
+        -HashRecordPath $orphanHash)
+    if ($orphanRecovery.Count -ne 1 -or
+        -not (Test-Path -LiteralPath $orphanRecovery[0].CommitMarkerPath -PathType Leaf) -or
+        (Test-Path -LiteralPath (Join-Path $orphanGeneration 'orphan.partial'))) {
+        throw 'Retry did not clean the uncommitted orphan and publish a complete generation.'
+    }
 
     $manifestOnePath = Join-Path $packageOne 'package-manifest.json'
     $manifestOriginalText = [IO.File]::ReadAllText($manifestOnePath)
@@ -651,6 +740,28 @@ try {
         throw 'An outside sourceProject custom profile created a publish output path.'
     }
 
+    $evaluationSchemaNames = @('AssemblyName', 'TargetName')
+    Assert-ExpectedFailureContaining -Description 'MSBuild evaluation duplicate property rejection' -RequiredFragments @(
+        'Duplicate JSON object property') -Action {
+        ConvertFrom-StrictMSBuildPropertyJson `
+            -Json '{"Properties":{"AssemblyName":"HerdrOps.App","assemblyname":"duplicate","TargetName":"HerdrOps.App"}}' `
+            -ExpectedPropertyNames $evaluationSchemaNames | Out-Null
+    } | Out-Null
+    Assert-ExpectedFailureContaining -Description 'MSBuild evaluation missing property rejection' -RequiredFragments @(
+        'schema drifted',
+        'TargetName') -Action {
+        ConvertFrom-StrictMSBuildPropertyJson `
+            -Json '{"Properties":{"AssemblyName":"HerdrOps.App"}}' `
+            -ExpectedPropertyNames $evaluationSchemaNames | Out-Null
+    } | Out-Null
+    Assert-ExpectedFailureContaining -Description 'MSBuild evaluation unexpected property rejection' -RequiredFragments @(
+        'schema drifted',
+        'Unexpected') -Action {
+        ConvertFrom-StrictMSBuildPropertyJson `
+            -Json '{"Properties":{"AssemblyName":"HerdrOps.App","TargetName":"HerdrOps.App","Unexpected":"value"}}' `
+            -ExpectedPropertyNames $evaluationSchemaNames | Out-Null
+    } | Out-Null
+
     $projectPath = Join-Path $repositoryRoot 'src\HerdrOps.App\HerdrOps.App.csproj'
     $projectOriginalBytes = [IO.File]::ReadAllBytes($projectPath)
     $dotnetProbeCommand = Join-Path $testRoot 'dotnet-probe.cmd'
@@ -664,7 +775,7 @@ try {
         [IO.File]::WriteAllText($projectPath, $maliciousProjectText, (New-Object System.Text.UTF8Encoding($false)))
         Assert-ExpectedFailureContaining -Description 'malicious AssemblyName rejected before dotnet' -RequiredFragments @(
             'AssemblyName',
-            'exactly HerdrOps.App') -Action {
+            "exactly 'HerdrOps.App'") -Action {
             & (Join-Path $PSScriptRoot 'Publish-HerdrOpsPackage.ps1') -OutputRoot (Join-Path $testRoot 'malicious-assembly-output') -ProfilePath $ProfilePath -TestDotnetCommandPath $dotnetProbeCommand | Out-Null
         } | Out-Null
         if (Test-Path -LiteralPath $dotnetProbeMarker) {
@@ -672,6 +783,72 @@ try {
         }
     } finally {
         [IO.File]::WriteAllBytes($projectPath, $projectOriginalBytes)
+        if (Test-Path -LiteralPath $dotnetProbeMarker) {
+            Remove-Item -LiteralPath $dotnetProbeMarker -Force
+        }
+    }
+
+    $importOverridePath = Join-Path $repositoryRoot ('tests\fixtures\v0.7\packaging\malicious-import-' + [Guid]::NewGuid().ToString('N') + '.props')
+    Write-DeterministicTextFile -Path $importOverridePath -Text @'
+<Project>
+  <PropertyGroup>
+    <AssemblyName>Malicious.Import</AssemblyName>
+    <TargetName>Malicious.Import</TargetName>
+    <RootNamespace>Malicious.Import</RootNamespace>
+  </PropertyGroup>
+</Project>
+'@
+    try {
+        $importedProjectText = [Text.Encoding]::UTF8.GetString($projectOriginalBytes)
+        $importedProjectText = $importedProjectText.Replace(
+            '</Project>',
+            ('  <Import Project="' + $importOverridePath + '" />' + [char]10 + '</Project>'))
+        [IO.File]::WriteAllText($projectPath, $importedProjectText, (New-Object System.Text.UTF8Encoding($false)))
+        Assert-ExpectedFailureContaining -Description 'imported identity override rejected before dotnet' -RequiredFragments @(
+            'Effective MSBuild property',
+            'AssemblyName',
+            'exactly') -Action {
+            & (Join-Path $PSScriptRoot 'Publish-HerdrOpsPackage.ps1') `
+                -OutputRoot (Join-Path $testRoot 'imported-override-output') `
+                -ProfilePath $ProfilePath `
+                -TestDotnetCommandPath $dotnetProbeCommand | Out-Null
+        } | Out-Null
+        if (Test-Path -LiteralPath $dotnetProbeMarker) {
+            throw 'The imported identity override probe reached the dotnet command.'
+        }
+    } finally {
+        [IO.File]::WriteAllBytes($projectPath, $projectOriginalBytes)
+        if (Test-Path -LiteralPath $importOverridePath) {
+            Remove-Item -LiteralPath $importOverridePath -Force
+        }
+        if (Test-Path -LiteralPath $dotnetProbeMarker) {
+            Remove-Item -LiteralPath $dotnetProbeMarker -Force
+        }
+    }
+
+    $outsideImportPath = Join-Path $testRoot 'outside-import.props'
+    Write-DeterministicTextFile -Path $outsideImportPath -Text '<Project />'
+    try {
+        $outsideImportProjectText = [Text.Encoding]::UTF8.GetString($projectOriginalBytes)
+        $outsideImportProjectText = $outsideImportProjectText.Replace(
+            '</Project>',
+            ('  <Import Project="' + $outsideImportPath + '" />' + [char]10 + '</Project>'))
+        [IO.File]::WriteAllText($projectPath, $outsideImportProjectText, (New-Object System.Text.UTF8Encoding($false)))
+        Assert-ExpectedFailureContaining -Description 'out-of-root imported ancestry rejected before dotnet' -RequiredFragments @(
+            'outside the authorized repository') -Action {
+            & (Join-Path $PSScriptRoot 'Publish-HerdrOpsPackage.ps1') `
+                -OutputRoot (Join-Path $testRoot 'out-of-root-import-output') `
+                -ProfilePath $ProfilePath `
+                -TestDotnetCommandPath $dotnetProbeCommand | Out-Null
+        } | Out-Null
+        if (Test-Path -LiteralPath $dotnetProbeMarker) {
+            throw 'The out-of-root import probe reached the dotnet command.'
+        }
+    } finally {
+        [IO.File]::WriteAllBytes($projectPath, $projectOriginalBytes)
+        if (Test-Path -LiteralPath $outsideImportPath) {
+            Remove-Item -LiteralPath $outsideImportPath -Force
+        }
         if (Test-Path -LiteralPath $dotnetProbeMarker) {
             Remove-Item -LiteralPath $dotnetProbeMarker -Force
         }

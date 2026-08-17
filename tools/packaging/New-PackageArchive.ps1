@@ -42,6 +42,7 @@ $record = Publish-PackageArchiveAndHashAtomically `
     EvidenceClass = 'Static'
     PackageVersion = [string]$profile.packageVersion
     PackageRoot = $safeRoot
+    GenerationRoot = $record.GenerationRoot
     ArchivePath = $record.ArchivePath
     ArchiveBytes = $record.ArchiveBytes
     ArchiveSha256 = $record.ArchiveSha256
@@ -50,5 +51,6 @@ $record = Publish-PackageArchiveAndHashAtomically `
     ManifestSha256 = $record.ManifestSha256
     ContentSha256 = $record.ContentSha256
     HashRecordPath = $record.HashRecordPath
+    MetadataPath = $record.MetadataPath
     CommitMarkerPath = $record.CommitMarkerPath
 }
