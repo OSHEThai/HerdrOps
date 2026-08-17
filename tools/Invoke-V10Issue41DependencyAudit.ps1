@@ -24,9 +24,9 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-$paginationPolicyPath = Join-Path $PSScriptRoot 'V10Issue41DependencyAuditPolicy.ps1'
+$paginationPolicyPath = Join-Path $PSScriptRoot 'GitHubPaginationPolicy.ps1'
 if (-not (Test-Path -LiteralPath $paginationPolicyPath -PathType Leaf)) {
-    throw "Issue #41 pagination policy is missing: $paginationPolicyPath"
+    throw "GitHub pagination policy is missing: $paginationPolicyPath"
 }
 . $paginationPolicyPath
 
@@ -676,13 +676,13 @@ function Get-GitHubSnapshot {
         )
         return Invoke-GhApiReadOnly -Endpoint $Endpoint -Executable $Executable
     }
-    $milestoneResponse = Read-V10Issue41PagedGitHubArray `
+    $milestoneResponse = Read-BoundedGitHubJsonArrayPages `
         -BaseEndpoint ("repos/{0}/milestones?state=all" -f $RepositoryName) `
         -PageSize $PageSize `
         -MaximumPages 100 `
         -PageReader $pageReader `
         -PageReaderArguments @($GhCommand)
-    $issueResponse = Read-V10Issue41PagedGitHubArray `
+    $issueResponse = Read-BoundedGitHubJsonArrayPages `
         -BaseEndpoint ("repos/{0}/issues?state=all&sort=created&direction=asc" -f $RepositoryName) `
         -PageSize $PageSize `
         -MaximumPages 100 `
