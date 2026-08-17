@@ -1034,6 +1034,7 @@ function Get-EvidenceManifestEntries {
 function Get-EvidenceStatusSummary {
     param(
         [Parameter(Mandatory)]
+        [AllowEmptyCollection()]
         [object[]]$Entries,
 
         [Parameter(Mandatory)]
