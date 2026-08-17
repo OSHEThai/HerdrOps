@@ -870,6 +870,7 @@ function Get-EvidenceManifestEntries {
     if ([string]::IsNullOrWhiteSpace($ManifestPath)) {
         foreach ($version in $script:RequiredVersions) {
             Add-Blocker -Code 'MISSING_GATE_REPORT' -Version $version -IssueNumber ([int]$PlanTruth.Tracking[$version].ReleaseTrackerIssue) -Detail "No evidence manifest was supplied; expected a version-local gate report and SHA-256 binding under artifacts/release-gates/$version/."
+            Add-Blocker -Code 'MISSING_GATE_HASH' -Version $version -IssueNumber ([int]$PlanTruth.Tracking[$version].ReleaseTrackerIssue) -Detail "No evidence manifest was supplied; the version-local gate report has no admitted SHA-256 identity for $version."
         }
         return [ordered]@{
             Source = 'No manifest; no evidence admitted'
@@ -1162,13 +1163,17 @@ if ($snapshot.Mode -eq 'OfflineFixture') {
 }
 
 $requestedCandidate = -not [string]::IsNullOrWhiteSpace($ReleaseCandidateCommit)
+$candidateIdentityMatches = (-not $requestedCandidate -or $ReleaseCandidateCommit.ToLowerInvariant() -ceq $gitState.SourceCommit)
+if ($requestedCandidate -and -not $candidateIdentityMatches) {
+    Add-Blocker -Code 'RELEASE_CANDIDATE_COMMIT_MISMATCH' -Detail "Requested release-candidate commit '$($ReleaseCandidateCommit.ToLowerInvariant())' does not match the clean audit source commit '$($gitState.SourceCommit)'."
+}
 $allEvidencePass = $true
 foreach ($className in $script:AllEvidenceClasses) {
     if ($evidenceStatus[$className].Status -ne 'PASS' -and $evidenceStatus[$className].Status -ne 'NOT_APPLICABLE') {
         $allEvidencePass = $false
     }
 }
-$canFreeze = ($script:AuditBlockers.Count -eq 0 -and $allEvidencePass -and $snapshot.Mode -eq 'GitHub')
+$canFreeze = ($script:AuditBlockers.Count -eq 0 -and $allEvidencePass -and $snapshot.Mode -eq 'GitHub' -and $candidateIdentityMatches)
 $releaseCandidate = [ordered]@{
     Status = 'NOT_RECORDED'
     Commit = ''
