@@ -1,5 +1,29 @@
 Set-StrictMode -Version Latest
 
+$strictJsonPolicyPath = Join-Path $PSScriptRoot 'StrictJsonPolicy.ps1'
+if (-not (Test-Path -LiteralPath $strictJsonPolicyPath -PathType Leaf)) {
+    throw "Strict JSON policy is missing: $strictJsonPolicyPath"
+}
+if (-not (Get-Command Assert-StrictJsonText -CommandType Function -ErrorAction SilentlyContinue)) {
+    . $strictJsonPolicyPath
+}
+
+function Get-GitHubPaginationRawSha256 {
+    param(
+        [Parameter(Mandatory)]
+        [string]$Raw
+    )
+
+    $algorithm = [Security.Cryptography.SHA256]::Create()
+    try {
+        $bytes = [Text.Encoding]::UTF8.GetBytes($Raw)
+        return ([BitConverter]::ToString($algorithm.ComputeHash($bytes))).Replace('-', '').ToUpperInvariant()
+    }
+    finally {
+        $algorithm.Dispose()
+    }
+}
+
 function Read-BoundedGitHubJsonArrayPages {
     param(
         [Parameter(Mandatory)]
@@ -45,6 +69,18 @@ function Read-BoundedGitHubJsonArrayPages {
             -not $trimmed.EndsWith(']', [StringComparison]::Ordinal)) {
             throw "GitHub paged endpoint did not return a JSON array: '$endpoint'."
         }
+        Assert-StrictJsonText -Json $raw -SourceName "GitHub page '$endpoint'"
+
+        $responseEndpoint = [string]$response.Endpoint
+        if ($responseEndpoint -cne $endpoint) {
+            throw "GitHub page reader endpoint mismatch: expected '$endpoint' observed '$responseEndpoint'."
+        }
+        $responseHash = [string]$response.Sha256
+        $observedHash = Get-GitHubPaginationRawSha256 -Raw $raw
+        if ($responseHash -notmatch '^[0-9a-fA-F]{64}$' -or
+            $responseHash.ToUpperInvariant() -cne $observedHash) {
+            throw "GitHub page reader SHA-256 mismatch for '$endpoint'."
+        }
 
         $pageItems = @($response.Value)
         if ($pageItems.Count -gt $PageSize) {
@@ -54,8 +90,8 @@ function Read-BoundedGitHubJsonArrayPages {
         foreach ($item in $pageItems) {
             [void]$items.Add($item)
         }
-        [void]$endpoints.Add([string]$response.Endpoint)
-        [void]$hashes.Add([string]$response.Sha256)
+        [void]$endpoints.Add($responseEndpoint)
+        [void]$hashes.Add($observedHash)
 
         if ($pageItems.Count -lt $PageSize) {
             return [pscustomobject]@{
