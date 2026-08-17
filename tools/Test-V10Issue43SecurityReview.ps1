@@ -221,14 +221,18 @@ function Set-SafeText {
         [string]$Path,
 
         [Parameter(Mandatory)]
-        [string[]]$Lines
+        [AllowNull()]
+        [AllowEmptyCollection()]
+        [AllowEmptyString()]
+        [object[]]$Lines
     )
 
     try {
         $candidate = Get-SafeFullPath -Path $Path -AllowMissingLeaf
         $parent = [IO.Directory]::GetParent($candidate).FullName
         $null = Get-SafeFullPath -Path $parent
-        $text = $Lines -join [Environment]::NewLine
+        $normalizedLines = @(ConvertTo-Issue43ReportLines -Lines $Lines)
+        $text = [string]::Join([Environment]::NewLine, $normalizedLines)
         $utf8 = New-Object -TypeName System.Text.UTF8Encoding -ArgumentList @($false)
         [IO.File]::WriteAllText($candidate, $text, $utf8)
         $null = Get-SafeFullPath -Path $candidate
@@ -533,14 +537,27 @@ function Get-FileInventoryLines {
 function Write-Reports {
     param(
         [Parameter(Mandatory)]
+        [AllowEmptyString()]
         [string]$Result,
 
         [Parameter(Mandatory)]
+        [AllowEmptyString()]
         [string]$SourceCommit,
 
         [Parameter(Mandatory)]
+        [AllowEmptyString()]
         [string]$Branch
     )
+
+    Assert-Issue43RequiredReportFields -Fields @{
+        Issue = $issueNumber
+        Version = $version
+        SourceCommit = $SourceCommit
+        CandidateCommit = $candidateIdentity
+        DirectParentCommit = $directParentIdentity
+        Branch = $Branch
+        Result = $Result
+    } | Out-Null
 
     $manifestLines = @(
         "Issue: $issueNumber",
@@ -635,6 +652,19 @@ function Write-Reports {
         throw 'The gate report could not be written safely.'
     }
     $gateHash = (Get-FileHash -LiteralPath (Get-SafeArtifactFile -Path $gateReportPath) -Algorithm SHA256).Hash.ToUpperInvariant()
+
+    Assert-Issue43RequiredReportFields -Fields @{
+        Issue = $issueNumber
+        Version = $version
+        SourceCommit = $SourceCommit
+        CandidateCommit = $candidateIdentity
+        DirectParentCommit = $directParentIdentity
+        Branch = $Branch
+        Result = $Result
+        ReviewedManifestSha256 = $manifestHash
+        SchemaMigrationReportSha256 = $schemaHash
+        GateReportSha256 = $gateHash
+    } | Out-Null
 
     $reviewLines = @(
         '# HerdrOps v1.0 Issue #43 Security and Privacy Review Report',
@@ -901,7 +931,8 @@ foreach ($group in $markerGroups) {
 
 try {
     Test-Issue43ScannerFixtures | Out-Null
-    Record-Check -Id 'S-10' -Status 'PASS' -EvidenceClass 'Static' -Detail 'adversarial scanner fixtures passed without live process or listener access'
+    Test-Issue43ReportWriterFixtures | Out-Null
+    Record-Check -Id 'S-10' -Status 'PASS' -EvidenceClass 'Static' -Detail 'adversarial scanner and report-writer fixtures passed without live process or listener access'
 } catch {
     Record-Check -Id 'S-10' -Status 'FAIL' -EvidenceClass 'Static' -Detail $_.Exception.Message
 }

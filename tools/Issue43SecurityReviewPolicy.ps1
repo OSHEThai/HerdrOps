@@ -244,3 +244,130 @@ var message = "HttpListener, runas, and NativeLibrary.Load(\"bind\")";
 
     return $true
 }
+
+function ConvertTo-Issue43ReportLines {
+    param(
+        [Parameter(Mandatory)]
+        [AllowNull()]
+        [AllowEmptyCollection()]
+        [AllowEmptyString()]
+        [object[]]$Lines
+    )
+
+    if ($null -eq $Lines) {
+        throw 'Issue #43 report lines cannot be null.'
+    }
+    if ($Lines.Count -eq 0) {
+        throw 'Issue #43 report lines cannot be empty.'
+    }
+
+    $normalized = New-Object System.Collections.Generic.List[string]
+    foreach ($line in $Lines) {
+        if ($null -eq $line) {
+            throw 'Issue #43 report lines cannot contain null values.'
+        }
+        if ($line -isnot [string]) {
+            throw "Issue #43 report line must be a string, but was $($line.GetType().FullName)."
+        }
+        [void]$normalized.Add([string]$line)
+    }
+
+    return $normalized.ToArray()
+}
+
+function Assert-Issue43RequiredReportFields {
+    param(
+        [Parameter(Mandatory)]
+        [hashtable]$Fields
+    )
+
+    $requiredFields = @(
+        'Issue',
+        'Version',
+        'SourceCommit',
+        'CandidateCommit',
+        'DirectParentCommit',
+        'Branch',
+        'Result'
+    )
+
+    foreach ($fieldName in $requiredFields) {
+        if (-not $Fields.ContainsKey($fieldName)) {
+            throw "Issue #43 required report field is missing: $fieldName."
+        }
+
+        $value = $Fields[$fieldName]
+        if ($null -eq $value -or [string]::IsNullOrWhiteSpace([string]$value)) {
+            throw "Issue #43 required report field is empty: $fieldName."
+        }
+    }
+
+    return $true
+}
+
+function Test-Issue43ReportWriterFixtures {
+    $separatorLines = @(ConvertTo-Issue43ReportLines -Lines @('header', '', 'footer'))
+    if ($separatorLines.Count -ne 3 -or $separatorLines[1] -ne '') {
+        throw 'Issue #43 report writer fixture did not preserve the empty separator line.'
+    }
+
+    try {
+        ConvertTo-Issue43ReportLines -Lines @('header', $null, 'footer') | Out-Null
+        throw 'Issue #43 report writer fixture accepted a null line.'
+    } catch {
+        if ($_.Exception.Message -notlike '*cannot contain null values*') {
+            throw
+        }
+    }
+
+    try {
+        ConvertTo-Issue43ReportLines -Lines @() | Out-Null
+        throw 'Issue #43 report writer fixture accepted an empty report.'
+    } catch {
+        if ($_.Exception.Message -notlike '*cannot be empty*') {
+            throw
+        }
+    }
+
+    $validFields = @{
+        Issue = '#43'
+        Version = 'v1.0.0'
+        SourceCommit = ('a' * 40)
+        CandidateCommit = ('b' * 40)
+        DirectParentCommit = ('c' * 40)
+        Branch = 'codex/v10-issue-43-security-review'
+        Result = 'PASS'
+    }
+    Assert-Issue43RequiredReportFields -Fields $validFields | Out-Null
+
+    $missingResultFields = @{}
+    foreach ($key in $validFields.Keys) {
+        if ($key -ne 'Result') {
+            $missingResultFields[$key] = $validFields[$key]
+        }
+    }
+    try {
+        Assert-Issue43RequiredReportFields -Fields $missingResultFields | Out-Null
+        throw 'Issue #43 report writer fixture accepted a missing required field.'
+    } catch {
+        if ($_.Exception.Message -notlike '*required report field is missing: Result*') {
+            throw
+        }
+    }
+
+    $emptyResultFields = @{}
+    foreach ($key in $validFields.Keys) {
+        $emptyResultFields[$key] = $validFields[$key]
+    }
+    $emptyResultFields['Result'] = ''
+    try {
+        Assert-Issue43RequiredReportFields -Fields $emptyResultFields | Out-Null
+        throw 'Issue #43 report writer fixture accepted an empty required field.'
+    } catch {
+        if ($_.Exception.Message -notlike '*required report field is empty: Result*') {
+            throw
+        }
+    }
+
+    return $true
+}
