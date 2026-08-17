@@ -596,7 +596,7 @@ function Get-PlanTruth {
     }
 
     return [ordered]@{
-        RoadmapIssues = @($roadmapIssues.ToArray() | Sort-Object Version, Key)
+        RoadmapIssues = @($roadmapIssues.ToArray() | Sort-Object @{ Expression = { $_.Version } }, @{ Expression = { $_.Key } })
         Tracking = $tracking
         Versions = $versions
         GatePaths = $gatePaths
@@ -845,8 +845,8 @@ function New-DependencyAuditData {
 
     return [ordered]@{
         TargetIssue = $target
-        Issues = @($dependencyIssues.ToArray() | Sort-Object Version, IssueNumber)
-        Map = @($map.ToArray() | Sort-Object Version, IssueNumber)
+        Issues = @($dependencyIssues.ToArray() | Sort-Object @{ Expression = { $_.Version } }, @{ Expression = { $_.IssueNumber } })
+        Map = @($map.ToArray() | Sort-Object @{ Expression = { $_.Version } }, @{ Expression = { $_.IssueNumber } })
     }
 }
 
@@ -1031,7 +1031,7 @@ function Get-EvidenceManifestEntries {
         Source = 'EvidenceManifest'
         ManifestSha256 = $manifest.Sha256
         ManifestPath = $manifest.FullName
-        Entries = @($entries.ToArray() | Sort-Object Version, GateId)
+        Entries = @($entries.ToArray() | Sort-Object @{ Expression = { $_.Version } }, @{ Expression = { $_.GateId } })
     }
 }
 
