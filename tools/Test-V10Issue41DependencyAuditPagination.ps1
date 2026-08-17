@@ -4,6 +4,11 @@ param()
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+function Assert-StrictJsonText {
+    param([string]$Json, [string]$SourceName)
+    # Deliberately permissive ambient function. The production policy must replace it.
+}
+
 . (Join-Path $PSScriptRoot 'GitHubPaginationPolicy.ps1')
 
 $responses = @{

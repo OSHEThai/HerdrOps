@@ -14,10 +14,11 @@ $fixtureRoot = Join-Path $repositoryRoot 'tests\fixtures\v1.0\issue-41'
 $readyFixture = Join-Path $fixtureRoot 'github-snapshot-ready.json'
 $duplicateFixture = Join-Path $fixtureRoot 'github-duplicate-key.json'
 $malformedFixture = Join-Path $fixtureRoot 'github-malformed.json'
+$fakeGhFixture = Join-Path $fixtureRoot 'fake-gh-multipage.ps1'
 $testRoot = Join-Path $repositoryRoot 'artifacts\dependency-audit-fixture-tests'
 $fixedObservedUtc = '2026-08-17T00:00:00.0000000Z'
 
-foreach ($path in @($auditTool, $strictJsonPolicy, $paginationPolicy, $paginationFixture, $milestoneVerifier, $readyFixture, $duplicateFixture, $malformedFixture)) {
+foreach ($path in @($auditTool, $strictJsonPolicy, $paginationPolicy, $paginationFixture, $milestoneVerifier, $readyFixture, $duplicateFixture, $malformedFixture, $fakeGhFixture)) {
     if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
         throw "Issue #41 fixture test input is missing: $path"
     }
@@ -294,7 +295,7 @@ $milestonePaginationCalls = [regex]::Matches(
     '(?m)^\s*\$(?:milestone|issue)Response\s*=\s*Read-BoundedGitHubJsonArrayPages\s*`?\s*$'
 ).Count
 if ($milestonePaginationCalls -ne 2 -or
-    $milestoneSource -notmatch 'milestones\?state=all&sort=created&direction=asc' -or
+    $milestoneSource -notmatch 'milestones\?state=all&sort=due_on&direction=asc' -or
     $milestoneSource -notmatch 'issues\?state=all&sort=created&direction=asc') {
     throw 'The shared milestone verifier is not bound to complete, stable GitHub pagination.'
 }
@@ -311,6 +312,23 @@ try {
             throw "$($shell.Name) pagination fixture failed: $($paginationOutput -join '; ')"
         }
         [void]$completed.Add("$($shell.Name): bounded pagination -> complete")
+        $milestoneOutput = @(& $shell.Path `
+                -NoProfile `
+                -NonInteractive `
+                -ExecutionPolicy Bypass `
+                -File $milestoneVerifier `
+                -Version 'v0.1.0' `
+                -Repository 'example' `
+                -GhExecutable $fakeGhFixture `
+                -GitHubPageSize 2 2>&1 | ForEach-Object { [string]$_ })
+        $milestoneExitCode = $LASTEXITCODE
+        $milestoneText = $milestoneOutput -join "`n"
+        if ($milestoneExitCode -ne 0 -or
+            $milestoneText -notmatch 'TotalIssues\s*:\s*3' -or
+            $milestoneText -notmatch 'IssueQueryPages\s*:\s*2') {
+            throw "$($shell.Name) production milestone pagination fixture failed (exit $milestoneExitCode): $milestoneText"
+        }
+        [void]$completed.Add("$($shell.Name): production milestone pagination -> 3 issues across 2 pages")
         $caseDirectory = New-CaseDirectory -ShellName $shell.Name
         try {
             $evidence = New-ReadyEvidenceManifest -CaseDirectory $caseDirectory -SourceCommit $sourceCommit

@@ -4,9 +4,7 @@ $strictJsonPolicyPath = Join-Path $PSScriptRoot 'StrictJsonPolicy.ps1'
 if (-not (Test-Path -LiteralPath $strictJsonPolicyPath -PathType Leaf)) {
     throw "Strict JSON policy is missing: $strictJsonPolicyPath"
 }
-if (-not (Get-Command Assert-StrictJsonText -CommandType Function -ErrorAction SilentlyContinue)) {
-    . $strictJsonPolicyPath
-}
+. $strictJsonPolicyPath
 
 function Get-GitHubPaginationRawSha256 {
     param(

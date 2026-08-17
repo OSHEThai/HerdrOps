@@ -31,7 +31,13 @@ function Read-GitHubJsonArrayPage {
     )
 
     $rawOutput = (& $Executable api $Endpoint 2>&1 | Out-String)
-    $exitCode = $LASTEXITCODE
+    $invocationSucceeded = $?
+    $exitCode = if ([IO.Path]::GetExtension($Executable) -ieq '.ps1') {
+        if ($invocationSucceeded) { 0 } else { 1 }
+    }
+    else {
+        $LASTEXITCODE
+    }
     if ($exitCode -ne 0) {
         throw "Unable to query GitHub endpoint '$Endpoint' (exit $exitCode): $($rawOutput.Trim())"
     }
@@ -43,8 +49,10 @@ function Read-GitHubJsonArrayPage {
     }
     Assert-StrictJsonText -Json $trimmed -SourceName "gh api $Endpoint"
 
+    $parsed = $trimmed | ConvertFrom-Json
+    $parsedItems = if ($null -eq $parsed) { @() } else { [object[]]$parsed }
     return [pscustomobject]@{
-        Value = @($trimmed | ConvertFrom-Json)
+        Value = $parsedItems
         Raw = $trimmed
         Sha256 = Get-GitHubPaginationRawSha256 -Raw $trimmed
         Endpoint = $Endpoint
@@ -61,7 +69,7 @@ $pageReader = {
 }
 
 $milestoneResponse = Read-BoundedGitHubJsonArrayPages `
-    -BaseEndpoint "repos/$Repository/milestones?state=all&sort=created&direction=asc" `
+    -BaseEndpoint "repos/$Repository/milestones?state=all&sort=due_on&direction=asc" `
     -PageSize $GitHubPageSize `
     -MaximumPages 100 `
     -PageReader $pageReader `
