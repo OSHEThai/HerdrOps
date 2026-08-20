@@ -12,6 +12,36 @@ if (args.Length > 0 &&
 }
 
 if (args.Length > 0 &&
+    string.Equals(args[0], ComplianceDiagnosticExportCommand.CommandName, StringComparison.Ordinal))
+{
+    return ComplianceDiagnosticExportCommand.Run(args, Console.Out, Console.Error);
+}
+
+if (args.Length > 0 &&
+    string.Equals(args[0], ComplianceDiagnosticExportCommand.ServiceCommandName, StringComparison.Ordinal))
+{
+    using var shutdown = new CancellationTokenSource();
+    ConsoleCancelEventHandler cancelHandler = (_, eventArgs) =>
+    {
+        eventArgs.Cancel = true;
+        shutdown.Cancel();
+    };
+    Console.CancelKeyPress += cancelHandler;
+    try
+    {
+        return await ComplianceDiagnosticExportCommand.RunServiceAsync(
+            args,
+            Console.Out,
+            Console.Error,
+            shutdown.Token);
+    }
+    finally
+    {
+        Console.CancelKeyPress -= cancelHandler;
+    }
+}
+
+if (args.Length > 0 &&
     string.Equals(args[0], "assignment-lifecycle-replay", StringComparison.Ordinal))
 {
     return AssignmentLifecycleReplayCommand.Run(args, Console.Out, Console.Error);
