@@ -8,7 +8,8 @@ This checklist controls the one-time transition of `OSHEThai/HerdrOps` from Priv
 
 - [ ] The committed source and complete Git history pass the redacted secret scan.
 - [ ] Every scanner candidate is either remediated or represented by one exact reviewed fingerprint in `.gitleaksignore`.
-- [ ] `LICENSE`, `SECURITY.md`, `CONTRIBUTING.md`, and `CODE_OF_CONDUCT.md` pass the readiness gate.
+- [ ] Apache-2.0 `LICENSE`, `NOTICE`, `SECURITY.md`, `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, `THIRD-PARTY-NOTICES.md`, and `TRADEMARKS.md` pass the readiness gate.
+- [ ] `NOTICE` covers source, documentation, approved design references, and project artwork while reserving trademark and endorsement rights.
 - [ ] Pull-request workflows use `contents: read`, do not use repository secrets, and pin third-party Actions to immutable commit SHAs.
 - [ ] Uploaded paths are limited to synthetic test results, design evidence, performance evidence, release-gate reports, and governance reports. Actual runtime evidence, local databases, logs, terminal output, and diagnostic bundles are not uploaded by public pull-request workflows.
 - [ ] The accepted commit passes CI and the open-source readiness workflow.

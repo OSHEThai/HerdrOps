@@ -38,6 +38,7 @@ if ($LASTEXITCODE -ne 0 -or $commitCount -notmatch '^\d+$') {
 $requiredFiles = @(
     'README.md',
     'LICENSE',
+    'NOTICE',
     'SECURITY.md',
     'CONTRIBUTING.md',
     'CODE_OF_CONDUCT.md',
@@ -59,7 +60,7 @@ foreach ($relativePath in $requiredFiles) {
 }
 
 $licenseText = Get-Content -Raw -LiteralPath (Join-Path $repositoryRoot 'LICENSE')
-$licenseId = if ($licenseText -match '(?m)^Apache License\s*$' -and
+$licenseId = if ($licenseText -match '(?m)^\s*Apache License\s*$' -and
     $licenseText -match '(?m)^\s*Version 2\.0, January 2004\s*$') {
     'Apache-2.0'
 } elseif ($licenseText -match '(?m)^MIT License\s*$' -and
@@ -67,6 +68,19 @@ $licenseId = if ($licenseText -match '(?m)^Apache License\s*$' -and
     'MIT'
 } else {
     throw 'LICENSE is not a recognized complete Apache-2.0 or MIT license text.'
+}
+if ($licenseId -cne 'Apache-2.0') {
+    throw "Issue #103 requires the owner-selected Apache-2.0 license; detected $licenseId."
+}
+
+$noticeText = Get-Content -Raw -LiteralPath (Join-Path $repositoryRoot 'NOTICE')
+foreach ($requiredNoticeText in @(
+        'Copyright 2026 OSHEThai and HerdrOps contributors',
+        'approved design references, and project artwork are licensed',
+        'TRADEMARKS.md')) {
+    if (-not $noticeText.Contains($requiredNoticeText, [StringComparison]::Ordinal)) {
+        throw "NOTICE is missing required owner-approved scope text: $requiredNoticeText"
+    }
 }
 
 $readmeText = Get-Content -Raw -LiteralPath (Join-Path $repositoryRoot 'README.md')
