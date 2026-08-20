@@ -15,8 +15,8 @@ public sealed class HerdrRuntimeTraceCommandTests
             HerdrRuntimeMonitorStatus.Connected,
             HerdrSessionState.Empty with
             {
-                Version = "0.8.0-test",
-                Protocol = 19,
+                Version = "0.8.2-test",
+                Protocol = 20,
                 ConnectionEpoch = 2,
                 LastIngestSequence = 11,
             },

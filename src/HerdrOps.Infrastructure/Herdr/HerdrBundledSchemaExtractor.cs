@@ -34,9 +34,9 @@ public sealed class HerdrBundledSchemaExtractor : IHerdrBundledSchemaExtractor
         IHerdrExecutableSnapshotReader? snapshotReader = null,
         IHerdrExecutableAdmissionScanner? admissionScanner = null)
     {
-        _binaryPolicy = binaryPolicy ?? HerdrProtocolContractV080Preview.Policy;
+        _binaryPolicy = binaryPolicy ?? HerdrProtocolContractV082Preview.Policy;
         _binaryInspector = new HerdrProtocolInspector(_binaryPolicy);
-        _schemaPolicy = schemaPolicy ?? HerdrBundledSchemaContractV19.Policy;
+        _schemaPolicy = schemaPolicy ?? HerdrBundledSchemaContractV20.Policy;
         _snapshotReader = snapshotReader;
         _admissionScanner = admissionScanner ?? new HerdrExecutableAdmissionScanner();
     }

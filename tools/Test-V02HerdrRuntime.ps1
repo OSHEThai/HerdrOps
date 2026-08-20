@@ -182,16 +182,16 @@ if ($trace.EventObserved -ne $true) { throw 'Actual Herdr event was not observed
 if ($trace.ReconnectObserved -ne $true) {
     throw 'Actual disconnect/reconnect with a fresh snapshot was not observed.'
 }
-if ($trace.Admission.ReleaseId -ne '0.8.0-preview.2026-08-04-d78e3d3b5126-x86_64-pc-windows-msvc') {
+if ($trace.Admission.ReleaseId -ne '0.8.2-preview.2026-08-19-b5c4a0176e91-x86_64-pc-windows-msvc') {
     throw "Unexpected Herdr release: $($trace.Admission.ReleaseId)"
 }
-if ($trace.Admission.ExecutableSha256 -ne '6F470DA358D6713B6BEBAB922FFB1F5FE1D3D288CC6F374C7DCA1B4A9837A542') {
+if ($trace.Admission.ExecutableSha256 -ne 'AFE7BAD9B77946917B509C9B638BB2A47BC1D4F19254957D15B0FAAFBEDB3E93') {
     throw "Unexpected Herdr executable SHA-256: $($trace.Admission.ExecutableSha256)"
 }
-if ($trace.Admission.BundledSchemaSha256 -ne '9449368D54BBECD4D4D0696EFFB9E9C002ECD63A5B8A48BBD901A305AF842982') {
+if ($trace.Admission.BundledSchemaSha256 -ne '3B34717C8B828FAF4E4A1D4DAC5953417712C8EB71A54237FFAD7582C7FF5679') {
     throw "Unexpected bundled schema SHA-256: $($trace.Admission.BundledSchemaSha256)"
 }
-if ([int]$trace.Admission.Protocol -ne 19) {
+if ([int]$trace.Admission.Protocol -ne 20) {
     throw "Unexpected runtime protocol: $($trace.Admission.Protocol)"
 }
 if ($null -eq $trace.ObservedServerIdentity -or [int]$trace.ObservedServerIdentity.ProcessId -le 0) {

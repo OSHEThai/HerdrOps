@@ -50,7 +50,7 @@ public sealed class HerdrRuntimeMonitorFactory
                 "Herdr executable was not discovered for runtime admission.");
         }
 
-        var binaryPolicy = HerdrProtocolContractV080Preview.Policy;
+        var binaryPolicy = HerdrProtocolContractV082Preview.Policy;
         HerdrExecutableAdmissionSnapshot executableSnapshot;
         try
         {

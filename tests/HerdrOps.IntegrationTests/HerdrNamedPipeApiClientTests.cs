@@ -557,7 +557,7 @@ public sealed class HerdrNamedPipeApiClientTests
     {
         var expanded = """
             {"id":"__REQUEST_ID__","result":{"type":"session_snapshot","snapshot":{
-              "version":"0.8.0-preview","protocol":19,
+              "version":"0.8.2-preview","protocol":20,
               "workspaces":[{"workspace_id":"workspace-1","number":1,"label":"HerdrOps","focused":true,"pane_count":1,"tab_count":1,"active_tab_id":"tab-1","agent_status":"working"}],
               "tabs":[{"tab_id":"tab-1","workspace_id":"workspace-1","number":1,"label":"Core","focused":true,"pane_count":1,"agent_status":"working"}],
               "panes":[{"pane_id":"pane-1","terminal_id":"terminal-1","workspace_id":"workspace-1","tab_id":"tab-1","focused":true,"agent_status":"working","revision":__REVISION__,"agent":"codex","display_agent":"Codex","title":"Worker","cwd":"Z:\\HerdrOps","foreground_cwd":"Z:\\HerdrOps","terminal_title":"Codex"}],

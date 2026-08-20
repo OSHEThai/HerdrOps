@@ -11,7 +11,7 @@ public sealed class HerdrProtocolInspector
         HerdrProtocolSupportPolicy? policy = null,
         IHerdrExecutableAdmissionScanner? scanner = null)
     {
-        _policy = policy ?? HerdrProtocolContractV080Preview.Policy;
+        _policy = policy ?? HerdrProtocolContractV082Preview.Policy;
         _scanner = scanner ?? new HerdrExecutableAdmissionScanner();
     }
 
