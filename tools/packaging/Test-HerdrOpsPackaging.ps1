@@ -575,6 +575,92 @@ try {
         throw 'Full package retry after generation rename did not reuse the committed generation.'
     }
 
+    $transientMoveOutputRoot = Join-Path $testRoot 'atomic-output-transient-move'
+    $transientPublication = Publish-PackageArtifactsAtomically `
+        -Profile $profile `
+        -PackageRoot $packageOne `
+        -ArchivePath $archiveOne `
+        -HashRecordPath $hashOne `
+        -OutputRoot $transientMoveOutputRoot `
+        -FaultInjectionStage 'DestinationMoveTransientFailure'
+
+    if (-not (Test-Path -LiteralPath $transientPublication.PackageRoot -PathType Container) -or
+        -not (Test-Path -LiteralPath $transientPublication.ArchivePath -PathType Leaf) -or
+        -not (Test-Path -LiteralPath $transientPublication.HashRecordPath -PathType Leaf)) {
+        throw 'Atomic publication with transient move fault did not produce one coherent package output.'
+    }
+    if (-not (Test-Path -LiteralPath (Join-Path $transientMoveOutputRoot 'commit.marker') -PathType Leaf)) {
+        throw 'Atomic publication with transient move fault did not leave a committed generation.'
+    }
+
+    $persistentMoveOutputRoot = Join-Path $testRoot 'atomic-output-persistent-move'
+    Assert-ExpectedFailureContaining -Description 'atomic publication persistent move failure' -RequiredFragments @(
+        'failed to move staging to output after 5 attempts',
+        'Injected persistent move failure') -Action {
+        Publish-PackageArtifactsAtomically `
+            -Profile $profile `
+            -PackageRoot $packageOne `
+            -ArchivePath $archiveOne `
+            -HashRecordPath $hashOne `
+            -OutputRoot $persistentMoveOutputRoot `
+            -FaultInjectionStage 'DestinationMovePersistentFailure' | Out-Null
+    } | Out-Null
+    if (Test-Path -LiteralPath $persistentMoveOutputRoot) {
+        throw "Atomic publication persistent move failure left an output root."
+    }
+    Assert-NoPackagingStagingFiles -Parent $testRoot -Description 'publication persistent move failure'
+
+    $diskFullMoveOutputRoot = Join-Path $testRoot 'atomic-output-disk-full-move'
+    Assert-ExpectedFailureContaining -Description 'atomic publication disk-full move failure' -RequiredFragments @(
+        'failed to move staging to output after 1 attempts',
+        'Injected disk-full failure') -Action {
+        Publish-PackageArtifactsAtomically `
+            -Profile $profile `
+            -PackageRoot $packageOne `
+            -ArchivePath $archiveOne `
+            -HashRecordPath $hashOne `
+            -OutputRoot $diskFullMoveOutputRoot `
+            -FaultInjectionStage 'DestinationMoveDiskFullFailure' | Out-Null
+    } | Out-Null
+    if (Test-Path -LiteralPath $diskFullMoveOutputRoot) {
+        throw "Atomic publication disk-full move failure left an output root."
+    }
+    Assert-NoPackagingStagingFiles -Parent $testRoot -Description 'publication disk-full move failure'
+
+    $unauthorizedMoveOutputRoot = Join-Path $testRoot 'atomic-output-unauthorized-move'
+    Assert-ExpectedFailureContaining -Description 'atomic publication unauthorized move failure' -RequiredFragments @(
+        'failed to move staging to output after 1 attempts',
+        'Injected non-transient access-denied failure') -Action {
+        Publish-PackageArtifactsAtomically `
+            -Profile $profile `
+            -PackageRoot $packageOne `
+            -ArchivePath $archiveOne `
+            -HashRecordPath $hashOne `
+            -OutputRoot $unauthorizedMoveOutputRoot `
+            -FaultInjectionStage 'DestinationMoveUnauthorizedFailure' | Out-Null
+    } | Out-Null
+    if (Test-Path -LiteralPath $unauthorizedMoveOutputRoot) {
+        throw "Atomic publication unauthorized move failure left an output root."
+    }
+    Assert-NoPackagingStagingFiles -Parent $testRoot -Description 'publication unauthorized move failure'
+
+    $postExhaustMoveOutputRoot = Join-Path $testRoot 'atomic-output-post-exhaust-move'
+    $postExhaustPublication = Publish-PackageArtifactsAtomically `
+        -Profile $profile `
+        -PackageRoot $packageOne `
+        -ArchivePath $archiveOne `
+        -HashRecordPath $hashOne `
+        -OutputRoot $postExhaustMoveOutputRoot `
+        -FaultInjectionStage 'DestinationMovePostExhaustSuccess'
+    if (-not (Test-Path -LiteralPath $postExhaustPublication.PackageRoot -PathType Container) -or
+        -not (Test-Path -LiteralPath $postExhaustPublication.ArchivePath -PathType Leaf) -or
+        -not (Test-Path -LiteralPath $postExhaustPublication.HashRecordPath -PathType Leaf)) {
+        throw 'Atomic publication with post-exhaust move success did not produce one coherent package output.'
+    }
+    if (-not (Test-Path -LiteralPath (Join-Path $postExhaustMoveOutputRoot 'commit.marker') -PathType Leaf)) {
+        throw 'Atomic publication with post-exhaust move success did not leave a committed generation.'
+    }
+
     $orphanArchive = Join-Path $testRoot 'orphan-recovery.zip'
     $orphanHash = Join-Path $testRoot 'orphan-recovery-hashes.txt'
     $orphanGeneration = Get-PackagingPairGenerationPath -ArchivePath $orphanArchive -HashRecordPath $orphanHash
