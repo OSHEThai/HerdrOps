@@ -214,10 +214,12 @@ try {
 if ($gitleaksExitCode -notin @(0, 1)) {
     throw "Gitleaks failed operationally with exit code $gitleaksExitCode."
 }
-$secretFindings = if (Test-Path -LiteralPath $gitleaksReportPath -PathType Leaf) {
-    @(Get-Content -Raw -LiteralPath $gitleaksReportPath | ConvertFrom-Json)
-} else {
-    @()
+$secretFindings = @()
+if (Test-Path -LiteralPath $gitleaksReportPath -PathType Leaf) {
+    $parsedFindings = Get-Content -Raw -LiteralPath $gitleaksReportPath | ConvertFrom-Json
+    if ($null -ne $parsedFindings) {
+        $secretFindings = @($parsedFindings)
+    }
 }
 
 $gateReportPath = Join-Path $gateDirectory 'gate-report.txt'
