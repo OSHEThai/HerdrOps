@@ -9,6 +9,14 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'Packaging.Common.ps1')
 
+$evaluationCommand = Get-Command Invoke-PackagingMSBuildPropertyEvaluation -CommandType Function
+$timeoutParameterAst = @($evaluationCommand.ScriptBlock.Ast.Body.ParamBlock.Parameters |
+    Where-Object { $_.Name.VariablePath.UserPath -eq 'TimeoutMilliseconds' })
+if ($timeoutParameterAst.Count -ne 1 -or
+    [int]$timeoutParameterAst[0].DefaultValue.SafeGetValue() -ne 60000) {
+    throw 'MSBuild property evaluation must retain the bounded 60000 ms cold-start timeout.'
+}
+
 if ([string]::IsNullOrWhiteSpace($ProfilePath)) {
     $ProfilePath = Join-Path $PSScriptRoot 'package-profile.json'
 }
