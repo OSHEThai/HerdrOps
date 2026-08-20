@@ -51,14 +51,19 @@ public sealed partial class SqliteHerdrStateStore
     internal event Action? ComplianceReviewBusySliceObserved;
 
     public HerdrComplianceReviewRegistrationResult RegisterComplianceReviewIncident(
-        ComplianceReviewIncidentRegistration registration)
+        ComplianceReviewIncidentRegistration registration,
+        CancellationToken cancellationToken = default)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         var candidate = ComplianceReviewWorkflowContract.CreateIncident(registration);
         lock (_sync)
         {
             ThrowIfDisposed();
+            cancellationToken.ThrowIfCancellationRequested();
             EnsureComplianceReviewSqlFunctions();
-            using var transaction = _connection.BeginTransaction(deferred: false);
+            using var transaction = BeginComplianceReviewWriteTransaction(
+                candidate.IncidentId,
+                cancellationToken);
             var existing = ReadComplianceReviewIncidentCore(
                 candidate.IncidentId,
                 transaction);
@@ -75,6 +80,7 @@ public sealed partial class SqliteHerdrStateStore
             EnsureEvidenceLinksExist(
                 candidate.InitialEvidenceIdentitySha256s,
                 transaction);
+            cancellationToken.ThrowIfCancellationRequested();
             using (var command = _connection.CreateCommand())
             {
                 command.Transaction = transaction;
@@ -117,6 +123,7 @@ public sealed partial class SqliteHerdrStateStore
                     SerializeComplianceReviewRegistration(candidate));
                 command.Parameters.AddWithValue("$state", (int)candidate.State);
                 command.Parameters.AddWithValue("$updatedUtc", FormatUtc(candidate.UpdatedUtc));
+                ConfigureComplianceReviewCommand(command, cancellationToken);
                 command.ExecuteNonQuery();
             }
 
@@ -125,7 +132,9 @@ public sealed partial class SqliteHerdrStateStore
                 "incident_id",
                 candidate.IncidentId,
                 candidate.InitialEvidenceIdentitySha256s,
-                transaction);
+                transaction,
+                cancellationToken);
+            cancellationToken.ThrowIfCancellationRequested();
             transaction.Commit();
             return new HerdrComplianceReviewRegistrationResult(
                 candidate,

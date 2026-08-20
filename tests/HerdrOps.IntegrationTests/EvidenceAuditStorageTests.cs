@@ -786,6 +786,77 @@ public sealed class EvidenceAuditStorageTests
             () => store.RegisterComplianceReviewIncident(registration));
     }
 
+    [TestMethod]
+    public void CommittedRetentionEventRecoversAfterCrashBeforePendingDelete()
+    {
+        using var directory = new TemporaryDirectory();
+        var options = CreateOptions(directory);
+        using var store = new SqliteHerdrStateStore(options);
+        var artifactPath = Path.Combine(directory.Path, "source", "crash-window.bin");
+        Directory.CreateDirectory(Path.GetDirectoryName(artifactPath)!);
+        File.WriteAllText(artifactPath, "committed-before-delete");
+        var captured = store.CaptureEvidence(
+            CreateCaptureRequest(retainUntilUtc: ObservedUtc.AddDays(1)),
+            artifactPath);
+        var identity = captured.StoredEvidence.Metadata.EvidenceIdentitySha256;
+        var pendingPath = Path.Combine(
+            options.ManagedEvidenceRootPath!,
+            ".retention",
+            identity + ".pending");
+
+        Action simulatedCrash = () => throw new InvalidOperationException(
+            "Deterministic crash after terminal retention commit.");
+        store.EvidenceRetentionCommittedBeforePendingDelete += simulatedCrash;
+        Assert.Throws<InvalidOperationException>(
+            () => store.ApplyEvidenceRetention(ObservedUtc.AddDays(2)));
+        store.EvidenceRetentionCommittedBeforePendingDelete -= simulatedCrash;
+
+        Assert.IsFalse(File.Exists(ResolveManagedPath(options, captured.StoredEvidence.Metadata)));
+        Assert.IsTrue(File.Exists(pendingPath));
+        Assert.HasCount(1, store.ReadEvidenceRetentionAudit());
+
+        var recovered = store.ApplyEvidenceRetention(ObservedUtc.AddDays(2));
+        Assert.HasCount(1, recovered.Results);
+        Assert.AreEqual(HerdrEvidenceRetentionOutcome.Purged, recovered.Results[0].Outcome);
+        Assert.IsFalse(File.Exists(pendingPath));
+        Assert.HasCount(1, store.ReadEvidenceRetentionAudit());
+    }
+
+    [TestMethod]
+    public void NewReviewRegistrationUsesBoundedBusySlicesAndCancellation()
+    {
+        using var directory = new TemporaryDirectory();
+        var options = CreateOptions(directory);
+        using var store = new SqliteHerdrStateStore(options);
+        var artifactPath = Path.Combine(directory.Path, "source", "busy-registration.bin");
+        Directory.CreateDirectory(Path.GetDirectoryName(artifactPath)!);
+        File.WriteAllText(artifactPath, "busy-registration");
+        var captured = store.CaptureEvidence(CreateCaptureRequest(), artifactPath);
+
+        using var blocker = Open(options.DatabasePath);
+        using var blockingTransaction = blocker.BeginTransaction(deferred: false);
+        using var busySliceObserved = new ManualResetEventSlim();
+        using var cancellation = new CancellationTokenSource();
+        store.ComplianceReviewBusySliceObserved += () => busySliceObserved.Set();
+        var registration = new ComplianceReviewIncidentRegistration(
+            ComplianceReviewWorkflowContract.ContractVersion,
+            "INC-BUSY-REGISTRATION",
+            "TASK-25",
+            "agent-worker-01",
+            ObservedUtc,
+            [captured.StoredEvidence.Metadata.EvidenceIdentitySha256]);
+
+        var registrationTask = Task.Run(() =>
+            store.RegisterComplianceReviewIncident(registration, cancellation.Token));
+        Assert.IsTrue(
+            busySliceObserved.Wait(TimeSpan.FromSeconds(5)),
+            "Registration did not enter the bounded SQLite busy-slice path.");
+        cancellation.Cancel();
+        Assert.Throws<OperationCanceledException>(
+            () => registrationTask.GetAwaiter().GetResult());
+        blockingTransaction.Rollback();
+    }
+
     private static ComplianceReviewAuthority SeedAuthority(
         SqliteHerdrStateStore store,
         AssignmentLifecycleReducer reducer,
