@@ -90,34 +90,61 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $reportRoot = 'artifacts/release-gates/v0.7.0/issue-38'
           New-Item -ItemType Directory -Path $reportRoot -Force | Out-Null
-          $report = ./tools/packaging/Test-HerdrOpsPackaging.ps1
-          if ($null -eq $report -or [string]$report.EvidenceClass -cne 'Static/Synthetic') {
-            throw 'Packaging gate (PowerShell 7) did not return a Static/Synthetic PASS report.'
-          }
-          foreach ($boundary in @('CleanMachine', 'Runtime', 'Human', 'Release')) {
-            if ([string]$report.$boundary -cne 'NOT OBSERVED') {
-              throw "Packaging gate (PowerShell 7) boundary '$boundary' was not NOT OBSERVED."
+          try {
+            $report = ./tools/packaging/Test-HerdrOpsPackaging.ps1
+            if ($null -eq $report -or [string]$report.EvidenceClass -cne 'Static/Synthetic') {
+              throw 'Packaging gate (PowerShell 7) did not return a Static/Synthetic PASS report.'
             }
+            foreach ($boundary in @('CleanMachine', 'Runtime', 'Human', 'Release')) {
+              if ([string]$report.$boundary -cne 'NOT OBSERVED') {
+                throw "Packaging gate (PowerShell 7) boundary '$boundary' was not NOT OBSERVED."
+              }
+            }
+            $report | Format-List | Out-String | Set-Content -LiteralPath (Join-Path $reportRoot 'pwsh-report.txt') -Encoding utf8
+          } catch {
+            $diagPath = Join-Path $reportRoot 'pwsh-failure.txt'
+            @(
+              "FAILURE: Packaging gate (PowerShell 7) did not complete successfully."
+              "EvidenceClass: Static/Synthetic"
+              "Shell: pwsh"
+              "ExitTime: $(Get-Date -Format 'o')"
+              "Error: $($_.Exception.Message)"
+              "ScriptStackTrace: $($_.ScriptStackTrace)"
+            ) | Set-Content -LiteralPath $diagPath -Encoding utf8
+            throw
           }
-          $report | Format-List | Out-String | Set-Content -LiteralPath (Join-Path $reportRoot 'pwsh-report.txt') -Encoding utf8
 
       # Static/Synthetic only; Actual Herdr Runtime NOT OBSERVED.
       - name: 'Run v0.7 packaging gate (Issue #38) - Static/Synthetic - Windows PowerShell 5.1'
+        if: always()
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
           $reportRoot = 'artifacts\release-gates\v0.7.0\issue-38'
           New-Item -ItemType Directory -Path $reportRoot -Force | Out-Null
-          $report = & .\tools\packaging\Test-HerdrOpsPackaging.ps1
-          if ($null -eq $report -or [string]$report.EvidenceClass -cne 'Static/Synthetic') {
-            throw 'Packaging gate (Windows PowerShell 5.1) did not return a Static/Synthetic PASS report.'
-          }
-          foreach ($boundary in @('CleanMachine', 'Runtime', 'Human', 'Release')) {
-            if ([string]$report.$boundary -cne 'NOT OBSERVED') {
-              throw "Packaging gate (Windows PowerShell 5.1) boundary '$boundary' was not NOT OBSERVED."
+          try {
+            $report = & .\tools\packaging\Test-HerdrOpsPackaging.ps1
+            if ($null -eq $report -or [string]$report.EvidenceClass -cne 'Static/Synthetic') {
+              throw 'Packaging gate (Windows PowerShell 5.1) did not return a Static/Synthetic PASS report.'
             }
+            foreach ($boundary in @('CleanMachine', 'Runtime', 'Human', 'Release')) {
+              if ([string]$report.$boundary -cne 'NOT OBSERVED') {
+                throw "Packaging gate (Windows PowerShell 5.1) boundary '$boundary' was not NOT OBSERVED."
+              }
+            }
+            $report | Format-List | Out-String | Set-Content -LiteralPath (Join-Path $reportRoot 'powershell-5.1-report.txt') -Encoding UTF8
+          } catch {
+            $diagPath = Join-Path $reportRoot 'powershell-5.1-failure.txt'
+            @(
+              "FAILURE: Packaging gate (Windows PowerShell 5.1) did not complete successfully."
+              "EvidenceClass: Static/Synthetic"
+              "Shell: powershell (5.1)"
+              "ExitTime: $(Get-Date -Format 'o')"
+              "Error: $($_.Exception.Message)"
+              "ScriptStackTrace: $($_.ScriptStackTrace)"
+            ) | Set-Content -LiteralPath $diagPath -Encoding UTF8
+            throw
           }
-          $report | Format-List | Out-String | Set-Content -LiteralPath (Join-Path $reportRoot 'powershell-5.1-report.txt') -Encoding UTF8
 
       - name: Upload test results
         if: always()
