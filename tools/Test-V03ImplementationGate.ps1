@@ -76,17 +76,17 @@ try {
         }
 
         $childOutput = @()
-        $childExitCode = 1
+        $childSucceeded = $false
         try {
             $childOutput = @(& $scriptPath @childArguments 2>&1)
-            $childExitCode = $LASTEXITCODE
+            $childSucceeded = $?
         }
         catch {
             $childOutput = @()
-            $childExitCode = 1
+            $childSucceeded = $false
         }
 
-        if ($childExitCode -ne 0) {
+        if (-not $childSucceeded) {
             throw [InvalidOperationException]::new("ChildGateFailed:$($definition.Issue)")
         }
 
