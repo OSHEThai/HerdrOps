@@ -10,9 +10,10 @@ namespace HerdrOps.App.Widgets;
 public partial class WidgetWindow : Window
 {
     private bool _isConstraining;
+    private IWidgetState? _state;
     private bool _isClosed;
-    private IWidgetState _state;
     private readonly IWidgetActionRouter _actionRouter;
+    private bool _resourcesReleased;
 
     public WidgetWindow(
         WidgetVariantDescriptor descriptor,
@@ -63,6 +64,8 @@ public partial class WidgetWindow : Window
     public WidgetVariantDescriptor Descriptor { get; }
 
     public WidgetMotionPolicy MotionPolicy { get; }
+
+    public bool ResourcesReleased => _resourcesReleased;
 
     public bool IsClosed => _isClosed;
 
@@ -157,6 +160,11 @@ public partial class WidgetWindow : Window
 
     private void ApplyLanguageChange()
     {
+        if (_state is null)
+        {
+            return;
+        }
+
         if (_state.EvidenceClass == HerdrOps.Contracts.EvidenceClass.Synthetic)
         {
             _state = SyntheticWidgetState.Create();
@@ -168,7 +176,22 @@ public partial class WidgetWindow : Window
 
     private void OnClosed(object? sender, EventArgs e)
     {
+        ReleaseResources();
+    }
+
+    internal void ReleaseResources()
+    {
+        if (_resourcesReleased)
+        {
+            return;
+        }
+
+        _resourcesReleased = true;
         _isClosed = true;
+        Surface.CloseRequested -= OnCloseRequested;
+        Surface.PinToggleRequested -= OnPinToggleRequested;
+        Surface.ResetPositionRequested -= OnResetPositionRequested;
+        Surface.DragRequested -= OnDragRequested;
         Surface.NotificationOpenRequested -= OnNotificationOpenRequested;
         Surface.NotificationHistoryRequested -= OnNotificationHistoryRequested;
         Surface.AgentDetailsRequested -= OnAgentDetailsRequested;
@@ -177,6 +200,11 @@ public partial class WidgetWindow : Window
             UiLanguageService.Shared,
             nameof(UiLanguageService.LanguageChanged),
             OnLanguageChanged);
+        LocationChanged -= OnLocationChanged;
+        PreviewKeyDown -= OnPreviewKeyDown;
+        Surface.ReleaseResources();
+        Content = null;
+        _state = null;
         Closed -= OnClosed;
     }
 

@@ -33,7 +33,7 @@ $runId = (Get-Date).ToUniversalTime().ToString('yyyyMMddTHHmmssZ')
 $evidenceDirectory = Join-Path $artifactRoot "protocol-evidence\v0.2\issue-54\$runId"
 $testResultsDirectory = Join-Path $evidenceDirectory 'test-results'
 $inspectionPath = Join-Path $evidenceDirectory 'installed-herdr-bundled-schema.json'
-$schemaPath = Join-Path $evidenceDirectory 'herdr-api-v19.schema.json'
+$schemaPath = Join-Path $evidenceDirectory 'herdr-api-v20.schema.json'
 $gateReportPath = Join-Path $evidenceDirectory 'gate-report.txt'
 
 $sourceCommit = Get-CleanSourceCommit -Root $repositoryRoot
@@ -75,10 +75,10 @@ if ($inspection.Status -ne 'Compatible') { throw "Unexpected schema status: $($i
 if ($inspection.EvidenceClass -ne 'Contract') { throw "Unexpected evidence class: $($inspection.EvidenceClass)" }
 if ($inspection.RuntimeObserved -ne $false) { throw 'Schema inspection must not claim runtime observation.' }
 if ($inspection.SessionControlInvoked -ne $false) { throw 'Schema inspection must not claim session control.' }
-if ($inspection.ReleaseId -ne '0.8.0-preview.2026-08-04-d78e3d3b5126-x86_64-pc-windows-msvc') {
+if ($inspection.ReleaseId -ne '0.8.2-preview.2026-08-19-b5c4a0176e91-x86_64-pc-windows-msvc') {
     throw "Unexpected Herdr release: $($inspection.ReleaseId)"
 }
-if ($inspection.ExecutableSha256 -ne '6F470DA358D6713B6BEBAB922FFB1F5FE1D3D288CC6F374C7DCA1B4A9837A542') {
+if ($inspection.ExecutableSha256 -ne 'AFE7BAD9B77946917B509C9B638BB2A47BC1D4F19254957D15B0FAAFBEDB3E93') {
     throw "Unexpected executable SHA-256: $($inspection.ExecutableSha256)"
 }
 if ([long]$inspection.SchemaStartOffset -ne 16342610) {
@@ -87,14 +87,14 @@ if ([long]$inspection.SchemaStartOffset -ne 16342610) {
 if ([int]$inspection.SchemaDocumentLength -ne 261498) {
     throw "Unexpected schema length: $($inspection.SchemaDocumentLength)"
 }
-$expectedSchemaSha256 = '9449368D54BBECD4D4D0696EFFB9E9C002ECD63A5B8A48BBD901A305AF842982'
+$expectedSchemaSha256 = '3B34717C8B828FAF4E4A1D4DAC5953417712C8EB71A54237FFAD7582C7FF5679'
 if ($inspection.SchemaDocumentSha256 -ne $expectedSchemaSha256) {
     throw "Unexpected schema SHA-256: $($inspection.SchemaDocumentSha256)"
 }
 if ($inspection.JsonSchemaDraft -ne 'https://json-schema.org/draft/2020-12/schema') {
     throw "Unexpected JSON Schema draft: $($inspection.JsonSchemaDraft)"
 }
-if ([int]$inspection.Protocol -ne 19 -or [int]$inspection.SchemaVersion -ne 1) {
+if ([int]$inspection.Protocol -ne 20 -or [int]$inspection.SchemaVersion -ne 1) {
     throw "Unexpected protocol/schema version: $($inspection.Protocol)/$($inspection.SchemaVersion)"
 }
 
@@ -128,8 +128,8 @@ if ($schemaFileHash -ne $expectedSchemaSha256) {
 }
 
 $schema = Get-Content -LiteralPath $schemaPath -Raw | ConvertFrom-Json -Depth 256
-if ([int]$schema.protocol -ne 19 -or [int]$schema.schema_version -ne 1) {
-    throw 'Exported schema metadata is not protocol 19/schema version 1.'
+if ([int]$schema.protocol -ne 20 -or [int]$schema.schema_version -ne 1) {
+    throw 'Exported schema metadata is not protocol 20/schema version 1.'
 }
 $requestMethods = @($schema.schemas.request.oneOf | ForEach-Object { $_.properties.method.const })
 foreach ($requiredMethod in @('session.snapshot', 'events.subscribe')) {

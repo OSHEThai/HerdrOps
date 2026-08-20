@@ -26,24 +26,24 @@ public sealed record HerdrBundledSchemaSupportPolicy(
 
 /// <summary>
 /// Successor contract for the full JSON Schema bundled in the exact Herdr binary admitted by
-/// <see cref="HerdrProtocolContractV080Preview"/>.
+/// <see cref="HerdrProtocolContractV082Preview"/>.
 /// </summary>
-public static class HerdrBundledSchemaContractV19
+public static class HerdrBundledSchemaContractV20
 {
-    public const string ContractId = "herdr-0.8.0-preview-bundled-schema-v1";
+    public const string ContractId = "herdr-0.8.2-preview-bundled-schema-v2";
 
-    public const int Revision = 1;
+    public const int Revision = 2;
 
     public const string JsonSchemaDraft = "https://json-schema.org/draft/2020-12/schema";
 
-    public const int Protocol = 19;
+    public const int Protocol = 20;
 
     public const int SchemaVersion = 1;
 
-    public const int DocumentLength = 261_498;
+    public const int DocumentLength = 265_595;
 
     public const string DocumentSha256 =
-        "9449368D54BBECD4D4D0696EFFB9E9C002ECD63A5B8A48BBD901A305AF842982";
+        "3B34717C8B828FAF4E4A1D4DAC5953417712C8EB71A54237FFAD7582C7FF5679";
 
     public static HerdrBundledSchemaSupportPolicy Policy { get; } = new(
         ContractId,
@@ -65,7 +65,7 @@ public static class HerdrBundledSchemaContractV19
                 Array.AsReadOnly(["EventData", "EventKind"])),
             new HerdrBundledSchemaGroupRequirement(
                 "request",
-                105,
+                107,
                 Array.AsReadOnly(["EventsSubscribeParams", "Subscription"])),
             new HerdrBundledSchemaGroupRequirement(
                 "subscription_event",

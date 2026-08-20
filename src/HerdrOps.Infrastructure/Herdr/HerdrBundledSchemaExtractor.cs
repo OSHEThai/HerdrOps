@@ -23,20 +23,104 @@ public sealed class HerdrBundledSchemaExtractor : IHerdrBundledSchemaExtractor
     ];
 
     private readonly HerdrProtocolInspector _binaryInspector;
+    private readonly HerdrProtocolSupportPolicy _binaryPolicy;
     private readonly HerdrBundledSchemaSupportPolicy _schemaPolicy;
-    private readonly IHerdrExecutableSnapshotReader _snapshotReader;
+    private readonly IHerdrExecutableSnapshotReader? _snapshotReader;
+    private readonly IHerdrExecutableAdmissionScanner _admissionScanner;
 
     public HerdrBundledSchemaExtractor(
         HerdrProtocolSupportPolicy? binaryPolicy = null,
         HerdrBundledSchemaSupportPolicy? schemaPolicy = null,
-        IHerdrExecutableSnapshotReader? snapshotReader = null)
+        IHerdrExecutableSnapshotReader? snapshotReader = null,
+        IHerdrExecutableAdmissionScanner? admissionScanner = null)
     {
-        _binaryInspector = new HerdrProtocolInspector(binaryPolicy);
-        _schemaPolicy = schemaPolicy ?? HerdrBundledSchemaContractV19.Policy;
-        _snapshotReader = snapshotReader ?? new HerdrExecutableSnapshotReader();
+        _binaryPolicy = binaryPolicy ?? HerdrProtocolContractV082Preview.Policy;
+        _binaryInspector = new HerdrProtocolInspector(_binaryPolicy);
+        _schemaPolicy = schemaPolicy ?? HerdrBundledSchemaContractV20.Policy;
+        _snapshotReader = snapshotReader;
+        _admissionScanner = admissionScanner ?? new HerdrExecutableAdmissionScanner();
     }
 
     public HerdrBundledSchemaExtraction Extract(string executablePath)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(executablePath);
+        if (_snapshotReader is not null)
+        {
+            return ExtractWithSnapshotReader(executablePath);
+        }
+
+        try
+        {
+            return Extract(_admissionScanner.Scan(
+                executablePath,
+                _binaryPolicy,
+                captureBundledSchema: true));
+        }
+        catch (HerdrExecutableAdmissionScanException exception)
+        {
+            var binaryInspection = _binaryInspector.InspectFailure(exception);
+            return Failure(
+                HerdrBundledSchemaStatus.ExecutableRejected,
+                binaryInspection,
+                $"Executable admission failed with {binaryInspection.Status}: {binaryInspection.Message}");
+        }
+    }
+
+    public HerdrBundledSchemaExtraction Extract(
+        HerdrExecutableAdmissionSnapshot snapshot)
+    {
+        ArgumentNullException.ThrowIfNull(snapshot);
+        var binaryInspection = _binaryInspector.Inspect(snapshot);
+        if (!binaryInspection.IsCompatible)
+        {
+            return Failure(
+                HerdrBundledSchemaStatus.ExecutableRejected,
+                binaryInspection,
+                $"Executable admission failed with {binaryInspection.Status}: {binaryInspection.Message}");
+        }
+
+        if (snapshot.SchemaStartOffsets.Count == 0)
+        {
+            return Failure(
+                HerdrBundledSchemaStatus.SchemaStartNotFound,
+                binaryInspection,
+                "The bundled JSON Schema start marker was not found in the admitted executable.");
+        }
+
+        if (snapshot.SchemaStartOffsets.Count > 1)
+        {
+            return Failure(
+                HerdrBundledSchemaStatus.DuplicateSchemaStart,
+                binaryInspection,
+                "Expected one bundled JSON Schema start marker but found 2 or more.");
+        }
+
+        var schemaStart = snapshot.SchemaStartOffsets[0];
+        if (snapshot.SchemaCaptureStatus != HerdrBundledSchemaCaptureStatus.Complete ||
+            snapshot.SchemaDocumentBytes is null)
+        {
+            var status = snapshot.SchemaCaptureStatus switch
+            {
+                HerdrBundledSchemaCaptureStatus.TooLarge =>
+                    HerdrBundledSchemaStatus.SchemaTooLarge,
+                HerdrBundledSchemaCaptureStatus.Malformed =>
+                    HerdrBundledSchemaStatus.MalformedJson,
+                _ => HerdrBundledSchemaStatus.SchemaTruncated,
+            };
+            return Failure(
+                status,
+                binaryInspection,
+                snapshot.SchemaCaptureMessage,
+                schemaStart);
+        }
+
+        return ValidateSchemaBytes(
+            binaryInspection,
+            schemaStart,
+            snapshot.SchemaDocumentBytes);
+    }
+
+    private HerdrBundledSchemaExtraction ExtractWithSnapshotReader(string executablePath)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(executablePath);
 
@@ -52,7 +136,7 @@ public sealed class HerdrBundledSchemaExtractor : IHerdrBundledSchemaExtractor
         HerdrExecutableSnapshot snapshot;
         try
         {
-            snapshot = _snapshotReader.Read(
+            snapshot = _snapshotReader!.Read(
                 binaryInspection.RequestedExecutablePath,
                 MaximumExecutableBytes);
         }
@@ -116,7 +200,17 @@ public sealed class HerdrBundledSchemaExtractor : IHerdrBundledSchemaExtractor
                 schemaStart);
         }
 
-        var schemaBytes = extraction.Bytes!;
+        return ValidateSchemaBytes(
+            binaryInspection,
+            schemaStart,
+            extraction.Bytes!);
+    }
+
+    private HerdrBundledSchemaExtraction ValidateSchemaBytes(
+        HerdrProtocolInspection binaryInspection,
+        long schemaStart,
+        byte[] schemaBytes)
+    {
         string schemaText;
         try
         {
@@ -162,7 +256,7 @@ public sealed class HerdrBundledSchemaExtractor : IHerdrBundledSchemaExtractor
 
     private HerdrBundledSchemaExtraction ValidateDocument(
         HerdrProtocolInspection binaryInspection,
-        int schemaStart,
+        long schemaStart,
         byte[] schemaBytes,
         JsonElement root)
     {

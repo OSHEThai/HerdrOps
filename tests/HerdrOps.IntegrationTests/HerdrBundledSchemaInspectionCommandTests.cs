@@ -243,7 +243,7 @@ public sealed class HerdrBundledSchemaInspectionCommandTests
             SchemaStartOffset: 0,
             schemaBytes.Length,
             new string('B', 64),
-            HerdrBundledSchemaContractV19.JsonSchemaDraft,
+            HerdrBundledSchemaContractV20.JsonSchemaDraft,
             Protocol: 19,
             SchemaVersion: 1,
             Array.Empty<HerdrBundledSchemaGroupSummary>(),

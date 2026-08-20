@@ -274,6 +274,10 @@ public static class HerdrOpsCoreStateServiceCommand
             {
                 var finalMonitorState = admitted.Monitor.Current;
                 var finalProjectedState = coordinator.CurrentState;
+                var evidenceTransitions = transitions.ToArray();
+                var acceptedEventObserved =
+                    HerdrRuntimeEvidence.HasAcceptedAgentStatusEvent(
+                        evidenceTransitions);
                 var runtimeObserved = finalMonitorState.BootstrapCount > 0 &&
                                       finalMonitorState.ServerIdentity is not null &&
                                       string.Equals(
@@ -285,7 +289,7 @@ public static class HerdrOpsCoreStateServiceCommand
                     runtimeObserved,
                     SessionControlInvoked: false,
                     SnapshotObserved: runtimeObserved,
-                    EventObserved: finalMonitorState.EventCount > 0,
+                    EventObserved: acceptedEventObserved,
                     ReconnectObserved: finalMonitorState.BootstrapCount > 1 &&
                                        finalMonitorState.DisconnectCount > 0,
                     startedUtc,
@@ -297,7 +301,7 @@ public static class HerdrOpsCoreStateServiceCommand
                     finalMonitorState,
                     finalProjectedState,
                     HerdrOpsStateIpcJson.ComputeSha256(finalProjectedState),
-                    transitions.ToArray(),
+                    evidenceTransitions,
                     runtimeObserved
                         ? "The Core served state projected from an exact-hash-bound Herdr process; event and reconnect flags require independent true values."
                         : "No exact-hash-bound Herdr snapshot was observed; this report receives no runtime credit.")

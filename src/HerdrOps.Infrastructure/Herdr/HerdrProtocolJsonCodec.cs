@@ -338,10 +338,10 @@ public static class HerdrProtocolJsonCodec
     private static HerdrSessionSnapshot ParseSnapshot(JsonElement snapshot)
     {
         var protocol = GetRequiredInt32(snapshot, "protocol");
-        if (protocol != HerdrBundledSchemaContractV19.Protocol)
+        if (protocol != HerdrBundledSchemaContractV20.Protocol)
         {
             throw new HerdrProtocolException(
-                $"Herdr snapshot protocol {protocol} is not the admitted protocol {HerdrBundledSchemaContractV19.Protocol}.");
+                $"Herdr snapshot protocol {protocol} is not the admitted protocol {HerdrBundledSchemaContractV20.Protocol}.");
         }
 
         RequireArray(snapshot, "layouts");

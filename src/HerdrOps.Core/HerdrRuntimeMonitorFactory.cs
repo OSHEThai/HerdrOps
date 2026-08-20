@@ -1,3 +1,4 @@
+using HerdrOps.Contracts;
 using HerdrOps.Infrastructure.Herdr;
 
 namespace HerdrOps.Core;
@@ -29,6 +30,14 @@ public sealed class HerdrRuntimeAdmissionException : IOException
 
 public sealed class HerdrRuntimeMonitorFactory
 {
+    private readonly IHerdrExecutableAdmissionScanner _admissionScanner;
+
+    public HerdrRuntimeMonitorFactory(
+        IHerdrExecutableAdmissionScanner? admissionScanner = null)
+    {
+        _admissionScanner = admissionScanner ?? new HerdrExecutableAdmissionScanner();
+    }
+
     public HerdrAdmittedRuntimeMonitor Create(
         string? explicitExecutablePath = null,
         string? explicitSocketPath = null,
@@ -41,14 +50,32 @@ public sealed class HerdrRuntimeMonitorFactory
                 "Herdr executable was not discovered for runtime admission.");
         }
 
-        var protocolInspection = new HerdrProtocolInspector().Inspect(executablePath);
+        var binaryPolicy = HerdrProtocolContractV082Preview.Policy;
+        HerdrExecutableAdmissionSnapshot executableSnapshot;
+        try
+        {
+            executableSnapshot = _admissionScanner.Scan(
+                executablePath,
+                binaryPolicy,
+                captureBundledSchema: true);
+        }
+        catch (HerdrExecutableAdmissionScanException exception)
+        {
+            throw new HerdrRuntimeAdmissionException(
+                $"Herdr protocol admission failed: {exception.Message}");
+        }
+
+        var protocolInspection = new HerdrProtocolInspector(binaryPolicy)
+            .Inspect(executableSnapshot);
         if (!protocolInspection.IsCompatible)
         {
             throw new HerdrRuntimeAdmissionException(
                 $"Herdr protocol admission failed: {protocolInspection.Message}");
         }
 
-        var schemaInspection = new HerdrBundledSchemaExtractor().Extract(executablePath).Inspection;
+        var schemaInspection = new HerdrBundledSchemaExtractor(binaryPolicy)
+            .Extract(executableSnapshot)
+            .Inspection;
         if (!schemaInspection.IsCompatible)
         {
             throw new HerdrRuntimeAdmissionException(
@@ -85,10 +112,12 @@ public sealed class HerdrRuntimeMonitorFactory
             schemaInspection.Protocol ?? throw new HerdrRuntimeAdmissionException(
                 "The admitted bundled schema did not report a protocol version."),
             endpoint);
+        var serverIdentityVerifier = new ExpectedHerdrServerIdentityVerifier(
+            admission.ExecutableSha256);
         var monitorClient = new HerdrNamedPipeApiClient(
-            serverIdentityVerifier: new ExpectedHerdrServerIdentityVerifier(admission.ExecutableSha256));
+            serverIdentityVerifier: serverIdentityVerifier);
         var paneInspectionClient = new HerdrNamedPipeApiClient(
-            serverIdentityVerifier: new ExpectedHerdrServerIdentityVerifier(admission.ExecutableSha256));
+            serverIdentityVerifier: serverIdentityVerifier);
         return new HerdrAdmittedRuntimeMonitor(
             new HerdrRuntimeMonitor(monitorClient, endpoint, initialState: initialState),
             admission,

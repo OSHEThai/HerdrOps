@@ -24,8 +24,14 @@ public sealed record HerdrRuntimeTraceTransition(
     int AgentCount,
     string StateFingerprintSha256,
     string ContractStateSha256,
+    string AgentTopologySha256,
+    string AgentStatusStateSha256,
     HerdrServerProcessIdentity? ServerIdentity,
-    string? Reason);
+    string? AcceptedEventKind,
+    string? Reason)
+{
+    public HerdrAcceptedAgentStatusEvent? AcceptedAgentStatusEvent { get; init; }
+}
 
 public sealed record HerdrRuntimeTraceReport(
     string EvidenceClassification,
@@ -179,6 +185,9 @@ public static class HerdrRuntimeTraceCommand
 
         var final = admitted.Monitor.Current;
         var observedServerIdentity = final.ServerIdentity;
+        var observedTransitions = transitions.ToArray();
+        var acceptedEventObserved =
+            HerdrRuntimeEvidence.HasAcceptedAgentStatusEvent(observedTransitions);
         var runtimeObserved = final.BootstrapCount > 0 &&
                               observedServerIdentity is not null &&
                               string.Equals(
@@ -191,7 +200,7 @@ public static class HerdrRuntimeTraceCommand
             runtimeObserved,
             SessionControlInvoked: false,
             SnapshotObserved: runtimeObserved,
-            EventObserved: final.EventCount > 0,
+            EventObserved: acceptedEventObserved,
             ReconnectObserved: reconnectObserved,
             startedUtc,
             DateTimeOffset.UtcNow,
@@ -201,7 +210,7 @@ public static class HerdrRuntimeTraceCommand
             admitted.Admission,
             observedServerIdentity,
             final,
-            transitions.ToArray(),
+            observedTransitions,
             runtimeObserved
                 ? "An exact-hash-bound Herdr server snapshot was observed. Event and reconnect flags require their own true values for credit."
                 : "No exact-hash-bound Herdr server snapshot was observed; this report receives no runtime credit.");

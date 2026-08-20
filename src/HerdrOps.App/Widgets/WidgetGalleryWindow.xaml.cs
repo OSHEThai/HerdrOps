@@ -8,6 +8,8 @@ public partial class WidgetGalleryWindow : Window
 {
     private const double NativeGalleryContentWidth = 1536;
     private bool _hasAdjustedInitialWidth;
+    private bool _resourcesReleased;
+    private int _resourceGeneration;
 
     public WidgetGalleryWindow()
         : this(SyntheticWidgetState.Create(), null, null, null)
@@ -33,7 +35,7 @@ public partial class WidgetGalleryWindow : Window
             widgetSelected,
             widgetEnabled);
         GalleryHost.Content = GalleryView;
-        RefreshTitle();
+        RefreshTitle(_resourceGeneration);
         WeakEventManager<UiLanguageService, EventArgs>.AddHandler(
             UiLanguageService.Shared,
             nameof(UiLanguageService.LanguageChanged),
@@ -42,6 +44,8 @@ public partial class WidgetGalleryWindow : Window
     }
 
     public WidgetGalleryView GalleryView { get; }
+
+    public bool ResourcesReleased => _resourcesReleased;
 
     protected override void OnContentRendered(EventArgs e)
     {
@@ -64,31 +68,56 @@ public partial class WidgetGalleryWindow : Window
 
     private void OnLanguageChanged(object? sender, EventArgs e)
     {
+        if (_resourcesReleased)
+        {
+            return;
+        }
+
+        var generation = _resourceGeneration;
         if (!Dispatcher.CheckAccess())
         {
             if (!Dispatcher.HasShutdownStarted && !Dispatcher.HasShutdownFinished)
             {
-                _ = Dispatcher.InvokeAsync(RefreshTitle);
+                _ = Dispatcher.InvokeAsync(() => RefreshTitle(generation));
             }
 
             return;
         }
 
-        RefreshTitle();
+        RefreshTitle(generation);
     }
 
-    private void RefreshTitle()
+    private void RefreshTitle(int generation)
     {
+        if (_resourcesReleased || generation != _resourceGeneration || GalleryView.ResourcesReleased)
+        {
+            return;
+        }
+
         var text = UiLanguageService.Shared;
         Title = $"{text["WidgetGalleryTitle"]} — {GalleryView.SharedState.WindowTitleSuffix}";
     }
 
     private void OnClosed(object? sender, EventArgs e)
     {
+        ReleaseResources();
+    }
+
+    internal void ReleaseResources()
+    {
+        if (_resourcesReleased)
+        {
+            return;
+        }
+
+        _resourcesReleased = true;
+        _resourceGeneration++;
         WeakEventManager<UiLanguageService, EventArgs>.RemoveHandler(
             UiLanguageService.Shared,
             nameof(UiLanguageService.LanguageChanged),
             OnLanguageChanged);
         Closed -= OnClosed;
+        GalleryView.ReleaseResources();
+        GalleryHost.Content = null;
     }
 }

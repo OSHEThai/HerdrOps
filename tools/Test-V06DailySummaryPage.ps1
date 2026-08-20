@@ -172,17 +172,31 @@ Assert-ContainsText `
         'SourceSetSha256',
         'AcceptedSources',
         'ResultSha256')
-Assert-ContainsText `
-    -Path $sharedIntegrationPaths.ShellView `
-    -Description 'shared Shell XAML' `
-    -RequiredText @('<views:DailySummaryView', 'x:Name="DailySummaryPage"')
-Assert-ContainsText `
-    -Path $sharedIntegrationPaths.ShellViewCodeBehind `
-    -Description 'shared Shell code-behind' `
-    -RequiredText @(
-        'DailySummaryPage.DataContext = syntheticPreview',
-        '"daily-summary"',
-        'DailySummaryPage.Visibility')
+$shellXaml = Get-Content -LiteralPath $sharedIntegrationPaths.ShellView -Raw
+$shellCodeBehind = Get-Content -LiteralPath $sharedIntegrationPaths.ShellViewCodeBehind -Raw
+$usesStaticPageHost =
+    $shellXaml.IndexOf('<views:DailySummaryView', [StringComparison]::Ordinal) -ge 0 -and
+    $shellXaml.IndexOf('x:Name="DailySummaryPage"', [StringComparison]::Ordinal) -ge 0
+$usesLazyPageHost =
+    $shellXaml.IndexOf('<ContentControl x:Name="PageHost"', [StringComparison]::Ordinal) -ge 0 -and
+    $shellCodeBehind.IndexOf('case "daily-summary":', [StringComparison]::Ordinal) -ge 0 -and
+    $shellCodeBehind.IndexOf('new DailySummaryView', [StringComparison]::Ordinal) -ge 0 -and
+    $shellCodeBehind.IndexOf('DataContext = _syntheticPreview', [StringComparison]::Ordinal) -ge 0 -and
+    $shellCodeBehind.IndexOf('PageHost.Content = page.Value.Page', [StringComparison]::Ordinal) -ge 0
+
+if (-not $usesStaticPageHost -and -not $usesLazyPageHost) {
+    throw 'shared Shell does not expose Daily Summary through a recognized static or lazy page host'
+}
+
+if ($usesStaticPageHost) {
+    Assert-ContainsText `
+        -Path $sharedIntegrationPaths.ShellViewCodeBehind `
+        -Description 'shared Shell static-page code-behind' `
+        -RequiredText @(
+            'DailySummaryPage.DataContext = syntheticPreview',
+            '"daily-summary"',
+            'DailySummaryPage.Visibility')
+}
 Assert-ContainsText `
     -Path $sharedIntegrationPaths.AppLocalization `
     -Description 'shared UI language catalog' `

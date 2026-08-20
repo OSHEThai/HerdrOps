@@ -11,6 +11,14 @@ public enum HerdrRuntimeMonitorStatus
     Stopped,
 }
 
+public sealed record HerdrAcceptedAgentStatusEvent(
+    string WorkspaceId,
+    string PaneId,
+    HerdrAgentStatus AgentStatus,
+    string? Agent,
+    string? DisplayAgent,
+    string? Title);
+
 public sealed record HerdrRuntimeMonitorSnapshot(
     HerdrRuntimeMonitorStatus Status,
     HerdrSessionState State,
@@ -20,21 +28,39 @@ public sealed record HerdrRuntimeMonitorSnapshot(
     long DisconnectCount,
     long ReconciliationCount,
     string? LastTransitionReason,
-    DateTimeOffset LastTransitionUtc);
+    DateTimeOffset LastTransitionUtc)
+{
+    public string? AcceptedEventKind { get; init; }
+
+    public HerdrAcceptedAgentStatusEvent? AcceptedAgentStatusEvent { get; init; }
+}
 
 public sealed record HerdrRuntimeMonitorOptions(
     TimeSpan AuthoritativeSnapshotPollInterval)
 {
+    public TimeSpan AgentRestoreGracePeriod { get; init; } = TimeSpan.FromSeconds(10);
+
     public static HerdrRuntimeMonitorOptions Default { get; } = new(
         TimeSpan.FromSeconds(1));
 
     public static HerdrRuntimeMonitorOptions EventOnlyForTests { get; } = new(
-        Timeout.InfiniteTimeSpan);
+        Timeout.InfiniteTimeSpan)
+    {
+        AgentRestoreGracePeriod = TimeSpan.Zero,
+    };
 
     public void Validate()
     {
         if (AuthoritativeSnapshotPollInterval == Timeout.InfiniteTimeSpan)
         {
+            if (AgentRestoreGracePeriod < TimeSpan.Zero ||
+                AgentRestoreGracePeriod > TimeSpan.FromMinutes(1))
+            {
+                throw new ArgumentOutOfRangeException(
+                    nameof(AgentRestoreGracePeriod),
+                    "The Agent restore grace period must be between zero and one minute.");
+            }
+
             return;
         }
 
@@ -45,11 +71,22 @@ public sealed record HerdrRuntimeMonitorOptions(
                 nameof(AuthoritativeSnapshotPollInterval),
                 "The authoritative snapshot poll interval must be positive, no longer than one minute, or infinite for a synthetic test.");
         }
+
+        if (AgentRestoreGracePeriod < TimeSpan.Zero ||
+            AgentRestoreGracePeriod > TimeSpan.FromMinutes(1))
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(AgentRestoreGracePeriod),
+                "The Agent restore grace period must be between zero and one minute.");
+        }
     }
 }
 
 public sealed class HerdrRuntimeMonitor
 {
+    public const string AcceptedAgentStatusEventKind =
+        "pane.agent_status_changed";
+
     private readonly object _stateLock = new();
     private readonly IHerdrApiClient _apiClient;
     private readonly HerdrPipeEndpoint _endpoint;
@@ -124,6 +161,8 @@ public sealed class HerdrRuntimeMonitor
         var consecutiveFailures = 0;
         var consecutiveImmediateReconciliations = 0;
         var hasBootstrapped = Current.BootstrapCount > 0;
+        var awaitAgentRestoreAfterReconnect = false;
+        DateTimeOffset? agentRestoreDeadlineUtc = null;
 
         try
         {
@@ -157,51 +196,73 @@ public sealed class HerdrRuntimeMonitor
                             discoveryServerIdentity,
                             subscriptionServerIdentity,
                             authoritativeServerIdentity);
-                        connectionEpoch++;
-                        ingestSequence++;
-                        var state = _reducer.Reconcile(
-                            authoritativeSnapshot,
-                            connectionEpoch,
-                            ingestSequence);
-                        var authoritativePaneIds = authoritativeSnapshot.Panes
-                            .Select(pane => pane.PaneId)
-                            .ToHashSet(StringComparer.Ordinal);
-                        var paneSetChanged = !subscribedPaneIds.SetEquals(authoritativePaneIds);
-                        var current = Current;
-                        Publish(current with
+                        if (awaitAgentRestoreAfterReconnect &&
+                            _options.AgentRestoreGracePeriod > TimeSpan.Zero)
                         {
-                            Status = paneSetChanged
-                                ? HerdrRuntimeMonitorStatus.Reconnecting
-                                : HerdrRuntimeMonitorStatus.Connected,
-                            State = state,
-                            ServerIdentity = bootstrapServerIdentity,
-                            BootstrapCount = current.BootstrapCount + 1,
-                            ReconciliationCount = current.ReconciliationCount + (paneSetChanged ? 1 : 0),
-                            LastTransitionReason = paneSetChanged
-                                ? "Pane set changed while the subscription was being bootstrapped."
-                                : null,
-                            LastTransitionUtc = snapshotReceivedUtc,
-                        });
-                        hasBootstrapped = true;
-                        cycleBootstrapped = true;
-                        consecutiveFailures = 0;
-                        immediateReconciliation = paneSetChanged;
+                            var now = _timeProvider.GetUtcNow();
+                            agentRestoreDeadlineUtc ??= now.Add(_options.AgentRestoreGracePeriod);
+                            if (now < agentRestoreDeadlineUtc.Value &&
+                                !HasRestoredAgentTopology(Current.State, authoritativeSnapshot))
+                            {
+                                immediateReconciliation = true;
+                                consecutiveFailures = 0;
+                            }
+                            else
+                            {
+                                awaitAgentRestoreAfterReconnect = false;
+                                agentRestoreDeadlineUtc = null;
+                            }
+                        }
 
                         if (!immediateReconciliation)
                         {
-                            var connectedResult = await MonitorConnectedCycleAsync(
-                                    subscriptionScope.Subscription,
-                                    subscribedPaneIds,
-                                    bootstrapServerIdentity,
-                                    connectionEpoch,
-                                    ingestSequence,
-                                    cancellationToken)
-                                .ConfigureAwait(false);
-                            ingestSequence = connectedResult.IngestSequence;
-                            immediateReconciliation = connectedResult.ImmediateReconciliation;
-                            if (connectedResult.StableProgressObserved)
+                            connectionEpoch++;
+                            ingestSequence++;
+                            var state = _reducer.Reconcile(
+                                authoritativeSnapshot,
+                                connectionEpoch,
+                                ingestSequence);
+                            var authoritativePaneIds = authoritativeSnapshot.Panes
+                                .Select(pane => pane.PaneId)
+                                .ToHashSet(StringComparer.Ordinal);
+                            var paneSetChanged = !subscribedPaneIds.SetEquals(authoritativePaneIds);
+                            var current = Current;
+                            Publish(
+                                current with
+                                {
+                                    Status = paneSetChanged
+                                    ? HerdrRuntimeMonitorStatus.Reconnecting
+                                    : HerdrRuntimeMonitorStatus.Connected,
+                                    State = state,
+                                    ServerIdentity = bootstrapServerIdentity,
+                                    BootstrapCount = current.BootstrapCount + 1,
+                                    ReconciliationCount = current.ReconciliationCount + (paneSetChanged ? 1 : 0),
+                                    LastTransitionReason = paneSetChanged
+                                    ? "Pane set changed while the subscription was being bootstrapped."
+                                    : null,
+                                    LastTransitionUtc = snapshotReceivedUtc,
+                                });
+                            hasBootstrapped = true;
+                            cycleBootstrapped = true;
+                            consecutiveFailures = 0;
+                            immediateReconciliation = paneSetChanged;
+
+                            if (!immediateReconciliation)
                             {
-                                consecutiveImmediateReconciliations = 0;
+                                var connectedResult = await MonitorConnectedCycleAsync(
+                                        subscriptionScope.Subscription,
+                                        subscribedPaneIds,
+                                        bootstrapServerIdentity,
+                                        connectionEpoch,
+                                        ingestSequence,
+                                        cancellationToken)
+                                    .ConfigureAwait(false);
+                                ingestSequence = connectedResult.IngestSequence;
+                                immediateReconciliation = connectedResult.ImmediateReconciliation;
+                                if (connectedResult.StableProgressObserved)
+                                {
+                                    consecutiveImmediateReconciliations = 0;
+                                }
                             }
                         }
                     }
@@ -212,12 +273,20 @@ public sealed class HerdrRuntimeMonitor
                     catch (Exception exception) when (IsRecoverable(exception))
                     {
                         ingestSequence = Current.State.LastIngestSequence;
+                        var transportDisconnected = cycleBootstrapped && IsTransportDisconnect(exception);
+                        if (transportDisconnected &&
+                            Current.State.Agents.Count > 0 &&
+                            _options.AgentRestoreGracePeriod > TimeSpan.Zero)
+                        {
+                            awaitAgentRestoreAfterReconnect = true;
+                            agentRestoreDeadlineUtc = null;
+                        }
                         if (hasBootstrapped)
                         {
                             RecordReconciliation(
                                 exception.Message,
                                 ingestSequence,
-                                incrementDisconnectCount: cycleBootstrapped && IsTransportDisconnect(exception));
+                                incrementDisconnectCount: transportDisconnected);
                         }
                         else
                         {
@@ -269,6 +338,27 @@ public sealed class HerdrRuntimeMonitor
                 Volatile.Write(ref _runActive, 0);
             }
         }
+    }
+
+    private static bool HasRestoredAgentTopology(
+        HerdrSessionState previousState,
+        HerdrSessionSnapshot snapshot)
+    {
+        if (previousState.Agents.Count == 0)
+        {
+            return true;
+        }
+
+        if (snapshot.Agents.Count != previousState.Agents.Count)
+        {
+            return false;
+        }
+
+        return previousState.Agents.Values.All(expected =>
+            snapshot.Agents.Any(observed =>
+                string.Equals(observed.PaneId, expected.PaneId, StringComparison.Ordinal) &&
+                string.Equals(observed.Agent, expected.Agent, StringComparison.Ordinal) &&
+                string.Equals(observed.Name, expected.Name, StringComparison.Ordinal)));
     }
 
     private void RecordReconciliation(
@@ -394,19 +484,31 @@ public sealed class HerdrRuntimeMonitor
                         var current = Current;
                         var stateChanged = !HasSameAuthoritativeContent(current.State, candidate);
                         var paneSetChanged = !subscribedPaneIds.SetEquals(candidate.Panes.Keys);
-                        Publish(current with
-                        {
-                            Status = paneSetChanged
-                                ? HerdrRuntimeMonitorStatus.Reconnecting
-                                : HerdrRuntimeMonitorStatus.Connected,
-                            State = candidate,
-                            EventCount = current.EventCount + 1,
-                            ReconciliationCount = current.ReconciliationCount + (stateChanged ? 1 : 0),
-                            LastTransitionReason = paneSetChanged
-                                ? "Pane set changed while reconciling an observed live Agent status."
-                                : null,
-                            LastTransitionUtc = statusSnapshotReceivedUtc,
-                        });
+                        var acceptedStatusEvent =
+                            !paneSetChanged &&
+                            candidate.Panes.TryGetValue(statusChanged.PaneId, out var acceptedPane) &&
+                            string.Equals(
+                                acceptedPane.WorkspaceId,
+                                statusChanged.WorkspaceId,
+                                StringComparison.Ordinal) &&
+                            acceptedPane.AgentStatus == statusChanged.AgentStatus
+                                ? statusChanged
+                                : null;
+                        Publish(
+                            current with
+                            {
+                                Status = paneSetChanged
+                                    ? HerdrRuntimeMonitorStatus.Reconnecting
+                                    : HerdrRuntimeMonitorStatus.Connected,
+                                State = candidate,
+                                EventCount = current.EventCount + 1,
+                                ReconciliationCount = current.ReconciliationCount + (stateChanged ? 1 : 0),
+                                LastTransitionReason = paneSetChanged
+                                    ? "Pane set changed while reconciling an observed live Agent status."
+                                    : null,
+                                LastTransitionUtc = statusSnapshotReceivedUtc,
+                            },
+                            acceptedStatusEvent);
 
                         if (paneSetChanged)
                         {
@@ -607,10 +709,45 @@ public sealed class HerdrRuntimeMonitor
         }
     }
 
-    private void Publish(HerdrRuntimeMonitorSnapshot snapshot)
+    private void Publish(
+        HerdrRuntimeMonitorSnapshot snapshot,
+        HerdrPaneAgentStatusChangedEvent? acceptedAgentStatusEvent = null)
     {
         lock (_stateLock)
         {
+            if (acceptedAgentStatusEvent is not null &&
+                (!string.Equals(
+                     acceptedAgentStatusEvent.EventName,
+                     AcceptedAgentStatusEventKind,
+                     StringComparison.Ordinal) ||
+                 snapshot.Status != HerdrRuntimeMonitorStatus.Connected ||
+                 snapshot.EventCount != _current.EventCount + 1 ||
+                 !snapshot.State.Panes.TryGetValue(
+                     acceptedAgentStatusEvent.PaneId,
+                     out var acceptedPane) ||
+                 !string.Equals(
+                     acceptedPane.WorkspaceId,
+                     acceptedAgentStatusEvent.WorkspaceId,
+                     StringComparison.Ordinal) ||
+                 acceptedPane.AgentStatus != acceptedAgentStatusEvent.AgentStatus))
+            {
+                throw new InvalidOperationException(
+                    "An accepted runtime event must be a connected transition with exactly one Event-count increment.");
+            }
+
+            snapshot = snapshot with
+            {
+                AcceptedEventKind = acceptedAgentStatusEvent?.EventName,
+                AcceptedAgentStatusEvent = acceptedAgentStatusEvent is null
+                    ? null
+                    : new HerdrAcceptedAgentStatusEvent(
+                        acceptedAgentStatusEvent.WorkspaceId,
+                        acceptedAgentStatusEvent.PaneId,
+                        acceptedAgentStatusEvent.AgentStatus,
+                        acceptedAgentStatusEvent.Agent,
+                        acceptedAgentStatusEvent.DisplayAgent,
+                        acceptedAgentStatusEvent.Title),
+            };
             _current = snapshot;
         }
 

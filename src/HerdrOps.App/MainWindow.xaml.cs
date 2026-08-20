@@ -14,6 +14,7 @@ namespace HerdrOps.App;
 public partial class MainWindow : Window
 {
     private ShellView? _shell;
+    private bool _resourcesReleased;
     private bool _allowClose;
     private bool _isClosed;
 
@@ -91,9 +92,16 @@ public partial class MainWindow : Window
 
     private void OnClosed(object? sender, EventArgs e)
     {
+        if (_resourcesReleased)
+        {
+            return;
+        }
+
+        _resourcesReleased = true;
         _isClosed = true;
         Closing -= OnClosing;
         Closed -= OnClosed;
+        _shell?.ReleaseResources();
         ShellHost.Content = null;
         _shell = null;
     }

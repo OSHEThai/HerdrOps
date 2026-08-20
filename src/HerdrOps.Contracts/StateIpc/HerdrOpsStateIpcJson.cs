@@ -125,6 +125,65 @@ public static class HerdrOpsStateIpcJson
             JsonSerializer.SerializeToUtf8Bytes(payload, SerializerOptions)));
     }
 
+    public static string ComputeAgentTopologySha256(HerdrSessionStateContract state)
+    {
+        ArgumentNullException.ThrowIfNull(state);
+        var topology = new
+        {
+            Workspaces = state.Workspaces
+                .OrderBy(item => item.WorkspaceId, StringComparer.Ordinal)
+                .Select(item => item.WorkspaceId)
+                .ToArray(),
+            Tabs = state.Tabs
+                .OrderBy(item => item.TabId, StringComparer.Ordinal)
+                .Select(item => new { item.TabId, item.WorkspaceId })
+                .ToArray(),
+            Panes = state.Panes
+                .OrderBy(item => item.PaneId, StringComparer.Ordinal)
+                .Select(item => new
+                {
+                    item.PaneId,
+                    item.TerminalId,
+                    item.WorkspaceId,
+                    item.TabId,
+                })
+                .ToArray(),
+            Agents = state.Agents
+                .OrderBy(item => item.TerminalId, StringComparer.Ordinal)
+                .Select(item => new
+                {
+                    item.TerminalId,
+                    item.WorkspaceId,
+                    item.TabId,
+                    item.PaneId,
+                })
+                .ToArray(),
+        };
+        return ComputeSha256(topology);
+    }
+
+    public static string ComputeAgentStatusStateSha256(HerdrSessionStateContract state)
+    {
+        ArgumentNullException.ThrowIfNull(state);
+        var statusState = new
+        {
+            Panes = state.Panes
+                .OrderBy(item => item.PaneId, StringComparer.Ordinal)
+                .Select(item => new { item.PaneId, item.AgentStatus })
+                .ToArray(),
+            Agents = state.Agents
+                .OrderBy(item => item.TerminalId, StringComparer.Ordinal)
+                .Select(item => new
+                {
+                    item.TerminalId,
+                    item.AgentStatus,
+                    item.StateChangeSequence,
+                })
+                .ToArray(),
+        };
+        return ComputeSha256(statusState);
+    }
+
     public static async ValueTask WriteFrameAsync(
         Stream stream,
         HerdrOpsStateIpcEnvelope envelope,

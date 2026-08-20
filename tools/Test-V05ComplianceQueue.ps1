@@ -320,15 +320,15 @@ Assert-ContainsText `
     -Path $shellXamlPath `
     -Description 'shared shell XAML' `
     -RequiredText @(
-        '<views:ComplianceQueueView',
-        'x:Name="ComplianceQueuePage"')
+        '<ContentControl x:Name="PageHost"',
+        'xmlns:views="clr-namespace:HerdrOps.App.Views"')
 Assert-ContainsText `
     -Path $shellCodeBehindPath `
     -Description 'shared shell code-behind' `
     -RequiredText @(
-        'ComplianceQueuePage.DataContext = LiveDashboard.ComplianceQueue;',
-        '"compliance-queue"',
-        'ComplianceQueuePage.Visibility')
+        'case "compliance-queue":',
+        'return ("ComplianceQueuePage", new ComplianceQueueView',
+        'DataContext = LiveDashboard.ComplianceQueue,')
 Assert-ContainsText `
     -Path $dashboardStatePath `
     -Description 'shared dashboard state' `

@@ -1,5 +1,3 @@
-using System.Security.Cryptography;
-
 namespace HerdrOps.Infrastructure.Herdr;
 
 public sealed record HerdrServerProcessIdentity(
@@ -64,9 +62,12 @@ public sealed class ExpectedHerdrServerIdentityVerifier : IHerdrServerIdentityVe
     private const long MaximumExecutableBytes = 128L * 1024 * 1024;
     private readonly object _cacheLock = new();
     private readonly string _expectedExecutableSha256;
+    private readonly IHerdrExecutableIdentityReader _identityReader;
     private readonly Dictionary<ServerProcessKey, HerdrServerProcessIdentity> _verifiedProcesses = [];
 
-    public ExpectedHerdrServerIdentityVerifier(string expectedExecutableSha256)
+    public ExpectedHerdrServerIdentityVerifier(
+        string expectedExecutableSha256,
+        IHerdrExecutableIdentityReader? identityReader = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(expectedExecutableSha256);
         if (expectedExecutableSha256.Length != 64 ||
@@ -78,6 +79,7 @@ public sealed class ExpectedHerdrServerIdentityVerifier : IHerdrServerIdentityVe
         }
 
         _expectedExecutableSha256 = expectedExecutableSha256.ToUpperInvariant();
+        _identityReader = identityReader ?? new HerdrExecutableIdentityReader();
     }
 
     public HerdrServerProcessIdentity Verify(HerdrConnectedStream connection)
@@ -94,10 +96,10 @@ public sealed class ExpectedHerdrServerIdentityVerifier : IHerdrServerIdentityVe
                 return cached;
             }
 
-            HerdrExecutableSnapshot snapshot;
+            HerdrExecutableIdentitySnapshot snapshot;
             try
             {
-                snapshot = new HerdrExecutableSnapshotReader().Read(
+                snapshot = _identityReader.Read(
                     connection.ServerExecutablePath,
                     MaximumExecutableBytes);
             }
@@ -109,7 +111,7 @@ public sealed class ExpectedHerdrServerIdentityVerifier : IHerdrServerIdentityVe
                     exception);
             }
 
-            var actualSha256 = Convert.ToHexString(SHA256.HashData(snapshot.Bytes));
+            var actualSha256 = snapshot.Sha256;
             if (!string.Equals(actualSha256, _expectedExecutableSha256, StringComparison.Ordinal))
             {
                 throw new HerdrServerIdentityException(
