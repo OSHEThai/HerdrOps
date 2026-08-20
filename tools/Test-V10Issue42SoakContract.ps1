@@ -206,10 +206,10 @@ $preparationChecks = @($script:checks | Where-Object { $_.Status -ne 'NOT OBSERV
     New-SoakCheck -Id $_.Id -Pass ($_.Status -eq 'PASS') -EvidenceClass $_.EvidenceClass -Detail $_.Detail
 })
 $verdict = Get-SoakVerdict -Checks $preparationChecks -RuntimeObserved $false -ReleaseObserved $false -PreparationMode $true
-if ($verdict -ne 'PENDING') {
-    Record-Check -Id 'VERDICT-01' -Status 'FAIL' -EvidenceClass 'Synthetic' -Detail "preparation mode produced verdict '$verdict' instead of PENDING"
+if ($verdict -eq 'PASS') {
+    Record-Check -Id 'VERDICT-01' -Status 'FAIL' -EvidenceClass 'Synthetic' -Detail 'preparation mode illegally emitted a soak PASS'
 } else {
-    Record-Check -Id 'VERDICT-01' -Status 'PASS' -EvidenceClass 'Synthetic' -Detail 'fail-closed verdict is PENDING; no soak PASS was emitted'
+    Record-Check -Id 'VERDICT-01' -Status 'PASS' -EvidenceClass 'Synthetic' -Detail "fail-closed verdict is $verdict; no soak PASS was emitted in preparation mode"
 }
 
 $finalCommitResult = Get-GitOutput -Arguments @('rev-parse', '--verify', 'HEAD^{commit}')
