@@ -395,6 +395,15 @@
           "scope": ["Measure CPU, working set, launch, delta latency, and reconnect budgets.", "Run an 8-hour actual-Herdr soak with fault observations.", "Complete user UAT and go/no-go for Beta."],
           "acceptance": ["No unhandled crash or unreconciled state occurs during soak.", "Budgets pass or have an explicit user-approved waiver.", "Human UAT and Beta go/no-go are recorded."],
           "evidence": ["Performance report", "8-hour soak log", "UAT decision"]
+        },
+        {
+          "key": "V070-06",
+          "title": "[v0.7.0] Prepare repository for public open-source development",
+          "labels": ["type:quality", "area:tooling", "area:docs", "priority:P0"],
+          "outcome": "HerdrOps can move from private development to safe public open-source collaboration with an explicit license, community policies, bounded workflow permissions, reviewed artifact exposure, and deterministic readiness evidence.",
+          "scope": ["Scan the current tree and complete Git history for secrets and triage findings without publishing detected values.", "Add the owner-selected license and repository-local community health files.", "Harden GitHub Actions for untrusted fork pull requests and bound public artifact exposure.", "Add a deterministic open-source readiness gate and record repository settings required for public operation.", "Change visibility only after the readiness evidence and CI pass."],
+          "acceptance": ["The current tree and complete Git history have no untriaged secrets.", "LICENSE, SECURITY.md, CONTRIBUTING.md, and CODE_OF_CONDUCT.md are present and internally consistent.", "Workflows use minimum read permissions, immutable action pins, no secrets on untrusted pull_request jobs, and bounded artifact paths.", "The deterministic open-source readiness gate passes at the committed source.", "Plan/GITHUB-TRACKING.md and Plan/github-roadmap.json include this work.", "CI passes and the public repository settings checklist is verified.", "OSHEThai/HerdrOps reports PUBLIC visibility."],
+          "evidence": ["Redacted secret-scan summary and triage record", "Static community-health and workflow-policy gate report", "CI run links for the accepted commit", "GitHub repository visibility and security-setting verification"]
         }
       ]
     },
@@ -460,4 +469,3 @@
     }
   ]
 }
-

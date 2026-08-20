@@ -114,6 +114,20 @@ HerdrOps/
 └── tools/                   Build, verification, and packaging tools
 ```
 
+## Contributing
+
+HerdrOps welcomes scoped issues, documentation improvements, tests, and implementation contributions. Read [CONTRIBUTING.md](CONTRIBUTING.md) before starting substantial work and follow [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) in all project spaces.
+
+Every implementation or release change must map to a GitHub issue in the matching milestone. Static, Synthetic, Contract, Runtime, independent-review, and Release evidence must be reported separately.
+
+## Security
+
+Do not publish suspected vulnerabilities, credentials, terminal output, diagnostic bundles, or machine-specific evidence in an issue. Follow the private reporting process in [SECURITY.md](SECURITY.md).
+
+## License
+
+HerdrOps source, documentation, and project artwork are distributed under the copyright terms in [LICENSE](LICENSE). Contributions are accepted under the same license. Third-party components retain their own terms as recorded in [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md), and use of the project name and marks is governed by [TRADEMARKS.md](TRADEMARKS.md).
+
 ## Planning Rules
 
 - `Plan/` เป็นแผนปัจจุบัน; เอกสารหรือ Mockup อื่นไม่แทนแผนนี้โดยอัตโนมัติ
