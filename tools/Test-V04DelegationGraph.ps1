@@ -46,7 +46,7 @@ $testRuns = @(
         Project = Join-Path $repositoryRoot 'tests\HerdrOps.IntegrationTests\HerdrOps.IntegrationTests.csproj'
         Filter = 'FullyQualifiedName~DelegationGraphStateTests'
         Log = 'delegation-graph-state.trx'
-        ExpectedCount = 10
+        ExpectedCount = 12
     },
     [pscustomobject]@{
         Project = Join-Path $repositoryRoot 'tests\HerdrOps.RuntimeTests\HerdrOps.RuntimeTests.csproj'
@@ -78,12 +78,19 @@ $combinedTestLog = ($testResults | ForEach-Object {
     Get-Content -LiteralPath $_.FullName -Raw
 }) -join "`n"
 $requiredChecks = @(
+    'ResolveSelectedTaskIdFallsBackToCurrentActorTaskWhenRequestedTaskIsUnrelated',
+    'ResolveSelectedTaskIdClearsRequestedTaskForUnknownActor',
     'ProjectionIsDeterministicAndBindsGraphItemsToReplayProvenance',
     'OrphanLifecycleEventRemainsVisibleWithoutCreatingADelegationEdge',
     'ProjectorRejectsRelationshipThatDoesNotMatchItsLifecycleEvent',
     'TaskSelectionSynchronizesGraphTimelineAndSelectedNodeDetail',
+    'NodeSelectionFallsBackToActorRelatedTaskWhenTaskSelectionMismatches',
     'TaskTreeClickRemainsAuthoritativeAcrossActorsAndFiltersProjection',
     'ApplyGraphLiveRefreshRemovesStaleTaskSelectionAndDetail',
+    'ClearingNodeSelectionClearsTaskAccessibleSelectionAndDetail',
+    'UnknownNodeSelectionClearsPriorTaskAndDetailInsteadOfRetainingIt',
+    'RemovedTaskSelectionIsDroppedAndCannotDriveDetailProjection',
+    'SwitchingActorsRepeatedlyKeepsTaskAndDetailActorSynchronized',
     'VisualAndAccessibleSelectionsRemainEquivalent',
     'ProjectionPresentsWorkingIdleBlockedReviewAndDoneAsTextAndColor',
     'LanguageRefreshRebuildsDelegationPresentationWithoutRetainingThaiCopy',
@@ -99,8 +106,8 @@ foreach ($check in $requiredChecks) {
 }
 
 $expectedTestCount = [int](($testRuns | Measure-Object -Property ExpectedCount -Sum).Sum)
-if ($expectedTestCount -ne 18) {
-    throw "Delegation Graph gate expected-count manifest drifted: expected 18, configured $expectedTestCount. Update the named test inventory and review the change."
+if ($expectedTestCount -ne 20) {
+    throw "Delegation Graph gate expected-count manifest drifted: expected 20, configured $expectedTestCount. Update the named test inventory and review the change."
 }
 
 $totalTests = 0
