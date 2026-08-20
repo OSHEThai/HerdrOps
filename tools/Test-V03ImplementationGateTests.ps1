@@ -349,7 +349,7 @@ Assert-True -Condition $definitions[3].ImplementationOnly -Message 'Issue #15 mu
 Assert-True -Condition ($aggregateSource -match '(?s)Invoke-Build\.ps1.*?-SkipTests') -Message 'Default aggregate build path must not invoke the full WPF test suite.'
 
 $fixtureBaseRoot = Join-Path $artifactRoot 'implementation-gate-test-fixtures'
-$implementationRunRoot = Join-Path $artifactRoot 'implementation-gates\v0.3.0\issue-17'
+$implementationRunRoot = Join-Path $artifactRoot 'release-gates\v0.3.0\issue-17'
 $testRoot = Join-Path $fixtureBaseRoot "run-$([Guid]::NewGuid().ToString('N'))"
 $passingReportPath = ''
 $failingReportPath = ''

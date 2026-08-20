@@ -169,7 +169,7 @@ jobs:
         with:
           retention-days: 7
           name: v0.3-implementation-gate-report
-          path: artifacts/implementation-gates/v0.3.0/issue-17
+          path: artifacts/release-gates/v0.3.0/issue-17
           if-no-files-found: warn
 
       - name: Upload v0.4 Delegation Graph gate report

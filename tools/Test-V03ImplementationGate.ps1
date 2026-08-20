@@ -73,7 +73,7 @@ function Add-V03DiagnosticException {
 
 $repositoryRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $artifactRoot = Join-Path $repositoryRoot 'artifacts'
-$implementationArtifactRoot = Join-Path $artifactRoot 'implementation-gates\v0.3.0\issue-17'
+$implementationArtifactRoot = Join-Path $artifactRoot 'release-gates\v0.3.0\issue-17'
 $sourceCommit = 'UNRESOLVED'
 $initialStatus = @()
 $finalStatus = @()
