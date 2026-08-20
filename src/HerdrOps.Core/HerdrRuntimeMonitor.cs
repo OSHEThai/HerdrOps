@@ -17,7 +17,12 @@ public sealed record HerdrAcceptedAgentStatusEvent(
     HerdrAgentStatus AgentStatus,
     string? Agent,
     string? DisplayAgent,
-    string? Title);
+    string? Title)
+{
+    public string? TabId { get; init; }
+
+    public string? AgentName { get; init; }
+}
 
 public sealed record HerdrRuntimeMonitorSnapshot(
     HerdrRuntimeMonitorStatus Status,
@@ -361,6 +366,81 @@ public sealed class HerdrRuntimeMonitor
                 string.Equals(observed.Name, expected.Name, StringComparison.Ordinal)));
     }
 
+    private static bool IsAcceptedAgentStatusEvent(
+        HerdrSessionState previousState,
+        HerdrSessionState candidateState,
+        HerdrPaneAgentStatusChangedEvent statusChanged)
+    {
+        if (string.IsNullOrWhiteSpace(statusChanged.Agent) ||
+            statusChanged.AgentStatus == HerdrAgentStatus.Unknown ||
+            !TryGetSingleAgentForPane(previousState, statusChanged.PaneId, out var previousAgent) ||
+            !TryGetSingleAgentForPane(candidateState, statusChanged.PaneId, out var candidateAgent) ||
+            !HasLiveAgentIdentity(previousAgent) ||
+            !HasLiveAgentIdentity(candidateAgent) ||
+            previousAgent.AgentStatus == HerdrAgentStatus.Unknown ||
+            candidateAgent.AgentStatus == HerdrAgentStatus.Unknown ||
+            previousAgent.AgentStatus == statusChanged.AgentStatus ||
+            !string.Equals(previousAgent.Agent, candidateAgent.Agent, StringComparison.Ordinal) ||
+            !string.Equals(previousAgent.Name, candidateAgent.Name, StringComparison.Ordinal) ||
+            !HasSameAgentTopology(previousAgent, candidateAgent) ||
+            !string.Equals(statusChanged.Agent, previousAgent.Agent, StringComparison.Ordinal) ||
+            !string.Equals(statusChanged.Agent, candidateAgent.Agent, StringComparison.Ordinal) ||
+            !candidateState.Panes.TryGetValue(statusChanged.PaneId, out var candidatePane) ||
+            !previousState.Panes.TryGetValue(statusChanged.PaneId, out var previousPane) ||
+            !HasMatchingPaneAgent(previousPane, previousAgent) ||
+            !HasMatchingPaneAgent(candidatePane, candidateAgent) ||
+            !string.Equals(statusChanged.WorkspaceId, previousAgent.WorkspaceId, StringComparison.Ordinal) ||
+            !string.Equals(statusChanged.WorkspaceId, candidateAgent.WorkspaceId, StringComparison.Ordinal) ||
+            candidatePane.AgentStatus != statusChanged.AgentStatus ||
+            candidateAgent.AgentStatus != statusChanged.AgentStatus ||
+            (!string.IsNullOrWhiteSpace(statusChanged.DisplayAgent) &&
+             !string.Equals(statusChanged.DisplayAgent, candidateAgent.DisplayAgent, StringComparison.Ordinal)))
+        {
+            return false;
+        }
+
+        return true;
+    }
+
+    private static bool TryGetSingleAgentForPane(
+        HerdrSessionState state,
+        string paneId,
+        out HerdrAgentSnapshot agent)
+    {
+        var matches = state.Agents.Values
+            .Where(item => string.Equals(item.PaneId, paneId, StringComparison.Ordinal))
+            .ToArray();
+        if (matches.Length != 1)
+        {
+            agent = null!;
+            return false;
+        }
+
+        agent = matches[0];
+        return true;
+    }
+
+    private static bool HasLiveAgentIdentity(HerdrAgentSnapshot agent) =>
+        !string.IsNullOrWhiteSpace(agent.Agent) &&
+        !string.IsNullOrWhiteSpace(agent.Name);
+
+    private static bool HasSameAgentTopology(
+        HerdrAgentSnapshot previous,
+        HerdrAgentSnapshot current) =>
+        string.Equals(previous.WorkspaceId, current.WorkspaceId, StringComparison.Ordinal) &&
+        string.Equals(previous.TabId, current.TabId, StringComparison.Ordinal) &&
+        string.Equals(previous.PaneId, current.PaneId, StringComparison.Ordinal);
+
+    private static bool HasMatchingPaneAgent(
+        HerdrPaneSnapshot pane,
+        HerdrAgentSnapshot agent) =>
+        string.Equals(pane.WorkspaceId, agent.WorkspaceId, StringComparison.Ordinal) &&
+        string.Equals(pane.TabId, agent.TabId, StringComparison.Ordinal) &&
+        string.Equals(pane.PaneId, agent.PaneId, StringComparison.Ordinal) &&
+        pane.AgentStatus == agent.AgentStatus &&
+        !string.IsNullOrWhiteSpace(pane.Agent) &&
+        string.Equals(pane.Agent, agent.Agent, StringComparison.Ordinal);
+
     private void RecordReconciliation(
         string reason,
         long consumedIngestSequence,
@@ -491,7 +571,8 @@ public sealed class HerdrRuntimeMonitor
                                 acceptedPane.WorkspaceId,
                                 statusChanged.WorkspaceId,
                                 StringComparison.Ordinal) &&
-                            acceptedPane.AgentStatus == statusChanged.AgentStatus
+                            acceptedPane.AgentStatus == statusChanged.AgentStatus &&
+                            IsAcceptedAgentStatusEvent(current.State, candidate, statusChanged)
                                 ? statusChanged
                                 : null;
                         Publish(
@@ -729,10 +810,26 @@ public sealed class HerdrRuntimeMonitor
                      acceptedPane.WorkspaceId,
                      acceptedAgentStatusEvent.WorkspaceId,
                      StringComparison.Ordinal) ||
-                 acceptedPane.AgentStatus != acceptedAgentStatusEvent.AgentStatus))
+                 acceptedPane.AgentStatus != acceptedAgentStatusEvent.AgentStatus ||
+                 !IsAcceptedAgentStatusEvent(
+                     _current.State,
+                     snapshot.State,
+                     acceptedAgentStatusEvent)))
             {
                 throw new InvalidOperationException(
-                    "An accepted runtime event must be a connected transition with exactly one Event-count increment.");
+                    "An accepted runtime event must be a connected transition with exactly one Event-count increment and a matching live Agent identity.");
+            }
+
+            HerdrAgentSnapshot? acceptedAgent = null;
+            HerdrPaneSnapshot? acceptedPaneSnapshot = null;
+            if (acceptedAgentStatusEvent is not null)
+            {
+                acceptedPaneSnapshot = snapshot.State.Panes[acceptedAgentStatusEvent.PaneId];
+                acceptedAgent = snapshot.State.Agents.Values.Single(
+                    item => string.Equals(
+                        item.PaneId,
+                        acceptedAgentStatusEvent.PaneId,
+                        StringComparison.Ordinal));
             }
 
             snapshot = snapshot with
@@ -746,7 +843,11 @@ public sealed class HerdrRuntimeMonitor
                         acceptedAgentStatusEvent.AgentStatus,
                         acceptedAgentStatusEvent.Agent,
                         acceptedAgentStatusEvent.DisplayAgent,
-                        acceptedAgentStatusEvent.Title),
+                        acceptedAgentStatusEvent.Title)
+                    {
+                        TabId = acceptedPaneSnapshot!.TabId,
+                        AgentName = acceptedAgent!.Name,
+                    },
             };
             _current = snapshot;
         }

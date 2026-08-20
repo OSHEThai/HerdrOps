@@ -37,7 +37,11 @@ public sealed class HerdrRuntimeTraceCommandTests
                 HerdrAgentStatus.Working,
                 "codex",
                 "Codex",
-                "Working"),
+                "Working")
+            {
+                TabId = "tab-1",
+                AgentName = "Worker 01",
+            },
         });
         var nonEventTransition = HerdrRuntimeEvidence.CreateTransition(snapshot);
 
@@ -62,6 +66,23 @@ public sealed class HerdrRuntimeTraceCommandTests
             [nonEventTransition, eventTransition]));
         Assert.IsFalse(HerdrRuntimeEvidence.HasAcceptedAgentStatusEvent(
             [nonEventTransition]));
+        Assert.IsFalse(HerdrRuntimeEvidence.HasAcceptedAgentStatusEvent(
+            [eventTransition with
+            {
+                AcceptedAgentStatusEvent = eventTransition.AcceptedAgentStatusEvent! with
+                {
+                    Agent = null,
+                    AgentName = null,
+                },
+            }]));
+        Assert.IsFalse(HerdrRuntimeEvidence.HasAcceptedAgentStatusEvent(
+            [eventTransition with
+            {
+                AcceptedAgentStatusEvent = eventTransition.AcceptedAgentStatusEvent! with
+                {
+                    AgentStatus = HerdrAgentStatus.Unknown,
+                },
+            }]));
     }
 
     [TestMethod]

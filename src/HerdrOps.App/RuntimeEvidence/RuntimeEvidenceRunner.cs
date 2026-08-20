@@ -76,7 +76,22 @@ public sealed record RuntimeAgentStatusChange(
     ulong PreviousRevision,
     ulong CurrentRevision,
     ulong PreviousStateChangeSequence,
-    ulong CurrentStateChangeSequence);
+    ulong CurrentStateChangeSequence)
+{
+    public string? PreviousWorkspaceId { get; init; }
+
+    public string? PreviousTabId { get; init; }
+
+    public string? PreviousPaneId { get; init; }
+
+    public string? PreviousAgentKind { get; init; }
+
+    public string? CurrentAgentKind { get; init; }
+
+    public string? PreviousAgentName { get; init; }
+
+    public string? CurrentAgentName { get; init; }
+}
 
 public sealed record RuntimeAgentStatusTransitionEvidence(
     DateTimeOffset PhaseEnteredUtc,
@@ -1107,9 +1122,46 @@ public sealed class RuntimeEvidenceRunner(
         }
 
         var change = evidence.Changes[0];
-        return change.CurrentStateChangeSequence > change.PreviousStateChangeSequence &&
+        return HasLiveAgentIdentity(change) &&
+               change.CurrentStateChangeSequence > change.PreviousStateChangeSequence &&
                change.CurrentStateChangeSequence - change.PreviousStateChangeSequence == 1;
     }
+
+    private static bool HasLiveAgentIdentity(RuntimeAgentStatusChange change) =>
+        !string.IsNullOrWhiteSpace(change.WorkspaceId) &&
+        !string.IsNullOrWhiteSpace(change.TabId) &&
+        !string.IsNullOrWhiteSpace(change.PaneId) &&
+        !string.IsNullOrWhiteSpace(change.PreviousWorkspaceId) &&
+        !string.IsNullOrWhiteSpace(change.PreviousTabId) &&
+        !string.IsNullOrWhiteSpace(change.PreviousPaneId) &&
+        string.Equals(
+            change.PreviousWorkspaceId,
+            change.WorkspaceId,
+            StringComparison.Ordinal) &&
+        string.Equals(
+            change.PreviousTabId,
+            change.TabId,
+            StringComparison.Ordinal) &&
+        string.Equals(
+            change.PreviousPaneId,
+            change.PaneId,
+            StringComparison.Ordinal) &&
+        !string.IsNullOrWhiteSpace(change.PreviousAgentKind) &&
+        !string.IsNullOrWhiteSpace(change.CurrentAgentKind) &&
+        !string.IsNullOrWhiteSpace(change.PreviousAgentName) &&
+        !string.IsNullOrWhiteSpace(change.CurrentAgentName) &&
+        string.Equals(
+            change.PreviousAgentKind,
+            change.CurrentAgentKind,
+            StringComparison.Ordinal) &&
+        string.Equals(
+            change.PreviousAgentName,
+            change.CurrentAgentName,
+            StringComparison.Ordinal) &&
+        !string.Equals(change.PreviousStatus, "Unknown", StringComparison.OrdinalIgnoreCase) &&
+        !string.Equals(change.CurrentStatus, "Unknown", StringComparison.OrdinalIgnoreCase) &&
+        !(string.Equals(change.PreviousStatus, "Idle", StringComparison.OrdinalIgnoreCase) &&
+          string.Equals(change.CurrentStatus, "Unknown", StringComparison.OrdinalIgnoreCase));
 
     private static bool IsSha256(string value) =>
         value is { Length: 64 } && value.All(Uri.IsHexDigit);
@@ -1246,6 +1298,14 @@ public sealed class RuntimeEvidenceRunner(
             return [];
         }
 
+        if (baseline.Agents.Count == 0 ||
+            current.Agents.Count == 0 ||
+            baseline.Agents.Any(agent => !HasLiveAgentIdentity(agent)) ||
+            current.Agents.Any(agent => !HasLiveAgentIdentity(agent)))
+        {
+            return [];
+        }
+
         var baselineAgents = baseline.Agents.ToDictionary(
             agent => agent.TerminalId,
             StringComparer.Ordinal);
@@ -1255,6 +1315,11 @@ public sealed class RuntimeEvidenceRunner(
         var currentPanes = current.Panes.ToDictionary(
             pane => pane.PaneId,
             StringComparer.Ordinal);
+        if (baseline.Agents.Any(agent => !HasMatchingPaneIdentity(baselinePanes, agent)) ||
+            current.Agents.Any(agent => !HasMatchingPaneIdentity(currentPanes, agent)))
+        {
+            return [];
+        }
         if (current.Agents.Any(agent =>
                 !baselineAgents.TryGetValue(agent.TerminalId, out var previous) ||
                 (string.Equals(previous.AgentStatus, agent.AgentStatus, StringComparison.Ordinal) &&
@@ -1269,6 +1334,8 @@ public sealed class RuntimeEvidenceRunner(
                 string.Equals(previous.WorkspaceId, agent.WorkspaceId, StringComparison.Ordinal) &&
                 string.Equals(previous.TabId, agent.TabId, StringComparison.Ordinal) &&
                 string.Equals(previous.PaneId, agent.PaneId, StringComparison.Ordinal) &&
+                string.Equals(previous.Agent, agent.Agent, StringComparison.Ordinal) &&
+                string.Equals(previous.Name, agent.Name, StringComparison.Ordinal) &&
                 !string.Equals(previous.AgentStatus, agent.AgentStatus, StringComparison.Ordinal) &&
                 agent.StateChangeSequence > previous.StateChangeSequence &&
                 agent.StateChangeSequence - previous.StateChangeSequence == 1 &&
@@ -1289,11 +1356,36 @@ public sealed class RuntimeEvidenceRunner(
                     previous.Revision,
                     agent.Revision,
                     previous.StateChangeSequence,
-                    agent.StateChangeSequence);
+                    agent.StateChangeSequence)
+                {
+                    PreviousWorkspaceId = previous.WorkspaceId,
+                    PreviousTabId = previous.TabId,
+                    PreviousPaneId = previous.PaneId,
+                    PreviousAgentKind = previous.Agent,
+                    CurrentAgentKind = agent.Agent,
+                    PreviousAgentName = previous.Name,
+                    CurrentAgentName = agent.Name,
+                };
             })
             .OrderBy(change => change.TerminalId, StringComparer.Ordinal)
             .ToArray();
     }
+
+    private static bool HasLiveAgentIdentity(HerdrAgentStateContract agent) =>
+        !string.IsNullOrWhiteSpace(agent.Agent) &&
+        !string.IsNullOrWhiteSpace(agent.Name) &&
+        !string.Equals(agent.AgentStatus, "Unknown", StringComparison.OrdinalIgnoreCase);
+
+    private static bool HasMatchingPaneIdentity(
+        IReadOnlyDictionary<string, HerdrPaneStateContract> panes,
+        HerdrAgentStateContract agent) =>
+        panes.TryGetValue(agent.PaneId, out var pane) &&
+        string.Equals(pane.TerminalId, agent.TerminalId, StringComparison.Ordinal) &&
+        string.Equals(pane.WorkspaceId, agent.WorkspaceId, StringComparison.Ordinal) &&
+        string.Equals(pane.TabId, agent.TabId, StringComparison.Ordinal) &&
+        pane.AgentStatus == agent.AgentStatus &&
+        !string.IsNullOrWhiteSpace(pane.Agent) &&
+        string.Equals(pane.Agent, agent.Agent, StringComparison.Ordinal);
 
     private RuntimeStateFingerprint CurrentFingerprint()
     {

@@ -346,7 +346,185 @@ public sealed class HerdrRuntimeMonitorTests
         Assert.AreEqual(
             HerdrAgentStatus.Blocked,
             acceptedEventTransition.AcceptedAgentStatusEvent.AgentStatus);
+        Assert.AreEqual("tab-1", acceptedEventTransition.AcceptedAgentStatusEvent.TabId);
+        Assert.AreEqual("Worker 01", acceptedEventTransition.AcceptedAgentStatusEvent.AgentName);
         Assert.AreEqual(HerdrRuntimeMonitorStatus.Connected, acceptedEventTransition.Status);
+    }
+
+    [TestMethod]
+    public async Task AgentlessUnknownStatusEventCannotEarnAcceptedEventProvenance()
+    {
+        var initial = CreateSnapshot(revision: 1, HerdrAgentStatus.Idle);
+        var agentless = initial with
+        {
+            Workspaces = [initial.Workspaces[0] with { AgentStatus = HerdrAgentStatus.Unknown }],
+            Tabs = [initial.Tabs[0] with { AgentStatus = HerdrAgentStatus.Unknown }],
+            Panes =
+            [
+                initial.Panes[0] with
+                {
+                    AgentStatus = HerdrAgentStatus.Unknown,
+                    Revision = 2,
+                    Agent = null,
+                    DisplayAgent = null,
+                    Title = null,
+                },
+            ],
+            Agents = [],
+        };
+
+        await AssertStatusEventIsNotAcceptedAsync(
+            initial,
+            agentless,
+            new HerdrPaneAgentStatusChangedEvent(
+                "pane.agent_status_changed",
+                "workspace-1",
+                "pane-1",
+                HerdrAgentStatus.Unknown,
+                null,
+                null,
+                null));
+    }
+
+    [TestMethod]
+    public async Task StatusEventWithBlankAgentCannotEarnAcceptedEventProvenance()
+    {
+        var initial = CreateSnapshot(revision: 1, HerdrAgentStatus.Working);
+        var updated = CreateSnapshot(revision: 2, HerdrAgentStatus.Blocked);
+
+        await AssertStatusEventIsNotAcceptedAsync(
+            initial,
+            updated,
+            new HerdrPaneAgentStatusChangedEvent(
+                "pane.agent_status_changed",
+                "workspace-1",
+                "pane-1",
+                HerdrAgentStatus.Blocked,
+                " ",
+                "Codex",
+                "Waiting"));
+    }
+
+    [TestMethod]
+    public async Task StatusEventWithChangedAgentKindCannotEarnAcceptedEventProvenance()
+    {
+        var initial = CreateSnapshot(revision: 1, HerdrAgentStatus.Working);
+        var updated = CreateSnapshot(revision: 2, HerdrAgentStatus.Blocked) with
+        {
+            Panes =
+            [
+                CreateSnapshot(revision: 2, HerdrAgentStatus.Blocked).Panes[0] with
+                {
+                    Agent = "opencode",
+                    DisplayAgent = "OpenCode",
+                },
+            ],
+            Agents =
+            [
+                CreateSnapshot(revision: 2, HerdrAgentStatus.Blocked).Agents[0] with
+                {
+                    Agent = "opencode",
+                    DisplayAgent = "OpenCode",
+                },
+            ],
+        };
+
+        await AssertStatusEventIsNotAcceptedAsync(
+            initial,
+            updated,
+            new HerdrPaneAgentStatusChangedEvent(
+                "pane.agent_status_changed",
+                "workspace-1",
+                "pane-1",
+                HerdrAgentStatus.Blocked,
+                "opencode",
+                "OpenCode",
+                "Waiting"));
+    }
+
+    [TestMethod]
+    public async Task StatusEventWithChangedAgentNameCannotEarnAcceptedEventProvenance()
+    {
+        var initial = CreateSnapshot(revision: 1, HerdrAgentStatus.Working);
+        var updated = CreateSnapshot(revision: 2, HerdrAgentStatus.Blocked) with
+        {
+            Agents =
+            [CreateSnapshot(revision: 2, HerdrAgentStatus.Blocked).Agents[0] with { Name = "Worker 02" }],
+        };
+
+        await AssertStatusEventIsNotAcceptedAsync(
+            initial,
+            updated,
+            new HerdrPaneAgentStatusChangedEvent(
+                "pane.agent_status_changed",
+                "workspace-1",
+                "pane-1",
+                HerdrAgentStatus.Blocked,
+                "codex",
+                "Codex",
+                "Waiting"));
+    }
+
+    [TestMethod]
+    public async Task StatusEventWithChangedAgentTopologyCannotEarnAcceptedEventProvenance()
+    {
+        var initial = CreateSnapshot(revision: 1, HerdrAgentStatus.Working);
+        var movedWorkspace = new HerdrWorkspaceSnapshot(
+            "workspace-2",
+            2,
+            "Secondary",
+            Focused: true,
+            PaneCount: 1,
+            TabCount: 1,
+            ActiveTabId: "tab-2",
+            HerdrAgentStatus.Blocked);
+        var movedTab = new HerdrTabSnapshot(
+            "tab-2",
+            "workspace-2",
+            1,
+            "Secondary",
+            Focused: true,
+            PaneCount: 1,
+            HerdrAgentStatus.Blocked);
+        var updated = initial with
+        {
+            Workspaces = [movedWorkspace],
+            Tabs = [movedTab],
+            Panes =
+            [
+                initial.Panes[0] with
+                {
+                    WorkspaceId = "workspace-2",
+                    TabId = "tab-2",
+                    AgentStatus = HerdrAgentStatus.Blocked,
+                    Revision = 2,
+                },
+            ],
+            Agents =
+            [
+                initial.Agents[0] with
+                {
+                    WorkspaceId = "workspace-2",
+                    TabId = "tab-2",
+                    AgentStatus = HerdrAgentStatus.Blocked,
+                    Revision = 2,
+                },
+            ],
+            FocusedWorkspaceId = "workspace-2",
+            FocusedTabId = "tab-2",
+        };
+
+        await AssertStatusEventIsNotAcceptedAsync(
+            initial,
+            updated,
+            new HerdrPaneAgentStatusChangedEvent(
+                "pane.agent_status_changed",
+                "workspace-2",
+                "pane-1",
+                HerdrAgentStatus.Blocked,
+                "codex",
+                "Codex",
+                "Waiting"));
     }
 
     [TestMethod]
@@ -1006,6 +1184,29 @@ public sealed class HerdrRuntimeMonitorTests
         timeProvider: timeProvider,
         initialState: initialState,
         options: options ?? HerdrRuntimeMonitorOptions.EventOnlyForTests);
+
+    private static async Task AssertStatusEventIsNotAcceptedAsync(
+        HerdrSessionSnapshot initial,
+        HerdrSessionSnapshot updated,
+        HerdrPaneAgentStatusChangedEvent statusEvent)
+    {
+        var apiClient = new ScriptedApiClient(
+            [initial, initial, updated, updated, updated],
+            [
+                ScriptedSubscription.WithEventsThenBlock(statusEvent),
+                ScriptedSubscription.BlockUntilCancelled(),
+            ]);
+        var monitor = CreateMonitor(apiClient);
+        using var cancellation = new CancellationTokenSource();
+        var runTask = monitor.RunAsync(cancellation.Token);
+
+        await WaitForAsync(monitor, state => state.EventCount == 1);
+        cancellation.Cancel();
+        await Assert.ThrowsAsync<OperationCanceledException>(() => runTask);
+
+        Assert.IsNull(monitor.Current.AcceptedEventKind);
+        Assert.IsNull(monitor.Current.AcceptedAgentStatusEvent);
+    }
 
     private static async Task WaitForAsync(
         HerdrRuntimeMonitor monitor,

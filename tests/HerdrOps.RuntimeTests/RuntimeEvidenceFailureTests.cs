@@ -149,6 +149,59 @@ public sealed class RuntimeEvidenceFailureTests
     }
 
     [TestMethod]
+    public void AgentStatusEventEvidenceRejectsMissingOrChangedAgentIdentity()
+    {
+        var original = CreateAgentStatusEvidence();
+        var change = original.Changes[0];
+
+        Assert.IsFalse(RuntimeEvidenceRunner.IsExactAgentStatusEvent(
+            original with
+            {
+                Changes = [change with { CurrentAgentKind = null }],
+            }));
+        Assert.IsFalse(RuntimeEvidenceRunner.IsExactAgentStatusEvent(
+            original with
+            {
+                Changes = [change with { CurrentAgentKind = "opencode" }],
+            }));
+        Assert.IsFalse(RuntimeEvidenceRunner.IsExactAgentStatusEvent(
+            original with
+            {
+                Changes = [change with { CurrentAgentName = "Worker 02" }],
+            }));
+        Assert.IsFalse(RuntimeEvidenceRunner.IsExactAgentStatusEvent(
+            original with
+            {
+                Changes = [change with { PaneId = "pane-2" }],
+            }));
+    }
+
+    [TestMethod]
+    public void AgentStatusEventEvidenceRejectsAgentDisappearance()
+    {
+        var original = CreateAgentStatusEvidence();
+        var change = original.Changes[0];
+
+        Assert.IsFalse(RuntimeEvidenceRunner.IsExactAgentStatusEvent(
+            original with
+            {
+                Changes =
+                [
+                    change with
+                    {
+                        PreviousStatus = "Idle",
+                        CurrentStatus = "Unknown",
+                    },
+                ],
+            }));
+        Assert.IsFalse(RuntimeEvidenceRunner.IsExactAgentStatusEvent(
+            original with
+            {
+                Changes = [change with { CurrentStatus = "Unknown" }],
+            }));
+    }
+
+    [TestMethod]
     public void AgentStatusEventEvidenceRejectsUnchangedAgentStatusState()
     {
         var original = CreateAgentStatusEvidence();
@@ -324,6 +377,15 @@ public sealed class RuntimeEvidenceFailureTests
                 PreviousRevision: 1,
                 CurrentRevision: 2,
                 PreviousStateChangeSequence: 10,
-                CurrentStateChangeSequence: 11),
+                CurrentStateChangeSequence: 11)
+            {
+                PreviousWorkspaceId = "w1",
+                PreviousTabId = "t1",
+                PreviousPaneId = "p1",
+                PreviousAgentKind = "codex",
+                CurrentAgentKind = "codex",
+                PreviousAgentName = "Worker 01",
+                CurrentAgentName = "Worker 01",
+            },
         ]);
 }

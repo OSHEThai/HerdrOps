@@ -11,10 +11,22 @@ internal static class HerdrRuntimeEvidence
         IEnumerable<HerdrRuntimeTraceTransition> transitions)
     {
         ArgumentNullException.ThrowIfNull(transitions);
-        return transitions.Any(transition => string.Equals(
-            transition.AcceptedEventKind,
-            HerdrRuntimeMonitor.AcceptedAgentStatusEventKind,
-            StringComparison.Ordinal));
+        return transitions.Any(transition =>
+        {
+            if (!string.Equals(
+                    transition.AcceptedEventKind,
+                    HerdrRuntimeMonitor.AcceptedAgentStatusEventKind,
+                    StringComparison.Ordinal) ||
+                transition.AcceptedAgentStatusEvent is not { } acceptedEvent)
+            {
+                return false;
+            }
+
+            return acceptedEvent.AgentStatus != HerdrAgentStatus.Unknown &&
+                   !string.IsNullOrWhiteSpace(acceptedEvent.Agent) &&
+                   !string.IsNullOrWhiteSpace(acceptedEvent.AgentName) &&
+                   !string.IsNullOrWhiteSpace(acceptedEvent.TabId);
+        });
     }
 
     public static HerdrRuntimeTraceTransition CreateTransition(

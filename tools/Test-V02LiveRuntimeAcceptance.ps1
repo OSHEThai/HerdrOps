@@ -494,6 +494,17 @@ function Assert-AgentStatusTransitionEvidence {
         Assert-True (-not [string]::IsNullOrWhiteSpace([string]$change.PreviousStatus)) "$Name omitted the previous Agent status."
         Assert-True (-not [string]::IsNullOrWhiteSpace([string]$change.CurrentStatus)) "$Name omitted the current Agent status."
         Assert-True ([string]$change.PreviousStatus -ne [string]$change.CurrentStatus) "$Name did not change the Agent status."
+        foreach ($identityField in @('PreviousWorkspaceId', 'PreviousTabId', 'PreviousPaneId', 'PreviousAgentKind', 'CurrentAgentKind', 'PreviousAgentName', 'CurrentAgentName')) {
+            Assert-True (Test-ObjectHasProperty -Object $change -Name $identityField) "$Name omitted Agent identity field '$identityField'."
+            Assert-True (-not [string]::IsNullOrWhiteSpace([string]$change.$identityField)) "$Name Agent identity field '$identityField' is blank."
+        }
+        Assert-True ([string]$change.PreviousWorkspaceId -eq [string]$change.WorkspaceId) "$Name changed Agent workspace topology during the status transition."
+        Assert-True ([string]$change.PreviousTabId -eq [string]$change.TabId) "$Name changed Agent tab topology during the status transition."
+        Assert-True ([string]$change.PreviousPaneId -eq [string]$change.PaneId) "$Name changed Agent pane topology during the status transition."
+        Assert-True ([string]$change.PreviousAgentKind -eq [string]$change.CurrentAgentKind) "$Name changed Agent kind during the status transition."
+        Assert-True ([string]$change.PreviousAgentName -eq [string]$change.CurrentAgentName) "$Name changed Agent name during the status transition."
+        Assert-True (-not ([string]$change.CurrentStatus -ieq 'Unknown')) "$Name used an Unknown Agent status as accepted Event evidence."
+        Assert-True (-not (([string]$change.PreviousStatus -ieq 'Idle') -and ([string]$change.CurrentStatus -ieq 'Unknown'))) "$Name used Idle-to-Unknown Agent disappearance as accepted Event evidence."
         Assert-True (([UInt64]$change.CurrentStateChangeSequence - [UInt64]$change.PreviousStateChangeSequence) -eq 1) "$Name did not advance the Agent state-change sequence exactly once."
         Assert-True ([UInt64]$change.CurrentRevision -ge [UInt64]$change.PreviousRevision) "$Name regressed the Agent revision."
     }
@@ -624,11 +635,20 @@ function Assert-AgentStatusTransitionEvidence {
     $acceptedAgentEvent = $currentTransition.AcceptedAgentStatusEvent
     Assert-True (-not [string]::IsNullOrWhiteSpace([string]$acceptedAgentEvent.WorkspaceId)) "$Name accepted Agent Event omitted WorkspaceId."
     Assert-True (-not [string]::IsNullOrWhiteSpace([string]$acceptedAgentEvent.PaneId)) "$Name accepted Agent Event omitted PaneId."
+    Assert-True (Test-ObjectHasProperty -Object $acceptedAgentEvent -Name 'TabId') "$Name accepted Agent Event omitted TabId."
+    Assert-True (-not [string]::IsNullOrWhiteSpace([string]$acceptedAgentEvent.TabId)) "$Name accepted Agent Event has blank TabId."
+    Assert-True (Test-ObjectHasProperty -Object $acceptedAgentEvent -Name 'AgentName') "$Name accepted Agent Event omitted AgentName."
+    Assert-True (-not [string]::IsNullOrWhiteSpace([string]$acceptedAgentEvent.Agent)) "$Name accepted Agent Event has blank Agent kind."
+    Assert-True (-not [string]::IsNullOrWhiteSpace([string]$acceptedAgentEvent.AgentName)) "$Name accepted Agent Event has blank Agent name."
     Assert-True (-not [string]::IsNullOrWhiteSpace([string]$acceptedAgentEvent.AgentStatus)) "$Name accepted Agent Event omitted AgentStatus."
+    Assert-True (-not ([string]$acceptedAgentEvent.AgentStatus -ieq 'Unknown')) "$Name accepted Agent Event used Unknown status."
     $matchingAcceptedChanges = @($changes | Where-Object {
         [string]$_.WorkspaceId -eq [string]$acceptedAgentEvent.WorkspaceId -and
+        [string]$_.TabId -eq [string]$acceptedAgentEvent.TabId -and
         [string]$_.PaneId -eq [string]$acceptedAgentEvent.PaneId -and
-        [string]$_.CurrentStatus -eq [string]$acceptedAgentEvent.AgentStatus
+        [string]$_.CurrentStatus -eq [string]$acceptedAgentEvent.AgentStatus -and
+        [string]$_.CurrentAgentKind -eq [string]$acceptedAgentEvent.Agent -and
+        [string]$_.CurrentAgentName -eq [string]$acceptedAgentEvent.AgentName
     })
     Assert-True ($matchingAcceptedChanges.Count -eq 1) "$Name accepted Event provenance does not identify exactly one same-pane App Agent-status change."
     if ($null -ne $leadingReconciliation) {
@@ -820,7 +840,7 @@ try {
                             Write-Host 'The target Agent Lab is disconnected. Wait for the Floating Vertical Widget to return to LIVE. Do not trigger Event B until the reconnect phase appears.'
                         }
                         'herdr-reconnected-waiting-for-post-reconnect-update' {
-                            Write-Host 'The target Agent Lab has reconnected and the Widget is LIVE. Now trigger Event B with a second genuine Agent-status transition.'
+                            Write-Host 'The target Agent Lab has reconnected and the Widget is LIVE. Now trigger Event B with a second genuine status transition from the same named Agent. Agentless, Unknown, or Idle-to-Unknown disappearance does not satisfy Event B.'
                         }
                         'waiting-for-idle-stability' {
                             Write-Host 'Event B arrived. Leave Herdr, Core, and App untouched while the gate waits for five continuous seconds of stable live state.'
