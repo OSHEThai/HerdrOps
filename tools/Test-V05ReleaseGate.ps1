@@ -782,4 +782,3 @@ $gateReport = @(
 $gateReport | Set-Content -LiteralPath $gateReportPath -Encoding utf8
 $gateReport | Write-Output
 Write-Output "GateReport: $gateReportPath"
-
