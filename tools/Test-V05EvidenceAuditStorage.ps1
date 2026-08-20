@@ -20,7 +20,7 @@ $migrationPath = Join-Path $repositoryRoot 'src\HerdrOps.Infrastructure\Storage\
 $contractPath = Join-Path $repositoryRoot 'docs\protocol\v0.5-evidence-audit-storage-contract.md'
 $expectedDomainContractSha256 = 'E6F5AE4E3AE96AF5A83B5D8C5E9FF4C432DA1CD727824B93121E8E39B79B3E06'
 $expectedStoreCoreV3ProjectionSha256 = '9D8CCF4690F5D1CAC445A3EC0A6CEBDEC06D9A29DAB6A608DD3AC6D75951163D'
-$expectedStorageSha256 = '37F41EA287D2A8A3FA8AC629D3652536A22522C22F5B2F63D36940B6895EF77A'
+$expectedStorageSha256 = '9AFF45ED13DAC924E51C6A3EF1A469BDEB533446687DDE3D92CAB7EBA08E88A1'
 $expectedMigrationSha256 = 'EE69EA92BC458DDD61214A90CC7EEEF08BB5B2D03FFDC24FDE6103A74C5D1E47'
 $expectedContractSha256 = 'F0F236D957C637509129DC05E644D99C3B0E87FDF97D3B11775ED26B254A32B3'
 
@@ -222,6 +222,7 @@ $requiredChecks = @(
     'ComplianceReviewRetentionUnknownOrMalformedStateFailsClosed',
     'ComplianceReviewRetentionCrossIncidentIsolation',
     'ComplianceReviewRetentionNoOverRetentionWhenEligible',
+    'RetentionWriteReservationSerializesConcurrentReviewBinding',
     'IncidentStateClassifiesOpenAndTerminalCorrectly'
 )
 foreach ($check in $requiredChecks) {

@@ -718,6 +718,74 @@ public sealed class EvidenceAuditStorageTests
         Assert.IsFalse(File.Exists(managedPath));
     }
 
+    [TestMethod]
+    public void RetentionWriteReservationSerializesConcurrentReviewBinding()
+    {
+        using var directory = new TemporaryDirectory();
+        var options = CreateOptions(directory);
+        using var store = new SqliteHerdrStateStore(options);
+        var artifactPath = Path.Combine(directory.Path, "source", "concurrent.bin");
+        Directory.CreateDirectory(Path.GetDirectoryName(artifactPath)!);
+        File.WriteAllText(artifactPath, "concurrent-retention");
+        var captured = store.CaptureEvidence(
+            CreateCaptureRequest(retainUntilUtc: ObservedUtc.AddDays(1)),
+            artifactPath);
+        var identity = captured.StoredEvidence.Metadata.EvidenceIdentitySha256;
+
+        using var retentionEntered = new ManualResetEventSlim();
+        using var releaseRetention = new ManualResetEventSlim();
+        store.EvidenceRetentionTransactionStarted += () =>
+        {
+            retentionEntered.Set();
+            releaseRetention.Wait();
+        };
+
+        var retentionTask = Task.Run(() => store.ApplyEvidenceRetention(ObservedUtc.AddDays(2)));
+        Assert.IsTrue(
+            retentionEntered.Wait(TimeSpan.FromSeconds(5)),
+            "Retention did not acquire its SQLite write reservation.");
+
+        using var competingConnection = Open(options.DatabasePath);
+        var competingWrite = Task.Run(() =>
+        {
+            try
+            {
+                using var transaction = competingConnection.BeginTransaction(deferred: false);
+                transaction.Commit();
+                return false;
+            }
+            catch (SqliteException)
+            {
+                return true;
+            }
+        });
+
+        // With the pre-fix read-then-purge sequence, this write reservation
+        // completes while the retention hook is held. The fixed invariant
+        // keeps it pending until the entire retention transaction commits.
+        if (competingWrite.IsCompleted)
+        {
+            Assert.IsTrue(
+                competingWrite.Result,
+                "A concurrent SQLite write unexpectedly entered retention's critical section.");
+        }
+
+        releaseRetention.Set();
+        var retention = retentionTask.GetAwaiter().GetResult();
+        Assert.AreEqual(HerdrEvidenceRetentionOutcome.Purged, retention.Results.Single().Outcome);
+        Assert.IsTrue(competingWrite.Wait(TimeSpan.FromSeconds(5)));
+
+        var registration = new ComplianceReviewIncidentRegistration(
+            ComplianceReviewWorkflowContract.ContractVersion,
+            "INC-AFTER-RETENTION",
+            "TASK-25",
+            "agent-worker-01",
+            ObservedUtc,
+            [identity]);
+        Assert.Throws<HerdrStateStoreException>(
+            () => store.RegisterComplianceReviewIncident(registration));
+    }
+
     private static ComplianceReviewAuthority SeedAuthority(
         SqliteHerdrStateStore store,
         AssignmentLifecycleReducer reducer,
