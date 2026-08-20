@@ -77,6 +77,7 @@ try {
 
         $childOutput = @()
         $childSucceeded = $false
+        $childErrorMessage = ''
         try {
             $childOutput = @(& $scriptPath @childArguments 2>&1)
             $childSucceeded = $?
@@ -84,9 +85,11 @@ try {
         catch {
             $childOutput = @()
             $childSucceeded = $false
+            $childErrorMessage = $_.Exception.Message
         }
 
         if (-not $childSucceeded) {
+            Write-Verbose -Message ("Child gate {0} failed before report validation: success={1}; outputCount={2}; error={3}" -f $definition.Issue, $childSucceeded, $childOutput.Count, $childErrorMessage) -Verbose
             throw [InvalidOperationException]::new("ChildGateFailed:$($definition.Issue)")
         }
 
