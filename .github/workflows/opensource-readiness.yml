@@ -1,0 +1,54 @@
+name: Open-Source Readiness
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  repository-governance:
+    runs-on: windows-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout complete history
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Install checksum-pinned Gitleaks
+        id: gitleaks
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $version = '8.30.1'
+          $expectedSha256 = 'D29144DEFF3A68AA93CED33DDDF84B7FDC26070ADD4AA0F4513094C8332AFC4E'
+          $toolRoot = Join-Path $env:RUNNER_TEMP "gitleaks-$version"
+          $archivePath = Join-Path $toolRoot "gitleaks_${version}_windows_x64.zip"
+          New-Item -ItemType Directory -Path $toolRoot -Force | Out-Null
+          Invoke-WebRequest `
+            -Uri "https://github.com/gitleaks/gitleaks/releases/download/v$version/gitleaks_${version}_windows_x64.zip" `
+            -OutFile $archivePath
+          $actualSha256 = (Get-FileHash -LiteralPath $archivePath -Algorithm SHA256).Hash
+          if ($actualSha256 -cne $expectedSha256) {
+            throw "Gitleaks archive checksum mismatch: $actualSha256"
+          }
+          Expand-Archive -LiteralPath $archivePath -DestinationPath $toolRoot -Force
+          "path=$(Join-Path $toolRoot 'gitleaks.exe')" >> $env:GITHUB_OUTPUT
+
+      - name: Run open-source readiness gate
+        shell: pwsh
+        run: ./tools/Test-OpenSourceReadiness.ps1 -GitleaksPath '${{ steps.gitleaks.outputs.path }}'
+
+      - name: Upload redacted governance evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          retention-days: 7
+          name: open-source-readiness
+          path: artifacts/governance/open-source-readiness
+          if-no-files-found: warn

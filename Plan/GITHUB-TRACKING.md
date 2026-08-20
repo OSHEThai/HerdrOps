@@ -12,10 +12,10 @@ Every planned release has one GitHub Milestone, scoped work issues, and one rele
 | v0.4.0 | [Milestone 4](https://github.com/OSHEThai/HerdrOps/milestone/4) | 5 | [#23](https://github.com/OSHEThai/HerdrOps/issues/23) |
 | v0.5.0 | [Milestone 5](https://github.com/OSHEThai/HerdrOps/milestone/5) | 5 | [#29](https://github.com/OSHEThai/HerdrOps/issues/29) |
 | v0.6.0 | [Milestone 6](https://github.com/OSHEThai/HerdrOps/milestone/6) | 4 | [#34](https://github.com/OSHEThai/HerdrOps/issues/34) |
-| v0.7.0 | [Milestone 7](https://github.com/OSHEThai/HerdrOps/milestone/7) | 5 | [#40](https://github.com/OSHEThai/HerdrOps/issues/40) |
+| v0.7.0 | [Milestone 7](https://github.com/OSHEThai/HerdrOps/milestone/7) | 6 | [#40](https://github.com/OSHEThai/HerdrOps/issues/40) |
 | v1.0.0 | [Milestone 8](https://github.com/OSHEThai/HerdrOps/milestone/8) | 5 | [#46](https://github.com/OSHEThai/HerdrOps/issues/46) |
 
-Total: 8 milestones, 42 scoped work issues, and 8 release trackers.
+Total: 8 milestones, 43 scoped work issues, and 8 release trackers.
 
 ## Operating rules
 

@@ -1,0 +1,4 @@
+25057bc2eae970c7fab2fe1c7c224942d9764dd6:tests/HerdrOps.IntegrationTests/DiagnosticBundleTests.cs:jwt:141
+fa5bb5871fa6278d138e929188a6a9ade9578de2:tests/HerdrOps.UnitTests/LocalSnapshotExportPublisherTests.cs:gitlab-pat:279
+b9424dfbbae4cbd0d25dfcc682c14538729d0634:Plan/DECISIONS.md:generic-api-key:56
+49d49b8b6774ed16a132dd0cc171252f648c6831:Plan/DECISIONS.md:generic-api-key:56

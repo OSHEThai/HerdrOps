@@ -87,6 +87,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
+          retention-days: 7
           name: test-results
           path: artifacts/test-results
           if-no-files-found: ignore
@@ -95,6 +96,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
+          retention-days: 7
           name: design-evidence
           path: artifacts/design-evidence
           if-no-files-found: warn
@@ -103,6 +105,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
+          retention-days: 7
           name: performance-evidence
           path: artifacts/performance-evidence
           if-no-files-found: warn
@@ -111,6 +114,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
+          retention-days: 7
           name: v0.1-gate-report
           path: artifacts/release-gates/v0.1.0
           if-no-files-found: warn
@@ -119,6 +123,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
+          retention-days: 7
           name: v0.2-state-store-ipc-gate-report
           path: artifacts/release-gates/v0.2.0/issue-8
           if-no-files-found: warn
@@ -127,6 +132,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
+          retention-days: 7
           name: v0.2-live-dashboard-pages-gate-report
           path: artifacts/release-gates/v0.2.0/issue-9
           if-no-files-found: warn
@@ -135,6 +141,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
+          retention-days: 7
           name: v0.2-live-widgets-gate-report
           path: artifacts/release-gates/v0.2.0/issue-10
           if-no-files-found: warn
@@ -143,6 +150,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
+          retention-days: 7
           name: v0.2-language-mode-gate-report
           path: artifacts/release-gates/v0.2.0/issue-63
           if-no-files-found: warn
@@ -151,6 +159,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
+          retention-days: 7
           name: v0.4-delegation-graph-gate-report
           path: artifacts/release-gates/v0.4.0/issue-20
           if-no-files-found: warn
@@ -159,6 +168,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
+          retention-days: 7
           name: v0.4-cli-self-report-gate-report
           path: artifacts/release-gates/v0.4.0/issue-18
           if-no-files-found: warn
@@ -167,6 +177,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
+          retention-days: 7
           name: v0.4-assignment-lifecycle-gate-report
           path: artifacts/release-gates/v0.4.0/issue-19
           if-no-files-found: warn
@@ -175,6 +186,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
+          retention-days: 7
           name: v0.4-task-alignment-gate-report
           path: artifacts/release-gates/v0.4.0/issue-21
           if-no-files-found: warn
@@ -183,6 +195,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
+          retention-days: 7
           name: v0.4-expanded-widget-gate-report
           path: artifacts/release-gates/v0.4.0/issue-22
           if-no-files-found: warn
@@ -191,6 +204,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
+          retention-days: 7
           name: v0.5-compliance-rule-engine-gate-report
           path: artifacts/release-gates/v0.5.0/issue-24
           if-no-files-found: warn
@@ -199,6 +213,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
+          retention-days: 7
           name: v0.5-evidence-audit-storage-gate-report
           path: artifacts/release-gates/v0.5.0/issue-25
           if-no-files-found: warn
@@ -207,6 +222,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
+          retention-days: 7
           name: v0.5-compliance-queue-gate-report
           path: artifacts/release-gates/v0.5.0/issue-26
           if-no-files-found: warn
@@ -215,6 +231,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
+          retention-days: 7
           name: v0.6-explainable-scoring-engine-gate-report
           path: artifacts/release-gates/v0.6.0/issue-30
 
@@ -222,6 +239,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
+          retention-days: 7
           name: v0.5-role-distinct-review-gate-report
           path: artifacts/release-gates/v0.5.0/issue-27
           if-no-files-found: warn
