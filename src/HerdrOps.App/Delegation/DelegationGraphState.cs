@@ -174,7 +174,9 @@ public sealed class DelegationGraphState : ObservableState
                 return;
             }
 
-            RefreshProjection(preferredActorId: SelectedNode?.ActorId);
+            RefreshProjection(
+                preferredActorId: SelectedNode?.ActorId,
+                taskSelectionAuthoritative: true);
         }
     }
 
@@ -297,7 +299,9 @@ public sealed class DelegationGraphState : ObservableState
         RefreshProjection(SelectedNode?.ActorId);
     }
 
-    private void RefreshProjection(string? preferredActorId)
+    private void RefreshProjection(
+        string? preferredActorId,
+        bool taskSelectionAuthoritative = false)
     {
         var graph = _graph;
         if (graph is null)
@@ -317,18 +321,53 @@ public sealed class DelegationGraphState : ObservableState
         SummaryCards = CreateSummaryCards(graph);
         TaskTreeItems = CreateTaskTree(graph, ProjectLabel);
         var selectedTask = selectedTaskId is null
-            ? TaskTreeItems.FirstOrDefault()
+            ? (taskSelectionAuthoritative ? null : TaskTreeItems.FirstOrDefault())
             : TaskTreeItems.FirstOrDefault(item =>
                 string.Equals(item.TaskId, selectedTaskId, StringComparison.Ordinal));
         var layout = CreateLayout(graph);
-        GraphNodes = CreateGraphNodes(graph, layout, selectedTask?.TaskId);
-        GraphEdges = CreateGraphEdges(graph, layout, selectedTask?.TaskId);
-        Timeline = CreateTimeline(graph, selectedTask?.TaskId);
-        AccessibleItems = CreateAccessibleItems(GraphNodes, GraphEdges);
+        var initialNodes = CreateGraphNodes(graph, layout, selectedTask?.TaskId);
+        var initialEdges = CreateGraphEdges(graph, layout, selectedTask?.TaskId);
+        var initialTimeline = CreateTimeline(graph, selectedTask?.TaskId);
         var selectedNode = preferredActorId is null
-            ? GraphNodes.FirstOrDefault(item => item.Opacity >= 1d) ?? GraphNodes.FirstOrDefault()
-            : GraphNodes.FirstOrDefault(item =>
-                string.Equals(item.ActorId, preferredActorId, StringComparison.Ordinal));
+            ? initialNodes.FirstOrDefault(item => item.Opacity >= 1d) ?? initialNodes.FirstOrDefault()
+            : initialNodes.FirstOrDefault(item =>
+                string.Equals(item.ActorId, preferredActorId, StringComparison.Ordinal) &&
+                (selectedTask?.TaskId is null ||
+                 graph.Nodes.Any(node =>
+                     string.Equals(node.ActorId, item.ActorId, StringComparison.Ordinal) &&
+                     node.TaskIds.Contains(selectedTask.TaskId, StringComparer.Ordinal)))) ??
+              initialNodes.FirstOrDefault(item => item.Opacity >= 1d);
+        var resolvedSelectedTaskId = taskSelectionAuthoritative && selectedTask is not null
+            ? selectedTask?.TaskId
+            : ResolveSelection(
+                graph!,
+                selectedNode?.ActorId,
+                selectedTask?.TaskId,
+                TaskTreeItems);
+        var projectedNodes = resolvedSelectedTaskId == selectedTask?.TaskId
+            ? initialNodes
+            : CreateGraphNodes(graph, layout, resolvedSelectedTaskId);
+        var projectedEdges = resolvedSelectedTaskId == selectedTask?.TaskId
+            ? initialEdges
+            : CreateGraphEdges(graph, layout, resolvedSelectedTaskId);
+        var projectedTimeline = resolvedSelectedTaskId == selectedTask?.TaskId
+            ? initialTimeline
+            : CreateTimeline(graph, resolvedSelectedTaskId);
+        if (resolvedSelectedTaskId != selectedTask?.TaskId && selectedNode is not null)
+        {
+            selectedNode = preferredActorId is null
+                ? projectedNodes.FirstOrDefault(item => item.Opacity >= 1d) ?? projectedNodes.FirstOrDefault()
+                : projectedNodes.FirstOrDefault(item =>
+                    string.Equals(item.ActorId, preferredActorId, StringComparison.Ordinal));
+        }
+        GraphNodes = projectedNodes;
+        GraphEdges = projectedEdges;
+        Timeline = projectedTimeline;
+        AccessibleItems = CreateAccessibleItems(GraphNodes, GraphEdges);
+        selectedTask = resolvedSelectedTaskId is null
+            ? null
+            : TaskTreeItems.FirstOrDefault(item =>
+                string.Equals(item.TaskId, resolvedSelectedTaskId, StringComparison.Ordinal));
         var selectedAccessible = selectedNode is null
             ? null
             : AccessibleItems.FirstOrDefault(item =>
@@ -349,10 +388,33 @@ public sealed class DelegationGraphState : ObservableState
             ? null
             : AccessibleItems.FirstOrDefault(item =>
                 string.Equals(item.ActorId, actorId, StringComparison.Ordinal));
-        SetSelections(SelectedTask, node, accessible);
-        SelectedDetail = node is null || _graph is null
-            ? EmptyDetail()
-            : CreateDetail(_graph, node.ActorId, SelectedTask?.TaskId);
+        if (node is null || _graph is null)
+        {
+            ClearSelections();
+            return;
+        }
+
+        var graph = _graph;
+        var resolvedSelectedTaskId = ResolveSelection(
+            graph,
+            actorId,
+            SelectedTask?.TaskId,
+            TaskTreeItems);
+        SetSelections(
+            resolvedSelectedTaskId is null
+                ? null
+                : TaskTreeItems.SingleOrDefault(item =>
+                    string.Equals(item.TaskId, resolvedSelectedTaskId, StringComparison.Ordinal)),
+            node,
+            accessible);
+
+        RefreshProjection(actorId);
+    }
+
+    private void ClearSelections()
+    {
+        SetSelections(null, null, null);
+        SelectedDetail = EmptyDetail();
     }
 
     private void SetSelections(
@@ -860,6 +922,28 @@ public sealed class DelegationGraphState : ObservableState
         }
 
         return summary;
+    }
+
+    private static string? ResolveSelection(
+        AssignmentDelegationGraph graph,
+        string? actorId,
+        string? selectedTaskId,
+        IReadOnlyList<DelegationTaskTreeItem> taskTreeItems)
+    {
+        if (actorId is null)
+        {
+            return selectedTaskId;
+        }
+
+        var taskId = AssignmentDelegationGraphProjector.ResolveSelectedTaskIdForActor(graph, actorId, selectedTaskId);
+        if (taskId is null)
+        {
+            return null;
+        }
+
+        return taskTreeItems.Any(item => string.Equals(item.TaskId, taskId, StringComparison.Ordinal))
+            ? taskId
+            : null;
     }
 
     private static IReadOnlyList<AssignmentLifecycleEvent> CreateSyntheticEvents()

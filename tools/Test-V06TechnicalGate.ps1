@@ -23,6 +23,8 @@ if ($initialStatus.Count -ne 0) {
     throw "The v0.6 technical gate requires a clean committed checkout. Pending paths: $($initialStatus -join '; ')"
 }
 
+. (Join-Path $PSScriptRoot 'lib\V06GateProvenance.ps1')
+
 function Assert-ReportPath {
     param(
         [Parameter(Mandatory)]
@@ -87,6 +89,7 @@ function Invoke-ChildGate {
     [pscustomobject]@{
         Name = $Name
         ReportPath = $reportPath
+        ReportRelativePath = Get-RepositoryRelativePath -RepositoryRoot $repositoryRoot -Path $reportPath
         Sha256 = ((Get-FileHash -LiteralPath $reportPath -Algorithm SHA256).Hash).ToUpperInvariant()
     }
 }
@@ -156,7 +159,7 @@ $gateDirectory = Join-Path $artifactRoot "release-gates\v0.6.0\technical\$runId"
 New-Item -ItemType Directory -Path $gateDirectory -Force | Out-Null
 $gateReportPath = Join-Path $gateDirectory 'gate-report.txt'
 $childReportLines = $childGates | ForEach-Object {
-    "PASS $($_.Name) sha256=$($_.Sha256) path=$($_.ReportPath)"
+    "PASS $($_.Name) sha256=$($_.Sha256) path=$($_.ReportRelativePath)"
 }
 $report = @(
     'HerdrOps v0.6.0 Version-Local Technical Gate',
