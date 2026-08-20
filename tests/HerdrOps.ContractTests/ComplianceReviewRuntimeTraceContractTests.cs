@@ -30,6 +30,12 @@ public sealed class ComplianceReviewRuntimeTraceContractTests
         Assert.AreEqual(
             "This trace proves local durable SQLite schema v4 compliance review records, audit trail integrity, authority provenance, evidence links, and retention protection observations. It does not by itself prove that reviewer identities were actual running Herdr Agents, UI rendering, or release readiness.",
             boundaryField.GetRawConstantValue());
+        var provenanceField = typeof(ComplianceReviewRuntimeTraceContract).GetField(
+            nameof(ComplianceReviewRuntimeTraceContract.ProducerProcessIdProvenanceText));
+        Assert.IsNotNull(provenanceField);
+        Assert.AreEqual(
+            "This process ID identifies the HerdrOps compliance-review trace producer/exporter process. It is not a Herdr process ID.",
+            provenanceField.GetRawConstantValue());
     }
 
     [TestMethod]
@@ -98,7 +104,7 @@ public sealed class ComplianceReviewRuntimeTraceContractTests
             ProductAssemblySha256: new string('2', 64),
             HostName: "TEST-HOST",
             OperatingSystem: "Windows 11",
-            ProcessId: 4321,
+            ProducerProcessId: 4321,
             StartedUtc: BaseUtc,
             FinishedUtc: BaseUtc.AddSeconds(1),
             IncidentCount: 1,
@@ -117,6 +123,9 @@ public sealed class ComplianceReviewRuntimeTraceContractTests
         Assert.AreEqual(ComplianceReviewRuntimeTraceContract.BuiltProcessIntegrationEvidence, restored.EvidenceClassification);
         Assert.IsTrue(restored.RuntimeObserved);
         Assert.IsFalse(restored.SessionControlInvoked);
+        Assert.AreEqual(4321, restored.ProducerProcessId);
+        StringAssert.Contains(json, "\"producerProcessId\"");
+        Assert.IsFalse(json.Contains("\"processId\"", StringComparison.Ordinal));
         Assert.AreEqual("INC-28-01", restored.Incidents[0].IncidentId);
         Assert.AreEqual(Guid.Parse("11111111-1111-1111-1111-111111111111"), restored.AuditEvents[0].AuditEventId);
         Assert.IsTrue(restored.RetentionObservations[0].IsProtectedFromPurge);

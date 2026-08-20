@@ -1,3 +1,5 @@
+using System.Runtime.InteropServices;
+using System.Security.Cryptography;
 using System.Text.Json;
 using HerdrOps.Contracts.ReviewIpc;
 using HerdrOps.Domain.Assignments;
@@ -6,6 +8,19 @@ using Microsoft.Data.Sqlite;
 using SQLitePCL;
 
 namespace HerdrOps.Infrastructure.Storage;
+
+/// <summary>
+/// The compliance-review trace data and database identity captured from one SQLite read snapshot.
+/// The database hash and size identify the serialized SQLite image of the same transaction
+/// that supplied the incident, audit, and retention rows; they are not a pre-open main-file hash.
+/// </summary>
+public sealed record ComplianceReviewRuntimeTraceStoreSnapshot(
+    int SchemaVersion,
+    string DatabaseFileSha256,
+    long DatabaseFileSizeBytes,
+    IReadOnlyList<ComplianceReviewIncident> Incidents,
+    IReadOnlyList<ComplianceReviewAuditEvent> AuditEvents,
+    IReadOnlyList<ComplianceReviewEvidenceRetentionObservation> RetentionObservations);
 
 public sealed partial class SqliteHerdrStateStore
 {
@@ -50,6 +65,14 @@ public sealed partial class SqliteHerdrStateStore
     // back, so tests can prove real SQLite contention and cancel
     // deterministically without reflection, sleeps, or timing probes.
     internal event Action? ComplianceReviewBusySliceObserved;
+
+    // Internal diagnostic hook (InternalsVisibleTo: HerdrOps.IntegrationTests).
+    // The hook is raised after the serialized snapshot identity has been captured for
+    // the combined trace read and before any trace rows are read. The legacy
+    // incident-list API raises the same hook immediately before its read
+    // transaction, allowing a WAL writer regression to distinguish the old
+    // hash-before-read sequence from the bound snapshot API.
+    internal event Action? ComplianceReviewRuntimeTraceReadBoundaryReached;
 
     public HerdrComplianceReviewRegistrationResult RegisterComplianceReviewIncident(
         ComplianceReviewIncidentRegistration registration)
@@ -198,50 +221,12 @@ public sealed partial class SqliteHerdrStateStore
             ThrowIfDisposed();
             cancellationToken.ThrowIfCancellationRequested();
             using var transaction = _connection.BeginTransaction();
-            using var command = _connection.CreateCommand();
-            command.Transaction = transaction;
-            command.CommandText = """
-                SELECT incident_id
-                FROM compliance_review_incidents
-                ORDER BY registered_utc, incident_id;
-                """;
-            ConfigureComplianceReviewCommand(command, cancellationToken);
-            var incidentIds = new List<string>();
-            using (var reader = command.ExecuteReader())
-            {
-                while (reader.Read())
-                {
-                    incidentIds.Add(reader.GetString(0));
-                }
-            }
-
-            var results = new List<ComplianceReviewIncident>();
-            var allowedIncidentIds = incidentIdFilter is not null
-                ? new HashSet<string>(incidentIdFilter, StringComparer.Ordinal)
-                : null;
-
-            foreach (var id in incidentIds)
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-                if (allowedIncidentIds is not null && !allowedIncidentIds.Contains(id))
-                {
-                    continue;
-                }
-
-                var incident = ReadComplianceReviewIncidentCore(id, transaction, cancellationToken);
-                if (incident is null)
-                {
-                    continue;
-                }
-
-                if (taskIdFilter is not null && !string.Equals(incident.TaskId, taskIdFilter, StringComparison.Ordinal))
-                {
-                    continue;
-                }
-
-                ValidateComplianceReviewHistory(incident, transaction, cancellationToken);
-                results.Add(incident);
-            }
+            OnComplianceReviewRuntimeTraceReadBoundaryReached();
+            var results = ReadAllComplianceReviewIncidentsCore(
+                taskIdFilter,
+                incidentIdFilter,
+                transaction,
+                cancellationToken);
 
             transaction.Commit();
             return results;
@@ -250,6 +235,132 @@ public sealed partial class SqliteHerdrStateStore
         {
             Monitor.Exit(_sync);
         }
+    }
+
+    /// <summary>
+    /// Reads all compliance-review trace data and captures its SQLite identity
+    /// from one transaction-bound serialized SQLite snapshot.
+    /// </summary>
+    public ComplianceReviewRuntimeTraceStoreSnapshot ReadComplianceReviewRuntimeTraceSnapshot(
+        string? taskIdFilter = null,
+        IReadOnlyList<string>? incidentIdFilter = null,
+        CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        EnterComplianceReviewLock(cancellationToken);
+        try
+        {
+            ThrowIfDisposed();
+            cancellationToken.ThrowIfCancellationRequested();
+            using var transaction = _connection.BeginTransaction();
+            var schemaVersion = ReadSchemaVersion(transaction, cancellationToken);
+            var databaseIdentity = CreateComplianceReviewDatabaseSnapshot(
+                transaction,
+                cancellationToken);
+            OnComplianceReviewRuntimeTraceReadBoundaryReached();
+
+            var incidents = ReadAllComplianceReviewIncidentsCore(
+                taskIdFilter,
+                incidentIdFilter,
+                transaction,
+                cancellationToken);
+            var auditEvents = new List<ComplianceReviewAuditEvent>();
+            var allEvidenceIdentities = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var incident in incidents)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                foreach (var evidenceIdentity in incident.InitialEvidenceIdentitySha256s)
+                {
+                    allEvidenceIdentities.Add(evidenceIdentity);
+                }
+
+                var incidentAuditEvents = ReadComplianceReviewAuditCore(
+                    incident.IncidentId,
+                    transaction,
+                    cancellationToken);
+                foreach (var auditEvent in incidentAuditEvents)
+                {
+                    foreach (var evidenceIdentity in auditEvent.EvidenceIdentitySha256s)
+                    {
+                        allEvidenceIdentities.Add(evidenceIdentity);
+                    }
+
+                    auditEvents.Add(auditEvent);
+                }
+            }
+
+            var retentionObservations = ReadComplianceReviewRetentionObservationsCore(
+                allEvidenceIdentities.OrderBy(id => id, StringComparer.Ordinal).ToArray(),
+                transaction,
+                cancellationToken);
+
+            transaction.Commit();
+            return new ComplianceReviewRuntimeTraceStoreSnapshot(
+                schemaVersion,
+                databaseIdentity.Sha256,
+                databaseIdentity.SizeBytes,
+                incidents,
+                auditEvents,
+                retentionObservations);
+        }
+        finally
+        {
+            Monitor.Exit(_sync);
+        }
+    }
+
+    private IReadOnlyList<ComplianceReviewIncident> ReadAllComplianceReviewIncidentsCore(
+        string? taskIdFilter,
+        IReadOnlyList<string>? incidentIdFilter,
+        SqliteTransaction transaction,
+        CancellationToken cancellationToken)
+    {
+        using var command = _connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = """
+            SELECT incident_id
+            FROM compliance_review_incidents
+            ORDER BY registered_utc, incident_id;
+            """;
+        ConfigureComplianceReviewCommand(command, cancellationToken);
+        var incidentIds = new List<string>();
+        using (var reader = command.ExecuteReader())
+        {
+            while (reader.Read())
+            {
+                incidentIds.Add(reader.GetString(0));
+            }
+        }
+
+        var results = new List<ComplianceReviewIncident>();
+        var allowedIncidentIds = incidentIdFilter is not null
+            ? new HashSet<string>(incidentIdFilter, StringComparer.Ordinal)
+            : null;
+
+        foreach (var id in incidentIds)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (allowedIncidentIds is not null && !allowedIncidentIds.Contains(id))
+            {
+                continue;
+            }
+
+            var incident = ReadComplianceReviewIncidentCore(id, transaction, cancellationToken);
+            if (incident is null)
+            {
+                continue;
+            }
+
+            if (taskIdFilter is not null && !string.Equals(incident.TaskId, taskIdFilter, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            ValidateComplianceReviewHistory(incident, transaction, cancellationToken);
+            results.Add(incident);
+        }
+
+        return results;
     }
 
     public IReadOnlyList<ComplianceReviewEvidenceRetentionObservation> ReadComplianceReviewRetentionObservations(
@@ -263,139 +374,11 @@ public sealed partial class SqliteHerdrStateStore
         {
             ThrowIfDisposed();
             cancellationToken.ThrowIfCancellationRequested();
-            var distinctIdentities = evidenceIdentitySha256s
-                .Where(id => !string.IsNullOrWhiteSpace(id))
-                .Distinct(StringComparer.Ordinal)
-                .OrderBy(id => id, StringComparer.Ordinal)
-                .ToArray();
-
-            var observations = new List<ComplianceReviewEvidenceRetentionObservation>(distinctIdentities.Length);
             using var transaction = _connection.BeginTransaction();
-
-            foreach (var identity in distinctIdentities)
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-                using var incidentCommand = _connection.CreateCommand();
-                incidentCommand.Transaction = transaction;
-                incidentCommand.CommandText = """
-                    SELECT linked.incident_id, incident.state
-                    FROM (
-                        SELECT incident_id
-                        FROM compliance_review_incident_evidence
-                        WHERE evidence_identity_sha256 = $identity
-                        UNION
-                        SELECT events.incident_id
-                        FROM compliance_review_event_evidence AS link
-                        INNER JOIN compliance_review_events AS events
-                            ON events.audit_event_id = link.audit_event_id
-                        WHERE link.evidence_identity_sha256 = $identity
-                    ) AS linked
-                    LEFT JOIN compliance_review_incidents AS incident
-                        ON incident.incident_id = linked.incident_id
-                    ORDER BY linked.incident_id;
-                    """;
-                incidentCommand.Parameters.AddWithValue("$identity", identity);
-                ConfigureComplianceReviewCommand(incidentCommand, cancellationToken);
-
-                var referencingIncidents = new List<string>();
-                var hasOpen = false;
-                var hasTerminal = false;
-                using (var reader = incidentCommand.ExecuteReader())
-                {
-                    while (reader.Read())
-                    {
-                        var incId = reader.GetString(0);
-                        referencingIncidents.Add(incId);
-                        if (reader.IsDBNull(1))
-                        {
-                            hasOpen = true;
-                        }
-                        else
-                        {
-                            var stateInt = reader.GetInt32(1);
-                            if (stateInt is 4 or 5)
-                            {
-                                hasTerminal = true;
-                            }
-                            else
-                            {
-                                hasOpen = true;
-                            }
-                        }
-                    }
-                }
-
-                var isProtected = hasOpen;
-
-                string? storageKind = null;
-                string? availability = null;
-                DateTimeOffset? retainUntilUtc = null;
-                using (var itemCommand = _connection.CreateCommand())
-                {
-                    itemCommand.Transaction = transaction;
-                    itemCommand.CommandText = """
-                        SELECT storage_kind, availability, retain_until_utc
-                        FROM evidence_items
-                        WHERE evidence_identity_sha256 = $identity;
-                        """;
-                    itemCommand.Parameters.AddWithValue("$identity", identity);
-                    ConfigureComplianceReviewCommand(itemCommand, cancellationToken);
-                    using var itemReader = itemCommand.ExecuteReader();
-                    if (itemReader.Read())
-                    {
-                        var skInt = itemReader.GetInt32(0);
-                        storageKind = skInt switch
-                        {
-                            1 => "ExternalReference",
-                            2 => "ManagedObject",
-                            _ => skInt.ToString(System.Globalization.CultureInfo.InvariantCulture),
-                        };
-                        var avInt = itemReader.GetInt32(1);
-                        availability = avInt switch
-                        {
-                            1 => "Present",
-                            2 => "Missing",
-                            _ => avInt.ToString(System.Globalization.CultureInfo.InvariantCulture),
-                        };
-                        retainUntilUtc = ParseUtc(itemReader.GetString(2));
-                    }
-                }
-
-                var retentionEventRecorded = false;
-                int? retentionOutcome = null;
-                DateTimeOffset? retentionOccurredUtc = null;
-                using (var retCommand = _connection.CreateCommand())
-                {
-                    retCommand.Transaction = transaction;
-                    retCommand.CommandText = """
-                        SELECT outcome, occurred_utc
-                        FROM evidence_retention_events
-                        WHERE evidence_identity_sha256 = $identity;
-                        """;
-                    retCommand.Parameters.AddWithValue("$identity", identity);
-                    ConfigureComplianceReviewCommand(retCommand, cancellationToken);
-                    using var retReader = retCommand.ExecuteReader();
-                    if (retReader.Read())
-                    {
-                        retentionEventRecorded = true;
-                        retentionOutcome = retReader.GetInt32(0);
-                        retentionOccurredUtc = ParseUtc(retReader.GetString(1));
-                    }
-                }
-
-                observations.Add(new ComplianceReviewEvidenceRetentionObservation(
-                    identity,
-                    referencingIncidents,
-                    hasOpen,
-                    hasTerminal,
-                    isProtected,
-                    storageKind,
-                    availability,
-                    retainUntilUtc,
-                    retentionEventRecorded,
-                    retentionOutcome,
-                    retentionOccurredUtc));
-            }
+            var observations = ReadComplianceReviewRetentionObservationsCore(
+                evidenceIdentitySha256s,
+                transaction,
+                cancellationToken);
 
             transaction.Commit();
             return observations;
@@ -404,6 +387,211 @@ public sealed partial class SqliteHerdrStateStore
         {
             Monitor.Exit(_sync);
         }
+    }
+
+    private IReadOnlyList<ComplianceReviewEvidenceRetentionObservation> ReadComplianceReviewRetentionObservationsCore(
+        IReadOnlyList<string> evidenceIdentitySha256s,
+        SqliteTransaction transaction,
+        CancellationToken cancellationToken)
+    {
+        var distinctIdentities = evidenceIdentitySha256s
+            .Where(id => !string.IsNullOrWhiteSpace(id))
+            .Distinct(StringComparer.Ordinal)
+            .OrderBy(id => id, StringComparer.Ordinal)
+            .ToArray();
+
+        var observations = new List<ComplianceReviewEvidenceRetentionObservation>(distinctIdentities.Length);
+        foreach (var identity in distinctIdentities)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            using var incidentCommand = _connection.CreateCommand();
+            incidentCommand.Transaction = transaction;
+            incidentCommand.CommandText = """
+                SELECT linked.incident_id, incident.state
+                FROM (
+                    SELECT incident_id
+                    FROM compliance_review_incident_evidence
+                    WHERE evidence_identity_sha256 = $identity
+                    UNION
+                    SELECT events.incident_id
+                    FROM compliance_review_event_evidence AS link
+                    INNER JOIN compliance_review_events AS events
+                        ON events.audit_event_id = link.audit_event_id
+                    WHERE link.evidence_identity_sha256 = $identity
+                ) AS linked
+                LEFT JOIN compliance_review_incidents AS incident
+                    ON incident.incident_id = linked.incident_id
+                ORDER BY linked.incident_id;
+                """;
+            incidentCommand.Parameters.AddWithValue("$identity", identity);
+            ConfigureComplianceReviewCommand(incidentCommand, cancellationToken);
+
+            var referencingIncidents = new List<string>();
+            var hasOpen = false;
+            var hasTerminal = false;
+            using (var reader = incidentCommand.ExecuteReader())
+            {
+                while (reader.Read())
+                {
+                    var incId = reader.GetString(0);
+                    referencingIncidents.Add(incId);
+                    if (reader.IsDBNull(1))
+                    {
+                        hasOpen = true;
+                    }
+                    else
+                    {
+                        var stateInt = reader.GetInt32(1);
+                        if (stateInt is 4 or 5)
+                        {
+                            hasTerminal = true;
+                        }
+                        else
+                        {
+                            hasOpen = true;
+                        }
+                    }
+                }
+            }
+
+            var isProtected = hasOpen;
+
+            string? storageKind = null;
+            string? availability = null;
+            DateTimeOffset? retainUntilUtc = null;
+            using (var itemCommand = _connection.CreateCommand())
+            {
+                itemCommand.Transaction = transaction;
+                itemCommand.CommandText = """
+                    SELECT storage_kind, availability, retain_until_utc
+                    FROM evidence_items
+                    WHERE evidence_identity_sha256 = $identity;
+                    """;
+                itemCommand.Parameters.AddWithValue("$identity", identity);
+                ConfigureComplianceReviewCommand(itemCommand, cancellationToken);
+                using var itemReader = itemCommand.ExecuteReader();
+                if (itemReader.Read())
+                {
+                    var skInt = itemReader.GetInt32(0);
+                    storageKind = skInt switch
+                    {
+                        1 => "ExternalReference",
+                        2 => "ManagedObject",
+                        _ => skInt.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                    };
+                    var avInt = itemReader.GetInt32(1);
+                    availability = avInt switch
+                    {
+                        1 => "Present",
+                        2 => "Missing",
+                        _ => avInt.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                    };
+                    retainUntilUtc = ParseUtc(itemReader.GetString(2));
+                }
+            }
+
+            var retentionEventRecorded = false;
+            int? retentionOutcome = null;
+            DateTimeOffset? retentionOccurredUtc = null;
+            using (var retCommand = _connection.CreateCommand())
+            {
+                retCommand.Transaction = transaction;
+                retCommand.CommandText = """
+                    SELECT outcome, occurred_utc
+                    FROM evidence_retention_events
+                    WHERE evidence_identity_sha256 = $identity;
+                    """;
+                retCommand.Parameters.AddWithValue("$identity", identity);
+                ConfigureComplianceReviewCommand(retCommand, cancellationToken);
+                using var retReader = retCommand.ExecuteReader();
+                if (retReader.Read())
+                {
+                    retentionEventRecorded = true;
+                    retentionOutcome = retReader.GetInt32(0);
+                    retentionOccurredUtc = ParseUtc(retReader.GetString(1));
+                }
+            }
+
+            observations.Add(new ComplianceReviewEvidenceRetentionObservation(
+                identity,
+                referencingIncidents,
+                hasOpen,
+                hasTerminal,
+                isProtected,
+                storageKind,
+                availability,
+                retainUntilUtc,
+                retentionEventRecorded,
+                retentionOutcome,
+                retentionOccurredUtc));
+        }
+
+        return observations;
+    }
+
+    private (string Sha256, long SizeBytes) CreateComplianceReviewDatabaseSnapshot(
+        SqliteTransaction transaction,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        // The caller keeps this transaction active on _connection. SQLite's
+        // serialize API therefore returns the database image for that source
+        // read snapshot, including committed WAL pages visible to it.
+        _ = transaction;
+        var serializedSize = 0L;
+        var serialized = SQLitePCL.raw.sqlite3_serialize(
+            _connection.Handle!,
+            "main",
+            out serializedSize,
+            0);
+        if (serialized == IntPtr.Zero || serializedSize <= 0 || serializedSize > int.MaxValue)
+        {
+            if (serialized != IntPtr.Zero)
+            {
+                SQLitePCL.raw.sqlite3_free(serialized);
+            }
+
+            throw new HerdrStateStoreException(
+                "SQLite could not serialize a non-empty bounded trace snapshot.");
+        }
+
+        try
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var bytes = new byte[checked((int)serializedSize)];
+            Marshal.Copy(serialized, bytes, 0, bytes.Length);
+            var hash = SHA256.HashData(bytes);
+            if (hash.Length != SHA256.HashSizeInBytes || hash.All(value => value == 0))
+            {
+                throw new HerdrStateStoreException(
+                    "SQLite serialized trace snapshot produced an invalid identity hash.");
+            }
+
+            return (Convert.ToHexString(hash), bytes.LongLength);
+        }
+        finally
+        {
+            SQLitePCL.raw.sqlite3_free(serialized);
+        }
+    }
+
+    private int ReadSchemaVersion(
+        SqliteTransaction transaction,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        using var command = _connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = "PRAGMA user_version;";
+        ConfigureComplianceReviewCommand(command, cancellationToken);
+        var value = command.ExecuteScalar();
+        if (value is null or DBNull)
+        {
+            throw new HerdrStateStoreException(
+                "Could not read SQLite schema version from the trace snapshot.");
+        }
+
+        return checked(Convert.ToInt32(value, System.Globalization.CultureInfo.InvariantCulture));
     }
 
     public HerdrComplianceReviewCapabilities ReadComplianceReviewCapabilities(
@@ -1518,6 +1706,9 @@ public sealed partial class SqliteHerdrStateStore
 
     private void OnComplianceReviewBusySliceObserved() =>
         ComplianceReviewBusySliceObserved?.Invoke();
+
+    private void OnComplianceReviewRuntimeTraceReadBoundaryReached() =>
+        ComplianceReviewRuntimeTraceReadBoundaryReached?.Invoke();
 
     private sealed class ComplianceReviewWriteLockBusyException : Exception
     {

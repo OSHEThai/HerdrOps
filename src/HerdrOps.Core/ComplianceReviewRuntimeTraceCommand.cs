@@ -11,7 +11,8 @@ using Microsoft.Data.Sqlite;
 namespace HerdrOps.Core;
 
 /// <summary>
-/// Produces a fail-closed, bounded compliance review runtime trace report from a durable SQLite state store database.
+/// Produces a fail-closed, bounded compliance-review trace report from durable SQLite state.
+/// The producer always emits RuntimeObserved=false; actual Herdr runtime acceptance is a separate gate.
 /// </summary>
 public static class ComplianceReviewRuntimeTraceCommand
 {
@@ -138,24 +139,28 @@ public static class ComplianceReviewRuntimeTraceCommand
 
         try
         {
-            var databaseBytes = File.ReadAllBytes(databasePath);
-            var databaseSha256 = Convert.ToHexString(SHA256.HashData(databaseBytes));
             var productAssemblySha256 = ComputeProductAssemblySha256();
-
-            // Validate SQLite schema version and tables fail-closed before reading
-            var schemaVersion = ValidateDatabaseSchema(databasePath);
-            if (schemaVersion < 4)
-            {
-                error.WriteLine($"Database schema version {schemaVersion} is unsupported; expected schema version 4+ with compliance review tables.");
-                return RuntimeFailureExitCode;
-            }
 
             var storeOptions = new HerdrStateStoreOptions(databasePath);
             using var store = new SqliteHerdrStateStore(storeOptions);
-
-            var rawIncidents = store.ReadAllComplianceReviewIncidents(
+            var snapshot = store.ReadComplianceReviewRuntimeTraceSnapshot(
                 taskIdFilter,
                 incidentFilters.Count > 0 ? incidentFilters : null);
+
+            if (snapshot.SchemaVersion < 4)
+            {
+                error.WriteLine($"Database schema version {snapshot.SchemaVersion} is unsupported; expected schema version 4+ with compliance review tables.");
+                return RuntimeFailureExitCode;
+            }
+
+            if (snapshot.DatabaseFileSizeBytes <= 0 ||
+                snapshot.DatabaseFileSizeBytes > MaximumInputBytes)
+            {
+                error.WriteLine($"SQLite snapshot size {snapshot.DatabaseFileSizeBytes} is outside the supported range.");
+                return RuntimeFailureExitCode;
+            }
+
+            var rawIncidents = snapshot.Incidents;
 
             if (incidentFilters.Count > 0)
             {
@@ -187,16 +192,16 @@ public static class ComplianceReviewRuntimeTraceCommand
                     allEvidenceIdentities.Add(evidenceId);
                 }
 
-                var rawAuditEvents = store.ReadComplianceReviewAudit(incident.IncidentId);
-                foreach (var auditEvent in rawAuditEvents)
-                {
-                    foreach (var evidenceId in auditEvent.EvidenceIdentitySha256s)
-                    {
-                        allEvidenceIdentities.Add(evidenceId);
-                    }
+            }
 
-                    allAuditEvents.Add(MapAuditEvent(auditEvent, redactor));
+            foreach (var auditEvent in snapshot.AuditEvents)
+            {
+                foreach (var evidenceId in auditEvent.EvidenceIdentitySha256s)
+                {
+                    allEvidenceIdentities.Add(evidenceId);
                 }
+
+                allAuditEvents.Add(MapAuditEvent(auditEvent, redactor));
             }
 
             if (allAuditEvents.Count > ComplianceReviewRuntimeTraceContract.MaximumAuditEvents)
@@ -211,9 +216,6 @@ public static class ComplianceReviewRuntimeTraceCommand
                 return RuntimeFailureExitCode;
             }
 
-            var retentionObservations = store.ReadComplianceReviewRetentionObservations(
-                allEvidenceIdentities.OrderBy(id => id, StringComparer.Ordinal).ToArray());
-
             var mappedIncidents = rawIncidents.Select(MapIncident).ToArray();
             var finishedUtc = DateTimeOffset.UtcNow;
 
@@ -225,13 +227,13 @@ public static class ComplianceReviewRuntimeTraceCommand
                 RestartObserved: false,
                 ReconnectObserved: false,
                 DatabasePath: CreatePathToken(databasePath),
-                DatabaseFileSha256: databaseSha256,
-                DatabaseFileSizeBytes: databaseInfo.Length,
-                SchemaVersion: schemaVersion,
+                DatabaseFileSha256: snapshot.DatabaseFileSha256,
+                DatabaseFileSizeBytes: snapshot.DatabaseFileSizeBytes,
+                SchemaVersion: snapshot.SchemaVersion,
                 ProductAssemblySha256: productAssemblySha256,
                 HostName: ComplianceReviewRuntimeTraceContract.RedactedMachineValue,
                 OperatingSystem: ComplianceReviewRuntimeTraceContract.RedactedMachineValue,
-                ProcessId: Environment.ProcessId,
+                ProducerProcessId: Environment.ProcessId,
                 StartedUtc: startedUtc,
                 FinishedUtc: finishedUtc,
                 IncidentCount: mappedIncidents.Length,
@@ -239,7 +241,7 @@ public static class ComplianceReviewRuntimeTraceCommand
                 EvidenceLinkCount: allEvidenceIdentities.Count,
                 Incidents: mappedIncidents,
                 AuditEvents: allAuditEvents,
-                RetentionObservations: retentionObservations,
+                RetentionObservations: snapshot.RetentionObservations,
                 EvidenceBoundary: ComplianceReviewRuntimeTraceContract.EvidenceBoundaryText);
 
             var json = JsonSerializer.Serialize(report, SerializerOptions) + Environment.NewLine;
@@ -268,59 +270,6 @@ public static class ComplianceReviewRuntimeTraceCommand
             error.WriteLine($"Compliance review runtime trace failed: {exception.Message}");
             return RuntimeFailureExitCode;
         }
-    }
-
-    private static int ValidateDatabaseSchema(string databasePath)
-    {
-        using var connection = new SqliteConnection(new SqliteConnectionStringBuilder
-        {
-            DataSource = databasePath,
-            Mode = SqliteOpenMode.ReadOnly,
-            Pooling = false,
-        }.ToString());
-        connection.Open();
-
-        using var versionCommand = connection.CreateCommand();
-        versionCommand.CommandText = "PRAGMA user_version;";
-        var versionScalar = versionCommand.ExecuteScalar();
-        if (versionScalar is null || versionScalar is DBNull)
-        {
-            throw new HerdrStateStoreException("Could not read database user_version PRAGMA.");
-        }
-
-        var schemaVersion = Convert.ToInt32(versionScalar, System.Globalization.CultureInfo.InvariantCulture);
-        if (schemaVersion < 4)
-        {
-            return schemaVersion;
-        }
-
-        using var tableCommand = connection.CreateCommand();
-        tableCommand.CommandText = """
-            SELECT name
-            FROM sqlite_master
-            WHERE type = 'table'
-              AND name IN (
-                  'compliance_review_incidents',
-                  'compliance_review_incident_evidence',
-                  'compliance_review_events',
-                  'compliance_review_event_evidence');
-            """;
-        var tableNames = new HashSet<string>(StringComparer.Ordinal);
-        using (var reader = tableCommand.ExecuteReader())
-        {
-            while (reader.Read())
-            {
-                tableNames.Add(reader.GetString(0));
-            }
-        }
-
-        if (tableNames.Count < 4)
-        {
-            throw new HerdrStateStoreException(
-                $"Database is missing required compliance review tables; found {tableNames.Count}/4.");
-        }
-
-        return schemaVersion;
     }
 
     private static HerdrOpsComplianceReviewIncident MapIncident(ComplianceReviewIncident incident) =>
@@ -369,12 +318,98 @@ public static class ComplianceReviewRuntimeTraceCommand
     private static string ComputeProductAssemblySha256()
     {
         var location = typeof(ComplianceReviewRuntimeTraceCommand).Assembly.Location;
-        if (!string.IsNullOrWhiteSpace(location) && File.Exists(location))
+        return ComputeProductAssemblySha256ForLocation(
+            location,
+            File.ReadAllBytes,
+            bytes => SHA256.HashData(bytes));
+    }
+
+    // Internal deterministic seam for hostile identity tests. Production always
+    // supplies the real Assembly.Location and File.ReadAllBytes.
+    internal static string ComputeProductAssemblySha256ForTesting(
+        string? location,
+        Func<string, byte[]>? readAllBytes = null,
+        Func<byte[], byte[]>? computeHash = null) =>
+        ComputeProductAssemblySha256ForLocation(
+            location,
+            readAllBytes ?? File.ReadAllBytes,
+            computeHash ?? (bytes => SHA256.HashData(bytes)));
+
+    private static string ComputeProductAssemblySha256ForLocation(
+        string? location,
+        Func<string, byte[]> readAllBytes,
+        Func<byte[], byte[]> computeHash)
+    {
+        ArgumentNullException.ThrowIfNull(readAllBytes);
+        ArgumentNullException.ThrowIfNull(computeHash);
+        if (string.IsNullOrWhiteSpace(location))
         {
-            return Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(location)));
+            throw new InvalidOperationException(
+                "Product assembly identity cannot be established because Assembly.Location is blank.");
         }
 
-        return new string('0', 64);
+        if (!Path.IsPathFullyQualified(location))
+        {
+            throw new InvalidOperationException(
+                "Product assembly identity cannot be established because Assembly.Location is not absolute.");
+        }
+
+        try
+        {
+            var attributes = File.GetAttributes(location);
+            if (attributes.HasFlag(FileAttributes.Directory) ||
+                attributes.HasFlag(FileAttributes.ReparsePoint))
+            {
+                throw new InvalidOperationException(
+                    "Product assembly identity cannot be established because Assembly.Location is not a regular file.");
+            }
+
+            var beforeRead = new FileInfo(location);
+            if (!beforeRead.Exists || beforeRead.Length <= 0)
+            {
+                throw new InvalidOperationException(
+                    "Product assembly identity cannot be established because Assembly.Location is not a readable regular file.");
+            }
+
+            var bytes = readAllBytes(location);
+            if (bytes is null || bytes.Length == 0)
+            {
+                throw new InvalidOperationException(
+                    "Product assembly identity cannot be established because the assembly file is empty.");
+            }
+
+            var afterRead = new FileInfo(location);
+            if (!afterRead.Exists ||
+                afterRead.Length != bytes.LongLength ||
+                afterRead.LastWriteTimeUtc != beforeRead.LastWriteTimeUtc ||
+                afterRead.Attributes.HasFlag(FileAttributes.Directory) ||
+                afterRead.Attributes.HasFlag(FileAttributes.ReparsePoint))
+            {
+                throw new InvalidOperationException(
+                    "Product assembly identity cannot be established because the assembly file changed while hashing.");
+            }
+
+            var hash = computeHash(bytes);
+            if (hash is null || hash.Length != SHA256.HashSizeInBytes || hash.All(value => value == 0))
+            {
+                throw new InvalidOperationException(
+                    "Product assembly identity hashing returned an invalid hash.");
+            }
+
+            return Convert.ToHexString(hash);
+        }
+        catch (Exception exception) when (
+            exception is IOException or
+                UnauthorizedAccessException or
+                ArgumentException or
+                NotSupportedException or
+                System.Security.SecurityException or
+                CryptographicException)
+        {
+            throw new InvalidOperationException(
+                "Product assembly identity could not be read or hashed; the trace must fail closed.",
+                exception);
+        }
     }
 
     private static string CreatePathToken(string path) =>

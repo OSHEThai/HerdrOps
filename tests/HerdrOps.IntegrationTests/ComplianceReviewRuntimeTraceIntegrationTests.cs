@@ -65,13 +65,113 @@ public sealed class ComplianceReviewRuntimeTraceIntegrationTests
         Assert.IsFalse(report.SessionControlInvoked);
         Assert.IsFalse(report.RestartObserved);
         Assert.IsFalse(report.ReconnectObserved);
+        Assert.AreEqual(Environment.ProcessId, report.ProducerProcessId);
         Assert.AreEqual(64, report.DatabaseFileSha256.Length);
+        Assert.IsFalse(report.DatabaseFileSha256.All(value => value == '0'));
         Assert.AreEqual(64, report.ProductAssemblySha256.Length);
         Assert.AreNotEqual(databasePath, report.DatabasePath);
         StringAssert.StartsWith(report.DatabasePath, "path-sha256:");
         Assert.AreEqual(ComplianceReviewRuntimeTraceContract.RedactedMachineValue, report.HostName);
         Assert.AreEqual(ComplianceReviewRuntimeTraceContract.RedactedMachineValue, report.OperatingSystem);
         StringAssert.Contains(report.EvidenceBoundary, "SQLite schema v4");
+        StringAssert.Contains(json, "\"producerProcessId\"");
+        Assert.IsFalse(json.Contains("\"processId\"", StringComparison.Ordinal));
+    }
+
+    [TestMethod]
+    public void TraceSnapshotExcludesConcurrentWalWriterAndBindsIdentityToSameSnapshot()
+    {
+        using var directory = new TemporaryDirectory();
+        var databasePath = Path.Combine(directory.Path, "herdrops.db");
+        var options = new HerdrStateStoreOptions(
+            databasePath,
+            ManagedEvidenceRootPath: Path.Combine(directory.Path, "managed-evidence"));
+        string evidenceIdentity;
+
+        using (var seedStore = new SqliteHerdrStateStore(options, new FixedTimeProvider(ObservedUtc)))
+        {
+            evidenceIdentity = CaptureEvidence(seedStore, directory, "snapshot.bin");
+            seedStore.RegisterComplianceReviewIncident(new ComplianceReviewIncidentRegistration(
+                ComplianceReviewWorkflowContract.ContractVersion,
+                "INC-SNAPSHOT",
+                "TASK-SNAPSHOT",
+                "worker-snapshot",
+                ObservedUtc.AddMinutes(1),
+                [evidenceIdentity]));
+        }
+
+        using var store = new SqliteHerdrStateStore(options, new FixedTimeProvider(ObservedUtc));
+        var writerInvocationCount = 0;
+        Task? writerTask = null;
+        using var writerStarted = new ManualResetEventSlim();
+        store.ComplianceReviewRuntimeTraceReadBoundaryReached += () =>
+        {
+            writerInvocationCount++;
+            if (writerInvocationCount > 1)
+            {
+                return;
+            }
+
+            writerTask = Task.Run(() =>
+            {
+                writerStarted.Set();
+                using var writer = new SqliteConnection(new SqliteConnectionStringBuilder
+                {
+                    DataSource = databasePath,
+                    Mode = SqliteOpenMode.ReadWrite,
+                    Pooling = false,
+                    DefaultTimeout = 1,
+                }.ToString());
+                writer.Open();
+                using var command = writer.CreateCommand();
+                command.CommandText = """
+                    INSERT INTO evidence_retention_events(
+                        retention_event_id,
+                        evidence_identity_sha256,
+                        occurred_utc,
+                        outcome,
+                        managed_relative_path,
+                        expected_content_length,
+                        expected_content_sha256,
+                        retention_audit_sha256)
+                    VALUES ($eventId, $identity, $occurredUtc, 2, $relativePath, 0, $contentSha, $auditSha);
+                    """;
+                command.Parameters.AddWithValue("$eventId", Guid.Parse("55555555-5555-5555-5555-555555555555").ToString("D"));
+                command.Parameters.AddWithValue("$identity", evidenceIdentity);
+                command.Parameters.AddWithValue("$occurredUtc", ObservedUtc.AddMinutes(20).ToString("O"));
+                command.Parameters.AddWithValue("$relativePath", "managed/snapshot.bin");
+                command.Parameters.AddWithValue("$contentSha", new string('A', 64));
+                command.Parameters.AddWithValue("$auditSha", new string('B', 64));
+                command.ExecuteNonQuery();
+            });
+            Assert.IsTrue(writerStarted.Wait(TimeSpan.FromSeconds(5)));
+        };
+
+        var snapshot = store.ReadComplianceReviewRuntimeTraceSnapshot();
+        Assert.IsNotNull(writerTask);
+        Assert.IsTrue(writerTask.Wait(TimeSpan.FromSeconds(5)));
+        writerTask.GetAwaiter().GetResult();
+
+        Assert.AreEqual(1, writerInvocationCount);
+        Assert.AreEqual(4, snapshot.SchemaVersion);
+        Assert.IsGreaterThan(0L, snapshot.DatabaseFileSizeBytes);
+        Assert.AreEqual(64, snapshot.DatabaseFileSha256.Length);
+        Assert.IsFalse(snapshot.DatabaseFileSha256.All(value => value == '0'));
+        var snapshotObservation = snapshot.RetentionObservations.Single(
+            observation => observation.EvidenceIdentitySha256 == evidenceIdentity);
+        Assert.IsFalse(
+            snapshotObservation.RetentionEventRecorded,
+            "The trace must not combine pre-writer identity with post-writer retention rows.");
+
+        var postSnapshotObservation = store.ReadComplianceReviewRetentionObservations([evidenceIdentity]).Single();
+        Assert.IsTrue(postSnapshotObservation.RetentionEventRecorded);
+
+        var postWriterSnapshot = store.ReadComplianceReviewRuntimeTraceSnapshot();
+        Assert.AreNotEqual(snapshot.DatabaseFileSha256, postWriterSnapshot.DatabaseFileSha256);
+        Assert.IsTrue(
+            postWriterSnapshot.RetentionObservations.Single(
+                observation => observation.EvidenceIdentitySha256 == evidenceIdentity)
+                .RetentionEventRecorded);
     }
 
     [TestMethod]
@@ -380,7 +480,7 @@ public sealed class ComplianceReviewRuntimeTraceIntegrationTests
             error);
 
         Assert.AreEqual(ComplianceReviewRuntimeTraceCommand.RuntimeFailureExitCode, exitCode);
-        StringAssert.Contains(error.ToString(), "unsupported");
+        StringAssert.Contains(error.ToString(), "failed");
     }
 
     [TestMethod]

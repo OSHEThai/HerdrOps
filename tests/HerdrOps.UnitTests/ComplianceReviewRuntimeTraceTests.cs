@@ -127,6 +127,82 @@ public sealed class ComplianceReviewRuntimeTraceTests
         StringAssert.Contains(error.ToString(), "Invalid, duplicate, or incomplete option");
     }
 
+    [TestMethod]
+    public void ProductAssemblyHashRejectsBlankAssemblyLocation()
+    {
+        var exception = Assert.ThrowsExactly<InvalidOperationException>(() =>
+            ComplianceReviewRuntimeTraceCommand.ComputeProductAssemblySha256ForTesting(null));
+
+        StringAssert.Contains(exception.Message, "Assembly.Location is blank");
+    }
+
+    [TestMethod]
+    public void ProductAssemblyHashRejectsMissingAssemblyFile()
+    {
+        var missingPath = System.IO.Path.Combine(
+            System.IO.Path.GetTempPath(),
+            $"herdrops-missing-{Guid.NewGuid():N}.dll");
+
+        var exception = Assert.ThrowsExactly<InvalidOperationException>(() =>
+            ComplianceReviewRuntimeTraceCommand.ComputeProductAssemblySha256ForTesting(missingPath));
+
+        StringAssert.Contains(exception.Message, "could not be read or hashed");
+    }
+
+    [TestMethod]
+    public void ProductAssemblyHashRejectsDirectoryAndDoesNotHashItsPath()
+    {
+        var directoryPath = System.IO.Path.Combine(
+            System.IO.Path.GetTempPath(),
+            $"herdrops-assembly-directory-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directoryPath);
+        try
+        {
+            var exception = Assert.ThrowsExactly<InvalidOperationException>(() =>
+                ComplianceReviewRuntimeTraceCommand.ComputeProductAssemblySha256ForTesting(directoryPath));
+
+            StringAssert.Contains(exception.Message, "not a regular file");
+        }
+        finally
+        {
+            Directory.Delete(directoryPath, recursive: false);
+        }
+    }
+
+    [TestMethod]
+    public void ProductAssemblyHashRejectsInaccessibleReaderAndHashFailure()
+    {
+        using var file = new TempFile();
+        File.WriteAllBytes(file.Path, [1, 2, 3]);
+
+        var inaccessible = Assert.ThrowsExactly<InvalidOperationException>(() =>
+            ComplianceReviewRuntimeTraceCommand.ComputeProductAssemblySha256ForTesting(
+                file.Path,
+                _ => throw new UnauthorizedAccessException("hostile reader")));
+        StringAssert.Contains(inaccessible.Message, "could not be read or hashed");
+
+        var hashFailure = Assert.ThrowsExactly<InvalidOperationException>(() =>
+            ComplianceReviewRuntimeTraceCommand.ComputeProductAssemblySha256ForTesting(
+                file.Path,
+                _ => throw new IOException("hostile hashing")));
+        StringAssert.Contains(hashFailure.Message, "could not be read or hashed");
+    }
+
+    [TestMethod]
+    public void ProductAssemblyHashRejectsSyntacticallyValidAllZeroHash()
+    {
+        using var file = new TempFile();
+        File.WriteAllBytes(file.Path, new byte[32]);
+
+        var exception = Assert.ThrowsExactly<InvalidOperationException>(() =>
+            ComplianceReviewRuntimeTraceCommand.ComputeProductAssemblySha256ForTesting(
+                file.Path,
+                _ => new byte[32],
+                _ => new byte[32]));
+
+        StringAssert.Contains(exception.Message, "invalid hash");
+    }
+
     private sealed class TempFile : IDisposable
     {
         public string Path { get; } = System.IO.Path.GetTempFileName();
