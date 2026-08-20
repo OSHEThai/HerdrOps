@@ -373,6 +373,16 @@ foreach ($contractStateHash in @($firstState.ContractStateSha256, $finalState.Co
         throw "Invalid normalized contract-state hash: $contractStateHash"
     }
 }
+foreach ($transition in $transitions) {
+    foreach ($agentFingerprint in @(
+        [string]$transition.AgentTopologySha256,
+        [string]$transition.AgentStatusStateSha256
+    )) {
+        if ($agentFingerprint -notmatch '^[0-9A-F]{64}$') {
+            throw "Invalid Agent evidence fingerprint: $agentFingerprint"
+        }
+    }
+}
 
 $trxFiles = @(Get-ChildItem -LiteralPath $testResultsDirectory -Filter '*.trx' -File)
 if ($trxFiles.Count -ne 3) { throw "Expected 3 fresh TRX files, found $($trxFiles.Count)." }

@@ -24,6 +24,8 @@ public sealed record HerdrRuntimeTraceTransition(
     int AgentCount,
     string StateFingerprintSha256,
     string ContractStateSha256,
+    string AgentTopologySha256,
+    string AgentStatusStateSha256,
     HerdrServerProcessIdentity? ServerIdentity,
     string? AcceptedEventKind,
     string? Reason)

@@ -99,6 +99,10 @@ public sealed record RuntimeAgentStatusTransitionEvidence(
     long CurrentReconciliationCount,
     string BaselineStateSha256,
     string CurrentStateSha256,
+    string BaselineAgentTopologySha256,
+    string CurrentAgentTopologySha256,
+    string BaselineAgentStatusStateSha256,
+    string CurrentAgentStatusStateSha256,
     long ConnectionEpoch,
     IReadOnlyList<RuntimeAgentStatusChange> Changes)
 {
@@ -1079,7 +1083,36 @@ public sealed class RuntimeEvidenceRunner(
         evidence.CurrentBootstrapCount == evidence.BaselineBootstrapCount &&
         evidence.CurrentDisconnectCount == evidence.BaselineDisconnectCount &&
         HasSupportedEventAdmissionPath(evidence) &&
-        evidence.ChangeCount == 1;
+        evidence.ChangeCount == 1 &&
+        HasExactAgentStateBinding(evidence);
+
+    private static bool HasExactAgentStateBinding(
+        RuntimeAgentStatusTransitionEvidence evidence)
+    {
+        if (!IsSha256(evidence.BaselineAgentTopologySha256) ||
+            !IsSha256(evidence.CurrentAgentTopologySha256) ||
+            !IsSha256(evidence.BaselineAgentStatusStateSha256) ||
+            !IsSha256(evidence.CurrentAgentStatusStateSha256) ||
+            !string.Equals(
+                evidence.BaselineAgentTopologySha256,
+                evidence.CurrentAgentTopologySha256,
+                StringComparison.Ordinal) ||
+            string.Equals(
+                evidence.BaselineAgentStatusStateSha256,
+                evidence.CurrentAgentStatusStateSha256,
+                StringComparison.Ordinal) ||
+            evidence.Changes.Count != 1)
+        {
+            return false;
+        }
+
+        var change = evidence.Changes[0];
+        return change.CurrentStateChangeSequence > change.PreviousStateChangeSequence &&
+               change.CurrentStateChangeSequence - change.PreviousStateChangeSequence == 1;
+    }
+
+    private static bool IsSha256(string value) =>
+        value is { Length: 64 } && value.All(Uri.IsHexDigit);
 
     private static bool HasSupportedEventAdmissionPath(
         RuntimeAgentStatusTransitionEvidence evidence)
@@ -1183,6 +1216,10 @@ public sealed class RuntimeEvidenceRunner(
                         currentHealth.ReconciliationCount,
                         baselineStateSha256,
                         HerdrOpsStateIpcJson.ComputeSha256(currentState),
+                        HerdrOpsStateIpcJson.ComputeAgentTopologySha256(baselineState),
+                        HerdrOpsStateIpcJson.ComputeAgentTopologySha256(currentState),
+                        HerdrOpsStateIpcJson.ComputeAgentStatusStateSha256(baselineState),
+                        HerdrOpsStateIpcJson.ComputeAgentStatusStateSha256(currentState),
                         currentState.ConnectionEpoch,
                         changes);
                 }
@@ -1201,6 +1238,14 @@ public sealed class RuntimeEvidenceRunner(
         HerdrSessionStateContract baseline,
         HerdrSessionStateContract current)
     {
+        if (!string.Equals(
+                HerdrOpsStateIpcJson.ComputeAgentTopologySha256(baseline),
+                HerdrOpsStateIpcJson.ComputeAgentTopologySha256(current),
+                StringComparison.Ordinal))
+        {
+            return [];
+        }
+
         var baselineAgents = baseline.Agents.ToDictionary(
             agent => agent.TerminalId,
             StringComparer.Ordinal);
@@ -1210,6 +1255,14 @@ public sealed class RuntimeEvidenceRunner(
         var currentPanes = current.Panes.ToDictionary(
             pane => pane.PaneId,
             StringComparer.Ordinal);
+        if (current.Agents.Any(agent =>
+                !baselineAgents.TryGetValue(agent.TerminalId, out var previous) ||
+                (string.Equals(previous.AgentStatus, agent.AgentStatus, StringComparison.Ordinal) &&
+                 previous.StateChangeSequence != agent.StateChangeSequence)))
+        {
+            return [];
+        }
+
         return current.Agents
             .Where(agent =>
                 baselineAgents.TryGetValue(agent.TerminalId, out var previous) &&
@@ -1218,6 +1271,7 @@ public sealed class RuntimeEvidenceRunner(
                 string.Equals(previous.PaneId, agent.PaneId, StringComparison.Ordinal) &&
                 !string.Equals(previous.AgentStatus, agent.AgentStatus, StringComparison.Ordinal) &&
                 agent.StateChangeSequence > previous.StateChangeSequence &&
+                agent.StateChangeSequence - previous.StateChangeSequence == 1 &&
                 baselinePanes.TryGetValue(previous.PaneId, out var previousPane) &&
                 currentPanes.TryGetValue(agent.PaneId, out var currentPane) &&
                 string.Equals(previousPane.AgentStatus, previous.AgentStatus, StringComparison.Ordinal) &&

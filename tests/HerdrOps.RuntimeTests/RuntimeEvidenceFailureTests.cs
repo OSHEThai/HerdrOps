@@ -123,6 +123,44 @@ public sealed class RuntimeEvidenceFailureTests
     }
 
     [TestMethod]
+    public void AgentStatusEventEvidenceRejectsCollapsedStatusChanges()
+    {
+        var original = CreateAgentStatusEvidence();
+        var evidence = original with
+        {
+            Changes =
+            [
+                original.Changes[0] with { CurrentStateChangeSequence = 12 },
+            ],
+        };
+
+        Assert.IsFalse(RuntimeEvidenceRunner.IsExactAgentStatusEvent(evidence));
+    }
+
+    [TestMethod]
+    public void AgentStatusEventEvidenceRejectsAgentTopologyDrift()
+    {
+        var evidence = CreateAgentStatusEvidence() with
+        {
+            CurrentAgentTopologySha256 = new string('B', 64),
+        };
+
+        Assert.IsFalse(RuntimeEvidenceRunner.IsExactAgentStatusEvent(evidence));
+    }
+
+    [TestMethod]
+    public void AgentStatusEventEvidenceRejectsUnchangedAgentStatusState()
+    {
+        var original = CreateAgentStatusEvidence();
+        var evidence = original with
+        {
+            CurrentAgentStatusStateSha256 = original.BaselineAgentStatusStateSha256,
+        };
+
+        Assert.IsFalse(RuntimeEvidenceRunner.IsExactAgentStatusEvent(evidence));
+    }
+
+    [TestMethod]
     public void AgentStatusEventEvidenceRejectsDisconnectedOrEpochDrift()
     {
         var evidence = CreateAgentStatusEvidence();
@@ -269,6 +307,10 @@ public sealed class RuntimeEvidenceFailureTests
         CurrentReconciliationCount: 5,
         BaselineStateSha256: new string('C', 64),
         CurrentStateSha256: new string('D', 64),
+        BaselineAgentTopologySha256: new string('E', 64),
+        CurrentAgentTopologySha256: new string('E', 64),
+        BaselineAgentStatusStateSha256: new string('F', 64),
+        CurrentAgentStatusStateSha256: new string('A', 64),
         ConnectionEpoch: 2,
         Changes:
         [

@@ -48,6 +48,14 @@ public sealed class HerdrRuntimeTraceCommandTests
         Assert.AreEqual("workspace-1", eventTransition.AcceptedAgentStatusEvent.WorkspaceId);
         Assert.AreEqual("pane-1", eventTransition.AcceptedAgentStatusEvent.PaneId);
         Assert.AreEqual(HerdrAgentStatus.Working, eventTransition.AcceptedAgentStatusEvent.AgentStatus);
+        StringAssert.Matches(eventTransition.AgentTopologySha256, new("^[0-9A-F]{64}$"));
+        StringAssert.Matches(eventTransition.AgentStatusStateSha256, new("^[0-9A-F]{64}$"));
+        Assert.AreEqual(
+            eventTransition.AgentTopologySha256,
+            nonEventTransition.AgentTopologySha256);
+        Assert.AreEqual(
+            eventTransition.AgentStatusStateSha256,
+            nonEventTransition.AgentStatusStateSha256);
         Assert.IsNull(nonEventTransition.AcceptedEventKind);
         Assert.IsNull(nonEventTransition.AcceptedAgentStatusEvent);
         Assert.IsTrue(HerdrRuntimeEvidence.HasAcceptedAgentStatusEvent(

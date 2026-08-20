@@ -494,7 +494,7 @@ function Assert-AgentStatusTransitionEvidence {
         Assert-True (-not [string]::IsNullOrWhiteSpace([string]$change.PreviousStatus)) "$Name omitted the previous Agent status."
         Assert-True (-not [string]::IsNullOrWhiteSpace([string]$change.CurrentStatus)) "$Name omitted the current Agent status."
         Assert-True ([string]$change.PreviousStatus -ne [string]$change.CurrentStatus) "$Name did not change the Agent status."
-        Assert-True ([UInt64]$change.CurrentStateChangeSequence -gt [UInt64]$change.PreviousStateChangeSequence) "$Name did not advance the Agent state-change sequence."
+        Assert-True (([UInt64]$change.CurrentStateChangeSequence - [UInt64]$change.PreviousStateChangeSequence) -eq 1) "$Name did not advance the Agent state-change sequence exactly once."
         Assert-True ([UInt64]$change.CurrentRevision -ge [UInt64]$change.PreviousRevision) "$Name regressed the Agent revision."
     }
 
@@ -528,6 +528,16 @@ function Assert-AgentStatusTransitionEvidence {
     Assert-True ([string]$Evidence.BaselineStateSha256 -match '^[0-9A-Fa-f]{64}$') "$Name baseline state hash is invalid."
     Assert-True ([string]$Evidence.CurrentStateSha256 -match '^[0-9A-Fa-f]{64}$') "$Name current state hash is invalid."
     Assert-True ([string]$Evidence.BaselineStateSha256 -ne [string]$Evidence.CurrentStateSha256) "$Name did not change the full state hash."
+    foreach ($hashField in @(
+        'BaselineAgentTopologySha256',
+        'CurrentAgentTopologySha256',
+        'BaselineAgentStatusStateSha256',
+        'CurrentAgentStatusStateSha256'
+    )) {
+        Assert-True ([string]$Evidence.$hashField -match '^[0-9A-Fa-f]{64}$') "$Name $hashField is invalid."
+    }
+    Assert-True ([string]$Evidence.BaselineAgentTopologySha256 -eq [string]$Evidence.CurrentAgentTopologySha256) "$Name changed Agent topology during Event admission."
+    Assert-True ([string]$Evidence.BaselineAgentStatusStateSha256 -ne [string]$Evidence.CurrentAgentStatusStateSha256) "$Name did not change the Agent status-state fingerprint."
 
     $matchingBaselineTransitions = @($CoreTransitions | Where-Object {
         $_.Status -eq 'Connected' -and
@@ -542,6 +552,8 @@ function Assert-AgentStatusTransitionEvidence {
     Assert-True ([long]$baselineTransition.BootstrapCount -eq [long]$Evidence.BaselineBootstrapCount) "$Name Core baseline BootstrapCount differs from App evidence."
     Assert-True ([long]$baselineTransition.DisconnectCount -eq [long]$Evidence.BaselineDisconnectCount) "$Name Core baseline DisconnectCount differs from App evidence."
     Assert-True ([long]$baselineTransition.ReconciliationCount -eq [long]$Evidence.BaselineReconciliationCount) "$Name Core baseline ReconciliationCount differs from App evidence."
+    Assert-True ([string]$baselineTransition.AgentTopologySha256 -eq [string]$Evidence.BaselineAgentTopologySha256) "$Name Core baseline Agent topology differs from App evidence."
+    Assert-True ([string]$baselineTransition.AgentStatusStateSha256 -eq [string]$Evidence.BaselineAgentStatusStateSha256) "$Name Core baseline Agent status-state differs from App evidence."
 
     $expectedTransitionCount = if ($admissionPath -eq 'direct-event') { 1 } else { 2 }
     $phaseTransitions = @($CoreTransitions | Where-Object {
@@ -581,6 +593,11 @@ function Assert-AgentStatusTransitionEvidence {
         Assert-True ([string]$leadingReconciliation.ContractStateSha256 -ne [string]$Evidence.BaselineStateSha256) "$Name leading reconciliation did not change state."
         Assert-True ([string]::IsNullOrWhiteSpace([string]$leadingReconciliation.AcceptedEventKind)) "$Name leading reconciliation was incorrectly labelled as an accepted Event."
         Assert-True ((-not (Test-ObjectHasProperty -Object $leadingReconciliation -Name 'AcceptedAgentStatusEvent')) -or $null -eq $leadingReconciliation.AcceptedAgentStatusEvent) "$Name leading reconciliation carried accepted Agent-event provenance."
+        Assert-True ([string]$leadingReconciliation.AgentTopologySha256 -eq [string]$Evidence.BaselineAgentTopologySha256) "$Name leading reconciliation changed Agent topology."
+        Assert-True ([string]$leadingReconciliation.AgentStatusStateSha256 -in @(
+            [string]$Evidence.BaselineAgentStatusStateSha256,
+            [string]$Evidence.CurrentAgentStatusStateSha256
+        )) "$Name leading reconciliation contained an unrelated or collapsed Agent-status change."
     }
 
     $matchingTransitions = @($CoreTransitions | Where-Object {
@@ -598,6 +615,8 @@ function Assert-AgentStatusTransitionEvidence {
     Assert-True ([long]$currentTransition.DisconnectCount -eq [long]$Evidence.CurrentDisconnectCount) "$Name Core current DisconnectCount differs from App evidence."
     Assert-True ([long]$currentTransition.ReconciliationCount -eq [long]$Evidence.CurrentReconciliationCount) "$Name Core current ReconciliationCount differs from App evidence."
     Assert-True ([long]$currentTransition.ConnectionEpoch -eq [long]$baselineTransition.ConnectionEpoch) "$Name changed ConnectionEpoch during the Agent-status transition."
+    Assert-True ([string]$currentTransition.AgentTopologySha256 -eq [string]$Evidence.CurrentAgentTopologySha256) "$Name Core current Agent topology differs from App evidence."
+    Assert-True ([string]$currentTransition.AgentStatusStateSha256 -eq [string]$Evidence.CurrentAgentStatusStateSha256) "$Name Core current Agent status-state differs from App evidence."
     Assert-True (Test-ObjectHasProperty -Object $currentTransition -Name 'AcceptedEventKind') "$Name Core transition omitted AcceptedEventKind."
     Assert-True ([string]$currentTransition.AcceptedEventKind -eq 'pane.agent_status_changed') "$Name Core transition AcceptedEventKind was not pane.agent_status_changed."
     Assert-True (Test-ObjectHasProperty -Object $currentTransition -Name 'AcceptedAgentStatusEvent') "$Name Core transition omitted accepted Agent-event provenance."

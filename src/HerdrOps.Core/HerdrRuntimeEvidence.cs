@@ -37,6 +37,8 @@ internal static class HerdrRuntimeEvidence
             snapshot.State.Agents.Count,
             ComputeStateFingerprint(snapshot.State),
             HerdrOpsStateIpcJson.ComputeSha256(contractState),
+            HerdrOpsStateIpcJson.ComputeAgentTopologySha256(contractState),
+            HerdrOpsStateIpcJson.ComputeAgentStatusStateSha256(contractState),
             snapshot.ServerIdentity,
             snapshot.AcceptedEventKind,
             snapshot.LastTransitionReason)
