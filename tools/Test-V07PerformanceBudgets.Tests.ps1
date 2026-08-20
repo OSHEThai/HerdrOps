@@ -406,8 +406,39 @@ $missingRootEval = Test-PerformanceBudgetReport -ReportObject $parsedValid -Expe
 $missingRootCheck = @($missingRootEval.Checks | Where-Object Id -eq 'V07-CANDIDATE-BINARY-ROOTS')[0]
 Assert-Test -Name 'Synthetic declared binaries without verification roots fail and never bind' -Condition (-not $missingRootEval.Passed -and $missingRootCheck.Status -eq 'FAIL' -and @($missingRootEval.CandidateBindings).Count -eq 0)
 
-# Section 11: Deterministic Self-Test Suite Invocation
-Write-Host "`nSection 11: Full Deterministic Self-Test Suite"
+# Section 11: Plan ApprovalReference anchor resolution (CommonMark heading hygiene)
+Write-Host "`nSection 11: Plan ApprovalReference anchor resolution"
+function ConvertTo-CommonMarkAnchor {
+    param([Parameter(Mandatory)][string]$HeadingText)
+    $slug = $HeadingText.ToLowerInvariant().Trim()
+    $slug = [regex]::Replace($slug, '[^\w\- ]+', '')
+    $slug = [regex]::Replace($slug, '\s+', '-')
+    $slug = [regex]::Replace($slug, '-+', '-')
+    $slug = [regex]::Replace($slug, '^-+|-+$', '')
+    return $slug
+}
+
+$releaseGatesPath = Join-Path $repositoryRoot 'Plan\RELEASE-GATES.md'
+$releaseGatesText = Get-BoundedUtf8FileText -Path $releaseGatesPath -Description 'Plan RELEASE-GATES authority record'
+$planHeadingAnchors = @()
+foreach ($line in ($releaseGatesText -split "`n")) {
+    if ($line -match '^\s*###\s+(.+)$') {
+        $planHeadingAnchors += ConvertTo-CommonMarkAnchor -HeadingText $Matches[1].Trim()
+    }
+}
+
+$planHeadingText = 'v0.7 performance waiver authority'
+$computedAnchor = ConvertTo-CommonMarkAnchor -HeadingText $planHeadingText
+$boundReferenceFragment = 'v07-performance-waiver-authority'
+$fragmentOfBoundReference = [regex]::Match($script:V07PlanWaiverAuthorityReference, '#(.+)$').Groups[1].Value
+Assert-Test -Name 'Plan Performance waiver heading resolves exact bound ApprovalReference fragment' -Condition (
+    $computedAnchor -eq $boundReferenceFragment -and
+    $fragmentOfBoundReference -eq $boundReferenceFragment -and
+    ($planHeadingAnchors -contains $boundReferenceFragment)
+) -Message "computed=$computedAnchor; bound-fragment=$fragmentOfBoundReference; Plan anchors present: $($planHeadingAnchors -join ',')"
+
+# Section 12: Deterministic Self-Test Suite Invocation
+Write-Host "`nSection 12: Full Deterministic Self-Test Suite"
 $selfTestResults = @(Invoke-PerformanceBudgetSelfTests -RepositoryRoot $repositoryRoot -FixturesDirectory $fixturesDirectory)
 $allStPassed = @($selfTestResults | Where-Object Status -ne 'PASS').Count -eq 0
 Assert-Test -Name "Invoke-PerformanceBudgetSelfTests runs all $($selfTestResults.Count) matrix cases" -Condition ($allStPassed -and $selfTestResults.Count -eq 36)

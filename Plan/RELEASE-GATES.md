@@ -44,7 +44,7 @@ Targets are gates to validate, not current achievements.
 
 If a target cannot be met, the release requires a recorded measurement, cause, impact and explicit waiver. Changing a target does not retroactively turn a failed run into a pass.
 
-### v0.7 Issue #39 waiver authority
+### v0.7 performance waiver authority
 
 The repository-local authority identity for an Issue #39 performance waiver is
 `@yutthaphon`. A waiver report must carry `ApprovalReference:
