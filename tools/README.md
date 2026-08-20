@@ -245,3 +245,11 @@ The v0.5 role-distinct review implementation gate is Contract plus BuiltProcess 
 The gate reports `NoRuntimeCredit`. No actual Herdr runtime credit exists until this behavior is captured from a standard, non-elevated Herdr pane and the exact pane/process observations, role observations, Core responses, and immutable database audit hashes are bound in one fresh runtime record. The gate cannot close Issue #27, provide independent acceptance, or pass the v0.5 release gate.
 
 The v0.7 performance budget gate reports Static, Synthetic, and Contract evidence for non-runtime preparation (Issue #39). It enforces strict schema v0.7.0, source commit binding, candidate executable SHA-256 binding, reparse point and path traversal protections, p95 sample distribution recalculation, PID+StartUtc binding and PID reuse detection, no-native-trim waiver rules, and fault/unreconciled-state fail-closed behavior. Actual Herdr Runtime, 8-hour sustained soak execution, Human UAT decisions, and Release Evidence remain explicitly NOT OBSERVED / NOT CLAIMED in this preparation slice.
+
+# Run the v0.7 lifecycle implementation gate deterministic self-test
+./tools/Test-V07Lifecycle.ps1 -SelfTest
+
+# Run the full v0.7 lifecycle implementation gate from a clean committed checkout
+./tools/Test-V07Lifecycle.ps1 -Configuration Release
+
+The v0.7 lifecycle implementation gate verifies exact committed source and contract invariants, executes locked build and formatting checks, and validates 12/12 unit tests and 39/39 integration tests (51/51 total). Runs with `-SkipBuild` are non-acceptance unless verified same-commit binary provenance proves assemblies match the current commit; the marker verifier requires the exact unique five-assembly path set with canonical casing and the current SHA-256 for every path, rejecting duplicate, unexpected, missing, case-ambiguous, malformed, or mismatched entries. Unverified `-SkipBuild` runs fail closed with a distinct non-zero exit code. Actual Herdr Runtime, installed tray visibility, Windows logon startup registry entries, physical DPI/accessibility verification, and Release evidence are explicitly NOT OBSERVED / NOT CLAIMED.
