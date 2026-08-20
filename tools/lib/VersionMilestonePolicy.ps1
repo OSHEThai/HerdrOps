@@ -22,9 +22,15 @@ function Get-GitHubPagedItems {
     for ($page = 1; $page -le $MaximumPages; $page++) {
         $request = '{0}{1}per_page={2}&page={3}' -f $Endpoint, $separator, $PerPage, $page
         $response = & $ApiInvoker $request
+        $responsePropertyNames = if ($null -eq $response) {
+            @()
+        }
+        else {
+            @($response.PSObject.Properties | ForEach-Object { $_.Name })
+        }
         if ($null -eq $response -or
-            $response.PSObject.Properties.Name -notcontains 'ExitCode' -or
-            $response.PSObject.Properties.Name -notcontains 'Content') {
+            $responsePropertyNames -notcontains 'ExitCode' -or
+            $responsePropertyNames -notcontains 'Content') {
             throw "GitHub API invoker returned an invalid response for '$request'."
         }
         if ([int]$response.ExitCode -ne 0) {

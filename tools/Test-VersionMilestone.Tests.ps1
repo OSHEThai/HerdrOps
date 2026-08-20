@@ -90,4 +90,40 @@ catch {
     if ($_.Exception.Message -notmatch 'not a JSON array') { throw }
 }
 
+$emptyResponseInvoker = { param([string]$Endpoint) [pscustomobject]@{} }
+try {
+    Get-GitHubPagedItems -Endpoint 'repos/example/project/issues?state=all' -ApiInvoker $emptyResponseInvoker | Out-Null
+    throw 'Expected a response without required properties to fail closed.'
+}
+catch {
+    if ($_.Exception.Message -notmatch 'invalid response') { throw }
+}
+
+$duplicateMilestoneInvoker = {
+    param([string]$Endpoint)
+    $page = if ($Endpoint -match '[?&]page=(\d+)') { [int]$Matches[1] } else { 0 }
+    if ($Endpoint -like 'repos/example/project/milestones*') {
+        if ($page -eq 1) {
+            $records = for ($number = 1; $number -le 100; $number++) {
+                $title = if ($number -eq 2) { 'v0.2.0' } else { "v$number" }
+                [pscustomobject]@{ number = $number; title = $title; state = 'open' }
+            }
+        }
+        else {
+            $records = @([pscustomobject]@{ number = 202; title = 'v0.2.0'; state = 'open' })
+        }
+    }
+    else {
+        $records = @()
+    }
+    [pscustomobject]@{ ExitCode = 0; Content = (ConvertTo-TestJsonArray -Records @($records)) }
+}
+try {
+    Get-VersionMilestoneAssessment -Version 'v0.2.0' -Repository 'example/project' -ApiInvoker $duplicateMilestoneInvoker | Out-Null
+    throw 'Expected duplicate milestones across full pages to fail closed.'
+}
+catch {
+    if ($_.Exception.Message -notmatch 'exactly one milestone.*found 2') { throw }
+}
+
 Write-Host 'Test-VersionMilestone.Tests: PASS'
