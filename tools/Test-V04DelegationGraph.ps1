@@ -40,16 +40,19 @@ $testRuns = @(
         Project = Join-Path $repositoryRoot 'tests\HerdrOps.UnitTests\HerdrOps.UnitTests.csproj'
         Filter = 'FullyQualifiedName~AssignmentDelegationGraphTests'
         Log = 'assignment-delegation-projection.trx'
+        ExpectedCount = 5
     },
     [pscustomobject]@{
         Project = Join-Path $repositoryRoot 'tests\HerdrOps.IntegrationTests\HerdrOps.IntegrationTests.csproj'
         Filter = 'FullyQualifiedName~DelegationGraphStateTests'
         Log = 'delegation-graph-state.trx'
+        ExpectedCount = 10
     },
     [pscustomobject]@{
         Project = Join-Path $repositoryRoot 'tests\HerdrOps.RuntimeTests\HerdrOps.RuntimeTests.csproj'
         Filter = 'FullyQualifiedName~DelegationGraphRenderingTests'
         Log = 'delegation-graph-rendering.trx'
+        ExpectedCount = 3
     }
 )
 foreach ($testRun in $testRuns) {
@@ -95,18 +98,36 @@ foreach ($check in $requiredChecks) {
     }
 }
 
+$expectedTestCount = [int](($testRuns | Measure-Object -Property ExpectedCount -Sum).Sum)
+if ($expectedTestCount -ne 18) {
+    throw "Delegation Graph gate expected-count manifest drifted: expected 18, configured $expectedTestCount. Update the named test inventory and review the change."
+}
+
 $totalTests = 0
 $passedTests = 0
 $failedTests = 0
-foreach ($trxFile in $testResults) {
+foreach ($testRun in $testRuns) {
+    $matchingResults = @($testResults | Where-Object Name -eq $testRun.Log)
+    if ($matchingResults.Count -ne 1) {
+        throw "Expected exactly one fresh TRX for '$($testRun.Log)', found $($matchingResults.Count)."
+    }
+    $trxFile = $matchingResults[0]
     [xml]$trx = Get-Content -LiteralPath $trxFile.FullName -Raw
     $counters = $trx.TestRun.ResultSummary.Counters
-    $totalTests += [int]$counters.total
-    $passedTests += [int]$counters.passed
-    $failedTests += [int]$counters.failed
+    $runTotal = [int]$counters.total
+    $runPassed = [int]$counters.passed
+    $runFailed = [int]$counters.failed
+    if ($runTotal -ne [int]$testRun.ExpectedCount -or
+        $runFailed -ne 0 -or
+        $runTotal -ne $runPassed) {
+        throw "Delegation Graph counters for '$($testRun.Filter)' are not the expected all-pass set: expected=$($testRun.ExpectedCount) total=$runTotal passed=$runPassed failed=$runFailed"
+    }
+    $totalTests += $runTotal
+    $passedTests += $runPassed
+    $failedTests += $runFailed
 }
-if ($totalTests -ne $requiredChecks.Count -or $failedTests -ne 0 -or $totalTests -ne $passedTests) {
-    throw "Delegation Graph counters are not the expected all-pass set: total=$totalTests passed=$passedTests failed=$failedTests"
+if ($totalTests -ne $expectedTestCount -or $failedTests -ne 0 -or $totalTests -ne $passedTests) {
+    throw "Delegation Graph counters are not the expected all-pass set: expected=$expectedTestCount total=$totalTests passed=$passedTests failed=$failedTests"
 }
 
 if (-not (Test-Path -LiteralPath $referencePath -PathType Leaf)) {
