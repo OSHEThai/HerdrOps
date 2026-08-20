@@ -23,6 +23,7 @@ internal static class HerdrRuntimeEvidence
             }
 
             return acceptedEvent.AgentStatus != HerdrAgentStatus.Unknown &&
+                   transition.AllAgentsHaveLiveIdentity &&
                    !string.IsNullOrWhiteSpace(acceptedEvent.Agent) &&
                    !string.IsNullOrWhiteSpace(acceptedEvent.AgentName) &&
                    !string.IsNullOrWhiteSpace(acceptedEvent.TabId);
@@ -47,6 +48,7 @@ internal static class HerdrRuntimeEvidence
             snapshot.State.Tabs.Count,
             snapshot.State.Panes.Count,
             snapshot.State.Agents.Count,
+            HasAllLiveAgentIdentities(snapshot.State),
             ComputeStateFingerprint(snapshot.State),
             HerdrOpsStateIpcJson.ComputeSha256(contractState),
             HerdrOpsStateIpcJson.ComputeAgentTopologySha256(contractState),
@@ -58,6 +60,12 @@ internal static class HerdrRuntimeEvidence
             AcceptedAgentStatusEvent = snapshot.AcceptedAgentStatusEvent,
         };
     }
+
+    private static bool HasAllLiveAgentIdentities(HerdrSessionState state) =>
+        state.Agents.Count > 0 && state.Agents.Values.All(agent =>
+            !string.IsNullOrWhiteSpace(agent.Agent) &&
+            !string.IsNullOrWhiteSpace(agent.Name) &&
+            agent.AgentStatus != HerdrAgentStatus.Unknown);
 
     private static string ComputeStateFingerprint(HerdrSessionState state)
     {

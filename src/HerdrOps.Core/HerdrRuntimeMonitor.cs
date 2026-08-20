@@ -373,6 +373,8 @@ public sealed class HerdrRuntimeMonitor
     {
         if (string.IsNullOrWhiteSpace(statusChanged.Agent) ||
             statusChanged.AgentStatus == HerdrAgentStatus.Unknown ||
+            !HasAllLiveAgentIdentities(previousState) ||
+            !HasAllLiveAgentIdentities(candidateState) ||
             !TryGetSingleAgentForPane(previousState, statusChanged.PaneId, out var previousAgent) ||
             !TryGetSingleAgentForPane(candidateState, statusChanged.PaneId, out var candidateAgent) ||
             !HasLiveAgentIdentity(previousAgent) ||
@@ -420,9 +422,13 @@ public sealed class HerdrRuntimeMonitor
         return true;
     }
 
+    private static bool HasAllLiveAgentIdentities(HerdrSessionState state) =>
+        state.Agents.Count > 0 && state.Agents.Values.All(HasLiveAgentIdentity);
+
     private static bool HasLiveAgentIdentity(HerdrAgentSnapshot agent) =>
         !string.IsNullOrWhiteSpace(agent.Agent) &&
-        !string.IsNullOrWhiteSpace(agent.Name);
+        !string.IsNullOrWhiteSpace(agent.Name) &&
+        agent.AgentStatus != HerdrAgentStatus.Unknown;
 
     private static bool HasSameAgentTopology(
         HerdrAgentSnapshot previous,

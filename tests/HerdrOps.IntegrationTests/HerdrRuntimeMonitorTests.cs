@@ -352,6 +352,113 @@ public sealed class HerdrRuntimeMonitorTests
     }
 
     [TestMethod]
+    public async Task EventAThenEventBFromTheSameAgentProducesTwoAcceptedTransitions()
+    {
+        var baseline = CreateSnapshot(revision: 1, HerdrAgentStatus.Working);
+        var eventAState = CreateSnapshot(revision: 2, HerdrAgentStatus.Idle);
+        var eventBState = CreateSnapshot(revision: 3, HerdrAgentStatus.Blocked);
+        var apiClient = new ScriptedApiClient(
+            [baseline, baseline, eventAState, eventBState],
+            [
+                ScriptedSubscription.WithEventsThenBlock(
+                    new HerdrPaneAgentStatusChangedEvent(
+                        "pane.agent_status_changed",
+                        "workspace-1",
+                        "pane-1",
+                        HerdrAgentStatus.Idle,
+                        "codex",
+                        "Codex",
+                        "Idle"),
+                    new HerdrPaneAgentStatusChangedEvent(
+                        "pane.agent_status_changed",
+                        "workspace-1",
+                        "pane-1",
+                        HerdrAgentStatus.Blocked,
+                        "codex",
+                        "Codex",
+                        "Blocked")),
+            ]);
+        var monitor = CreateMonitor(apiClient);
+        var acceptedTransitions = new List<HerdrRuntimeMonitorSnapshot>();
+        monitor.StateChanged += (_, state) =>
+        {
+            if (state.AcceptedEventKind is not null)
+            {
+                acceptedTransitions.Add(state);
+            }
+        };
+        using var cancellation = new CancellationTokenSource();
+        var runTask = monitor.RunAsync(cancellation.Token);
+
+        await WaitForAsync(
+            monitor,
+            state => state.EventCount == 2 &&
+                     state.State.Agents["terminal-1"].AgentStatus == HerdrAgentStatus.Blocked);
+        cancellation.Cancel();
+        await Assert.ThrowsAsync<OperationCanceledException>(() => runTask);
+
+        Assert.AreEqual(1, monitor.Current.BootstrapCount);
+        Assert.AreEqual(2, monitor.Current.EventCount);
+        Assert.AreEqual(2, monitor.Current.ReconciliationCount);
+        Assert.AreEqual(3, monitor.Current.State.LastIngestSequence);
+        Assert.AreEqual(HerdrAgentStatus.Blocked, monitor.Current.State.Agents["terminal-1"].AgentStatus);
+        Assert.HasCount(2, acceptedTransitions);
+        Assert.AreEqual((ulong)2, acceptedTransitions[0].State.Agents["terminal-1"].StateChangeSequence);
+        Assert.AreEqual((ulong)3, acceptedTransitions[1].State.Agents["terminal-1"].StateChangeSequence);
+
+        var eventA = acceptedTransitions[0].AcceptedAgentStatusEvent!;
+        var eventB = acceptedTransitions[1].AcceptedAgentStatusEvent!;
+        Assert.AreEqual(HerdrRuntimeMonitor.AcceptedAgentStatusEventKind, acceptedTransitions[0].AcceptedEventKind);
+        Assert.AreEqual(HerdrRuntimeMonitor.AcceptedAgentStatusEventKind, acceptedTransitions[1].AcceptedEventKind);
+        Assert.AreEqual(HerdrAgentStatus.Idle, eventA.AgentStatus);
+        Assert.AreEqual(HerdrAgentStatus.Blocked, eventB.AgentStatus);
+        Assert.AreEqual(eventA.Agent, eventB.Agent);
+        Assert.AreEqual(eventA.AgentName, eventB.AgentName);
+        Assert.AreEqual(eventA.WorkspaceId, eventB.WorkspaceId);
+        Assert.AreEqual(eventA.TabId, eventB.TabId);
+        Assert.AreEqual(eventA.PaneId, eventB.PaneId);
+        Assert.AreEqual("codex", eventA.Agent);
+        Assert.AreEqual("Worker 01", eventA.AgentName);
+        Assert.AreEqual("tab-1", eventA.TabId);
+    }
+
+    [TestMethod]
+    public async Task UnknownStatusOnAnyOtherAgentCannotEarnAcceptedEventProvenance()
+    {
+        var initial = AddSecondPane(CreateSnapshot(revision: 1, HerdrAgentStatus.Working));
+        var updatedBase = AddSecondPane(CreateSnapshot(revision: 2, HerdrAgentStatus.Blocked));
+        var updated = updatedBase with
+        {
+            Panes =
+            [
+                updatedBase.Panes[0],
+                updatedBase.Panes[1] with { AgentStatus = HerdrAgentStatus.Unknown },
+            ],
+            Agents =
+            [
+                updatedBase.Agents[0],
+                updatedBase.Agents[1] with
+                {
+                    AgentStatus = HerdrAgentStatus.Unknown,
+                    StateChangeSequence = 2,
+                },
+            ],
+        };
+
+        await AssertStatusEventIsNotAcceptedAsync(
+            initial,
+            updated,
+            new HerdrPaneAgentStatusChangedEvent(
+                "pane.agent_status_changed",
+                "workspace-1",
+                "pane-1",
+                HerdrAgentStatus.Blocked,
+                "codex",
+                "Codex",
+                "Blocked"));
+    }
+
+    [TestMethod]
     public async Task AgentlessUnknownStatusEventCannotEarnAcceptedEventProvenance()
     {
         var initial = CreateSnapshot(revision: 1, HerdrAgentStatus.Idle);

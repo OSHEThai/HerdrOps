@@ -1298,10 +1298,8 @@ public sealed class RuntimeEvidenceRunner(
             return [];
         }
 
-        if (baseline.Agents.Count == 0 ||
-            current.Agents.Count == 0 ||
-            baseline.Agents.Any(agent => !HasLiveAgentIdentity(agent)) ||
-            current.Agents.Any(agent => !HasLiveAgentIdentity(agent)))
+        if (!HasAllLiveAgentIdentities(baseline) ||
+            !HasAllLiveAgentIdentities(current))
         {
             return [];
         }
@@ -1370,6 +1368,9 @@ public sealed class RuntimeEvidenceRunner(
             .OrderBy(change => change.TerminalId, StringComparer.Ordinal)
             .ToArray();
     }
+
+    internal static bool HasAllLiveAgentIdentities(HerdrSessionStateContract state) =>
+        state.Agents.Count > 0 && state.Agents.All(HasLiveAgentIdentity);
 
     private static bool HasLiveAgentIdentity(HerdrAgentStateContract agent) =>
         !string.IsNullOrWhiteSpace(agent.Agent) &&

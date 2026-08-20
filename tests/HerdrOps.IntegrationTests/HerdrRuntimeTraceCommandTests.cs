@@ -1,3 +1,4 @@
+using HerdrOps.App.RuntimeEvidence;
 using HerdrOps.Core;
 using HerdrOps.Contracts;
 using HerdrOps.Domain.Herdr;
@@ -11,15 +12,11 @@ public sealed class HerdrRuntimeTraceCommandTests
     [TestMethod]
     public void TraceTransitionCopiesOnlyTheMonitorAcceptedEventProvenance()
     {
+        var state = HerdrSessionStateContractMapper.ToDomain(
+            HerdrStateTestData.CreateState(sequence: 11, connectionEpoch: 2));
         var snapshot = new HerdrRuntimeMonitorSnapshot(
             HerdrRuntimeMonitorStatus.Connected,
-            HerdrSessionState.Empty with
-            {
-                Version = "0.8.2-test",
-                Protocol = 20,
-                ConnectionEpoch = 2,
-                LastIngestSequence = 11,
-            },
+            state,
             ServerIdentity: null,
             BootstrapCount: 2,
             EventCount: 6,
@@ -52,6 +49,7 @@ public sealed class HerdrRuntimeTraceCommandTests
         Assert.AreEqual("workspace-1", eventTransition.AcceptedAgentStatusEvent.WorkspaceId);
         Assert.AreEqual("pane-1", eventTransition.AcceptedAgentStatusEvent.PaneId);
         Assert.AreEqual(HerdrAgentStatus.Working, eventTransition.AcceptedAgentStatusEvent.AgentStatus);
+        Assert.IsTrue(eventTransition.AllAgentsHaveLiveIdentity);
         StringAssert.Matches(eventTransition.AgentTopologySha256, new("^[0-9A-F]{64}$"));
         StringAssert.Matches(eventTransition.AgentStatusStateSha256, new("^[0-9A-F]{64}$"));
         Assert.AreEqual(
@@ -69,6 +67,11 @@ public sealed class HerdrRuntimeTraceCommandTests
         Assert.IsFalse(HerdrRuntimeEvidence.HasAcceptedAgentStatusEvent(
             [eventTransition with
             {
+                AllAgentsHaveLiveIdentity = false,
+            }]));
+        Assert.IsFalse(HerdrRuntimeEvidence.HasAcceptedAgentStatusEvent(
+            [eventTransition with
+            {
                 AcceptedAgentStatusEvent = eventTransition.AcceptedAgentStatusEvent! with
                 {
                     Agent = null,
@@ -83,6 +86,26 @@ public sealed class HerdrRuntimeTraceCommandTests
                     AgentStatus = HerdrAgentStatus.Unknown,
                 },
             }]));
+    }
+
+    [TestMethod]
+    public void AppCorrelationRequiresEveryAdmittedAgentToHaveLiveIdentity()
+    {
+        var live = HerdrStateTestData.CreateState(sequence: 11);
+
+        Assert.IsTrue(RuntimeEvidenceRunner.HasAllLiveAgentIdentities(live));
+        Assert.IsFalse(RuntimeEvidenceRunner.HasAllLiveAgentIdentities(
+            live with
+            {
+                Agents =
+                [live.Agents[0] with { AgentStatus = "Unknown" }],
+            }));
+        Assert.IsFalse(RuntimeEvidenceRunner.HasAllLiveAgentIdentities(
+            live with
+            {
+                Agents =
+                [live.Agents[0] with { Agent = " " }],
+            }));
     }
 
     [TestMethod]

@@ -22,6 +22,7 @@ public sealed record HerdrRuntimeTraceTransition(
     int TabCount,
     int PaneCount,
     int AgentCount,
+    bool AllAgentsHaveLiveIdentity,
     string StateFingerprintSha256,
     string ContractStateSha256,
     string AgentTopologySha256,

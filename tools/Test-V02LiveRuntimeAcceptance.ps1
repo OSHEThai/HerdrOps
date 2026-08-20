@@ -228,6 +228,16 @@ function Test-ObjectHasProperty {
     return $null -ne $Object.PSObject.Properties[$Name]
 }
 
+function Assert-AllAgentsHaveLiveIdentity {
+    param(
+        [Parameter(Mandatory)]$Transition,
+        [Parameter(Mandatory)][string]$Name
+    )
+
+    Assert-True (Test-ObjectHasProperty -Object $Transition -Name 'AllAgentsHaveLiveIdentity') "$Name Core transition omitted the aggregate Agent-identity contract flag."
+    Assert-True ([bool]$Transition.AllAgentsHaveLiveIdentity) "$Name Core transition admitted an Agentless, blank-identity, or Unknown Agent in the state."
+}
+
 function Get-ProgressUtcTicks {
     param([AllowNull()]$Value)
 
@@ -560,6 +570,7 @@ function Assert-AgentStatusTransitionEvidence {
     })
     Assert-True ($matchingBaselineTransitions.Count -ge 1) "$Name has no exact Core transition correlation for its progress-bound baseline."
     $baselineTransition = $matchingBaselineTransitions[$matchingBaselineTransitions.Count - 1]
+    Assert-AllAgentsHaveLiveIdentity -Transition $baselineTransition -Name "$Name baseline"
     Assert-True ([long]$baselineTransition.BootstrapCount -eq [long]$Evidence.BaselineBootstrapCount) "$Name Core baseline BootstrapCount differs from App evidence."
     Assert-True ([long]$baselineTransition.DisconnectCount -eq [long]$Evidence.BaselineDisconnectCount) "$Name Core baseline DisconnectCount differs from App evidence."
     Assert-True ([long]$baselineTransition.ReconciliationCount -eq [long]$Evidence.BaselineReconciliationCount) "$Name Core baseline ReconciliationCount differs from App evidence."
@@ -622,6 +633,7 @@ function Assert-AgentStatusTransitionEvidence {
     })
     Assert-True ($matchingTransitions.Count -eq 1) "$Name does not have exactly one Core transition correlation for its same-Agent status change."
     $currentTransition = $matchingTransitions[0]
+    Assert-AllAgentsHaveLiveIdentity -Transition $currentTransition -Name "$Name current"
     Assert-True ([long]$currentTransition.BootstrapCount -eq [long]$Evidence.CurrentBootstrapCount) "$Name Core current BootstrapCount differs from App evidence."
     Assert-True ([long]$currentTransition.DisconnectCount -eq [long]$Evidence.CurrentDisconnectCount) "$Name Core current DisconnectCount differs from App evidence."
     Assert-True ([long]$currentTransition.ReconciliationCount -eq [long]$Evidence.CurrentReconciliationCount) "$Name Core current ReconciliationCount differs from App evidence."
