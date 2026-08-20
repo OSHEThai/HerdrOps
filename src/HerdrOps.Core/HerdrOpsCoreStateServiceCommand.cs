@@ -32,7 +32,9 @@ public static class HerdrOpsCoreStateServiceCommand
         TextWriter error,
         CancellationToken cancellationToken = default,
         Func<string, string?>? environmentVariableReader = null,
-        Func<string?, string?, HerdrSessionState?, HerdrAdmittedRuntimeMonitor>? admittedMonitorFactory = null)
+        Func<string?, string?, HerdrSessionState?, HerdrAdmittedRuntimeMonitor>? admittedMonitorFactory = null,
+        Func<HerdrOpsStatePipeServerOptions>? statePipeOptionsFactory = null,
+        Func<HerdrOpsReviewCommandPipeServerOptions>? reviewCommandPipeOptionsFactory = null)
     {
         ArgumentNullException.ThrowIfNull(args);
         ArgumentNullException.ThrowIfNull(output);
@@ -151,7 +153,7 @@ public static class HerdrOpsCoreStateServiceCommand
                 ? HerdrStateStoreOptions.ForCurrentUser()
                 : new HerdrStateStoreOptions(Path.GetFullPath(databasePath));
             using var store = new SqliteHerdrStateStore(storeOptions);
-            var pipeOptions = HerdrOpsStatePipeServerOptions.ForCurrentUser();
+            var pipeOptions = (statePipeOptionsFactory ?? HerdrOpsStatePipeServerOptions.ForCurrentUser)();
             var coordinator = new HerdrStateProjectionCoordinator(store, pipeOptions);
             var admitted = admittedMonitorFactory is null
                 ? new HerdrRuntimeMonitorFactory().Create(
@@ -167,7 +169,7 @@ public static class HerdrOpsCoreStateServiceCommand
                 admitted.PaneInspectionClient,
                 admitted.Admission.Endpoint);
             var reviewCommandServer = new HerdrOpsReviewCommandPipeServer(
-                HerdrOpsReviewCommandPipeServerOptions.ForCurrentUser(),
+                (reviewCommandPipeOptionsFactory ?? HerdrOpsReviewCommandPipeServerOptions.ForCurrentUser)(),
                 reviewWorkflow.ExecuteAsync,
                 reviewWorkflow.ReadCapabilitiesAsync,
                 reviewClientAuthorizer.AuthorizeAsync);
