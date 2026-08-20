@@ -2312,23 +2312,10 @@ function Assert-PackagingEvaluatedImportPaths {
         $path = Normalize-ComparablePath -Path $reportedPath
         if (Test-PathWithin -ChildPath $path -RootPath $RepositoryRoot) {
             Assert-NoReparsePath -Path $path
-            if (@($StaticAncestry | Where-Object { $_.Equals($path, [StringComparison]::OrdinalIgnoreCase) }).Count -gt 0) {
-                continue
+            if (@($StaticAncestry | Where-Object { $_.Equals($path, [StringComparison]::OrdinalIgnoreCase) }).Count -eq 0) {
+                throw "MSBuild reported an unverified repository import ancestry path: $path"
             }
-            # NuGet restore generates *.nuget.g.props and *.nuget.g.targets under each
-            # project's obj/ directory. These are not present in static XML imports but
-            # are injected into MSBuildAllProjects by the NuGet SDK at evaluation time.
-            # Permit them only when they sit directly inside an obj\ subdirectory of
-            # a directory that is itself within the repository root.
-            $leaf = [IO.Path]::GetFileName($path)
-            $parentDir = Normalize-ComparablePath -Path (Split-Path -Path $path -Parent)
-            $parentLeaf = [IO.Path]::GetFileName($parentDir)
-            if (($leaf -match '\.nuget\.g\.props$' -or $leaf -match '\.nuget\.g\.targets$') -and
-                $parentLeaf -ieq 'obj' -and
-                (Test-PathWithin -ChildPath $parentDir -RootPath $RepositoryRoot)) {
-                continue
-            }
-            throw "MSBuild reported an unverified repository import ancestry path: $path"
+            continue
         }
         if (Test-PathWithin -ChildPath $path -RootPath $TrustedDotnetRoot) {
             if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
