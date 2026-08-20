@@ -7,6 +7,7 @@ using HerdrOps.Contracts.StateIpc;
 using HerdrOps.Domain.Herdr;
 using HerdrOps.Infrastructure.Herdr;
 using HerdrOps.Infrastructure.StateIpc;
+using HerdrOps.Infrastructure.ReviewIpc;
 using HerdrOps.Infrastructure.Storage;
 
 namespace HerdrOps.Core;
@@ -161,6 +162,15 @@ public static class HerdrOpsCoreStateServiceCommand
                     executablePath,
                     socketPath,
                     coordinator.RestoredDomainState);
+            var reviewWorkflow = new ComplianceReviewWorkflowService(store);
+            var reviewClientAuthorizer = new HerdrReviewClientProcessAuthorizer(
+                admitted.PaneInspectionClient,
+                admitted.Admission.Endpoint);
+            var reviewCommandServer = new HerdrOpsReviewCommandPipeServer(
+                HerdrOpsReviewCommandPipeServerOptions.ForCurrentUser(),
+                reviewWorkflow.ExecuteAsync,
+                reviewWorkflow.ReadCapabilitiesAsync,
+                reviewClientAuthorizer.AuthorizeAsync);
             var transitions = new ConcurrentQueue<HerdrRuntimeTraceTransition>();
             EventHandler<HerdrRuntimeMonitorSnapshot>? evidenceHandler = null;
             var startedUtc = DateTimeOffset.UtcNow;
@@ -200,7 +210,10 @@ public static class HerdrOpsCoreStateServiceCommand
                     completionSignalObservationCancellation!.Token);
             try
             {
-                var serviceTask = new HerdrOpsCoreStateService(admitted.Monitor, coordinator)
+                var serviceTask = new HerdrOpsCoreStateService(
+                        admitted.Monitor,
+                        coordinator,
+                        reviewCommandServer)
                     .RunAsync(effectiveCancellationToken);
                 if (completionSignalTask is null)
                 {

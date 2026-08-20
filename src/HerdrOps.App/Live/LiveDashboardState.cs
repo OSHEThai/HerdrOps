@@ -6,6 +6,7 @@ using HerdrOps.App.Delegation;
 using HerdrOps.App.Localization;
 using HerdrOps.App.Organization;
 using HerdrOps.App.Overview;
+using HerdrOps.App.ReviewIpc;
 using HerdrOps.App.StateIpc;
 using HerdrOps.App.Widgets;
 using HerdrOps.Contracts.StateIpc;
@@ -33,6 +34,7 @@ public sealed class LiveDashboardState : ObservableState, IDisposable
 {
     private readonly List<LiveActivityRecord> _activities = [];
     private readonly bool _syntheticPreview;
+    private readonly ComplianceReviewStateHub? _complianceReviewState;
     private AssignmentLifecycleReplayResult? _assignmentReplay;
     private IReadOnlyList<TaskAlignmentAnalysisResult> _taskAlignmentAnalyses = [];
     private HerdrSessionStateContract _currentState = HerdrSessionStateContract.Empty;
@@ -56,13 +58,48 @@ public sealed class LiveDashboardState : ObservableState, IDisposable
     private bool _disposed;
 
     public LiveDashboardState()
-        : this(syntheticPreview: false)
+        : this(
+            syntheticPreview: false,
+            complianceReviewState: null,
+            reviewCommands: null,
+            reviewerActorId: null,
+            reviewTimeProvider: null)
     {
     }
 
-    private LiveDashboardState(bool syntheticPreview)
+    public LiveDashboardState(ComplianceReviewStateHub complianceReviewState)
+        : this(
+            syntheticPreview: false,
+            complianceReviewState ?? throw new ArgumentNullException(nameof(complianceReviewState)),
+            reviewCommands: null,
+            reviewerActorId: null,
+            reviewTimeProvider: null)
+    {
+    }
+
+    public LiveDashboardState(
+        ComplianceReviewStateHub complianceReviewState,
+        ComplianceReviewCommandCoordinator reviewCommands,
+        string? reviewerActorId,
+        TimeProvider? reviewTimeProvider = null)
+        : this(
+            syntheticPreview: false,
+            complianceReviewState ?? throw new ArgumentNullException(nameof(complianceReviewState)),
+            reviewCommands ?? throw new ArgumentNullException(nameof(reviewCommands)),
+            reviewerActorId,
+            reviewTimeProvider)
+    {
+    }
+
+    private LiveDashboardState(
+        bool syntheticPreview,
+        ComplianceReviewStateHub? complianceReviewState,
+        ComplianceReviewCommandCoordinator? reviewCommands,
+        string? reviewerActorId,
+        TimeProvider? reviewTimeProvider)
     {
         _syntheticPreview = syntheticPreview;
+        _complianceReviewState = complianceReviewState;
         var text = UiLanguageService.Shared;
         Overview = new LiveOverviewState();
         Organization = new LiveOrganizationState();
@@ -79,7 +116,14 @@ public sealed class LiveDashboardState : ObservableState, IDisposable
             : new TaskAlignmentState();
         ComplianceQueue = syntheticPreview
             ? ComplianceQueueState.CreateSyntheticPreview()
-            : ComplianceQueueState.CreateUnavailableLiveState();
+            : ComplianceQueueState.CreateUnavailableLiveState(
+                reviewCommands,
+                reviewerActorId,
+                timeProvider: reviewTimeProvider);
+        if (_complianceReviewState is not null)
+        {
+            _complianceReviewState.StateChanged += OnComplianceReviewStateChanged;
+        }
         Organization.AgentSelectionRequested += (_, terminalId) => SelectAgent(terminalId);
         _connectionStatus = syntheticPreview
             ? LiveDashboardConnectionStatus.SyntheticPreview
@@ -100,7 +144,12 @@ public sealed class LiveDashboardState : ObservableState, IDisposable
         }
     }
 
-    public static LiveDashboardState CreateSyntheticPreview() => new(syntheticPreview: true);
+    public static LiveDashboardState CreateSyntheticPreview() => new(
+        syntheticPreview: true,
+        complianceReviewState: null,
+        reviewCommands: null,
+        reviewerActorId: null,
+        reviewTimeProvider: null);
 
     public LiveOverviewState Overview { get; }
 
@@ -393,9 +442,22 @@ public sealed class LiveDashboardState : ObservableState, IDisposable
         }
 
         _disposed = true;
+        if (_complianceReviewState is not null)
+        {
+            _complianceReviewState.StateChanged -= OnComplianceReviewStateChanged;
+        }
+
         // ComplianceQueue is owned by this dashboard state. Shell views can be
         // unloaded and reloaded without ending the App-wide state lifetime.
         ComplianceQueue.Dispose();
+    }
+
+    private void OnComplianceReviewStateChanged(
+        object? sender,
+        ComplianceReviewStateChangedEventArgs eventArgs)
+    {
+        ComplianceQueue.ApplyAuthoritativeReviewChange(eventArgs.Change);
+        Widgets.ApplyAuthoritativeReviewChange(eventArgs.Change);
     }
 
     private void RefreshViews(

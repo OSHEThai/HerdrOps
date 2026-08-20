@@ -195,14 +195,14 @@ public sealed class LiveDashboardRenderingTests
                 shell.Navigation.SelectedIndex = 0;
                 var size = new Size(1672, 941);
                 Layout(shell, size);
-                var visibleText = EnumerateDescendants(shell)
-                    .OfType<TextBlock>()
-                    .Where(IsEffectivelyVisible)
-                    .Select(text => text.Text)
-                    .ToArray();
-                Assert.IsTrue(visibleText.Contains(
-                    UiLanguageService.Shared["HerdrReconnecting"],
-                    StringComparer.Ordinal));
+                var expectedConnectionLabel = UiLanguageService.Shared["HerdrReconnecting"];
+                Assert.AreEqual(expectedConnectionLabel, dashboard.ConnectionLabel);
+                var connectionStatusText = Assert.IsInstanceOfType<TextBlock>(
+                    shell.FindName("ConnectionStatusText"));
+                Assert.AreEqual(expectedConnectionLabel, connectionStatusText.Text);
+                Assert.IsTrue(
+                    IsEffectivelyVisible(connectionStatusText),
+                    $"The connection status text was not rendered. Actual size: {connectionStatusText.ActualWidth:0.##}x{connectionStatusText.ActualHeight:0.##}.");
                 Assert.IsTrue(dashboard.Overview.TopAgents.All(
                     agent => agent.StatusLabel == UiLanguageService.Shared["StatusOffline"]));
                 var languageName = language == UiLanguage.Thai ? "thai" : "english";

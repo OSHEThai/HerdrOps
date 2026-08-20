@@ -2,8 +2,10 @@ using System.ComponentModel;
 using System.Runtime.CompilerServices;
 using System.Windows;
 using System.Windows.Controls;
+using HerdrOps.App.Lifecycle;
 using HerdrOps.App.Localization;
 using HerdrOps.App.Views;
+using HerdrOps.Domain.Settings;
 
 namespace HerdrOps.App.Widgets;
 
@@ -20,6 +22,8 @@ public partial class WidgetGalleryView : UserControl, INotifyPropertyChanged
     private readonly bool _usesDefaultLauncher;
     private bool _resourcesReleased;
     private int _resourceGeneration;
+    private readonly Action<AppSettingsWidgetVariant>? _widgetSelected;
+    private readonly Action<bool>? _widgetEnabled;
 
     public WidgetGalleryView()
         : this(SyntheticWidgetState.Create(), launcher: null)
@@ -29,11 +33,22 @@ public partial class WidgetGalleryView : UserControl, INotifyPropertyChanged
     public WidgetGalleryView(
         IWidgetState state,
         IWidgetWindowLauncher? launcher)
+        : this(state, launcher, null, null)
+    {
+    }
+
+    public WidgetGalleryView(
+        IWidgetState state,
+        IWidgetWindowLauncher? launcher,
+        Action<AppSettingsWidgetVariant>? widgetSelected,
+        Action<bool>? widgetEnabled)
     {
         ArgumentNullException.ThrowIfNull(state);
         _state = state;
         _usesDefaultLauncher = launcher is null;
         _launcher = launcher ?? new WidgetWindowLauncher(state);
+        _widgetSelected = widgetSelected;
+        _widgetEnabled = widgetEnabled;
         _adaptiveItems = WidgetCatalog.CreateAdaptiveGalleryItems();
 
         InitializeComponent();
@@ -79,10 +94,14 @@ public partial class WidgetGalleryView : UserControl, INotifyPropertyChanged
 
     public void OpenVariant(WidgetVariant variant)
     {
-        if (!_resourcesReleased)
+        if (_resourcesReleased)
         {
-            _launcher?.Open(variant);
+            return;
         }
+
+        _widgetSelected?.Invoke(AppSettingsLifecycleMapping.ToAppSettingsWidgetVariant(variant));
+        _widgetEnabled?.Invoke(true);
+        _launcher?.Open(variant);
     }
 
     private IEnumerable<WidgetSurface> GetPreviews()
@@ -128,6 +147,7 @@ public partial class WidgetGalleryView : UserControl, INotifyPropertyChanged
             mainWindow.Activate();
         }
     }
+
 
     private void OnGallerySizeChanged(object sender, SizeChangedEventArgs e)
     {

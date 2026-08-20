@@ -1,3 +1,4 @@
+using System.Windows;
 using HerdrOps.App;
 using HerdrOps.App.Live;
 using HerdrOps.App.Views;
@@ -87,9 +88,53 @@ public sealed class RuntimeEvidenceResourceLifecycleTests
 
             Assert.IsTrue(shell.NavigateTo("evaluation"));
             window.UpdateLayout();
+            Assert.AreEqual(1, shell.RetainedPageCount);
+            Assert.AreEqual("EvaluationPage", shell.ActivePageName);
+            Assert.IsNull(shell.FindName("RealtimeActivityPage"));
+            Assert.IsInstanceOfType<EvaluationView>(shell.FindName("EvaluationPage"));
+
+            Assert.IsTrue(shell.NavigateTo("daily-summary"));
+            window.UpdateLayout();
+            Assert.AreEqual(1, shell.RetainedPageCount);
+            Assert.AreEqual("DailySummaryPage", shell.ActivePageName);
+            Assert.IsNull(shell.FindName("EvaluationPage"));
+            Assert.IsInstanceOfType<DailySummaryView>(shell.FindName("DailySummaryPage"));
+
+            window.Close();
+        }, TimeSpan.FromSeconds(30));
+    }
+
+    [TestMethod]
+    public void SyntheticPreviewShellFallsBackToPlaceholderForGuardedDestinations()
+    {
+        WpfTestHost.Run(() =>
+        {
+            var shell = ShellView.CreateSyntheticPreview();
+            var window = new Window { Content = shell, Width = 1366, Height = 768 };
+            window.Show();
+            window.UpdateLayout();
+
+            Assert.AreEqual(1, shell.RetainedPageCount);
+            Assert.AreEqual("OverviewPage", shell.ActivePageName);
+
+            Assert.IsTrue(shell.NavigateTo("evaluation"));
+            window.UpdateLayout();
+            Assert.AreEqual(1, shell.RetainedPageCount);
+            Assert.AreEqual("EvaluationPage", shell.ActivePageName);
+            Assert.IsInstanceOfType<EvaluationView>(shell.FindName("EvaluationPage"));
+
+            Assert.IsTrue(shell.NavigateTo("daily-summary"));
+            window.UpdateLayout();
+            Assert.AreEqual(1, shell.RetainedPageCount);
+            Assert.AreEqual("DailySummaryPage", shell.ActivePageName);
+            Assert.IsNull(shell.FindName("EvaluationPage"));
+            Assert.IsInstanceOfType<DailySummaryView>(shell.FindName("DailySummaryPage"));
+
+            Assert.IsTrue(shell.NavigateTo("live-organization"));
+            window.UpdateLayout();
             Assert.AreEqual(0, shell.RetainedPageCount);
             Assert.IsNull(shell.ActivePageName);
-            Assert.IsNull(shell.FindName("RealtimeActivityPage"));
+            Assert.IsNull(shell.FindName("OverviewPage"));
 
             window.Close();
         }, TimeSpan.FromSeconds(30));

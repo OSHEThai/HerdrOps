@@ -9,7 +9,7 @@ public sealed record HerdrStateStoreOptions(
     int BusyTimeoutSeconds = 5,
     string? ManagedEvidenceRootPath = null)
 {
-    public const int CurrentSchemaVersion = 3;
+    public const int CurrentSchemaVersion = 4;
 
     public static HerdrStateStoreOptions ForCurrentUser()
     {
@@ -80,6 +80,20 @@ public sealed record HerdrEvidenceWriteResult(
 public sealed record HerdrReviewAuditWriteResult(
     ReviewAuditEvent StoredEvent,
     bool WasAlreadyPresent);
+
+public sealed record HerdrComplianceReviewRegistrationResult(
+    HerdrOps.Domain.Compliance.ComplianceReviewIncident Incident,
+    bool WasAlreadyPresent);
+
+public sealed record HerdrComplianceReviewWriteResult(
+    HerdrOps.Domain.Compliance.ComplianceReviewIncident Incident,
+    HerdrOps.Domain.Compliance.ComplianceReviewAuditEvent AuditEvent,
+    bool WasAlreadyPresent);
+
+public sealed record HerdrComplianceReviewCapabilities(
+    HerdrOps.Domain.Compliance.ComplianceReviewIncident? Incident,
+    HerdrOps.Domain.Compliance.ComplianceReviewerRole? ReviewerRole,
+    IReadOnlyList<HerdrOps.Domain.Compliance.ComplianceReviewDecisionKind> AllowedDecisions);
 
 public enum HerdrEvidenceRetentionOutcome
 {

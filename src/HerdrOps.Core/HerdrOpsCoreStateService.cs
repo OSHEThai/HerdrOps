@@ -1,16 +1,21 @@
+using HerdrOps.Infrastructure.ReviewIpc;
+
 namespace HerdrOps.Core;
 
 public sealed class HerdrOpsCoreStateService
 {
     private readonly HerdrRuntimeMonitor _monitor;
     private readonly HerdrStateProjectionCoordinator _coordinator;
+    private readonly HerdrOpsReviewCommandPipeServer? _reviewCommandServer;
 
     public HerdrOpsCoreStateService(
         HerdrRuntimeMonitor monitor,
-        HerdrStateProjectionCoordinator coordinator)
+        HerdrStateProjectionCoordinator coordinator,
+        HerdrOpsReviewCommandPipeServer? reviewCommandServer = null)
     {
         _monitor = monitor ?? throw new ArgumentNullException(nameof(monitor));
         _coordinator = coordinator ?? throw new ArgumentNullException(nameof(coordinator));
+        _reviewCommandServer = reviewCommandServer;
     }
 
     public async Task RunAsync(CancellationToken cancellationToken)
@@ -19,11 +24,14 @@ public sealed class HerdrOpsCoreStateService
         using var serviceCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         var monitorTask = _monitor.RunAsync(serviceCancellation.Token);
         var pipeTask = _coordinator.PipeServer.RunAsync(serviceCancellation.Token);
+        var reviewCommandTask = _reviewCommandServer?.RunAsync(serviceCancellation.Token) ??
+            Task.Delay(Timeout.InfiniteTimeSpan, serviceCancellation.Token);
         try
         {
             var completed = await Task.WhenAny(
                     monitorTask,
                     pipeTask,
+                    reviewCommandTask,
                     projection.Faulted)
                 .ConfigureAwait(false);
             if (cancellationToken.IsCancellationRequested)
@@ -43,13 +51,16 @@ public sealed class HerdrOpsCoreStateService
             throw new HerdrOpsCoreStateServiceException(
                 completed == monitorTask
                     ? "The Herdr runtime monitor stopped unexpectedly."
-                    : "The Core-to-App state IPC server stopped unexpectedly.");
+                    : completed == pipeTask
+                        ? "The Core-to-App state IPC server stopped unexpectedly."
+                        : "The Core review-command IPC server stopped unexpectedly.");
         }
         finally
         {
             serviceCancellation.Cancel();
             await ObserveShutdownAsync(monitorTask).ConfigureAwait(false);
             await ObserveShutdownAsync(pipeTask).ConfigureAwait(false);
+            await ObserveShutdownAsync(reviewCommandTask).ConfigureAwait(false);
         }
     }
 

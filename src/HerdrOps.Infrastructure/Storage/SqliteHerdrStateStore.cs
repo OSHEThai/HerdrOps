@@ -5,6 +5,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using HerdrOps.Contracts.StateIpc;
 using HerdrOps.Domain.Assignments;
+using HerdrOps.Infrastructure.Storage.Recovery;
 using Microsoft.Data.Sqlite;
 
 namespace HerdrOps.Infrastructure.Storage;
@@ -224,6 +225,7 @@ public sealed partial class SqliteHerdrStateStore : IDisposable
     private readonly object _sync = new();
     private readonly HerdrStateStoreOptions _options;
     private readonly TimeProvider _timeProvider;
+    private readonly StateStoreRecoveryOptions _recoveryOptions;
     private readonly FileStream _ownershipLock;
     private readonly SqliteConnection _connection;
     private AssignmentLifecycleReducer _assignmentLifecycleReducer = new();
@@ -232,27 +234,79 @@ public sealed partial class SqliteHerdrStateStore : IDisposable
     public SqliteHerdrStateStore(
         HerdrStateStoreOptions options,
         TimeProvider? timeProvider = null)
+        : this(options, timeProvider, recoveryOptions: null)
+    {
+    }
+
+    internal SqliteHerdrStateStore(
+        HerdrStateStoreOptions options,
+        TimeProvider? timeProvider,
+        StateStoreRecoveryOptions? recoveryOptions)
     {
         _options = ValidateOptions(options);
         _timeProvider = timeProvider ?? TimeProvider.System;
-        Directory.CreateDirectory(Path.GetDirectoryName(_options.DatabasePath)!);
-        var shouldBackUpBeforeMigration = File.Exists(_options.DatabasePath) &&
-            new FileInfo(_options.DatabasePath).Length > 0;
+        _recoveryOptions = recoveryOptions ?? new StateStoreRecoveryOptions();
+        StateStoreRecoveryPathPolicy.EnsureDatabaseParent(_options.DatabasePath);
+        var primaryExisted = false;
+        var shouldBackUpBeforeMigration = false;
+        StateStoreRecoveryFileIdentity? boundaryIdentity = null;
+        var primaryValidationPassed = false;
         _ownershipLock = AcquireOwnershipLock(_options.DatabasePath);
         try
         {
+            _recoveryOptions.EffectiveFaultInjector.OnPhase(
+                new StateStoreRecoveryPhaseContext(
+                    StateStoreRecoveryPhase.AfterOwnershipLock,
+                    0,
+                    HerdrStateStoreOptions.CurrentSchemaVersion,
+                    _options.DatabasePath));
+
+            var observedIdentity = InspectDatabaseLeaf(_options.DatabasePath);
+            _recoveryOptions.EffectiveFaultInjector.OnPhase(
+                new StateStoreRecoveryPhaseContext(
+                    StateStoreRecoveryPhase.AfterDatabaseLeafInspection,
+                    0,
+                    HerdrStateStoreOptions.CurrentSchemaVersion,
+                    _options.DatabasePath));
+            boundaryIdentity = InspectDatabaseLeaf(_options.DatabasePath);
+            if (!AreSameIdentity(observedIdentity, boundaryIdentity))
+            {
+                throw new HerdrStateStoreException(
+                    "The database leaf identity changed at the ownership boundary; SQLite was not opened.");
+            }
+
+            primaryExisted = boundaryIdentity is not null;
+            shouldBackUpBeforeMigration = boundaryIdentity is not null && boundaryIdentity.Length > 0;
             _connection = new SqliteConnection(CreateConnectionString(_options));
         }
-        catch
+        catch (Exception exception)
         {
             _ownershipLock.Dispose();
+            if (exception is StateStoreCorruptionException corruption)
+            {
+                throw new HerdrStateStoreException(
+                    StateStoreRecoveryDiagnostics.SanitizeMessage(corruption.Message),
+                    corruption);
+            }
+
             throw;
         }
 
         try
         {
+            StateStoreRecoveryPathPolicy.ValidateExistingPrimary(_options.DatabasePath);
+            var postValidationIdentity = InspectDatabaseLeaf(_options.DatabasePath);
+            if (!AreSameIdentity(boundaryIdentity, postValidationIdentity))
+            {
+                throw new HerdrStateStoreException(
+                    "The database leaf identity changed during admission; SQLite was not opened.");
+            }
+
             _connection.Open();
             ConfigureConnection();
+            StateStoreRecoveryArtifacts.ValidateConnectionIdentity(
+                _connection,
+                _options.DatabasePath);
             var version = ReadSchemaVersion();
             if (version > HerdrStateStoreOptions.CurrentSchemaVersion)
             {
@@ -268,29 +322,122 @@ public sealed partial class SqliteHerdrStateStore : IDisposable
             if (version < HerdrStateStoreOptions.CurrentSchemaVersion)
             {
                 EnsureIntegrity("before migration");
+                primaryValidationPassed = true;
                 if (shouldBackUpBeforeMigration)
                 {
-                    LastBackupPath = CreateBackup(version, HerdrStateStoreOptions.CurrentSchemaVersion);
+                    _recoveryOptions.EffectiveFaultInjector.OnPhase(
+                        new StateStoreRecoveryPhaseContext(
+                            StateStoreRecoveryPhase.BeforeBackup,
+                            version,
+                            HerdrStateStoreOptions.CurrentSchemaVersion,
+                            null));
+                    var backup = CreateBackup(version, HerdrStateStoreOptions.CurrentSchemaVersion);
+                    LastBackupPath = backup.BackupPath;
+                    _recoveryOptions.EffectiveFaultInjector.OnPhase(
+                        new StateStoreRecoveryPhaseContext(
+                            StateStoreRecoveryPhase.AfterBackup,
+                            version,
+                            HerdrStateStoreOptions.CurrentSchemaVersion,
+                            backup.BackupPath));
                 }
 
                 ApplyMigrations(version);
+            }
+            else
+            {
+                EnsureIntegrity("before initialization");
+                primaryValidationPassed = true;
             }
 
             EnableWalMode();
             ValidateMigrationHistory(HerdrStateStoreOptions.CurrentSchemaVersion);
             EnsureIntegrity("after initialization");
+            StateStoreRecoveryArtifacts.ValidateConnectionIdentity(
+                _connection,
+                _options.DatabasePath);
             _assignmentLifecycleReducer = RestoreAssignmentLifecycleReducer();
             EnsureManagedVaultParentChainIsSafe();
             Directory.CreateDirectory(_options.ManagedEvidenceRootPath!);
             EnsureManagedVaultRootIsSafe();
         }
-        catch
+        catch (Exception exception)
         {
             _connection.Dispose();
             _ownershipLock.Dispose();
+            if (exception is StateStoreCorruptionException corruption)
+            {
+                if (primaryExisted && !primaryValidationPassed)
+                {
+                    TryQuarantineCorruptedPrimary(corruption);
+                }
+
+                var publicFailure = new HerdrStateStoreException(
+                    StateStoreRecoveryDiagnostics.SanitizeMessage(corruption.Message),
+                    corruption);
+                foreach (System.Collections.DictionaryEntry entry in corruption.Data)
+                {
+                    publicFailure.Data[entry.Key] = entry.Value;
+                }
+
+                throw publicFailure;
+            }
+
+            if (primaryExisted && !primaryValidationPassed && exception is SqliteException)
+            {
+                TryQuarantineCorruptedPrimary(exception);
+            }
+
             throw;
         }
     }
+
+    private void TryQuarantineCorruptedPrimary(Exception failure)
+    {
+        try
+        {
+            var quarantinePath = StateStoreRecoveryArtifacts.Quarantine(
+                _options.DatabasePath,
+                failure,
+                schemaVersion: null,
+                phase: "initialization-validation",
+                timeProvider: _timeProvider,
+                recoveryOptions: _recoveryOptions);
+            failure.Data["HerdrOps.QuarantinePath"] =
+                StateStoreRecoveryDiagnostics.TokenizePath(quarantinePath);
+        }
+        catch (Exception quarantineFailure)
+        {
+            StateStoreRecoveryDiagnostics.AttachCleanupFailure(
+                failure,
+                "quarantine-cleanup",
+                _options.DatabasePath,
+                quarantineFailure);
+            failure.Data["HerdrOps.QuarantineFailure"] =
+                StateStoreRecoveryDiagnostics.SanitizeMessage(quarantineFailure.Message);
+        }
+    }
+
+    private static StateStoreRecoveryFileIdentity? InspectDatabaseLeaf(string databasePath)
+    {
+        StateStoreRecoveryPathPolicy.EnsureNoReparseComponents(databasePath, includeLeaf: true);
+        if (Directory.Exists(databasePath))
+        {
+            throw new StateStoreCorruptionException(
+                $"The state-store path '{databasePath}' is a directory, not a SQLite database.");
+        }
+
+        return File.Exists(databasePath)
+            ? StateStoreRecoveryArtifacts.IdentifyFile(databasePath)
+            : null;
+    }
+
+    private static bool AreSameIdentity(
+        StateStoreRecoveryFileIdentity? left,
+        StateStoreRecoveryFileIdentity? right) =>
+        left is null && right is null ||
+        left is not null && right is not null &&
+        left.Length == right.Length &&
+        string.Equals(left.Sha256, right.Sha256, StringComparison.Ordinal);
 
     public string DatabasePath => _options.DatabasePath;
 
@@ -1464,7 +1611,7 @@ public sealed partial class SqliteHerdrStateStore : IDisposable
                 "The SQLite busy timeout must be between 1 and 60 seconds.");
         }
 
-        var databasePath = Path.GetFullPath(options.DatabasePath);
+        var databasePath = StateStoreRecoveryPathPolicy.NormalizeDatabasePath(options.DatabasePath);
         var evidenceRootPath = string.IsNullOrWhiteSpace(options.ManagedEvidenceRootPath)
             ? Path.Combine(Path.GetDirectoryName(databasePath)!, "evidence")
             : options.ManagedEvidenceRootPath;
@@ -1509,6 +1656,12 @@ public sealed partial class SqliteHerdrStateStore : IDisposable
     private static FileStream AcquireOwnershipLock(string databasePath)
     {
         var lockPath = databasePath + ".core.lock";
+        StateStoreRecoveryPathPolicy.EnsureNoReparseComponents(
+            Path.GetDirectoryName(lockPath)!,
+            includeLeaf: true);
+        StateStoreRecoveryPathPolicy.EnsureNoReparseComponents(
+            lockPath,
+            includeLeaf: true);
         try
         {
             return new FileStream(
@@ -1559,6 +1712,12 @@ public sealed partial class SqliteHerdrStateStore : IDisposable
              targetVersion++)
         {
             var definition = GetMigration(targetVersion);
+            _recoveryOptions.EffectiveFaultInjector.OnPhase(
+                new StateStoreRecoveryPhaseContext(
+                    StateStoreRecoveryPhase.BeforeMigration,
+                    currentVersion,
+                    targetVersion,
+                    null));
             using var transaction = _connection.BeginTransaction(deferred: false);
             using (var migration = _connection.CreateCommand())
             {
@@ -1588,33 +1747,31 @@ public sealed partial class SqliteHerdrStateStore : IDisposable
                 version.ExecuteNonQuery();
             }
 
+            _recoveryOptions.EffectiveFaultInjector.OnPhase(
+                new StateStoreRecoveryPhaseContext(
+                    StateStoreRecoveryPhase.AfterMigrationBeforeCommit,
+                    currentVersion,
+                    targetVersion,
+                    null));
             transaction.Commit();
+            _recoveryOptions.EffectiveFaultInjector.OnPhase(
+                new StateStoreRecoveryPhaseContext(
+                    StateStoreRecoveryPhase.AfterMigrationCommit,
+                    currentVersion,
+                    targetVersion,
+                    null));
+            currentVersion = targetVersion;
         }
     }
 
-    private string CreateBackup(int fromVersion, int toVersion)
-    {
-        var backupDirectory = Path.Combine(
-            Path.GetDirectoryName(_options.DatabasePath)!,
-            "backups");
-        Directory.CreateDirectory(backupDirectory);
-        var timestamp = _timeProvider.GetUtcNow().ToString(
-            "yyyyMMddTHHmmssfff'Z'",
-            CultureInfo.InvariantCulture);
-        var backupPath = Path.Combine(
-            backupDirectory,
-            $"{Path.GetFileName(_options.DatabasePath)}.v{fromVersion}.pre-v{toVersion}.{timestamp}.{Guid.NewGuid():N}.bak");
-        using var destination = new SqliteConnection(new SqliteConnectionStringBuilder
-        {
-            DataSource = backupPath,
-            Mode = SqliteOpenMode.ReadWriteCreate,
-            Cache = SqliteCacheMode.Default,
-            Pooling = false,
-        }.ToString());
-        destination.Open();
-        _connection.BackupDatabase(destination);
-        return backupPath;
-    }
+    private StateStoreRecoveryBackupResult CreateBackup(int fromVersion, int toVersion) =>
+        StateStoreRecoveryArtifacts.CreateBackup(
+            _connection,
+            _options.DatabasePath,
+            fromVersion,
+            toVersion,
+            _timeProvider,
+            _recoveryOptions);
 
     private void ValidateMigrationHistory(int schemaVersion)
     {
@@ -1629,7 +1786,7 @@ public sealed partial class SqliteHerdrStateStore : IDisposable
             count.CommandText = "SELECT COUNT(*) FROM schema_migrations;";
             if (Convert.ToInt32(count.ExecuteScalar(), CultureInfo.InvariantCulture) != schemaVersion)
             {
-                throw new HerdrStateStoreException(
+                throw new StateStoreCorruptionException(
                     "The applied SQLite migration history cardinality does not match the schema version.");
             }
         }
@@ -1650,7 +1807,7 @@ public sealed partial class SqliteHerdrStateStore : IDisposable
                 !string.Equals(reader.GetString(1), definition.ScriptSha256, StringComparison.Ordinal) ||
                 reader.Read())
             {
-                throw new HerdrStateStoreException(
+                throw new StateStoreCorruptionException(
                     $"The applied SQLite migration v{version} does not match the executable contract.");
             }
         }
@@ -1832,11 +1989,18 @@ public sealed partial class SqliteHerdrStateStore : IDisposable
 
     private void EnsureIntegrity(string phase)
     {
-        var result = ExecuteScalarString("PRAGMA quick_check;");
-        if (!string.Equals(result, "ok", StringComparison.OrdinalIgnoreCase))
+        var quickCheck = ExecuteScalarString("PRAGMA quick_check;");
+        if (!string.Equals(quickCheck, "ok", StringComparison.OrdinalIgnoreCase))
         {
-            throw new HerdrStateStoreException(
-                $"SQLite integrity check failed {phase}: {result}");
+            throw new StateStoreCorruptionException(
+                $"SQLite quick_check failed {phase}: {quickCheck}");
+        }
+
+        var integrityCheck = ExecuteScalarString("PRAGMA integrity_check;");
+        if (!string.Equals(integrityCheck, "ok", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new StateStoreCorruptionException(
+                $"SQLite integrity_check failed {phase}: {integrityCheck}");
         }
     }
 
@@ -1886,6 +2050,11 @@ public sealed partial class SqliteHerdrStateStore : IDisposable
             EvidenceAuditMigrationName,
             EvidenceAuditMigrationSql,
             ComputeMigrationSha256(EvidenceAuditMigrationSql)),
+        4 => new MigrationDefinition(
+            4,
+            ComplianceReviewMigrationName,
+            ComplianceReviewMigrationSql,
+            ComputeMigrationSha256(ComplianceReviewMigrationSql)),
         _ => throw new HerdrStateStoreException(
             $"No SQLite migration contract exists for v{version}."),
     };

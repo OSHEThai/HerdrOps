@@ -1,10 +1,12 @@
 using HerdrOps.App.Live;
 using HerdrOps.App.Localization;
+using HerdrOps.App.ReviewIpc;
 using HerdrOps.App.Overview;
 using HerdrOps.Contracts;
 using HerdrOps.Contracts.StateIpc;
 using HerdrOps.Domain.Activity;
 using HerdrOps.Domain.Notifications;
+using HerdrOps.Domain.Compliance;
 
 namespace HerdrOps.App.Widgets;
 
@@ -13,6 +15,8 @@ public sealed class LiveWidgetState : ObservableState, IInteractiveWidgetState
     private const int MaximumVisibleNotices = 4;
     private readonly WidgetUpdateTelemetry _telemetry;
     private readonly NotificationCenter _notificationCenter;
+    private readonly Dictionary<string, ComplianceWidgetReviewNotice> _reviewNotices =
+        new(StringComparer.Ordinal);
     private HerdrSessionStateContract _lastState = HerdrSessionStateContract.Empty;
     private bool _lastIsCoreConnected;
     private bool _lastIsLive;
@@ -327,6 +331,36 @@ public sealed class LiveWidgetState : ObservableState, IInteractiveWidgetState
         return decision;
     }
 
+    public void ApplyAuthoritativeReviewChange(ComplianceReviewStateChange change)
+    {
+        ArgumentNullException.ThrowIfNull(change);
+        var incident = ComplianceReviewWorkflowContract.NormalizeAndValidateIncident(
+            change.Incident);
+        var candidate = new ComplianceWidgetReviewNotice(
+            incident.IncidentId,
+            incident.State,
+            incident.Sequence,
+            incident.UpdatedUtc,
+            change.Decision?.ReviewerActorId);
+        if (_reviewNotices.TryGetValue(incident.IncidentId, out var existing) &&
+            existing.Sequence >= candidate.Sequence)
+        {
+            return;
+        }
+
+        _reviewNotices[incident.IncidentId] = candidate;
+        if (_reviewNotices.Count > MaximumVisibleNotices)
+        {
+            var oldest = _reviewNotices.Values
+                .OrderBy(item => item.UpdatedUtc)
+                .ThenBy(item => item.IncidentId, StringComparer.Ordinal)
+                .First();
+            _reviewNotices.Remove(oldest.IncidentId);
+        }
+
+        RefreshNotices();
+    }
+
     private void RefreshNotices()
     {
         var activityNotices = CreateNotificationNotices(
@@ -337,12 +371,77 @@ public sealed class LiveWidgetState : ObservableState, IInteractiveWidgetState
             _lastIsCoreConnected,
             _lastIsLive,
             _lastNoticeSnapshotAt);
-        Notices = activityNotices
+        var reviewNotices = CreateComplianceReviewNotices();
+        Notices = reviewNotices
+            .Concat(activityNotices)
             .Concat(statusNotices)
             .Take(MaximumVisibleNotices)
             .ToArray();
         PriorityNotices = Notices.Take(2).ToArray();
     }
+
+    private IReadOnlyList<WidgetNotice> CreateComplianceReviewNotices()
+    {
+        var text = UiLanguageService.Shared;
+        return _reviewNotices.Values
+            .OrderByDescending(item => item.UpdatedUtc)
+            .ThenBy(item => item.IncidentId, StringComparer.Ordinal)
+            .Select(item =>
+            {
+                var stateKey = item.State switch
+                {
+                    ComplianceReviewState.Suspected => "WidgetReviewStateSuspected",
+                    ComplianceReviewState.PendingLeader => "WidgetReviewStatePendingLeader",
+                    ComplianceReviewState.PendingProjectManager => "WidgetReviewStatePendingProjectManager",
+                    ComplianceReviewState.Confirmed => "WidgetReviewStateConfirmed",
+                    ComplianceReviewState.Dismissed => "WidgetReviewStateDismissed",
+                    _ => throw new ArgumentOutOfRangeException(
+                        nameof(item),
+                        item.State,
+                        "Unsupported compliance review state."),
+                };
+                var brushKey = item.State switch
+                {
+                    ComplianceReviewState.Confirmed => OverviewBrushKeys.Done,
+                    ComplianceReviewState.Dismissed => OverviewBrushKeys.Offline,
+                    ComplianceReviewState.PendingLeader or
+                    ComplianceReviewState.PendingProjectManager => OverviewBrushKeys.Review,
+                    _ => OverviewBrushKeys.Blocked,
+                };
+                var reviewer = string.IsNullOrWhiteSpace(item.ReviewerActorId)
+                    ? text["WidgetReviewReviewerUnavailable"]
+                    : item.ReviewerActorId;
+                return new WidgetNotice(
+                    text.Format("WidgetReviewNoticeTitleFormat", item.IncidentId),
+                    text.Format(
+                        "WidgetReviewNoticeMessageFormat",
+                        text[stateKey],
+                        reviewer),
+                    item.UpdatedUtc.ToLocalTime().ToString(
+                        "HH:mm",
+                        System.Globalization.CultureInfo.InvariantCulture),
+                    "\uE7BA",
+                    brushKey,
+                    text[stateKey],
+                    OpenAutomationName: text.Format(
+                        "WidgetOpenComplianceReviewAutomationFormat",
+                        item.IncidentId),
+                    Route: new WidgetNotificationRoute(
+                        $"compliance-review:{item.IncidentId}",
+                        Guid.Empty,
+                        item.IncidentId,
+                        AgentTerminalId: null,
+                        TaskId: null));
+            })
+            .ToArray();
+    }
+
+    private sealed record ComplianceWidgetReviewNotice(
+        string IncidentId,
+        ComplianceReviewState State,
+        long Sequence,
+        DateTimeOffset UpdatedUtc,
+        string? ReviewerActorId);
 
     private void RecordLatency(
         long sequence,

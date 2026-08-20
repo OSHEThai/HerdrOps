@@ -2,12 +2,15 @@ using System.ComponentModel;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
+using HerdrOps.App.Evaluation;
 using HerdrOps.App.Files;
 using HerdrOps.App.Live;
 using HerdrOps.App.Localization;
 using HerdrOps.App.Overview;
 using HerdrOps.App.Shell;
+using HerdrOps.App.Summaries;
 using HerdrOps.App.Widgets;
+using HerdrOps.Domain.Settings;
 
 namespace HerdrOps.App.Views;
 
@@ -26,6 +29,10 @@ public partial class ShellView : UserControl
     private const double ProjectSelectorBreakpoint = 1080;
     private const double StatusLegendBreakpoint = 1480;
     private readonly bool _syntheticPreview;
+    private readonly Action<UiLanguage>? _languageSelector;
+    private readonly Action<AppSettingsWidgetVariant>? _widgetSelected;
+    private readonly Action<bool>? _widgetEnabled;
+    private readonly IWidgetWindowLauncher? _widgetLauncher;
     private string? _activeDestinationId;
     private string? _activePageName;
     private bool _resourcesReleased;
@@ -36,16 +43,40 @@ public partial class ShellView : UserControl
     }
 
     public ShellView(LiveDashboardState liveDashboard)
-        : this(liveDashboard, syntheticPreview: false)
+        : this(liveDashboard, null, null, null, null)
+    {
+    }
+
+    public ShellView(
+        LiveDashboardState liveDashboard,
+        Action<UiLanguage>? languageSelector,
+        Action<AppSettingsWidgetVariant>? widgetSelected,
+        Action<bool>? widgetEnabled,
+        IWidgetWindowLauncher? widgetLauncher)
+        : this(
+            liveDashboard,
+            syntheticPreview: false,
+            languageSelector,
+            widgetSelected,
+            widgetEnabled,
+            widgetLauncher)
     {
     }
 
     private ShellView(
         LiveDashboardState liveDashboard,
-        bool syntheticPreview)
+        bool syntheticPreview,
+        Action<UiLanguage>? languageSelector = null,
+        Action<AppSettingsWidgetVariant>? widgetSelected = null,
+        Action<bool>? widgetEnabled = null,
+        IWidgetWindowLauncher? widgetLauncher = null)
     {
         LiveDashboard = liveDashboard ?? throw new ArgumentNullException(nameof(liveDashboard));
         _syntheticPreview = syntheticPreview;
+        _languageSelector = languageSelector;
+        _widgetSelected = widgetSelected;
+        _widgetEnabled = widgetEnabled;
+        _widgetLauncher = widgetLauncher;
         Navigation = new ShellNavigationController();
         InitializeComponent();
         DataContext = Navigation;
@@ -73,7 +104,16 @@ public partial class ShellView : UserControl
 
     public string? ActivePageName => _activePageName;
 
-    public void SetLanguage(UiLanguage language) => LanguageService.SetLanguage(language);
+    public void SetLanguage(UiLanguage language)
+    {
+        if (_languageSelector is not null)
+        {
+            _languageSelector(language);
+            return;
+        }
+
+        LanguageService.SetLanguage(language);
+    }
 
     public bool TryNavigateByKey(Key key, ModifierKeys modifiers)
     {
@@ -162,6 +202,20 @@ public partial class ShellView : UserControl
         {
             fileActivity.RefreshLanguage();
         }
+        if (PageHost.Content is EvaluationView
+            {
+                DataContext: EvaluationState evaluation,
+            })
+        {
+            evaluation.RefreshLanguage();
+        }
+        if (PageHost.Content is DailySummaryView
+            {
+                DataContext: DailySummaryState dailySummary,
+            })
+        {
+            dailySummary.RefreshLanguage();
+        }
         if (_syntheticPreview && PageHost.Content is OverviewView overview)
         {
             overview.DataContext = SyntheticOverviewState.Create();
@@ -231,7 +285,9 @@ public partial class ShellView : UserControl
                     page.UseWidgetState(
                         _syntheticPreview
                             ? SyntheticWidgetState.Create()
-                            : LiveDashboard.Widgets);
+                            : LiveDashboard.Widgets,
+                        _widgetLauncher);
+                    page.UseSettingsLifecycle(_widgetSelected, _widgetEnabled);
                     return ("OverviewPage", page);
                 }
 
@@ -271,6 +327,20 @@ public partial class ShellView : UserControl
                 return ("ComplianceQueuePage", new ComplianceQueueView
                 {
                     DataContext = LiveDashboard.ComplianceQueue,
+                });
+            case "evaluation":
+                return ("EvaluationPage", new EvaluationView
+                {
+                    DataContext = _syntheticPreview
+                        ? EvaluationState.CreateSyntheticPreview()
+                        : EvaluationState.CreateUnavailable(),
+                });
+            case "daily-summary":
+                return ("DailySummaryPage", new DailySummaryView
+                {
+                    DataContext = _syntheticPreview
+                        ? DailySummaryState.CreateSyntheticPreview()
+                        : DailySummaryState.CreateUnavailable(),
                 });
             default:
                 return null;

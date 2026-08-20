@@ -901,6 +901,52 @@
                             automation:AutomationProperties.Name="{Binding [ComplianceQueueReviewActionsTitle], Source={x:Static localization:UiLanguageService.Shared}}">
                             <StackPanel>
                                 <TextBlock Tag="ComplianceLanguageCheck" FontSize="13" FontWeight="SemiBold" Text="{Binding [ComplianceQueueReviewActionsTitle], Source={x:Static localization:UiLanguageService.Shared}}" />
+                                <StackPanel Margin="0,6,0,2"
+                                            Visibility="{Binding IsLiveReview, Converter={StaticResource BooleanToVisibility}}">
+                                    <TextBlock Tag="ComplianceLanguageCheck"
+                                               Foreground="{DynamicResource HerdrOps.Brush.TextSecondary}"
+                                               FontSize="10"
+                                               Text="{Binding [ComplianceReviewReasonLabel], Source={x:Static localization:UiLanguageService.Shared}}" />
+                                    <Grid Margin="0,3,0,0">
+                                        <TextBox x:Name="ReviewReasonBox"
+                                                 MinHeight="34"
+                                                 MaxLength="2048"
+                                                 Padding="8,6"
+                                                 VerticalContentAlignment="Center"
+                                                 Foreground="{DynamicResource HerdrOps.Brush.TextPrimary}"
+                                                 Background="{DynamicResource HerdrOps.Brush.SurfaceRaised}"
+                                                 BorderBrush="{DynamicResource HerdrOps.Brush.BorderStrong}"
+                                                 BorderThickness="1"
+                                                 IsEnabled="{Binding CanEditReviewReason}"
+                                                 Text="{Binding ReviewReason, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                                 automation:AutomationProperties.Name="{Binding [ComplianceReviewReasonLabel], Source={x:Static localization:UiLanguageService.Shared}}" />
+                                        <TextBlock Margin="9,0"
+                                                   VerticalAlignment="Center"
+                                                   Foreground="{DynamicResource HerdrOps.Brush.TextMuted}"
+                                                   FontSize="10"
+                                                   IsHitTestVisible="False"
+                                                   Tag="ComplianceLanguageCheck"
+                                                   Text="{Binding [ComplianceReviewReasonPlaceholder], Source={x:Static localization:UiLanguageService.Shared}}">
+                                            <TextBlock.Style>
+                                                <Style TargetType="TextBlock">
+                                                    <Setter Property="Visibility" Value="Collapsed" />
+                                                    <Style.Triggers>
+                                                        <DataTrigger Binding="{Binding ReviewReason}" Value="">
+                                                            <Setter Property="Visibility" Value="Visible" />
+                                                        </DataTrigger>
+                                                    </Style.Triggers>
+                                                </Style>
+                                            </TextBlock.Style>
+                                        </TextBlock>
+                                    </Grid>
+                                    <TextBlock Margin="0,3,0,0"
+                                               Tag="ComplianceLanguageCheck"
+                                               Foreground="{DynamicResource HerdrOps.Brush.TextSecondary}"
+                                               FontSize="10"
+                                               automation:AutomationProperties.LiveSetting="Polite"
+                                               Text="{Binding ReviewStatus}"
+                                               TextWrapping="Wrap" />
+                                </StackPanel>
                                 <ItemsControl Margin="0,6,0,0" ItemsSource="{Binding ReviewActions}">
                                     <ItemsControl.ItemTemplate>
                                         <DataTemplate>
@@ -908,9 +954,10 @@
                                                     Visibility="{Binding IsVisible, Converter={StaticResource BooleanToVisibility}}"
                                                     IsEnabled="{Binding IsEnabled}"
                                                     ToolTip="{Binding UnavailableReason}"
-                                                    ToolTipService.ShowOnDisabled="True"
-                                                    automation:AutomationProperties.Name="{Binding Label}"
-                                                    automation:AutomationProperties.HelpText="{Binding UnavailableReason}">
+                                                     ToolTipService.ShowOnDisabled="True"
+                                                     automation:AutomationProperties.Name="{Binding Label}"
+                                                     automation:AutomationProperties.HelpText="{Binding UnavailableReason}"
+                                                     Click="OnReviewActionClick">
                                                 <Grid>
                                                     <Grid.ColumnDefinitions>
                                                         <ColumnDefinition Width="25" />

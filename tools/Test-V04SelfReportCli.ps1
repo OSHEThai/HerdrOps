@@ -14,8 +14,8 @@ $repositoryRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Pat
 $artifactRoot = Join-Path $repositoryRoot 'artifacts'
 $contractPath = Join-Path $repositoryRoot 'docs\protocol\v0.4-cli-self-report-contract.md'
 $implementationPath = Join-Path $repositoryRoot 'docs\design\implementation\v0.4-issue-18-cli-self-report.md'
-$reviewRecordPath = Join-Path $repositoryRoot 'docs\reviews\v0.4-issue-18-independent-review.md'
-$reviewManifestPath = Join-Path $repositoryRoot 'docs\reviews\v0.4-issue-18-reviewed-files.sha256'
+$reviewRecordPath = Join-Path $repositoryRoot 'docs\reviews\v0.4-issue-18-successor-v0.5-independent-review.md'
+$reviewManifestPath = Join-Path $repositoryRoot 'docs\reviews\v0.4-issue-18-successor-v0.5-reviewed-files.sha256'
 $assignmentExamplePath = Join-Path $repositoryRoot 'docs\protocol\examples\v0.4\assignment.json'
 
 $workingTreeStatus = @(& git -C $repositoryRoot status --porcelain=v1 --untracked-files=all)
@@ -322,7 +322,7 @@ if ($reviewPassed) {
         throw 'The PASS review record is missing its reviewed-file manifest binding.'
     }
 
-    $expectedManifestRelativePath = 'docs/reviews/v0.4-issue-18-reviewed-files.sha256'
+    $expectedManifestRelativePath = 'docs/reviews/v0.4-issue-18-successor-v0.5-reviewed-files.sha256'
     if ($manifestPathMatch.Groups[1].Value -cne $expectedManifestRelativePath -or
         -not (Test-Path -LiteralPath $reviewManifestPath -PathType Leaf)) {
         throw 'The PASS review record does not bind the required Issue #18 manifest path.'

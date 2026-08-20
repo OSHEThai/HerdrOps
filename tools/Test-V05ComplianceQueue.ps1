@@ -35,69 +35,33 @@ $contractProject = Join-Path $repositoryRoot 'tests\HerdrOps.ContractTests\Herdr
 $integrationProject = Join-Path $repositoryRoot 'tests\HerdrOps.IntegrationTests\HerdrOps.IntegrationTests.csproj'
 $runtimeProject = Join-Path $repositoryRoot 'tests\HerdrOps.RuntimeTests\HerdrOps.RuntimeTests.csproj'
 
-# These are content anchors for the stabilized Issue #26 working set. They are
-# intentionally committed here instead of being calculated from the checkout at
-# run time, so source drift fails closed.
+# These are content anchors for the stabilized, Issue #26-owned working set.
+# Shared shell, localization, lifecycle, and token files evolve additively as
+# later pages are integrated, so they are tracked and marker-checked separately.
 $expectedHashes = [ordered]@{
     ComplianceQueueState = [ordered]@{
         Path = $sourceCommitPath
-        Sha256 = '64295ED9546787EB9C213DC773D21E116547AD46BE1AC068813359EFFBBA7833'
+        Sha256 = '54A5BE3C3839FAE6E69CC63770B1D34BAB7A2C3AEE56CAAB033F0D34A04FCBC0'
     }
     ComplianceQueueView = [ordered]@{
         Path = $viewPath
-        Sha256 = '9A4929B5EB72D81DC049F894A08C1052429E30B0D93B8525591D67DB4C027A13'
+        Sha256 = '9F08B33E35CBEBA24C9673CA9B5410849BF6E12406416B08535DE8D6E2375307'
     }
     ComplianceQueueViewCodeBehind = [ordered]@{
         Path = $viewCodeBehindPath
-        Sha256 = '841E9F67CB760044A8E1D442889235B6FA4461E99C6409215CE12245BE2DEBCD'
-    }
-    ShellView = [ordered]@{
-        Path = $shellXamlPath
-        Sha256 = 'B3728DDD6CA01D8676DA6831DE8433F685DDE964DDDE911041921BB5EF1917F8'
-    }
-    ShellViewCodeBehind = [ordered]@{
-        Path = $shellCodeBehindPath
-        Sha256 = 'C6CDF49388FF7F185B14043B2FF328C3539EA453C620605131BFB233C757AEC3'
-    }
-    LiveDashboardState = [ordered]@{
-        Path = $dashboardStatePath
-        Sha256 = '69ADD7909B9485B68BD16BF8B6D6491D2F5FF4E85B36607A4918C1394C025BF2'
-    }
-    LiveDashboardRuntime = [ordered]@{
-        Path = $dashboardRuntimePath
-        Sha256 = '010226D6BD3A286D0DDE736E3D1E28BA0D78DEF36E4E14D9C513FD4101CB9526'
-    }
-    SemanticTokens = [ordered]@{
-        Path = $semanticTokensPath
-        Sha256 = '1E41C6E43EEFAE6523147DF9D553A3AAD78922B2606871550894ECE12E3B1246'
-    }
-    UiLanguageCatalog = [ordered]@{
-        Path = $languageCatalogPath
-        Sha256 = '02F804F1D172059354FDE4CA8E6F48B000F0569342D68C04AD40EA6EDFB6FF1C'
+        Sha256 = 'C106BD54CA8E85B75BB119898523C0D26D12BA1F51894177C2EEC218D8AE0AD4'
     }
     Contract = [ordered]@{
         Path = $contractPath
-        Sha256 = '6627170B41D472780B32C2E9E7AA2AE07B47AE4536B113A045CCE2C8A237693A'
+        Sha256 = 'D4573C51520F8764D1C7E89DFBA7CB406C3D83DB77F59BA8F1DE29B64334AF40'
     }
     ComplianceQueuePresentationContractTest = [ordered]@{
         Path = $contractTestSourcePath
-        Sha256 = '778E5E8EF3F6FFEFB6DBE970032F4DFB670D486F32B082918FE08EC38827D909'
+        Sha256 = 'B2AC371E511B6D393E29EEC5613F7651A9880FF63238C094ADCFC37272A6AE57'
     }
     ComplianceQueueStateTest = [ordered]@{
         Path = $stateTestSourcePath
-        Sha256 = '2EDA7C77C1C52C82D0C2F52BA3F27832ACA29BD3B0D2BEAF37F6EBD8D528AE5A'
-    }
-    UiLanguageCatalogTest = [ordered]@{
-        Path = $languageCatalogTestSourcePath
-        Sha256 = 'DFDE8A6AC9BD870158D53100B7F1B48A9C36346C68CF3AE75A65C6F1629F14DB'
-    }
-    LiveDashboardStateTest = [ordered]@{
-        Path = $dashboardStateTestSourcePath
-        Sha256 = 'E9E2EE47836C05A8FADCBE97C23088176A8AE8A4FA9C5454E634B5DB2BCC1C83'
-    }
-    LiveWidgetStateTest = [ordered]@{
-        Path = $liveWidgetStateTestSourcePath
-        Sha256 = '584F528C9929B8CF6733EC873E8A1E24E196E7650841873AB44A3DE7F80662AC'
+        Sha256 = 'F83A7BF8D668B80D65F15AC527117F9893F45AE7F6C43C4D47927FAA7363AFEB'
     }
     ComplianceQueueRuntimeTest = [ordered]@{
         Path = $runtimeTestSourcePath
@@ -109,11 +73,25 @@ $expectedHashes = [ordered]@{
     }
 }
 
-# The source, test, contract, and immutable-reference files below must be
-# tracked by the exact committed HEAD. Existing final SHA anchors remain
-# unchanged while the visual implementation is still being stabilized; the
-# release owner must refresh every drifted anchor from the final commit.
-$requiredTrackedPaths = @($expectedHashes.Values | ForEach-Object { $_.Path })
+# Later version pages legitimately extend these shared integration files. Their
+# Issue #26 invariants are checked below while their observed hashes remain in
+# the evidence report for auditability.
+$sharedIntegrationFiles = [ordered]@{
+    ShellView = $shellXamlPath
+    ShellViewCodeBehind = $shellCodeBehindPath
+    LiveDashboardState = $dashboardStatePath
+    LiveDashboardRuntime = $dashboardRuntimePath
+    SemanticTokens = $semanticTokensPath
+    UiLanguageCatalog = $languageCatalogPath
+    UiLanguageCatalogTest = $languageCatalogTestSourcePath
+    LiveDashboardStateTest = $dashboardStateTestSourcePath
+    LiveWidgetStateTest = $liveWidgetStateTestSourcePath
+}
+
+$requiredTrackedPaths = @(
+    $expectedHashes.Values | ForEach-Object { $_.Path }
+    $sharedIntegrationFiles.Values
+)
 
 function Get-CleanCheckoutStatus {
     $status = @(& git -C $repositoryRoot status --porcelain=v1 --untracked-files=all)
@@ -339,6 +317,51 @@ foreach ($entry in $expectedHashes.GetEnumerator()) {
 }
 
 Assert-ContainsText `
+    -Path $shellXamlPath `
+    -Description 'shared shell XAML' `
+    -RequiredText @(
+        '<ContentControl x:Name="PageHost"',
+        'xmlns:views="clr-namespace:HerdrOps.App.Views"')
+Assert-ContainsText `
+    -Path $shellCodeBehindPath `
+    -Description 'shared shell code-behind' `
+    -RequiredText @(
+        'case "compliance-queue":',
+        'return ("ComplianceQueuePage", new ComplianceQueueView',
+        'DataContext = LiveDashboard.ComplianceQueue,')
+Assert-ContainsText `
+    -Path $dashboardStatePath `
+    -Description 'shared dashboard state' `
+    -RequiredText @(
+        'ComplianceQueueState.CreateSyntheticPreview()',
+        'ComplianceQueueState.CreateUnavailableLiveState(',
+        'ComplianceQueue.RefreshLanguage();',
+        'ComplianceQueue.Dispose();')
+Assert-ContainsText `
+    -Path $dashboardRuntimePath `
+    -Description 'shared dashboard runtime' `
+    -RequiredText @(
+        'Owns the single App-wide Core subscription',
+        'LiveDashboardSession')
+Assert-ContainsText `
+    -Path $semanticTokensPath `
+    -Description 'shared semantic tokens' `
+    -RequiredText @(
+        'HerdrOps.Brush.Severity.Critical',
+        'HerdrOps.Brush.Severity.High',
+        'HerdrOps.Brush.Review.Suspected',
+        'HerdrOps.Brush.Review.Confirmed',
+        'HerdrOps.Brush.Review.PendingLeader',
+        'HerdrOps.Brush.Review.PendingProjectManager',
+        'HerdrOps.Brush.Review.MissingEvidence')
+Assert-ContainsText `
+    -Path $languageCatalogPath `
+    -Description 'shared UI language catalog' `
+    -RequiredText @(
+        '["ComplianceQueuePageTitle"]',
+        '["ComplianceQueuePageAutomation"]',
+        '["ComplianceQueueSyntheticBoundary"]')
+Assert-ContainsText `
     -Path $contractTestSourcePath `
     -Description 'contract test source' `
     -RequiredText @(
@@ -351,6 +374,7 @@ Assert-ContainsText `
     -RequiredText @(
         'LocalizedPaginationRangeTracksFilteredVisibleCount',
         'SyntheticPreviewCoversEveryIncidentStateAndKeepsDetailEvidenceAndActionsAligned',
+        'SyntheticReviewActionsRejectDirectExecutionWithoutIpc',
         'SeverityAndReviewPresentationUseDedicatedSemanticBrushKeys',
         'EvidenceProjectionCarriesIssue25ProvenanceAndOneExplicitMissingItem',
         'SelectionRejectsRowsOutsideVisibleIncidentsAndFailsClosed',
@@ -465,6 +489,7 @@ $requiredChecks = @(
     'WrittenContractKeepsSyntheticUiSeparateFromAuthorizationAndRuntime',
     'LocalizedPaginationRangeTracksFilteredVisibleCount',
     'SyntheticPreviewCoversEveryIncidentStateAndKeepsDetailEvidenceAndActionsAligned',
+    'SyntheticReviewActionsRejectDirectExecutionWithoutIpc',
     'SeverityAndReviewPresentationUseDedicatedSemanticBrushKeys',
     'EvidenceProjectionCarriesIssue25ProvenanceAndOneExplicitMissingItem',
     'SelectionRejectsRowsOutsideVisibleIncidentsAndFailsClosed',
@@ -617,6 +642,10 @@ $hashReport = $expectedHashes.GetEnumerator() | ForEach-Object {
     $hashValue = ([string]$hashEntry.Value.Sha256).ToUpperInvariant()
     "SHA256 $hashValue $($hashEntry.Key) $(Get-RepositoryRelativePath -Path $hashEntry.Value.Path)"
 }
+$sharedHashReport = $sharedIntegrationFiles.GetEnumerator() | ForEach-Object {
+    $hashValue = (Get-FileHash -LiteralPath $_.Value -Algorithm SHA256).Hash.ToUpperInvariant()
+    "SHA256 $hashValue $($_.Key) $(Get-RepositoryRelativePath -Path $_.Value)"
+}
 $counterReport = $testCounterEvidence | ForEach-Object {
     $values = $_.Counters
     "TRX $($_.Name) total=$($values.total) executed=$($values.executed) passed=$($values.passed) failed=$($values.failed) error=$($values.error) timeout=$($values.timeout) aborted=$($values.aborted) inconclusive=$($values.inconclusive) notExecuted=$($values.notExecuted) completed=$($values.completed) notRunnable=$($values.notRunnable) disconnected=$($values.disconnected) warning=$($values.warning)"
@@ -646,6 +675,9 @@ $gateReport = @(
     '',
     'ExactSourceSha256Anchors:',
     $hashReport,
+    '',
+    'ObservedSharedIntegrationSha256:',
+    $sharedHashReport,
     '',
     'FreshTrxCounters:',
     $counterReport,

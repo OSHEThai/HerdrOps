@@ -11,6 +11,7 @@ public partial class WidgetWindow : Window
 {
     private bool _isConstraining;
     private IWidgetState? _state;
+    private bool _isClosed;
     private readonly IWidgetActionRouter _actionRouter;
     private bool _resourcesReleased;
 
@@ -65,6 +66,8 @@ public partial class WidgetWindow : Window
     public WidgetMotionPolicy MotionPolicy { get; }
 
     public bool ResourcesReleased => _resourcesReleased;
+
+    public bool IsClosed => _isClosed;
 
     public bool IsDragEnabled => true;
 
@@ -184,6 +187,7 @@ public partial class WidgetWindow : Window
         }
 
         _resourcesReleased = true;
+        _isClosed = true;
         Surface.CloseRequested -= OnCloseRequested;
         Surface.PinToggleRequested -= OnPinToggleRequested;
         Surface.ResetPositionRequested -= OnResetPositionRequested;

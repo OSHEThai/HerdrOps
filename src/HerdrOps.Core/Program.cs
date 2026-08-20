@@ -64,6 +64,11 @@ if (args.Length > 0 && string.Equals(args[0], "serve-herdr-state", StringCompari
     }
 }
 
+if (args.Length > 0 && string.Equals(args[0], "restore-state-store", StringComparison.Ordinal))
+{
+    return StateStoreRestoreCommand.Run(args, Console.Out, Console.Error);
+}
+
 if (args.Length > 0 && string.Equals(args[0], "serve-self-reports", StringComparison.Ordinal))
 {
     using var shutdown = new CancellationTokenSource();

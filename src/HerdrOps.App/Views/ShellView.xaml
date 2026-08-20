@@ -578,7 +578,8 @@
                     <Ellipse Width="9"
                              Height="9"
                              Fill="{Binding LiveDashboard.ConnectionBrushKey, RelativeSource={RelativeSource AncestorType=UserControl}, Converter={StaticResource ResourceBrush}}" />
-                    <TextBlock Margin="8,0,18,0"
+                    <TextBlock x:Name="ConnectionStatusText"
+                               Margin="8,0,18,0"
                                Foreground="{DynamicResource HerdrOps.Brush.TextMuted}"
                                FontSize="12"
                                Text="{Binding LiveDashboard.ConnectionLabel, RelativeSource={RelativeSource AncestorType=UserControl}}" />
