@@ -418,9 +418,9 @@ public static class ComplianceDiagnosticExportBuilder
     {
         using var stream = new MemoryStream();
         using (var writer = new Utf8JsonWriter(stream, new JsonWriterOptions
-               {
-                   Indented = false,
-               }))
+        {
+            Indented = false,
+        }))
         {
             writer.WriteStartObject();
             writer.WriteString("schemaVersion", ComplianceDiagnosticExportSchema.ExportSchemaVersion);
