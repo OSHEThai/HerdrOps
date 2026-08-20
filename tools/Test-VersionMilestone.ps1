@@ -30,13 +30,20 @@ function Read-GitHubJsonArrayPage {
         [string]$Executable
     )
 
-    $rawOutput = (& $Executable api $Endpoint 2>&1 | Out-String)
-    $invocationSucceeded = $?
-    $exitCode = if ([IO.Path]::GetExtension($Executable) -ieq '.ps1') {
-        if ($invocationSucceeded) { 0 } else { 1 }
+    $previousPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = 'Continue'
+        $rawOutput = (& $Executable api $Endpoint 2>&1 | Out-String)
+        $invocationSucceeded = $?
+        $exitCode = if ([IO.Path]::GetExtension($Executable) -ieq '.ps1') {
+            if ($invocationSucceeded) { 0 } else { 1 }
+        }
+        else {
+            $LASTEXITCODE
+        }
     }
-    else {
-        $LASTEXITCODE
+    finally {
+        $ErrorActionPreference = $previousPreference
     }
     if ($exitCode -ne 0) {
         throw "Unable to query GitHub endpoint '$Endpoint' (exit $exitCode): $($rawOutput.Trim())"
@@ -118,3 +125,5 @@ if ($milestone[0].state -ne 'closed') {
 }
 
 Write-Host "$Version milestone is closed with no open issues."
+
+exit 0

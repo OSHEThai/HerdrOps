@@ -25,3 +25,4 @@ if (-not $responses.ContainsKey($Endpoint)) {
 }
 
 Write-Output $responses[$Endpoint]
+exit 0

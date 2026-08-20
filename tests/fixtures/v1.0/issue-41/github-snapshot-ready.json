@@ -55,6 +55,7 @@
     { "number": 51, "title": "[v0.1.0] Remediate independent Widget design review findings", "state": "closed", "milestone": { "number": 1, "title": "v0.1.0" } },
     { "number": 54, "title": "[v0.2.0] Extract and validate bundled Herdr JSON Schema successor", "state": "closed", "milestone": { "number": 2, "title": "v0.2.0" } },
     { "number": 60, "title": "[v0.1.0] Separate Thai and English UI modes", "state": "closed", "milestone": { "number": 1, "title": "v0.1.0" } },
-    { "number": 63, "title": "[v0.2.0] Complete Thai and English separation for live surfaces", "state": "closed", "milestone": { "number": 2, "title": "v0.2.0" } }
+    { "number": 63, "title": "[v0.2.0] Complete Thai and English separation for live surfaces", "state": "closed", "milestone": { "number": 2, "title": "v0.2.0" } },
+    { "number": 103, "title": "[v0.7.0] Prepare repository for public open-source development", "state": "closed", "milestone": { "number": 7, "title": "v0.7.0" } }
   ]
 }

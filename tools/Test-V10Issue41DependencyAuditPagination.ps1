@@ -178,3 +178,5 @@ foreach ($malformedJson in @(
 }
 
 Write-Output 'Issue #41 bounded pagination fixtures: PASS'
+
+exit 0

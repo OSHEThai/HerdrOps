@@ -24,6 +24,22 @@ foreach ($path in @($auditTool, $strictJsonPolicy, $paginationPolicy, $paginatio
     }
 }
 
+function ConvertTo-PlainText {
+    param(
+        [Parameter(Mandatory = $false)]
+        [string]$Text
+    )
+
+    if ([string]::IsNullOrEmpty($Text)) {
+        return ''
+    }
+
+    $cleaned = $Text -replace '\x1b\[[0-9;?]*[ -/]*[@-~]', ''
+    $cleaned = $cleaned -replace '\x1b\][^\x07\x1b]*(\x07|\x1b\\)', ''
+    $cleaned = $cleaned -replace '\x1b[@-Z\\-_]', ''
+    return $cleaned
+}
+
 function Write-Utf8NoBom {
     param(
         [Parameter(Mandatory)]
@@ -38,8 +54,16 @@ function Write-Utf8NoBom {
 }
 
 function Get-SourceCommit {
-    $lines = @(& git -C $repositoryRoot rev-parse --verify 'HEAD^{commit}' 2>&1 | ForEach-Object { [string]$_ })
-    if ($LASTEXITCODE -ne 0 -or $lines.Count -ne 1 -or $lines[0].Trim() -notmatch '^[0-9a-fA-F]{40}$') {
+    $previousPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = 'Continue'
+        $lines = @(& git -C $repositoryRoot rev-parse --verify 'HEAD^{commit}' 2>&1 | ForEach-Object { [string]$_ })
+        $exitCode = $LASTEXITCODE
+    }
+    finally {
+        $ErrorActionPreference = $previousPreference
+    }
+    if ($exitCode -ne 0 -or $lines.Count -ne 1 -or $lines[0].Trim() -notmatch '^[0-9a-fA-F]{40}$') {
         throw 'Fixture tests require a committed source identity.'
     }
     return $lines[0].Trim().ToLowerInvariant()
@@ -190,10 +214,21 @@ function Invoke-AuditCase {
     if (-not [string]::IsNullOrWhiteSpace($CandidateCommit)) {
         $arguments += @('-ReleaseCandidateCommit', $CandidateCommit)
     }
-    $output = @(& $ShellPath @arguments 2>&1 | ForEach-Object { [string]$_ })
+    $previousPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = 'Continue'
+        $output = @(& $ShellPath @arguments 2>&1 | ForEach-Object { [string]$_ })
+        $exitCode = $LASTEXITCODE
+    }
+    finally {
+        $ErrorActionPreference = $previousPreference
+    }
+    $rawText = $output -join "`n"
+    $plainText = ConvertTo-PlainText -Text $rawText
     return [pscustomobject]@{
-        ExitCode = $LASTEXITCODE
-        Output = ($output -join "`n")
+        ExitCode = $exitCode
+        Output = $plainText
+        RawOutput = $rawText
     }
 }
 
@@ -226,8 +261,10 @@ function Assert-Contains {
         [string]$CaseName
     )
 
-    if ($Text.IndexOf($Needle, [StringComparison]::Ordinal) -lt 0) {
-        throw "$CaseName did not contain '$Needle'. Output: $Text"
+    $plainText = ConvertTo-PlainText -Text $Text
+    $plainNeedle = ConvertTo-PlainText -Text $Needle
+    if ($plainText.IndexOf($plainNeedle, [StringComparison]::Ordinal) -lt 0) {
+        throw "$CaseName did not contain '$Needle'. Output: $plainText"
     }
 }
 
@@ -265,8 +302,17 @@ function Assert-ParsedInShell {
     $env:HERDR_OPS_V10_PARSE_TARGET = $Path
     try {
         $command = '$target=$env:HERDR_OPS_V10_PARSE_TARGET; $tokens=$null; $errors=$null; [System.Management.Automation.Language.Parser]::ParseFile($target, [ref]$tokens, [ref]$errors) | Out-Null; if ($errors.Count -gt 0) { $errors | ForEach-Object { Write-Error $_.ToString() }; exit 1 }; Write-Output "PARSE_PASS"'
-        $output = @(& $ShellPath -NoProfile -NonInteractive -Command $command 2>&1 | ForEach-Object { [string]$_ })
-        if ($LASTEXITCODE -ne 0 -or ($output -join "`n") -notmatch 'PARSE_PASS') {
+        $previousPreference = $ErrorActionPreference
+        try {
+            $ErrorActionPreference = 'Continue'
+            $output = @(& $ShellPath -NoProfile -NonInteractive -Command $command 2>&1 | ForEach-Object { [string]$_ })
+            $exitCode = $LASTEXITCODE
+        }
+        finally {
+            $ErrorActionPreference = $previousPreference
+        }
+        $plainText = ConvertTo-PlainText -Text ($output -join "`n")
+        if ($exitCode -ne 0 -or $plainText -notmatch 'PARSE_PASS') {
             throw "PowerShell parse failed for $Path using ${ShellPath}: $($output -join '; ')"
         }
     }
@@ -307,22 +353,39 @@ try {
         Assert-ParsedInShell -ShellPath $shell.Path -Path $paginationPolicy
         Assert-ParsedInShell -ShellPath $shell.Path -Path $paginationFixture
         Assert-ParsedInShell -ShellPath $shell.Path -Path $milestoneVerifier
-        $paginationOutput = @(& $shell.Path -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $paginationFixture 2>&1 | ForEach-Object { [string]$_ })
-        if ($LASTEXITCODE -ne 0 -or ($paginationOutput -join "`n") -notmatch 'bounded pagination fixtures: PASS') {
-            throw "$($shell.Name) pagination fixture failed: $($paginationOutput -join '; ')"
+        $previousPreference = $ErrorActionPreference
+        try {
+            $ErrorActionPreference = 'Continue'
+            $paginationOutput = @(& $shell.Path -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $paginationFixture 2>&1 | ForEach-Object { [string]$_ })
+            $paginationExitCode = $LASTEXITCODE
+        }
+        finally {
+            $ErrorActionPreference = $previousPreference
+        }
+        $paginationText = ConvertTo-PlainText -Text ($paginationOutput -join "`n")
+        if ($paginationExitCode -ne 0 -or $paginationText -notmatch 'bounded pagination fixtures:\s*PASS') {
+            throw "$($shell.Name) pagination fixture failed (exit $paginationExitCode): $($paginationOutput -join '; ')"
         }
         [void]$completed.Add("$($shell.Name): bounded pagination -> complete")
-        $milestoneOutput = @(& $shell.Path `
-                -NoProfile `
-                -NonInteractive `
-                -ExecutionPolicy Bypass `
-                -File $milestoneVerifier `
-                -Version 'v0.1.0' `
-                -Repository 'example' `
-                -GhExecutable $fakeGhFixture `
-                -GitHubPageSize 2 2>&1 | ForEach-Object { [string]$_ })
-        $milestoneExitCode = $LASTEXITCODE
-        $milestoneText = $milestoneOutput -join "`n"
+
+        $previousPreference = $ErrorActionPreference
+        try {
+            $ErrorActionPreference = 'Continue'
+            $milestoneOutput = @(& $shell.Path `
+                    -NoProfile `
+                    -NonInteractive `
+                    -ExecutionPolicy Bypass `
+                    -File $milestoneVerifier `
+                    -Version 'v0.1.0' `
+                    -Repository 'example' `
+                    -GhExecutable $fakeGhFixture `
+                    -GitHubPageSize 2 2>&1 | ForEach-Object { [string]$_ })
+            $milestoneExitCode = $LASTEXITCODE
+        }
+        finally {
+            $ErrorActionPreference = $previousPreference
+        }
+        $milestoneText = ConvertTo-PlainText -Text ($milestoneOutput -join "`n")
         if ($milestoneExitCode -ne 0 -or
             $milestoneText -notmatch 'TotalIssues\s*:\s*3' -or
             $milestoneText -notmatch 'IssueQueryPages\s*:\s*2') {
@@ -330,6 +393,9 @@ try {
         }
         [void]$completed.Add("$($shell.Name): production milestone pagination -> 3 issues across 2 pages")
         $caseDirectory = New-CaseDirectory -ShellName $shell.Name
+        foreach ($generatedOutput in @(Get-ChildItem -LiteralPath (Join-Path $repositoryRoot 'artifacts\dependency-audit') -Directory -Filter ("fixture-$($shell.Name)-*") -ErrorAction SilentlyContinue)) {
+            Remove-Item -LiteralPath $generatedOutput.FullName -Recurse -Force
+        }
         try {
             $evidence = New-ReadyEvidenceManifest -CaseDirectory $caseDirectory -SourceCommit $sourceCommit
             $readyOutput = Join-Path $repositoryRoot ("artifacts\dependency-audit\fixture-$($shell.Name)-ready")
@@ -337,11 +403,15 @@ try {
             $readyResult = Invoke-AuditCase -ShellPath $shell.Path -FixturePath $readyFixture -EvidencePath $evidence.Path -OutputPath $readyOutput
             Assert-CaseExit -Result $readyResult -ExpectedExitCode 2 -CaseName "$($shell.Name) offline ready fixture"
             $readyReport = Assert-Report -OutputPath $readyOutput -CaseName "$($shell.Name) offline ready fixture"
-            if (@($readyReport.DependencyMap).Count -ne 44) { throw "$($shell.Name) dependency map count was $(@($readyReport.DependencyMap).Count), expected 44." }
+            if (@($readyReport.DependencyMap).Count -ne 45) { throw "$($shell.Name) dependency map count was $(@($readyReport.DependencyMap).Count), expected 45." }
+            $v07WorkIssues = @($readyReport.DependencyMap | Where-Object { $_.Version -eq 'v0.7.0' -and -not $_.IsReleaseTracker })
+            if ($v07WorkIssues.Count -ne 6) { throw "$($shell.Name) v0.7.0 work issue count was $($v07WorkIssues.Count), expected 6." }
+            $issue103 = @($v07WorkIssues | Where-Object IssueNumber -eq 103)
+            if ($issue103.Count -ne 1 -or $issue103[0].RoadmapKey -ne 'V070-06') { throw "$($shell.Name) v0.7.0 supplemental issue #103 was not mapped correctly." }
             if ($readyReport.ReleaseCandidate.Status -ne 'NOT_RECORDED') { throw 'Offline fixture recorded an RC.' }
             if ($readyReport.EvidenceStatus.Runtime.Status -eq 'PASS' -or $readyReport.EvidenceStatus.Release.Status -eq 'PASS') { throw 'Offline fixture granted Runtime/Release credit.' }
             Assert-Contains -Text (Get-Content -LiteralPath (Join-Path $readyOutput 'dependency-audit.txt') -Raw) -Needle 'OFFLINE_FIXTURE_NO_RELEASE_CREDIT' -CaseName "$($shell.Name) offline ready fixture"
-            [void]$completed.Add("$($shell.Name): ready fixture -> NOT_READY")
+            [void]$completed.Add("$($shell.Name): ready fixture -> NOT_READY (45 dependency items)")
 
             $candidateOutput = Join-Path $repositoryRoot ("artifacts\dependency-audit\fixture-$($shell.Name)-candidate-mismatch")
             $candidateResult = Invoke-AuditCase -ShellPath $shell.Path -FixturePath $readyFixture -EvidencePath $evidence.Path -OutputPath $candidateOutput -CandidateCommit ('A' * 40)
@@ -442,7 +512,7 @@ try {
             [void]$completed.Add("$($shell.Name): RuntimeTests conflation -> rejected")
 
             $reparseJunction = Join-Path $repositoryRoot ("artifacts\dependency-audit\fixture-$($shell.Name)-reparse")
-            if (Test-Path -LiteralPath $reparseJunction) { Remove-Item -LiteralPath $reparseJunction -Force }
+            if (Test-Path -LiteralPath $reparseJunction) { [IO.Directory]::Delete($reparseJunction) }
             New-Item -ItemType Junction -Path $reparseJunction -Target $caseDirectory -ErrorAction Stop | Out-Null
             try {
                 $reparseOutput = Join-Path $reparseJunction 'nested'
@@ -451,7 +521,7 @@ try {
                 if (Test-Path -LiteralPath $reparseOutput) { throw "$($shell.Name) accepted a reparse output path." }
             }
             finally {
-                if (Test-Path -LiteralPath $reparseJunction) { Remove-Item -LiteralPath $reparseJunction -Force }
+                if (Test-Path -LiteralPath $reparseJunction) { [IO.Directory]::Delete($reparseJunction) }
             }
             [void]$completed.Add("$($shell.Name): reparse output -> rejected")
 
@@ -479,6 +549,77 @@ try {
                 if (Test-Path -LiteralPath $dirtyProbe) { Remove-Item -LiteralPath $dirtyProbe -Force }
             }
             [void]$completed.Add("$($shell.Name): dirty checkout -> rejected")
+
+            # Regression: ANSI escape sequences in subprocess output do not break assertions
+            $esc = [char]27
+            $bel = [char]7
+            $ansiSample = "$($esc)[31mError:$($esc)[0m $($esc)[1mSomething went wrong$($esc)[0m with $($esc)[32;1mTotalIssues : 3$($esc)[0m and $($esc)]0;Window Title$($bel)$($esc)[34;4mIssueQueryPages : 2$($esc)[0m"
+            $ansiStripped = ConvertTo-PlainText -Text $ansiSample
+            if ($ansiStripped -notmatch 'TotalIssues\s*:\s*3' -or $ansiStripped -notmatch 'IssueQueryPages\s*:\s*2' -or $ansiStripped -notmatch 'Error: Something went wrong') {
+                throw "$($shell.Name) ANSI strip regression failed: $ansiStripped"
+            }
+            Assert-Contains -Text $ansiSample -Needle 'Something went wrong' -CaseName "$($shell.Name) ANSI Assert-Contains regression"
+            [void]$completed.Add("$($shell.Name): ANSI plain-text strip -> resilient")
+
+            # Regression: PS5 native stderr capture does not throw ActionPreferenceStopException / RemoteException
+            $stderrScript = @"
+`$ErrorActionPreference = 'Stop'
+`$prev = `$ErrorActionPreference
+try {
+    `$ErrorActionPreference = 'Continue'
+    `$res = @(& cmd.exe /c "echo regression_stderr_message 1>&2 & echo regression_stdout_message" 2>&1 | ForEach-Object { [string]`$_ })
+    `$ec = `$LASTEXITCODE
+}
+finally {
+    `$ErrorActionPreference = `$prev
+}
+`$joined = `$res -join ' '
+if (`$ec -ne 0 -or `$joined -notmatch 'regression_stderr_message' -or `$joined -notmatch 'regression_stdout_message') {
+    exit 1
+}
+Write-Output 'STDERR_CAPTURE_PASS'
+"@
+            $encodedStderrScript = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($stderrScript))
+            $previousPreference = $ErrorActionPreference
+            try {
+                $ErrorActionPreference = 'Continue'
+                $stderrOutput = @(& $shell.Path -NoProfile -NonInteractive -EncodedCommand $encodedStderrScript 2>&1 | ForEach-Object { [string]$_ })
+                $stderrExitCode = $LASTEXITCODE
+            }
+            finally {
+                $ErrorActionPreference = $previousPreference
+            }
+            $stderrText = ConvertTo-PlainText -Text ($stderrOutput -join "`n")
+            if ($stderrExitCode -ne 0 -or $stderrText -notmatch 'STDERR_CAPTURE_PASS') {
+                throw "$($shell.Name) native stderr capture regression failed (exit $stderrExitCode): $stderrText"
+            }
+            [void]$completed.Add("$($shell.Name): native stderr capture -> deterministic")
+
+            # Regression: Omitting supplemental v0.7.0 issue (#103) is rejected with count mismatch
+            $missingSupplementalPath = Join-Path $caseDirectory 'github-missing-v07-supplemental.json'
+            $missingSupplementalFixture = Copy-JsonFixture -SourcePath $readyFixture -DestinationPath $missingSupplementalPath
+            $missingSupplementalFixture.issues = @($missingSupplementalFixture.issues | Where-Object { [int]$_.number -ne 103 })
+            Write-Utf8NoBom -Path $missingSupplementalPath -Content (($missingSupplementalFixture | ConvertTo-Json -Depth 20) + "`r`n")
+            $missingSupplementalOutput = Join-Path $repositoryRoot ("artifacts\dependency-audit\fixture-$($shell.Name)-missing-v07-supplemental")
+            $missingSupplementalResult = Invoke-AuditCase -ShellPath $shell.Path -FixturePath $missingSupplementalPath -OutputPath $missingSupplementalOutput
+            Assert-CaseExit -Result $missingSupplementalResult -ExpectedExitCode 2 -CaseName "$($shell.Name) missing v0.7 supplemental fixture"
+            $missingSupplementalReport = Assert-Report -OutputPath $missingSupplementalOutput -CaseName "$($shell.Name) missing v0.7 supplemental fixture"
+            if (@($missingSupplementalReport.Blockers | Where-Object { $_.Code -eq 'WORK_ISSUE_COUNT_MISMATCH' -and $_.Version -eq 'v0.7.0' }).Count -eq 0) {
+                throw "$($shell.Name) missing v0.7.0 supplemental issue did not trigger WORK_ISSUE_COUNT_MISMATCH."
+            }
+            if (@($missingSupplementalReport.Blockers | Where-Object { $_.Code -eq 'MISSING_OR_DUPLICATE_PLAN_ISSUE' -and $_.Version -eq 'v0.7.0' }).Count -eq 0) {
+                throw "$($shell.Name) missing v0.7.0 supplemental issue did not trigger MISSING_OR_DUPLICATE_PLAN_ISSUE."
+            }
+            [void]$completed.Add("$($shell.Name): missing v0.7 supplemental -> rejected count")
+
+            # Regression: Subprocess exit 0 explicitly returned on success
+            if ($paginationExitCode -ne 0) {
+                throw "$($shell.Name) pagination script did not exit with explicit 0: $paginationExitCode"
+            }
+            if ($milestoneExitCode -ne 0) {
+                throw "$($shell.Name) milestone verifier script did not exit with explicit 0: $milestoneExitCode"
+            }
+            [void]$completed.Add("$($shell.Name): explicit exit 0 -> verified")
         }
         finally {
             if (Test-Path -LiteralPath $caseDirectory) { Remove-Item -LiteralPath $caseDirectory -Recurse -Force }

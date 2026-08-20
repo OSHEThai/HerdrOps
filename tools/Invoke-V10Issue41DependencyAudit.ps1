@@ -292,8 +292,15 @@ function Invoke-GhApiReadOnly {
         throw "GitHub CLI executable is unavailable: $Executable"
     }
 
-    $rawOutput = @(& $Executable api $Endpoint 2>&1 | ForEach-Object { [string]$_ }) -join "`n"
-    $exitCode = $LASTEXITCODE
+    $previousPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = 'Continue'
+        $rawOutput = @(& $Executable api $Endpoint 2>&1 | ForEach-Object { [string]$_ }) -join "`n"
+        $exitCode = $LASTEXITCODE
+    }
+    finally {
+        $ErrorActionPreference = $previousPreference
+    }
     if ($exitCode -ne 0) {
         throw "GitHub CLI query failed (exit code $exitCode) for '$Endpoint': $rawOutput"
     }
@@ -324,15 +331,23 @@ function Get-GitState {
         [string]$Root
     )
 
-    $commitLines = @(& git -C $Root rev-parse --verify 'HEAD^{commit}' 2>&1 | ForEach-Object { [string]$_ })
-    $commitExit = $LASTEXITCODE
+    $previousPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = 'Continue'
+        $commitLines = @(& git -C $Root rev-parse --verify 'HEAD^{commit}' 2>&1 | ForEach-Object { [string]$_ })
+        $commitExit = $LASTEXITCODE
+
+        $statusLines = @(& git -C $Root status --porcelain=v1 --untracked-files=all 2>&1 | ForEach-Object { [string]$_ })
+        $statusExit = $LASTEXITCODE
+    }
+    finally {
+        $ErrorActionPreference = $previousPreference
+    }
     if ($commitExit -ne 0 -or $commitLines.Count -ne 1 -or $commitLines[0].Trim() -notmatch '^[0-9a-fA-F]{40}$') {
         throw "Could not resolve a committed source identity in '$Root'."
     }
     $commit = $commitLines[0].Trim().ToLowerInvariant()
 
-    $statusLines = @(& git -C $Root status --porcelain=v1 --untracked-files=all 2>&1 | ForEach-Object { [string]$_ })
-    $statusExit = $LASTEXITCODE
     if ($statusExit -ne 0) {
         throw "Could not inspect the Git working tree in '$Root'."
     }
@@ -1167,3 +1182,5 @@ Write-Output "TextReport: $textPath"
 if ($decision -ne 'READY') {
     exit 2
 }
+
+exit 0
