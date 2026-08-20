@@ -36,6 +36,8 @@ $script:V07PlanBudgets = [ordered]@{
 }
 
 $script:MaxJsonReportBytes = 4 * 1024 * 1024 # 4 MiB max for reports
+$script:V07PlanAuthorizedWaiverApprover = '@yutthaphon'
+$script:V07PlanWaiverAuthorityReference = 'Plan/RELEASE-GATES.md#v07-performance-waiver-authority'
 
 # -----------------------------------------------------------------------------
 # C# High-Performance Strict JSON Validator, Schema Checker, and P95 Engine
@@ -56,7 +58,9 @@ namespace HerdrOps.BudgetValidation
     {
         private static double RequireFiniteNumber(object value, string property, string sourceDescription)
         {
-            if (!(value is double) && !(value is float) && !(value is decimal))
+            if (!(value is sbyte) && !(value is byte) && !(value is short) && !(value is ushort) &&
+                !(value is int) && !(value is uint) && !(value is long) && !(value is ulong) &&
+                !(value is double) && !(value is float) && !(value is decimal))
             {
                 throw new InvalidOperationException(string.Format("Strict schema violation: {0} must be a JSON number (not a string or other type) in {1}.", property, sourceDescription));
             }
@@ -89,7 +93,14 @@ namespace HerdrOps.BudgetValidation
             if (!metrics.ContainsKey(property) || metrics[property] == null) return;
             List<object> samples = metrics[property] as List<object>;
             if (samples == null) throw new InvalidOperationException(string.Format("Strict schema violation: {0} must be an array of JSON numbers in {1}.", property, sourceDescription));
-            foreach (object sample in samples) RequireFiniteNumber(sample, property + "[]", sourceDescription);
+            foreach (object sample in samples)
+            {
+                double value = RequireFiniteNumber(sample, property + "[]", sourceDescription);
+                if (value < 0.0)
+                {
+                    throw new InvalidOperationException(string.Format("Strict schema violation: {0} samples must be >= 0 in {1}.", property, sourceDescription));
+                }
+            }
         }
 
         public static object ParseStrict(string json, string sourceDescription)
@@ -136,7 +147,7 @@ namespace HerdrOps.BudgetValidation
                 }
             }
 
-            string[] requiredTop = new string[] { "SchemaVersion", "RunId", "TimestampUtc", "Candidate", "Metrics", "EvidenceBoundary" };
+            string[] requiredTop = new string[] { "SchemaVersion", "RunId", "TimestampUtc", "EvidenceClass", "HostEnvironment", "Candidate", "Metrics", "EvidenceBoundary" };
             foreach (string req in requiredTop)
             {
                 if (!root.ContainsKey(req) || root[req] == null)
@@ -151,10 +162,45 @@ namespace HerdrOps.BudgetValidation
                 throw new InvalidOperationException(string.Format("Strict schema violation: SchemaVersion must be exactly 'v0.7.0'; found '{0}' in {1}.", schemaVersion, sourceDescription));
             }
 
+            string evidenceClass = root["EvidenceClass"] as string;
+            if (evidenceClass != "Preparation" && evidenceClass != "Runtime")
+            {
+                throw new InvalidOperationException(string.Format("Strict schema violation: EvidenceClass must be exactly 'Preparation' or 'Runtime' in {0}.", sourceDescription));
+            }
+
             string timestamp = root["TimestampUtc"] as string;
             if (timestamp == null || !Regex.IsMatch(timestamp, @"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$"))
             {
                 throw new InvalidOperationException(string.Format("Strict schema violation: TimestampUtc must be a valid ISO 8601 UTC timestamp ending in 'Z'; found '{0}' in {1}.", timestamp, sourceDescription));
+            }
+
+            Dictionary<string, object> host = root["HostEnvironment"] as Dictionary<string, object>;
+            if (host == null)
+            {
+                throw new InvalidOperationException(string.Format("Strict schema violation: HostEnvironment must be an object in {0}.", sourceDescription));
+            }
+            HashSet<string> allowedHostProps = new HashSet<string>(StringComparer.Ordinal) { "Os", "Architecture", "LogicalProcessors", "ReferenceHostConfirmed" };
+            foreach (KeyValuePair<string, object> hp in host)
+            {
+                if (!allowedHostProps.Contains(hp.Key))
+                {
+                    throw new InvalidOperationException(string.Format("Strict schema violation: Disallowed unknown property '{0}' in HostEnvironment in {1}.", hp.Key, sourceDescription));
+                }
+            }
+            string[] requiredHost = new string[] { "Os", "Architecture", "LogicalProcessors", "ReferenceHostConfirmed" };
+            foreach (string rh in requiredHost)
+            {
+                if (!host.ContainsKey(rh) || host[rh] == null)
+                {
+                    throw new InvalidOperationException(string.Format("Strict schema violation: Missing required HostEnvironment property '{0}' in {1}.", rh, sourceDescription));
+                }
+            }
+            if (!(host["Os"] is string) || string.IsNullOrWhiteSpace((string)host["Os"]) ||
+                !(host["Architecture"] is string) || string.IsNullOrWhiteSpace((string)host["Architecture"]) ||
+                RequireInteger(host["LogicalProcessors"], "HostEnvironment.LogicalProcessors", sourceDescription) <= 0 ||
+                !(host["ReferenceHostConfirmed"] is bool))
+            {
+                throw new InvalidOperationException(string.Format("Strict schema violation: HostEnvironment has invalid field types or bounds in {0}.", sourceDescription));
             }
 
             Dictionary<string, object> candidate = root["Candidate"] as Dictionary<string, object>;
@@ -174,6 +220,10 @@ namespace HerdrOps.BudgetValidation
             if (sourceCommit == null || !Regex.IsMatch(sourceCommit, @"^[0-9a-f]{40}$"))
             {
                 throw new InvalidOperationException(string.Format("Strict schema violation: Candidate.SourceCommit must be a 40-hex lowercase string in {0}.", sourceDescription));
+            }
+            if (!candidate.ContainsKey("GitTreeClean") || !(candidate["GitTreeClean"] is bool) || !(bool)candidate["GitTreeClean"])
+            {
+                throw new InvalidOperationException(string.Format("Strict schema violation: Candidate.GitTreeClean must be true in {0}.", sourceDescription));
             }
 
             if (candidate.ContainsKey("Binaries") && candidate["Binaries"] != null)
@@ -212,11 +262,18 @@ namespace HerdrOps.BudgetValidation
                         throw new InvalidOperationException(string.Format("Strict schema violation: Binary Sha256 must be a 64-hex lowercase string in {0}.", sourceDescription));
                     }
                     long length = RequireInteger(bin["LengthBytes"], "Candidate.Binaries.LengthBytes", sourceDescription);
-                    if (length < 0)
-                    {
-                        throw new InvalidOperationException(string.Format("Strict schema violation: Binary LengthBytes must be >= 0 in {0}.", sourceDescription));
-                    }
-                }
+                     if (length < 0)
+                     {
+                         throw new InvalidOperationException(string.Format("Strict schema violation: Binary LengthBytes must be >= 0 in {0}.", sourceDescription));
+                     }
+                     string relativePath = bin["RelativePath"] as string;
+                     if (string.IsNullOrWhiteSpace(relativePath) || relativePath.IndexOf("..", StringComparison.Ordinal) >= 0 ||
+                         relativePath.StartsWith("\\", StringComparison.Ordinal) || relativePath.StartsWith("/", StringComparison.Ordinal) ||
+                         (relativePath.Length >= 2 && relativePath[1] == ':'))
+                     {
+                         throw new InvalidOperationException(string.Format("Strict schema violation: Binary RelativePath must be a non-rooted path without traversal in {0}.", sourceDescription));
+                     }
+                 }
             }
 
             Dictionary<string, object> metrics = root["Metrics"] as Dictionary<string, object>;
@@ -333,7 +390,7 @@ namespace HerdrOps.BudgetValidation
             {
                 List<object> waivers = root["Waivers"] as List<object>;
                 if (waivers == null) throw new InvalidOperationException(string.Format("Strict schema violation: Waivers must be an array in {0}.", sourceDescription));
-                HashSet<string> allowedWProps = new HashSet<string>(StringComparer.Ordinal) { "Metric", "Target", "Observed", "Cause", "Impact", "ApprovedBy", "ApprovalDateUtc", "WaiverSha256" };
+                     HashSet<string> allowedWProps = new HashSet<string>(StringComparer.Ordinal) { "Metric", "Target", "Observed", "Cause", "Impact", "ApprovedBy", "ApprovalDateUtc", "ApprovalReference", "WaiverSha256" };
                 foreach (object wObj in waivers)
                 {
                     Dictionary<string, object> w = wObj as Dictionary<string, object>;
@@ -342,7 +399,7 @@ namespace HerdrOps.BudgetValidation
                     {
                         if (!allowedWProps.Contains(wp.Key)) throw new InvalidOperationException(string.Format("Strict schema violation: Disallowed unknown property '{0}' in Waiver in {1}.", wp.Key, sourceDescription));
                     }
-                    string[] reqW = new string[] { "Metric", "Target", "Observed", "Cause", "Impact", "ApprovedBy", "ApprovalDateUtc", "WaiverSha256" };
+                     string[] reqW = new string[] { "Metric", "Target", "Observed", "Cause", "Impact", "ApprovedBy", "ApprovalDateUtc", "ApprovalReference", "WaiverSha256" };
                     foreach (string rw in reqW)
                     {
                         string val = w.ContainsKey(rw) ? (w[rw] as string) : null;
@@ -357,27 +414,40 @@ namespace HerdrOps.BudgetValidation
                          throw new InvalidOperationException(string.Format("Strict schema violation: WaiverSha256 must be 64-hex lowercase in {0}.", sourceDescription));
                      }
                      string approver = w["ApprovedBy"] as string;
-                     if (approver == null || !Regex.IsMatch(approver, @"^@[^\s:]+$"))
+                     if (approver != "@yutthaphon")
                      {
-                         throw new InvalidOperationException(string.Format("Strict schema violation: ApprovedBy must identify an authorized human using a non-empty @identity in {0}.", sourceDescription));
+                         throw new InvalidOperationException(string.Format("Strict schema violation: ApprovedBy must equal the Plan-authorized identity '@yutthaphon' in {0}.", sourceDescription));
                      }
                      string approvalDate = w["ApprovalDateUtc"] as string;
                      DateTimeOffset parsedApprovalDate;
                      if (approvalDate == null || !Regex.IsMatch(approvalDate, @"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$") ||
                          !DateTimeOffset.TryParse(approvalDate, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal, out parsedApprovalDate))
                      {
-                         throw new InvalidOperationException(string.Format("Strict schema violation: ApprovalDateUtc must be a valid ISO 8601 UTC timestamp ending in Z in {0}.", sourceDescription));
-                     }
+                          throw new InvalidOperationException(string.Format("Strict schema violation: ApprovalDateUtc must be a valid ISO 8601 UTC timestamp ending in Z in {0}.", sourceDescription));
+                      }
+                      string approvalReference = w["ApprovalReference"] as string;
+                      if (approvalReference != "Plan/RELEASE-GATES.md#v07-performance-waiver-authority")
+                      {
+                          throw new InvalidOperationException(string.Format("Strict schema violation: ApprovalReference must point to the Plan waiver authority in {0}.", sourceDescription));
+                      }
                  }
             }
 
             Dictionary<string, object> ev = root["EvidenceBoundary"] as Dictionary<string, object>;
             if (ev == null) throw new InvalidOperationException(string.Format("Strict schema violation: EvidenceBoundary must be an object in {0}.", sourceDescription));
             HashSet<string> allowedEv = new HashSet<string>(StringComparer.Ordinal) { "StaticEvidence", "SyntheticEvidence", "ContractEvidence", "ActualHerdrRuntime", "SoakExecution", "HumanUatDecision", "ReleaseEvidence" };
-            foreach (KeyValuePair<string, object> ep in ev)
-            {
-                if (!allowedEv.Contains(ep.Key)) throw new InvalidOperationException(string.Format("Strict schema violation: Disallowed unknown property '{0}' in EvidenceBoundary in {1}.", ep.Key, sourceDescription));
-            }
+             foreach (KeyValuePair<string, object> ep in ev)
+             {
+                 if (!allowedEv.Contains(ep.Key)) throw new InvalidOperationException(string.Format("Strict schema violation: Disallowed unknown property '{0}' in EvidenceBoundary in {1}.", ep.Key, sourceDescription));
+             }
+             string[] requiredEv = new string[] { "StaticEvidence", "SyntheticEvidence", "ContractEvidence", "ActualHerdrRuntime", "SoakExecution", "HumanUatDecision", "ReleaseEvidence" };
+             foreach (string re in requiredEv)
+             {
+                 if (!ev.ContainsKey(re) || !(ev[re] is string) || string.IsNullOrWhiteSpace((string)ev[re]))
+                 {
+                     throw new InvalidOperationException(string.Format("Strict schema violation: EvidenceBoundary property '{0}' must be a non-empty string in {1}.", re, sourceDescription));
+                 }
+             }
         }
 
         public static double CalculateP95(double[] samples)
@@ -866,7 +936,7 @@ function Get-WaiverCanonicalSha256 {
         [string]$Waiver.ApprovalDateUtc
     }
 
-    $canonicalText = "$($Waiver.Metric):$($Waiver.Target):$($Waiver.Observed):$($Waiver.Cause):$($Waiver.Impact):$($Waiver.ApprovedBy):$dateStr"
+    $canonicalText = "$($Waiver.Metric):$($Waiver.Target):$($Waiver.Observed):$($Waiver.Cause):$($Waiver.Impact):$($Waiver.ApprovedBy):$($dateStr):$($Waiver.ApprovalReference)"
     return Get-Sha256DigestHex -Text $canonicalText
 }
 
@@ -883,8 +953,11 @@ function Test-WaiverIntegrity {
         }
     }
 
-    if ([string]$Waiver.ApprovedBy -notmatch '^@[^\s:]+$') {
-        return [pscustomobject]@{ IsValid = $false; Reason = 'Waiver authority is absent or is not an authorized human @identity.' }
+    if ([string]$Waiver.ApprovedBy -ne $script:V07PlanAuthorizedWaiverApprover) {
+        return [pscustomobject]@{ IsValid = $false; Reason = "Waiver authority must equal the Plan-authorized identity $script:V07PlanAuthorizedWaiverApprover." }
+    }
+    if ([string]$Waiver.ApprovalReference -ne $script:V07PlanWaiverAuthorityReference) {
+        return [pscustomobject]@{ IsValid = $false; Reason = "Waiver ApprovalReference must equal $script:V07PlanWaiverAuthorityReference." }
     }
     $approvalDate = [DateTimeOffset]::MinValue
     if ($Waiver.ApprovalDateUtc -is [DateTime]) {
@@ -915,7 +988,7 @@ function Test-WaiverIntegrity {
     }
 
     $computedSha = Get-WaiverCanonicalSha256 -Waiver $Waiver
-    $declaredSha = ($Waiver.WaiverSha256).ToLowerInvariant()
+    $declaredSha = ([string]$Waiver.WaiverSha256).ToLowerInvariant()
     if ($computedSha -ne $declaredSha) {
         return [pscustomobject]@{
             IsValid = $false
@@ -927,6 +1000,35 @@ function Test-WaiverIntegrity {
         IsValid = $true
         Reason  = "Valid waiver approved by $($Waiver.ApprovedBy) on $($Waiver.ApprovalDateUtc)."
     }
+}
+
+function ConvertTo-PositiveProcessId {
+    param([Parameter(Mandatory)]$Value)
+
+    if ($Value -isnot [System.Byte] -and $Value -isnot [System.Int16] -and $Value -isnot [System.Int32] -and
+        $Value -isnot [System.Int64] -and $Value -isnot [System.UInt16] -and $Value -isnot [System.UInt32] -and $Value -isnot [System.UInt64]) {
+        return $null
+    }
+
+    try {
+        $normalized = [Convert]::ToInt64($Value, [Globalization.CultureInfo]::InvariantCulture)
+    } catch {
+        return $null
+    }
+    if ($normalized -le 0) { return $null }
+    return $normalized
+}
+
+function ConvertTo-V07UtcTimestampText {
+    param([Parameter(Mandatory)]$Value)
+
+    if ($Value -is [DateTime]) {
+        return ([DateTime]$Value).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ', [Globalization.CultureInfo]::InvariantCulture)
+    }
+    if ($Value -is [DateTimeOffset]) {
+        return ([DateTimeOffset]$Value).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ', [Globalization.CultureInfo]::InvariantCulture)
+    }
+    return [string]$Value
 }
 
 # -----------------------------------------------------------------------------
@@ -944,7 +1046,20 @@ function Test-PerformanceBudgetReport {
     $waiversApplied = [System.Collections.Generic.List[object]]::new()
     $allPassed = $true
 
-    $evidenceClass = if ($null -ne $ReportObject.PSObject.Properties['EvidenceClass']) { [string]$ReportObject.EvidenceClass } else { 'Preparation' }
+    $hasEvidenceClass = $null -ne $ReportObject.PSObject.Properties['EvidenceClass']
+    $hasHostEnvironment = $null -ne $ReportObject.PSObject.Properties['HostEnvironment'] -and $null -ne $ReportObject.HostEnvironment
+    $evidenceClass = if ($hasEvidenceClass) { [string]$ReportObject.EvidenceClass } else { '' }
+    if (-not $hasEvidenceClass) {
+        $allPassed = $false
+        $checks.Add([pscustomobject]@{ Id='V07-EVIDENCE-CLASS-REQUIRED'; Metric='Evidence class declaration'; Target='EvidenceClass is explicitly declared'; Observed='Missing'; Status='FAIL'; WaiverApplied=$false; Detail='EvidenceClass is required; an omitted class cannot default to Preparation.' })
+    } elseif ($evidenceClass -notin @('Preparation', 'Runtime')) {
+        $allPassed = $false
+        $checks.Add([pscustomobject]@{ Id='V07-EVIDENCE-CLASS-VALUE'; Metric='Evidence class declaration'; Target='EvidenceClass is Preparation or Runtime'; Observed=$evidenceClass; Status='FAIL'; WaiverApplied=$false; Detail='Unknown evidence classes fail closed.' })
+    }
+    if (-not $hasHostEnvironment) {
+        $allPassed = $false
+        $checks.Add([pscustomobject]@{ Id='V07-HOST-ENVIRONMENT-REQUIRED'; Metric='Host environment declaration'; Target='HostEnvironment is explicitly declared'; Observed='Missing'; Status='FAIL'; WaiverApplied=$false; Detail='HostEnvironment is required; host context cannot be inferred or omitted.' })
+    }
     $isRuntimeAdmission = ($evidenceClass -eq 'Runtime' -and
         $null -ne $ReportObject.PSObject.Properties['EvidenceBoundary'] -and
         [string]$ReportObject.EvidenceBoundary.ActualHerdrRuntime -match '^OBSERVED$' -and
@@ -1532,28 +1647,45 @@ function Test-PerformanceBudgetReport {
     if ($null -ne $ReportObject.PSObject.Properties['ProcessTelemetry'] -and $null -ne $ReportObject.ProcessTelemetry) {
         $observedPids = [ordered]@{}
         $pidReuseDetected = $false
+        $invalidPidDetected = $false
         foreach ($proc in @($ReportObject.ProcessTelemetry)) {
-            $pKey = [string]$proc.ProcessId
+            $normalizedPid = if ($null -eq $proc.ProcessId) { $null } else { ConvertTo-PositiveProcessId -Value $proc.ProcessId }
+            $processStartText = if ($null -eq $proc.ProcessStartUtc) { '' } else { ConvertTo-V07UtcTimestampText -Value $proc.ProcessStartUtc }
+            if ($null -eq $normalizedPid) {
+                $invalidPidDetected = $true
+                $allPassed = $false
+                $checks.Add([pscustomobject]@{
+                    Id            = 'V07-PID-TYPE'
+                    Metric        = 'Process PID type and bounds'
+                    Target        = 'Positive JSON integer PID normalized to Int64'
+                    Observed      = [string]$proc.ProcessId
+                    Status        = 'FAIL'
+                    WaiverApplied = $false
+                    Detail        = 'ProcessId is not a positive supported integer.'
+                })
+                continue
+            }
+            $pKey = [string]$normalizedPid
             if ($observedPids.Contains($pKey)) {
                 $priorStart = $observedPids[$pKey]
-                if ($priorStart -ne $proc.ProcessStartUtc) {
+                if ($priorStart -ne $processStartText) {
                     $pidReuseDetected = $true
                     $allPassed = $false
                     $checks.Add([pscustomobject]@{
                         Id            = "V07-PID-REUSE-$pKey"
                         Metric        = "Process PID+StartUtc binding"
                         Target        = "PID $pKey preserves constant ProcessStartUtc ($priorStart)"
-                        Observed      = "PID $pKey changed start time to $($proc.ProcessStartUtc) (PID reuse anomaly)"
+                        Observed      = "PID $pKey changed start time to $processStartText (PID reuse anomaly)"
                         Status        = 'FAIL'
                         WaiverApplied = $false
                         Detail        = "PID reuse without distinct process start time correlation fails closed."
                     })
                 }
             } else {
-                $observedPids[$pKey] = $proc.ProcessStartUtc
+                $observedPids[$pKey] = $processStartText
             }
         }
-        if (-not $pidReuseDetected) {
+        if (-not $pidReuseDetected -and -not $invalidPidDetected) {
             $checks.Add([pscustomobject]@{
                 Id            = "V07-PID-BINDING"
                 Metric        = "Process PID+StartUtc binding"
@@ -1572,76 +1704,103 @@ function Test-PerformanceBudgetReport {
             foreach ($telemetryItem in @($ReportObject.ProcessTelemetry)) { $telemetry.Add($telemetryItem) }
         }
         $requiredProcessNames = @('HerdrOps.Core', 'HerdrOps.App')
+        $sourceCandidate = if ($null -ne $ReportObject.Candidate.PSObject.Properties['Binaries'] -and $null -ne $ReportObject.Candidate.Binaries) { @($ReportObject.Candidate.Binaries) } else { @() }
+        $processByName = @{}
         if ($telemetry.Count -ne 2) {
             $allPassed = $false
             $checks.Add([pscustomobject]@{ Id='V07-RUNTIME-PROCESS-IDENTITIES'; Metric='Runtime process telemetry'; Target='Exactly Core and App identities'; Observed="$($telemetry.Count) identities"; Status='FAIL'; WaiverApplied=$false; Detail='Runtime admission requires exact Core and App ProcessTelemetry records.' })
         }
         foreach ($name in $requiredProcessNames) {
             $matchingProcess = @($telemetry | Where-Object { [string]$_.ProcessName -eq $name })
-            $proc = if ($matchingProcess.Length -gt 0) { $matchingProcess[0] } else { $null }
-            $validProc = ($null -ne $proc -and $proc.ProcessId -is [int] -and [int]$proc.ProcessId -gt 0 -and
-                [string]$proc.ProcessStartUtc -match '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$' -and
+            $proc = if ($matchingProcess.Length -eq 1) { $matchingProcess[0] } else { $null }
+            $normalizedPid = if ($null -ne $proc -and $null -ne $proc.ProcessId) { ConvertTo-PositiveProcessId -Value $proc.ProcessId } else { $null }
+            $processStartText = if ($null -ne $proc -and $null -ne $proc.ProcessStartUtc) { ConvertTo-V07UtcTimestampText -Value $proc.ProcessStartUtc } else { '' }
+            $parsedStart = [DateTimeOffset]::MinValue
+            $validStart = ($null -ne $proc -and $processStartText -match '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$' -and
+                [DateTimeOffset]::TryParse($processStartText, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::AssumeUniversal -bor [Globalization.DateTimeStyles]::AdjustToUniversal, [ref]$parsedStart) -and
+                $parsedStart.UtcDateTime -le [DateTime]::UtcNow)
+            $validProc = ($null -ne $proc -and $null -ne $normalizedPid -and $validStart -and
                 [string]$proc.BinaryPath -and [string]$proc.BinarySha256 -match '^[0-9a-f]{64}$')
+            if ($null -ne $proc) { $processByName[$name] = [pscustomobject]@{ Record=$proc; ProcessId=$normalizedPid } }
             if (-not $validProc) {
                 $allPassed = $false
                 $checks.Add([pscustomobject]@{ Id="V07-RUNTIME-PROCESS-$name"; Metric="$name process identity"; Target='Positive PID, UTC start, exact binary path/hash'; Observed=($(if($null -eq $proc){'Missing'}else{$proc | Out-String})); Status='FAIL'; WaiverApplied=$false; Detail='Runtime process identity is incomplete or not strictly typed.' })
             }
         }
-        $sourceCandidate = if ($null -ne $ReportObject.Candidate.PSObject.Properties['Binaries'] -and $null -ne $ReportObject.Candidate.Binaries) { @($ReportObject.Candidate.Binaries) } else { @() }
-        if ($null -eq $sourceCandidate) { $sourceCandidate = @() }
-        foreach ($proc in $telemetry) {
-            $matchingBinary = @($sourceCandidate | Where-Object { [IO.Path]::GetFullPath((Join-Path $RepositoryRoot $_.RelativePath)) -eq [IO.Path]::GetFullPath([string]$proc.BinaryPath) -and ([string]$_.Sha256).ToLowerInvariant() -eq ([string]$proc.BinarySha256).ToLowerInvariant() })
-            if ($null -eq $matchingBinary) { $matchingBinary = @() }
-            if ($matchingBinary.Count -ne 1) {
+        $runtimePidValues = @($requiredProcessNames | ForEach-Object { if ($processByName.ContainsKey($_)) { $processByName[$_].ProcessId } })
+        if ($runtimePidValues.Count -ne @($runtimePidValues | Select-Object -Unique).Count) {
+            $allPassed = $false
+            $checks.Add([pscustomobject]@{ Id='V07-RUNTIME-PID-DISTINCT'; Metric='Runtime Core/App PID distinctness'; Target='Core and App have distinct positive PIDs'; Observed=($runtimePidValues -join ','); Status='FAIL'; WaiverApplied=$false; Detail='Core and App cannot share one PID/start identity.' })
+        }
+        foreach ($name in $requiredProcessNames) {
+            if (-not $processByName.ContainsKey($name)) { continue }
+            $proc = $processByName[$name].Record
+            $expectedNames = @("$name.dll", "$name.exe")
+            $matchingBinary = @()
+            $binaryValid = $false
+            $binaryFailure = ''
+            try {
+                if ([string]::IsNullOrWhiteSpace($RepositoryRoot) -or [string]::IsNullOrWhiteSpace($CandidateDirectory)) { throw 'Runtime admission requires repository and candidate roots.' }
+                $matchingBinary = @($sourceCandidate | Where-Object {
+                    $candidateName = [IO.Path]::GetFileName([string]$_.RelativePath)
+                    $expectedNames -icontains $candidateName -and
+                    [IO.Path]::GetFullPath((Join-Path $RepositoryRoot $_.RelativePath)) -eq [IO.Path]::GetFullPath([string]$proc.BinaryPath) -and
+                    ([string]$_.Sha256).ToLowerInvariant() -eq ([string]$proc.BinarySha256).ToLowerInvariant()
+                })
+                $resolvedProcessPath = Assert-PathWithinRoot -Path ([string]$proc.BinaryPath) -AllowedRoots @($RepositoryRoot, $CandidateDirectory) -Description "$name process binary"
+                Assert-NotReparsePoint -Path $resolvedProcessPath -Description "$name process binary"
+                if ($matchingBinary.Count -ne 1) { throw "Process binary does not match the exact $name candidate path and SHA-256." }
+                if (-not (Test-Path -LiteralPath $resolvedProcessPath -PathType Leaf)) { throw 'Process binary does not exist on disk.' }
+                $actualProcessItem = Get-Item -LiteralPath $resolvedProcessPath -Force -ErrorAction Stop
+                $actualProcessSha = Get-Sha256DigestHex -Path $resolvedProcessPath
+                if ($actualProcessItem.Length -ne $matchingBinary[0].LengthBytes -or $actualProcessSha -ne ([string]$matchingBinary[0].Sha256).ToLowerInvariant()) { throw 'Process binary on-disk length or SHA-256 does not match the declared candidate.' }
+                $binaryValid = $true
+            } catch {
+                $binaryFailure = $_.Exception.Message
+            }
+            if (-not $binaryValid) {
                 $allPassed = $false
-                $checks.Add([pscustomobject]@{ Id="V07-RUNTIME-BINARY-$($proc.ProcessName)"; Metric="$($proc.ProcessName) binary binding"; Target='Telemetry path and SHA-256 match Candidate.Binaries'; Observed=[string]$proc.BinaryPath; Status='FAIL'; WaiverApplied=$false; Detail='Runtime process binary is not exactly bound to the declared candidate source.' })
+                $checks.Add([pscustomobject]@{ Id="V07-RUNTIME-BINARY-$name"; Metric="$name binary binding"; Target="Exact $name process path, length, and SHA-256"; Observed=[string]$proc.BinaryPath; Status='FAIL'; WaiverApplied=$false; Detail=$binaryFailure })
             }
         }
     }
 
-    # 11. Candidate Binaries Verification (if CandidateDirectory and Binaries are present)
+    # 11. Candidate Binaries Verification (every declared binary must be bound)
     $candidateBindings = [System.Collections.Generic.List[object]]::new()
-    if ($null -ne $ReportObject.PSObject.Properties['Candidate'] -and
+    $hasDeclaredBinaries = ($null -ne $ReportObject.PSObject.Properties['Candidate'] -and
         $null -ne $ReportObject.Candidate.PSObject.Properties['Binaries'] -and
-        $null -ne $ReportObject.Candidate.Binaries -and
-        -not [string]::IsNullOrWhiteSpace($CandidateDirectory) -and
-        -not [string]::IsNullOrWhiteSpace($RepositoryRoot)) {
+        $null -ne $ReportObject.Candidate.Binaries -and @($ReportObject.Candidate.Binaries).Count -gt 0)
+    if ($hasDeclaredBinaries) {
+        if ([string]::IsNullOrWhiteSpace($CandidateDirectory) -or [string]::IsNullOrWhiteSpace($RepositoryRoot)) {
+            $allPassed = $false
+            $checks.Add([pscustomobject]@{ Id='V07-CANDIDATE-BINARY-ROOTS'; Metric='Candidate binary verification roots'; Target='RepositoryRoot and CandidateDirectory are supplied'; Observed='Missing verification root'; Status='FAIL'; WaiverApplied=$false; Detail='Declared candidate binaries cannot be marked bound without explicit verification roots.' })
+        }
+    }
+    if ($hasDeclaredBinaries -and -not [string]::IsNullOrWhiteSpace($CandidateDirectory) -and -not [string]::IsNullOrWhiteSpace($RepositoryRoot)) {
         $allowedRoots = @($RepositoryRoot, $CandidateDirectory)
         foreach ($bin in @($ReportObject.Candidate.Binaries)) {
-            $fullBinPath = Join-Path $RepositoryRoot $bin.RelativePath
-            if (Test-Path -LiteralPath $fullBinPath -PathType Leaf) {
+            $fullBinPath = Join-Path $RepositoryRoot ([string]$bin.RelativePath)
+            try {
                 $resolvedBinPath = Assert-PathWithinRoot -Path $fullBinPath -AllowedRoots $allowedRoots -Description "Candidate binary $($bin.RelativePath)"
                 Assert-NotReparsePoint -Path $resolvedBinPath -Description "Candidate binary $($bin.RelativePath)"
-
-                $actualLength = (Get-Item -LiteralPath $resolvedBinPath).Length
+                if (-not (Test-Path -LiteralPath $resolvedBinPath -PathType Leaf)) { throw "Candidate binary does not exist: $($bin.RelativePath)" }
+                $actualLength = (Get-Item -LiteralPath $resolvedBinPath -Force -ErrorAction Stop).Length
                 $actualSha = Get-Sha256DigestHex -Path $resolvedBinPath
-                $declaredSha = ($bin.Sha256).ToLowerInvariant()
-
-                if ($actualLength -eq $bin.LengthBytes -and $actualSha -eq $declaredSha) {
-                    $candidateBindings.Add([pscustomobject]@{
-                        Path     = $bin.RelativePath
-                        Status   = 'BOUND_AND_VERIFIED'
-                        Length   = $actualLength
-                        Sha256   = $actualSha
-                    })
-                } else {
-                    $allPassed = $false
-                    $candidateBindings.Add([pscustomobject]@{
-                        Path     = $bin.RelativePath
-                        Status   = 'TAMPER_OR_MISMATCH'
-                        Length   = $actualLength
-                        Sha256   = $actualSha
-                    })
-                    $checks.Add([pscustomobject]@{
-                        Id            = "V07-CANDIDATE-HASH-$([IO.Path]::GetFileNameWithoutExtension($bin.RelativePath))"
-                        Metric        = "Candidate binary hash verification"
-                        Target        = "Exact byte length and SHA-256 match ($($bin.Sha256))"
-                        Observed      = "Actual length=$actualLength bytes, SHA-256=$actualSha"
-                        Status        = 'FAIL'
-                        WaiverApplied = $false
-                        Detail        = "Candidate binary $($bin.RelativePath) does not match declared SHA-256 or length."
-                    })
-                }
+                $declaredSha = ([string]$bin.Sha256).ToLowerInvariant()
+                if ($actualLength -ne $bin.LengthBytes -or $actualSha -ne $declaredSha) { throw "Candidate binary $($bin.RelativePath) does not match declared SHA-256 or length." }
+                $candidateBindings.Add([pscustomobject]@{ Path=$bin.RelativePath; Status='BOUND_AND_VERIFIED'; Length=$actualLength; Sha256=$actualSha })
+            } catch {
+                $allPassed = $false
+                $candidateBindings.Add([pscustomobject]@{ Path=$bin.RelativePath; Status='NOT_VERIFIED'; Length=0; Sha256='' })
+                $checks.Add([pscustomobject]@{
+                    Id            = "V07-CANDIDATE-HASH-$([IO.Path]::GetFileNameWithoutExtension($bin.RelativePath))"
+                    Metric        = "Candidate binary hash verification"
+                    Target        = "Exact byte length and SHA-256 match ($($bin.Sha256))"
+                    Observed      = "Not verified"
+                    Status        = 'FAIL'
+                    WaiverApplied = $false
+                    Detail        = $_.Exception.Message
+                })
             }
         }
     }
@@ -1696,7 +1855,7 @@ function Invoke-PerformanceBudgetSelfTests {
     try {
         $json = Get-BoundedUtf8FileText -Path $passingPath -Description 'Passing fixture'
         $report = ConvertFrom-StrictPerformanceBudgetJson -JsonText $json -SourceDescription 'passing fixture'
-        $eval = Test-PerformanceBudgetReport -ReportObject $report
+        $eval = Test-PerformanceBudgetReport -ReportObject $report -CandidateDirectory (Join-Path $RepositoryRoot 'artifacts\bin') -RepositoryRoot $RepositoryRoot -ExpectedSourceCommit ([string]$report.Candidate.SourceCommit)
         & $recordSelfTest 'Positive: Golden passing budget report' ($eval.Passed -and $eval.OverallStatus -eq 'PASS') "All 8 checks PASS"
     } catch {
         & $recordSelfTest 'Positive: Golden passing budget report' $false $_.Exception.Message
@@ -1707,7 +1866,7 @@ function Invoke-PerformanceBudgetSelfTests {
     try {
         $json = Get-BoundedUtf8FileText -Path $waivedPath -Description 'Waived fixture'
         $report = ConvertFrom-StrictPerformanceBudgetJson -JsonText $json -SourceDescription 'waived fixture'
-        $eval = Test-PerformanceBudgetReport -ReportObject $report
+        $eval = Test-PerformanceBudgetReport -ReportObject $report -CandidateDirectory (Join-Path $RepositoryRoot 'artifacts\bin') -RepositoryRoot $RepositoryRoot -ExpectedSourceCommit ([string]$report.Candidate.SourceCommit)
         & $recordSelfTest 'Positive: Budget overrun with valid waiver' ($eval.Passed -and $eval.OverallStatus -eq 'PASS (WITH WAIVER)') "Waiver correctly transitions failing metric to PASS (WAIVED)"
     } catch {
         & $recordSelfTest 'Positive: Budget overrun with valid waiver' $false $_.Exception.Message
@@ -2010,7 +2169,7 @@ function Invoke-PerformanceBudgetSelfTests {
         $prep0hReport = ConvertFrom-StrictPerformanceBudgetJson -JsonText $prep0hJson -SourceDescription 'prep 0h test'
         $prep0hReport.Metrics.SoakDurationHours = 0.0
         $prep0hReport.EvidenceClass = 'Preparation'
-        $prep0hEval = Test-PerformanceBudgetReport -ReportObject $prep0hReport
+        $prep0hEval = Test-PerformanceBudgetReport -ReportObject $prep0hReport -CandidateDirectory (Join-Path $RepositoryRoot 'artifacts\bin') -RepositoryRoot $RepositoryRoot -ExpectedSourceCommit ([string]$prep0hReport.Candidate.SourceCommit)
         $soakCheck = @($prep0hEval.Checks | Where-Object Id -eq 'V07-PERF-07-SOAK')[0]
         & $recordSelfTest 'Preparation: Zero-hour soak reports NOT OBSERVED (never PASS as runtime)' ($prep0hEval.Passed -and $soakCheck.Status -eq 'NOT OBSERVED') "Preparation reports NOT OBSERVED: $($soakCheck.Detail)"
     } catch {
@@ -2044,8 +2203,8 @@ function Invoke-PerformanceBudgetSelfTests {
         $run8hReport.EvidenceBoundary.SoakExecution = 'OBSERVED'
         $run8hReport.Candidate.SourceCommit = (Test-CleanRepositoryState -RepositoryRoot $RepositoryRoot -SkipCleanCheck)
         $run8hReport | Add-Member -MemberType NoteProperty -Name ProcessTelemetry -Value @(
-            [pscustomobject]@{ ProcessName='HerdrOps.Core'; ProcessId=[int]41001; ProcessStartUtc='2026-08-21T12:00:00Z'; BinaryPath=(Join-Path $RepositoryRoot 'artifacts/bin/HerdrOps.Core/release/HerdrOps.Core.dll'); BinarySha256=[string]$run8hReport.Candidate.Binaries[0].Sha256 },
-            [pscustomobject]@{ ProcessName='HerdrOps.App'; ProcessId=[int]41002; ProcessStartUtc='2026-08-21T12:00:01Z'; BinaryPath=(Join-Path $RepositoryRoot 'artifacts/bin/HerdrOps.App/release/HerdrOps.App.dll'); BinarySha256=[string]$run8hReport.Candidate.Binaries[1].Sha256 }
+            [pscustomobject]@{ ProcessName='HerdrOps.Core'; ProcessId=[int]41001; ProcessStartUtc='2020-01-01T12:00:00Z'; BinaryPath=(Join-Path $RepositoryRoot 'artifacts/bin/HerdrOps.Core/release/HerdrOps.Core.dll'); BinarySha256=[string]$run8hReport.Candidate.Binaries[0].Sha256 },
+            [pscustomobject]@{ ProcessName='HerdrOps.App'; ProcessId=[int]41002; ProcessStartUtc='2020-01-01T12:00:01Z'; BinaryPath=(Join-Path $RepositoryRoot 'artifacts/bin/HerdrOps.App/release/HerdrOps.App.dll'); BinarySha256=[string]$run8hReport.Candidate.Binaries[1].Sha256 }
         ) -Force
         $run8hEval = Test-PerformanceBudgetReport -ReportObject $run8hReport -CandidateDirectory (Join-Path $RepositoryRoot 'artifacts/bin') -RepositoryRoot $RepositoryRoot -ExpectedSourceCommit $run8hReport.Candidate.SourceCommit
         $soakCheck = @($run8hEval.Checks | Where-Object Id -eq 'V07-PERF-07-SOAK')[0]
@@ -2095,7 +2254,7 @@ function Invoke-PerformanceBudgetSelfTests {
         $prep8h = ConvertFrom-StrictPerformanceBudgetJson -JsonText (Get-BoundedUtf8FileText -Path $passingPath) -SourceDescription 'prep 8h boundary test'
         $prep8h.Metrics.SoakDurationHours = 8.0
         $prep8h.EvidenceClass = 'Preparation'
-        $prep8hEval = Test-PerformanceBudgetReport -ReportObject $prep8h
+        $prep8hEval = Test-PerformanceBudgetReport -ReportObject $prep8h -CandidateDirectory (Join-Path $RepositoryRoot 'artifacts\bin') -RepositoryRoot $RepositoryRoot -ExpectedSourceCommit ([string]$prep8h.Candidate.SourceCommit)
         $prep8hCheck = @($prep8hEval.Checks | Where-Object Id -eq 'V07-PERF-07-SOAK')[0]
         & $recordSelfTest 'Preparation: Full synthetic 8-hour soak remains NOT OBSERVED' ($prep8hEval.Passed -and $prep8hCheck.Status -eq 'NOT OBSERVED') 'Preparation cannot satisfy live soak admission'
     } catch {

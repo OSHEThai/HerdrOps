@@ -18,6 +18,52 @@ $testCount = 0
 $passCount = 0
 $failCount = 0
 
+function New-RuntimeJsonFromPassingFixture {
+    param(
+        [string]$CoreBinaryRelativePath = 'artifacts/bin/HerdrOps.Core/release/HerdrOps.Core.dll',
+        [long]$CorePid = 41001,
+        [long]$AppPid = 41002
+    )
+
+    $json = Get-BoundedUtf8FileText -Path $passFixturePath -Description 'Runtime JSON regression fixture'
+    $base = $json | ConvertFrom-Json
+    $head = (git -C $repositoryRoot rev-parse HEAD).Trim()
+    $json = $json -replace '"SourceCommit":\s*"[0-9a-f]{40}"', ('"SourceCommit": "' + $head + '"')
+    $json = $json.Replace('"EvidenceClass": "Preparation"', '"EvidenceClass": "Runtime"')
+    $json = $json.Replace('"ActualHerdrRuntime": "NOT OBSERVED / NOT CLAIMED"', '"ActualHerdrRuntime": "OBSERVED"')
+    $json = $json.Replace('"SoakExecution": "NOT OBSERVED / NOT CLAIMED"', '"SoakExecution": "OBSERVED"')
+
+    $metricsInsertion = '"DashboardColdLaunchP95Ms": 1320.0,' + [Environment]::NewLine +
+        '    "WidgetDeltaLatencySamplesMs": [145.2, 145.2, 145.2],' + [Environment]::NewLine +
+        '    "DashboardColdLaunchSamplesMs": [1320.0, 1320.0, 1320.0],'
+    $json = $json.Replace('"DashboardColdLaunchP95Ms": 1320.0,', $metricsInsertion)
+
+    $coreBinary = @($base.Candidate.Binaries | Where-Object { $_.RelativePath -eq $CoreBinaryRelativePath })[0]
+    if ($null -eq $coreBinary) { throw "Runtime regression candidate binary missing from fixture: $CoreBinaryRelativePath" }
+    $appBinary = @($base.Candidate.Binaries | Where-Object { $_.RelativePath -like '*HerdrOps.App/release/HerdrOps.App.dll' })[0]
+    $corePath = (Join-Path $repositoryRoot $CoreBinaryRelativePath).Replace('\', '\\')
+    $appPath = (Join-Path $repositoryRoot $appBinary.RelativePath).Replace('\', '\\')
+    $telemetry = @"
+  "ProcessTelemetry": [
+    {
+      "ProcessName": "HerdrOps.Core",
+      "ProcessId": $CorePid,
+      "ProcessStartUtc": "2020-01-01T12:00:00Z",
+      "BinaryPath": "$corePath",
+      "BinarySha256": "$($coreBinary.Sha256)"
+    },
+    {
+      "ProcessName": "HerdrOps.App",
+      "ProcessId": $AppPid,
+      "ProcessStartUtc": "2020-01-01T12:00:01Z",
+      "BinaryPath": "$appPath",
+      "BinarySha256": "$($appBinary.Sha256)"
+    }
+  ],
+"@
+    return $json.Replace('  "EvidenceBoundary":', $telemetry + '  "EvidenceBoundary":')
+}
+
 function Assert-Test {
     param(
         [Parameter(Mandatory)][string]$Name,
@@ -105,12 +151,12 @@ Assert-Test -Name 'ConvertFrom-StrictPerformanceBudgetJson rejects negative metr
 
 # Section 5: Budget Evaluations and Waivers
 Write-Host "`nSection 5: Budget Evaluations and Waivers"
-$evalPass = Test-PerformanceBudgetReport -ReportObject $parsedValid
+$evalPass = Test-PerformanceBudgetReport -ReportObject $parsedValid -CandidateDirectory (Join-Path $repositoryRoot 'artifacts\bin') -RepositoryRoot $repositoryRoot -ExpectedSourceCommit ([string]$parsedValid.Candidate.SourceCommit)
 Assert-Test -Name 'Passing report passes all 8 Plan target budgets' -Condition ($evalPass.Passed -and $evalPass.OverallStatus -eq 'PASS')
 
 $waivedJson = Get-BoundedUtf8FileText -Path (Join-Path $fixturesDirectory 'waived-budget-report.json')
 $parsedWaived = ConvertFrom-StrictPerformanceBudgetJson -JsonText $waivedJson -SourceDescription 'Waived report'
-$evalWaived = Test-PerformanceBudgetReport -ReportObject $parsedWaived
+$evalWaived = Test-PerformanceBudgetReport -ReportObject $parsedWaived -CandidateDirectory (Join-Path $repositoryRoot 'artifacts\bin') -RepositoryRoot $repositoryRoot -ExpectedSourceCommit ([string]$parsedWaived.Candidate.SourceCommit)
 Assert-Test -Name 'Valid waiver transitions failing metric to PASS (WAIVED)' -Condition ($evalWaived.Passed -and $evalWaived.OverallStatus -eq 'PASS (WITH WAIVER)')
 
 $trimWaiverJson = Get-BoundedUtf8FileText -Path (Join-Path $fixturesDirectory 'disallowed-native-trim-waiver-fail.json')
@@ -172,7 +218,7 @@ Write-Host "`nSection 8: Zero-Hour Soak vs 8-Hour Soak Boundary"
 $prep0hReport = ConvertFrom-StrictPerformanceBudgetJson -JsonText $validJson -SourceDescription 'Prep 0h'
 $prep0hReport.Metrics.SoakDurationHours = 0.0
 $prep0hReport.EvidenceClass = 'Preparation'
-$evalPrep0h = Test-PerformanceBudgetReport -ReportObject $prep0hReport
+$evalPrep0h = Test-PerformanceBudgetReport -ReportObject $prep0hReport -CandidateDirectory (Join-Path $repositoryRoot 'artifacts\bin') -RepositoryRoot $repositoryRoot -ExpectedSourceCommit ([string]$prep0hReport.Candidate.SourceCommit)
 $prep0hCheck = @($evalPrep0h.Checks | Where-Object Id -eq 'V07-PERF-07-SOAK')[0]
 Assert-Test -Name 'Zero-hour soak in Preparation reports NOT OBSERVED (never PASS as runtime)' -Condition ($evalPrep0h.Passed -and $prep0hCheck.Status -eq 'NOT OBSERVED')
 
@@ -194,8 +240,8 @@ $run8hReport.EvidenceBoundary.ActualHerdrRuntime = 'OBSERVED'
 $run8hReport.EvidenceBoundary.SoakExecution = 'OBSERVED'
 $run8hReport.Candidate.SourceCommit = Test-CleanRepositoryState -RepositoryRoot $repositoryRoot -SkipCleanCheck
 $run8hReport | Add-Member -MemberType NoteProperty -Name ProcessTelemetry -Value @(
-    [pscustomobject]@{ ProcessName='HerdrOps.Core'; ProcessId=[int]41001; ProcessStartUtc='2026-08-21T12:00:00Z'; BinaryPath=(Join-Path $repositoryRoot 'artifacts/bin/HerdrOps.Core/release/HerdrOps.Core.dll'); BinarySha256=[string]$run8hReport.Candidate.Binaries[0].Sha256 },
-    [pscustomobject]@{ ProcessName='HerdrOps.App'; ProcessId=[int]41002; ProcessStartUtc='2026-08-21T12:00:01Z'; BinaryPath=(Join-Path $repositoryRoot 'artifacts/bin/HerdrOps.App/release/HerdrOps.App.dll'); BinarySha256=[string]$run8hReport.Candidate.Binaries[1].Sha256 }
+    [pscustomobject]@{ ProcessName='HerdrOps.Core'; ProcessId=[int]41001; ProcessStartUtc='2020-01-01T12:00:00Z'; BinaryPath=(Join-Path $repositoryRoot 'artifacts/bin/HerdrOps.Core/release/HerdrOps.Core.dll'); BinarySha256=[string]$run8hReport.Candidate.Binaries[0].Sha256 },
+    [pscustomobject]@{ ProcessName='HerdrOps.App'; ProcessId=[int]41002; ProcessStartUtc='2020-01-01T12:00:01Z'; BinaryPath=(Join-Path $repositoryRoot 'artifacts/bin/HerdrOps.App/release/HerdrOps.App.dll'); BinarySha256=[string]$run8hReport.Candidate.Binaries[1].Sha256 }
 ) -Force
 $evalRun8h = Test-PerformanceBudgetReport -ReportObject $run8hReport -CandidateDirectory (Join-Path $repositoryRoot 'artifacts/bin') -RepositoryRoot $repositoryRoot -ExpectedSourceCommit $run8hReport.Candidate.SourceCommit
 $run8hCheck = @($evalRun8h.Checks | Where-Object Id -eq 'V07-PERF-07-SOAK')[0]
@@ -227,8 +273,141 @@ try {
 }
 Assert-Test -Name 'Strict JSON parser rejects trailing comma in array' -Condition $trailingArrayCommaCaught
 
-# Section 10: Deterministic Self-Test Suite Invocation
-Write-Host "`nSection 10: Full Deterministic Self-Test Suite"
+# Section 10: Hostile JSON-parsed regressions (Synthetic only; no Runtime/Release credit)
+Write-Host "`nSection 10: Hostile JSON-parsed regressions (Synthetic only)"
+$syntheticExpectedHead = (git -C $repositoryRoot rev-parse HEAD).Trim()
+$runtimeJson = New-RuntimeJsonFromPassingFixture
+$runtimeReport = ConvertFrom-StrictPerformanceBudgetJson -JsonText $runtimeJson -SourceDescription 'synthetic runtime-admission JSON'
+$runtimeEval = Test-PerformanceBudgetReport -ReportObject $runtimeReport -CandidateDirectory (Join-Path $repositoryRoot 'artifacts\bin') -RepositoryRoot $repositoryRoot -ExpectedSourceCommit $syntheticExpectedHead
+$expectedPidType = if ($PSVersionTable.PSVersion.Major -ge 6) { 'System.Int64' } else { 'System.Int32' }
+$pidTypeIsNormalized = $runtimeReport.ProcessTelemetry[0].ProcessId.GetType().FullName -eq $expectedPidType
+$pidBindingCheck = @($runtimeEval.Checks | Where-Object Id -eq 'V07-PID-BINDING')[0]
+$runtimeFailures = (@($runtimeEval.Checks | Where-Object Status -notin @('PASS', 'PASS (WAIVED)') | ForEach-Object { "$($_.Id):$($_.Status)" }) -join ',')
+Assert-Test -Name 'Synthetic JSON positive PID normalizes PS7 Int64 / PS5 Int32 and binds' -Condition ($pidTypeIsNormalized -and $runtimeEval.Passed -and $pidBindingCheck.Status -eq 'PASS') -Message "Parsed PID type=$($runtimeReport.ProcessTelemetry[0].ProcessId.GetType().FullName); Overall=$($runtimeEval.OverallStatus); PIDCheck=$($pidBindingCheck.Status); Failures=$runtimeFailures"
+
+$nonPositivePidObject = ConvertFrom-StrictPerformanceBudgetJson -JsonText $runtimeJson -SourceDescription 'synthetic non-positive PID source'
+$nonPositivePidObject.ProcessTelemetry[0].ProcessId = -1
+$nonPositivePidJson = $nonPositivePidObject | ConvertTo-Json -Depth 20 -Compress
+$nonPositivePidCaught = $false
+try {
+    $null = ConvertFrom-StrictPerformanceBudgetJson -JsonText $nonPositivePidJson -SourceDescription 'synthetic non-positive PID'
+} catch {
+    $nonPositivePidCaught = $_.Exception.Message -match 'positive integer|ProcessId'
+}
+Assert-Test -Name 'Synthetic JSON non-positive PID fails closed' -Condition $nonPositivePidCaught
+
+$duplicatePidJson = New-RuntimeJsonFromPassingFixture -CorePid 41001 -AppPid 41001
+$duplicatePidReport = ConvertFrom-StrictPerformanceBudgetJson -JsonText $duplicatePidJson -SourceDescription 'synthetic duplicate Core/App PID'
+$duplicatePidEval = Test-PerformanceBudgetReport -ReportObject $duplicatePidReport -CandidateDirectory (Join-Path $repositoryRoot 'artifacts\bin') -RepositoryRoot $repositoryRoot -ExpectedSourceCommit $syntheticExpectedHead
+$duplicatePidCheck = @($duplicatePidEval.Checks | Where-Object Id -eq 'V07-RUNTIME-PID-DISTINCT')[0]
+Assert-Test -Name 'Synthetic JSON rejects shared Core/App PID' -Condition (-not $duplicatePidEval.Passed -and $duplicatePidCheck.Status -eq 'FAIL')
+
+$roleMismatchJson = New-RuntimeJsonFromPassingFixture -CoreBinaryRelativePath 'artifacts/bin/HerdrOps.CLI/release/HerdrOps.CLI.dll'
+$roleMismatchReport = ConvertFrom-StrictPerformanceBudgetJson -JsonText $roleMismatchJson -SourceDescription 'synthetic role-to-binary mismatch'
+$roleMismatchEval = Test-PerformanceBudgetReport -ReportObject $roleMismatchReport -CandidateDirectory (Join-Path $repositoryRoot 'artifacts\bin') -RepositoryRoot $repositoryRoot -ExpectedSourceCommit $syntheticExpectedHead
+$roleMismatchCheck = @($roleMismatchEval.Checks | Where-Object Id -eq 'V07-RUNTIME-BINARY-HerdrOps.Core')[0]
+Assert-Test -Name 'Synthetic JSON rejects Core process mapped to CLI binary' -Condition (-not $roleMismatchEval.Passed -and $roleMismatchCheck.Status -eq 'FAIL')
+
+$wrongHashObject = ConvertFrom-StrictPerformanceBudgetJson -JsonText $runtimeJson -SourceDescription 'synthetic process hash source'
+$wrongHashObject.ProcessTelemetry[0].BinarySha256 = '0' * 64
+$wrongHashJson = $wrongHashObject | ConvertTo-Json -Depth 20 -Compress
+$wrongHashReport = ConvertFrom-StrictPerformanceBudgetJson -JsonText $wrongHashJson -SourceDescription 'synthetic process hash mismatch'
+$wrongHashEval = Test-PerformanceBudgetReport -ReportObject $wrongHashReport -CandidateDirectory (Join-Path $repositoryRoot 'artifacts\bin') -RepositoryRoot $repositoryRoot -ExpectedSourceCommit $syntheticExpectedHead
+$wrongHashCheck = @($wrongHashEval.Checks | Where-Object Id -eq 'V07-RUNTIME-BINARY-HerdrOps.Core')[0]
+Assert-Test -Name 'Synthetic JSON rejects process binary SHA mismatch' -Condition (-not $wrongHashEval.Passed -and $wrongHashCheck.Status -eq 'FAIL')
+
+$missingEvidenceObject = ConvertFrom-StrictPerformanceBudgetJson -JsonText $runtimeJson -SourceDescription 'synthetic missing EvidenceClass source'
+[void]$missingEvidenceObject.PSObject.Properties.Remove('EvidenceClass')
+$missingEvidenceJson = $missingEvidenceObject | ConvertTo-Json -Depth 20 -Compress
+$missingEvidenceCaught = $false
+try {
+    $null = ConvertFrom-StrictPerformanceBudgetJson -JsonText $missingEvidenceJson -SourceDescription 'synthetic missing EvidenceClass'
+} catch {
+    $missingEvidenceCaught = $_.Exception.Message -match 'EvidenceClass'
+}
+Assert-Test -Name 'Synthetic JSON requires EvidenceClass' -Condition $missingEvidenceCaught
+
+$missingHostObject = ConvertFrom-StrictPerformanceBudgetJson -JsonText $runtimeJson -SourceDescription 'synthetic missing HostEnvironment source'
+[void]$missingHostObject.PSObject.Properties.Remove('HostEnvironment')
+$missingHostJson = $missingHostObject | ConvertTo-Json -Depth 20 -Compress
+$missingHostCaught = $false
+try {
+    $null = ConvertFrom-StrictPerformanceBudgetJson -JsonText $missingHostJson -SourceDescription 'synthetic missing HostEnvironment'
+} catch {
+    $missingHostCaught = $_.Exception.Message -match 'HostEnvironment'
+}
+Assert-Test -Name 'Synthetic JSON requires HostEnvironment' -Condition $missingHostCaught
+
+$negativeLatencyObject = ConvertFrom-StrictPerformanceBudgetJson -JsonText $runtimeJson -SourceDescription 'synthetic negative latency source'
+$negativeLatencyObject.Metrics.WidgetDeltaLatencySamplesMs = @(-1.0, 145.2)
+$negativeLatencyJson = $negativeLatencyObject | ConvertTo-Json -Depth 20 -Compress
+$negativeLatencyCaught = $false
+try {
+    $null = ConvertFrom-StrictPerformanceBudgetJson -JsonText $negativeLatencyJson -SourceDescription 'synthetic negative latency sample'
+} catch {
+    $negativeLatencyCaught = $_.Exception.Message -match 'samples must be >= 0'
+}
+Assert-Test -Name 'Synthetic negative latency sample fails schema' -Condition $negativeLatencyCaught
+
+$negativeLaunchObject = ConvertFrom-StrictPerformanceBudgetJson -JsonText $runtimeJson -SourceDescription 'synthetic negative launch source'
+$negativeLaunchObject.Metrics.DashboardColdLaunchSamplesMs = @(-1.0, 1320.0)
+$negativeLaunchJson = $negativeLaunchObject | ConvertTo-Json -Depth 20 -Compress
+$negativeLaunchCaught = $false
+try {
+    $null = ConvertFrom-StrictPerformanceBudgetJson -JsonText $negativeLaunchJson -SourceDescription 'synthetic negative launch sample'
+} catch {
+    $negativeLaunchCaught = $_.Exception.Message -match 'samples must be >= 0'
+}
+Assert-Test -Name 'Synthetic negative launch sample fails schema' -Condition $negativeLaunchCaught
+
+$nonFiniteJson = $runtimeJson.Replace('[145.2, 145.2, 145.2]', '[1e999, 145.2, 145.2]')
+$nonFiniteCaught = $false
+try {
+    $null = ConvertFrom-StrictPerformanceBudgetJson -JsonText $nonFiniteJson -SourceDescription 'synthetic non-finite latency sample'
+} catch {
+    $nonFiniteCaught = $true
+}
+Assert-Test -Name 'Synthetic non-finite latency sample fails schema' -Condition $nonFiniteCaught
+
+$hostileIdentityObject = ConvertFrom-StrictPerformanceBudgetJson -JsonText $waivedJson -SourceDescription 'synthetic arbitrary waiver identity source'
+$hostileIdentityObject.Waivers[0].ApprovedBy = '@arbitrary-identity'
+$hostileIdentityObject.Waivers[0].WaiverSha256 = Get-WaiverCanonicalSha256 -Waiver $hostileIdentityObject.Waivers[0]
+$hostileIdentityJson = $hostileIdentityObject | ConvertTo-Json -Depth 20 -Compress
+$hostileIdentityCaught = $false
+try {
+    $null = ConvertFrom-StrictPerformanceBudgetJson -JsonText $hostileIdentityJson -SourceDescription 'synthetic arbitrary waiver identity'
+} catch {
+    $hostileIdentityCaught = $_.Exception.Message -match 'ApprovedBy'
+}
+Assert-Test -Name 'Synthetic arbitrary waiver identity fails Plan binding' -Condition $hostileIdentityCaught
+
+$hostileReferenceObject = ConvertFrom-StrictPerformanceBudgetJson -JsonText $waivedJson -SourceDescription 'synthetic arbitrary waiver reference source'
+$hostileReferenceObject.Waivers[0].ApprovalReference = 'Plan/UNAUTHORIZED-REFERENCE'
+$hostileReferenceObject.Waivers[0].WaiverSha256 = Get-WaiverCanonicalSha256 -Waiver $hostileReferenceObject.Waivers[0]
+$hostileReferenceJson = $hostileReferenceObject | ConvertTo-Json -Depth 20 -Compress
+$hostileReferenceCaught = $false
+try {
+    $null = ConvertFrom-StrictPerformanceBudgetJson -JsonText $hostileReferenceJson -SourceDescription 'synthetic arbitrary waiver reference'
+} catch {
+    $hostileReferenceCaught = $_.Exception.Message -match 'ApprovalReference'
+}
+Assert-Test -Name 'Synthetic waiver without Plan approval reference fails closed' -Condition $hostileReferenceCaught
+
+$missingBinaryObject = ConvertFrom-StrictPerformanceBudgetJson -JsonText $validJson -SourceDescription 'synthetic missing candidate binary source'
+$missingBinaryObject.Candidate.Binaries[0].RelativePath = 'artifacts/bin/missing-core.dll'
+$missingBinaryJson = $missingBinaryObject | ConvertTo-Json -Depth 20 -Compress
+$missingBinaryReport = ConvertFrom-StrictPerformanceBudgetJson -JsonText $missingBinaryJson -SourceDescription 'synthetic missing candidate binary'
+$missingBinaryEval = Test-PerformanceBudgetReport -ReportObject $missingBinaryReport -CandidateDirectory (Join-Path $repositoryRoot 'artifacts\bin') -RepositoryRoot $repositoryRoot -ExpectedSourceCommit ([string]$missingBinaryReport.Candidate.SourceCommit)
+$missingBinaryCheck = @($missingBinaryEval.Checks | Where-Object Id -eq 'V07-CANDIDATE-HASH-missing-core')[0]
+$missingBinaryBinding = @($missingBinaryEval.CandidateBindings | Where-Object Path -eq 'artifacts/bin/missing-core.dll')[0]
+Assert-Test -Name 'Synthetic non-runtime missing candidate binary is NOT_VERIFIED and fails' -Condition (-not $missingBinaryEval.Passed -and $missingBinaryCheck.Status -eq 'FAIL' -and $missingBinaryBinding.Status -eq 'NOT_VERIFIED')
+
+$missingRootEval = Test-PerformanceBudgetReport -ReportObject $parsedValid -ExpectedSourceCommit ([string]$parsedValid.Candidate.SourceCommit)
+$missingRootCheck = @($missingRootEval.Checks | Where-Object Id -eq 'V07-CANDIDATE-BINARY-ROOTS')[0]
+Assert-Test -Name 'Synthetic declared binaries without verification roots fail and never bind' -Condition (-not $missingRootEval.Passed -and $missingRootCheck.Status -eq 'FAIL' -and @($missingRootEval.CandidateBindings).Count -eq 0)
+
+# Section 11: Deterministic Self-Test Suite Invocation
+Write-Host "`nSection 11: Full Deterministic Self-Test Suite"
 $selfTestResults = @(Invoke-PerformanceBudgetSelfTests -RepositoryRoot $repositoryRoot -FixturesDirectory $fixturesDirectory)
 $allStPassed = @($selfTestResults | Where-Object Status -ne 'PASS').Count -eq 0
 Assert-Test -Name "Invoke-PerformanceBudgetSelfTests runs all $($selfTestResults.Count) matrix cases" -Condition ($allStPassed -and $selfTestResults.Count -eq 36)

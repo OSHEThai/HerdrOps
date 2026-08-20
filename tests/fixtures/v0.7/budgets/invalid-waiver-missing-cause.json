@@ -3,6 +3,7 @@
   "RunId": "20260821T120000Z-invwaiver1",
   "TimestampUtc": "2026-08-21T12:00:00Z",
   "EvidenceClass": "Preparation",
+  "HostEnvironment": { "Os": "Windows 11 Pro", "Architecture": "x64", "LogicalProcessors": 16, "ReferenceHostConfirmed": true },
   "Candidate": {
     "SourceCommit": "79e015ec33dd5f357fb2b35405e580879073a6e5",
     "GitTreeClean": true
@@ -27,7 +28,8 @@
       "Impact": "Slight CPU increase",
       "ApprovedBy": "@yutthaphon",
       "ApprovalDateUtc": "2026-08-21T12:00:00Z",
-      "WaiverSha256": "141e978463828331e67ed8750e3c23e623ce88d4333a0a2811dbc4ae37efa5b8"
+      "ApprovalReference": "Plan/RELEASE-GATES.md#v07-performance-waiver-authority",
+      "WaiverSha256": "bb5b1f8b5fd9e3bd14c4c15364d0f96b27f3d4b59c8ac430033591fddf0f12fe"
     }
   ],
   "EvidenceBoundary": {
