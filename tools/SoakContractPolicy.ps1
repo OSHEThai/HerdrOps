@@ -35,6 +35,16 @@ function Get-SoakFileSha256 {
     return ((Get-FileHash -LiteralPath $Path -Algorithm SHA256 -ErrorAction Stop).Hash).ToLowerInvariant()
 }
 
+function ConvertTo-SoakSha256Normalized {
+    param([Parameter(Mandatory)][string]$Value)
+
+    $normalized = $Value.Trim().ToLowerInvariant()
+    if ($normalized -notmatch '^[0-9a-f]{64}$') {
+        throw "SHA-256 must be an exact 64-character lowercase hex digest; received '$Value'"
+    }
+    return $normalized
+}
+
 function Test-SoakBoundedTelemetry {
     param(
         [Parameter(Mandatory)][object[]]$Artifacts,
@@ -79,6 +89,10 @@ function Test-SoakAlertConsistency {
         [Parameter(Mandatory)][object[]]$Alerts
     )
 
+    # Event `id` and `agentId` are immutable identity fields. Event `sequence` and alert
+    # `acknowledged`/`acknowledgementTime` are mutable current state and never participate
+    # in identity binding or SHA-256 provenance. An unacknowledged alert normalizes both a
+    # null and an empty-string acknowledgementTime to the same "no acknowledgement" value.
     $findings = @()
     $eventIds = @{}
     foreach ($event in $Events) {
@@ -115,7 +129,7 @@ function Test-SoakAlertConsistency {
         }
 
         $acknowledged = [bool]$alert.Acknowledged
-        $acknowledgementTime = [string]$alert.AcknowledgementTime
+        $acknowledgementTime = if ($null -eq $alert.AcknowledgementTime) { '' } else { [string]$alert.AcknowledgementTime }
         if ($acknowledged) {
             if ([string]::IsNullOrWhiteSpace($acknowledgementTime)) {
                 $findings += "alert '$alertId' is acknowledged without an acknowledgementTime"
@@ -148,11 +162,12 @@ function Test-SoakCandidateBytes {
 
     $observedBytes = [long](Get-Item -LiteralPath $ArchivePath -ErrorAction Stop).Length
     $observedSha256 = Get-SoakFileSha256 -Path $ArchivePath
+    $expectedSha256 = ConvertTo-SoakSha256Normalized -Value $ExpectedSha256
     $findings = @()
     if ($observedBytes -ne $ExpectedBytes) {
         $findings += "byte count $observedBytes does not match expected $ExpectedBytes"
     }
-    if ($observedSha256 -ne $ExpectedSha256.ToLowerInvariant()) {
+    if ($observedSha256 -ne $expectedSha256) {
         $findings += 'SHA-256 does not match the expected candidate binding'
     }
 
@@ -205,7 +220,8 @@ function Assert-SoakDatabaseIdentity {
     }
 
     $observedSha256 = Get-SoakFileSha256 -Path $Path
-    if ($observedSha256 -ne $ExpectedSha256.ToLowerInvariant()) {
+    $expectedSha256 = ConvertTo-SoakSha256Normalized -Value $ExpectedSha256
+    if ($observedSha256 -ne $expectedSha256) {
         return [pscustomobject]@{
             Pass = $false
             ObservedSha256 = $observedSha256
@@ -339,6 +355,21 @@ function Test-SoakPolicyFixtures {
             @{ Name = 'c'; Bytes = 1; Lines = 1; Entries = 1; Path = 'p' }
         ) -MaxArtifacts 2
         if ($overCount.Pass) { throw 'over-count case did not fail closed' }
+
+        $overLines = Test-SoakBoundedTelemetry -Artifacts @(
+            @{ Name = 'a'; Bytes = 10; Lines = 21; Entries = 5; Path = 'p' }
+        ) -MaxLinesPerArtifact 20
+        if ($overLines.Pass) { throw 'over-limit line case did not fail closed' }
+
+        $overEntries = Test-SoakBoundedTelemetry -Artifacts @(
+            @{ Name = 'a'; Bytes = 10; Lines = 10; Entries = 21; Path = 'p' }
+        ) -MaxEntriesPerArtifact 20
+        if ($overEntries.Pass) { throw 'over-limit entry case did not fail closed' }
+
+        $overPath = Test-SoakBoundedTelemetry -Artifacts @(
+            @{ Name = 'a'; Bytes = 10; Lines = 10; Entries = 5; Path = ('p' * 6) }
+        ) -MaxPathLength 5
+        if ($overPath.Pass) { throw 'over-limit path-length case did not fail closed' }
     } catch {
         $failures += "telemetry: $($_.Exception.Message)"
     }
@@ -369,6 +400,16 @@ function Test-SoakPolicyFixtures {
             @{ Id = 'a1'; EventId = 'e1'; AgentId = 'agent-a'; Acknowledged = $false; AcknowledgementTime = '2026-08-20T00:00:00Z' }
         )
         if ($ackMismatch.Pass) { throw 'acknowledgement inconsistency was not detected' }
+
+        $nullUnacknowledged = Test-SoakAlertConsistency -Events $events -Alerts @(
+            @{ Id = 'a2'; EventId = 'e2'; AgentId = 'agent-b'; Acknowledged = $false; AcknowledgementTime = $null }
+        )
+        if (-not $nullUnacknowledged.Pass) { throw "null acknowledgementTime on an unacknowledged alert was not normalized: $($nullUnacknowledged.Findings -join '; ')" }
+
+        $nullAcknowledged = Test-SoakAlertConsistency -Events $events -Alerts @(
+            @{ Id = 'a1'; EventId = 'e1'; AgentId = 'agent-a'; Acknowledged = $true; AcknowledgementTime = $null }
+        )
+        if ($nullAcknowledged.Pass) { throw 'acknowledged alert with a null acknowledgementTime was accepted' }
 
         $duplicateAlert = Test-SoakAlertConsistency -Events $events -Alerts @(
             @{ Id = 'a1'; EventId = 'e1'; AgentId = 'agent-a'; Acknowledged = $false; AcknowledgementTime = '' },

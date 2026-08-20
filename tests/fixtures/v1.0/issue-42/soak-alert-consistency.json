@@ -10,6 +10,6 @@
   "alerts": [
     { "id": "alert-soak-001", "eventId": "evt-soak-001", "agentId": "agent-lab-leader", "severity": "urgent", "acknowledged": true, "acknowledgementTime": "2026-08-20T00:01:00Z" },
     { "id": "alert-soak-002", "eventId": "evt-soak-002", "agentId": "agent-lab-worker", "severity": "info", "acknowledged": false, "acknowledgementTime": "" },
-    { "id": "alert-soak-003", "eventId": "evt-soak-003", "agentId": "agent-lab-reviewer", "severity": "info", "acknowledged": false, "acknowledgementTime": "" }
+    { "id": "alert-soak-003", "eventId": "evt-soak-003", "agentId": "agent-lab-reviewer", "severity": "info", "acknowledged": false, "acknowledgementTime": null }
   ]
 }
