@@ -48,12 +48,20 @@ function Invoke-GhJson {
 function Get-GhJson {
     param([Parameter(Mandatory)] [string]$Endpoint)
 
-    $raw = & gh api $Endpoint
+    $raw = & gh api --paginate --slurp $Endpoint
     if ($LASTEXITCODE -ne 0) {
         throw "GitHub API request failed: GET $Endpoint"
     }
 
-    return $raw | ConvertFrom-Json -Depth 100
+    $pages = @($raw | ConvertFrom-Json -Depth 100)
+    $items = [System.Collections.Generic.List[object]]::new()
+    foreach ($page in $pages) {
+        foreach ($item in @($page)) {
+            $items.Add($item)
+        }
+    }
+
+    return $items.ToArray()
 }
 
 function New-WorkIssueBody {
