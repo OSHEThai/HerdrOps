@@ -3,7 +3,9 @@ param(
     [ValidateSet('Debug', 'Release')]
     [string]$Configuration = 'Release',
 
-    [switch]$SkipBuild
+    [switch]$SkipBuild,
+
+    [switch]$SelfTest
 )
 
 Set-StrictMode -Version Latest
@@ -18,7 +20,12 @@ $storeModelsPath = Join-Path $repositoryRoot 'src\HerdrOps.Infrastructure\Storag
 $storagePath = Join-Path $repositoryRoot 'src\HerdrOps.Infrastructure\Storage\SqliteHerdrStateStore.Evidence.cs'
 $migrationPath = Join-Path $repositoryRoot 'src\HerdrOps.Infrastructure\Storage\SqliteHerdrStateStore.EvidenceMigration.cs'
 $contractPath = Join-Path $repositoryRoot 'docs\protocol\v0.5-evidence-audit-storage-contract.md'
-$expectedDomainContractSha256 = 'E6F5AE4E3AE96AF5A83B5D8C5E9FF4C432DA1CD727824B93121E8E39B79B3E06'
+# The v0.5 projection pin is the original reviewed EvidenceContracts.cs bytes.
+# Issue #43 extends that file with exactly four reviewed retention hunks; the
+# projection strips only those hunks and must reproduce this original pin, and
+# the hunks themselves are bound by their own SHA-256 below.
+$expectedDomainContractProjectionSha256 = 'E6F5AE4E3AE96AF5A83B5D8C5E9FF4C432DA1CD727824B93121E8E39B79B3E06'
+$expectedDomainContractExtensionSha256 = '86285594E06404570995086185CCB33E9EB2A530159EAA6B777175E312A11425'
 $expectedStoreCoreV3ProjectionSha256 = '9D8CCF4690F5D1CAC445A3EC0A6CEBDEC06D9A29DAB6A608DD3AC6D75951163D'
 $expectedStorageSha256 = '5A6AF41A731C4E0100F909AD3BEEA615729B422555A10FFA7AF463FC49A4D30C'
 $expectedMigrationSha256 = 'EE69EA92BC458DDD61214A90CC7EEEF08BB5B2D03FFDC24FDE6103A74C5D1E47'
@@ -111,6 +118,161 @@ function Get-StoreCoreIdentity {
     }
 }
 
+# Reviewed Issue #43 forward-extension projection for the v0.5 evidence domain
+# contract. Issue #43 extends EvidenceContracts.cs with exactly four retention
+# hunks: a nullable RetainUntilUtc capture field, two `!.Value` dereference
+# sites, and the EvidenceRetentionPolicy.ResolveRetainUntil call. The projection
+# strips ONLY those hunks and must reproduce the original v0.5 bytes; each hunk
+# is required exactly once and the hunks are bound by their own SHA-256, so
+# unrelated drift, a substituted extension, or a duplicate hunk fails closed.
+$domainContractNullableRetainUntilPattern = 'DateTimeOffset\? RetainUntilUtc,'
+$domainContractNormalizedValuePattern = 'normalizedRequest\.RetainUntilUtc!\.Value,'
+$domainContractResolveRetainUntilPattern = 'var retainUntilUtc = EvidenceRetentionPolicy\.ResolveRetainUntil\((\r?\n)(\s+)observedUtc,(\r?\n)(\s+)request\.RetainUntilUtc\);'
+$domainContractMetadataValuePattern = 'RetainUntilUtc = request\.RetainUntilUtc!\.Value,'
+
+function Get-EvidenceDomainContractIdentity {
+    param(
+        [Parameter(Mandatory)]
+        [string]$Path
+    )
+
+    $source = [IO.File]::ReadAllText($Path)
+    $hunkCounts = @(
+        [Regex]::Matches($source, $domainContractNullableRetainUntilPattern).Count,
+        [Regex]::Matches($source, $domainContractNormalizedValuePattern).Count,
+        [Regex]::Matches($source, $domainContractResolveRetainUntilPattern).Count,
+        [Regex]::Matches($source, $domainContractMetadataValuePattern).Count
+    )
+    foreach ($count in $hunkCounts) {
+        if ($count -ne 1) {
+            throw "The Issue #43 retention forward-extension must contain exactly one reviewed hunk, found $count."
+        }
+    }
+
+    $extensionHunks = @(
+        [Regex]::Match($source, $domainContractNullableRetainUntilPattern).Value,
+        [Regex]::Match($source, $domainContractNormalizedValuePattern).Value,
+        [Regex]::Match($source, $domainContractResolveRetainUntilPattern).Value,
+        [Regex]::Match($source, $domainContractMetadataValuePattern).Value
+    )
+    $projection = [Regex]::Replace($source, $domainContractNullableRetainUntilPattern, 'DateTimeOffset RetainUntilUtc,')
+    $projection = [Regex]::Replace($projection, $domainContractNormalizedValuePattern, 'normalizedRequest.RetainUntilUtc,')
+    $projection = [Regex]::Replace(
+        $projection,
+        $domainContractResolveRetainUntilPattern,
+        'var retainUntilUtc = EvidenceContractNormalization.EnsureUtc($1$2request.RetainUntilUtc,$3$4nameof(request.RetainUntilUtc));')
+    $projection = [Regex]::Replace($projection, $domainContractMetadataValuePattern, 'RetainUntilUtc = request.RetainUntilUtc,')
+
+    return [pscustomobject]@{
+        ProjectionSha256 = Get-TextSha256 -Text $projection
+        ExtensionSha256 = Get-TextSha256 -Text ($extensionHunks -join '')
+    }
+}
+
+if ($SelfTest) {
+    $realSource = [IO.File]::ReadAllText($domainContractPath)
+    $realIdentity = Get-EvidenceDomainContractIdentity -Path $domainContractPath
+    $fixtureFailures = @()
+
+    # Positive control: the committed file must reproduce the reviewed v0.5
+    # projection and bind the reviewed Issue #43 extension identity.
+    if ($realIdentity.ProjectionSha256 -cne $expectedDomainContractProjectionSha256) {
+        $fixtureFailures += 'positive-control projection drift'
+    }
+    if ($realIdentity.ExtensionSha256 -cne $expectedDomainContractExtensionSha256) {
+        $fixtureFailures += 'positive-control extension drift'
+    }
+
+    # Hostile: unrelated drift anywhere in the file must change the projection.
+    $unrelatedDrift = $realSource.Replace('bool CreateManagedCopy);', 'bool CreateManagedCopy); ')
+    if ($unrelatedDrift -ceq $realSource) {
+        $fixtureFailures += 'hostile fixture could not inject unrelated drift'
+    } else {
+        $driftPath = Join-Path $env:TEMP ("evidence-drift-" + [Guid]::NewGuid().ToString('N') + '.cs')
+        try {
+            [IO.File]::WriteAllText($driftPath, $unrelatedDrift, [Text.UTF8Encoding]::new($false))
+            $driftIdentity = Get-EvidenceDomainContractIdentity -Path $driftPath
+            if ($driftIdentity.ProjectionSha256 -ceq $expectedDomainContractProjectionSha256) {
+                $fixtureFailures += 'unrelated drift did not change the projection hash'
+            }
+        } finally {
+            if (Test-Path -LiteralPath $driftPath) { Remove-Item -LiteralPath $driftPath -Force }
+        }
+    }
+
+    # Hostile: removing the extension (reverting to the original v0.5 bytes)
+    # must fail closed because a required reviewed hunk is missing.
+    $reverted = $realSource
+    $reverted = [Regex]::Replace($reverted, $domainContractNullableRetainUntilPattern, 'DateTimeOffset RetainUntilUtc,')
+    $reverted = [Regex]::Replace($reverted, $domainContractNormalizedValuePattern, 'normalizedRequest.RetainUntilUtc,')
+    $reverted = [Regex]::Replace(
+        $reverted,
+        $domainContractResolveRetainUntilPattern,
+        'var retainUntilUtc = EvidenceContractNormalization.EnsureUtc($1$2request.RetainUntilUtc,$3$4nameof(request.RetainUntilUtc));')
+    $reverted = [Regex]::Replace($reverted, $domainContractMetadataValuePattern, 'RetainUntilUtc = request.RetainUntilUtc,')
+    $revertPath = Join-Path $env:TEMP ("evidence-revert-" + [Guid]::NewGuid().ToString('N') + '.cs')
+    try {
+        [IO.File]::WriteAllText($revertPath, $reverted, [Text.UTF8Encoding]::new($false))
+        try {
+            Get-EvidenceDomainContractIdentity -Path $revertPath | Out-Null
+            $fixtureFailures += 'removed extension hunks did not fail closed'
+        } catch {
+            # Expected: the identity binding rejects a missing reviewed hunk.
+        }
+    } finally {
+        if (Test-Path -LiteralPath $revertPath) { Remove-Item -LiteralPath $revertPath -Force }
+    }
+
+    # Hostile: substituting a different retention call must fail closed because
+    # the exact reviewed hunk text is required.
+    $altered = $realSource.Replace(
+        'var retainUntilUtc = EvidenceRetentionPolicy.ResolveRetainUntil(',
+        'var retainUntilUtc = EvidenceRetentionPolicy.ResolveRetainUntil2(')
+    if ($altered -ceq $realSource) {
+        $fixtureFailures += 'hostile fixture could not inject extension substitution'
+    } else {
+        $alterPath = Join-Path $env:TEMP ("evidence-alter-" + [Guid]::NewGuid().ToString('N') + '.cs')
+        try {
+            [IO.File]::WriteAllText($alterPath, $altered, [Text.UTF8Encoding]::new($false))
+            try {
+                Get-EvidenceDomainContractIdentity -Path $alterPath | Out-Null
+                $fixtureFailures += 'substituted extension hunk did not fail closed'
+            } catch {
+                # Expected: the exact reviewed hunk text is required.
+            }
+        } finally {
+            if (Test-Path -LiteralPath $alterPath) { Remove-Item -LiteralPath $alterPath -Force }
+        }
+    }
+
+    # Hostile: duplicating an extension hunk must fail closed on the exact-one count.
+    $duplicated = $realSource.Replace(
+        'RetainUntilUtc = request.RetainUntilUtc!.Value,',
+        'RetainUntilUtc = request.RetainUntilUtc!.Value,`r`n            RetainUntilUtc = request.RetainUntilUtc!.Value,')
+    if ($duplicated -ceq $realSource) {
+        $fixtureFailures += 'hostile fixture could not inject duplicate hunk'
+    } else {
+        $duplicatePath = Join-Path $env:TEMP ("evidence-duplicate-" + [Guid]::NewGuid().ToString('N') + '.cs')
+        try {
+            [IO.File]::WriteAllText($duplicatePath, $duplicated, [Text.UTF8Encoding]::new($false))
+            try {
+                Get-EvidenceDomainContractIdentity -Path $duplicatePath | Out-Null
+                $fixtureFailures += 'duplicate extension hunk did not fail closed'
+            } catch {
+                # Expected: exactly one reviewed hunk is required.
+            }
+        } finally {
+            if (Test-Path -LiteralPath $duplicatePath) { Remove-Item -LiteralPath $duplicatePath -Force }
+        }
+    }
+
+    if ($fixtureFailures.Count -gt 0) {
+        throw "v0.5 evidence/audit forward-extension self-tests failed: $($fixtureFailures -join '; ')"
+    }
+    Write-Host 'v0.5 evidence/audit forward-extension hostile self-tests: PASS'
+    return
+}
+
 $sourceCommit = Assert-CleanCommittedCheckout
 
 if (-not $SkipBuild) {
@@ -120,7 +282,8 @@ if (-not $SkipBuild) {
     }
 }
 
-$requiredFiles = @($domainContractPath, $storeCorePath, $storeModelsPath, $storagePath, $migrationPath, $contractPath)
+$retentionPolicyPath = Join-Path $repositoryRoot 'src\HerdrOps.Domain\Evidence\EvidenceRetentionPolicy.cs'
+$requiredFiles = @($domainContractPath, $storeCorePath, $storeModelsPath, $storagePath, $migrationPath, $contractPath, $retentionPolicyPath)
 foreach ($requiredFile in $requiredFiles) {
     if (-not (Test-Path -LiteralPath $requiredFile -PathType Leaf)) {
         throw "Required v0.5 evidence/audit contract file was not found: $requiredFile"
@@ -132,8 +295,10 @@ $storeCoreIdentity = Get-StoreCoreIdentity -Path $storeCorePath -V4AllowlistPatt
 $storeCoreV3ProjectionSha256 = $storeCoreIdentity.ProjectionSha256
 $v4RegistrationSha256 = $storeCoreIdentity.V4RegistrationSha256
 
+$domainContractIdentity = Get-EvidenceDomainContractIdentity -Path $domainContractPath
 $actualHashes = [ordered]@{
-    DomainContract = (Get-FileHash -LiteralPath $domainContractPath -Algorithm SHA256).Hash
+    DomainContractProjection = $domainContractIdentity.ProjectionSha256
+    DomainContractExtension = $domainContractIdentity.ExtensionSha256
     StoreCore = (Get-FileHash -LiteralPath $storeCorePath -Algorithm SHA256).Hash
     StoreCoreV3Projection = $storeCoreV3ProjectionSha256
     Storage = (Get-FileHash -LiteralPath $storagePath -Algorithm SHA256).Hash
@@ -141,7 +306,8 @@ $actualHashes = [ordered]@{
     Contract = (Get-FileHash -LiteralPath $contractPath -Algorithm SHA256).Hash
 }
 $expectedHashes = [ordered]@{
-    DomainContract = $expectedDomainContractSha256
+    DomainContractProjection = $expectedDomainContractProjectionSha256
+    DomainContractExtension = $expectedDomainContractExtensionSha256
     StoreCoreV3Projection = $expectedStoreCoreV3ProjectionSha256
     Storage = $expectedStorageSha256
     Migration = $expectedMigrationSha256
@@ -301,8 +467,10 @@ if ($LASTEXITCODE -ne 0 -or $finalCommit -ne $sourceCommit -or $finalStatus.Coun
 }
 
 $finalStoreCoreIdentity = Get-StoreCoreIdentity -Path $storeCorePath -V4AllowlistPattern $v4AllowlistPattern
+$finalDomainContractIdentity = Get-EvidenceDomainContractIdentity -Path $domainContractPath
 $finalHashes = [ordered]@{
-    DomainContract = (Get-FileHash -LiteralPath $domainContractPath -Algorithm SHA256).Hash
+    DomainContractProjection = $finalDomainContractIdentity.ProjectionSha256
+    DomainContractExtension = $finalDomainContractIdentity.ExtensionSha256
     StoreCore = (Get-FileHash -LiteralPath $storeCorePath -Algorithm SHA256).Hash
     StoreCoreV3Projection = $finalStoreCoreIdentity.ProjectionSha256
     Storage = (Get-FileHash -LiteralPath $storagePath -Algorithm SHA256).Hash
@@ -345,7 +513,8 @@ $gateReport = @(
     "TestsAggregate: total=$($aggregateCounters.total) executed=$($aggregateCounters.executed) passed=$($aggregateCounters.passed) failed=$($aggregateCounters.failed) error=$($aggregateCounters.error) timeout=$($aggregateCounters.timeout) aborted=$($aggregateCounters.aborted) inconclusive=$($aggregateCounters.inconclusive) notExecuted=$($aggregateCounters.notExecuted) completed=$($aggregateCounters.completed) notRunnable=$($aggregateCounters.notRunnable) disconnected=$($aggregateCounters.disconnected) warning=$($aggregateCounters.warning)",
     'FreshTrxCounters:',
     $counterReport,
-    "DomainContractSha256: $($actualHashes.DomainContract)",
+    "DomainContractProjectionSha256: $($actualHashes.DomainContractProjection)",
+    "DomainContractExtensionSha256: $($actualHashes.DomainContractExtension)",
     "StoreCoreSha256: $($actualHashes.StoreCore)",
     "StoreCoreV3ProjectionSha256: $($actualHashes.StoreCoreV3Projection)",
     "AllowedV4ExtensionIdentity: schema=4;registrationSha256=$v4RegistrationSha256",
