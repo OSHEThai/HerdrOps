@@ -389,7 +389,6 @@ public sealed class RuntimeEvidenceRunner(
     private readonly MainWindow _mainWindow = mainWindow ?? throw new ArgumentNullException(nameof(mainWindow));
     private readonly RuntimeEvidenceOptions _options = options ?? throw new ArgumentNullException(nameof(options));
     private readonly List<RuntimeEvidenceCapture> _captures = [];
-    private readonly Dictionary<(int Width, int Height), RenderTargetBitmap> _captureBitmapCache = [];
     private readonly List<WeakReference<RenderTargetBitmap>> _captureBitmapReferences = [];
     private readonly List<RuntimeEvidenceProgress> _progressHistory = [];
     private readonly List<WidgetWindow> _widgetWindows = [];
@@ -745,18 +744,8 @@ public sealed class RuntimeEvidenceRunner(
                 $"Runtime capture '{fileName}' has no laid-out WPF surface.");
         }
 
-        var dimensions = (Width: width, Height: height);
-        if (!_captureBitmapCache.TryGetValue(dimensions, out var bitmap))
-        {
-            // Evidence captures revisit the same Dashboard and Widget sizes.
-            // Reuse those native WPF surfaces so capture-only allocation does
-            // not set the production idle process's native heap high-water mark.
-            bitmap = new RenderTargetBitmap(width, height, 96, 96, PixelFormats.Pbgra32);
-            _captureBitmapCache.Add(dimensions, bitmap);
-            _captureBitmapReferences.Add(new WeakReference<RenderTargetBitmap>(bitmap));
-        }
-
-        bitmap.Clear();
+        var bitmap = new RenderTargetBitmap(width, height, 96, 96, PixelFormats.Pbgra32);
+        _captureBitmapReferences.Add(new WeakReference<RenderTargetBitmap>(bitmap));
         bitmap.Render(visual);
         var encoder = new PngBitmapEncoder();
         encoder.Frames.Add(BitmapFrame.Create(bitmap));
@@ -931,7 +920,6 @@ public sealed class RuntimeEvidenceRunner(
         // never creates. Release those managed capture buffers before measuring
         // the production Dashboard-closed/Widget-visible state. No native
         // working-set trim is used; the following sample observes natural pages.
-        _captureBitmapCache.Clear();
         await Dispatcher.Yield(DispatcherPriority.ApplicationIdle);
         GCSettings.LargeObjectHeapCompactionMode =
             GCLargeObjectHeapCompactionMode.CompactOnce;
