@@ -1,4 +1,5 @@
 using System.Text.Json;
+using HerdrOps.Contracts.ReviewIpc;
 using HerdrOps.Domain.Assignments;
 using HerdrOps.Domain.Compliance;
 using Microsoft.Data.Sqlite;
@@ -182,6 +183,226 @@ public sealed partial class SqliteHerdrStateStore
             ValidateComplianceReviewHistory(incident, events);
             transaction.Commit();
             return events;
+        }
+    }
+
+    public IReadOnlyList<ComplianceReviewIncident> ReadAllComplianceReviewIncidents(
+        string? taskIdFilter = null,
+        IReadOnlyList<string>? incidentIdFilter = null,
+        CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        EnterComplianceReviewLock(cancellationToken);
+        try
+        {
+            ThrowIfDisposed();
+            cancellationToken.ThrowIfCancellationRequested();
+            using var transaction = _connection.BeginTransaction();
+            using var command = _connection.CreateCommand();
+            command.Transaction = transaction;
+            command.CommandText = """
+                SELECT incident_id
+                FROM compliance_review_incidents
+                ORDER BY registered_utc, incident_id;
+                """;
+            ConfigureComplianceReviewCommand(command, cancellationToken);
+            var incidentIds = new List<string>();
+            using (var reader = command.ExecuteReader())
+            {
+                while (reader.Read())
+                {
+                    incidentIds.Add(reader.GetString(0));
+                }
+            }
+
+            var results = new List<ComplianceReviewIncident>();
+            var allowedIncidentIds = incidentIdFilter is not null
+                ? new HashSet<string>(incidentIdFilter, StringComparer.Ordinal)
+                : null;
+
+            foreach (var id in incidentIds)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (allowedIncidentIds is not null && !allowedIncidentIds.Contains(id))
+                {
+                    continue;
+                }
+
+                var incident = ReadComplianceReviewIncidentCore(id, transaction, cancellationToken);
+                if (incident is null)
+                {
+                    continue;
+                }
+
+                if (taskIdFilter is not null && !string.Equals(incident.TaskId, taskIdFilter, StringComparison.Ordinal))
+                {
+                    continue;
+                }
+
+                ValidateComplianceReviewHistory(incident, transaction, cancellationToken);
+                results.Add(incident);
+            }
+
+            transaction.Commit();
+            return results;
+        }
+        finally
+        {
+            Monitor.Exit(_sync);
+        }
+    }
+
+    public IReadOnlyList<ComplianceReviewEvidenceRetentionObservation> ReadComplianceReviewRetentionObservations(
+        IReadOnlyList<string> evidenceIdentitySha256s,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(evidenceIdentitySha256s);
+        cancellationToken.ThrowIfCancellationRequested();
+        EnterComplianceReviewLock(cancellationToken);
+        try
+        {
+            ThrowIfDisposed();
+            cancellationToken.ThrowIfCancellationRequested();
+            var distinctIdentities = evidenceIdentitySha256s
+                .Where(id => !string.IsNullOrWhiteSpace(id))
+                .Distinct(StringComparer.Ordinal)
+                .OrderBy(id => id, StringComparer.Ordinal)
+                .ToArray();
+
+            var observations = new List<ComplianceReviewEvidenceRetentionObservation>(distinctIdentities.Length);
+            using var transaction = _connection.BeginTransaction();
+
+            foreach (var identity in distinctIdentities)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                using var incidentCommand = _connection.CreateCommand();
+                incidentCommand.Transaction = transaction;
+                incidentCommand.CommandText = """
+                    SELECT linked.incident_id, incident.state
+                    FROM (
+                        SELECT incident_id
+                        FROM compliance_review_incident_evidence
+                        WHERE evidence_identity_sha256 = $identity
+                        UNION
+                        SELECT events.incident_id
+                        FROM compliance_review_event_evidence AS link
+                        INNER JOIN compliance_review_events AS events
+                            ON events.audit_event_id = link.audit_event_id
+                        WHERE link.evidence_identity_sha256 = $identity
+                    ) AS linked
+                    LEFT JOIN compliance_review_incidents AS incident
+                        ON incident.incident_id = linked.incident_id
+                    ORDER BY linked.incident_id;
+                    """;
+                incidentCommand.Parameters.AddWithValue("$identity", identity);
+                ConfigureComplianceReviewCommand(incidentCommand, cancellationToken);
+
+                var referencingIncidents = new List<string>();
+                var hasOpen = false;
+                var hasTerminal = false;
+                using (var reader = incidentCommand.ExecuteReader())
+                {
+                    while (reader.Read())
+                    {
+                        var incId = reader.GetString(0);
+                        referencingIncidents.Add(incId);
+                        if (reader.IsDBNull(1))
+                        {
+                            hasOpen = true;
+                        }
+                        else
+                        {
+                            var stateInt = reader.GetInt32(1);
+                            if (stateInt is 4 or 5)
+                            {
+                                hasTerminal = true;
+                            }
+                            else
+                            {
+                                hasOpen = true;
+                            }
+                        }
+                    }
+                }
+
+                var isProtected = hasOpen;
+
+                string? storageKind = null;
+                string? availability = null;
+                DateTimeOffset? retainUntilUtc = null;
+                using (var itemCommand = _connection.CreateCommand())
+                {
+                    itemCommand.Transaction = transaction;
+                    itemCommand.CommandText = """
+                        SELECT storage_kind, availability, retain_until_utc
+                        FROM evidence_items
+                        WHERE evidence_identity_sha256 = $identity;
+                        """;
+                    itemCommand.Parameters.AddWithValue("$identity", identity);
+                    ConfigureComplianceReviewCommand(itemCommand, cancellationToken);
+                    using var itemReader = itemCommand.ExecuteReader();
+                    if (itemReader.Read())
+                    {
+                        var skInt = itemReader.GetInt32(0);
+                        storageKind = skInt switch
+                        {
+                            1 => "ExternalReference",
+                            2 => "ManagedObject",
+                            _ => skInt.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                        };
+                        var avInt = itemReader.GetInt32(1);
+                        availability = avInt switch
+                        {
+                            1 => "Present",
+                            2 => "Missing",
+                            _ => avInt.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                        };
+                        retainUntilUtc = ParseUtc(itemReader.GetString(2));
+                    }
+                }
+
+                var retentionEventRecorded = false;
+                int? retentionOutcome = null;
+                DateTimeOffset? retentionOccurredUtc = null;
+                using (var retCommand = _connection.CreateCommand())
+                {
+                    retCommand.Transaction = transaction;
+                    retCommand.CommandText = """
+                        SELECT outcome, occurred_utc
+                        FROM evidence_retention_events
+                        WHERE evidence_identity_sha256 = $identity;
+                        """;
+                    retCommand.Parameters.AddWithValue("$identity", identity);
+                    ConfigureComplianceReviewCommand(retCommand, cancellationToken);
+                    using var retReader = retCommand.ExecuteReader();
+                    if (retReader.Read())
+                    {
+                        retentionEventRecorded = true;
+                        retentionOutcome = retReader.GetInt32(0);
+                        retentionOccurredUtc = ParseUtc(retReader.GetString(1));
+                    }
+                }
+
+                observations.Add(new ComplianceReviewEvidenceRetentionObservation(
+                    identity,
+                    referencingIncidents,
+                    hasOpen,
+                    hasTerminal,
+                    isProtected,
+                    storageKind,
+                    availability,
+                    retainUntilUtc,
+                    retentionEventRecorded,
+                    retentionOutcome,
+                    retentionOccurredUtc));
+            }
+
+            transaction.Commit();
+            return observations;
+        }
+        finally
+        {
+            Monitor.Exit(_sync);
         }
     }
 
