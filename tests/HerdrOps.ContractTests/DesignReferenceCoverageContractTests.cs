@@ -163,6 +163,7 @@ public sealed class DesignReferenceCoverageContractTests
         var repositoryRoot = FindRepositoryRoot();
         var catalog = ReadRepositoryFile(repositoryRoot, "src", "HerdrOps.App", "Shell", "ShellNavigationCatalog.cs");
         var shell = ReadRepositoryFile(repositoryRoot, "src", "HerdrOps.App", "Views", "ShellView.xaml");
+        var shellCodeBehind = ReadRepositoryFile(repositoryRoot, "src", "HerdrOps.App", "Views", "ShellView.xaml.cs");
 
         var catalogRows = Regex.Matches(
                 catalog,
@@ -183,7 +184,16 @@ public sealed class DesignReferenceCoverageContractTests
         foreach (var expected in ExpectedPages)
         {
             StringAssert.Contains(catalog, $"new(\"{expected.Id}\", \"{expected.EnglishName}\", \"{expected.ThaiName}\"");
-            StringAssert.Contains(shell, $"<views:{expected.XamlType} x:Name=\"{expected.XamlName}\"");
+            var hasStaticSurface = shell.Contains(
+                $"<views:{expected.XamlType} x:Name=\"{expected.XamlName}\"",
+                StringComparison.Ordinal);
+            var hasLazySurface =
+                shellCodeBehind.Contains($"case \"{expected.Id}\"", StringComparison.Ordinal) &&
+                shellCodeBehind.Contains($"\"{expected.XamlName}\"", StringComparison.Ordinal) &&
+                shellCodeBehind.Contains($"new {expected.XamlType}", StringComparison.Ordinal);
+            Assert.IsTrue(
+                hasStaticSurface || hasLazySurface,
+                $"Shell destination {expected.Id} has no matching static or lazy page surface.");
         }
 
         foreach (var sharedSurface in new[] { "ShellRoot", "NavigationList", "StatusLegend", "LanguageSelector", "FooterConnectionText" })

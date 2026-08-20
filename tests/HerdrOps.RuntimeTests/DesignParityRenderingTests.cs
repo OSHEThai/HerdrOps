@@ -501,23 +501,15 @@ public sealed class DesignParityRenderingTests
         int width,
         int height)
     {
-        var visiblePanels = new[]
-        {
-            "CompactPanel",
-            "NormalPanel",
-            "ExpandedPanel",
-            "FloatingMiniPanel",
-            "FloatingVerticalPanel",
-            "NotificationPanel",
-            "AgentDetailPanel",
-        }
-        .Select(name => FindNamed<FrameworkElement>(surface, name))
-        .Where(panel => panel.Visibility == Visibility.Visible)
-        .ToArray();
-        Assert.HasCount(1, visiblePanels, $"Widget variant exposes an ambiguous visible panel: {descriptor.Variant}");
-        Assert.IsGreaterThan(0d, visiblePanels[0].ActualWidth, $"Widget panel has no width: {descriptor.Variant}");
-        Assert.IsGreaterThan(0d, visiblePanels[0].ActualHeight, $"Widget panel has no height: {descriptor.Variant}");
-        AssertRectInside(visiblePanels[0], surface, $"Widget panel exceeds its surface: {descriptor.Variant}");
+        var panelName = descriptor.Variant == WidgetVariant.AgentDetailPopup
+            ? "AgentDetailPanel"
+            : $"{descriptor.Variant}Panel";
+        var visiblePanel = surface.FindName(panelName) as FrameworkElement
+            ?? throw new AssertFailedException($"Missing active widget panel: {panelName}");
+        Assert.AreEqual(Visibility.Visible, visiblePanel.Visibility, $"Widget panel is not visible: {descriptor.Variant}");
+        Assert.IsGreaterThan(0d, visiblePanel.ActualWidth, $"Widget panel has no width: {descriptor.Variant}");
+        Assert.IsGreaterThan(0d, visiblePanel.ActualHeight, $"Widget panel has no height: {descriptor.Variant}");
+        AssertRectInside(visiblePanel, surface, $"Widget panel exceeds its surface: {descriptor.Variant}");
 
         var wordmark = FindNamed<TextBlock>(surface, "HeaderWordmark");
         Assert.AreEqual(
