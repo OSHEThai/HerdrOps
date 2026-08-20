@@ -183,6 +183,120 @@ jobs:
         shell: pwsh
         run: ./tools/Test-V05RoleDistinctReview.ps1 -Configuration Release -SkipBuild
 
+      # Issue #44 install-acceptance preparation. Static/Synthetic only; no live
+      # filesystem mutation, no HerdrOps/Herdr process start, no release action.
+      - name: 'Run v1 install-acceptance gate (Issue #44) - Static/Synthetic - PowerShell 7 (pwsh)'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $reportRoot = 'artifacts/release-gates/v1.0.0/issue-44'
+          try {
+            New-Item -ItemType Directory -Path $reportRoot -Force | Out-Null
+            $reports = @(./tools/acceptance/Test-HerdrOpsInstallAcceptance.ps1)
+            if ($reports.Count -ne 1) {
+              throw "Install-acceptance gate (PowerShell 7) returned $($reports.Count) objects; expected exactly 1."
+            }
+            $report = $reports[0]
+            if ([string]$report.EvidenceClass -cne 'Static/Synthetic') {
+              throw 'Install-acceptance gate (PowerShell 7) did not return a Static/Synthetic PASS report.'
+            }
+            foreach ($boundary in @('CleanMachine', 'Runtime', 'Release')) {
+              if ([string]$report.$boundary -cne 'NOT OBSERVED') {
+                throw "Install-acceptance gate (PowerShell 7) boundary '$boundary' was not NOT OBSERVED."
+              }
+            }
+            $report | Format-List | Out-String | Set-Content -LiteralPath (Join-Path $reportRoot 'pwsh-report.txt') -Encoding utf8
+          } catch {
+            $originalError = $_
+            try {
+              New-Item -ItemType Directory -Path $reportRoot -Force | Out-Null
+              $diagPath = Join-Path $reportRoot 'pwsh-failure.txt'
+              @(
+                'FAILURE: Install-acceptance gate (PowerShell 7) did not complete successfully.'
+                'EvidenceClass: Static/Synthetic'
+                'Shell: pwsh'
+                "ExitTime: $(Get-Date -Format 'o')"
+                "Error: $($originalError.Exception.Message)"
+                "ScriptStackTrace: $($originalError.ScriptStackTrace)"
+              ) | Set-Content -LiteralPath $diagPath -Encoding utf8
+            } catch {
+              Write-Warning "Could not write install-acceptance gate diagnostics: $($_.Exception.Message)"
+            }
+            throw $originalError
+          }
+
+      # Static/Synthetic only; Actual Herdr Runtime NOT OBSERVED.
+      - name: 'Run v1 install-acceptance gate (Issue #44) - Static/Synthetic - Windows PowerShell 5.1'
+        if: always()
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $reportRoot = 'artifacts\release-gates\v1.0.0\issue-44'
+          try {
+            New-Item -ItemType Directory -Path $reportRoot -Force | Out-Null
+            $reports = @(& .\tools\acceptance\Test-HerdrOpsInstallAcceptance.ps1)
+            if ($reports.Count -ne 1) {
+              throw "Install-acceptance gate (Windows PowerShell 5.1) returned $($reports.Count) objects; expected exactly 1."
+            }
+            $report = $reports[0]
+            if ([string]$report.EvidenceClass -cne 'Static/Synthetic') {
+              throw 'Install-acceptance gate (Windows PowerShell 5.1) did not return a Static/Synthetic PASS report.'
+            }
+            foreach ($boundary in @('CleanMachine', 'Runtime', 'Release')) {
+              if ([string]$report.$boundary -cne 'NOT OBSERVED') {
+                throw "Install-acceptance gate (Windows PowerShell 5.1) boundary '$boundary' was not NOT OBSERVED."
+              }
+            }
+            $report | Format-List | Out-String | Set-Content -LiteralPath (Join-Path $reportRoot 'powershell-5.1-report.txt') -Encoding UTF8
+          } catch {
+            $originalError = $_
+            try {
+              New-Item -ItemType Directory -Path $reportRoot -Force | Out-Null
+              $diagPath = Join-Path $reportRoot 'powershell-5.1-failure.txt'
+              @(
+                'FAILURE: Install-acceptance gate (Windows PowerShell 5.1) did not complete successfully.'
+                'EvidenceClass: Static/Synthetic'
+                'Shell: powershell (5.1)'
+                "ExitTime: $(Get-Date -Format 'o')"
+                "Error: $($originalError.Exception.Message)"
+                "ScriptStackTrace: $($originalError.ScriptStackTrace)"
+              ) | Set-Content -LiteralPath $diagPath -Encoding UTF8
+            } catch {
+              Write-Warning "Could not write install-acceptance gate diagnostics: $($_.Exception.Message)"
+            }
+            throw $originalError
+          }
+
+      - name: 'Run v1 install-acceptance durable evidence (Issue #44) - DryRun and Fixture reports'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $reportRoot = 'artifacts/release-gates/v1.0.0/issue-44'
+          New-Item -ItemType Directory -Path $reportRoot -Force | Out-Null
+          $dryRunReport = @(./tools/acceptance/Invoke-HerdrOpsInstallAcceptance.ps1 -Mode DryRun -ReportPath (Join-Path $reportRoot 'dry-run-report.json'))
+          if ($dryRunReport.Count -ne 1 -or [string]$dryRunReport[0].status -cne 'PASS' -or [string]$dryRunReport[0].mode -cne 'DryRun' -or [string]$dryRunReport[0].evidenceClass -cne 'Static') {
+            throw 'Install-acceptance DryRun evidence report did not PASS as Static evidence.'
+          }
+          $fixtureReport = @(./tools/acceptance/Invoke-HerdrOpsInstallAcceptance.ps1 -Mode Fixture -ReportPath (Join-Path $reportRoot 'fixture-report.json'))
+          if ($fixtureReport.Count -ne 1 -or [string]$fixtureReport[0].status -cne 'PASS' -or [string]$fixtureReport[0].mode -cne 'Fixture' -or [string]$fixtureReport[0].evidenceClass -cne 'Synthetic') {
+            throw 'Install-acceptance Fixture evidence report did not PASS as Synthetic evidence.'
+          }
+          $report = $fixtureReport[0]
+          foreach ($boundary in @('contract', 'cleanMachine', 'runtime', 'independentReview', 'release')) {
+            if ([string]$report.boundaries.$boundary -notlike 'NOT OBSERVED*') {
+              throw "Install-acceptance Fixture evidence boundary '$boundary' was not NOT OBSERVED."
+            }
+          }
+
+      - name: 'Upload v1 install-acceptance gate report (Issue #44)'
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          retention-days: 7
+          name: v1-install-acceptance-gate-report
+          path: artifacts/release-gates/v1.0.0/issue-44
+          if-no-files-found: warn
+
       - name: Upload test results
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
