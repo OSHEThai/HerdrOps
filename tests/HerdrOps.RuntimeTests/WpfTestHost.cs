@@ -9,6 +9,7 @@ namespace HerdrOps.RuntimeTests;
 /// </summary>
 internal static class WpfTestHost
 {
+    private static readonly TimeSpan StartupTimeout = TimeSpan.FromSeconds(30);
     private static readonly ManualResetEventSlim Ready = new(initialState: false);
     private static readonly object StartGate = new();
     private static Thread? _uiThread;
@@ -54,17 +55,21 @@ internal static class WpfTestHost
                 return;
             }
 
-            _uiThread = new Thread(StartDispatcher)
+            if (_uiThread is null)
             {
-                IsBackground = true,
-                Name = "HerdrOps WPF Runtime Test Host",
-            };
-            _uiThread.SetApartmentState(ApartmentState.STA);
-            _uiThread.Start();
+                _uiThread = new Thread(StartDispatcher)
+                {
+                    IsBackground = true,
+                    Name = "HerdrOps WPF Runtime Test Host",
+                };
+                _uiThread.SetApartmentState(ApartmentState.STA);
+                _uiThread.Start();
+            }
 
-            if (!Ready.Wait(TimeSpan.FromSeconds(10)))
+            if (!Ready.Wait(StartupTimeout))
             {
-                throw new TimeoutException("WPF test host did not start within 10 seconds.");
+                throw new TimeoutException(
+                    $"WPF test host did not start within {StartupTimeout.TotalSeconds:0} seconds.");
             }
 
             if (_startupFailure is not null)

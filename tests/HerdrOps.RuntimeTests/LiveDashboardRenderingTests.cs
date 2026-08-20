@@ -7,6 +7,8 @@ using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using HerdrOps.App.Live;
 using HerdrOps.App.Localization;
+using HerdrOps.App.Organization;
+using HerdrOps.App.Overview;
 using HerdrOps.App.StateIpc;
 using HerdrOps.App.Views;
 using HerdrOps.Contracts.StateIpc;
@@ -17,51 +19,51 @@ namespace HerdrOps.RuntimeTests;
 [DoNotParallelize]
 public sealed class LiveDashboardRenderingTests
 {
-    [TestInitialize]
-    public void UseThaiDefault() => UiLanguageService.Shared.SetLanguage(UiLanguage.Thai);
-
-    [TestCleanup]
-    public void RestoreThaiDefault() => UiLanguageService.Shared.SetLanguage(UiLanguage.Thai);
+    private const double HorizontalTextFitTolerance = 3;
+    private const double VerticalTextFitTolerance = 4;
 
     [TestMethod]
     public void LiveOverviewOrganizationAndAgentDetailRenderFromOneCoreSnapshot()
     {
         WpfTestHost.Run(() =>
         {
-            var dashboard = CreateDashboard();
-            var outputDirectory = Path.Combine(
-                FindRepositoryRoot(),
-                "artifacts",
-                "design-evidence",
-                "v0.2.0",
-                "issue-9",
-                "contract-backed-wpf");
-            Directory.CreateDirectory(outputDirectory);
-            var pages = new[]
+            RunWithLanguage(UiLanguage.Thai, () =>
             {
-                (Index: 0, Name: "overview", Type: typeof(OverviewView), Tag: "ThaiOverviewCheck"),
-                (Index: 1, Name: "live-organization", Type: typeof(LiveOrganizationView), Tag: "ThaiLiveOrganizationCheck"),
-                (Index: 4, Name: "agent-detail", Type: typeof(AgentDetailView), Tag: "ThaiAgentDetailCheck"),
-            };
-
-            foreach (var page in pages)
-            {
-                foreach (var size in new[] { new Size(1672, 941), new Size(1366, 768) })
+                var dashboard = CreateDashboard();
+                var outputDirectory = Path.Combine(
+                    FindRepositoryRoot(),
+                    "artifacts",
+                    "design-evidence",
+                    "v0.2.0",
+                    "issue-9",
+                    "contract-backed-wpf");
+                Directory.CreateDirectory(outputDirectory);
+                var pages = new[]
                 {
-                    var shell = new ShellView(dashboard);
-                    shell.Navigation.SelectedIndex = page.Index;
-                    Layout(shell, size);
-                    var visiblePage = EnumerateDescendants(shell)
-                        .OfType<FrameworkElement>()
-                        .Single(element => element.GetType() == page.Type);
-                    Assert.AreEqual(Visibility.Visible, visiblePage.Visibility);
-                    Assert.IsGreaterThan(0d, visiblePage.ActualWidth);
-                    Assert.IsGreaterThan(0d, visiblePage.ActualHeight);
-                    AssertThaiTextFits(shell, page.Tag);
-                    var suffix = size.Width < 1500 ? "1366x768" : "1672x941";
-                    SavePng(shell, size, Path.Combine(outputDirectory, $"{page.Name}-{suffix}.png"));
+                    (Index: 0, Name: "overview", Type: typeof(OverviewView), Tag: "ThaiOverviewCheck"),
+                    (Index: 1, Name: "live-organization", Type: typeof(LiveOrganizationView), Tag: "ThaiLiveOrganizationCheck"),
+                    (Index: 4, Name: "agent-detail", Type: typeof(AgentDetailView), Tag: "ThaiAgentDetailCheck"),
+                };
+
+                foreach (var page in pages)
+                {
+                    foreach (var size in new[] { new Size(1672, 941), new Size(1366, 768) })
+                    {
+                        var shell = new ShellView(dashboard);
+                        shell.Navigation.SelectedIndex = page.Index;
+                        Layout(shell, size);
+                        var visiblePage = EnumerateDescendants(shell)
+                            .OfType<FrameworkElement>()
+                            .Single(element => element.GetType() == page.Type);
+                        Assert.AreEqual(Visibility.Visible, visiblePage.Visibility);
+                        Assert.IsGreaterThan(0d, visiblePage.ActualWidth);
+                        Assert.IsGreaterThan(0d, visiblePage.ActualHeight);
+                        AssertThaiTextFits(shell, page.Tag);
+                        var suffix = size.Width < 1500 ? "1366x768" : "1672x941";
+                        SavePng(shell, size, Path.Combine(outputDirectory, $"{page.Name}-{suffix}.png"));
+                    }
                 }
-            }
+            });
         });
     }
 
@@ -70,35 +72,122 @@ public sealed class LiveDashboardRenderingTests
     {
         WpfTestHost.Run(() =>
         {
-            var dashboard = CreateDashboard();
-            var shell = new ShellView(dashboard);
-            shell.Navigation.SelectedIndex = 1;
-            Layout(shell, new Size(1672, 941));
-            var topology = EnumerateDescendants(shell)
-                .OfType<ListBox>()
-                .Single(list => string.Equals(
-                    AutomationProperties.GetName(list),
-                    UiLanguageService.Shared["OrganizationHierarchyAutomation"],
-                    StringComparison.Ordinal));
-            var agentItems = topology.Items
-                .OfType<HerdrOps.App.Organization.OrganizationNode>()
-                .Where(node => node.IsAgent)
-                .ToArray();
-            Assert.HasCount(2, agentItems);
-            Assert.IsTrue(topology.Focusable);
-            topology.SelectedItem = agentItems.Single(node => node.AgentTerminalId == "terminal-2");
-            topology.GetBindingExpression(ListBox.SelectedItemProperty)?.UpdateSource();
-            Assert.AreEqual("terminal-2", dashboard.AgentDetail.Terminal);
+            RunWithLanguage(UiLanguage.Thai, () =>
+            {
+                var text = UiLanguageService.Shared;
+                var dashboard = CreateDashboard();
+                var shell = new ShellView(dashboard);
+                shell.Navigation.SelectedIndex = 1;
+                Layout(shell, new Size(1672, 941));
+                var topology = EnumerateDescendants(shell)
+                    .OfType<ListBox>()
+                    .Single(list => string.Equals(
+                        AutomationProperties.GetName(list),
+                        text["OrganizationHierarchyAutomation"],
+                        StringComparison.Ordinal));
+                var agentItems = topology.Items
+                    .OfType<HerdrOps.App.Organization.OrganizationNode>()
+                    .Where(node => node.IsAgent)
+                    .ToArray();
+                Assert.HasCount(2, agentItems);
+                Assert.IsTrue(topology.Focusable);
+                topology.SelectedItem = agentItems.Single(node => node.AgentTerminalId == "terminal-2");
+                topology.GetBindingExpression(ListBox.SelectedItemProperty)?.UpdateSource();
+                Assert.AreEqual("terminal-2", dashboard.AgentDetail.Terminal);
 
-            shell.Navigation.SelectedIndex = 4;
-            Layout(shell, new Size(1672, 941));
-            var visibleText = EnumerateDescendants(shell)
-                .OfType<TextBlock>()
-                .Where(IsEffectivelyVisible)
-                .Select(text => text.Text)
-                .ToArray();
-            Assert.IsTrue(visibleText.Contains(UiLanguageService.Shared["ValueUnknown"], StringComparer.Ordinal));
-            Assert.IsFalse(visibleText.Contains("100", StringComparer.Ordinal));
+                shell.Navigation.SelectedIndex = 4;
+                Layout(shell, new Size(1672, 941));
+                var visibleText = EnumerateDescendants(shell)
+                    .OfType<TextBlock>()
+                    .Where(IsEffectivelyVisible)
+                    .Select(textBlock => textBlock.Text)
+                    .ToArray();
+                Assert.IsTrue(visibleText.Contains(text["ValueUnknown"], StringComparer.Ordinal));
+                Assert.IsFalse(visibleText.Contains("100", StringComparer.Ordinal));
+            });
+        });
+    }
+
+    [TestMethod]
+    public void SyntheticOrganizationUsesCardTreeLayoutAndKeepsNodesKeyboardAccessible()
+    {
+        WpfTestHost.Run(() =>
+        {
+            RunWithLanguage(UiLanguage.Thai, () =>
+            {
+                using var dashboard = LiveDashboardState.CreateSyntheticPreview();
+                var shell = new ShellView(dashboard);
+                shell.Navigation.SelectedIndex = 1;
+                Layout(shell, new Size(1680, 941));
+
+                var panel = EnumerateDescendants(shell)
+                    .OfType<OrganizationHierarchyPanel>()
+                    .Single();
+                Assert.IsGreaterThan(0d, panel.ActualWidth);
+                Assert.IsGreaterThan(0d, panel.ActualHeight);
+
+                var positionedNodes = panel.Children
+                    .OfType<FrameworkElement>()
+                    .Where(child => child.DataContext is OrganizationNode)
+                    .Select(child =>
+                    {
+                        var node = (OrganizationNode)child.DataContext!;
+                        var origin = child.TranslatePoint(new Point(0, 0), panel);
+                        return (node, origin.X, origin.Y, child);
+                    })
+                    .ToArray();
+                Assert.HasCount(dashboard.Organization.Nodes.Count, positionedNodes);
+                Assert.IsGreaterThanOrEqualTo(
+                    4,
+                    positionedNodes.Select(item => Math.Round(item.X)).Distinct().Count(),
+                    "The organization hierarchy is still arranged as one flat x-coordinate.");
+
+                var projectManager = positionedNodes.Single(item => item.node.Name == "Project Manager");
+                var backendLeader = positionedNodes.Single(item => item.node.Name == "Backend Leader");
+                var backendWorker = positionedNodes.Single(item => item.node.Name == "Backend Worker 01");
+                Assert.IsLessThan(
+                    backendLeader.Y,
+                    projectManager.Y,
+                    $"Unexpected tree order: PM={projectManager.X},{projectManager.Y}; BL={backendLeader.X},{backendLeader.Y}; BW={backendWorker.X},{backendWorker.Y}");
+                Assert.IsLessThan(
+                    backendWorker.Y,
+                    backendLeader.Y,
+                    $"Unexpected worker order: BL={backendLeader.X},{backendLeader.Y}; BW={backendWorker.X},{backendWorker.Y}");
+                Assert.AreNotEqual(projectManager.X, backendLeader.X);
+                Assert.IsTrue(positionedNodes.All(item => item.child is Control { Focusable: true, IsTabStop: true }));
+                Assert.IsTrue(positionedNodes.All(item =>
+                    !string.IsNullOrWhiteSpace(AutomationProperties.GetName(item.child))));
+            });
+        });
+    }
+
+    [TestMethod]
+    public void LiveOrganizationCardsAndStatusesFitInThaiAndEnglishAtReferenceSizes()
+    {
+        WpfTestHost.Run(() =>
+        {
+            var languageService = UiLanguageService.Shared;
+            var previousLanguage = languageService.CurrentLanguage;
+            try
+            {
+                foreach (var language in new[] { UiLanguage.Thai, UiLanguage.English })
+                {
+                    languageService.SetLanguage(language);
+                    using var dashboard = LiveDashboardState.CreateSyntheticPreview();
+                    foreach (var size in new[] { new Size(1672, 941), new Size(1366, 768) })
+                    {
+                        var shell = new ShellView(dashboard);
+                        shell.Navigation.SelectedIndex = 1;
+                        Layout(shell, size);
+                        AssertLiveOrganizationConflictSemantics(shell, dashboard, language, size);
+                        AssertOrganizationCardsFit(shell, size, language);
+                    }
+                }
+            }
+            finally
+            {
+                languageService.SetLanguage(previousLanguage);
+            }
         });
     }
 
@@ -107,57 +196,66 @@ public sealed class LiveDashboardRenderingTests
     {
         WpfTestHost.Run(() =>
         {
-            var dashboard = CreateDashboard();
-            var outputDirectory = Path.Combine(
-                FindRepositoryRoot(),
-                "artifacts",
-                "design-evidence",
-                "v0.2.0",
-                "issue-63",
-                "contract-backed-wpf");
-            Directory.CreateDirectory(outputDirectory);
-            var pages = new[]
+            RunWithLanguage(UiLanguage.Thai, () =>
             {
-                (Index: 0, Name: "overview", Type: typeof(OverviewView)),
-                (Index: 1, Name: "live-organization", Type: typeof(LiveOrganizationView)),
-                (Index: 4, Name: "agent-detail", Type: typeof(AgentDetailView)),
-            };
-
-            foreach (var language in new[] { UiLanguage.Thai, UiLanguage.English })
-            {
-                UiLanguageService.Shared.SetLanguage(language);
-                dashboard.RefreshLanguage();
-                foreach (var page in pages)
+                var dashboard = CreateDashboard();
+                var outputDirectory = Path.Combine(
+                    FindRepositoryRoot(),
+                    "artifacts",
+                    "design-evidence",
+                    "v0.2.0",
+                    "issue-63",
+                    "contract-backed-wpf");
+                Directory.CreateDirectory(outputDirectory);
+                var pages = new[]
                 {
-                    var shell = new ShellView(dashboard);
-                    shell.Navigation.SelectedIndex = page.Index;
-                    var size = new Size(1672, 941);
-                    Layout(shell, size);
-                    var visiblePage = EnumerateDescendants(shell)
-                        .OfType<FrameworkElement>()
-                        .Single(element => element.GetType() == page.Type);
-                    Assert.AreEqual(Visibility.Visible, visiblePage.Visibility);
-                    var visibleText = EnumerateDescendants(shell)
-                        .OfType<TextBlock>()
-                        .Where(IsEffectivelyVisible)
-                        .Select(text => text.Text)
-                        .Where(text => !string.IsNullOrWhiteSpace(text))
-                        .ToArray();
-                    if (language == UiLanguage.English)
-                    {
-                        Assert.IsTrue(
-                            visibleText.All(text => !ContainsThai(text)),
-                            $"English {page.Name} retained Thai copy: {string.Join(" | ", visibleText.Where(ContainsThai))}");
-                    }
-                    else
-                    {
-                        Assert.IsTrue(visibleText.Any(ContainsThai), $"Thai {page.Name} did not render Thai UI copy.");
-                    }
+                    (Index: 0, Name: "overview", Type: typeof(OverviewView)),
+                    (Index: 1, Name: "live-organization", Type: typeof(LiveOrganizationView)),
+                    (Index: 4, Name: "agent-detail", Type: typeof(AgentDetailView)),
+                };
 
-                    var languageName = language == UiLanguage.Thai ? "thai" : "english";
-                    SavePng(shell, size, Path.Combine(outputDirectory, $"{languageName}-{page.Name}.png"));
+                foreach (var language in new[] { UiLanguage.Thai, UiLanguage.English })
+                {
+                    RunWithLanguage(language, () =>
+                    {
+                        dashboard.RefreshLanguage();
+                        foreach (var page in pages)
+                        {
+                            var shell = new ShellView(dashboard);
+                            shell.Navigation.SelectedIndex = page.Index;
+                            var size = new Size(1672, 941);
+                            Layout(shell, size);
+                            var visiblePage = EnumerateDescendants(shell)
+                                .OfType<FrameworkElement>()
+                                .Single(element => element.GetType() == page.Type);
+                            Assert.AreEqual(Visibility.Visible, visiblePage.Visibility);
+                            var visibleText = EnumerateDescendants(shell)
+                                .OfType<TextBlock>()
+                                .Where(IsEffectivelyVisible)
+                                .Select(textBlock => textBlock.Text)
+                                .Where(text => !string.IsNullOrWhiteSpace(text))
+                                .ToArray();
+                            if (language == UiLanguage.English)
+                            {
+                                Assert.IsTrue(
+                                    visibleText.All(text => !ContainsThai(text)),
+                                    $"English {page.Name} retained Thai copy: {string.Join(" | ", visibleText.Where(ContainsThai))}");
+                            }
+                            else
+                            {
+                                Assert.IsTrue(visibleText.Any(ContainsThai), $"Thai {page.Name} did not render Thai UI copy.");
+                            }
+                            UiLanguageRenderingAssertions.AssertOppositeUiTranslationsAbsent(
+                                visibleText,
+                                language,
+                                $"live dashboard page {page.Name}");
+
+                            var languageName = language == UiLanguage.Thai ? "thai" : "english";
+                            SavePng(shell, size, Path.Combine(outputDirectory, $"{languageName}-{page.Name}.png"));
+                        }
+                    });
                 }
-            }
+            });
         });
     }
 
@@ -166,51 +264,58 @@ public sealed class LiveDashboardRenderingTests
     {
         WpfTestHost.Run(() =>
         {
-            var dashboard = CreateDashboard();
-            var reconnecting = dashboard.CurrentRuntimeHealth with
+            RunWithLanguage(UiLanguage.Thai, () =>
             {
-                Status = "Reconnecting",
-                LastTransitionUtc = dashboard.CurrentRuntimeHealth.LastTransitionUtc.AddSeconds(1),
-                DisconnectCount = 1,
-                ReconciliationCount = 1,
-            };
-            var update = CreateRuntimeHealthUpdate(dashboard.CurrentState, reconnecting);
-            dashboard.ApplyUpdate(update, update.Envelope.SentUtc.AddMilliseconds(5));
-            var outputDirectory = Path.Combine(
-                FindRepositoryRoot(),
-                "artifacts",
-                "design-evidence",
-                "v0.2.0",
-                "issue-9",
-                "contract-backed-wpf");
-            Directory.CreateDirectory(outputDirectory);
+                var dashboard = CreateDashboard();
+                var reconnecting = dashboard.CurrentRuntimeHealth with
+                {
+                    Status = "Reconnecting",
+                    LastTransitionUtc = dashboard.CurrentRuntimeHealth.LastTransitionUtc.AddSeconds(1),
+                    DisconnectCount = 1,
+                    ReconciliationCount = 1,
+                };
+                var update = CreateRuntimeHealthUpdate(dashboard.CurrentState, reconnecting);
+                dashboard.ApplyUpdate(update, update.Envelope.SentUtc.AddMilliseconds(5));
+                var outputDirectory = Path.Combine(
+                    FindRepositoryRoot(),
+                    "artifacts",
+                    "design-evidence",
+                    "v0.2.0",
+                    "issue-9",
+                    "contract-backed-wpf");
+                Directory.CreateDirectory(outputDirectory);
 
-            Assert.IsTrue(dashboard.IsCoreConnected);
-            Assert.IsFalse(dashboard.IsLive);
-            foreach (var language in new[] { UiLanguage.Thai, UiLanguage.English })
-            {
-                UiLanguageService.Shared.SetLanguage(language);
-                dashboard.RefreshLanguage();
-                var shell = new ShellView(dashboard);
-                shell.Navigation.SelectedIndex = 0;
-                var size = new Size(1672, 941);
-                Layout(shell, size);
-                var expectedConnectionLabel = UiLanguageService.Shared["HerdrReconnecting"];
-                Assert.AreEqual(expectedConnectionLabel, dashboard.ConnectionLabel);
-                var connectionStatusText = Assert.IsInstanceOfType<TextBlock>(
-                    shell.FindName("ConnectionStatusText"));
-                Assert.AreEqual(expectedConnectionLabel, connectionStatusText.Text);
-                Assert.IsTrue(
-                    IsEffectivelyVisible(connectionStatusText),
-                    $"The connection status text was not rendered. Actual size: {connectionStatusText.ActualWidth:0.##}x{connectionStatusText.ActualHeight:0.##}.");
-                Assert.IsTrue(dashboard.Overview.TopAgents.All(
-                    agent => agent.StatusLabel == UiLanguageService.Shared["StatusOffline"]));
-                var languageName = language == UiLanguage.Thai ? "thai" : "english";
-                SavePng(
-                    shell,
-                    size,
-                    Path.Combine(outputDirectory, $"{languageName}-overview-herdr-reconnecting.png"));
-            }
+                Assert.IsTrue(dashboard.IsCoreConnected);
+                Assert.IsFalse(dashboard.IsLive);
+                foreach (var language in new[] { UiLanguage.Thai, UiLanguage.English })
+                {
+                    RunWithLanguage(language, () =>
+                    {
+                        var text = UiLanguageService.Shared;
+                        var expectedReconnecting = text["HerdrReconnecting"];
+                        var expectedOffline = text["StatusOffline"];
+                        dashboard.RefreshLanguage();
+                        var shell = new ShellView(dashboard);
+                        shell.Navigation.SelectedIndex = 0;
+                        var size = new Size(1672, 941);
+                        Layout(shell, size);
+                        Assert.AreEqual(expectedReconnecting, dashboard.ConnectionLabel);
+                        var connectionStatusText = Assert.IsInstanceOfType<TextBlock>(
+                            shell.FindName("ConnectionStatusText"));
+                        Assert.AreEqual(expectedReconnecting, connectionStatusText.Text);
+                        Assert.IsTrue(
+                            IsEffectivelyVisible(connectionStatusText),
+                            $"The connection status text was not rendered. Actual size: {connectionStatusText.ActualWidth:0.##}x{connectionStatusText.ActualHeight:0.##}.");
+                        Assert.IsTrue(dashboard.Overview.TopAgents.All(
+                            agent => agent.StatusLabel == expectedOffline));
+                        var languageName = language == UiLanguage.Thai ? "thai" : "english";
+                        SavePng(
+                            shell,
+                            size,
+                            Path.Combine(outputDirectory, $"{languageName}-overview-herdr-reconnecting.png"));
+                    });
+                }
+            });
         });
     }
 
@@ -324,11 +429,32 @@ public sealed class LiveDashboardRenderingTests
                 1);
             if (textBlock.TextWrapping == TextWrapping.NoWrap)
             {
-                Assert.IsLessThanOrEqualTo(
-                    textBlock.ActualWidth + 3,
-                    formatted.WidthIncludingTrailingWhitespace,
-                    $"Thai text clipped: {textBlock.Text}");
+                Assert.IsGreaterThanOrEqualTo(
+                    formatted.WidthIncludingTrailingWhitespace - HorizontalTextFitTolerance,
+                    textBlock.ActualWidth,
+                    $"Thai text clipped: available width={textBlock.ActualWidth}, intrinsic width={formatted.WidthIncludingTrailingWhitespace}, text={textBlock.Text}");
+                continue;
             }
+
+            var measurement = new TextBlock
+            {
+                Text = textBlock.Text,
+                FontFamily = textBlock.FontFamily,
+                FontSize = textBlock.FontSize,
+                FontStretch = textBlock.FontStretch,
+                FontStyle = textBlock.FontStyle,
+                FontWeight = textBlock.FontWeight,
+                FlowDirection = textBlock.FlowDirection,
+                Language = textBlock.Language,
+                LineHeight = textBlock.LineHeight,
+                LineStackingStrategy = textBlock.LineStackingStrategy,
+                TextWrapping = textBlock.TextWrapping,
+            };
+            measurement.Measure(new Size(Math.Max(1, textBlock.ActualWidth), double.PositiveInfinity));
+            Assert.IsGreaterThanOrEqualTo(
+                measurement.DesiredSize.Height - VerticalTextFitTolerance,
+                textBlock.ActualHeight,
+                $"Wrapped Thai text clipped: available height={textBlock.ActualHeight}, intrinsic height={measurement.DesiredSize.Height}, text={textBlock.Text}");
         }
     }
 
@@ -377,9 +503,141 @@ public sealed class LiveDashboardRenderingTests
         bitmap.Render(view);
         var encoder = new PngBitmapEncoder();
         encoder.Frames.Add(BitmapFrame.Create(bitmap));
-        using var output = File.Create(path);
-        encoder.Save(output);
-        Assert.IsGreaterThan(10_000L, output.Length, $"Rendered evidence was unexpectedly small: {path}");
+        using (var output = File.Create(path))
+        {
+            encoder.Save(output);
+        }
+        PngEvidenceAssertions.AssertValid(
+            path,
+            checked((int)size.Width),
+            checked((int)size.Height));
+    }
+
+    private static void AssertOrganizationCardsFit(
+        ShellView shell,
+        Size shellSize,
+        UiLanguage language)
+    {
+        var text = UiLanguageService.Shared;
+        var list = EnumerateDescendants(shell)
+            .OfType<ListBox>()
+            .Single(candidate => string.Equals(
+                AutomationProperties.GetName(candidate),
+                text["OrganizationHierarchyAutomation"],
+                StringComparison.Ordinal));
+        var panel = EnumerateDescendants(list)
+            .OfType<OrganizationHierarchyPanel>()
+            .Single();
+        var cards = panel.Children
+            .OfType<ListBoxItem>()
+            .Where(card => card.DataContext is OrganizationNode)
+            .ToArray();
+        Assert.HasCount(17, cards, $"Organization card count drifted at {shellSize} in {language}.");
+
+        var viewport = new Rect(0, 0, panel.ActualWidth, panel.ActualHeight);
+        foreach (var card in cards)
+        {
+            var cardBounds = GetBounds(card, panel);
+            Assert.IsTrue(
+                viewport.Contains(cardBounds.TopLeft) && viewport.Contains(cardBounds.BottomRight),
+                $"Organization card is clipped at {shellSize} in {language}: {card.DataContext} bounds={cardBounds} viewport={viewport}");
+
+            var node = (OrganizationNode)card.DataContext!;
+            var statuses = EnumerateDescendants(card)
+                .OfType<TextBlock>()
+                .Where(status => string.Equals(status.Text, node.Status, StringComparison.Ordinal))
+                .ToArray();
+            Assert.HasCount(1, statuses, $"Status text is missing or duplicated for {node.Name}.");
+            var status = statuses[0];
+            Assert.AreEqual(
+                TextTrimming.CharacterEllipsis,
+                status.TextTrimming,
+                $"Status must be fully readable or deliberately ellipsized for {node.Name}.");
+            Assert.IsTrue(
+                !double.IsInfinity(status.Width) && status.Width > 0,
+                $"Status has no bounded visual width for {node.Name}.");
+            var statusBounds = GetBounds(status, card);
+            var cardViewport = new Rect(0, 0, card.ActualWidth, card.ActualHeight);
+            Assert.IsTrue(
+                cardViewport.Contains(statusBounds.TopLeft) && cardViewport.Contains(statusBounds.BottomRight),
+                $"Status is clipped inside organization card for {node.Name}: {statusBounds}");
+        }
+
+        var leaderNames = new[] { "Backend Leader", "Frontend Leader", "Test Leader", "DevOps Leader" };
+        foreach (var leaderName in leaderNames)
+        {
+            Assert.IsTrue(
+                cards.Any(card => ((OrganizationNode)card.DataContext!).Name == leaderName),
+                $"Leader branch is missing at {shellSize} in {language}: {leaderName}");
+        }
+    }
+
+    private static void AssertLiveOrganizationConflictSemantics(
+        ShellView shell,
+        LiveDashboardState dashboard,
+        UiLanguage language,
+        Size shellSize)
+    {
+        var text = UiLanguageService.Shared;
+        var conflictCard = dashboard.Organization.SummaryCards
+            .Single(card => string.Equals(card.Title, text["OrganizationRoleConflicts"], StringComparison.Ordinal));
+        Assert.AreEqual("1", conflictCard.Value, $"Role conflict count drifted at {shellSize} in {language}.");
+        Assert.AreEqual(text["OrganizationRoleConflictDetail"], conflictCard.Detail);
+        Assert.AreEqual(OverviewBrushKeys.Blocked, conflictCard.AccentBrushKey, "Role conflicts must use red/coral severity.");
+        Assert.AreNotEqual(OverviewBrushKeys.Review, conflictCard.AccentBrushKey, "Role conflicts must not use the purple Review workflow.");
+
+        var conflictAttention = dashboard.Organization.AttentionItems
+            .Single(item => string.Equals(item.Title, text["OrganizationRoleConflicts"], StringComparison.Ordinal));
+        Assert.AreEqual("DevOps Leader", conflictAttention.Detail);
+        Assert.AreEqual(OverviewBrushKeys.Blocked, conflictAttention.AccentBrushKey);
+        Assert.AreNotEqual(OverviewBrushKeys.Review, conflictAttention.AccentBrushKey);
+
+        var legend = EnumerateDescendants(shell)
+            .OfType<TextBlock>()
+            .Single(block => string.Equals(block.Name, "OrganizationConflictLegendText", StringComparison.Ordinal));
+        Assert.AreEqual(text["OrganizationConflictLegend"], legend.Text);
+        Assert.AreEqual(
+            shell.FindResource("HerdrOps.Brush.Status.Blocked"),
+            legend.Foreground,
+            "The conflict legend must use the red/coral severity brush.");
+        Assert.AreNotEqual(
+            shell.FindResource("HerdrOps.Brush.Status.Review"),
+            legend.Foreground,
+            "The conflict legend must not reuse the purple Review brush.");
+        var hierarchyText = EnumerateDescendants(shell)
+            .OfType<TextBlock>()
+            .Where(block => IsEffectivelyVisible(block))
+            .Select(block => block.Text)
+            .ToArray();
+        Assert.IsFalse(
+            hierarchyText.Contains(text["StatusReview"], StringComparer.Ordinal),
+            "Live Organization must not expose Review as the conflict meaning.");
+        UiLanguageRenderingAssertions.AssertOppositeUiTranslationsAbsent(
+            hierarchyText,
+            language,
+            $"Live Organization conflict semantics {shellSize}");
+    }
+
+    private static void RunWithLanguage(UiLanguage language, Action action)
+    {
+        ArgumentNullException.ThrowIfNull(action);
+        var service = UiLanguageService.Shared;
+        var previousLanguage = service.CurrentLanguage;
+        try
+        {
+            service.SetLanguage(language);
+            action();
+        }
+        finally
+        {
+            service.SetLanguage(previousLanguage);
+        }
+    }
+
+    private static Rect GetBounds(FrameworkElement child, FrameworkElement parent)
+    {
+        var origin = child.TranslatePoint(new Point(0, 0), parent);
+        return new Rect(origin, new Size(child.ActualWidth, child.ActualHeight));
     }
 
     private static string FindRepositoryRoot()

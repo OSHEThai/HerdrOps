@@ -248,6 +248,17 @@ public partial class ShellView : UserControl
     private void UpdatePageVisibility()
     {
         var destinationId = Navigation.SelectedDestination.Id;
+        var isLiveOrganization = !_syntheticPreview && string.Equals(
+            destinationId,
+            "live-organization",
+            StringComparison.Ordinal);
+        StatusReviewLegendItem.Visibility = isLiveOrganization
+            ? Visibility.Collapsed
+            : Visibility.Visible;
+        StatusDoneLegendItem.Visibility = isLiveOrganization
+            ? Visibility.Visible
+            : Visibility.Collapsed;
+
         if (string.Equals(_activeDestinationId, destinationId, StringComparison.Ordinal) &&
             PageHost.Content is not null)
         {

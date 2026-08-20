@@ -52,7 +52,9 @@
                         <Ellipse Width="10" Height="10" Fill="{DynamicResource HerdrOps.Brush.Status.Review}" />
                         <TextBlock Margin="6,0,14,0" FontSize="11" Text="{Binding [StatusReview], Source={x:Static localization:UiLanguageService.Shared}}" />
                         <Ellipse Width="10" Height="10" Fill="{DynamicResource HerdrOps.Brush.Status.Done}" />
-                        <TextBlock Margin="6,0,0,0" FontSize="11" Text="{Binding [StatusDone], Source={x:Static localization:UiLanguageService.Shared}}" />
+                        <TextBlock Margin="6,0,14,0" FontSize="11" Text="{Binding [StatusDone], Source={x:Static localization:UiLanguageService.Shared}}" />
+                        <Ellipse Width="10" Height="10" Fill="{DynamicResource HerdrOps.Brush.Status.Offline}" />
+                        <TextBlock Margin="6,0,0,0" FontSize="11" Text="{Binding [StatusOffline], Source={x:Static localization:UiLanguageService.Shared}}" />
                     </StackPanel>
                 </Grid>
             </Border>

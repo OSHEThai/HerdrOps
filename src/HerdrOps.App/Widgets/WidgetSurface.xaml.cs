@@ -168,6 +168,7 @@ public partial class WidgetSurface : UserControl
         VariantHost.Visibility = templateKey is null ? Visibility.Collapsed : Visibility.Visible;
 
         var isNarrowVertical = variant == WidgetVariant.FloatingVertical;
+        var isFloatingMini = variant == WidgetVariant.FloatingMini;
         HeaderSourceText.SetBinding(
             TextBlock.TextProperty,
             new Binding(isNarrowVertical
@@ -178,19 +179,19 @@ public partial class WidgetSurface : UserControl
             new Binding(isNarrowVertical
                 ? nameof(IWidgetState.CompactConnectionLabel)
                 : nameof(IWidgetState.ConnectionLabel)));
-        HeaderWordmark.FontSize = isNarrowVertical ? 11 : 14;
+        HeaderWordmark.FontSize = isNarrowVertical ? 11 : isFloatingMini ? 12 : 14;
         HeaderStatusDot.Margin = isNarrowVertical
             ? new Thickness(4, 0, 3, 0)
             : new Thickness(9, 0, 5, 0);
-        HeaderSourceText.FontSize = isNarrowVertical ? 7 : 9;
+        HeaderSourceText.FontSize = isNarrowVertical ? 7 : isFloatingMini ? 8 : 9;
         HeaderSourceText.Foreground = (System.Windows.Media.Brush)FindResource(
             isNarrowVertical
                 ? "HerdrOps.Brush.PrimaryText"
                 : "HerdrOps.Brush.TextMuted");
-        PinButton.Width = isNarrowVertical ? 24 : 30;
-        PinButton.Height = isNarrowVertical ? 24 : 30;
-        CloseButton.Width = isNarrowVertical ? 24 : 30;
-        CloseButton.Height = isNarrowVertical ? 24 : 30;
+        PinButton.Width = isNarrowVertical || isFloatingMini ? 24 : 30;
+        PinButton.Height = isNarrowVertical || isFloatingMini ? 24 : 30;
+        CloseButton.Width = isNarrowVertical || isFloatingMini ? 24 : 30;
+        CloseButton.Height = isNarrowVertical || isFloatingMini ? 24 : 30;
     }
 
     private static object? FindNamedVisual(DependencyObject? root, string name)

@@ -143,9 +143,18 @@
                         <Ellipse Width="12" Height="12" Fill="{DynamicResource HerdrOps.Brush.Status.Blocked}" />
                         <TextBlock Margin="7,0,0,0" VerticalAlignment="Center" FontSize="12" Text="{Binding [StatusBlocked], Source={x:Static localization:UiLanguageService.Shared}}" />
                     </StackPanel>
-                    <StackPanel Margin="0,0,20,0" Orientation="Horizontal">
+                    <StackPanel x:Name="StatusReviewLegendItem"
+                                Margin="0,0,20,0"
+                                Orientation="Horizontal">
                         <Ellipse Width="12" Height="12" Fill="{DynamicResource HerdrOps.Brush.Status.Review}" />
                         <TextBlock Margin="7,0,0,0" VerticalAlignment="Center" FontSize="12" Text="{Binding [StatusReview], Source={x:Static localization:UiLanguageService.Shared}}" />
+                    </StackPanel>
+                    <StackPanel x:Name="StatusDoneLegendItem"
+                                Margin="0,0,20,0"
+                                Orientation="Horizontal"
+                                Visibility="Collapsed">
+                        <Ellipse Width="12" Height="12" Fill="{DynamicResource HerdrOps.Brush.Status.Done}" />
+                        <TextBlock Margin="7,0,0,0" VerticalAlignment="Center" FontSize="12" Text="{Binding [StatusDone], Source={x:Static localization:UiLanguageService.Shared}}" />
                     </StackPanel>
                     <StackPanel Orientation="Horizontal">
                         <Ellipse Width="12" Height="12" Fill="{DynamicResource HerdrOps.Brush.Status.Offline}" />
@@ -578,11 +587,12 @@
                     <Ellipse Width="9"
                              Height="9"
                              Fill="{Binding LiveDashboard.ConnectionBrushKey, RelativeSource={RelativeSource AncestorType=UserControl}, Converter={StaticResource ResourceBrush}}" />
-                    <TextBlock x:Name="ConnectionStatusText"
-                               Margin="8,0,18,0"
-                               Foreground="{DynamicResource HerdrOps.Brush.TextMuted}"
-                               FontSize="12"
-                               Text="{Binding LiveDashboard.ConnectionLabel, RelativeSource={RelativeSource AncestorType=UserControl}}" />
+                    <Grid x:Name="FooterConnectionText" Margin="8,0,18,0">
+                        <TextBlock x:Name="ConnectionStatusText"
+                                   Foreground="{DynamicResource HerdrOps.Brush.TextMuted}"
+                                   FontSize="12"
+                                   Text="{Binding LiveDashboard.ConnectionLabel, RelativeSource={RelativeSource AncestorType=UserControl}}" />
+                    </Grid>
                     <TextBlock Foreground="{DynamicResource HerdrOps.Brush.TextMuted}"
                                FontSize="12"
                                Text="{Binding LiveDashboard.LatencyLabel, RelativeSource={RelativeSource AncestorType=UserControl}}" />
