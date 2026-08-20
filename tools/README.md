@@ -67,12 +67,6 @@ $targetAgentLabSocket = Join-Path $env:APPDATA 'herdr\herdr.sock'
 # This remains partial until actual Herdr notification delivery is captured.
 ./tools/Test-V03NotificationRuntime.ps1
 
-# Verify the v0.3 Issue #17 implementation-only aggregation and its
-# deterministic child-gate failure propagation. These checks cover only
-# Static, Contract, and Synthetic evidence and do not make a version decision.
-./tools/Test-V03ImplementationGateTests.ps1
-./tools/Test-V03ImplementationGate.ps1 -Configuration Release
-
 # Verify v0.4 assignment lifecycle transitions, Core-acceptance mapping,
 # SQLite migration and append-only provenance, restart replay, orphan and
 # duplicate-handoff visibility, and exact committed synthetic replay hashes.
@@ -165,18 +159,7 @@ dotnet artifacts/bin/HerdrOps.Core/release/HerdrOps.Core.dll trace-herdr-termina
   --seconds 120 --interval-ms 500 --lines 80
 ```
 
-# Verify the fail-closed v1.0 Issue #42 24-hour soak/fault-injection contract and
-# harness without running a soak or controlling Herdr/Core/App. Reports PENDING and
-# refuses PASS in synthetic/preparation mode.
-./tools/Test-V10Issue42SoakContract.ps1
-
-# Optionally validate exact packaged candidate bytes (still refuses a soak/PASS).
-./tools/Test-V10Issue42SoakContract.ps1 `
-  -CandidateArchivePath '<candidate-archive>' `
-  -CandidateArchiveSha256 '<64-hex>' `
-  -CandidateArchiveBytes <bytes>
-
-The composite gate binds production WPF captures to exact state hashes from the admitted Herdr Core trace and requires each Event phase to contain exactly one Core-labelled `pane.agent_status_changed` transition with matching accepted workspace/pane/status and App Agent evidence. It admits either a direct Event sequence or exactly one unlabelled connected snapshot reconciliation immediately before that Event; extra sequences, Events, topology changes or unrelated panes fail closed. It verifies Dashboard-close Widget continuity, waits for five seconds of an unchanged complete runtime fingerprint with SHA-256-chained append-only phase provenance, and then measures Widget latency plus combined Core/App idle resources. Dashboard and capture resources are released before managed large-object-heap cleanup, and weak references must show every tracked capture bitmap was collected; no native working-set trim is used and the 180 MB target is unchanged. The gate also compares prelaunch and post-run App/Core executable hashes, emits a `NoRuntimeCredit` report on every terminating failure, fails closed outside an authorized Herdr pane, and does not control the Herdr session itself.
+The composite gate binds production WPF captures to exact state hashes from the admitted Herdr Core trace, verifies Dashboard-close Widget continuity, and measures Widget latency plus combined Core/App idle resources. It fails closed outside an authorized Herdr pane and does not control the Herdr session itself.
 
 The v0.3 activity-pipeline gate is Contract plus Synthetic evidence only. It does not claim a live Herdr trace, process telemetry, file collection, bounded `pane.read`, redaction against actual data, or v0.3 release readiness.
 
@@ -230,3 +213,57 @@ The v0.6 Daily Summary gate reports Static, Synthetic, and Contract evidence sep
 The v0.5 role-distinct review implementation gate is Contract plus BuiltProcess Integration plus local SQLite Integration evidence. It verifies the built CLI rejects public pipe override, Core-owned authority, same-transaction mutation, immutable role attribution, current-authority SQL guards, strict App/CLI IPC, complete held Windows process chains with parent recapture and strict creation-time ordering, operational client-process-to-Herdr-pane correlation, incident and event evidence-link declaration through `json_each`, registration-retry and pre-append complete-history validation, live Core-capability-gated Queue actions, one operation-frame-read-to-response server deadline, a bounded four-slot detached-delegate budget with shutdown drain, cooperative workflow/store lock waits, a one-second compliance-review command/provider/PRAGMA lock-wait ceiling plus an operation-token cancellation request, structured SQLite provider failures, fresh App/CLI connect-validation-handshake-operation deadlines with internal `TimeoutException` versus caller `OperationCanceledException`, process-wide App/CLI validator budgets of four and two, exact accepted command/result/reason/evidence binding, rejection without snapshots, accepted-only shared-state publication, same-incident generation and single-flight guards, isolated StateHub subscriber delivery, and shared Queue/Widget projection. The production App and CLI clients additionally bind the connected server to the OS-reported Core PID and validate its executable metadata, hash, start, and file stability before the handshake; no hello is sent before validation succeeds. Synchronous server delegates and client validators cannot be force-cancelled; their bounded permits and cancellation sources or pipe references remain retained until actual completion, and late faults are observed. A cancellation request to `SqliteCommand.Cancel` is cooperative and does not guarantee immediate interruption of a provider busy wait. Transaction acquisition or a mutation already executing synchronously cannot be promised immediate cancellation or rollback. Review commands use `ExpectedState` and `ExpectedSequence` together; clients do not supply `OccurredUtc`, because Core assigns it with `TimeProvider`. The Core connection validates the audit JSON hash, Domain event, and persisted scalar projection before insert. App publication after an accepted authoritative response is not suppressed by caller cancellation, while cancellation before a response still cancels transport. Process and executable checks establish operational identity continuity/correlation only; they are not cryptographic publisher authentication, signing, or provenance proof. A sufficiently privileged same-user process may forge parentage with `PROC_THREAD_ATTRIBUTE_PARENT_PROCESS`, and Herdr protocol 19 does not bind pane root PIDs to creation identities, so pre-snapshot PID recycling remains a residual. A deliberate same-user SQLite writer can register or spoof its own validation function and remains a trust-boundary residual.
 
 The gate reports `NoRuntimeCredit`. No actual Herdr runtime credit exists until this behavior is captured from a standard, non-elevated Herdr pane and the exact pane/process observations, role observations, Core responses, and immutable database audit hashes are bound in one fresh runtime record. The gate cannot close Issue #27, provide independent acceptance, or pass the v0.5 release gate.
+
+## v1.0.0 release-candidate preparation
+
+Run the bounded Static/Synthetic validator on both supported PowerShell hosts:
+
+```powershell
+./tools/release/Test-V10ReleaseReadiness.ps1
+
+& "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" `
+  -NoProfile -NonInteractive -ExecutionPolicy Bypass `
+  -File .\tools\release\Test-V10ReleaseReadiness.ps1
+```
+
+After all candidate source changes are committed, create a three-component v1
+candidate from that exact clean commit. This command builds a local ignored
+artifact only; it does not install, tag, push, or publish anything:
+
+```powershell
+$commit = git rev-parse HEAD
+./tools/release/New-V10ReleaseCandidate.ps1 `
+  -ExpectedSourceCommit $commit `
+  -OutputRoot .\artifacts\release-candidate\v1.0.0
+```
+
+MSBuild identity evaluation uses a fresh owned project-extensions directory.
+Generated imports left below `obj` by an earlier build are therefore excluded
+without being deleted or trusted; repository and SDK import fences remain in
+force.
+
+The output contains the merged `HerdrOps.App`, `HerdrOps.Core`, and
+`HerdrOps.Cli` self-contained files, deterministic archive, package manifest,
+integrity record, committed-generation metadata, and `release-candidate.json`.
+Duplicate component paths must be byte-identical except for the three
+profile-bound Windows Desktop facade overlays owned by App. The builder checks
+their component order, exact conflict set, strong-name identities, assembly
+versions, and common SDK file version before retaining the App bytes. The
+candidate record binds the exact commit, all package hashes, all six
+executable/DLL entry points, and the eight separate English/Thai release
+documents.
+
+The committed example authorization is intentionally `PENDING` and must fail.
+Only after real Reports #41 through #44 and an explicit product-owner `GO` exist
+may an operator create a new authorization file and run:
+
+```powershell
+./tools/release/Invoke-V10ReleaseReadiness.ps1 `
+  -AuthorizationPath .\artifacts\release-authorization\v1.0.0\authorization.json
+```
+
+`READY_TO_PUBLISH` is a Static verification of exact bound input bytes. It does
+not create tag `v1.0.0`, call GitHub, rebuild the candidate, or establish
+Release evidence. Publication and post-publication download/hash verification
+remain separate required actions. See
+`docs/release/v1.0.0/release-readiness-contract.md`.
