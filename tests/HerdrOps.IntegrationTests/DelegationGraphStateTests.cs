@@ -53,6 +53,76 @@ public sealed class DelegationGraphStateTests
     }
 
     [TestMethod]
+    public void ClearingNodeSelectionClearsTaskAccessibleSelectionAndDetail()
+    {
+        var state = DelegationGraphState.CreateSyntheticPreview();
+        state.SelectedTask = state.TaskTreeItems.Single(item => item.TaskId == "TASK-122");
+        state.SelectedNode = state.GraphNodes.Single(item => item.ActorId == "backend-worker-02");
+
+        state.SelectedNode = null;
+
+        Assert.IsNull(state.SelectedTask);
+        Assert.IsNull(state.SelectedNode);
+        Assert.IsNull(state.SelectedAccessibleItem);
+        Assert.AreEqual("—", state.SelectedDetail.ActorId);
+        Assert.AreEqual(UiLanguageService.Shared["DelegationNoAssignmentSummary"], state.SelectedDetail.AssignmentSummary);
+    }
+
+    [TestMethod]
+    public void UnknownNodeSelectionClearsPriorTaskAndDetailInsteadOfRetainingIt()
+    {
+        var state = DelegationGraphState.CreateSyntheticPreview();
+        state.SelectedTask = state.TaskTreeItems.Single(item => item.TaskId == "TASK-122");
+        state.SelectedNode = state.GraphNodes.Single(item => item.ActorId == "backend-worker-02");
+
+        state.SelectedNode = new DelegationGraphNodeItem(
+            "unknown-actor", "UA", "Unknown", "Unknown", "Offline", "StatusOffline",
+            "0", 0d, 0d, 1d, "unknown-actor");
+
+        Assert.IsNull(state.SelectedTask);
+        Assert.IsNull(state.SelectedNode);
+        Assert.IsNull(state.SelectedAccessibleItem);
+        Assert.AreEqual("—", state.SelectedDetail.ActorId);
+        Assert.AreEqual(UiLanguageService.Shared["DelegationNoAssignmentSummary"], state.SelectedDetail.AssignmentSummary);
+    }
+
+    [TestMethod]
+    public void RemovedTaskSelectionIsDroppedAndCannotDriveDetailProjection()
+    {
+        var state = DelegationGraphState.CreateSyntheticPreview();
+        state.SelectedNode = state.GraphNodes.Single(item => item.ActorId == "backend-worker-02");
+
+        state.SelectedTask = new DelegationTaskTreeItem(
+            "removed-task", 1, "Removed task", "No longer present", "", "", "TASK-REMOVED");
+
+        Assert.IsNotNull(state.SelectedTask);
+        Assert.AreNotEqual("TASK-REMOVED", state.SelectedTask!.TaskId);
+        Assert.AreEqual(state.SelectedNode?.ActorId, state.SelectedDetail.ActorId);
+        Assert.IsFalse(state.SelectedDetail.TaskIds.Contains("TASK-REMOVED", StringComparer.Ordinal));
+        Assert.IsTrue(state.Timeline.All(item => item.TaskId != "TASK-REMOVED"));
+    }
+
+    [TestMethod]
+    public void SwitchingActorsRepeatedlyKeepsTaskAndDetailActorSynchronized()
+    {
+        var state = DelegationGraphState.CreateSyntheticPreview();
+        var firstActor = state.GraphNodes.Single(item => item.ActorId == "backend-worker-01");
+        var secondActor = state.GraphNodes.Single(item => item.ActorId == "frontend-worker-01");
+
+        state.SelectedNode = firstActor;
+        Assert.AreEqual(firstActor.ActorId, state.SelectedDetail.ActorId);
+        Assert.IsTrue(state.SelectedDetail.TaskIds.Contains(state.SelectedTask!.TaskId!, StringComparer.Ordinal));
+
+        state.SelectedNode = secondActor;
+        Assert.AreEqual(secondActor.ActorId, state.SelectedDetail.ActorId);
+        Assert.IsTrue(state.SelectedDetail.TaskIds.Contains(state.SelectedTask!.TaskId!, StringComparer.Ordinal));
+
+        state.SelectedNode = firstActor;
+        Assert.AreEqual(firstActor.ActorId, state.SelectedDetail.ActorId);
+        Assert.IsTrue(state.SelectedDetail.TaskIds.Contains(state.SelectedTask!.TaskId!, StringComparer.Ordinal));
+    }
+
+    [TestMethod]
     public void VisualAndAccessibleSelectionsRemainEquivalent()
     {
         var state = DelegationGraphState.CreateSyntheticPreview();

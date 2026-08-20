@@ -146,7 +146,7 @@ public static class AssignmentDelegationGraphProjector
             string.Equals(item.ActorId, actorId, StringComparison.Ordinal));
         if (actorNode is null)
         {
-            return requestedTaskId;
+            return null;
         }
 
         if (requestedTaskId is not null &&

@@ -379,7 +379,7 @@ public sealed class DelegationGraphState : ObservableState
                 string.Equals(item.ActorId, actorId, StringComparison.Ordinal));
         if (node is null || _graph is null)
         {
-            SelectedDetail = EmptyDetail();
+            ClearSelections();
             return;
         }
 
@@ -398,6 +398,12 @@ public sealed class DelegationGraphState : ObservableState
             accessible);
 
         RefreshProjection(actorId);
+    }
+
+    private void ClearSelections()
+    {
+        SetSelections(null, null, null);
+        SelectedDetail = EmptyDetail();
     }
 
     private void SetSelections(

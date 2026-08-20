@@ -43,6 +43,19 @@ public sealed class AssignmentDelegationGraphTests
     }
 
     [TestMethod]
+    public void ResolveSelectedTaskIdClearsRequestedTaskForUnknownActor()
+    {
+        var graph = AssignmentDelegationGraphProjector.Create(
+            AssignmentLifecycleReplay.Run(AssignmentLifecycleTests.CompleteTrace()));
+
+        Assert.IsNull(
+            AssignmentDelegationGraphProjector.ResolveSelectedTaskIdForActor(
+                graph,
+                "actor-that-is-not-in-the-graph",
+                "TASK-001"));
+    }
+
+    [TestMethod]
     public void ProjectionIsDeterministicAndBindsGraphItemsToReplayProvenance()
     {
         var replay = AssignmentLifecycleReplay.Run(AssignmentLifecycleTests.CompleteTrace());
