@@ -40,12 +40,17 @@
 .PARAMETER RepoRoot
     Path to the working-tree root.  Defaults to the parent of the tools/ directory.
 
+.PARAMETER SelfTest
+    Run deterministic in-memory negative parser and anchor self-tests without
+    reading or writing repository files.
+
 .EXAMPLE
     pwsh -File tools/Test-V07Issue37ManifestIntegrity.ps1
 #>
 [CmdletBinding()]
 param(
-    [string]$RepoRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
+    [string]$RepoRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path,
+    [switch]$SelfTest
 )
 
 Set-StrictMode -Version Latest
@@ -70,6 +75,44 @@ $CANDIDATE_COMMIT            = '4d36e288a0d4d8791f6afb7ba90e5ee0128c06ad'
 $REMEDIATION_UPDATED_FILE    = 'tests/HerdrOps.IntegrationTests/StateStoreRecoveryTests.cs'
 
 $MANIFEST_PATH               = 'docs/reviews/v0.7-issue-37-reviewed-files.sha256'
+$EXPECTED_MANIFEST_ENTRY_COUNT = 35
+$EXPECTED_MANIFEST_PATHS     = @(
+    'src/HerdrOps.Core/HerdrOpsCoreStateServiceCommand.cs',
+    'src/HerdrOps.Core/HerdrRuntimeEvidence.cs',
+    'src/HerdrOps.Core/HerdrRuntimeMonitor.cs',
+    'src/HerdrOps.Core/HerdrRuntimeMonitorFactory.cs',
+    'src/HerdrOps.Core/HerdrRuntimeTraceCommand.cs',
+    'src/HerdrOps.Core/StateStoreRestoreCommand.cs',
+    'src/HerdrOps.Domain/Diagnostics/DiagnosticRedaction.cs',
+    'src/HerdrOps.Infrastructure/Herdr/HerdrBundledSchemaExtractor.cs',
+    'src/HerdrOps.Infrastructure/Herdr/HerdrExecutableSnapshotReader.cs',
+    'src/HerdrOps.Infrastructure/Herdr/HerdrProtocolInspector.cs',
+    'src/HerdrOps.Infrastructure/Herdr/HerdrProtocolJsonCodec.cs',
+    'src/HerdrOps.Infrastructure/Herdr/HerdrServerIdentity.cs',
+    'src/HerdrOps.Infrastructure/Storage/Recovery/StateStoreRecoveryArtifacts.cs',
+    'src/HerdrOps.Infrastructure/Storage/Recovery/StateStoreRecoveryContracts.cs',
+    'src/HerdrOps.Infrastructure/Storage/Recovery/StateStoreRecoveryPathPolicy.cs',
+    'src/HerdrOps.Infrastructure/Storage/Recovery/StateStoreRecoveryService.cs',
+    'src/HerdrOps.Contracts/HerdrBundledSchemaContract.cs',
+    'src/HerdrOps.Contracts/HerdrProtocolContract.cs',
+    'tests/HerdrOps.ContractTests/HerdrBundledSchemaExtractorContractTests.cs',
+    'tests/HerdrOps.ContractTests/HerdrProtocolInspectorContractTests.cs',
+    'tests/HerdrOps.ContractTests/HerdrProtocolJsonCodecContractTests.cs',
+    'tests/HerdrOps.IntegrationTests/DiagnosticBundleTests.cs',
+    'tests/HerdrOps.IntegrationTests/HerdrBundledSchemaInspectionCommandTests.cs',
+    'tests/HerdrOps.IntegrationTests/HerdrNamedPipeApiClientTests.cs',
+    'tests/HerdrOps.IntegrationTests/HerdrRuntimeMonitorTests.cs',
+    'tests/HerdrOps.IntegrationTests/StateStoreRecoveryTests.cs',
+    'tests/HerdrOps.RuntimeTests/LiveDashboardRenderingTests.cs',
+    'tests/HerdrOps.RuntimeTests/MSTestSettings.cs',
+    'tests/HerdrOps.RuntimeTests/RuntimeEvidenceResourceLifecycleTests.cs',
+    'tests/HerdrOps.RuntimeTests/WpfTestHost.cs',
+    'tools/Test-V02BundledSchemaContract.ps1',
+    'tools/Test-V02HerdrRuntime.ps1',
+    'tools/Test-V02LiveRuntimeAcceptance.ps1',
+    'tools/Test-V05ComplianceQueue.ps1',
+    'tools/Test-V06DailySummaryPage.ps1'
+)
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -98,6 +141,21 @@ function Get-GitBlobSha1ForCommit {
     return $parts[2]
 }
 
+function Get-GitHeadCommit {
+    param([string]$Repo)
+    $output = & git -C $Repo rev-parse --verify HEAD 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        throw "git rev-parse HEAD exited $LASTEXITCODE."
+    }
+
+    $commit = ($output | Out-String).Trim()
+    if ($commit -notmatch '^[0-9a-fA-F]{40}$') {
+        throw "git rev-parse HEAD returned an invalid commit id: $commit"
+    }
+
+    return $commit
+}
+
 function Compute-Sha256Hex {
     param([byte[]]$Bytes)
     $sha256 = [System.Security.Cryptography.SHA256]::Create()
@@ -115,6 +173,240 @@ function Assert-Equal {
     Write-Host "         Expected: $Expected"
     Write-Host "         Actual:   $Actual"
     return $false
+}
+
+function Assert-ManifestBlobAnchor {
+    param(
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$ActualBlobSha1,
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$PinnedBlobSha1
+    )
+
+    if ([string]::IsNullOrWhiteSpace($ActualBlobSha1) -or
+        -not [string]::Equals($ActualBlobSha1, $PinnedBlobSha1, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "HEAD manifest blob '$ActualBlobSha1' does not match pinned remediation anchor '$PinnedBlobSha1'."
+    }
+}
+
+function ConvertFrom-StrictManifest {
+    param(
+        [Parameter(Mandatory = $true)][byte[]]$Bytes,
+        [Parameter(Mandatory = $true)][string[]]$ExpectedPaths,
+        [Parameter(Mandatory = $true)][int]$ExpectedCount
+    )
+
+    $utf8 = [System.Text.UTF8Encoding]::new($false, $true)
+    try {
+        $manifestText = $utf8.GetString($Bytes)
+    }
+    catch {
+        throw "Manifest is not valid UTF-8: $($_.Exception.Message)"
+    }
+
+    $expectedSet = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
+    foreach ($expectedPath in $ExpectedPaths) {
+        [void]$expectedSet.Add($expectedPath)
+    }
+
+    $seenPaths = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
+    $entries = [System.Collections.Generic.List[object]]::new()
+    $errors = [System.Collections.Generic.List[string]]::new()
+    $manifestLines = $manifestText -split "`n"
+
+    # A single final LF is canonical and does not represent an extra entry.
+    if ($manifestLines.Count -gt 0 -and $manifestLines[-1] -eq '') {
+        if ($manifestLines.Count -eq 1) {
+            $manifestLines = @()
+        }
+        else {
+            $manifestLines = $manifestLines[0..($manifestLines.Count - 2)]
+        }
+    }
+
+    for ($index = 0; $index -lt $manifestLines.Count; $index++) {
+        $lineNumber = $index + 1
+        $line = [string]$manifestLines[$index]
+        if ($line.EndsWith("`r", [StringComparison]::Ordinal)) {
+            $line = $line.Substring(0, $line.Length - 1)
+        }
+
+        if ([string]::IsNullOrWhiteSpace($line)) {
+            [void]$errors.Add("malformed blank line $lineNumber")
+            continue
+        }
+
+        $match = [System.Text.RegularExpressions.Regex]::Match(
+            $line,
+            '^SHA256 ([0-9A-Fa-f]{64}) ([^ \t].*)\z',
+            [System.Text.RegularExpressions.RegexOptions]::CultureInvariant)
+        if (-not $match.Success) {
+            [void]$errors.Add("malformed line $lineNumber")
+            continue
+        }
+
+        $recordedHash = $match.Groups[1].Value.ToUpperInvariant()
+        $relativePath = $match.Groups[2].Value
+        if (-not $expectedSet.Contains($relativePath)) {
+            [void]$errors.Add("unexpected path '$relativePath'")
+        }
+        if (-not $seenPaths.Add($relativePath)) {
+            [void]$errors.Add("duplicate path '$relativePath'")
+        }
+
+        [void]$entries.Add([pscustomobject]@{
+            Hash = $recordedHash
+            Path = $relativePath
+        })
+    }
+
+    if ($entries.Count -ne $ExpectedCount) {
+        [void]$errors.Add("expected exactly $ExpectedCount entries but found $($entries.Count)")
+    }
+
+    $missingPaths = @($ExpectedPaths | Where-Object { -not $seenPaths.Contains($_) })
+    if ($missingPaths.Count -gt 0) {
+        [void]$errors.Add("missing path(s): $($missingPaths -join ', ')")
+    }
+
+    if ($errors.Count -gt 0) {
+        throw "Manifest validation failed: $($errors -join '; ')."
+    }
+
+    return $entries.ToArray()
+}
+
+function Assert-NegativeManifestCase {
+    param(
+        [Parameter(Mandatory = $true)][string]$Name,
+        [Parameter(Mandatory = $true)][string]$ManifestText,
+        [Parameter(Mandatory = $true)][string[]]$ExpectedPaths,
+        [Parameter(Mandatory = $true)][int]$ExpectedCount,
+        [Parameter(Mandatory = $true)][string]$ExpectedMessage
+    )
+
+    $utf8 = [System.Text.UTF8Encoding]::new($false)
+    try {
+        ConvertFrom-StrictManifest `
+            -Bytes $utf8.GetBytes($ManifestText) `
+            -ExpectedPaths $ExpectedPaths `
+            -ExpectedCount $ExpectedCount | Out-Null
+        Write-Host "  [FAIL] negative self-test '$Name' was accepted" -ForegroundColor Red
+        return $false
+    }
+    catch {
+        if ($_.Exception.Message -like "*$ExpectedMessage*") {
+            Write-Host "  [PASS] negative self-test '$Name' rejected" -ForegroundColor Green
+            return $true
+        }
+
+        Write-Host "  [FAIL] negative self-test '$Name' rejected for an unexpected reason" -ForegroundColor Red
+        Write-Host "         Expected fragment: $ExpectedMessage"
+        Write-Host "         Actual: $($_.Exception.Message)"
+        return $false
+    }
+}
+
+function Invoke-DeterministicSelfTests {
+    Write-Host '=== Deterministic negative self-tests ===' -ForegroundColor Cyan
+    $hashA = ('A' * 64) -join ''
+    $hashB = ('B' * 64) -join ''
+    $hashC = ('C' * 64) -join ''
+    $hashD = ('D' * 64) -join ''
+    $expectedPaths = @('alpha.txt', 'beta.txt', 'gamma.txt')
+    $validLines = @(
+        "SHA256 $hashA alpha.txt",
+        "SHA256 $hashB beta.txt",
+        "SHA256 $hashC gamma.txt"
+    )
+    $validManifest = (($validLines -join "`n") + "`n")
+    $failed = 0
+
+    try {
+        ConvertFrom-StrictManifest `
+            -Bytes ([System.Text.UTF8Encoding]::new($false).GetBytes($validManifest)) `
+            -ExpectedPaths $expectedPaths `
+            -ExpectedCount 3 | Out-Null
+        Write-Host "  [PASS] valid fixture accepted" -ForegroundColor Green
+    }
+    catch {
+        Write-Host "  [FAIL] valid fixture rejected: $($_.Exception.Message)" -ForegroundColor Red
+        $failed++
+    }
+
+    $cases = @(
+        [pscustomobject]@{
+            Name = 'malformed line'
+            Text = ((($validLines[0], 'not a manifest record', $validLines[2]) -join "`n") + "`n")
+            Expected = 'malformed line 2'
+            Count = 3
+        },
+        [pscustomobject]@{
+            Name = 'duplicate path'
+            Text = (($validLines + $validLines[0]) -join "`n") + "`n"
+            Expected = "duplicate path 'alpha.txt'"
+            Count = 3
+        },
+        [pscustomobject]@{
+            Name = 'unexpected path'
+            Text = (($validLines[0], $validLines[1], "SHA256 $hashC delta.txt") -join "`n") + "`n"
+            Expected = "unexpected path 'delta.txt'"
+            Count = 3
+        },
+        [pscustomobject]@{
+            Name = 'missing path'
+            Text = (($validLines[0], $validLines[1]) -join "`n") + "`n"
+            Expected = "missing path(s): gamma.txt"
+            Count = 2
+        },
+        [pscustomobject]@{
+            Name = 'wrong exact entry count'
+            Text = (($validLines + "SHA256 $hashD delta.txt") -join "`n") + "`n"
+            Expected = 'expected exactly 3 entries but found 4'
+            Count = 3
+        }
+    )
+
+    foreach ($case in $cases) {
+        if (-not (Assert-NegativeManifestCase `
+                -Name $case.Name `
+                -ManifestText $case.Text `
+                -ExpectedPaths $expectedPaths `
+                -ExpectedCount $case.Count `
+                -ExpectedMessage $case.Expected)) {
+            $failed++
+        }
+    }
+
+    try {
+        Assert-ManifestBlobAnchor `
+            -ActualBlobSha1 '0000000000000000000000000000000000000000' `
+            -PinnedBlobSha1 '1111111111111111111111111111111111111111'
+        Write-Host '  [FAIL] HEAD anchor mismatch was accepted' -ForegroundColor Red
+        $failed++
+    }
+    catch {
+        if ($_.Exception.Message -like '*does not match pinned remediation anchor*') {
+            Write-Host '  [PASS] HEAD anchor mismatch rejected' -ForegroundColor Green
+        }
+        else {
+            Write-Host "  [FAIL] HEAD anchor mismatch rejected for an unexpected reason: $($_.Exception.Message)" -ForegroundColor Red
+            $failed++
+        }
+    }
+
+    if ($failed -gt 0) {
+        Write-Host "Self-test result: FAIL ($failed failure(s))." -ForegroundColor Red
+        return $false
+    }
+
+    Write-Host 'Self-test result: PASS (valid fixture plus five deterministic negative cases and anchor mismatch).' -ForegroundColor Green
+    return $true
+}
+
+if ($SelfTest) {
+    if (-not (Invoke-DeterministicSelfTests)) {
+        exit 1
+    }
+    exit 0
 }
 
 # ---------------------------------------------------------------------------
@@ -158,26 +450,61 @@ Write-Host "  Blob size: $($remediationBytes.Length) bytes"
 $ok = Assert-Equal 'RemediationManifestSha256' $REMEDIATION_EXPECTED_SHA256 $actualSha256_2
 if ($ok) { $passed++ } else { $failed++ }
 
-# --- Check 5: Per-file entries using correct commit anchors ----------------
+# --- Check 5: HEAD manifest blob must be the pinned remediation manifest -----
 Write-Host ''
-Write-Host '=== Check 5: Per-file SHA-256 entries (anchored to candidate/remediation commits) ===' -ForegroundColor Cyan
+Write-Host '=== Check 5: HEAD manifest blob anchor ===' -ForegroundColor Cyan
+$headCommit = $null
+$headManifestBlobSha1 = $null
+$headManifestAnchorOk = $false
+try {
+    $headCommit = Get-GitHeadCommit -Repo $RepoRoot
+    $headManifestBlobSha1 = Get-GitBlobSha1ForCommit -Repo $RepoRoot -Commit $headCommit -RelPath $MANIFEST_PATH
+    Assert-ManifestBlobAnchor -ActualBlobSha1 $headManifestBlobSha1 -PinnedBlobSha1 $REMEDIATION_BLOB_SHA1
+    Write-Host "  [PASS] HEAD $headCommit manifest blob is pinned remediation blob $REMEDIATION_BLOB_SHA1" -ForegroundColor Green
+    $headManifestAnchorOk = $true
+    $passed++
+}
+catch {
+    Write-Host '  [FAIL] HEAD manifest blob anchor' -ForegroundColor Red
+    Write-Host "         $($_.Exception.Message)"
+    $failed++
+}
+
+# --- Check 6: Per-file entries using correct commit anchors ----------------
+Write-Host ''
+Write-Host '=== Check 6: strict per-file SHA-256 entries (anchored to candidate/remediation commits) ===' -ForegroundColor Cyan
 Write-Host "  Default commit: $CANDIDATE_COMMIT"
 Write-Host "  Exception:      $REMEDIATION_UPDATED_FILE -> $REMEDIATION_COMMIT"
 
-$manifestText  = [System.Text.Encoding]::UTF8.GetString($remediationBytes)
-$manifestLines = $manifestText -split "`n" | Where-Object { $_.Trim() -ne '' }
 $entryCount = 0
 $entryFails = 0
+$manifestEntries = @()
 
-foreach ($line in $manifestLines) {
-    $line = $line.TrimEnd("`r")
-    if ($line -notmatch '^SHA256 ([0-9A-Fa-f]{64}) (.+)$') {
-        Write-Host "  [WARN] Unrecognised line: $line" -ForegroundColor Yellow
-        continue
+if (-not $headManifestAnchorOk) {
+    Write-Host '  [FAIL-CLOSED] Skipping entry verification because HEAD is not pinned to the remediation manifest.' -ForegroundColor Red
+    $failed++
+}
+else {
+    try {
+        $headManifestBytes = Get-GitBlobBytes -Repo $RepoRoot -BlobSha1 $headManifestBlobSha1
+        $manifestEntries = @(ConvertFrom-StrictManifest `
+            -Bytes $headManifestBytes `
+            -ExpectedPaths $EXPECTED_MANIFEST_PATHS `
+            -ExpectedCount $EXPECTED_MANIFEST_ENTRY_COUNT)
+        $entryCount = $manifestEntries.Count
+        Write-Host "  [PASS] Manifest shape: exactly $EXPECTED_MANIFEST_ENTRY_COUNT entries; no malformed, duplicate, unexpected, or missing paths" -ForegroundColor Green
+        $passed++
     }
-    $recordedHash = $Matches[1].ToUpper()
-    $relPath      = ($Matches[2].Trim()) -replace '\\', '/'
-    $entryCount++
+    catch {
+        Write-Host '  [FAIL] Strict manifest shape validation' -ForegroundColor Red
+        Write-Host "         $($_.Exception.Message)"
+        $failed++
+    }
+}
+
+foreach ($entry in $manifestEntries) {
+    $recordedHash = $entry.Hash
+    $relPath      = $entry.Path
 
     # Use remediation commit for the one file updated there; candidate commit for all others
     $effectiveCommit = if ($relPath -eq $REMEDIATION_UPDATED_FILE) { $REMEDIATION_COMMIT } else { $CANDIDATE_COMMIT }
@@ -214,6 +541,6 @@ if ($failed -gt 0) {
     Write-Host 'RESULT: FAIL' -ForegroundColor Red
     exit 1
 } else {
-    Write-Host 'RESULT: PASS - all manifest integrity checks reproducible from canonical Git blob bytes.' -ForegroundColor Green
+    Write-Host 'RESULT: PASS - HEAD is pinned to the canonical manifest and all strict integrity checks are reproducible from Git blob bytes.' -ForegroundColor Green
     exit 0
 }
