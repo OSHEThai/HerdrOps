@@ -15,7 +15,9 @@ public sealed record ComplianceReviewCompositeRuntimeReport(
     bool SessionControlInvoked,
     DateTimeOffset GeneratedUtc,
     string IncidentId,
+    string ReviewTracePath,
     string ReviewTraceSha256,
+    string HerdrRuntimeReportPath,
     string HerdrRuntimeReportSha256,
     string FinalHerdrStateSha256,
     DateTimeOffset OverlapStartedUtc,
@@ -207,7 +209,9 @@ public static class ComplianceReviewRuntimeAcceptanceCommand
                 herdrRuntime.SessionControlInvoked,
                 DateTimeOffset.UtcNow,
                 incidentId,
+                reviewTracePath,
                 Hash(reviewBytes),
+                herdrRuntimeReportPath,
                 Hash(runtimeBytes),
                 stateSha256,
                 overlapStartedUtc,
@@ -225,6 +229,7 @@ public static class ComplianceReviewRuntimeAcceptanceCommand
         catch (Exception exception) when (
             exception is IOException or
                 UnauthorizedAccessException or
+                System.Security.SecurityException or
                 NotSupportedException or
                 InvalidDataException or
                 JsonException or
@@ -243,6 +248,11 @@ public static class ComplianceReviewRuntimeAcceptanceCommand
         {
             throw new InvalidDataException(
                 $"Acceptance input must contain 1 through {MaximumInputBytes} bytes: {path}");
+        }
+
+        if (info.Attributes.HasFlag(FileAttributes.ReparsePoint) || info.LinkTarget is not null)
+        {
+            throw new InvalidDataException($"Reparse point or symbolic link rejected: {path}");
         }
 
         return File.ReadAllBytes(path);

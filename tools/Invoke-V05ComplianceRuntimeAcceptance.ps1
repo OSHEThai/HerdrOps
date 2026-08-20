@@ -311,6 +311,8 @@ $runtimeGateReport = @(
     "CompositeRuntimeReportSha256: $compositeSha256",
     "HerdrRuntimeReportSha256: $herdrRuntimeSha256",
     "EvidenceFileSha256: $evidenceSha256",
+    "CompositeRuntimeReport: $compositeReportPath",
+    "HerdrRuntimeReport: $herdrRuntimeReportPath",
     "ProjectManagerTerminalId: $ProjectManagerTerminalId",
     "LeaderTerminalId: $LeaderTerminalId",
     "SubjectTerminalId: $SubjectTerminalId",

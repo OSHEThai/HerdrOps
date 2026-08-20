@@ -183,6 +183,8 @@ public sealed class ComplianceReviewRuntimeAcceptanceCommandTests
         Assert.AreEqual("Runtime", composite.EvidenceClassification);
         Assert.IsTrue(composite.Acceptance.Passed);
         Assert.AreEqual(incidentId, composite.IncidentId);
+        Assert.AreEqual(Path.GetFullPath(reviewTracePath), composite.ReviewTracePath);
+        Assert.AreEqual(Path.GetFullPath(herdrReportPath), composite.HerdrRuntimeReportPath);
     }
 
     [TestMethod]
@@ -377,6 +379,42 @@ public sealed class ComplianceReviewRuntimeAcceptanceCommandTests
         Assert.IsNotNull(composite);
         Assert.IsFalse(composite.RuntimeAccepted);
         Assert.AreEqual("NoRuntimeCredit", composite.EvidenceClassification);
+    }
+
+    [TestMethod]
+    public void LockedOrAccessDeniedInputReturnsExitCodeTwo()
+    {
+        using var directory = new TemporaryDirectory();
+        var reviewTracePath = Path.Combine(directory.Path, "review-trace.json");
+        var herdrReportPath = Path.Combine(directory.Path, "herdr-runtime.json");
+        var compositeReportPath = Path.Combine(directory.Path, "composite-report.json");
+
+        File.WriteAllText(reviewTracePath, "{}");
+        File.WriteAllText(herdrReportPath, "{}");
+
+        using var fileLock = new FileStream(
+            reviewTracePath,
+            FileMode.Open,
+            FileAccess.ReadWrite,
+            FileShare.None);
+
+        var output = new StringWriter();
+        var error = new StringWriter();
+
+        var exitCode = ComplianceReviewRuntimeAcceptanceCommand.Run(
+            new[]
+            {
+                "compliance-review-acceptance",
+                "--review-trace", reviewTracePath,
+                "--herdr-runtime-report", herdrReportPath,
+                "--incident-id", "INC-LOCK",
+                "--report", compositeReportPath,
+            },
+            output,
+            error);
+
+        Assert.AreEqual(2, exitCode);
+        Assert.Contains("Compliance review runtime acceptance failed:", error.ToString());
     }
 
     private static HerdrSessionStateContract CreateSessionState()
