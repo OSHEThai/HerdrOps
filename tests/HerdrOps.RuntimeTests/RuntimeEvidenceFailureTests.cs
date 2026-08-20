@@ -324,6 +324,16 @@ public sealed class RuntimeEvidenceFailureTests
                 PreviousRevision: 1,
                 CurrentRevision: 2,
                 PreviousStateChangeSequence: 10,
-                CurrentStateChangeSequence: 11),
-        ]);
+                CurrentStateChangeSequence: 11)
+            {
+                PreviousAgentKind = "codex",
+                CurrentAgentKind = "codex",
+                PreviousAgentName = "Codex",
+                CurrentAgentName = "Codex",
+            },
+        ])
+    {
+        BaselineAllAgentsHaveLiveIdentity = true,
+        CurrentAllAgentsHaveLiveIdentity = true,
+    };
 }

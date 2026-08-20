@@ -44,6 +44,7 @@ internal static class HerdrRuntimeEvidence
             snapshot.LastTransitionReason)
         {
             AcceptedAgentStatusEvent = snapshot.AcceptedAgentStatusEvent,
+            AllAgentsHaveLiveIdentity = snapshot.AllAgentsHaveLiveIdentity,
         };
     }
 

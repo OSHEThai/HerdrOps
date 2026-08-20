@@ -76,7 +76,16 @@ public sealed record RuntimeAgentStatusChange(
     ulong PreviousRevision,
     ulong CurrentRevision,
     ulong PreviousStateChangeSequence,
-    ulong CurrentStateChangeSequence);
+    ulong CurrentStateChangeSequence)
+{
+    public string? PreviousAgentKind { get; init; }
+
+    public string? CurrentAgentKind { get; init; }
+
+    public string? PreviousAgentName { get; init; }
+
+    public string? CurrentAgentName { get; init; }
+}
 
 public sealed record RuntimeAgentStatusTransitionEvidence(
     DateTimeOffset PhaseEnteredUtc,
@@ -107,6 +116,10 @@ public sealed record RuntimeAgentStatusTransitionEvidence(
     IReadOnlyList<RuntimeAgentStatusChange> Changes)
 {
     public int ChangeCount => Changes.Count;
+
+    public bool BaselineAllAgentsHaveLiveIdentity { get; init; }
+
+    public bool CurrentAllAgentsHaveLiveIdentity { get; init; }
 }
 
 public sealed record RuntimeProcessResourceMeasurement(
@@ -1080,6 +1093,8 @@ public sealed class RuntimeEvidenceRunner(
         evidence.CurrentIsCoreConnected &&
         evidence.CurrentIsLive &&
         string.Equals(evidence.CurrentRuntimeStatus, "Connected", StringComparison.Ordinal) &&
+        evidence.BaselineAllAgentsHaveLiveIdentity &&
+        evidence.CurrentAllAgentsHaveLiveIdentity &&
         evidence.CurrentBootstrapCount == evidence.BaselineBootstrapCount &&
         evidence.CurrentDisconnectCount == evidence.BaselineDisconnectCount &&
         HasSupportedEventAdmissionPath(evidence) &&
@@ -1108,8 +1123,27 @@ public sealed class RuntimeEvidenceRunner(
 
         var change = evidence.Changes[0];
         return change.CurrentStateChangeSequence > change.PreviousStateChangeSequence &&
-               change.CurrentStateChangeSequence - change.PreviousStateChangeSequence == 1;
+               change.CurrentStateChangeSequence - change.PreviousStateChangeSequence == 1 &&
+               HasLiveAgentIdentity(change) &&
+               string.Equals(change.PreviousAgentKind, change.CurrentAgentKind, StringComparison.Ordinal) &&
+               string.Equals(change.PreviousAgentName, change.CurrentAgentName, StringComparison.Ordinal);
     }
+
+    internal static bool HasAllLiveAgentIdentities(HerdrSessionStateContract state) =>
+        state.Agents.Count > 0 && state.Agents.All(HasLiveAgentIdentity);
+
+    private static bool HasLiveAgentIdentity(HerdrAgentStateContract agent) =>
+        !string.IsNullOrWhiteSpace(agent.Agent) &&
+        !string.IsNullOrWhiteSpace(agent.Name) &&
+        !string.Equals(agent.AgentStatus, "Unknown", StringComparison.OrdinalIgnoreCase);
+
+    private static bool HasLiveAgentIdentity(RuntimeAgentStatusChange change) =>
+        !string.IsNullOrWhiteSpace(change.PreviousAgentKind) &&
+        !string.IsNullOrWhiteSpace(change.CurrentAgentKind) &&
+        !string.IsNullOrWhiteSpace(change.PreviousAgentName) &&
+        !string.IsNullOrWhiteSpace(change.CurrentAgentName) &&
+        !string.Equals(change.PreviousStatus, "Unknown", StringComparison.OrdinalIgnoreCase) &&
+        !string.Equals(change.CurrentStatus, "Unknown", StringComparison.OrdinalIgnoreCase);
 
     private static bool IsSha256(string value) =>
         value is { Length: 64 } && value.All(Uri.IsHexDigit);
@@ -1190,7 +1224,9 @@ public sealed class RuntimeEvidenceRunner(
                 currentHealth.BootstrapCount == baselineProgress.BootstrapCount &&
                 currentHealth.DisconnectCount == baselineProgress.DisconnectCount &&
                 currentHealth.LastTransitionUtc >= baselineProgress.ObservedUtc &&
-                string.Equals(currentHealth.Status, "Connected", StringComparison.Ordinal))
+                string.Equals(currentHealth.Status, "Connected", StringComparison.Ordinal) &&
+                HasAllLiveAgentIdentities(baselineState) &&
+                HasAllLiveAgentIdentities(currentState))
             {
                 var changes = FindCorrelatedAgentStatusChanges(baselineState, currentState);
                 if (changes.Count == 1)
@@ -1221,7 +1257,11 @@ public sealed class RuntimeEvidenceRunner(
                         HerdrOpsStateIpcJson.ComputeAgentStatusStateSha256(baselineState),
                         HerdrOpsStateIpcJson.ComputeAgentStatusStateSha256(currentState),
                         currentState.ConnectionEpoch,
-                        changes);
+                        changes)
+                    {
+                        BaselineAllAgentsHaveLiveIdentity = HasAllLiveAgentIdentities(baselineState),
+                        CurrentAllAgentsHaveLiveIdentity = HasAllLiveAgentIdentities(currentState),
+                    };
                 }
             }
 
@@ -1275,7 +1315,11 @@ public sealed class RuntimeEvidenceRunner(
                 baselinePanes.TryGetValue(previous.PaneId, out var previousPane) &&
                 currentPanes.TryGetValue(agent.PaneId, out var currentPane) &&
                 string.Equals(previousPane.AgentStatus, previous.AgentStatus, StringComparison.Ordinal) &&
-                string.Equals(currentPane.AgentStatus, agent.AgentStatus, StringComparison.Ordinal))
+                string.Equals(currentPane.AgentStatus, agent.AgentStatus, StringComparison.Ordinal) &&
+                HasLiveAgentIdentity(previous) &&
+                HasLiveAgentIdentity(agent) &&
+                string.Equals(previous.Agent, agent.Agent, StringComparison.Ordinal) &&
+                string.Equals(previous.Name, agent.Name, StringComparison.Ordinal))
             .Select(agent =>
             {
                 var previous = baselineAgents[agent.TerminalId];
@@ -1289,7 +1333,13 @@ public sealed class RuntimeEvidenceRunner(
                     previous.Revision,
                     agent.Revision,
                     previous.StateChangeSequence,
-                    agent.StateChangeSequence);
+                    agent.StateChangeSequence)
+                {
+                    PreviousAgentKind = previous.Agent,
+                    CurrentAgentKind = agent.Agent,
+                    PreviousAgentName = previous.Name,
+                    CurrentAgentName = agent.Name,
+                };
             })
             .OrderBy(change => change.TerminalId, StringComparer.Ordinal)
             .ToArray();

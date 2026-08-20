@@ -31,6 +31,8 @@ public sealed record HerdrRuntimeTraceTransition(
     string? Reason)
 {
     public HerdrAcceptedAgentStatusEvent? AcceptedAgentStatusEvent { get; init; }
+
+    public bool AllAgentsHaveLiveIdentity { get; init; }
 }
 
 public sealed record HerdrRuntimeTraceReport(

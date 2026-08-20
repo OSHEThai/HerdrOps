@@ -346,6 +346,9 @@ public sealed class HerdrRuntimeMonitorTests
         Assert.AreEqual(
             HerdrAgentStatus.Blocked,
             acceptedEventTransition.AcceptedAgentStatusEvent.AgentStatus);
+        Assert.AreEqual("tab-1", acceptedEventTransition.AcceptedAgentStatusEvent.TabId);
+        Assert.AreEqual("Worker 01", acceptedEventTransition.AcceptedAgentStatusEvent.AgentName);
+        Assert.IsTrue(acceptedEventTransition.AllAgentsHaveLiveIdentity);
         Assert.AreEqual(HerdrRuntimeMonitorStatus.Connected, acceptedEventTransition.Status);
     }
 
@@ -848,6 +851,42 @@ public sealed class HerdrRuntimeMonitorTests
         Assert.AreEqual(TimeSpan.FromMilliseconds(120), firstMaximum);
         Assert.AreEqual(TimeSpan.FromMilliseconds(1600), cappedMinimum);
         Assert.AreEqual(TimeSpan.FromMilliseconds(2000), cappedMaximum);
+    }
+
+    [TestMethod]
+    public void AggregateLiveAgentIdentityFailsClosedForEmptyBlankAndUnknownAgents()
+    {
+        var snapshot = CreateSnapshot(revision: 1, HerdrAgentStatus.Working);
+        var state = new HerdrStateReducer().Reconcile(snapshot, 1, 1);
+
+        Assert.IsTrue(HerdrRuntimeMonitor.HasAllLiveAgentIdentities(state));
+        Assert.IsFalse(
+            HerdrRuntimeMonitor.HasAllLiveAgentIdentities(
+                state with
+                {
+                    Agents = new Dictionary<string, HerdrAgentSnapshot>(),
+                }));
+        Assert.IsFalse(
+            HerdrRuntimeMonitor.HasAllLiveAgentIdentities(
+                state with
+                {
+                    Agents = new Dictionary<string, HerdrAgentSnapshot>
+                    {
+                        ["terminal-1"] = state.Agents["terminal-1"] with { Agent = null },
+                    },
+                }));
+        Assert.IsFalse(
+            HerdrRuntimeMonitor.HasAllLiveAgentIdentities(
+                state with
+                {
+                    Agents = new Dictionary<string, HerdrAgentSnapshot>
+                    {
+                        ["terminal-1"] = state.Agents["terminal-1"] with
+                        {
+                            AgentStatus = HerdrAgentStatus.Unknown,
+                        },
+                    },
+                }));
     }
 
     [TestMethod]
