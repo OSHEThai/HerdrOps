@@ -379,20 +379,26 @@ function Get-EvidenceClassificationLines {
         'ContractEvidence: NOT OBSERVED / FAILED'
     }
 
-    $unitEvidenceLine = if ($unitExactPassed) {
+    $unitEvidenceLine = if ($unitExactPassed -and (-not $SkipBuild -or $ProvenanceVerified)) {
         "UnitEvidence: OBSERVED (12/12 unit tests passed: TrayCommandRouter [2], TrayMenuModel [1], StartAtLogonService [8], TrayLifecycleController [1])"
+    } elseif ($unitExactPassed -and $SkipBuild -and -not $ProvenanceVerified) {
+        "UnitEvidence: UNVERIFIED / STALE BINARIES (12/12 unit test passes observed on unverified binaries; same-commit provenance was not established: $ProvenanceReason)"
     } else {
         "UnitEvidence: FAILED (Expected: 12/12 passed 0 failed, Observed: Total=$UnitTotal, Passed=$UnitPassed, Failed=$UnitFailed)"
     }
 
-    $integrationEvidenceLine = if ($integrationExactPassed) {
+    $integrationEvidenceLine = if ($integrationExactPassed -and (-not $SkipBuild -or $ProvenanceVerified)) {
         "IntegrationEvidence: OBSERVED (39/39 integration tests passed: AppSettingsStore [27], AppLifecycleController [4], StartupSafety [6], TrayLifecycle [2])"
+    } elseif ($integrationExactPassed -and $SkipBuild -and -not $ProvenanceVerified) {
+        "IntegrationEvidence: UNVERIFIED / STALE BINARIES (39/39 integration test passes observed on unverified binaries; same-commit provenance was not established: $ProvenanceReason)"
     } else {
         "IntegrationEvidence: FAILED (Expected: 39/39 passed 0 failed, Observed: Total=$IntegrationTotal, Passed=$IntegrationPassed, Failed=$IntegrationFailed)"
     }
 
-    $syntheticEvidenceLine = if ($syntheticExactPassed) {
+    $syntheticEvidenceLine = if ($syntheticExactPassed -and (-not $SkipBuild -or $ProvenanceVerified)) {
         "SyntheticEvidence: OBSERVED (51/51 automated tests passed: in-memory tray and startup backends, temporary settings storage, lifecycle state transitions)"
+    } elseif ($syntheticExactPassed -and $SkipBuild -and -not $ProvenanceVerified) {
+        "SyntheticEvidence: UNVERIFIED / STALE BINARIES (51/51 automated test passes observed on unverified binaries; same-commit provenance was not established: $ProvenanceReason)"
     } else {
         "SyntheticEvidence: NOT OBSERVED / FAILED (Expected: 51/51 passed 0 failed 0 missing, Observed: Total=$TotalTests, Passed=$PassedTests, Failed=$FailedTests, MissingNamedChecks=$MissingChecksCount)"
     }
@@ -404,18 +410,21 @@ function Get-EvidenceClassificationLines {
     if ($ContractChecksPassed) {
         $observedClasses.Add('Contract')
     }
-    if ($unitExactPassed) {
+    if ((-not $SkipBuild -or $ProvenanceVerified) -and $unitExactPassed) {
         $observedClasses.Add('Unit')
     }
-    if ($integrationExactPassed) {
+    if ((-not $SkipBuild -or $ProvenanceVerified) -and $integrationExactPassed) {
         $observedClasses.Add('Integration')
     }
-    if ($syntheticExactPassed) {
+    if ((-not $SkipBuild -or $ProvenanceVerified) -and $syntheticExactPassed) {
         $observedClasses.Add('Synthetic')
     }
 
-    $evidenceClassLine = "EvidenceClass: $($observedClasses -join ', ')"
-
+    $evidenceClassLine = if ($ProvenanceVerified -or -not $SkipBuild) {
+        "EvidenceClass: $($observedClasses -join ', ')"
+    } else {
+        "EvidenceClass: $($observedClasses -join ', ') (Unit, Integration, and Synthetic evidence UNVERIFIED on current commit due to unverified/stale binaries)"
+    }
     $isFullAcceptancePass = ((-not $SkipBuild -and $BuildPassed -or ($SkipBuild -and $ProvenanceVerified)) -and
         $StaticChecksPassed -and $ContractChecksPassed -and $syntheticExactPassed)
 
@@ -449,6 +458,24 @@ function Get-EvidenceClassificationLines {
         IsFullAcceptancePass = $isFullAcceptancePass
         VerdictResult = $verdictResult
         ImplementationGateVerdict = $implementationGateVerdict
+    }
+}
+
+function Assert-GateAcceptanceOutcome {
+    param(
+        [Parameter(Mandatory)]
+        [pscustomobject]$Evidence,
+
+        [Parameter(Mandatory)]
+        [string]$ProvenanceReason
+    )
+
+    if (-not $Evidence.IsFullAcceptancePass) {
+        if ($Evidence.VerdictResult -eq 'NON-ACCEPTANCE CHECKS PASS' -or $Evidence.ImplementationGateVerdict -match 'NON-ACCEPTANCE') {
+            throw "v0.7 lifecycle implementation gate NON-ACCEPTANCE: -SkipBuild executed without verified same-commit binary provenance ($ProvenanceReason)."
+        } else {
+            throw "v0.7 lifecycle implementation gate FAILED."
+        }
     }
 }
 
@@ -547,12 +574,30 @@ function Invoke-SelfTests {
     if ($skipBuildNoProvenance.StaticLine -notmatch 'StaticEvidence:\s*NOT OBSERVED \(-SkipBuild specified without verified same-commit binary provenance') {
         throw 'SelfTest failed: -SkipBuild without provenance must report StaticEvidence NOT OBSERVED with reason'
     }
-    if ($skipBuildNoProvenance.ObservedClasses -contains 'Static') {
-        throw 'SelfTest failed: -SkipBuild without provenance must NOT include Static in EvidenceClass'
+    if ($skipBuildNoProvenance.UnitLine -notmatch 'UnitEvidence:\s*UNVERIFIED / STALE BINARIES') {
+        throw 'SelfTest failed: -SkipBuild without provenance must report UnitEvidence UNVERIFIED / STALE BINARIES'
+    }
+    if ($skipBuildNoProvenance.IntegrationLine -notmatch 'IntegrationEvidence:\s*UNVERIFIED / STALE BINARIES') {
+        throw 'SelfTest failed: -SkipBuild without provenance must report IntegrationEvidence UNVERIFIED / STALE BINARIES'
+    }
+    if ($skipBuildNoProvenance.SyntheticLine -notmatch 'SyntheticEvidence:\s*UNVERIFIED / STALE BINARIES') {
+        throw 'SelfTest failed: -SkipBuild without provenance must report SyntheticEvidence UNVERIFIED / STALE BINARIES'
+    }
+    if ($skipBuildNoProvenance.ObservedClasses -contains 'Static' -or
+        $skipBuildNoProvenance.ObservedClasses -contains 'Unit' -or
+        $skipBuildNoProvenance.ObservedClasses -contains 'Integration' -or
+        $skipBuildNoProvenance.ObservedClasses -contains 'Synthetic') {
+        throw 'SelfTest failed: -SkipBuild without provenance must NOT include Static, Unit, Integration, or Synthetic in observed classes'
+    }
+    if ($skipBuildNoProvenance.EvidenceClassLine -notmatch 'UNVERIFIED on current commit due to unverified/stale binaries') {
+        throw 'SelfTest failed: -SkipBuild without provenance must clarify unverified/stale binaries in EvidenceClass line'
     }
     if ($skipBuildNoProvenance.VerdictResult -ne 'NON-ACCEPTANCE CHECKS PASS' -or
         $skipBuildNoProvenance.ImplementationGateVerdict -notmatch 'NON-ACCEPTANCE') {
         throw 'SelfTest failed: -SkipBuild without provenance must report NON-ACCEPTANCE verdict'
+    }
+    if ($skipBuildNoProvenance.IsFullAcceptancePass) {
+        throw 'SelfTest failed: -SkipBuild without provenance must NOT produce IsFullAcceptancePass true'
     }
 
     # 4d: Failing test counters or count mismatch (e.g. 11/12 unit or 38/39 integration or 13/12 overflow)
@@ -668,11 +713,53 @@ function Invoke-SelfTests {
     }
     Write-Host '  [PASS] GateReportContractFormatting (exact negative runtime and release boundaries)'
 
-    Write-Host 'SelfTest: PASS (all 7 deterministic self-check suites passed)'
+    # Check 8: Verify Exit Semantics and Nonzero Return on Non-Acceptance and Failure
+    # 8a: Assert-GateAcceptanceOutcome does not throw on full acceptance pass
+    try {
+        Assert-GateAcceptanceOutcome -Evidence $fullPassing -ProvenanceReason 'Full locked build passed'
+        Assert-GateAcceptanceOutcome -Evidence $skipBuildWithProvenance -ProvenanceReason 'Provenance verified'
+    } catch {
+        throw "SelfTest failed: full acceptance pass must not throw on exit verification: $($_.Exception.Message)"
+    }
+
+    # 8b: Assert-GateAcceptanceOutcome throws terminating error on SkipBuild without provenance (NON-ACCEPTANCE)
+    $nonAcceptanceThrew = $false
+    $nonAcceptanceMessage = ''
+    try {
+        Assert-GateAcceptanceOutcome -Evidence $skipBuildNoProvenance -ProvenanceReason 'Build marker was not found'
+    } catch {
+        $nonAcceptanceThrew = $true
+        $nonAcceptanceMessage = $_.Exception.Message
+    }
+    if (-not $nonAcceptanceThrew) {
+        throw 'SelfTest failed: NON-ACCEPTANCE outcome must throw a terminating error'
+    }
+    if ($nonAcceptanceMessage -notmatch 'NON-ACCEPTANCE:\s*-SkipBuild executed without verified same-commit binary provenance') {
+        throw "SelfTest failed: NON-ACCEPTANCE exception message mismatch: $nonAcceptanceMessage"
+    }
+
+    # 8c: Assert-GateAcceptanceOutcome throws terminating error on FAIL
+    $failThrew = $false
+    $failMessage = ''
+    try {
+        Assert-GateAcceptanceOutcome -Evidence $unitFailure -ProvenanceReason 'Full locked build executed'
+    } catch {
+        $failThrew = $true
+        $failMessage = $_.Exception.Message
+    }
+    if (-not $failThrew) {
+        throw 'SelfTest failed: FAIL outcome must throw a terminating error'
+    }
+    if ($failMessage -notmatch 'FAILED') {
+        throw "SelfTest failed: FAIL exception message mismatch: $failMessage"
+    }
+
+    Write-Host '  [PASS] ExitSemanticsAndNonzeroReturn (deterministic verification: PASS exits 0, NON-ACCEPTANCE throws nonzero, FAIL throws nonzero)'
+
+    Write-Host 'SelfTest: PASS (all 8 deterministic self-check suites passed)'
     Write-Host 'Result: PASS'
     Write-Host 'Status: IMPLEMENTATION GATE / NO RUNTIME OR RELEASE CREDIT'
 }
-
 if ($SelfTest) {
     Invoke-SelfTests -RepoRoot $repositoryRoot -Paths $requiredRelativePaths -Checks $requiredChecks -ArtifactRoot $artifactRoot
     return
@@ -990,6 +1077,4 @@ Write-Host "Result: $($evidence.VerdictResult)"
 Write-Host "ImplementationGate: $($evidence.ImplementationGateVerdict)"
 Write-Host "Status: IMPLEMENTATION GATE / NO RUNTIME OR RELEASE CREDIT"
 
-if (-not $evidence.IsFullAcceptancePass -and (-not $SkipBuild -or $evidence.VerdictResult -eq 'FAIL')) {
-    throw "v0.7 lifecycle implementation gate FAILED."
-}
+Assert-GateAcceptanceOutcome -Evidence $evidence -ProvenanceReason $provenanceReason
