@@ -16,40 +16,59 @@
     normalisation, no character-encoding conversion is applied.  The hash covers
     exactly the bytes returned by git cat-file blob.
 
-    Manifest anchor 1 -- CandidateManifestSha256 (original review):
-      Commit:  79363ef  (docs(review): record independent evidence review for Issue #37 (#37))
-      Blob:    33a6d4d1fa54e5162e7cd393474ea75668d819a4
-      SHA-256: E705B62697D9908DC122B9FEC892814A63B3EAA5E9ED638307DF8F317B3A304F
-      Scope:   SHA-256 of each manifested file read from the candidate commit
-               4d36e288a0d4d8791f6afb7ba90e5ee0128c06ad (head of codex/v07-issue-37-recovery
-               at review time).
+    Squash / rebase independence (PR #112 remediation)
+    ---------------------------------------------------
+    This verifier does NOT depend on the branch-local review commits 79363ef or
+    1fcec2cf.  The two immutable manifest anchor payloads are materialised as
+    current-tree review-evidence files and verified against their pinned HEAD
+    blob SHA1 and content SHA-256:
 
-    Manifest anchor 2 -- RemediationManifestSha256 (after P1 remediation):
-      Commit:  1fcec2cf  (test(recovery): add apostrophe-path StateStoreRecovery quarantine test (#37))
-      Blob:    8bfe715043cd2a3935ac3e1b3a8abeb87c856431
-      SHA-256: 633FE04B260CFABC02D19E6AB69D32E2D5E2621AFCAEDBD67691CB8ADEB3B7F7
-      Scope:   Same 35 entries; only StateStoreRecoveryTests.cs hash updated to reflect
-               the new apostrophe-path test added at 1fcec2cf.
+      CandidateManifest anchor:
+        Path:      docs/reviews/v0.7-issue-37-reviewed-files.candidate.sha256
+        Blob:      33a6d4d1fa54e5162e7cd393474ea75668d819a4
+        SHA-256:   E705B62697D9908DC122B9FEC892814A63B3EAA5E9ED638307DF8F317B3A304F
 
-    Per-file entry verification rule (Check 5):
-      - All entries except StateStoreRecoveryTests.cs: verified against candidate commit
-        4d36e288 (the blob each entry was originally recorded from).
-      - StateStoreRecoveryTests.cs: verified against remediation commit 1fcec2cf
-        (its hash was updated in the manifest by that commit).
+      RemediationManifest anchor:
+        Path:      docs/reviews/v0.7-issue-37-reviewed-files.sha256
+        Blob:      8bfe715043cd2a3935ac3e1b3a8abeb87c856431
+        SHA-256:   633FE04B260CFABC02D19E6AB69D32E2D5E2621AFCAEDBD67691CB8ADEB3B7F7
+
+    Per-file entry verification rule:
+      - All entries except StateStoreRecoveryTests.cs are verified against the
+        candidate commit 4d36e288a0d4d8791f6afb7ba90e5ee0128c06ad, which is an
+        ancestor of origin/main (retained because it is guaranteed to survive a
+        merge / squash / rebase).
+      - StateStoreRecoveryTests.cs is verified against the current HEAD tree
+        (its remediation content is committed in this branch and will be
+        carried into origin/main by the merge; no branch-local commit SHA is
+        required).
+
+    Reports
+    -------
+    Both -SelfTest and the normal verifier write deterministic reports under:
+        artifacts/release-gates/v0.7.0/issue-37
+    The report is written even on failure and always records the pass/fail
+    boundary.  It never claims ActualHerdrRuntime or Release evidence.
 
 .PARAMETER RepoRoot
-    Path to the working-tree root.  Defaults to the parent of the tools/ directory.
+    Path to the working-tree root.  Defaults to the parent of the tools/ directory,
+    resolved after parameter binding so Windows PowerShell 5.1 can execute the
+    script (PSScriptRoot is not available during default-value evaluation in 5.1).
 
 .PARAMETER SelfTest
-    Run deterministic in-memory negative parser and anchor self-tests without
-    reading or writing repository files.
+    Run deterministic in-memory negative parser, anchor-identity and report-boundary
+    self-tests, then write a self-test report.  No tracked repository file is read
+    or written except the gitignored report under artifacts/.
 
 .EXAMPLE
     pwsh -File tools/Test-V07Issue37ManifestIntegrity.ps1
+
+.EXAMPLE
+    powershell -NoProfile -File tools/Test-V07Issue37ManifestIntegrity.ps1 -SelfTest
 #>
 [CmdletBinding()]
 param(
-    [string]$RepoRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path,
+    [string]$RepoRoot = '',
     [switch]$SelfTest
 )
 
@@ -57,24 +76,31 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $false
 
+# RepoRoot is resolved here, after parameter binding, because Windows PowerShell
+# 5.1 does not populate $PSScriptRoot while evaluating parameter default values.
+if ([string]::IsNullOrWhiteSpace($RepoRoot)) {
+    $RepoRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
+}
+
 # ---------------------------------------------------------------------------
 # Anchored constants (ManifestHashScheme: GitBlobSha256/v1)
 # ---------------------------------------------------------------------------
-$ORIGINAL_COMMIT             = '79363ef'
-$ORIGINAL_BLOB_SHA1          = '33a6d4d1fa54e5162e7cd393474ea75668d819a4'
-$ORIGINAL_EXPECTED_SHA256    = 'E705B62697D9908DC122B9FEC892814A63B3EAA5E9ED638307DF8F317B3A304F'
+$CANDIDATE_MANIFEST_PATH      = 'docs/reviews/v0.7-issue-37-reviewed-files.candidate.sha256'
+$CANDIDATE_BLOB_SHA1          = '33a6d4d1fa54e5162e7cd393474ea75668d819a4'
+$CANDIDATE_EXPECTED_SHA256    = 'E705B62697D9908DC122B9FEC892814A63B3EAA5E9ED638307DF8F317B3A304F'
 
-$REMEDIATION_COMMIT          = '1fcec2cf'
-$REMEDIATION_BLOB_SHA1       = '8bfe715043cd2a3935ac3e1b3a8abeb87c856431'
-$REMEDIATION_EXPECTED_SHA256 = '633FE04B260CFABC02D19E6AB69D32E2D5E2621AFCAEDBD67691CB8ADEB3B7F7'
+$REMEDIATION_MANIFEST_PATH    = 'docs/reviews/v0.7-issue-37-reviewed-files.sha256'
+$REMEDIATION_BLOB_SHA1        = '8bfe715043cd2a3935ac3e1b3a8abeb87c856431'
+$REMEDIATION_EXPECTED_SHA256  = '633FE04B260CFABC02D19E6AB69D32E2D5E2621AFCAEDBD67691CB8ADEB3B7F7'
 
-# The original candidate commit: per-file hashes in the manifest were recorded here
-$CANDIDATE_COMMIT            = '4d36e288a0d4d8791f6afb7ba90e5ee0128c06ad'
+# The candidate commit is an ancestor of origin/main and is therefore guaranteed
+# to survive a merge / squash / rebase of this branch.
+$CANDIDATE_COMMIT             = '4d36e288a0d4d8791f6afb7ba90e5ee0128c06ad'
 
-# The one file whose hash was updated by the remediation commit
-$REMEDIATION_UPDATED_FILE    = 'tests/HerdrOps.IntegrationTests/StateStoreRecoveryTests.cs'
+# The one file whose hash was updated by the remediation and is now verified
+# against the current HEAD tree (no historical commit required).
+$REMEDIATION_UPDATED_FILE     = 'tests/HerdrOps.IntegrationTests/StateStoreRecoveryTests.cs'
 
-$MANIFEST_PATH               = 'docs/reviews/v0.7-issue-37-reviewed-files.sha256'
 $EXPECTED_MANIFEST_ENTRY_COUNT = 35
 $EXPECTED_MANIFEST_PATHS     = @(
     'src/HerdrOps.Core/HerdrOpsCoreStateServiceCommand.cs',
@@ -114,77 +140,189 @@ $EXPECTED_MANIFEST_PATHS     = @(
     'tools/Test-V06DailySummaryPage.ps1'
 )
 
+$REPORT_DIRECTORY = Join-Path $RepoRoot 'artifacts\release-gates\v0.7.0\issue-37'
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 function Get-GitBlobBytes {
-    param([string]$Repo, [string]$BlobSha1)
+    param(
+        [Parameter(Mandatory = $true)][string]$Repo,
+        [Parameter(Mandatory = $true)][string]$BlobSha1,
+        [Parameter(Mandatory = $true)][string]$What
+    )
+
     $psi = [System.Diagnostics.ProcessStartInfo]::new()
     $psi.FileName = 'git'
     $psi.Arguments = "-C `"$Repo`" cat-file blob $BlobSha1"
     $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
     $psi.UseShellExecute = $false
+
     $proc = [System.Diagnostics.Process]::Start($psi)
+    if ($null -eq $proc) {
+        throw "Failed to start git for $What."
+    }
+
     $ms = [System.IO.MemoryStream]::new()
     $proc.StandardOutput.BaseStream.CopyTo($ms)
     $proc.WaitForExit()
-    if ($proc.ExitCode -ne 0) { throw "git cat-file blob $BlobSha1 exited $($proc.ExitCode)" }
+
+    if ($proc.ExitCode -ne 0) {
+        $err = $proc.StandardError.ReadToEnd().Trim()
+        throw "git cat-file blob $BlobSha1 ($What) failed (exit $($proc.ExitCode)): $(Get-ConciseGitError -Output $err)"
+    }
+
     return $ms.ToArray()
 }
 
-function Get-GitBlobSha1ForCommit {
-    param([string]$Repo, [string]$Commit, [string]$RelPath)
-    $output = & git -C $Repo ls-tree $Commit $RelPath 2>&1
-    if (-not $output) { return $null }
-    $parts = ($output -split '\s+')
-    if ($parts.Count -lt 3) { return $null }
-    return $parts[2]
+function Get-ConciseGitError {
+    param([Parameter(Mandatory = $true)][string]$Output)
+
+    $lines = @($Output -split "`r?`n" | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    if ($lines.Count -eq 0) {
+        return 'no output'
+    }
+
+    $fatalLines = @($lines | Where-Object { $_ -match '^(fatal|error):' })
+    if ($fatalLines.Count -gt 0) {
+        return $fatalLines[-1]
+    }
+
+    return $lines[-1]
+}
+
+function Get-TreeBlobSha1 {
+    param(
+        [Parameter(Mandatory = $true)][string]$Repo,
+        [Parameter(Mandatory = $true)][string]$TreeIsh,
+        [Parameter(Mandatory = $true)][string]$RelPath
+    )
+
+    $spec = "${TreeIsh}:$RelPath"
+    $output = & git -C $Repo rev-parse $spec 2>&1
+    $exitCode = $LASTEXITCODE
+    $text = (($output | Out-String).Trim())
+
+    if ($exitCode -ne 0) {
+        throw "git rev-parse $spec failed (exit $exitCode): $(Get-ConciseGitError -Output $text)"
+    }
+
+    if ($text -notmatch '^[0-9a-fA-F]{40}$') {
+        throw "git rev-parse $spec returned an invalid object id: '$text'"
+    }
+
+    return $text
 }
 
 function Get-GitHeadCommit {
-    param([string]$Repo)
-    $output = & git -C $Repo rev-parse --verify HEAD 2>&1
-    if ($LASTEXITCODE -ne 0) {
-        throw "git rev-parse HEAD exited $LASTEXITCODE."
+    param([Parameter(Mandatory = $true)][string]$Repo)
+
+    $output = & git -C $Repo rev-parse HEAD 2>&1
+    $exitCode = $LASTEXITCODE
+    $commit = (($output | Out-String).Trim())
+
+    if ($exitCode -ne 0) {
+        throw "git rev-parse HEAD failed (exit $exitCode): $(Get-ConciseGitError -Output $commit)"
     }
 
-    $commit = ($output | Out-String).Trim()
     if ($commit -notmatch '^[0-9a-fA-F]{40}$') {
-        throw "git rev-parse HEAD returned an invalid commit id: $commit"
+        throw "git rev-parse HEAD returned an invalid commit id: '$commit'"
     }
 
     return $commit
 }
 
 function Compute-Sha256Hex {
-    param([byte[]]$Bytes)
+    param([Parameter(Mandatory = $true)][byte[]]$Bytes)
     $sha256 = [System.Security.Cryptography.SHA256]::Create()
     $hashBytes = $sha256.ComputeHash($Bytes)
     return [BitConverter]::ToString($hashBytes).Replace('-', '')
 }
 
-function Assert-Equal {
-    param([string]$Label, [string]$Expected, [string]$Actual)
-    if ($Expected -eq $Actual) {
-        Write-Host "  [PASS] $Label" -ForegroundColor Green
-        return $true
-    }
-    Write-Host "  [FAIL] $Label" -ForegroundColor Red
-    Write-Host "         Expected: $Expected"
-    Write-Host "         Actual:   $Actual"
-    return $false
-}
-
-function Assert-ManifestBlobAnchor {
+function Assert-AnchorIdentity {
     param(
+        [Parameter(Mandatory = $true)][string]$Label,
         [Parameter(Mandatory = $true)][AllowEmptyString()][string]$ActualBlobSha1,
-        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$PinnedBlobSha1
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$PinnedBlobSha1,
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$ActualSha256,
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$PinnedSha256
     )
 
     if ([string]::IsNullOrWhiteSpace($ActualBlobSha1) -or
         -not [string]::Equals($ActualBlobSha1, $PinnedBlobSha1, [StringComparison]::OrdinalIgnoreCase)) {
-        throw "HEAD manifest blob '$ActualBlobSha1' does not match pinned remediation anchor '$PinnedBlobSha1'."
+        throw "$Label blob SHA1 mismatch: actual '$ActualBlobSha1' does not match pinned '$PinnedBlobSha1'."
     }
+
+    if ([string]::IsNullOrWhiteSpace($ActualSha256) -or
+        -not [string]::Equals($ActualSha256, $PinnedSha256, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "$Label content SHA-256 mismatch: actual '$ActualSha256' does not match pinned '$PinnedSha256'."
+    }
+}
+
+function Get-EvidenceBoundaryLines {
+    return @(
+        'ActualHerdrRuntime: NOT OBSERVED / NOT CLAIMED',
+        'ReleaseStatus: NOT CLAIMED',
+        'NoRuntimeCredit: TRUE'
+    )
+}
+
+function Assert-NoRuntimeOrReleaseClaim {
+    param([Parameter(Mandatory = $true)][AllowEmptyString()][string[]]$Lines)
+
+    foreach ($line in $Lines) {
+        if ($line -match '^ActualHerdrRuntime\s*:') {
+            if ($line -notmatch '^ActualHerdrRuntime\s*:\s*NOT OBSERVED') {
+                throw "report claims runtime evidence: $line"
+            }
+        }
+        if ($line -match '^ReleaseStatus\s*:') {
+            if ($line -notmatch '^ReleaseStatus\s*:\s*NOT CLAIMED') {
+                throw "report claims release evidence: $line"
+            }
+        }
+        if ($line -match '^\s*Release\s*:') {
+            if ($line -notmatch '^\s*Release\s*:\s*(NOT CLAIMED|NOT OBSERVED|NOT REQUIRED)') {
+                throw "report claims release evidence: $line"
+            }
+        }
+    }
+}
+
+function Write-GateReport {
+    param(
+        [Parameter(Mandatory = $true)][string]$ReportDirectory,
+        [Parameter(Mandatory = $true)][string]$ReportFileName,
+        [Parameter(Mandatory = $true)][string]$Title,
+        [Parameter(Mandatory = $true)][string]$Result,
+        [Parameter(Mandatory = $true)][int]$Passed,
+        [Parameter(Mandatory = $true)][int]$Failed,
+        [Parameter(Mandatory = $false)][string[]]$DetailLines
+    )
+
+    $boundaryLines = Get-EvidenceBoundaryLines
+    $lines = @(
+        $Title,
+        "GeneratedUtc: $([DateTime]::UtcNow.ToString('O'))",
+        'Milestone: v0.7.0',
+        'Issue: 37',
+        "Result: $Result",
+        "Passed: $Passed",
+        "Failed: $Failed",
+        'EvidenceClass: Static (repository review-evidence manifest/hash integrity)'
+    ) + $boundaryLines
+
+    if ($null -ne $DetailLines -and $DetailLines.Count -gt 0) {
+        $lines += @('', 'Checks:') + $DetailLines
+    }
+
+    Assert-NoRuntimeOrReleaseClaim -Lines $lines
+
+    New-Item -ItemType Directory -Path $ReportDirectory -Force | Out-Null
+    $path = Join-Path $ReportDirectory $ReportFileName
+    $lines | Set-Content -LiteralPath $path -Encoding utf8
+    return $path
 }
 
 function ConvertFrom-StrictManifest {
@@ -305,6 +443,64 @@ function Assert-NegativeManifestCase {
     }
 }
 
+function Assert-NegativeAnchorCase {
+    param(
+        [Parameter(Mandatory = $true)][string]$Name,
+        [Parameter(Mandatory = $true)][string]$ExpectedMessage,
+        [Parameter(Mandatory = $true)][string]$ActualBlobSha1,
+        [Parameter(Mandatory = $true)][string]$PinnedBlobSha1,
+        [Parameter(Mandatory = $true)][string]$ActualSha256,
+        [Parameter(Mandatory = $true)][string]$PinnedSha256
+    )
+
+    try {
+        Assert-AnchorIdentity `
+            -Label $Name `
+            -ActualBlobSha1 $ActualBlobSha1 `
+            -PinnedBlobSha1 $PinnedBlobSha1 `
+            -ActualSha256 $ActualSha256 `
+            -PinnedSha256 $PinnedSha256
+        Write-Host "  [FAIL] negative anchor self-test '$Name' was accepted" -ForegroundColor Red
+        return $false
+    }
+    catch {
+        if ($_.Exception.Message -like "*$ExpectedMessage*") {
+            Write-Host "  [PASS] negative anchor self-test '$Name' rejected" -ForegroundColor Green
+            return $true
+        }
+
+        Write-Host "  [FAIL] negative anchor self-test '$Name' rejected for an unexpected reason" -ForegroundColor Red
+        Write-Host "         Expected fragment: $ExpectedMessage"
+        Write-Host "         Actual: $($_.Exception.Message)"
+        return $false
+    }
+}
+
+function Assert-NegativeReportCase {
+    param(
+        [Parameter(Mandatory = $true)][string]$Name,
+        [Parameter(Mandatory = $true)][string[]]$Lines,
+        [Parameter(Mandatory = $true)][string]$ExpectedMessage
+    )
+
+    try {
+        Assert-NoRuntimeOrReleaseClaim -Lines $Lines
+        Write-Host "  [FAIL] negative report self-test '$Name' was accepted" -ForegroundColor Red
+        return $false
+    }
+    catch {
+        if ($_.Exception.Message -like "*$ExpectedMessage*") {
+            Write-Host "  [PASS] negative report self-test '$Name' rejected" -ForegroundColor Green
+            return $true
+        }
+
+        Write-Host "  [FAIL] negative report self-test '$Name' rejected for an unexpected reason" -ForegroundColor Red
+        Write-Host "         Expected fragment: $ExpectedMessage"
+        Write-Host "         Actual: $($_.Exception.Message)"
+        return $false
+    }
+}
+
 function Invoke-DeterministicSelfTests {
     Write-Host '=== Deterministic negative self-tests ===' -ForegroundColor Cyan
     $hashA = ('A' * 64) -join ''
@@ -319,13 +515,15 @@ function Invoke-DeterministicSelfTests {
     )
     $validManifest = (($validLines -join "`n") + "`n")
     $failed = 0
+    $passed = 0
 
     try {
         ConvertFrom-StrictManifest `
             -Bytes ([System.Text.UTF8Encoding]::new($false).GetBytes($validManifest)) `
             -ExpectedPaths $expectedPaths `
             -ExpectedCount 3 | Out-Null
-        Write-Host "  [PASS] valid fixture accepted" -ForegroundColor Green
+        Write-Host '  [PASS] valid fixture accepted' -ForegroundColor Green
+        $passed++
     }
     catch {
         Write-Host "  [FAIL] valid fixture rejected: $($_.Exception.Message)" -ForegroundColor Red
@@ -366,181 +564,293 @@ function Invoke-DeterministicSelfTests {
     )
 
     foreach ($case in $cases) {
-        if (-not (Assert-NegativeManifestCase `
+        if (Assert-NegativeManifestCase `
                 -Name $case.Name `
                 -ManifestText $case.Text `
                 -ExpectedPaths $expectedPaths `
                 -ExpectedCount $case.Count `
-                -ExpectedMessage $case.Expected)) {
-            $failed++
-        }
-    }
-
-    try {
-        Assert-ManifestBlobAnchor `
-            -ActualBlobSha1 '0000000000000000000000000000000000000000' `
-            -PinnedBlobSha1 '1111111111111111111111111111111111111111'
-        Write-Host '  [FAIL] HEAD anchor mismatch was accepted' -ForegroundColor Red
-        $failed++
-    }
-    catch {
-        if ($_.Exception.Message -like '*does not match pinned remediation anchor*') {
-            Write-Host '  [PASS] HEAD anchor mismatch rejected' -ForegroundColor Green
+                -ExpectedMessage $case.Expected) {
+            $passed++
         }
         else {
-            Write-Host "  [FAIL] HEAD anchor mismatch rejected for an unexpected reason: $($_.Exception.Message)" -ForegroundColor Red
             $failed++
         }
     }
 
-    if ($failed -gt 0) {
-        Write-Host "Self-test result: FAIL ($failed failure(s))." -ForegroundColor Red
-        return $false
+    # Anchor-identity negatives: the materialised anchor is verified by BOTH its
+    # HEAD blob SHA1 and its content SHA-256, independently (squash/rebase
+    # independence).  Any drift in either dimension must fail closed.
+    $anchorBlob = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+    $anchorSha256 = ('11' * 32) -join ''
+
+    try {
+        Assert-AnchorIdentity `
+            -Label 'anchor identity fixture' `
+            -ActualBlobSha1 $anchorBlob `
+            -PinnedBlobSha1 $anchorBlob `
+            -ActualSha256 $anchorSha256 `
+            -PinnedSha256 $anchorSha256
+        Write-Host '  [PASS] anchor identity fixture accepted' -ForegroundColor Green
+        $passed++
+    }
+    catch {
+        Write-Host "  [FAIL] anchor identity fixture rejected: $($_.Exception.Message)" -ForegroundColor Red
+        $failed++
     }
 
-    Write-Host 'Self-test result: PASS (valid fixture plus five deterministic negative cases and anchor mismatch).' -ForegroundColor Green
-    return $true
+    if (Assert-NegativeAnchorCase `
+            -Name 'blob SHA1 mismatch' `
+            -ExpectedMessage 'blob SHA1 mismatch' `
+            -ActualBlobSha1 '0000000000000000000000000000000000000000' `
+            -PinnedBlobSha1 $anchorBlob `
+            -ActualSha256 $anchorSha256 `
+            -PinnedSha256 $anchorSha256) { $passed++ } else { $failed++ }
+
+    if (Assert-NegativeAnchorCase `
+            -Name 'content SHA-256 mismatch' `
+            -ExpectedMessage 'content SHA-256 mismatch' `
+            -ActualBlobSha1 $anchorBlob `
+            -PinnedBlobSha1 $anchorBlob `
+            -ActualSha256 (('22' * 32) -join '') `
+            -PinnedSha256 $anchorSha256) { $passed++ } else { $failed++ }
+
+    # Report-boundary negatives: the report must never claim runtime or release
+    # evidence, and a boundary line that would do so must be rejected.
+    $boundaryLines = Get-EvidenceBoundaryLines
+    try {
+        Assert-NoRuntimeOrReleaseClaim -Lines $boundaryLines
+        Write-Host '  [PASS] report boundary fixture accepted' -ForegroundColor Green
+        $passed++
+    }
+    catch {
+        Write-Host "  [FAIL] report boundary fixture rejected: $($_.Exception.Message)" -ForegroundColor Red
+        $failed++
+    }
+
+    if (Assert-NegativeReportCase `
+            -Name 'runtime evidence claim' `
+            -Lines @('ActualHerdrRuntime: OBSERVED') `
+            -ExpectedMessage 'runtime evidence') { $passed++ } else { $failed++ }
+
+    if (Assert-NegativeReportCase `
+            -Name 'release evidence claim' `
+            -Lines @('ReleaseStatus: CLAIMED') `
+            -ExpectedMessage 'release evidence') { $passed++ } else { $failed++ }
+
+    Write-Host ''
+    if ($failed -gt 0) {
+        Write-Host "Self-test result: FAIL ($failed failure(s), $passed pass(es))." -ForegroundColor Red
+        return [pscustomobject]@{ Passed = $passed; Failed = $failed; Result = 'FAIL' }
+    }
+
+    Write-Host "Self-test result: PASS ($passed pass(es), $failed failure(s))." -ForegroundColor Green
+    return [pscustomobject]@{ Passed = $passed; Failed = $failed; Result = 'PASS' }
 }
 
 if ($SelfTest) {
-    if (-not (Invoke-DeterministicSelfTests)) {
+    $selfTestResult = Invoke-DeterministicSelfTests
+    $selfTestReport = Write-GateReport `
+        -ReportDirectory $REPORT_DIRECTORY `
+        -ReportFileName 'selftest-report.txt' `
+        -Title 'HerdrOps v0.7 Issue #37 Manifest Integrity Verifier - SelfTest' `
+        -Result $selfTestResult.Result `
+        -Passed $selfTestResult.Passed `
+        -Failed $selfTestResult.Failed `
+        -DetailLines @(
+            'Scope: deterministic in-memory negative parser, anchor-identity, and report-boundary cases.',
+            'No tracked repository file is read or written by -SelfTest.',
+            'The gitignored self-test report above is the only filesystem artifact produced.'
+        )
+    Write-Host "GateReport: $selfTestReport"
+
+    if ($selfTestResult.Failed -gt 0) {
         exit 1
     }
     exit 0
 }
 
 # ---------------------------------------------------------------------------
-Write-Host "Git: $(& git --version 2>&1)"
+# Normal verifier
+# ---------------------------------------------------------------------------
+$gitVersion = ''
+try {
+    $gitVersion = ((& git --version 2>&1) | Out-String).Trim()
+    if ($LASTEXITCODE -ne 0) {
+        $gitVersion = "unavailable (exit $LASTEXITCODE)"
+    }
+}
+catch {
+    $gitVersion = 'unavailable'
+}
+Write-Host "Git: $gitVersion"
 Write-Host "RepoRoot: $RepoRoot"
 Write-Host ''
 
 $passed = 0
 $failed = 0
+$detailLines = [System.Collections.Generic.List[string]]::new()
 
-# --- Check 1: Original blob SHA1 at 79363ef --------------------------------
-Write-Host '=== Check 1: Original review manifest blob (79363ef) ===' -ForegroundColor Cyan
-$actualBlob1 = Get-GitBlobSha1ForCommit -Repo $RepoRoot -Commit $ORIGINAL_COMMIT -RelPath $MANIFEST_PATH
-$ok = Assert-Equal 'Original blob SHA1 at 79363ef' $ORIGINAL_BLOB_SHA1 $actualBlob1
-if ($ok) { $passed++ } else { $failed++ }
+function Add-Pass {
+    param([Parameter(Mandatory = $true)][string]$Name)
+    $script:passed++
+    [void]$script:detailLines.Add("PASS $Name")
+}
 
-# --- Check 2: CandidateManifestSha256 reproducibility ----------------------
-Write-Host ''
-Write-Host '=== Check 2: CandidateManifestSha256 reproducibility ===' -ForegroundColor Cyan
-Write-Host "  Rule: SHA-256(git cat-file blob $ORIGINAL_BLOB_SHA1)"
-$originalBytes = Get-GitBlobBytes -Repo $RepoRoot -BlobSha1 $ORIGINAL_BLOB_SHA1
-$actualSha256_1 = Compute-Sha256Hex -Bytes $originalBytes
-Write-Host "  Blob size: $($originalBytes.Length) bytes"
-$ok = Assert-Equal 'CandidateManifestSha256' $ORIGINAL_EXPECTED_SHA256 $actualSha256_1
-if ($ok) { $passed++ } else { $failed++ }
+function Add-Fail {
+    param(
+        [Parameter(Mandatory = $true)][string]$Name,
+        [Parameter(Mandatory = $false)][string]$Message
+    )
+    $script:failed++
+    [void]$script:detailLines.Add("FAIL $Name")
+    if (-not [string]::IsNullOrWhiteSpace($Message)) {
+        [void]$script:detailLines.Add("     $Message")
+    }
+}
 
-# --- Check 3: Remediation blob SHA1 at 1fcec2cf ----------------------------
-Write-Host ''
-Write-Host '=== Check 3: Remediation manifest blob (1fcec2cf) ===' -ForegroundColor Cyan
-$actualBlob2 = Get-GitBlobSha1ForCommit -Repo $RepoRoot -Commit $REMEDIATION_COMMIT -RelPath $MANIFEST_PATH
-$ok = Assert-Equal 'Remediation blob SHA1 at 1fcec2cf' $REMEDIATION_BLOB_SHA1 $actualBlob2
-if ($ok) { $passed++ } else { $failed++ }
-
-# --- Check 4: RemediationManifestSha256 reproducibility --------------------
-Write-Host ''
-Write-Host '=== Check 4: RemediationManifestSha256 reproducibility ===' -ForegroundColor Cyan
-Write-Host "  Rule: SHA-256(git cat-file blob $REMEDIATION_BLOB_SHA1)"
-$remediationBytes = Get-GitBlobBytes -Repo $RepoRoot -BlobSha1 $REMEDIATION_BLOB_SHA1
-$actualSha256_2 = Compute-Sha256Hex -Bytes $remediationBytes
-Write-Host "  Blob size: $($remediationBytes.Length) bytes"
-$ok = Assert-Equal 'RemediationManifestSha256' $REMEDIATION_EXPECTED_SHA256 $actualSha256_2
-if ($ok) { $passed++ } else { $failed++ }
-
-# --- Check 5: HEAD manifest blob must be the pinned remediation manifest -----
-Write-Host ''
-Write-Host '=== Check 5: HEAD manifest blob anchor ===' -ForegroundColor Cyan
 $headCommit = $null
-$headManifestBlobSha1 = $null
-$headManifestAnchorOk = $false
 try {
     $headCommit = Get-GitHeadCommit -Repo $RepoRoot
-    $headManifestBlobSha1 = Get-GitBlobSha1ForCommit -Repo $RepoRoot -Commit $headCommit -RelPath $MANIFEST_PATH
-    Assert-ManifestBlobAnchor -ActualBlobSha1 $headManifestBlobSha1 -PinnedBlobSha1 $REMEDIATION_BLOB_SHA1
-    Write-Host "  [PASS] HEAD $headCommit manifest blob is pinned remediation blob $REMEDIATION_BLOB_SHA1" -ForegroundColor Green
-    $headManifestAnchorOk = $true
-    $passed++
+    Add-Pass "Resolve HEAD ($headCommit)"
 }
 catch {
-    Write-Host '  [FAIL] HEAD manifest blob anchor' -ForegroundColor Red
-    Write-Host "         $($_.Exception.Message)"
-    $failed++
+    Add-Fail 'Resolve HEAD' $_.Exception.Message
 }
 
-# --- Check 6: Per-file entries using correct commit anchors ----------------
+# --- Check 1: Candidate manifest anchor (materialised, HEAD blob/content) ----
+Write-Host '=== Check 1: Candidate manifest anchor (materialised current-tree file) ===' -ForegroundColor Cyan
+try {
+    $candidateBlob = Get-TreeBlobSha1 -Repo $RepoRoot -TreeIsh 'HEAD' -RelPath $CANDIDATE_MANIFEST_PATH
+    $candidateBytes = Get-GitBlobBytes -Repo $RepoRoot -BlobSha1 $candidateBlob -What 'candidate manifest anchor'
+    $candidateSha256 = Compute-Sha256Hex -Bytes $candidateBytes
+    Assert-AnchorIdentity `
+        -Label 'Candidate manifest anchor' `
+        -ActualBlobSha1 $candidateBlob `
+        -PinnedBlobSha1 $CANDIDATE_BLOB_SHA1 `
+        -ActualSha256 $candidateSha256 `
+        -PinnedSha256 $CANDIDATE_EXPECTED_SHA256
+    Write-Host "  [PASS] HEAD blob $candidateBlob = pinned; SHA-256 $candidateSha256 = pinned ($($candidateBytes.Length) bytes)" -ForegroundColor Green
+    Add-Pass 'Candidate manifest anchor (HEAD blob SHA1 + content SHA-256)'
+}
+catch {
+    Write-Host "  [FAIL] $($_.Exception.Message)" -ForegroundColor Red
+    Add-Fail 'Candidate manifest anchor (HEAD blob SHA1 + content SHA-256)' $_.Exception.Message
+}
+
+# --- Check 2: Remediation manifest anchor (materialised, HEAD blob/content) --
 Write-Host ''
-Write-Host '=== Check 6: strict per-file SHA-256 entries (anchored to candidate/remediation commits) ===' -ForegroundColor Cyan
-Write-Host "  Default commit: $CANDIDATE_COMMIT"
-Write-Host "  Exception:      $REMEDIATION_UPDATED_FILE -> $REMEDIATION_COMMIT"
+Write-Host '=== Check 2: Remediation manifest anchor (current-tree .sha256 file) ===' -ForegroundColor Cyan
+try {
+    $remediationBlob = Get-TreeBlobSha1 -Repo $RepoRoot -TreeIsh 'HEAD' -RelPath $REMEDIATION_MANIFEST_PATH
+    $remediationBytes = Get-GitBlobBytes -Repo $RepoRoot -BlobSha1 $remediationBlob -What 'remediation manifest anchor'
+    $remediationSha256 = Compute-Sha256Hex -Bytes $remediationBytes
+    Assert-AnchorIdentity `
+        -Label 'Remediation manifest anchor' `
+        -ActualBlobSha1 $remediationBlob `
+        -PinnedBlobSha1 $REMEDIATION_BLOB_SHA1 `
+        -ActualSha256 $remediationSha256 `
+        -PinnedSha256 $REMEDIATION_EXPECTED_SHA256
+    Write-Host "  [PASS] HEAD blob $remediationBlob = pinned; SHA-256 $remediationSha256 = pinned ($($remediationBytes.Length) bytes)" -ForegroundColor Green
+    Add-Pass 'Remediation manifest anchor (HEAD blob SHA1 + content SHA-256)'
+}
+catch {
+    Write-Host "  [FAIL] $($_.Exception.Message)" -ForegroundColor Red
+    Add-Fail 'Remediation manifest anchor (HEAD blob SHA1 + content SHA-256)' $_.Exception.Message
+}
+
+# --- Check 3: Strict manifest shape -----------------------------------------
+Write-Host ''
+Write-Host '=== Check 3: strict manifest shape (35 entries, ordinal allowlist) ===' -ForegroundColor Cyan
+$manifestEntries = @()
+$manifestShapeOk = $false
+try {
+    $manifestEntries = @(ConvertFrom-StrictManifest `
+        -Bytes $remediationBytes `
+        -ExpectedPaths $EXPECTED_MANIFEST_PATHS `
+        -ExpectedCount $EXPECTED_MANIFEST_ENTRY_COUNT)
+    Write-Host "  [PASS] exactly $EXPECTED_MANIFEST_ENTRY_COUNT entries; no malformed, duplicate, unexpected, or missing paths" -ForegroundColor Green
+    Add-Pass 'Strict manifest shape (35 entries, ordinal allowlist)'
+    $manifestShapeOk = $true
+}
+catch {
+    Write-Host "  [FAIL] $($_.Exception.Message)" -ForegroundColor Red
+    Add-Fail 'Strict manifest shape (35 entries, ordinal allowlist)' $_.Exception.Message
+}
+
+# --- Check 4: Per-file entries ----------------------------------------------
+Write-Host ''
+Write-Host '=== Check 4: strict per-file SHA-256 entries ===' -ForegroundColor Cyan
+Write-Host "  Default anchor: candidate commit $CANDIDATE_COMMIT (ancestor of origin/main)"
+Write-Host "  Exception:      $REMEDIATION_UPDATED_FILE -> current HEAD tree"
 
 $entryCount = 0
 $entryFails = 0
-$manifestEntries = @()
 
-if (-not $headManifestAnchorOk) {
-    Write-Host '  [FAIL-CLOSED] Skipping entry verification because HEAD is not pinned to the remediation manifest.' -ForegroundColor Red
-    $failed++
+if (-not $manifestShapeOk) {
+    Write-Host '  [FAIL-CLOSED] Skipping entry verification because the manifest shape is invalid.' -ForegroundColor Red
+    Add-Fail 'Per-file entries' 'Skipped: manifest shape did not pass.'
 }
 else {
-    try {
-        $headManifestBytes = Get-GitBlobBytes -Repo $RepoRoot -BlobSha1 $headManifestBlobSha1
-        $manifestEntries = @(ConvertFrom-StrictManifest `
-            -Bytes $headManifestBytes `
-            -ExpectedPaths $EXPECTED_MANIFEST_PATHS `
-            -ExpectedCount $EXPECTED_MANIFEST_ENTRY_COUNT)
-        $entryCount = $manifestEntries.Count
-        Write-Host "  [PASS] Manifest shape: exactly $EXPECTED_MANIFEST_ENTRY_COUNT entries; no malformed, duplicate, unexpected, or missing paths" -ForegroundColor Green
-        $passed++
+    foreach ($entry in $manifestEntries) {
+        $recordedHash = $entry.Hash
+        $relPath      = $entry.Path
+        $entryCount++
+
+        try {
+            if ($relPath -eq $REMEDIATION_UPDATED_FILE) {
+                $entryBlobSha1 = Get-TreeBlobSha1 -Repo $RepoRoot -TreeIsh 'HEAD' -RelPath $relPath
+            }
+            else {
+                $entryBlobSha1 = Get-TreeBlobSha1 -Repo $RepoRoot -TreeIsh $CANDIDATE_COMMIT -RelPath $relPath
+            }
+            $entryBytes = Get-GitBlobBytes -Repo $RepoRoot -BlobSha1 $entryBlobSha1 -What "entry $relPath"
+            $actualHash = Compute-Sha256Hex -Bytes $entryBytes
+
+            if ($recordedHash -eq $actualHash) {
+                Write-Host "  [PASS] $relPath" -ForegroundColor Green
+                Add-Pass "entry $relPath"
+            }
+            else {
+                Write-Host "  [FAIL] $relPath" -ForegroundColor Red
+                Write-Host "         Recorded: $recordedHash"
+                Write-Host "         Actual:   $actualHash"
+                $entryFails++
+                Add-Fail "entry $relPath" "recorded $recordedHash actual $actualHash"
+            }
+        }
+        catch {
+            Write-Host "  [FAIL] $relPath" -ForegroundColor Red
+            Write-Host "         $($_.Exception.Message)"
+            $entryFails++
+            Add-Fail "entry $relPath" $_.Exception.Message
+        }
     }
-    catch {
-        Write-Host '  [FAIL] Strict manifest shape validation' -ForegroundColor Red
-        Write-Host "         $($_.Exception.Message)"
-        $failed++
-    }
+    Write-Host "  Entries: $entryCount  Fails: $entryFails"
 }
-
-foreach ($entry in $manifestEntries) {
-    $recordedHash = $entry.Hash
-    $relPath      = $entry.Path
-
-    # Use remediation commit for the one file updated there; candidate commit for all others
-    $effectiveCommit = if ($relPath -eq $REMEDIATION_UPDATED_FILE) { $REMEDIATION_COMMIT } else { $CANDIDATE_COMMIT }
-
-    $entryBlobSha1 = Get-GitBlobSha1ForCommit -Repo $RepoRoot -Commit $effectiveCommit -RelPath $relPath
-    if (-not $entryBlobSha1) {
-        Write-Host "  [FAIL] $relPath not found in tree at $effectiveCommit" -ForegroundColor Red
-        $entryFails++
-        $failed++
-        continue
-    }
-    $entryBytes = Get-GitBlobBytes -Repo $RepoRoot -BlobSha1 $entryBlobSha1
-    $actualHash = Compute-Sha256Hex -Bytes $entryBytes
-
-    if ($recordedHash -eq $actualHash) {
-        Write-Host "  [PASS] $relPath" -ForegroundColor Green
-        $passed++
-    } else {
-        Write-Host "  [FAIL] $relPath" -ForegroundColor Red
-        Write-Host "         Recorded: $recordedHash"
-        Write-Host "         Actual:   $actualHash"
-        $entryFails++
-        $failed++
-    }
-}
-Write-Host "  Entries: $entryCount  Fails: $entryFails"
 
 # --- Summary ---------------------------------------------------------------
 Write-Host ''
 Write-Host '=== Summary ===' -ForegroundColor Cyan
 Write-Host "  Passed: $passed  Failed: $failed"
 Write-Host ''
+
+$result = if ($failed -gt 0) { 'FAIL' } else { 'PASS' }
+$reportPath = Write-GateReport `
+    -ReportDirectory $REPORT_DIRECTORY `
+    -ReportFileName 'gate-report.txt' `
+    -Title 'HerdrOps v0.7 Issue #37 Manifest Integrity Verifier' `
+    -Result $result `
+    -Passed $passed `
+    -Failed $failed `
+    -DetailLines $detailLines
+Write-Host "GateReport: $reportPath"
+Write-Host ''
+
 if ($failed -gt 0) {
     Write-Host 'RESULT: FAIL' -ForegroundColor Red
     exit 1
-} else {
-    Write-Host 'RESULT: PASS - HEAD is pinned to the canonical manifest and all strict integrity checks are reproducible from Git blob bytes.' -ForegroundColor Green
+}
+else {
+    Write-Host 'RESULT: PASS - anchors verified from materialised current-tree blobs; strict integrity checks reproducible.' -ForegroundColor Green
     exit 0
 }
