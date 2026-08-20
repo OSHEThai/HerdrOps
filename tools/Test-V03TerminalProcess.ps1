@@ -138,7 +138,7 @@ if ($client -notmatch 'CreateBoundedPaneReadRequest' -or
     throw 'The collector-to-client bounded pane.read path is incomplete.'
 }
 $productionPaneReadWriters = @(Get-ChildItem -LiteralPath (Join-Path $repositoryRoot 'src') -Filter '*.cs' -Recurse -File |
-    Select-String -Pattern 'WriteString\("method", "pane\.read"\)')
+    Select-String -Pattern 'WriteString\("method", "pane\.read"\)' -CaseSensitive)
 if ($productionPaneReadWriters.Count -ne 1) {
     throw "Expected exactly one product pane.read request writer, found $($productionPaneReadWriters.Count)."
 }

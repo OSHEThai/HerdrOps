@@ -146,15 +146,25 @@ Write-Output 'GateReport: $reportPath'
 function Invoke-AggregateDirectlyWithForcedHerdrEnvironment {
     param(
         [Parameter(Mandatory)][string]$AggregateScript,
-        [Parameter(Mandatory)][string]$HelperRoot
+        [Parameter(Mandatory)][string]$HelperRoot,
+        [switch]$SocketPathOnly
     )
 
     $helperPath = Join-Path $HelperRoot 'aggregate-forced-herdr-helper.ps1'
+    $envAssignments = @()
+    if (-not $SocketPathOnly) {
+        $envAssignments += "`$env:HERDR_ENV = '1'"
+    }
+    $envAssignments += "`$env:HERDR_SOCKET_PATH = 'X:\forced-production-check\herdr.sock'"
+    $envAssignmentBlock = ($envAssignments -join "`n")
     $helperText = @"
 [CmdletBinding()]
 param([string]`$AggregateScript)
-`$env:HERDR_ENV = '1'
-`$env:HERDR_SOCKET_PATH = 'X:\forced-production-check\herdr.sock'
+# Clear any ambient Herdr session so the socket-path-only variant proves its
+# branch independently of HERDR_ENV.
+Remove-Item Env:\HERDR_ENV -ErrorAction SilentlyContinue
+Remove-Item Env:\HERDR_SOCKET_PATH -ErrorAction SilentlyContinue
+$envAssignmentBlock
 & `$AggregateScript -SkipBuild
 exit `$LASTEXITCODE
 "@
@@ -176,6 +186,7 @@ $passingReportPath = ''
 $failingReportPath = ''
 $herdrIsolationRoot = ''
 $forcedHerdrReportPath = ''
+$socketPathOnlyReportPath = ''
 $originalHerdrEnv = $env:HERDR_ENV
 $originalHerdrSocketPath = $env:HERDR_SOCKET_PATH
 try {
@@ -287,14 +298,26 @@ try {
     $env:HERDR_SOCKET_PATH = $originalHerdrSocketPath
 
     # Outside the stub isolation above, the production gate must still refuse
-    # to run for real under a real Herdr environment (fail-closed).
+    # to run for real under a real Herdr environment (fail-closed). The report
+    # path is captured before any assertion so a failing assertion still lets
+    # the finally block remove the forced-Herdr report directory.
     $forcedHerdrOutput = @(Invoke-AggregateDirectlyWithForcedHerdrEnvironment -AggregateScript $aggregateScript -HelperRoot $testRoot)
     $forcedHerdrExitCode = $LASTEXITCODE
     $forcedHerdrOutputText = @($forcedHerdrOutput | ForEach-Object { [string]$_ }) -join ' | '
-    Assert-True -Condition ($forcedHerdrExitCode -ne 0) -Message "The production gate must still refuse to run under a real Herdr environment. Output=$forcedHerdrOutputText"
     $forcedHerdrReportPath = Get-AggregateReportPath -Output $forcedHerdrOutput
     $forcedHerdrReportText = Get-Content -LiteralPath $forcedHerdrReportPath -Raw
+    Assert-True -Condition ($forcedHerdrExitCode -ne 0) -Message "The production gate must still refuse to run under a real Herdr environment. Output=$forcedHerdrOutputText"
     Assert-True -Condition ($forcedHerdrReportText -match '(?m)^FailureCode: AuthorizedHerdrEnvironment\r?$') -Message 'The production gate did not fail closed with AuthorizedHerdrEnvironment under a real Herdr session.'
+
+    # HERDR_SOCKET_PATH alone must independently trigger the same fail-closed
+    # refusal, proving the socket-path branch does not depend on HERDR_ENV.
+    $socketPathOnlyOutput = @(Invoke-AggregateDirectlyWithForcedHerdrEnvironment -AggregateScript $aggregateScript -HelperRoot $testRoot -SocketPathOnly)
+    $socketPathOnlyExitCode = $LASTEXITCODE
+    $socketPathOnlyOutputText = @($socketPathOnlyOutput | ForEach-Object { [string]$_ }) -join ' | '
+    $socketPathOnlyReportPath = Get-AggregateReportPath -Output $socketPathOnlyOutput
+    $socketPathOnlyReportText = Get-Content -LiteralPath $socketPathOnlyReportPath -Raw
+    Assert-True -Condition ($socketPathOnlyExitCode -ne 0) -Message "The production gate must refuse to run when only HERDR_SOCKET_PATH is set. Output=$socketPathOnlyOutputText"
+    Assert-True -Condition ($socketPathOnlyReportText -match '(?m)^FailureCode: AuthorizedHerdrEnvironment\r?$') -Message 'The production gate did not fail closed with AuthorizedHerdrEnvironment when only HERDR_SOCKET_PATH was set.'
 }
 finally {
     $env:HERDR_ENV = $originalHerdrEnv
@@ -302,7 +325,8 @@ finally {
     foreach ($runDirectory in @(
             $(if ([string]::IsNullOrWhiteSpace($passingReportPath)) { '' } else { Split-Path -Parent $passingReportPath }),
             $(if ([string]::IsNullOrWhiteSpace($failingReportPath)) { '' } else { Split-Path -Parent $failingReportPath }),
-            $(if ([string]::IsNullOrWhiteSpace($forcedHerdrReportPath)) { '' } else { Split-Path -Parent $forcedHerdrReportPath }))) {
+            $(if ([string]::IsNullOrWhiteSpace($forcedHerdrReportPath)) { '' } else { Split-Path -Parent $forcedHerdrReportPath }),
+            $(if ([string]::IsNullOrWhiteSpace($socketPathOnlyReportPath)) { '' } else { Split-Path -Parent $socketPathOnlyReportPath }))) {
         if (-not [string]::IsNullOrWhiteSpace($runDirectory) -and (Test-Path -LiteralPath $runDirectory)) {
             Remove-Item -LiteralPath $runDirectory -Recurse -Force -ErrorAction SilentlyContinue
         }
