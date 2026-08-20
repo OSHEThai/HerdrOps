@@ -1800,7 +1800,7 @@ function Publish-PackageArtifactsAtomically {
             'AfterMetadata',
             'BeforeCommit',
             'DestinationMoveTransientFailure',
-            'DestinationMovePersistentFailure',
+            'DestinationMoveRetryExhaustedFailure',
             'DestinationMoveDiskFullFailure',
             'DestinationMoveUnauthorizedFailure',
             'DestinationMovePostExhaustSuccess',
@@ -1947,8 +1947,8 @@ function Publish-PackageArtifactsAtomically {
                 if ($FaultInjectionStage -eq 'DestinationMoveTransientFailure' -and $i -eq 0) {
                     throw [System.IO.IOException]::new("Injected transient move failure.")
                 }
-                if ($FaultInjectionStage -eq 'DestinationMovePersistentFailure') {
-                    throw [System.IO.IOException]::new("Injected persistent move failure.")
+                if ($FaultInjectionStage -eq 'DestinationMoveRetryExhaustedFailure') {
+                    throw [System.IO.IOException]::new("Injected retry-exhaustion move failure.")
                 }
                 if ($FaultInjectionStage -eq 'DestinationMoveDiskFullFailure') {
                     throw [System.IO.IOException]::new("Injected disk-full failure.")
@@ -1972,7 +1972,7 @@ function Publish-PackageArtifactsAtomically {
                 $moveError = $_
 
                 $isTransient = $false
-                if ($_.Exception.Message -match 'Injected transient move failure' -or $_.Exception.Message -match 'Injected persistent move failure') {
+                if ($_.Exception.Message -match 'Injected transient move failure' -or $_.Exception.Message -match 'Injected retry-exhaustion move failure') {
                     $isTransient = $true
                 } else {
                     $hr = $_.Exception.HResult -band 0xFFFF
@@ -2004,6 +2004,10 @@ function Publish-PackageArtifactsAtomically {
                 }
             }
             if ($destinationRecovered) {
+                if ($null -ne $stagingRoot -and (Test-Path -LiteralPath $stagingRoot)) {
+                    Remove-PackagingStagingDirectory -Path $stagingRoot
+                    $stagingRoot = $null
+                }
                 $moveSuccess = $true
             } else {
                 throw [System.InvalidOperationException]::new("Atomic publication failed to move staging to output after $attemptCount attempts. Primary error: $($moveError.Exception.Message)", $moveError.Exception)

@@ -593,22 +593,22 @@ try {
         throw 'Atomic publication with transient move fault did not leave a committed generation.'
     }
 
-    $persistentMoveOutputRoot = Join-Path $testRoot 'atomic-output-persistent-move'
-    Assert-ExpectedFailureContaining -Description 'atomic publication persistent move failure' -RequiredFragments @(
+    $persistentMoveOutputRoot = Join-Path $testRoot 'atomic-output-retry-exhausted-move'
+    Assert-ExpectedFailureContaining -Description 'atomic publication retry-exhausted move failure' -RequiredFragments @(
         'failed to move staging to output after 5 attempts',
-        'Injected persistent move failure') -Action {
+        'Injected retry-exhaustion move failure') -Action {
         Publish-PackageArtifactsAtomically `
             -Profile $profile `
             -PackageRoot $packageOne `
             -ArchivePath $archiveOne `
             -HashRecordPath $hashOne `
             -OutputRoot $persistentMoveOutputRoot `
-            -FaultInjectionStage 'DestinationMovePersistentFailure' | Out-Null
+            -FaultInjectionStage 'DestinationMoveRetryExhaustedFailure' | Out-Null
     } | Out-Null
     if (Test-Path -LiteralPath $persistentMoveOutputRoot) {
-        throw "Atomic publication persistent move failure left an output root."
+        throw "Atomic publication retry-exhausted move failure left an output root."
     }
-    Assert-NoPackagingStagingFiles -Parent $testRoot -Description 'publication persistent move failure'
+    Assert-NoPackagingStagingFiles -Parent $testRoot -Description 'publication retry-exhausted move failure'
 
     $diskFullMoveOutputRoot = Join-Path $testRoot 'atomic-output-disk-full-move'
     Assert-ExpectedFailureContaining -Description 'atomic publication disk-full move failure' -RequiredFragments @(
@@ -660,6 +660,7 @@ try {
     if (-not (Test-Path -LiteralPath (Join-Path $postExhaustMoveOutputRoot 'commit.marker') -PathType Leaf)) {
         throw 'Atomic publication with post-exhaust move success did not leave a committed generation.'
     }
+    Assert-NoPackagingStagingFiles -Parent $testRoot -Description 'publication post-exhaust recovery'
 
     $orphanArchive = Join-Path $testRoot 'orphan-recovery.zip'
     $orphanHash = Join-Path $testRoot 'orphan-recovery-hashes.txt'
@@ -1032,6 +1033,10 @@ foreach ($boundary in @('CleanMachine', 'Runtime', 'Human', 'Release')) {
     TamperAndVersionFailClosed = 'PASS'
     CleanupErrorOrdering = 'PASS'
     AtomicPublicationRetry = 'PASS'
+    AtomicPublicationTransientRetry = 'PASS'
+    AtomicPublicationRetryExhaustion = 'PASS'
+    AtomicPublicationFailFastFaults = 'PASS'
+    AtomicPublicationPostExhaustRecovery = 'PASS'
     SyntheticLifecycle = 'PASS'
     CleanMachine = 'NOT OBSERVED'
     Runtime = 'NOT OBSERVED'
