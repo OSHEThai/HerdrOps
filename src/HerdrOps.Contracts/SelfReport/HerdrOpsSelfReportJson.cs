@@ -10,7 +10,6 @@ public static class HerdrOpsSelfReportJson
     private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web)
     {
         AllowTrailingCommas = false,
-        AllowDuplicateProperties = false,
         MaxDepth = 32,
         PropertyNameCaseInsensitive = false,
         ReadCommentHandling = JsonCommentHandling.Disallow,
