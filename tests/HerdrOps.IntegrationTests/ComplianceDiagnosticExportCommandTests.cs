@@ -1,6 +1,7 @@
 using System.Text;
 using System.Text.Json;
 using HerdrOps.Cli;
+using HerdrOps.Contracts.ComplianceDiagnosticExport;
 using HerdrOps.Core;
 
 namespace HerdrOps.IntegrationTests;
@@ -345,6 +346,130 @@ public sealed class ComplianceDiagnosticExportCommandTests
             "invalid-arguments code must appear in CLI stderr for diagnosability");
         Assert.IsFalse(File.Exists(outputPath), "no output file must be created on argument failure");
     }
+
+    // ── Pre-fix-sensitive regressions: hostile content carried inside the exception.Message ──
+    //
+    // The hostile-pipe-name tests above already prove the fixed literal is emitted, but because the
+    // pipe-client/server ValidateOptions ArgumentException messages were already fixed literals, those
+    // tests would also pass against the pre-hardening `exception.Message` interpolation. The tests below
+    // inject the hostile content directly inside a real exception.Message so that the OLD behavior would
+    // echo it to stderr and FAIL, while the hardened fixed literal keeps it absent (genuinely sensitive).
+
+    private const string ServiceHostileSecret = "service-secret-token";
+    private const string ServiceHostilePath = "C:/Users/Alice/private.txt";
+    private const string ServiceHostileProse = "free prose secret in service";
+
+    private const string CliHostileSecret = "cli-secret-token-in-exception";
+    private const string CliHostilePath = "C:/Users/Alice/private-cli.txt";
+    private const string CliHostileProse = "free prose secret in cli exception";
+
+    [TestMethod]
+    public async Task ServiceCommandIOExceptionHostileMessageDoesNotLeakToStderr()
+    {
+        using var output = new StringWriter();
+        using var error = new StringWriter();
+        var exitCode = await ComplianceDiagnosticExportCommand.RunServiceAsync(
+                [
+                    ComplianceDiagnosticExportCommand.ServiceCommandName,
+                    "--pipe-name",
+                    "valid-legal-pipe-name",
+                ],
+                output,
+                error,
+                CancellationToken.None,
+                ServiceCommandHostileIOException)
+            .ConfigureAwait(false);
+
+        Assert.AreEqual(ComplianceDiagnosticExportCommand.ExportFailureExitCode, exitCode);
+        var stderrText = error.ToString();
+        Assert.IsFalse(stderrText.Contains(ServiceHostileSecret, StringComparison.Ordinal),
+            "secret token carried by the IOException must not leak to service-command stderr");
+        Assert.IsFalse(stderrText.Contains(ServiceHostilePath, StringComparison.Ordinal),
+            "path carried by the IOException must not leak to service-command stderr");
+        Assert.IsFalse(stderrText.Contains(ServiceHostileProse, StringComparison.Ordinal),
+            "prose carried by the IOException must not leak to service-command stderr");
+        StringAssert.Contains(stderrText, "the service could not be started",
+            "fixed public message must appear in service-command stderr");
+    }
+
+    [TestMethod]
+    public async Task ServiceCommandArgumentExceptionHostileMessageDoesNotLeakToStderr()
+    {
+        using var output = new StringWriter();
+        using var error = new StringWriter();
+        var exitCode = await ComplianceDiagnosticExportCommand.RunServiceAsync(
+                [
+                    ComplianceDiagnosticExportCommand.ServiceCommandName,
+                    "--pipe-name",
+                    "valid-legal-pipe-name",
+                ],
+                output,
+                error,
+                CancellationToken.None,
+                ServiceCommandHostileArgumentException)
+            .ConfigureAwait(false);
+
+        Assert.AreEqual(ComplianceDiagnosticExportCommand.ExportFailureExitCode, exitCode);
+        var stderrText = error.ToString();
+        Assert.IsFalse(stderrText.Contains(ServiceHostileSecret, StringComparison.Ordinal),
+            "secret token carried by the ArgumentException must not leak to service-command stderr");
+        Assert.IsFalse(stderrText.Contains(ServiceHostilePath, StringComparison.Ordinal),
+            "path carried by the ArgumentException must not leak to service-command stderr");
+        Assert.IsFalse(stderrText.Contains(ServiceHostileProse, StringComparison.Ordinal),
+            "prose carried by the ArgumentException must not leak to service-command stderr");
+        StringAssert.Contains(stderrText, "the service could not be started",
+            "fixed public message must appear in service-command stderr");
+    }
+
+    [TestMethod]
+    public async Task CliArgumentExceptionHostileMessageDoesNotLeakToStderr()
+    {
+        using var fixture = TemporaryDirectory.Create();
+        var outputPath = Path.Combine(fixture.Path, "hostile-args.json");
+
+        using var cliOutput = new StringWriter();
+        using var cliError = new StringWriter();
+        var exitCode = await ComplianceDiagnosticExportCliCommand.RunAsync(
+                [
+                    ComplianceDiagnosticExportCliCommand.CommandName,
+                    "--input",
+                    "-",
+                    "--output",
+                    outputPath,
+                    "--pipe-name",
+                    "valid-legal-pipe-name",
+                    "--timeout-ms",
+                    "500",
+                ],
+                new StringReader(FixtureJson()),
+                cliOutput,
+                cliError,
+                CancellationToken.None,
+                exportClient: null,
+                exportOperation: CliCommandHostileArgumentException)
+            .ConfigureAwait(false);
+
+        Assert.AreEqual(HerdrOpsCliCommand.UsageFailureExitCode, exitCode);
+        var stderrText = cliError.ToString();
+        Assert.IsFalse(stderrText.Contains(CliHostileSecret, StringComparison.Ordinal),
+            "secret token carried by the ArgumentException must not leak to CLI stderr");
+        Assert.IsFalse(stderrText.Contains(CliHostilePath, StringComparison.Ordinal),
+            "path carried by the ArgumentException must not leak to CLI stderr");
+        Assert.IsFalse(stderrText.Contains(CliHostileProse, StringComparison.Ordinal),
+            "prose carried by the ArgumentException must not leak to CLI stderr");
+        StringAssert.Contains(stderrText, "invalid-arguments",
+            "invalid-arguments code must appear in CLI stderr for diagnosability");
+        Assert.IsFalse(File.Exists(outputPath), "no output file must be created on argument failure");
+    }
+
+    private static async Task<int> ServiceCommandHostileIOException() =>
+        throw new IOException($"{ServiceHostileSecret} {ServiceHostilePath} {ServiceHostileProse}");
+
+    private static async Task<int> ServiceCommandHostileArgumentException() =>
+        throw new ArgumentException($"{ServiceHostileSecret} {ServiceHostilePath} {ServiceHostileProse}");
+
+    private static async Task<ComplianceDiagnosticExportResponse> CliCommandHostileArgumentException() =>
+        throw new ArgumentException($"{CliHostileSecret} {CliHostilePath} {CliHostileProse}");
 
     private static async Task WaitForReadyAsync(StringWriter output)
     {

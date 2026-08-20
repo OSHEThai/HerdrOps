@@ -75,11 +75,19 @@ public static class ComplianceDiagnosticExportCommand
         return artifact;
     }
 
-    public static async Task<int> RunServiceAsync(
+    public static Task<int> RunServiceAsync(
         string[] args,
         TextWriter output,
         TextWriter error,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default) =>
+        RunServiceAsync(args, output, error, cancellationToken, serverOperation: null);
+
+    internal static async Task<int> RunServiceAsync(
+        string[] args,
+        TextWriter output,
+        TextWriter error,
+        CancellationToken cancellationToken,
+        Func<Task<int>>? serverOperation)
     {
         ArgumentNullException.ThrowIfNull(args);
         ArgumentNullException.ThrowIfNull(output);
@@ -91,6 +99,11 @@ public static class ComplianceDiagnosticExportCommand
 
         try
         {
+            if (serverOperation is not null)
+            {
+                return await serverOperation().ConfigureAwait(false);
+            }
+
             var options = pipeName is null
                 ? ComplianceDiagnosticExportPipeServerOptions.ForCurrentUser()
                 : new ComplianceDiagnosticExportPipeServerOptions(pipeName);

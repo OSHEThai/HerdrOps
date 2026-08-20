@@ -8,13 +8,30 @@ public static class ComplianceDiagnosticExportCliCommand
     public const string CommandName = "compliance-diagnostic-export";
     public const int MaximumInputBytes = ComplianceDiagnosticExportProtocol.MaximumInputBytes;
 
-    public static async Task<int> RunAsync(
+    public static Task<int> RunAsync(
         string[] args,
         TextReader input,
         TextWriter output,
         TextWriter error,
         CancellationToken cancellationToken = default,
-        ComplianceDiagnosticExportPipeClient? exportClient = null)
+        ComplianceDiagnosticExportPipeClient? exportClient = null) =>
+        RunAsync(
+            args,
+            input,
+            output,
+            error,
+            cancellationToken,
+            exportClient,
+            exportOperation: null);
+
+    internal static async Task<int> RunAsync(
+        string[] args,
+        TextReader input,
+        TextWriter output,
+        TextWriter error,
+        CancellationToken cancellationToken,
+        ComplianceDiagnosticExportPipeClient? exportClient,
+        Func<Task<ComplianceDiagnosticExportResponse>>? exportOperation)
     {
         ArgumentNullException.ThrowIfNull(args);
         ArgumentNullException.ThrowIfNull(input);
@@ -27,18 +44,27 @@ public static class ComplianceDiagnosticExportCliCommand
 
         try
         {
-            var inputBytes = await ReadInputAsync(inputPath!, input, cancellationToken)
-                .ConfigureAwait(false);
-            var client = exportClient ?? new ComplianceDiagnosticExportPipeClient(
-                pipeName is null
-                    ? ComplianceDiagnosticExportPipeClientOptions.ForCurrentUser(timeoutMilliseconds)
-                    : new ComplianceDiagnosticExportPipeClientOptions(pipeName, timeoutMilliseconds));
-            var response = await client.ExportAsync(
-                    inputBytes,
-                    outputPath!,
-                    Guid.NewGuid(),
-                    cancellationToken)
-                .ConfigureAwait(false);
+            ComplianceDiagnosticExportResponse response;
+            if (exportOperation is not null)
+            {
+                response = await exportOperation().ConfigureAwait(false);
+            }
+            else
+            {
+                var inputBytes = await ReadInputAsync(inputPath!, input, cancellationToken)
+                    .ConfigureAwait(false);
+                var client = exportClient ?? new ComplianceDiagnosticExportPipeClient(
+                    pipeName is null
+                        ? ComplianceDiagnosticExportPipeClientOptions.ForCurrentUser(timeoutMilliseconds)
+                        : new ComplianceDiagnosticExportPipeClientOptions(pipeName, timeoutMilliseconds));
+                response = await client.ExportAsync(
+                        inputBytes,
+                        outputPath!,
+                        Guid.NewGuid(),
+                        cancellationToken)
+                    .ConfigureAwait(false);
+            }
+
             output.WriteLine(ComplianceDiagnosticExportJson.Serialize(response));
             return response.Accepted
                 ? HerdrOpsCliCommand.SuccessExitCode
