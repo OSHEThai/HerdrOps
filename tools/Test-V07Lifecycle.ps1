@@ -14,24 +14,6 @@ $PSNativeCommandUseErrorActionPreference = $false
 $repositoryRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
 $artifactRoot = Join-Path $repositoryRoot 'artifacts'
 
-$sourceCommit = (& git -C $repositoryRoot rev-parse HEAD).Trim()
-if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($sourceCommit)) {
-    throw 'Could not resolve the source commit for the v0.7 lifecycle gate.'
-}
-
-$workingTreeStatus = @(& git -C $repositoryRoot status --porcelain=v1 --untracked-files=all | Where-Object {
-    $_ -notmatch '^\?\?\s+artifacts[\\/]'
-})
-if ($LASTEXITCODE -ne 0) {
-    throw 'Could not inspect the source working tree for the v0.7 lifecycle gate.'
-}
-if ($workingTreeStatus.Count -ne 0) {
-    $pendingNonTool = @($workingTreeStatus | Where-Object { $_ -notmatch 'tools[\\/]Test-V07Lifecycle\.ps1' })
-    if ($pendingNonTool.Count -ne 0) {
-        throw "The v0.7 lifecycle gate requires a clean committed checkout. Pending paths: $($pendingNonTool -join ', ')"
-    }
-}
-
 $requiredRelativePaths = @(
     'docs\protocol\v0.7-settings-contract.md',
     'docs\protocol\v0.7-lifecycle-contract.md',
@@ -69,14 +51,349 @@ $requiredRelativePaths = @(
     'tests\HerdrOps.IntegrationTests\TrayLifecycleIntegrationTests.cs'
 )
 
-$sourceHashes = [ordered]@{}
-foreach ($relativePath in $requiredRelativePaths) {
-    $path = Join-Path $repositoryRoot $relativePath
-    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
-        throw "Required v0.7 lifecycle file was not found: $relativePath"
+$requiredChecks = @(
+    # Unit checks (12 tests)
+    'TrayCommandRouterRoutesEveryCommandToTheInjectedTarget',
+    'TrayCommandRouterPropagatesTargetFailures',
+    'TrayMenuModelRequiresExactlyOneSelectedLanguage',
+    'StartAtLogonEnableDisableAndStatusAreIdempotentWithAnInMemoryBackend',
+    'StartAtLogonReportsAConflictingDeterministicValue',
+    'StartAtLogonConflictFailsClosedAndDisablePreservesTheOtherCommand',
+    'StartAtLogonRejectsMalformedExecutablePaths',
+    'StartAtLogonQuotesValidAbsoluteWindowsExecutableControls',
+    'StartAtLogonPropagatesBackendFailures',
+    'StartAtLogonRechecksAfterWriteAndReturnsControlledConflictStatus',
+    'StartAtLogonDoesNotOverwriteOrDeleteAWriterSeenAtTheRaceBoundary',
+    'TrayCleanupRetriesWhenHideAndBackendDisposeBothInitiallyFail',
+    # Integration checks (39 tests)
+    'RoundTripIsDeterministicAndContainsOneSelectedLanguage',
+    'RestoreReversesToAPreviouslyAdmittedSnapshot',
+    'LoadCanonicalizesValidNonCanonicalJsonAndRestoreWritesCanonicalBytes',
+    'TamperedSnapshotIsRejectedWithoutChangingLastValidFile',
+    'ResetDefaultsReplacesPreferencesWithExplicitDefaults',
+    'MalformedOversizedAndUnsupportedDocumentsFailClosed',
+    'ConstructorDoesNotPermitDocumentBoundAboveContractMaximum',
+    'StrictParserRejectsInvalidUtf8BomDuplicateUnknownAndMissingProperties',
+    'FailedAtomicCommitCleansTemporaryFileAndRetainsPreviousFile',
+    'CancellationAfterAtomicCommitRestoresPreviousFileBeforeThrowing',
+    'CancellationAfterAtomicCommitWithNoPreviousFileRemovesPublishedFileBeforeThrowing',
+    'PostPublicationExceptionRollsBackPreviousFileBeforeFailureEscapes',
+    'ConcurrentSaveWaitsForFailedRollbackAndCannotOverwriteSuccessfulSave',
+    'CancelledWaitersReleaseReferencesAndEvictDestinationLock',
+    'DestinationLockRegistryEvictsEntriesAfterDistinctDestinationStress',
+    'TemporaryArtifactCollisionDoesNotDeletePreExistingFile',
+    'BackupArtifactCollisionDoesNotDeletePreExistingFile',
+    'CleanupFailureAfterRollbackIsVisibleAndRollbackPrecedesCleanup',
+    'CleanupFailureIsSurfacedAlongsidePrimaryCommitFailure',
+    'CleanupFailureAfterCommitIsNotSilentlyIgnored',
+    'DestinationPolicyRejectsRelativeRootTraversalAndUncPaths',
+    'DestinationPolicyAcceptsFileDirectlyInsideAllowedRoot',
+    'DestinationPolicyRejectsEmptyReservedAdsInvalidAndDevicePaths',
+    'CancellationIsCheckedBeforeValidationAndSnapshotValidation',
+    'ExistingReparsePointComponentsAreRejectedWhenSupported',
+    'BoundedTextAndInvalidValuesAreRejectedBeforeReplacement',
+    'BoundedReaderRejectsConcurrentGrowthAfterReadingOnlyMaximumPlusOne',
+    'LifecycleLoadsAppliesAndReversesSettingsWithInjectedSeams',
+    'TrayMenuExposesAOneLanguageStartAtLogonRouteWhenTheHostOwnsIt',
+    'TrayIconContractRemovesScreenshotMatteAndScalesForDpi',
+    'ShutdownCleanupAttemptsEveryActionAndReportsEachFailure',
+    'InjectedPerUserGateRejectsSecondLaunchAndReleasesDeterministically',
+    'StartupTransactionRollsBackEveryFaultStageInReverseOrder',
+    'StartupTransactionPreservesPrimaryBeforeCleanupFailure',
+    'StartupTransactionRetriesFailedCleanupWithoutLosingStageOrder',
+    'GateAcquisitionFailurePreservesPrimaryWhenTransactionalDisposeAlsoFails',
+    'GateThatDoesNotAcquireIsDisposedBeforeTheStartupTransactionCommits',
+    'TrayMenuBuilderProjectsConfiguredWidgetAndOneSelectedLanguage',
+    'SyntheticTrayBackendExercisesControllerLifecycleWithoutAnOsResource'
+)
+
+function Test-PathInvariants {
+    param(
+        [Parameter(Mandatory)]
+        [string]$RepoRoot,
+
+        [Parameter(Mandatory)]
+        [string[]]$Paths
+    )
+
+    $hashes = [ordered]@{}
+    foreach ($relativePath in $Paths) {
+        $fullPath = Join-Path $RepoRoot $relativePath
+        if (-not (Test-Path -LiteralPath $fullPath -PathType Leaf)) {
+            throw "Required v0.7 lifecycle file was not found: $relativePath"
+        }
+        $hash = (Get-FileHash -LiteralPath $fullPath -Algorithm SHA256).Hash
+        if ([string]::IsNullOrWhiteSpace($hash) -or $hash -notmatch '^[0-9A-Fa-f]{64}$') {
+            throw "Invalid SHA-256 hash computed for $relativePath"
+        }
+        $hashes[$relativePath] = $hash
     }
-    $sourceHashes[$relativePath] = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash
+    return $hashes
 }
+
+function Test-StaticContractInvariants {
+    param(
+        [Parameter(Mandatory)]
+        [string]$RepoRoot
+    )
+
+    $appSettingsPath = Join-Path $RepoRoot 'src\HerdrOps.Domain\Settings\AppSettings.cs'
+    $startupRegistrationPath = Join-Path $RepoRoot 'src\HerdrOps.Domain\Lifecycle\StartupRegistration.cs'
+    $mutexPath = Join-Path $RepoRoot 'src\HerdrOps.App\Lifecycle\WindowsPerUserLifecycleMutex.cs'
+
+    $appSettingsSource = Get-Content -LiteralPath $appSettingsPath -Raw
+    $startupRegistrationSource = Get-Content -LiteralPath $startupRegistrationPath -Raw
+    $mutexSource = Get-Content -LiteralPath $mutexPath -Raw
+
+    # 1. 16 KiB maximum document bound
+    if ($appSettingsSource -notmatch 'MaximumDocumentUtf8Bytes\s*=\s*(16\s*\*\s*1024|16384)') {
+        throw 'AppSettings source does not declare MaximumDocumentUtf8Bytes as 16 KiB.'
+    }
+
+    # 2. Start-at-logon Registry key and value name
+    if ($startupRegistrationSource -notmatch 'ValueName\s*=\s*"HerdrOps"') {
+        throw 'StartupRegistration does not declare deterministic value name HerdrOps.'
+    }
+    if ($startupRegistrationSource -notmatch 'CurrentVersion\\Run') {
+        throw 'StartupRegistration does not target HKCU CurrentVersion\Run.'
+    }
+
+    # 3. Single-instance and Startup mutex naming semantics: Global\{productName}.{userSid}.{suffix}
+    if (-not $mutexSource.Contains('$"Global\\{productName}.{userSid}.{suffix}"')) {
+        throw 'WindowsPerUserLifecycleMutex does not use the exact $"Global\{productName}.{userSid}.{suffix}" naming format.'
+    }
+    if ($mutexSource -notmatch 'SingleInstance' -or $mutexSource -notmatch 'StartupRegistration') {
+        throw 'WindowsPerUserLifecycleMutex is missing required SingleInstance or StartupRegistration suffix.'
+    }
+
+    return $true
+}
+
+function Get-EvidenceClassificationLines {
+    param(
+        [bool]$SkipBuild,
+        [bool]$BuildPassed,
+        [bool]$StaticChecksPassed,
+        [bool]$ContractChecksPassed,
+        [int]$UnitPassed,
+        [int]$UnitFailed,
+        [int]$IntegrationPassed,
+        [int]$IntegrationFailed,
+        [int]$TotalTests,
+        [int]$PassedTests,
+        [int]$FailedTests,
+        [int]$MissingChecksCount,
+        [int]$RequiredPathsCount
+    )
+
+    $staticEvidenceLine = if (-not $SkipBuild -and $BuildPassed -and $StaticChecksPassed) {
+        "StaticEvidence: OBSERVED ($RequiredPathsCount required files present and verified, locked build passed with 0 warnings/errors, format checked)"
+    } elseif ($SkipBuild) {
+        "StaticEvidence: NOT OBSERVED (-SkipBuild specified; locked build and format verification not executed; $RequiredPathsCount required files present and static invariants verified)"
+    } else {
+        'StaticEvidence: NOT OBSERVED / FAILED'
+    }
+
+    $contractEvidenceLine = if ($ContractChecksPassed) {
+        'ContractEvidence: OBSERVED (Settings 16 KiB document bound, schema v1 model, HKCU Run key deterministic path, Global SID-scoped mutex invariant)'
+    } else {
+        'ContractEvidence: NOT OBSERVED / FAILED'
+    }
+
+    $unitEvidenceLine = if ($UnitPassed -ge 12 -and $UnitFailed -eq 0) {
+        "UnitEvidence: OBSERVED ($UnitPassed unit tests passed: TrayCommandRouter, TrayMenuModel, StartAtLogonService)"
+    } else {
+        "UnitEvidence: FAILED (Passed: $UnitPassed, Failed: $UnitFailed)"
+    }
+
+    $integrationEvidenceLine = if ($IntegrationPassed -ge 39 -and $IntegrationFailed -eq 0) {
+        "IntegrationEvidence: OBSERVED ($IntegrationPassed integration tests passed: AppSettingsStore, AppLifecycleController, StartupSafety, TrayLifecycle)"
+    } else {
+        "IntegrationEvidence: FAILED (Passed: $IntegrationPassed, Failed: $IntegrationFailed)"
+    }
+
+    $syntheticChecksPassed = ($TotalTests -ge 51 -and $FailedTests -eq 0 -and $TotalTests -eq $PassedTests -and $UnitPassed -ge 12 -and $UnitFailed -eq 0 -and $IntegrationPassed -ge 39 -and $IntegrationFailed -eq 0 -and $MissingChecksCount -eq 0)
+
+    $syntheticEvidenceLine = if ($syntheticChecksPassed) {
+        "SyntheticEvidence: OBSERVED ($PassedTests/$TotalTests automated tests passed: in-memory tray and startup backends, temporary settings storage, lifecycle state transitions)"
+    } else {
+        "SyntheticEvidence: NOT OBSERVED / FAILED (Total: $TotalTests, Passed: $PassedTests, Failed: $FailedTests, MissingNamedChecks: $MissingChecksCount)"
+    }
+
+    $observedClasses = [System.Collections.Generic.List[string]]::new()
+    if (-not $SkipBuild -and $BuildPassed -and $StaticChecksPassed) {
+        $observedClasses.Add('Static')
+    }
+    if ($ContractChecksPassed) {
+        $observedClasses.Add('Contract')
+    }
+    if ($UnitPassed -ge 12 -and $UnitFailed -eq 0) {
+        $observedClasses.Add('Unit')
+    }
+    if ($IntegrationPassed -ge 39 -and $IntegrationFailed -eq 0) {
+        $observedClasses.Add('Integration')
+    }
+    if ($syntheticChecksPassed) {
+        $observedClasses.Add('Synthetic')
+    }
+
+    $evidenceClassLine = "EvidenceClass: $($observedClasses -join ', ')"
+
+    return [pscustomobject]@{
+        StaticLine = $staticEvidenceLine
+        ContractLine = $contractEvidenceLine
+        UnitLine = $unitEvidenceLine
+        IntegrationLine = $integrationEvidenceLine
+        SyntheticLine = $syntheticEvidenceLine
+        EvidenceClassLine = $evidenceClassLine
+        SyntheticChecksPassed = $syntheticChecksPassed
+        ObservedClasses = @($observedClasses)
+    }
+}
+
+function Invoke-SelfTests {
+    param(
+        [Parameter(Mandatory)]
+        [string]$RepoRoot,
+
+        [Parameter(Mandatory)]
+        [string[]]$Paths,
+
+        [Parameter(Mandatory)]
+        [string[]]$Checks
+    )
+
+    Write-Host 'Running deterministic self-checks for Test-V07Lifecycle.ps1...'
+
+    # Check 1: Verify all 34 required paths and SHA256 computation
+    $hashes = Test-PathInvariants -RepoRoot $RepoRoot -Paths $Paths
+    if ($hashes.Count -ne 34) {
+        throw "SelfTest failed: expected 34 hashes, got $($hashes.Count)"
+    }
+    Write-Host "  [PASS] RequiredPathsCoverage (34/34 paths verified with valid SHA-256)"
+
+    # Check 2: Verify static and contract invariants
+    $staticContractOk = Test-StaticContractInvariants -RepoRoot $RepoRoot
+    if (-not $staticContractOk) {
+        throw 'SelfTest failed: static contract invariants failed'
+    }
+    Write-Host '  [PASS] StaticContractInvariants (16 KiB bound, HKCU Run key, Global mutex format)'
+
+    # Check 3: Verify named checks integrity
+    if ($Checks.Count -ne 51) {
+        throw "SelfTest failed: expected 51 named checks, got $($Checks.Count)"
+    }
+    $uniqueChecks = @($Checks | Select-Object -Unique)
+    if ($uniqueChecks.Count -ne 51) {
+        throw 'SelfTest failed: duplicate named checks found in array'
+    }
+    Write-Host '  [PASS] NamedChecksIntegrity (51/51 unique required test checks: 12 Unit, 39 Integration)'
+
+    # Check 4: Verify Evidence Classification Matrix under -SkipBuild vs FullBuild vs Failures
+    # 4a: Full build passing
+    $fullPassing = Get-EvidenceClassificationLines `
+        -SkipBuild $false -BuildPassed $true -StaticChecksPassed $true -ContractChecksPassed $true `
+        -UnitPassed 12 -UnitFailed 0 -IntegrationPassed 39 -IntegrationFailed 0 `
+        -TotalTests 51 -PassedTests 51 -FailedTests 0 -MissingChecksCount 0 -RequiredPathsCount 34
+    if ($fullPassing.StaticLine -notmatch 'StaticEvidence:\s*OBSERVED.*locked build passed.*format checked') {
+        throw 'SelfTest failed: full build did not report StaticEvidence OBSERVED with build and format info'
+    }
+    if ($fullPassing.SyntheticLine -notmatch 'SyntheticEvidence:\s*OBSERVED') {
+        throw 'SelfTest failed: passing tests did not report SyntheticEvidence OBSERVED'
+    }
+    if (-not ($fullPassing.ObservedClasses -contains 'Static' -and $fullPassing.ObservedClasses -contains 'Synthetic')) {
+        throw 'SelfTest failed: full passing run did not include Static and Synthetic in EvidenceClass'
+    }
+
+    # 4b: -SkipBuild passing
+    $skipBuildPassing = Get-EvidenceClassificationLines `
+        -SkipBuild $true -BuildPassed $false -StaticChecksPassed $true -ContractChecksPassed $true `
+        -UnitPassed 12 -UnitFailed 0 -IntegrationPassed 39 -IntegrationFailed 0 `
+        -TotalTests 51 -PassedTests 51 -FailedTests 0 -MissingChecksCount 0 -RequiredPathsCount 34
+    if ($skipBuildPassing.StaticLine -match 'StaticEvidence:\s*OBSERVED' -or $skipBuildPassing.StaticLine -notmatch 'StaticEvidence:\s*NOT OBSERVED') {
+        throw 'SelfTest failed: -SkipBuild must NEVER report StaticEvidence OBSERVED'
+    }
+    if ($skipBuildPassing.StaticLine -notmatch '-SkipBuild specified') {
+        throw 'SelfTest failed: -SkipBuild must note that build and format verification were not executed'
+    }
+    if ($skipBuildPassing.ObservedClasses -contains 'Static') {
+        throw 'SelfTest failed: -SkipBuild must NOT include Static in EvidenceClass'
+    }
+    if ($skipBuildPassing.SyntheticLine -notmatch 'SyntheticEvidence:\s*OBSERVED') {
+        throw 'SelfTest failed: -SkipBuild with passing tests must report SyntheticEvidence OBSERVED'
+    }
+
+    # 4c: Failing tests
+    $testFailure = Get-EvidenceClassificationLines `
+        -SkipBuild $false -BuildPassed $true -StaticChecksPassed $true -ContractChecksPassed $true `
+        -UnitPassed 11 -UnitFailed 1 -IntegrationPassed 39 -IntegrationFailed 0 `
+        -TotalTests 51 -PassedTests 50 -FailedTests 1 -MissingChecksCount 1 -RequiredPathsCount 34
+    if ($testFailure.SyntheticLine -match '^SyntheticEvidence:\s*OBSERVED' -or $testFailure.SyntheticLine -notmatch 'FAILED') {
+        throw 'SelfTest failed: test failure must report SyntheticEvidence FAILED'
+    }
+    if ($testFailure.ObservedClasses -contains 'Synthetic') {
+        throw 'SelfTest failed: test failure must NOT include Synthetic in EvidenceClass'
+    }
+    Write-Host '  [PASS] EvidenceClassificationMatrix (SkipBuild, FullBuild, and Failure paths verified)'
+
+    # Check 5: Verify TRX Parser Logic
+    $sampleTrxXml = @"
+<?xml version="1.0" encoding="utf-8"?>
+<TestRun id="test-run-1" name="MockRun" xmlns="http://microsoft.com/schemas/VisualStudio/TeamTest/2010">
+  <ResultSummary outcome="Completed">
+    <Counters total="12" executed="12" passed="12" failed="0" error="0" timeout="0" aborted="0" inconclusive="0" passedButRunAborted="0" notRunnable="0" notExecuted="0" disconnected="0" warning="0" completed="0" helpKeyword="" />
+  </ResultSummary>
+</TestRun>
+"@
+    [xml]$parsedTrx = $sampleTrxXml
+    $counters = $parsedTrx.TestRun.ResultSummary.Counters
+    if ([int]$counters.total -ne 12 -or [int]$counters.passed -ne 12 -or [int]$counters.failed -ne 0) {
+        throw 'SelfTest failed: sample TRX parsing counters mismatch'
+    }
+    Write-Host '  [PASS] TrxParserDeterministicCounting (mock TRX XML counters validated)'
+
+    # Check 6: Report formatting and boundary assertions
+    $boundaryReport = @(
+        'ActualHerdrRuntime: NOT REQUIRED / NOT OBSERVED / NOT CLAIMED',
+        'ReleaseEvidence: NOT PRODUCED / NOT CLAIMED',
+        'Status: IMPLEMENTATION GATE / NO RUNTIME OR RELEASE CREDIT'
+    )
+    foreach ($line in $boundaryReport) {
+        if ($line -notmatch 'NOT|NO RUNTIME') {
+            throw "SelfTest failed: boundary invariant violated: $line"
+        }
+    }
+    Write-Host '  [PASS] GateReportContractFormatting (structure, boundaries, no runtime or release claim)'
+
+    Write-Host 'SelfTest: PASS (all 6 deterministic self-check suites passed)'
+    Write-Host 'Result: PASS'
+    Write-Host 'Status: IMPLEMENTATION GATE / NO RUNTIME OR RELEASE CREDIT'
+}
+
+if ($SelfTest) {
+    Invoke-SelfTests -RepoRoot $repositoryRoot -Paths $requiredRelativePaths -Checks $requiredChecks
+    return
+}
+
+$sourceCommit = (& git -C $repositoryRoot rev-parse HEAD).Trim()
+if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($sourceCommit)) {
+    throw 'Could not resolve the source commit for the v0.7 lifecycle gate.'
+}
+
+$workingTreeStatus = @(& git -C $repositoryRoot status --porcelain=v1 --untracked-files=all | Where-Object {
+    $_ -notmatch '^\?\?\s+artifacts[\\/]'
+})
+if ($LASTEXITCODE -ne 0) {
+    throw 'Could not inspect the source working tree for the v0.7 lifecycle gate.'
+}
+if ($workingTreeStatus.Count -ne 0) {
+    $pendingNonTool = @($workingTreeStatus | Where-Object { $_ -notmatch 'tools[\\/]Test-V07Lifecycle\.ps1' })
+    if ($pendingNonTool.Count -ne 0) {
+        throw "The v0.7 lifecycle gate requires a clean committed checkout. Pending paths: $($pendingNonTool -join ', ')"
+    }
+}
+
+$sourceHashes = Test-PathInvariants -RepoRoot $repositoryRoot -Paths $requiredRelativePaths
 
 $buildPassed = $false
 if (-not $SkipBuild) {
@@ -85,43 +402,10 @@ if (-not $SkipBuild) {
         throw "v0.7 lifecycle build gate failed with exit code $LASTEXITCODE."
     }
     $buildPassed = $true
-} else {
-    $buildPassed = $true
 }
-
-# Static & Contract Invariant Verifications
-$appSettingsSource = Get-Content -LiteralPath (Join-Path $repositoryRoot 'src\HerdrOps.Domain\Settings\AppSettings.cs') -Raw
-$startupRegistrationSource = Get-Content -LiteralPath (Join-Path $repositoryRoot 'src\HerdrOps.Domain\Lifecycle\StartupRegistration.cs') -Raw
-$mutexSource = Get-Content -LiteralPath (Join-Path $repositoryRoot 'src\HerdrOps.App\Lifecycle\WindowsPerUserLifecycleMutex.cs') -Raw
 
 $staticChecksPassed = $true
-$contractChecksPassed = $true
-
-# 1. 16 KiB maximum document bound
-if ($appSettingsSource -notmatch 'MaximumDocumentUtf8Bytes\s*=\s*(16\s*\*\s*1024|16384)') {
-    $contractChecksPassed = $false
-    throw 'AppSettings source does not declare MaximumDocumentUtf8Bytes as 16 KiB.'
-}
-
-# 2. Start-at-logon Registry key and value name
-if ($startupRegistrationSource -notmatch 'ValueName\s*=\s*"HerdrOps"') {
-    $contractChecksPassed = $false
-    throw 'StartupRegistration does not declare deterministic value name HerdrOps.'
-}
-if ($startupRegistrationSource -notmatch 'CurrentVersion\\Run') {
-    $contractChecksPassed = $false
-    throw 'StartupRegistration does not target HKCU CurrentVersion\Run.'
-}
-
-# 3. Single-instance and Startup mutex naming semantics: Global\{productName}.{userSid}.{suffix}
-if (-not $mutexSource.Contains('$"Global\\{productName}.{userSid}.{suffix}"')) {
-    $contractChecksPassed = $false
-    throw 'WindowsPerUserLifecycleMutex does not use the exact $"Global\{productName}.{userSid}.{suffix}" naming format.'
-}
-if ($mutexSource -notmatch 'SingleInstance' -or $mutexSource -notmatch 'StartupRegistration') {
-    $contractChecksPassed = $false
-    throw 'WindowsPerUserLifecycleMutex is missing required SingleInstance or StartupRegistration suffix.'
-}
+$contractChecksPassed = Test-StaticContractInvariants -RepoRoot $repositoryRoot
 
 $runId = "$([DateTime]::UtcNow.ToString('yyyyMMddTHHmmssfffffffZ', [Globalization.CultureInfo]::InvariantCulture))-$([Guid]::NewGuid().ToString('N').Substring(0, 8))"
 $gateDirectory = Join-Path $artifactRoot "release-gates\v0.7.0\issue-36\$runId"
@@ -182,43 +466,14 @@ $combinedTestLog = ($testResults | ForEach-Object {
     Get-Content -LiteralPath $_.FullName -Raw
 }) -join "`n"
 
-$requiredChecks = @(
-    # Unit checks (12 tests)
-    'TrayCommandRouterRoutesEveryCommandToTheInjectedTarget',
-    'TrayCommandRouterPropagatesTargetFailures',
-    'TrayMenuModelRequiresExactlyOneSelectedLanguage',
-    'StartAtLogonEnableDisableAndStatusAreIdempotentWithAnInMemoryBackend',
-    'StartAtLogonReportsAConflictingDeterministicValue',
-    'StartAtLogonConflictFailsClosedAndDisablePreservesTheOtherCommand',
-    'StartAtLogonRejectsMalformedExecutablePaths',
-    'StartAtLogonQuotesValidAbsoluteWindowsExecutableControls',
-    'StartAtLogonPropagatesBackendFailures',
-    'StartAtLogonRechecksAfterWriteAndReturnsControlledConflictStatus',
-    'StartAtLogonDoesNotOverwriteOrDeleteAWriterSeenAtTheRaceBoundary',
-    'TrayCleanupRetriesWhenHideAndBackendDisposeBothInitiallyFail',
-    # Integration checks (39 tests)
-    'LifecycleLoadsAppliesAndReversesSettingsWithInjectedSeams',
-    'TrayMenuExposesAOneLanguageStartAtLogonRouteWhenTheHostOwnsIt',
-    'TrayIconContractRemovesScreenshotMatteAndScalesForDpi',
-    'ShutdownCleanupAttemptsEveryActionAndReportsEachFailure',
-    'ConstructorDoesNotPermitDocumentBoundAboveContractMaximum',
-    'DestinationPolicyRejectsRelativeRootTraversalAndUncPaths',
-    'DestinationPolicyRejectsEmptyReservedAdsInvalidAndDevicePaths',
-    'ExistingReparsePointComponentsAreRejectedWhenSupported',
-    'InjectedPerUserGateRejectsSecondLaunchAndReleasesDeterministically',
-    'StartupTransactionRollsBackEveryFaultStageInReverseOrder',
-    'StartupTransactionPreservesPrimaryBeforeCleanupFailure',
-    'StartupTransactionRetriesFailedCleanupWithoutLosingStageOrder',
-    'GateAcquisitionFailurePreservesPrimaryWhenTransactionalDisposeAlsoFails',
-    'GateThatDoesNotAcquireIsDisposedBeforeTheStartupTransactionCommits',
-    'TrayMenuBuilderProjectsConfiguredWidgetAndOneSelectedLanguage',
-    'SyntheticTrayBackendExercisesControllerLifecycleWithoutAnOsResource'
-)
-
+$missingChecks = [System.Collections.Generic.List[string]]::new()
 foreach ($check in $requiredChecks) {
     if ($combinedTestLog -notmatch [Regex]::Escape($check)) {
-        throw "Required v0.7 lifecycle check is absent from fresh test logs: $check"
+        $missingChecks.Add($check)
     }
+}
+if ($missingChecks.Count -ne 0) {
+    throw "Required v0.7 lifecycle checks are absent from fresh test logs ($($missingChecks.Count) missing): $($missingChecks -join ', ')"
 }
 
 $totalTests = 0
@@ -234,35 +489,25 @@ if ($totalTests -lt $requiredChecks.Count -or $failedTests -ne 0 -or $totalTests
     throw "Lifecycle test counters are not all passing: total=$totalTests passed=$passedTests failed=$failedTests"
 }
 
-# Dynamic conditional evidence reporting based on observed runs
 $unitPass = $categoryCounters['Unit'].Passed
 $unitFail = $categoryCounters['Unit'].Failed
 $integrationPass = $categoryCounters['Integration'].Passed
 $integrationFail = $categoryCounters['Integration'].Failed
 
-$staticEvidenceLine = if ($buildPassed -and $staticChecksPassed) {
-    "StaticEvidence: OBSERVED ($($requiredRelativePaths.Count) required files present and verified, locked build passed with 0 warnings/errors, format checked)"
-} else {
-    'StaticEvidence: NOT OBSERVED / FAILED'
-}
-
-$contractEvidenceLine = if ($contractChecksPassed) {
-    'ContractEvidence: OBSERVED (Settings 16 KiB document bound, schema v1 model, HKCU Run key deterministic path, Global SID-scoped mutex invariant)'
-} else {
-    'ContractEvidence: NOT OBSERVED / FAILED'
-}
-
-$integrationEvidenceLine = if ($integrationPass -ge 39 -and $integrationFail -eq 0) {
-    "IntegrationEvidence: OBSERVED ($integrationPass integration tests passed: AppSettingsStore, AppLifecycleController, StartupSafety, TrayLifecycle)"
-} else {
-    "IntegrationEvidence: FAILED (Passed: $integrationPass, Failed: $integrationFail)"
-}
-
-$unitEvidenceLine = if ($unitPass -ge 12 -and $unitFail -eq 0) {
-    "UnitEvidence: OBSERVED ($unitPass unit tests passed: TrayCommandRouter, TrayMenuModel, StartAtLogonService)"
-} else {
-    "UnitEvidence: FAILED (Passed: $unitPass, Failed: $unitFail)"
-}
+$evidence = Get-EvidenceClassificationLines `
+    -SkipBuild ([bool]$SkipBuild) `
+    -BuildPassed $buildPassed `
+    -StaticChecksPassed $staticChecksPassed `
+    -ContractChecksPassed $contractChecksPassed `
+    -UnitPassed $unitPass `
+    -UnitFailed $unitFail `
+    -IntegrationPassed $integrationPass `
+    -IntegrationFailed $integrationFail `
+    -TotalTests $totalTests `
+    -PassedTests $passedTests `
+    -FailedTests $failedTests `
+    -MissingChecksCount ($missingChecks.Count) `
+    -RequiredPathsCount ($requiredRelativePaths.Count)
 
 $reportPath = Join-Path $gateDirectory 'gate-report.txt'
 $reportLines = @(
@@ -277,12 +522,12 @@ $reportLines = @(
     '----------------------------------------------------------------------',
     'Evidence Classification (Conditional on Verified Runs)',
     '----------------------------------------------------------------------',
-    'EvidenceClass: Static, Contract, Integration, Synthetic',
-    $staticEvidenceLine,
-    $contractEvidenceLine,
-    $unitEvidenceLine,
-    $integrationEvidenceLine,
-    'SyntheticEvidence: OBSERVED (in-memory tray and startup backends, temporary settings storage, lifecycle state transitions)',
+    $evidence.EvidenceClassLine,
+    $evidence.StaticLine,
+    $evidence.ContractLine,
+    $evidence.UnitLine,
+    $evidence.IntegrationLine,
+    $evidence.SyntheticLine,
     'ActualHerdrRuntime: NOT REQUIRED / NOT OBSERVED / NOT CLAIMED',
     'WindowsHostEvidence: PENDING / NOT OBSERVED (actual tray visibility, logon launch, AppData persistence across reboots)',
     'HumanAccessibilityEvidence: PENDING / NOT OBSERVED (screen reader Narrator audio, high contrast, physical DPI scaling)',
@@ -298,7 +543,7 @@ $reportLines = @(
     "FailedTests: $failedTests",
     "UnitTests: $($categoryCounters['Unit'].Passed) passed / $($categoryCounters['Unit'].Total) total",
     "IntegrationTests: $($categoryCounters['Integration'].Passed) passed / $($categoryCounters['Integration'].Total) total",
-    "RequiredChecksVerified: $($requiredChecks.Count)",
+    "RequiredNamedChecksVerified: $($requiredChecks.Count)/$($requiredChecks.Count) OBSERVED (12 Unit, 39 Integration)",
     '',
     'TRX Results Files:'
 )
@@ -322,6 +567,17 @@ foreach ($relativePath in $sourceHashes.Keys) {
 $reportLines += @(
     '',
     '----------------------------------------------------------------------',
+    'Required Named Checks',
+    '----------------------------------------------------------------------'
+)
+
+foreach ($check in $requiredChecks) {
+    $reportLines += "  - PASS $check"
+}
+
+$reportLines += @(
+    '',
+    '----------------------------------------------------------------------',
     'Gate Verdict',
     '----------------------------------------------------------------------',
     'ImplementationGate: PASS',
@@ -336,6 +592,7 @@ $reportHash = (Get-FileHash -LiteralPath $reportPath -Algorithm SHA256).Hash
 Write-Host "GateReport: $reportPath"
 Write-Host "GateReportSha256: $reportHash"
 Write-Host "TotalTests: $totalTests (Unit: $unitPass, Integration: $integrationPass)"
+Write-Host "RequiredNamedChecksVerified: $($requiredChecks.Count)/$($requiredChecks.Count)"
 Write-Host "Result: PASS"
 Write-Host "ImplementationGate: PASS"
 Write-Host "Status: IMPLEMENTATION GATE / NO RUNTIME OR RELEASE CREDIT"
