@@ -108,6 +108,7 @@ function New-V03ImplementationGateReport {
         [Parameter(Mandatory)]
         [string]$SourceCommit,
 
+        [AllowEmptyCollection()]
         [Parameter(Mandatory)]
         [object[]]$ChildResults,
 

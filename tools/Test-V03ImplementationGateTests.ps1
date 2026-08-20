@@ -143,7 +143,8 @@ try {
     $pwshPath = (Get-Command pwsh -ErrorAction Stop).Source
     $passingOutput = @(& $pwshPath -NoProfile -File $aggregateScript -Configuration Debug -SkipBuild -ChildGateRoot $passingRoot 2>&1)
     $passingExitCode = $LASTEXITCODE
-    Assert-Equal -Expected 0 -Actual $passingExitCode -Message 'Aggregate did not propagate all-child success.'
+    $passingOutputText = @($passingOutput | ForEach-Object { [string]$_ }) -join ' | '
+    Assert-Equal -Expected 0 -Actual $passingExitCode -Message "Aggregate did not propagate all-child success. Output=$passingOutputText"
     $passingReportPath = Get-AggregateReportPath -Output $passingOutput
     $passingReportText = Get-Content -LiteralPath $passingReportPath -Raw
     Assert-True -Condition ($passingReportText -match '(?m)^Result: PASS$') -Message 'Passing aggregate report did not say PASS.'
