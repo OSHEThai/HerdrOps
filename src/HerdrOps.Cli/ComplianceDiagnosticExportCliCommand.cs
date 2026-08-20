@@ -62,9 +62,9 @@ public static class ComplianceDiagnosticExportCliCommand
             WriteError(error, "core-unavailable", "HerdrOps Core is unavailable for compliance diagnostic export.");
             return HerdrOpsCliCommand.CoreUnavailableExitCode;
         }
-        catch (ArgumentException exception)
+        catch (ArgumentException)
         {
-            WriteError(error, "invalid-arguments", exception.Message);
+            WriteError(error, "invalid-arguments", "The compliance diagnostic export arguments are invalid.");
             return HerdrOpsCliCommand.UsageFailureExitCode;
         }
     }

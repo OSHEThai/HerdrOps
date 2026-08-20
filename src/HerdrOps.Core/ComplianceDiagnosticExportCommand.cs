@@ -125,7 +125,7 @@ public static class ComplianceDiagnosticExportCommand
                 InvalidOperationException or
                 UnauthorizedAccessException)
         {
-            error.WriteLine($"Core compliance diagnostic export service failed: {exception.Message}");
+            error.WriteLine("Core compliance diagnostic export service failed: the service could not be started.");
             return ExportFailureExitCode;
         }
     }

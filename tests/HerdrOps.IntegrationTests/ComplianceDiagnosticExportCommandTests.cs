@@ -231,6 +231,121 @@ public sealed class ComplianceDiagnosticExportCommandTests
         Assert.AreEqual(string.Empty, serviceError.ToString());
     }
 
+    // ── Hostile regressions: service-command and CLI exception.Message must not echo to output ──
+
+    // Before hardening, the service-command infrastructure catch wrote exception.Message verbatim
+    // to stderr, which would expose any path/secret/prose embedded in the pipe name.
+    [TestMethod]
+    public async Task ServiceCommandInfrastructureFailureDoesNotLeakExceptionMessageToStderr()
+    {
+        const string secretFragment = "super-secret-token-in-pipe-name";
+        const string pathFragment = "C:/Users/Alice/private.txt";
+        const string proseFragment = "prose secret hidden inside name";
+
+        // A pipe name with embedded backslash is rejected by ValidateOptions with an
+        // ArgumentException. The Message contains the pipe name string, which would leak secrets.
+        var hostilePipeName = $"bad\\pipe\\{secretFragment}";
+
+        using var output = new StringWriter();
+        using var error = new StringWriter();
+        var exitCode = await ComplianceDiagnosticExportCommand.RunServiceAsync(
+            [
+                ComplianceDiagnosticExportCommand.ServiceCommandName,
+                "--pipe-name",
+                hostilePipeName,
+            ],
+            output,
+            error,
+            CancellationToken.None).ConfigureAwait(false);
+
+        Assert.AreEqual(ComplianceDiagnosticExportCommand.ExportFailureExitCode, exitCode);
+        var stderrText = error.ToString();
+        Assert.IsFalse(stderrText.Contains(secretFragment, StringComparison.Ordinal),
+            "secret token must not appear in service-command stderr");
+        Assert.IsFalse(stderrText.Contains(pathFragment, StringComparison.Ordinal),
+            "path must not appear in service-command stderr");
+        Assert.IsFalse(stderrText.Contains(proseFragment, StringComparison.Ordinal),
+            "prose must not appear in service-command stderr");
+        // The fixed public message must remain so the failure is still diagnosable.
+        StringAssert.Contains(stderrText, "the service could not be started",
+            "fixed public message must appear in service-command stderr");
+    }
+
+    [TestMethod]
+    public async Task ServiceCommandOversizedPipeNameDoesNotLeakExceptionMessageToStderr()
+    {
+        // 129-character pipe name (one over the 128-char limit in ValidateOptions) that embeds a
+        // secret token: the ArgumentException.Message contains the full name, which must not leak.
+        const string secretFragment = "integration-secret-token";
+        var oversizedName = new string('z', 105) + secretFragment; // 105 + 24 = 129 chars
+
+        using var output = new StringWriter();
+        using var error = new StringWriter();
+        var exitCode = await ComplianceDiagnosticExportCommand.RunServiceAsync(
+            [
+                ComplianceDiagnosticExportCommand.ServiceCommandName,
+                "--pipe-name",
+                oversizedName,
+            ],
+            output,
+            error,
+            CancellationToken.None).ConfigureAwait(false);
+
+        Assert.AreEqual(ComplianceDiagnosticExportCommand.ExportFailureExitCode, exitCode);
+        var stderrText = error.ToString();
+        Assert.IsFalse(stderrText.Contains(secretFragment, StringComparison.Ordinal),
+            "secret token must not appear in service-command stderr");
+        StringAssert.Contains(stderrText, "the service could not be started",
+            "fixed public message must appear in service-command stderr");
+    }
+
+    [TestMethod]
+    public async Task CliArgumentExceptionDoesNotLeakExceptionMessageToStderr()
+    {
+        // The CLI ArgumentException catch (from pipe-client ValidateOptions) previously wrote
+        // exception.Message verbatim. A hostile pipe name with a backslash (which triggers
+        // ArgumentException inside ValidateOptions) must not appear in CLI stderr.
+        const string secretFragment = "cli-secret-token";
+        const string pathFragment = "C:/Users/Alice/private.txt";
+        const string proseFragment = "free prose secret cli";
+
+        // A pipe name with embedded backslash is rejected by ValidateOptions with ArgumentException.
+        var hostilePipeName = $"bad\\{secretFragment}\\{proseFragment}";
+
+        using var fixture = TemporaryDirectory.Create();
+        var outputPath = Path.Combine(fixture.Path, "hostile-cli.json");
+
+        using var cliOutput = new StringWriter();
+        using var cliError = new StringWriter();
+        var exitCode = await HerdrOpsCliCommand.RunAsync(
+            [
+                ComplianceDiagnosticExportCliCommand.CommandName,
+                "--input",
+                "-",
+                "--output",
+                outputPath,
+                "--pipe-name",
+                hostilePipeName,
+                "--timeout-ms",
+                "500",
+            ],
+            new StringReader(FixtureJson()),
+            cliOutput,
+            cliError).ConfigureAwait(false);
+
+        Assert.AreEqual(HerdrOpsCliCommand.UsageFailureExitCode, exitCode);
+        var stderrText = cliError.ToString();
+        Assert.IsFalse(stderrText.Contains(secretFragment, StringComparison.Ordinal),
+            "secret token must not appear in CLI stderr");
+        Assert.IsFalse(stderrText.Contains(pathFragment, StringComparison.Ordinal),
+            "path must not appear in CLI stderr");
+        Assert.IsFalse(stderrText.Contains(proseFragment, StringComparison.Ordinal),
+            "prose must not appear in CLI stderr");
+        StringAssert.Contains(stderrText, "invalid-arguments",
+            "invalid-arguments code must appear in CLI stderr for diagnosability");
+        Assert.IsFalse(File.Exists(outputPath), "no output file must be created on argument failure");
+    }
+
     private static async Task WaitForReadyAsync(StringWriter output)
     {
         for (var attempt = 0; attempt < 100; attempt++)
