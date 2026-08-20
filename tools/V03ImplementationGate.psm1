@@ -91,6 +91,8 @@ function Assert-V03ImplementationChildReport {
         throw "Child gate $Name did not report a passing implementation result."
     }
 
+    $resultValue = $resultMatches[0].Groups['result'].Value.Trim()
+
     foreach ($forbiddenPattern in @(
             '(?im)^EvidenceClass:\s*Runtime\s*$',
             '(?im)^ActualHerdr[^:]*:\s*OBSERVED\s*$',
@@ -101,6 +103,25 @@ function Assert-V03ImplementationChildReport {
             throw "Child gate $Name report contains an out-of-scope acceptance claim."
         }
     }
+
+    return $resultValue
+}
+
+function Get-V03ChildResultValue {
+    param(
+        [Parameter(Mandatory)]
+        [object]$Child,
+
+        [Parameter(Mandatory)]
+        [string]$Name
+    )
+
+    $property = $Child.PSObject.Properties[$Name]
+    if ($null -eq $property -or $null -eq $property.Value) {
+        return ''
+    }
+
+    return [string]$property.Value
 }
 
 function New-V03ImplementationGateReport {
@@ -119,11 +140,19 @@ function New-V03ImplementationGateReport {
         [string]$FailureCode,
 
         [Parameter(Mandatory)]
-        [DateTime]$GeneratedUtc
+        [DateTime]$GeneratedUtc,
+
+        [int]$ExpectedChildGateCount = 0
     )
 
-    $passed = @($ChildResults | Where-Object Status -eq 'PASS').Count
-    $total = @($ChildResults).Count
+    $passed = @($ChildResults | Where-Object { (Get-V03ChildResultValue -Child $_ -Name 'Status') -eq 'PASS' }).Count
+    $partial = @($ChildResults | Where-Object { (Get-V03ChildResultValue -Child $_ -Name 'Status') -eq 'PARTIAL' }).Count
+    $failed = @($ChildResults | Where-Object { (Get-V03ChildResultValue -Child $_ -Name 'Status') -eq 'FAIL' }).Count
+    $notRun = @($ChildResults | Where-Object { (Get-V03ChildResultValue -Child $_ -Name 'Status') -eq 'NOT_RUN' }).Count
+    $attempted = @($ChildResults | Where-Object {
+            (Get-V03ChildResultValue -Child $_ -Name 'Attempted') -eq 'True'
+        }).Count
+    $total = if ($ExpectedChildGateCount -gt 0) { $ExpectedChildGateCount } else { $attempted }
     $lines = @(
         'HerdrOps v0.3.0 Issue #17 Implementation Gate',
         "GeneratedUtc: $($GeneratedUtc.ToUniversalTime().ToString('O'))",
@@ -132,6 +161,11 @@ function New-V03ImplementationGateReport {
         'GateKind: Implementation',
         'EvidenceClasses: Static, Contract, Synthetic',
         "ChildGates: $passed/$total PASS",
+        "ChildGatesPartial: $partial/$total PARTIAL",
+        "ChildGatesFailed: $failed/$total FAIL",
+        "ChildGatesNotRun: $notRun/$total NOT_RUN",
+        "ChildGatesAttempted: $attempted/$total",
+        'ChildDiagnosticArtifacts: child-gates/',
         'InstalledHerdrCommand: NOT INVOKED',
         'PackageOrMilestoneDecision: NOT PERFORMED',
         'IssueClosure: NOT PERFORMED'
@@ -144,19 +178,39 @@ function New-V03ImplementationGateReport {
     $lines += ''
     $lines += 'ChildGateResults:'
     foreach ($child in $ChildResults) {
-        $suffix = if ([string]::IsNullOrWhiteSpace($child.ReportSha256)) {
+        $reportSha256 = Get-V03ChildResultValue -Child $child -Name 'ReportSha256'
+        $suffix = if ([string]::IsNullOrWhiteSpace($reportSha256)) {
             ''
         }
         else {
-            " sha256=$($child.ReportSha256)"
+            " sha256=$reportSha256"
         }
-        $lines += "$($child.Status) Issue#$($child.Issue) $($child.Name)$suffix"
+        $status = Get-V03ChildResultValue -Child $child -Name 'Status'
+        if ([string]::IsNullOrWhiteSpace($status)) {
+            $status = 'NOT_RUN'
+        }
+        $lines += "$status Issue#$($child.Issue) $($child.Name)$suffix"
+
+        foreach ($artifact in @(
+                @{ Label = 'GateReportArtifact'; Name = 'ReportArtifact' },
+                @{ Label = 'StdoutArtifact'; Name = 'StdoutArtifact' },
+                @{ Label = 'StdoutSha256'; Name = 'StdoutSha256' },
+                @{ Label = 'StderrArtifact'; Name = 'StderrArtifact' },
+                @{ Label = 'StderrSha256'; Name = 'StderrSha256' },
+                @{ Label = 'FailureCode'; Name = 'FailureCode' })) {
+            $value = Get-V03ChildResultValue -Child $child -Name $artifact.Name
+            if (-not [string]::IsNullOrWhiteSpace($value)) {
+                $lines += ('  {0}: {1}' -f $artifact.Label, $value)
+            }
+        }
     }
 
     $lines += ''
     $lines += 'EvidenceBoundary:'
     $lines += 'This report is an implementation-only aggregation of the v0.3 Static, Contract, and Synthetic child checks for Issues #12 through #16.'
-    $lines += 'It does not inspect an installed Herdr instance, admit live process/file observations, decide issue acceptance, close a milestone, or publish a package.'
+    $lines += 'Contract-backed WPF rendering and other Contract/Synthetic observations remain admitted only within each child report boundary.'
+    $lines += 'This aggregate provides no installed-Herdr evidence, no live File/Git evidence, and no release evidence.'
+    $lines += 'It does not decide issue acceptance, close a milestone, or publish a package.'
     $lines += 'A PASS here is implementation preparation evidence only.'
     return $lines
 }

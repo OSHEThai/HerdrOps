@@ -288,8 +288,9 @@ if ($ImplementationOnly) {
     ) + ($requiredChecks | ForEach-Object { "PASS $_" }) + @(
         '',
         'EvidenceBoundary:',
-        'This implementation-only mode proves the scoped Contract and Synthetic checks and WPF rendering for Issue #15.',
-        'It does not inspect an installed Herdr instance, admit local File/Git observations, decide issue acceptance, or publish a package.'
+        'This implementation-only mode proves the scoped Contract and Synthetic checks, including contract-backed WPF rendering, for Issue #15.',
+        'It provides no installed-Herdr evidence, no live File/Git evidence, or release evidence.',
+        'It does not decide issue acceptance or publish a package.'
     )
 }
 else {
