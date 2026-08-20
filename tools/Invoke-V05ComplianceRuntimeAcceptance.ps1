@@ -317,6 +317,7 @@ $runtimeGateReport = @(
     '',
     'EvidenceBoundary:',
     'This report validates compliance lifecycle routing from suspicion through role-distinct Leader escalation and PM confirmation, retention protection, secret-redacted metadata, and queue consistency against an observed Herdr runtime.',
+    'This runtime acceptance report is not packaged release evidence, clean-install validation, or release authorization.',
     'Current-user Named Pipe isolation provides operational attestation only.'
 )
 $runtimeGateReport | Set-Content -LiteralPath $runtimeGateReportPath -Encoding utf8
