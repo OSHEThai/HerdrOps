@@ -9,9 +9,12 @@ param(
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
 
+. (Join-Path $PSScriptRoot 'lib\V06GateProvenance.ps1')
+
 $repositoryRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
 $artifactRoot = Join-Path $repositoryRoot 'artifacts'
-$gateDirectory = Join-Path $artifactRoot 'release-gates\v0.6.0\issue-32'
+$runId = "$([DateTime]::UtcNow.ToString('yyyyMMddTHHmmssfffffffZ', [Globalization.CultureInfo]::InvariantCulture))-$([Guid]::NewGuid().ToString('N').Substring(0, 8))"
+$gateDirectory = Join-Path $artifactRoot "release-gates\v0.6.0\issue-32\$runId"
 $testResultDirectory = Join-Path $gateDirectory 'test-results'
 $gateReportPath = Join-Path $gateDirectory 'gate-report.txt'
 
@@ -294,6 +297,7 @@ $integrationProject = Join-Path $repositoryRoot 'tests\HerdrOps.IntegrationTests
 $runtimeProject = Join-Path $repositoryRoot 'tests\HerdrOps.RuntimeTests\HerdrOps.RuntimeTests.csproj'
 $contractProject = Join-Path $repositoryRoot 'tests\HerdrOps.ContractTests\HerdrOps.ContractTests.csproj'
 
+$evidenceCaptureStartedUtc = [DateTime]::UtcNow
 $syntheticTests = @(
     Invoke-TargetedTest -EvidenceName 'Daily Summary aggregation synthetic tests' -ProjectPath $unitProject -Filter 'FullyQualifiedName~DailySummaryAggregationTests' -LogFileName 'daily-summary-aggregation.trx'
     Invoke-TargetedTest -EvidenceName 'Daily Summary state synthetic tests' -ProjectPath $integrationProject -Filter 'FullyQualifiedName~DailySummaryStateTests' -LogFileName 'daily-summary-state.trx'
@@ -304,6 +308,7 @@ $contractTests = @(
 )
 
 $captureDirectory = Join-Path $artifactRoot 'design-evidence\v0.6.0\issue-32\daily-summary'
+$evidenceStaleAfterUtc = $evidenceCaptureStartedUtc.AddSeconds(-2)
 $captureSpecifications = @(
     [pscustomobject]@{ FileName = 'daily-summary-th-1672x941.png'; Width = 1672; Height = 941; Mode = 'Thai reference' }
     [pscustomobject]@{ FileName = 'daily-summary-en-1672x941.png'; Width = 1672; Height = 941; Mode = 'English reference' }
@@ -323,6 +328,7 @@ $captureEvidence = foreach ($capture in $captureSpecifications) {
     if ($captureItem.Length -le 0) {
         throw "Daily Summary PNG evidence is empty: $capturePath"
     }
+    Assert-FreshEvidence -Path $capturePath -NotBeforeUtc $evidenceStaleAfterUtc -Description 'Daily Summary PNG evidence'
     [pscustomobject]@{
         FileName = $capture.FileName
         Width = $dimensions.Width
@@ -384,7 +390,7 @@ $report = @(
     ''
     'EvidenceBoundary:'
     'This gate proves only committed Static, Synthetic and Contract checks for Issue #32. It does not prove an installed Herdr session, live Agent events, runtime resource usage, independent acceptance, packaging, release readiness or v0.6 completion.'
-    "GateReport: $gateReportPath"
 )
 $report | Set-Content -LiteralPath $gateReportPath -Encoding UTF8
 $report | Write-Output
+Write-Output "GateReport: $gateReportPath"
