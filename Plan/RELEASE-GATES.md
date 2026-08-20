@@ -44,6 +44,15 @@ Targets are gates to validate, not current achievements.
 
 If a target cannot be met, the release requires a recorded measurement, cause, impact and explicit waiver. Changing a target does not retroactively turn a failed run into a pass.
 
+### v0.7 performance waiver authority
+
+The repository-local authority identity for an Issue #39 performance waiver is
+`@yutthaphon`. A waiver report must carry `ApprovalReference:
+Plan/RELEASE-GATES.md#v07-performance-waiver-authority`; any other identity or
+reference fails closed. This binds the report to the Plan-defined authority
+record and does not by itself constitute human approval, Runtime evidence, or
+Release evidence.
+
 ## Release artifact rules
 
 - Build artifacts are produced in a clean output directory
@@ -52,4 +61,3 @@ If a target cannot be met, the release requires a recorded measurement, cause, i
 - A rebuilt artifact requires a new acceptance run even when source commit is unchanged
 - A Beta label requires v0.7 gates; a Stable label requires v1.0 gates
 - No remote publication, signing claim or automatic update claim without direct evidence
-
