@@ -184,15 +184,122 @@ jobs:
         run: ./tools/Test-V05RoleDistinctReview.ps1 -Configuration Release -SkipBuild
 
 
-      # Static/Synthetic only; No actual Herdr Runtime, no CleanMachine, no Human GO/NO-GO observed.
+      # Static/Synthetic only; Actual Herdr Runtime NOT OBSERVED.
       - name: 'Run v1.0 release-readiness preparation gate (Issue #45) - Static/Synthetic - PowerShell 7 (pwsh)'
         shell: pwsh
-        run: ./tools/release/Test-V10ReleaseReadiness.ps1
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $reportRoot = 'artifacts/release-readiness-gates/v1.0.0/issue-45'
+          try {
+            New-Item -ItemType Directory -Path $reportRoot -Force | Out-Null
+            $reports = @(./tools/release/Test-V10ReleaseReadiness.ps1)
+            if ($reports.Count -ne 1) {
+              throw "Release-readiness gate (PowerShell 7) returned $($reports.Count) objects; expected exactly 1."
+            }
+            $report = $reports[0]
+            if ([int]$report.AssertionCount -ne 15) {
+              throw "Release-readiness gate (PowerShell 7) AssertionCount=$($report.AssertionCount); expected 15."
+            }
+            if ([string]$report.EvidenceClass -cne 'Static/Synthetic') {
+              throw 'Release-readiness gate (PowerShell 7) did not return a Static/Synthetic PASS report.'
+            }
+            foreach ($boundary in @('CleanMachine', 'Runtime', 'Human', 'Release')) {
+              if ([string]$report.$boundary -cne 'NOT OBSERVED') {
+                throw "Release-readiness gate (PowerShell 7) boundary '$boundary' was not NOT OBSERVED."
+              }
+            }
+            $report | Format-List | Out-String | Set-Content -LiteralPath (Join-Path $reportRoot 'pwsh-report.txt') -Encoding utf8
+          } catch {
+            $originalError = $_
+            try {
+              New-Item -ItemType Directory -Path $reportRoot -Force | Out-Null
+              $diagPath = Join-Path $reportRoot 'pwsh-failure.txt'
+              @(
+                "FAILURE: Release-readiness gate (PowerShell 7) did not complete successfully."
+                "EvidenceClass: Static/Synthetic"
+                "Shell: pwsh"
+                "ExitTime: $(Get-Date -Format 'o')"
+                "Error: $($originalError.Exception.Message)"
+                "ScriptStackTrace: $($originalError.ScriptStackTrace)"
+              ) | Set-Content -LiteralPath $diagPath -Encoding utf8
+            } catch {
+              Write-Warning "Could not write release-readiness gate diagnostics: $($_.Exception.Message)"
+            }
+            throw $originalError
+          }
 
       # Static/Synthetic only; validates that the same gate passes on Windows PowerShell 5.1.
       - name: 'Run v1.0 release-readiness preparation gate (Issue #45) - Static/Synthetic - Windows PowerShell 5.1'
+        if: always()
         shell: powershell
-        run: ./tools/release/Test-V10ReleaseReadiness.ps1
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $reportRoot = 'artifacts\release-readiness-gates\v1.0.0\issue-45'
+          try {
+            New-Item -ItemType Directory -Path $reportRoot -Force | Out-Null
+            $reports = @(& .\tools\release\Test-V10ReleaseReadiness.ps1)
+            if ($reports.Count -ne 1) {
+              throw "Release-readiness gate (Windows PowerShell 5.1) returned $($reports.Count) objects; expected exactly 1."
+            }
+            $report = $reports[0]
+            if ([int]$report.AssertionCount -ne 15) {
+              throw "Release-readiness gate (Windows PowerShell 5.1) AssertionCount=$($report.AssertionCount); expected 15."
+            }
+            if ([string]$report.EvidenceClass -cne 'Static/Synthetic') {
+              throw 'Release-readiness gate (Windows PowerShell 5.1) did not return a Static/Synthetic PASS report.'
+            }
+            foreach ($boundary in @('CleanMachine', 'Runtime', 'Human', 'Release')) {
+              if ([string]$report.$boundary -cne 'NOT OBSERVED') {
+                throw "Release-readiness gate (Windows PowerShell 5.1) boundary '$boundary' was not NOT OBSERVED."
+              }
+            }
+            $report | Format-List | Out-String | Set-Content -LiteralPath (Join-Path $reportRoot 'powershell-5.1-report.txt') -Encoding UTF8
+          } catch {
+            $originalError = $_
+            try {
+              New-Item -ItemType Directory -Path $reportRoot -Force | Out-Null
+              $diagPath = Join-Path $reportRoot 'powershell-5.1-failure.txt'
+              @(
+                "FAILURE: Release-readiness gate (Windows PowerShell 5.1) did not complete successfully."
+                "EvidenceClass: Static/Synthetic"
+                "Shell: powershell (5.1)"
+                "ExitTime: $(Get-Date -Format 'o')"
+                "Error: $($originalError.Exception.Message)"
+                "ScriptStackTrace: $($originalError.ScriptStackTrace)"
+              ) | Set-Content -LiteralPath $diagPath -Encoding utf8
+            } catch {
+              Write-Warning "Could not write release-readiness gate diagnostics: $($_.Exception.Message)"
+            }
+            throw $originalError
+          }
+
+      # Pre-fix-sensitive guard: the v1.0 slice must NOT phase the Issue #38
+      # packaging destination-move retry loop, DestinationMove* fault stages,
+      # or the bounded 60000 ms cold-start MSBuild timeout. The packaging gate
+      # exercises these stages functionally; this guard fails statically if a
+      # later change removes the #38 behavior before the functional gate runs.
+      - name: 'Pre-fix-sensitive guard: v1.0 slice preserves Issue #38 packaging fault stages'
+        if: always()
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $packaging = [IO.File]::ReadAllText((Join-Path $env:GITHUB_WORKSPACE 'tools\packaging\Packaging.Common.ps1'))
+          foreach ($stage in @(
+              'DestinationMoveTransientFailure',
+              'DestinationMoveRetryExhaustedFailure',
+              'DestinationMoveDiskFullFailure',
+              'DestinationMoveUnauthorizedFailure',
+              'DestinationMovePostExhaustSuccess')) {
+            if ($packaging -notmatch ([regex]::Escape($stage))) {
+              throw "Issue #38 packaging fault-injection stage '$stage' was removed from Packaging.Common.ps1."
+            }
+          }
+          if ($packaging -notmatch '\$moveAttempts\s*=\s*5') {
+            throw 'Issue #38 packaging destination-move retry loop (moveAttempts = 5) was removed from Packaging.Common.ps1.'
+          }
+          if ($packaging -notmatch '\$TimeoutMilliseconds\s*=\s*60000') {
+            throw 'Issue #38 bounded 60000 ms cold-start MSBuild timeout was removed from Packaging.Common.ps1.'
+          }
 
       - name: Upload test results
         if: always()
@@ -370,5 +477,5 @@ jobs:
         with:
           retention-days: 7
           name: v1.0-release-readiness-gate-report
-          path: artifacts/release-readiness-tests
+          path: artifacts/release-readiness-gates/v1.0.0/issue-45
           if-no-files-found: warn
