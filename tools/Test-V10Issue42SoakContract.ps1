@@ -158,13 +158,8 @@ if ($null -eq $fixtureBytes) {
     Record-Check -Id 'FIXTURE-01' -Status 'FAIL' -EvidenceClass 'Synthetic' -Detail "alert-consistency fixture is missing: $fixtureRelativePath"
 } else {
     try {
-        $fixture = [IO.File]::ReadAllText((Join-Path $repositoryRoot $fixtureRelativePath)) | ConvertFrom-Json -Depth 20
-        if ([int]$fixture.schemaVersion -ne 1 -or [int]$fixture.issue -ne 42) {
-            throw 'fixture schemaVersion or issue identity is wrong'
-        }
-        if (@($fixture.events).Count -eq 0 -or @($fixture.alerts).Count -eq 0) {
-            throw 'fixture events or alerts are empty'
-        }
+        $fixtureText = [IO.File]::ReadAllText((Join-Path $repositoryRoot $fixtureRelativePath))
+        $fixture = Test-SoakFixtureJson -JsonText $fixtureText
         $fixtureResult = Test-SoakAlertConsistency -Events @($fixture.events) -Alerts @($fixture.alerts)
         if (-not $fixtureResult.Pass) {
             throw "committed fixture is not alert-consistent: $($fixtureResult.Findings -join '; ')"
@@ -202,6 +197,15 @@ Record-Check -Id 'RESTART-APP' -Status 'NOT OBSERVED' -EvidenceClass 'Runtime' -
 Record-Check -Id 'RUNTIME-01' -Status 'NOT OBSERVED' -EvidenceClass 'Runtime' -Detail 'no 24-hour actual-Herdr soak or fault injection was performed'
 Record-Check -Id 'RELEASE-01' -Status 'NOT OBSERVED' -EvidenceClass 'Release' -Detail 'no packaged release acceptance or publication was performed'
 
+$finalCommitResult = Get-GitOutput -Arguments @('rev-parse', '--verify', 'HEAD^{commit}')
+$finalCommit = $finalCommitResult.Text.ToLowerInvariant()
+$finalStatusResult = Get-GitOutput -Arguments @('status', '--porcelain=v1', '--untracked-files=all')
+if ($finalCommitResult.ExitCode -ne 0 -or $finalCommit -ne $sourceCommit -or $finalStatusResult.ExitCode -ne 0 -or $finalStatusResult.Lines.Count -ne 0) {
+    Record-Check -Id 'BOUND-04' -Status 'FAIL' -EvidenceClass 'Static' -Detail 'source commit or clean checkout changed during the gate'
+} else {
+    Record-Check -Id 'BOUND-04' -Status 'PASS' -EvidenceClass 'Static' -Detail 'source commit and clean checkout remained unchanged'
+}
+
 $preparationChecks = @($script:checks | Where-Object { $_.Status -ne 'NOT OBSERVED' } | ForEach-Object {
     New-SoakCheck -Id $_.Id -Pass ($_.Status -eq 'PASS') -EvidenceClass $_.EvidenceClass -Detail $_.Detail
 })
@@ -212,52 +216,16 @@ if ($verdict -eq 'PASS') {
     Record-Check -Id 'VERDICT-01' -Status 'PASS' -EvidenceClass 'Synthetic' -Detail "fail-closed verdict is $verdict; no soak PASS was emitted in preparation mode"
 }
 
-$finalCommitResult = Get-GitOutput -Arguments @('rev-parse', '--verify', 'HEAD^{commit}')
-$finalCommit = $finalCommitResult.Text.ToLowerInvariant()
-$finalStatusResult = Get-GitOutput -Arguments @('status', '--porcelain=v1', '--untracked-files=all')
-if ($finalCommit -ne $sourceCommit -or $finalStatusResult.Lines.Count -ne 0) {
-    Record-Check -Id 'BOUND-04' -Status 'FAIL' -EvidenceClass 'Static' -Detail 'source commit or clean checkout changed during the gate'
-} else {
-    Record-Check -Id 'BOUND-04' -Status 'PASS' -EvidenceClass 'Static' -Detail 'source commit and clean checkout remained unchanged'
-}
-
-$checkLines = @($script:checks | ForEach-Object {
-    "$($_.Status) $($_.Id) evidence=$($_.EvidenceClass) $($_.Detail)"
-})
-
 $policyHash = Get-SoakFileSha256 -Path $policyPath
 $contractHash = Get-SoakFileSha256 -Path (Join-Path $repositoryRoot $contractRelativePath)
 $fixtureHash = Get-SoakFileSha256 -Path (Join-Path $repositoryRoot $fixtureRelativePath)
 
-$reportLines = @(
-    'HerdrOps v1.0.0 Issue #42 24-Hour Soak and Fault-Injection Preparation Gate',
-    "GeneratedUtc: $([DateTime]::UtcNow.ToString('O'))",
-    "Issue: $issueNumber",
-    "Version: $version",
-    "Branch: $branch",
-    "SourceCommit: $sourceCommit",
-    "Result: $verdict",
-    'SoakPass: false',
-    'IssueAcceptance: PENDING',
-    'PreparationSlice: STATIC + SYNTHETIC + CONTRACT',
-    "PolicySha256: $policyHash",
-    "ContractSha256: $contractHash",
-    "FixtureSha256: $fixtureHash",
-    'RuntimeEvidence: NOT OBSERVED / NOT CLAIMED',
-    'ReleaseEvidence: NOT OBSERVED / NOT CLAIMED',
-    '',
-    'Checks:',
-    ($checkLines -join [Environment]::NewLine),
-    '',
-    'EvidenceBoundary:',
-    'No 24-hour actual-Herdr soak was run.',
-    'No Herdr/Core/App process was started, stopped, or restarted.',
-    'No live database was opened; database integrity remains NOT OBSERVED.',
-    'No packaged release candidate, clean-machine install, publication, or go/no-go was produced.',
-    'This gate refuses PASS in synthetic/preparation mode and cannot close Issue #42.'
-)
+$reportText = Format-SoakGateReport -IssueNumber $issueNumber -Version $version -Branch $branch `
+    -SourceCommit $sourceCommit -Verdict $verdict -PolicySha256 $policyHash -ContractSha256 $contractHash `
+    -FixtureSha256 $fixtureHash -Checks $script:checks
+
 $utf8 = New-Object System.Text.UTF8Encoding($false)
-[IO.File]::WriteAllText($gateReportPath, ($reportLines -join [Environment]::NewLine), $utf8)
+[IO.File]::WriteAllText($gateReportPath, $reportText, $utf8)
 $gateReportHash = Get-SoakFileSha256 -Path $gateReportPath
 
 $provenance = Get-SoakProvenance -OrderedArtifacts @(

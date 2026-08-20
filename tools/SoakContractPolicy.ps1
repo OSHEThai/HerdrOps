@@ -341,6 +341,81 @@ function New-SoakCheck {
     }
 }
 
+function Test-SoakFixtureJson {
+    param([Parameter(Mandatory)][string]$JsonText)
+
+    if ([string]::IsNullOrWhiteSpace($JsonText)) {
+        throw 'fixture JSON is empty or whitespace'
+    }
+
+    $parsed = $JsonText | ConvertFrom-Json
+    if ($null -eq $parsed) {
+        throw 'fixture JSON parsed to null'
+    }
+
+    if ([int]$parsed.schemaVersion -ne 1 -or [int]$parsed.issue -ne 42) {
+        throw 'fixture schemaVersion must be 1 and issue must be 42'
+    }
+    if (@($parsed.events).Count -eq 0 -or @($parsed.alerts).Count -eq 0) {
+        throw 'fixture events or alerts are empty'
+    }
+
+    return $parsed
+}
+
+function Format-SoakGateReport {
+    param(
+        [Parameter(Mandatory)][string]$IssueNumber,
+        [Parameter(Mandatory)][string]$Version,
+        [Parameter(Mandatory)][string]$Branch,
+        [Parameter(Mandatory)][string]$SourceCommit,
+        [Parameter(Mandatory)][string]$Verdict,
+        [Parameter(Mandatory)][string]$PolicySha256,
+        [Parameter(Mandatory)][string]$ContractSha256,
+        [Parameter(Mandatory)][string]$FixtureSha256,
+        [Parameter(Mandatory)][object[]]$Checks,
+        [string]$GeneratedUtc = ''
+    )
+
+    if ([string]::IsNullOrWhiteSpace($GeneratedUtc)) {
+        $GeneratedUtc = [DateTime]::UtcNow.ToString('O')
+    }
+
+    $checkLines = @($Checks | ForEach-Object {
+        "$($_.Status) $($_.Id) evidence=$($_.EvidenceClass) $($_.Detail)"
+    })
+
+    $reportLines = @(
+        'HerdrOps v1.0.0 Issue #42 24-Hour Soak and Fault-Injection Preparation Gate',
+        "GeneratedUtc: $GeneratedUtc",
+        "Issue: $IssueNumber",
+        "Version: $Version",
+        "Branch: $Branch",
+        "SourceCommit: $SourceCommit",
+        "Result: $Verdict",
+        'SoakPass: false',
+        'IssueAcceptance: PENDING',
+        'PreparationSlice: STATIC + SYNTHETIC + CONTRACT',
+        "PolicySha256: $PolicySha256",
+        "ContractSha256: $ContractSha256",
+        "FixtureSha256: $FixtureSha256",
+        'RuntimeEvidence: NOT OBSERVED / NOT CLAIMED',
+        'ReleaseEvidence: NOT OBSERVED / NOT CLAIMED',
+        '',
+        'Checks:',
+        ($checkLines -join [Environment]::NewLine),
+        '',
+        'EvidenceBoundary:',
+        'No 24-hour actual-Herdr soak was run.',
+        'No Herdr/Core/App process was started, stopped, or restarted.',
+        'No live database was opened; database integrity remains NOT OBSERVED.',
+        'No packaged release candidate, clean-machine install, publication, or go/no-go was produced.',
+        'This gate refuses PASS in synthetic/preparation mode and cannot close Issue #42.'
+    )
+
+    return ($reportLines -join [Environment]::NewLine)
+}
+
 function Test-SoakPolicyFixtures {
     $failures = @()
 
@@ -558,9 +633,137 @@ function Test-SoakPolicyFixtures {
         $failures += "provenance: $($_.Exception.Message)"
     }
 
+    try {
+        $validFixtureJson = @'
+{
+  "schemaVersion": 1,
+  "issue": 42,
+  "fixture": "soak-alert-consistency",
+  "events": [
+    { "id": "e1", "agentId": "a1", "sequence": 1 }
+  ],
+  "alerts": [
+    { "id": "al1", "eventId": "e1", "agentId": "a1", "severity": "info", "acknowledged": false, "acknowledgementTime": "" }
+  ]
+}
+'@
+        $parsedFixture = Test-SoakFixtureJson -JsonText $validFixtureJson
+        if ([int]$parsedFixture.schemaVersion -ne 1 -or [int]$parsedFixture.issue -ne 42) {
+            throw 'valid fixture did not parse schemaVersion or issue correctly'
+        }
+        if (@($parsedFixture.events).Count -ne 1 -or @($parsedFixture.alerts).Count -ne 1) {
+            throw 'valid fixture event/alert counts mismatch'
+        }
+
+        # Negative fixture cases: must fail closed without Depth parameter
+        foreach ($invalidFixture in @(
+            '',
+            '   ',
+            'not-json',
+            '{"schemaVersion": 2, "issue": 42, "events": [{"id":"e1"}], "alerts": [{"id":"a1"}]}',
+            '{"schemaVersion": 1, "issue": 99, "events": [{"id":"e1"}], "alerts": [{"id":"a1"}]}',
+            '{"schemaVersion": 1, "issue": 42, "events": [], "alerts": [{"id":"a1"}]}',
+            '{"schemaVersion": 1, "issue": 42, "events": [{"id":"e1"}], "alerts": []}'
+        )) {
+            $threw = $false
+            try {
+                Test-SoakFixtureJson -JsonText $invalidFixture | Out-Null
+            } catch {
+                $threw = $true
+            }
+            if (-not $threw) {
+                throw "invalid fixture JSON was accepted instead of failing closed: '$invalidFixture'"
+            }
+        }
+    } catch {
+        $failures += "fixture-json: $($_.Exception.Message)"
+    }
+
+    try {
+        # Check ordering and verdict computation regression:
+        # All checks including BOUND-04 must be evaluated before verdict computation and report serialization.
+        $checksPass = @(
+            [pscustomobject]@{ Id = 'BOUND-01'; Status = 'PASS'; EvidenceClass = 'Static'; Detail = 'source commit resolved' },
+            [pscustomobject]@{ Id = 'BOUND-02'; Status = 'PASS'; EvidenceClass = 'Static'; Detail = 'branch matches' },
+            [pscustomobject]@{ Id = 'BOUND-03'; Status = 'PASS'; EvidenceClass = 'Static'; Detail = 'clean checkout' },
+            [pscustomobject]@{ Id = 'CONTRACT-01'; Status = 'PASS'; EvidenceClass = 'Static'; Detail = 'contract markers' },
+            [pscustomobject]@{ Id = 'STATIC-01'; Status = 'PASS'; EvidenceClass = 'Static'; Detail = 'policy parses' },
+            [pscustomobject]@{ Id = 'SELF-01'; Status = 'PASS'; EvidenceClass = 'Synthetic'; Detail = 'self tests pass' },
+            [pscustomobject]@{ Id = 'FIXTURE-01'; Status = 'PASS'; EvidenceClass = 'Synthetic'; Detail = 'fixture passes' },
+            [pscustomobject]@{ Id = 'CANDIDATE-01'; Status = 'NOT OBSERVED'; EvidenceClass = 'Static'; Detail = 'no candidate archive' },
+            [pscustomobject]@{ Id = 'INTEGRITY-01'; Status = 'NOT OBSERVED'; EvidenceClass = 'Contract'; Detail = 'no db probe' },
+            [pscustomobject]@{ Id = 'RESTART-HERDR'; Status = 'NOT OBSERVED'; EvidenceClass = 'Runtime'; Detail = 'refused' },
+            [pscustomobject]@{ Id = 'RESTART-CORE'; Status = 'NOT OBSERVED'; EvidenceClass = 'Runtime'; Detail = 'refused' },
+            [pscustomobject]@{ Id = 'RESTART-APP'; Status = 'NOT OBSERVED'; EvidenceClass = 'Runtime'; Detail = 'refused' },
+            [pscustomobject]@{ Id = 'RUNTIME-01'; Status = 'NOT OBSERVED'; EvidenceClass = 'Runtime'; Detail = 'not observed' },
+            [pscustomobject]@{ Id = 'RELEASE-01'; Status = 'NOT OBSERVED'; EvidenceClass = 'Release'; Detail = 'not observed' },
+            [pscustomobject]@{ Id = 'BOUND-04'; Status = 'PASS'; EvidenceClass = 'Static'; Detail = 'source commit and checkout unchanged' }
+        )
+
+        $prepChecks = @($checksPass | Where-Object { $_.Status -ne 'NOT OBSERVED' } | ForEach-Object {
+            New-SoakCheck -Id $_.Id -Pass ($_.Status -eq 'PASS') -EvidenceClass $_.EvidenceClass -Detail $_.Detail
+        })
+        $passVerdict = Get-SoakVerdict -Checks $prepChecks -RuntimeObserved $false -ReleaseObserved $false -PreparationMode $true
+        if ($passVerdict -ne 'PENDING') {
+            throw "expected PENDING verdict for clean preparation checks; got '$passVerdict'"
+        }
+
+        $allChecksWithVerdict = @($checksPass) + @(
+            [pscustomobject]@{ Id = 'VERDICT-01'; Status = 'PASS'; EvidenceClass = 'Synthetic'; Detail = "fail-closed verdict is $passVerdict" }
+        )
+        $passReport = Format-SoakGateReport -IssueNumber '#42' -Version 'v1.0.0' -Branch 'codex/v10-issue-42-soak-contract' `
+            -SourceCommit ('0' * 40) -Verdict $passVerdict -PolicySha256 ('a' * 64) -ContractSha256 ('b' * 64) `
+            -FixtureSha256 ('c' * 64) -Checks $allChecksWithVerdict -GeneratedUtc '2026-08-20T00:00:00.0000000Z'
+
+        if ($passReport.IndexOf('Result: PENDING', [StringComparison]::Ordinal) -lt 0) {
+            throw 'passing report does not contain Result: PENDING'
+        }
+        if ($passReport.IndexOf('PASS BOUND-04', [StringComparison]::Ordinal) -lt 0) {
+            throw 'passing report does not contain PASS BOUND-04'
+        }
+        if ($passReport.IndexOf('PASS VERDICT-01', [StringComparison]::Ordinal) -lt 0) {
+            throw 'passing report does not contain PASS VERDICT-01'
+        }
+
+        # When BOUND-04 fails (dirty checkout or modified commit at gate end), verdict MUST be FAIL
+        $checksBound04Fail = @($checksPass | ForEach-Object {
+            if ($_.Id -eq 'BOUND-04') {
+                [pscustomobject]@{ Id = 'BOUND-04'; Status = 'FAIL'; EvidenceClass = 'Static'; Detail = 'checkout changed' }
+            } else {
+                $_
+            }
+        })
+        $prepChecksBound04Fail = @($checksBound04Fail | Where-Object { $_.Status -ne 'NOT OBSERVED' } | ForEach-Object {
+            New-SoakCheck -Id $_.Id -Pass ($_.Status -eq 'PASS') -EvidenceClass $_.EvidenceClass -Detail $_.Detail
+        })
+        $bound04FailVerdict = Get-SoakVerdict -Checks $prepChecksBound04Fail -RuntimeObserved $false -ReleaseObserved $false -PreparationMode $true
+        if ($bound04FailVerdict -ne 'FAIL') {
+            throw "expected FAIL verdict when BOUND-04 fails; got '$bound04FailVerdict'"
+        }
+
+        $allChecksBound04Fail = @($checksBound04Fail) + @(
+            [pscustomobject]@{ Id = 'VERDICT-01'; Status = 'PASS'; EvidenceClass = 'Synthetic'; Detail = "fail-closed verdict is $bound04FailVerdict" }
+        )
+        $bound04FailReport = Format-SoakGateReport -IssueNumber '#42' -Version 'v1.0.0' -Branch 'codex/v10-issue-42-soak-contract' `
+            -SourceCommit ('0' * 40) -Verdict $bound04FailVerdict -PolicySha256 ('a' * 64) -ContractSha256 ('b' * 64) `
+            -FixtureSha256 ('c' * 64) -Checks $allChecksBound04Fail -GeneratedUtc '2026-08-20T00:00:00.0000000Z'
+
+        if ($bound04FailReport.IndexOf('Result: FAIL', [StringComparison]::Ordinal) -lt 0) {
+            throw 'bound-04 failure report does not contain Result: FAIL'
+        }
+        if ($bound04FailReport.IndexOf('Result: PENDING', [StringComparison]::Ordinal) -ge 0) {
+            throw 'bound-04 failure report stale Result: PENDING was not cleared'
+        }
+        if ($bound04FailReport.IndexOf('FAIL BOUND-04', [StringComparison]::Ordinal) -lt 0) {
+            throw 'bound-04 failure report does not contain FAIL BOUND-04 check line'
+        }
+    } catch {
+        $failures += "report-ordering-and-verdict: $($_.Exception.Message)"
+    }
     if ($failures.Count -gt 0) {
         throw "Issue #42 soak policy fixtures failed: $($failures -join '; ')"
     }
+
 
     return $true
 }
