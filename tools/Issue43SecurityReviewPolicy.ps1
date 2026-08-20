@@ -627,18 +627,27 @@ function Get-Issue43ExactlyOneTrxFile {
 
     $full = [IO.Path]::GetFullPath($Directory)
     $prefix = $full.TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
-    $candidates = @(
-        Get-ChildItem -LiteralPath $full -Recurse -File -ErrorAction SilentlyContinue |
-            Where-Object {
-                $_.FullName.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase) -and
-                    [string]::Equals($_.Name, $FileName, [StringComparison]::OrdinalIgnoreCase)
-            }
-    )
+    $candidates = @()
+    $enumerationFailed = $false
+    try {
+        # An incomplete traversal must not be treated as an empty or unique
+        # result: access/enumeration errors invalidate exactly-one evidence.
+        $candidates = @(
+            Get-ChildItem -LiteralPath $full -Recurse -File -ErrorAction Stop |
+                Where-Object {
+                    $_.FullName.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase) -and
+                        [string]::Equals($_.Name, $FileName, [StringComparison]::OrdinalIgnoreCase)
+                }
+        )
+    } catch {
+        $enumerationFailed = $true
+    }
 
     return [pscustomobject]@{
-        Count = $candidates.Count
-        Path = if ($candidates.Count -eq 1) { $candidates[0].FullName } else { $null }
-        Found = $candidates.Count -eq 1
+        Count = if ($enumerationFailed) { 0 } else { $candidates.Count }
+        Path = if (-not $enumerationFailed -and $candidates.Count -eq 1) { $candidates[0].FullName } else { $null }
+        Found = -not $enumerationFailed -and $candidates.Count -eq 1
+        EnumerationFailed = $enumerationFailed
     }
 }
 
@@ -659,6 +668,7 @@ function Test-Issue43ProcessFixtures {
             @{ Arguments = @('', 'x'); Expected = '"" x' },
             @{ Arguments = @('a"b'); Expected = '"a\"b"' },
             @{ Arguments = @('C:\path with spaces\'); Expected = '"C:\path with spaces\\"' },
+            @{ Arguments = @('C:\path with "embedded"\'); Expected = '"C:\path with \"embedded\"\\"' },
             @{ Arguments = @('a', 'b'); Expected = 'a b' },
             @{ Arguments = @("tab`tinside"); Expected = "`"tab`tinside`"" }
         )
@@ -698,6 +708,7 @@ foreach ($value in $values) {
             'FullyQualifiedName~StateIpcContractTests|FullyQualifiedName~SelfReportContractTests',
             'quote"inside',
             'trailing\',
+            'C:\path with "embedded"\',
             '',
             "tab`tinside"
         )
@@ -719,6 +730,7 @@ foreach ($value in $values) {
             '[FullyQualifiedName~StateIpcContractTests|FullyQualifiedName~SelfReportContractTests]',
             '[quote"inside]',
             '[trailing\]',
+            '[C:\path with "embedded"\]',
             '[]',
             "[tab`tinside]"
         )
@@ -803,6 +815,11 @@ Start-Sleep -Seconds 60
         $duplicateTrx = Get-Issue43ExactlyOneTrxFile -Directory $trxDirectory -FileName 'C-01-ipc.trx'
         if ($duplicateTrx.Found -or $duplicateTrx.Count -ne 2) {
             throw "Issue #43 exactly-one TRX helper did not fail closed on duplicate names (found $($duplicateTrx.Count))."
+        }
+        $missingTrxDirectory = Join-Path $fixtureRoot 'missing-trx-results'
+        $enumerationFailure = Get-Issue43ExactlyOneTrxFile -Directory $missingTrxDirectory -FileName 'C-01-ipc.trx'
+        if (-not $enumerationFailure.EnumerationFailed -or $enumerationFailure.Found) {
+            throw 'Issue #43 exactly-one TRX helper did not fail closed on an enumeration error.'
         }
 
         return $true

@@ -540,6 +540,11 @@ function Test-SelectedTest {
     }
 
     $trxResult = Get-Issue43ExactlyOneTrxFile -Directory $testDirectory -FileName $trxName
+    if ($trxResult.EnumerationFailed) {
+        $script:testReports += [pscustomobject]@{ Id = $Id; Name = $Name; EvidenceClass = $EvidenceClass; Status = 'FAIL'; Path = 'NOT AVAILABLE'; Sha256 = 'NOT AVAILABLE'; Total = 0; Passed = 0; Failed = 1 }
+        Record-Check -Id $Id -Status 'FAIL' -EvidenceClass $EvidenceClass -Detail "$Name TRX result enumeration failed; exactly-one evidence is unavailable"
+        return
+    }
     if (-not $trxResult.Found) {
         $script:testReports += [pscustomobject]@{ Id = $Id; Name = $Name; EvidenceClass = $EvidenceClass; Status = 'FAIL'; Path = 'NOT AVAILABLE'; Sha256 = 'NOT AVAILABLE'; Total = 0; Passed = 0; Failed = 1 }
         Record-Check -Id $Id -Status 'FAIL' -EvidenceClass $EvidenceClass -Detail "$Name did not produce exactly one TRX result (found $($trxResult.Count))"
@@ -1125,4 +1130,3 @@ Write-Output "EvidenceClasses: Static=$(Get-EvidenceClassStatus -EvidenceClass '
 if ($result -ne 'PASS') {
     throw "Issue #43 security/privacy preparation gate failed: $($failures -join '; ')"
 }
-
