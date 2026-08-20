@@ -746,6 +746,7 @@ function Write-Reports {
         'Live listeners, effective Windows pipe ACLs, live processes, Registry, AppData, and live database: NOT OBSERVED / NOT CLAIMED.',
         'Administrator non-elevated host proof: NOT OBSERVED / NOT CLAIMED.',
         'BuiltProcess evidence: NOT RUN.',
+        'RuntimeEvidenceBoundaryTests (when run in Release configuration): bounded local test evidence only; actual Herdr Runtime/Release evidence: NOT OBSERVED / NOT CLAIMED.',
         'Independent review: NOT OBSERVED / NOT CLAIMED.',
         'Human approval and go/no-go: NOT OBSERVED / NOT CLAIMED.',
         'Release packaging, installation, upgrade, rollback acceptance, and publication: NOT OBSERVED / NOT CLAIMED.',
@@ -823,6 +824,7 @@ function Write-Reports {
         'Actual Herdr runtime: NOT OBSERVED / NOT CLAIMED.',
         'Installed Herdr compatibility, live listener inventory, effective Windows ACLs, and cross-account isolation: NOT OBSERVED / NOT CLAIMED.',
         'Live processes, Registry, AppData, live database, and host elevation state: NOT OBSERVED / NOT CLAIMED.',
+        'RuntimeEvidenceBoundaryTests (when run in Release configuration): bounded local test evidence only; actual Herdr Runtime/Release evidence: NOT OBSERVED / NOT CLAIMED.',
         'Independent review: NOT OBSERVED / NOT CLAIMED.',
         'Human approval and go/no-go: NOT OBSERVED / NOT CLAIMED.',
         'Release packaging, clean-machine installation, upgrade, rollback acceptance, and publication: NOT OBSERVED / NOT CLAIMED.',
@@ -862,7 +864,7 @@ if ($LASTEXITCODE -ne 0 -or $sourceCommit -notmatch '^[0-9a-f]{40}$') {
 
 $branchOutput = @(& git -C $repositoryRoot symbolic-ref --short HEAD 2>&1)
 $observedBranch = ($branchOutput -join '').Trim()
-if ($LASTEXITCODE -ne 0 -or $observedBranch -ne $reviewedBranch) {
+if ($LASTEXITCODE -ne 0 -or -not [string]::Equals($observedBranch, $reviewedBranch, [StringComparison]::Ordinal)) {
     Record-Check -Id 'BOUND-02' -Status 'FAIL' -EvidenceClass 'Static' -Detail "expected reviewed branch $reviewedBranch but observed $observedBranch"
 } else {
     Record-Check -Id 'BOUND-02' -Status 'PASS' -EvidenceClass 'Static' -Detail "branch is the explicitly reviewed identity: $reviewedBranch"
@@ -1070,6 +1072,7 @@ $loopbackCodePattern = '(?i)\b(?:https?|wss?)\s*:\s*//\s*(?:localhost|127\.0\.0\
 $loopbackRawPattern = '(?i)(?:https?|wss?)\s*:\s*//\s*(?:localhost|127\.0\.0\.1|\[?::1\]?)(?::\d+)?'
 
 try {
+    Test-Issue43BranchIdentityFixtures | Out-Null
     Test-Issue43ScannerFixtures | Out-Null
     Test-Issue43ProductScannerWrapperFixtures -CodePattern $loopbackCodePattern -RawPattern $loopbackRawPattern | Out-Null
     Test-Issue43ReportWriterFixtures | Out-Null

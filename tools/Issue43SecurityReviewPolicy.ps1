@@ -442,6 +442,32 @@ function Test-Issue43ReportWriterFixtures {
     return $true
 }
 
+function Test-Issue43OrdinalBranchIdentity {
+    param(
+        [Parameter(Mandatory)]
+        [string]$ObservedBranch,
+
+        [Parameter(Mandatory)]
+        [string]$ReviewedBranch
+    )
+
+    return [string]::Equals($ObservedBranch, $ReviewedBranch, [StringComparison]::Ordinal)
+}
+
+function Test-Issue43BranchIdentityFixtures {
+    $actualBranch = 'codex/v10-issue-43-final'
+    $wrongCaseBranch = 'CODEX/V10-ISSUE-43-FINAL'
+
+    if (-not (Test-Issue43OrdinalBranchIdentity -ObservedBranch $actualBranch -ReviewedBranch $actualBranch)) {
+        throw 'Issue #43 ordinal branch identity fixture rejected an exact branch identity.'
+    }
+    if (Test-Issue43OrdinalBranchIdentity -ObservedBranch $actualBranch -ReviewedBranch $wrongCaseBranch) {
+        throw 'Issue #43 ordinal branch identity fixture accepted a wrong-case branch identity.'
+    }
+
+    return $true
+}
+
 function ConvertTo-Issue43NativeArgumentString {
     param(
         [string[]]$Arguments
@@ -660,6 +686,47 @@ function Get-Issue43ExactlyOneTrxFile {
     }
 }
 
+function Remove-Issue43OwnedFixtureDirectory {
+    param(
+        [Parameter(Mandatory)]
+        [string]$FixtureRoot,
+
+        [scriptblock]$RemoveDirectory
+    )
+
+    if ([string]::IsNullOrWhiteSpace($FixtureRoot)) {
+        throw 'Issue #43 fixture cleanup requires an owned directory path.'
+    }
+
+    $fullPath = [IO.Path]::GetFullPath($FixtureRoot).TrimEnd([char]92, [char]47)
+    $tempRoot = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd([char]92, [char]47)
+    $tempPrefix = $tempRoot + [IO.Path]::DirectorySeparatorChar
+    $leafName = [IO.Path]::GetFileName($fullPath)
+    if (-not $fullPath.StartsWith($tempPrefix, [StringComparison]::OrdinalIgnoreCase) -or
+        -not $leafName.StartsWith('HerdrOps Issue43 Process Fixture ', [StringComparison]::Ordinal)) {
+        throw "Issue #43 fixture cleanup refused an unowned path: $FixtureRoot"
+    }
+
+    if (Test-Path -LiteralPath $fullPath -PathType Any) {
+        $item = Get-Item -LiteralPath $fullPath -Force -ErrorAction Stop
+        if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw "Issue #43 fixture cleanup refused a reparse-point path: $FixtureRoot"
+        }
+
+        if ($null -eq $RemoveDirectory) {
+            Remove-Item -LiteralPath $fullPath -Recurse -Force -ErrorAction Stop
+        } else {
+            & $RemoveDirectory $fullPath
+        }
+    }
+
+    if (Test-Path -LiteralPath $fullPath -PathType Any) {
+        throw "Issue #43 fixture cleanup could not verify removal of owned path: $FixtureRoot"
+    }
+
+    return $true
+}
+
 function Test-Issue43ProcessFixtures {
     $fixtureRoot = Join-Path ([IO.Path]::GetTempPath()) "HerdrOps Issue43 Process Fixture $([Guid]::NewGuid().ToString('N'))"
     if ($fixtureRoot -notmatch ' ') {
@@ -845,8 +912,32 @@ Start-Sleep -Seconds 60
             throw 'Issue #43 exactly-one TRX helper did not fail closed on an injected access-denied enumeration.'
         }
 
+        $cleanupRegressionRoot = Join-Path ([IO.Path]::GetTempPath()) "HerdrOps Issue43 Process Fixture Cleanup $([Guid]::NewGuid().ToString('N'))"
+        New-Item -ItemType Directory -Path $cleanupRegressionRoot -Force | Out-Null
+        try {
+            $cleanupFailureObserved = $false
+            try {
+                Remove-Issue43OwnedFixtureDirectory -FixtureRoot $cleanupRegressionRoot -RemoveDirectory {
+                    param([string]$Path)
+                } | Out-Null
+            } catch {
+                if ($_.Exception.Message -notlike '*could not verify removal*') {
+                    throw
+                }
+                $cleanupFailureObserved = $true
+            }
+            if (-not $cleanupFailureObserved) {
+                throw 'Issue #43 fixture cleanup regression accepted an unremoved owned directory.'
+            }
+            if (-not (Test-Path -LiteralPath $cleanupRegressionRoot -PathType Container)) {
+                throw 'Issue #43 fixture cleanup regression lost its owned directory before verification.'
+            }
+        } finally {
+            Remove-Issue43OwnedFixtureDirectory -FixtureRoot $cleanupRegressionRoot | Out-Null
+        }
+
         return $true
     } finally {
-        Remove-Item -LiteralPath $fixtureRoot -Recurse -Force -ErrorAction SilentlyContinue
+        Remove-Issue43OwnedFixtureDirectory -FixtureRoot $fixtureRoot | Out-Null
     }
 }
