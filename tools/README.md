@@ -168,8 +168,9 @@ dotnet artifacts/bin/HerdrOps.Core/release/HerdrOps.Core.dll trace-herdr-termina
 # self-test suite (positive passing/waived boundaries and negative violations).
 ./tools/Test-V07PerformanceBudgets.ps1 -SelfTest
 
-# Evaluate a candidate performance report against Plan v0.7 non-functional budgets
-# and candidate executable hashes without live Herdr runtime execution.
+# Negative control: the committed passing-budget-report fixture intentionally carries
+# stale source/binary bindings and must fail closed against a different current build.
+# This command does not provide live Herdr runtime or release credit.
 ./tools/Test-V07PerformanceBudgets.ps1 `
   -ReportPath tests/fixtures/v0.7/budgets/passing-budget-report.json `
   -SkipBuild

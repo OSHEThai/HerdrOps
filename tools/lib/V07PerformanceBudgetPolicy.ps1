@@ -169,7 +169,12 @@ namespace HerdrOps.BudgetValidation
             }
 
             string timestamp = root["TimestampUtc"] as string;
-            if (timestamp == null || !Regex.IsMatch(timestamp, @"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$"))
+            DateTimeOffset parsedTimestamp;
+            if (timestamp == null ||
+                !Regex.IsMatch(timestamp, @"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$") ||
+                !DateTimeOffset.TryParse(timestamp, CultureInfo.InvariantCulture,
+                    DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal, out parsedTimestamp) ||
+                parsedTimestamp.Offset != TimeSpan.Zero)
             {
                 throw new InvalidOperationException(string.Format("Strict schema violation: TimestampUtc must be a valid ISO 8601 UTC timestamp ending in 'Z'; found '{0}' in {1}.", timestamp, sourceDescription));
             }
@@ -447,6 +452,18 @@ namespace HerdrOps.BudgetValidation
                  {
                      throw new InvalidOperationException(string.Format("Strict schema violation: EvidenceBoundary property '{0}' must be a non-empty string in {1}.", re, sourceDescription));
                  }
+             }
+             string actualHerdrRuntime = (string)ev["ActualHerdrRuntime"];
+             string soakExecution = (string)ev["SoakExecution"];
+             if (evidenceClass == "Runtime" &&
+                 (actualHerdrRuntime != "OBSERVED" || soakExecution != "OBSERVED"))
+             {
+                 throw new InvalidOperationException(string.Format("Strict schema violation: Runtime evidence requires ActualHerdrRuntime and SoakExecution to be exactly 'OBSERVED' in {0}.", sourceDescription));
+             }
+             if (evidenceClass == "Preparation" &&
+                 (actualHerdrRuntime != "NOT OBSERVED / NOT CLAIMED" || soakExecution != "NOT OBSERVED / NOT CLAIMED"))
+             {
+                 throw new InvalidOperationException(string.Format("Strict schema violation: Preparation evidence requires ActualHerdrRuntime and SoakExecution to be exactly 'NOT OBSERVED / NOT CLAIMED' in {0}.", sourceDescription));
              }
         }
 
@@ -1160,10 +1177,20 @@ function Test-PerformanceBudgetReport {
         $allPassed = $false
         $checks.Add([pscustomobject]@{ Id='V07-HOST-ENVIRONMENT-REQUIRED'; Metric='Host environment declaration'; Target='HostEnvironment is explicitly declared'; Observed='Missing'; Status='FAIL'; WaiverApplied=$false; Detail='HostEnvironment is required; host context cannot be inferred or omitted.' })
     }
-    $isRuntimeAdmission = ($evidenceClass -eq 'Runtime' -and
-        $null -ne $ReportObject.PSObject.Properties['EvidenceBoundary'] -and
-        [string]$ReportObject.EvidenceBoundary.ActualHerdrRuntime -match '^OBSERVED$' -and
-        [string]$ReportObject.EvidenceBoundary.SoakExecution -match '^OBSERVED$')
+    $hasEvidenceBoundary = ($null -ne $ReportObject.PSObject.Properties['EvidenceBoundary'] -and $null -ne $ReportObject.EvidenceBoundary)
+    $actualHerdrRuntime = if ($hasEvidenceBoundary -and $null -ne $ReportObject.EvidenceBoundary.PSObject.Properties['ActualHerdrRuntime']) { [string]$ReportObject.EvidenceBoundary.ActualHerdrRuntime } else { '' }
+    $soakExecution = if ($hasEvidenceBoundary -and $null -ne $ReportObject.EvidenceBoundary.PSObject.Properties['SoakExecution']) { [string]$ReportObject.EvidenceBoundary.SoakExecution } else { '' }
+    $evidenceBoundaryConsistent = (($evidenceClass -eq 'Runtime' -and
+            $actualHerdrRuntime -ceq 'OBSERVED' -and $soakExecution -ceq 'OBSERVED') -or
+        ($evidenceClass -eq 'Preparation' -and
+            $actualHerdrRuntime -ceq 'NOT OBSERVED / NOT CLAIMED' -and $soakExecution -ceq 'NOT OBSERVED / NOT CLAIMED'))
+    if (-not $evidenceBoundaryConsistent) {
+        $allPassed = $false
+        $checks.Add([pscustomobject]@{ Id='V07-EVIDENCE-BOUNDARY-CONSISTENCY'; Metric='Evidence class and runtime boundary'; Target="Runtime requires OBSERVED/OBSERVED; Preparation requires NOT OBSERVED / NOT CLAIMED"; Observed="EvidenceClass=$evidenceClass; ActualHerdrRuntime=$actualHerdrRuntime; SoakExecution=$soakExecution"; Status='FAIL'; WaiverApplied=$false; Detail='EvidenceClass and EvidenceBoundary are inconsistent; runtime admission fails closed.' })
+    } else {
+        $checks.Add([pscustomobject]@{ Id='V07-EVIDENCE-BOUNDARY-CONSISTENCY'; Metric='Evidence class and runtime boundary'; Target="Runtime requires OBSERVED/OBSERVED; Preparation requires NOT OBSERVED / NOT CLAIMED"; Observed="EvidenceClass=$evidenceClass; ActualHerdrRuntime=$actualHerdrRuntime; SoakExecution=$soakExecution"; Status='PASS'; WaiverApplied=$false; Detail='EvidenceClass and EvidenceBoundary are consistent.' })
+    }
+    $isRuntimeAdmission = ($evidenceClass -eq 'Runtime' -and $evidenceBoundaryConsistent)
 
     if ([string]::IsNullOrWhiteSpace($ExpectedSourceCommit) -and -not [string]::IsNullOrWhiteSpace($RepositoryRoot)) {
         $ExpectedSourceCommit = Test-CleanRepositoryState -RepositoryRoot $RepositoryRoot
@@ -2377,6 +2404,40 @@ function Invoke-PerformanceBudgetSelfTests {
         & $recordSelfTest 'Negative: Stale candidate source commit fails closed' (-not $staleEval.Passed -and $sourceCheck.Status -eq 'FAIL') 'Candidate source commit mismatch rejected'
     } catch {
         & $recordSelfTest 'Negative: Stale candidate source commit fails closed' $false $_.Exception.Message
+    }
+
+    # Negative Test 37: A mutated Runtime object without observed runtime/soak fails closed.
+    try {
+        $runtimeBoundaryBase = ConvertFrom-StrictPerformanceBudgetJson -JsonText (Get-BoundedUtf8FileText -Path $passingPath) -SourceDescription 'runtime boundary mutation test'
+        $runtimeBoundaryReport = New-SynthesizedCandidateBoundReport -BaseReportObject $runtimeBoundaryBase -RepositoryRoot $RepositoryRoot
+        $runtimeBoundaryReport.EvidenceClass = 'Runtime'
+        $runtimeBoundaryEval = Test-PerformanceBudgetReport -ReportObject $runtimeBoundaryReport -CandidateDirectory (Join-Path $RepositoryRoot 'artifacts\bin') -RepositoryRoot $RepositoryRoot -ExpectedSourceCommit ([string]$runtimeBoundaryReport.Candidate.SourceCommit)
+        $boundaryCheck = @($runtimeBoundaryEval.Checks | Where-Object Id -eq 'V07-EVIDENCE-BOUNDARY-CONSISTENCY')[0]
+        & $recordSelfTest 'Negative: Runtime without observed runtime and soak fails closed' (-not $runtimeBoundaryEval.Passed -and $boundaryCheck.Status -eq 'FAIL') 'Runtime boundary mismatch rejected'
+    } catch {
+        & $recordSelfTest 'Negative: Runtime without observed runtime and soak fails closed' $false $_.Exception.Message
+    }
+
+    # Negative Test 38: A mutated Preparation object claiming observed runtime/soak fails closed.
+    try {
+        $prepBoundaryBase = ConvertFrom-StrictPerformanceBudgetJson -JsonText (Get-BoundedUtf8FileText -Path $passingPath) -SourceDescription 'preparation boundary mutation test'
+        $prepBoundaryReport = New-SynthesizedCandidateBoundReport -BaseReportObject $prepBoundaryBase -RepositoryRoot $RepositoryRoot
+        $prepBoundaryReport.EvidenceBoundary.ActualHerdrRuntime = 'OBSERVED'
+        $prepBoundaryReport.EvidenceBoundary.SoakExecution = 'OBSERVED'
+        $prepBoundaryEval = Test-PerformanceBudgetReport -ReportObject $prepBoundaryReport -CandidateDirectory (Join-Path $RepositoryRoot 'artifacts\bin') -RepositoryRoot $RepositoryRoot -ExpectedSourceCommit ([string]$prepBoundaryReport.Candidate.SourceCommit)
+        $boundaryCheck = @($prepBoundaryEval.Checks | Where-Object Id -eq 'V07-EVIDENCE-BOUNDARY-CONSISTENCY')[0]
+        & $recordSelfTest 'Negative: Preparation claiming observed runtime and soak fails closed' (-not $prepBoundaryEval.Passed -and $boundaryCheck.Status -eq 'FAIL') 'Preparation boundary mismatch rejected'
+    } catch {
+        & $recordSelfTest 'Negative: Preparation claiming observed runtime and soak fails closed' $false $_.Exception.Message
+    }
+
+    # Negative Test 39: Timestamp shape alone cannot admit an impossible UTC date/time.
+    try {
+        $invalidTimestampJson = (Get-BoundedUtf8FileText -Path $passingPath) -replace '"TimestampUtc":\s*"[^"]+"', '"TimestampUtc": "2026-99-99T99:99:99Z"'
+        $null = ConvertFrom-StrictPerformanceBudgetJson -JsonText $invalidTimestampJson -SourceDescription 'invalid semantic timestamp test'
+        & $recordSelfTest 'Negative: Impossible UTC timestamp fails semantic validation' $false 'Expected impossible timestamp rejection was not thrown'
+    } catch {
+        & $recordSelfTest 'Negative: Impossible UTC timestamp fails semantic validation' ($_.Exception.Message -match 'TimestampUtc') "Rejected impossible timestamp: $($_.Exception.Message)"
     }
 
     return @($selfTestResults)

@@ -294,6 +294,19 @@ $evalRun8h = Test-PerformanceBudgetReport -ReportObject $synthRun8hReport -Candi
 $run8hCheck = @($evalRun8h.Checks | Where-Object Id -eq 'V07-PERF-07-SOAK')[0]
 Assert-Test -Name '8-hour soak in Runtime admission passes' -Condition ($evalRun8h.Passed -and $run8hCheck.Status -eq 'PASS')
 
+$runtimeWithoutObserved = New-SynthesizedPassingReport
+$runtimeWithoutObserved.EvidenceClass = 'Runtime'
+$evalRuntimeWithoutObserved = Test-PerformanceBudgetReport -ReportObject $runtimeWithoutObserved -CandidateDirectory (Join-Path $repositoryRoot 'artifacts\bin') -RepositoryRoot $repositoryRoot -ExpectedSourceCommit ([string]$runtimeWithoutObserved.Candidate.SourceCommit)
+$runtimeBoundaryCheck = @($evalRuntimeWithoutObserved.Checks | Where-Object Id -eq 'V07-EVIDENCE-BOUNDARY-CONSISTENCY')[0]
+Assert-Test -Name 'Runtime without observed runtime and soak fails closed' -Condition (-not $evalRuntimeWithoutObserved.Passed -and $runtimeBoundaryCheck.Status -eq 'FAIL')
+
+$preparationClaimingObserved = New-SynthesizedPassingReport
+$preparationClaimingObserved.EvidenceBoundary.ActualHerdrRuntime = 'OBSERVED'
+$preparationClaimingObserved.EvidenceBoundary.SoakExecution = 'OBSERVED'
+$evalPreparationClaimingObserved = Test-PerformanceBudgetReport -ReportObject $preparationClaimingObserved -CandidateDirectory (Join-Path $repositoryRoot 'artifacts\bin') -RepositoryRoot $repositoryRoot -ExpectedSourceCommit ([string]$preparationClaimingObserved.Candidate.SourceCommit)
+$preparationBoundaryCheck = @($evalPreparationClaimingObserved.Checks | Where-Object Id -eq 'V07-EVIDENCE-BOUNDARY-CONSISTENCY')[0]
+Assert-Test -Name 'Preparation claiming observed runtime and soak fails closed' -Condition (-not $evalPreparationClaimingObserved.Passed -and $preparationBoundaryCheck.Status -eq 'FAIL')
+
 # Section 9: PowerShell 5.1 & Strict JSON Regressions
 Write-Host "`nSection 9: PowerShell 5.1 & Strict JSON Regressions"
 $trailingContentCaught = $false
@@ -319,6 +332,15 @@ try {
     $trailingArrayCommaCaught = $true
 }
 Assert-Test -Name 'Strict JSON parser rejects trailing comma in array' -Condition $trailingArrayCommaCaught
+
+$invalidTimestampCaught = $false
+try {
+    $invalidTimestampJson = $validJson -replace '"TimestampUtc":\s*"[^"]+"', '"TimestampUtc": "2026-99-99T99:99:99Z"'
+    $null = ConvertFrom-StrictPerformanceBudgetJson -JsonText $invalidTimestampJson -SourceDescription 'Impossible UTC timestamp'
+} catch {
+    $invalidTimestampCaught = $_.Exception.Message -match 'TimestampUtc'
+}
+Assert-Test -Name 'Strict JSON schema rejects impossible UTC timestamp' -Condition $invalidTimestampCaught
 
 # Section 10: Hostile JSON-parsed regressions (Synthetic only; no Runtime/Release credit)
 Write-Host "`nSection 10: Hostile JSON-parsed regressions (Synthetic only)"
@@ -488,7 +510,7 @@ Assert-Test -Name 'Plan Performance waiver heading resolves exact bound Approval
 Write-Host "`nSection 12: Full Deterministic Self-Test Suite"
 $selfTestResults = @(Invoke-PerformanceBudgetSelfTests -RepositoryRoot $repositoryRoot -FixturesDirectory $fixturesDirectory)
 $allStPassed = @($selfTestResults | Where-Object Status -ne 'PASS').Count -eq 0
-Assert-Test -Name "Invoke-PerformanceBudgetSelfTests runs all $($selfTestResults.Count) matrix cases" -Condition ($allStPassed -and $selfTestResults.Count -eq 36)
+Assert-Test -Name "Invoke-PerformanceBudgetSelfTests runs all $($selfTestResults.Count) matrix cases" -Condition ($allStPassed -and $selfTestResults.Count -eq 39)
 
 # Section 13: Pre-Fix-Sensitive Regression — Fixture-Hash Binding Isolation (Issue #39)
 # Verifies the root cause: static fixture metadata fails binding after a rebuild, but the
