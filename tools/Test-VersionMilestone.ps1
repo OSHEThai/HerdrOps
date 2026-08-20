@@ -10,40 +10,27 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-$milestones = & gh api "repos/$Repository/milestones?state=all&per_page=100" | ConvertFrom-Json -Depth 50
-if ($LASTEXITCODE -ne 0) { throw 'Unable to query GitHub milestones.' }
+. (Join-Path $PSScriptRoot 'lib\VersionMilestonePolicy.ps1')
 
-$milestone = @($milestones | Where-Object title -eq $Version)
-if ($milestone.Count -ne 1) {
-    throw "Expected exactly one milestone named $Version; found $($milestone.Count)."
+$apiInvoker = {
+    param([string]$Endpoint)
+    $content = @(& gh api $Endpoint 2>&1)
+    [pscustomobject]@{
+        ExitCode = $LASTEXITCODE
+        Content = ($content -join [Environment]::NewLine)
+    }
 }
 
-$issues = & gh api "repos/$Repository/issues?state=all&per_page=100" | ConvertFrom-Json -Depth 50
-if ($LASTEXITCODE -ne 0) { throw 'Unable to query GitHub issues.' }
+$assessment = Get-VersionMilestoneAssessment -Version $Version -Repository $Repository -ApiInvoker $apiInvoker
+$assessment | Select-Object Repository, Version, MilestoneState, TotalIssues, OpenIssues, ClosedIssues
 
-$versionIssues = @($issues | Where-Object {
-    -not ($_.PSObject.Properties.Name -contains 'pull_request') -and
-    $null -ne $_.milestone -and
-    $_.milestone.number -eq $milestone[0].number
-})
-$openIssues = @($versionIssues | Where-Object state -eq 'open')
-
-[pscustomobject]@{
-    Repository = $Repository
-    Version = $Version
-    MilestoneState = $milestone[0].state
-    TotalIssues = $versionIssues.Count
-    OpenIssues = $openIssues.Count
-    ClosedIssues = @($versionIssues | Where-Object state -eq 'closed').Count
+if ($assessment.OpenIssues -gt 0) {
+    $assessment.OpenIssueRecords | Select-Object number, title, html_url | Format-Table -AutoSize
+    throw "$Version is not release-ready: $($assessment.OpenIssues) issue(s) remain open."
 }
 
-if ($openIssues.Count -gt 0) {
-    $openIssues | Sort-Object number | Select-Object number, title, html_url | Format-Table -AutoSize
-    throw "$Version is not release-ready: $($openIssues.Count) issue(s) remain open."
-}
-
-if ($milestone[0].state -ne 'closed') {
-    throw "$Version has no open issues but its milestone is still '$($milestone[0].state)'."
+if ($assessment.MilestoneState -ne 'closed') {
+    throw "$Version has no open issues but its milestone is still '$($assessment.MilestoneState)'."
 }
 
 Write-Host "$Version milestone is closed with no open issues."
