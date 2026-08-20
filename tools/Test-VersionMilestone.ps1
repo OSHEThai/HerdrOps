@@ -92,16 +92,41 @@ $issueResponse = Read-BoundedGitHubJsonArrayPages `
 $milestones = @($milestoneResponse.Value)
 $issues = @($issueResponse.Value)
 
-$milestone = @($milestones | Where-Object title -eq $Version)
+$milestone = @($milestones | Where-Object { [string]$_.title -ceq $Version })
 if ($milestone.Count -ne 1) {
     throw "Expected exactly one milestone named $Version; found $($milestone.Count)."
 }
 
-$versionIssues = @($issues | Where-Object {
-    -not ($_.PSObject.Properties.Name -contains 'pull_request') -and
-    $null -ne $_.milestone -and
-    $_.milestone.number -eq $milestone[0].number
-})
+$selectedMilestoneNumber = [int]$milestone[0].number
+$versionIssues = New-Object System.Collections.ArrayList
+foreach ($issue in $issues) {
+    if ($issue.PSObject.Properties.Name -contains 'pull_request') {
+        continue
+    }
+
+    $issueMilestone = $issue.milestone
+    if ($null -eq $issueMilestone) {
+        continue
+    }
+
+    $issueMilestoneNumber = [int]$issueMilestone.number
+    $issueMilestoneTitle = [string]$issueMilestone.title
+    $declaredMilestone = @($milestones | Where-Object { [int]$_.number -eq $issueMilestoneNumber })
+    if ($declaredMilestone.Count -ne 1 -or
+        $issueMilestoneTitle -cne [string]$declaredMilestone[0].title) {
+        throw "Issue #$($issue.number) has milestone '$issueMilestoneTitle'#$issueMilestoneNumber, which does not match the declared GitHub milestone number/title pair."
+    }
+
+    if ($issueMilestoneNumber -eq $selectedMilestoneNumber -or
+        $issueMilestoneTitle -ceq $Version) {
+        if ($issueMilestoneNumber -ne $selectedMilestoneNumber -or
+            $issueMilestoneTitle -cne $Version) {
+            throw "Issue #$($issue.number) has milestone '$issueMilestoneTitle'#$issueMilestoneNumber; expected '$Version'#$selectedMilestoneNumber."
+        }
+        [void]$versionIssues.Add($issue)
+    }
+}
+$versionIssues = @($versionIssues.ToArray())
 $openIssues = @($versionIssues | Where-Object state -eq 'open')
 
 [pscustomobject]@{

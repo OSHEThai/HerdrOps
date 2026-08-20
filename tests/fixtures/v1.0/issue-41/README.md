@@ -8,4 +8,6 @@
 
 `fake-gh-multipage.ps1` drives the actual shared milestone verifier through one milestone page and two issue pages under both Windows PowerShell 5.1 and PowerShell 7. It is deterministic test input only and does not establish GitHub or release state.
 
-The fixture test creates short-lived report and artifact files from the current committed source identity. Those files are written only below the ignored `artifacts/` directory and are removed after each case. No fixture grants actual Herdr Runtime, Independent, Human, Release, or release-candidate credit.
+The fixture test creates short-lived report and artifact files from the current committed source identity. Each invocation uses a random per-run directory below `artifacts/dependency-audit/` with an ownership marker. Generated paths are checked for lexical and physical/reparse containment, writes refuse unowned pre-existing targets, and cleanup removes only paths owned by that invocation. Hostile pre-existing-file and reparse-point cases are included in the cross-shell suite. No fixture grants actual Herdr Runtime, Independent, Human, Release, or release-candidate credit.
+
+The fake milestone CLI supports deterministic `HERDR_OPS_ISSUE41_FAKE_GH_MODE` values `MILESTONE_CASE_MISMATCH` and `ISSUE_MILESTONE_TITLE_MISMATCH` for parity negatives.

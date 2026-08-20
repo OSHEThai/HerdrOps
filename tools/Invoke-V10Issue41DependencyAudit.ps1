@@ -671,6 +671,7 @@ function New-DependencyAuditData {
         }
 
         if (@($issue.PSObject.Properties.Name) -contains 'pull_request') {
+            Add-Blocker -Code 'PULL_REQUEST_RECORD_REJECTED' -IssueNumber $number -Detail "GitHub Issues API returned issue #$number with a pull_request record; pull requests are invalid dependency-audit input."
             continue
         }
 
