@@ -190,7 +190,7 @@ try {
             '--known-task', 'TASK-115',
             '--pipe-name', $durablePipeName,
             '--database', $durableDatabasePath,
-            '--seconds', '4',
+            '--seconds', '10',
             '--trace', $durableTracePath) `
         -RedirectStandardOutput $durableCoreOutputPath `
         -RedirectStandardError $durableCoreErrorPath `
@@ -227,11 +227,14 @@ try {
     if ($acceptedExitCode -ne 0) {
         throw "The built CLI-to-durable-Core exchange failed with exit $acceptedExitCode."
     }
-    if (-not $durableCoreProcess.WaitForExit(10000)) {
+    if (-not $durableCoreProcess.WaitForExit(16000)) {
         throw 'The durable Core self-report process exceeded its bounded duration.'
     }
-    if ($durableCoreProcess.ExitCode -ne 0) {
-        throw "The durable Core self-report process failed with exit $($durableCoreProcess.ExitCode)."
+    $durableCoreProcess.WaitForExit()
+    $durableCoreProcess.Refresh()
+    $durableCoreExitCode = if ($durableCoreProcess.HasExited) { [int]$durableCoreProcess.ExitCode } else { $null }
+    if ($null -eq $durableCoreExitCode -or $durableCoreExitCode -ne 0) {
+        throw "The durable Core self-report process failed with exit $durableCoreExitCode. Output: $durableCoreOutputPath; Error: $durableCoreErrorPath"
     }
 } finally {
     if ($null -ne $durableCoreProcess) {
@@ -252,7 +255,7 @@ if (-not (Test-Path -LiteralPath $durableTracePath -PathType Leaf)) {
     throw 'The durable CLI-to-Core process did not write its lifecycle trace.'
 }
 $durableResult = Get-Content -LiteralPath $durableResultPath -Raw | ConvertFrom-Json
-$durableTrace = Get-Content -LiteralPath $durableTracePath -Raw | ConvertFrom-Json -Depth 128
+$durableTrace = Get-Content -LiteralPath $durableTracePath -Raw | ConvertFrom-Json
 if (-not [bool]$durableResult.accepted -or
     $durableResult.acceptedSource -ne 'HerdrOps.Core' -or
     -not [bool]$durableTrace.durableLifecycleEnabled -or

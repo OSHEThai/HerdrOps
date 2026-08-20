@@ -37,7 +37,7 @@ foreach ($path in @($CompositeRuntimeReport, $RuntimeGateReport)) {
 }
 $resolvedCompositePath = (Resolve-Path -LiteralPath $CompositeRuntimeReport).Path
 $resolvedRuntimeGatePath = (Resolve-Path -LiteralPath $RuntimeGateReport).Path
-$composite = Get-Content -LiteralPath $resolvedCompositePath -Raw | ConvertFrom-Json -Depth 128
+$composite = Get-Content -LiteralPath $resolvedCompositePath -Raw | ConvertFrom-Json
 if ($composite.EvidenceClassification -ne 'Runtime' -or
     -not [bool]$composite.RuntimeAccepted -or
     [bool]$composite.SessionControlInvoked -or
