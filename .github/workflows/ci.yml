@@ -189,6 +189,23 @@ jobs:
         shell: pwsh
         run: ./tools/Test-V05RoleDistinctReview.ps1 -Configuration Release -SkipBuild
 
+      - name: Run v0.7 lifecycle implementation gate deterministic self-test (pwsh)
+        shell: pwsh
+        run: ./tools/Test-V07Lifecycle.ps1 -SelfTest
+
+      - name: Run v0.7 lifecycle implementation gate deterministic self-test (Windows PowerShell 5.1)
+        shell: powershell
+        run: ./tools/Test-V07Lifecycle.ps1 -SelfTest
+
+      # Static/Synthetic policy regressions only; no live soak or Actual Herdr Runtime credit.
+      - name: Run v0.7 performance budget policy tests (PowerShell 7)
+        shell: pwsh
+        run: ./tools/Test-V07PerformanceBudgets.Tests.ps1
+
+      - name: Run v0.7 performance budget policy tests (Windows PowerShell 5.1)
+        shell: powershell
+        run: ./tools/Test-V07PerformanceBudgets.Tests.ps1
+
       - name: Run v0.7 Issue #37 manifest integrity verifier (full git-blob checks, requires history)
         shell: pwsh
         run: ./tools/Test-V07Issue37ManifestIntegrity.ps1

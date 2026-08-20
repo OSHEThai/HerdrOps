@@ -267,12 +267,15 @@ $requiredMarkers = [ordered]@{
         $workflowServiceSource.Contains('cancellationToken.ThrowIfCancellationRequested()', [StringComparison]::Ordinal) -and
         $storageSource.Contains('Monitor.TryEnter(_sync, TimeSpan.FromMilliseconds(25))', [StringComparison]::Ordinal) -and
         $storageSource.Contains('ComplianceReviewBusyTimeoutCeilingSeconds = 1', [StringComparison]::Ordinal) -and
+        $storageSource.Contains('ComplianceReviewBusySliceMilliseconds = 50', [StringComparison]::Ordinal) -and
         $storageSource.Contains('command.CommandTimeout = Math.Min(', [StringComparison]::Ordinal) -and
-        $storageSource.Contains('SetComplianceReviewBusyTimeout(', [StringComparison]::Ordinal) -and
         $storageSource.Contains('BeginComplianceReviewWriteTransaction(', [StringComparison]::Ordinal) -and
         $storageSource.Contains('INSERT OR IGNORE INTO compliance_review_incidents(', [StringComparison]::Ordinal) -and
-        $storageSource.Contains('RegisterComplianceReviewCommandCancellation(', [StringComparison]::Ordinal) -and
-        $storageSource.Contains('((SqliteCommand)state!).Cancel()', [StringComparison]::Ordinal) -and
+        $storageSource.Contains('ExecuteComplianceReviewWriteLockSlice(', [StringComparison]::Ordinal) -and
+        $storageSource.Contains('sqlite3_busy_timeout(', [StringComparison]::Ordinal) -and
+        $storageSource.Contains('sqlite3_step(', [StringComparison]::Ordinal) -and
+        $storageSource.Contains('ComplianceReviewBusySliceObserved', [StringComparison]::Ordinal) -and
+        $storageSource.Contains('OperationCanceledException', [StringComparison]::Ordinal) -and
         $serverSource.Contains('SqliteException', [StringComparison]::Ordinal)
     ServerUsesCurrentUserPipe = $serverSource.Contains('PipeOptions.CurrentUserOnly', [StringComparison]::Ordinal)
     ServerProcessIdentityUsesOsPid = $serverIdentitySource.Contains('GetNamedPipeServerProcessId', [StringComparison]::Ordinal)
@@ -800,7 +803,7 @@ $gateReport = @(
     'HerdrRootPidResidual: Herdr protocol 19 does not bind reported pane root PIDs to creation identities, so PID recycling before the held-process snapshot is not cryptographically excluded',
     'EvidenceMembershipAndReplay: Immutable registration/audit JSON evidence membership, registration-retry validation, and pre-append full-history replay validation are verified',
     'ResponseDeadlineClassification: One server deadline spans operation-frame read, authorization, handler, and response; shutdown drains tracked detached delegates; bounded delegate and validator budgets retain permits until actual completion',
-    'StorageCancellationBoundary: Workflow/store monitor waits are cancellation-aware; compliance SQLite commands use a one-second command/provider/PRAGMA lock-wait ceiling plus a cooperative operation-token cancellation request; immediate provider interruption, transaction-acquisition cancellation, and rollback of already-running synchronous mutation are not claimed',
+    'StorageCancellationBoundary: Workflow/store monitor waits are cancellation-aware; compliance SQLite commands use a one-second command/provider/PRAGMA lock-wait ceiling, and write-lock acquisition is a cooperative 50 ms raw-SQLite busy-slice retry loop with the operation token checked between slices; immediate provider interruption, transaction-acquisition cancellation, and rollback of already-running synchronous mutation are not claimed',
     'UiResultBinding: Accepted-only publication, single-flight, same-incident generations, and exact command, reviewer, decision, state, sequence, reason, evidence, task, subject, and audit-hash binding reject stale or mismatched results',
     'StateHubObserverIsolation: Nonfatal subscriber failures are isolated per handler so later consumers continue and duplicate replay remains suppressed',
     'PublisherOrCodeSigningProof: NOT PROVIDED / NOT CLAIMED',
