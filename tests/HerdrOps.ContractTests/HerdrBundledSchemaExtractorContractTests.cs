@@ -27,7 +27,7 @@ public sealed class HerdrBundledSchemaExtractorContractTests
         Assert.IsFalse(extraction.Inspection.SessionControlInvoked);
         Assert.AreEqual(schema.Length, extraction.Inspection.SchemaDocumentLength);
         Assert.AreEqual(Sha256(schema), extraction.Inspection.SchemaDocumentSha256);
-        Assert.AreEqual(19, extraction.Inspection.Protocol);
+        Assert.AreEqual(20, extraction.Inspection.Protocol);
         Assert.AreEqual(1, extraction.Inspection.SchemaVersion);
         Assert.IsNotNull(extraction.SchemaDocumentBytes);
         CollectionAssert.AreEqual(schema, extraction.SchemaDocumentBytes);
@@ -146,7 +146,7 @@ public sealed class HerdrBundledSchemaExtractorContractTests
             SchemaDocument.Create(draft: "https://json-schema.org/draft/2019-09/schema"),
             HerdrBundledSchemaStatus.UnsupportedDraft);
         AssertStatus(
-            SchemaDocument.Create(protocol: 20),
+            SchemaDocument.Create(protocol: 21),
             HerdrBundledSchemaStatus.UnsupportedProtocol);
         AssertStatus(
             SchemaDocument.Create(schemaVersion: 2),
@@ -282,23 +282,23 @@ public sealed class HerdrBundledSchemaExtractorContractTests
     [TestMethod]
     public void ProductionPolicyPinsExactInstalledDocumentAndRequiredSurface()
     {
-        var policy = HerdrBundledSchemaContractV19.Policy;
+        var policy = HerdrBundledSchemaContractV20.Policy;
 
-        Assert.AreEqual("herdr-0.8.0-preview-bundled-schema-v1", policy.ContractId);
-        Assert.AreEqual(1, policy.Revision);
+        Assert.AreEqual("herdr-0.8.2-preview-bundled-schema-v2", policy.ContractId);
+        Assert.AreEqual(2, policy.Revision);
         Assert.AreEqual("https://json-schema.org/draft/2020-12/schema", policy.JsonSchemaDraft);
-        Assert.AreEqual(19, policy.Protocol);
+        Assert.AreEqual(20, policy.Protocol);
         Assert.AreEqual(1, policy.SchemaVersion);
-        Assert.AreEqual(261_498, policy.ExpectedDocumentLength);
+        Assert.AreEqual(265_595, policy.ExpectedDocumentLength);
         Assert.AreEqual(
-            "9449368D54BBECD4D4D0696EFFB9E9C002ECD63A5B8A48BBD901A305AF842982",
+            "3B34717C8B828FAF4E4A1D4DAC5953417712C8EB71A54237FFAD7582C7FF5679",
             policy.ExpectedDocumentSha256);
         CollectionAssert.AreEqual(
             new[]
             {
                 "error_response:1",
                 "event:16",
-                "request:105",
+                "request:107",
                 "subscription_event:10",
                 "success_response:67",
             },
@@ -363,8 +363,8 @@ public sealed class HerdrBundledSchemaExtractorContractTests
         };
 
         public static byte[] Create(
-            string draft = HerdrBundledSchemaContractV19.JsonSchemaDraft,
-            int protocol = 19,
+            string draft = HerdrBundledSchemaContractV20.JsonSchemaDraft,
+            int protocol = 20,
             int schemaVersion = 1,
             bool includeEventGroup = true,
             bool includeSessionSnapshot = true,
@@ -541,7 +541,7 @@ public sealed class HerdrBundledSchemaExtractorContractTests
         public static BundledSchemaFixture Create(params byte[][] schemaDocuments)
         {
             Assert.IsNotEmpty(schemaDocuments);
-            var releaseId = "fixture-herdr-schema-v19-x86_64-pc-windows-msvc";
+            var releaseId = "fixture-herdr-schema-v20-x86_64-pc-windows-msvc";
             var rootPath = Path.Combine(
                 Path.GetTempPath(),
                 "HerdrOps.BundledSchemaContractTests",
@@ -552,7 +552,7 @@ public sealed class HerdrBundledSchemaExtractorContractTests
 
             using var stream = new MemoryStream();
             stream.Write(Encoding.ASCII.GetBytes("MZ\0"));
-            var sourceBinaryPolicy = HerdrProtocolContractV080Preview.Policy;
+            var sourceBinaryPolicy = HerdrProtocolContractV082Preview.Policy;
             var binaryMarkers = sourceBinaryPolicy.RequiredRpcMethods
                 .Concat(sourceBinaryPolicy.RequiredShapes.Select(shape => shape.BinaryMarker))
                 .Concat(sourceBinaryPolicy.RequiredTransportMarkers);
@@ -581,8 +581,8 @@ public sealed class HerdrBundledSchemaExtractorContractTests
             var schemaPolicy = new HerdrBundledSchemaSupportPolicy(
                 "fixture-herdr-bundled-schema-v1",
                 1,
-                HerdrBundledSchemaContractV19.JsonSchemaDraft,
-                19,
+                HerdrBundledSchemaContractV20.JsonSchemaDraft,
+                20,
                 1,
                 schema.Length,
                 Sha256(schema),

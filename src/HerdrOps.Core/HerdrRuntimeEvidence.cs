@@ -7,6 +7,16 @@ namespace HerdrOps.Core;
 
 internal static class HerdrRuntimeEvidence
 {
+    public static bool HasAcceptedAgentStatusEvent(
+        IEnumerable<HerdrRuntimeTraceTransition> transitions)
+    {
+        ArgumentNullException.ThrowIfNull(transitions);
+        return transitions.Any(transition => string.Equals(
+            transition.AcceptedEventKind,
+            HerdrRuntimeMonitor.AcceptedAgentStatusEventKind,
+            StringComparison.Ordinal));
+    }
+
     public static HerdrRuntimeTraceTransition CreateTransition(
         HerdrRuntimeMonitorSnapshot snapshot)
     {
@@ -27,8 +37,14 @@ internal static class HerdrRuntimeEvidence
             snapshot.State.Agents.Count,
             ComputeStateFingerprint(snapshot.State),
             HerdrOpsStateIpcJson.ComputeSha256(contractState),
+            HerdrOpsStateIpcJson.ComputeAgentTopologySha256(contractState),
+            HerdrOpsStateIpcJson.ComputeAgentStatusStateSha256(contractState),
             snapshot.ServerIdentity,
-            snapshot.LastTransitionReason);
+            snapshot.AcceptedEventKind,
+            snapshot.LastTransitionReason)
+        {
+            AcceptedAgentStatusEvent = snapshot.AcceptedAgentStatusEvent,
+        };
     }
 
     private static string ComputeStateFingerprint(HerdrSessionState state)

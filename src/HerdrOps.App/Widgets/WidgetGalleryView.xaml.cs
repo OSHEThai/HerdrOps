@@ -16,10 +16,12 @@ public partial class WidgetGalleryView : UserControl, INotifyPropertyChanged
 {
     private const double AdaptiveWidthBreakpoint = 1536;
     private const double AdaptiveHeightBreakpoint = 900;
-    private IWidgetWindowLauncher _launcher;
-    private IWidgetState _state;
+    private IWidgetWindowLauncher? _launcher;
+    private IWidgetState? _state;
     private IReadOnlyList<WidgetGalleryItem> _adaptiveItems;
     private readonly bool _usesDefaultLauncher;
+    private bool _resourcesReleased;
+    private int _resourceGeneration;
     private readonly Action<AppSettingsWidgetVariant>? _widgetSelected;
     private readonly Action<bool>? _widgetEnabled;
 
@@ -65,6 +67,8 @@ public partial class WidgetGalleryView : UserControl, INotifyPropertyChanged
 
     public event PropertyChangedEventHandler? PropertyChanged;
 
+    public bool ResourcesReleased => _resourcesReleased;
+
     public IReadOnlyList<WidgetVariantDescriptor> Variants => WidgetCatalog.All;
 
     public IReadOnlyList<WidgetGalleryItem> AdaptiveItems
@@ -79,7 +83,8 @@ public partial class WidgetGalleryView : UserControl, INotifyPropertyChanged
 
     public IWidgetState SharedState
     {
-        get => _state;
+        get => _state ?? throw new InvalidOperationException(
+            "The widget gallery resources have already been released.");
         private set
         {
             _state = value;
@@ -89,9 +94,14 @@ public partial class WidgetGalleryView : UserControl, INotifyPropertyChanged
 
     public void OpenVariant(WidgetVariant variant)
     {
+        if (_resourcesReleased)
+        {
+            return;
+        }
+
         _widgetSelected?.Invoke(AppSettingsLifecycleMapping.ToAppSettingsWidgetVariant(variant));
         _widgetEnabled?.Invoke(true);
-        _launcher.Open(variant);
+        _launcher?.Open(variant);
     }
 
     private IEnumerable<WidgetSurface> GetPreviews()
@@ -150,22 +160,33 @@ public partial class WidgetGalleryView : UserControl, INotifyPropertyChanged
 
     private void OnLanguageChanged(object? sender, EventArgs e)
     {
+        if (_resourcesReleased)
+        {
+            return;
+        }
+
+        var generation = _resourceGeneration;
         if (!Dispatcher.CheckAccess())
         {
             if (!Dispatcher.HasShutdownStarted && !Dispatcher.HasShutdownFinished)
             {
-                _ = Dispatcher.InvokeAsync(ApplyLanguageChange);
+                _ = Dispatcher.InvokeAsync(() => ApplyLanguageChange(generation));
             }
 
             return;
         }
 
-        ApplyLanguageChange();
+        ApplyLanguageChange(generation);
     }
 
-    private void ApplyLanguageChange()
+    private void ApplyLanguageChange(int generation)
     {
-        if (SharedState.EvidenceClass == HerdrOps.Contracts.EvidenceClass.Synthetic)
+        if (_resourcesReleased || generation != _resourceGeneration || _state is not { } state)
+        {
+            return;
+        }
+
+        if (state.EvidenceClass == HerdrOps.Contracts.EvidenceClass.Synthetic)
         {
             SharedState = SyntheticWidgetState.Create();
             if (_usesDefaultLauncher)
@@ -184,11 +205,40 @@ public partial class WidgetGalleryView : UserControl, INotifyPropertyChanged
 
     private void OnUnloaded(object sender, RoutedEventArgs e)
     {
+        ReleaseResources();
+    }
+
+    public void ReleaseResources()
+    {
+        if (_resourcesReleased)
+        {
+            return;
+        }
+
+        _resourcesReleased = true;
+        _resourceGeneration++;
         WeakEventManager<UiLanguageService, EventArgs>.RemoveHandler(
             UiLanguageService.Shared,
             nameof(UiLanguageService.LanguageChanged),
             OnLanguageChanged);
         Unloaded -= OnUnloaded;
+
+        foreach (var preview in GetPreviews())
+        {
+            preview.ReleaseResources();
+        }
+
+        if (DashboardPreviewHost.Content is ShellView shell)
+        {
+            shell.ReleaseResources();
+        }
+
+        DashboardPreviewHost.Content = null;
+        AdaptiveGalleryItems.ItemsSource = null;
+        DataContext = null;
+        _adaptiveItems = Array.Empty<WidgetGalleryItem>();
+        _launcher = null;
+        _state = null;
     }
 
     private void OnPropertyChanged([CallerMemberName] string? propertyName = null) =>

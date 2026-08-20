@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using System.Runtime.InteropServices;
+using System.Security.Cryptography;
 using System.Text;
 using Microsoft.Win32.SafeHandles;
 
@@ -12,6 +13,16 @@ public sealed record HerdrExecutableSnapshot(
 public interface IHerdrExecutableSnapshotReader
 {
     HerdrExecutableSnapshot Read(string requestedPath, long maximumBytes);
+}
+
+public sealed record HerdrExecutableIdentitySnapshot(
+    string FinalPath,
+    long Length,
+    string Sha256);
+
+public interface IHerdrExecutableIdentityReader
+{
+    HerdrExecutableIdentitySnapshot Read(string requestedPath, long maximumBytes);
 }
 
 /// <summary>
@@ -51,7 +62,7 @@ public sealed class HerdrExecutableSnapshotReader : IHerdrExecutableSnapshotRead
         return new HerdrExecutableSnapshot(finalPath, bytes);
     }
 
-    private static string GetFinalDosPath(SafeFileHandle fileHandle)
+    internal static string GetFinalDosPath(SafeFileHandle fileHandle)
     {
         var capacity = 512;
         while (true)
@@ -98,4 +109,42 @@ public sealed class HerdrExecutableSnapshotReader : IHerdrExecutableSnapshotRead
         StringBuilder filePath,
         uint filePathLength,
         uint flags);
+}
+
+/// <summary>
+/// Hashes an admitted executable directly from one bound file handle without
+/// retaining a full executable-sized managed buffer.
+/// </summary>
+public sealed class HerdrExecutableIdentityReader : IHerdrExecutableIdentityReader
+{
+    public HerdrExecutableIdentitySnapshot Read(string requestedPath, long maximumBytes)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(requestedPath);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maximumBytes);
+
+        var fullRequestedPath = Path.GetFullPath(requestedPath);
+        using var stream = new FileStream(
+            fullRequestedPath,
+            FileMode.Open,
+            FileAccess.Read,
+            FileShare.Read,
+            bufferSize: 81920,
+            FileOptions.SequentialScan);
+        var length = stream.Length;
+        if (length < 2 || length > maximumBytes)
+        {
+            throw new IOException(
+                $"Herdr executable length {length} is outside the accepted identity bounds.");
+        }
+
+        var finalPath = HerdrExecutableSnapshotReader.GetFinalDosPath(stream.SafeFileHandle);
+        var sha256 = Convert.ToHexString(SHA256.HashData(stream));
+        if (stream.Position != length || stream.Length != length)
+        {
+            throw new IOException(
+                "Herdr executable length changed while the identity handle was open.");
+        }
+
+        return new HerdrExecutableIdentitySnapshot(finalPath, length, sha256);
+    }
 }

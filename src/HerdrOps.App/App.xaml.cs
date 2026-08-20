@@ -181,7 +181,8 @@ public partial class App : Application
                 options.ReportPath,
                 startedUtc,
                 new UnauthorizedAccessException(
-                    "Runtime evidence mode requires HERDR_ENV=1 and HERDR_SOCKET_PATH from an authorized Herdr pane."));
+                    "Runtime evidence mode requires HERDR_ENV=1 and HERDR_SOCKET_PATH from an authorized Herdr pane."),
+                options.ProgressPath);
             Shutdown(3);
             return;
         }
@@ -242,17 +243,26 @@ public partial class App : Application
             RuntimeEvidenceRunner.WriteFailure(
                 options.ReportPath,
                 startedUtc,
-                new StartupTransactionException(primaryFailure, cleanupException));
+                new StartupTransactionException(primaryFailure, cleanupException),
+                options.ProgressPath);
             exitCode = 2;
         }
         else if (primaryFailure is not null)
         {
-            RuntimeEvidenceRunner.WriteFailure(options.ReportPath, startedUtc, primaryFailure);
+            RuntimeEvidenceRunner.WriteFailure(
+                options.ReportPath,
+                startedUtc,
+                primaryFailure,
+                options.ProgressPath);
             exitCode = 2;
         }
         else if (cleanupFailure is not null)
         {
-            RuntimeEvidenceRunner.WriteFailure(options.ReportPath, startedUtc, cleanupFailure);
+            RuntimeEvidenceRunner.WriteFailure(
+                options.ReportPath,
+                startedUtc,
+                cleanupFailure,
+                options.ProgressPath);
             exitCode = 2;
         }
 

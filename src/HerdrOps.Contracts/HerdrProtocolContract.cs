@@ -33,17 +33,17 @@ public sealed record HerdrProtocolSupportPolicy(
 /// v0.2 compatibility contract extracted from the installed Herdr preview binary.
 /// Exact binary binding is intentional: an update must be inspected and admitted as a successor.
 /// </summary>
-public static class HerdrProtocolContractV080Preview
+public static class HerdrProtocolContractV082Preview
 {
-    public const string ContractId = "herdr-0.8.0-preview-readonly-monitoring-v1";
+    public const string ContractId = "herdr-0.8.2-preview-readonly-monitoring-v2";
 
-    public const int Revision = 1;
+    public const int Revision = 2;
 
     public const string SupportedReleaseId =
-        "0.8.0-preview.2026-08-04-d78e3d3b5126-x86_64-pc-windows-msvc";
+        "0.8.2-preview.2026-08-19-b5c4a0176e91-x86_64-pc-windows-msvc";
 
     public const string SupportedBinarySha256 =
-        "6F470DA358D6713B6BEBAB922FFB1F5FE1D3D288CC6F374C7DCA1B4A9837A542";
+        "AFE7BAD9B77946917B509C9B638BB2A47BC1D4F19254957D15B0FAAFBEDB3E93";
 
     public static HerdrProtocolSupportPolicy Policy { get; } = new(
         ContractId,

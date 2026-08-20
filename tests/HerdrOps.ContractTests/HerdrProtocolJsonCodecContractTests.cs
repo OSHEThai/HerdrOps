@@ -56,8 +56,8 @@ public sealed class HerdrProtocolJsonCodecContractTests
             CreateSnapshotResponse("request-3", revision: 4),
             "request-3");
 
-        Assert.AreEqual("0.8.0-preview", snapshot.Version);
-        Assert.AreEqual(19, snapshot.Protocol);
+        Assert.AreEqual("0.8.2-preview", snapshot.Version);
+        Assert.AreEqual(20, snapshot.Protocol);
         Assert.HasCount(1, snapshot.Workspaces);
         Assert.HasCount(1, snapshot.Tabs);
         Assert.HasCount(1, snapshot.Panes);
@@ -82,12 +82,12 @@ public sealed class HerdrProtocolJsonCodecContractTests
     public void SnapshotWithDifferentProtocolFailsClosed()
     {
         var response = CreateSnapshotResponse("request-protocol", revision: 1)
-            .Replace("\"protocol\": 19", "\"protocol\": 20", StringComparison.Ordinal);
+            .Replace("\"protocol\": 20", "\"protocol\": 21", StringComparison.Ordinal);
 
         var exception = Assert.ThrowsExactly<HerdrProtocolException>(() =>
             HerdrProtocolJsonCodec.ParseSnapshotResponse(response, "request-protocol"));
 
-        StringAssert.Contains(exception.Message, "is not the admitted protocol 19");
+        StringAssert.Contains(exception.Message, "is not the admitted protocol 20");
     }
 
     [TestMethod]
@@ -322,8 +322,8 @@ public sealed class HerdrProtocolJsonCodecContractTests
           "result": {
             "type": "session_snapshot",
             "snapshot": {
-              "version": "0.8.0-preview",
-              "protocol": 19,
+              "version": "0.8.2-preview",
+              "protocol": 20,
               "workspaces": [
                 {
                   "workspace_id": "workspace-1",

@@ -235,7 +235,9 @@
             </Border>
 
             <Grid x:Name="WidgetBody" Grid.Row="1" Margin="10">
-                <Grid x:Name="CompactPanel">
+                <Grid.Resources>
+                    <DataTemplate x:Key="CompactTemplate" x:Shared="False">
+                        <Grid x:Name="CompactPanel">
                     <Grid.RowDefinitions>
                         <RowDefinition Height="64" />
                         <RowDefinition Height="*" />
@@ -297,9 +299,11 @@
                         <TextBlock Grid.Column="3" VerticalAlignment="Center" Foreground="{DynamicResource HerdrOps.Brush.Status.Blocked}" FontSize="11" FontWeight="SemiBold" Text="{Binding NegativeDeltaLabel}" />
                         <TextBlock Grid.Column="5" VerticalAlignment="Center" Foreground="{DynamicResource HerdrOps.Brush.PrimaryText}" FontSize="18" FontWeight="SemiBold" Text="{Binding DailyScoreLabel}" />
                     </Grid>
-                </Grid>
+                        </Grid>
+                    </DataTemplate>
 
-                <Grid x:Name="NormalPanel" Visibility="Collapsed">
+                    <DataTemplate x:Key="NormalTemplate" x:Shared="False">
+                        <Grid x:Name="NormalPanel">
                     <Grid.RowDefinitions>
                         <RowDefinition Height="*" />
                         <RowDefinition Height="46" />
@@ -321,9 +325,11 @@
                         <TextBlock Grid.Column="3" VerticalAlignment="Center" Foreground="{DynamicResource HerdrOps.Brush.Status.Blocked}" FontWeight="SemiBold" Text="{Binding NegativeDeltaLabel}" />
                         <TextBlock Grid.Column="5" VerticalAlignment="Center" Foreground="{DynamicResource HerdrOps.Brush.PrimaryText}" FontWeight="SemiBold" Text="{Binding DailyScoreLabel}" />
                     </Grid>
-                </Grid>
+                        </Grid>
+                    </DataTemplate>
 
-                <Grid x:Name="ExpandedPanel" Visibility="Collapsed">
+                    <DataTemplate x:Key="ExpandedTemplate" x:Shared="False">
+                        <Grid x:Name="ExpandedPanel">
                     <Grid.RowDefinitions>
                         <RowDefinition Height="34" />
                         <RowDefinition Height="*" />
@@ -392,9 +398,11 @@
                         <TextBlock Grid.Column="3" VerticalAlignment="Center" Foreground="{DynamicResource HerdrOps.Brush.Status.Blocked}" FontSize="11" FontWeight="SemiBold" Text="{Binding NegativeDeltaLabel}" />
                         <TextBlock Grid.Column="5" VerticalAlignment="Center" Foreground="{DynamicResource HerdrOps.Brush.PrimaryText}" FontSize="15" FontWeight="SemiBold" Text="{Binding DailyScoreLabel}" />
                     </Grid>
-                </Grid>
+                        </Grid>
+                    </DataTemplate>
 
-                <Grid x:Name="FloatingMiniPanel" Visibility="Collapsed">
+                    <DataTemplate x:Key="FloatingMiniTemplate" x:Shared="False">
+                        <Grid x:Name="FloatingMiniPanel">
                     <Grid.RowDefinitions>
                         <RowDefinition Height="*" />
                         <RowDefinition Height="42" />
@@ -421,9 +429,11 @@
                         <TextBlock Tag="ThaiWidgetCheck" VerticalAlignment="Center" FontSize="11" Text="{Binding [WidgetScoreToday], Source={x:Static localization:UiLanguageService.Shared}}" />
                         <TextBlock Grid.Column="1" VerticalAlignment="Center" Foreground="{DynamicResource HerdrOps.Brush.PrimaryText}" FontSize="17" FontWeight="SemiBold" Text="{Binding DailyScoreLabel}" />
                     </Grid>
-                </Grid>
+                        </Grid>
+                    </DataTemplate>
 
-                <Grid x:Name="FloatingVerticalPanel" Visibility="Collapsed">
+                    <DataTemplate x:Key="FloatingVerticalTemplate" x:Shared="False">
+                        <Grid x:Name="FloatingVerticalPanel">
                     <Grid.RowDefinitions>
                         <RowDefinition Height="*" />
                         <RowDefinition Height="36" />
@@ -450,9 +460,11 @@
                         </ItemsControl>
                     </ScrollViewer>
                     <TextBlock Grid.Row="1" HorizontalAlignment="Center" VerticalAlignment="Center" Foreground="{DynamicResource HerdrOps.Brush.PrimaryText}" FontSize="15" FontWeight="SemiBold" Text="{Binding DailyScoreLabel}" />
-                </Grid>
+                        </Grid>
+                    </DataTemplate>
 
-                <Grid x:Name="NotificationPanel" Visibility="Collapsed">
+                    <DataTemplate x:Key="NotificationTemplate" x:Shared="False">
+                        <Grid x:Name="NotificationPanel">
                     <Grid.RowDefinitions>
                         <RowDefinition Height="*" />
                         <RowDefinition Height="46" />
@@ -575,9 +587,11 @@
                             automation:AutomationProperties.Name="{Binding [OverviewAlerts], Source={x:Static localization:UiLanguageService.Shared}}"
                             Click="OnViewAllNotificationsClick"
                             Content="{Binding [WidgetViewAll], Source={x:Static localization:UiLanguageService.Shared}}" />
-                </Grid>
+                        </Grid>
+                    </DataTemplate>
 
-                <Grid x:Name="AgentDetailPanel" Visibility="Collapsed">
+                    <DataTemplate x:Key="AgentDetailTemplate" x:Shared="False">
+                        <Grid x:Name="AgentDetailPanel">
                     <Grid.RowDefinitions>
                         <RowDefinition Height="38" />
                         <RowDefinition Height="152" />
@@ -637,7 +651,14 @@
                             automation:AutomationProperties.Name="{Binding [WidgetViewAgentDetails], Source={x:Static localization:UiLanguageService.Shared}}"
                             Click="OnViewSelectedAgentClick"
                             Content="{Binding [WidgetViewAllDetails], Source={x:Static localization:UiLanguageService.Shared}}" />
-                </Grid>
+                        </Grid>
+                    </DataTemplate>
+                </Grid.Resources>
+
+                <ContentControl x:Name="VariantHost"
+                                Content="{Binding State, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                                HorizontalContentAlignment="Stretch"
+                                VerticalContentAlignment="Stretch" />
             </Grid>
 
             <Grid Grid.Row="2" Margin="10,0">

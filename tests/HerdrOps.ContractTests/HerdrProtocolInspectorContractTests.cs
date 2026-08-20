@@ -31,7 +31,7 @@ public sealed class HerdrProtocolInspectorContractTests
     [TestMethod]
     public void MatchingIdentityWithMissingShapeFailsClosedAndNamesTheGap()
     {
-        var missingMarker = HerdrProtocolContractV080Preview.Policy.RequiredShapes[0].BinaryMarker;
+        var missingMarker = HerdrProtocolContractV082Preview.Policy.RequiredShapes[0].BinaryMarker;
         using var fixture = ProtocolFixture.Create(missingMarker);
 
         var inspection = new HerdrProtocolInspector(fixture.Policy).Inspect(fixture.ExecutablePath);
@@ -89,16 +89,16 @@ public sealed class HerdrProtocolInspectorContractTests
     [TestMethod]
     public void ProductionPolicyPinsExactIdentitySurfaceAndFingerprint()
     {
-        var policy = HerdrProtocolContractV080Preview.Policy;
+        var policy = HerdrProtocolContractV082Preview.Policy;
 
-        Assert.AreEqual(HerdrProtocolContractV080Preview.ContractId, policy.ContractId);
-        Assert.AreEqual(HerdrProtocolContractV080Preview.Revision, policy.Revision);
+        Assert.AreEqual(HerdrProtocolContractV082Preview.ContractId, policy.ContractId);
+        Assert.AreEqual(HerdrProtocolContractV082Preview.Revision, policy.Revision);
         Assert.HasCount(1, policy.CompatibleBinaries);
         Assert.AreEqual(
-            HerdrProtocolContractV080Preview.SupportedReleaseId,
+            HerdrProtocolContractV082Preview.SupportedReleaseId,
             policy.CompatibleBinaries[0].ReleaseId);
         Assert.AreEqual(
-            HerdrProtocolContractV080Preview.SupportedBinarySha256,
+            HerdrProtocolContractV082Preview.SupportedBinarySha256,
             policy.CompatibleBinaries[0].Sha256);
         CollectionAssert.AreEqual(
             new[]
@@ -141,10 +141,10 @@ public sealed class HerdrProtocolInspectorContractTests
             },
             policy.RequiredTransportMarkers.ToArray());
         Assert.AreEqual(
-            "40C9859AB291715A80154C278545C7E020213D7F0FED5955321ED98E1C2D03DB",
+            "3533FDC87F0008323B3DCB798ECD7E68B104F7E1323551ECF41CD4434D9892DE",
             HerdrProtocolContractFingerprint.Compute(
                 policy,
-                HerdrProtocolContractV080Preview.SupportedReleaseId));
+                HerdrProtocolContractV082Preview.SupportedReleaseId));
     }
 
     [TestMethod]
@@ -202,7 +202,7 @@ public sealed class HerdrProtocolInspectorContractTests
             Directory.CreateDirectory(releasePath);
             var executablePath = Path.Combine(releasePath, "herdr.exe");
 
-            var sourcePolicy = HerdrProtocolContractV080Preview.Policy;
+            var sourcePolicy = HerdrProtocolContractV082Preview.Policy;
             var markers = sourcePolicy.RequiredRpcMethods
                 .Concat(sourcePolicy.RequiredShapes.Select(shape => shape.BinaryMarker))
                 .Concat(sourcePolicy.RequiredTransportMarkers)

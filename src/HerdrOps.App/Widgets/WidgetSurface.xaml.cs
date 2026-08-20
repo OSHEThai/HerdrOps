@@ -2,6 +2,7 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Data;
 using System.Windows.Input;
+using System.Windows.Media;
 
 namespace HerdrOps.App.Widgets;
 
@@ -27,6 +28,8 @@ public partial class WidgetSurface : UserControl
         typeof(IWidgetState),
         typeof(WidgetSurface),
         new FrameworkPropertyMetadata(null, OnStateChanged));
+
+    private bool _resourcesReleased;
 
     public WidgetSurface()
         : this(SyntheticWidgetState.Create())
@@ -77,10 +80,49 @@ public partial class WidgetSurface : UserControl
         set => SetValue(StateProperty, value);
     }
 
+    public bool ResourcesReleased => _resourcesReleased;
+
     public void SetState(IWidgetState state)
     {
         ArgumentNullException.ThrowIfNull(state);
+        ObjectDisposedException.ThrowIf(_resourcesReleased, this);
         State = state;
+    }
+
+    public new object? FindName(string name)
+    {
+        ArgumentNullException.ThrowIfNull(name);
+
+        var namedElement = base.FindName(name);
+        return namedElement ?? FindNamedVisual(VariantHost, name);
+    }
+
+    public void ReleaseState()
+    {
+        ClearValue(StateProperty);
+        SurfaceRoot.DataContext = null;
+    }
+
+    public void ReleaseResources()
+    {
+        if (_resourcesReleased)
+        {
+            return;
+        }
+
+        _resourcesReleased = true;
+        ReleaseState();
+        VariantHost.ContentTemplate = null;
+        VariantHost.Visibility = Visibility.Collapsed;
+        CloseRequested = null;
+        PinToggleRequested = null;
+        ResetPositionRequested = null;
+        DragRequested = null;
+        NotificationOpenRequested = null;
+        NotificationAcknowledged = null;
+        NotificationHistoryRequested = null;
+        AgentDetailsRequested = null;
+        TaskAlignmentRequested = null;
     }
 
     private static void OnStateChanged(DependencyObject dependencyObject, DependencyPropertyChangedEventArgs e)
@@ -101,18 +143,30 @@ public partial class WidgetSurface : UserControl
 
     private void ApplyVariant(WidgetVariant variant)
     {
-        if (!IsInitialized)
+        if (_resourcesReleased || VariantHost is null)
         {
             return;
         }
 
-        CompactPanel.Visibility = variant == WidgetVariant.Compact ? Visibility.Visible : Visibility.Collapsed;
-        NormalPanel.Visibility = variant == WidgetVariant.Normal ? Visibility.Visible : Visibility.Collapsed;
-        ExpandedPanel.Visibility = variant == WidgetVariant.Expanded ? Visibility.Visible : Visibility.Collapsed;
-        FloatingMiniPanel.Visibility = variant == WidgetVariant.FloatingMini ? Visibility.Visible : Visibility.Collapsed;
-        FloatingVerticalPanel.Visibility = variant == WidgetVariant.FloatingVertical ? Visibility.Visible : Visibility.Collapsed;
-        NotificationPanel.Visibility = variant == WidgetVariant.Notification ? Visibility.Visible : Visibility.Collapsed;
-        AgentDetailPanel.Visibility = variant == WidgetVariant.AgentDetailPopup ? Visibility.Visible : Visibility.Collapsed;
+        var templateKey = variant switch
+        {
+            WidgetVariant.Compact => "CompactTemplate",
+            WidgetVariant.Normal => "NormalTemplate",
+            WidgetVariant.Expanded => "ExpandedTemplate",
+            WidgetVariant.FloatingMini => "FloatingMiniTemplate",
+            WidgetVariant.FloatingVertical => "FloatingVerticalTemplate",
+            WidgetVariant.Notification => "NotificationTemplate",
+            WidgetVariant.AgentDetailPopup => "AgentDetailTemplate",
+            _ => null,
+        };
+        // Drop the previous template before installing the selected one so a
+        // surface retains only one instantiated variant visual tree.
+        VariantHost.ContentTemplate = null;
+        VariantHost.ContentTemplate = templateKey is null
+            ? null
+            : (DataTemplate)VariantHost.FindResource(templateKey);
+        VariantHost.Visibility = templateKey is null ? Visibility.Collapsed : Visibility.Visible;
+
         var isNarrowVertical = variant == WidgetVariant.FloatingVertical;
         var isFloatingMini = variant == WidgetVariant.FloatingMini;
         HeaderSourceText.SetBinding(
@@ -138,6 +192,32 @@ public partial class WidgetSurface : UserControl
         PinButton.Height = isNarrowVertical || isFloatingMini ? 24 : 30;
         CloseButton.Width = isNarrowVertical || isFloatingMini ? 24 : 30;
         CloseButton.Height = isNarrowVertical || isFloatingMini ? 24 : 30;
+    }
+
+    private static object? FindNamedVisual(DependencyObject? root, string name)
+    {
+        if (root is null)
+        {
+            return null;
+        }
+
+        for (var index = 0; index < VisualTreeHelper.GetChildrenCount(root); index++)
+        {
+            var child = VisualTreeHelper.GetChild(root, index);
+            if (child is FrameworkElement element &&
+                string.Equals(element.Name, name, StringComparison.Ordinal))
+            {
+                return child;
+            }
+
+            var descendant = FindNamedVisual(child, name);
+            if (descendant is not null)
+            {
+                return descendant;
+            }
+        }
+
+        return null;
     }
 
     private void OnCloseClick(object sender, RoutedEventArgs e) =>

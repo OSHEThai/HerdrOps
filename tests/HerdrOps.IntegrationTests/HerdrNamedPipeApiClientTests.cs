@@ -48,6 +48,28 @@ public sealed class HerdrNamedPipeApiClientTests
     }
 
     [TestMethod]
+    public void ServerIdentityVerifierCachesAStreamingIdentityPerProcessLifetime()
+    {
+        using var currentProcess = Process.GetCurrentProcess();
+        var executablePath = currentProcess.MainModule!.FileName;
+        var expectedSha256 = new string('A', 64);
+        var reader = new RecordingIdentityReader(expectedSha256);
+        var verifier = new ExpectedHerdrServerIdentityVerifier(expectedSha256, reader);
+        var connection = new HerdrConnectedStream(
+            Stream.Null,
+            currentProcess.Id,
+            currentProcess.StartTime.ToUniversalTime(),
+            executablePath);
+
+        var first = verifier.Verify(connection);
+        var second = verifier.Verify(connection);
+
+        Assert.AreSame(first, second);
+        Assert.AreEqual(1, reader.ReadCount);
+        Assert.AreEqual(expectedSha256, first.ExecutableSha256);
+    }
+
+    [TestMethod]
     public async Task SnapshotRoundTripUsesNewlineFramingAndCorrelatesResponse()
     {
         var pipeName = CreatePipeName();
@@ -535,7 +557,7 @@ public sealed class HerdrNamedPipeApiClientTests
     {
         var expanded = """
             {"id":"__REQUEST_ID__","result":{"type":"session_snapshot","snapshot":{
-              "version":"0.8.0-preview","protocol":19,
+              "version":"0.8.2-preview","protocol":20,
               "workspaces":[{"workspace_id":"workspace-1","number":1,"label":"HerdrOps","focused":true,"pane_count":1,"tab_count":1,"active_tab_id":"tab-1","agent_status":"working"}],
               "tabs":[{"tab_id":"tab-1","workspace_id":"workspace-1","number":1,"label":"Core","focused":true,"pane_count":1,"agent_status":"working"}],
               "panes":[{"pane_id":"pane-1","terminal_id":"terminal-1","workspace_id":"workspace-1","tab_id":"tab-1","focused":true,"agent_status":"working","revision":__REVISION__,"agent":"codex","display_agent":"Codex","title":"Worker","cwd":"Z:\\HerdrOps","foreground_cwd":"Z:\\HerdrOps","terminal_title":"Codex"}],
@@ -616,5 +638,22 @@ public sealed class HerdrNamedPipeApiClientTests
 
         public override void Write(byte[] buffer, int offset, int count) =>
             throw new NotSupportedException();
+    }
+
+    private sealed class RecordingIdentityReader(string sha256)
+        : IHerdrExecutableIdentityReader
+    {
+        public int ReadCount { get; private set; }
+
+        public HerdrExecutableIdentitySnapshot Read(
+            string requestedPath,
+            long maximumBytes)
+        {
+            ReadCount++;
+            return new HerdrExecutableIdentitySnapshot(
+                Path.GetFullPath(requestedPath),
+                maximumBytes,
+                sha256);
+        }
     }
 }
