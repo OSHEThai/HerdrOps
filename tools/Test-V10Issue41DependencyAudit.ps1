@@ -353,12 +353,14 @@ try {
 
             $duplicateOutput = Join-Path $repositoryRoot ("artifacts\dependency-audit\fixture-$($shell.Name)-duplicate")
             $duplicateResult = Invoke-AuditCase -ShellPath $shell.Path -FixturePath $duplicateFixture -OutputPath $duplicateOutput
-            if ($duplicateResult.ExitCode -eq 0 -or (Test-Path -LiteralPath $duplicateOutput)) { throw "$($shell.Name) accepted duplicate JSON keys." }
+            Assert-CaseExit -Result $duplicateResult -ExpectedExitCode 1 -CaseName "$($shell.Name) duplicate JSON keys"
+            if (Test-Path -LiteralPath $duplicateOutput) { throw "$($shell.Name) accepted duplicate JSON keys." }
             [void]$completed.Add("$($shell.Name): duplicate JSON -> rejected")
 
             $malformedOutput = Join-Path $repositoryRoot ("artifacts\dependency-audit\fixture-$($shell.Name)-malformed")
             $malformedResult = Invoke-AuditCase -ShellPath $shell.Path -FixturePath $malformedFixture -OutputPath $malformedOutput
-            if ($malformedResult.ExitCode -eq 0 -or (Test-Path -LiteralPath $malformedOutput)) { throw "$($shell.Name) accepted malformed JSON." }
+            Assert-CaseExit -Result $malformedResult -ExpectedExitCode 1 -CaseName "$($shell.Name) malformed JSON"
+            if (Test-Path -LiteralPath $malformedOutput) { throw "$($shell.Name) accepted malformed JSON." }
             [void]$completed.Add("$($shell.Name): malformed JSON -> rejected")
 
             $duplicateNumberPath = Join-Path $caseDirectory 'github-duplicate-number.json'
@@ -445,7 +447,8 @@ try {
             try {
                 $reparseOutput = Join-Path $reparseJunction 'nested'
                 $reparseResult = Invoke-AuditCase -ShellPath $shell.Path -FixturePath $readyFixture -OutputPath $reparseOutput
-                if ($reparseResult.ExitCode -eq 0 -or (Test-Path -LiteralPath $reparseOutput)) { throw "$($shell.Name) accepted a reparse output path." }
+                Assert-CaseExit -Result $reparseResult -ExpectedExitCode 1 -CaseName "$($shell.Name) reparse output path"
+                if (Test-Path -LiteralPath $reparseOutput) { throw "$($shell.Name) accepted a reparse output path." }
             }
             finally {
                 if (Test-Path -LiteralPath $reparseJunction) { Remove-Item -LiteralPath $reparseJunction -Force }
@@ -454,12 +457,14 @@ try {
 
             $traversalOutput = Join-Path $repositoryRoot 'artifacts\dependency-audit\..\issue-41-escape'
             $traversalResult = Invoke-AuditCase -ShellPath $shell.Path -FixturePath $readyFixture -OutputPath $traversalOutput
-            if ($traversalResult.ExitCode -eq 0 -or (Test-Path -LiteralPath (Join-Path $repositoryRoot 'artifacts\issue-41-escape'))) { throw "$($shell.Name) accepted output traversal." }
+            Assert-CaseExit -Result $traversalResult -ExpectedExitCode 1 -CaseName "$($shell.Name) output traversal"
+            if (Test-Path -LiteralPath (Join-Path $repositoryRoot 'artifacts\issue-41-escape')) { throw "$($shell.Name) accepted output traversal." }
             [void]$completed.Add("$($shell.Name): output traversal -> rejected")
 
             $missingGhOutput = Join-Path $repositoryRoot ("artifacts\dependency-audit\fixture-$($shell.Name)-gh-failure")
             $missingGhResult = Invoke-AuditCase -ShellPath $shell.Path -OutputPath $missingGhOutput -GhCommand 'herdops-command-that-does-not-exist'
-            if ($missingGhResult.ExitCode -eq 0 -or (Test-Path -LiteralPath $missingGhOutput)) { throw "$($shell.Name) accepted missing gh." }
+            Assert-CaseExit -Result $missingGhResult -ExpectedExitCode 1 -CaseName "$($shell.Name) missing gh"
+            if (Test-Path -LiteralPath $missingGhOutput) { throw "$($shell.Name) accepted missing gh." }
             [void]$completed.Add("$($shell.Name): gh failure -> rejected")
 
             $dirtyProbe = Join-Path $repositoryRoot ("issue-41-dirty-probe-$($shell.Name).txt")
@@ -467,7 +472,8 @@ try {
             try {
                 $dirtyOutput = Join-Path $repositoryRoot ("artifacts\dependency-audit\fixture-$($shell.Name)-dirty")
                 $dirtyResult = Invoke-AuditCase -ShellPath $shell.Path -FixturePath $readyFixture -OutputPath $dirtyOutput
-                if ($dirtyResult.ExitCode -eq 0 -or (Test-Path -LiteralPath $dirtyOutput)) { throw "$($shell.Name) accepted a dirty checkout." }
+                Assert-CaseExit -Result $dirtyResult -ExpectedExitCode 1 -CaseName "$($shell.Name) dirty checkout"
+                if (Test-Path -LiteralPath $dirtyOutput) { throw "$($shell.Name) accepted a dirty checkout." }
             }
             finally {
                 if (Test-Path -LiteralPath $dirtyProbe) { Remove-Item -LiteralPath $dirtyProbe -Force }
@@ -488,3 +494,5 @@ finally {
 
 $completed | ForEach-Object { Write-Output $_ }
 Write-Output ("Issue #41 fixture tests passed: {0} cases" -f $completed.Count)
+
+exit 0
