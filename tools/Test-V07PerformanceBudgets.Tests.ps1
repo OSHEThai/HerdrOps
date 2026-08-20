@@ -39,6 +39,8 @@ Write-Host "`n==================================================================
 Write-Host "HerdrOps v0.7 Performance Budget Policy & Gate Test Suite (Issue #39)"
 Write-Host "========================================================================`n"
 
+# Section 1: Cryptographic Hashes and Normalization
+Write-Host "Section 1: Cryptographic Hashes and Normalization"
 $textHash = Get-Sha256DigestHex -Text 'HerdrOps-v0.7.0-Budget-Test'
 Assert-Test -Name 'Get-Sha256DigestHex for text' -Condition ($textHash -eq '743aafac048a3c889900346359bfc7425f4a8d6e42a15d34189d0da4ea0988e0')
 
@@ -165,11 +167,65 @@ $parsedUnrec = ConvertFrom-StrictPerformanceBudgetJson -JsonText $unrecJson -Sou
 $evalUnrec = Test-PerformanceBudgetReport -ReportObject $parsedUnrec
 Assert-Test -Name 'Unreconciled state fails closed' -Condition (-not $evalUnrec.Passed)
 
-# Section 8: Deterministic Self-Test Suite Invocation
-Write-Host "`nSection 8: Full Deterministic Self-Test Suite"
+# Section 8: Zero-Hour Soak vs 8-Hour Soak Boundary (Preparation vs Runtime Admission)
+Write-Host "`nSection 8: Zero-Hour Soak vs 8-Hour Soak Boundary"
+$prep0hReport = ConvertFrom-StrictPerformanceBudgetJson -JsonText $validJson -SourceDescription 'Prep 0h'
+$prep0hReport.Metrics.SoakDurationHours = 0.0
+$prep0hReport.EvidenceClass = 'Preparation'
+$evalPrep0h = Test-PerformanceBudgetReport -ReportObject $prep0hReport
+$prep0hCheck = @($evalPrep0h.Checks | Where-Object Id -eq 'V07-PERF-07-SOAK')[0]
+Assert-Test -Name 'Zero-hour soak in Preparation reports NOT OBSERVED (never PASS as runtime)' -Condition ($evalPrep0h.Passed -and $prep0hCheck.Status -eq 'NOT OBSERVED')
+
+$run0hReport = ConvertFrom-StrictPerformanceBudgetJson -JsonText $validJson -SourceDescription 'Runtime 0h'
+$run0hReport.Metrics.SoakDurationHours = 0.0
+$run0hReport.EvidenceClass = 'Runtime'
+$run0hReport.EvidenceBoundary.ActualHerdrRuntime = 'OBSERVED'
+$run0hReport.EvidenceBoundary.SoakExecution = 'OBSERVED'
+$evalRun0h = Test-PerformanceBudgetReport -ReportObject $run0hReport
+$run0hCheck = @($evalRun0h.Checks | Where-Object Id -eq 'V07-PERF-07-SOAK')[0]
+Assert-Test -Name 'Zero-hour soak in Runtime admission cannot satisfy 8-hour requirement (fails closed)' -Condition (-not $evalRun0h.Passed -and $run0hCheck.Status -eq 'FAIL')
+
+$run8hReport = ConvertFrom-StrictPerformanceBudgetJson -JsonText $validJson -SourceDescription 'Runtime 8h'
+$run8hReport.Metrics.SoakDurationHours = 8.0
+$run8hReport.EvidenceClass = 'Runtime'
+$run8hReport.EvidenceBoundary.ActualHerdrRuntime = 'OBSERVED'
+$run8hReport.EvidenceBoundary.SoakExecution = 'OBSERVED'
+$evalRun8h = Test-PerformanceBudgetReport -ReportObject $run8hReport
+$run8hCheck = @($evalRun8h.Checks | Where-Object Id -eq 'V07-PERF-07-SOAK')[0]
+Assert-Test -Name '8-hour soak in Runtime admission passes' -Condition ($evalRun8h.Passed -and $run8hCheck.Status -eq 'PASS')
+
+# Section 9: PowerShell 5.1 & Strict JSON Regressions
+Write-Host "`nSection 9: PowerShell 5.1 & Strict JSON Regressions"
+$trailingContentCaught = $false
+try {
+    $null = ConvertFrom-StrictPerformanceBudgetJson -JsonText ($validJson + " `n{}") -SourceDescription 'Trailing content'
+} catch {
+    $trailingContentCaught = $_.Exception.Message -match 'Trailing content'
+}
+Assert-Test -Name 'Strict JSON parser rejects trailing content' -Condition $trailingContentCaught
+
+$trailingCommaCaught = $false
+try {
+    $null = ConvertFrom-StrictPerformanceBudgetJson -JsonText '{"SchemaVersion":"v0.7.0",}' -SourceDescription 'Trailing comma'
+} catch {
+    $trailingCommaCaught = $_.Exception.Message -match 'Trailing comma'
+}
+Assert-Test -Name 'Strict JSON parser rejects trailing comma in object' -Condition $trailingCommaCaught
+
+$trailingArrayCommaCaught = $false
+try {
+    $null = ConvertFrom-StrictPerformanceBudgetJson -JsonText '{"SchemaVersion":"v0.7.0","Waivers":[,]}' -SourceDescription 'Trailing array comma'
+} catch {
+    $trailingArrayCommaCaught = $true
+}
+Assert-Test -Name 'Strict JSON parser rejects trailing comma in array' -Condition $trailingArrayCommaCaught
+
+# Section 10: Deterministic Self-Test Suite Invocation
+Write-Host "`nSection 10: Full Deterministic Self-Test Suite"
 $selfTestResults = @(Invoke-PerformanceBudgetSelfTests -RepositoryRoot $repositoryRoot -FixturesDirectory $fixturesDirectory)
 $allStPassed = @($selfTestResults | Where-Object Status -ne 'PASS').Count -eq 0
-Assert-Test -Name "Invoke-PerformanceBudgetSelfTests runs all $($selfTestResults.Count) fixtures" -Condition ($allStPassed -and $selfTestResults.Count -eq 27)
+Assert-Test -Name "Invoke-PerformanceBudgetSelfTests runs all $($selfTestResults.Count) fixtures" -Condition ($allStPassed -and $selfTestResults.Count -eq 32)
+
 Write-Host "`n========================================================================"
 Write-Host "Test Summary: $passCount passed, $failCount failed of $testCount total tests."
 Write-Host "========================================================================`n"

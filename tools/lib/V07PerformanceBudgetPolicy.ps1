@@ -39,251 +39,539 @@ $script:MaxJsonReportBytes = 4 * 1024 * 1024 # 4 MiB max for reports
 
 # -----------------------------------------------------------------------------
 # C# High-Performance Strict JSON Validator, Schema Checker, and P95 Engine
+# Built with C# 5 / .NET Framework 4.x and .NET Core / PS 5.1 / PS 7+ compatibility
+# Zero external assembly dependencies (no System.Text.Json required)
 # -----------------------------------------------------------------------------
 if (-not ('HerdrOps.BudgetValidation.StrictJsonValidator' -as [type])) {
     $strictValidatorCode = @'
 using System;
 using System.Collections.Generic;
 using System.Globalization;
-using System.Linq;
 using System.Text;
-using System.Text.Json;
 using System.Text.RegularExpressions;
 
 namespace HerdrOps.BudgetValidation
 {
     public static class StrictJsonValidator
     {
+        public static object ParseStrict(string json, string sourceDescription)
+        {
+            if (string.IsNullOrEmpty(json) || json.Trim().Length == 0)
+            {
+                throw new ArgumentException(string.Format("{0} is empty or whitespace.", sourceDescription));
+            }
+            int pos = 0;
+            object val = ParseValue(json, ref pos, json.Length, 0, sourceDescription);
+            SkipWhitespace(json, ref pos, json.Length);
+            if (pos < json.Length)
+            {
+                throw new InvalidOperationException(string.Format("Strict JSON violation: Trailing content after root JSON value in {0} at character index {1}.", sourceDescription, pos));
+            }
+            return val;
+        }
+
         public static void CheckStrictStructureAndDuplicates(string json, string sourceDescription)
         {
-            if (string.IsNullOrWhiteSpace(json))
-            {
-                throw new ArgumentException($"{sourceDescription} is empty or whitespace.");
-            }
-
-            byte[] bytes = Encoding.UTF8.GetBytes(json);
-            var options = new JsonReaderOptions
-            {
-                AllowTrailingCommas = false,
-                CommentHandling = JsonCommentHandling.Disallow,
-                MaxDepth = 32
-            };
-
-            var reader = new Utf8JsonReader(bytes, options);
-            var stack = new Stack<HashSet<string>>();
-
-            while (reader.Read())
-            {
-                if (reader.TokenType == JsonTokenType.StartObject)
-                {
-                    stack.Push(new HashSet<string>(StringComparer.Ordinal));
-                }
-                else if (reader.TokenType == JsonTokenType.EndObject)
-                {
-                    if (stack.Count > 0)
-                    {
-                        stack.Pop();
-                    }
-                }
-                else if (reader.TokenType == JsonTokenType.PropertyName)
-                {
-                    string prop = reader.GetString();
-                    if (stack.Count == 0)
-                    {
-                        throw new InvalidOperationException($"Strict JSON violation in {sourceDescription}: Property name outside object.");
-                    }
-                    var currentSet = stack.Peek();
-                    if (currentSet.Contains(prop))
-                    {
-                        throw new InvalidOperationException($"Strict JSON violation: Duplicate property '{prop}' detected in {sourceDescription}.");
-                    }
-                    currentSet.Add(prop);
-                }
-                else if (reader.TokenType == JsonTokenType.Number)
-                {
-                    string numStr = Encoding.UTF8.GetString(bytes, (int)reader.TokenStartIndex, (int)reader.ValueSpan.Length);
-                    if (numStr.IndexOf("nan", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                        numStr.IndexOf("infinity", StringComparison.OrdinalIgnoreCase) >= 0)
-                    {
-                        throw new InvalidOperationException($"Strict JSON violation: Disallowed numeric value '{numStr}' in {sourceDescription}.");
-                    }
-                }
-            }
+            ParseStrict(json, sourceDescription);
         }
 
         public static void ValidateSchemaDocument(string json, string sourceDescription)
         {
-            CheckStrictStructureAndDuplicates(json, sourceDescription);
-
-            using (var doc = JsonDocument.Parse(json, new JsonDocumentOptions { AllowTrailingCommas = false, CommentHandling = JsonCommentHandling.Disallow }))
+            object parsed = ParseStrict(json, sourceDescription);
+            Dictionary<string, object> root = parsed as Dictionary<string, object>;
+            if (root == null)
             {
-                var root = doc.RootElement;
-                if (root.ValueKind != JsonValueKind.Object)
+                throw new InvalidOperationException(string.Format("Strict schema violation: Root must be an object in {0}.", sourceDescription));
+            }
+
+            HashSet<string> allowedTopLevel = new HashSet<string>(StringComparer.Ordinal)
+            {
+                "SchemaVersion", "RunId", "TimestampUtc", "EvidenceClass", "HostEnvironment",
+                "Candidate", "Metrics", "Waivers", "EvidenceBoundary", "ProcessTelemetry", "Reconciliation"
+            };
+
+            foreach (KeyValuePair<string, object> kvp in root)
+            {
+                if (!allowedTopLevel.Contains(kvp.Key))
                 {
-                    throw new InvalidOperationException($"Root must be an object in {sourceDescription}.");
+                    throw new InvalidOperationException(string.Format("Strict schema violation: Disallowed unknown top-level property '{0}' in {1}.", kvp.Key, sourceDescription));
                 }
+            }
 
-                var allowedTopLevel = new HashSet<string>(StringComparer.Ordinal)
+            string[] requiredTop = new string[] { "SchemaVersion", "RunId", "TimestampUtc", "Candidate", "Metrics", "EvidenceBoundary" };
+            foreach (string req in requiredTop)
+            {
+                if (!root.ContainsKey(req) || root[req] == null)
                 {
-                    "SchemaVersion", "RunId", "TimestampUtc", "EvidenceClass", "HostEnvironment",
-                    "Candidate", "Metrics", "Waivers", "EvidenceBoundary", "ProcessTelemetry", "Reconciliation"
-                };
+                    throw new InvalidOperationException(string.Format("Strict schema violation: Missing required top-level property '{0}' in {1}.", req, sourceDescription));
+                }
+            }
 
-                foreach (var prop in root.EnumerateObject())
+            string schemaVersion = root["SchemaVersion"] as string;
+            if (schemaVersion != "v0.7.0")
+            {
+                throw new InvalidOperationException(string.Format("Strict schema violation: SchemaVersion must be exactly 'v0.7.0'; found '{0}' in {1}.", schemaVersion, sourceDescription));
+            }
+
+            string timestamp = root["TimestampUtc"] as string;
+            if (timestamp == null || !Regex.IsMatch(timestamp, @"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$"))
+            {
+                throw new InvalidOperationException(string.Format("Strict schema violation: TimestampUtc must be a valid ISO 8601 UTC timestamp ending in 'Z'; found '{0}' in {1}.", timestamp, sourceDescription));
+            }
+
+            Dictionary<string, object> candidate = root["Candidate"] as Dictionary<string, object>;
+            if (candidate == null)
+            {
+                throw new InvalidOperationException(string.Format("Strict schema violation: Candidate must be an object in {0}.", sourceDescription));
+            }
+            HashSet<string> allowedCandProps = new HashSet<string>(StringComparer.Ordinal) { "SourceCommit", "GitTreeClean", "Binaries" };
+            foreach (KeyValuePair<string, object> cp in candidate)
+            {
+                if (!allowedCandProps.Contains(cp.Key))
                 {
-                    if (!allowedTopLevel.Contains(prop.Name))
+                    throw new InvalidOperationException(string.Format("Strict schema violation: Disallowed unknown property '{0}' in Candidate in {1}.", cp.Key, sourceDescription));
+                }
+            }
+            string sourceCommit = candidate.ContainsKey("SourceCommit") ? (candidate["SourceCommit"] as string) : null;
+            if (sourceCommit == null || !Regex.IsMatch(sourceCommit, @"^[0-9a-f]{40}$"))
+            {
+                throw new InvalidOperationException(string.Format("Strict schema violation: Candidate.SourceCommit must be a 40-hex lowercase string in {0}.", sourceDescription));
+            }
+
+            if (candidate.ContainsKey("Binaries") && candidate["Binaries"] != null)
+            {
+                List<object> binaries = candidate["Binaries"] as List<object>;
+                if (binaries == null)
+                {
+                    throw new InvalidOperationException(string.Format("Strict schema violation: Candidate.Binaries must be an array in {0}.", sourceDescription));
+                }
+                HashSet<string> allowedBinProps = new HashSet<string>(StringComparer.Ordinal) { "RelativePath", "LengthBytes", "Sha256" };
+                foreach (object binObj in binaries)
+                {
+                    Dictionary<string, object> bin = binObj as Dictionary<string, object>;
+                    if (bin == null)
                     {
-                        throw new InvalidOperationException($"Strict schema violation: Disallowed unknown top-level property '{prop.Name}' in {sourceDescription}.");
+                        throw new InvalidOperationException(string.Format("Strict schema violation: Binary item must be an object in {0}.", sourceDescription));
                     }
-                }
-
-                string[] requiredTop = { "SchemaVersion", "RunId", "TimestampUtc", "Candidate", "Metrics", "EvidenceBoundary" };
-                foreach (var req in requiredTop)
-                {
-                    JsonElement elem;
-                    if (!root.TryGetProperty(req, out elem))
+                    foreach (KeyValuePair<string, object> bp in bin)
                     {
-                        throw new InvalidOperationException($"Strict schema violation: Missing required top-level property '{req}' in {sourceDescription}.");
-                    }
-                }
-
-                string schemaVersion = root.GetProperty("SchemaVersion").GetString();
-                if (schemaVersion != "v0.7.0")
-                {
-                    throw new InvalidOperationException($"Strict schema violation: SchemaVersion must be exactly 'v0.7.0'; found '{schemaVersion}' in {sourceDescription}.");
-                }
-
-                string timestamp = root.GetProperty("TimestampUtc").GetString();
-                if (!Regex.IsMatch(timestamp ?? "", @"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$"))
-                {
-                    throw new InvalidOperationException($"Strict schema violation: TimestampUtc must be a valid ISO 8601 UTC timestamp ending in 'Z'; found '{timestamp}' in {sourceDescription}.");
-                }
-
-                var candidate = root.GetProperty("Candidate");
-                if (candidate.ValueKind != JsonValueKind.Object)
-                {
-                    throw new InvalidOperationException($"Strict schema violation: Candidate must be an object in {sourceDescription}.");
-                }
-                var allowedCandProps = new HashSet<string>(StringComparer.Ordinal) { "SourceCommit", "GitTreeClean", "Binaries" };
-                foreach (var cp in candidate.EnumerateObject())
-                {
-                    if (!allowedCandProps.Contains(cp.Name))
-                    {
-                        throw new InvalidOperationException($"Strict schema violation: Disallowed unknown property '{cp.Name}' in Candidate in {sourceDescription}.");
-                    }
-                }
-                JsonElement scElem;
-                if (!candidate.TryGetProperty("SourceCommit", out scElem) || !Regex.IsMatch(scElem.GetString() ?? "", @"^[0-9a-f]{40}$"))
-                {
-                    throw new InvalidOperationException($"Strict schema violation: Candidate.SourceCommit must be a 40-hex lowercase string in {sourceDescription}.");
-                }
-
-                var metrics = root.GetProperty("Metrics");
-                if (metrics.ValueKind != JsonValueKind.Object)
-                {
-                    throw new InvalidOperationException($"Strict schema violation: Metrics must be an object in {sourceDescription}.");
-                }
-                var allowedMetricsProps = new HashSet<string>(StringComparer.Ordinal)
-                {
-                    "IdleCpuAveragePercent", "IdleWorkingSetCombinedBytes",
-                    "WidgetStateDeltaLatencyP95Ms", "WidgetDeltaLatencySamplesMs",
-                    "DashboardColdLaunchP95Ms", "DashboardColdLaunchSamplesMs",
-                    "HerdrReconnectReconcileSeconds", "UnboundedTerminalReads",
-                    "UnhandledCrashesDuringSoak", "SoakDurationHours",
-                    "UnreconciledStateCount", "UnhandledFaultCount", "AdministratorRequired"
-                };
-                foreach (var mp in metrics.EnumerateObject())
-                {
-                    if (!allowedMetricsProps.Contains(mp.Name))
-                    {
-                        throw new InvalidOperationException($"Strict schema violation: Disallowed unknown property '{mp.Name}' in Metrics in {sourceDescription}.");
-                    }
-                }
-
-                string[] reqMetrics = { "IdleCpuAveragePercent", "IdleWorkingSetCombinedBytes", "WidgetStateDeltaLatencyP95Ms", "DashboardColdLaunchP95Ms", "HerdrReconnectReconcileSeconds", "UnboundedTerminalReads", "UnhandledCrashesDuringSoak", "AdministratorRequired" };
-                foreach (var rm in reqMetrics)
-                {
-                    JsonElement mElem;
-                    if (!metrics.TryGetProperty(rm, out mElem))
-                    {
-                        throw new InvalidOperationException($"Strict schema violation: Missing required metric '{rm}' in {sourceDescription}.");
-                    }
-                }
-
-                double cpu = metrics.GetProperty("IdleCpuAveragePercent").GetDouble();
-                if (cpu < 0.0 || cpu > 100.0) throw new InvalidOperationException($"Strict schema violation: IdleCpuAveragePercent must be 0.0-100.0; found {cpu} in {sourceDescription}.");
-
-                long ws = metrics.GetProperty("IdleWorkingSetCombinedBytes").GetInt64();
-                if (ws < 0) throw new InvalidOperationException($"Strict schema violation: IdleWorkingSetCombinedBytes must be >= 0; found {ws} in {sourceDescription}.");
-
-                double lat = metrics.GetProperty("WidgetStateDeltaLatencyP95Ms").GetDouble();
-                if (lat < 0.0) throw new InvalidOperationException($"Strict schema violation: WidgetStateDeltaLatencyP95Ms must be >= 0; found {lat} in {sourceDescription}.");
-
-                double launch = metrics.GetProperty("DashboardColdLaunchP95Ms").GetDouble();
-                if (launch < 0.0) throw new InvalidOperationException($"Strict schema violation: DashboardColdLaunchP95Ms must be >= 0; found {launch} in {sourceDescription}.");
-
-                double rec = metrics.GetProperty("HerdrReconnectReconcileSeconds").GetDouble();
-                if (rec < 0.0) throw new InvalidOperationException($"Strict schema violation: HerdrReconnectReconcileSeconds must be >= 0; found {rec} in {sourceDescription}.");
-
-                int term = metrics.GetProperty("UnboundedTerminalReads").GetInt32();
-                if (term < 0) throw new InvalidOperationException($"Strict schema violation: UnboundedTerminalReads must be >= 0; found {term} in {sourceDescription}.");
-
-                int crash = metrics.GetProperty("UnhandledCrashesDuringSoak").GetInt32();
-                if (crash < 0) throw new InvalidOperationException($"Strict schema violation: UnhandledCrashesDuringSoak must be >= 0; found {crash} in {sourceDescription}.");
-
-                var admin = metrics.GetProperty("AdministratorRequired");
-                if (admin.ValueKind != JsonValueKind.True && admin.ValueKind != JsonValueKind.False)
-                {
-                    throw new InvalidOperationException($"Strict schema violation: AdministratorRequired must be a boolean in {sourceDescription}.");
-                }
-
-                JsonElement waivers;
-                if (root.TryGetProperty("Waivers", out waivers))
-                {
-                    if (waivers.ValueKind != JsonValueKind.Array) throw new InvalidOperationException($"Strict schema violation: Waivers must be an array in {sourceDescription}.");
-                    var allowedWProps = new HashSet<string>(StringComparer.Ordinal) { "Metric", "Target", "Observed", "Cause", "Impact", "ApprovedBy", "ApprovalDateUtc", "WaiverSha256" };
-                    foreach (var w in waivers.EnumerateArray())
-                    {
-                        if (w.ValueKind != JsonValueKind.Object) throw new InvalidOperationException($"Strict schema violation: Waiver element must be an object in {sourceDescription}.");
-                        foreach (var wp in w.EnumerateObject())
+                        if (!allowedBinProps.Contains(bp.Key))
                         {
-                            if (!allowedWProps.Contains(wp.Name)) throw new InvalidOperationException($"Strict schema violation: Disallowed unknown property '{wp.Name}' in Waiver in {sourceDescription}.");
-                        }
-                        string[] reqW = { "Metric", "Target", "Observed", "Cause", "Impact", "ApprovedBy", "ApprovalDateUtc", "WaiverSha256" };
-                        foreach (var rw in reqW)
-                        {
-                            JsonElement wv;
-                            if (!w.TryGetProperty(rw, out wv) || string.IsNullOrWhiteSpace(wv.GetString()))
-                            {
-                                throw new InvalidOperationException($"Strict schema violation: Missing or empty required waiver property '{rw}' in {sourceDescription}.");
-                            }
-                        }
-                        string wSha = w.GetProperty("WaiverSha256").GetString();
-                        if (!Regex.IsMatch(wSha ?? "", @"^[0-9a-f]{64}$"))
-                        {
-                            throw new InvalidOperationException($"Strict schema violation: WaiverSha256 must be 64-hex lowercase in {sourceDescription}.");
+                            throw new InvalidOperationException(string.Format("Strict schema violation: Disallowed unknown property '{0}' in Binary in {1}.", bp.Key, sourceDescription));
                         }
                     }
+                    string[] reqBin = new string[] { "RelativePath", "LengthBytes", "Sha256" };
+                    foreach (string rb in reqBin)
+                    {
+                        if (!bin.ContainsKey(rb) || bin[rb] == null)
+                        {
+                            throw new InvalidOperationException(string.Format("Strict schema violation: Missing required binary property '{0}' in {1}.", rb, sourceDescription));
+                        }
+                    }
+                    string sha = bin["Sha256"] as string;
+                    if (sha == null || !Regex.IsMatch(sha, @"^[0-9a-f]{64}$"))
+                    {
+                        throw new InvalidOperationException(string.Format("Strict schema violation: Binary Sha256 must be a 64-hex lowercase string in {0}.", sourceDescription));
+                    }
+                    long length = Convert.ToInt64(bin["LengthBytes"], CultureInfo.InvariantCulture);
+                    if (length < 0)
+                    {
+                        throw new InvalidOperationException(string.Format("Strict schema violation: Binary LengthBytes must be >= 0 in {0}.", sourceDescription));
+                    }
                 }
+            }
 
-                var ev = root.GetProperty("EvidenceBoundary");
-                if (ev.ValueKind != JsonValueKind.Object) throw new InvalidOperationException($"Strict schema violation: EvidenceBoundary must be an object in {sourceDescription}.");
-                var allowedEv = new HashSet<string>(StringComparer.Ordinal) { "StaticEvidence", "SyntheticEvidence", "ContractEvidence", "ActualHerdrRuntime", "SoakExecution", "HumanUatDecision", "ReleaseEvidence" };
-                foreach (var ep in ev.EnumerateObject())
+            Dictionary<string, object> metrics = root["Metrics"] as Dictionary<string, object>;
+            if (metrics == null)
+            {
+                throw new InvalidOperationException(string.Format("Strict schema violation: Metrics must be an object in {0}.", sourceDescription));
+            }
+            HashSet<string> allowedMetricsProps = new HashSet<string>(StringComparer.Ordinal)
+            {
+                "IdleCpuAveragePercent", "IdleWorkingSetCombinedBytes",
+                "WidgetStateDeltaLatencyP95Ms", "WidgetDeltaLatencySamplesMs",
+                "DashboardColdLaunchP95Ms", "DashboardColdLaunchSamplesMs",
+                "HerdrReconnectReconcileSeconds", "UnboundedTerminalReads",
+                "UnhandledCrashesDuringSoak", "SoakDurationHours",
+                "UnreconciledStateCount", "UnhandledFaultCount", "AdministratorRequired"
+            };
+            foreach (KeyValuePair<string, object> mp in metrics)
+            {
+                if (!allowedMetricsProps.Contains(mp.Key))
                 {
-                    if (!allowedEv.Contains(ep.Name)) throw new InvalidOperationException($"Strict schema violation: Disallowed unknown property '{ep.Name}' in EvidenceBoundary in {sourceDescription}.");
+                    throw new InvalidOperationException(string.Format("Strict schema violation: Disallowed unknown property '{0}' in Metrics in {1}.", mp.Key, sourceDescription));
                 }
+            }
+
+            string[] reqMetrics = new string[]
+            {
+                "IdleCpuAveragePercent", "IdleWorkingSetCombinedBytes",
+                "WidgetStateDeltaLatencyP95Ms", "DashboardColdLaunchP95Ms",
+                "HerdrReconnectReconcileSeconds", "UnboundedTerminalReads",
+                "UnhandledCrashesDuringSoak", "AdministratorRequired"
+            };
+            foreach (string rm in reqMetrics)
+            {
+                if (!metrics.ContainsKey(rm) || metrics[rm] == null)
+                {
+                    throw new InvalidOperationException(string.Format("Strict schema violation: Missing required metric '{0}' in {1}.", rm, sourceDescription));
+                }
+            }
+
+            double cpu = Convert.ToDouble(metrics["IdleCpuAveragePercent"], CultureInfo.InvariantCulture);
+            if (cpu < 0.0 || cpu > 100.0) throw new InvalidOperationException(string.Format("Strict schema violation: IdleCpuAveragePercent must be 0.0-100.0; found {0} in {1}.", cpu, sourceDescription));
+
+            long ws = Convert.ToInt64(metrics["IdleWorkingSetCombinedBytes"], CultureInfo.InvariantCulture);
+            if (ws < 0) throw new InvalidOperationException(string.Format("Strict schema violation: IdleWorkingSetCombinedBytes must be >= 0; found {0} in {1}.", ws, sourceDescription));
+
+            double lat = Convert.ToDouble(metrics["WidgetStateDeltaLatencyP95Ms"], CultureInfo.InvariantCulture);
+            if (lat < 0.0) throw new InvalidOperationException(string.Format("Strict schema violation: WidgetStateDeltaLatencyP95Ms must be >= 0; found {0} in {1}.", lat, sourceDescription));
+
+            double launch = Convert.ToDouble(metrics["DashboardColdLaunchP95Ms"], CultureInfo.InvariantCulture);
+            if (launch < 0.0) throw new InvalidOperationException(string.Format("Strict schema violation: DashboardColdLaunchP95Ms must be >= 0; found {0} in {1}.", launch, sourceDescription));
+
+            double rec = Convert.ToDouble(metrics["HerdrReconnectReconcileSeconds"], CultureInfo.InvariantCulture);
+            if (rec < 0.0) throw new InvalidOperationException(string.Format("Strict schema violation: HerdrReconnectReconcileSeconds must be >= 0; found {0} in {1}.", rec, sourceDescription));
+
+            long term = Convert.ToInt64(metrics["UnboundedTerminalReads"], CultureInfo.InvariantCulture);
+            if (term < 0) throw new InvalidOperationException(string.Format("Strict schema violation: UnboundedTerminalReads must be >= 0; found {0} in {1}.", term, sourceDescription));
+
+            long crash = Convert.ToInt64(metrics["UnhandledCrashesDuringSoak"], CultureInfo.InvariantCulture);
+            if (crash < 0) throw new InvalidOperationException(string.Format("Strict schema violation: UnhandledCrashesDuringSoak must be >= 0; found {0} in {1}.", crash, sourceDescription));
+
+            object adminObj = metrics["AdministratorRequired"];
+            if (!(adminObj is bool))
+            {
+                throw new InvalidOperationException(string.Format("Strict schema violation: AdministratorRequired must be a boolean in {0}.", sourceDescription));
+            }
+
+            if (metrics.ContainsKey("SoakDurationHours") && metrics["SoakDurationHours"] != null)
+            {
+                double soak = Convert.ToDouble(metrics["SoakDurationHours"], CultureInfo.InvariantCulture);
+                if (soak < 0.0) throw new InvalidOperationException(string.Format("Strict schema violation: SoakDurationHours must be >= 0; found {0} in {1}.", soak, sourceDescription));
+            }
+
+            if (metrics.ContainsKey("UnreconciledStateCount") && metrics["UnreconciledStateCount"] != null)
+            {
+                long unrec = Convert.ToInt64(metrics["UnreconciledStateCount"], CultureInfo.InvariantCulture);
+                if (unrec < 0) throw new InvalidOperationException(string.Format("Strict schema violation: UnreconciledStateCount must be >= 0; found {0} in {1}.", unrec, sourceDescription));
+            }
+
+            if (metrics.ContainsKey("UnhandledFaultCount") && metrics["UnhandledFaultCount"] != null)
+            {
+                long fault = Convert.ToInt64(metrics["UnhandledFaultCount"], CultureInfo.InvariantCulture);
+                if (fault < 0) throw new InvalidOperationException(string.Format("Strict schema violation: UnhandledFaultCount must be >= 0; found {0} in {1}.", fault, sourceDescription));
+            }
+
+            if (root.ContainsKey("Waivers") && root["Waivers"] != null)
+            {
+                List<object> waivers = root["Waivers"] as List<object>;
+                if (waivers == null) throw new InvalidOperationException(string.Format("Strict schema violation: Waivers must be an array in {0}.", sourceDescription));
+                HashSet<string> allowedWProps = new HashSet<string>(StringComparer.Ordinal) { "Metric", "Target", "Observed", "Cause", "Impact", "ApprovedBy", "ApprovalDateUtc", "WaiverSha256" };
+                foreach (object wObj in waivers)
+                {
+                    Dictionary<string, object> w = wObj as Dictionary<string, object>;
+                    if (w == null) throw new InvalidOperationException(string.Format("Strict schema violation: Waiver element must be an object in {0}.", sourceDescription));
+                    foreach (KeyValuePair<string, object> wp in w)
+                    {
+                        if (!allowedWProps.Contains(wp.Key)) throw new InvalidOperationException(string.Format("Strict schema violation: Disallowed unknown property '{0}' in Waiver in {1}.", wp.Key, sourceDescription));
+                    }
+                    string[] reqW = new string[] { "Metric", "Target", "Observed", "Cause", "Impact", "ApprovedBy", "ApprovalDateUtc", "WaiverSha256" };
+                    foreach (string rw in reqW)
+                    {
+                        string val = w.ContainsKey(rw) ? (w[rw] as string) : null;
+                        if (string.IsNullOrEmpty(val) || val.Trim().Length == 0)
+                        {
+                            throw new InvalidOperationException(string.Format("Strict schema violation: Missing or empty required waiver property '{0}' in {1}.", rw, sourceDescription));
+                        }
+                    }
+                    string wSha = w["WaiverSha256"] as string;
+                    if (wSha == null || !Regex.IsMatch(wSha, @"^[0-9a-f]{64}$"))
+                    {
+                        throw new InvalidOperationException(string.Format("Strict schema violation: WaiverSha256 must be 64-hex lowercase in {0}.", sourceDescription));
+                    }
+                }
+            }
+
+            Dictionary<string, object> ev = root["EvidenceBoundary"] as Dictionary<string, object>;
+            if (ev == null) throw new InvalidOperationException(string.Format("Strict schema violation: EvidenceBoundary must be an object in {0}.", sourceDescription));
+            HashSet<string> allowedEv = new HashSet<string>(StringComparer.Ordinal) { "StaticEvidence", "SyntheticEvidence", "ContractEvidence", "ActualHerdrRuntime", "SoakExecution", "HumanUatDecision", "ReleaseEvidence" };
+            foreach (KeyValuePair<string, object> ep in ev)
+            {
+                if (!allowedEv.Contains(ep.Key)) throw new InvalidOperationException(string.Format("Strict schema violation: Disallowed unknown property '{0}' in EvidenceBoundary in {1}.", ep.Key, sourceDescription));
             }
         }
 
         public static double CalculateP95(double[] samples)
         {
             if (samples == null || samples.Length == 0) return 0.0;
-            var sorted = samples.OrderBy(x => x).ToArray();
+            double[] sorted = (double[])samples.Clone();
+            Array.Sort(sorted);
             int index = (int)Math.Ceiling(0.95 * sorted.Length) - 1;
             if (index < 0) index = 0;
             if (index >= sorted.Length) index = sorted.Length - 1;
             return sorted[index];
+        }
+
+        private static void SkipWhitespace(string json, ref int pos, int length)
+        {
+            while (pos < length)
+            {
+                char c = json[pos];
+                if (c == ' ' || c == '\t' || c == '\r' || c == '\n') pos++;
+                else break;
+            }
+        }
+
+        private static object ParseValue(string json, ref int pos, int length, int depth, string source)
+        {
+            if (depth > 32) throw new InvalidOperationException(string.Format("Strict JSON violation: Exceeded maximum nesting depth of 32 in {0}.", source));
+            SkipWhitespace(json, ref pos, length);
+            if (pos >= length) throw new InvalidOperationException(string.Format("Strict JSON violation: Unexpected end of input in {0}.", source));
+            char c = json[pos];
+            if (c == '{') return ParseObject(json, ref pos, length, depth + 1, source);
+            if (c == '[') return ParseArray(json, ref pos, length, depth + 1, source);
+            if (c == '"') return ParseString(json, ref pos, length, source);
+            if (c == 't' || c == 'f') return ParseBoolean(json, ref pos, length, source);
+            if (c == 'n') return ParseNull(json, ref pos, length, source);
+            if (c == '-' || (c >= '0' && c <= '9')) return ParseNumber(json, ref pos, length, source);
+            throw new InvalidOperationException(string.Format("Strict JSON violation: Unexpected character '{0}' in {1} at position {2}.", c, source, pos));
+        }
+
+        private static Dictionary<string, object> ParseObject(string json, ref int pos, int length, int depth, string source)
+        {
+            pos++; // consume '{'
+            Dictionary<string, object> dict = new Dictionary<string, object>(StringComparer.Ordinal);
+            SkipWhitespace(json, ref pos, length);
+            if (pos < length && json[pos] == '}')
+            {
+                pos++;
+                return dict;
+            }
+            while (pos < length)
+            {
+                SkipWhitespace(json, ref pos, length);
+                if (pos >= length || json[pos] != '"')
+                {
+                    throw new InvalidOperationException(string.Format("Strict JSON violation: Expected quoted property name in object in {0} at position {1}.", source, pos));
+                }
+                string key = ParseString(json, ref pos, length, source);
+                if (dict.ContainsKey(key))
+                {
+                    throw new InvalidOperationException(string.Format("Strict JSON violation: Duplicate property '{0}' detected in {1}.", key, source));
+                }
+                SkipWhitespace(json, ref pos, length);
+                if (pos >= length || json[pos] != ':')
+                {
+                    throw new InvalidOperationException(string.Format("Strict JSON violation: Expected ':' after property name '{0}' in {1} at position {2}.", key, source, pos));
+                }
+                pos++; // consume ':'
+                object val = ParseValue(json, ref pos, length, depth, source);
+                dict.Add(key, val);
+                SkipWhitespace(json, ref pos, length);
+                if (pos >= length) throw new InvalidOperationException(string.Format("Strict JSON violation: Unterminated object in {0}.", source));
+                if (json[pos] == ',')
+                {
+                    pos++;
+                    SkipWhitespace(json, ref pos, length);
+                    if (pos < length && json[pos] == '}')
+                    {
+                        throw new InvalidOperationException(string.Format("Strict JSON violation: Trailing comma in object in {0} at position {1}.", source, pos));
+                    }
+                }
+                else if (json[pos] == '}')
+                {
+                    pos++;
+                    return dict;
+                }
+                else
+                {
+                    throw new InvalidOperationException(string.Format("Strict JSON violation: Expected ',' or '}' in object in {0} at position {1}.", source, pos));
+                }
+            }
+            throw new InvalidOperationException(string.Format("Strict JSON violation: Unterminated object in {0}.", source));
+        }
+
+        private static List<object> ParseArray(string json, ref int pos, int length, int depth, string source)
+        {
+            pos++; // consume '['
+            List<object> list = new List<object>();
+            SkipWhitespace(json, ref pos, length);
+            if (pos < length && json[pos] == ']')
+            {
+                pos++;
+                return list;
+            }
+            while (pos < length)
+            {
+                object val = ParseValue(json, ref pos, length, depth, source);
+                list.Add(val);
+                SkipWhitespace(json, ref pos, length);
+                if (pos >= length) throw new InvalidOperationException(string.Format("Strict JSON violation: Unterminated array in {0}.", source));
+                if (json[pos] == ',')
+                {
+                    pos++;
+                    SkipWhitespace(json, ref pos, length);
+                    if (pos < length && json[pos] == ']')
+                    {
+                        throw new InvalidOperationException(string.Format("Strict JSON violation: Trailing comma in array in {0} at position {1}.", source, pos));
+                    }
+                }
+                else if (json[pos] == ']')
+                {
+                    pos++;
+                    return list;
+                }
+                else
+                {
+                    throw new InvalidOperationException(string.Format("Strict JSON violation: Expected ',' or ']' in array in {0} at position {1}.", source, pos));
+                }
+            }
+            throw new InvalidOperationException(string.Format("Strict JSON violation: Unterminated array in {0}.", source));
+        }
+
+        private static string ParseString(string json, ref int pos, int length, string source)
+        {
+            pos++; // consume opening '"'
+            StringBuilder sb = new StringBuilder();
+            while (pos < length)
+            {
+                char c = json[pos++];
+                if (c == '"') return sb.ToString();
+                if (c == '\\')
+                {
+                    if (pos >= length) throw new InvalidOperationException(string.Format("Strict JSON violation: Unterminated escape sequence in {0}.", source));
+                    char esc = json[pos++];
+                    switch (esc)
+                    {
+                        case '"': sb.Append('"'); break;
+                        case '\\': sb.Append('\\'); break;
+                        case '/': sb.Append('/'); break;
+                        case 'b': sb.Append('\b'); break;
+                        case 'f': sb.Append('\f'); break;
+                        case 'n': sb.Append('\n'); break;
+                        case 'r': sb.Append('\r'); break;
+                        case 't': sb.Append('\t'); break;
+                        case 'u':
+                            if (pos + 4 > length) throw new InvalidOperationException(string.Format("Strict JSON violation: Incomplete unicode escape in {0}.", source));
+                            string hex = json.Substring(pos, 4);
+                            pos += 4;
+                            int codePoint;
+                            if (!int.TryParse(hex, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out codePoint))
+                            {
+                                throw new InvalidOperationException(string.Format("Strict JSON violation: Invalid unicode escape '\\u{0}' in {1}.", hex, source));
+                            }
+                            sb.Append((char)codePoint);
+                            break;
+                        default:
+                            throw new InvalidOperationException(string.Format("Strict JSON violation: Invalid escape character '\\{0}' in {1}.", esc, source));
+                    }
+                }
+                else if (c < 0x20)
+                {
+                    throw new InvalidOperationException(string.Format("Strict JSON violation: Unescaped control character (0x{0:X2}) in string in {1}.", (int)c, source));
+                }
+                else
+                {
+                    sb.Append(c);
+                }
+            }
+            throw new InvalidOperationException(string.Format("Strict JSON violation: Unterminated string in {0}.", source));
+        }
+
+        private static bool ParseBoolean(string json, ref int pos, int length, string source)
+        {
+            if (pos + 4 <= length && json.Substring(pos, 4) == "true")
+            {
+                pos += 4;
+                return true;
+            }
+            if (pos + 5 <= length && json.Substring(pos, 5) == "false")
+            {
+                pos += 5;
+                return false;
+            }
+            throw new InvalidOperationException(string.Format("Strict JSON violation: Invalid boolean literal in {0} at position {1}.", source, pos));
+        }
+
+        private static object ParseNull(string json, ref int pos, int length, string source)
+        {
+            if (pos + 4 <= length && json.Substring(pos, 4) == "null")
+            {
+                pos += 4;
+                return null;
+            }
+            throw new InvalidOperationException(string.Format("Strict JSON violation: Invalid null literal in {0} at position {1}.", source, pos));
+        }
+
+        private static object ParseNumber(string json, ref int pos, int length, string source)
+        {
+            int start = pos;
+            if (json[pos] == '-') pos++;
+            if (pos >= length) throw new InvalidOperationException(string.Format("Strict JSON violation: Invalid number in {0} at position {1}.", source, start));
+            if (json[pos] == '0')
+            {
+                pos++;
+            }
+            else if (json[pos] >= '1' && json[pos] <= '9')
+            {
+                while (pos < length && json[pos] >= '0' && json[pos] <= '9') pos++;
+            }
+            else
+            {
+                throw new InvalidOperationException(string.Format("Strict JSON violation: Invalid number in {0} at position {1}.", source, start));
+            }
+
+            bool isFloating = false;
+            if (pos < length && json[pos] == '.')
+            {
+                isFloating = true;
+                pos++;
+                int fracStart = pos;
+                while (pos < length && json[pos] >= '0' && json[pos] <= '9') pos++;
+                if (pos == fracStart) throw new InvalidOperationException(string.Format("Strict JSON violation: Number missing fractional digits in {0} at position {1}.", source, start));
+            }
+
+            if (pos < length && (json[pos] == 'e' || json[pos] == 'E'))
+            {
+                isFloating = true;
+                pos++;
+                if (pos < length && (json[pos] == '+' || json[pos] == '-')) pos++;
+                int expStart = pos;
+                while (pos < length && json[pos] >= '0' && json[pos] <= '9') pos++;
+                if (pos == expStart) throw new InvalidOperationException(string.Format("Strict JSON violation: Number missing exponent digits in {0} at position {1}.", source, start));
+            }
+
+            string numText = json.Substring(start, pos - start);
+            if (numText.IndexOf("nan", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                numText.IndexOf("infinity", StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                throw new InvalidOperationException(string.Format("Strict JSON violation: Disallowed numeric value '{0}' in {1}.", numText, source));
+            }
+
+            if (isFloating)
+            {
+                double dVal;
+                if (!double.TryParse(numText, NumberStyles.Float, CultureInfo.InvariantCulture, out dVal))
+                {
+                    throw new InvalidOperationException(string.Format("Strict JSON violation: Cannot parse floating number '{0}' in {1}.", numText, source));
+                }
+                return dVal;
+            }
+            else
+            {
+                long lVal;
+                if (!long.TryParse(numText, NumberStyles.Integer, CultureInfo.InvariantCulture, out lVal))
+                {
+                    double dVal;
+                    if (!double.TryParse(numText, NumberStyles.Float, CultureInfo.InvariantCulture, out dVal))
+                    {
+                        throw new InvalidOperationException(string.Format("Strict JSON violation: Cannot parse integer '{0}' in {1}.", numText, source));
+                    }
+                    return dVal;
+                }
+                return lVal;
+            }
         }
     }
 }
@@ -328,7 +616,7 @@ function Get-Sha256DigestHex {
 
         $builder = New-Object System.Text.StringBuilder ($hashBytes.Length * 2)
         foreach ($b in $hashBytes) {
-            [void]$builder.Append($b.ToString('x2'))
+            [void]$builder.Append($b.ToString('x2', [Globalization.CultureInfo]::InvariantCulture))
         }
         return $builder.ToString()
     } finally {
@@ -444,7 +732,8 @@ function Test-CleanRepositoryState {
     $resolvedRoot = [IO.Path]::GetFullPath($RepositoryRoot)
     Assert-NotReparsePoint -Path $resolvedRoot -Description 'Repository root'
 
-    $sourceCommit = (& git -C $resolvedRoot rev-parse --verify 'HEAD^{commit}' 2>&1).ToString().Trim()
+    $sourceCommitOutput = @(& git -C $resolvedRoot rev-parse --verify 'HEAD^{commit}' 2>&1)
+    $sourceCommit = ($sourceCommitOutput -join '').Trim()
     if ($LASTEXITCODE -ne 0 -or $sourceCommit -notmatch '^[0-9a-f]{40}$') {
         throw "Could not resolve source commit at $resolvedRoot (exit code $LASTEXITCODE): $sourceCommit"
     }
@@ -461,7 +750,7 @@ function Test-CleanRepositoryState {
 }
 
 # -----------------------------------------------------------------------------
-# Strict JSON Parser & Schema Validator
+# Strict JSON Parser & Schema Validator (PS 5.1 & PS 7+ Compatible)
 # -----------------------------------------------------------------------------
 function ConvertFrom-StrictPerformanceBudgetJson {
     param(
@@ -470,7 +759,7 @@ function ConvertFrom-StrictPerformanceBudgetJson {
     )
 
     [HerdrOps.BudgetValidation.StrictJsonValidator]::ValidateSchemaDocument($JsonText, $SourceDescription)
-    return ($JsonText | ConvertFrom-Json -DateKind String -Depth 50)
+    return ($JsonText | ConvertFrom-Json)
 }
 
 # -----------------------------------------------------------------------------
@@ -488,6 +777,7 @@ function Get-WaiverCanonicalSha256 {
     $canonicalText = "$($Waiver.Metric):$($Waiver.Target):$($Waiver.Observed):$($Waiver.Cause):$($Waiver.Impact):$($Waiver.ApprovedBy):$dateStr"
     return Get-Sha256DigestHex -Text $canonicalText
 }
+
 function Test-WaiverIntegrity {
     param(
         [Parameter(Mandatory)]$Waiver,
@@ -618,7 +908,7 @@ function Test-PerformanceBudgetReport {
             Observed      = "$($wsMb.ToString('F3', [Globalization.CultureInfo]::InvariantCulture)) MB ($wsBytes bytes)"
             Status        = 'PASS'
             WaiverApplied = $false
-            Detail        = "Combined working set ($($wsMb.ToString('F3')) MB) meets Plan target ($wsTarget)."
+            Detail        = "Combined working set ($($wsMb.ToString('F3', [Globalization.CultureInfo]::InvariantCulture)) MB) meets Plan target ($wsTarget)."
         })
     } else {
         $waiver = & $findWaiverForMetric 'IdleWorkingSetCombinedBytes'
@@ -633,7 +923,7 @@ function Test-PerformanceBudgetReport {
                     Observed      = "$($wsMb.ToString('F3', [Globalization.CultureInfo]::InvariantCulture)) MB ($wsBytes bytes)"
                     Status        = 'PASS (WAIVED)'
                     WaiverApplied = $true
-                    Detail        = "Working set ($($wsMb.ToString('F3')) MB) exceeded target ($wsTarget); approved waiver applied: $($wCheck.Reason)"
+                    Detail        = "Working set ($($wsMb.ToString('F3', [Globalization.CultureInfo]::InvariantCulture)) MB) exceeded target ($wsTarget); approved waiver applied: $($wCheck.Reason)"
                 })
             } else {
                 $allPassed = $false
@@ -644,7 +934,7 @@ function Test-PerformanceBudgetReport {
                     Observed      = "$($wsMb.ToString('F3', [Globalization.CultureInfo]::InvariantCulture)) MB ($wsBytes bytes)"
                     Status        = 'FAIL'
                     WaiverApplied = $false
-                    Detail        = "Working set ($($wsMb.ToString('F3')) MB) exceeded target ($wsTarget); waiver invalid: $($wCheck.Reason)"
+                    Detail        = "Working set ($($wsMb.ToString('F3', [Globalization.CultureInfo]::InvariantCulture)) MB) exceeded target ($wsTarget); waiver invalid: $($wCheck.Reason)"
                 })
             }
         } else {
@@ -656,7 +946,7 @@ function Test-PerformanceBudgetReport {
                 Observed      = "$($wsMb.ToString('F3', [Globalization.CultureInfo]::InvariantCulture)) MB ($wsBytes bytes)"
                 Status        = 'FAIL'
                 WaiverApplied = $false
-                Detail        = "Working set ($($wsMb.ToString('F3')) MB) exceeded target ($wsTarget) with no waiver."
+                Detail        = "Working set ($($wsMb.ToString('F3', [Globalization.CultureInfo]::InvariantCulture)) MB) exceeded target ($wsTarget) with no waiver."
             })
         }
     }
@@ -919,29 +1209,40 @@ function Test-PerformanceBudgetReport {
     }
 
     # 7. Unhandled crash during v0.7 soak (0 in 8 hours)
+    # Preservation of preparation boundary: preparation slice reports NOT OBSERVED for 0h soak, NEVER PASS as runtime.
+    # Actual Runtime admission requires full >= 8.0h soak execution and cannot treat zero-hour soak as pass.
     $crashObs = [int]$metrics.UnhandledCrashesDuringSoak
-    $soakDuration = if ($null -ne $metrics.PSObject.Properties['SoakDurationHours']) { [double]$metrics.SoakDurationHours } else { 0.0 }
+    $soakDuration = if ($null -ne $metrics.PSObject.Properties['SoakDurationHours'] -and $null -ne $metrics.SoakDurationHours) {
+        [double]$metrics.SoakDurationHours
+    } else {
+        0.0
+    }
     $crashTarget = "0 crashes in >= 8.0 hours"
+
+    $evidenceClass = if ($null -ne $ReportObject.PSObject.Properties['EvidenceClass']) { [string]$ReportObject.EvidenceClass } else { 'Preparation' }
+    $isRuntimeAdmission = ($evidenceClass -inotmatch 'Preparation') -or
+        ($null -ne $ReportObject.PSObject.Properties['EvidenceBoundary'] -and
+         ($ReportObject.EvidenceBoundary.ActualHerdrRuntime -match '^OBSERVED' -or $ReportObject.EvidenceBoundary.SoakExecution -match '^OBSERVED'))
 
     if ($crashObs -eq 0 -and $soakDuration -ge $script:V07PlanBudgets.MinSoakDurationHours) {
         $checks.Add([pscustomobject]@{
             Id            = 'V07-PERF-07-SOAK'
             Metric        = 'Unhandled crash during v0.7 soak'
             Target        = $crashTarget
-            Observed      = "$crashObs crashes in $($soakDuration.ToString('F1')) hours"
+            Observed      = "$crashObs crashes in $($soakDuration.ToString('F1', [Globalization.CultureInfo]::InvariantCulture)) hours"
             Status        = 'PASS'
             WaiverApplied = $false
             Detail        = "Zero unhandled crashes over full 8-hour soak duration."
         })
-    } elseif ($crashObs -eq 0 -and $soakDuration -eq 0.0) {
+    } elseif ($crashObs -eq 0 -and $soakDuration -eq 0.0 -and -not $isRuntimeAdmission) {
         $checks.Add([pscustomobject]@{
             Id            = 'V07-PERF-07-SOAK'
             Metric        = 'Unhandled crash during v0.7 soak'
             Target        = $crashTarget
             Observed      = "$crashObs crashes (Soak duration: NOT EXECUTED / PREPARATION)"
-            Status        = 'PASS'
+            Status        = 'NOT OBSERVED'
             WaiverApplied = $false
-            Detail        = "Zero unhandled crashes recorded; full 8-hour soak execution is NOT OBSERVED in this preparation slice."
+            Detail        = "Zero unhandled crashes recorded in preparation slice; sustained 8-hour live soak execution is NOT OBSERVED."
         })
     } else {
         $waiver = & $findWaiverForMetric 'UnhandledCrashesDuringSoak'
@@ -953,7 +1254,7 @@ function Test-PerformanceBudgetReport {
                     Id            = 'V07-PERF-07-SOAK'
                     Metric        = 'Unhandled crash during v0.7 soak'
                     Target        = $crashTarget
-                    Observed      = "$crashObs crashes in $($soakDuration.ToString('F1')) hours"
+                    Observed      = "$crashObs crashes in $($soakDuration.ToString('F1', [Globalization.CultureInfo]::InvariantCulture)) hours"
                     Status        = 'PASS (WAIVED)'
                     WaiverApplied = $true
                     Detail        = "Soak crashes ($crashObs) or duration ($soakDuration h) violated target; approved waiver applied: $($wCheck.Reason)"
@@ -964,7 +1265,7 @@ function Test-PerformanceBudgetReport {
                     Id            = 'V07-PERF-07-SOAK'
                     Metric        = 'Unhandled crash during v0.7 soak'
                     Target        = $crashTarget
-                    Observed      = "$crashObs crashes in $($soakDuration.ToString('F1')) hours"
+                    Observed      = "$crashObs crashes in $($soakDuration.ToString('F1', [Globalization.CultureInfo]::InvariantCulture)) hours"
                     Status        = 'FAIL'
                     WaiverApplied = $false
                     Detail        = "Soak crashes ($crashObs) or duration ($soakDuration h) violated target; waiver invalid: $($wCheck.Reason)"
@@ -972,14 +1273,19 @@ function Test-PerformanceBudgetReport {
             }
         } else {
             $allPassed = $false
+            $failDetail = if ($isRuntimeAdmission -and $soakDuration -lt $script:V07PlanBudgets.MinSoakDurationHours) {
+                "Actual Runtime admission requires sustained 8-hour soak (observed: $soakDuration h < 8.0 h); zero-hour or partial soak cannot satisfy runtime requirement without waiver."
+            } else {
+                "Soak crashes ($crashObs) or insufficient soak duration ($soakDuration h < 8.0 h) without waiver."
+            }
             $checks.Add([pscustomobject]@{
                 Id            = 'V07-PERF-07-SOAK'
                 Metric        = 'Unhandled crash during v0.7 soak'
                 Target        = $crashTarget
-                Observed      = "$crashObs crashes in $($soakDuration.ToString('F1')) hours"
+                Observed      = "$crashObs crashes in $($soakDuration.ToString('F1', [Globalization.CultureInfo]::InvariantCulture)) hours"
                 Status        = 'FAIL'
                 WaiverApplied = $false
-                Detail        = "Soak crashes ($crashObs) or insufficient soak duration ($soakDuration h < 8.0 h) without waiver."
+                Detail        = $failDetail
             })
         }
     }
@@ -1511,6 +1817,67 @@ function Invoke-PerformanceBudgetSelfTests {
         & $recordSelfTest 'Negative: Path traversal outside root fails' $false "Expected path traversal exception was not thrown"
     } catch {
         & $recordSelfTest 'Negative: Path traversal outside root fails' $true "Rejected escaped path: $($_.Exception.Message)"
+    }
+
+    # Test 28: Zero-hour soak in Preparation mode (reports NOT OBSERVED, never PASS as runtime)
+    try {
+        $prep0hJson = Get-BoundedUtf8FileText -Path (Join-Path $FixturesDirectory 'passing-budget-report.json')
+        $prep0hReport = ConvertFrom-StrictPerformanceBudgetJson -JsonText $prep0hJson -SourceDescription 'prep 0h test'
+        $prep0hReport.Metrics.SoakDurationHours = 0.0
+        $prep0hReport.EvidenceClass = 'Preparation'
+        $prep0hEval = Test-PerformanceBudgetReport -ReportObject $prep0hReport
+        $soakCheck = @($prep0hEval.Checks | Where-Object Id -eq 'V07-PERF-07-SOAK')[0]
+        & $recordSelfTest 'Preparation: Zero-hour soak reports NOT OBSERVED (never PASS as runtime)' ($prep0hEval.Passed -and $soakCheck.Status -eq 'NOT OBSERVED') "Preparation reports NOT OBSERVED: $($soakCheck.Detail)"
+    } catch {
+        & $recordSelfTest 'Preparation: Zero-hour soak reports NOT OBSERVED (never PASS as runtime)' $false $_.Exception.Message
+    }
+
+    # Negative Test 29: Zero-hour soak in Runtime admission fails closed (cannot satisfy 8-hour requirement)
+    try {
+        $run0hJson = Get-BoundedUtf8FileText -Path (Join-Path $FixturesDirectory 'passing-budget-report.json')
+        $run0hReport = ConvertFrom-StrictPerformanceBudgetJson -JsonText $run0hJson -SourceDescription 'runtime 0h test'
+        $run0hReport.Metrics.SoakDurationHours = 0.0
+        $run0hReport.EvidenceClass = 'Runtime'
+        $run0hReport.EvidenceBoundary.ActualHerdrRuntime = 'OBSERVED'
+        $run0hReport.EvidenceBoundary.SoakExecution = 'OBSERVED'
+        $run0hEval = Test-PerformanceBudgetReport -ReportObject $run0hReport
+        $soakCheck = @($run0hEval.Checks | Where-Object Id -eq 'V07-PERF-07-SOAK')[0]
+        & $recordSelfTest 'Negative: Zero-hour soak in Runtime admission fails closed' (-not $run0hEval.Passed -and $soakCheck.Status -eq 'FAIL') "Runtime admission requires 8h soak; 0h fails closed"
+    } catch {
+        & $recordSelfTest 'Negative: Zero-hour soak in Runtime admission fails closed' $false $_.Exception.Message
+    }
+
+    # Test 30: Full 8-hour soak in Runtime admission passes
+    try {
+        $run8hJson = Get-BoundedUtf8FileText -Path (Join-Path $FixturesDirectory 'passing-budget-report.json')
+        $run8hReport = ConvertFrom-StrictPerformanceBudgetJson -JsonText $run8hJson -SourceDescription 'runtime 8h test'
+        $run8hReport.Metrics.SoakDurationHours = 8.0
+        $run8hReport.EvidenceClass = 'Runtime'
+        $run8hReport.EvidenceBoundary.ActualHerdrRuntime = 'OBSERVED'
+        $run8hReport.EvidenceBoundary.SoakExecution = 'OBSERVED'
+        $run8hEval = Test-PerformanceBudgetReport -ReportObject $run8hReport
+        $soakCheck = @($run8hEval.Checks | Where-Object Id -eq 'V07-PERF-07-SOAK')[0]
+        & $recordSelfTest 'Positive: 8-hour soak in Runtime admission passes' ($run8hEval.Passed -and $soakCheck.Status -eq 'PASS') "8h soak passes runtime admission"
+    } catch {
+        & $recordSelfTest 'Positive: 8-hour soak in Runtime admission passes' $false $_.Exception.Message
+    }
+
+    # Negative Test 31: Trailing content after root JSON object fails closed
+    try {
+        $trailingJson = (Get-BoundedUtf8FileText -Path (Join-Path $FixturesDirectory 'passing-budget-report.json')) + ' {"extra":"trailing"}'
+        $null = ConvertFrom-StrictPerformanceBudgetJson -JsonText $trailingJson -SourceDescription 'trailing content test'
+        & $recordSelfTest 'Negative: Trailing content after root JSON fails' $false "Expected trailing content exception was not thrown"
+    } catch {
+        & $recordSelfTest 'Negative: Trailing content after root JSON fails' $true "Rejected trailing content: $($_.Exception.Message)"
+    }
+
+    # Negative Test 32: Trailing comma in JSON object fails closed
+    try {
+        $trailingCommaJson = '{"SchemaVersion":"v0.7.0",}'
+        $null = ConvertFrom-StrictPerformanceBudgetJson -JsonText $trailingCommaJson -SourceDescription 'trailing comma test'
+        & $recordSelfTest 'Negative: Trailing comma in JSON object fails' $false "Expected trailing comma exception was not thrown"
+    } catch {
+        & $recordSelfTest 'Negative: Trailing comma in JSON object fails' $true "Rejected trailing comma: $($_.Exception.Message)"
     }
 
     return @($selfTestResults)
