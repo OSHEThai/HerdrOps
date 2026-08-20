@@ -249,7 +249,8 @@ public static class ComplianceReviewRuntimeAcceptance
         foreach (var pmEvent in pmReviewEvents)
         {
             if (!agents.TryGetValue(pmEvent.ReviewerActorId, out var role) ||
-                !string.Equals(role, "Project Manager", StringComparison.Ordinal))
+                !ComplianceReviewWorkflowContract.TryMapAssignmentRole(role, out var reviewerRole) ||
+                reviewerRole != ComplianceReviewerRole.ProjectManager)
             {
                 pmDistinct = false;
                 break;

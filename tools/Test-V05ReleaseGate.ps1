@@ -55,6 +55,19 @@ foreach ($requiredLine in @(
     }
 }
 
+$reviewRecords = 24..28 | ForEach-Object {
+    Join-Path $repositoryRoot "docs\reviews\v0.5-issue-$($_)-independent-review.md"
+}
+foreach ($reviewRecord in $reviewRecords) {
+    if (-not (Test-Path -LiteralPath $reviewRecord -PathType Leaf)) {
+        throw "Independent v0.5 review record is missing: $reviewRecord"
+    }
+    $reviewText = Get-Content -LiteralPath $reviewRecord -Raw
+    if ($reviewText -notmatch '(?m)^Verdict:\s*PASS\s*$') {
+        throw "Independent v0.5 review is not PASS: $reviewRecord"
+    }
+}
+
 if (-not $SkipBuild) {
     & (Join-Path $PSScriptRoot 'Invoke-Build.ps1') -Configuration $Configuration -VerifyFormat
     if ($LASTEXITCODE -ne 0) {
@@ -84,4 +97,34 @@ if ($LASTEXITCODE -ne 0 -or
     throw 'The source commit or clean-checkout state changed while the v0.5 release gate ran.'
 }
 
-Write-Host "v0.5 release gate passed against commit $sourceCommit."
+$runId = "$([DateTime]::UtcNow.ToString('yyyyMMddTHHmmssfffffffZ', [Globalization.CultureInfo]::InvariantCulture))-$([Guid]::NewGuid().ToString('N').Substring(0, 8))"
+$gateDirectory = Join-Path $artifactRoot "release-gates\v0.5.0\release\$runId"
+New-Item -ItemType Directory -Path $gateDirectory -Force | Out-Null
+$runtimeGateSha256 = (Get-FileHash -LiteralPath $resolvedRuntimeGatePath -Algorithm SHA256).Hash
+$reviewHashes = $reviewRecords | ForEach-Object {
+    "SHA256 $((Get-FileHash -LiteralPath $_ -Algorithm SHA256).Hash) $([IO.Path]::GetFileName($_))"
+}
+$gateReportPath = Join-Path $gateDirectory 'gate-report.txt'
+$gateReport = @(
+    'HerdrOps v0.5.0 Release Gate',
+    "GeneratedUtc: $([DateTime]::UtcNow.ToString('O'))",
+    "SourceCommit: $sourceCommit",
+    'Result: PASS',
+    'ReleaseReady: true',
+    'ImplementationGates: 4/4 PASS',
+    'IndependentReviews: 5/5 PASS',
+    'RoleDistinctRuntimeAcceptance: PASS',
+    'SessionControlInvoked: false',
+    "CompositeRuntimeReportSha256: $compositeSha256",
+    "RuntimeGateReportSha256: $runtimeGateSha256",
+    '',
+    'IndependentReviewHashes:'
+) + $reviewHashes + @(
+    '',
+    'EvidenceBoundary:',
+    'This gate requires all four v0.5 implementation gates, five explicit independent PASS records, and one exact-source role-distinct composite Herdr runtime report.',
+    'A passing local report is release-gate evidence for the bound source commit. GitHub issue closure, tag creation, package publication, and release publication remain separate actions.'
+)
+$gateReport | Set-Content -LiteralPath $gateReportPath -Encoding utf8
+$gateReport | Write-Output
+Write-Output "GateReport: $gateReportPath"

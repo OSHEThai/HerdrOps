@@ -144,6 +144,100 @@ public sealed class ComplianceReviewRuntimeAcceptanceCommandTests
         Assert.AreEqual(incidentId, composite.IncidentId);
     }
 
+    [TestMethod]
+    public void CorruptedTraceOrMissingInputsReturnExitCodeTwo()
+    {
+        using var directory = new TemporaryDirectory();
+        const string incidentId = "INC-28-CORRUPT";
+        const string taskId = "TASK-28-CORRUPT";
+        const string subjectId = "worker-terminal";
+        const string pmId = "pm-terminal";
+
+        var reviewTracePath = Path.Combine(directory.Path, "review-trace-corrupt.json");
+        var herdrReportPath = Path.Combine(directory.Path, "herdr-runtime.json");
+        var compositeReportPath = Path.Combine(directory.Path, "composite-report-fail.json");
+
+        var incident = ComplianceReviewWorkflowContract.CreateIncident(
+            new ComplianceReviewIncidentRegistration(
+                1,
+                incidentId,
+                taskId,
+                subjectId,
+                BaseTime,
+                Array.Empty<string>()));
+
+        // Tampered audit event with invalid sequence
+        var badAudit = new ComplianceReviewAuditEvent(
+            1,
+            Guid.NewGuid(),
+            incidentId,
+            taskId,
+            subjectId,
+            999,
+            pmId,
+            ComplianceReviewerRole.ProjectManager,
+            Guid.NewGuid(),
+            1,
+            new string('A', 64),
+            ComplianceReviewDecisionKind.Confirm,
+            ComplianceReviewState.Suspected,
+            ComplianceReviewState.Confirmed,
+            "Tampered reason.",
+            BaseTime.AddSeconds(1),
+            Array.Empty<string>(),
+            new string('B', 64),
+            null,
+            new string('C', 64));
+
+        var reviewTrace = new ComplianceReviewRuntimeTrace(
+            ContractVersion: 1,
+            StartedUtc: BaseTime,
+            FinishedUtc: BaseTime.AddSeconds(10),
+            EvidenceClassification: "BuiltProcessIntegration",
+            DurableReviewEnabled: true,
+            AuditEvents: new[] { badAudit },
+            Incidents: new[] { incident },
+            RetentionProtectedObserved: true,
+            RestartConsistencyObserved: true);
+
+        File.WriteAllText(
+            reviewTracePath,
+            JsonSerializer.Serialize(reviewTrace, new JsonSerializerOptions { WriteIndented = true }));
+
+        var sessionContract = CreateSessionState();
+        var herdrReport = CreateRuntimeReport(sessionContract);
+
+        File.WriteAllText(
+            herdrReportPath,
+            JsonSerializer.Serialize(herdrReport, new JsonSerializerOptions { WriteIndented = true }));
+
+        var output = new StringWriter();
+        var error = new StringWriter();
+
+        var exitCode = ComplianceReviewRuntimeAcceptanceCommand.Run(
+            new[]
+            {
+                "compliance-review-acceptance",
+                "--review-trace", reviewTracePath,
+                "--herdr-runtime-report", herdrReportPath,
+                "--incident-id", incidentId,
+                "--report", compositeReportPath,
+            },
+            output,
+            error);
+
+        Assert.AreEqual(2, exitCode);
+        Assert.IsTrue(File.Exists(compositeReportPath));
+
+        var composite = JsonSerializer.Deserialize<ComplianceReviewCompositeRuntimeReport>(
+            File.ReadAllText(compositeReportPath),
+            new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+
+        Assert.IsNotNull(composite);
+        Assert.IsFalse(composite.RuntimeAccepted);
+        Assert.AreEqual("NoRuntimeCredit", composite.EvidenceClassification);
+    }
+
     private static HerdrSessionStateContract CreateSessionState()
     {
         var identities = new[]

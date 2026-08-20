@@ -69,6 +69,103 @@ public sealed class ComplianceReviewRuntimeAcceptanceTests
     }
 
     [TestMethod]
+    [DataRow("Security Leader")]
+    [DataRow("Test Leader")]
+    [DataRow("DevOps Leader")]
+    [DataRow("Data Leader")]
+    [DataRow("Documentation Leader")]
+    public void CanonicalLeaderRolesPassAcceptance(string leaderRole)
+    {
+        const string incidentId = "INC-28-LEADERS";
+        const string taskId = "TASK-28";
+        const string subjectId = "worker-sub";
+        const string pmId = "pm-sub";
+        const string leaderId = "leader-sub";
+
+        var incident = CreateIncident(incidentId, taskId, subjectId);
+        var (ev1, inc1) = CreateTransition(
+            incident,
+            pmId,
+            ComplianceReviewerRole.ProjectManager,
+            ComplianceReviewDecisionKind.SendToLeader,
+            ComplianceReviewState.PendingLeader,
+            "Route to Leader.",
+            BaseTime.AddSeconds(1));
+
+        var (ev2, inc2) = CreateTransition(
+            inc1,
+            leaderId,
+            ComplianceReviewerRole.Leader,
+            ComplianceReviewDecisionKind.EscalateToProjectManager,
+            ComplianceReviewState.PendingProjectManager,
+            "Escalate to PM.",
+            BaseTime.AddSeconds(2));
+
+        var (ev3, inc3) = CreateTransition(
+            inc2,
+            pmId,
+            ComplianceReviewerRole.ProjectManager,
+            ComplianceReviewDecisionKind.Confirm,
+            ComplianceReviewState.Confirmed,
+            "Confirmed.",
+            BaseTime.AddSeconds(3));
+
+        var agents = new[]
+        {
+            new ComplianceReviewRuntimeAgentIdentity(pmId, "Project Manager"),
+            new ComplianceReviewRuntimeAgentIdentity(leaderId, leaderRole),
+            new ComplianceReviewRuntimeAgentIdentity(subjectId, "Worker"),
+        };
+
+        var result = ComplianceReviewRuntimeAcceptance.Analyze(
+            new[] { ev1, ev2, ev3 },
+            new[] { inc3 },
+            agents,
+            incidentId,
+            retentionProtectedObserved: true,
+            restartConsistencyObserved: true);
+
+        Assert.IsTrue(result.Passed);
+        Assert.IsTrue(result.RoleDistinctReviewersPassed);
+    }
+
+    [TestMethod]
+    public void NonCanonicalRoleFailsRoleDistinctCheck()
+    {
+        const string incidentId = "INC-28-INVALID-ROLE";
+        const string taskId = "TASK-28";
+        const string subjectId = "worker-sub";
+        const string pmId = "pm-sub";
+
+        var incident = CreateIncident(incidentId, taskId, subjectId);
+        var (ev1, inc1) = CreateTransition(
+            incident,
+            pmId,
+            ComplianceReviewerRole.ProjectManager,
+            ComplianceReviewDecisionKind.Confirm,
+            ComplianceReviewState.Confirmed,
+            "Confirmed.",
+            BaseTime.AddSeconds(1));
+
+        var agents = new[]
+        {
+            new ComplianceReviewRuntimeAgentIdentity(pmId, "Unauthorized Developer"),
+            new ComplianceReviewRuntimeAgentIdentity(subjectId, "Worker"),
+        };
+
+        var result = ComplianceReviewRuntimeAcceptance.Analyze(
+            new[] { ev1 },
+            new[] { inc1 },
+            agents,
+            incidentId,
+            retentionProtectedObserved: true,
+            restartConsistencyObserved: true);
+
+        Assert.IsFalse(result.Passed);
+        Assert.IsFalse(result.RoleDistinctReviewersPassed);
+    }
+
+    [TestMethod]
     public void DirectProjectManagerDismissLifecyclePassesAcceptance()
     {
         const string incidentId = "INC-28-002";
