@@ -347,7 +347,7 @@ public sealed class ComplianceReviewStorageTests
     }
 
     [TestMethod]
-    public async Task BlockedComplianceReviewOperationObservesCancellationBeforeMutation()
+    public void BlockedComplianceReviewOperationObservesCancellationBeforeMutation()
     {
         using var directory = new TemporaryDirectory();
         var options = Options(directory) with { BusyTimeoutSeconds = 5 };
@@ -379,46 +379,187 @@ public sealed class ComplianceReviewStorageTests
         }
 
         using var cancellation = new CancellationTokenSource();
-        cancellation.CancelAfter(TimeSpan.FromMilliseconds(250));
-        var operation = Task.Run(() => store.ApplyComplianceReviewCommand(
-            command,
-            authority,
-            cancellation.Token));
-        var completedBeforeBound = await Task.WhenAny(
-                operation,
-                Task.Delay(TimeSpan.FromSeconds(2))) == operation;
-
+        using var busySliceObserved = new ManualResetEventSlim();
+        using var operationStarted = new ManualResetEventSlim();
         Exception? operationException = null;
-        try
+        var operationThread = new Thread(() =>
         {
-            using var rollback = blocker.CreateCommand();
-            rollback.CommandText = "ROLLBACK;";
-            rollback.ExecuteNonQuery();
-        }
-        finally
-        {
+            operationStarted.Set();
             try
             {
-                await operation.WaitAsync(TimeSpan.FromSeconds(5));
+                store.ApplyComplianceReviewCommand(
+                    command,
+                    authority,
+                    cancellation.Token);
             }
             catch (Exception exception)
             {
                 operationException = exception;
             }
+        })
+        {
+            IsBackground = true,
+        };
+
+        try
+        {
+            store.ComplianceReviewBusySliceObserved += () => busySliceObserved.Set();
+            operationThread.Start();
+            Assert.IsTrue(
+                operationStarted.Wait(TimeSpan.FromSeconds(10)),
+                "The review operation did not start within the probe bound.");
+            Assert.IsTrue(
+                busySliceObserved.Wait(TimeSpan.FromSeconds(10)),
+                "The review operation did not observe a real SQLite BUSY/LOCKED slice within the probe bound.");
+
+            var cancellationElapsed = System.Diagnostics.Stopwatch.StartNew();
+            cancellation.Cancel();
+            Assert.IsTrue(
+                operationThread.Join(TimeSpan.FromSeconds(1)),
+                "The review operation did not complete well below the total busy bound after cancellation.");
+            cancellationElapsed.Stop();
+            Assert.IsTrue(
+                cancellationElapsed.Elapsed < TimeSpan.FromMilliseconds(500),
+                $"The canceled review operation took {cancellationElapsed.Elapsed.TotalMilliseconds:F0}ms to observe cancellation; expected completion well below the 1-second busy bound.");
+        }
+        finally
+        {
+            // Release the database write lock on every path, then make sure the
+            // background thread terminates so the test never leaks a thread.
+            using (var rollback = blocker.CreateCommand())
+            {
+                rollback.CommandText = "ROLLBACK;";
+                rollback.ExecuteNonQuery();
+            }
+
+            if (!operationThread.Join(TimeSpan.FromSeconds(10)))
+            {
+                throw new InvalidOperationException(
+                    "The review operation thread did not terminate after the blocker released the database write lock.");
+            }
         }
 
-        Assert.IsTrue(
-            completedBeforeBound,
-            "A compliance-review SQLite operation remained blocked beyond its cancellation bound.");
         Assert.IsNotNull(operationException);
-        // SQLite may either observe the cancellation while waiting or fail
-        // closed with BUSY/LOCKED before the cancellation timer wins the race.
-        // Every admitted outcome is bounded and occurs before any mutation.
         Assert.IsTrue(
-            operationException is OperationCanceledException ||
-            operationException is SqliteException { SqliteErrorCode: 5 or 6 or 9 },
-            $"Expected cancellation or SQLITE_BUSY/LOCKED/INTERRUPT, got {operationException.GetType().FullName}: {operationException.Message}");
+            operationException is OperationCanceledException,
+            $"Expected OperationCanceledException only, got {operationException.GetType().FullName}: {operationException.Message}");
         Assert.IsEmpty(store.ReadComplianceReviewAudit("INC-27"));
+        var incident = store.ReadComplianceReviewIncident("INC-27");
+        Assert.IsNotNull(incident);
+        Assert.AreEqual(ComplianceReviewState.Suspected, incident.State);
+        Assert.AreEqual(0L, incident.Sequence);
+        Assert.IsNull(incident.LastAuditEventId);
+        Assert.IsNull(incident.LastAuditSha256);
+    }
+
+    [TestMethod]
+    public void BlockedComplianceReviewOperationFailsClosedAtContentionBoundWithoutCancellation()
+    {
+        using var directory = new TemporaryDirectory();
+        var options = Options(directory) with { BusyTimeoutSeconds = 5 };
+        using var store = new SqliteHerdrStateStore(options);
+        var lifecycle = new AssignmentLifecycleReducer();
+        var authority = SeedAuthority(
+            store,
+            lifecycle,
+            "project-manager",
+            "Project Manager",
+            ComplianceReviewerRole.ProjectManager,
+            Guid.Parse("cccccccc-cccc-cccc-cccc-cccccccccccc"),
+            sequence: 1);
+        var evidenceId = CaptureEvidence(store, directory);
+        store.RegisterComplianceReviewIncident(Registration(evidenceId));
+        var command = Command(
+            Guid.Parse("44444444-4444-4444-4444-444444444444"),
+            ComplianceReviewState.Suspected,
+            ComplianceReviewDecisionKind.SendToLeader,
+            "project-manager",
+            RegisteredUtc.AddMinutes(2),
+            evidenceId);
+
+        using var blocker = Open(options.DatabasePath);
+        using (var beginImmediate = blocker.CreateCommand())
+        {
+            beginImmediate.CommandText = "BEGIN IMMEDIATE;";
+            beginImmediate.ExecuteNonQuery();
+        }
+
+        using var busySliceObserved = new ManualResetEventSlim();
+        using var operationStarted = new ManualResetEventSlim();
+        Exception? operationException = null;
+        var operationThread = new Thread(() =>
+        {
+            operationStarted.Set();
+            try
+            {
+                store.ApplyComplianceReviewCommand(
+                    command,
+                    authority,
+                    CancellationToken.None);
+            }
+            catch (Exception exception)
+            {
+                operationException = exception;
+            }
+        })
+        {
+            IsBackground = true,
+        };
+
+        var elapsed = System.Diagnostics.Stopwatch.StartNew();
+        try
+        {
+            store.ComplianceReviewBusySliceObserved += () => busySliceObserved.Set();
+            operationThread.Start();
+            Assert.IsTrue(
+                operationStarted.Wait(TimeSpan.FromSeconds(10)),
+                "The review operation did not start within the probe bound.");
+            Assert.IsTrue(
+                busySliceObserved.Wait(TimeSpan.FromSeconds(10)),
+                "The review operation did not observe a real SQLite BUSY/LOCKED slice within the probe bound.");
+            Assert.IsTrue(
+                operationThread.Join(TimeSpan.FromSeconds(4)),
+                "A non-canceled review operation did not fail closed at the contention bound.");
+            elapsed.Stop();
+            // The production ceiling is one second, reached through ~20
+            // cooperative 50 ms busy slices. The lower bound proves the loop
+            // actually contended to the ceiling instead of failing immediately;
+            // the upper bound stays well below the 5-second option value so a
+            // removed one-second cap is still detected.
+            Assert.IsTrue(
+                elapsed.Elapsed >= TimeSpan.FromMilliseconds(750),
+                $"The non-canceled review operation failed after only {elapsed.Elapsed.TotalMilliseconds:F0}ms; expected it to contend up to the one-second production ceiling before failing closed.");
+            Assert.IsTrue(
+                elapsed.Elapsed < TimeSpan.FromSeconds(2),
+                $"The non-canceled review operation took {elapsed.Elapsed.TotalSeconds:F2}s; expected failure closed at the one-second compliance contention bound.");
+        }
+        finally
+        {
+            using (var rollback = blocker.CreateCommand())
+            {
+                rollback.CommandText = "ROLLBACK;";
+                rollback.ExecuteNonQuery();
+            }
+
+            if (!operationThread.Join(TimeSpan.FromSeconds(10)))
+            {
+                throw new InvalidOperationException(
+                    "The review operation thread did not terminate after the blocker released the database write lock.");
+            }
+        }
+
+        Assert.IsNotNull(operationException);
+        Assert.IsInstanceOfType<HerdrStateStoreException>(operationException);
+        StringAssert.Contains(
+            operationException.Message,
+            "contention bound");
+        Assert.IsEmpty(store.ReadComplianceReviewAudit("INC-27"));
+        var incident = store.ReadComplianceReviewIncident("INC-27");
+        Assert.IsNotNull(incident);
+        Assert.AreEqual(ComplianceReviewState.Suspected, incident.State);
+        Assert.AreEqual(0L, incident.Sequence);
+        Assert.IsNull(incident.LastAuditEventId);
+        Assert.IsNull(incident.LastAuditSha256);
     }
 
     [TestMethod]

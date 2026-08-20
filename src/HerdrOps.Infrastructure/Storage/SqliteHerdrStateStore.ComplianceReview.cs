@@ -2,13 +2,53 @@ using System.Text.Json;
 using HerdrOps.Domain.Assignments;
 using HerdrOps.Domain.Compliance;
 using Microsoft.Data.Sqlite;
+using SQLitePCL;
 
 namespace HerdrOps.Infrastructure.Storage;
 
 public sealed partial class SqliteHerdrStateStore
 {
     private const int ComplianceReviewBusyTimeoutCeilingSeconds = 1;
+    private const int ComplianceReviewBusySliceMilliseconds = 50;
+    private const int SqliteLockedSharedCache = 262;
+    private const int SqliteBusySnapshot = 517;
+    private const string ComplianceReviewWriteLockSliceSql = """
+        INSERT OR IGNORE INTO compliance_review_incidents(
+            incident_id,
+            contract_version,
+            task_id,
+            subject_actor_id,
+            registered_utc,
+            registration_sha256,
+            registration_json,
+            state,
+            sequence,
+            updated_utc,
+            last_audit_event_id,
+            last_audit_sha256)
+        SELECT incident_id,
+               contract_version,
+               task_id,
+               subject_actor_id,
+               registered_utc,
+               registration_sha256,
+               registration_json,
+               state,
+               sequence,
+               updated_utc,
+               last_audit_event_id,
+               last_audit_sha256
+        FROM compliance_review_incidents
+        WHERE incident_id = $incidentId;
+        """;
     private bool _complianceReviewSqlFunctionsRegistered;
+
+    // Internal diagnostic hook (InternalsVisibleTo: HerdrOps.IntegrationTests).
+    // Raised only after the write-lock slice statement actually entered the
+    // SQLite step and returned BUSY/LOCKED, and the failed slice was rolled
+    // back, so tests can prove real SQLite contention and cancel
+    // deterministically without reflection, sleeps, or timing probes.
+    internal event Action? ComplianceReviewBusySliceObserved;
 
     public HerdrComplianceReviewRegistrationResult RegisterComplianceReviewIncident(
         ComplianceReviewIncidentRegistration registration)
@@ -435,9 +475,6 @@ public sealed partial class SqliteHerdrStateStore
         command.Parameters.AddWithValue("$actorId", actorId);
         AssignmentCurrentActorRole? role = null;
         ConfigureComplianceReviewCommand(command, cancellationToken);
-        using var roleCommandCancellation = RegisterComplianceReviewCommandCancellation(
-            command,
-            cancellationToken);
         using (var reader = command.ExecuteReader())
         {
             if (reader.Read())
@@ -495,9 +532,6 @@ public sealed partial class SqliteHerdrStateStore
             """;
         latest.Parameters.AddWithValue("$actorId", actorId);
         ConfigureComplianceReviewCommand(latest, cancellationToken);
-        using var latestCommandCancellation = RegisterComplianceReviewCommandCancellation(
-            latest,
-            cancellationToken);
         var latestSequence = latest.ExecuteScalar();
         cancellationToken.ThrowIfCancellationRequested();
         if (latestSequence is null or DBNull ||
@@ -536,9 +570,6 @@ public sealed partial class SqliteHerdrStateStore
             """;
         command.Parameters.AddWithValue("$incidentId", incidentId);
         ConfigureComplianceReviewCommand(command, cancellationToken);
-        using var incidentCommandCancellation = RegisterComplianceReviewCommandCancellation(
-            command,
-            cancellationToken);
         using var reader = command.ExecuteReader();
         if (!reader.Read())
         {
@@ -611,9 +642,6 @@ public sealed partial class SqliteHerdrStateStore
             """;
         command.Parameters.AddWithValue("$incidentId", incidentId);
         ConfigureComplianceReviewCommand(command, cancellationToken);
-        using var auditListCommandCancellation = RegisterComplianceReviewCommandCancellation(
-            command,
-            cancellationToken);
         var ids = new List<Guid>();
         using (var reader = command.ExecuteReader())
         {
@@ -666,9 +694,6 @@ public sealed partial class SqliteHerdrStateStore
             """;
         command.Parameters.AddWithValue("$auditEventId", auditEventId.ToString("D"));
         ConfigureComplianceReviewCommand(command, cancellationToken);
-        using var auditEventCommandCancellation = RegisterComplianceReviewCommandCancellation(
-            command,
-            cancellationToken);
         StoredComplianceReviewAuditRow row;
         using (var reader = command.ExecuteReader())
         {
@@ -874,9 +899,6 @@ public sealed partial class SqliteHerdrStateStore
         command.Parameters.AddWithValue("$auditJson", auditJson);
         command.Parameters.AddWithValue("$auditJsonSha256", ComputeUtf8Sha256(auditJson));
         ConfigureComplianceReviewCommand(command, cancellationToken);
-        using var auditInsertCommandCancellation = RegisterComplianceReviewCommandCancellation(
-            command,
-            cancellationToken);
         command.ExecuteNonQuery();
         cancellationToken.ThrowIfCancellationRequested();
     }
@@ -923,8 +945,6 @@ public sealed partial class SqliteHerdrStateStore
             command.Parameters.AddWithValue("$ownerId", ownerId);
             command.Parameters.AddWithValue("$identity", identity);
             ConfigureComplianceReviewCommand(command, cancellationToken);
-            using var evidenceInsertCommandCancellation =
-                RegisterComplianceReviewCommandCancellation(command, cancellationToken);
             command.ExecuteNonQuery();
         }
     }
@@ -955,9 +975,6 @@ public sealed partial class SqliteHerdrStateStore
             """;
         command.Parameters.AddWithValue("$ownerId", ownerId);
         ConfigureComplianceReviewCommand(command, cancellationToken);
-        using var evidenceReadCommandCancellation = RegisterComplianceReviewCommandCancellation(
-            command,
-            cancellationToken);
         var evidence = new List<string>();
         using var reader = command.ExecuteReader();
         while (reader.Read())
@@ -1103,8 +1120,9 @@ public sealed partial class SqliteHerdrStateStore
     {
         ArgumentNullException.ThrowIfNull(command);
         cancellationToken.ThrowIfCancellationRequested();
-        // This is a finite SQLite lock-wait boundary. It does not interrupt a
-        // synchronous mutation already executing and does not claim rollback.
+        // Backstop for commands that run inside an already-acquired review
+        // transaction. The write-lock acquisition itself is bounded by the
+        // cooperative busy-slice loop in BeginComplianceReviewWriteTransaction.
         command.CommandTimeout = Math.Min(
             _options.BusyTimeoutSeconds,
             ComplianceReviewBusyTimeoutCeilingSeconds);
@@ -1116,122 +1134,181 @@ public sealed partial class SqliteHerdrStateStore
     {
         incidentId = ComplianceReviewWorkflowContract.NormalizeIncidentId(incidentId);
         cancellationToken.ThrowIfCancellationRequested();
-        var previousDefaultTimeout = _connection.DefaultTimeout;
-        var boundedTimeoutSeconds = Math.Min(
+        var totalContentionBoundSeconds = Math.Min(
             _options.BusyTimeoutSeconds,
             ComplianceReviewBusyTimeoutCeilingSeconds);
-        _connection.DefaultTimeout = boundedTimeoutSeconds;
-        SetComplianceReviewBusyTimeout(boundedTimeoutSeconds);
-        SqliteTransaction? transaction = null;
+        var contentionDeadline = _timeProvider
+            .GetUtcNow()
+            .AddSeconds(totalContentionBoundSeconds);
         try
         {
-            transaction = _connection.BeginTransaction(deferred: true);
-            using var command = _connection.CreateCommand();
-            command.Transaction = transaction;
-            // Re-inserting the already-registered incident under OR IGNORE is a
-            // real write statement that acquires the same reservation needed by
-            // the review mutation without changing any row or firing an update.
-            // Unlike BeginTransaction(deferred: false), its lock wait is attached
-            // to a command with a finite provider timeout and operation token.
-            command.CommandText = """
-                INSERT OR IGNORE INTO compliance_review_incidents(
-                    incident_id,
-                    contract_version,
-                    task_id,
-                    subject_actor_id,
-                    registered_utc,
-                    registration_sha256,
-                    registration_json,
-                    state,
-                    sequence,
-                    updated_utc,
-                    last_audit_event_id,
-                    last_audit_sha256)
-                SELECT incident_id,
-                       contract_version,
-                       task_id,
-                       subject_actor_id,
-                       registered_utc,
-                       registration_sha256,
-                       registration_json,
-                       state,
-                       sequence,
-                       updated_utc,
-                       last_audit_event_id,
-                       last_audit_sha256
-                FROM compliance_review_incidents
-                WHERE incident_id = $incidentId;
-                """;
-            command.Parameters.AddWithValue("$incidentId", incidentId);
-            ConfigureComplianceReviewCommand(command, cancellationToken);
-            using var commandCancellation = RegisterComplianceReviewCommandCancellation(
-                command,
-                cancellationToken);
-            command.ExecuteNonQuery();
-            cancellationToken.ThrowIfCancellationRequested();
-            return transaction;
-        }
-        catch (SqliteException exception) when (cancellationToken.IsCancellationRequested)
-        {
-            transaction?.Dispose();
-            throw new OperationCanceledException(
-                "The compliance-review write-lock acquisition was canceled.",
-                exception,
-                cancellationToken);
-        }
-        catch
-        {
-            transaction?.Dispose();
-            throw;
+            while (true)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                SqliteTransaction? transaction = null;
+                try
+                {
+                    transaction = _connection.BeginTransaction(deferred: true);
+                    // Re-inserting the already-registered incident under OR IGNORE
+                    // is a real write statement that acquires the same reservation
+                    // needed by the review mutation without changing any row or
+                    // firing an update. Each attempt is stepped directly through
+                    // the raw SQLite API with one short native busy slice, so a
+                    // BUSY/LOCKED slice returns promptly and can be rolled back
+                    // and retried with a fresh CancellationToken check.
+                    ExecuteComplianceReviewWriteLockSlice(
+                        incidentId,
+                        cancellationToken);
+                    cancellationToken.ThrowIfCancellationRequested();
+                    return transaction;
+                }
+                catch (ComplianceReviewWriteLockBusyException busy)
+                {
+                    // The short slice hit real SQLite contention. Roll the failed
+                    // attempt back cleanly, signal the diagnostic hook, then
+                    // recheck the token and the total bound before the next slice.
+                    transaction?.Dispose();
+                    OnComplianceReviewBusySliceObserved();
+                    cancellationToken.ThrowIfCancellationRequested();
+                    if (_timeProvider.GetUtcNow() >= contentionDeadline)
+                    {
+                        throw new HerdrStateStoreException(
+                            "The compliance-review write-lock acquisition exceeded the configured "
+                                + $"{totalContentionBoundSeconds}-second contention bound.",
+                            busy);
+                    }
+                }
+                catch (SqliteException exception) when (
+                    cancellationToken.IsCancellationRequested)
+                {
+                    transaction?.Dispose();
+                    throw new OperationCanceledException(
+                        "The compliance-review write-lock acquisition was canceled.",
+                        exception,
+                        cancellationToken);
+                }
+                catch
+                {
+                    transaction?.Dispose();
+                    throw;
+                }
+            }
         }
         finally
         {
-            _connection.DefaultTimeout = previousDefaultTimeout;
-            SetComplianceReviewBusyTimeout(previousDefaultTimeout);
+            // Restore the configured connection busy deadline for later commands.
+            SQLitePCL.raw.sqlite3_busy_timeout(
+                _connection.Handle,
+                checked(_options.BusyTimeoutSeconds * 1000));
         }
     }
 
-    private void SetComplianceReviewBusyTimeout(int timeoutSeconds)
-    {
-        using var command = _connection.CreateCommand();
-        command.CommandText = $"PRAGMA busy_timeout = {checked(timeoutSeconds * 1000)};";
-        command.ExecuteNonQuery();
-    }
-
-    private static CancellationTokenRegistration RegisterComplianceReviewCommandCancellation(
-        SqliteCommand command,
+    private void ExecuteComplianceReviewWriteLockSlice(
+        string incidentId,
         CancellationToken cancellationToken)
     {
-        ArgumentNullException.ThrowIfNull(command);
         cancellationToken.ThrowIfCancellationRequested();
-        if (!cancellationToken.CanBeCanceled)
+        var handle = _connection.Handle!;
+        var rc = SQLitePCL.raw.sqlite3_busy_timeout(
+            handle,
+            ComplianceReviewBusySliceMilliseconds);
+        if (rc != SQLitePCL.raw.SQLITE_OK)
         {
-            return default;
+            throw new HerdrStateStoreException(
+                "The compliance-review write-lock slice could not set its native busy deadline.");
         }
 
-        var registration = cancellationToken.Register(
-            static state =>
+        SQLitePCL.sqlite3_stmt? statement = null;
+        try
+        {
+            rc = SQLitePCL.raw.sqlite3_prepare_v2(
+                handle,
+                ComplianceReviewWriteLockSliceSql,
+                out statement);
+            if (IsComplianceReviewBusyOrLocked(rc))
             {
-                try
-                {
-                    ((SqliteCommand)state!).Cancel();
-                }
-                catch (Exception exception) when (
-                    exception is ObjectDisposedException or
-                        InvalidOperationException or
-                        SqliteException)
-                {
-                }
-            },
-            command);
-        if (!cancellationToken.IsCancellationRequested)
+                throw new ComplianceReviewWriteLockBusyException(rc);
+            }
+
+            if (rc != SQLitePCL.raw.SQLITE_OK)
+            {
+                throw CreateComplianceReviewRawSqliteException(
+                    handle,
+                    rc,
+                    "prepare");
+            }
+
+            rc = SQLitePCL.raw.sqlite3_bind_text(statement!, 1, incidentId);
+            if (rc != SQLitePCL.raw.SQLITE_OK)
+            {
+                throw CreateComplianceReviewRawSqliteException(
+                    handle,
+                    rc,
+                    "parameter bind");
+            }
+
+            rc = SQLitePCL.raw.sqlite3_step(statement!);
+            if (rc is SQLitePCL.raw.SQLITE_ROW or SQLitePCL.raw.SQLITE_DONE)
+            {
+                return;
+            }
+
+            if (IsComplianceReviewBusyOrLocked(rc))
+            {
+                throw new ComplianceReviewWriteLockBusyException(rc);
+            }
+
+            if (rc == SQLitePCL.raw.SQLITE_INTERRUPT)
+            {
+                throw new SqliteException(
+                    "The compliance-review write-lock slice was interrupted.",
+                    SQLitePCL.raw.SQLITE_INTERRUPT,
+                    SQLitePCL.raw.SQLITE_INTERRUPT);
+            }
+
+            throw CreateComplianceReviewRawSqliteException(handle, rc, "step");
+        }
+        finally
         {
-            return registration;
+            if (statement is not null)
+            {
+                SQLitePCL.raw.sqlite3_finalize(statement);
+            }
+        }
+    }
+
+    private static bool IsComplianceReviewBusyOrLocked(int sqliteErrorCode) =>
+        sqliteErrorCode is SQLitePCL.raw.SQLITE_BUSY or
+            SQLitePCL.raw.SQLITE_LOCKED or
+            SqliteLockedSharedCache or
+            SqliteBusySnapshot;
+
+    private static SqliteException CreateComplianceReviewRawSqliteException(
+        SQLitePCL.sqlite3 handle,
+        int errorCode,
+        string operation)
+    {
+        var message = SQLitePCL.raw.sqlite3_errmsg(handle).utf8_to_string();
+        return new SqliteException(
+            $"The compliance-review write-lock {operation} failed with SQLite error {errorCode}: {message}",
+            errorCode,
+            errorCode);
+    }
+
+    private void OnComplianceReviewBusySliceObserved() =>
+        ComplianceReviewBusySliceObserved?.Invoke();
+
+    private sealed class ComplianceReviewWriteLockBusyException : Exception
+    {
+        public ComplianceReviewWriteLockBusyException(int sqliteErrorCode)
+            : base(
+                $"SQLite reported busy/locked error code {sqliteErrorCode} while "
+                    + "acquiring the compliance-review write lock.")
+        {
+            SqliteErrorCode = sqliteErrorCode;
         }
 
-        registration.Dispose();
-        cancellationToken.ThrowIfCancellationRequested();
-        return default;
+        public int SqliteErrorCode { get; }
     }
 
     private HerdrStoredAssignmentLifecycleEvent? ReadComplianceReviewAssignmentLifecycleEvent(
@@ -1251,9 +1328,6 @@ public sealed partial class SqliteHerdrStateStore
             """;
         command.Parameters.AddWithValue("$sequence", sequence);
         ConfigureComplianceReviewCommand(command, cancellationToken);
-        using var commandCancellation = RegisterComplianceReviewCommandCancellation(
-            command,
-            cancellationToken);
         using var reader = command.ExecuteReader();
         var result = reader.Read()
             ? ReadAndValidateAssignmentLifecycleEvent(reader)
