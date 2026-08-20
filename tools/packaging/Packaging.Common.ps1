@@ -2202,7 +2202,8 @@ function Invoke-PackagingMSBuildPropertyEvaluation {
         [Parameter(Mandatory = $true)][string]$ProjectPath,
         [Parameter(Mandatory = $true)]$Profile,
         [string]$TestDotnetCommandPath,
-        [int]$TimeoutMilliseconds = 15000
+        [ValidateRange(1000, 120000)]
+        [int]$TimeoutMilliseconds = 60000
     )
 
     $propertyNames = @(
