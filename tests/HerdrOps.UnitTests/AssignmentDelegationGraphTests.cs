@@ -6,6 +6,56 @@ namespace HerdrOps.UnitTests;
 public sealed class AssignmentDelegationGraphTests
 {
     [TestMethod]
+    public void ResolveSelectedTaskIdFallsBackToCurrentActorTaskWhenRequestedTaskIsUnrelated()
+    {
+        var events = new[]
+        {
+            AssignmentLifecycleTests.CreateEvent(
+                AssignmentLifecycleEventKind.Assignment,
+                sequence: 1,
+                actorId: "project-manager",
+                actorRole: "Project Manager",
+                taskId: "TASK-101",
+                targetAgentId: "backend-worker-01"),
+            AssignmentLifecycleTests.CreateEvent(
+                AssignmentLifecycleEventKind.Acknowledgement,
+                sequence: 2,
+                actorId: "backend-worker-01",
+                actorRole: "Backend Worker",
+                taskId: "TASK-101",
+                parentEventId: AssignmentLifecycleTests.GuidFor(1)),
+            AssignmentLifecycleTests.CreateEvent(
+                AssignmentLifecycleEventKind.Assignment,
+                sequence: 3,
+                actorId: "project-manager",
+                actorRole: "Project Manager",
+                taskId: "TASK-102",
+                targetAgentId: "reviewer-01"),
+        };
+        var graph = AssignmentDelegationGraphProjector.Create(AssignmentLifecycleReplay.Run(events));
+
+        Assert.AreEqual(
+            "TASK-101",
+            AssignmentDelegationGraphProjector.ResolveSelectedTaskIdForActor(
+                graph,
+                "backend-worker-01",
+                "TASK-102"));
+    }
+
+    [TestMethod]
+    public void ResolveSelectedTaskIdClearsRequestedTaskForUnknownActor()
+    {
+        var graph = AssignmentDelegationGraphProjector.Create(
+            AssignmentLifecycleReplay.Run(AssignmentLifecycleTests.CompleteTrace()));
+
+        Assert.IsNull(
+            AssignmentDelegationGraphProjector.ResolveSelectedTaskIdForActor(
+                graph,
+                "actor-that-is-not-in-the-graph",
+                "TASK-001"));
+    }
+
+    [TestMethod]
     public void ProjectionIsDeterministicAndBindsGraphItemsToReplayProvenance()
     {
         var replay = AssignmentLifecycleReplay.Run(AssignmentLifecycleTests.CompleteTrace());
