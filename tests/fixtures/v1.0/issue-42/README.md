@@ -13,8 +13,10 @@ fault-injection preparation gate (`tools/Test-V10Issue42SoakContract.ps1`).
 - Event identity is immutable: `id` and `agentId` never change and participate in the
   consistency binding. Event `sequence` is mutable current state and is not part of the
   alert identity or the SHA-256 provenance chain.
-- Alert identity and binding are immutable: `id`, `eventId`, `agentId`, and `severity`.
-  Alert `acknowledged` and `acknowledgementTime` are mutable current state.
+- Alert identity and binding are immutable: `id`, `eventId`, and `agentId`.
+  Alert `acknowledged` and `acknowledgementTime` are mutable current state. `severity`
+  is display data and is not part of the alert identity, consistency binding, or
+  provenance.
 - An unacknowledged alert normalizes both `null` and empty-string `acknowledgementTime`
   to the same "no acknowledgement" value; an acknowledged alert must carry a non-empty
   `acknowledgementTime`.

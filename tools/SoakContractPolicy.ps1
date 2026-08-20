@@ -93,6 +93,7 @@ function Test-SoakAlertConsistency {
     # `acknowledged`/`acknowledgementTime` are mutable current state and never participate
     # in identity binding or SHA-256 provenance. An unacknowledged alert normalizes both a
     # null and an empty-string acknowledgementTime to the same "no acknowledgement" value.
+    # A null or missing `acknowledged` flag fails closed rather than coercing to unacknowledged.
     $findings = @()
     $eventIds = @{}
     foreach ($event in $Events) {
@@ -128,7 +129,21 @@ function Test-SoakAlertConsistency {
             }
         }
 
-        $acknowledged = [bool]$alert.Acknowledged
+        $hasAcknowledged = $true
+        try {
+            $ackFlag = $alert.Acknowledged
+        } catch {
+            $hasAcknowledged = $false
+        }
+        if (-not $hasAcknowledged) {
+            $findings += "alert '$alertId' is missing an acknowledged flag"
+            continue
+        }
+        if ($null -eq [object]$ackFlag) {
+            $findings += "alert '$alertId' has a null acknowledged flag"
+            continue
+        }
+        $acknowledged = [bool]$ackFlag
         $acknowledgementTime = if ($null -eq $alert.AcknowledgementTime) { '' } else { [string]$alert.AcknowledgementTime }
         if ($acknowledged) {
             if ([string]::IsNullOrWhiteSpace($acknowledgementTime)) {
@@ -339,6 +354,25 @@ function Test-SoakPolicyFixtures {
     }
 
     try {
+        $normalized = ConvertTo-SoakSha256Normalized -Value (' A' + ('b' * 63) + ' ')
+        if ($normalized -ne ('a' + ('b' * 63))) {
+            throw "confirmed 64-hex digest was not trimmed and lowercased: '$normalized'"
+        }
+
+        foreach ($invalid in @('', 'abc', 'zz', ('0' * 63), ('0' * 65), ('g' * 64))) {
+            $threw = $false
+            try {
+                ConvertTo-SoakSha256Normalized -Value $invalid | Out-Null
+            } catch {
+                $threw = $true
+            }
+            if (-not $threw) { throw "invalid SHA-256 '$invalid' was accepted instead of failing closed" }
+        }
+    } catch {
+        $failures += "sha-normalization: $($_.Exception.Message)"
+    }
+
+    try {
         $bounded = Test-SoakBoundedTelemetry -Artifacts @(
             @{ Name = 'a'; Bytes = 100; Lines = 10; Entries = 5; Path = 'p' }
         ) -MaxArtifacts 2 -MaxBytesPerArtifact 200
@@ -410,6 +444,16 @@ function Test-SoakPolicyFixtures {
             @{ Id = 'a1'; EventId = 'e1'; AgentId = 'agent-a'; Acknowledged = $true; AcknowledgementTime = $null }
         )
         if ($nullAcknowledged.Pass) { throw 'acknowledged alert with a null acknowledgementTime was accepted' }
+
+        $nullAcknowledgedFlag = Test-SoakAlertConsistency -Events $events -Alerts @(
+            @{ Id = 'a1'; EventId = 'e1'; AgentId = 'agent-a'; Acknowledged = $null; AcknowledgementTime = '' }
+        )
+        if ($nullAcknowledgedFlag.Pass) { throw 'alert with a null acknowledged flag was accepted instead of failing closed' }
+
+        $missingAcknowledgedFlag = Test-SoakAlertConsistency -Events $events -Alerts @(
+            @{ Id = 'a1'; EventId = 'e1'; AgentId = 'agent-a'; AcknowledgementTime = '' }
+        )
+        if ($missingAcknowledgedFlag.Pass) { throw 'alert with a missing acknowledged flag was accepted instead of failing closed' }
 
         $duplicateAlert = Test-SoakAlertConsistency -Events $events -Alerts @(
             @{ Id = 'a1'; EventId = 'e1'; AgentId = 'agent-a'; Acknowledged = $false; AcknowledgementTime = '' },
