@@ -76,7 +76,11 @@ fixture bytes) and its SHA-256 values are checked against independently stored
 expected digests. It is regression-stable:
 
 - PositiveControlAccepted: a fully bound manifest with valid invariants is accepted.
-- OnDiskBinding: the accepted manifest's exact bytes on disk re-verify.
+- OnDiskBinding: the accepted manifest's exact bytes on disk re-verify, and the immutable
+  reference PNG bytes on disk match the `docs/design/reference/MANIFEST.md` table.
+- ExactCaptureSetCardinality: a shape-valid but non-canonical extra page capture fails closed.
+- ExactWidgetCardinality: an extra widget-kind capture beyond the declared variant set fails closed.
+- ReferenceBinding: a capture whose `refersToReference` is not a `MANIFEST.md` entry fails closed.
 - MissingCapture, DuplicateCapture and UnexpectedCapture FailClosed: rejected.
 - ForgedCheckboxOnlySignoff and ForgedDivergence FailClosed: rejected.
 - HashTamper FailClosed: a changed referenced byte with unchanged recorded hash is rejected.
@@ -88,7 +92,15 @@ executed it once under Windows PowerShell 5.1 and once under PowerShell 7; both
 runs report the same PASS/FAIL set and the same `Static/Contract/Synthetic`
 evidence class with `Human`, `Runtime` and `Release` unobserved. Output is
 bounded: the evidence report is one small JSON document whose schema and
-template SHA-256 digests are identical across both shells.
+template SHA-256 digests are deterministic and identical across both shells.
+
+The schema and template SHA-256 digests are self-computed by the verifier over
+the committed file bytes; they are deterministic and identical across both
+shells, but they are not independently recomputed by an external digest tool in
+this PREPARATION slice. The evidence report states this explicitly
+(`digestVerifiedIndependent: false`, `digestOrigin: self-reported by the tool
+SHA-256 function on the committed file bytes`) and the actual template fail
+guard is captured from the thrown verifier message, not hardcoded.
 
 ## Evidence boundary
 

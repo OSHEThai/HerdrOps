@@ -38,6 +38,28 @@ function Assert-HumanDesignReviewPreparedSchema {
     }
 }
 
+function Get-HumanDesignReviewObservedGuard {
+    param([Parameter(Mandatory = $true)][string]$Message)
+
+    # Extract a stable, field-level guard token from the actual fail-closure message so
+    # the report reflects the guard that truly tripped rather than a hardcoded label.
+    if ($Message -match "reviewer '([^']+)' is (missing or placeholder|missing|placeholder|malformed)") {
+        return ('reviewer:' + $Matches[1] + ':not-bound')
+    }
+    if ($Message -match "'([A-Za-z0-9_\.]+)' is (missing or placeholder|missing|placeholder|malformed)") {
+        return ($Matches[1] + ':not-bound')
+    }
+    if ($Message -match '([a-zA-Z0-9 ]+) is (missing or placeholder|placeholder|malformed|unbound)') {
+        return (($Matches[1] -replace '[\s]', ':').ToLowerInvariant() + ':fail-closed')
+    }
+    foreach ($known in @('unbound', 'placeholder', 'forged', 'missing', 'malformed')) {
+        if ($Message.IndexOf($known, [StringComparison]::OrdinalIgnoreCase) -ge 0) {
+            return $known
+        }
+    }
+    return 'unknown-guard'
+}
+
 function Assert-HumanDesignReviewTemplateFailClosed {
     param([Parameter(Mandatory = $true)][string]$TemplatePath)
 
@@ -55,7 +77,11 @@ function Assert-HumanDesignReviewTemplateFailClosed {
     if ($guardMatched.Count -eq 0) {
         throw "The distribution template did not fail on a recognized fail-closed guard: $failClosureMessage"
     }
-    return $failClosureMessage
+    $observedGuard = Get-HumanDesignReviewObservedGuard -Message $failClosureMessage
+    return [pscustomobject][ordered]@{
+        Message = $failClosureMessage
+        Guard = $observedGuard
+    }
 }
 
 $schemaPath = Get-HumanDesignReviewSchemaPath
@@ -85,14 +111,29 @@ $report = [pscustomobject][ordered]@{
             version = [string]$PSVersionTable.PSVersion
         }
     )
-    schema = [ordered]@{ path = [string]$schemaPath; sha256 = $schemaHash; conformsToStrictJson = $true }
-    template = [ordered]@{ path = [string]$templatePath; sha256 = $templateHash; failClosedOnUnbound = $true; observedGuardFragments = @('unbound') }
+    schema = [ordered]@{
+        path = [string]$schemaPath
+        sha256 = $schemaHash
+        digestOrigin = 'self-reported by the tool SHA-256 function on the committed file bytes'
+        digestVerifiedIndependent = $false
+        conformsToStrictJson = $true
+    }
+    template = [ordered]@{
+        path = [string]$templatePath
+        sha256 = $templateHash
+        digestOrigin = 'self-reported by the tool SHA-256 function on the committed file bytes'
+        digestVerifiedIndependent = $false
+        failClosedOnUnbound = $true
+        observedGuardFragments = @($templateFailure.Guard)
+        observedGuardFromMessage = [string]$templateFailure.Message
+    }
     preparedArtifacts = @(
         [ordered]@{ relativePath = 'tools/human-design-review/human-design-review.schema.json'; kind = 'schema' }
         [ordered]@{ relativePath = 'tools/human-design-review/human-design-review.template.json'; kind = 'template' }
         [ordered]@{ relativePath = 'tools/human-design-review/HumanDesignReview.Common.ps1'; kind = 'verifier core' }
         [ordered]@{ relativePath = 'tools/human-design-review/Test-V0.7HumanDesignReviewVerifier.ps1'; kind = 'manifest verifier' }
         [ordered]@{ relativePath = 'tools/human-design-review/Test-V0.7HumanDesignReviewSelftests.ps1'; kind = 'deterministic selftest' }
+        [ordered]@{ relativePath = 'tools/human-design-review/Invoke-V0.7HumanDesignReviewEvidence.ps1'; kind = 'preparation evidence driver' }
     )
 }
 

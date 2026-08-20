@@ -377,6 +377,59 @@ try {
         Test-HumanDesignReviewManifest -ManifestPath $unexpectedPath | Out-Null
     }
 
+    # Negative: F1 EXACT-SET CARDINALITY — an extra shape-valid but non-canonical page
+    # capture (canonical-looking path, unknown page) must fail closed, not slip through
+    # the shape regex as the original design allowed.
+    $extraPageFolder = Join-Path $testRoot 'neg-extra-noncanonical-page'
+    Copy-Item -LiteralPath $fixture.Root -Destination $extraPageFolder -Recurse
+    $extraPagePath = Join-Path $extraPageFolder 'human-design-review.manifest.json'
+    $extraPageManifest = ([IO.File]::ReadAllText($extraPagePath)) | ConvertFrom-Json
+    $extraPageManifest.captures += [ordered]@{
+        relativePath = 'captures/en/pages/foobar-100.png'
+        sha256 = (Get-HumanDesignReviewSha256ForText -Text 'extra non canonical page').ToUpperInvariant()
+        width = 100; height = 100; language = 'en'; kind = 'page'; refersToReference = '02-live-organization.png'
+    }
+    $extraPageManifest.provenance.artifactHash = (Get-HumanDesignReviewArtifactHashFromManifest -Manifest $extraPageManifest).ToUpperInvariant()
+    $extraPageJson = $extraPageManifest | ConvertTo-Json -Depth 100
+    [IO.File]::WriteAllText($extraPagePath, $extraPageJson, (New-Object System.Text.UTF8Encoding($false)))
+    Assert-ReviewSelftestFailure -Description 'extra non-canonical page capture violates exact capture set cardinality' -RequiredFragments @(
+        'exact canonical 60') -Action {
+        Test-HumanDesignReviewManifest -ManifestPath $extraPagePath | Out-Null
+    }
+
+    # Negative: F1 EXACT-SET CARDINALITY — an extra widget-kind capture beyond the
+    # declared widget variant set must fail closed.
+    $extraWidgetFolder = Join-Path $testRoot 'neg-extra-widget-cardinality'
+    Copy-Item -LiteralPath $fixture.Root -Destination $extraWidgetFolder -Recurse
+    $extraWidgetPath = Join-Path $extraWidgetFolder 'human-design-review.manifest.json'
+    $extraWidgetManifest = ([IO.File]::ReadAllText($extraWidgetPath)) | ConvertFrom-Json
+    $extraWidgetManifest.captures += [ordered]@{
+        relativePath = 'captures/th/widgets/compact-native.png'
+        sha256 = (Get-HumanDesignReviewSha256ForText -Text 'extra widget th variant').ToUpperInvariant()
+        width = 100; height = 100; language = 'th'; kind = 'widget-variant'; refersToReference = '11-widget-concepts.png'
+    }
+    $extraWidgetManifest.provenance.artifactHash = (Get-HumanDesignReviewArtifactHashFromManifest -Manifest $extraWidgetManifest).ToUpperInvariant()
+    $extraWidgetJson = $extraWidgetManifest | ConvertTo-Json -Depth 100
+    [IO.File]::WriteAllText($extraWidgetPath, $extraWidgetJson, (New-Object System.Text.UTF8Encoding($false)))
+    Assert-ReviewSelftestFailure -Description 'extra widget capture violates exact widget cardinality' -RequiredFragments @(
+        'widget capture cardinality') -Action {
+        Test-HumanDesignReviewManifest -ManifestPath $extraWidgetPath | Out-Null
+    }
+
+    # Negative: F2 MANIFEST BINDING — a capture referring to a non-MANIFEST.md entry
+    # must fail closed even though the refersToReference field is well-formed.
+    $forgedRefFolder = Join-Path $testRoot 'neg-forged-reference-entry'
+    Copy-Item -LiteralPath $fixture.Root -Destination $forgedRefFolder -Recurse
+    $forgedRefPath = Join-Path $forgedRefFolder 'human-design-review.manifest.json'
+    $forgedRefManifest = ([IO.File]::ReadAllText($forgedRefPath)) | ConvertFrom-Json
+    $forgedRefManifest.captures[0].refersToReference = '99-bogus.png'
+    $forgedRefJson = $forgedRefManifest | ConvertTo-Json -Depth 100
+    [IO.File]::WriteAllText($forgedRefPath, $forgedRefJson, (New-Object System.Text.UTF8Encoding($false)))
+    Assert-ReviewSelftestFailure -Description 'forged non-MANIFEST refersToReference is rejected' -RequiredFragments @(
+        'not a valid docs/design/reference/MANIFEST') -Action {
+        Test-HumanDesignReviewManifest -ManifestPath $forgedRefPath | Out-Null
+    }
+
     # Negative: FORGED checkbox-only signoff (passed=true with an unbound zero hash).
     $forgedFolder = Join-Path $testRoot 'neg-forged-checkbox'
     Copy-Item -LiteralPath $fixture.Root -Destination $forgedFolder -Recurse
@@ -465,6 +518,9 @@ try {
     MissingCaptureFailClosed = 'PASS'
     DuplicateCaptureFailClosed = 'PASS'
     UnexpectedCaptureFailClosed = 'PASS'
+    ExactCaptureSetCardinalityFailClosed = 'PASS'
+    ExactWidgetCardinalityFailClosed = 'PASS'
+    ReferenceBindingFailClosed = 'PASS'
     ForgedCheckboxOnlySignoffFailClosed = 'PASS'
     ForgedDivergenceFailClosed = 'PASS'
     HashTamperFailClosed = 'PASS'

@@ -51,6 +51,86 @@ function Get-HumanDesignReviewZeroHash {
     return ('0' * 64)
 }
 
+### Immutable reference MANIFEST binding. The authoritative reference surface is
+### docs/design/reference/MANIFEST.md plus the eleven immutable PNGs it lists.
+### A capture's refersToReference must name a valid MANIFEST entry and, when
+### binding is validated, the on-disk reference PNG bytes must equal the MANIFEST
+### table hash so the immutable reference surface cannot be silently swapped.
+
+function Get-HumanDesignReviewReferenceManifestPath {
+    return (Join-Path (Get-HumanDesignReviewRoot) 'docs\design\reference\MANIFEST.md')
+}
+
+function Get-HumanDesignReviewReferenceDirectory {
+    return (Join-Path (Get-HumanDesignReviewRoot) 'docs\design\reference')
+}
+
+function Read-HumanDesignReviewReferenceManifest {
+    $path = Get-HumanDesignReviewReferenceManifestPath
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+        throw "Design reference MANIFEST.md was not found at '$path'."
+    }
+    $entries = @{}
+    $lines = [IO.File]::ReadAllLines($path)
+    foreach ($line in $lines) {
+        if ($line -notmatch '^\|\s*`([0-9]{2}-[a-z0-9-]+\.png)`\s*\|\s*([0-9]+)\s*[x\u00D7]\s*([0-9]+)\s*\|\s*([0-9,]+)\s*\|\s*`([0-9A-Fa-f]{64})`\s*\|$') {
+            continue
+        }
+        $fileName = $Matches[1]
+        $width = [int]$Matches[2]
+        $height = [int]$Matches[3]
+        $bytes = [int64]($Matches[4] -replace ',', '')
+        $sha256 = $Matches[5].ToUpperInvariant()
+        $entries[$fileName] = [pscustomobject][ordered]@{
+            File = $fileName
+            Width = $width
+            Height = $height
+            Bytes = $bytes
+            Sha256 = $sha256
+        }
+    }
+    if ($entries.Count -ne 11) {
+        throw "Design reference MANIFEST.md must declare exactly 11 immutable reference entries; found $($entries.Count)."
+    }
+    return $entries
+}
+
+function Test-HumanDesignReviewReferenceEntry {
+    param([Parameter(Mandatory = $true)][string]$Reference)
+
+    $normalized = $Reference.Replace('\', '/')
+    $leaf = [IO.Path]::GetFileName($normalized)
+    $manifest = Read-HumanDesignReviewReferenceManifest
+    return $manifest.ContainsKey($leaf)
+}
+
+function Assert-HumanDesignReviewReferenceBinding {
+    param([Parameter(Mandatory = $true)][string]$Reference, [switch]$ValidateBindings)
+
+    $normalized = $Reference.Replace('\', '/')
+    $leaf = [IO.Path]::GetFileName($normalized)
+    $manifest = Read-HumanDesignReviewReferenceManifest
+    if (-not $manifest.ContainsKey($leaf)) {
+        throw "Capture refersToReference '$Reference' is not a valid docs/design/reference/MANIFEST.md entry."
+    }
+    if (-not $ValidateBindings) {
+        return
+    }
+    $entry = $manifest[$leaf]
+    $onDiskPath = Join-Path (Get-HumanDesignReviewReferenceDirectory) $leaf
+    if (-not (Test-Path -LiteralPath $onDiskPath -PathType Leaf)) {
+        throw "Immutable reference '$leaf' is missing from docs/design/reference/."
+    }
+    $bytes = [IO.File]::ReadAllBytes((Resolve-Path -LiteralPath $onDiskPath).Path)
+    $onDiskHash = Get-HumanDesignReviewSha256ForBytes -Bytes $bytes
+    if ($onDiskHash -cne $entry.Sha256) {
+        throw "Immutable reference '$leaf' on-disk SHA-256 ($onDiskHash) does not match the MANIFEST.md bound hash."
+    }
+    if ($bytes.Length -ne [long]$entry.Bytes) {
+        throw "Immutable reference '$leaf' on-disk byte length does not match the MANIFEST.md bound byte count."
+    }
+}
+
 function Test-HumanDesignReviewPlaceholder {
     param([AllowEmptyString()][string]$Text)
 
@@ -656,6 +736,12 @@ function Test-HumanDesignReviewManifestInvariants {
         if ([string]$capture.kind -notin @('page', 'widget-variant', 'dashboard-preview', 'contact-sheet')) {
             throw "Review manifest capture '$relative' has an invalid kind."
         }
+        if (-not (Test-HumanDesignReviewReferenceEntry -Reference ([string]$capture.refersToReference))) {
+            throw "Review manifest capture '$relative' refersToReference '$($capture.refersToReference)' is not a valid docs/design/reference/MANIFEST.md entry."
+        }
+        if ($ValidateBindings) {
+            Assert-HumanDesignReviewReferenceBinding -Reference ([string]$capture.refersToReference) -ValidateBindings
+        }
         if ($ValidateBindings -and -not [string]::IsNullOrWhiteSpace($EvidenceRoot)) {
             $onDiskPath = Join-Path $EvidenceRoot $relative
             if (-not (Test-Path -LiteralPath $onDiskPath -PathType Leaf)) {
@@ -687,6 +773,23 @@ function Test-HumanDesignReviewManifestInvariants {
         }
     }
 
+    $canonicalPageRefs = @($canonicalKeys | ForEach-Object {
+        Get-HumanDesignReviewCanonicalPageCaptureRefForKey -Key $_
+    })
+    $pageCaptureRefs = @($captures | Where-Object { $_.kind -eq 'page' } | ForEach-Object {
+        [string]$_.relativePath.Replace('\', '/')
+    })
+    $extraPageRefs = @($pageCaptureRefs | Where-Object {
+        $normalized = $_.Replace('\', '/')
+        ($normalized -match '^captures/(th|en)/pages/') -and ($canonicalPageRefs -notcontains $normalized)
+    })
+    if ($extraPageRefs.Count -gt 0) {
+        throw "Review manifest declares an unexpected capture beyond the exact canonical 60 page captures: $($extraPageRefs -join ', ')."
+    }
+    if ($pageCaptureRefs.Count -ne $canonicalPageRefs.Count) {
+        throw "Review manifest page capture cardinality must be exactly $($canonicalPageRefs.Count); found $($pageCaptureRefs.Count)."
+    }
+
     $expectedArtifactHash = Get-HumanDesignReviewArtifactHashFromManifest -Manifest $Manifest
     if ($expectedArtifactHash -cne [string]$provenance.artifactHash) {
         throw 'Review manifest provenance artifactHash does not match the declared capture list and hashes.'
@@ -701,10 +804,23 @@ function Test-HumanDesignReviewManifestInvariants {
             throw "Review manifest declares an unexpected widget capture '$relative'."
         }
     }
+    $widgetNames = @('Compact', 'Normal', 'Expanded', 'FloatingMini', 'FloatingVertical', 'Notification',
+        'AgentDetailPopup', 'DashboardPreview')
+    $declaredWidgetRefs = @{}
+    foreach ($name in $widgetNames) {
+        $declaredWidgetRefs[[string]$Manifest.widgets.$name.capturesRef.Replace('\', '/')] = $true
+    }
+    $widgetCaptureRefs = @($captures | Where-Object { $_.kind -in @('widget-variant', 'dashboard-preview') } | ForEach-Object {
+        [string]$_.relativePath.Replace('\', '/')
+    })
+    if ($widgetCaptureRefs.Count -ne $declaredWidgetRefs.Count -or
+        @($widgetCaptureRefs | Where-Object { -not $declaredWidgetRefs.ContainsKey($_) }).Count -gt 0) {
+        throw "Review manifest widget capture cardinality must be exactly the declared widget variant set; found $($widgetCaptureRefs.Count)."
+    }
 
     foreach ($ref in $captureRefs) {
         $normalized = $ref.Replace('\', '/')
-        $isPage = ($normalized -match '^captures/(th|en)/pages/[a-z0-9-]+-(100|125|150)\.png$')
+        $isPage = ($canonicalPageRefs -contains $normalized)
         $isWidget = ($allowedWidgetRefs -contains $normalized)
         $isContact = ($normalized -like 'captures/*contact*')
         if (-not ($isPage -or $isWidget -or $isContact)) {
@@ -712,8 +828,6 @@ function Test-HumanDesignReviewManifestInvariants {
         }
     }
 
-    $widgetNames = @('Compact', 'Normal', 'Expanded', 'FloatingMini', 'FloatingVertical', 'Notification',
-        'AgentDetailPopup', 'DashboardPreview')
     $widgetObjectNames = @($Manifest.widgets.PSObject.Properties.Name)
     if ($widgetObjectNames.Count -ne $widgetNames.Count) {
         throw 'Review manifest widgets object must declare exactly the approved widget variant set.'
