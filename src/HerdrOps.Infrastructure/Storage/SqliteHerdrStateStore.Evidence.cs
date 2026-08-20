@@ -1390,7 +1390,7 @@ public sealed partial class SqliteHerdrStateStore
     {
         using var command = _connection.CreateCommand();
         command.CommandText = """
-            SELECT EXISTS (
+            SELECT (EXISTS (
                 SELECT 1
                 FROM review_audit_events AS latest
                 WHERE latest.review_state = 1
@@ -1403,7 +1403,24 @@ public sealed partial class SqliteHerdrStateStore
                   AND latest.sequence = (
                       SELECT MAX(candidate.sequence)
                       FROM review_audit_events AS candidate
-                      WHERE candidate.review_case_id = latest.review_case_id));
+                      WHERE candidate.review_case_id = latest.review_case_id)
+            )) OR (EXISTS (
+                SELECT 1
+                FROM (
+                    SELECT incident_id
+                    FROM compliance_review_incident_evidence
+                    WHERE evidence_identity_sha256 = $identity
+                    UNION
+                    SELECT events.incident_id
+                    FROM compliance_review_event_evidence AS link
+                    INNER JOIN compliance_review_events AS events
+                        ON events.audit_event_id = link.audit_event_id
+                    WHERE link.evidence_identity_sha256 = $identity
+                ) AS linked
+                LEFT JOIN compliance_review_incidents AS incident
+                    ON incident.incident_id = linked.incident_id
+                WHERE incident.state IS NULL OR incident.state NOT IN (4, 5)
+            ));
             """;
         command.Parameters.AddWithValue("$identity", evidenceIdentitySha256);
         return Convert.ToInt64(command.ExecuteScalar(), System.Globalization.CultureInfo.InvariantCulture) == 1;
