@@ -511,18 +511,22 @@ function Test-SelectedTest {
         '--results-directory',
         $testDirectory
     )
-    $process = Start-Process -FilePath 'dotnet' -ArgumentList @arguments -PassThru -NoNewWindow
-    $exited = $process.WaitForExit(300000)
-    if (-not $exited) {
-        $process.Kill()
-        $script:testReports += [pscustomobject]@{ Id = $Id; Name = $Name; EvidenceClass = $EvidenceClass; Status = 'FAIL'; Path = 'NOT AVAILABLE'; Sha256 = 'NOT AVAILABLE'; Total = 0; Passed = 0; Failed = 1 }
-        Record-Check -Id $Id -Status 'FAIL' -EvidenceClass $EvidenceClass -Detail "$Name timed out after 300s"
+    $stdoutPath = [IO.Path]::GetFullPath((Join-Path $testDirectory "$Id-$Name.stdout.txt"))
+    $stderrPath = [IO.Path]::GetFullPath((Join-Path $testDirectory "$Id-$Name.stderr.txt"))
+    $run = Start-Issue43OwnedProcess -FilePath 'dotnet' -ArgumentList $arguments -TimeoutMilliseconds 300000 -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
+    if (-not $run.Started) {
+        $script:testReports += [pscustomobject]@{ Id = $Id; Name = $Name; EvidenceClass = $EvidenceClass; Status = 'FAIL'; Path = 'NOT RUN'; Sha256 = 'NOT AVAILABLE'; Total = 0; Passed = 0; Failed = 1 }
+        Record-Check -Id $Id -Status 'FAIL' -EvidenceClass $EvidenceClass -Detail "$Name could not start dotnet: $($run.ErrorMessage)"
         return
     }
-    $exitCode = $process.ExitCode
-    if ($exitCode -ne 0) {
+    if ($run.TimedOut) {
         $script:testReports += [pscustomobject]@{ Id = $Id; Name = $Name; EvidenceClass = $EvidenceClass; Status = 'FAIL'; Path = 'NOT AVAILABLE'; Sha256 = 'NOT AVAILABLE'; Total = 0; Passed = 0; Failed = 1 }
-        Record-Check -Id $Id -Status 'FAIL' -EvidenceClass $EvidenceClass -Detail "$Name selected tests exited $exitCode"
+        Record-Check -Id $Id -Status 'FAIL' -EvidenceClass $EvidenceClass -Detail "$Name timed out after 300s; owned tree kill=$($run.Killed); stdout=$(Get-RelativeRepositoryPath -Path $stdoutPath); stderr=$(Get-RelativeRepositoryPath -Path $stderrPath)"
+        return
+    }
+    if ($null -eq $run.ExitCode -or $run.ExitCode -ne 0) {
+        $script:testReports += [pscustomobject]@{ Id = $Id; Name = $Name; EvidenceClass = $EvidenceClass; Status = 'FAIL'; Path = 'NOT AVAILABLE'; Sha256 = 'NOT AVAILABLE'; Total = 0; Passed = 0; Failed = 1 }
+        Record-Check -Id $Id -Status 'FAIL' -EvidenceClass $EvidenceClass -Detail "$Name selected tests exited $($run.ExitCode); stdout=$(Get-RelativeRepositoryPath -Path $stdoutPath); stderr=$(Get-RelativeRepositoryPath -Path $stderrPath)"
         return
     }
 
@@ -535,17 +539,14 @@ function Test-SelectedTest {
         return
     }
 
-    $trxCandidates = @(
-        Get-ChildItem -LiteralPath $testDirectory -Recurse -File -Filter $trxName -ErrorAction SilentlyContinue |
-            Where-Object { $_.FullName.StartsWith($testDirectory + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase) }
-    )
-    if ($trxCandidates.Count -ne 1) {
+    $trxResult = Get-Issue43ExactlyOneTrxFile -Directory $testDirectory -FileName $trxName
+    if (-not $trxResult.Found) {
         $script:testReports += [pscustomobject]@{ Id = $Id; Name = $Name; EvidenceClass = $EvidenceClass; Status = 'FAIL'; Path = 'NOT AVAILABLE'; Sha256 = 'NOT AVAILABLE'; Total = 0; Passed = 0; Failed = 1 }
-        Record-Check -Id $Id -Status 'FAIL' -EvidenceClass $EvidenceClass -Detail "$Name did not produce exactly one TRX result (found $($trxCandidates.Count))"
+        Record-Check -Id $Id -Status 'FAIL' -EvidenceClass $EvidenceClass -Detail "$Name did not produce exactly one TRX result (found $($trxResult.Count))"
         return
     }
 
-    $trxPath = Get-SafeArtifactFile -Path $trxCandidates[0].FullName
+    $trxPath = Get-SafeArtifactFile -Path $trxResult.Path
     if ($null -eq $trxPath) {
         $script:testReports += [pscustomobject]@{ Id = $Id; Name = $Name; EvidenceClass = $EvidenceClass; Status = 'FAIL'; Path = 'UNSAFE'; Sha256 = 'NOT AVAILABLE'; Total = 0; Passed = 0; Failed = 1 }
         Record-Check -Id $Id -Status 'FAIL' -EvidenceClass $EvidenceClass -Detail "$Name TRX path was not safe"
@@ -998,7 +999,7 @@ $markerGroups = @(
     ) },
     [pscustomobject]@{ Id = 'S-03'; EvidenceClass = 'Static'; Files = @(
         @{ Path = 'docs/protocol/v0.5-evidence-audit-storage-contract.md'; Markers = @('Retention evaluates only present managed copies', 'currently open', 'Purged', 'AlreadyMissing', 'Evidence metadata, review history, evidence links, and retention history remain', 'recoverable') },
-        @{ Path = 'docs/protocol/v1.0-issue-43-security-privacy-review-contract.md'; Markers = @('30 days from', '365 days', 'Omitting the value resolves to the 30-day default', 'hash-bound terminal retention event') },
+        @{ Path = 'docs/protocol/v1.0-issue-43-security-privacy-review-contract.md'; Markers = @('30 days from', '365 days', 'Omitting the value resolves to the 30-day default', 'hash-bound terminal retention event', 'rejected fail-closed') },
         @{ Path = 'src/HerdrOps.Domain/Evidence/EvidenceContracts.cs'; Markers = @('EvidenceRetentionPolicy.ResolveRetainUntil') },
         @{ Path = 'src/HerdrOps.Domain/Evidence/EvidenceRetentionPolicy.cs'; Markers = @('DefaultManagedArtifactRetentionDays = 30', 'MaximumManagedArtifactRetentionDays = 365', 'ResolveRetainUntil') },
         @{ Path = 'tests/HerdrOps.UnitTests/EvidenceContractsTests.cs'; Markers = @('NullRetentionUsesTheVersionedThirtyDayDefault', 'RetentionOverrideIsBoundedToTheVersionedMaximum') },
@@ -1066,6 +1067,13 @@ try {
     Record-Check -Id 'S-10' -Status 'PASS' -EvidenceClass 'Static' -Detail 'adversarial scanner, product-wrapper, and report-writer fixtures passed without live process or listener access'
 } catch {
     Record-Check -Id 'S-10' -Status 'FAIL' -EvidenceClass 'Static' -Detail $_.Exception.Message
+}
+
+try {
+    Test-Issue43ProcessFixtures | Out-Null
+    Record-Check -Id 'S-11' -Status 'PASS' -EvidenceClass 'Synthetic' -Detail 'native argument quoting, spaced-path binding, owned bounded timeout/kill/wait cleanup, and exactly-one-output fixtures passed on this host'
+} catch {
+    Record-Check -Id 'S-11' -Status 'FAIL' -EvidenceClass 'Synthetic' -Detail $_.Exception.Message
 }
 
 Test-ForbiddenProductPattern -Id 'S-07-LISTENER' -CodePattern $listenerCodePattern -RawPattern $listenerRawPattern -Description 'unexpected network listener declarations' | Out-Null

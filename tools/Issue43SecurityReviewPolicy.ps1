@@ -441,3 +441,372 @@ function Test-Issue43ReportWriterFixtures {
 
     return $true
 }
+
+function ConvertTo-Issue43NativeArgumentString {
+    param(
+        [string[]]$Arguments
+    )
+
+    if ($null -eq $Arguments) {
+        throw 'Issue #43 native argument list cannot be null.'
+    }
+
+    $commandLine = ''
+    foreach ($argument in $Arguments) {
+        if ($commandLine.Length -gt 0) {
+            $commandLine += ' '
+        }
+
+        $value = if ($null -eq $argument) { '' } else { [string]$argument }
+        if ($value.Length -eq 0) {
+            $commandLine += '""'
+            continue
+        }
+
+        if ($value -notmatch '[ \t"]') {
+            $commandLine += $value
+            continue
+        }
+
+        # Windows CommandLineToArgvW-compatible quoting: backslashes before a
+        # quote are doubled, an embedded quote is escaped as backslash-quote,
+        # and trailing backslashes before the closing quote are doubled.
+        $quoted = '"'
+        $backslashes = 0
+        foreach ($character in $value.ToCharArray()) {
+            if ($character -eq [char]92) {
+                $backslashes++
+                continue
+            }
+            if ($character -eq '"') {
+                $quoted += ('\' * ($backslashes * 2 + 1)) + '"'
+                $backslashes = 0
+                continue
+            }
+            $quoted += ('\' * $backslashes) + $character
+            $backslashes = 0
+        }
+        $quoted += ('\' * ($backslashes * 2)) + '"'
+        $commandLine += $quoted
+    }
+
+    return $commandLine
+}
+
+function Stop-Issue43ProcessTree {
+    param(
+        [Parameter(Mandatory)]
+        [System.Diagnostics.Process]$Process
+    )
+
+    if ($Process.HasExited) {
+        return $true
+    }
+
+    # Process.Kill(bool) is not available on Windows PowerShell 5.1
+    # (.NET Framework), so a cross-shell tree kill uses taskkill /T.
+    $null = & taskkill.exe /PID $Process.Id /T /F 2>$null
+    $deadline = [DateTime]::UtcNow.AddSeconds(15)
+    while (-not $Process.HasExited -and [DateTime]::UtcNow -lt $deadline) {
+        Start-Sleep -Milliseconds 100
+    }
+    if (-not $Process.HasExited) {
+        $null = & taskkill.exe /PID $Process.Id /T /F 2>$null
+        $null = $Process.WaitForExit(15000)
+    }
+
+    return $Process.HasExited
+}
+
+function Start-Issue43OwnedProcess {
+    param(
+        [Parameter(Mandatory)]
+        [string]$FilePath,
+
+        [string[]]$ArgumentList,
+
+        [int]$TimeoutMilliseconds = 300000,
+
+        [string]$RedirectStandardOutput,
+
+        [string]$RedirectStandardError
+    )
+
+    if ($null -eq $ArgumentList) {
+        throw 'Issue #43 owned process argument list cannot be null.'
+    }
+
+    # Start-Process on Windows PowerShell 5.1 does not populate ExitCode when
+    # output is redirected and its ArgumentList never quotes spaced arguments,
+    # so the owned process is launched through System.Diagnostics.Process with
+    # an explicitly escaped command line and background pipe draining.
+    $commandLine = ConvertTo-Issue43NativeArgumentString -Arguments $ArgumentList
+    $startInfo = New-Object System.Diagnostics.ProcessStartInfo
+    $startInfo.FileName = $FilePath
+    $startInfo.UseShellExecute = $false
+    $startInfo.CreateNoWindow = $true
+    $startInfo.Arguments = $commandLine
+    $captureStdout = -not [string]::IsNullOrWhiteSpace($RedirectStandardOutput)
+    $captureStderr = -not [string]::IsNullOrWhiteSpace($RedirectStandardError)
+    $startInfo.RedirectStandardOutput = $captureStdout
+    $startInfo.RedirectStandardError = $captureStderr
+
+    $process = New-Object System.Diagnostics.Process
+    $process.StartInfo = $startInfo
+
+    try {
+        if (-not $process.Start()) {
+            throw 'the process could not be started'
+        }
+    } catch {
+        return [pscustomobject]@{
+            Started = $false
+            Process = $null
+            TimedOut = $false
+            ExitCode = $null
+            Killed = $false
+            ErrorMessage = $_.Exception.Message
+            CommandLine = $commandLine
+        }
+    }
+
+    # Background pipe draining avoids pipe-buffer deadlock without PowerShell
+    # scriptblocks on .NET reader threads (which fail without a runspace).
+    $stdoutTask = $null
+    $stderrTask = $null
+    if ($captureStdout) {
+        $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+    }
+    if ($captureStderr) {
+        $stderrTask = $process.StandardError.ReadToEndAsync()
+    }
+
+    $timedOut = -not $process.WaitForExit($TimeoutMilliseconds)
+    $killed = $false
+    if ($timedOut) {
+        $killed = Stop-Issue43ProcessTree -Process $process
+    }
+    if (-not $process.HasExited) {
+        $null = $process.WaitForExit(15000)
+    }
+    if ($process.HasExited) {
+        # Drain remaining pipe content before reading the exit code.
+        $null = $process.WaitForExit()
+    }
+
+    if ($captureStdout) {
+        $stdoutText = ''
+        try { $stdoutText = [string]$stdoutTask.Result } catch { }
+        [IO.File]::WriteAllText($RedirectStandardOutput, $stdoutText, (New-Object System.Text.UTF8Encoding($false)))
+    }
+    if ($captureStderr) {
+        $stderrText = ''
+        try { $stderrText = [string]$stderrTask.Result } catch { }
+        [IO.File]::WriteAllText($RedirectStandardError, $stderrText, (New-Object System.Text.UTF8Encoding($false)))
+    }
+
+    return [pscustomobject]@{
+        Started = $true
+        Process = $process
+        TimedOut = $timedOut
+        ExitCode = if ($process.HasExited) { $process.ExitCode } else { $null }
+        Killed = $killed
+        ErrorMessage = $null
+        CommandLine = $commandLine
+    }
+}
+
+function Get-Issue43ExactlyOneTrxFile {
+    param(
+        [Parameter(Mandatory)]
+        [string]$Directory,
+
+        [Parameter(Mandatory)]
+        [string]$FileName
+    )
+
+    $full = [IO.Path]::GetFullPath($Directory)
+    $prefix = $full.TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
+    $candidates = @(
+        Get-ChildItem -LiteralPath $full -Recurse -File -ErrorAction SilentlyContinue |
+            Where-Object {
+                $_.FullName.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase) -and
+                    [string]::Equals($_.Name, $FileName, [StringComparison]::OrdinalIgnoreCase)
+            }
+    )
+
+    return [pscustomobject]@{
+        Count = $candidates.Count
+        Path = if ($candidates.Count -eq 1) { $candidates[0].FullName } else { $null }
+        Found = $candidates.Count -eq 1
+    }
+}
+
+function Test-Issue43ProcessFixtures {
+    $fixtureRoot = Join-Path ([IO.Path]::GetTempPath()) "HerdrOps Issue43 Process Fixture $([Guid]::NewGuid().ToString('N'))"
+    if ($fixtureRoot -notmatch ' ') {
+        throw 'Issue #43 process fixture directory must contain a space to exercise spaced-path binding.'
+    }
+
+    try {
+        New-Item -ItemType Directory -Path $fixtureRoot -Force | Out-Null
+        $utf8NoBom = New-Object -TypeName System.Text.UTF8Encoding -ArgumentList @($false)
+
+        $argumentCases = @(
+            @{ Arguments = @('simple'); Expected = 'simple' },
+            @{ Arguments = @('arg with space'); Expected = '"arg with space"' },
+            @{ Arguments = @('C:\path with spaces\proj.csproj'); Expected = '"C:\path with spaces\proj.csproj"' },
+            @{ Arguments = @('', 'x'); Expected = '"" x' },
+            @{ Arguments = @('a"b'); Expected = '"a\"b"' },
+            @{ Arguments = @('C:\path with spaces\'); Expected = '"C:\path with spaces\\"' },
+            @{ Arguments = @('a', 'b'); Expected = 'a b' },
+            @{ Arguments = @("tab`tinside"); Expected = "`"tab`tinside`"" }
+        )
+        foreach ($argumentCase in $argumentCases) {
+            $actual = ConvertTo-Issue43NativeArgumentString -Arguments $argumentCase.Arguments
+            if ($actual -cne $argumentCase.Expected) {
+                throw "Issue #43 native argument quoting produced '$actual'; expected '$($argumentCase.Expected)'."
+            }
+        }
+
+        $hostExecutable = (Get-Process -Id $PID).Path
+        $echoScript = Join-Path $fixtureRoot 'echo-arguments.ps1'
+        $echoScriptBody = @'
+param()
+$outputPath = $args[0]
+$values = @()
+if ($args.Count -gt 1) {
+    $values = @($args[1..($args.Count - 1)])
+}
+$lines = New-Object 'System.Collections.Generic.List[string]'
+foreach ($value in $values) {
+    [void]$lines.Add(('[{0}]' -f $value))
+}
+[IO.File]::WriteAllLines($outputPath, [string[]]$lines, (New-Object System.Text.UTF8Encoding($false)))
+'@
+        [IO.File]::WriteAllText($echoScript, $echoScriptBody, $utf8NoBom)
+
+        $roundTripOutput = Join-Path $fixtureRoot 'roundtrip-output.txt'
+        $trickyArguments = @(
+            '-NoProfile',
+            '-ExecutionPolicy', 'Bypass',
+            '-File', $echoScript,
+            $roundTripOutput,
+            'arg with space',
+            'C:\path with spaces\proj.csproj',
+            '--filter',
+            'FullyQualifiedName~StateIpcContractTests|FullyQualifiedName~SelfReportContractTests',
+            'quote"inside',
+            'trailing\',
+            '',
+            "tab`tinside"
+        )
+        $roundTrip = Start-Issue43OwnedProcess -FilePath $hostExecutable -ArgumentList $trickyArguments -TimeoutMilliseconds 30000
+        if (-not $roundTrip.Started) {
+            throw "Issue #43 argv round-trip could not start: $($roundTrip.ErrorMessage)"
+        }
+        if ($roundTrip.TimedOut) {
+            throw 'Issue #43 argv round-trip timed out.'
+        }
+        if ($roundTrip.ExitCode -ne 0) {
+            throw "Issue #43 argv round-trip exited $($roundTrip.ExitCode)."
+        }
+
+        $expectedRoundTripLines = @(
+            '[arg with space]',
+            '[C:\path with spaces\proj.csproj]',
+            '[--filter]',
+            '[FullyQualifiedName~StateIpcContractTests|FullyQualifiedName~SelfReportContractTests]',
+            '[quote"inside]',
+            '[trailing\]',
+            '[]',
+            "[tab`tinside]"
+        )
+        $actualRoundTripLines = @(Get-Content -LiteralPath $roundTripOutput)
+        if ($actualRoundTripLines.Count -ne $expectedRoundTripLines.Count) {
+            throw "Issue #43 argv round-trip produced $($actualRoundTripLines.Count) lines; expected $($expectedRoundTripLines.Count)."
+        }
+        for ($index = 0; $index -lt $expectedRoundTripLines.Count; $index++) {
+            if ($actualRoundTripLines[$index] -cne $expectedRoundTripLines[$index]) {
+                throw "Issue #43 argv round-trip line $index was '$($actualRoundTripLines[$index])'; expected '$($expectedRoundTripLines[$index])'."
+            }
+        }
+
+        $sleepScript = Join-Path $fixtureRoot 'sleep-with-child.ps1'
+        $sleepScriptBody = @'
+param()
+$childPidPath = $args[0]
+$hostExecutable = (Get-Process -Id $PID).Path
+$child = Start-Process -FilePath $hostExecutable -ArgumentList @('-NoProfile', '-Command', 'Start-Sleep -Seconds 60') -PassThru -WindowStyle Hidden
+[IO.File]::WriteAllText($childPidPath, $child.Id.ToString(), (New-Object System.Text.UTF8Encoding($false)))
+Start-Sleep -Seconds 60
+'@
+        [IO.File]::WriteAllText($sleepScript, $sleepScriptBody, $utf8NoBom)
+
+        $childPidPath = Join-Path $fixtureRoot 'child.pid'
+        $sleepRun = Start-Issue43OwnedProcess `
+            -FilePath $hostExecutable `
+            -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $sleepScript, $childPidPath) `
+            -TimeoutMilliseconds 8000
+        if (-not $sleepRun.Started) {
+            throw "Issue #43 owned timeout fixture could not start: $($sleepRun.ErrorMessage)"
+        }
+        if (-not $sleepRun.TimedOut) {
+            throw 'Issue #43 owned process did not enforce its bounded timeout.'
+        }
+        if (-not $sleepRun.Killed) {
+            throw 'Issue #43 owned process tree was not killed after timeout.'
+        }
+        if (-not $sleepRun.Process.HasExited) {
+            throw 'Issue #43 owned process was not reaped after tree kill.'
+        }
+        if (-not (Test-Path -LiteralPath $childPidPath)) {
+            throw 'Issue #43 owned timeout fixture did not record its grandchild PID.'
+        }
+        $grandchildPid = [int](Get-Content -LiteralPath $childPidPath -Raw).Trim()
+        $grandchildDeadline = [DateTime]::UtcNow.AddSeconds(5)
+        $grandchildAlive = $true
+        while ([DateTime]::UtcNow -lt $grandchildDeadline -and $grandchildAlive) {
+            if ($null -eq (Get-Process -Id $grandchildPid -ErrorAction SilentlyContinue)) {
+                $grandchildAlive = $false
+            } else {
+                Start-Sleep -Milliseconds 200
+            }
+        }
+        if ($grandchildAlive) {
+            throw "Issue #43 tree kill left grandchild process $grandchildPid alive."
+        }
+
+        $exitScript = Join-Path $fixtureRoot 'exit-42.ps1'
+        [IO.File]::WriteAllText($exitScript, 'exit 42', $utf8NoBom)
+        $exitRun = Start-Issue43OwnedProcess `
+            -FilePath $hostExecutable `
+            -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $exitScript) `
+            -TimeoutMilliseconds 30000
+        if (-not $exitRun.Started -or $exitRun.TimedOut -or $exitRun.ExitCode -ne 42) {
+            throw "Issue #43 owned process did not return the exact positive exit code (started=$($exitRun.Started) timedOut=$($exitRun.TimedOut) exit=$($exitRun.ExitCode))."
+        }
+
+        $trxDirectory = Join-Path $fixtureRoot 'trx-results'
+        New-Item -ItemType Directory -Path $trxDirectory -Force | Out-Null
+        $emptyTrx = Get-Issue43ExactlyOneTrxFile -Directory $trxDirectory -FileName 'C-01-ipc.trx'
+        if ($emptyTrx.Found -or $emptyTrx.Count -ne 0) {
+            throw "Issue #43 exactly-one TRX helper found $($emptyTrx.Count) files in an empty directory."
+        }
+        [IO.File]::WriteAllText((Join-Path $trxDirectory 'C-01-ipc.trx'), '<dummy/>', $utf8NoBom)
+        $singleTrx = Get-Issue43ExactlyOneTrxFile -Directory $trxDirectory -FileName 'C-01-ipc.trx'
+        if (-not $singleTrx.Found -or $singleTrx.Count -ne 1) {
+            throw 'Issue #43 exactly-one TRX helper did not find the single TRX file.'
+        }
+        New-Item -ItemType Directory -Path (Join-Path $trxDirectory 'nested') -Force | Out-Null
+        [IO.File]::WriteAllText((Join-Path $trxDirectory 'nested\C-01-ipc.trx'), '<dummy/>', $utf8NoBom)
+        $duplicateTrx = Get-Issue43ExactlyOneTrxFile -Directory $trxDirectory -FileName 'C-01-ipc.trx'
+        if ($duplicateTrx.Found -or $duplicateTrx.Count -ne 2) {
+            throw "Issue #43 exactly-one TRX helper did not fail closed on duplicate names (found $($duplicateTrx.Count))."
+        }
+
+        return $true
+    } finally {
+        Remove-Item -LiteralPath $fixtureRoot -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
