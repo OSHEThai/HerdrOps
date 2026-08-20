@@ -3,6 +3,7 @@ using System.Text.Json;
 using HerdrOps.Core;
 using HerdrOps.Domain.Herdr;
 using HerdrOps.Infrastructure.Herdr;
+using HerdrOps.Infrastructure.ReviewIpc;
 using HerdrOps.Infrastructure.StateIpc;
 using HerdrOps.Infrastructure.Storage;
 
@@ -210,16 +211,24 @@ public sealed class HerdrOpsCoreStateServiceTests
         var fixture = new BlockingRuntimeFixture();
         var output = new StringWriter();
         var error = new StringWriter();
-        var stopwatch = Stopwatch.StartNew();
 
         var serviceTask = HerdrOpsCoreStateServiceCommand.RunAsync(
             CreateEvidenceArguments(directory, signalPath, reportPath),
             output,
             error,
             environmentVariableReader: _ => "1",
-            admittedMonitorFactory: fixture.Create);
+            admittedMonitorFactory: fixture.Create,
+            statePipeOptionsFactory: CreateUniqueStatePipeOptions,
+            reviewCommandPipeOptionsFactory: CreateUniqueReviewCommandPipeOptions);
 
         await fixture.AuthoritativeSnapshotReady.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        // The bound below times only the cancel-to-stop path (signal observed
+        // through service shutdown), not process/store/pipe setup above: setup
+        // cost is unrelated to whether cancellation itself is prompt, and
+        // folding it into this budget made the assertion flaky under
+        // unrelated scheduling contention.
+        var stopwatch = Stopwatch.StartNew();
         File.WriteAllBytes(signalPath, []);
         var exitCode = await serviceTask.WaitAsync(TimeSpan.FromSeconds(5));
         stopwatch.Stop();
@@ -255,7 +264,9 @@ public sealed class HerdrOpsCoreStateServiceTests
             output,
             error,
             environmentVariableReader: _ => "1",
-            admittedMonitorFactory: fixture.Create);
+            admittedMonitorFactory: fixture.Create,
+            statePipeOptionsFactory: CreateUniqueStatePipeOptions,
+            reviewCommandPipeOptionsFactory: CreateUniqueReviewCommandPipeOptions);
 
         await fixture.AuthoritativeSnapshotReady.Task.WaitAsync(TimeSpan.FromSeconds(5));
         File.WriteAllText(signalPath, "not-an-empty-marker");
@@ -266,6 +277,62 @@ public sealed class HerdrOpsCoreStateServiceTests
         Assert.IsTrue(fixture.SubscriptionDisposed);
         StringAssert.Contains(error.ToString(), "empty marker file", StringComparison.Ordinal);
     }
+
+    [TestMethod]
+    public async Task ConcurrentBlockingEvidenceServicesDoNotCollideOnSharedPipeIdentity()
+    {
+        // Issue #28 regression: HerdrOpsCoreStateServiceCommand.RunAsync used to
+        // bind its state-IPC and review-command-IPC servers to fixed
+        // ForCurrentUser() pipe names even in evidence mode. Two evidence-mode
+        // services running concurrently (or many, under CI's MethodLevel test
+        // parallelism) then raced for the same OS pipe-instance ceiling and
+        // intermittently failed with IOException "All pipe instances are busy.",
+        // or with a wall-clock stall past the cancellation-latency bound.
+        // statePipeOptionsFactory/reviewCommandPipeOptionsFactory give each
+        // instance an isolated identity; this test hammers that concurrently to
+        // prove the collision cannot recur.
+        const int concurrency = 16;
+        var scenarios = new Task[concurrency];
+        for (var index = 0; index < concurrency; index++)
+        {
+            scenarios[index] = RunIsolatedCompletionSignalScenarioAsync();
+        }
+
+        await Task.WhenAll(scenarios).WaitAsync(TimeSpan.FromSeconds(30));
+    }
+
+    private static async Task RunIsolatedCompletionSignalScenarioAsync()
+    {
+        using var directory = new TemporaryDirectory();
+        var reportPath = Path.Combine(directory.Path, "runtime.json");
+        var signalPath = Path.Combine(directory.Path, "complete.signal");
+        var fixture = new BlockingRuntimeFixture();
+        var output = new StringWriter();
+        var error = new StringWriter();
+
+        var serviceTask = HerdrOpsCoreStateServiceCommand.RunAsync(
+            CreateEvidenceArguments(directory, signalPath, reportPath),
+            output,
+            error,
+            environmentVariableReader: _ => "1",
+            admittedMonitorFactory: fixture.Create,
+            statePipeOptionsFactory: CreateUniqueStatePipeOptions,
+            reviewCommandPipeOptionsFactory: CreateUniqueReviewCommandPipeOptions);
+
+        await fixture.AuthoritativeSnapshotReady.Task.WaitAsync(TimeSpan.FromSeconds(15));
+        File.WriteAllBytes(signalPath, []);
+        var exitCode = await serviceTask.WaitAsync(TimeSpan.FromSeconds(15));
+
+        Assert.AreEqual(0, exitCode, error.ToString());
+        Assert.IsTrue(File.Exists(reportPath));
+        Assert.IsTrue(fixture.SubscriptionDisposed);
+    }
+
+    private static HerdrOpsStatePipeServerOptions CreateUniqueStatePipeOptions() =>
+        new($"herdrops-state-test-{Guid.NewGuid():N}");
+
+    private static HerdrOpsReviewCommandPipeServerOptions CreateUniqueReviewCommandPipeOptions() =>
+        new($"herdrops-review-test-{Guid.NewGuid():N}");
 
     private static string[] CreateEvidenceArguments(
         TemporaryDirectory directory,
