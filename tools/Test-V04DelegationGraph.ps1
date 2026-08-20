@@ -79,6 +79,8 @@ $requiredChecks = @(
     'OrphanLifecycleEventRemainsVisibleWithoutCreatingADelegationEdge',
     'ProjectorRejectsRelationshipThatDoesNotMatchItsLifecycleEvent',
     'TaskSelectionSynchronizesGraphTimelineAndSelectedNodeDetail',
+    'TaskTreeClickRemainsAuthoritativeAcrossActorsAndFiltersProjection',
+    'ApplyGraphLiveRefreshRemovesStaleTaskSelectionAndDetail',
     'VisualAndAccessibleSelectionsRemainEquivalent',
     'ProjectionPresentsWorkingIdleBlockedReviewAndDoneAsTextAndColor',
     'LanguageRefreshRebuildsDelegationPresentationWithoutRetainingThaiCopy',
@@ -169,7 +171,7 @@ $gateReport = @(
     'FixtureNodes: 8',
     'FixtureTypedRelationships: 7',
     'StatusModes: Working, Idle, Blocked, Review, Done, Offline fallback',
-    'InteractionModes: task filtering, node selection, pan, zoom, fit',
+    'InteractionModes: task-tree-authoritative filtering, node selection, pan, zoom, fit',
     'AccessibleEquivalent: keyboard list with names, statuses, and relationships',
     'LanguageModes: Thai-only or English-only interface copy',
     '',
@@ -180,7 +182,7 @@ $gateReport = @(
 ) + ($captureEvidence | ForEach-Object { "SHA256 $($_.Sha256) $($_.Name)" }) + @(
     '',
     'EvidenceBoundary:',
-    'This gate proves deterministic assignment-lifecycle projection, provenance validation, task/tree/graph/detail/timeline synchronization, distinct status presentation, keyboard-equivalent relationship access, language separation, approved-reference binding, and actual WPF rendering from a deterministic contract-backed fixture.',
+    'This gate proves deterministic assignment-lifecycle projection, provenance validation, task-tree-authoritative cross-actor filtering, stale-selection removal on ApplyGraph refresh, task/tree/graph/detail/timeline synchronization, distinct status presentation, keyboard-equivalent relationship access, language separation, approved-reference binding, and actual WPF rendering from a deterministic contract-backed fixture.',
     'It does not prove an installed Herdr session, actual Core lifecycle delivery, live handoff timing, actual Agent activity, independent Issue #20 acceptance, or v0.4 release readiness.',
     'Issue #20 must remain open until an independent reviewer accepts the committed implementation and evidence.'
 )

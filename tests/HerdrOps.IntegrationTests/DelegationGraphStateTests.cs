@@ -1,7 +1,10 @@
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.RegularExpressions;
 using HerdrOps.App.Delegation;
 using HerdrOps.App.Live;
 using HerdrOps.App.Localization;
+using HerdrOps.Domain.Assignments;
 
 namespace HerdrOps.IntegrationTests;
 
@@ -50,6 +53,43 @@ public sealed class DelegationGraphStateTests
         Assert.AreNotEqual("—", state.SelectedDetail.AssignmentSummary);
         Assert.IsTrue(state.SelectedDetail.TaskIds.Contains("TASK-115", StringComparer.Ordinal));
         Assert.IsFalse(state.SelectedDetail.TaskIds.Contains("TASK-122", StringComparer.Ordinal));
+    }
+
+    [TestMethod]
+    public void TaskTreeClickRemainsAuthoritativeAcrossActorsAndFiltersProjection()
+    {
+        var state = DelegationGraphState.CreateSyntheticPreview();
+        state.SelectedNode = state.GraphNodes.Single(item => item.ActorId == "backend-worker-02");
+
+        state.SelectedTask = state.TaskTreeItems.Single(item => item.TaskId == "TASK-118");
+
+        Assert.AreEqual("TASK-118", state.SelectedTask?.TaskId);
+        Assert.AreNotEqual("backend-worker-02", state.SelectedNode?.ActorId);
+        Assert.IsTrue(state.SelectedNode is null || state.SelectedDetail.TaskIds.Contains("TASK-118", StringComparer.Ordinal));
+        Assert.IsTrue(state.Timeline.All(item => item.TaskId == "TASK-118"));
+        Assert.IsTrue(state.GraphEdges.Where(item => item.Opacity >= 0.9d).All(item => item.TaskId == "TASK-118"));
+        Assert.AreEqual(state.SelectedNode?.ActorId, state.SelectedDetail.ActorId);
+    }
+
+    [TestMethod]
+    public void ApplyGraphLiveRefreshRemovesStaleTaskSelectionAndDetail()
+    {
+        var state = DelegationGraphState.CreateSyntheticPreview();
+        state.SelectedTask = state.TaskTreeItems.Single(item => item.TaskId == "TASK-122");
+        state.SelectedNode = state.GraphNodes.Single(item => item.ActorId == "backend-worker-02");
+
+        state.ApplyGraph(
+            AssignmentDelegationGraphProjector.Create(
+                AssignmentLifecycleReplay.Run([CreateAssignmentEvent("TASK-115", "backend-worker-01")])),
+            "HerdrOps",
+            "Refresh fixture",
+            "Synthetic only");
+
+        Assert.AreEqual("TASK-115", state.SelectedTask?.TaskId);
+        Assert.IsFalse(state.TaskTreeItems.Any(item => item.TaskId == "TASK-122"));
+        Assert.IsFalse(state.SelectedDetail.TaskIds.Contains("TASK-122", StringComparer.Ordinal));
+        Assert.IsTrue(state.Timeline.All(item => item.TaskId == "TASK-115"));
+        Assert.AreEqual(state.SelectedNode?.ActorId, state.SelectedDetail.ActorId);
     }
 
     [TestMethod]
@@ -200,4 +240,26 @@ public sealed class DelegationGraphStateTests
 
     private static bool ContainsThai(string value) =>
         Regex.IsMatch(value, "[ก-๙]", RegexOptions.CultureInvariant);
+
+    private static AssignmentLifecycleEvent CreateAssignmentEvent(string taskId, string targetAgentId) => new(
+        AssignmentLifecycleContract.Version,
+        Guid.Parse("00000000-0000-0000-0000-000000000001"),
+        AssignmentLifecycleEventKind.Assignment,
+        1,
+        new DateTimeOffset(2026, 8, 15, 1, 0, 0, TimeSpan.Zero),
+        new DateTimeOffset(2026, 8, 15, 1, 0, 1, TimeSpan.Zero),
+        AssignmentLifecycleContract.CoreSource,
+        Guid.Parse("00000000-0000-0000-0000-000000000101"),
+        Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes("issue-20-refresh"))),
+        taskId,
+        "project-manager",
+        "Project Manager",
+        "Refresh assignment",
+        null,
+        targetAgentId,
+        null,
+        null,
+        null,
+        null,
+        null);
 }
