@@ -224,6 +224,8 @@ public static class ComplianceReviewRuntimeAcceptanceCommand
         }
         catch (Exception exception) when (
             exception is IOException or
+                UnauthorizedAccessException or
+                NotSupportedException or
                 InvalidDataException or
                 JsonException or
                 ArgumentException or

@@ -43,6 +43,47 @@ public sealed class ComplianceReviewRuntimeAcceptanceCommandTests
     }
 
     [TestMethod]
+    public void MissingOrInvalidPathsReturnExitCodeTwo()
+    {
+        var output = new StringWriter();
+        var error = new StringWriter();
+
+        var exitCodeMissingFile = ComplianceReviewRuntimeAcceptanceCommand.Run(
+            new[]
+            {
+                "compliance-review-acceptance",
+                "--review-trace", "Z:\\non-existent\\review-trace.json",
+                "--herdr-runtime-report", "Z:\\non-existent\\herdr-runtime.json",
+                "--incident-id", "INC-01",
+                "--report", "Z:\\non-existent\\report.json",
+            },
+            output,
+            error);
+
+        Assert.AreEqual(2, exitCodeMissingFile);
+        Assert.Contains("Compliance review runtime acceptance failed:", error.ToString());
+
+        output.GetStringBuilder().Clear();
+        error.GetStringBuilder().Clear();
+
+        var tooLongPath = "Z:\\" + new string('A', 500) + "\\report.json";
+        var exitCodeTooLong = ComplianceReviewRuntimeAcceptanceCommand.Run(
+            new[]
+            {
+                "compliance-review-acceptance",
+                "--review-trace", tooLongPath,
+                "--herdr-runtime-report", "Z:\\non-existent\\herdr-runtime.json",
+                "--incident-id", "INC-01",
+                "--report", "Z:\\non-existent\\report.json",
+            },
+            output,
+            error);
+
+        Assert.AreEqual(2, exitCodeTooLong);
+        Assert.Contains("Compliance review runtime acceptance failed:", error.ToString());
+    }
+
+    [TestMethod]
     public void SyntheticBuiltProcessTraceProducesCompositeReport()
     {
         using var directory = new TemporaryDirectory();

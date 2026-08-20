@@ -6,6 +6,8 @@ param(
     [Parameter(Mandatory)]
     [string]$RuntimeGateReport,
 
+    [string]$HerdrRuntimeReport,
+
     [ValidateSet('Debug', 'Release')]
     [string]$Configuration = 'Release',
 
@@ -15,6 +17,24 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $false
+
+function Assert-ValidLeafPath {
+    param(
+        [string]$Path,
+        [string]$Name
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Path)) {
+        throw "The $Name path must not be null or whitespace."
+    }
+    if ($Path.IndexOfAny([IO.Path]::GetInvalidPathChars()) -ge 0) {
+        throw "The $Name path contains invalid path characters: $Path"
+    }
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        throw "Required v0.5 runtime evidence is missing or not a leaf file ($Name): $Path"
+    }
+    return (Resolve-Path -LiteralPath $Path).Path
+}
 
 $repositoryRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
 $artifactRoot = Join-Path $repositoryRoot 'artifacts'
@@ -30,13 +50,16 @@ if ($workingTreeStatus.Count -ne 0) {
     throw "The v0.5 release gate requires a clean committed checkout. Pending paths: $($workingTreeStatus -join ', ')"
 }
 
-foreach ($path in @($CompositeRuntimeReport, $RuntimeGateReport)) {
-    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
-        throw "Required v0.5 runtime evidence is missing: $path"
-    }
+$resolvedCompositePath = Assert-ValidLeafPath -Path $CompositeRuntimeReport -Name 'composite runtime report'
+$resolvedRuntimeGatePath = Assert-ValidLeafPath -Path $RuntimeGateReport -Name 'runtime gate report'
+
+$candidateHerdrReport = if ([string]::IsNullOrWhiteSpace($HerdrRuntimeReport)) {
+    Join-Path (Split-Path -Parent $resolvedCompositePath) 'herdr-runtime.json'
+} else {
+    $HerdrRuntimeReport
 }
-$resolvedCompositePath = (Resolve-Path -LiteralPath $CompositeRuntimeReport).Path
-$resolvedRuntimeGatePath = (Resolve-Path -LiteralPath $RuntimeGateReport).Path
+$resolvedHerdrReportPath = Assert-ValidLeafPath -Path $candidateHerdrReport -Name 'Herdr runtime report'
+
 $composite = Get-Content -LiteralPath $resolvedCompositePath -Raw | ConvertFrom-Json -Depth 128
 if ($composite.EvidenceClassification -ne 'Runtime' -or
     -not [bool]$composite.RuntimeAccepted -or
@@ -44,14 +67,22 @@ if ($composite.EvidenceClassification -ne 'Runtime' -or
     -not [bool]$composite.Acceptance.Passed) {
     throw 'The supplied composite report is not passing role-distinct runtime evidence.'
 }
+
 $compositeSha256 = (Get-FileHash -LiteralPath $resolvedCompositePath -Algorithm SHA256).Hash
+$herdrRuntimeSha256 = (Get-FileHash -LiteralPath $resolvedHerdrReportPath -Algorithm SHA256).Hash
+
+if ($composite.HerdrRuntimeReportSha256 -ne $herdrRuntimeSha256) {
+    throw "Composite runtime report HerdrRuntimeReportSha256 ($($composite.HerdrRuntimeReportSha256)) does not match actual Herdr runtime report hash ($herdrRuntimeSha256)."
+}
+
 $runtimeGateText = Get-Content -LiteralPath $resolvedRuntimeGatePath -Raw
 foreach ($requiredLine in @(
         'Result: PASS',
         "SourceCommit: $sourceCommit",
-        "CompositeRuntimeReportSha256: $compositeSha256")) {
+        "CompositeRuntimeReportSha256: $compositeSha256",
+        "HerdrRuntimeReportSha256: $herdrRuntimeSha256")) {
     if ($runtimeGateText -notmatch "(?m)^$([Regex]::Escape($requiredLine))\s*$") {
-        throw "The runtime gate report is not bound to this release source and composite report: $requiredLine"
+        throw "The runtime gate report is not bound to this release source and runtime evidence: $requiredLine"
     }
 }
 
@@ -116,13 +147,15 @@ $gateReport = @(
     'RoleDistinctRuntimeAcceptance: PASS',
     'SessionControlInvoked: false',
     "CompositeRuntimeReportSha256: $compositeSha256",
+    "HerdrRuntimeReportSha256: $herdrRuntimeSha256",
     "RuntimeGateReportSha256: $runtimeGateSha256",
+    "HerdrRuntimeReport: $resolvedHerdrReportPath",
     '',
     'IndependentReviewHashes:'
 ) + $reviewHashes + @(
     '',
     'EvidenceBoundary:',
-    'This gate requires all four v0.5 implementation gates, five explicit independent PASS records, and one exact-source role-distinct composite Herdr runtime report.',
+    'This gate requires all four v0.5 implementation gates, five explicit independent PASS records, and one exact-source role-distinct composite Herdr runtime report with exact bound Herdr runtime report.',
     'A passing local report is release-gate evidence for the bound source commit. GitHub issue closure, tag creation, package publication, and release publication remain separate actions.'
 )
 $gateReport | Set-Content -LiteralPath $gateReportPath -Encoding utf8
