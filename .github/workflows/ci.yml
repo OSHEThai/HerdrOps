@@ -183,6 +183,14 @@ jobs:
         shell: pwsh
         run: ./tools/Test-V05RoleDistinctReview.ps1 -Configuration Release -SkipBuild
 
+      - name: Run v0.7 lifecycle implementation gate deterministic self-test (pwsh)
+        shell: pwsh
+        run: ./tools/Test-V07Lifecycle.ps1 -SelfTest
+
+      - name: Run v0.7 lifecycle implementation gate deterministic self-test (Windows PowerShell 5.1)
+        shell: powershell
+        run: ./tools/Test-V07Lifecycle.ps1 -SelfTest
+
       - name: Upload test results
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
