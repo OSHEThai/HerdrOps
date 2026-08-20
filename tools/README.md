@@ -157,6 +157,20 @@ $targetAgentLabSocket = Join-Path $env:APPDATA 'herdr\herdr.sock'
 dotnet artifacts/bin/HerdrOps.Core/release/HerdrOps.Core.dll trace-herdr-terminal-process `
   --report artifacts/runtime-evidence/v0.3.0/issue-14/terminal-process.json `
   --seconds 120 --interval-ms 500 --lines 80
+
+# From a clean committed checkout, run the deterministic v0.7 performance budget
+# self-test suite (positive passing/waived boundaries and negative violations).
+./tools/Test-V07PerformanceBudgets.ps1 -SelfTest
+
+# Negative control: the committed passing-budget-report fixture intentionally carries
+# stale source/binary bindings and must fail closed against a different current build.
+# This command does not provide live Herdr runtime or release credit.
+./tools/Test-V07PerformanceBudgets.ps1 `
+  -ReportPath tests/fixtures/v0.7/budgets/passing-budget-report.json `
+  -SkipBuild
+
+# Run the comprehensive unit and regression suite for v0.7 performance budget policy.
+./tools/Test-V07PerformanceBudgets.Tests.ps1
 ```
 
 The composite gate binds production WPF captures to exact state hashes from the admitted Herdr Core trace, verifies Dashboard-close Widget continuity, and measures Widget latency plus combined Core/App idle resources. It fails closed outside an authorized Herdr pane and does not control the Herdr session itself.
@@ -267,3 +281,13 @@ not create tag `v1.0.0`, call GitHub, rebuild the candidate, or establish
 Release evidence. Publication and post-publication download/hash verification
 remain separate required actions. See
 `docs/release/v1.0.0/release-readiness-contract.md`.
+
+The v0.7 performance budget gate reports Static, Synthetic, and Contract evidence for non-runtime preparation (Issue #39). It enforces strict schema v0.7.0, source commit binding, candidate executable SHA-256 binding, reparse point and path traversal protections, p95 sample distribution recalculation, PID+StartUtc binding and PID reuse detection, no-native-trim waiver rules, and fault/unreconciled-state fail-closed behavior. Actual Herdr Runtime, 8-hour sustained soak execution, Human UAT decisions, and Release Evidence remain explicitly NOT OBSERVED / NOT CLAIMED in this preparation slice.
+
+# Run the v0.7 lifecycle implementation gate deterministic self-test
+./tools/Test-V07Lifecycle.ps1 -SelfTest
+
+# Run the full v0.7 lifecycle implementation gate from a clean committed checkout
+./tools/Test-V07Lifecycle.ps1 -Configuration Release
+
+The v0.7 lifecycle implementation gate verifies exact committed source and contract invariants, executes locked build and formatting checks, and validates 12/12 unit tests and 39/39 integration tests (51/51 total). Runs with `-SkipBuild` are non-acceptance unless verified same-commit binary provenance proves assemblies match the current commit; the marker verifier requires the exact unique five-assembly path set with canonical casing and the current SHA-256 for every path, rejecting duplicate, unexpected, missing, case-ambiguous, malformed, or mismatched entries. Unverified `-SkipBuild` runs fail closed with a distinct non-zero exit code. Actual Herdr Runtime, installed tray visibility, Windows logon startup registry entries, physical DPI/accessibility verification, and Release evidence are explicitly NOT OBSERVED / NOT CLAIMED.

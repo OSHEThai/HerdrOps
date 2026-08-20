@@ -55,6 +55,18 @@ public static class HerdrOpsCliCommand
                 .ConfigureAwait(false);
         }
 
+        if (args.Length > 0 &&
+            string.Equals(args[0], ComplianceDiagnosticExportCliCommand.CommandName, StringComparison.Ordinal))
+        {
+            return await ComplianceDiagnosticExportCliCommand.RunAsync(
+                    args,
+                    input,
+                    output,
+                    error,
+                    cancellationToken)
+                .ConfigureAwait(false);
+        }
+
         if (args.Length == 1 && string.Equals(args[0], "--help", StringComparison.Ordinal))
         {
             WriteUsage(output);
@@ -265,5 +277,5 @@ public static class HerdrOpsCliCommand
 
     private static void WriteUsage(TextWriter writer) =>
         writer.WriteLine(
-            "Usage: HerdrOps.Cli <assignment|acknowledgement|delegation|progress|deviation|evidence|handoff> --input <json-path|-> [--pipe-name <name>] [--timeout-ms <100-60000>]\n       HerdrOps.Cli review --input <json-path|-> [--timeout-ms <100-60000>]");
+            "Usage: HerdrOps.Cli <assignment|acknowledgement|delegation|progress|deviation|evidence|handoff> --input <json-path|-> [--pipe-name <name>] [--timeout-ms <100-60000>]\n       HerdrOps.Cli review --input <json-path|-> [--timeout-ms <100-60000>]\n       HerdrOps.Cli compliance-diagnostic-export --input <json-path|-> --output <absolute-json-path> [--pipe-name <name>] [--timeout-ms <100-60000>]");
 }

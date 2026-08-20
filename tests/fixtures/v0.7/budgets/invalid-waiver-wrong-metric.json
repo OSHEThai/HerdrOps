@@ -1,0 +1,44 @@
+{
+  "SchemaVersion": "v0.7.0",
+  "RunId": "20260821T120000Z-invwaiver2",
+  "TimestampUtc": "2026-08-21T12:00:00Z",
+  "EvidenceClass": "Preparation",
+  "HostEnvironment": { "Os": "Windows 11 Pro", "Architecture": "x64", "LogicalProcessors": 16, "ReferenceHostConfirmed": true },
+  "Candidate": {
+    "SourceCommit": "79e015ec33dd5f357fb2b35405e580879073a6e5",
+    "GitTreeClean": true
+  },
+  "Metrics": {
+    "IdleCpuAveragePercent": 1.35,
+    "IdleWorkingSetCombinedBytes": 142606336,
+    "WidgetStateDeltaLatencyP95Ms": 145.2,
+    "DashboardColdLaunchP95Ms": 1320.0,
+    "HerdrReconnectReconcileSeconds": 2.1,
+    "UnboundedTerminalReads": 0,
+    "UnhandledCrashesDuringSoak": 0,
+    "SoakDurationHours": 8.0,
+    "AdministratorRequired": false
+  },
+  "Waivers": [
+    {
+      "Metric": "WidgetStateDeltaLatencyP95Ms",
+      "Target": "p95 <= 250.0 ms",
+      "Observed": "340.5 ms",
+      "Cause": "Rendering telemetry spike",
+      "Impact": "Minimal UX lag",
+      "ApprovedBy": "@yutthaphon",
+      "ApprovalDateUtc": "2026-08-21T12:00:00Z",
+      "ApprovalReference": "Plan/RELEASE-GATES.md#v07-performance-waiver-authority",
+    "WaiverSha256": "97ffa6bf7c1fa80ee3f3b90bcb4f04d294bb7041c08738b719dbfdb78cb7b939"
+    }
+  ],
+  "EvidenceBoundary": {
+    "StaticEvidence": "OBSERVED",
+    "SyntheticEvidence": "OBSERVED",
+    "ContractEvidence": "OBSERVED",
+    "ActualHerdrRuntime": "NOT OBSERVED / NOT CLAIMED",
+    "SoakExecution": "NOT OBSERVED / NOT CLAIMED",
+    "HumanUatDecision": "NOT OBSERVED / PENDING",
+    "ReleaseEvidence": "NOT OBSERVED / NOT CLAIMED"
+  }
+}
