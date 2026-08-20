@@ -869,6 +869,83 @@ public sealed class StateStoreRecoveryTests
         Assert.IsFalse(metadata.Contains("OriginalDatabasePath", StringComparison.Ordinal));
     }
 
+    /// <summary>
+    /// P1 — Apostrophe-path recovery-layer coverage (Issue #37 independent-review finding).
+    ///
+    /// Commit b6320c92 fixed apostrophe-in-path mis-termination in DiagnosticRedaction.cs and
+    /// tested it via DiagnosticBundleTests.  This test closes the remaining gap by exercising
+    /// StateStoreRecoveryArtifacts.Quarantine with a database path whose directory component
+    /// contains a literal apostrophe (U+0027), verifying that:
+    ///   1. recovery-trace.json and metadata.json do not contain the raw apostrophe-bearing path.
+    ///   2. The failure message embedded in the trace does not expose the raw apostrophe-bearing path.
+    ///   3. metadata.json carries a DatabasePathToken field (hash-based token, not the real path).
+    ///   4. recovery-trace.json carries EvidenceClasses, ActualHerdrRuntime: NOT_OBSERVED, and
+    ///      Release: NOT_OBSERVED as required by the recovery-trace contract.
+    ///
+    /// Evidence class: Synthetic (in-process file I/O; no Herdr runtime).
+    /// </summary>
+    [TestMethod]
+    public void QuarantineWithApostrophePathDirectoryTokenizesAndRedactsSafely()
+    {
+        using var directory = new TemporaryDirectory();
+
+        // Create a sub-directory whose name contains a literal apostrophe, matching
+        // the class of path that commit b6320c92 was designed to handle safely
+        // (e.g. C:\Users\O'Brien\AppData\Local\HerdrOps\state.db).
+        var apostropheSubDir = Path.Combine(directory.Path, "O'Brien");
+        Directory.CreateDirectory(apostropheSubDir);
+        var databasePath = Path.Combine(apostropheSubDir, "state.db");
+        File.WriteAllText(databasePath, "damaged");
+
+        // Embed the raw apostrophe-bearing path into the failure message so the
+        // redactor's quoted-path boundary logic is exercised end-to-end through
+        // StateStoreRecoveryDiagnostics.SanitizeMessage -> DiagnosticTextRedactor.
+        var failure = new InvalidOperationException(
+            $"State-store integrity check failed; path='{databasePath}'; hint=see-diagnostics");
+
+        var quarantinePath = StateStoreRecoveryArtifacts.Quarantine(
+            databasePath,
+            failure,
+            schemaVersion: null,
+            phase: "initialization-validation",
+            timeProvider: new FixedTimeProvider(FixedUtc),
+            recoveryOptions: new StateStoreRecoveryOptions(GuidFactory: () => FixedToken));
+
+        // 1 & 2: Neither JSON artifact may expose the raw apostrophe-bearing path.
+        var jsonFiles = Directory.GetFiles(quarantinePath, "*.json");
+        Assert.IsGreaterThanOrEqualTo(2, jsonFiles.Length, "Expected at least metadata.json and recovery-trace.json");
+        foreach (var file in jsonFiles)
+        {
+            var text = File.ReadAllText(file);
+            Assert.IsFalse(
+                text.Contains(databasePath, StringComparison.Ordinal),
+                $"Raw apostrophe-bearing database path leaked into {Path.GetFileName(file)}");
+            Assert.IsFalse(
+                text.Contains(apostropheSubDir, StringComparison.Ordinal),
+                $"Raw apostrophe-bearing sub-directory leaked into {Path.GetFileName(file)}");
+            Assert.IsFalse(
+                text.Contains("O'Brien", StringComparison.Ordinal),
+                $"Apostrophe-bearing path component leaked into {Path.GetFileName(file)}");
+        }
+
+        // 3: metadata.json must carry a DatabasePathToken (hash), not the original path.
+        var metadataText = File.ReadAllText(Path.Combine(quarantinePath, "metadata.json"));
+        StringAssert.Contains(metadataText, "DatabasePathToken");
+        Assert.IsFalse(metadataText.Contains("OriginalDatabasePath", StringComparison.Ordinal));
+
+        // 4: recovery-trace.json must satisfy the evidence-class / runtime-status contract.
+        using var traceDoc = System.Text.Json.JsonDocument.Parse(
+            File.ReadAllBytes(Path.Combine(quarantinePath, "recovery-trace.json")));
+        var root = traceDoc.RootElement;
+        CollectionAssert.AreEquivalent(
+            new[] { "Static", "Synthetic", "Contract" },
+            root.GetProperty("EvidenceClasses").EnumerateArray()
+                .Select(e => e.GetString()!)
+                .ToArray());
+        Assert.AreEqual("NOT_OBSERVED", root.GetProperty("ActualHerdrRuntime").GetString());
+        Assert.AreEqual("NOT_OBSERVED", root.GetProperty("Release").GetString());
+    }
+
     [TestMethod]
     public void CleanupFailurePreservesPrimaryExceptionAndRetainsTemporaryEvidence()
     {
