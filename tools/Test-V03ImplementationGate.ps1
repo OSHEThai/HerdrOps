@@ -70,9 +70,12 @@ try {
             throw [InvalidOperationException]::new("ChildGateMissing:$($definition.Issue)")
         }
 
-        $childArguments = @('-Configuration', $Configuration, '-SkipBuild')
+        $childArguments = @{
+            Configuration = $Configuration
+            SkipBuild = $true
+        }
         if ($definition.ImplementationOnly) {
-            $childArguments += '-ImplementationOnly'
+            $childArguments['ImplementationOnly'] = $true
         }
 
         $childOutput = @()
