@@ -49,8 +49,8 @@
       "Cause": "Background diagnostic tracing enabled for Beta profiling on reference host",
       "Impact": "Slight CPU increase during active background trace; remains within 1.5% host ceiling",
       "ApprovedBy": "@yutthaphon",
-      "ApprovalDateUtc": "2026-08-21T12:00:00Z",
-      "WaiverSha256": "141e978463828331e67ed8750e3c23e623ce88d4333a0a2811dbc4ae37efa5b8"
+      "ApprovalDateUtc": "2026-08-20T12:00:00Z",
+      "WaiverSha256": "a9e9ecefbfcfb2b95b24e76bc9c640aa727126083b7f571a22d2aa2d1ebfd680"
     }
   ],
   "EvidenceBoundary": {

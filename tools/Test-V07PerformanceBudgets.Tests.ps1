@@ -187,10 +187,17 @@ Assert-Test -Name 'Zero-hour soak in Runtime admission cannot satisfy 8-hour req
 
 $run8hReport = ConvertFrom-StrictPerformanceBudgetJson -JsonText $validJson -SourceDescription 'Runtime 8h'
 $run8hReport.Metrics.SoakDurationHours = 8.0
+$run8hReport.Metrics | Add-Member -MemberType NoteProperty -Name WidgetDeltaLatencySamplesMs -Value @([double]145.2, [double]145.2, [double]145.2) -Force
+$run8hReport.Metrics | Add-Member -MemberType NoteProperty -Name DashboardColdLaunchSamplesMs -Value @([double]1320.0, [double]1320.0, [double]1320.0) -Force
 $run8hReport.EvidenceClass = 'Runtime'
 $run8hReport.EvidenceBoundary.ActualHerdrRuntime = 'OBSERVED'
 $run8hReport.EvidenceBoundary.SoakExecution = 'OBSERVED'
-$evalRun8h = Test-PerformanceBudgetReport -ReportObject $run8hReport
+$run8hReport.Candidate.SourceCommit = Test-CleanRepositoryState -RepositoryRoot $repositoryRoot -SkipCleanCheck
+$run8hReport | Add-Member -MemberType NoteProperty -Name ProcessTelemetry -Value @(
+    [pscustomobject]@{ ProcessName='HerdrOps.Core'; ProcessId=[int]41001; ProcessStartUtc='2026-08-21T12:00:00Z'; BinaryPath=(Join-Path $repositoryRoot 'artifacts/bin/HerdrOps.Core/release/HerdrOps.Core.dll'); BinarySha256=[string]$run8hReport.Candidate.Binaries[0].Sha256 },
+    [pscustomobject]@{ ProcessName='HerdrOps.App'; ProcessId=[int]41002; ProcessStartUtc='2026-08-21T12:00:01Z'; BinaryPath=(Join-Path $repositoryRoot 'artifacts/bin/HerdrOps.App/release/HerdrOps.App.dll'); BinarySha256=[string]$run8hReport.Candidate.Binaries[1].Sha256 }
+) -Force
+$evalRun8h = Test-PerformanceBudgetReport -ReportObject $run8hReport -CandidateDirectory (Join-Path $repositoryRoot 'artifacts/bin') -RepositoryRoot $repositoryRoot -ExpectedSourceCommit $run8hReport.Candidate.SourceCommit
 $run8hCheck = @($evalRun8h.Checks | Where-Object Id -eq 'V07-PERF-07-SOAK')[0]
 Assert-Test -Name '8-hour soak in Runtime admission passes' -Condition ($evalRun8h.Passed -and $run8hCheck.Status -eq 'PASS')
 
@@ -224,7 +231,7 @@ Assert-Test -Name 'Strict JSON parser rejects trailing comma in array' -Conditio
 Write-Host "`nSection 10: Full Deterministic Self-Test Suite"
 $selfTestResults = @(Invoke-PerformanceBudgetSelfTests -RepositoryRoot $repositoryRoot -FixturesDirectory $fixturesDirectory)
 $allStPassed = @($selfTestResults | Where-Object Status -ne 'PASS').Count -eq 0
-Assert-Test -Name "Invoke-PerformanceBudgetSelfTests runs all $($selfTestResults.Count) fixtures" -Condition ($allStPassed -and $selfTestResults.Count -eq 32)
+Assert-Test -Name "Invoke-PerformanceBudgetSelfTests runs all $($selfTestResults.Count) matrix cases" -Condition ($allStPassed -and $selfTestResults.Count -eq 36)
 
 Write-Host "`n========================================================================"
 Write-Host "Test Summary: $passCount passed, $failCount failed of $testCount total tests."

@@ -54,6 +54,44 @@ namespace HerdrOps.BudgetValidation
 {
     public static class StrictJsonValidator
     {
+        private static double RequireFiniteNumber(object value, string property, string sourceDescription)
+        {
+            if (!(value is double) && !(value is float) && !(value is decimal))
+            {
+                throw new InvalidOperationException(string.Format("Strict schema violation: {0} must be a JSON number (not a string or other type) in {1}.", property, sourceDescription));
+            }
+            double result = Convert.ToDouble(value, CultureInfo.InvariantCulture);
+            if (double.IsNaN(result) || double.IsInfinity(result))
+            {
+                throw new InvalidOperationException(string.Format("Strict schema violation: {0} must be finite in {1}.", property, sourceDescription));
+            }
+            return result;
+        }
+
+        private static long RequireInteger(object value, string property, string sourceDescription)
+        {
+            if (!(value is long) && !(value is int) && !(value is short) && !(value is byte) && !(value is ulong) && !(value is uint))
+            {
+                throw new InvalidOperationException(string.Format("Strict schema violation: {0} must be an integer JSON number (no strings or fractions) in {1}.", property, sourceDescription));
+            }
+            try
+            {
+                return Convert.ToInt64(value, CultureInfo.InvariantCulture);
+            }
+            catch (Exception ex)
+            {
+                throw new InvalidOperationException(string.Format("Strict schema violation: {0} is outside the supported integer range in {1}.", property, sourceDescription), ex);
+            }
+        }
+
+        private static void ValidateOptionalSamples(Dictionary<string, object> metrics, string property, string sourceDescription)
+        {
+            if (!metrics.ContainsKey(property) || metrics[property] == null) return;
+            List<object> samples = metrics[property] as List<object>;
+            if (samples == null) throw new InvalidOperationException(string.Format("Strict schema violation: {0} must be an array of JSON numbers in {1}.", property, sourceDescription));
+            foreach (object sample in samples) RequireFiniteNumber(sample, property + "[]", sourceDescription);
+        }
+
         public static object ParseStrict(string json, string sourceDescription)
         {
             if (string.IsNullOrEmpty(json) || json.Trim().Length == 0)
@@ -173,7 +211,7 @@ namespace HerdrOps.BudgetValidation
                     {
                         throw new InvalidOperationException(string.Format("Strict schema violation: Binary Sha256 must be a 64-hex lowercase string in {0}.", sourceDescription));
                     }
-                    long length = Convert.ToInt64(bin["LengthBytes"], CultureInfo.InvariantCulture);
+                    long length = RequireInteger(bin["LengthBytes"], "Candidate.Binaries.LengthBytes", sourceDescription);
                     if (length < 0)
                     {
                         throw new InvalidOperationException(string.Format("Strict schema violation: Binary LengthBytes must be >= 0 in {0}.", sourceDescription));
@@ -218,25 +256,25 @@ namespace HerdrOps.BudgetValidation
                 }
             }
 
-            double cpu = Convert.ToDouble(metrics["IdleCpuAveragePercent"], CultureInfo.InvariantCulture);
+            double cpu = RequireFiniteNumber(metrics["IdleCpuAveragePercent"], "Metrics.IdleCpuAveragePercent", sourceDescription);
             if (cpu < 0.0 || cpu > 100.0) throw new InvalidOperationException(string.Format("Strict schema violation: IdleCpuAveragePercent must be 0.0-100.0; found {0} in {1}.", cpu, sourceDescription));
 
-            long ws = Convert.ToInt64(metrics["IdleWorkingSetCombinedBytes"], CultureInfo.InvariantCulture);
+            long ws = RequireInteger(metrics["IdleWorkingSetCombinedBytes"], "Metrics.IdleWorkingSetCombinedBytes", sourceDescription);
             if (ws < 0) throw new InvalidOperationException(string.Format("Strict schema violation: IdleWorkingSetCombinedBytes must be >= 0; found {0} in {1}.", ws, sourceDescription));
 
-            double lat = Convert.ToDouble(metrics["WidgetStateDeltaLatencyP95Ms"], CultureInfo.InvariantCulture);
+            double lat = RequireFiniteNumber(metrics["WidgetStateDeltaLatencyP95Ms"], "Metrics.WidgetStateDeltaLatencyP95Ms", sourceDescription);
             if (lat < 0.0) throw new InvalidOperationException(string.Format("Strict schema violation: WidgetStateDeltaLatencyP95Ms must be >= 0; found {0} in {1}.", lat, sourceDescription));
 
-            double launch = Convert.ToDouble(metrics["DashboardColdLaunchP95Ms"], CultureInfo.InvariantCulture);
+            double launch = RequireFiniteNumber(metrics["DashboardColdLaunchP95Ms"], "Metrics.DashboardColdLaunchP95Ms", sourceDescription);
             if (launch < 0.0) throw new InvalidOperationException(string.Format("Strict schema violation: DashboardColdLaunchP95Ms must be >= 0; found {0} in {1}.", launch, sourceDescription));
 
-            double rec = Convert.ToDouble(metrics["HerdrReconnectReconcileSeconds"], CultureInfo.InvariantCulture);
+            double rec = RequireFiniteNumber(metrics["HerdrReconnectReconcileSeconds"], "Metrics.HerdrReconnectReconcileSeconds", sourceDescription);
             if (rec < 0.0) throw new InvalidOperationException(string.Format("Strict schema violation: HerdrReconnectReconcileSeconds must be >= 0; found {0} in {1}.", rec, sourceDescription));
 
-            long term = Convert.ToInt64(metrics["UnboundedTerminalReads"], CultureInfo.InvariantCulture);
+            long term = RequireInteger(metrics["UnboundedTerminalReads"], "Metrics.UnboundedTerminalReads", sourceDescription);
             if (term < 0) throw new InvalidOperationException(string.Format("Strict schema violation: UnboundedTerminalReads must be >= 0; found {0} in {1}.", term, sourceDescription));
 
-            long crash = Convert.ToInt64(metrics["UnhandledCrashesDuringSoak"], CultureInfo.InvariantCulture);
+            long crash = RequireInteger(metrics["UnhandledCrashesDuringSoak"], "Metrics.UnhandledCrashesDuringSoak", sourceDescription);
             if (crash < 0) throw new InvalidOperationException(string.Format("Strict schema violation: UnhandledCrashesDuringSoak must be >= 0; found {0} in {1}.", crash, sourceDescription));
 
             object adminObj = metrics["AdministratorRequired"];
@@ -247,20 +285,48 @@ namespace HerdrOps.BudgetValidation
 
             if (metrics.ContainsKey("SoakDurationHours") && metrics["SoakDurationHours"] != null)
             {
-                double soak = Convert.ToDouble(metrics["SoakDurationHours"], CultureInfo.InvariantCulture);
+                double soak = RequireFiniteNumber(metrics["SoakDurationHours"], "Metrics.SoakDurationHours", sourceDescription);
                 if (soak < 0.0) throw new InvalidOperationException(string.Format("Strict schema violation: SoakDurationHours must be >= 0; found {0} in {1}.", soak, sourceDescription));
             }
 
             if (metrics.ContainsKey("UnreconciledStateCount") && metrics["UnreconciledStateCount"] != null)
             {
-                long unrec = Convert.ToInt64(metrics["UnreconciledStateCount"], CultureInfo.InvariantCulture);
+                long unrec = RequireInteger(metrics["UnreconciledStateCount"], "Metrics.UnreconciledStateCount", sourceDescription);
                 if (unrec < 0) throw new InvalidOperationException(string.Format("Strict schema violation: UnreconciledStateCount must be >= 0; found {0} in {1}.", unrec, sourceDescription));
             }
 
             if (metrics.ContainsKey("UnhandledFaultCount") && metrics["UnhandledFaultCount"] != null)
             {
-                long fault = Convert.ToInt64(metrics["UnhandledFaultCount"], CultureInfo.InvariantCulture);
+                long fault = RequireInteger(metrics["UnhandledFaultCount"], "Metrics.UnhandledFaultCount", sourceDescription);
                 if (fault < 0) throw new InvalidOperationException(string.Format("Strict schema violation: UnhandledFaultCount must be >= 0; found {0} in {1}.", fault, sourceDescription));
+            }
+
+            ValidateOptionalSamples(metrics, "WidgetDeltaLatencySamplesMs", sourceDescription);
+            ValidateOptionalSamples(metrics, "DashboardColdLaunchSamplesMs", sourceDescription);
+
+            if (root.ContainsKey("ProcessTelemetry") && root["ProcessTelemetry"] != null)
+            {
+                List<object> telemetry = root["ProcessTelemetry"] as List<object>;
+                if (telemetry == null) throw new InvalidOperationException(string.Format("Strict schema violation: ProcessTelemetry must be an array in {0}.", sourceDescription));
+                HashSet<string> allowedProcessProps = new HashSet<string>(StringComparer.Ordinal) { "ProcessName", "ProcessId", "ProcessStartUtc", "BinaryPath", "BinarySha256" };
+                foreach (object processObj in telemetry)
+                {
+                    Dictionary<string, object> process = processObj as Dictionary<string, object>;
+                    if (process == null) throw new InvalidOperationException(string.Format("Strict schema violation: ProcessTelemetry element must be an object in {0}.", sourceDescription));
+                    foreach (KeyValuePair<string, object> pp in process)
+                        if (!allowedProcessProps.Contains(pp.Key)) throw new InvalidOperationException(string.Format("Strict schema violation: Disallowed ProcessTelemetry property '{0}' in {1}.", pp.Key, sourceDescription));
+                    string[] requiredProcess = new string[] { "ProcessName", "ProcessId", "ProcessStartUtc" };
+                    foreach (string rp in requiredProcess)
+                        if (!process.ContainsKey(rp) || process[rp] == null) throw new InvalidOperationException(string.Format("Strict schema violation: Missing ProcessTelemetry property '{0}' in {1}.", rp, sourceDescription));
+                    if (!(process["ProcessName"] is string) || RequireInteger(process["ProcessId"], "ProcessTelemetry.ProcessId", sourceDescription) <= 0)
+                        throw new InvalidOperationException(string.Format("Strict schema violation: ProcessTelemetry identity has invalid name or positive integer PID in {0}.", sourceDescription));
+                    string processStart = process["ProcessStartUtc"] as string;
+                    DateTimeOffset parsedStart;
+                    if (processStart == null || !Regex.IsMatch(processStart, @"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$") || !DateTimeOffset.TryParse(processStart, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal, out parsedStart))
+                        throw new InvalidOperationException(string.Format("Strict schema violation: ProcessTelemetry.ProcessStartUtc must be valid UTC in {0}.", sourceDescription));
+                    if (process.ContainsKey("BinarySha256") && process["BinarySha256"] != null && (!(process["BinarySha256"] is string) || !Regex.IsMatch((string)process["BinarySha256"], @"^[0-9a-f]{64}$")))
+                        throw new InvalidOperationException(string.Format("Strict schema violation: ProcessTelemetry.BinarySha256 must be lowercase SHA-256 in {0}.", sourceDescription));
+                }
             }
 
             if (root.ContainsKey("Waivers") && root["Waivers"] != null)
@@ -285,12 +351,24 @@ namespace HerdrOps.BudgetValidation
                             throw new InvalidOperationException(string.Format("Strict schema violation: Missing or empty required waiver property '{0}' in {1}.", rw, sourceDescription));
                         }
                     }
-                    string wSha = w["WaiverSha256"] as string;
-                    if (wSha == null || !Regex.IsMatch(wSha, @"^[0-9a-f]{64}$"))
+                     string wSha = w["WaiverSha256"] as string;
+                     if (wSha == null || !Regex.IsMatch(wSha, @"^[0-9a-f]{64}$"))
                     {
-                        throw new InvalidOperationException(string.Format("Strict schema violation: WaiverSha256 must be 64-hex lowercase in {0}.", sourceDescription));
-                    }
-                }
+                         throw new InvalidOperationException(string.Format("Strict schema violation: WaiverSha256 must be 64-hex lowercase in {0}.", sourceDescription));
+                     }
+                     string approver = w["ApprovedBy"] as string;
+                     if (approver == null || !Regex.IsMatch(approver, @"^@[^\s:]+$"))
+                     {
+                         throw new InvalidOperationException(string.Format("Strict schema violation: ApprovedBy must identify an authorized human using a non-empty @identity in {0}.", sourceDescription));
+                     }
+                     string approvalDate = w["ApprovalDateUtc"] as string;
+                     DateTimeOffset parsedApprovalDate;
+                     if (approvalDate == null || !Regex.IsMatch(approvalDate, @"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$") ||
+                         !DateTimeOffset.TryParse(approvalDate, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal, out parsedApprovalDate))
+                     {
+                         throw new InvalidOperationException(string.Format("Strict schema violation: ApprovalDateUtc must be a valid ISO 8601 UTC timestamp ending in Z in {0}.", sourceDescription));
+                     }
+                 }
             }
 
             Dictionary<string, object> ev = root["EvidenceBoundary"] as Dictionary<string, object>;
@@ -682,11 +760,25 @@ function Assert-NotReparsePoint {
         [string]$Description = 'Path'
     )
 
-    if (Test-Path -LiteralPath $Path) {
-        $item = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
-        if (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
-            throw "$Description is a reparse point (symlink/junction/mount) which is disallowed for security: $Path"
+    $probe = [IO.Path]::GetFullPath($Path)
+    while (-not [string]::IsNullOrWhiteSpace($probe)) {
+        if (Test-Path -LiteralPath $probe) {
+            $item = Get-Item -LiteralPath $probe -Force -ErrorAction Stop
+            if (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+                throw "$Description has a reparse-point ancestor (symlink/junction/mount): $probe"
+            }
+            if ($item.PSIsContainer) {
+                $parent = $item.Parent
+            } else {
+                $parent = $item.Directory
+            }
+            if ($null -eq $parent) { break }
+            $next = $parent.FullName
+        } else {
+            $next = [IO.Directory]::GetParent($probe)
         }
+        if ([string]::IsNullOrWhiteSpace($next) -or $next.Equals($probe, [StringComparison]::OrdinalIgnoreCase)) { break }
+        $probe = $next
     }
 }
 
@@ -791,6 +883,28 @@ function Test-WaiverIntegrity {
         }
     }
 
+    if ([string]$Waiver.ApprovedBy -notmatch '^@[^\s:]+$') {
+        return [pscustomobject]@{ IsValid = $false; Reason = 'Waiver authority is absent or is not an authorized human @identity.' }
+    }
+    $approvalDate = [DateTimeOffset]::MinValue
+    if ($Waiver.ApprovalDateUtc -is [DateTime]) {
+        if ($Waiver.ApprovalDateUtc.Kind -ne [DateTimeKind]::Utc) {
+            return [pscustomobject]@{ IsValid = $false; Reason = 'Waiver ApprovalDateUtc is not UTC.' }
+        }
+        $approvalDate = [DateTimeOffset]$Waiver.ApprovalDateUtc
+    } elseif ($Waiver.ApprovalDateUtc -is [DateTimeOffset]) {
+        $approvalDate = $Waiver.ApprovalDateUtc.ToUniversalTime()
+    } else {
+        $approvalText = [string]$Waiver.ApprovalDateUtc
+        if ($approvalText -notmatch '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$' -or
+            -not [DateTimeOffset]::TryParse($approvalText, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::AssumeUniversal -bor [Globalization.DateTimeStyles]::AdjustToUniversal, [ref]$approvalDate)) {
+            return [pscustomobject]@{ IsValid = $false; Reason = 'Waiver ApprovalDateUtc is not a valid UTC timestamp ending in Z.' }
+        }
+    }
+    if ($approvalDate.UtcDateTime -gt [DateTime]::UtcNow) {
+        return [pscustomobject]@{ IsValid = $false; Reason = 'Waiver ApprovalDateUtc is in the future.' }
+    }
+
     # Strict "No Native Trim" waiver check (DECISIONS.md D-011 / docs/protocol/v0.2-runtime-monitor-contract.md)
     $disallowedTrimPattern = '(?i)(native.*trim|working[- ]?set.*trim|SetProcessWorkingSetSize|EmptyWorkingSet|force.*trim)'
     if ($Waiver.Cause -match $disallowedTrimPattern -or $Waiver.Impact -match $disallowedTrimPattern) {
@@ -822,12 +936,28 @@ function Test-PerformanceBudgetReport {
     param(
         [Parameter(Mandatory)]$ReportObject,
         [string]$CandidateDirectory = '',
-        [string]$RepositoryRoot = ''
+        [string]$RepositoryRoot = '',
+        [string]$ExpectedSourceCommit = ''
     )
 
     $checks = [System.Collections.Generic.List[object]]::new()
     $waiversApplied = [System.Collections.Generic.List[object]]::new()
     $allPassed = $true
+
+    $evidenceClass = if ($null -ne $ReportObject.PSObject.Properties['EvidenceClass']) { [string]$ReportObject.EvidenceClass } else { 'Preparation' }
+    $isRuntimeAdmission = ($evidenceClass -eq 'Runtime' -and
+        $null -ne $ReportObject.PSObject.Properties['EvidenceBoundary'] -and
+        [string]$ReportObject.EvidenceBoundary.ActualHerdrRuntime -match '^OBSERVED$' -and
+        [string]$ReportObject.EvidenceBoundary.SoakExecution -match '^OBSERVED$')
+
+    if ([string]::IsNullOrWhiteSpace($ExpectedSourceCommit) -and -not [string]::IsNullOrWhiteSpace($RepositoryRoot)) {
+        $ExpectedSourceCommit = Test-CleanRepositoryState -RepositoryRoot $RepositoryRoot
+    }
+    if (-not [string]::IsNullOrWhiteSpace($ExpectedSourceCommit) -and
+        ([string]$ReportObject.Candidate.SourceCommit).ToLowerInvariant() -ne $ExpectedSourceCommit.ToLowerInvariant()) {
+        $allPassed = $false
+        $checks.Add([pscustomobject]@{ Id='V07-CANDIDATE-SOURCE-COMMIT'; Metric='Candidate source commit binding'; Target=$ExpectedSourceCommit.ToLowerInvariant(); Observed=[string]$ReportObject.Candidate.SourceCommit; Status='FAIL'; WaiverApplied=$false; Detail='Candidate.SourceCommit does not equal the exact evaluated clean HEAD.' })
+    }
 
     $metrics = $ReportObject.Metrics
     $waiversList = if ($null -ne $ReportObject.PSObject.Properties['Waivers'] -and $null -ne $ReportObject.Waivers) { @($ReportObject.Waivers) } else { @() }
@@ -955,8 +1085,11 @@ function Test-PerformanceBudgetReport {
     $latObs = [double]$metrics.WidgetStateDeltaLatencyP95Ms
     $latTarget = "p95 <= 250.0 ms"
 
-    # p95 Sample Recomputation verification (if raw samples provided)
-    if ($null -ne $metrics.PSObject.Properties['WidgetDeltaLatencySamplesMs'] -and $null -ne $metrics.WidgetDeltaLatencySamplesMs) {
+    # Runtime admission must carry raw samples; preparation may omit live samples.
+    if ($isRuntimeAdmission -and ($null -eq $metrics.PSObject.Properties['WidgetDeltaLatencySamplesMs'] -or $null -eq $metrics.WidgetDeltaLatencySamplesMs -or @($metrics.WidgetDeltaLatencySamplesMs).Count -eq 0)) {
+        $allPassed = $false
+        $checks.Add([pscustomobject]@{ Id='V07-PERF-03-LATENCY-SAMPLES'; Metric='Widget delta latency raw samples'; Target='Non-empty raw samples for runtime admission'; Observed='Missing'; Status='FAIL'; WaiverApplied=$false; Detail='Runtime admission cannot use a declared p95 without raw samples.' })
+    } elseif ($null -ne $metrics.PSObject.Properties['WidgetDeltaLatencySamplesMs'] -and $null -ne $metrics.WidgetDeltaLatencySamplesMs) {
         $samples = [double[]]@($metrics.WidgetDeltaLatencySamplesMs)
         if ($samples.Length -gt 0) {
             $recomputedP95 = [HerdrOps.BudgetValidation.StrictJsonValidator]::CalculateP95($samples)
@@ -1030,7 +1163,10 @@ function Test-PerformanceBudgetReport {
     $launchObs = [double]$metrics.DashboardColdLaunchP95Ms
     $launchTarget = "p95 <= 2.0 s (2000.0 ms)"
 
-    if ($null -ne $metrics.PSObject.Properties['DashboardColdLaunchSamplesMs'] -and $null -ne $metrics.DashboardColdLaunchSamplesMs) {
+    if ($isRuntimeAdmission -and ($null -eq $metrics.PSObject.Properties['DashboardColdLaunchSamplesMs'] -or $null -eq $metrics.DashboardColdLaunchSamplesMs -or @($metrics.DashboardColdLaunchSamplesMs).Count -eq 0)) {
+        $allPassed = $false
+        $checks.Add([pscustomobject]@{ Id='V07-PERF-04-COLDLAUNCH-SAMPLES'; Metric='Dashboard cold launch raw samples'; Target='Non-empty raw samples for runtime admission'; Observed='Missing'; Status='FAIL'; WaiverApplied=$false; Detail='Runtime admission cannot use a declared p95 without raw samples.' })
+    } elseif ($null -ne $metrics.PSObject.Properties['DashboardColdLaunchSamplesMs'] -and $null -ne $metrics.DashboardColdLaunchSamplesMs) {
         $launchSamples = [double[]]@($metrics.DashboardColdLaunchSamplesMs)
         if ($launchSamples.Length -gt 0) {
             $recomputedLaunchP95 = [HerdrOps.BudgetValidation.StrictJsonValidator]::CalculateP95($launchSamples)
@@ -1219,12 +1355,17 @@ function Test-PerformanceBudgetReport {
     }
     $crashTarget = "0 crashes in >= 8.0 hours"
 
-    $evidenceClass = if ($null -ne $ReportObject.PSObject.Properties['EvidenceClass']) { [string]$ReportObject.EvidenceClass } else { 'Preparation' }
-    $isRuntimeAdmission = ($evidenceClass -inotmatch 'Preparation') -or
-        ($null -ne $ReportObject.PSObject.Properties['EvidenceBoundary'] -and
-         ($ReportObject.EvidenceBoundary.ActualHerdrRuntime -match '^OBSERVED' -or $ReportObject.EvidenceBoundary.SoakExecution -match '^OBSERVED'))
-
-    if ($crashObs -eq 0 -and $soakDuration -ge $script:V07PlanBudgets.MinSoakDurationHours) {
+    if (-not $isRuntimeAdmission) {
+        $checks.Add([pscustomobject]@{
+            Id            = 'V07-PERF-07-SOAK'
+            Metric        = 'Unhandled crash during v0.7 soak'
+            Target        = $crashTarget
+            Observed      = "$crashObs crashes; reported duration $($soakDuration.ToString('F1', [Globalization.CultureInfo]::InvariantCulture)) hours"
+            Status        = 'NOT OBSERVED'
+            WaiverApplied = $false
+            Detail        = 'Preparation/static/synthetic evidence cannot satisfy zero, partial, or full live soak admission; Runtime and SoakExecution remain NOT OBSERVED.'
+        })
+    } elseif ($crashObs -eq 0 -and $soakDuration -ge $script:V07PlanBudgets.MinSoakDurationHours) {
         $checks.Add([pscustomobject]@{
             Id            = 'V07-PERF-07-SOAK'
             Metric        = 'Unhandled crash during v0.7 soak'
@@ -1425,6 +1566,39 @@ function Test-PerformanceBudgetReport {
         }
     }
 
+    if ($isRuntimeAdmission) {
+        $telemetry = New-Object System.Collections.Generic.List[object]
+        if ($null -ne $ReportObject.PSObject.Properties['ProcessTelemetry'] -and $null -ne $ReportObject.ProcessTelemetry) {
+            foreach ($telemetryItem in @($ReportObject.ProcessTelemetry)) { $telemetry.Add($telemetryItem) }
+        }
+        $requiredProcessNames = @('HerdrOps.Core', 'HerdrOps.App')
+        if ($telemetry.Count -ne 2) {
+            $allPassed = $false
+            $checks.Add([pscustomobject]@{ Id='V07-RUNTIME-PROCESS-IDENTITIES'; Metric='Runtime process telemetry'; Target='Exactly Core and App identities'; Observed="$($telemetry.Count) identities"; Status='FAIL'; WaiverApplied=$false; Detail='Runtime admission requires exact Core and App ProcessTelemetry records.' })
+        }
+        foreach ($name in $requiredProcessNames) {
+            $matchingProcess = @($telemetry | Where-Object { [string]$_.ProcessName -eq $name })
+            $proc = if ($matchingProcess.Length -gt 0) { $matchingProcess[0] } else { $null }
+            $validProc = ($null -ne $proc -and $proc.ProcessId -is [int] -and [int]$proc.ProcessId -gt 0 -and
+                [string]$proc.ProcessStartUtc -match '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$' -and
+                [string]$proc.BinaryPath -and [string]$proc.BinarySha256 -match '^[0-9a-f]{64}$')
+            if (-not $validProc) {
+                $allPassed = $false
+                $checks.Add([pscustomobject]@{ Id="V07-RUNTIME-PROCESS-$name"; Metric="$name process identity"; Target='Positive PID, UTC start, exact binary path/hash'; Observed=($(if($null -eq $proc){'Missing'}else{$proc | Out-String})); Status='FAIL'; WaiverApplied=$false; Detail='Runtime process identity is incomplete or not strictly typed.' })
+            }
+        }
+        $sourceCandidate = if ($null -ne $ReportObject.Candidate.PSObject.Properties['Binaries'] -and $null -ne $ReportObject.Candidate.Binaries) { @($ReportObject.Candidate.Binaries) } else { @() }
+        if ($null -eq $sourceCandidate) { $sourceCandidate = @() }
+        foreach ($proc in $telemetry) {
+            $matchingBinary = @($sourceCandidate | Where-Object { [IO.Path]::GetFullPath((Join-Path $RepositoryRoot $_.RelativePath)) -eq [IO.Path]::GetFullPath([string]$proc.BinaryPath) -and ([string]$_.Sha256).ToLowerInvariant() -eq ([string]$proc.BinarySha256).ToLowerInvariant() })
+            if ($null -eq $matchingBinary) { $matchingBinary = @() }
+            if ($matchingBinary.Count -ne 1) {
+                $allPassed = $false
+                $checks.Add([pscustomobject]@{ Id="V07-RUNTIME-BINARY-$($proc.ProcessName)"; Metric="$($proc.ProcessName) binary binding"; Target='Telemetry path and SHA-256 match Candidate.Binaries'; Observed=[string]$proc.BinaryPath; Status='FAIL'; WaiverApplied=$false; Detail='Runtime process binary is not exactly bound to the declared candidate source.' })
+            }
+        }
+    }
+
     # 11. Candidate Binaries Verification (if CandidateDirectory and Binaries are present)
     $candidateBindings = [System.Collections.Generic.List[object]]::new()
     if ($null -ne $ReportObject.PSObject.Properties['Candidate'] -and
@@ -1469,6 +1643,14 @@ function Test-PerformanceBudgetReport {
                     })
                 }
             }
+        }
+    }
+
+    if ($isRuntimeAdmission) {
+        $verifiedRuntimeBinaries = @($candidateBindings | Where-Object { $_.Status -eq 'BOUND_AND_VERIFIED' -and ($_.Path -match '(?i)(^|[\\/])HerdrOps\.(Core|App)\.(dll|exe)$') })
+        if ([string]::IsNullOrWhiteSpace($CandidateDirectory) -or [string]::IsNullOrWhiteSpace($RepositoryRoot) -or $verifiedRuntimeBinaries.Count -lt 2) {
+            $allPassed = $false
+            $checks.Add([pscustomobject]@{ Id='V07-RUNTIME-BINARY-DISK-BINDING'; Metric='Runtime candidate binary disk binding'; Target='Verified Core and App binary bytes from declared paths'; Observed="$($verifiedRuntimeBinaries.Count) verified runtime binaries"; Status='FAIL'; WaiverApplied=$false; Detail='Runtime admission requires actual on-disk Core/App SHA-256 and length verification; declaration alone is insufficient.' })
         }
     }
 
@@ -1727,6 +1909,9 @@ function Invoke-PerformanceBudgetSelfTests {
     try {
         $json = Get-BoundedUtf8FileText -Path $failingCrashesPath -Description 'Failing soak crashes fixture'
         $report = ConvertFrom-StrictPerformanceBudgetJson -JsonText $json -SourceDescription 'failing soak crashes fixture'
+        $report.EvidenceClass = 'Runtime'
+        $report.EvidenceBoundary.ActualHerdrRuntime = 'OBSERVED'
+        $report.EvidenceBoundary.SoakExecution = 'OBSERVED'
         $eval = Test-PerformanceBudgetReport -ReportObject $report
         $crashCheck = @($eval.Checks | Where-Object Id -eq 'V07-PERF-07-SOAK')[0]
         & $recordSelfTest 'Negative: Soak unhandled crashes > 0' (-not $eval.Passed -and $crashCheck.Status -eq 'FAIL') "Soak crashes > 0 fails closed"
@@ -1741,7 +1926,7 @@ function Invoke-PerformanceBudgetSelfTests {
         $report = ConvertFrom-StrictPerformanceBudgetJson -JsonText $json -SourceDescription 'failing soak duration fixture'
         $eval = Test-PerformanceBudgetReport -ReportObject $report
         $soakCheck = @($eval.Checks | Where-Object Id -eq 'V07-PERF-07-SOAK')[0]
-        & $recordSelfTest 'Negative: Soak duration < 8 hours' (-not $eval.Passed -and $soakCheck.Status -eq 'FAIL') "Soak duration < 8 hours fails closed"
+        & $recordSelfTest 'Preparation: Partial soak remains NOT OBSERVED' ($eval.Passed -and $soakCheck.Status -eq 'NOT OBSERVED') "Preparation partial soak cannot earn runtime credit"
     } catch {
         & $recordSelfTest 'Negative: Soak duration < 8 hours' $false $_.Exception.Message
     }
@@ -1852,10 +2037,17 @@ function Invoke-PerformanceBudgetSelfTests {
         $run8hJson = Get-BoundedUtf8FileText -Path (Join-Path $FixturesDirectory 'passing-budget-report.json')
         $run8hReport = ConvertFrom-StrictPerformanceBudgetJson -JsonText $run8hJson -SourceDescription 'runtime 8h test'
         $run8hReport.Metrics.SoakDurationHours = 8.0
+        $run8hReport.Metrics | Add-Member -MemberType NoteProperty -Name WidgetDeltaLatencySamplesMs -Value @([double]145.2, [double]145.2, [double]145.2) -Force
+        $run8hReport.Metrics | Add-Member -MemberType NoteProperty -Name DashboardColdLaunchSamplesMs -Value @([double]1320.0, [double]1320.0, [double]1320.0) -Force
         $run8hReport.EvidenceClass = 'Runtime'
         $run8hReport.EvidenceBoundary.ActualHerdrRuntime = 'OBSERVED'
         $run8hReport.EvidenceBoundary.SoakExecution = 'OBSERVED'
-        $run8hEval = Test-PerformanceBudgetReport -ReportObject $run8hReport
+        $run8hReport.Candidate.SourceCommit = (Test-CleanRepositoryState -RepositoryRoot $RepositoryRoot -SkipCleanCheck)
+        $run8hReport | Add-Member -MemberType NoteProperty -Name ProcessTelemetry -Value @(
+            [pscustomobject]@{ ProcessName='HerdrOps.Core'; ProcessId=[int]41001; ProcessStartUtc='2026-08-21T12:00:00Z'; BinaryPath=(Join-Path $RepositoryRoot 'artifacts/bin/HerdrOps.Core/release/HerdrOps.Core.dll'); BinarySha256=[string]$run8hReport.Candidate.Binaries[0].Sha256 },
+            [pscustomobject]@{ ProcessName='HerdrOps.App'; ProcessId=[int]41002; ProcessStartUtc='2026-08-21T12:00:01Z'; BinaryPath=(Join-Path $RepositoryRoot 'artifacts/bin/HerdrOps.App/release/HerdrOps.App.dll'); BinarySha256=[string]$run8hReport.Candidate.Binaries[1].Sha256 }
+        ) -Force
+        $run8hEval = Test-PerformanceBudgetReport -ReportObject $run8hReport -CandidateDirectory (Join-Path $RepositoryRoot 'artifacts/bin') -RepositoryRoot $RepositoryRoot -ExpectedSourceCommit $run8hReport.Candidate.SourceCommit
         $soakCheck = @($run8hEval.Checks | Where-Object Id -eq 'V07-PERF-07-SOAK')[0]
         & $recordSelfTest 'Positive: 8-hour soak in Runtime admission passes' ($run8hEval.Passed -and $soakCheck.Status -eq 'PASS') "8h soak passes runtime admission"
     } catch {
@@ -1878,6 +2070,46 @@ function Invoke-PerformanceBudgetSelfTests {
         & $recordSelfTest 'Negative: Trailing comma in JSON object fails' $false "Expected trailing comma exception was not thrown"
     } catch {
         & $recordSelfTest 'Negative: Trailing comma in JSON object fails' $true "Rejected trailing comma: $($_.Exception.Message)"
+    }
+
+    # Negative Test 33: JSON numeric strings are not schema numbers
+    try {
+        $badNumericType = (Get-BoundedUtf8FileText -Path $passingPath) -replace '"IdleCpuAveragePercent":\s*0\.45', '"IdleCpuAveragePercent":"0.45"'
+        $null = ConvertFrom-StrictPerformanceBudgetJson -JsonText $badNumericType -SourceDescription 'numeric string type test'
+        & $recordSelfTest 'Negative: Numeric string fails exact JSON type validation' $false 'Expected numeric-string rejection was not thrown'
+    } catch {
+        & $recordSelfTest 'Negative: Numeric string fails exact JSON type validation' $true "Rejected numeric string: $($_.Exception.Message)"
+    }
+
+    # Negative Test 34: Integer fields reject fractional JSON numbers
+    try {
+        $badFraction = (Get-BoundedUtf8FileText -Path $passingPath) -replace '"IdleWorkingSetCombinedBytes":\s*142606336', '"IdleWorkingSetCombinedBytes":142606336.5'
+        $null = ConvertFrom-StrictPerformanceBudgetJson -JsonText $badFraction -SourceDescription 'fractional integer type test'
+        & $recordSelfTest 'Negative: Fractional integer fails exact JSON type validation' $false 'Expected fractional-integer rejection was not thrown'
+    } catch {
+        & $recordSelfTest 'Negative: Fractional integer fails exact JSON type validation' $true "Rejected fractional integer: $($_.Exception.Message)"
+    }
+
+    # Test 35: A full synthetic Preparation duration is still NOT OBSERVED
+    try {
+        $prep8h = ConvertFrom-StrictPerformanceBudgetJson -JsonText (Get-BoundedUtf8FileText -Path $passingPath) -SourceDescription 'prep 8h boundary test'
+        $prep8h.Metrics.SoakDurationHours = 8.0
+        $prep8h.EvidenceClass = 'Preparation'
+        $prep8hEval = Test-PerformanceBudgetReport -ReportObject $prep8h
+        $prep8hCheck = @($prep8hEval.Checks | Where-Object Id -eq 'V07-PERF-07-SOAK')[0]
+        & $recordSelfTest 'Preparation: Full synthetic 8-hour soak remains NOT OBSERVED' ($prep8hEval.Passed -and $prep8hCheck.Status -eq 'NOT OBSERVED') 'Preparation cannot satisfy live soak admission'
+    } catch {
+        & $recordSelfTest 'Preparation: Full synthetic 8-hour soak remains NOT OBSERVED' $false $_.Exception.Message
+    }
+
+    # Negative Test 36: Candidate source commit mismatch fails closed
+    try {
+        $stale = ConvertFrom-StrictPerformanceBudgetJson -JsonText (Get-BoundedUtf8FileText -Path $passingPath) -SourceDescription 'stale source commit test'
+        $staleEval = Test-PerformanceBudgetReport -ReportObject $stale -ExpectedSourceCommit ('0' * 40)
+        $sourceCheck = @($staleEval.Checks | Where-Object Id -eq 'V07-CANDIDATE-SOURCE-COMMIT')[0]
+        & $recordSelfTest 'Negative: Stale candidate source commit fails closed' (-not $staleEval.Passed -and $sourceCheck.Status -eq 'FAIL') 'Candidate source commit mismatch rejected'
+    } catch {
+        & $recordSelfTest 'Negative: Stale candidate source commit fails closed' $false $_.Exception.Message
     }
 
     return @($selfTestResults)
