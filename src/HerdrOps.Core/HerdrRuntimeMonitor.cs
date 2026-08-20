@@ -38,16 +38,29 @@ public sealed record HerdrRuntimeMonitorSnapshot(
 public sealed record HerdrRuntimeMonitorOptions(
     TimeSpan AuthoritativeSnapshotPollInterval)
 {
+    public TimeSpan AgentRestoreGracePeriod { get; init; } = TimeSpan.FromSeconds(10);
+
     public static HerdrRuntimeMonitorOptions Default { get; } = new(
         TimeSpan.FromSeconds(1));
 
     public static HerdrRuntimeMonitorOptions EventOnlyForTests { get; } = new(
-        Timeout.InfiniteTimeSpan);
+        Timeout.InfiniteTimeSpan)
+    {
+        AgentRestoreGracePeriod = TimeSpan.Zero,
+    };
 
     public void Validate()
     {
         if (AuthoritativeSnapshotPollInterval == Timeout.InfiniteTimeSpan)
         {
+            if (AgentRestoreGracePeriod < TimeSpan.Zero ||
+                AgentRestoreGracePeriod > TimeSpan.FromMinutes(1))
+            {
+                throw new ArgumentOutOfRangeException(
+                    nameof(AgentRestoreGracePeriod),
+                    "The Agent restore grace period must be between zero and one minute.");
+            }
+
             return;
         }
 
@@ -57,6 +70,14 @@ public sealed record HerdrRuntimeMonitorOptions(
             throw new ArgumentOutOfRangeException(
                 nameof(AuthoritativeSnapshotPollInterval),
                 "The authoritative snapshot poll interval must be positive, no longer than one minute, or infinite for a synthetic test.");
+        }
+
+        if (AgentRestoreGracePeriod < TimeSpan.Zero ||
+            AgentRestoreGracePeriod > TimeSpan.FromMinutes(1))
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(AgentRestoreGracePeriod),
+                "The Agent restore grace period must be between zero and one minute.");
         }
     }
 }
@@ -140,6 +161,8 @@ public sealed class HerdrRuntimeMonitor
         var consecutiveFailures = 0;
         var consecutiveImmediateReconciliations = 0;
         var hasBootstrapped = Current.BootstrapCount > 0;
+        var awaitAgentRestoreAfterReconnect = false;
+        DateTimeOffset? agentRestoreDeadlineUtc = null;
 
         try
         {
@@ -173,52 +196,73 @@ public sealed class HerdrRuntimeMonitor
                             discoveryServerIdentity,
                             subscriptionServerIdentity,
                             authoritativeServerIdentity);
-                        connectionEpoch++;
-                        ingestSequence++;
-                        var state = _reducer.Reconcile(
-                            authoritativeSnapshot,
-                            connectionEpoch,
-                            ingestSequence);
-                        var authoritativePaneIds = authoritativeSnapshot.Panes
-                            .Select(pane => pane.PaneId)
-                            .ToHashSet(StringComparer.Ordinal);
-                        var paneSetChanged = !subscribedPaneIds.SetEquals(authoritativePaneIds);
-                        var current = Current;
-                        Publish(
-                            current with
+                        if (awaitAgentRestoreAfterReconnect &&
+                            _options.AgentRestoreGracePeriod > TimeSpan.Zero)
+                        {
+                            var now = _timeProvider.GetUtcNow();
+                            agentRestoreDeadlineUtc ??= now.Add(_options.AgentRestoreGracePeriod);
+                            if (now < agentRestoreDeadlineUtc.Value &&
+                                !HasRestoredAgentTopology(Current.State, authoritativeSnapshot))
                             {
-                                Status = paneSetChanged
-                                ? HerdrRuntimeMonitorStatus.Reconnecting
-                                : HerdrRuntimeMonitorStatus.Connected,
-                                State = state,
-                                ServerIdentity = bootstrapServerIdentity,
-                                BootstrapCount = current.BootstrapCount + 1,
-                                ReconciliationCount = current.ReconciliationCount + (paneSetChanged ? 1 : 0),
-                                LastTransitionReason = paneSetChanged
-                                ? "Pane set changed while the subscription was being bootstrapped."
-                                : null,
-                                LastTransitionUtc = snapshotReceivedUtc,
-                            });
-                        hasBootstrapped = true;
-                        cycleBootstrapped = true;
-                        consecutiveFailures = 0;
-                        immediateReconciliation = paneSetChanged;
+                                immediateReconciliation = true;
+                                consecutiveFailures = 0;
+                            }
+                            else
+                            {
+                                awaitAgentRestoreAfterReconnect = false;
+                                agentRestoreDeadlineUtc = null;
+                            }
+                        }
 
                         if (!immediateReconciliation)
                         {
-                            var connectedResult = await MonitorConnectedCycleAsync(
-                                    subscriptionScope.Subscription,
-                                    subscribedPaneIds,
-                                    bootstrapServerIdentity,
-                                    connectionEpoch,
-                                    ingestSequence,
-                                    cancellationToken)
-                                .ConfigureAwait(false);
-                            ingestSequence = connectedResult.IngestSequence;
-                            immediateReconciliation = connectedResult.ImmediateReconciliation;
-                            if (connectedResult.StableProgressObserved)
+                            connectionEpoch++;
+                            ingestSequence++;
+                            var state = _reducer.Reconcile(
+                                authoritativeSnapshot,
+                                connectionEpoch,
+                                ingestSequence);
+                            var authoritativePaneIds = authoritativeSnapshot.Panes
+                                .Select(pane => pane.PaneId)
+                                .ToHashSet(StringComparer.Ordinal);
+                            var paneSetChanged = !subscribedPaneIds.SetEquals(authoritativePaneIds);
+                            var current = Current;
+                            Publish(
+                                current with
+                                {
+                                    Status = paneSetChanged
+                                    ? HerdrRuntimeMonitorStatus.Reconnecting
+                                    : HerdrRuntimeMonitorStatus.Connected,
+                                    State = state,
+                                    ServerIdentity = bootstrapServerIdentity,
+                                    BootstrapCount = current.BootstrapCount + 1,
+                                    ReconciliationCount = current.ReconciliationCount + (paneSetChanged ? 1 : 0),
+                                    LastTransitionReason = paneSetChanged
+                                    ? "Pane set changed while the subscription was being bootstrapped."
+                                    : null,
+                                    LastTransitionUtc = snapshotReceivedUtc,
+                                });
+                            hasBootstrapped = true;
+                            cycleBootstrapped = true;
+                            consecutiveFailures = 0;
+                            immediateReconciliation = paneSetChanged;
+
+                            if (!immediateReconciliation)
                             {
-                                consecutiveImmediateReconciliations = 0;
+                                var connectedResult = await MonitorConnectedCycleAsync(
+                                        subscriptionScope.Subscription,
+                                        subscribedPaneIds,
+                                        bootstrapServerIdentity,
+                                        connectionEpoch,
+                                        ingestSequence,
+                                        cancellationToken)
+                                    .ConfigureAwait(false);
+                                ingestSequence = connectedResult.IngestSequence;
+                                immediateReconciliation = connectedResult.ImmediateReconciliation;
+                                if (connectedResult.StableProgressObserved)
+                                {
+                                    consecutiveImmediateReconciliations = 0;
+                                }
                             }
                         }
                     }
@@ -229,12 +273,20 @@ public sealed class HerdrRuntimeMonitor
                     catch (Exception exception) when (IsRecoverable(exception))
                     {
                         ingestSequence = Current.State.LastIngestSequence;
+                        var transportDisconnected = cycleBootstrapped && IsTransportDisconnect(exception);
+                        if (transportDisconnected &&
+                            Current.State.Agents.Count > 0 &&
+                            _options.AgentRestoreGracePeriod > TimeSpan.Zero)
+                        {
+                            awaitAgentRestoreAfterReconnect = true;
+                            agentRestoreDeadlineUtc = null;
+                        }
                         if (hasBootstrapped)
                         {
                             RecordReconciliation(
                                 exception.Message,
                                 ingestSequence,
-                                incrementDisconnectCount: cycleBootstrapped && IsTransportDisconnect(exception));
+                                incrementDisconnectCount: transportDisconnected);
                         }
                         else
                         {
@@ -286,6 +338,27 @@ public sealed class HerdrRuntimeMonitor
                 Volatile.Write(ref _runActive, 0);
             }
         }
+    }
+
+    private static bool HasRestoredAgentTopology(
+        HerdrSessionState previousState,
+        HerdrSessionSnapshot snapshot)
+    {
+        if (previousState.Agents.Count == 0)
+        {
+            return true;
+        }
+
+        if (snapshot.Agents.Count != previousState.Agents.Count)
+        {
+            return false;
+        }
+
+        return previousState.Agents.Values.All(expected =>
+            snapshot.Agents.Any(observed =>
+                string.Equals(observed.PaneId, expected.PaneId, StringComparison.Ordinal) &&
+                string.Equals(observed.Agent, expected.Agent, StringComparison.Ordinal) &&
+                string.Equals(observed.Name, expected.Name, StringComparison.Ordinal)));
     }
 
     private void RecordReconciliation(
