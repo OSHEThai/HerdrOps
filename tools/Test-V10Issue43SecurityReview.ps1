@@ -9,7 +9,11 @@ param(
 
     [Parameter(Mandatory = $true)]
     [ValidatePattern('^[0-9a-fA-F]{40}$')]
-    [string]$DirectParentCommit
+    [string]$DirectParentCommit,
+
+    [Parameter(Mandatory = $true)]
+    [ValidateNotNullOrEmpty()]
+    [string]$Branch
 )
 
 Set-StrictMode -Version Latest
@@ -17,11 +21,11 @@ $ErrorActionPreference = 'Stop'
 
 $repositoryRoot = [IO.Path]::GetFullPath((Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path)
 $artifactRoot = [IO.Path]::GetFullPath((Join-Path $repositoryRoot 'artifacts'))
-$expectedBranch = 'codex/v10-issue-43-clean'
 $version = 'v1.0.0'
 $issueNumber = '#43'
 $candidateIdentity = $CandidateCommit.ToLowerInvariant()
 $directParentIdentity = $DirectParentCommit.ToLowerInvariant()
+$reviewedBranch = $Branch.Trim()
 $runId = "$([DateTime]::UtcNow.ToString('yyyyMMddTHHmmssfffffffZ', [Globalization.CultureInfo]::InvariantCulture))-$([Guid]::NewGuid().ToString('N').Substring(0, 8))"
 $gateDirectory = [IO.Path]::GetFullPath((Join-Path $artifactRoot "release-gates\v1.0.0\issue-43\$runId"))
 $testDirectory = [IO.Path]::GetFullPath((Join-Path $gateDirectory 'contract-tests'))
@@ -857,11 +861,11 @@ if ($LASTEXITCODE -ne 0 -or $sourceCommit -notmatch '^[0-9a-f]{40}$') {
 }
 
 $branchOutput = @(& git -C $repositoryRoot symbolic-ref --short HEAD 2>&1)
-$branch = ($branchOutput -join '').Trim()
-if ($LASTEXITCODE -ne 0 -or $branch -ne $expectedBranch) {
-    Record-Check -Id 'BOUND-02' -Status 'FAIL' -EvidenceClass 'Static' -Detail "expected branch $expectedBranch but observed $branch"
+$observedBranch = ($branchOutput -join '').Trim()
+if ($LASTEXITCODE -ne 0 -or $observedBranch -ne $reviewedBranch) {
+    Record-Check -Id 'BOUND-02' -Status 'FAIL' -EvidenceClass 'Static' -Detail "expected reviewed branch $reviewedBranch but observed $observedBranch"
 } else {
-    Record-Check -Id 'BOUND-02' -Status 'PASS' -EvidenceClass 'Static' -Detail "branch is $expectedBranch"
+    Record-Check -Id 'BOUND-02' -Status 'PASS' -EvidenceClass 'Static' -Detail "branch is the explicitly reviewed identity: $reviewedBranch"
 }
 
 $initialStatus = @(& git -C $repositoryRoot status --porcelain=v1 --untracked-files=all 2>&1)
@@ -1118,7 +1122,7 @@ if ($finalCommit -ne $sourceCommit -or $finalStatus.Count -ne 0) {
 }
 
 $result = if ($failures.Count -eq 0) { 'PASS' } else { 'FAIL' }
-$reports = Write-Reports -Result $result -SourceCommit $sourceCommit -Branch $branch -CandidateHeadMatch $(if ($candidateMatch) { 'PASS' } else { 'FAIL' }) -DirectParentMatch $(if ($parentMatch) { 'PASS' } else { 'FAIL' })
+$reports = Write-Reports -Result $result -SourceCommit $sourceCommit -Branch $reviewedBranch -CandidateHeadMatch $(if ($candidateMatch) { 'PASS' } else { 'FAIL' }) -DirectParentMatch $(if ($parentMatch) { 'PASS' } else { 'FAIL' })
 Write-Output "Issue #43 gate result: $result"
 Write-Output "ReviewedManifest: $($reports.ManifestPath)"
 Write-Output "SchemaMigrationReport: $($reports.SchemaReportPath)"

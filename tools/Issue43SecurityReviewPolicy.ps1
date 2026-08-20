@@ -622,7 +622,9 @@ function Get-Issue43ExactlyOneTrxFile {
         [string]$Directory,
 
         [Parameter(Mandatory)]
-        [string]$FileName
+        [string]$FileName,
+
+        [scriptblock]$EnumerateFiles
     )
 
     $full = [IO.Path]::GetFullPath($Directory)
@@ -632,8 +634,15 @@ function Get-Issue43ExactlyOneTrxFile {
     try {
         # An incomplete traversal must not be treated as an empty or unique
         # result: access/enumeration errors invalidate exactly-one evidence.
+        # A caller may inject the traversal to reproduce an access-denied
+        # failure deterministically without touching real ACLs.
+        $files = if ($null -ne $EnumerateFiles) {
+            @(& $EnumerateFiles $full)
+        } else {
+            @(Get-ChildItem -LiteralPath $full -Recurse -File -ErrorAction Stop)
+        }
         $candidates = @(
-            Get-ChildItem -LiteralPath $full -Recurse -File -ErrorAction Stop |
+            $files |
                 Where-Object {
                     $_.FullName.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase) -and
                         [string]::Equals($_.Name, $FileName, [StringComparison]::OrdinalIgnoreCase)
@@ -820,6 +829,20 @@ Start-Sleep -Seconds 60
         $enumerationFailure = Get-Issue43ExactlyOneTrxFile -Directory $missingTrxDirectory -FileName 'C-01-ipc.trx'
         if (-not $enumerationFailure.EnumerationFailed -or $enumerationFailure.Found) {
             throw 'Issue #43 exactly-one TRX helper did not fail closed on an enumeration error.'
+        }
+
+        # Deterministic injected access-denied regression: the traversal is
+        # replaced with an injected enumerator that raises the same
+        # UnauthorizedAccessException the default Get-ChildItem traversal
+        # surfaces on an inaccessible path, without requiring a real ACL or a
+        # privileged account.
+        $accessDeniedEnumerator = {
+            param($directory)
+            throw New-Object -TypeName System.UnauthorizedAccessException -ArgumentList @("injected access-denied for $directory")
+        }
+        $accessDenied = Get-Issue43ExactlyOneTrxFile -Directory $trxDirectory -FileName 'C-01-ipc.trx' -EnumerateFiles $accessDeniedEnumerator
+        if (-not $accessDenied.EnumerationFailed -or $accessDenied.Found -or $accessDenied.Count -ne 0) {
+            throw 'Issue #43 exactly-one TRX helper did not fail closed on an injected access-denied enumeration.'
         }
 
         return $true
