@@ -147,8 +147,8 @@ try {
     Assert-Equal -Expected 0 -Actual $passingExitCode -Message "Aggregate did not propagate all-child success. Output=$passingOutputText"
     $passingReportPath = Get-AggregateReportPath -Output $passingOutput
     $passingReportText = Get-Content -LiteralPath $passingReportPath -Raw
-    Assert-True -Condition ($passingReportText -match '(?m)^Result: PASS$') -Message 'Passing aggregate report did not say PASS.'
-    Assert-True -Condition ($passingReportText -match '(?m)^ChildGates: 5/5 PASS$') -Message 'Passing aggregate did not record all five child gates.'
+    Assert-True -Condition ($passingReportText -match '(?m)^Result: PASS\r?$') -Message 'Passing aggregate report did not say PASS.'
+    Assert-True -Condition ($passingReportText -match '(?m)^ChildGates: 5/5 PASS\r?$') -Message 'Passing aggregate did not record all five child gates.'
 
     $failingRoot = Join-Path $testRoot 'failing-children'
     New-Item -ItemType Directory -Path $failingRoot -Force | Out-Null
@@ -158,8 +158,8 @@ try {
     Assert-True -Condition ($failingExitCode -ne 0) -Message 'Aggregate swallowed a child-gate failure.'
     $failingReportPath = Get-AggregateReportPath -Output $failingOutput
     $failingReportText = Get-Content -LiteralPath $failingReportPath -Raw
-    Assert-True -Condition ($failingReportText -match '(?m)^Result: FAIL$') -Message 'Failed aggregate report did not say FAIL.'
-    Assert-True -Condition ($failingReportText -match '(?m)^FailureCode: ChildGateFailed:14$') -Message 'Failed aggregate did not preserve the deterministic child failure code.'
+    Assert-True -Condition ($failingReportText -match '(?m)^Result: FAIL\r?$') -Message 'Failed aggregate report did not say FAIL.'
+    Assert-True -Condition ($failingReportText -match '(?m)^FailureCode: ChildGateFailed:14\r?$') -Message 'Failed aggregate did not preserve the deterministic child failure code.'
     Assert-True -Condition ($failingReportText -notmatch '(?i)release|runtime') -Message 'Failed aggregate report contains a release/runtime acceptance term.'
 }
 finally {
