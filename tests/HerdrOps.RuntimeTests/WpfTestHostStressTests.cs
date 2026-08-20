@@ -69,10 +69,10 @@ public sealed class WpfTestHostStressTests
     }
 
     [TestMethod]
-    public void UnobservedDispatcherExceptionIsReportedAndHostSurvives()
+    public void InjectedDispatcherFaultIsReportedAndHostSurvives()
     {
         var original = new InvalidOperationException("synthetic dispatcher callback failure");
-        var observed = WpfTestHost.PostUnhandledExceptionForTest(original);
+        var observed = WpfTestHost.PostDispatcherFaultForTest(original);
 
         Assert.IsTrue(
             observed.Wait(TimeSpan.FromSeconds(30)),
