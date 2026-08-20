@@ -67,4 +67,25 @@ public sealed class WpfTestHostStressTests
         WpfTestHost.Run(() => Assert.IsTrue(Dispatcher.CurrentDispatcher.CheckAccess()));
         StringAssert.Contains(WpfTestHost.GetDiagnosticsForTest(), "State: Running");
     }
+
+    [TestMethod]
+    public void UnobservedDispatcherExceptionIsReportedAndHostSurvives()
+    {
+        var original = new InvalidOperationException("synthetic dispatcher callback failure");
+        var observed = WpfTestHost.PostUnhandledExceptionForTest(original);
+
+        Assert.IsTrue(
+            observed.Wait(TimeSpan.FromSeconds(30)),
+            "The dispatcher unhandled-exception callback was not observed.");
+        Assert.AreSame(original, observed.GetAwaiter().GetResult());
+
+        var reported = Assert.ThrowsExactly<InvalidOperationException>(() =>
+            WpfTestHost.Run(() => Assert.Fail("the poisoned operation must not run")));
+
+        Assert.AreSame(original, reported.InnerException);
+        StringAssert.Contains(reported.Message, "unobserved callback exception");
+
+        WpfTestHost.Run(() => Assert.IsTrue(Dispatcher.CurrentDispatcher.CheckAccess()));
+        StringAssert.Contains(WpfTestHost.GetDiagnosticsForTest(), "State: Running");
+    }
 }

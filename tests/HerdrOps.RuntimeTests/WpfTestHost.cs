@@ -49,6 +49,7 @@ internal static class WpfTestHost
 
         if (dispatcher.CheckAccess())
         {
+            ThrowIfDispatcherFaultIsPending(session);
             action();
             return;
         }
@@ -56,7 +57,13 @@ internal static class WpfTestHost
         DispatcherOperation operation;
         try
         {
-            operation = dispatcher.InvokeAsync(action, DispatcherPriority.Send);
+            operation = dispatcher.InvokeAsync(
+                () =>
+                {
+                    ThrowIfDispatcherFaultIsPending(session);
+                    action();
+                },
+                DispatcherPriority.Send);
         }
         catch (Exception exception)
         {
@@ -160,9 +167,38 @@ internal static class WpfTestHost
                 _terminalShutdown = true;
             }
         }
+
+        if (session.DispatcherFault is not null)
+        {
+            throw CreateDispatcherFaultException(session, session.DispatcherFault);
+        }
+
+        if (session.CleanupFailure is not null)
+        {
+            throw new InvalidOperationException(
+                "WPF test host shutdown cleanup failed. " + GetDiagnostics(session),
+                session.CleanupFailure);
+        }
     }
 
     internal static string GetDiagnosticsForTest() => GetDiagnostics(null);
+
+    internal static Task<Exception> PostUnhandledExceptionForTest(Exception exception)
+    {
+        ArgumentNullException.ThrowIfNull(exception);
+
+        var session = EnsureStarted();
+        Dispatcher dispatcher;
+        lock (HostGate)
+        {
+            dispatcher = session.Dispatcher ?? throw CreateUnavailableException(session);
+        }
+
+        dispatcher.BeginInvoke(
+            DispatcherPriority.Normal,
+            new Action(() => throw exception));
+        return session.DispatcherFaultObserved.Task;
+    }
 
     private static HostSession EnsureStarted()
     {
@@ -295,6 +331,7 @@ internal static class WpfTestHost
             {
                 ShutdownMode = ShutdownMode.OnExplicitShutdown,
             };
+            application.DispatcherUnhandledException += session.DispatcherUnhandledExceptionHandler;
             lock (HostGate)
             {
                 session.Application = application;
@@ -448,6 +485,53 @@ internal static class WpfTestHost
         }
     }
 
+    private static void ThrowIfDispatcherFaultIsPending(HostSession session)
+    {
+        Exception? dispatcherFault;
+        lock (HostGate)
+        {
+            dispatcherFault = session.DispatcherFault;
+            if (dispatcherFault is not null)
+            {
+                session.DispatcherFault = null;
+                session.LastMilestone = "DispatcherFaultObserved";
+            }
+        }
+
+        if (dispatcherFault is not null)
+        {
+            throw CreateDispatcherFaultException(session, dispatcherFault);
+        }
+    }
+
+    private static InvalidOperationException CreateDispatcherFaultException(
+        HostSession session,
+        Exception dispatcherFault)
+    {
+        return new InvalidOperationException(
+            "The WPF dispatcher reported an unobserved callback exception. " +
+            GetDiagnostics(session),
+            dispatcherFault);
+    }
+
+    private static void HandleDispatcherUnhandledException(
+        HostSession session,
+        object? sender,
+        DispatcherUnhandledExceptionEventArgs eventArgs)
+    {
+        lock (HostGate)
+        {
+            session.DispatcherFault ??= eventArgs.Exception;
+            session.LastMilestone = "DispatcherFaultCaptured";
+            session.DispatcherFaultObserved.TrySetResult(eventArgs.Exception);
+        }
+
+        // Preserve the owned dispatcher so WpfTestHost.Run can report the
+        // original callback fault on the next ordered operation. This is not
+        // a silent swallow: Shutdown also fails if the fault is never consumed.
+        eventArgs.Handled = true;
+    }
+
     private static void RequestStopLocked(HostSession session)
     {
         session.ShutdownRequested = true;
@@ -586,7 +670,8 @@ internal static class WpfTestHost
             session.CreatedUtc,
             session.LastTransitionUtc,
             session.Failure,
-            session.CleanupFailure);
+            session.CleanupFailure,
+            session.DispatcherFault);
     }
 
     private static string FormatSnapshot(HostSnapshot snapshot)
@@ -612,6 +697,7 @@ internal static class WpfTestHost
         builder.Append("LastTransitionUtc: ").AppendLine(snapshot.LastTransitionUtc.ToString("O"));
         builder.Append("StartupFailure: ").AppendLine(FormatException(snapshot.Failure));
         builder.Append("CleanupFailure: ").AppendLine(FormatException(snapshot.CleanupFailure));
+        builder.Append("DispatcherFault: ").AppendLine(FormatException(snapshot.DispatcherFault));
         return builder.ToString().TrimEnd();
     }
 
@@ -648,9 +734,16 @@ internal static class WpfTestHost
         Failed,
     }
 
-    private sealed class HostSession(int generation)
+    private sealed class HostSession
     {
-        public int Generation { get; } = generation;
+        public HostSession(int generation)
+        {
+            Generation = generation;
+            DispatcherUnhandledExceptionHandler =
+                (sender, eventArgs) => HandleDispatcherUnhandledException(this, sender, eventArgs);
+        }
+
+        public int Generation { get; }
         public HostState State { get; set; } = HostState.Starting;
         public Thread? UiThread { get; set; }
         public Dispatcher? Dispatcher { get; set; }
@@ -662,6 +755,10 @@ internal static class WpfTestHost
         public string? FailureMilestone { get; set; }
         public Exception? Failure { get; set; }
         public Exception? CleanupFailure { get; set; }
+        public Exception? DispatcherFault { get; set; }
+        public DispatcherUnhandledExceptionEventHandler DispatcherUnhandledExceptionHandler { get; }
+        public TaskCompletionSource<Exception> DispatcherFaultObserved { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
         public DateTimeOffset CreatedUtc { get; } = DateTimeOffset.UtcNow;
         public DateTimeOffset LastTransitionUtc { get; set; } = DateTimeOffset.UtcNow;
         public CancellationTokenSource StopRequested { get; } = new();
@@ -684,5 +781,6 @@ internal static class WpfTestHost
         DateTimeOffset CreatedUtc,
         DateTimeOffset LastTransitionUtc,
         Exception? Failure,
-        Exception? CleanupFailure);
+        Exception? CleanupFailure,
+        Exception? DispatcherFault);
 }
