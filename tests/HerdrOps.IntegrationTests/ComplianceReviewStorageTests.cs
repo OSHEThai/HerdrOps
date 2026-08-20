@@ -401,7 +401,6 @@ public sealed class ComplianceReviewStorageTests
             IsBackground = true,
         };
 
-        var cancellationElapsed = System.Diagnostics.Stopwatch.StartNew();
         try
         {
             store.ComplianceReviewBusySliceObserved += () => busySliceObserved.Set();
@@ -413,6 +412,7 @@ public sealed class ComplianceReviewStorageTests
                 busySliceObserved.Wait(TimeSpan.FromSeconds(10)),
                 "The review operation did not observe a real SQLite BUSY/LOCKED slice within the probe bound.");
 
+            var cancellationElapsed = System.Diagnostics.Stopwatch.StartNew();
             cancellation.Cancel();
             Assert.IsTrue(
                 operationThread.Join(TimeSpan.FromSeconds(1)),
@@ -521,8 +521,16 @@ public sealed class ComplianceReviewStorageTests
                 operationThread.Join(TimeSpan.FromSeconds(4)),
                 "A non-canceled review operation did not fail closed at the contention bound.");
             elapsed.Stop();
+            // The production ceiling is one second, reached through ~20
+            // cooperative 50 ms busy slices. The lower bound proves the loop
+            // actually contended to the ceiling instead of failing immediately;
+            // the upper bound stays well below the 5-second option value so a
+            // removed one-second cap is still detected.
             Assert.IsTrue(
-                elapsed.Elapsed < TimeSpan.FromSeconds(3),
+                elapsed.Elapsed >= TimeSpan.FromMilliseconds(750),
+                $"The non-canceled review operation failed after only {elapsed.Elapsed.TotalMilliseconds:F0}ms; expected it to contend up to the one-second production ceiling before failing closed.");
+            Assert.IsTrue(
+                elapsed.Elapsed < TimeSpan.FromSeconds(2),
                 $"The non-canceled review operation took {elapsed.Elapsed.TotalSeconds:F2}s; expected failure closed at the one-second compliance contention bound.");
         }
         finally
