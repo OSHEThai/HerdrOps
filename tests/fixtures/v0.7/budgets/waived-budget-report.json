@@ -1,0 +1,65 @@
+{
+  "SchemaVersion": "v0.7.0",
+  "RunId": "20260821T120000Z-waived01",
+  "TimestampUtc": "2026-08-21T12:00:00Z",
+  "EvidenceClass": "Preparation",
+  "HostEnvironment": {
+    "Os": "Windows 11 Pro",
+    "Architecture": "x64",
+    "LogicalProcessors": 16,
+    "ReferenceHostConfirmed": true
+  },
+  "Candidate": {
+    "SourceCommit": "79e015ec33dd5f357fb2b35405e580879073a6e5",
+    "GitTreeClean": true,
+    "Binaries": [
+      {
+        "RelativePath": "artifacts/bin/HerdrOps.Core/release/HerdrOps.Core.dll",
+        "LengthBytes": 270848,
+        "Sha256": "31589db4d7a47eaedeae4a35b805867544903b1a10f263e585fec8e1b459dba8"
+      },
+      {
+        "RelativePath": "artifacts/bin/HerdrOps.App/release/HerdrOps.App.dll",
+        "LengthBytes": 2813440,
+        "Sha256": "9ee14fe9869b4a8339175f03bfad84d045623b2755c7c1d38421bd783cdfad54"
+      },
+      {
+        "RelativePath": "artifacts/bin/HerdrOps.CLI/release/HerdrOps.CLI.dll",
+        "LengthBytes": 40448,
+        "Sha256": "7580e6dd68ea75c6182d42f6c5f6849f625f9a40c79e58ce082b79886e6932e5"
+      }
+    ]
+  },
+  "Metrics": {
+    "IdleCpuAveragePercent": 1.35,
+    "IdleWorkingSetCombinedBytes": 142606336,
+    "WidgetStateDeltaLatencyP95Ms": 145.2,
+    "DashboardColdLaunchP95Ms": 1320.0,
+    "HerdrReconnectReconcileSeconds": 2.1,
+    "UnboundedTerminalReads": 0,
+    "UnhandledCrashesDuringSoak": 0,
+    "SoakDurationHours": 8.0,
+    "AdministratorRequired": false
+  },
+  "Waivers": [
+    {
+      "Metric": "IdleCpuAveragePercent",
+      "Target": "<= 1.0%",
+      "Observed": "1.35%",
+      "Cause": "Background diagnostic tracing enabled for Beta profiling on reference host",
+      "Impact": "Slight CPU increase during active background trace; remains within 1.5% host ceiling",
+      "ApprovedBy": "@yutthaphon",
+      "ApprovalDateUtc": "2026-08-21T12:00:00Z",
+      "WaiverSha256": "141e978463828331e67ed8750e3c23e623ce88d4333a0a2811dbc4ae37efa5b8"
+    }
+  ],
+  "EvidenceBoundary": {
+    "StaticEvidence": "OBSERVED",
+    "SyntheticEvidence": "OBSERVED",
+    "ContractEvidence": "OBSERVED",
+    "ActualHerdrRuntime": "NOT OBSERVED / NOT CLAIMED",
+    "SoakExecution": "NOT OBSERVED / NOT CLAIMED",
+    "HumanUatDecision": "NOT OBSERVED / PENDING",
+    "ReleaseEvidence": "NOT OBSERVED / NOT CLAIMED"
+  }
+}

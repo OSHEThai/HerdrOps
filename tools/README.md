@@ -163,6 +163,19 @@ $targetAgentLabSocket = Join-Path $env:APPDATA 'herdr\herdr.sock'
 dotnet artifacts/bin/HerdrOps.Core/release/HerdrOps.Core.dll trace-herdr-terminal-process `
   --report artifacts/runtime-evidence/v0.3.0/issue-14/terminal-process.json `
   --seconds 120 --interval-ms 500 --lines 80
+
+# From a clean committed checkout, run the deterministic v0.7 performance budget
+# self-test suite (positive passing/waived boundaries and negative violations).
+./tools/Test-V07PerformanceBudgets.ps1 -SelfTest
+
+# Evaluate a candidate performance report against Plan v0.7 non-functional budgets
+# and candidate executable hashes without live Herdr runtime execution.
+./tools/Test-V07PerformanceBudgets.ps1 `
+  -ReportPath tests/fixtures/v0.7/budgets/passing-budget-report.json `
+  -SkipBuild
+
+# Run the comprehensive unit and regression suite for v0.7 performance budget policy.
+./tools/Test-V07PerformanceBudgets.Tests.ps1
 ```
 
 # Verify the fail-closed v1.0 Issue #42 24-hour soak/fault-injection contract and
@@ -230,3 +243,5 @@ The v0.6 Daily Summary gate reports Static, Synthetic, and Contract evidence sep
 The v0.5 role-distinct review implementation gate is Contract plus BuiltProcess Integration plus local SQLite Integration evidence. It verifies the built CLI rejects public pipe override, Core-owned authority, same-transaction mutation, immutable role attribution, current-authority SQL guards, strict App/CLI IPC, complete held Windows process chains with parent recapture and strict creation-time ordering, operational client-process-to-Herdr-pane correlation, incident and event evidence-link declaration through `json_each`, registration-retry and pre-append complete-history validation, live Core-capability-gated Queue actions, one operation-frame-read-to-response server deadline, a bounded four-slot detached-delegate budget with shutdown drain, cooperative workflow/store lock waits, a one-second compliance-review command/provider/PRAGMA lock-wait ceiling plus an operation-token cancellation request, structured SQLite provider failures, fresh App/CLI connect-validation-handshake-operation deadlines with internal `TimeoutException` versus caller `OperationCanceledException`, process-wide App/CLI validator budgets of four and two, exact accepted command/result/reason/evidence binding, rejection without snapshots, accepted-only shared-state publication, same-incident generation and single-flight guards, isolated StateHub subscriber delivery, and shared Queue/Widget projection. The production App and CLI clients additionally bind the connected server to the OS-reported Core PID and validate its executable metadata, hash, start, and file stability before the handshake; no hello is sent before validation succeeds. Synchronous server delegates and client validators cannot be force-cancelled; their bounded permits and cancellation sources or pipe references remain retained until actual completion, and late faults are observed. A cancellation request to `SqliteCommand.Cancel` is cooperative and does not guarantee immediate interruption of a provider busy wait. Transaction acquisition or a mutation already executing synchronously cannot be promised immediate cancellation or rollback. Review commands use `ExpectedState` and `ExpectedSequence` together; clients do not supply `OccurredUtc`, because Core assigns it with `TimeProvider`. The Core connection validates the audit JSON hash, Domain event, and persisted scalar projection before insert. App publication after an accepted authoritative response is not suppressed by caller cancellation, while cancellation before a response still cancels transport. Process and executable checks establish operational identity continuity/correlation only; they are not cryptographic publisher authentication, signing, or provenance proof. A sufficiently privileged same-user process may forge parentage with `PROC_THREAD_ATTRIBUTE_PARENT_PROCESS`, and Herdr protocol 19 does not bind pane root PIDs to creation identities, so pre-snapshot PID recycling remains a residual. A deliberate same-user SQLite writer can register or spoof its own validation function and remains a trust-boundary residual.
 
 The gate reports `NoRuntimeCredit`. No actual Herdr runtime credit exists until this behavior is captured from a standard, non-elevated Herdr pane and the exact pane/process observations, role observations, Core responses, and immutable database audit hashes are bound in one fresh runtime record. The gate cannot close Issue #27, provide independent acceptance, or pass the v0.5 release gate.
+
+The v0.7 performance budget gate reports Static, Synthetic, and Contract evidence for non-runtime preparation (Issue #39). It enforces strict schema v0.7.0, source commit binding, candidate executable SHA-256 binding, reparse point and path traversal protections, p95 sample distribution recalculation, PID+StartUtc binding and PID reuse detection, no-native-trim waiver rules, and fault/unreconciled-state fail-closed behavior. Actual Herdr Runtime, 8-hour sustained soak execution, Human UAT decisions, and Release Evidence remain explicitly NOT OBSERVED / NOT CLAIMED in this preparation slice.

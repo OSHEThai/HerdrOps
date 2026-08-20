@@ -1,0 +1,42 @@
+{
+  "SchemaVersion": "v0.7.0",
+  "RunId": "20260821T120000Z-trimwaiver",
+  "TimestampUtc": "2026-08-21T12:00:00Z",
+  "EvidenceClass": "Preparation",
+  "Candidate": {
+    "SourceCommit": "79e015ec33dd5f357fb2b35405e580879073a6e5",
+    "GitTreeClean": true
+  },
+  "Metrics": {
+    "IdleCpuAveragePercent": 0.45,
+    "IdleWorkingSetCombinedBytes": 220200960,
+    "WidgetStateDeltaLatencyP95Ms": 145.2,
+    "DashboardColdLaunchP95Ms": 1320.0,
+    "HerdrReconnectReconcileSeconds": 2.1,
+    "UnboundedTerminalReads": 0,
+    "UnhandledCrashesDuringSoak": 0,
+    "SoakDurationHours": 8.0,
+    "AdministratorRequired": false
+  },
+  "Waivers": [
+    {
+      "Metric": "IdleWorkingSetCombinedBytes",
+      "Target": "<= 180.0 MB (188,743,680 bytes)",
+      "Observed": "210.0 MB",
+      "Cause": "Native working-set trim invoked during garbage collection cycle",
+      "Impact": "Temporary working set spike before native trim",
+      "ApprovedBy": "@yutthaphon",
+      "ApprovalDateUtc": "2026-08-21T12:00:00Z",
+      "WaiverSha256": "dd4a670d32131fd4e7413d65d912cf3c618fda3de831274bb7d49f909d10800b"
+    }
+  ],
+  "EvidenceBoundary": {
+    "StaticEvidence": "OBSERVED",
+    "SyntheticEvidence": "OBSERVED",
+    "ContractEvidence": "OBSERVED",
+    "ActualHerdrRuntime": "NOT OBSERVED / NOT CLAIMED",
+    "SoakExecution": "NOT OBSERVED / NOT CLAIMED",
+    "HumanUatDecision": "NOT OBSERVED / PENDING",
+    "ReleaseEvidence": "NOT OBSERVED / NOT CLAIMED"
+  }
+}

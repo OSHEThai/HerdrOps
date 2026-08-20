@@ -1,0 +1,31 @@
+{
+  "SchemaVersion": "v0.7.0",
+  "RunId": "20260821T120000Z-failcpu1",
+  "TimestampUtc": "2026-08-21T12:00:00Z",
+  "EvidenceClass": "Preparation",
+  "Candidate": {
+    "SourceCommit": "79e015ec33dd5f357fb2b35405e580879073a6e5",
+    "GitTreeClean": true
+  },
+  "Metrics": {
+    "IdleCpuAveragePercent": 1.45,
+    "IdleWorkingSetCombinedBytes": 142606336,
+    "WidgetStateDeltaLatencyP95Ms": 145.2,
+    "DashboardColdLaunchP95Ms": 1320.0,
+    "HerdrReconnectReconcileSeconds": 2.1,
+    "UnboundedTerminalReads": 0,
+    "UnhandledCrashesDuringSoak": 0,
+    "SoakDurationHours": 8.0,
+    "AdministratorRequired": false
+  },
+  "Waivers": [],
+  "EvidenceBoundary": {
+    "StaticEvidence": "OBSERVED",
+    "SyntheticEvidence": "OBSERVED",
+    "ContractEvidence": "OBSERVED",
+    "ActualHerdrRuntime": "NOT OBSERVED / NOT CLAIMED",
+    "SoakExecution": "NOT OBSERVED / NOT CLAIMED",
+    "HumanUatDecision": "NOT OBSERVED / PENDING",
+    "ReleaseEvidence": "NOT OBSERVED / NOT CLAIMED"
+  }
+}
