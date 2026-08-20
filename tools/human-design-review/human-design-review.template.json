@@ -1,0 +1,951 @@
+{
+  "$id": "https://herdrops.local/schema/v0.7/human-design-review.schema.json",
+  "schemaVersion": 1,
+  "contract": {
+    "issue": 35,
+    "version": "0.7.0",
+    "productId": "HerdrOps",
+    "immutableReferenceSet": "docs/design/reference/*.png",
+    "designContract": "Plan/DESIGN-CONTRACT.md"
+  },
+  "reviewStatus": "Pending",
+  "reviewer": {
+    "name": "[PLACEHOLDER]: reviewer display name",
+    "role": "[PLACEHOLDER]: reviewer role",
+    "organization": "[PLACEHOLDER]: reviewer organization",
+    "independent": false,
+    "signatureDate": "9999-12-31",
+    "signatory": "[PLACEHOLDER]: signed name"
+  },
+  "provenance": {
+    "boundCommitSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+    "runHash": "0000000000000000000000000000000000000000000000000000000000000000",
+    "artifactHash": "0000000000000000000000000000000000000000000000000000000000000000",
+    "hashAlgorithm": "SHA-256",
+    "canonicalRunDescriptor": "[PLACEHOLDER]: deterministic run descriptor"
+  },
+  "uiUnderReview": {
+    "surfaceKind": "Observed WPF build",
+    "wpfBuild": {
+      "assembly": "HerdrOps.App",
+      "branch": "[PLACEHOLDER]: branch",
+      "commitSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "configuration": "Release"
+    },
+    "hostOs": "[PLACEHOLDER]: host OS",
+    "hostResolutionWidth": 1672,
+    "hostResolutionHeight": 941,
+    "dpiScaleFactor": 100,
+    "captureTool": {
+      "name": "[PLACEHOLDER]: capture tool",
+      "runtime": "[PLACEHOLDER]: runtime",
+      "version": "[PLACEHOLDER]: tool version"
+    },
+    "observedWindow": "[PLACEHOLDER]: observed top-level window",
+    "captureDate": "9999-12-31T00:00:00Z"
+  },
+  "captures": [
+    {
+      "refersToReference": "11-widget-concepts.png",
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "width": 1672,
+      "language": "en",
+      "relativePath": "captures/README-placeholder",
+      "height": 941,
+      "kind": "contact-sheet"
+    }
+  ],
+  "pages": {
+    "agent-detail": {
+      "accessibility": {
+        "keyboardFocusVisible": {
+          "passed": false,
+          "evidence": {
+            "boundSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+            "note": "[PLACEHOLDER]: keyboard focus visible evidence"
+          }
+        },
+        "thaiTextNoClipping": {
+          "passed": false,
+          "evidence": {
+            "boundSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+            "note": "[PLACEHOLDER]: thai clipping evidence"
+          }
+        },
+        "focusOrderValid": {
+          "passed": false,
+          "evidence": {
+            "boundSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+            "note": "[PLACEHOLDER]: focus order evidence"
+          }
+        },
+        "automationNamesPresent": {
+          "passed": false,
+          "evidence": {
+            "boundSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+            "note": "[PLACEHOLDER]: automation names evidence"
+          }
+        },
+        "screenReaderSmoke": {
+          "passed": false,
+          "evidence": {
+            "boundSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+            "note": "[PLACEHOLDER]: screen reader smoke evidence"
+          }
+        },
+        "reducedMotionSupported": {
+          "passed": false,
+          "evidence": {
+            "boundSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+            "note": "[PLACEHOLDER]: reduced motion evidence"
+          }
+        }
+      },
+      "languageCoverage": {
+        "th": {
+          "125": {
+            "captureRef": "captures/th/pages/agent-detail-125.png",
+            "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+          },
+          "150": {
+            "captureRef": "captures/th/pages/agent-detail-150.png",
+            "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+          },
+          "100": {
+            "captureRef": "captures/th/pages/agent-detail-100.png",
+            "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+          }
+        },
+        "en": {
+          "125": {
+            "captureRef": "captures/en/pages/agent-detail-125.png",
+            "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+          },
+          "150": {
+            "captureRef": "captures/en/pages/agent-detail-150.png",
+            "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+          },
+          "100": {
+            "captureRef": "captures/en/pages/agent-detail-100.png",
+            "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+          }
+        }
+      }
+    },
+    "realtime-activity": {
+      "accessibility": {
+        "keyboardFocusVisible": {
+          "passed": false,
+          "evidence": {
+            "boundSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+            "note": "[PLACEHOLDER]: keyboard focus visible evidence"
+          }
+        },
+        "thaiTextNoClipping": {
+          "passed": false,
+          "evidence": {
+            "boundSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+            "note": "[PLACEHOLDER]: thai clipping evidence"
+          }
+        },
+        "focusOrderValid": {
+          "passed": false,
+          "evidence": {
+            "boundSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+            "note": "[PLACEHOLDER]: focus order evidence"
+          }
+        },
+        "automationNamesPresent": {
+          "passed": false,
+          "evidence": {
+            "boundSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+            "note": "[PLACEHOLDER]: automation names evidence"
+          }
+        },
+        "screenReaderSmoke": {
+          "passed": false,
+          "evidence": {
+            "boundSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+            "note": "[PLACEHOLDER]: screen reader smoke evidence"
+          }
+        },
+        "reducedMotionSupported": {
+          "passed": false,
+          "evidence": {
+            "boundSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+            "note": "[PLACEHOLDER]: reduced motion evidence"
+          }
+        }
+      },
+      "languageCoverage": {
+        "th": {
+          "125": {
+            "captureRef": "captures/th/pages/realtime-activity-125.png",
+            "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+          },
+          "150": {
+            "captureRef": "captures/th/pages/realtime-activity-150.png",
+            "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+          },
+          "100": {
+            "captureRef": "captures/th/pages/realtime-activity-100.png",
+            "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+          }
+        },
+        "en": {
+          "125": {
+            "captureRef": "captures/en/pages/realtime-activity-125.png",
+            "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+          },
+          "150": {
+            "captureRef": "captures/en/pages/realtime-activity-150.png",
+            "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+          },
+          "100": {
+            "captureRef": "captures/en/pages/realtime-activity-100.png",
+            "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+          }
+        }
+      }
+    },
+    "compliance-queue": {
+      "accessibility": {
+        "keyboardFocusVisible": {
+          "passed": false,
+          "evidence": {
+            "boundSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+            "note": "[PLACEHOLDER]: keyboard focus visible evidence"
+          }
+        },
+        "thaiTextNoClipping": {
+          "passed": false,
+          "evidence": {
+            "boundSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+            "note": "[PLACEHOLDER]: thai clipping evidence"
+          }
+        },
+        "focusOrderValid": {
+          "passed": false,
+          "evidence": {
+            "boundSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+            "note": "[PLACEHOLDER]: focus order evidence"
+          }
+        },
+        "automationNamesPresent": {
+          "passed": false,
+          "evidence": {
+            "boundSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+            "note": "[PLACEHOLDER]: automation names evidence"
+          }
+        },
+        "screenReaderSmoke": {
+          "passed": false,
+          "evidence": {
+            "boundSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+            "note": "[PLACEHOLDER]: screen reader smoke evidence"
+          }
+        },
+        "reducedMotionSupported": {
+          "passed": false,
+          "evidence": {
+            "boundSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+            "note": "[PLACEHOLDER]: reduced motion evidence"
+          }
+        }
+      },
+      "languageCoverage": {
+        "th": {
+          "125": {
+            "captureRef": "captures/th/pages/compliance-queue-125.png",
+            "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+          },
+          "150": {
+            "captureRef": "captures/th/pages/compliance-queue-150.png",
+            "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+          },
+          "100": {
+            "captureRef": "captures/th/pages/compliance-queue-100.png",
+            "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+          }
+        },
+        "en": {
+          "125": {
+            "captureRef": "captures/en/pages/compliance-queue-125.png",
+            "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+          },
+          "150": {
+            "captureRef": "captures/en/pages/compliance-queue-150.png",
+            "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+          },
+          "100": {
+            "captureRef": "captures/en/pages/compliance-queue-100.png",
+            "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+          }
+        }
+      }
+    },
+    "evaluation": {
+      "accessibility": {
+        "keyboardFocusVisible": {
+          "passed": false,
+          "evidence": {
+            "boundSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+            "note": "[PLACEHOLDER]: keyboard focus visible evidence"
+          }
+        },
+        "thaiTextNoClipping": {
+          "passed": false,
+          "evidence": {
+            "boundSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+            "note": "[PLACEHOLDER]: thai clipping evidence"
+          }
+        },
+        "focusOrderValid": {
+          "passed": false,
+          "evidence": {
+            "boundSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+            "note": "[PLACEHOLDER]: focus order evidence"
+          }
+        },
+        "automationNamesPresent": {
+          "passed": false,
+          "evidence": {
+            "boundSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+            "note": "[PLACEHOLDER]: automation names evidence"
+          }
+        },
+        "screenReaderSmoke": {
+          "passed": false,
+          "evidence": {
+            "boundSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+            "note": "[PLACEHOLDER]: screen reader smoke evidence"
+          }
+        },
+        "reducedMotionSupported": {
+          "passed": false,
+          "evidence": {
+            "boundSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+            "note": "[PLACEHOLDER]: reduced motion evidence"
+          }
+        }
+      },
+      "languageCoverage": {
+        "th": {
+          "125": {
+            "captureRef": "captures/th/pages/evaluation-125.png",
+            "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+          },
+          "150": {
+            "captureRef": "captures/th/pages/evaluation-150.png",
+            "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+          },
+          "100": {
+            "captureRef": "captures/th/pages/evaluation-100.png",
+            "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+          }
+        },
+        "en": {
+          "125": {
+            "captureRef": "captures/en/pages/evaluation-125.png",
+            "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+          },
+          "150": {
+            "captureRef": "captures/en/pages/evaluation-150.png",
+            "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+          },
+          "100": {
+            "captureRef": "captures/en/pages/evaluation-100.png",
+            "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+          }
+        }
+      }
+    },
+    "live-organization": {
+      "roleDivergence": {
+        "evidence": {
+          "boundSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+          "note": "[PLACEHOLDER]: Live Organization Review-to-Done divergence explicit acceptance required"
+        },
+        "accepts": false
+      },
+      "languageCoverage": {
+        "th": {
+          "125": {
+            "captureRef": "captures/th/pages/live-organization-125.png",
+            "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+          },
+          "150": {
+            "captureRef": "captures/th/pages/live-organization-150.png",
+            "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+          },
+          "100": {
+            "captureRef": "captures/th/pages/live-organization-100.png",
+            "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+          }
+        },
+        "en": {
+          "125": {
+            "captureRef": "captures/en/pages/live-organization-125.png",
+            "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+          },
+          "150": {
+            "captureRef": "captures/en/pages/live-organization-150.png",
+            "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+          },
+          "100": {
+            "captureRef": "captures/en/pages/live-organization-100.png",
+            "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+          }
+        }
+      },
+      "accessibility": {
+        "keyboardFocusVisible": {
+          "passed": false,
+          "evidence": {
+            "boundSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+            "note": "[PLACEHOLDER]: keyboard focus visible evidence"
+          }
+        },
+        "thaiTextNoClipping": {
+          "passed": false,
+          "evidence": {
+            "boundSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+            "note": "[PLACEHOLDER]: thai clipping evidence"
+          }
+        },
+        "focusOrderValid": {
+          "passed": false,
+          "evidence": {
+            "boundSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+            "note": "[PLACEHOLDER]: focus order evidence"
+          }
+        },
+        "automationNamesPresent": {
+          "passed": false,
+          "evidence": {
+            "boundSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+            "note": "[PLACEHOLDER]: automation names evidence"
+          }
+        },
+        "screenReaderSmoke": {
+          "passed": false,
+          "evidence": {
+            "boundSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+            "note": "[PLACEHOLDER]: screen reader smoke evidence"
+          }
+        },
+        "reducedMotionSupported": {
+          "passed": false,
+          "evidence": {
+            "boundSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+            "note": "[PLACEHOLDER]: reduced motion evidence"
+          }
+        }
+      }
+    },
+    "overview": {
+      "accessibility": {
+        "keyboardFocusVisible": {
+          "passed": false,
+          "evidence": {
+            "boundSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+            "note": "[PLACEHOLDER]: keyboard focus visible evidence"
+          }
+        },
+        "thaiTextNoClipping": {
+          "passed": false,
+          "evidence": {
+            "boundSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+            "note": "[PLACEHOLDER]: thai clipping evidence"
+          }
+        },
+        "focusOrderValid": {
+          "passed": false,
+          "evidence": {
+            "boundSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+            "note": "[PLACEHOLDER]: focus order evidence"
+          }
+        },
+        "automationNamesPresent": {
+          "passed": false,
+          "evidence": {
+            "boundSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+            "note": "[PLACEHOLDER]: automation names evidence"
+          }
+        },
+        "screenReaderSmoke": {
+          "passed": false,
+          "evidence": {
+            "boundSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+            "note": "[PLACEHOLDER]: screen reader smoke evidence"
+          }
+        },
+        "reducedMotionSupported": {
+          "passed": false,
+          "evidence": {
+            "boundSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+            "note": "[PLACEHOLDER]: reduced motion evidence"
+          }
+        }
+      },
+      "languageCoverage": {
+        "th": {
+          "125": {
+            "captureRef": "captures/th/pages/overview-125.png",
+            "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+          },
+          "150": {
+            "captureRef": "captures/th/pages/overview-150.png",
+            "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+          },
+          "100": {
+            "captureRef": "captures/th/pages/overview-100.png",
+            "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+          }
+        },
+        "en": {
+          "125": {
+            "captureRef": "captures/en/pages/overview-125.png",
+            "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+          },
+          "150": {
+            "captureRef": "captures/en/pages/overview-150.png",
+            "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+          },
+          "100": {
+            "captureRef": "captures/en/pages/overview-100.png",
+            "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+          }
+        }
+      }
+    },
+    "task-alignment": {
+      "accessibility": {
+        "keyboardFocusVisible": {
+          "passed": false,
+          "evidence": {
+            "boundSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+            "note": "[PLACEHOLDER]: keyboard focus visible evidence"
+          }
+        },
+        "thaiTextNoClipping": {
+          "passed": false,
+          "evidence": {
+            "boundSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+            "note": "[PLACEHOLDER]: thai clipping evidence"
+          }
+        },
+        "focusOrderValid": {
+          "passed": false,
+          "evidence": {
+            "boundSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+            "note": "[PLACEHOLDER]: focus order evidence"
+          }
+        },
+        "automationNamesPresent": {
+          "passed": false,
+          "evidence": {
+            "boundSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+            "note": "[PLACEHOLDER]: automation names evidence"
+          }
+        },
+        "screenReaderSmoke": {
+          "passed": false,
+          "evidence": {
+            "boundSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+            "note": "[PLACEHOLDER]: screen reader smoke evidence"
+          }
+        },
+        "reducedMotionSupported": {
+          "passed": false,
+          "evidence": {
+            "boundSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+            "note": "[PLACEHOLDER]: reduced motion evidence"
+          }
+        }
+      },
+      "languageCoverage": {
+        "th": {
+          "125": {
+            "captureRef": "captures/th/pages/task-alignment-125.png",
+            "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+          },
+          "150": {
+            "captureRef": "captures/th/pages/task-alignment-150.png",
+            "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+          },
+          "100": {
+            "captureRef": "captures/th/pages/task-alignment-100.png",
+            "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+          }
+        },
+        "en": {
+          "125": {
+            "captureRef": "captures/en/pages/task-alignment-125.png",
+            "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+          },
+          "150": {
+            "captureRef": "captures/en/pages/task-alignment-150.png",
+            "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+          },
+          "100": {
+            "captureRef": "captures/en/pages/task-alignment-100.png",
+            "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+          }
+        }
+      }
+    },
+    "daily-summary": {
+      "accessibility": {
+        "keyboardFocusVisible": {
+          "passed": false,
+          "evidence": {
+            "boundSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+            "note": "[PLACEHOLDER]: keyboard focus visible evidence"
+          }
+        },
+        "thaiTextNoClipping": {
+          "passed": false,
+          "evidence": {
+            "boundSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+            "note": "[PLACEHOLDER]: thai clipping evidence"
+          }
+        },
+        "focusOrderValid": {
+          "passed": false,
+          "evidence": {
+            "boundSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+            "note": "[PLACEHOLDER]: focus order evidence"
+          }
+        },
+        "automationNamesPresent": {
+          "passed": false,
+          "evidence": {
+            "boundSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+            "note": "[PLACEHOLDER]: automation names evidence"
+          }
+        },
+        "screenReaderSmoke": {
+          "passed": false,
+          "evidence": {
+            "boundSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+            "note": "[PLACEHOLDER]: screen reader smoke evidence"
+          }
+        },
+        "reducedMotionSupported": {
+          "passed": false,
+          "evidence": {
+            "boundSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+            "note": "[PLACEHOLDER]: reduced motion evidence"
+          }
+        }
+      },
+      "languageCoverage": {
+        "th": {
+          "125": {
+            "captureRef": "captures/th/pages/daily-summary-125.png",
+            "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+          },
+          "150": {
+            "captureRef": "captures/th/pages/daily-summary-150.png",
+            "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+          },
+          "100": {
+            "captureRef": "captures/th/pages/daily-summary-100.png",
+            "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+          }
+        },
+        "en": {
+          "125": {
+            "captureRef": "captures/en/pages/daily-summary-125.png",
+            "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+          },
+          "150": {
+            "captureRef": "captures/en/pages/daily-summary-150.png",
+            "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+          },
+          "100": {
+            "captureRef": "captures/en/pages/daily-summary-100.png",
+            "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+          }
+        }
+      }
+    },
+    "delegation-graph": {
+      "accessibility": {
+        "keyboardFocusVisible": {
+          "passed": false,
+          "evidence": {
+            "boundSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+            "note": "[PLACEHOLDER]: keyboard focus visible evidence"
+          }
+        },
+        "thaiTextNoClipping": {
+          "passed": false,
+          "evidence": {
+            "boundSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+            "note": "[PLACEHOLDER]: thai clipping evidence"
+          }
+        },
+        "focusOrderValid": {
+          "passed": false,
+          "evidence": {
+            "boundSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+            "note": "[PLACEHOLDER]: focus order evidence"
+          }
+        },
+        "automationNamesPresent": {
+          "passed": false,
+          "evidence": {
+            "boundSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+            "note": "[PLACEHOLDER]: automation names evidence"
+          }
+        },
+        "screenReaderSmoke": {
+          "passed": false,
+          "evidence": {
+            "boundSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+            "note": "[PLACEHOLDER]: screen reader smoke evidence"
+          }
+        },
+        "reducedMotionSupported": {
+          "passed": false,
+          "evidence": {
+            "boundSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+            "note": "[PLACEHOLDER]: reduced motion evidence"
+          }
+        }
+      },
+      "languageCoverage": {
+        "th": {
+          "125": {
+            "captureRef": "captures/th/pages/delegation-graph-125.png",
+            "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+          },
+          "150": {
+            "captureRef": "captures/th/pages/delegation-graph-150.png",
+            "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+          },
+          "100": {
+            "captureRef": "captures/th/pages/delegation-graph-100.png",
+            "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+          }
+        },
+        "en": {
+          "125": {
+            "captureRef": "captures/en/pages/delegation-graph-125.png",
+            "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+          },
+          "150": {
+            "captureRef": "captures/en/pages/delegation-graph-150.png",
+            "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+          },
+          "100": {
+            "captureRef": "captures/en/pages/delegation-graph-100.png",
+            "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+          }
+        }
+      }
+    },
+    "file-activity": {
+      "accessibility": {
+        "keyboardFocusVisible": {
+          "passed": false,
+          "evidence": {
+            "boundSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+            "note": "[PLACEHOLDER]: keyboard focus visible evidence"
+          }
+        },
+        "thaiTextNoClipping": {
+          "passed": false,
+          "evidence": {
+            "boundSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+            "note": "[PLACEHOLDER]: thai clipping evidence"
+          }
+        },
+        "focusOrderValid": {
+          "passed": false,
+          "evidence": {
+            "boundSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+            "note": "[PLACEHOLDER]: focus order evidence"
+          }
+        },
+        "automationNamesPresent": {
+          "passed": false,
+          "evidence": {
+            "boundSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+            "note": "[PLACEHOLDER]: automation names evidence"
+          }
+        },
+        "screenReaderSmoke": {
+          "passed": false,
+          "evidence": {
+            "boundSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+            "note": "[PLACEHOLDER]: screen reader smoke evidence"
+          }
+        },
+        "reducedMotionSupported": {
+          "passed": false,
+          "evidence": {
+            "boundSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+            "note": "[PLACEHOLDER]: reduced motion evidence"
+          }
+        }
+      },
+      "languageCoverage": {
+        "th": {
+          "125": {
+            "captureRef": "captures/th/pages/file-activity-125.png",
+            "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+          },
+          "150": {
+            "captureRef": "captures/th/pages/file-activity-150.png",
+            "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+          },
+          "100": {
+            "captureRef": "captures/th/pages/file-activity-100.png",
+            "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+          }
+        },
+        "en": {
+          "125": {
+            "captureRef": "captures/en/pages/file-activity-125.png",
+            "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+          },
+          "150": {
+            "captureRef": "captures/en/pages/file-activity-150.png",
+            "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+          },
+          "100": {
+            "captureRef": "captures/en/pages/file-activity-100.png",
+            "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+          }
+        }
+      }
+    }
+  },
+  "widgets": {
+    "Notification": {
+      "capturesRef": "captures/[lang]/widgets/notification-native.png",
+      "evidence": {
+        "boundSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+        "note": "[PLACEHOLDER]: Widget variant Notification evidence"
+      },
+      "semantics": {
+        "boundSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+        "note": "[PLACEHOLDER]: Widget variant Notification semantic review evidence"
+      },
+      "sharedStateAccepted": false
+    },
+    "Compact": {
+      "capturesRef": "captures/[lang]/widgets/compact-native.png",
+      "evidence": {
+        "boundSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+        "note": "[PLACEHOLDER]: Widget variant Compact evidence"
+      },
+      "semantics": {
+        "boundSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+        "note": "[PLACEHOLDER]: Widget variant Compact semantic review evidence"
+      },
+      "sharedStateAccepted": false
+    },
+    "FloatingMini": {
+      "capturesRef": "captures/[lang]/widgets/floatingmini-native.png",
+      "evidence": {
+        "boundSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+        "note": "[PLACEHOLDER]: Widget variant FloatingMini evidence"
+      },
+      "semantics": {
+        "boundSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+        "note": "[PLACEHOLDER]: Widget variant FloatingMini semantic review evidence"
+      },
+      "sharedStateAccepted": false
+    },
+    "AgentDetailPopup": {
+      "capturesRef": "captures/[lang]/widgets/agentdetailpopup-native.png",
+      "evidence": {
+        "boundSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+        "note": "[PLACEHOLDER]: Widget variant AgentDetailPopup evidence"
+      },
+      "semantics": {
+        "boundSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+        "note": "[PLACEHOLDER]: Widget variant AgentDetailPopup semantic review evidence"
+      },
+      "sharedStateAccepted": false
+    },
+    "FloatingVertical": {
+      "capturesRef": "captures/[lang]/widgets/floatingvertical-native.png",
+      "evidence": {
+        "boundSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+        "note": "[PLACEHOLDER]: Widget variant FloatingVertical evidence"
+      },
+      "semantics": {
+        "boundSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+        "note": "[PLACEHOLDER]: Widget variant FloatingVertical semantic review evidence"
+      },
+      "sharedStateAccepted": false
+    },
+    "Normal": {
+      "capturesRef": "captures/[lang]/widgets/normal-native.png",
+      "evidence": {
+        "boundSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+        "note": "[PLACEHOLDER]: Widget variant Normal evidence"
+      },
+      "semantics": {
+        "boundSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+        "note": "[PLACEHOLDER]: Widget variant Normal semantic review evidence"
+      },
+      "sharedStateAccepted": false
+    },
+    "DashboardPreview": {
+      "capturesRef": "captures/[lang]/widgets/dashboard-preview.png",
+      "evidence": {
+        "boundSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+        "note": "[PLACEHOLDER]: Dashboard preview evidence"
+      },
+      "semantics": {
+        "boundSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+        "note": "[PLACEHOLDER]: Dashboard launch/preview state semantic review evidence"
+      },
+      "sharedStateAccepted": false
+    },
+    "Expanded": {
+      "capturesRef": "captures/[lang]/widgets/expanded-native.png",
+      "evidence": {
+        "boundSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+        "note": "[PLACEHOLDER]: Widget variant Expanded evidence"
+      },
+      "semantics": {
+        "boundSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+        "note": "[PLACEHOLDER]: Widget variant Expanded semantic review evidence"
+      },
+      "sharedStateAccepted": false
+    }
+  },
+  "accessibleEvidence": {
+    "contrastManualChecks": [
+      {
+        "foreground": "#000000",
+        "measured": false,
+        "boundSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+        "background": "#FFFFFF",
+        "ratio": 21.0,
+        "label": "[PLACEHOLDER]: contrast pair label"
+      }
+    ],
+    "manualEvidenceSlots": [
+      {
+        "title": "[PLACEHOLDER]: manual evidence slot title",
+        "boundSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+        "observation": "[PLACEHOLDER]: manual observation"
+      }
+    ]
+  },
+  "declarations": {
+    "noAcceptedCaptureInPreparation": true,
+    "humanReviewClaimed": false,
+    "runtimeClaims": "NOT OBSERVED",
+    "releaseClaims": "NOT PRODUCED",
+    "preparationBoundary": "PREPARATION/Static-Contract-Synthetic"
+  }
+}
