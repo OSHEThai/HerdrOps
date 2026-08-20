@@ -1,4 +1,6 @@
+using System.Globalization;
 using System.Text;
+using System.Text.RegularExpressions;
 using HerdrOps.Contracts.SelfReport;
 
 namespace HerdrOps.ContractTests;
@@ -196,6 +198,37 @@ public sealed class SelfReportContractTests
 
         Assert.Throws<HerdrOpsSelfReportProtocolException>(() =>
             HerdrOpsSelfReportJson.ValidateResult(invalid));
+    }
+
+    [TestMethod]
+    public void AcceptedResultAcceptedUtcCarriesExplicitUtcOffsetOnTheWire()
+    {
+        var result = new HerdrOpsSelfReportResult(
+            true,
+            HerdrOpsSelfReportProtocol.ResultCodes.Accepted,
+            "The self-report event was accepted by Core.",
+            Guid.NewGuid(),
+            HerdrOpsSelfReportProtocol.EventTypes.Assignment,
+            "TASK-115",
+            Guid.NewGuid(),
+            1,
+            new DateTimeOffset(2026, 8, 15, 3, 0, 1, TimeSpan.Zero),
+            HerdrOpsSelfReportProtocol.CoreSource,
+            new string('A', 64));
+        HerdrOpsSelfReportJson.ValidateResult(result);
+
+        var json = HerdrOpsSelfReportJson.Serialize(result);
+        var match = Regex.Match(json, "\"acceptedUtc\":\"([^\"]+)\"", RegexOptions.CultureInvariant);
+        Assert.IsTrue(match.Success, "The accepted result must contain an acceptedUtc string member.");
+
+        var acceptedUtc = match.Groups[1].Value;
+        Assert.IsTrue(
+            Regex.IsMatch(acceptedUtc, "Z$|[+-]00:00$", RegexOptions.CultureInvariant),
+            $"The accepted acceptedUtc must carry an explicit UTC offset, got: {acceptedUtc}");
+        Assert.AreEqual(
+            TimeSpan.Zero,
+            DateTimeOffset.Parse(acceptedUtc, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind).Offset,
+            "The accepted acceptedUtc must parse to a zero UTC offset on any host timezone.");
     }
 
     private static HerdrOpsSelfReportCommandInput ValidInput() => new(

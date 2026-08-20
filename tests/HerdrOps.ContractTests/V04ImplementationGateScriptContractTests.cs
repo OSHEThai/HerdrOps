@@ -81,6 +81,33 @@ public sealed class V04ImplementationGateScriptContractTests
             "Invoke-V04LifecycleRuntimeAcceptance.ps1 must enforce composite Acceptance.Passed check.");
     }
 
+    [TestMethod]
+    public void SelfReportGatePreservesExactAcceptedUtcAcrossPowerShellHostsAndTimezones()
+    {
+        var script = ReadRepositoryFile("tools", "Test-V04SelfReportCli.ps1");
+
+        Assert.IsFalse(
+            Regex.IsMatch(script, @"\[string\]\$acceptedResult\.acceptedUtc", RegexOptions.CultureInvariant),
+            "Test-V04SelfReportCli.ps1 must not read acceptedUtc through ConvertFrom-Json, whose date coercion rewrites the exact UTC offset on PowerShell 7 and differs by host timezone.");
+
+        StringAssert.Contains(
+            script,
+            "\"acceptedUtc\"\\s*:\\s*\"([^\"]+)\"",
+            "Test-V04SelfReportCli.ps1 must extract acceptedUtc from the raw JSON bytes to preserve the exact UTC string and offset.");
+        StringAssert.Contains(
+            script,
+            "$acceptedUtcText -notmatch '(Z|[+-]00:00)$'",
+            "Test-V04SelfReportCli.ps1 must require an explicit UTC offset so the check behaves identically on UTC and non-UTC hosts.");
+        StringAssert.Contains(
+            script,
+            "[Globalization.DateTimeStyles]::RoundtripKind",
+            "Test-V04SelfReportCli.ps1 must parse acceptedUtc with RoundtripKind to preserve the exact offset.");
+        StringAssert.Contains(
+            script,
+            "$acceptedUtc.Offset -ne [TimeSpan]::Zero",
+            "Test-V04SelfReportCli.ps1 must reject a non-zero acceptedUtc offset.");
+    }
+
     private static string[] GateScripts() =>
     [
         "Test-V04SelfReportCli.ps1",

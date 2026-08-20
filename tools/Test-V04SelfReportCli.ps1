@@ -289,7 +289,23 @@ $acceptedResult = $acceptedResultJson | ConvertFrom-Json
 $unknownResult = Get-Content -LiteralPath $unknownOutputPath -Raw | ConvertFrom-Json
 $invalidResult = Get-Content -LiteralPath $invalidErrorPath -Raw | ConvertFrom-Json
 $trace = Get-Content -LiteralPath $tracePath -Raw | ConvertFrom-Json
-$acceptedUtcText = [string]$acceptedResult.acceptedUtc
+
+# Read the acceptedUtc string directly from the raw JSON bytes instead of via
+# ConvertFrom-Json, whose date coercion varies by PowerShell host (PowerShell 7
+# rewrites ISO-8601 values to a localized DateTime and drops the exact UTC
+# offset). A regex extraction preserves the exact string on PowerShell 5.1 and 7
+# and on any host timezone.
+$acceptedUtcMatch = [Regex]::Match(
+    $acceptedResultJson,
+    '"acceptedUtc"\s*:\s*"([^"]+)"',
+    [Text.RegularExpressions.RegexOptions]::CultureInvariant)
+if (-not $acceptedUtcMatch.Success) {
+    throw 'The built CLI accepted response is missing a string acceptedUtc identity.'
+}
+$acceptedUtcText = $acceptedUtcMatch.Groups[1].Value
+if ($acceptedUtcText -notmatch '(Z|[+-]00:00)$') {
+    throw "The built CLI acceptedUtc must carry an explicit UTC offset: $acceptedUtcText"
+}
 $acceptedUtc = [DateTimeOffset]::Parse(
     $acceptedUtcText,
     [Globalization.CultureInfo]::InvariantCulture,
