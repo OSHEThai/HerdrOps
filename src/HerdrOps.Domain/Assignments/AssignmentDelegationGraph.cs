@@ -131,6 +131,57 @@ public static class AssignmentDelegationGraphProjector
             graphSha256);
     }
 
+    public static string? ResolveSelectedTaskIdForActor(
+        AssignmentDelegationGraph graph,
+        string actorId,
+        string? requestedTaskId)
+    {
+        ArgumentNullException.ThrowIfNull(graph);
+        if (string.IsNullOrWhiteSpace(actorId))
+        {
+            return requestedTaskId;
+        }
+
+        var actorNode = graph.Nodes.SingleOrDefault(item =>
+            string.Equals(item.ActorId, actorId, StringComparison.Ordinal));
+        if (actorNode is null)
+        {
+            return requestedTaskId;
+        }
+
+        if (requestedTaskId is not null &&
+            actorNode.TaskIds.Contains(requestedTaskId, StringComparer.Ordinal))
+        {
+            return requestedTaskId;
+        }
+
+        var currentTaskId = graph.Tasks
+            .Where(item => string.Equals(item.CurrentAssigneeId, actorId, StringComparison.Ordinal))
+            .OrderBy(item => item.TaskId, StringComparer.Ordinal)
+            .Select(item => item.TaskId)
+            .FirstOrDefault();
+        if (currentTaskId is not null)
+        {
+            return currentTaskId;
+        }
+
+        var latestTimelineTaskId = graph.Timeline
+            .Where(item =>
+                string.Equals(item.ActorId, actorId, StringComparison.Ordinal) ||
+                string.Equals(item.TargetAgentId, actorId, StringComparison.Ordinal))
+            .OrderByDescending(item => item.Sequence)
+            .Select(item => item.TaskId)
+            .FirstOrDefault();
+        if (latestTimelineTaskId is not null)
+        {
+            return latestTimelineTaskId;
+        }
+
+        return actorNode.TaskIds.Count == 0
+            ? null
+            : actorNode.TaskIds.OrderBy(item => item, StringComparer.Ordinal).First();
+    }
+
     private static IReadOnlyDictionary<Guid, NormalizedAssignmentLifecycleEvent> ValidateReplayProvenance(
         AssignmentLifecycleReplayResult replay)
     {

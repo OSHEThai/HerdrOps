@@ -33,6 +33,26 @@ public sealed class DelegationGraphStateTests
     }
 
     [TestMethod]
+    public void NodeSelectionFallsBackToActorRelatedTaskWhenTaskSelectionMismatches()
+    {
+        var state = DelegationGraphState.CreateSyntheticPreview();
+        var selectedTask = state.TaskTreeItems.Single(item => item.TaskId == "TASK-122");
+        var actor = state.GraphNodes.Single(item => item.ActorId == "backend-worker-01");
+
+        state.SelectedTask = selectedTask;
+        state.SelectedNode = actor;
+
+        Assert.AreEqual("backend-worker-01", state.SelectedNode?.ActorId);
+        Assert.AreEqual("TASK-115", state.SelectedTask?.TaskId);
+        Assert.AreEqual("backend-worker-01", state.SelectedDetail.ActorId);
+        Assert.IsTrue(state.Timeline.All(item => item.TaskId == "TASK-115"));
+        Assert.IsTrue(state.GraphEdges.All(item => item.TaskId == "TASK-115" ? item.Opacity >= 0.9d : item.Opacity < 0.9d));
+        Assert.AreNotEqual("—", state.SelectedDetail.AssignmentSummary);
+        Assert.IsTrue(state.SelectedDetail.TaskIds.Contains("TASK-115", StringComparer.Ordinal));
+        Assert.IsFalse(state.SelectedDetail.TaskIds.Contains("TASK-122", StringComparer.Ordinal));
+    }
+
+    [TestMethod]
     public void VisualAndAccessibleSelectionsRemainEquivalent()
     {
         var state = DelegationGraphState.CreateSyntheticPreview();
