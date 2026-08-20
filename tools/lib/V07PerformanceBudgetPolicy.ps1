@@ -1032,6 +1032,106 @@ function ConvertTo-V07UtcTimestampText {
 }
 
 # -----------------------------------------------------------------------------
+# Candidate Synthesis Helpers (Issue #39 Non-Runtime Preparation)
+# Used by self-tests and external tests to build a positive-control report whose
+# Candidate.Binaries are bound to the *current* build output at test runtime,
+# without persisting machine-specific hashes into committed fixture files.
+# -----------------------------------------------------------------------------
+function New-CurrentCandidateBindings {
+    <#
+    .SYNOPSIS
+        Reads the three declared HerdrOps candidate DLLs from artifacts/bin and
+        returns an array of {RelativePath, LengthBytes, Sha256} objects whose
+        values reflect exactly what is on disk right now.
+    .DESCRIPTION
+        Fails closed with a clear prerequisite error if any expected binary is
+        absent.  Does NOT weaken hash or length verification — the returned
+        objects contain the actual on-disk bytes and SHA-256 so that callers can
+        pass them to Test-PerformanceBudgetReport for strict verification.
+    #>
+    param(
+        [Parameter(Mandatory)][string]$RepositoryRoot
+    )
+
+    # Canonical relative paths that must exist after a successful Release build.
+    $requiredRelPaths = @(
+        'artifacts/bin/HerdrOps.Core/release/HerdrOps.Core.dll',
+        'artifacts/bin/HerdrOps.App/release/HerdrOps.App.dll',
+        'artifacts/bin/HerdrOps.Cli/release/HerdrOps.Cli.dll'
+    )
+
+    $bindings = [System.Collections.Generic.List[pscustomobject]]::new()
+    foreach ($rel in $requiredRelPaths) {
+        $fullPath = Join-Path $RepositoryRoot ($rel.Replace('/', [System.IO.Path]::DirectorySeparatorChar))
+        if (-not (Test-Path -LiteralPath $fullPath -PathType Leaf)) {
+            throw "Candidate binary prerequisite missing -- run Invoke-Build.ps1 first: $rel"
+        }
+        Assert-NotReparsePoint -Path $fullPath -Description "Candidate binary $rel"
+        $fi = Get-Item -LiteralPath $fullPath -Force -ErrorAction Stop
+        $sha = Get-Sha256DigestHex -Path $fullPath
+        $bindings.Add([pscustomobject]@{
+            RelativePath = $rel
+            LengthBytes  = $fi.Length
+            Sha256       = $sha
+        })
+    }
+    return @($bindings)
+}
+
+function New-SynthesizedCandidateBoundReport {
+    <#
+    .SYNOPSIS
+        Deep-copies a base report object and replaces its Candidate.SourceCommit
+        and Candidate.Binaries with values derived from the current HEAD and the
+        actual on-disk build outputs.
+    .DESCRIPTION
+        The committed fixture files intentionally contain stable (but potentially
+        stale after a rebuild) binary metadata.  Tests that exercise positive
+        candidate-binding paths must call this function to obtain a report whose
+        declared hashes and lengths match exactly what Test-PerformanceBudgetReport
+        will verify on disk — without ever writing machine-specific values into
+        the repository.
+
+        Fails closed (throws) if:
+          - Any candidate binary is absent from artifacts/bin.
+          - The RepositoryRoot resolves to a reparse point.
+          - git rev-parse HEAD fails.
+
+        Negative tests (tampered hash, missing binary, wrong role) must be
+        constructed by the caller by mutating a copy of the returned object;
+        they must NOT use this function's output directly as the expected-failure
+        input, because this function always returns a valid positive-control.
+    #>
+    param(
+        [Parameter(Mandatory)]$BaseReportObject,
+        [Parameter(Mandatory)][string]$RepositoryRoot
+    )
+
+    # Resolve and safety-check the repository root.
+    $resolvedRoot = (Resolve-Path -LiteralPath $RepositoryRoot).Path
+    Assert-NotReparsePoint -Path $resolvedRoot -Description 'RepositoryRoot for synthesis'
+
+    # Bind SourceCommit to the current HEAD.  SkipCleanCheck is intentional:
+    # the worktree is in a pre-commit state during test runs and clean-check is
+    # not meaningful for a synthesis helper (the binary binding is what matters).
+    $currentHead = Test-CleanRepositoryState -RepositoryRoot $resolvedRoot -SkipCleanCheck
+
+    # Compute on-disk bindings (fails closed if any binary is missing).
+    $currentBindings = New-CurrentCandidateBindings -RepositoryRoot $resolvedRoot
+
+    # Deep-copy the base report via JSON round-trip so the original object is
+    # never mutated and each call returns an independent object.
+    $jsonCopy = $BaseReportObject | ConvertTo-Json -Depth 20
+    $synthesized = $jsonCopy | ConvertFrom-Json
+
+    # Rebind SourceCommit and Binaries to current state.
+    $synthesized.Candidate.SourceCommit = $currentHead
+    $synthesized.Candidate | Add-Member -MemberType NoteProperty -Name Binaries -Value $currentBindings -Force
+
+    return $synthesized
+}
+
+# -----------------------------------------------------------------------------
 # Performance Budget Evaluation Engine
 # -----------------------------------------------------------------------------
 function Test-PerformanceBudgetReport {
@@ -1850,23 +1950,27 @@ function Invoke-PerformanceBudgetSelfTests {
         })
     }
 
-    # Test 1: Passing golden fixture
+    # Test 1: Passing golden fixture — synthesize candidate bindings from current build output.
+    # The fixture is the schema-correct semantic sample; binary hashes are derived from disk.
     $passingPath = Join-Path $FixturesDirectory 'passing-budget-report.json'
     try {
         $json = Get-BoundedUtf8FileText -Path $passingPath -Description 'Passing fixture'
-        $report = ConvertFrom-StrictPerformanceBudgetJson -JsonText $json -SourceDescription 'passing fixture'
-        $eval = Test-PerformanceBudgetReport -ReportObject $report -CandidateDirectory (Join-Path $RepositoryRoot 'artifacts\bin') -RepositoryRoot $RepositoryRoot -ExpectedSourceCommit ([string]$report.Candidate.SourceCommit)
+        $baseReport = ConvertFrom-StrictPerformanceBudgetJson -JsonText $json -SourceDescription 'passing fixture'
+        $synthReport = New-SynthesizedCandidateBoundReport -BaseReportObject $baseReport -RepositoryRoot $RepositoryRoot
+        $eval = Test-PerformanceBudgetReport -ReportObject $synthReport -CandidateDirectory (Join-Path $RepositoryRoot 'artifacts\bin') -RepositoryRoot $RepositoryRoot -ExpectedSourceCommit ([string]$synthReport.Candidate.SourceCommit)
         & $recordSelfTest 'Positive: Golden passing budget report' ($eval.Passed -and $eval.OverallStatus -eq 'PASS') "All 8 checks PASS"
     } catch {
         & $recordSelfTest 'Positive: Golden passing budget report' $false $_.Exception.Message
     }
 
-    # Test 2: Waived budget fixture
+    # Test 2: Waived budget fixture — synthesize candidate bindings; waiver SHA covers
+    # only waiver-content fields so it remains valid after binary replacement.
     $waivedPath = Join-Path $FixturesDirectory 'waived-budget-report.json'
     try {
         $json = Get-BoundedUtf8FileText -Path $waivedPath -Description 'Waived fixture'
-        $report = ConvertFrom-StrictPerformanceBudgetJson -JsonText $json -SourceDescription 'waived fixture'
-        $eval = Test-PerformanceBudgetReport -ReportObject $report -CandidateDirectory (Join-Path $RepositoryRoot 'artifacts\bin') -RepositoryRoot $RepositoryRoot -ExpectedSourceCommit ([string]$report.Candidate.SourceCommit)
+        $baseWaived = ConvertFrom-StrictPerformanceBudgetJson -JsonText $json -SourceDescription 'waived fixture'
+        $synthWaived = New-SynthesizedCandidateBoundReport -BaseReportObject $baseWaived -RepositoryRoot $RepositoryRoot
+        $eval = Test-PerformanceBudgetReport -ReportObject $synthWaived -CandidateDirectory (Join-Path $RepositoryRoot 'artifacts\bin') -RepositoryRoot $RepositoryRoot -ExpectedSourceCommit ([string]$synthWaived.Candidate.SourceCommit)
         & $recordSelfTest 'Positive: Budget overrun with valid waiver' ($eval.Passed -and $eval.OverallStatus -eq 'PASS (WITH WAIVER)') "Waiver correctly transitions failing metric to PASS (WAIVED)"
     } catch {
         & $recordSelfTest 'Positive: Budget overrun with valid waiver' $false $_.Exception.Message
@@ -2163,10 +2267,11 @@ function Invoke-PerformanceBudgetSelfTests {
         & $recordSelfTest 'Negative: Path traversal outside root fails' $true "Rejected escaped path: $($_.Exception.Message)"
     }
 
-    # Test 28: Zero-hour soak in Preparation mode (reports NOT OBSERVED, never PASS as runtime)
+    # Test 28: Zero-hour soak in Preparation mode — synthesize bindings so the
+    # positive-control passes the binary check; the soak check must report NOT OBSERVED.
     try {
-        $prep0hJson = Get-BoundedUtf8FileText -Path (Join-Path $FixturesDirectory 'passing-budget-report.json')
-        $prep0hReport = ConvertFrom-StrictPerformanceBudgetJson -JsonText $prep0hJson -SourceDescription 'prep 0h test'
+        $prep0hBase = ConvertFrom-StrictPerformanceBudgetJson -JsonText (Get-BoundedUtf8FileText -Path (Join-Path $FixturesDirectory 'passing-budget-report.json')) -SourceDescription 'prep 0h test'
+        $prep0hReport = New-SynthesizedCandidateBoundReport -BaseReportObject $prep0hBase -RepositoryRoot $RepositoryRoot
         $prep0hReport.Metrics.SoakDurationHours = 0.0
         $prep0hReport.EvidenceClass = 'Preparation'
         $prep0hEval = Test-PerformanceBudgetReport -ReportObject $prep0hReport -CandidateDirectory (Join-Path $RepositoryRoot 'artifacts\bin') -RepositoryRoot $RepositoryRoot -ExpectedSourceCommit ([string]$prep0hReport.Candidate.SourceCommit)
@@ -2191,17 +2296,18 @@ function Invoke-PerformanceBudgetSelfTests {
         & $recordSelfTest 'Negative: Zero-hour soak in Runtime admission fails closed' $false $_.Exception.Message
     }
 
-    # Test 30: Full 8-hour soak in Runtime admission passes
+    # Test 30: Full 8-hour soak in Runtime admission — synthesize bindings so the
+    # candidate-hash check and disk-binding check both pass on the current build.
     try {
-        $run8hJson = Get-BoundedUtf8FileText -Path (Join-Path $FixturesDirectory 'passing-budget-report.json')
-        $run8hReport = ConvertFrom-StrictPerformanceBudgetJson -JsonText $run8hJson -SourceDescription 'runtime 8h test'
+        $run8hBase = ConvertFrom-StrictPerformanceBudgetJson -JsonText (Get-BoundedUtf8FileText -Path (Join-Path $FixturesDirectory 'passing-budget-report.json')) -SourceDescription 'runtime 8h test'
+        $run8hReport = New-SynthesizedCandidateBoundReport -BaseReportObject $run8hBase -RepositoryRoot $RepositoryRoot
         $run8hReport.Metrics.SoakDurationHours = 8.0
         $run8hReport.Metrics | Add-Member -MemberType NoteProperty -Name WidgetDeltaLatencySamplesMs -Value @([double]145.2, [double]145.2, [double]145.2) -Force
         $run8hReport.Metrics | Add-Member -MemberType NoteProperty -Name DashboardColdLaunchSamplesMs -Value @([double]1320.0, [double]1320.0, [double]1320.0) -Force
         $run8hReport.EvidenceClass = 'Runtime'
         $run8hReport.EvidenceBoundary.ActualHerdrRuntime = 'OBSERVED'
         $run8hReport.EvidenceBoundary.SoakExecution = 'OBSERVED'
-        $run8hReport.Candidate.SourceCommit = (Test-CleanRepositoryState -RepositoryRoot $RepositoryRoot -SkipCleanCheck)
+        # ProcessTelemetry uses the synthesized (on-disk) binary SHA256 values and paths.
         $run8hReport | Add-Member -MemberType NoteProperty -Name ProcessTelemetry -Value @(
             [pscustomobject]@{ ProcessName='HerdrOps.Core'; ProcessId=[int]41001; ProcessStartUtc='2020-01-01T12:00:00Z'; BinaryPath=(Join-Path $RepositoryRoot 'artifacts/bin/HerdrOps.Core/release/HerdrOps.Core.dll'); BinarySha256=[string]$run8hReport.Candidate.Binaries[0].Sha256 },
             [pscustomobject]@{ ProcessName='HerdrOps.App'; ProcessId=[int]41002; ProcessStartUtc='2020-01-01T12:00:01Z'; BinaryPath=(Join-Path $RepositoryRoot 'artifacts/bin/HerdrOps.App/release/HerdrOps.App.dll'); BinarySha256=[string]$run8hReport.Candidate.Binaries[1].Sha256 }
@@ -2249,9 +2355,11 @@ function Invoke-PerformanceBudgetSelfTests {
         & $recordSelfTest 'Negative: Fractional integer fails exact JSON type validation' $true "Rejected fractional integer: $($_.Exception.Message)"
     }
 
-    # Test 35: A full synthetic Preparation duration is still NOT OBSERVED
+    # Test 35: A full synthetic Preparation duration is still NOT OBSERVED — synthesize
+    # bindings so the binary check passes and the soak assertion is the only variable.
     try {
-        $prep8h = ConvertFrom-StrictPerformanceBudgetJson -JsonText (Get-BoundedUtf8FileText -Path $passingPath) -SourceDescription 'prep 8h boundary test'
+        $prep8hBase = ConvertFrom-StrictPerformanceBudgetJson -JsonText (Get-BoundedUtf8FileText -Path $passingPath) -SourceDescription 'prep 8h boundary test'
+        $prep8h = New-SynthesizedCandidateBoundReport -BaseReportObject $prep8hBase -RepositoryRoot $RepositoryRoot
         $prep8h.Metrics.SoakDurationHours = 8.0
         $prep8h.EvidenceClass = 'Preparation'
         $prep8hEval = Test-PerformanceBudgetReport -ReportObject $prep8h -CandidateDirectory (Join-Path $RepositoryRoot 'artifacts\bin') -RepositoryRoot $RepositoryRoot -ExpectedSourceCommit ([string]$prep8h.Candidate.SourceCommit)

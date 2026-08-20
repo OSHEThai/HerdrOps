@@ -18,15 +18,36 @@ $testCount = 0
 $passCount = 0
 $failCount = 0
 
+function New-SynthesizedPassingReport {
+    <#
+    .SYNOPSIS
+        Returns a deep-copied passing-fixture report with SourceCommit and
+        Candidate.Binaries replaced by current HEAD and actual on-disk hashes.
+        Fails closed (throws) if any candidate binary is absent from artifacts/bin.
+        Each call returns a fresh, independent object — never mutate the fixture itself.
+    #>
+    $json = Get-BoundedUtf8FileText -Path $passFixturePath -Description 'Passing fixture base for synthesis'
+    $base = ConvertFrom-StrictPerformanceBudgetJson -JsonText $json -SourceDescription 'passing fixture base'
+    return New-SynthesizedCandidateBoundReport -BaseReportObject $base -RepositoryRoot $repositoryRoot
+}
+
 function New-RuntimeJsonFromPassingFixture {
+    <#
+    .SYNOPSIS
+        Builds a Runtime-class JSON string derived from the passing fixture, with
+        ProcessTelemetry bound to actual on-disk SHA-256 values.
+        BinarySha256 in ProcessTelemetry comes from disk so that the standard
+        positive-control path passes; negative tests must override these fields
+        explicitly in the returned parsed object.
+    #>
     param(
         [string]$CoreBinaryRelativePath = 'artifacts/bin/HerdrOps.Core/release/HerdrOps.Core.dll',
         [long]$CorePid = 41001,
         [long]$AppPid = 41002
     )
 
+    # Start from the fixture JSON then patch it to Runtime evidence class.
     $json = Get-BoundedUtf8FileText -Path $passFixturePath -Description 'Runtime JSON regression fixture'
-    $base = $json | ConvertFrom-Json
     $head = (git -C $repositoryRoot rev-parse HEAD).Trim()
     $json = $json -replace '"SourceCommit":\s*"[0-9a-f]{40}"', ('"SourceCommit": "' + $head + '"')
     $json = $json.Replace('"EvidenceClass": "Preparation"', '"EvidenceClass": "Runtime"')
@@ -38,11 +59,32 @@ function New-RuntimeJsonFromPassingFixture {
         '    "DashboardColdLaunchSamplesMs": [1320.0, 1320.0, 1320.0],'
     $json = $json.Replace('"DashboardColdLaunchP95Ms": 1320.0,', $metricsInsertion)
 
-    $coreBinary = @($base.Candidate.Binaries | Where-Object { $_.RelativePath -eq $CoreBinaryRelativePath })[0]
-    if ($null -eq $coreBinary) { throw "Runtime regression candidate binary missing from fixture: $CoreBinaryRelativePath" }
-    $appBinary = @($base.Candidate.Binaries | Where-Object { $_.RelativePath -like '*HerdrOps.App/release/HerdrOps.App.dll' })[0]
+    # Derive candidate bindings from disk so binary hashes are always current.
+    # New-CurrentCandidateBindings fails closed if any binary is missing.
+    $currentBindings = New-CurrentCandidateBindings -RepositoryRoot $repositoryRoot
+
+    # Replace the stale Candidate.Binaries block in the JSON with current hashes
+    # so the candidate-hash verification inside Test-PerformanceBudgetReport passes.
+    $bindingsJson = ($currentBindings | ConvertTo-Json -Depth 5 -Compress)
+    $json = $json -replace '"Binaries":\s*\[[\s\S]*?\]', ('"Binaries": ' + $bindingsJson)
+
+    # Find the core-role binding (may differ for role-mismatch negative tests).
+    $coreBinary = @($currentBindings | Where-Object { $_.RelativePath -eq $CoreBinaryRelativePath })[0]
+    if ($null -eq $coreBinary) {
+        # Role-mismatch test: resolve the explicit path directly from disk.
+        $coreFullPath = Join-Path $repositoryRoot ($CoreBinaryRelativePath.Replace('/', [System.IO.Path]::DirectorySeparatorChar))
+        if (Test-Path -LiteralPath $coreFullPath -PathType Leaf) {
+            $coreLen = (Get-Item -LiteralPath $coreFullPath -Force).Length
+            $coreSha = Get-Sha256DigestHex -Path $coreFullPath
+            $coreBinary = [pscustomobject]@{ RelativePath=$CoreBinaryRelativePath; LengthBytes=$coreLen; Sha256=$coreSha }
+        } else {
+            throw "Runtime regression candidate binary missing from disk: $CoreBinaryRelativePath"
+        }
+    }
+    $appBinary = @($currentBindings | Where-Object { $_.RelativePath -like '*HerdrOps.App/release/HerdrOps.App.dll' })[0]
+
     $corePath = (Join-Path $repositoryRoot $CoreBinaryRelativePath).Replace('\', '\\')
-    $appPath = (Join-Path $repositoryRoot $appBinary.RelativePath).Replace('\', '\\')
+    $appPath  = (Join-Path $repositoryRoot $appBinary.RelativePath).Replace('\', '\\')
     $telemetry = @"
   "ProcessTelemetry": [
     {
@@ -150,13 +192,18 @@ try {
 Assert-Test -Name 'ConvertFrom-StrictPerformanceBudgetJson rejects negative metric' -Condition $negMetricCaught
 
 # Section 5: Budget Evaluations and Waivers
+# Positive-control tests use synthesized reports (current HEAD + on-disk binary hashes) so
+# that the candidate-hash binding check always reflects the actual build output rather than
+# the static fixture metadata, which becomes stale after any legitimate rebuild.
 Write-Host "`nSection 5: Budget Evaluations and Waivers"
-$evalPass = Test-PerformanceBudgetReport -ReportObject $parsedValid -CandidateDirectory (Join-Path $repositoryRoot 'artifacts\bin') -RepositoryRoot $repositoryRoot -ExpectedSourceCommit ([string]$parsedValid.Candidate.SourceCommit)
+$synthPassReport = New-SynthesizedPassingReport
+$evalPass = Test-PerformanceBudgetReport -ReportObject $synthPassReport -CandidateDirectory (Join-Path $repositoryRoot 'artifacts\bin') -RepositoryRoot $repositoryRoot -ExpectedSourceCommit ([string]$synthPassReport.Candidate.SourceCommit)
 Assert-Test -Name 'Passing report passes all 8 Plan target budgets' -Condition ($evalPass.Passed -and $evalPass.OverallStatus -eq 'PASS')
 
 $waivedJson = Get-BoundedUtf8FileText -Path (Join-Path $fixturesDirectory 'waived-budget-report.json')
-$parsedWaived = ConvertFrom-StrictPerformanceBudgetJson -JsonText $waivedJson -SourceDescription 'Waived report'
-$evalWaived = Test-PerformanceBudgetReport -ReportObject $parsedWaived -CandidateDirectory (Join-Path $repositoryRoot 'artifacts\bin') -RepositoryRoot $repositoryRoot -ExpectedSourceCommit ([string]$parsedWaived.Candidate.SourceCommit)
+$parsedWaivedBase = ConvertFrom-StrictPerformanceBudgetJson -JsonText $waivedJson -SourceDescription 'Waived report base'
+$synthWaivedReport = New-SynthesizedCandidateBoundReport -BaseReportObject $parsedWaivedBase -RepositoryRoot $repositoryRoot
+$evalWaived = Test-PerformanceBudgetReport -ReportObject $synthWaivedReport -CandidateDirectory (Join-Path $repositoryRoot 'artifacts\bin') -RepositoryRoot $repositoryRoot -ExpectedSourceCommit ([string]$synthWaivedReport.Candidate.SourceCommit)
 Assert-Test -Name 'Valid waiver transitions failing metric to PASS (WAIVED)' -Condition ($evalWaived.Passed -and $evalWaived.OverallStatus -eq 'PASS (WITH WAIVER)')
 
 $trimWaiverJson = Get-BoundedUtf8FileText -Path (Join-Path $fixturesDirectory 'disallowed-native-trim-waiver-fail.json')
@@ -214,8 +261,9 @@ $evalUnrec = Test-PerformanceBudgetReport -ReportObject $parsedUnrec
 Assert-Test -Name 'Unreconciled state fails closed' -Condition (-not $evalUnrec.Passed)
 
 # Section 8: Zero-Hour Soak vs 8-Hour Soak Boundary (Preparation vs Runtime Admission)
+# prep0h and run8h use synthesized candidates; run0h (negative, no CandidateDirectory) is unchanged.
 Write-Host "`nSection 8: Zero-Hour Soak vs 8-Hour Soak Boundary"
-$prep0hReport = ConvertFrom-StrictPerformanceBudgetJson -JsonText $validJson -SourceDescription 'Prep 0h'
+$prep0hReport = New-SynthesizedPassingReport
 $prep0hReport.Metrics.SoakDurationHours = 0.0
 $prep0hReport.EvidenceClass = 'Preparation'
 $evalPrep0h = Test-PerformanceBudgetReport -ReportObject $prep0hReport -CandidateDirectory (Join-Path $repositoryRoot 'artifacts\bin') -RepositoryRoot $repositoryRoot -ExpectedSourceCommit ([string]$prep0hReport.Candidate.SourceCommit)
@@ -231,19 +279,18 @@ $evalRun0h = Test-PerformanceBudgetReport -ReportObject $run0hReport
 $run0hCheck = @($evalRun0h.Checks | Where-Object Id -eq 'V07-PERF-07-SOAK')[0]
 Assert-Test -Name 'Zero-hour soak in Runtime admission cannot satisfy 8-hour requirement (fails closed)' -Condition (-not $evalRun0h.Passed -and $run0hCheck.Status -eq 'FAIL')
 
-$run8hReport = ConvertFrom-StrictPerformanceBudgetJson -JsonText $validJson -SourceDescription 'Runtime 8h'
-$run8hReport.Metrics.SoakDurationHours = 8.0
-$run8hReport.Metrics | Add-Member -MemberType NoteProperty -Name WidgetDeltaLatencySamplesMs -Value @([double]145.2, [double]145.2, [double]145.2) -Force
-$run8hReport.Metrics | Add-Member -MemberType NoteProperty -Name DashboardColdLaunchSamplesMs -Value @([double]1320.0, [double]1320.0, [double]1320.0) -Force
-$run8hReport.EvidenceClass = 'Runtime'
-$run8hReport.EvidenceBoundary.ActualHerdrRuntime = 'OBSERVED'
-$run8hReport.EvidenceBoundary.SoakExecution = 'OBSERVED'
-$run8hReport.Candidate.SourceCommit = Test-CleanRepositoryState -RepositoryRoot $repositoryRoot -SkipCleanCheck
-$run8hReport | Add-Member -MemberType NoteProperty -Name ProcessTelemetry -Value @(
-    [pscustomobject]@{ ProcessName='HerdrOps.Core'; ProcessId=[int]41001; ProcessStartUtc='2020-01-01T12:00:00Z'; BinaryPath=(Join-Path $repositoryRoot 'artifacts/bin/HerdrOps.Core/release/HerdrOps.Core.dll'); BinarySha256=[string]$run8hReport.Candidate.Binaries[0].Sha256 },
-    [pscustomobject]@{ ProcessName='HerdrOps.App'; ProcessId=[int]41002; ProcessStartUtc='2020-01-01T12:00:01Z'; BinaryPath=(Join-Path $repositoryRoot 'artifacts/bin/HerdrOps.App/release/HerdrOps.App.dll'); BinarySha256=[string]$run8hReport.Candidate.Binaries[1].Sha256 }
+$synthRun8hReport = New-SynthesizedPassingReport
+$synthRun8hReport.Metrics.SoakDurationHours = 8.0
+$synthRun8hReport.Metrics | Add-Member -MemberType NoteProperty -Name WidgetDeltaLatencySamplesMs -Value @([double]145.2, [double]145.2, [double]145.2) -Force
+$synthRun8hReport.Metrics | Add-Member -MemberType NoteProperty -Name DashboardColdLaunchSamplesMs -Value @([double]1320.0, [double]1320.0, [double]1320.0) -Force
+$synthRun8hReport.EvidenceClass = 'Runtime'
+$synthRun8hReport.EvidenceBoundary.ActualHerdrRuntime = 'OBSERVED'
+$synthRun8hReport.EvidenceBoundary.SoakExecution = 'OBSERVED'
+$synthRun8hReport | Add-Member -MemberType NoteProperty -Name ProcessTelemetry -Value @(
+    [pscustomobject]@{ ProcessName='HerdrOps.Core'; ProcessId=[int]41001; ProcessStartUtc='2020-01-01T12:00:00Z'; BinaryPath=(Join-Path $repositoryRoot 'artifacts/bin/HerdrOps.Core/release/HerdrOps.Core.dll'); BinarySha256=[string]$synthRun8hReport.Candidate.Binaries[0].Sha256 },
+    [pscustomobject]@{ ProcessName='HerdrOps.App'; ProcessId=[int]41002; ProcessStartUtc='2020-01-01T12:00:01Z'; BinaryPath=(Join-Path $repositoryRoot 'artifacts/bin/HerdrOps.App/release/HerdrOps.App.dll'); BinarySha256=[string]$synthRun8hReport.Candidate.Binaries[1].Sha256 }
 ) -Force
-$evalRun8h = Test-PerformanceBudgetReport -ReportObject $run8hReport -CandidateDirectory (Join-Path $repositoryRoot 'artifacts/bin') -RepositoryRoot $repositoryRoot -ExpectedSourceCommit $run8hReport.Candidate.SourceCommit
+$evalRun8h = Test-PerformanceBudgetReport -ReportObject $synthRun8hReport -CandidateDirectory (Join-Path $repositoryRoot 'artifacts/bin') -RepositoryRoot $repositoryRoot -ExpectedSourceCommit $synthRun8hReport.Candidate.SourceCommit
 $run8hCheck = @($evalRun8h.Checks | Where-Object Id -eq 'V07-PERF-07-SOAK')[0]
 Assert-Test -Name '8-hour soak in Runtime admission passes' -Condition ($evalRun8h.Passed -and $run8hCheck.Status -eq 'PASS')
 
@@ -442,6 +489,42 @@ Write-Host "`nSection 12: Full Deterministic Self-Test Suite"
 $selfTestResults = @(Invoke-PerformanceBudgetSelfTests -RepositoryRoot $repositoryRoot -FixturesDirectory $fixturesDirectory)
 $allStPassed = @($selfTestResults | Where-Object Status -ne 'PASS').Count -eq 0
 Assert-Test -Name "Invoke-PerformanceBudgetSelfTests runs all $($selfTestResults.Count) matrix cases" -Condition ($allStPassed -and $selfTestResults.Count -eq 36)
+
+# Section 13: Pre-Fix-Sensitive Regression — Fixture-Hash Binding Isolation (Issue #39)
+# Verifies the root cause: static fixture metadata fails binding after a rebuild, but the
+# synthesized approach (current HEAD + on-disk hashes) passes the same strict evaluation.
+# Negative cases (missing binary, tampered hash) are confirmed still fail closed post-fix.
+Write-Host "`nSection 13: Pre-Fix Regression -- Fixture-Hash vs. Synthesized Binding"
+
+# 13a: Static fixture hashes from the committed fixture (pre-fix state) MUST fail the
+#      candidate-binding check when the on-disk binaries were built from a different commit.
+#      This test catches a regression if positive controls are accidentally reverted to use
+#      raw fixture metadata instead of synthesized bindings.
+$staticFixtureReport = ConvertFrom-StrictPerformanceBudgetJson -JsonText $validJson -SourceDescription 'Static fixture (pre-fix binding source)'
+$staticEval = Test-PerformanceBudgetReport -ReportObject $staticFixtureReport -CandidateDirectory (Join-Path $repositoryRoot 'artifacts\bin') -RepositoryRoot $repositoryRoot -ExpectedSourceCommit ([string]$staticFixtureReport.Candidate.SourceCommit)
+$staticHashChecks = @($staticEval.Checks | Where-Object { $_.Id -like 'V07-CANDIDATE-HASH-*' -and $_.Status -eq 'FAIL' })
+$staticFixtureFails = (-not $staticEval.Passed) -or $staticHashChecks.Count -gt 0
+# This must fail: fixture hashes are stale relative to current build output.
+# If the on-disk binaries happen to match the fixture by coincidence (same build), skip gracefully.
+$matchesFixtureByCoincidence = ($staticEval.Passed -and $staticHashChecks.Count -eq 0 -and
+    ([string]$staticFixtureReport.Candidate.SourceCommit -eq (git -C $repositoryRoot rev-parse HEAD).Trim()))
+Assert-Test -Name 'Pre-fix-sensitive: Static fixture hashes bind or fail (never silently wrong)' -Condition ($staticFixtureFails -or $matchesFixtureByCoincidence) -Message "OverallStatus=$($staticEval.OverallStatus); StaleHashFailCount=$($staticHashChecks.Count); FixtureCommit=$($staticFixtureReport.Candidate.SourceCommit)"
+
+# 13b: Synthesized candidate (current HEAD + on-disk SHA) MUST pass the binding check.
+#      This is the direct replacement for the pre-fix positive control; if this fails it
+#      means New-SynthesizedCandidateBoundReport is broken or binaries are missing.
+$synthRegressionReport = New-SynthesizedPassingReport
+$synthEval = Test-PerformanceBudgetReport -ReportObject $synthRegressionReport -CandidateDirectory (Join-Path $repositoryRoot 'artifacts\bin') -RepositoryRoot $repositoryRoot -ExpectedSourceCommit ([string]$synthRegressionReport.Candidate.SourceCommit)
+$synthRegressionHashChecks = @($synthEval.Checks | Where-Object { $_.Id -like 'V07-CANDIDATE-HASH-*' -and $_.Status -eq 'FAIL' })
+Assert-Test -Name 'Pre-fix-sensitive: Synthesized candidate passes strict binding check post-fix' -Condition ($synthEval.Passed -and $synthRegressionHashChecks.Count -eq 0) -Message "OverallStatus=$($synthEval.OverallStatus); FailedHashChecks=$($synthRegressionHashChecks.Count)"
+
+# 13c: Tampered hash on synthesized candidate MUST still fail closed — proves the fix did
+#      not weaken the negative-control path.
+$tamperedSynthReport = New-SynthesizedPassingReport
+$tamperedSynthReport.Candidate.Binaries[0] | Add-Member -MemberType NoteProperty -Name Sha256 -Value ('0' * 64) -Force
+$tamperedEval = Test-PerformanceBudgetReport -ReportObject $tamperedSynthReport -CandidateDirectory (Join-Path $repositoryRoot 'artifacts\bin') -RepositoryRoot $repositoryRoot -ExpectedSourceCommit ([string]$tamperedSynthReport.Candidate.SourceCommit)
+$tamperedHashFail = @($tamperedEval.Checks | Where-Object { $_.Id -like 'V07-CANDIDATE-HASH-HerdrOps.Core' -and $_.Status -eq 'FAIL' })[0]
+Assert-Test -Name 'Pre-fix-sensitive: Tampered hash on synthesized candidate still fails closed' -Condition (-not $tamperedEval.Passed -and $null -ne $tamperedHashFail) -Message "OverallStatus=$($tamperedEval.OverallStatus)"
 
 Write-Host "`n========================================================================"
 Write-Host "Test Summary: $passCount passed, $failCount failed of $testCount total tests."
