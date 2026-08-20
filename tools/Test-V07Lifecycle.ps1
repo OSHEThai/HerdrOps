@@ -4,7 +4,8 @@ param(
     [string]$Configuration = 'Release',
 
     [switch]$SkipBuild,
-    [switch]$SelfTest
+    [switch]$SelfTest,
+    [switch]$SelfTestExitProbe
 )
 
 Set-StrictMode -Version Latest
@@ -171,6 +172,22 @@ function Test-StaticContractInvariants {
     return $true
 }
 
+function Get-LifecycleTrackedAssemblyPaths {
+    param(
+        [Parameter(Mandatory)]
+        [string]$Configuration
+    )
+
+    $configFolder = $Configuration.ToLowerInvariant()
+    return @(
+        "bin/HerdrOps.App/$configFolder/HerdrOps.App.dll",
+        "bin/HerdrOps.Domain/$configFolder/HerdrOps.Domain.dll",
+        "bin/HerdrOps.Infrastructure/$configFolder/HerdrOps.Infrastructure.dll",
+        "bin/HerdrOps.UnitTests/$configFolder/HerdrOps.UnitTests.dll",
+        "bin/HerdrOps.IntegrationTests/$configFolder/HerdrOps.IntegrationTests.dll"
+    )
+}
+
 function Get-LifecycleBinaryProvenance {
     param(
         [Parameter(Mandatory)]
@@ -180,14 +197,7 @@ function Get-LifecycleBinaryProvenance {
         [string]$Configuration
     )
 
-    $configFolder = $Configuration.ToLowerInvariant()
-    $trackedAssemblies = @(
-        "bin/HerdrOps.App/$configFolder/HerdrOps.App.dll",
-        "bin/HerdrOps.Domain/$configFolder/HerdrOps.Domain.dll",
-        "bin/HerdrOps.Infrastructure/$configFolder/HerdrOps.Infrastructure.dll",
-        "bin/HerdrOps.UnitTests/$configFolder/HerdrOps.UnitTests.dll",
-        "bin/HerdrOps.IntegrationTests/$configFolder/HerdrOps.IntegrationTests.dll"
-    )
+    $trackedAssemblies = @(Get-LifecycleTrackedAssemblyPaths -Configuration $Configuration)
 
     $records = [ordered]@{}
     foreach ($relPath in $trackedAssemblies) {
@@ -294,6 +304,14 @@ function Test-LifecycleBuildMarker {
             }
         }
 
+        $expectedAssemblies = @(Get-LifecycleTrackedAssemblyPaths -Configuration $ExpectedConfiguration)
+        $expectedPathSet = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
+        $expectedPathSetIgnoreCase = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+        foreach ($expectedPath in $expectedAssemblies) {
+            [void]$expectedPathSet.Add($expectedPath)
+            [void]$expectedPathSetIgnoreCase.Add($expectedPath)
+        }
+
         $currentHashes = Get-LifecycleBinaryProvenance -ArtifactRoot $ArtifactRoot -Configuration $ExpectedConfiguration
         if ($null -eq $currentHashes) {
             return [pscustomobject]@{
@@ -303,22 +321,112 @@ function Test-LifecycleBuildMarker {
             }
         }
 
-        $markerAssemblies = @($marker.assemblies)
-        if ($markerAssemblies.Count -ne $currentHashes.Count) {
+        if ($null -eq $marker.assemblies) {
             return [pscustomobject]@{
                 Verified = $false
-                Reason = "Build marker assembly count mismatch: expected $($currentHashes.Count), got $($markerAssemblies.Count)"
+                Reason = 'Build marker assemblies list is missing'
                 BinaryHashes = $null
             }
         }
 
+        $markerAssemblies = @($marker.assemblies)
+        $seenExactPaths = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
+        $seenIgnoreCasePaths = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+        $markerHashes = [ordered]@{}
         foreach ($entry in $markerAssemblies) {
-            $rel = [string]$entry.relativePath
-            $expectedHash = [string]$entry.sha256
-            if (-not $currentHashes.Contains($rel) -or $currentHashes[$rel] -cne $expectedHash) {
+            if ($null -eq $entry) {
                 return [pscustomobject]@{
                     Verified = $false
-                    Reason = "Assembly '$rel' hash changed since the build marker was generated"
+                    Reason = 'Build marker assembly entry is malformed'
+                    BinaryHashes = $null
+                }
+            }
+
+            $entryPropertyNames = @($entry.PSObject.Properties.Name)
+            if (-not ($entryPropertyNames -contains 'relativePath') -or
+                -not ($entryPropertyNames -contains 'sha256') -or
+                $entry.relativePath -isnot [string] -or
+                $entry.sha256 -isnot [string]) {
+                return [pscustomobject]@{
+                    Verified = $false
+                    Reason = 'Build marker assembly entry is malformed'
+                    BinaryHashes = $null
+                }
+            }
+
+            $rel = [string]$entry.relativePath
+            $expectedHash = [string]$entry.sha256
+            if ([string]::IsNullOrWhiteSpace($rel) -or $expectedHash -notmatch '^[0-9A-Fa-f]{64}$') {
+                return [pscustomobject]@{
+                    Verified = $false
+                    Reason = "Build marker assembly entry '$rel' is malformed"
+                    BinaryHashes = $null
+                }
+            }
+
+            if (-not $expectedPathSetIgnoreCase.Contains($rel)) {
+                return [pscustomobject]@{
+                    Verified = $false
+                    Reason = "Build marker contains unexpected assembly path '$rel'"
+                    BinaryHashes = $null
+                }
+            }
+
+            if (-not $expectedPathSet.Contains($rel)) {
+                return [pscustomobject]@{
+                    Verified = $false
+                    Reason = "Build marker assembly path '$rel' has case ambiguity; expected canonical path casing"
+                    BinaryHashes = $null
+                }
+            }
+
+            if ($seenExactPaths.Contains($rel)) {
+                return [pscustomobject]@{
+                    Verified = $false
+                    Reason = "Build marker contains duplicate assembly path '$rel'"
+                    BinaryHashes = $null
+                }
+            }
+
+            if (-not $seenIgnoreCasePaths.Add($rel)) {
+                return [pscustomobject]@{
+                    Verified = $false
+                    Reason = "Build marker contains case-ambiguous duplicate assembly path '$rel'"
+                    BinaryHashes = $null
+                }
+            }
+
+            [void]$seenExactPaths.Add($rel)
+            $markerHashes[$rel] = $expectedHash.ToUpperInvariant()
+        }
+
+        $missingPaths = @($expectedAssemblies | Where-Object {
+            -not $seenExactPaths.Contains([string]$_)
+        })
+        if ($missingPaths.Count -gt 0) {
+            return [pscustomobject]@{
+                Verified = $false
+                Reason = "Build marker is missing expected assembly path(s): $($missingPaths -join ', ')"
+                BinaryHashes = $null
+            }
+        }
+
+        if ($markerAssemblies.Count -ne $expectedAssemblies.Count) {
+            return [pscustomobject]@{
+                Verified = $false
+                Reason = "Build marker assembly count mismatch: expected $($expectedAssemblies.Count), got $($markerAssemblies.Count)"
+                BinaryHashes = $null
+            }
+        }
+
+        foreach ($expectedPath in $expectedAssemblies) {
+            $markerHash = [string]$markerHashes[$expectedPath]
+            $currentHash = [string]$currentHashes[$expectedPath]
+            if ([string]::IsNullOrWhiteSpace($currentHash) -or $currentHash -notmatch '^[0-9A-F]{64}$' -or
+                $currentHash -cne $markerHash) {
+                return [pscustomobject]@{
+                    Verified = $false
+                    Reason = "Assembly '$expectedPath' SHA-256 mismatch between build marker and current output"
                     BinaryHashes = $null
                 }
             }
@@ -479,6 +587,19 @@ function Assert-GateAcceptanceOutcome {
     }
 }
 
+function Get-GateReportBoundaryLines {
+    return @(
+        'ActualHerdrRuntime: NOT REQUIRED / NOT OBSERVED / NOT CLAIMED',
+        'ActualHerdrRuntimeEvidence: NOT OBSERVED / NOT CLAIMED',
+        'WindowsHostEvidence: PENDING / NOT OBSERVED (actual tray visibility, logon launch, AppData persistence across reboots)',
+        'HumanAccessibilityEvidence: PENDING / NOT OBSERVED (screen reader Narrator audio, high contrast, physical DPI scaling)',
+        'ReleaseEvidence: NOT PRODUCED / NOT CLAIMED',
+        'ReleasePublication: NOT PERFORMED',
+        'Status: IMPLEMENTATION GATE / NO RUNTIME OR RELEASE CREDIT',
+        'IssueTracker: Issue #36 remains OPEN pending reference-host and human acceptance'
+    )
+}
+
 function Invoke-SelfTests {
     param(
         [Parameter(Mandatory)]
@@ -491,7 +612,10 @@ function Invoke-SelfTests {
         [string[]]$Checks,
 
         [Parameter(Mandatory)]
-        [string]$ArtifactRoot
+        [string]$ArtifactRoot,
+
+        [Parameter(Mandatory)]
+        [string]$ScriptPath
     )
 
     Write-Host 'Running deterministic self-checks for Test-V07Lifecycle.ps1...'
@@ -642,15 +766,25 @@ function Invoke-SelfTests {
     }
     Write-Host '  [PASS] TrxParserDeterministicCounting (mock TRX XML counters validated)'
 
-    # Check 6: Verify Build Marker Creation and Verification Logic
+    # Check 6: Verify Build Marker Creation and Exact Assembly Provenance Logic
     $tempMarkerDir = Join-Path ([IO.Path]::GetTempPath()) ("herdrops-test-marker-" + [Guid]::NewGuid().ToString('N'))
     New-Item -ItemType Directory -Path $tempMarkerDir -Force | Out-Null
     try {
         $mockMarkerFile = Join-Path $tempMarkerDir 'test-marker.json'
-        $mockHashes = [ordered]@{
-            'bin/HerdrOps.App/release/HerdrOps.App.dll' = ('A' * 64)
-            'bin/HerdrOps.Domain/release/HerdrOps.Domain.dll' = ('B' * 64)
+        $mockExpectedPaths = @(Get-LifecycleTrackedAssemblyPaths -Configuration 'Release')
+        foreach ($relativePath in $mockExpectedPaths) {
+            $mockAssemblyPath = Join-Path $tempMarkerDir ($relativePath.Replace('/', '\'))
+            $mockAssemblyDirectory = Split-Path -Path $mockAssemblyPath -Parent
+            New-Item -ItemType Directory -Path $mockAssemblyDirectory -Force | Out-Null
+            $mockBytes = [Text.UTF8Encoding]::new($false).GetBytes("deterministic fixture: $relativePath`n")
+            [IO.File]::WriteAllBytes($mockAssemblyPath, $mockBytes)
         }
+
+        $mockHashes = Get-LifecycleBinaryProvenance -ArtifactRoot $tempMarkerDir -Configuration 'Release'
+        if ($null -eq $mockHashes -or $mockHashes.Count -ne $mockExpectedPaths.Count) {
+            throw 'SelfTest failed: deterministic assembly fixtures did not produce the exact expected path set'
+        }
+
         Write-LifecycleBuildMarker `
             -MarkerPath $mockMarkerFile `
             -SourceCommit '0123456789abcdef0123456789abcdef01234567' `
@@ -659,6 +793,57 @@ function Invoke-SelfTests {
 
         if (-not (Test-Path -LiteralPath $mockMarkerFile -PathType Leaf)) {
             throw 'SelfTest failed: build marker was not written'
+        }
+
+        $validResult = Test-LifecycleBuildMarker `
+            -MarkerPath $mockMarkerFile `
+            -ExpectedCommit '0123456789abcdef0123456789abcdef01234567' `
+            -ExpectedConfiguration 'Release' `
+            -ArtifactRoot $tempMarkerDir
+        if (-not $validResult.Verified -or $validResult.BinaryHashes.Count -ne $mockExpectedPaths.Count) {
+            throw "SelfTest failed: valid exact assembly path set and SHA-256 binding must verify ($($validResult.Reason))"
+        }
+
+        $markerRaw = [IO.File]::ReadAllText($mockMarkerFile)
+        $duplicateMarker = $markerRaw | ConvertFrom-Json
+        $duplicateMarker.assemblies[1].relativePath = $duplicateMarker.assemblies[0].relativePath
+
+        $unexpectedMarker = $markerRaw | ConvertFrom-Json
+        $unexpectedMarker.assemblies[0].relativePath = 'bin/Unexpected/release/Unexpected.dll'
+
+        $missingMarker = $markerRaw | ConvertFrom-Json
+        $missingMarker.assemblies = @($missingMarker.assemblies | Select-Object -Skip 1)
+
+        $caseAmbiguousMarker = $markerRaw | ConvertFrom-Json
+        $caseAmbiguousMarker.assemblies[0].relativePath = ([string]$caseAmbiguousMarker.assemblies[0].relativePath).ToLowerInvariant()
+
+        $wrongHashMarker = $markerRaw | ConvertFrom-Json
+        $wrongHashMarker.assemblies[0].sha256 = ('F' * 64)
+
+        $malformedMarker = $markerRaw | ConvertFrom-Json
+        $malformedMarker.assemblies[0].sha256 = 'not-a-sha256'
+
+        $negativeMarkerCases = @(
+            [pscustomobject]@{ Name = 'duplicate path'; Marker = $duplicateMarker; ExpectedReason = 'duplicate assembly path' },
+            [pscustomobject]@{ Name = 'unexpected path'; Marker = $unexpectedMarker; ExpectedReason = 'unexpected assembly path' },
+            [pscustomobject]@{ Name = 'missing path'; Marker = $missingMarker; ExpectedReason = 'missing expected assembly path' },
+            [pscustomobject]@{ Name = 'case ambiguity'; Marker = $caseAmbiguousMarker; ExpectedReason = 'case ambiguity' },
+            [pscustomobject]@{ Name = 'wrong SHA-256'; Marker = $wrongHashMarker; ExpectedReason = 'SHA-256 mismatch' },
+            [pscustomobject]@{ Name = 'malformed entry'; Marker = $malformedMarker; ExpectedReason = 'malformed' }
+        )
+
+        foreach ($negativeCase in $negativeMarkerCases) {
+            $negativeMarkerPath = Join-Path $tempMarkerDir ("$($negativeCase.Name.Replace(' ', '-')).json")
+            $negativeJson = $negativeCase.Marker | ConvertTo-Json -Depth 5
+            [IO.File]::WriteAllText($negativeMarkerPath, $negativeJson + "`n", [Text.UTF8Encoding]::new($false))
+            $negativeResult = Test-LifecycleBuildMarker `
+                -MarkerPath $negativeMarkerPath `
+                -ExpectedCommit '0123456789abcdef0123456789abcdef01234567' `
+                -ExpectedConfiguration 'Release' `
+                -ArtifactRoot $tempMarkerDir
+            if ($negativeResult.Verified -or $negativeResult.Reason -notmatch $negativeCase.ExpectedReason) {
+                throw "SelfTest failed: $($negativeCase.Name) marker must fail closed (Reason: $($negativeResult.Reason))"
+            }
         }
 
         # Test missing marker
@@ -690,28 +875,35 @@ function Invoke-SelfTests {
         if ($mismatchedConfig.Verified -or $mismatchedConfig.Reason -notmatch 'configuration') {
             throw 'SelfTest failed: configuration mismatch must not verify'
         }
-        Write-Host '  [PASS] BuildMarkerProvenanceLogic (creation, schema, commit mismatch, and configuration mismatch verified)'
+        Write-Host '  [PASS] BuildMarkerProvenanceLogic (exact unique path set, duplicate/unexpected/missing/case/hash/malformed rejection, schema, commit, and configuration checks verified)'
     } finally {
         if (Test-Path -LiteralPath $tempMarkerDir) {
             Remove-Item -LiteralPath $tempMarkerDir -Recurse -Force
         }
     }
 
-    # Check 7: Report formatting and exact negative boundary assertions
-    $boundaryReport = @(
+    # Check 7: Generated report formatting and exact negative boundary assertions
+    $boundaryReport = @(Get-GateReportBoundaryLines)
+    $expectedBoundaryReport = @(
         'ActualHerdrRuntime: NOT REQUIRED / NOT OBSERVED / NOT CLAIMED',
         'ActualHerdrRuntimeEvidence: NOT OBSERVED / NOT CLAIMED',
+        'WindowsHostEvidence: PENDING / NOT OBSERVED (actual tray visibility, logon launch, AppData persistence across reboots)',
+        'HumanAccessibilityEvidence: PENDING / NOT OBSERVED (screen reader Narrator audio, high contrast, physical DPI scaling)',
         'ReleaseEvidence: NOT PRODUCED / NOT CLAIMED',
         'ReleasePublication: NOT PERFORMED',
         'Status: IMPLEMENTATION GATE / NO RUNTIME OR RELEASE CREDIT',
         'IssueTracker: Issue #36 remains OPEN pending reference-host and human acceptance'
     )
+    if ($boundaryReport.Count -ne $expectedBoundaryReport.Count -or
+        ($boundaryReport -join "`n") -cne ($expectedBoundaryReport -join "`n")) {
+        throw 'SelfTest failed: generated report boundary lines changed unexpectedly'
+    }
     foreach ($line in $boundaryReport) {
         if ($line -notmatch 'NOT|NO RUNTIME|PENDING') {
-            throw "SelfTest failed: boundary invariant violated: $line"
+            throw "SelfTest failed: generated report boundary invariant violated: $line"
         }
     }
-    Write-Host '  [PASS] GateReportContractFormatting (exact negative runtime and release boundaries)'
+    Write-Host '  [PASS] GateReportContractFormatting (generated report has exact negative runtime and release boundaries)'
 
     # Check 8: Verify Exit Semantics and Nonzero Return on Non-Acceptance and Failure
     # 8a: Assert-GateAcceptanceOutcome does not throw on full acceptance pass
@@ -754,14 +946,50 @@ function Invoke-SelfTests {
         throw "SelfTest failed: FAIL exception message mismatch: $failMessage"
     }
 
-    Write-Host '  [PASS] ExitSemanticsAndNonzeroReturn (deterministic verification: PASS exits 0, NON-ACCEPTANCE throws nonzero, FAIL throws nonzero)'
+    $selfTestHost = if ($PSVersionTable.PSEdition -eq 'Core') {
+        Join-Path $PSHOME 'pwsh.exe'
+    } else {
+        Join-Path $PSHOME 'powershell.exe'
+    }
+    if (-not (Test-Path -LiteralPath $selfTestHost -PathType Leaf)) {
+        throw "SelfTest failed: current PowerShell host executable was not found at '$selfTestHost'"
+    }
+    $probeStartInfo = New-Object System.Diagnostics.ProcessStartInfo
+    $probeStartInfo.FileName = $selfTestHost
+    $probeStartInfo.Arguments = "-NoProfile -File `"$ScriptPath`" -SelfTestExitProbe"
+    $probeStartInfo.UseShellExecute = $false
+    $probeStartInfo.CreateNoWindow = $true
+    $probeStartInfo.RedirectStandardOutput = $true
+    $probeStartInfo.RedirectStandardError = $true
+    $probeProcess = New-Object System.Diagnostics.Process
+    $probeProcess.StartInfo = $probeStartInfo
+    [void]$probeProcess.Start()
+    $probeStdOut = $probeProcess.StandardOutput.ReadToEnd()
+    $probeStdErr = $probeProcess.StandardError.ReadToEnd()
+    $probeProcess.WaitForExit()
+    $probeExitCode = $probeProcess.ExitCode
+    $probeProcess.Dispose()
+    if ($probeExitCode -eq 0) {
+        throw "SelfTest failed: subprocess NON-ACCEPTANCE probe did not return a nonzero exit (exit=$probeExitCode)"
+    }
+
+    Write-Host '  [PASS] ExitSemanticsAndNonzeroReturn (PASS exits 0, NON-ACCEPTANCE and FAIL throw, subprocess NON-ACCEPTANCE exits nonzero)'
 
     Write-Host 'SelfTest: PASS (all 8 deterministic self-check suites passed)'
     Write-Host 'Result: PASS'
     Write-Host 'Status: IMPLEMENTATION GATE / NO RUNTIME OR RELEASE CREDIT'
 }
+if ($SelfTestExitProbe) {
+    $exitProbeEvidence = [pscustomobject]@{
+        IsFullAcceptancePass = $false
+        VerdictResult = 'NON-ACCEPTANCE CHECKS PASS'
+        ImplementationGateVerdict = 'NON-ACCEPTANCE (self-test subprocess probe)'
+    }
+    Assert-GateAcceptanceOutcome -Evidence $exitProbeEvidence -ProvenanceReason 'Self-test subprocess probe'
+    exit 0
+}
 if ($SelfTest) {
-    Invoke-SelfTests -RepoRoot $repositoryRoot -Paths $requiredRelativePaths -Checks $requiredChecks -ArtifactRoot $artifactRoot
+    Invoke-SelfTests -RepoRoot $repositoryRoot -Paths $requiredRelativePaths -Checks $requiredChecks -ArtifactRoot $artifactRoot -ScriptPath $PSCommandPath
     return
 }
 
@@ -998,14 +1226,7 @@ $reportLines = @(
     $evidence.UnitLine,
     $evidence.IntegrationLine,
     $evidence.SyntheticLine,
-    'ActualHerdrRuntime: NOT REQUIRED / NOT OBSERVED / NOT CLAIMED',
-    'ActualHerdrRuntimeEvidence: NOT OBSERVED / NOT CLAIMED',
-    'WindowsHostEvidence: PENDING / NOT OBSERVED (actual tray visibility, logon launch, AppData persistence across reboots)',
-    'HumanAccessibilityEvidence: PENDING / NOT OBSERVED (screen reader Narrator audio, high contrast, physical DPI scaling)',
-    'ReleaseEvidence: NOT PRODUCED / NOT CLAIMED',
-    'ReleasePublication: NOT PERFORMED',
-    'Status: IMPLEMENTATION GATE / NO RUNTIME OR RELEASE CREDIT',
-    'IssueTracker: Issue #36 remains OPEN pending reference-host and human acceptance',
+    (Get-GateReportBoundaryLines),
     '',
     '----------------------------------------------------------------------',
     'Automated Test Execution Breakdown',
