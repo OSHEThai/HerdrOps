@@ -3,7 +3,9 @@ param(
     [ValidateSet('Debug', 'Release')]
     [string]$Configuration = 'Release',
 
-    [switch]$SkipBuild
+    [switch]$SkipBuild,
+
+    [switch]$ImplementationOnly
 )
 
 Set-StrictMode -Version Latest
@@ -35,7 +37,13 @@ if (-not $SkipBuild) {
 }
 
 $runId = "$([DateTime]::UtcNow.ToString('yyyyMMddTHHmmssfffffffZ', [Globalization.CultureInfo]::InvariantCulture))-$([Guid]::NewGuid().ToString('N').Substring(0, 8))"
-$gateDirectory = Join-Path $artifactRoot "release-gates\v0.3.0\issue-15\$runId"
+$gateParentDirectory = if ($ImplementationOnly) {
+    Join-Path $artifactRoot 'implementation-gates\v0.3.0\issue-15'
+}
+else {
+    Join-Path $artifactRoot 'release-gates\v0.3.0\issue-15'
+}
+$gateDirectory = Join-Path $gateParentDirectory $runId
 $testResultDirectory = Join-Path $gateDirectory 'test-results'
 New-Item -ItemType Directory -Path $testResultDirectory -Force | Out-Null
 
@@ -160,54 +168,56 @@ if ($captureEvidence[0].Sha256 -eq $captureEvidence[1].Sha256) {
     throw 'Changing the selected file event did not change the rendered WPF evidence.'
 }
 
-if (-not (Test-Path -LiteralPath $runtimeTracePath -PathType Leaf)) {
-    throw "Actual File/Git trace is missing: $runtimeTracePath"
-}
-$runtimeTrace = Get-Content -LiteralPath $runtimeTracePath -Raw | ConvertFrom-Json
-if ($runtimeTrace.contractVersion -ne 1 -or
-    $runtimeTrace.runtimeObserved -ne $true -or
-    $runtimeTrace.fileSystemWatcherObserved -ne $true -or
-    $runtimeTrace.gitStatusObserved -ne $true -or
-    $runtimeTrace.herdrAgentCorrelationObserved -ne $false -or
-    $runtimeTrace.repositoryMutationInvoked -ne $false -or
-    $runtimeTrace.retainedEventLimit -ne 4096) {
-    throw 'Actual File/Git trace flags do not match the issue #15 evidence contract.'
-}
-$fileEvents = @($runtimeTrace.fileSystemEvents)
-$gitEvents = @($runtimeTrace.initialGitStatus) + @($runtimeTrace.finalGitStatus)
-if ($fileEvents.Count -lt 1 -or $gitEvents.Count -lt 1) {
-    throw 'Actual File/Git trace must contain both watcher and Git observations.'
-}
-if (@($fileEvents | Where-Object {
-            $_.sourceKind -ne 'FileSystem' -or
-            $_.confidence -ne 'Observed' -or
-            $_.isAuthorized -ne $true -or
-            $_.scopeDecision -ne 'authorized'
-        }).Count -ne 0) {
-    throw 'Actual watcher trace contains an observation without scoped FileSystem provenance.'
-}
-if (@($gitEvents | Where-Object {
-            $_.sourceKind -ne 'Git' -or
-            $_.confidence -ne 'Observed' -or
-            $_.isAuthorized -ne $true -or
-            $_.scopeDecision -ne 'authorized'
-        }).Count -ne 0) {
-    throw 'Actual Git trace contains an observation without read-only Git provenance.'
-}
-$allTracePaths = @($fileEvents + $gitEvents | ForEach-Object { [string]$_.relativePath })
-if (@($allTracePaths | Where-Object {
-            [IO.Path]::IsPathRooted($_) -or $_ -match '(^|[\\/])\.\.([\\/]|$)'
-        }).Count -ne 0) {
-    throw 'Actual File/Git trace retained an absolute or parent-traversing path.'
-}
+if (-not $ImplementationOnly) {
+    if (-not (Test-Path -LiteralPath $runtimeTracePath -PathType Leaf)) {
+        throw "Actual File/Git trace is missing: $runtimeTracePath"
+    }
+    $runtimeTrace = Get-Content -LiteralPath $runtimeTracePath -Raw | ConvertFrom-Json
+    if ($runtimeTrace.contractVersion -ne 1 -or
+        $runtimeTrace.runtimeObserved -ne $true -or
+        $runtimeTrace.fileSystemWatcherObserved -ne $true -or
+        $runtimeTrace.gitStatusObserved -ne $true -or
+        $runtimeTrace.herdrAgentCorrelationObserved -ne $false -or
+        $runtimeTrace.repositoryMutationInvoked -ne $false -or
+        $runtimeTrace.retainedEventLimit -ne 4096) {
+        throw 'Actual File/Git trace flags do not match the issue #15 evidence contract.'
+    }
+    $fileEvents = @($runtimeTrace.fileSystemEvents)
+    $gitEvents = @($runtimeTrace.initialGitStatus) + @($runtimeTrace.finalGitStatus)
+    if ($fileEvents.Count -lt 1 -or $gitEvents.Count -lt 1) {
+        throw 'Actual File/Git trace must contain both watcher and Git observations.'
+    }
+    if (@($fileEvents | Where-Object {
+                $_.sourceKind -ne 'FileSystem' -or
+                $_.confidence -ne 'Observed' -or
+                $_.isAuthorized -ne $true -or
+                $_.scopeDecision -ne 'authorized'
+            }).Count -ne 0) {
+        throw 'Actual watcher trace contains an observation without scoped FileSystem provenance.'
+    }
+    if (@($gitEvents | Where-Object {
+                $_.sourceKind -ne 'Git' -or
+                $_.confidence -ne 'Observed' -or
+                $_.isAuthorized -ne $true -or
+                $_.scopeDecision -ne 'authorized'
+            }).Count -ne 0) {
+        throw 'Actual Git trace contains an observation without read-only Git provenance.'
+    }
+    $allTracePaths = @($fileEvents + $gitEvents | ForEach-Object { [string]$_.relativePath })
+    if (@($allTracePaths | Where-Object {
+                [IO.Path]::IsPathRooted($_) -or $_ -match '(^|[\\/])\.\.([\\/]|$)'
+            }).Count -ne 0) {
+        throw 'Actual File/Git trace retained an absolute or parent-traversing path.'
+    }
 
-$coreAssemblyPath = Join-Path $repositoryRoot "src\HerdrOps.Core\bin\$Configuration\net10.0-windows\HerdrOps.Core.dll"
-if (-not (Test-Path -LiteralPath $coreAssemblyPath -PathType Leaf)) {
-    throw "Core assembly used for the runtime trace is missing: $coreAssemblyPath"
-}
-$coreAssemblySha256 = (Get-FileHash -LiteralPath $coreAssemblyPath -Algorithm SHA256).Hash
-if ($runtimeTrace.productAssemblySha256 -ne $coreAssemblySha256) {
-    throw "Runtime trace assembly hash mismatch: trace=$($runtimeTrace.productAssemblySha256) current=$coreAssemblySha256"
+    $coreAssemblyPath = Join-Path $repositoryRoot "src\HerdrOps.Core\bin\$Configuration\net10.0-windows\HerdrOps.Core.dll"
+    if (-not (Test-Path -LiteralPath $coreAssemblyPath -PathType Leaf)) {
+        throw "Core assembly used for the local trace is missing: $coreAssemblyPath"
+    }
+    $coreAssemblySha256 = (Get-FileHash -LiteralPath $coreAssemblyPath -Algorithm SHA256).Hash
+    if ($runtimeTrace.productAssemblySha256 -ne $coreAssemblySha256) {
+        throw "Local trace assembly hash mismatch: trace=$($runtimeTrace.productAssemblySha256) current=$coreAssemblySha256"
+    }
 }
 
 $requiredFiles = @($contractPath, $designRecordPath, $reviewRecordPath)
@@ -253,42 +263,70 @@ $sourceCommit = (& git -C $repositoryRoot rev-parse HEAD).Trim()
 if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($sourceCommit)) {
     throw 'Could not resolve the source commit for the v0.3 File/Git gate.'
 }
-$runtimeTraceSha256 = (Get-FileHash -LiteralPath $runtimeTracePath -Algorithm SHA256).Hash
 $contractSha256 = (Get-FileHash -LiteralPath $contractPath -Algorithm SHA256).Hash
 $reviewRecordSha256 = (Get-FileHash -LiteralPath $reviewRecordPath -Algorithm SHA256).Hash
 $gateReportPath = Join-Path $gateDirectory 'gate-report.txt'
-$gateReport = @(
-    'HerdrOps v0.3 Issue #15 Scoped File/Git Activity Implementation Gate',
-    "GeneratedUtc: $([DateTime]::UtcNow.ToString('O'))",
-    "SourceCommit: $sourceCommit",
-    'Result: IMPLEMENTATION READY / PARTIAL',
-    'ImplementationGate: PASS',
-    'IssueAcceptance: PENDING',
-    'VersionReleaseGate: PENDING',
-    'ActualFileSystemWatcher: OBSERVED',
-    'ActualReadOnlyGitStatus: OBSERVED',
-    'ActualHerdrAgentTaskCorrelation: NOT OBSERVED / NOT CLAIMED',
-    'IndependentReviewVerdict: UNAVAILABLE / NOT CLAIMED',
-    'FileReadInterception: NOT IMPLEMENTED / NOT CLAIMED',
-    'IssueStateRequired: OPEN',
-    "Tests: $passedTests/$totalTests PASS",
-    "ReferenceSha256: $referenceSha256",
-    "RuntimeTraceSha256: $runtimeTraceSha256",
-    "ProductAssemblySha256: $coreAssemblySha256",
-    "ContractSha256: $contractSha256",
-    "IndependentReviewRecordSha256: $reviewRecordSha256",
-    '',
-    'WpfCaptures:'
-) + ($captureEvidence | ForEach-Object { "$($_.Name): $($_.Sha256)" }) + @(
-    '',
-    'RequiredChecks:'
-) + ($requiredChecks | ForEach-Object { "PASS $_" }) + @(
-    '',
-    'EvidenceBoundary:',
-    'This gate proves canonical repository scoping, reparse-point escape rejection, bounded/debounced watcher intake, direct read-only bounded Git metadata, secret-redacted bounded diff preview, deterministic fail-closed correlation logic, separated Thai/English WPF rendering, and one actual local FileSystemWatcher plus Git trace from the hashed product assembly.',
-    'RepositoryMutationInvoked=false applies to collector, Git, and source mutation. The caller-selected JSON report is the trace command output and is not concealed by that field.',
-    'It does not prove file-read interception, actual Herdr Agent/Task correlation, installed-Herdr runtime behavior, or v0.3 release readiness. Issue #15 must remain open until actual Herdr correlation evidence is captured and independently reviewed.'
-)
+if ($ImplementationOnly) {
+    $gateReport = @(
+        'HerdrOps v0.3 Issue #15 File/Git Implementation Gate',
+        "GeneratedUtc: $([DateTime]::UtcNow.ToString('O'))",
+        "SourceCommit: $sourceCommit",
+        'Result: PASS',
+        'GateKind: Implementation',
+        'EvidenceClass: Contract plus Synthetic',
+        'ImplementationOnly: true',
+        'InstalledHerdrCommand: NOT INVOKED',
+        "Tests: $passedTests/$totalTests PASS",
+        "ReferenceSha256: $referenceSha256",
+        "ContractSha256: $contractSha256",
+        "IndependentReviewRecordSha256: $reviewRecordSha256",
+        '',
+        'WpfCaptures:'
+    ) + ($captureEvidence | ForEach-Object { "$($_.Name): $($_.Sha256)" }) + @(
+        '',
+        'RequiredChecks:'
+    ) + ($requiredChecks | ForEach-Object { "PASS $_" }) + @(
+        '',
+        'EvidenceBoundary:',
+        'This implementation-only mode proves the scoped Contract and Synthetic checks and WPF rendering for Issue #15.',
+        'It does not inspect an installed Herdr instance, admit local File/Git observations, decide issue acceptance, or publish a package.'
+    )
+}
+else {
+    $runtimeTraceSha256 = (Get-FileHash -LiteralPath $runtimeTracePath -Algorithm SHA256).Hash
+    $gateReport = @(
+        'HerdrOps v0.3 Issue #15 Scoped File/Git Activity Implementation Gate',
+        "GeneratedUtc: $([DateTime]::UtcNow.ToString('O'))",
+        "SourceCommit: $sourceCommit",
+        'Result: IMPLEMENTATION READY / PARTIAL',
+        'ImplementationGate: PASS',
+        'IssueAcceptance: PENDING',
+        'VersionReleaseGate: PENDING',
+        'ActualFileSystemWatcher: OBSERVED',
+        'ActualReadOnlyGitStatus: OBSERVED',
+        'ActualHerdrAgentTaskCorrelation: NOT OBSERVED / NOT CLAIMED',
+        'IndependentReviewVerdict: UNAVAILABLE / NOT CLAIMED',
+        'FileReadInterception: NOT IMPLEMENTED / NOT CLAIMED',
+        'IssueStateRequired: OPEN',
+        "Tests: $passedTests/$totalTests PASS",
+        "ReferenceSha256: $referenceSha256",
+        "RuntimeTraceSha256: $runtimeTraceSha256",
+        "ProductAssemblySha256: $coreAssemblySha256",
+        "ContractSha256: $contractSha256",
+        "IndependentReviewRecordSha256: $reviewRecordSha256",
+        '',
+        'WpfCaptures:'
+    ) + ($captureEvidence | ForEach-Object { "$($_.Name): $($_.Sha256)" }) + @(
+        '',
+        'RequiredChecks:'
+    ) + ($requiredChecks | ForEach-Object { "PASS $_" }) + @(
+        '',
+        'EvidenceBoundary:',
+        'This gate proves canonical repository scoping, reparse-point escape rejection, bounded/debounced watcher intake, direct read-only bounded Git metadata, secret-redacted bounded diff preview, deterministic fail-closed correlation logic, separated Thai/English WPF rendering, and one actual local FileSystemWatcher plus Git trace from the hashed product assembly.',
+        'RepositoryMutationInvoked=false applies to collector, Git, and source mutation. The caller-selected JSON report is the trace command output and is not concealed by that field.',
+        'It does not prove file-read interception, actual Herdr Agent/Task correlation, installed-Herdr runtime behavior, or v0.3 release readiness. Issue #15 must remain open until actual Herdr correlation evidence is captured and independently reviewed.'
+    )
+}
 $gateReport | Set-Content -LiteralPath $gateReportPath -Encoding utf8
 $gateReport | Write-Output
 Write-Output "GateReport: $gateReportPath"

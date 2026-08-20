@@ -67,6 +67,12 @@ $targetAgentLabSocket = Join-Path $env:APPDATA 'herdr\herdr.sock'
 # This remains partial until actual Herdr notification delivery is captured.
 ./tools/Test-V03NotificationRuntime.ps1
 
+# Verify the v0.3 Issue #17 implementation-only aggregation and its
+# deterministic child-gate failure propagation. These checks cover only
+# Static, Contract, and Synthetic evidence and do not make a version decision.
+./tools/Test-V03ImplementationGateTests.ps1
+./tools/Test-V03ImplementationGate.ps1 -Configuration Release
+
 # Verify v0.4 assignment lifecycle transitions, Core-acceptance mapping,
 # SQLite migration and append-only provenance, restart replay, orphan and
 # duplicate-handoff visibility, and exact committed synthetic replay hashes.
