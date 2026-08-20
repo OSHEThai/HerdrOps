@@ -137,8 +137,9 @@ if ($client -notmatch 'CreateBoundedPaneReadRequest' -or
     $collector -notmatch 'ReadRecentUnwrappedAsync') {
     throw 'The collector-to-client bounded pane.read path is incomplete.'
 }
-$productionPaneReadWriters = @(& rg 'WriteString\("method", "pane\.read"\)' (Join-Path $repositoryRoot 'src') --glob '*.cs')
-if ($LASTEXITCODE -ne 0 -or $productionPaneReadWriters.Count -ne 1) {
+$productionPaneReadWriters = @(Get-ChildItem -LiteralPath (Join-Path $repositoryRoot 'src') -Filter '*.cs' -Recurse -File |
+    Select-String -Pattern 'WriteString\("method", "pane\.read"\)')
+if ($productionPaneReadWriters.Count -ne 1) {
     throw "Expected exactly one product pane.read request writer, found $($productionPaneReadWriters.Count)."
 }
 

@@ -84,6 +84,13 @@ function git {
     `$global:LASTEXITCODE = `$LASTEXITCODE
 }
 
+# This stub helper spawns its own child process to isolate the fixture run
+# from whatever real Herdr session happens to be hosting this test suite.
+# The production gate script's own fail-closed check (below) is untouched:
+# it still reads these variables directly whenever it runs for real.
+Remove-Item Env:\HERDR_ENV -ErrorAction SilentlyContinue
+Remove-Item Env:\HERDR_SOCKET_PATH -ErrorAction SilentlyContinue
+
 & `$AggregateScript -Configuration Debug -SkipBuild -ChildGateRoot `$ChildRoot
 exit `$LASTEXITCODE
 "@
@@ -136,6 +143,26 @@ Write-Output 'GateReport: $reportPath'
     }
 }
 
+function Invoke-AggregateDirectlyWithForcedHerdrEnvironment {
+    param(
+        [Parameter(Mandatory)][string]$AggregateScript,
+        [Parameter(Mandatory)][string]$HelperRoot
+    )
+
+    $helperPath = Join-Path $HelperRoot 'aggregate-forced-herdr-helper.ps1'
+    $helperText = @"
+[CmdletBinding()]
+param([string]`$AggregateScript)
+`$env:HERDR_ENV = '1'
+`$env:HERDR_SOCKET_PATH = 'X:\forced-production-check\herdr.sock'
+& `$AggregateScript -SkipBuild
+exit `$LASTEXITCODE
+"@
+    Set-Content -LiteralPath $helperPath -Value $helperText -Encoding utf8
+    $pwshPath = (Get-Command pwsh -ErrorAction Stop).Source
+    return @(& $pwshPath -NoProfile -File $helperPath -AggregateScript $AggregateScript 2>&1)
+}
+
 $sourceCommit = (& git -C $repositoryRoot rev-parse --verify 'HEAD^{commit}').Trim()
 $definitions = @(Get-V03ImplementationChildGateDefinitions)
 $aggregateSource = Get-Content -LiteralPath $aggregateScript -Raw
@@ -147,6 +174,10 @@ Assert-True -Condition ($aggregateSource -match '(?s)Invoke-Build\.ps1.*?-SkipTe
 $testRoot = Join-Path $artifactRoot "implementation-gate-test-fixtures\$([Guid]::NewGuid().ToString('N'))"
 $passingReportPath = ''
 $failingReportPath = ''
+$herdrIsolationRoot = ''
+$forcedHerdrReportPath = ''
+$originalHerdrEnv = $env:HERDR_ENV
+$originalHerdrSocketPath = $env:HERDR_SOCKET_PATH
 try {
     $reportsRoot = Join-Path $testRoot 'reports'
     New-Item -ItemType Directory -Path $reportsRoot -Force | Out-Null
@@ -236,11 +267,42 @@ try {
     Assert-True -Condition (Test-Path -LiteralPath $failingStderr -PathType Leaf) -Message 'Failed aggregate did not create the failing child stderr artifact.'
     Assert-True -Condition ((Get-Content -LiteralPath $failingStderr -Raw) -match 'synthetic child failure') -Message 'Failed aggregate lost the raw child failure diagnostic.'
     Assert-True -Condition ($failingReportText -notmatch 'synthetic child failure') -Message 'Failed aggregate exposed an unstable raw child error as a FailureCode.'
+
+    # An ambient Herdr session (HERDR_ENV / HERDR_SOCKET_PATH set in this very
+    # process, e.g. because the suite is being run from inside Herdr) must not
+    # leak into the stub fixture run below and make it non-deterministic.
+    $env:HERDR_ENV = '1'
+    $env:HERDR_SOCKET_PATH = 'X:\ambient-session\herdr.sock'
+    $herdrIsolationRoot = Join-Path $testRoot 'herdr-isolation-children'
+    New-Item -ItemType Directory -Path $herdrIsolationRoot -Force | Out-Null
+    New-StubChildGates -Root $herdrIsolationRoot -SourceCommit $sourceCommit
+    $isolationOutput = @(Invoke-AggregateWithCleanTestGit -AggregateScript $aggregateScript -ChildRoot $herdrIsolationRoot -HelperRoot $testRoot)
+    $isolationExitCode = $LASTEXITCODE
+    $isolationOutputText = @($isolationOutput | ForEach-Object { [string]$_ }) -join ' | '
+    Assert-Equal -Expected 0 -Actual $isolationExitCode -Message "Stub fixture suite must stay deterministic under an ambient Herdr session. Output=$isolationOutputText"
+    $isolationReportPath = Get-AggregateReportPath -Output $isolationOutput
+    $isolationReportText = Get-Content -LiteralPath $isolationReportPath -Raw
+    Assert-True -Condition ($isolationReportText -match '(?m)^Result: PASS\r?$') -Message 'Ambient Herdr session leaked into the stub fixture aggregate result.'
+    $env:HERDR_ENV = $originalHerdrEnv
+    $env:HERDR_SOCKET_PATH = $originalHerdrSocketPath
+
+    # Outside the stub isolation above, the production gate must still refuse
+    # to run for real under a real Herdr environment (fail-closed).
+    $forcedHerdrOutput = @(Invoke-AggregateDirectlyWithForcedHerdrEnvironment -AggregateScript $aggregateScript -HelperRoot $testRoot)
+    $forcedHerdrExitCode = $LASTEXITCODE
+    $forcedHerdrOutputText = @($forcedHerdrOutput | ForEach-Object { [string]$_ }) -join ' | '
+    Assert-True -Condition ($forcedHerdrExitCode -ne 0) -Message "The production gate must still refuse to run under a real Herdr environment. Output=$forcedHerdrOutputText"
+    $forcedHerdrReportPath = Get-AggregateReportPath -Output $forcedHerdrOutput
+    $forcedHerdrReportText = Get-Content -LiteralPath $forcedHerdrReportPath -Raw
+    Assert-True -Condition ($forcedHerdrReportText -match '(?m)^FailureCode: AuthorizedHerdrEnvironment\r?$') -Message 'The production gate did not fail closed with AuthorizedHerdrEnvironment under a real Herdr session.'
 }
 finally {
+    $env:HERDR_ENV = $originalHerdrEnv
+    $env:HERDR_SOCKET_PATH = $originalHerdrSocketPath
     foreach ($runDirectory in @(
             $(if ([string]::IsNullOrWhiteSpace($passingReportPath)) { '' } else { Split-Path -Parent $passingReportPath }),
-            $(if ([string]::IsNullOrWhiteSpace($failingReportPath)) { '' } else { Split-Path -Parent $failingReportPath }))) {
+            $(if ([string]::IsNullOrWhiteSpace($failingReportPath)) { '' } else { Split-Path -Parent $failingReportPath }),
+            $(if ([string]::IsNullOrWhiteSpace($forcedHerdrReportPath)) { '' } else { Split-Path -Parent $forcedHerdrReportPath }))) {
         if (-not [string]::IsNullOrWhiteSpace($runDirectory) -and (Test-Path -LiteralPath $runDirectory)) {
             Remove-Item -LiteralPath $runDirectory -Recurse -Force -ErrorAction SilentlyContinue
         }
