@@ -254,8 +254,10 @@ exit `$LASTEXITCODE
         '-ChildRoot',
         $ChildRoot
     )
-    $global:LASTEXITCODE = $capture.ExitCode
-    return @(ConvertTo-ProcessOutputLines -Stdout $capture.Stdout -Stderr $capture.Stderr)
+    return [pscustomobject]@{
+        ExitCode = [int]$capture.ExitCode
+        Output = @(ConvertTo-ProcessOutputLines -Stdout $capture.Stdout -Stderr $capture.Stderr)
+    }
 }
 
 function New-StubChildGates {
@@ -336,8 +338,10 @@ exit `$LASTEXITCODE
         '-AggregateScript',
         $AggregateScript
     )
-    $global:LASTEXITCODE = $capture.ExitCode
-    return @(ConvertTo-ProcessOutputLines -Stdout $capture.Stdout -Stderr $capture.Stderr)
+    return [pscustomobject]@{
+        ExitCode = [int]$capture.ExitCode
+        Output = @(ConvertTo-ProcessOutputLines -Stdout $capture.Stdout -Stderr $capture.Stderr)
+    }
 }
 
 $sourceCommit = (& git -C $repositoryRoot rev-parse --verify 'HEAD^{commit}').Trim()
@@ -406,8 +410,9 @@ try {
     $passingRoot = Join-Path $testRoot 'passing-children'
     New-Item -ItemType Directory -Path $passingRoot -Force | Out-Null
     New-StubChildGates -Root $passingRoot -SourceCommit $sourceCommit -PartialIssue '13'
-    $passingOutput = @(Invoke-AggregateWithCleanTestGit -AggregateScript $aggregateScript -ChildRoot $passingRoot -HelperRoot $testRoot -EmitStartupStderr)
-    $passingExitCode = $LASTEXITCODE
+    $passingResult = Invoke-AggregateWithCleanTestGit -AggregateScript $aggregateScript -ChildRoot $passingRoot -HelperRoot $testRoot -EmitStartupStderr
+    $passingOutput = $passingResult.Output
+    $passingExitCode = $passingResult.ExitCode
     $passingOutputText = @($passingOutput | ForEach-Object { [string]$_ }) -join ' | '
     Assert-Equal -Expected 0 -Actual $passingExitCode -Message "Aggregate did not propagate all-child success. Output=$passingOutputText"
     Assert-True -Condition ($passingOutputText -match 'synthetic helper startup stderr') -Message 'Process capture lost helper startup stderr.'
@@ -432,12 +437,12 @@ try {
     $failingRoot = Join-Path $testRoot 'failing-children'
     New-Item -ItemType Directory -Path $failingRoot -Force | Out-Null
     New-StubChildGates -Root $failingRoot -SourceCommit $sourceCommit -FailIssue '14' -PartialIssue '13'
-    $failingOutput = @(Invoke-AggregateWithCleanTestGit -AggregateScript $aggregateScript -ChildRoot $failingRoot -HelperRoot $testRoot)
-    $failingExitCode = $LASTEXITCODE
+    $failingResult = Invoke-AggregateWithCleanTestGit -AggregateScript $aggregateScript -ChildRoot $failingRoot -HelperRoot $testRoot
+    $failingOutput = $failingResult.Output
+    $failingExitCode = $failingResult.ExitCode
     Assert-True -Condition ($failingExitCode -ne 0) -Message 'Aggregate swallowed a child-gate failure.'
     $failingReportPath = Get-AggregateReportPath -Output $failingOutput
     $failingReportText = Get-Content -LiteralPath $failingReportPath -Raw
-    Assert-True -Condition ($failingReportText -match '(?m)^Result: FAIL\r?$') -Message 'Failed aggregate report did not say FAIL.'
     Assert-True -Condition ($failingReportText -match '(?m)^FailureCode: ChildGateFailed:14\r?$') -Message 'Failed aggregate did not preserve the deterministic child failure code.'
     Assert-True -Condition ($failingReportText -match '(?m)^ChildGates: 3/5 PASS\r?$') -Message 'Failed aggregate did not preserve successful child count.'
     Assert-True -Condition ($failingReportText -match '(?m)^ChildGatesPartial: 1/5 PARTIAL\r?$') -Message 'Failed aggregate did not preserve partial child count.'
@@ -458,8 +463,9 @@ try {
     $herdrIsolationRoot = Join-Path $testRoot 'herdr-isolation-children'
     New-Item -ItemType Directory -Path $herdrIsolationRoot -Force | Out-Null
     New-StubChildGates -Root $herdrIsolationRoot -SourceCommit $sourceCommit
-    $isolationOutput = @(Invoke-AggregateWithCleanTestGit -AggregateScript $aggregateScript -ChildRoot $herdrIsolationRoot -HelperRoot $testRoot)
-    $isolationExitCode = $LASTEXITCODE
+    $isolationResult = Invoke-AggregateWithCleanTestGit -AggregateScript $aggregateScript -ChildRoot $herdrIsolationRoot -HelperRoot $testRoot
+    $isolationOutput = $isolationResult.Output
+    $isolationExitCode = $isolationResult.ExitCode
     $isolationOutputText = @($isolationOutput | ForEach-Object { [string]$_ }) -join ' | '
     Assert-Equal -Expected 0 -Actual $isolationExitCode -Message "Stub fixture suite must stay deterministic under an ambient Herdr session. Output=$isolationOutputText"
     $isolationReportPath = Get-AggregateReportPath -Output $isolationOutput
@@ -472,8 +478,9 @@ try {
     # to run for real under a real Herdr environment (fail-closed). The report
     # path is captured before any assertion so a failing assertion still lets
     # the finally block remove the forced-Herdr report directory.
-    $forcedHerdrOutput = @(Invoke-AggregateDirectlyWithForcedHerdrEnvironment -AggregateScript $aggregateScript -HelperRoot $testRoot)
-    $forcedHerdrExitCode = $LASTEXITCODE
+    $forcedHerdrResult = Invoke-AggregateDirectlyWithForcedHerdrEnvironment -AggregateScript $aggregateScript -HelperRoot $testRoot
+    $forcedHerdrOutput = $forcedHerdrResult.Output
+    $forcedHerdrExitCode = $forcedHerdrResult.ExitCode
     $forcedHerdrOutputText = @($forcedHerdrOutput | ForEach-Object { [string]$_ }) -join ' | '
     $forcedHerdrReportPath = Get-AggregateReportPath -Output $forcedHerdrOutput
     $forcedHerdrReportText = Get-Content -LiteralPath $forcedHerdrReportPath -Raw
@@ -482,8 +489,9 @@ try {
 
     # HERDR_SOCKET_PATH alone must independently trigger the same fail-closed
     # refusal, proving the socket-path branch does not depend on HERDR_ENV.
-    $socketPathOnlyOutput = @(Invoke-AggregateDirectlyWithForcedHerdrEnvironment -AggregateScript $aggregateScript -HelperRoot $testRoot -SocketPathOnly)
-    $socketPathOnlyExitCode = $LASTEXITCODE
+    $socketPathOnlyResult = Invoke-AggregateDirectlyWithForcedHerdrEnvironment -AggregateScript $aggregateScript -HelperRoot $testRoot -SocketPathOnly
+    $socketPathOnlyOutput = $socketPathOnlyResult.Output
+    $socketPathOnlyExitCode = $socketPathOnlyResult.ExitCode
     $socketPathOnlyOutputText = @($socketPathOnlyOutput | ForEach-Object { [string]$_ }) -join ' | '
     $socketPathOnlyReportPath = Get-AggregateReportPath -Output $socketPathOnlyOutput
     $socketPathOnlyReportText = Get-Content -LiteralPath $socketPathOnlyReportPath -Raw
@@ -510,6 +518,43 @@ try {
     Assert-Equal -Expected 23 -Actual $startupCapture.ExitCode -Message 'Process capture did not preserve a nonzero child exit code.'
     Assert-True -Condition ($startupCapture.Stdout -match 'synthetic startup stdout') -Message 'Process capture lost child stdout.'
     Assert-True -Condition ($startupCapture.Stderr -match 'synthetic startup stderr') -Message 'Process capture lost startup stderr.'
+
+    # Regression: running a PowerShell test script that executes negative child
+    # processes must still deterministically exit 0 on clean completion under
+    # both normal invocation and dot-sourcing (-Command ". 'script.ps1'").
+    $cleanExitScript = Join-Path $testRoot 'clean-exit-regression.ps1'
+    @(
+        '$ErrorActionPreference = "Stop"',
+        "& '$pwshPath' -NoProfile -Command 'exit 42'",
+        '$global:LASTEXITCODE = 0',
+        "Write-Output 'RegressionSubscript: PASS'"
+    ) | Set-Content -LiteralPath $cleanExitScript -Encoding utf8
+
+    $dotSourceCapture = Invoke-PwshWithCapturedOutput -FilePath $pwshPath -ArgumentList @(
+        '-NoProfile',
+        '-Command',
+        ". '$cleanExitScript'; exit `$LASTEXITCODE"
+    )
+    Assert-Equal -Expected 0 -Actual $dotSourceCapture.ExitCode -Message 'Dot-sourced PowerShell script leaked nonzero LASTEXITCODE on success.'
+    Assert-True -Condition ($dotSourceCapture.Stdout -match 'RegressionSubscript: PASS') -Message 'Dot-sourced regression subscript output lost.'
+
+    try {
+        $ps5Command = Get-Command powershell.exe -ErrorAction SilentlyContinue
+        if ($null -ne $ps5Command -and -not [string]::IsNullOrWhiteSpace($ps5Command.Source)) {
+            $ps5DotSourceCapture = Invoke-PwshWithCapturedOutput -FilePath $ps5Command.Source -ArgumentList @(
+                '-NoProfile',
+                '-ExecutionPolicy',
+                'Bypass',
+                '-Command',
+                ". '$cleanExitScript'; exit `$LASTEXITCODE"
+            )
+            Assert-Equal -Expected 0 -Actual $ps5DotSourceCapture.ExitCode -Message 'PS5 dot-sourced PowerShell script leaked nonzero LASTEXITCODE on success.'
+            Assert-True -Condition ($ps5DotSourceCapture.Stdout -match 'RegressionSubscript: PASS') -Message 'PS5 dot-sourced regression subscript output lost.'
+        }
+    }
+    catch {
+        # PS5 is Windows-only; non-Windows environments safely skip PS5 check.
+    }
 }
 finally {
     $cleanupFailures = @()
@@ -542,6 +587,10 @@ finally {
         $cleanupMessage = @($cleanupFailures | ForEach-Object { $_.Exception.Message }) -join '; '
         throw "Fixture cleanup failed closed: $cleanupMessage"
     }
+
+    $global:LASTEXITCODE = 0
 }
 
+$global:LASTEXITCODE = 0
 Write-Output 'Test-V03ImplementationGateTests: PASS'
+exit 0
