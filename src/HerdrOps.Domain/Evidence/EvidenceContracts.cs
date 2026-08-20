@@ -40,7 +40,7 @@ public sealed record EvidenceCaptureRequest(
     string SourceReference,
     DateTimeOffset ObservedUtc,
     DateTimeOffset IngestedUtc,
-    DateTimeOffset RetainUntilUtc,
+    DateTimeOffset? RetainUntilUtc,
     bool CreateManagedCopy);
 
 public sealed record EvidenceMetadata(
@@ -125,7 +125,7 @@ public static class EvidenceMetadataContract
             normalizedRequest.SourceReference,
             normalizedRequest.ObservedUtc,
             normalizedRequest.IngestedUtc,
-            normalizedRequest.RetainUntilUtc,
+            normalizedRequest.RetainUntilUtc!.Value,
             availability,
             storageKind,
             contentLength,
@@ -185,9 +185,9 @@ public static class EvidenceMetadataContract
         var ingestedUtc = EvidenceContractNormalization.EnsureUtc(
             request.IngestedUtc,
             nameof(request.IngestedUtc));
-        var retainUntilUtc = EvidenceContractNormalization.EnsureUtc(
-            request.RetainUntilUtc,
-            nameof(request.RetainUntilUtc));
+        var retainUntilUtc = EvidenceRetentionPolicy.ResolveRetainUntil(
+            observedUtc,
+            request.RetainUntilUtc);
         if (ingestedUtc < observedUtc)
         {
             throw new EvidenceContractException(
@@ -299,7 +299,7 @@ public static class EvidenceMetadataContract
             SourceReference = request.SourceReference,
             ObservedUtc = request.ObservedUtc,
             IngestedUtc = request.IngestedUtc,
-            RetainUntilUtc = request.RetainUntilUtc,
+            RetainUntilUtc = request.RetainUntilUtc!.Value,
             ContentSha256 = contentSha256,
             ManagedRelativePath = managedPath,
             EvidenceIdentitySha256 = requireHashes
