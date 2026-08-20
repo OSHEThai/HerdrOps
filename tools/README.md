@@ -67,6 +67,12 @@ $targetAgentLabSocket = Join-Path $env:APPDATA 'herdr\herdr.sock'
 # This remains partial until actual Herdr notification delivery is captured.
 ./tools/Test-V03NotificationRuntime.ps1
 
+# Verify the v0.3 Issue #17 implementation-only aggregation and its
+# deterministic child-gate failure propagation. These checks cover only
+# Static, Contract, and Synthetic evidence and do not make a version decision.
+./tools/Test-V03ImplementationGateTests.ps1
+./tools/Test-V03ImplementationGate.ps1 -Configuration Release
+
 # Verify v0.4 assignment lifecycle transitions, Core-acceptance mapping,
 # SQLite migration and append-only provenance, restart replay, orphan and
 # duplicate-handoff visibility, and exact committed synthetic replay hashes.
@@ -158,6 +164,17 @@ dotnet artifacts/bin/HerdrOps.Core/release/HerdrOps.Core.dll trace-herdr-termina
   --report artifacts/runtime-evidence/v0.3.0/issue-14/terminal-process.json `
   --seconds 120 --interval-ms 500 --lines 80
 ```
+
+# Verify the fail-closed v1.0 Issue #42 24-hour soak/fault-injection contract and
+# harness without running a soak or controlling Herdr/Core/App. Reports PENDING and
+# refuses PASS in synthetic/preparation mode.
+./tools/Test-V10Issue42SoakContract.ps1
+
+# Optionally validate exact packaged candidate bytes (still refuses a soak/PASS).
+./tools/Test-V10Issue42SoakContract.ps1 `
+  -CandidateArchivePath '<candidate-archive>' `
+  -CandidateArchiveSha256 '<64-hex>' `
+  -CandidateArchiveBytes <bytes>
 
 The composite gate binds production WPF captures to exact state hashes from the admitted Herdr Core trace and requires each Event phase to contain exactly one Core-labelled `pane.agent_status_changed` transition with matching accepted workspace/pane/status and App Agent evidence. It admits either a direct Event sequence or exactly one unlabelled connected snapshot reconciliation immediately before that Event; extra sequences, Events, topology changes or unrelated panes fail closed. It verifies Dashboard-close Widget continuity, waits for five seconds of an unchanged complete runtime fingerprint with SHA-256-chained append-only phase provenance, and then measures Widget latency plus combined Core/App idle resources. Dashboard and capture resources are released before managed large-object-heap cleanup, and weak references must show every tracked capture bitmap was collected; no native working-set trim is used and the 180 MB target is unchanged. The gate also compares prelaunch and post-run App/Core executable hashes, emits a `NoRuntimeCredit` report on every terminating failure, fails closed outside an authorized Herdr pane, and does not control the Herdr session itself.
 
