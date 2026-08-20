@@ -897,9 +897,15 @@ try {
         if (Test-Path -LiteralPath $appReportPath -PathType Leaf) {
             try {
                 $failedAppReport = Get-Content -LiteralPath $appReportPath -Raw | ConvertFrom-Json
-                $failedChecks = @($failedAppReport.FailedCandidateChecks)
-                if ($failedChecks.Count -gt 0) {
-                    $appFailureMessage += " FailedCandidateChecks=$($failedChecks -join ',')"
+                if (Test-ObjectHasProperty -Object $failedAppReport -Name 'FailedCandidateChecks') {
+                    $failedChecks = @($failedAppReport.FailedCandidateChecks)
+                    if ($failedChecks.Count -gt 0) {
+                        $appFailureMessage += " FailedCandidateChecks=$($failedChecks -join ',')"
+                    }
+                }
+                if ((Test-ObjectHasProperty -Object $failedAppReport -Name 'ErrorType') -and
+                    (Test-ObjectHasProperty -Object $failedAppReport -Name 'Message')) {
+                    $appFailureMessage += " AppFailure=$($failedAppReport.ErrorType): $($failedAppReport.Message)"
                 }
             } catch {
                 $appFailureMessage += ' App report could not be parsed for failed-check diagnostics.'
