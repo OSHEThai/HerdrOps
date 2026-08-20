@@ -48,6 +48,147 @@ function Assert-Throws {
     Assert-True -Condition $thrown -Message $Message
 }
 
+function ConvertTo-WindowsProcessArgument {
+    param(
+        [AllowEmptyString()]
+        [string]$Argument
+    )
+
+    if ($null -eq $Argument) {
+        $Argument = ''
+    }
+
+    # ProcessStartInfo.Arguments is a single Windows command-line string on
+    # both Windows PowerShell 5.1 and PowerShell 7. Quote every argument using
+    # the CommandLineToArgvW rules so paths containing spaces, quotes, or
+    # trailing backslashes remain one argument in the child process.
+    $builder = New-Object System.Text.StringBuilder
+    $null = $builder.Append('"')
+    $backslashCount = 0
+    foreach ($character in $Argument.ToCharArray()) {
+        if ($character -eq [char]92) {
+            $backslashCount++
+            continue
+        }
+
+        if ($character -eq [char]34) {
+            $null = $builder.Append((('\' * (($backslashCount * 2) + 1)) -join ''))
+            $null = $builder.Append('"')
+            $backslashCount = 0
+            continue
+        }
+
+        if ($backslashCount -gt 0) {
+            $null = $builder.Append((('\' * $backslashCount) -join ''))
+            $backslashCount = 0
+        }
+        $null = $builder.Append([string]$character)
+    }
+
+    if ($backslashCount -gt 0) {
+        $null = $builder.Append((('\' * ($backslashCount * 2)) -join ''))
+    }
+    $null = $builder.Append('"')
+    return $builder.ToString()
+}
+
+function Invoke-PwshWithCapturedOutput {
+    param(
+        [Parameter(Mandatory)][string]$FilePath,
+        [Parameter(Mandatory)][string[]]$ArgumentList
+    )
+
+    $startInfo = New-Object System.Diagnostics.ProcessStartInfo
+    $startInfo.FileName = $FilePath
+    $quotedArguments = @($ArgumentList | ForEach-Object {
+            ConvertTo-WindowsProcessArgument -Argument ([string]$_)
+        })
+    $startInfo.Arguments = [string]::Join(' ', [string[]]$quotedArguments)
+    $startInfo.UseShellExecute = $false
+    $startInfo.CreateNoWindow = $true
+    $startInfo.RedirectStandardOutput = $true
+    $startInfo.RedirectStandardError = $true
+
+    $process = New-Object System.Diagnostics.Process
+    try {
+        $process.StartInfo = $startInfo
+        $started = $process.Start()
+        if (-not $started) {
+            throw [InvalidOperationException]::new('PwshProcessStartFailed')
+        }
+
+        # Start both async reads before waiting so a verbose child cannot
+        # deadlock on a full stdout or stderr pipe.
+        $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+        $stderrTask = $process.StandardError.ReadToEndAsync()
+        $process.WaitForExit()
+        $stdout = $stdoutTask.GetAwaiter().GetResult()
+        $stderr = $stderrTask.GetAwaiter().GetResult()
+
+        return [pscustomobject]@{
+            ExitCode = [int]$process.ExitCode
+            Stdout = [string]$stdout
+            Stderr = [string]$stderr
+        }
+    }
+    finally {
+        if ($null -ne $process) {
+            $process.Dispose()
+        }
+    }
+}
+
+function ConvertTo-ProcessOutputLines {
+    param(
+        [AllowEmptyString()][string]$Stdout,
+        [AllowEmptyString()][string]$Stderr
+    )
+
+    $lines = @()
+    if (-not [string]::IsNullOrEmpty($Stdout)) {
+        $lines += [Regex]::Split($Stdout, "\r\n|\n|\r")
+    }
+    if (-not [string]::IsNullOrEmpty($Stderr)) {
+        $lines += [Regex]::Split($Stderr, "\r\n|\n|\r")
+    }
+    return $lines
+}
+
+function Remove-OwnedFixturePath {
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [Parameter(Mandatory)][string]$OwnerRoot
+    )
+
+    $separatorChars = [char[]]@([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
+    $ownerFull = [IO.Path]::GetFullPath($OwnerRoot).TrimEnd($separatorChars)
+    $targetFull = [IO.Path]::GetFullPath($Path).TrimEnd($separatorChars)
+    $ownerPrefix = $ownerFull + [IO.Path]::DirectorySeparatorChar
+
+    # Never permit an owner root itself (or any unrelated path) to become a
+    # recursive deletion target. Every cleanup target must be a child of the
+    # exact fixture root assigned to that target.
+    if (-not $targetFull.StartsWith($ownerPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "Refusing to remove fixture path outside owner root: $targetFull"
+    }
+
+    if (Test-Path -LiteralPath $targetFull) {
+        $resolvedTarget = (Resolve-Path -LiteralPath $targetFull -ErrorAction Stop).Path
+        if (-not $resolvedTarget.StartsWith($ownerPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+            throw "Refusing to remove fixture path whose resolved target escaped owner root: $resolvedTarget"
+        }
+        if (-not (Test-Path -LiteralPath $targetFull -PathType Container)) {
+            throw "Refusing to remove non-directory fixture target: $targetFull"
+        }
+
+        Remove-Item -LiteralPath $targetFull -Recurse -Force -ErrorAction Stop
+    }
+
+    if (Test-Path -LiteralPath $targetFull) {
+        throw "Owned fixture path was not removed: $targetFull"
+    }
+}
+
 function Get-AggregateReportPath {
     param(
         [Parameter(Mandatory)][object[]]$Output
@@ -65,11 +206,18 @@ function Invoke-AggregateWithCleanTestGit {
     param(
         [Parameter(Mandatory)][string]$AggregateScript,
         [Parameter(Mandatory)][string]$ChildRoot,
-        [Parameter(Mandatory)][string]$HelperRoot
+        [Parameter(Mandatory)][string]$HelperRoot,
+        [switch]$EmitStartupStderr
     )
 
     $helperPath = Join-Path $HelperRoot 'aggregate-clean-git-helper.ps1'
     $realGitPath = (Get-Command git.exe -ErrorAction Stop).Source.Replace("'", "''")
+    $startupStderrLine = if ($EmitStartupStderr) {
+        "[Console]::Error.WriteLine('synthetic helper startup stderr')"
+    }
+    else {
+        ''
+    }
     $helperText = @"
 [CmdletBinding()]
 param([string]`$AggregateScript, [string]`$ChildRoot)
@@ -90,13 +238,24 @@ function git {
 # it still reads these variables directly whenever it runs for real.
 Remove-Item Env:\HERDR_ENV -ErrorAction SilentlyContinue
 Remove-Item Env:\HERDR_SOCKET_PATH -ErrorAction SilentlyContinue
+$startupStderrLine
 
 & `$AggregateScript -Configuration Debug -SkipBuild -ChildGateRoot `$ChildRoot
 exit `$LASTEXITCODE
 "@
     Set-Content -LiteralPath $helperPath -Value $helperText -Encoding utf8
     $pwshPath = (Get-Command pwsh -ErrorAction Stop).Source
-    return @(& $pwshPath -NoProfile -File $helperPath -AggregateScript $AggregateScript -ChildRoot $ChildRoot 2>&1)
+    $capture = Invoke-PwshWithCapturedOutput -FilePath $pwshPath -ArgumentList @(
+        '-NoProfile',
+        '-File',
+        $helperPath,
+        '-AggregateScript',
+        $AggregateScript,
+        '-ChildRoot',
+        $ChildRoot
+    )
+    $global:LASTEXITCODE = $capture.ExitCode
+    return @(ConvertTo-ProcessOutputLines -Stdout $capture.Stdout -Stderr $capture.Stderr)
 }
 
 function New-StubChildGates {
@@ -170,7 +329,15 @@ exit `$LASTEXITCODE
 "@
     Set-Content -LiteralPath $helperPath -Value $helperText -Encoding utf8
     $pwshPath = (Get-Command pwsh -ErrorAction Stop).Source
-    return @(& $pwshPath -NoProfile -File $helperPath -AggregateScript $AggregateScript 2>&1)
+    $capture = Invoke-PwshWithCapturedOutput -FilePath $pwshPath -ArgumentList @(
+        '-NoProfile',
+        '-File',
+        $helperPath,
+        '-AggregateScript',
+        $AggregateScript
+    )
+    $global:LASTEXITCODE = $capture.ExitCode
+    return @(ConvertTo-ProcessOutputLines -Stdout $capture.Stdout -Stderr $capture.Stderr)
 }
 
 $sourceCommit = (& git -C $repositoryRoot rev-parse --verify 'HEAD^{commit}').Trim()
@@ -181,10 +348,13 @@ Assert-Equal -Expected 'Test-V03FileGitActivity.ps1' -Actual $definitions[3].Scr
 Assert-True -Condition $definitions[3].ImplementationOnly -Message 'Issue #15 must use the implementation-only child mode.'
 Assert-True -Condition ($aggregateSource -match '(?s)Invoke-Build\.ps1.*?-SkipTests') -Message 'Default aggregate build path must not invoke the full WPF test suite.'
 
-$testRoot = Join-Path $artifactRoot "implementation-gate-test-fixtures\$([Guid]::NewGuid().ToString('N'))"
+$fixtureBaseRoot = Join-Path $artifactRoot 'implementation-gate-test-fixtures'
+$implementationRunRoot = Join-Path $artifactRoot 'implementation-gates\v0.3.0\issue-17'
+$testRoot = Join-Path $fixtureBaseRoot "run-$([Guid]::NewGuid().ToString('N'))"
 $passingReportPath = ''
 $failingReportPath = ''
 $herdrIsolationRoot = ''
+$isolationReportPath = ''
 $forcedHerdrReportPath = ''
 $socketPathOnlyReportPath = ''
 $originalHerdrEnv = $env:HERDR_ENV
@@ -236,10 +406,11 @@ try {
     $passingRoot = Join-Path $testRoot 'passing-children'
     New-Item -ItemType Directory -Path $passingRoot -Force | Out-Null
     New-StubChildGates -Root $passingRoot -SourceCommit $sourceCommit -PartialIssue '13'
-    $passingOutput = @(Invoke-AggregateWithCleanTestGit -AggregateScript $aggregateScript -ChildRoot $passingRoot -HelperRoot $testRoot)
+    $passingOutput = @(Invoke-AggregateWithCleanTestGit -AggregateScript $aggregateScript -ChildRoot $passingRoot -HelperRoot $testRoot -EmitStartupStderr)
     $passingExitCode = $LASTEXITCODE
     $passingOutputText = @($passingOutput | ForEach-Object { [string]$_ }) -join ' | '
     Assert-Equal -Expected 0 -Actual $passingExitCode -Message "Aggregate did not propagate all-child success. Output=$passingOutputText"
+    Assert-True -Condition ($passingOutputText -match 'synthetic helper startup stderr') -Message 'Process capture lost helper startup stderr.'
     $passingReportPath = Get-AggregateReportPath -Output $passingOutput
     $passingReportText = Get-Content -LiteralPath $passingReportPath -Raw
     Assert-True -Condition ($passingReportText -match '(?m)^Result: PASS\r?$') -Message 'Passing aggregate report did not say PASS.'
@@ -318,21 +489,58 @@ try {
     $socketPathOnlyReportText = Get-Content -LiteralPath $socketPathOnlyReportPath -Raw
     Assert-True -Condition ($socketPathOnlyExitCode -ne 0) -Message "The production gate must refuse to run when only HERDR_SOCKET_PATH is set. Output=$socketPathOnlyOutputText"
     Assert-True -Condition ($socketPathOnlyReportText -match '(?m)^FailureCode: AuthorizedHerdrEnvironment\r?$') -Message 'The production gate did not fail closed with AuthorizedHerdrEnvironment when only HERDR_SOCKET_PATH was set.'
+
+    # Directly exercise the ProcessStartInfo seam with a path containing
+    # spaces. The child emits stderr and exits nonzero; both channels and the
+    # exact exit code must survive without PS5 treating stderr as an exception.
+    $startupStderrRoot = Join-Path $testRoot 'process capture path with spaces'
+    New-Item -ItemType Directory -Path $startupStderrRoot -Force | Out-Null
+    $startupStderrScript = Join-Path $startupStderrRoot 'startup stderr exit.ps1'
+    @(
+        "[Console]::Out.WriteLine('synthetic startup stdout')",
+        "[Console]::Error.WriteLine('synthetic startup stderr')",
+        'exit 23'
+    ) | Set-Content -LiteralPath $startupStderrScript -Encoding utf8
+    $pwshPath = (Get-Command pwsh -ErrorAction Stop).Source
+    $startupCapture = Invoke-PwshWithCapturedOutput -FilePath $pwshPath -ArgumentList @(
+        '-NoProfile',
+        '-File',
+        $startupStderrScript
+    )
+    Assert-Equal -Expected 23 -Actual $startupCapture.ExitCode -Message 'Process capture did not preserve a nonzero child exit code.'
+    Assert-True -Condition ($startupCapture.Stdout -match 'synthetic startup stdout') -Message 'Process capture lost child stdout.'
+    Assert-True -Condition ($startupCapture.Stderr -match 'synthetic startup stderr') -Message 'Process capture lost startup stderr.'
 }
 finally {
-    $env:HERDR_ENV = $originalHerdrEnv
-    $env:HERDR_SOCKET_PATH = $originalHerdrSocketPath
-    foreach ($runDirectory in @(
-            $(if ([string]::IsNullOrWhiteSpace($passingReportPath)) { '' } else { Split-Path -Parent $passingReportPath }),
-            $(if ([string]::IsNullOrWhiteSpace($failingReportPath)) { '' } else { Split-Path -Parent $failingReportPath }),
-            $(if ([string]::IsNullOrWhiteSpace($forcedHerdrReportPath)) { '' } else { Split-Path -Parent $forcedHerdrReportPath }),
-            $(if ([string]::IsNullOrWhiteSpace($socketPathOnlyReportPath)) { '' } else { Split-Path -Parent $socketPathOnlyReportPath }))) {
-        if (-not [string]::IsNullOrWhiteSpace($runDirectory) -and (Test-Path -LiteralPath $runDirectory)) {
-            Remove-Item -LiteralPath $runDirectory -Recurse -Force -ErrorAction SilentlyContinue
+    $cleanupFailures = @()
+    try {
+        $env:HERDR_ENV = $originalHerdrEnv
+        $env:HERDR_SOCKET_PATH = $originalHerdrSocketPath
+    }
+    catch {
+        $cleanupFailures += $_
+    }
+
+    foreach ($cleanupTarget in @(
+            [pscustomobject]@{ Path = if ([string]::IsNullOrWhiteSpace($passingReportPath)) { '' } else { Split-Path -Parent $passingReportPath }; OwnerRoot = $implementationRunRoot },
+            [pscustomobject]@{ Path = if ([string]::IsNullOrWhiteSpace($failingReportPath)) { '' } else { Split-Path -Parent $failingReportPath }; OwnerRoot = $implementationRunRoot },
+            [pscustomobject]@{ Path = if ([string]::IsNullOrWhiteSpace($isolationReportPath)) { '' } else { Split-Path -Parent $isolationReportPath }; OwnerRoot = $implementationRunRoot },
+            [pscustomobject]@{ Path = if ([string]::IsNullOrWhiteSpace($forcedHerdrReportPath)) { '' } else { Split-Path -Parent $forcedHerdrReportPath }; OwnerRoot = $implementationRunRoot },
+            [pscustomobject]@{ Path = if ([string]::IsNullOrWhiteSpace($socketPathOnlyReportPath)) { '' } else { Split-Path -Parent $socketPathOnlyReportPath }; OwnerRoot = $implementationRunRoot },
+            [pscustomobject]@{ Path = $testRoot; OwnerRoot = $fixtureBaseRoot })) {
+        if (-not [string]::IsNullOrWhiteSpace($cleanupTarget.Path)) {
+            try {
+                Remove-OwnedFixturePath -Path $cleanupTarget.Path -OwnerRoot $cleanupTarget.OwnerRoot
+            }
+            catch {
+                $cleanupFailures += $_
+            }
         }
     }
-    if (Test-Path -LiteralPath $testRoot) {
-        Remove-Item -LiteralPath $testRoot -Recurse -Force -ErrorAction SilentlyContinue
+
+    if ($cleanupFailures.Count -gt 0) {
+        $cleanupMessage = @($cleanupFailures | ForEach-Object { $_.Exception.Message }) -join '; '
+        throw "Fixture cleanup failed closed: $cleanupMessage"
     }
 }
 
