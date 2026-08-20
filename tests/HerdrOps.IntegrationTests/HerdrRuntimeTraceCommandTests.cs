@@ -65,6 +65,62 @@ public sealed class HerdrRuntimeTraceCommandTests
     }
 
     [TestMethod]
+    public void TraceTransitionFailsClosedForMixedValidAndAgentlessTopology()
+    {
+        var validState = HerdrSessionStateContractMapper.ToDomain(
+            HerdrStateTestData.CreateState(sequence: 1));
+        var extraPane = validState.Panes["pane-1"] with
+        {
+            PaneId = "pane-2",
+            TerminalId = "terminal-2",
+            Focused = false,
+            Title = "Worker 02",
+        };
+        var mixedState = validState with
+        {
+            Workspaces = new Dictionary<string, HerdrWorkspaceSnapshot>
+            {
+                ["workspace-1"] = validState.Workspaces["workspace-1"] with { PaneCount = 2 },
+            },
+            Tabs = new Dictionary<string, HerdrTabSnapshot>
+            {
+                ["tab-1"] = validState.Tabs["tab-1"] with { PaneCount = 2 },
+            },
+            Panes = new Dictionary<string, HerdrPaneSnapshot>
+            {
+                ["pane-1"] = validState.Panes["pane-1"],
+                ["pane-2"] = extraPane,
+            },
+        };
+        var transition = HerdrRuntimeEvidence.CreateTransition(
+            new HerdrRuntimeMonitorSnapshot(
+                HerdrRuntimeMonitorStatus.Connected,
+                mixedState,
+                ServerIdentity: null,
+                BootstrapCount: 1,
+                EventCount: 0,
+                DisconnectCount: 0,
+                ReconciliationCount: 0,
+                LastTransitionReason: null,
+                LastTransitionUtc: DateTimeOffset.Parse("2026-08-16T03:04:01Z")));
+
+        Assert.IsTrue(
+            HerdrRuntimeEvidence.CreateTransition(
+                new HerdrRuntimeMonitorSnapshot(
+                    HerdrRuntimeMonitorStatus.Connected,
+                    validState,
+                    ServerIdentity: null,
+                    BootstrapCount: 1,
+                    EventCount: 0,
+                    DisconnectCount: 0,
+                    ReconciliationCount: 0,
+                    LastTransitionReason: null,
+                    LastTransitionUtc: DateTimeOffset.Parse("2026-08-16T03:04:00Z")))
+                .AllAgentsHaveLiveIdentity);
+        Assert.IsFalse(transition.AllAgentsHaveLiveIdentity);
+    }
+
+    [TestMethod]
     public void RuntimeFactoryRejectsMissingExecutableBeforePipeConnection()
     {
         var missingExecutable = Path.Combine(

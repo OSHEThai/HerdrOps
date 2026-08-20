@@ -1130,12 +1130,10 @@ public sealed class RuntimeEvidenceRunner(
     }
 
     internal static bool HasAllLiveAgentIdentities(HerdrSessionStateContract state) =>
-        state.Agents.Count > 0 && state.Agents.All(HasLiveAgentIdentity);
+        HerdrAgentIdentityContract.HasAllLiveAgentIdentities(state);
 
     private static bool HasLiveAgentIdentity(HerdrAgentStateContract agent) =>
-        !string.IsNullOrWhiteSpace(agent.Agent) &&
-        !string.IsNullOrWhiteSpace(agent.Name) &&
-        !string.Equals(agent.AgentStatus, "Unknown", StringComparison.OrdinalIgnoreCase);
+        HerdrAgentIdentityContract.HasLiveAgentIdentity(agent);
 
     private static bool HasLiveAgentIdentity(RuntimeAgentStatusChange change) =>
         !string.IsNullOrWhiteSpace(change.PreviousAgentKind) &&

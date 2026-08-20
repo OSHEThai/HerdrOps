@@ -103,12 +103,12 @@ try {
         -Condition ((& { Assert-AllAgentsHaveLiveIdentity -Transition $liveTransition -Name 'leading reconciliation'; $true })) `
         -Message 'Assert-AllAgentsHaveLiveIdentity accepts a leading-reconciliation transition where every Agent has a live identity'
 
-    # --- Fails closed: blank Agent kind/name or Unknown status at the midpoint
+    # --- Fails closed: mixed valid + Agentless/Unknown topology at the midpoint
 
-    $blankIdentityTransition = New-LeadingReconciliationTransition -AllAgentsHaveLiveIdentity $false
+    $mixedTopologyTransition = New-LeadingReconciliationTransition -AllAgentsHaveLiveIdentity $false
     Assert-TestThrows `
-        -ScriptBlock { Assert-AllAgentsHaveLiveIdentity -Transition $blankIdentityTransition -Name 'leading reconciliation' } `
-        -Message 'Assert-AllAgentsHaveLiveIdentity rejects a leading-reconciliation transition with a blank-identity or Unknown Agent (AllAgentsHaveLiveIdentity=false)'
+        -ScriptBlock { Assert-AllAgentsHaveLiveIdentity -Transition $mixedTopologyTransition -Name 'leading reconciliation' } `
+        -Message 'Assert-AllAgentsHaveLiveIdentity rejects a leading-reconciliation transition with mixed valid + Agentless/Unknown topology (AllAgentsHaveLiveIdentity=false)'
 
     # --- Fails closed: Core/App/gate parity requires the flag be present too -
 

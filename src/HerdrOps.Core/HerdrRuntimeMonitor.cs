@@ -1,3 +1,4 @@
+using HerdrOps.Contracts.StateIpc;
 using HerdrOps.Domain.Herdr;
 using HerdrOps.Infrastructure.Herdr;
 
@@ -370,7 +371,9 @@ public sealed class HerdrRuntimeMonitor
     }
 
     internal static bool HasAllLiveAgentIdentities(HerdrSessionState state) =>
-        state.Agents.Count > 0 && state.Agents.Values.All(HasLiveAgentIdentity);
+        state is not null &&
+        HerdrAgentIdentityContract.HasAllLiveAgentIdentities(
+            HerdrSessionStateContractMapper.ToContractUnchecked(state));
 
     private static bool HasLiveAgentIdentity(HerdrAgentSnapshot agent) =>
         !string.IsNullOrWhiteSpace(agent.Agent) &&
