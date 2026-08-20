@@ -23,6 +23,8 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $false
 
+. (Join-Path $PSScriptRoot 'lib\V02GateProvenance.ps1')
+
 function Get-CleanSourceCommit {
     param([Parameter(Mandatory)][string]$Root)
 
@@ -123,15 +125,6 @@ function Get-FreshTestCounts {
     return [pscustomobject]@{ Total = $total; Passed = $passed; Failed = $failed }
 }
 
-function Assert-True {
-    param(
-        [Parameter(Mandatory)][bool]$Condition,
-        [Parameter(Mandatory)][string]$Message
-    )
-
-    if (-not $Condition) { throw $Message }
-}
-
 function Test-FiniteNumber {
     param([Parameter(Mandatory)][double]$Value)
 
@@ -217,25 +210,6 @@ function Write-FailureGateReport {
         # Never mask the original failure when the diagnostic report itself cannot be written.
         Write-Warning "Could not write failure gate report '$GateReportPath': $($_.Exception.Message)"
     }
-}
-
-function Test-ObjectHasProperty {
-    param(
-        [Parameter(Mandatory)]$Object,
-        [Parameter(Mandatory)][string]$Name
-    )
-
-    return $null -ne $Object.PSObject.Properties[$Name]
-}
-
-function Assert-AllAgentsHaveLiveIdentity {
-    param(
-        [Parameter(Mandatory)]$Transition,
-        [Parameter(Mandatory)][string]$Name
-    )
-
-    Assert-True (Test-ObjectHasProperty -Object $Transition -Name 'AllAgentsHaveLiveIdentity') "$Name Core transition omitted the aggregate Agent-identity contract flag."
-    Assert-True ([bool]$Transition.AllAgentsHaveLiveIdentity) "$Name Core transition admitted an Agentless, blank-identity, or Unknown Agent in the state."
 }
 
 function Get-ProgressUtcTicks {
@@ -607,6 +581,7 @@ function Assert-AgentStatusTransitionEvidence {
         })
         Assert-True ($leadingCandidates.Count -eq 1) "$Name did not contain exactly one Core snapshot reconciliation before the Event."
         $leadingReconciliation = $leadingCandidates[0]
+        Assert-AllAgentsHaveLiveIdentity -Transition $leadingReconciliation -Name "$Name leading reconciliation"
         Assert-True ([long]$leadingReconciliation.BootstrapCount -eq [long]$Evidence.BaselineBootstrapCount) "$Name leading reconciliation changed BootstrapCount."
         Assert-True ([long]$leadingReconciliation.DisconnectCount -eq [long]$Evidence.BaselineDisconnectCount) "$Name leading reconciliation changed DisconnectCount."
         Assert-True ([long]$leadingReconciliation.ReconciliationCount -eq ([long]$Evidence.BaselineReconciliationCount + 1)) "$Name leading reconciliation did not advance ReconciliationCount exactly once."

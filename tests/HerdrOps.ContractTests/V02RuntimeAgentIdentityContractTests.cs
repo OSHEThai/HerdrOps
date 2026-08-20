@@ -25,6 +25,9 @@ public sealed class V02RuntimeAgentIdentityContractTests
         StringAssert.Contains(appEvidence, "HasAllLiveAgentIdentities");
         StringAssert.Contains(gate, "Assert-AllAgentsHaveLiveIdentity");
         StringAssert.Contains(gate, "AllAgentsHaveLiveIdentity");
+        StringAssert.Contains(
+            gate,
+            "Assert-AllAgentsHaveLiveIdentity -Transition $leadingReconciliation");
         StringAssert.Contains(protocol, "This strictness is aggregate and intentional");
         StringAssert.Contains(decisions, "Aggregate identity strictness is intentional");
         StringAssert.Contains(decisions, "unrelated Agentless or `Unknown` Agent");
