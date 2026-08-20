@@ -29,8 +29,8 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $reportRoot = 'artifacts/release-gates/v0.7.0/issue-38'
-          New-Item -ItemType Directory -Path $reportRoot -Force | Out-Null
           try {
+            New-Item -ItemType Directory -Path $reportRoot -Force | Out-Null
             $reports = @(./tools/packaging/Test-HerdrOpsPackaging.ps1)
             if ($reports.Count -ne 1) {
               throw "Packaging gate (PowerShell 7) returned $($reports.Count) objects; expected exactly 1."
@@ -46,16 +46,22 @@ jobs:
             }
             $report | Format-List | Out-String | Set-Content -LiteralPath (Join-Path $reportRoot 'pwsh-report.txt') -Encoding utf8
           } catch {
-            $diagPath = Join-Path $reportRoot 'pwsh-failure.txt'
-            @(
-              "FAILURE: Packaging gate (PowerShell 7) did not complete successfully."
-              "EvidenceClass: Static/Synthetic"
-              "Shell: pwsh"
-              "ExitTime: $(Get-Date -Format 'o')"
-              "Error: $($_.Exception.Message)"
-              "ScriptStackTrace: $($_.ScriptStackTrace)"
-            ) | Set-Content -LiteralPath $diagPath -Encoding utf8
-            throw
+            $originalError = $_
+            try {
+              New-Item -ItemType Directory -Path $reportRoot -Force | Out-Null
+              $diagPath = Join-Path $reportRoot 'pwsh-failure.txt'
+              @(
+                "FAILURE: Packaging gate (PowerShell 7) did not complete successfully."
+                "EvidenceClass: Static/Synthetic"
+                "Shell: pwsh"
+                "ExitTime: $(Get-Date -Format 'o')"
+                "Error: $($originalError.Exception.Message)"
+                "ScriptStackTrace: $($originalError.ScriptStackTrace)"
+              ) | Set-Content -LiteralPath $diagPath -Encoding utf8
+            } catch {
+              Write-Warning "Could not write packaging gate diagnostics: $($_.Exception.Message)"
+            }
+            throw $originalError
           }
 
       # Static/Synthetic only; Actual Herdr Runtime NOT OBSERVED.
@@ -65,8 +71,8 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $reportRoot = 'artifacts\release-gates\v0.7.0\issue-38'
-          New-Item -ItemType Directory -Path $reportRoot -Force | Out-Null
           try {
+            New-Item -ItemType Directory -Path $reportRoot -Force | Out-Null
             $reports = @(& .\tools\packaging\Test-HerdrOpsPackaging.ps1)
             if ($reports.Count -ne 1) {
               throw "Packaging gate (Windows PowerShell 5.1) returned $($reports.Count) objects; expected exactly 1."
@@ -82,16 +88,22 @@ jobs:
             }
             $report | Format-List | Out-String | Set-Content -LiteralPath (Join-Path $reportRoot 'powershell-5.1-report.txt') -Encoding UTF8
           } catch {
-            $diagPath = Join-Path $reportRoot 'powershell-5.1-failure.txt'
-            @(
-              "FAILURE: Packaging gate (Windows PowerShell 5.1) did not complete successfully."
-              "EvidenceClass: Static/Synthetic"
-              "Shell: powershell (5.1)"
-              "ExitTime: $(Get-Date -Format 'o')"
-              "Error: $($_.Exception.Message)"
-              "ScriptStackTrace: $($_.ScriptStackTrace)"
-            ) | Set-Content -LiteralPath $diagPath -Encoding UTF8
-            throw
+            $originalError = $_
+            try {
+              New-Item -ItemType Directory -Path $reportRoot -Force | Out-Null
+              $diagPath = Join-Path $reportRoot 'powershell-5.1-failure.txt'
+              @(
+                "FAILURE: Packaging gate (Windows PowerShell 5.1) did not complete successfully."
+                "EvidenceClass: Static/Synthetic"
+                "Shell: powershell (5.1)"
+                "ExitTime: $(Get-Date -Format 'o')"
+                "Error: $($originalError.Exception.Message)"
+                "ScriptStackTrace: $($originalError.ScriptStackTrace)"
+              ) | Set-Content -LiteralPath $diagPath -Encoding UTF8
+            } catch {
+              Write-Warning "Could not write packaging gate diagnostics: $($_.Exception.Message)"
+            }
+            throw $originalError
           }
 
       - name: 'Upload v0.7 packaging gate report (Issue #38)'
