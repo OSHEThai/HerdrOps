@@ -8,20 +8,24 @@ public static class HerdrSessionStateContractMapper
 {
     public static HerdrSessionStateContract ToContract(HerdrSessionState state)
     {
+        return HerdrSessionStateContractReducer.NormalizeAndValidate(ToContractUnchecked(state));
+    }
+
+    internal static HerdrSessionStateContract ToContractUnchecked(HerdrSessionState state)
+    {
         ArgumentNullException.ThrowIfNull(state);
-        return HerdrSessionStateContractReducer.NormalizeAndValidate(
-            new HerdrSessionStateContract(
-                state.Version,
-                state.Protocol,
-                state.ConnectionEpoch,
-                state.LastIngestSequence,
-                state.Workspaces.Values.Select(ToContract).ToArray(),
-                state.Tabs.Values.Select(ToContract).ToArray(),
-                state.Panes.Values.Select(ToContract).ToArray(),
-                state.Agents.Values.Select(ToContract).ToArray(),
-                state.FocusedWorkspaceId,
-                state.FocusedTabId,
-                state.FocusedPaneId));
+        return new HerdrSessionStateContract(
+            state.Version,
+            state.Protocol,
+            state.ConnectionEpoch,
+            state.LastIngestSequence,
+            state.Workspaces.Values.Select(ToContract).ToArray(),
+            state.Tabs.Values.Select(ToContract).ToArray(),
+            state.Panes.Values.Select(ToContract).ToArray(),
+            state.Agents.Values.Select(ToContract).ToArray(),
+            state.FocusedWorkspaceId,
+            state.FocusedTabId,
+            state.FocusedPaneId);
     }
 
     public static HerdrSessionState ToDomain(HerdrSessionStateContract contract)
