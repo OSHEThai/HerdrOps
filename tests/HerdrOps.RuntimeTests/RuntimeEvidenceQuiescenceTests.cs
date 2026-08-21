@@ -132,6 +132,72 @@ public sealed class RuntimeEvidenceQuiescenceTests
             Fingerprint()));
     }
 
+    [TestMethod]
+    public void PostReconnectIdentityChurnDoesNotFreezeThePrematureSequence()
+    {
+        var tracker = new RuntimeReconnectQuiescenceTracker(requiredStableSeconds: 2);
+
+        Assert.IsNull(tracker.Observe(
+            Start,
+            Fingerprint(sequence: 7, reconciliationCount: 2),
+            hasAllLiveAgentIdentities: false));
+        Assert.IsNull(tracker.Observe(
+            Start.AddMilliseconds(300),
+            Fingerprint(sequence: 8, reconciliationCount: 3),
+            hasAllLiveAgentIdentities: false));
+        Assert.IsNull(tracker.Observe(
+            Start.AddMilliseconds(600),
+            Fingerprint(sequence: 9, reconciliationCount: 4),
+            hasAllLiveAgentIdentities: false));
+        Assert.IsNull(tracker.Observe(
+            Start.AddMilliseconds(900),
+            Fingerprint(sequence: 10, reconciliationCount: 5),
+            hasAllLiveAgentIdentities: false));
+        Assert.IsNull(tracker.Observe(
+            Start.AddMilliseconds(1200),
+            Fingerprint(sequence: 11, reconciliationCount: 6),
+            hasAllLiveAgentIdentities: true));
+        Assert.IsNull(tracker.Observe(
+            Start.AddMilliseconds(2900),
+            Fingerprint(sequence: 11, reconciliationCount: 6),
+            hasAllLiveAgentIdentities: true));
+
+        var settled = tracker.Observe(
+            Start.AddMilliseconds(3300),
+            Fingerprint(sequence: 11, reconciliationCount: 6),
+            hasAllLiveAgentIdentities: true);
+
+        Assert.IsNotNull(settled);
+        Assert.AreEqual(11, settled.StableSequence);
+        Assert.AreEqual(7, settled.InitialSequence);
+        Assert.AreEqual(4, settled.ResetCount);
+    }
+
+    [TestMethod]
+    public void StableButIncompletelyIdentifiedFingerprintNeverSettles()
+    {
+        var tracker = new RuntimeReconnectQuiescenceTracker(requiredStableSeconds: 2);
+        var churnedFingerprint = Fingerprint(sequence: 11, reconciliationCount: 3);
+
+        Assert.IsNull(tracker.Observe(Start, churnedFingerprint, hasAllLiveAgentIdentities: false));
+        Assert.IsNull(tracker.Observe(
+            Start.AddSeconds(2),
+            churnedFingerprint,
+            hasAllLiveAgentIdentities: false));
+        Assert.IsNull(tracker.Observe(
+            Start.AddSeconds(5),
+            churnedFingerprint,
+            hasAllLiveAgentIdentities: false));
+
+        var settled = tracker.Observe(
+            Start.AddSeconds(5),
+            churnedFingerprint,
+            hasAllLiveAgentIdentities: true);
+
+        Assert.IsNotNull(settled);
+        Assert.AreEqual(11, settled.StableSequence);
+    }
+
     private static RuntimeStateFingerprint Fingerprint(
         bool isLive = true,
         long sequence = 13,
