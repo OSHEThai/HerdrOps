@@ -1220,7 +1220,7 @@ function Test-V07SoakArtifactSchema {
     foreach ($failure in @(Test-V07AllowedProperties -Object $producer -Allowed @(
             'Tool', 'Version', 'SessionControlInvoked', 'ObserverMode', 'ObserverExecutablePath',
             'ObserverExecutableSha256', 'ObserverReportPath', 'ObserverReportSha256',
-            'AdmittedHerdrServerIdentity', 'FaultSchedule', 'ScheduleContextPath',
+            'AdmittedHerdrServerIdentity', 'AdmittedRoleIdentities', 'FaultSchedule', 'ScheduleContextPath',
             'ScheduleContextSha256') -Context 'Soak.Producer')) {
         $failures.Add($failure)
     }
@@ -1228,6 +1228,17 @@ function Test-V07SoakArtifactSchema {
     foreach ($failure in @(Test-V07AllowedProperties -Object $admittedIdentity -Allowed @(
             'ProcessId', 'ProcessStartUtc', 'ExecutablePath', 'ExecutableSha256') -Context 'Soak.Producer.AdmittedHerdrServerIdentity')) {
         $failures.Add($failure)
+    }
+    $admittedRoleIdentities = if ($null -ne $producer -and $null -ne $producer.PSObject.Properties['AdmittedRoleIdentities']) { $producer.AdmittedRoleIdentities } else { $null }
+    foreach ($failure in @(Test-V07AllowedProperties -Object $admittedRoleIdentities -Allowed @('Core', 'App') -Context 'Soak.Producer.AdmittedRoleIdentities')) {
+        $failures.Add($failure)
+    }
+    foreach ($roleName in @('Core', 'App')) {
+        $roleIdentity = if ($null -ne $admittedRoleIdentities -and $null -ne $admittedRoleIdentities.PSObject.Properties[$roleName]) { $admittedRoleIdentities.$roleName } else { $null }
+        foreach ($failure in @(Test-V07AllowedProperties -Object $roleIdentity -Allowed @(
+                'ProcessId', 'ProcessStartUtc', 'ExecutablePath', 'ExecutableSha256') -Context "Soak.Producer.AdmittedRoleIdentities.$roleName")) {
+            $failures.Add($failure)
+        }
     }
     if ($null -ne $producer -and $null -ne $producer.PSObject.Properties['FaultSchedule']) {
         foreach ($scheduled in @($producer.FaultSchedule)) {
@@ -1248,7 +1259,9 @@ function Test-V07SoakArtifactSchema {
         foreach ($entry in @($provenance.HeartbeatEntries)) {
             foreach ($failure in @(Test-V07AllowedProperties -Object $entry -Allowed @(
                     'Ordinal', 'ObservedUtc', 'Status', 'TargetSocketPresent', 'HerdrProcessId',
-                    'HerdrProcessStartUtc', 'HerdrExecutablePath', 'HerdrExecutableSha256', 'CoreProcessId', 'AppProcessId',
+                    'HerdrProcessStartUtc', 'HerdrExecutablePath', 'HerdrExecutableSha256', 'CoreProcessId',
+                    'CoreProcessStartUtc', 'CoreExecutablePath', 'CoreExecutableSha256', 'AppProcessId',
+                    'AppProcessStartUtc', 'AppExecutablePath', 'AppExecutableSha256',
                     'PreviousEntrySha256', 'EntrySha256') -Context 'Soak.Provenance.HeartbeatEntries[]')) {
                 $failures.Add($failure)
             }
@@ -1379,6 +1392,44 @@ function Test-V07SoakProvenance {
         $admittedSha -ne $installedSha) {
         $failures.Add('Admitted Herdr server identity does not match the installed Herdr identity.')
     }
+
+    $admittedRoleIdentities = if ($null -ne $producer.PSObject.Properties['AdmittedRoleIdentities']) { $producer.AdmittedRoleIdentities } else { $null }
+    $roleIdentityByName = @{}
+    foreach ($roleName in @('Core', 'App')) {
+        $roleIdentity = if ($null -ne $admittedRoleIdentities -and $null -ne $admittedRoleIdentities.PSObject.Properties[$roleName]) { $admittedRoleIdentities.$roleName } else { $null }
+        if ($null -eq $roleIdentity) {
+            $failures.Add("Soak.Producer.AdmittedRoleIdentities.$roleName is required for every heartbeat identity binding.")
+            continue
+        }
+        $roleIdentityByName[$roleName] = $roleIdentity
+        foreach ($name in @('ProcessId', 'ProcessStartUtc', 'ExecutablePath', 'ExecutableSha256')) {
+            if ($null -eq $roleIdentity.PSObject.Properties[$name] -or [string]::IsNullOrWhiteSpace([string]$roleIdentity.$name)) {
+                $failures.Add("Soak.Producer.AdmittedRoleIdentities.$roleName.$name is required.")
+            }
+        }
+        $rolePid = if ($null -ne $roleIdentity.PSObject.Properties['ProcessId']) { ConvertTo-V07PositiveProcessId -Value $roleIdentity.ProcessId } else { $null }
+        if ($null -eq $rolePid) { $failures.Add("Admitted $roleName role ProcessId must be positive.") }
+        $roleStartText = if ($null -ne $roleIdentity.PSObject.Properties['ProcessStartUtc']) { [string]$roleIdentity.ProcessStartUtc } else { '' }
+        $rolePath = if ($null -ne $roleIdentity.PSObject.Properties['ExecutablePath']) { [string]$roleIdentity.ExecutablePath } else { '' }
+        if (-not (Test-V07UtcTimestampText -Text $roleStartText)) { $failures.Add("Admitted $roleName role ProcessStartUtc is invalid.") }
+        $roleSha = try { ConvertTo-V07NormalizedSha256 -Value ([string]$roleIdentity.ExecutableSha256) } catch { '' }
+        if ([string]::IsNullOrWhiteSpace($roleSha)) { $failures.Add("Admitted $roleName role ExecutableSha256 must be a valid SHA-256.") }
+        $measurementRole = @($MeasurementArtifact.Roles | Where-Object { [string]$_.Role -ceq $roleName })
+        if ($measurementRole.Count -ne 1) {
+            $failures.Add("Measurement artifact must contain exactly one admitted $roleName role identity.")
+        } else {
+            $measurementRoleStart = if (Test-V07UtcTimestampText -Text ([string]$measurementRole[0].ProcessStartUtc)) {
+                ConvertTo-V07UtcText -Value ([DateTimeOffset]$measurementRole[0].ProcessStartUtc)
+            } else { [string]$measurementRole[0].ProcessStartUtc }
+            $measurementRoleSha = try { ConvertTo-V07NormalizedSha256 -Value ([string]$measurementRole[0].BinarySha256) } catch { '' }
+            if ([int]$rolePid -ne [int]$measurementRole[0].ProcessId -or
+                $roleStartText -cne $measurementRoleStart -or
+                $rolePath -ine [string]$measurementRole[0].BinaryPath -or
+                $roleSha -ne $measurementRoleSha) {
+                $failures.Add("Admitted $roleName role identity does not match the measurement artifact role identity.")
+            }
+        }
+    }
     if ([string]::IsNullOrWhiteSpace([string]$producer.ObserverExecutablePath)) {
         $failures.Add('Soak.Producer.ObserverExecutablePath must be non-empty.')
     }
@@ -1507,6 +1558,26 @@ function Test-V07SoakProvenance {
             [string]$entry.HerdrExecutableSha256 -ine [string]$installed.ExecutableSha256) {
             $failures.Add('Heartbeat Herdr PID/start/path/SHA does not match the admitted Herdr server identity.')
         }
+        foreach ($roleBinding in @(
+                [pscustomobject]@{ Name = 'Core'; Identity = if ($roleIdentityByName.ContainsKey('Core')) { $roleIdentityByName['Core'] } else { $null }; ProcessId = 'CoreProcessId'; StartUtc = 'CoreProcessStartUtc'; Path = 'CoreExecutablePath'; Sha = 'CoreExecutableSha256' },
+                [pscustomobject]@{ Name = 'App'; Identity = if ($roleIdentityByName.ContainsKey('App')) { $roleIdentityByName['App'] } else { $null }; ProcessId = 'AppProcessId'; StartUtc = 'AppProcessStartUtc'; Path = 'AppExecutablePath'; Sha = 'AppExecutableSha256' }
+            )) {
+            $roleIdentity = $roleBinding.Identity
+            $entryPid = if ($null -ne $entry.PSObject.Properties[$roleBinding.ProcessId]) { ConvertTo-V07PositiveProcessId -Value $entry.($roleBinding.ProcessId) } else { $null }
+            $entryStart = if ($null -ne $entry.PSObject.Properties[$roleBinding.StartUtc]) { [string]$entry.($roleBinding.StartUtc) } else { '' }
+            $entryPath = if ($null -ne $entry.PSObject.Properties[$roleBinding.Path]) { [string]$entry.($roleBinding.Path) } else { '' }
+            $entrySha = if ($null -ne $entry.PSObject.Properties[$roleBinding.Sha]) { try { ConvertTo-V07NormalizedSha256 -Value ([string]$entry.($roleBinding.Sha)) } catch { '' } } else { '' }
+            $expectedPid = if ($null -ne $roleIdentity -and $null -ne $roleIdentity.PSObject.Properties['ProcessId']) { ConvertTo-V07PositiveProcessId -Value $roleIdentity.ProcessId } else { $null }
+            $expectedStart = if ($null -ne $roleIdentity -and $null -ne $roleIdentity.PSObject.Properties['ProcessStartUtc'] -and (Test-V07UtcTimestampText -Text ([string]$roleIdentity.ProcessStartUtc))) {
+                ConvertTo-V07UtcText -Value ([DateTimeOffset]$roleIdentity.ProcessStartUtc)
+            } else { '' }
+            $expectedPath = if ($null -ne $roleIdentity -and $null -ne $roleIdentity.PSObject.Properties['ExecutablePath']) { [string]$roleIdentity.ExecutablePath } else { '' }
+            $expectedSha = if ($null -ne $roleIdentity -and $null -ne $roleIdentity.PSObject.Properties['ExecutableSha256']) { try { ConvertTo-V07NormalizedSha256 -Value ([string]$roleIdentity.ExecutableSha256) } catch { '' } } else { '' }
+            if ($null -eq $expectedPid -or $null -eq $entryPid -or $entryPid -ne $expectedPid -or
+                $entryStart -cne $expectedStart -or $entryPath -ine $expectedPath -or $entrySha -ne $expectedSha) {
+                $failures.Add("Heartbeat $($roleBinding.Name) PID/start/path/SHA does not match the admitted $($roleBinding.Name) role identity.")
+            }
+        }
         if ([string]$entry.PreviousEntrySha256 -ine $previous) { $failures.Add('Heartbeat hash chain previous entry does not match.') }
         $entrySha = try { ConvertTo-V07NormalizedSha256 -Value ([string]$entry.EntrySha256) } catch { '' }
         if ([string]::IsNullOrWhiteSpace($entrySha)) { $failures.Add('Heartbeat EntrySha256 is invalid.') } else {
@@ -1531,6 +1602,7 @@ function Test-V07SoakProvenance {
     }
 
     $faults = @($provenance.FaultObservations)
+    $finalizationNowUtc = [DateTimeOffset]::UtcNow
     if ($faults.Count -lt 3) { $failures.Add('At least three scheduled restart/fault observations are required.') }
     if ($faults.Count -gt $script:V07SoakMaxFaultObservations) { $failures.Add('FaultObservations exceeds the bounded entry limit.') }
     try { if ([int]$provenance.ObservationCount -ne $faults.Count) { $failures.Add('ObservationCount does not equal retained fault observations.') } } catch { $failures.Add('ObservationCount must be an integral number.') }
@@ -1567,6 +1639,10 @@ function Test-V07SoakProvenance {
         if ((Test-V07UtcTimestampText -Text ([string]$fault.DueUtc)) -and (Test-V07UtcTimestampText -Text ([string]$fault.ObservedUtc)) -and
             ([DateTimeOffset]$fault.ObservedUtc -lt [DateTimeOffset]$fault.DueUtc)) {
             $failures.Add("Fault observation '$faultId' is early: ObservedUtc must be at or after DueUtc.")
+        }
+        if ((Test-V07UtcTimestampText -Text ([string]$fault.ObservedUtc)) -and
+            ([DateTimeOffset]$fault.ObservedUtc -gt $finalizationNowUtc)) {
+            $failures.Add("Fault observation '$faultId' is in the future: ObservedUtc cannot exceed finalization time.")
         }
         $faultSha = try { ConvertTo-V07NormalizedSha256 -Value ([string]$fault.EvidenceSha256) } catch { '' }
         if ([string]::IsNullOrWhiteSpace([string]$fault.EvidencePath) -or [string]::IsNullOrWhiteSpace($faultSha)) { $failures.Add("Fault observation '$faultId' must bind operator evidence path and SHA-256.") }
@@ -2196,6 +2272,7 @@ function ConvertTo-V07RuntimeBudgetReport {
         $SoakArtifact = $null,
         [Parameter(Mandatory)][string]$RepositoryRoot,
         [Parameter(Mandatory)][string]$CandidateDirectory,
+        [string]$EvidenceRoot = '',
         [string]$RunId = '',
         [switch]$SkipDiskVerification
     )
@@ -2220,13 +2297,22 @@ function ConvertTo-V07RuntimeBudgetReport {
             BudgetReport = $null
         }
     }
+    if ([string]::IsNullOrWhiteSpace($EvidenceRoot)) {
+        return [pscustomobject]@{
+            CanFinalize  = $false
+            Reason       = 'External soak evidence root is required before Runtime credit can be finalized.'
+            Blockers     = @('EvidenceRoot is required; finalization always rehashes the retained soak logs, observer report, schedule context, and referenced operator evidence.')
+            BudgetReport = $null
+        }
+    }
 
     $session = $MeasurementArtifact.Session
     $candidate = $MeasurementArtifact.Candidate
     $metrics = $MeasurementArtifact.Metrics
     $rawSamples = $MeasurementArtifact.RawSamples
 
-    $soakCheck = Test-V07SoakArtifact -SoakArtifact $SoakArtifact -MeasurementArtifact $MeasurementArtifact -RepositoryRoot $RepositoryRoot
+    $soakCheck = Test-V07SoakArtifact -SoakArtifact $SoakArtifact -MeasurementArtifact $MeasurementArtifact `
+        -RepositoryRoot $RepositoryRoot -EvidenceRoot $EvidenceRoot -ValidateExternalBindings
     foreach ($failure in $soakCheck.Failures) { $blockers.Add($failure) }
     if (-not $soakCheck.Valid) {
         return [pscustomobject]@{

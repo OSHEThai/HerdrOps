@@ -145,6 +145,24 @@ function Get-V07SoakProcessSnapshot {
     }
 }
 
+function Test-V07SoakProcessIdentityMatch {
+    param(
+        [Parameter(Mandatory)]$Snapshot,
+        [Parameter(Mandatory)]$Identity
+    )
+
+    if (-not [bool]$Snapshot.Present -or $null -eq $Identity) { return $false }
+    try {
+        $expectedStart = ConvertTo-V07SoakUtcText -Value ([DateTimeOffset]$Identity.ProcessStartUtc)
+        return ([int]$Snapshot.ProcessId -eq [int]$Identity.ProcessId) -and
+            ([string]$Snapshot.ProcessStartUtc -ceq $expectedStart) -and
+            ([string]$Snapshot.ExecutablePath -ieq [string]$Identity.ExecutablePath) -and
+            ([string]$Snapshot.ExecutableSha256 -ceq [string]$Identity.ExecutableSha256)
+    } catch {
+        return $false
+    }
+}
+
 function New-V07SoakHeartbeatEntry {
     param(
         [Parameter(Mandatory)][int]$Ordinal,
@@ -154,6 +172,7 @@ function New-V07SoakHeartbeatEntry {
         [Parameter(Mandatory)][int]$CoreProcessId,
         [Parameter(Mandatory)][int]$AppProcessId,
         [Parameter(Mandatory)]$AdmittedHerdrServerIdentity,
+        [Parameter(Mandatory)][hashtable]$AdmittedRoleIdentities,
         [Parameter(Mandatory)][hashtable]$PreviousSnapshots,
         [Parameter(Mandatory)][string]$PreviousEntrySha256
     )
@@ -162,12 +181,11 @@ function New-V07SoakHeartbeatEntry {
     $core = Get-V07SoakProcessSnapshot -ProcessId $CoreProcessId -Role 'Core' -Previous $PreviousSnapshots
     $app = Get-V07SoakProcessSnapshot -ProcessId $AppProcessId -Role 'App' -Previous $PreviousSnapshots
     $targetPresent = Test-Path -LiteralPath $TargetHerdrSocketPath -PathType Leaf
-    $identityMatch = $herdr.Present -and
-        ([int]$herdr.ProcessId -eq [int]$AdmittedHerdrServerIdentity.ProcessId) -and
-        ([string]$herdr.ProcessStartUtc -ceq [string]$AdmittedHerdrServerIdentity.ProcessStartUtc) -and
-        ([string]$herdr.ExecutablePath -ieq [string]$AdmittedHerdrServerIdentity.ExecutablePath) -and
-        ([string]$herdr.ExecutableSha256 -ceq [string]$AdmittedHerdrServerIdentity.ExecutableSha256)
-    $healthy = $targetPresent -and $herdr.Present -and $core.Present -and $app.Present -and $identityMatch
+    $identityMatch = Test-V07SoakProcessIdentityMatch -Snapshot $herdr -Identity $AdmittedHerdrServerIdentity
+    $coreIdentityMatch = Test-V07SoakProcessIdentityMatch -Snapshot $core -Identity $AdmittedRoleIdentities['Core']
+    $appIdentityMatch = Test-V07SoakProcessIdentityMatch -Snapshot $app -Identity $AdmittedRoleIdentities['App']
+    $healthy = $targetPresent -and $herdr.Present -and $core.Present -and $app.Present -and
+        $identityMatch -and $coreIdentityMatch -and $appIdentityMatch
     $entry = [pscustomobject][ordered]@{
         Ordinal = $Ordinal
         ObservedUtc = ConvertTo-V07SoakUtcText -Value ([DateTimeOffset]::UtcNow)
@@ -177,8 +195,14 @@ function New-V07SoakHeartbeatEntry {
         HerdrProcessStartUtc = [string]$herdr.ProcessStartUtc
         HerdrExecutablePath = [string]$herdr.ExecutablePath
         HerdrExecutableSha256 = [string]$herdr.ExecutableSha256
-        CoreProcessId = $CoreProcessId
-        AppProcessId = $AppProcessId
+        CoreProcessId = [int]$core.ProcessId
+        CoreProcessStartUtc = [string]$core.ProcessStartUtc
+        CoreExecutablePath = [string]$core.ExecutablePath
+        CoreExecutableSha256 = [string]$core.ExecutableSha256
+        AppProcessId = [int]$app.ProcessId
+        AppProcessStartUtc = [string]$app.ProcessStartUtc
+        AppExecutablePath = [string]$app.ExecutablePath
+        AppExecutableSha256 = [string]$app.ExecutableSha256
         PreviousEntrySha256 = $PreviousEntrySha256
         EntrySha256 = ''
     }
@@ -272,7 +296,10 @@ function Read-V07SoakOperatorObservation {
     $expectedDue = ConvertTo-V07SoakUtcText -Value $SoakStartedUtc.AddSeconds([int]$ExpectedSchedule.OffsetSeconds)
     if ([string]$marker.DueUtc -cne $expectedDue) { throw "Operator observation '$ExpectedId' DueUtc does not match the immutable soak schedule context." }
     if (-not (Test-V07UtcTimestampText -Text ([string]$marker.ObservedUtc))) { throw "Operator observation '$ExpectedId' has an invalid timestamp." }
-    if ([DateTimeOffset]$marker.ObservedUtc -lt [DateTimeOffset]$marker.DueUtc) { throw "Operator observation '$ExpectedId' is early: ObservedUtc must be at or after DueUtc." }
+    $observedUtc = [DateTimeOffset]$marker.ObservedUtc
+    $dueUtc = [DateTimeOffset]$marker.DueUtc
+    if ($observedUtc -lt $dueUtc) { throw "Operator observation '$ExpectedId' is early: ObservedUtc must be at or after DueUtc." }
+    if ($observedUtc -gt [DateTimeOffset]::UtcNow) { throw "Operator observation '$ExpectedId' is in the future: ObservedUtc cannot exceed finalization time." }
     $contextPath = Join-Path $EvidenceRoot 'soak-context.json'
     if (-not (Test-Path -LiteralPath $contextPath -PathType Leaf)) { throw "Operator observation '$ExpectedId' is missing the immutable soak context." }
     $contextSha = Get-V07Sha256Hex -Path $contextPath
