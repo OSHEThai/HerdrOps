@@ -1,6 +1,8 @@
 using System.Diagnostics;
 using System.Globalization;
 using System.IO;
+using System.Security.Cryptography;
+using System.Text.Json;
 using System.Windows;
 using System.Windows.Automation;
 using System.Windows.Controls;
@@ -92,6 +94,11 @@ public sealed class LiveWidgetRenderingTests
 
                 SavePng(surface, size, Path.Combine(outputDirectory, item.FileName));
             }
+
+            WriteEvidenceMetadata(
+                "captures",
+                outputDirectory,
+                variants.Select(item => item.FileName).ToArray());
         });
     }
 
@@ -342,6 +349,10 @@ public sealed class LiveWidgetRenderingTests
             "ActualRuntimeGate: PENDING",
         };
         File.WriteAllLines(reportPath, report);
+        WriteEvidenceMetadata(
+            "measurement",
+            reportDirectory,
+            new[] { Path.GetFileName(reportPath) });
 
         Assert.IsLessThanOrEqualTo(
             targetMilliseconds,
@@ -363,6 +374,77 @@ public sealed class LiveWidgetRenderingTests
         };
         Layout(surface, new Size(descriptor.WindowWidth, descriptor.WindowHeight));
         return surface;
+    }
+
+    private static void WriteEvidenceMetadata(
+        string evidenceKind,
+        string evidenceDirectory,
+        IReadOnlyCollection<string> fileNames)
+    {
+        var runToken = Environment.GetEnvironmentVariable("HERDOPS_V02_LIVE_WIDGET_RUN_TOKEN");
+        var sourceCommit = Environment.GetEnvironmentVariable("HERDOPS_V02_LIVE_WIDGET_SOURCE_COMMIT");
+        if (string.IsNullOrWhiteSpace(sourceCommit))
+        {
+            sourceCommit = TryResolveRepositoryCommit(FindRepositoryRoot());
+        }
+        if (string.IsNullOrWhiteSpace(runToken) || string.IsNullOrWhiteSpace(sourceCommit))
+        {
+            return;
+        }
+
+        var files = fileNames.Select(fileName => new
+        {
+            Name = fileName,
+            Sha256 = Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(Path.Combine(evidenceDirectory, fileName))))
+        }).ToArray();
+        var metadataPath = Path.Combine(
+            FindRepositoryRoot(),
+            "artifacts",
+            "release-gates",
+            "v0.2.0",
+            "issue-10",
+            $"live-widget-{evidenceKind}.json");
+        Directory.CreateDirectory(Path.GetDirectoryName(metadataPath)!);
+        var metadata = new
+        {
+            EvidenceKind = evidenceKind,
+            RunToken = runToken,
+            SourceCommit = sourceCommit,
+            GeneratedUtc = DateTimeOffset.UtcNow,
+            Files = files,
+        };
+        File.WriteAllText(metadataPath, JsonSerializer.Serialize(metadata, new JsonSerializerOptions { WriteIndented = true }));
+    }
+
+    private static string? TryResolveRepositoryCommit(string repositoryRoot)
+    {
+        try
+        {
+            var startInfo = new ProcessStartInfo
+            {
+                FileName = "git",
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                CreateNoWindow = true,
+            };
+            startInfo.ArgumentList.Add("-C");
+            startInfo.ArgumentList.Add(repositoryRoot);
+            startInfo.ArgumentList.Add("rev-parse");
+            startInfo.ArgumentList.Add("HEAD");
+            using var process = Process.Start(startInfo);
+            if (process is null)
+            {
+                return null;
+            }
+            var output = process.StandardOutput.ReadToEnd().Trim();
+            process.WaitForExit();
+            return process.ExitCode == 0 && output.Length == 40 ? output.ToLowerInvariant() : null;
+        }
+        catch
+        {
+            return null;
+        }
     }
 
     private static LiveDashboardState CreateDashboard(long sequence)
