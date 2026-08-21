@@ -33,15 +33,16 @@ try {
     $runId = [Guid]::NewGuid().ToString('N')
 
     Write-Host "Invoking atomic uninstall transition from $fullInstallRoot..."
-    Invoke-AtomicUninstallTransition -InstallRoot $fullInstallRoot -RunId $runId
+    Invoke-AtomicUninstallTransition `
+        -InstallRoot $fullInstallRoot `
+        -UserDataRoot $fullUserDataRoot `
+        -RemoveUserData:$RemoveUserData `
+        -RunId $runId
 
-    if ($RemoveUserData) {
-        if (Test-Path -LiteralPath $fullUserDataRoot) {
-            Write-Host "Removing user data from $fullUserDataRoot..."
-            Remove-DirectoryTreeSafe -Path $fullUserDataRoot -Context "User data removal"
-        }
-    } else {
+    if (-not $RemoveUserData) {
         Write-Host "Retained user data left intact at $fullUserDataRoot."
+    } else {
+        Write-Host "Removed user data from $fullUserDataRoot."
     }
 
     Write-Host "Uninstallation completed successfully."

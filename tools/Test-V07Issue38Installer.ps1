@@ -171,6 +171,128 @@ try {
     }
     if (-not $caught) { throw "File parent collision not caught!" }
 
+    # 4.6 Windows device-name entry
+    $hostileArchiveDevice = Join-Path $testRoot 'hostile-device.zip'
+    $archiveDevice = [System.IO.Compression.ZipFile]::Open($hostileArchiveDevice, [System.IO.Compression.ZipArchiveMode]::Create)
+    $entry = $archiveDevice.CreateEntry('NUL')
+    $entry.Open().Dispose()
+    $archiveDevice.Dispose()
+
+    $caught = $false
+    $deviceDestination = Join-Path $testRoot 'device-dest'
+    try {
+        Expand-HerdrOpsArchiveSafe -ArchivePath $hostileArchiveDevice -DestinationPath $deviceDestination
+    } catch {
+        if ($_.Exception.Message -match 'device-name') {
+            $caught = $true
+        }
+    }
+    if (-not $caught) { throw 'Windows device-name archive entry was not caught!' }
+    if (Test-Path -LiteralPath $deviceDestination) {
+        throw 'Rejected device-name archive created a destination path.'
+    }
+
+    # 4.7 Archive entry-count and expanded-byte bounds
+    $oldMaxEntries = $script:MaxInstallerArchiveEntries
+    $script:MaxInstallerArchiveEntries = [long]1
+    try {
+        $hostileArchiveCount = Join-Path $testRoot 'hostile-count.zip'
+        $archiveCount = [System.IO.Compression.ZipFile]::Open($hostileArchiveCount, [System.IO.Compression.ZipArchiveMode]::Create)
+        $archiveCount.CreateEntry('one.txt').Open().Dispose()
+        $archiveCount.CreateEntry('two.txt').Open().Dispose()
+        $archiveCount.Dispose()
+        $caught = $false
+        $countDestination = Join-Path $testRoot 'count-dest'
+        try {
+            Expand-HerdrOpsArchiveSafe -ArchivePath $hostileArchiveCount -DestinationPath $countDestination
+        } catch {
+            if ($_.Exception.Message -match 'too many entries') {
+                $caught = $true
+            }
+        }
+        if (-not $caught) { throw 'Archive entry-count bound was not enforced!' }
+        if (Test-Path -LiteralPath $countDestination) {
+            throw 'Rejected entry-count archive created a destination path.'
+        }
+    } finally {
+        $script:MaxInstallerArchiveEntries = $oldMaxEntries
+    }
+
+    $oldMaxBytes = $script:MaxInstallerArchiveExpandedBytes
+    $script:MaxInstallerArchiveExpandedBytes = [long]4
+    try {
+        $hostileArchiveBytes = Join-Path $testRoot 'hostile-bytes.zip'
+        $archiveBytes = [System.IO.Compression.ZipFile]::Open($hostileArchiveBytes, [System.IO.Compression.ZipArchiveMode]::Create)
+        $entry = $archiveBytes.CreateEntry('oversized.txt')
+        $writer = New-Object System.IO.StreamWriter($entry.Open())
+        $writer.Write('12345')
+        $writer.Dispose()
+        $archiveBytes.Dispose()
+        $caught = $false
+        $bytesDestination = Join-Path $testRoot 'bytes-dest'
+        try {
+            Expand-HerdrOpsArchiveSafe -ArchivePath $hostileArchiveBytes -DestinationPath $bytesDestination
+        } catch {
+            if ($_.Exception.Message -match 'expanded bytes') {
+                $caught = $true
+            }
+        }
+        if (-not $caught) { throw 'Archive expanded-byte bound was not enforced!' }
+        if (Test-Path -LiteralPath $bytesDestination) {
+            throw 'Rejected expanded-byte archive created a destination path.'
+        }
+    } finally {
+        $script:MaxInstallerArchiveExpandedBytes = $oldMaxBytes
+    }
+
+    # 4.8 Reparse destination guard
+    $reparseTarget = Join-Path $testRoot 'reparse-target'
+    $reparseLink = Join-Path $testRoot 'reparse-link'
+    New-Item -ItemType Directory -Path $reparseTarget -Force | Out-Null
+    New-Item -ItemType Junction -Path $reparseLink -Target $reparseTarget -Force | Out-Null
+    try {
+        $caught = $false
+        try {
+            Expand-HerdrOpsArchiveSafe -ArchivePath $initialArchivePath -DestinationPath (Join-Path $reparseLink 'payload')
+        } catch {
+            if ($_.Exception.Message -match 'Reparse points are not allowed') {
+                $caught = $true
+            }
+        }
+        if (-not $caught) { throw 'Reparse destination was not rejected before extraction.' }
+    } finally {
+        if (Test-Path -LiteralPath $reparseLink) {
+            [IO.Directory]::Delete($reparseLink)
+        }
+        if (Test-Path -LiteralPath $reparseTarget) {
+            Remove-Item -LiteralPath $reparseTarget -Recurse -Force
+        }
+    }
+
+    # 4.9 Interrupted transition recovery
+    $recoveryParent = Join-Path $testRoot 'recovery-parent'
+    $recoveryInstall = Join-Path $recoveryParent 'Install'
+    $recoveryStage = Join-Path $recoveryParent 'HerdrOps.stage-0123456789abcdef0123456789abcdef'
+    $recoveryBackup = Join-Path $recoveryParent 'HerdrOps.backup-0123456789abcdef0123456789abcdef'
+    New-Item -ItemType Directory -Path $recoveryStage,$recoveryBackup -Force | Out-Null
+    Set-Content -LiteralPath (Join-Path $recoveryStage 'partial.txt') -Value 'partial'
+    Set-Content -LiteralPath (Join-Path $recoveryBackup 'old.txt') -Value 'old'
+    Recover-HerdrOpsTransitionState -InstallRoot $recoveryInstall -Operation Install
+    if (-not (Test-Path -LiteralPath (Join-Path $recoveryInstall 'old.txt')) -or
+        (Test-Path -LiteralPath $recoveryStage) -or (Test-Path -LiteralPath $recoveryBackup)) {
+        throw 'Interrupted install recovery did not restore the prior package atomically.'
+    }
+
+    $uninstallRecoveryParent = Join-Path $testRoot 'uninstall-recovery-parent'
+    $uninstallRecoveryInstall = Join-Path $uninstallRecoveryParent 'Install'
+    $uninstallRecoveryBackup = Join-Path $uninstallRecoveryParent 'HerdrOps.backup-0123456789abcdef0123456789abcdef'
+    New-Item -ItemType Directory -Path $uninstallRecoveryBackup -Force | Out-Null
+    Set-Content -LiteralPath (Join-Path $uninstallRecoveryBackup 'old.txt') -Value 'old'
+    Recover-HerdrOpsTransitionState -InstallRoot $uninstallRecoveryInstall -Operation Uninstall
+    if (Test-Path -LiteralPath $uninstallRecoveryBackup) {
+        throw 'Interrupted uninstall recovery did not retire the backup.'
+    }
+
     # 5. Missing LOCALAPPDATA Fallback
     $isolatedUserProfile = Join-Path $testRoot 'IsolatedUser'
     New-Item -ItemType Directory -Path $isolatedUserProfile -Force | Out-Null
@@ -217,14 +339,38 @@ try {
 
     # 6. Concurrency and Lock Cleanup
     $script = Join-Path $PSScriptRoot 'installer\Install-HerdrOps.ps1'
-    $job1 = Start-Job -ScriptBlock { param($s, $a, $i, $u) & $s -ArchivePath $a -InstallRoot $i -UserDataRoot $u 2>&1 } -ArgumentList $script, $initialArchivePath, $installRoot, $userDataRoot
-    $job2 = Start-Job -ScriptBlock { param($s, $a, $i, $u) & $s -ArchivePath $a -InstallRoot $i -UserDataRoot $u 2>&1 } -ArgumentList $script, $initialArchivePath, $installRoot, $userDataRoot
-    Wait-Job $job1, $job2 | Out-Null
-    $out1 = Receive-Job $job1 -Wait -AutoRemoveJob
-    $out2 = Receive-Job $job2 -Wait -AutoRemoveJob
-    $lockDir = Join-Path (Split-Path $installRoot -Parent) "$([IO.Path]::GetFileName($installRoot)).lock"
-    if (Test-Path -LiteralPath $lockDir) {
-        throw "Lock cleanup failed: lock directory still exists!"
+    $jobScript = {
+        param($s, $a, $i, $u)
+        & $s -ArchivePath $a -InstallRoot $i -UserDataRoot $u 2>&1
+        if ($null -ne $LASTEXITCODE -and $LASTEXITCODE -ne 0) {
+            throw "Installer child exited with code $LASTEXITCODE."
+        }
+        'INSTALL_JOB_SUCCESS'
+    }
+    $job1 = Start-Job -ScriptBlock $jobScript -ArgumentList $script, $initialArchivePath, $installRoot, $userDataRoot
+    $job2 = Start-Job -ScriptBlock $jobScript -ArgumentList $script, $initialArchivePath, $installRoot, $userDataRoot
+    $jobs = @($job1, $job2)
+    Wait-Job $jobs | Out-Null
+    $job1State = [string]$job1.State
+    $job2State = [string]$job2.State
+    $out1 = Receive-Job $job1 -ErrorAction SilentlyContinue 2>&1 | Out-String
+    $out2 = Receive-Job $job2 -ErrorAction SilentlyContinue 2>&1 | Out-String
+    if ($job1State -cne 'Completed' -or $job2State -cne 'Completed') {
+        throw "Concurrent installer jobs did not complete: job1=$job1State job2=$job2State"
+    }
+    if ($out1 -notmatch 'INSTALL_JOB_SUCCESS' -or
+        $out2 -notmatch 'INSTALL_JOB_SUCCESS') {
+        throw "Concurrent installer job output did not prove successful completion. job1=$out1 job2=$out2"
+    }
+    Remove-Job $jobs -Force -ErrorAction SilentlyContinue
+    if (-not (Test-Path -LiteralPath (Join-Path $installRoot 'file1.txt')) -or
+        -not (Test-Path -LiteralPath (Join-Path $installRoot 'file2.txt'))) {
+        throw 'Concurrent installer jobs did not leave a complete package.'
+    }
+    $transients = @(Get-ChildItem -LiteralPath (Split-Path $installRoot -Parent) -Directory -Force |
+        Where-Object { $_.Name -match '^HerdrOps\.(stage|backup)-[0-9a-fA-F]{32}$' })
+    if ($transients.Count -ne 0) {
+        throw "Concurrent installer jobs left transient directories: $($transients.Name -join ', ')"
     }
 
     # 7. Test Uninstall (Positive - Retain User Data)
@@ -266,9 +412,16 @@ try {
         HostileDuplicateCaseCollision  = 'PASS'
         HostileFileContainerCollision  = 'PASS'
         HostileFileParentCollision     = 'PASS'
+        HostileArchiveDeviceName       = 'PASS'
+        HostileArchiveEntryCount       = 'PASS'
+        HostileArchiveExpandedBytes    = 'PASS'
+        ReparseDestinationGuard        = 'PASS'
+        InterruptedInstallRecovery     = 'PASS'
+        InterruptedUninstallRecovery   = 'PASS'
         MissingLocalAppDataFallback    = 'PASS'
         ConcurrencyLockAcquisition     = 'PASS'
         ConcurrencyLockCleanup         = 'PASS'
+        ConcurrencyJobStateAndOutput   = 'PASS'
         UninstallRetainUserData        = 'PASS'
         UninstallRemoveUserData        = 'PASS'
         CleanMachine                   = 'NOT OBSERVED'
