@@ -2,6 +2,7 @@ using System.IO;
 using System.Text;
 using System.Text.Json;
 using HerdrOps.App.RuntimeEvidence;
+using HerdrOps.Contracts.StateIpc;
 
 namespace HerdrOps.RuntimeTests;
 
@@ -51,6 +52,45 @@ public sealed class RuntimeEvidenceFailureTests
     {
         Assert.IsTrue(RuntimeEvidenceRunner.IsExactAgentStatusEvent(
             CreateAgentStatusEvidence()));
+    }
+
+    [TestMethod]
+    public void AppAggregateLiveAgentIdentityRejectsMixedValidAndInvalidTopology()
+    {
+        var validState = CreateLiveIdentityState();
+        var secondPane = validState.Panes[0] with
+        {
+            PaneId = "pane-2",
+            TerminalId = "terminal-2",
+            Focused = false,
+            Title = "Worker 02",
+        };
+        var secondAgent = validState.Agents[0] with
+        {
+            TerminalId = "terminal-2",
+            PaneId = "pane-2",
+            Focused = false,
+            Name = "Worker 02",
+            Title = "Worker 02",
+        };
+
+        Assert.IsTrue(RuntimeEvidenceRunner.HasAllLiveAgentIdentities(validState));
+        Assert.IsFalse(
+            RuntimeEvidenceRunner.HasAllLiveAgentIdentities(
+                validState with
+                {
+                    Panes = [validState.Panes[0], secondPane],
+                    Agents = [validState.Agents[0]],
+                }),
+            "A valid Agent must not mask an Agentless pane in App evidence.");
+        Assert.IsFalse(
+            RuntimeEvidenceRunner.HasAllLiveAgentIdentities(
+                validState with
+                {
+                    Panes = [validState.Panes[0], secondPane],
+                    Agents = [validState.Agents[0], secondAgent with { AgentStatus = "Unknown" }],
+                }),
+            "A valid Agent must not mask an Unknown Agent in App evidence.");
     }
 
     [TestMethod]
@@ -286,6 +326,73 @@ public sealed class RuntimeEvidenceFailureTests
         CanonicalPayload: string.Empty,
         EntrySha256: string.Empty);
 
+    private static HerdrSessionStateContract CreateLiveIdentityState() => new(
+        "0.8.0-preview",
+        19,
+        1,
+        1,
+        [
+            new HerdrWorkspaceStateContract(
+                "workspace-1",
+                1,
+                "HerdrOps",
+                Focused: true,
+                PaneCount: 1,
+                TabCount: 1,
+                ActiveTabId: "tab-1",
+                "Working"),
+        ],
+        [
+            new HerdrTabStateContract(
+                "tab-1",
+                "workspace-1",
+                1,
+                "Core",
+                Focused: true,
+                PaneCount: 1,
+                "Working"),
+        ],
+        [
+            new HerdrPaneStateContract(
+                "pane-1",
+                "terminal-1",
+                "workspace-1",
+                "tab-1",
+                Focused: true,
+                "Working",
+                1,
+                "codex",
+                "Codex",
+                "Worker",
+                "Z:\\HerdrOps",
+                "Z:\\HerdrOps",
+                "Codex"),
+        ],
+        [
+            new HerdrAgentStateContract(
+                "terminal-1",
+                "workspace-1",
+                "tab-1",
+                "pane-1",
+                Focused: true,
+                "Working",
+                1,
+                1,
+                "codex",
+                "Codex",
+                "Worker 01",
+                "Worker",
+                "Z:\\HerdrOps",
+                "Z:\\HerdrOps",
+                "Codex",
+                InteractiveReady: true,
+                LaunchPending: false,
+                ScreenDetectionSkipped: false),
+        ],
+        "workspace-1",
+        "tab-1",
+        "pane-1");
+
     private static RuntimeAgentStatusTransitionEvidence CreateAgentStatusEvidence() => new(
         PhaseEnteredUtc: DateTimeOffset.Parse("2026-08-16T03:04:00Z"),
         ObservedUtc: DateTimeOffset.Parse("2026-08-16T03:04:01Z"),
@@ -324,6 +431,16 @@ public sealed class RuntimeEvidenceFailureTests
                 PreviousRevision: 1,
                 CurrentRevision: 2,
                 PreviousStateChangeSequence: 10,
-                CurrentStateChangeSequence: 11),
-        ]);
+                CurrentStateChangeSequence: 11)
+            {
+                PreviousAgentKind = "codex",
+                CurrentAgentKind = "codex",
+                PreviousAgentName = "Codex",
+                CurrentAgentName = "Codex",
+            },
+        ])
+    {
+        BaselineAllAgentsHaveLiveIdentity = true,
+        CurrentAllAgentsHaveLiveIdentity = true,
+    };
 }
