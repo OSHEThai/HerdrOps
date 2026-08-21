@@ -213,7 +213,7 @@ namespace HerdrOps.BudgetValidation
             {
                 throw new InvalidOperationException(string.Format("Strict schema violation: Candidate must be an object in {0}.", sourceDescription));
             }
-            HashSet<string> allowedCandProps = new HashSet<string>(StringComparer.Ordinal) { "SourceCommit", "GitTreeClean", "Binaries" };
+            HashSet<string> allowedCandProps = new HashSet<string>(StringComparer.Ordinal) { "SourceCommit", "SourceTree", "GitTreeClean", "Binaries" };
             foreach (KeyValuePair<string, object> cp in candidate)
             {
                 if (!allowedCandProps.Contains(cp.Key))
@@ -225,6 +225,11 @@ namespace HerdrOps.BudgetValidation
             if (sourceCommit == null || !Regex.IsMatch(sourceCommit, @"^[0-9a-f]{40}$"))
             {
                 throw new InvalidOperationException(string.Format("Strict schema violation: Candidate.SourceCommit must be a 40-hex lowercase string in {0}.", sourceDescription));
+            }
+            if (candidate.ContainsKey("SourceTree") && candidate["SourceTree"] != null &&
+                (!(candidate["SourceTree"] is string) || !Regex.IsMatch((string)candidate["SourceTree"], @"^[0-9a-f]{40}$")))
+            {
+                throw new InvalidOperationException(string.Format("Strict schema violation: Candidate.SourceTree must be a 40-hex lowercase string in {0}.", sourceDescription));
             }
             if (!candidate.ContainsKey("GitTreeClean") || !(candidate["GitTreeClean"] is bool) || !(bool)candidate["GitTreeClean"])
             {

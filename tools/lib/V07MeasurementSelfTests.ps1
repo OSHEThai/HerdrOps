@@ -39,6 +39,7 @@ function New-V07SynthesizedLiveArtifact {
     $synthesized = $jsonCopy | ConvertFrom-Json
 
     $synthesized.Candidate.SourceCommit = $binding.SourceCommit
+    $synthesized.Candidate | Add-Member -MemberType NoteProperty -Name SourceTree -Value $binding.SourceTree -Force
     $synthesized.Candidate.GitTreeClean = $binding.GitTreeClean
     $synthesized.Candidate | Add-Member -MemberType NoteProperty -Name Binaries -Value @($binding.Binaries) -Force
 
@@ -92,7 +93,67 @@ function New-V07SyntheticSoakArtifact {
         [double]$DurationHours = 8.0
     )
 
-    return [pscustomobject]@{
+    $installed = [pscustomobject][ordered]@{
+        ProductId = 'Herdr'
+        ExecutablePath = [string]$MeasurementArtifact.Session.HerdrExecutablePath
+        ExecutableSha256 = [string]$MeasurementArtifact.Session.HerdrExecutableSha256
+        ReleaseId = if ($null -ne $MeasurementArtifact.Session.PSObject.Properties['HerdrReleaseId']) { [string]$MeasurementArtifact.Session.HerdrReleaseId } else { 'synthetic-herdr' }
+        PackageRoot = Split-Path -Path ([string]$MeasurementArtifact.Session.HerdrExecutablePath) -Parent
+        PackageIdentitySha256 = ''
+    }
+    $installed.PackageIdentitySha256 = Get-V07InstalledHerdrIdentitySha256 -Identity $installed
+
+    $heartbeatEntries = [System.Collections.Generic.List[object]]::new()
+    $previousHeartbeat = '0' * 64
+    $heartbeatStart = [DateTimeOffset]::Parse('2020-01-01T00:00:00Z')
+    for ($hour = 0; $hour -le 8; $hour++) {
+        $entry = [pscustomobject][ordered]@{
+            Ordinal = $hour + 1; ObservedUtc = $heartbeatStart.AddHours($hour).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ', [Globalization.CultureInfo]::InvariantCulture)
+            Status = 'Healthy'; TargetSocketPresent = $true
+            HerdrProcessId = 8123; HerdrProcessStartUtc = '2020-01-01T00:00:00Z'; HerdrExecutableSha256 = [string]$installed.ExecutableSha256
+            CoreProcessId = 41001; AppProcessId = 41002; PreviousEntrySha256 = $previousHeartbeat; EntrySha256 = ''
+        }
+        $entry.EntrySha256 = Get-V07SoakEntrySha256 -Entry $entry
+        $heartbeatEntries.Add($entry)
+        $previousHeartbeat = [string]$entry.EntrySha256
+    }
+
+    $faultEntries = [System.Collections.Generic.List[object]]::new()
+    $faultSchedule = @(
+        @{ Id = 'FAULT-01'; Kind = 'TargetHerdrRestartObservation'; Due = '2020-01-01T02:00:00Z'; Offset = 7200 },
+        @{ Id = 'FAULT-02'; Kind = 'CoreReconnectObservation'; Due = '2020-01-01T04:00:00Z'; Offset = 14400 },
+        @{ Id = 'FAULT-03'; Kind = 'AppRecoveryObservation'; Due = '2020-01-01T06:00:00Z'; Offset = 21600 }
+    )
+    $previousFault = '0' * 64
+    foreach ($scheduled in $faultSchedule) {
+        $fault = [pscustomobject][ordered]@{
+            Id = $scheduled.Id; Kind = $scheduled.Kind; ScheduledOffsetSeconds = $scheduled.Offset
+            DueUtc = $scheduled.Due; ObservedUtc = $scheduled.Due; Status = 'Observed'; OperatorAcknowledged = $true
+            EvidencePath = 'synthetic://' + $scheduled.Id; EvidenceSha256 = Get-V07Sha256Hex -Text $scheduled.Id
+            Note = 'Synthetic positive-control observation only.'; PreviousEntrySha256 = $previousFault; EntrySha256 = ''
+        }
+        $fault.EntrySha256 = Get-V07SoakEntrySha256 -Entry $fault
+        $previousFault = [string]$fault.EntrySha256
+        $faultEntries.Add($fault)
+    }
+
+    $resourceSamples = @(
+        [pscustomobject][ordered]@{ ObservedUtc = '2020-01-01T00:00:00Z'; HerdrProcessId = 8123; CoreProcessId = 41001; AppProcessId = 41002; CombinedWorkingSetBytes = 100; CombinedCpuPercent = 0.2 },
+        [pscustomobject][ordered]@{ ObservedUtc = '2020-01-01T04:00:00Z'; HerdrProcessId = 8123; CoreProcessId = 41001; AppProcessId = 41002; CombinedWorkingSetBytes = 120; CombinedCpuPercent = 0.4 },
+        [pscustomobject][ordered]@{ ObservedUtc = '2020-01-01T08:00:00Z'; HerdrProcessId = 8123; CoreProcessId = 41001; AppProcessId = 41002; CombinedWorkingSetBytes = 110; CombinedCpuPercent = 0.3 }
+    )
+    $limits = [pscustomobject][ordered]@{
+        MaxArtifactBytes = $script:V07SoakMaxArtifactBytes; MaxHeartbeatEntries = $script:V07SoakMaxHeartbeatEntries
+        MaxFaultObservations = $script:V07SoakMaxFaultObservations; MaxResourceSamples = $script:V07SoakMaxResourceSamples
+        MaxManifestEntries = $script:V07SoakMaxManifestEntries
+    }
+    $artifacts = @(
+        [pscustomobject][ordered]@{ Name = 'heartbeat.jsonl'; RelativePath = 'synthetic://heartbeat.jsonl'; LengthBytes = 1; Sha256 = Get-V07Sha256Hex -Text 'heartbeat'; Lines = $heartbeatEntries.Count; Entries = $heartbeatEntries.Count },
+        [pscustomobject][ordered]@{ Name = 'fault-observations.jsonl'; RelativePath = 'synthetic://fault-observations.jsonl'; LengthBytes = 1; Sha256 = Get-V07Sha256Hex -Text 'faults'; Lines = 3; Entries = 3 },
+        [pscustomobject][ordered]@{ Name = 'resources.jsonl'; RelativePath = 'synthetic://resources.jsonl'; LengthBytes = 1; Sha256 = Get-V07Sha256Hex -Text 'resources'; Lines = 3; Entries = 3 }
+    )
+
+    return [pscustomobject][ordered]@{
         SchemaVersion = $script:V07SoakSchemaVersion
         ArtifactKind  = $script:V07SoakArtifactKind
         RunId         = 'soak-' + [Guid]::NewGuid().ToString('N').Substring(0, 8)
@@ -104,19 +165,47 @@ function New-V07SyntheticSoakArtifact {
         MeasurementRunId = [string]$MeasurementArtifact.RunId
         MeasurementArtifactSha256 = Get-V07ArtifactCanonicalSha256 -Artifact $MeasurementArtifact
         Session       = [pscustomobject]@{
+            ControlPaneId = if ($null -ne $MeasurementArtifact.Session.PSObject.Properties['ControlPaneId']) { [string]$MeasurementArtifact.Session.ControlPaneId } else { 'synthetic-control' }
+            ObservedControlPaneId = if ($null -ne $MeasurementArtifact.Session.PSObject.Properties['ObservedControlPaneId']) { [string]$MeasurementArtifact.Session.ObservedControlPaneId } else { 'synthetic-control' }
             ControlHerdrSocketPath = [string]$MeasurementArtifact.Session.ControlHerdrSocketPath
             TargetHerdrSocketPath  = [string]$MeasurementArtifact.Session.TargetHerdrSocketPath
+            HerdrExecutablePath    = [string]$MeasurementArtifact.Session.HerdrExecutablePath
             HerdrExecutableSha256  = [string]$MeasurementArtifact.Session.HerdrExecutableSha256
+            HerdrReleaseId         = [string]$installed.ReleaseId
         }
         Candidate     = [pscustomobject]@{
             SourceCommit = [string]$MeasurementArtifact.Candidate.SourceCommit
+            SourceTree = if ($null -ne $MeasurementArtifact.Candidate.PSObject.Properties['SourceTree']) { [string]$MeasurementArtifact.Candidate.SourceTree } else { ('0' * 40) }
+            GitTreeClean = $true
+            Binaries = @($MeasurementArtifact.Candidate.Binaries)
         }
         Soak          = [pscustomobject]@{
             DurationHours           = $DurationHours
             UnhandledCrashes        = 0
             UnreconciledStateCount  = 0
             UnboundedTerminalReads  = 0
+            RuntimeObservationCount = 3
+            RuntimeObservationFailures = 0
+            StateEvidenceCount = 3
+            ObservedEvents = 3
+            ObservedReconnects = 1
         }
+        InstalledHerdr = $installed
+        Producer = [pscustomobject][ordered]@{
+            Tool = 'Invoke-V07ActualHerdrSoak.ps1'; Version = '1'; SessionControlInvoked = $false; ObserverMode = 'ReadOnlyAttached'
+        }
+        Provenance = [pscustomobject][ordered]@{
+            HeartbeatIntervalSeconds = 3600; ExpectedHeartbeatCount = $heartbeatEntries.Count; MissingHeartbeatCount = 0
+            HeartbeatEntries = @($heartbeatEntries); HeartbeatChainHeadSha256 = [string]$heartbeatEntries[-1].EntrySha256
+            FirstHeartbeatUtc = '2020-01-01T00:00:00Z'; LastHeartbeatUtc = '2020-01-01T08:00:00Z'
+            ObservationCount = $faultEntries.Count; FaultObservations = @($faultEntries); FaultObservationChainHeadSha256 = $previousFault
+        }
+        Resources = [pscustomobject][ordered]@{
+            MaxSamples = $script:V07SoakMaxResourceSamples; Samples = @($resourceSamples)
+            PeakWorkingSetBytes = 120; PeakCpuPercent = 0.4
+        }
+        Limits = $limits
+        Artifacts = $artifacts
     }
 }
 

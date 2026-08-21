@@ -154,15 +154,20 @@ Assert-Test -Name 'External admission rejects stale source commit and binary has
 Write-Host "`nSection 4: Soak Artifact Validation"
 $goodSoakJson = Get-V07BoundedUtf8FileText -Path (Join-Path $fixturesDirectory 'soak-evidence-good.json') -Description 'Good soak fixture'
 Assert-V07StrictJsonText -JsonText $goodSoakJson -SourceDescription 'Good soak fixture'
-$goodSoak = $goodSoakJson | ConvertFrom-Json
 $baseArtifact = (Get-V07BoundedUtf8FileText -Path $goodFixturePath -Description 'Good fixture') | ConvertFrom-Json
-$soakCheck = Test-V07SoakArtifact -SoakArtifact $goodSoak -MeasurementArtifact $baseArtifact
-Assert-Test -Name 'Committed good soak fixture validates against the good session' -Condition $soakCheck.Valid -Message "Failures: $($soakCheck.Failures -join '; ')"
+$synthForSoak = New-V07SynthesizedLiveArtifact -BaseArtifact $baseArtifact -RepositoryRoot $repositoryRoot
+$goodSoak = New-V07SyntheticSoakArtifact -MeasurementArtifact $synthForSoak
+$legacySoak = $goodSoakJson | ConvertFrom-Json
+$legacySoakCheck = Test-V07SoakArtifact -SoakArtifact $legacySoak -MeasurementArtifact $baseArtifact
+Assert-Test -Name 'Legacy compact soak fixture fails closed without producer provenance' -Condition (-not $legacySoakCheck.Valid)
+$soakCheck = Test-V07SoakArtifact -SoakArtifact $goodSoak -MeasurementArtifact $synthForSoak -RepositoryRoot $repositoryRoot
+Assert-Test -Name 'Synthetic soak producer provenance validates against the good session' -Condition $soakCheck.Valid -Message "Failures: $($soakCheck.Failures -join '; ')"
 
 $cancelledSoakJson = Get-V07BoundedUtf8FileText -Path (Join-Path $fixturesDirectory 'soak-evidence-cancelled.json') -Description 'Cancelled soak fixture'
 Assert-V07StrictJsonText -JsonText $cancelledSoakJson -SourceDescription 'Cancelled soak fixture'
-$cancelledSoak = $cancelledSoakJson | ConvertFrom-Json
-$cancelledSoakCheck = Test-V07SoakArtifact -SoakArtifact $cancelledSoak -MeasurementArtifact $baseArtifact
+$cancelledSoak = New-V07SyntheticSoakArtifact -MeasurementArtifact $synthForSoak
+$cancelledSoak.Cancelled = $true
+$cancelledSoakCheck = Test-V07SoakArtifact -SoakArtifact $cancelledSoak -MeasurementArtifact $synthForSoak
 Assert-Test -Name 'Cancelled soak artifact is rejected' -Condition (-not $cancelledSoakCheck.Valid) -Message "Failures: $($cancelledSoakCheck.Failures -join '; ')"
 
 # -----------------------------------------------------------------------------
