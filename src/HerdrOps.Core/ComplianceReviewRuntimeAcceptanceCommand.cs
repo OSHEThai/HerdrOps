@@ -193,6 +193,12 @@ public static class ComplianceReviewRuntimeAcceptanceCommand
                                    item.OccurredUtc >= overlapStartedUtc &&
                                    item.OccurredUtc <= overlapFinishedUtc);
 
+            var acceptedAgentStatusEventObserved =
+                herdrRuntime.EventObserved &&
+                herdrRuntime.Transitions is not null &&
+                HerdrRuntimeEvidence.HasAcceptedAgentStatusEvent(
+                    herdrRuntime.Transitions);
+
             var runtimeAccepted = acceptance.Passed &&
                                   timeCoherent &&
                                   string.Equals(
@@ -200,6 +206,8 @@ public static class ComplianceReviewRuntimeAcceptanceCommand
                                       "BuiltProcessIntegration",
                                       StringComparison.Ordinal) &&
                                   herdrRuntime.RuntimeObserved &&
+                                  acceptedAgentStatusEventObserved &&
+                                  herdrRuntime.ReconnectObserved &&
                                   string.Equals(
                                       herdrRuntime.EvidenceClassification,
                                       EvidenceClass.Runtime.ToString(),

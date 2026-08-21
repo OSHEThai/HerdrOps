@@ -91,12 +91,84 @@ public sealed class ComplianceReviewRuntimeAcceptanceCommandTests
         using var directory = new TemporaryDirectory();
         const string incidentId = "INC-28-SYNTHETIC";
         const string taskId = "TASK-28-SYNTHETIC";
+        var result = RunValidAcceptance(directory.Path, incidentId, taskId);
+
+        Assert.AreEqual(0, result.ExitCode);
+        Assert.IsNotNull(result.Composite);
+
+        Assert.IsTrue(result.Composite!.RuntimeAccepted);
+        Assert.AreEqual("Runtime", result.Composite.EvidenceClassification);
+        Assert.IsTrue(result.Composite.Acceptance.Passed);
+        Assert.AreEqual(incidentId, result.Composite.IncidentId);
+        Assert.AreEqual(Path.GetFullPath(result.ReviewTracePath), result.Composite.ReviewTracePath);
+        Assert.AreEqual(Path.GetFullPath(result.HerdrReportPath), result.Composite.HerdrRuntimeReportPath);
+    }
+
+    [TestMethod]
+    public void MissingEventObservationFailsClosedWithoutRuntimeCredit()
+    {
+        using var directory = new TemporaryDirectory();
+        var result = RunValidAcceptance(
+            directory.Path,
+            "INC-28-NO-EVENT",
+            "TASK-28-NO-EVENT",
+            eventObserved: false);
+
+        Assert.AreEqual(2, result.ExitCode);
+        Assert.IsNotNull(result.Composite);
+        Assert.IsFalse(result.Composite!.RuntimeAccepted);
+        Assert.AreEqual("NoRuntimeCredit", result.Composite.EvidenceClassification);
+    }
+
+    [TestMethod]
+    public void EventFlagWithoutAcceptedTransitionFailsClosedWithoutRuntimeCredit()
+    {
+        using var directory = new TemporaryDirectory();
+        var result = RunValidAcceptance(
+            directory.Path,
+            "INC-28-NO-ACCEPTED-TRANSITION",
+            "TASK-28-NO-ACCEPTED-TRANSITION",
+            transitions: Array.Empty<HerdrRuntimeTraceTransition>());
+
+        Assert.AreEqual(2, result.ExitCode);
+        Assert.IsNotNull(result.Composite);
+        Assert.IsFalse(result.Composite!.RuntimeAccepted);
+        Assert.AreEqual("NoRuntimeCredit", result.Composite.EvidenceClassification);
+    }
+
+    [TestMethod]
+    public void MissingReconnectObservationFailsClosedWithoutRuntimeCredit()
+    {
+        using var directory = new TemporaryDirectory();
+        var result = RunValidAcceptance(
+            directory.Path,
+            "INC-28-NO-RECONNECT",
+            "TASK-28-NO-RECONNECT",
+            reconnectObserved: false);
+
+        Assert.AreEqual(2, result.ExitCode);
+        Assert.IsNotNull(result.Composite);
+        Assert.IsFalse(result.Composite!.RuntimeAccepted);
+        Assert.AreEqual("NoRuntimeCredit", result.Composite.EvidenceClassification);
+    }
+
+    private static (
+        int ExitCode,
+        string ReviewTracePath,
+        string HerdrReportPath,
+        ComplianceReviewCompositeRuntimeReport? Composite) RunValidAcceptance(
+        string directoryPath,
+        string incidentId,
+        string taskId,
+        bool eventObserved = true,
+        bool reconnectObserved = true,
+        IReadOnlyList<HerdrRuntimeTraceTransition>? transitions = null)
+    {
         const string subjectId = "worker-terminal";
         const string pmId = "pm-terminal";
-
-        var reviewTracePath = Path.Combine(directory.Path, "review-trace.json");
-        var herdrReportPath = Path.Combine(directory.Path, "herdr-runtime.json");
-        var compositeReportPath = Path.Combine(directory.Path, "composite-report.json");
+        var reviewTracePath = Path.Combine(directoryPath, "review-trace.json");
+        var herdrReportPath = Path.Combine(directoryPath, "herdr-runtime.json");
+        var compositeReportPath = Path.Combine(directoryPath, "composite-report.json");
 
         var incident = ComplianceReviewWorkflowContract.CreateIncident(
             new ComplianceReviewIncidentRegistration(
@@ -131,27 +203,29 @@ public sealed class ComplianceReviewRuntimeAcceptanceCommandTests
             incident,
             cmd,
             authority);
-
         var appliedIncident = ComplianceReviewWorkflowContract.Apply(
             incident,
             auditEvent);
-
-        var reviewTrace = CreateTraceReport(new[] { appliedIncident }, new[] { auditEvent }, true, true);
-
+        var reviewTrace = CreateTraceReport(
+            new[] { appliedIncident },
+            new[] { auditEvent },
+            retentionProtectedObserved: true,
+            restartConsistencyObserved: true);
         File.WriteAllText(
             reviewTracePath,
             JsonSerializer.Serialize(reviewTrace, new JsonSerializerOptions { WriteIndented = true }));
 
-        var sessionContract = CreateSessionState();
-        var herdrReport = CreateRuntimeReport(sessionContract);
-
+        var herdrReport = CreateRuntimeReport(
+            CreateSessionState(),
+            eventObserved: eventObserved,
+            reconnectObserved: reconnectObserved,
+            transitions: transitions);
         File.WriteAllText(
             herdrReportPath,
             JsonSerializer.Serialize(herdrReport, new JsonSerializerOptions { WriteIndented = true }));
 
         var output = new StringWriter();
         var error = new StringWriter();
-
         var exitCode = ComplianceReviewRuntimeAcceptanceCommand.Run(
             new[]
             {
@@ -164,20 +238,15 @@ public sealed class ComplianceReviewRuntimeAcceptanceCommandTests
             output,
             error);
 
-        Assert.AreEqual(0, exitCode);
-        Assert.IsTrue(File.Exists(compositeReportPath));
+        ComplianceReviewCompositeRuntimeReport? composite = null;
+        if (File.Exists(compositeReportPath))
+        {
+            composite = JsonSerializer.Deserialize<ComplianceReviewCompositeRuntimeReport>(
+                File.ReadAllText(compositeReportPath),
+                new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+        }
 
-        var composite = JsonSerializer.Deserialize<ComplianceReviewCompositeRuntimeReport>(
-            File.ReadAllText(compositeReportPath),
-            new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
-
-        Assert.IsNotNull(composite);
-        Assert.IsTrue(composite.RuntimeAccepted);
-        Assert.AreEqual("Runtime", composite.EvidenceClassification);
-        Assert.IsTrue(composite.Acceptance.Passed);
-        Assert.AreEqual(incidentId, composite.IncidentId);
-        Assert.AreEqual(Path.GetFullPath(reviewTracePath), composite.ReviewTracePath);
-        Assert.AreEqual(Path.GetFullPath(herdrReportPath), composite.HerdrRuntimeReportPath);
+        return (exitCode, reviewTracePath, herdrReportPath, composite);
     }
 
     [TestMethod]
@@ -534,7 +603,10 @@ public sealed class ComplianceReviewRuntimeAcceptanceCommandTests
 
     private static HerdrCoreRuntimeEvidenceReport CreateRuntimeReport(
         HerdrSessionStateContract state,
-        string? evidenceClassification = null)
+        string? evidenceClassification = null,
+        bool eventObserved = true,
+        bool reconnectObserved = true,
+        IReadOnlyList<HerdrRuntimeTraceTransition>? transitions = null)
     {
         var executableHash = Hash("herdr-executable");
         var endpoint = HerdrPipeEndpoint.FromSocketPath("test-herdr-pipe");
@@ -565,13 +637,24 @@ public sealed class ComplianceReviewRuntimeAcceptanceCommandTests
             0,
             "contract-backed test",
             BaseTime.AddSeconds(5));
+        var acceptedEventTransition = HerdrRuntimeEvidence.CreateTransition(monitor with
+        {
+            AcceptedEventKind = HerdrRuntimeMonitor.AcceptedAgentStatusEventKind,
+            AcceptedAgentStatusEvent = new HerdrAcceptedAgentStatusEvent(
+                "workspace-1",
+                "pane-1",
+                HerdrAgentStatus.Working,
+                "codex",
+                "Codex",
+                "Working"),
+        });
         return new HerdrCoreRuntimeEvidenceReport(
             evidenceClassification ?? EvidenceClass.Runtime.ToString(),
             RuntimeObserved: true,
             SessionControlInvoked: false,
             SnapshotObserved: true,
-            EventObserved: true,
-            ReconnectObserved: false,
+            EventObserved: eventObserved,
+            ReconnectObserved: reconnectObserved,
             BaseTime,
             BaseTime.AddSeconds(10),
             120,
@@ -581,7 +664,7 @@ public sealed class ComplianceReviewRuntimeAcceptanceCommandTests
             monitor,
             state,
             HerdrOpsStateIpcJson.ComputeSha256(state),
-            Array.Empty<HerdrRuntimeTraceTransition>(),
+            transitions ?? new[] { acceptedEventTransition },
             "Contract-backed test report.");
     }
 
