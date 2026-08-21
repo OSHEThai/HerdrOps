@@ -74,6 +74,79 @@ function Assert-TestThrows {
     Assert-TestTrue -Condition $threw -Message $Message
 }
 
+$validSessionList = [pscustomobject]@{
+    sessions = @(
+        [pscustomobject]@{
+            default = $true
+            name = 'default'
+            running = $true
+            socket_path = 'C:\Users\tester\AppData\Roaming\herdr\herdr.sock'
+        }
+        [pscustomobject]@{
+            default = $false
+            name = 'acceptance'
+            running = $true
+            socket_path = 'C:\Users\tester\AppData\Roaming\herdr\sessions\acceptance\herdr.sock'
+        }
+    )
+} | ConvertTo-Json -Depth 4 -Compress
+
+try {
+    $validTopology = Assert-V02AcceptanceSessionTopology `
+        -SessionListJson $validSessionList `
+        -ControlSocketPath 'C:\Users\tester\AppData\Roaming\herdr\sessions\acceptance\herdr.sock' `
+        -TargetSocketPath 'C:\Users\tester\AppData\Roaming\herdr\herdr.sock'
+    Assert-TestTrue `
+        -Condition ($validTopology.ControlSessionName -ceq 'acceptance' -and $validTopology.TargetSessionName -ceq 'default') `
+        -Message 'Acceptance session guard accepts an isolated acceptance control and default target session'
+
+    Assert-TestThrows `
+        -ScriptBlock {
+            Assert-V02AcceptanceSessionTopology `
+                -SessionListJson $validSessionList `
+                -ControlSocketPath 'C:\Users\tester\AppData\Roaming\herdr\herdr.sock' `
+                -TargetSocketPath 'C:\Users\tester\AppData\Roaming\herdr\sessions\acceptance\herdr.sock'
+        } `
+        -Message 'Acceptance session guard rejects a default-session control pane'
+
+    Assert-TestThrows `
+        -ScriptBlock {
+            Assert-V02AcceptanceSessionTopology `
+                -SessionListJson $validSessionList `
+                -ControlSocketPath 'C:\Users\tester\AppData\Roaming\herdr\sessions\acceptance\herdr.sock' `
+                -TargetSocketPath 'C:\Users\tester\AppData\Roaming\herdr\sessions\acceptance\herdr.sock'
+        } `
+        -Message 'Acceptance session guard rejects a target socket equal to the control socket'
+
+    $stoppedTargetList = [pscustomobject]@{
+        sessions = @(
+            [pscustomobject]@{
+                default = $true
+                name = 'default'
+                running = $false
+                socket_path = 'C:\Users\tester\AppData\Roaming\herdr\herdr.sock'
+            }
+            [pscustomobject]@{
+                default = $false
+                name = 'acceptance'
+                running = $true
+                socket_path = 'C:\Users\tester\AppData\Roaming\herdr\sessions\acceptance\herdr.sock'
+            }
+        )
+    } | ConvertTo-Json -Depth 4 -Compress
+    Assert-TestThrows `
+        -ScriptBlock {
+            Assert-V02AcceptanceSessionTopology `
+                -SessionListJson $stoppedTargetList `
+                -ControlSocketPath 'C:\Users\tester\AppData\Roaming\herdr\sessions\acceptance\herdr.sock' `
+                -TargetSocketPath 'C:\Users\tester\AppData\Roaming\herdr\herdr.sock'
+        } `
+        -Message 'Acceptance session guard rejects a stopped target session'
+}
+catch {
+    $failures.Add("Acceptance session guard test failed: $($_.Exception.Message)")
+}
+
 # A leading-reconciliation transition mirrors the unlabelled Core snapshot the
 # gate correlates between the App baseline and the accepted Agent-status Event
 # on the snapshot-before-event admission path (Test-V02LiveRuntimeAcceptance.ps1
@@ -138,4 +211,4 @@ if ($failures.Count -gt 0) {
 }
 
 Write-Host ''
-Write-Host 'All v0.2 leading-reconciliation Agent-identity hardening assertions passed.' -ForegroundColor Green
+Write-Host 'All v0.2 gate provenance and Acceptance-session assertions passed.' -ForegroundColor Green

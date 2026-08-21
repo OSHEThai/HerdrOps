@@ -16,6 +16,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $false
+. (Join-Path $PSScriptRoot 'lib/V02GateProvenance.ps1')
 
 function Get-CleanSourceCommit {
     param([Parameter(Mandatory)][string]$Root)
@@ -119,6 +120,15 @@ $targetHerdrSocketPath = (Resolve-Path -LiteralPath $TargetHerdrSocketPath).Path
 if ([StringComparer]::OrdinalIgnoreCase.Equals($controlHerdrSocketPath, $targetHerdrSocketPath)) {
     throw 'Acceptance control and target Agent Lab sockets must be different. Restarting the control session would terminate the gate process.'
 }
+$sessionListOutput = @(& $HerdrExecutable session list --json)
+if ($LASTEXITCODE -ne 0 -or $sessionListOutput.Count -eq 0) {
+    throw 'Could not enumerate Herdr named sessions before the runtime gate.'
+}
+$sessionTopology = Assert-V02AcceptanceSessionTopology `
+    -SessionListJson ($sessionListOutput -join [Environment]::NewLine) `
+    -ControlSocketPath $controlHerdrSocketPath `
+    -TargetSocketPath $targetHerdrSocketPath
+
 $controlPaneOutput = @(& $HerdrExecutable pane current --current)
 if ($LASTEXITCODE -ne 0 -or $controlPaneOutput.Count -eq 0) {
     throw 'Could not verify the active Acceptance control pane through its Herdr socket.'
@@ -418,6 +428,8 @@ $reportLines = @(
     'ReconnectObserved: true',
     "AcceptanceControlPaneEnvironmentId: $($env:HERDR_PANE_ID)",
     "AcceptanceControlPaneObservedId: $observedControlPaneId",
+    "AcceptanceControlSession: $($sessionTopology.ControlSessionName)",
+    "TargetAgentLabSession: $($sessionTopology.TargetSessionName)",
     "AcceptanceControlSocketPath: $controlHerdrSocketPath",
     "AcceptanceControlServerIdentity: pid=$($controlServerIdentity.ProcessId) start=$($controlServerIdentity.ProcessStartUtc.ToString('O')) path=$($controlServerIdentity.ExecutablePath) sha256=$($controlServerIdentity.ExecutableSha256)",
     "TargetAgentLabSocketPath: $targetHerdrSocketPath",
