@@ -10,6 +10,7 @@ public enum EvidenceClass
     Contract,
     Runtime,
     IndependentReview,
+    Human,
     Release,
 }
 
