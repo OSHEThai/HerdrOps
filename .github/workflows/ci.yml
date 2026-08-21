@@ -15,6 +15,11 @@ jobs:
     timeout-minutes: 30
     env:
       HERDOPS_V02_LIVE_WIDGET_RUN_TOKEN: ${{ github.run_id }}-${{ github.run_attempt }}
+      ISSUE43_EVENT_NAME: ${{ github.event_name }}
+      ISSUE43_CANDIDATE_SHA: ${{ github.sha }}
+      ISSUE43_PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      ISSUE43_PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+      ISSUE43_REVIEW_BRANCH: ${{ github.head_ref || github.ref_name }}
 
     steps:
       - name: Checkout
@@ -190,6 +195,246 @@ jobs:
       - name: Run v0.5 evidence and audit storage implementation gate
         shell: pwsh
         run: ./tools/Test-V05EvidenceAuditStorage.ps1 -Configuration Release -SkipBuild
+
+      - name: Run v0.5 evidence/audit forward-extension hostile self-tests (PowerShell 7)
+        shell: pwsh
+        run: ./tools/Test-V05EvidenceAuditStorage.ps1 -SelfTest
+
+      - name: Run v0.5 evidence/audit forward-extension hostile self-tests (Windows PowerShell 5.1)
+        shell: powershell
+        run: ./tools/Test-V05EvidenceAuditStorage.ps1 -SelfTest
+
+      # Static/Synthetic/Contract/local SQLite integration only; Actual Herdr Runtime and Release NOT OBSERVED.
+      - name: Prepare v1.0 Issue #43 CI candidate binding
+        if: always()
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          function Resolve-Issue43Commit {
+            param(
+              [Parameter(Mandatory)]
+              [string]$Value,
+
+              [Parameter(Mandatory)]
+              [string]$Name
+            )
+
+            $normalized = $Value.Trim().ToLowerInvariant()
+            if ($normalized -notmatch '^[0-9a-f]{40}$') {
+              throw "Issue #43 CI binding '$Name' must be an exact 40-hex SHA."
+            }
+
+            $resolvedOutput = @(& git rev-parse --verify ($normalized + '^{commit}') 2>&1)
+            if ($LASTEXITCODE -ne 0 -or $resolvedOutput.Count -ne 1) {
+              throw "Issue #43 CI binding '$Name' could not be resolved."
+            }
+
+            $resolved = ($resolvedOutput -join '').Trim().ToLowerInvariant()
+            if ($resolved -cne $normalized) {
+              throw "Issue #43 CI binding '$Name' resolved to an unexpected commit."
+            }
+            return $resolved
+          }
+
+          $candidate = Resolve-Issue43Commit -Value $env:ISSUE43_CANDIDATE_SHA -Name 'candidate'
+          $sourceOutput = @(& git rev-parse --verify 'HEAD^{commit}' 2>&1)
+          if ($LASTEXITCODE -ne 0 -or $sourceOutput.Count -ne 1) {
+            throw 'Issue #43 CI binding could not resolve the checked-out HEAD.'
+          }
+          $source = ($sourceOutput -join '').Trim().ToLowerInvariant()
+          if ($source -cne $candidate) {
+            throw "Issue #43 CI candidate $candidate does not match checked-out HEAD $source."
+          }
+
+          $reviewBranch = ([string]$env:ISSUE43_REVIEW_BRANCH).Trim()
+          if ([string]::IsNullOrWhiteSpace($reviewBranch)) {
+            throw 'Issue #43 CI binding received no reviewed branch.'
+          }
+          & git check-ref-format --branch $reviewBranch *> $null
+          if ($LASTEXITCODE -ne 0) {
+            throw "Issue #43 CI binding received an invalid branch name: $reviewBranch"
+          }
+
+          $parentOutput = @(& git rev-list --parents -n 1 $source 2>&1)
+          if ($LASTEXITCODE -ne 0 -or $parentOutput.Count -ne 1) {
+            throw 'Issue #43 CI binding could not resolve candidate parents.'
+          }
+          $parentTokens = (($parentOutput -join '').Trim() -split '\s+')
+          if ($parentTokens[0].ToLowerInvariant() -cne $candidate -or $parentTokens.Count -lt 2) {
+            throw 'Issue #43 CI binding received malformed candidate parent data.'
+          }
+
+          $eventName = ([string]$env:ISSUE43_EVENT_NAME).Trim()
+          if ($eventName -ceq 'pull_request') {
+            $expectedHead = Resolve-Issue43Commit -Value $env:ISSUE43_PR_HEAD_SHA -Name 'pull-request head'
+            $expectedBase = Resolve-Issue43Commit -Value $env:ISSUE43_PR_BASE_SHA -Name 'pull-request base'
+            if ($parentTokens.Count -ne 3 -or
+                $parentTokens[1].ToLowerInvariant() -cne $expectedBase -or
+                $parentTokens[2].ToLowerInvariant() -cne $expectedHead) {
+              throw 'Issue #43 CI pull-request merge commit is not bound to the declared base and head.'
+            }
+            $directParent = $expectedBase
+          } elseif ($eventName -ceq 'push') {
+            if ($reviewBranch -cne 'main') {
+              throw "Issue #43 CI push binding expected main, observed $reviewBranch."
+            }
+            $directParent = $parentTokens[1].ToLowerInvariant()
+          } else {
+            throw "Issue #43 CI binding does not support event '$eventName'."
+          }
+
+          $initialStatus = @(& git status --porcelain=v1 --untracked-files=all 2>&1)
+          if ($LASTEXITCODE -ne 0 -or $initialStatus.Count -ne 0) {
+            throw 'Issue #43 CI binding requires a clean checkout before branch binding.'
+          }
+
+          $branchOutput = @(& git symbolic-ref --short HEAD 2>&1)
+          $branchExit = $LASTEXITCODE
+          $observedBranch = ($branchOutput -join '').Trim()
+          if ($branchExit -eq 0 -and -not [string]::IsNullOrWhiteSpace($observedBranch)) {
+            if (-not [string]::Equals($observedBranch, $reviewBranch, [StringComparison]::Ordinal)) {
+              throw "Issue #43 CI observed branch '$observedBranch', expected '$reviewBranch'."
+            }
+          } else {
+            & git switch --create $reviewBranch $candidate
+            if ($LASTEXITCODE -ne 0) {
+              throw "Issue #43 CI could not bind detached HEAD to branch '$reviewBranch'."
+            }
+          }
+
+          $finalBranch = ((@(& git symbolic-ref --short HEAD 2>&1) -join '').Trim())
+          if (-not [string]::Equals($finalBranch, $reviewBranch, [StringComparison]::Ordinal)) {
+            throw "Issue #43 CI branch binding ended at '$finalBranch', expected '$reviewBranch'."
+          }
+          $finalStatus = @(& git status --porcelain=v1 --untracked-files=all 2>&1)
+          if ($LASTEXITCODE -ne 0 -or $finalStatus.Count -ne 0) {
+            throw 'Issue #43 CI branch binding changed the checkout state.'
+          }
+
+          if ([string]::IsNullOrWhiteSpace($env:GITHUB_ENV)) {
+            throw 'Issue #43 CI binding cannot publish its exact values to subsequent steps.'
+          }
+          $environmentLines = @(
+            "ISSUE43_CANDIDATE_COMMIT=$candidate"
+            "ISSUE43_DIRECT_PARENT_COMMIT=$directParent"
+            "ISSUE43_REVIEW_BRANCH=$reviewBranch"
+          )
+          [IO.File]::AppendAllText(
+            $env:GITHUB_ENV,
+            (($environmentLines -join [Environment]::NewLine) + [Environment]::NewLine),
+            [Text.UTF8Encoding]::new($false))
+          Write-Host "Issue #43 CI binding prepared: candidate=$candidate; direct-parent=$directParent; branch=$reviewBranch; event=$eventName"
+
+      - name: Run v1.0 Issue #43 security-review fixtures (PowerShell 7)
+        if: always()
+        shell: pwsh
+        run: ./tools/Test-V10Issue43SecurityReviewFixtures.ps1
+
+      - name: Run v1.0 Issue #43 security-review fixtures (Windows PowerShell 5.1)
+        if: always()
+        shell: powershell
+        run: ./tools/Test-V10Issue43SecurityReviewFixtures.ps1
+
+      # Static/Synthetic/Contract/local SQLite integration only; Actual Herdr Runtime and Release NOT OBSERVED.
+      - name: Run v1.0 Issue #43 security/privacy preparation gate (PowerShell 7)
+        if: always()
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $reportRoot = 'artifacts/release-gates/v1.0.0/issue-43'
+          $candidate = [string]$env:ISSUE43_CANDIDATE_COMMIT
+          $directParent = [string]$env:ISSUE43_DIRECT_PARENT_COMMIT
+          $branch = [string]$env:ISSUE43_REVIEW_BRANCH
+          try {
+            if ([string]::IsNullOrWhiteSpace($candidate) -or
+                [string]::IsNullOrWhiteSpace($directParent) -or
+                [string]::IsNullOrWhiteSpace($branch)) {
+              throw 'Issue #43 CI binding values were not published by the preparation step.'
+            }
+            New-Item -ItemType Directory -Path $reportRoot -Force | Out-Null
+            & ./tools/Test-V10Issue43SecurityReview.ps1 `
+              -Configuration Release `
+              -CandidateCommit $candidate `
+              -DirectParentCommit $directParent `
+              -Branch $branch
+            if ($LASTEXITCODE -ne 0) {
+              throw "Issue #43 preparation gate exited with code $LASTEXITCODE."
+            }
+          } catch {
+            $originalError = $_
+            try {
+              New-Item -ItemType Directory -Path $reportRoot -Force | Out-Null
+              @(
+                'FAILURE: Issue #43 preparation gate did not complete successfully.'
+                "CandidateCommit: $candidate"
+                "DirectParentCommit: $directParent"
+                "Branch: $branch"
+                'EvidenceClass: Static/Synthetic/Contract/LocalSQLiteIntegration'
+                'Runtime: NOT OBSERVED / NOT CLAIMED'
+                'Release: NOT OBSERVED / NOT CLAIMED'
+                "Error: $($originalError.Exception.Message)"
+                "ScriptStackTrace: $($originalError.ScriptStackTrace)"
+              ) | Set-Content -LiteralPath (Join-Path $reportRoot 'ci-pwsh-failure.txt') -Encoding utf8
+            } catch {
+              Write-Warning "Could not write Issue #43 diagnostics: $($_.Exception.Message)"
+            }
+            throw $originalError
+          }
+
+      - name: Run v1.0 Issue #43 security/privacy preparation gate (Windows PowerShell 5.1)
+        if: always()
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $reportRoot = 'artifacts\release-gates\v1.0.0\issue-43'
+          $candidate = [string]$env:ISSUE43_CANDIDATE_COMMIT
+          $directParent = [string]$env:ISSUE43_DIRECT_PARENT_COMMIT
+          $branch = [string]$env:ISSUE43_REVIEW_BRANCH
+          try {
+            if ([string]::IsNullOrWhiteSpace($candidate) -or
+                [string]::IsNullOrWhiteSpace($directParent) -or
+                [string]::IsNullOrWhiteSpace($branch)) {
+              throw 'Issue #43 CI binding values were not published by the preparation step.'
+            }
+            New-Item -ItemType Directory -Path $reportRoot -Force | Out-Null
+            & .\tools\Test-V10Issue43SecurityReview.ps1 `
+              -Configuration Release `
+              -CandidateCommit $candidate `
+              -DirectParentCommit $directParent `
+              -Branch $branch
+            if ($LASTEXITCODE -ne 0) {
+              throw "Issue #43 preparation gate exited with code $LASTEXITCODE."
+            }
+          } catch {
+            $originalError = $_
+            try {
+              New-Item -ItemType Directory -Path $reportRoot -Force | Out-Null
+              @(
+                'FAILURE: Issue #43 preparation gate did not complete successfully.'
+                "CandidateCommit: $candidate"
+                "DirectParentCommit: $directParent"
+                "Branch: $branch"
+                'EvidenceClass: Static/Synthetic/Contract/LocalSQLiteIntegration'
+                'Runtime: NOT OBSERVED / NOT CLAIMED'
+                'Release: NOT OBSERVED / NOT CLAIMED'
+                "Error: $($originalError.Exception.Message)"
+                "ScriptStackTrace: $($originalError.ScriptStackTrace)"
+              ) | Set-Content -LiteralPath (Join-Path $reportRoot 'ci-powershell-5.1-failure.txt') -Encoding UTF8
+            } catch {
+              Write-Warning "Could not write Issue #43 diagnostics: $($_.Exception.Message)"
+            }
+            throw $originalError
+          }
+
+      - name: Upload v1.0 Issue #43 security/privacy preparation reports
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          retention-days: 7
+          name: v1.0-issue-43-security-privacy-gate-report
+          path: artifacts/release-gates/v1.0.0/issue-43
+          if-no-files-found: error
 
       - name: Run v0.5 Compliance Queue implementation gate
         shell: pwsh

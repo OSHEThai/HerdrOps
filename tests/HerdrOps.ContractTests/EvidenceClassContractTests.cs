@@ -11,7 +11,7 @@ public sealed class EvidenceClassContractTests
         var names = Enum.GetNames<EvidenceClass>();
 
         CollectionAssert.AreEqual(
-            new[] { "Static", "Synthetic", "Contract", "Runtime", "IndependentReview", "Release" },
+            new[] { "Static", "Synthetic", "Contract", "Runtime", "IndependentReview", "Human", "Release" },
             names);
     }
 }
