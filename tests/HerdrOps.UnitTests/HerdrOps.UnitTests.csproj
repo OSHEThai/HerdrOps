@@ -1,6 +1,6 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
-    <TargetFramework>net10.0</TargetFramework>
+    <TargetFramework>net10.0-windows</TargetFramework>
     <IsPackable>false</IsPackable>
   </PropertyGroup>
 
@@ -11,6 +11,7 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\HerdrOps.Contracts\HerdrOps.Contracts.csproj" />
     <ProjectReference Include="..\..\src\HerdrOps.Domain\HerdrOps.Domain.csproj" />
+    <ProjectReference Include="..\..\src\HerdrOps.Core\HerdrOps.Core.csproj" />
   </ItemGroup>
 
   <ItemGroup>
