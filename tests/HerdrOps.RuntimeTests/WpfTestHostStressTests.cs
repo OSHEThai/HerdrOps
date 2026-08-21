@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Windows;
 using System.Windows.Threading;
 
 namespace HerdrOps.RuntimeTests;
@@ -9,6 +10,19 @@ namespace HerdrOps.RuntimeTests;
 [DoNotParallelize]
 public sealed class WpfTestHostStressTests
 {
+    [TestMethod]
+    public void OwnedHostDoesNotRunProductionApplicationStartup()
+    {
+        WpfTestHost.Run(() =>
+        {
+            Assert.IsNotNull(Application.Current);
+            var application = Assert.IsInstanceOfType<HerdrOps.App.App>(Application.Current);
+            Assert.IsTrue(
+                application.IsTestHostStartupSuppressed,
+                "The test host must isolate production single-instance startup and shutdown behavior.");
+        });
+    }
+
     [TestMethod]
     public void ConcurrentCallersShareOneOwnedDispatcherAndComplete()
     {
