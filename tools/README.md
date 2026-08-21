@@ -24,9 +24,14 @@ Build, verification, GitHub roadmap, evidence capture, and packaging helpers liv
 # From a fresh, unmoved pane in the authorized Acceptance control session,
 # capture target Agent Lab
 # snapshot/Agent-status-event/reconnect evidence. The two sockets must differ.
+# Replace both values with the separately approved final candidate identities.
+$expectedSourceCommit = '<approved-source-commit>'
+$expectedSourceTree = '<approved-source-tree>'
 $targetAgentLabSocket = Join-Path $env:APPDATA 'herdr\herdr.sock'
 ./tools/Test-V02HerdrRuntime.ps1 `
     -TargetHerdrSocketPath $targetAgentLabSocket `
+    -ExpectedSourceCommit $expectedSourceCommit `
+    -ExpectedSourceTree $expectedSourceTree `
     -DurationSeconds 120
 
 # From a standard non-elevated pane in the separate Acceptance control session,
@@ -34,6 +39,8 @@ $targetAgentLabSocket = Join-Path $env:APPDATA 'herdr\herdr.sock'
 # Restart only the target Agent Lab session when the gate prompts for it.
 ./tools/Test-V02LiveRuntimeAcceptance.ps1 `
     -TargetHerdrSocketPath $targetAgentLabSocket `
+    -ExpectedSourceCommit $expectedSourceCommit `
+    -ExpectedSourceTree $expectedSourceTree `
     -Language Thai `
     -DurationSeconds 600
 
