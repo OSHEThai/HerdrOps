@@ -1,0 +1,224 @@
+{
+  "SchemaVersion": "v0.7.0-measurement",
+  "ArtifactKind": "PerformanceMeasurementRun",
+  "RunId": "20260821T120000Z-synth0001",
+  "StartedUtc": "2020-01-01T12:00:00Z",
+  "FinishedUtc": "2020-01-01T12:05:00Z",
+  "Mode": "Synthetic",
+  "Cancelled": false,
+  "TimedOut": false,
+  "TerminationReason": "",
+  "HostEnvironment": {
+    "Os": "Windows 11 Pro",
+    "Architecture": "x64",
+    "LogicalProcessors": 16,
+    "ReferenceHostConfirmed": true
+  },
+  "Session": {
+    "ControlPaneId": "pane-acceptance-001",
+    "ObservedControlPaneId": "pane-acceptance-001",
+    "ControlHerdrSocketPath": "C:\\Users\\operator\\AppData\\Local\\herdr\\acceptance.sock",
+    "TargetHerdrSocketPath": "C:\\Users\\operator\\AppData\\Local\\herdr\\agent-lab.sock",
+    "SeparateSessions": true,
+    "HerdrExecutablePath": "C:\\Users\\operator\\AppData\\Local\\Programs\\Herdr\\bin\\herdr.exe",
+    "HerdrExecutableSha256": "afe7bad9b77946917b509c9b638bb2a47bc1d4f19254957d15b0faafbedb3e93",
+    "HerdrReleaseId": "0.8.2-preview.2026-08-19-b5c4a0176e91-x86_64-pc-windows-msvc",
+    "ControlHerdrServerIdentity": {
+      "ProcessId": 8123,
+      "ProcessStartUtc": "2020-01-01T11:59:00Z",
+      "ExecutablePath": "C:\\Users\\operator\\AppData\\Local\\Programs\\Herdr\\bin\\herdr.exe",
+      "ExecutableSha256": "afe7bad9b77946917b509c9b638bb2a47bc1d4f19254957d15b0faafbedb3e93"
+    }
+  },
+  "Candidate": {
+    "SourceCommit": "79e015ec33dd5f357fb2b35405e580879073a6e5",
+    "GitTreeClean": true,
+    "Binaries": [
+      {
+        "RelativePath": "artifacts/bin/HerdrOps.Core/release/HerdrOps.Core.dll",
+        "LengthBytes": 270848,
+        "Sha256": "31589db4d7a47eaedeae4a35b805867544903b1a10f263e585fec8e1b459dba8"
+      },
+      {
+        "RelativePath": "artifacts/bin/HerdrOps.App/release/HerdrOps.App.dll",
+        "LengthBytes": 2813440,
+        "Sha256": "9ee14fe9869b4a8339175f03bfad84d045623b2755c7c1d38421bd783cdfad54"
+      }
+    ]
+  },
+  "Roles": [
+    {
+      "Role": "Core",
+      "ProcessId": 41001,
+      "ProcessStartUtc": "2020-01-01T12:00:00Z",
+      "BinaryPath": "C:\\HerdrOps\\artifacts\\bin\\HerdrOps.Core\\release\\HerdrOps.Core.dll",
+      "BinarySha256": "31589db4d7a47eaedeae4a35b805867544903b1a10f263e585fec8e1b459dba8"
+    },
+    {
+      "Role": "App",
+      "ProcessId": 41002,
+      "ProcessStartUtc": "2020-01-01T12:00:01Z",
+      "BinaryPath": "C:\\HerdrOps\\artifacts\\bin\\HerdrOps.App\\release\\HerdrOps.App.dll",
+      "BinarySha256": "9ee14fe9869b4a8339175f03bfad84d045623b2755c7c1d38421bd783cdfad54"
+    }
+  ],
+  "Metrics": {
+    "DashboardColdLaunchP95Ms": 1500.2,
+    "WidgetStateDeltaLatencyP95Ms": 182.3,
+    "HerdrReconnectReconcileSeconds": 3.0,
+    "IdleCpuAveragePercent": 0.6,
+    "IdleWorkingSetCombinedBytes": 145000000,
+    "UnboundedTerminalReads": 0,
+    "UnhandledCrashesDuringSoak": 0,
+    "SoakDurationHours": 0.0,
+    "AdministratorRequired": false
+  },
+  "Observed": {
+    "DashboardColdLaunch": true,
+    "WidgetStateDeltaLatency": true,
+    "HerdrReconnectReconcile": true,
+    "IdleCpu": true,
+    "IdleWorkingSet": true
+  },
+  "RawSamples": {
+    "DashboardColdLaunch": [
+      {
+        "RunOrdinal": 1,
+        "ObservedUtc": "2020-01-01T12:00:05Z",
+        "Milliseconds": 1320.0,
+        "AppProcessId": 41002,
+        "CoreProcessId": 41001,
+        "Termination": "Graceful"
+      },
+      {
+        "RunOrdinal": 2,
+        "ObservedUtc": "2020-01-01T12:00:45Z",
+        "Milliseconds": 1450.5,
+        "AppProcessId": 41002,
+        "CoreProcessId": 41001,
+        "Termination": "Graceful"
+      },
+      {
+        "RunOrdinal": 3,
+        "ObservedUtc": "2020-01-01T12:01:25Z",
+        "Milliseconds": 1500.2,
+        "AppProcessId": 41002,
+        "CoreProcessId": 41001,
+        "Termination": "Graceful"
+      },
+      {
+        "RunOrdinal": 4,
+        "ObservedUtc": "2020-01-01T12:02:05Z",
+        "Milliseconds": 1480.1,
+        "AppProcessId": 41002,
+        "CoreProcessId": 41001,
+        "Termination": "Graceful"
+      },
+      {
+        "RunOrdinal": 5,
+        "ObservedUtc": "2020-01-01T12:02:45Z",
+        "Milliseconds": 1388.9,
+        "AppProcessId": 41002,
+        "CoreProcessId": 41001,
+        "Termination": "Graceful"
+      }
+    ],
+    "WidgetStateDeltaLatency": [
+      {
+        "ObservedUtc": "2020-01-01T12:00:12Z",
+        "Milliseconds": 120.4,
+        "AppProcessId": 41002,
+        "CoreProcessId": 41001,
+        "UpdateKind": "Delta"
+      },
+      {
+        "ObservedUtc": "2020-01-01T12:00:18Z",
+        "Milliseconds": 182.3,
+        "AppProcessId": 41002,
+        "CoreProcessId": 41001,
+        "UpdateKind": "Delta"
+      },
+      {
+        "ObservedUtc": "2020-01-01T12:00:24Z",
+        "Milliseconds": 155.0,
+        "AppProcessId": 41002,
+        "CoreProcessId": 41001,
+        "UpdateKind": "Snapshot"
+      }
+    ],
+    "HerdrReconnectReconcile": [
+      {
+        "ObservedUtc": "2020-01-01T12:00:43Z",
+        "Seconds": 3.0,
+        "DisconnectTransitionUtc": "2020-01-01T12:00:40Z",
+        "ReconnectTransitionUtc": "2020-01-01T12:00:43Z",
+        "ReconnectBootstrapCount": 2,
+        "ReconnectServerPid": 456
+      }
+    ],
+    "IdleCpu": [
+      {
+        "ObservedUtc": "2020-01-01T12:00:50Z",
+        "Percent": 0.5,
+        "SampleOrdinal": 1
+      },
+      {
+        "ObservedUtc": "2020-01-01T12:00:51Z",
+        "Percent": 0.7,
+        "SampleOrdinal": 2
+      },
+      {
+        "ObservedUtc": "2020-01-01T12:00:52Z",
+        "Percent": 0.6,
+        "SampleOrdinal": 3
+      }
+    ],
+    "IdleWorkingSet": [
+      {
+        "ObservedUtc": "2020-01-01T12:00:50Z",
+        "Bytes": 144900000,
+        "SampleOrdinal": 1
+      },
+      {
+        "ObservedUtc": "2020-01-01T12:00:51Z",
+        "Bytes": 145100000,
+        "SampleOrdinal": 2
+      },
+      {
+        "ObservedUtc": "2020-01-01T12:00:52Z",
+        "Bytes": 145000000,
+        "SampleOrdinal": 3
+      }
+    ]
+  },
+  "PhaseLog": [
+    {
+      "Phase": "admission",
+      "StartedUtc": "2020-01-01T12:00:00Z",
+      "FinishedUtc": "2020-01-01T12:00:01Z",
+      "Result": "OK",
+      "Detail": "Session and candidate admitted."
+    },
+    {
+      "Phase": "latency-reconnect-idle",
+      "StartedUtc": "2020-01-01T12:00:01Z",
+      "FinishedUtc": "2020-01-01T12:00:53Z",
+      "Result": "OK",
+      "Detail": "Operator-driven evidence run observed."
+    },
+    {
+      "Phase": "launch-p95",
+      "StartedUtc": "2020-01-01T12:00:05Z",
+      "FinishedUtc": "2020-01-01T12:02:46Z",
+      "Result": "OK",
+      "Detail": "Five cold dashboard launches observed."
+    },
+    {
+      "Phase": "assembly",
+      "StartedUtc": "2020-01-01T12:02:46Z",
+      "FinishedUtc": "2020-01-01T12:03:00Z",
+      "Result": "OK",
+      "Detail": "Measurement artifact assembled and admitted."
+    }
+  ]
+}

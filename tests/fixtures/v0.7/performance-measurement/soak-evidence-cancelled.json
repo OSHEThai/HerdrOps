@@ -1,0 +1,26 @@
+{
+  "SchemaVersion": "v0.7.0-soak",
+  "ArtifactKind": "SoakRun",
+  "RunId": "20260820T000000Z-soak0002",
+  "StartedUtc": "2020-01-01T00:00:00Z",
+  "FinishedUtc": "2020-01-01T08:00:00Z",
+  "Mode": "Live",
+  "Cancelled": true,
+  "TimedOut": false,
+  "Session": {
+    "ControlHerdrSocketPath": "C:\\Users\\operator\\AppData\\Local\\herdr\\acceptance.sock",
+    "TargetHerdrSocketPath": "C:\\Users\\operator\\AppData\\Local\\herdr\\agent-lab.sock",
+    "HerdrExecutableSha256": "afe7bad9b77946917b509c9b638bb2a47bc1d4f19254957d15b0faafbedb3e93"
+  },
+  "Candidate": {
+    "SourceCommit": "79e015ec33dd5f357fb2b35405e580879073a6e5"
+  },
+  "Soak": {
+    "DurationHours": 8.0,
+    "UnhandledCrashes": 0,
+    "UnreconciledStateCount": 0,
+    "UnboundedTerminalReads": 0
+  },
+  "MeasurementRunId": "20260821T120000Z-live0001",
+  "MeasurementArtifactSha256": "140e6696a277836cbaa89ac70b4876a70e61039a6cd438ec19421d33989319da"
+}

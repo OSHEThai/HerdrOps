@@ -474,7 +474,16 @@ jobs:
         shell: powershell
         run: ./tools/Test-V07PerformanceBudgets.Tests.ps1
 
-# Issue #44 install-acceptance preparation. Static/Synthetic only; no live
+      # Static/Synthetic producer unit & regression tests; no live soak or Actual Herdr Runtime credit.
+      - name: Run v0.7 performance measurement producer tests (PowerShell 7)
+        shell: pwsh
+        run: ./tools/Test-V07PerformanceMeasurement.Tests.ps1
+
+      - name: Run v0.7 performance measurement producer tests (Windows PowerShell 5.1)
+        shell: powershell
+        run: ./tools/Test-V07PerformanceMeasurement.Tests.ps1
+
+      # Issue #44 install-acceptance preparation. Static/Synthetic only; no live
       # filesystem mutation, no HerdrOps/Herdr process start, no release action.
       - name: 'Run v1 install-acceptance gate (Issue #44) - Static/Synthetic - PowerShell 7 (pwsh)'
         shell: pwsh
