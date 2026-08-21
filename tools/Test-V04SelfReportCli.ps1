@@ -178,12 +178,27 @@ function Invoke-CapturedProcess {
         -RedirectStandardError $StandardErrorPath `
         -WindowStyle Hidden `
         -PassThru
+    if ($null -eq $process) {
+        throw "Could not start captured process: $FilePath"
+    }
     if (-not $process.WaitForExit($TimeoutMilliseconds)) {
         $process.Kill($true)
         throw "Process timed out after $TimeoutMilliseconds milliseconds: $FilePath"
     }
 
-    return $process.ExitCode
+    try {
+        $process.Refresh()
+    } catch {
+        throw "Could not refresh captured process state: $($_.Exception.Message)"
+    }
+    if (-not $process.HasExited) {
+        throw "Captured process did not report exited after its wait: $FilePath"
+    }
+    $exitCode = $process.ExitCode
+    if ($null -eq $exitCode) {
+        throw "Captured process did not expose an exit code after it exited: $FilePath"
+    }
+    return [int]$exitCode
 }
 
 $coreArguments = @(
@@ -204,6 +219,9 @@ $coreProcess = Start-Process `
     -RedirectStandardError $coreErrorPath `
     -WindowStyle Hidden `
     -PassThru
+if ($null -eq $coreProcess) {
+    throw "Could not start the built Core self-report process: $coreExecutable"
+}
 
 $readyDeadline = [DateTime]::UtcNow.AddSeconds(5)
 $coreReady = $false
@@ -245,8 +263,20 @@ if (-not $coreProcess.WaitForExit(12000)) {
     $coreProcess.Kill($true)
     throw 'The built Core self-report process did not stop after its evidence duration.'
 }
-if ($coreProcess.ExitCode -ne 0) {
-    throw "The built Core self-report process failed with exit code $($coreProcess.ExitCode)."
+try {
+    $coreProcess.Refresh()
+} catch {
+    throw "Could not refresh the built Core self-report process state: $($_.Exception.Message)"
+}
+if (-not $coreProcess.HasExited) {
+    throw 'The built Core self-report process did not report exited after its wait.'
+}
+$coreExitCode = $coreProcess.ExitCode
+if ($null -eq $coreExitCode) {
+    throw 'The built Core self-report process did not expose an exit code after it exited.'
+}
+if ([int]$coreExitCode -ne 0) {
+    throw "The built Core self-report process failed with exit code $([int]$coreExitCode)."
 }
 if ((Get-Item -LiteralPath $coreErrorPath).Length -ne 0) {
     throw "The built Core self-report process wrote stderr: $(Get-Content -LiteralPath $coreErrorPath -Raw)"
