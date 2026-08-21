@@ -114,7 +114,11 @@ function Get-ReviewFileHash {
 function New-FullReviewFixture {
     param([Parameter(Mandatory = $true)][string]$Root)
 
-    $commit = (Get-HumanDesignReviewSha256ForText -Text 'fixture-commit-issue-35').ToUpperInvariant()
+    $gitProv = Get-HumanDesignReviewGitProvenance -RepoRoot (Get-HumanDesignReviewRoot)
+    if ($null -eq $gitProv -or -not [bool]$gitProv.IsVerifiable) {
+        throw 'The positive fixture requires an exact Git commit/tree source identity.'
+    }
+    $commit = $gitProv.CommitSha256
     $pages = Get-HumanDesignReviewCanonicalPages
     $languages = Get-HumanDesignReviewLanguages
     $scales = Get-HumanDesignReviewScales
@@ -286,6 +290,8 @@ function New-FullReviewFixture {
         Root = [IO.Path]::GetFullPath($Root)
         ManifestPath = [IO.Path]::GetFullPath($manifestPath)
         Commit = $commit
+        SourceCommit = $gitProv.GitCommit
+        SourceTree = $gitProv.GitTree
     }
 }
 
@@ -311,7 +317,8 @@ try {
     # A valid, fully-bound fixture manifests verifies cleanly (positive control).
     $fixture = New-FullReviewFixture -Root (Join-Path $testRoot 'fixture-valid')
     $positive = Test-HumanDesignReviewManifest -ManifestPath $fixture.ManifestPath `
-        -EvidenceRoot $fixture.Root -ValidateBindings
+        -EvidenceRoot $fixture.Root -ValidateBindings `
+        -ExpectedSourceCommit $fixture.SourceCommit -ExpectedSourceTree $fixture.SourceTree
     if (-not $positive.Valid -or $positive.ReviewStatus -cne 'Accepted') {
         throw 'The fully bound fixture manifest did not verify cleanly.'
     }
@@ -325,6 +332,72 @@ try {
         throw 'Configuration-only verification did not report Static/Contract evidence class.'
     }
 
+    # Binding mode requires both exact source identities; configuration-only mode remains compatible.
+    Assert-ReviewSelftestFailure -Description 'binding mode requires ExpectedSourceCommit and ExpectedSourceTree' -RequiredFragments @(
+        'ExpectedSourceCommit', 'ExpectedSourceTree', 'required') -Action {
+        Test-HumanDesignReviewManifest -ManifestPath $fixture.ManifestPath -EvidenceRoot $fixture.Root -ValidateBindings | Out-Null
+    }
+
+    $wrongSourceCommit = ('f' * 40)
+    Assert-ReviewSelftestFailure -Description 'wrong ExpectedSourceCommit is rejected' -RequiredFragments @(
+        'does not match ExpectedSourceCommit') -Action {
+        Test-HumanDesignReviewManifest -ManifestPath $fixture.ManifestPath -EvidenceRoot $fixture.Root -ValidateBindings `
+            -ExpectedSourceCommit $wrongSourceCommit -ExpectedSourceTree $fixture.SourceTree | Out-Null
+    }
+
+    $wrongSourceTree = ('e' * 40)
+    Assert-ReviewSelftestFailure -Description 'wrong ExpectedSourceTree is rejected' -RequiredFragments @(
+        'does not match ExpectedSourceTree') -Action {
+        Test-HumanDesignReviewManifest -ManifestPath $fixture.ManifestPath -EvidenceRoot $fixture.Root -ValidateBindings `
+            -ExpectedSourceCommit $fixture.SourceCommit -ExpectedSourceTree $wrongSourceTree | Out-Null
+    }
+
+    # Both manifest locations must carry the same canonical commit/tree binding digest.
+    $wpfMismatchFolder = Join-Path $testRoot 'neg-wpf-build-binding-mismatch'
+    Copy-Item -LiteralPath $fixture.Root -Destination $wpfMismatchFolder -Recurse
+    $wpfMismatchPath = Join-Path $wpfMismatchFolder 'human-design-review.manifest.json'
+    $wpfMismatchManifest = ([IO.File]::ReadAllText($wpfMismatchPath)) | ConvertFrom-Json
+    $wpfMismatchManifest.uiUnderReview.wpfBuild.commitSha256 = (Get-HumanDesignReviewSha256ForText -Text 'different WPF source').ToUpperInvariant()
+    $wpfMismatchJson = $wpfMismatchManifest | ConvertTo-Json -Depth 100
+    [IO.File]::WriteAllText($wpfMismatchPath, $wpfMismatchJson, (New-Object System.Text.UTF8Encoding($false)))
+    Assert-ReviewSelftestFailure -Description 'wpfBuild digest mismatch is rejected' -RequiredFragments @(
+        'wpfBuild.commitSha256', 'must be equal') -Action {
+        Test-HumanDesignReviewManifest -ManifestPath $wpfMismatchPath -EvidenceRoot $wpfMismatchFolder -ValidateBindings `
+            -ExpectedSourceCommit $fixture.SourceCommit -ExpectedSourceTree $fixture.SourceTree | Out-Null
+    }
+
+    # A pair of mutually-equal but stale manifest digests cannot satisfy the expected source binding.
+    $staleBindingFolder = Join-Path $testRoot 'neg-stale-source-binding'
+    Copy-Item -LiteralPath $fixture.Root -Destination $staleBindingFolder -Recurse
+    $staleBindingPath = Join-Path $staleBindingFolder 'human-design-review.manifest.json'
+    $staleBindingManifest = ([IO.File]::ReadAllText($staleBindingPath)) | ConvertFrom-Json
+    $staleBindingDigest = (Get-HumanDesignReviewSha256ForText -Text 'stale source commit/tree').ToUpperInvariant()
+    $staleBindingManifest.provenance.boundCommitSha256 = $staleBindingDigest
+    $staleBindingManifest.uiUnderReview.wpfBuild.commitSha256 = $staleBindingDigest
+    $staleBindingManifest.provenance.runHash = (Get-HumanDesignReviewRunHashFromManifest -Manifest $staleBindingManifest).ToUpperInvariant()
+    $staleBindingJson = $staleBindingManifest | ConvertTo-Json -Depth 100
+    [IO.File]::WriteAllText($staleBindingPath, $staleBindingJson, (New-Object System.Text.UTF8Encoding($false)))
+    Assert-ReviewSelftestFailure -Description 'stale equal source digests are rejected' -RequiredFragments @(
+        'does not match the expected source commit/tree binding digest') -Action {
+        Test-HumanDesignReviewManifest -ManifestPath $staleBindingPath -EvidenceRoot $staleBindingFolder -ValidateBindings `
+            -ExpectedSourceCommit $fixture.SourceCommit -ExpectedSourceTree $fixture.SourceTree | Out-Null
+    }
+
+    # Binding mode must fail closed if the source tree becomes dirty.
+    $dirtyProbePath = Join-Path (Get-HumanDesignReviewRoot) ('.issue35-selftest-dirty-' + [Guid]::NewGuid().ToString('N'))
+    try {
+        Write-ReviewDeterministicFile -Path $dirtyProbePath -Text 'temporary dirty-tree probe'
+        Assert-ReviewSelftestFailure -Description 'dirty source tree is rejected' -RequiredFragments @(
+            'working tree must be clean') -Action {
+            Test-HumanDesignReviewManifest -ManifestPath $fixture.ManifestPath -EvidenceRoot $fixture.Root -ValidateBindings `
+                -ExpectedSourceCommit $fixture.SourceCommit -ExpectedSourceTree $fixture.SourceTree | Out-Null
+        }
+    } finally {
+        if (Test-Path -LiteralPath $dirtyProbePath -PathType Leaf) {
+            Remove-Item -LiteralPath $dirtyProbePath -Force
+        }
+    }
+
     # Rotate one fixture capture's bytes; on-disk binding must fail-closed.
     $pageProbeRel = 'captures/en/pages/overview-100.png'
     $pageProbeFull = Join-Path $fixture.Root ($pageProbeRel.Replace('/', [IO.Path]::DirectorySeparatorChar.ToString()))
@@ -333,7 +406,8 @@ try {
         [IO.File]::WriteAllBytes($pageProbeFull, (New-Object System.Text.UTF8Encoding($false)).GetBytes('tampered capture bytes'))
         Assert-ReviewSelftestFailure -Description 'rotated capture fails on-disk binding' -RequiredFragments @(
             'on-disk SHA-256 does not match') -Action {
-            Test-HumanDesignReviewManifest -ManifestPath $fixture.ManifestPath -EvidenceRoot $fixture.Root -ValidateBindings | Out-Null
+            Test-HumanDesignReviewManifest -ManifestPath $fixture.ManifestPath -EvidenceRoot $fixture.Root -ValidateBindings `
+                -ExpectedSourceCommit $fixture.SourceCommit -ExpectedSourceTree $fixture.SourceTree | Out-Null
         }
     } finally {
         [IO.File]::WriteAllBytes($pageProbeFull, $pageProbeOriginal)
@@ -347,7 +421,8 @@ try {
         [IO.File]::WriteAllBytes($contactProbeFull, (New-Object System.Text.UTF8Encoding($false)).GetBytes('tampered contact sheet bytes'))
         Assert-ReviewSelftestFailure -Description 'rotated contact sheet capture fails on-disk binding' -RequiredFragments @(
             'on-disk SHA-256 does not match') -Action {
-            Test-HumanDesignReviewManifest -ManifestPath $fixture.ManifestPath -EvidenceRoot $fixture.Root -ValidateBindings | Out-Null
+            Test-HumanDesignReviewManifest -ManifestPath $fixture.ManifestPath -EvidenceRoot $fixture.Root -ValidateBindings `
+                -ExpectedSourceCommit $fixture.SourceCommit -ExpectedSourceTree $fixture.SourceTree | Out-Null
         }
     } finally {
         [IO.File]::WriteAllBytes($contactProbeFull, $contactProbeOriginal)
@@ -665,7 +740,8 @@ try {
     }
 
     # Positive control must still verify after all negatives.
-    $positiveRefinal = Test-HumanDesignReviewManifest -ManifestPath $fixture.ManifestPath -EvidenceRoot $fixture.Root -ValidateBindings
+    $positiveRefinal = Test-HumanDesignReviewManifest -ManifestPath $fixture.ManifestPath -EvidenceRoot $fixture.Root -ValidateBindings `
+        -ExpectedSourceCommit $fixture.SourceCommit -ExpectedSourceTree $fixture.SourceTree
     if (-not $positiveRefinal.Valid) {
         throw 'The fully bound fixture manifest no longer verifies after the negative selftest set.'
     }
