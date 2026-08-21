@@ -227,21 +227,22 @@ $operationOutput = Invoke-PackagingOperationWithCleanup -Operation {
                 -RelativePath ([string]$component.project) `
                 -RepositoryRoot $buildRepositoryRoot `
                 -Description "release component $($component.name) project"
+            $packageVersion = [string]$profile.packageVersion
             $arguments = @(
                 'publish',
                 $projectPath,
-                '--configuration', 'Release',
-                '--runtime', 'win-x64',
+                '--configuration', ([string]$profile.configuration),
+                '--runtime', ([string]$profile.runtimeIdentifier),
                 '--self-contained', 'true',
                 '--output', $publishRoot,
                 '--nologo',
                 '--no-restore',
-                '-p:VersionPrefix=1.0.0',
+                ('-p:VersionPrefix=' + $packageVersion),
                 '-p:VersionSuffix=',
-                '-p:Version=1.0.0',
-                '-p:AssemblyVersion=1.0.0.0',
-                '-p:FileVersion=1.0.0.0',
-                '-p:InformationalVersion=1.0.0',
+                ('-p:Version=' + $packageVersion),
+                ('-p:AssemblyVersion=' + $packageVersion + '.0'),
+                ('-p:FileVersion=' + $packageVersion + '.0'),
+                ('-p:InformationalVersion=' + $packageVersion),
                 '-p:ContinuousIntegrationBuild=true',
                 '-p:Deterministic=true',
                 '-p:DebugType=None')

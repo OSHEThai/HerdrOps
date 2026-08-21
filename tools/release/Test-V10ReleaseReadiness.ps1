@@ -324,7 +324,9 @@ try {
         -RepositoryRoot $repositoryRoot `
         -ExpectedSourceCommit $sourceCommit `
         -ProfilePath $profilePath
-    if ($authorizationResult.Status -cne 'READY_TO_PUBLISH' -or $authorizationResult.Release -cne 'NOT OBSERVED') {
+    if ($authorizationResult.Status -cne 'READY_TO_PUBLISH' -or
+        $authorizationResult.Decision -cne 'GO' -or
+        $authorizationResult.Release -cne 'NOT OBSERVED') {
         throw 'Synthetic complete authorization did not return the expected pre-publication boundary.'
     }
     [void]$assertions.Add('CompleteBindingAcceptedSynthetically')
@@ -382,12 +384,17 @@ try {
     }
     [void]$assertions.Add('DuplicateJsonRejected')
 
-    foreach ($englishDocument in @(Get-ChildItem -LiteralPath (Join-Path $repositoryRoot 'docs\release\v1.0.0') -Filter '*.en.md')) {
+    $englishDocuments = @(Get-ChildItem -LiteralPath (Join-Path $repositoryRoot 'docs\release\v1.0.0') -Filter '*.en.md')
+    $thaiDocuments = @(Get-ChildItem -LiteralPath (Join-Path $repositoryRoot 'docs\release\v1.0.0') -Filter '*.th.md')
+    if ($englishDocuments.Count -ne 4 -or $thaiDocuments.Count -ne 4) {
+        throw "Release documentation must contain exactly four English and four Thai files; observed English=$($englishDocuments.Count), Thai=$($thaiDocuments.Count)."
+    }
+    foreach ($englishDocument in $englishDocuments) {
         if ([IO.File]::ReadAllText($englishDocument.FullName) -match '[\u0E00-\u0E7F]') {
             throw "English release document contains Thai text: $($englishDocument.FullName)"
         }
     }
-    foreach ($thaiDocument in @(Get-ChildItem -LiteralPath (Join-Path $repositoryRoot 'docs\release\v1.0.0') -Filter '*.th.md')) {
+    foreach ($thaiDocument in $thaiDocuments) {
         if ([IO.File]::ReadAllText($thaiDocument.FullName) -notmatch '[\u0E00-\u0E7F]') {
             throw "Thai release document contains no Thai text: $($thaiDocument.FullName)"
         }

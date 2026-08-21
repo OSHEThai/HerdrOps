@@ -221,8 +221,9 @@ function Assert-V10ReleaseProfile {
 
     if ([int]$Profile.issue -ne 45 -or [string]$Profile.packageVersion -cne '1.0.0' -or
         [string]$Profile.releaseVersion -cne 'v1.0.0' -or [string]$Profile.releaseTag -cne 'v1.0.0' -or
-        [string]$Profile.repository -cne 'OSHEThai/HerdrOps') {
-        throw 'The v1 release profile must be bound exactly to Issue #45, v1.0.0, and OSHEThai/HerdrOps.'
+        [string]$Profile.repository -cne 'OSHEThai/HerdrOps' -or
+        [string]$Profile.runtimeUse -cne 'not-used') {
+        throw 'The v1 release profile must be bound exactly to Issue #45, v1.0.0, OSHEThai/HerdrOps, and runtimeUse=not-used.'
     }
 
     $expectedComponents = @(
@@ -1161,6 +1162,7 @@ function Assert-V10ReleaseAuthorization {
         Gates = @($gateRecords.ToArray())
         Approver = $approver
         ApprovedAtUtc = [string]$authorization.goNoGo.approvedAtUtc
+        Decision = [string]$authorization.goNoGo.decision
         ReleaseNotesPath = $releaseNotesPath
         ReleaseNotesSha256 = $releaseNotesHash
         Status = 'READY_TO_PUBLISH'

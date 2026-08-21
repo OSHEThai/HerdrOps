@@ -74,7 +74,7 @@ $report = [ordered]@{
             }
         })
     goNoGo = [ordered]@{
-        decision = 'GO'
+        decision = $readiness.Decision
         approver = $readiness.Approver
         approvedAtUtc = $readiness.ApprovedAtUtc
     }
