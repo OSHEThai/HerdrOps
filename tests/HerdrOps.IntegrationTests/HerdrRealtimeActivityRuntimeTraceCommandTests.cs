@@ -6,6 +6,82 @@ namespace HerdrOps.IntegrationTests;
 public sealed class HerdrRealtimeActivityRuntimeTraceCommandTests
 {
     [TestMethod]
+    public void TransitionKeyRetentionHasAnExplicitFifoBound()
+    {
+        var keys = new BoundedTransitionKeySet(capacity: 3);
+
+        Assert.IsTrue(keys.TryAdd("pane-a:1"));
+        Assert.IsTrue(keys.TryAdd("pane-a:2"));
+        Assert.IsTrue(keys.TryAdd("pane-a:3"));
+        Assert.AreEqual(3, keys.Count);
+        Assert.IsFalse(keys.TryAdd("pane-a:2"));
+        Assert.AreEqual(3, keys.Count);
+
+        Assert.IsTrue(keys.TryAdd("pane-a:4"));
+        Assert.AreEqual(3, keys.Count);
+        Assert.IsTrue(keys.TryAdd("pane-a:1"), "The oldest key is eligible again only after FIFO eviction.");
+        Assert.AreEqual(3, keys.Count);
+    }
+
+    [TestMethod]
+    public void TransitionKeyRetentionRemainsBoundedForAnAdversarialUniqueStream()
+    {
+        var keys = new BoundedTransitionKeySet(HerdrRealtimeActivityRuntimeTraceCommand.MaximumSeenTransitionKeys);
+
+        for (var index = 0; index < 100_000; index++)
+        {
+            Assert.IsTrue(keys.TryAdd($"pane-adversarial:{index}"));
+        }
+
+        Assert.AreEqual(HerdrRealtimeActivityRuntimeTraceCommand.MaximumSeenTransitionKeys, keys.Count);
+        Assert.AreEqual(HerdrRealtimeActivityRuntimeTraceCommand.MaximumSeenTransitionKeys, keys.Capacity);
+    }
+
+    [TestMethod]
+    public void LatencyRetentionKeepsOnlyFirstAndMaximumForAnAdversarialStream()
+    {
+        var latencies = new BoundedLatencyAccumulator();
+
+        for (var index = 0; index < 100_000; index++)
+        {
+            latencies.Add(index);
+        }
+
+        Assert.AreEqual(100_000L, latencies.ObservedCount);
+        Assert.AreEqual(0d, latencies.First);
+        Assert.AreEqual(99_999d, latencies.Maximum);
+        Assert.AreEqual(HerdrRealtimeActivityRuntimeTraceCommand.MaximumLatencyAccumulatorValues, latencies.RetainedValueCount);
+    }
+
+    [TestMethod]
+    public void LatencyRetentionRejectsNonFiniteAndNegativeValues()
+    {
+        var latencies = new BoundedLatencyAccumulator();
+
+        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => latencies.Add(-0.1d));
+        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => latencies.Add(double.NaN));
+        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => latencies.Add(double.PositiveInfinity));
+        Assert.AreEqual(0L, latencies.ObservedCount);
+        Assert.AreEqual(0, latencies.RetainedValueCount);
+    }
+
+    [TestMethod]
+    public void RuntimeTraceRetentionBoundsAreExplicitAndAligned()
+    {
+        var bounds = new HerdrRealtimeActivityRuntimeTraceRetentionBounds(
+            HerdrRealtimeActivityRuntimeTraceCommand.MaximumRetainedEvents,
+            HerdrRealtimeActivityRuntimeTraceCommand.MaximumSeenTransitionKeys,
+            HerdrRealtimeActivityRuntimeTraceCommand.MaximumLatencyAccumulatorValues);
+
+        Assert.AreEqual(4096, bounds.MaximumRetainedEvents);
+        Assert.AreEqual(4096, bounds.MaximumSeenTransitionKeys);
+        Assert.AreEqual(2, bounds.MaximumLatencyAccumulatorValues);
+        Assert.AreEqual(
+            BoundedLatencyAccumulator.MaximumRetainedValues,
+            bounds.MaximumLatencyAccumulatorValues);
+    }
+
+    [TestMethod]
     public async Task MissingReportIsRejectedBeforeRuntimeAdmission()
     {
         using var output = new StringWriter();

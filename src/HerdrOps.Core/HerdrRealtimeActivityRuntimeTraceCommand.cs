@@ -26,6 +26,11 @@ public sealed record HerdrRealtimeActivityRuntimeTraceEvent(
     DateTimeOffset OccurredUtc,
     DateTimeOffset ObservedUtc);
 
+public sealed record HerdrRealtimeActivityRuntimeTraceRetentionBounds(
+    int MaximumRetainedEvents,
+    int MaximumSeenTransitionKeys,
+    int MaximumLatencyAccumulatorValues);
+
 public sealed record HerdrRealtimeActivityRuntimeTraceReport(
     int ContractVersion,
     string EvidenceClassification,
@@ -50,6 +55,7 @@ public sealed record HerdrRealtimeActivityRuntimeTraceReport(
     double? FirstEventLatencyMilliseconds,
     double? MaximumEventLatencyMilliseconds,
     ActivityPipelineDiagnostics PipelineDiagnostics,
+    HerdrRealtimeActivityRuntimeTraceRetentionBounds RetentionBounds,
     IReadOnlyList<HerdrRealtimeActivityRuntimeTraceEvent> Events,
     string Message,
     string EvidenceBoundary);
@@ -66,7 +72,9 @@ public static class HerdrRealtimeActivityRuntimeTraceCommand
     private const int RuntimeFailureExitCode = 2;
     private const int EnvironmentGateExitCode = 3;
     private const int UsageFailureExitCode = 64;
-    private const int MaximumRetainedEvents = 4096;
+    internal const int MaximumRetainedEvents = 4096;
+    internal const int MaximumSeenTransitionKeys = 4096;
+    internal const int MaximumLatencyAccumulatorValues = BoundedLatencyAccumulator.MaximumRetainedValues;
 
     private static readonly JsonSerializerOptions SerializerOptions = new()
     {
@@ -120,13 +128,13 @@ public static class HerdrRealtimeActivityRuntimeTraceCommand
         var activityPipeline = new ActivityEventPipeline();
         var pipelineLock = new object();
         var events = new ConcurrentQueue<HerdrRealtimeActivityRuntimeTraceEvent>();
-        var seenTransitionKeys = new ConcurrentDictionary<string, byte>(StringComparer.Ordinal);
+        var seenTransitionKeys = new BoundedTransitionKeySet(MaximumSeenTransitionKeys);
         var acceptedEventCount = 0;
         var immediateEventCount = 0;
         var bufferedEventCount = 0;
         var duplicateCount = 0;
         var rejectedCount = 0;
-        var latencies = new List<double>();
+        var latencyAccumulator = new BoundedLatencyAccumulator();
 
         void OnStateChanged(object? sender, HerdrRuntimeMonitorSnapshot snapshot)
         {
@@ -148,7 +156,7 @@ public static class HerdrRealtimeActivityRuntimeTraceCommand
             }
 
             var transitionKey = $"{accepted.PaneId}:{snapshot.EventCount}";
-            if (!seenTransitionKeys.TryAdd(transitionKey, 0))
+            if (!seenTransitionKeys.TryAdd(transitionKey))
             {
                 return;
             }
@@ -218,7 +226,7 @@ public static class HerdrRealtimeActivityRuntimeTraceCommand
 
             lock (pipelineLock)
             {
-                latencies.Add(latencyMilliseconds);
+                latencyAccumulator.Add(latencyMilliseconds);
             }
 
             events.Enqueue(new HerdrRealtimeActivityRuntimeTraceEvent(
@@ -290,16 +298,8 @@ public static class HerdrRealtimeActivityRuntimeTraceCommand
             message += $" Monitor failed with {monitorFailure.GetType().Name}.";
         }
 
-        double? firstLatency = null;
-        double? maximumLatency = null;
-        lock (pipelineLock)
-        {
-            if (latencies.Count > 0)
-            {
-                firstLatency = latencies[0];
-                maximumLatency = latencies.Max();
-            }
-        }
+        var firstLatency = latencyAccumulator.First;
+        var maximumLatency = latencyAccumulator.Maximum;
 
         var report = new HerdrRealtimeActivityRuntimeTraceReport(
             ContractVersion: 1,
@@ -325,9 +325,13 @@ public static class HerdrRealtimeActivityRuntimeTraceCommand
             firstLatency,
             maximumLatency,
             pipelineDiagnostics,
+            new HerdrRealtimeActivityRuntimeTraceRetentionBounds(
+                MaximumRetainedEvents,
+                MaximumSeenTransitionKeys,
+                MaximumLatencyAccumulatorValues),
             transitionRecords,
             message,
-            "This is actual Herdr Agent-status transition evidence routed through the v0.3 activity pipeline for one admitted session. SessionControlInvoked=false means this command issued no Herdr session-control request. This does not prove Task correlation, notification delivery, restart persistence, independent review, or v0.3 release readiness.");
+            "This is actual Herdr Agent-status transition evidence routed through the v0.3 activity pipeline for one admitted session. SessionControlInvoked=false means this command issued no Herdr session-control request. Retained trace events and seen transition keys are each bounded to 4096 with FIFO eviction; latency statistics retain only first and maximum values (2 numeric values) plus scalar counters. This does not prove Task correlation, notification delivery, restart persistence, independent review, or v0.3 release readiness.");
 
         var json = JsonSerializer.Serialize(report, SerializerOptions) + "\n";
         try
@@ -464,4 +468,141 @@ public static class HerdrRealtimeActivityRuntimeTraceCommand
     private static void WriteUsage(TextWriter writer) =>
         writer.WriteLine(
             $"Usage: HerdrOps.Core {CommandName} --report <json-path> [--seconds <1-3600>] [--herdr <path>] [--socket-path <path>]");
+}
+
+internal sealed class BoundedTransitionKeySet
+{
+    private readonly object _gate = new();
+    private readonly int _capacity;
+    private readonly HashSet<string> _keys;
+    private readonly Queue<string> _order;
+
+    public BoundedTransitionKeySet(int capacity)
+    {
+        if (capacity < 1)
+        {
+            throw new ArgumentOutOfRangeException(nameof(capacity), "The transition-key bound must be positive.");
+        }
+
+        _capacity = capacity;
+        _keys = new HashSet<string>(capacity, StringComparer.Ordinal);
+        _order = new Queue<string>(capacity);
+    }
+
+    public int Capacity => _capacity;
+
+    public int Count
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return _keys.Count;
+            }
+        }
+    }
+
+    public bool TryAdd(string key)
+    {
+        ArgumentNullException.ThrowIfNull(key);
+
+        lock (_gate)
+        {
+            if (_keys.Contains(key))
+            {
+                return false;
+            }
+
+            if (_order.Count == _capacity)
+            {
+                var oldest = _order.Dequeue();
+                if (!_keys.Remove(oldest))
+                {
+                    throw new InvalidOperationException("The bounded transition-key set lost its FIFO invariant.");
+                }
+            }
+
+            _keys.Add(key);
+            _order.Enqueue(key);
+            return true;
+        }
+    }
+}
+
+internal sealed class BoundedLatencyAccumulator
+{
+    public const int MaximumRetainedValues = 2;
+
+    private readonly object _gate = new();
+    private double? _first;
+    private double? _maximum;
+    private long _observedCount;
+
+    public long ObservedCount
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return _observedCount;
+            }
+        }
+    }
+
+    public int RetainedValueCount
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return (_first.HasValue ? 1 : 0) + (_maximum.HasValue ? 1 : 0);
+            }
+        }
+    }
+
+    public double? First
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return _first;
+            }
+        }
+    }
+
+    public double? Maximum
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return _maximum;
+            }
+        }
+    }
+
+    public void Add(double latencyMilliseconds)
+    {
+        if (double.IsNaN(latencyMilliseconds) ||
+            double.IsInfinity(latencyMilliseconds) ||
+            latencyMilliseconds < 0d)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(latencyMilliseconds),
+                "Latency must be a finite non-negative number of milliseconds.");
+        }
+
+        lock (_gate)
+        {
+            _first ??= latencyMilliseconds;
+            _maximum = !_maximum.HasValue || latencyMilliseconds > _maximum.Value
+                ? latencyMilliseconds
+                : _maximum.Value;
+            checked
+            {
+                _observedCount++;
+            }
+        }
+    }
 }

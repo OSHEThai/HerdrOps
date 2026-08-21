@@ -84,7 +84,12 @@ $requiredChecks = @(
     'MissingReportIsRejectedBeforeRuntimeAdmission',
     'InvalidDurationIsRejectedDeterministically',
     'MissingAuthorizedHerdrEnvironmentFailsClosedWithoutWritingReport',
-    'RuntimeAdmissionFailureIsReportedWithoutWritingReport'
+    'RuntimeAdmissionFailureIsReportedWithoutWritingReport',
+    'TransitionKeyRetentionHasAnExplicitFifoBound',
+    'TransitionKeyRetentionRemainsBoundedForAnAdversarialUniqueStream',
+    'LatencyRetentionKeepsOnlyFirstAndMaximumForAnAdversarialStream',
+    'LatencyRetentionRejectsNonFiniteAndNegativeValues',
+    'RuntimeTraceRetentionBoundsAreExplicitAndAligned'
 )
 foreach ($check in $requiredChecks) {
     if ($combinedTestLog -notmatch [Regex]::Escape($check)) {
