@@ -2,6 +2,36 @@
 
 Set-StrictMode -Version Latest
 
+function Get-DefaultHerdrOpsInstallRoot {
+    if (-not [string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) {
+        return (Join-Path $env:LOCALAPPDATA 'Programs\HerdrOps')
+    }
+    if (-not [string]::IsNullOrWhiteSpace($env:USERPROFILE)) {
+        return (Join-Path $env:USERPROFILE 'AppData\Local\Programs\HerdrOps')
+    }
+    $localAppData = [Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)
+    if (-not [string]::IsNullOrWhiteSpace($localAppData)) {
+        return (Join-Path $localAppData 'Programs\HerdrOps')
+    }
+    $userProfile = [Environment]::GetFolderPath([Environment+SpecialFolder]::UserProfile)
+    return (Join-Path $userProfile 'AppData\Local\Programs\HerdrOps')
+}
+
+function Get-DefaultHerdrOpsUserDataRoot {
+    if (-not [string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) {
+        return (Join-Path $env:LOCALAPPDATA 'HerdrOps')
+    }
+    if (-not [string]::IsNullOrWhiteSpace($env:USERPROFILE)) {
+        return (Join-Path $env:USERPROFILE 'AppData\Local\HerdrOps')
+    }
+    $localAppData = [Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)
+    if (-not [string]::IsNullOrWhiteSpace($localAppData)) {
+        return (Join-Path $localAppData 'HerdrOps')
+    }
+    $userProfile = [Environment]::GetFolderPath([Environment+SpecialFolder]::UserProfile)
+    return (Join-Path $userProfile 'AppData\Local\HerdrOps')
+}
+
 function Get-SafeInstallerPath {
     param([Parameter(Mandatory = $true)][string]$Path)
 

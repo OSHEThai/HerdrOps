@@ -7,10 +7,10 @@ param(
     [string]$ArchivePath,
 
     [Parameter(Mandatory = $false)]
-    [string]$InstallRoot = (if ([string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) { "$env:USERPROFILE\AppData\Local\Programs\HerdrOps" } else { "$env:LOCALAPPDATA\Programs\HerdrOps" }),
+    [string]$InstallRoot,
 
     [Parameter(Mandatory = $false)]
-    [string]$UserDataRoot = (if ([string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) { "$env:USERPROFILE\AppData\Local\HerdrOps" } else { "$env:LOCALAPPDATA\HerdrOps" })
+    [string]$UserDataRoot
 )
 
 Set-StrictMode -Version Latest
@@ -20,6 +20,13 @@ $ErrorActionPreference = 'Stop'
 
 try {
     Write-Host "Starting HerdrOps installation..."
+
+    if ([string]::IsNullOrWhiteSpace($InstallRoot)) {
+        $InstallRoot = Get-DefaultHerdrOpsInstallRoot
+    }
+    if ([string]::IsNullOrWhiteSpace($UserDataRoot)) {
+        $UserDataRoot = Get-DefaultHerdrOpsUserDataRoot
+    }
 
     $fullArchivePath = Get-SafeInstallerPath -Path $ArchivePath
     $fullInstallRoot = Get-SafeInstallerPath -Path $InstallRoot

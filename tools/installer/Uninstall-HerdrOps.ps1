@@ -3,10 +3,10 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $false)]
-    [string]$InstallRoot = (if ([string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) { "$env:USERPROFILE\AppData\Local\Programs\HerdrOps" } else { "$env:LOCALAPPDATA\Programs\HerdrOps" }),
+    [string]$InstallRoot,
 
     [Parameter(Mandatory = $false)]
-    [string]$UserDataRoot = (if ([string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) { "$env:USERPROFILE\AppData\Local\HerdrOps" } else { "$env:LOCALAPPDATA\HerdrOps" }),
+    [string]$UserDataRoot,
 
     [Parameter(Mandatory = $false)]
     [switch]$RemoveUserData
@@ -19,6 +19,13 @@ $ErrorActionPreference = 'Stop'
 
 try {
     Write-Host "Starting HerdrOps uninstallation..."
+
+    if ([string]::IsNullOrWhiteSpace($InstallRoot)) {
+        $InstallRoot = Get-DefaultHerdrOpsInstallRoot
+    }
+    if ([string]::IsNullOrWhiteSpace($UserDataRoot)) {
+        $UserDataRoot = Get-DefaultHerdrOpsUserDataRoot
+    }
 
     $fullInstallRoot = Get-SafeInstallerPath -Path $InstallRoot
     $fullUserDataRoot = Get-SafeInstallerPath -Path $UserDataRoot
