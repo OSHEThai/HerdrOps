@@ -140,6 +140,21 @@ $EXPECTED_MANIFEST_PATHS     = @(
     'tools/Test-V06DailySummaryPage.ps1'
 )
 
+# This is a separate successor-review scope. It deliberately does not alter
+# either historical manifest or historical review record. A successor Agent
+# must produce the actual manifest after independently reviewing these files.
+$SUCCESSOR_SCOPE_TEMPLATE_PATH = 'docs/reviews/v0.7-issue-37-successor-review-scope.template.md'
+$SUCCESSOR_REVIEW_SCOPE_PATHS = @(
+    'docs/protocol/v0.7-diagnostic-bundle-contract.md',
+    'src/HerdrOps.Domain/Diagnostics/DiagnosticBundleBuilder.cs',
+    'src/HerdrOps.Domain/Diagnostics/DiagnosticBundleModels.cs',
+    'src/HerdrOps.Infrastructure/Diagnostics/DiagnosticBundlePublisher.cs',
+    'src/HerdrOps.Core/DiagnosticBundleCommand.cs',
+    'src/HerdrOps.Core/Program.cs',
+    'tests/HerdrOps.IntegrationTests/DiagnosticBundleTests.cs',
+    'tests/HerdrOps.IntegrationTests/DiagnosticBundleCommandTests.cs'
+)
+
 $REPORT_DIRECTORY = Join-Path $RepoRoot 'artifacts\release-gates\v0.7.0\issue-37'
 
 # ---------------------------------------------------------------------------
@@ -266,6 +281,88 @@ function Get-EvidenceBoundaryLines {
         'ReleaseStatus: NOT CLAIMED',
         'NoRuntimeCredit: TRUE'
     )
+}
+
+function Assert-SuccessorScopeTemplateText {
+    param(
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Text,
+        [Parameter(Mandatory = $true)][string[]]$ExpectedPaths
+    )
+
+    if ($Text -match '(?im)^\s*(Verdict|ReviewVerdict|ReleaseGateAccepted)\s*:\s*(PASS|TRUE)\s*$') {
+        throw 'Successor scope template contains an author-generated PASS or release acceptance.'
+    }
+
+    if ($Text -notmatch '(?m)^Status:\s*TEMPLATE / PENDING\s*$' -or
+        $Text -notmatch '(?m)^ReviewVerdict:\s*PENDING\s*$' -or
+        $Text -notmatch '(?m)^ReleaseGateAccepted:\s*FALSE\s*$') {
+        throw 'Successor scope template must remain explicitly TEMPLATE/PENDING and not release-accepted.'
+    }
+
+    foreach ($expectedPath in $ExpectedPaths) {
+        $escapedLine = [System.Text.RegularExpressions.Regex]::Escape('- `' + $expectedPath + '`')
+        if ($Text -notmatch ('(?m)^' + $escapedLine + '\s*$')) {
+            throw "Successor scope template is missing required path '$expectedPath'."
+        }
+    }
+}
+
+function Assert-SuccessorScopeTemplate {
+    param(
+        [Parameter(Mandatory = $true)][string]$Repo,
+        [Parameter(Mandatory = $true)][string]$TemplatePath,
+        [Parameter(Mandatory = $true)][string[]]$ExpectedPaths
+    )
+
+    $absolutePath = Join-Path $Repo $TemplatePath
+    if (-not (Test-Path -LiteralPath $absolutePath -PathType Leaf)) {
+        throw "Successor scope template is missing: $TemplatePath"
+    }
+
+    $text = Get-Content -LiteralPath $absolutePath -Raw
+    Assert-SuccessorScopeTemplateText -Text $text -ExpectedPaths $ExpectedPaths
+}
+
+function Assert-SuccessorScopeFiles {
+    param(
+        [Parameter(Mandatory = $true)][string]$Repo,
+        [Parameter(Mandatory = $true)][string[]]$RequiredPaths
+    )
+
+    foreach ($requiredPath in $RequiredPaths) {
+        try {
+            [void](Get-TreeBlobSha1 -Repo $Repo -TreeIsh 'HEAD' -RelPath $requiredPath)
+        }
+        catch {
+            throw "Successor review required production/test file is missing at HEAD: $requiredPath"
+        }
+    }
+}
+
+function Assert-NegativeSuccessorScopeCase {
+    param(
+        [Parameter(Mandatory = $true)][string]$Name,
+        [Parameter(Mandatory = $true)][string]$Text,
+        [Parameter(Mandatory = $true)][string[]]$ExpectedPaths,
+        [Parameter(Mandatory = $true)][string]$ExpectedMessage
+    )
+
+    try {
+        Assert-SuccessorScopeTemplateText -Text $Text -ExpectedPaths $ExpectedPaths
+        Write-Host "  [FAIL] successor scope self-test '$Name' was accepted" -ForegroundColor Red
+        return $false
+    }
+    catch {
+        if ($_.Exception.Message -like "*$ExpectedMessage*") {
+            Write-Host "  [PASS] successor scope self-test '$Name' rejected" -ForegroundColor Green
+            return $true
+        }
+
+        Write-Host "  [FAIL] successor scope self-test '$Name' rejected for an unexpected reason" -ForegroundColor Red
+        Write-Host "         Expected fragment: $ExpectedMessage"
+        Write-Host "         Actual: $($_.Exception.Message)"
+        return $false
+    }
 }
 
 function Assert-NoRuntimeOrReleaseClaim {
@@ -637,6 +734,42 @@ function Invoke-DeterministicSelfTests {
             -Lines @('ReleaseStatus: CLAIMED') `
             -ExpectedMessage 'release evidence') { $passed++ } else { $failed++ }
 
+    $validSuccessorScope = @(
+        'Status: TEMPLATE / PENDING',
+        'ReviewVerdict: PENDING',
+        'ReleaseGateAccepted: FALSE'
+    ) + ($SUCCESSOR_REVIEW_SCOPE_PATHS | ForEach-Object { '- `' + $_ + '`' }) -join "`n"
+    try {
+        Assert-SuccessorScopeTemplateText `
+            -Text $validSuccessorScope `
+            -ExpectedPaths $SUCCESSOR_REVIEW_SCOPE_PATHS
+        Write-Host '  [PASS] successor required-scope template accepted' -ForegroundColor Green
+        $passed++
+    }
+    catch {
+        Write-Host "  [FAIL] successor required-scope template rejected: $($_.Exception.Message)" -ForegroundColor Red
+        $failed++
+    }
+
+    $missingSuccessorPath = $SUCCESSOR_REVIEW_SCOPE_PATHS[0]
+    $missingSuccessorScope = @(
+        'Status: TEMPLATE / PENDING',
+        'ReviewVerdict: PENDING',
+        'ReleaseGateAccepted: FALSE'
+    ) + ($SUCCESSOR_REVIEW_SCOPE_PATHS | Where-Object { $_ -ne $missingSuccessorPath } | ForEach-Object { '- `' + $_ + '`' }) -join "`n"
+    if (Assert-NegativeSuccessorScopeCase `
+            -Name 'missing required successor path' `
+            -Text $missingSuccessorScope `
+            -ExpectedPaths $SUCCESSOR_REVIEW_SCOPE_PATHS `
+            -ExpectedMessage "missing required path '$missingSuccessorPath'") { $passed++ } else { $failed++ }
+
+    $passSuccessorScope = $validSuccessorScope.Replace('ReviewVerdict: PENDING', 'ReviewVerdict: PASS')
+    if (Assert-NegativeSuccessorScopeCase `
+            -Name 'author-generated successor PASS' `
+            -Text $passSuccessorScope `
+            -ExpectedPaths $SUCCESSOR_REVIEW_SCOPE_PATHS `
+            -ExpectedMessage 'author-generated PASS') { $passed++ } else { $failed++ }
+
     Write-Host ''
     if ($failed -gt 0) {
         Write-Host "Self-test result: FAIL ($failed failure(s), $passed pass(es))." -ForegroundColor Red
@@ -657,7 +790,7 @@ if ($SelfTest) {
         -Passed $selfTestResult.Passed `
         -Failed $selfTestResult.Failed `
         -DetailLines @(
-            'Scope: deterministic in-memory negative parser, anchor-identity, and report-boundary cases.',
+            'Scope: deterministic in-memory negative parser, anchor-identity, successor-scope, and report-boundary cases.',
             'No tracked repository file is read or written by -SelfTest.',
             'The gitignored self-test report above is the only filesystem artifact produced.'
         )
@@ -826,6 +959,25 @@ else {
         }
     }
     Write-Host "  Entries: $entryCount  Fails: $entryFails"
+}
+
+# --- Check 5: successor required scope ------------------------------------
+Write-Host ''
+Write-Host '=== Check 5: successor review required scope (PENDING template) ===' -ForegroundColor Cyan
+try {
+    Assert-SuccessorScopeTemplate `
+        -Repo $RepoRoot `
+        -TemplatePath $SUCCESSOR_SCOPE_TEMPLATE_PATH `
+        -ExpectedPaths $SUCCESSOR_REVIEW_SCOPE_PATHS
+    Assert-SuccessorScopeFiles `
+        -Repo $RepoRoot `
+        -RequiredPaths $SUCCESSOR_REVIEW_SCOPE_PATHS
+    Write-Host "  [PASS] template is PENDING and all $($SUCCESSOR_REVIEW_SCOPE_PATHS.Count) required files exist at HEAD" -ForegroundColor Green
+    Add-Pass 'Successor review required scope (PENDING template and required files)'
+}
+catch {
+    Write-Host "  [FAIL] $($_.Exception.Message)" -ForegroundColor Red
+    Add-Fail 'Successor review required scope (PENDING template and required files)' $_.Exception.Message
 }
 
 # --- Summary ---------------------------------------------------------------

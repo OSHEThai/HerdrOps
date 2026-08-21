@@ -18,6 +18,12 @@ if (args.Length > 0 &&
 }
 
 if (args.Length > 0 &&
+    string.Equals(args[0], DiagnosticBundleCommand.CommandName, StringComparison.Ordinal))
+{
+    return DiagnosticBundleCommand.Run(args, Console.Out, Console.Error);
+}
+
+if (args.Length > 0 &&
     string.Equals(args[0], ComplianceDiagnosticExportCommand.ServiceCommandName, StringComparison.Ordinal))
 {
     using var shutdown = new CancellationTokenSource();
