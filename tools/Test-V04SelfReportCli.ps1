@@ -41,7 +41,7 @@ New-Item -ItemType Directory -Path $testResultDirectory -Force | Out-Null
 $testRuns = @(
     [pscustomobject]@{
         Project = Join-Path $repositoryRoot 'tests\HerdrOps.ContractTests\HerdrOps.ContractTests.csproj'
-        Filter = 'FullyQualifiedName~SelfReportContractTests'
+        Filter = 'FullyQualifiedName~SelfReportContractTests|FullyQualifiedName~V04ImplementationGateScriptContractTests'
         Log = 'self-report-contract.trx'
     },
     [pscustomobject]@{
@@ -171,35 +171,52 @@ function Invoke-CapturedProcess {
         [int]$TimeoutMilliseconds = 10000
     )
 
-    $process = Start-Process `
-        -FilePath $FilePath `
-        -ArgumentList $ArgumentList `
-        -RedirectStandardOutput $StandardOutputPath `
-        -RedirectStandardError $StandardErrorPath `
-        -WindowStyle Hidden `
-        -PassThru
+    $startInfo = New-Object Diagnostics.ProcessStartInfo
+    $startInfo.FileName = $FilePath
+    $startInfo.UseShellExecute = $false
+    $startInfo.CreateNoWindow = $true
+    $startInfo.RedirectStandardOutput = $true
+    $startInfo.RedirectStandardError = $true
+    $startInfo.Arguments = (($ArgumentList | ForEach-Object {
+        $argument = [string]$_
+        if ($argument -match '[\s"]') {
+            '"' + ($argument -replace '(\\*)"', '$1$1\"') + '"'
+        }
+        else {
+            $argument
+        }
+    }) -join ' ')
+
+    $process = New-Object Diagnostics.Process
+    $process.StartInfo = $startInfo
+    if (-not $process.Start()) {
+        throw "Could not start process: $FilePath"
+    }
+    $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+    $stderrTask = $process.StandardError.ReadToEndAsync()
     if (-not $process.WaitForExit($TimeoutMilliseconds)) {
-        $process.Kill($true)
+        $process.Kill()
         throw "Process timed out after $TimeoutMilliseconds milliseconds: $FilePath"
     }
-
-    return $process.ExitCode
+    $process.WaitForExit()
+    [IO.File]::WriteAllText($StandardOutputPath, $stdoutTask.GetAwaiter().GetResult())
+    [IO.File]::WriteAllText($StandardErrorPath, $stderrTask.GetAwaiter().GetResult())
+    $exitCode = [int]$process.ExitCode
+    $process.Dispose()
+    return $exitCode
 }
 
-$coreArguments = @(
-    'serve-self-reports',
-    '--known-task',
-    'TASK-115',
-    '--pipe-name',
-    $pipeName,
-    '--seconds',
-    '8',
-    '--trace',
-    $tracePath
-)
+# Shared bounded process-cleanup helper (PS5.1- and PS7-compatible, no Kill(bool)).
+. (Join-Path $PSScriptRoot 'lib\V04ProcessCleanup.ps1')
+
 $coreProcess = Start-Process `
     -FilePath $coreExecutable `
-    -ArgumentList $coreArguments `
+    -ArgumentList @(
+        'serve-self-reports',
+        '--known-task', 'TASK-115',
+        '--pipe-name', $pipeName,
+        '--seconds', '15',
+        '--trace', $tracePath) `
     -RedirectStandardOutput $coreOutputPath `
     -RedirectStandardError $coreErrorPath `
     -WindowStyle Hidden `
@@ -212,16 +229,14 @@ while ([DateTime]::UtcNow -lt $readyDeadline) {
         break
     }
     if ((Test-Path -LiteralPath $coreOutputPath) -and
-        ((Get-Content -LiteralPath $coreOutputPath -Raw) -match 'self-report service ready')) {
+        ((Get-Content -LiteralPath $coreOutputPath -Raw -ErrorAction SilentlyContinue) -match 'self-report service ready')) {
         $coreReady = $true
         break
     }
     Start-Sleep -Milliseconds 50
 }
 if (-not $coreReady) {
-    if (-not $coreProcess.HasExited) {
-        $coreProcess.Kill($true)
-    }
+    Stop-CoreProcessBounded -Process $coreProcess
     throw 'The built Core self-report process did not become ready within 5 seconds.'
 }
 
@@ -241,12 +256,14 @@ $invalidExitCode = Invoke-CapturedProcess `
     -StandardOutputPath $invalidOutputPath `
     -StandardErrorPath $invalidErrorPath
 
-if (-not $coreProcess.WaitForExit(12000)) {
-    $coreProcess.Kill($true)
+if (-not $coreProcess.WaitForExit(20000)) {
+    Stop-CoreProcessBounded -Process $coreProcess
     throw 'The built Core self-report process did not stop after its evidence duration.'
 }
-if ($coreProcess.ExitCode -ne 0) {
-    throw "The built Core self-report process failed with exit code $($coreProcess.ExitCode)."
+$coreProcess.Refresh()
+$coreExitCode = if ($coreProcess.HasExited) { [int]$coreProcess.ExitCode } else { $null }
+if ($null -eq $coreExitCode -or $coreExitCode -ne 0) {
+    throw "The built Core self-report process failed with exit code $coreExitCode. Output: $coreOutputPath; Error: $coreErrorPath"
 }
 if ((Get-Item -LiteralPath $coreErrorPath).Length -ne 0) {
     throw "The built Core self-report process wrote stderr: $(Get-Content -LiteralPath $coreErrorPath -Raw)"
@@ -266,8 +283,23 @@ $acceptedResult = $acceptedResultJson | ConvertFrom-Json
 $unknownResult = Get-Content -LiteralPath $unknownOutputPath -Raw | ConvertFrom-Json
 $invalidResult = Get-Content -LiteralPath $invalidErrorPath -Raw | ConvertFrom-Json
 $trace = Get-Content -LiteralPath $tracePath -Raw | ConvertFrom-Json
-$acceptedResultDocument = [Text.Json.JsonDocument]::Parse($acceptedResultJson)
-$acceptedUtcText = $acceptedResultDocument.RootElement.GetProperty('acceptedUtc').GetString()
+
+# Read the acceptedUtc string directly from the raw JSON bytes instead of via
+# ConvertFrom-Json, whose date coercion varies by PowerShell host (PowerShell 7
+# rewrites ISO-8601 values to a localized DateTime and drops the exact UTC
+# offset). A regex extraction preserves the exact string on PowerShell 5.1 and 7
+# and on any host timezone.
+$acceptedUtcMatch = [Regex]::Match(
+    $acceptedResultJson,
+    '"acceptedUtc"\s*:\s*"([^"]+)"',
+    [Text.RegularExpressions.RegexOptions]::CultureInvariant)
+if (-not $acceptedUtcMatch.Success) {
+    throw 'The built CLI accepted response is missing a string acceptedUtc identity.'
+}
+$acceptedUtcText = $acceptedUtcMatch.Groups[1].Value
+if ($acceptedUtcText -notmatch '(Z|[+-]00:00)$') {
+    throw "The built CLI acceptedUtc must carry an explicit UTC offset: $acceptedUtcText"
+}
 $acceptedUtc = [DateTimeOffset]::Parse(
     $acceptedUtcText,
     [Globalization.CultureInfo]::InvariantCulture,
@@ -357,6 +389,7 @@ if ($reviewPassed) {
         'src/HerdrOps.Core/Program.cs',
         'src/HerdrOps.Infrastructure/StateIpc/HerdrOpsSelfReportPipeServer.cs',
         'tests/HerdrOps.ContractTests/SelfReportContractTests.cs',
+        'tests/HerdrOps.ContractTests/V04ImplementationGateScriptContractTests.cs',
         'tests/HerdrOps.IntegrationTests/AssignmentLifecycleIngestionCoordinatorTests.cs',
         'tests/HerdrOps.IntegrationTests/SelfReportIntegrationTests.cs',
         'tests/HerdrOps.UnitTests/SolutionTopologyTests.cs',
