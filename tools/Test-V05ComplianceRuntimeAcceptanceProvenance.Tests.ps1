@@ -204,6 +204,16 @@ try {
     Assert-Condition -Condition ($wrapperText -match "Phase\s*=\s*'Post-run'|Phase\s+'Post-run'") -Message 'Wrapper contains Post-run Assert-CleanSourceIdentity'
     Assert-Condition -Condition ($wrapperText -match 'SourceTree:\s*\$sourceTree') -Message 'Wrapper gate report includes SourceTree'
     Assert-Condition -Condition ($wrapperText -match 'Write-ComplianceRuntimeFailureReport') -Message 'Wrapper includes Write-ComplianceRuntimeFailureReport in catch'
+
+    # 11. Documentation synchronization in tools/README.md
+    $readmePath = Join-Path $PSScriptRoot 'README.md'
+    Assert-Condition -Condition (Test-Path -LiteralPath $readmePath -PathType Leaf) -Message 'tools/README.md exists'
+
+    $readmeText = Get-Content -LiteralPath $readmePath -Raw
+    Assert-Condition -Condition ($readmeText -match '\$expectedSourceCommit\s*=') -Message 'tools/README.md defines $expectedSourceCommit placeholder'
+    Assert-Condition -Condition ($readmeText -match '\$expectedSourceTree\s*=') -Message 'tools/README.md defines $expectedSourceTree placeholder'
+    Assert-Condition -Condition ($readmeText -match 'Invoke-V05ComplianceRuntimeAcceptance\.ps1[\s\S]*?-ExpectedSourceCommit') -Message 'tools/README.md includes -ExpectedSourceCommit parameter'
+    Assert-Condition -Condition ($readmeText -match 'Invoke-V05ComplianceRuntimeAcceptance\.ps1[\s\S]*?-ExpectedSourceTree') -Message 'tools/README.md includes -ExpectedSourceTree parameter'
 }
 finally {
     Remove-Item -LiteralPath $scratchRoot -Recurse -Force -ErrorAction SilentlyContinue
