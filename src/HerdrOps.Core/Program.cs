@@ -72,6 +72,16 @@ if (args.Length > 0 &&
         Console.Error);
 }
 
+if (args.Length > 0 &&
+    string.Equals(args[0], ComplianceReviewRegistrationCommand.CommandName, StringComparison.Ordinal))
+{
+    return ComplianceReviewRegistrationCommand.Run(
+        args,
+        Console.In,
+        Console.Out,
+        Console.Error);
+}
+
 if (args.Length > 0 && string.Equals(args[0], "trace-herdr-terminal-process", StringComparison.Ordinal))
 {
     return await HerdrTerminalProcessTraceCommand.RunAsync(args, Console.Out, Console.Error);

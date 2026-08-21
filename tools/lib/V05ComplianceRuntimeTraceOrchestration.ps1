@@ -6,6 +6,7 @@ if ($null -eq ('HerdrOps.Tools.V05BoundedProcessRunner' -as [type])) {
 using System;
 using System.Diagnostics;
 using System.IO;
+using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -29,6 +30,8 @@ namespace HerdrOps.Tools
 
     public static class V05BoundedProcessRunner
     {
+        private const int OuterDrainTimeoutMilliseconds = 3000;
+
         private static V05BoundedStreamResult Drain(Stream stream, long maximumBytes)
         {
             byte[] buffer = new byte[4096];
@@ -89,9 +92,14 @@ namespace HerdrOps.Tools
                 bool timedOut = !process.WaitForExit(timeoutMilliseconds);
                 if (timedOut)
                 {
-                    process.Kill();
+                    KillProcessTree(process);
                 }
-                process.WaitForExit();
+
+                if (!process.WaitForExit(OuterDrainTimeoutMilliseconds))
+                {
+                    KillProcessTree(process);
+                    process.WaitForExit();
+                }
 
                 V05BoundedStreamResult stdout = stdoutTask.GetAwaiter().GetResult();
                 V05BoundedStreamResult stderr = stderrTask.GetAwaiter().GetResult();
@@ -104,6 +112,45 @@ namespace HerdrOps.Tools
                     StdoutExceeded = stdout.Exceeded,
                     StderrExceeded = stderr.Exceeded
                 };
+            }
+        }
+
+        private static void KillProcessTree(Process process)
+        {
+            MethodInfo killTree = typeof(Process).GetMethod(
+                "Kill",
+                new Type[] { typeof(bool) });
+            if (killTree != null)
+            {
+                try
+                {
+                    killTree.Invoke(process, new object[] { true });
+                    return;
+                }
+                catch (Exception)
+                {
+                    // Fall through to the tree-kill fallback below.
+                }
+            }
+
+            try
+            {
+                ProcessStartInfo startInfo = new ProcessStartInfo();
+                startInfo.FileName = "taskkill";
+                startInfo.Arguments = "/PID " + process.Id.ToString(System.Globalization.CultureInfo.InvariantCulture) + " /T /F";
+                startInfo.UseShellExecute = false;
+                startInfo.CreateNoWindow = true;
+                using (Process killer = Process.Start(startInfo))
+                {
+                    if (killer != null)
+                    {
+                        killer.WaitForExit(OuterDrainTimeoutMilliseconds);
+                    }
+                }
+            }
+            catch (Exception)
+            {
+                // The child is already dead, or a best-effort tree kill was refused.
             }
         }
     }
