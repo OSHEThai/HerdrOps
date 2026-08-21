@@ -509,7 +509,6 @@ jobs:
           retention-days: 7
           name: v1.0-release-readiness-gate-report
           path: artifacts/release-gates/v1.0.0/issue-45
-
           if-no-files-found: warn
 
       - name: Upload v0.7 Issue #37 manifest integrity verifier report
