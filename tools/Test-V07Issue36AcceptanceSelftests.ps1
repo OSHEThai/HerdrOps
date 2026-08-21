@@ -184,11 +184,36 @@ Assert-V07Issue36Selftest -Condition ([string]$templateFile.Value.boundaries.run
 Assert-V07Issue36Selftest -Condition ([string]$templateFile.Value.boundaries.release -ceq 'NOT OBSERVED') -Message 'template Release boundary is not withheld.'
 
 $currentCandidate = Get-V07ReleaseGateCurrentCandidate -RepositoryRoot $repositoryRoot -AllowDirty
+
+function Invoke-V07Issue36SelftestManifest {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$EvidenceRoot,
+        [Parameter(Mandatory = $true)][string]$RepositoryRoot,
+        [Parameter(Mandatory = $true)]$CurrentCandidate
+    )
+
+    return (Test-V07Issue36AcceptanceManifest -ManifestPath $Path -EvidenceRoot $EvidenceRoot -RepositoryRoot $RepositoryRoot -CurrentCandidate $CurrentCandidate -ExpectedSourceCommit $CurrentCandidate.Commit -ExpectedSourceTree $CurrentCandidate.Tree -AllowDirtyCandidate)
+}
+
 $testRoot = Join-Path ([IO.Path]::GetTempPath()) ('HerdrOps-V07-Issue36-Selftest-' + [Guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $testRoot -Force | Out-Null
 try {
     $fixture = New-V07Issue36SelftestFixture -Root $testRoot -RepositoryRoot $repositoryRoot -CurrentCandidate $currentCandidate
-    $positive = Test-V07Issue36AcceptanceManifest -ManifestPath $fixture.ManifestPath -EvidenceRoot $fixture.EvidenceRoot -RepositoryRoot $repositoryRoot -CurrentCandidate $currentCandidate -AllowDirtyCandidate
+    $gatePath = Join-Path $repositoryRoot 'tools\Test-V07Issue36Acceptance.ps1'
+    Assert-V07Issue36ExpectedFailure -Description 'non-SelfTest gate with both expected source values absent' -Action {
+        & $gatePath -ManifestPath $fixture.ManifestPath -EvidenceRoot $fixture.EvidenceRoot | Out-Null
+    }
+    Assert-V07Issue36ExpectedFailure -Description 'policy with both expected source values absent' -Action {
+        Test-V07Issue36AcceptanceManifest -ManifestPath $fixture.ManifestPath -EvidenceRoot $fixture.EvidenceRoot -RepositoryRoot $repositoryRoot -CurrentCandidate $currentCandidate -AllowDirtyCandidate | Out-Null
+    }
+    Assert-V07Issue36ExpectedFailure -Description 'policy with one expected source value absent' -Action {
+        Test-V07Issue36AcceptanceManifest -ManifestPath $fixture.ManifestPath -EvidenceRoot $fixture.EvidenceRoot -RepositoryRoot $repositoryRoot -CurrentCandidate $currentCandidate -ExpectedSourceCommit $currentCandidate.Commit -AllowDirtyCandidate | Out-Null
+    }
+    Assert-V07Issue36ExpectedFailure -Description 'wrong expected source checkout request' -Action {
+        Test-V07Issue36AcceptanceManifest -ManifestPath $fixture.ManifestPath -EvidenceRoot $fixture.EvidenceRoot -RepositoryRoot $repositoryRoot -CurrentCandidate $currentCandidate -ExpectedSourceCommit ('1' * 40) -ExpectedSourceTree $currentCandidate.Tree -AllowDirtyCandidate | Out-Null
+    }
+    $positive = Invoke-V07Issue36SelftestManifest -Path $fixture.ManifestPath -EvidenceRoot $fixture.EvidenceRoot -RepositoryRoot $repositoryRoot -CurrentCandidate $currentCandidate
     Assert-V07Issue36Selftest -Condition ([bool]$positive.Valid) -Message 'positive exact-bound fixture did not validate.'
     $report = New-V07Issue36PendingGateReport -Validation $positive
     Assert-V07Issue36Selftest -Condition ([string]$report.status -ceq 'PENDING') -Message 'gate report forged a non-PENDING status.'
@@ -199,7 +224,7 @@ try {
     $unknownPath = Join-Path $fixture.EvidenceRoot 'unknown.json'
     Write-V07Issue36SelftestJson -Path $unknownPath -Value $unknown
     Assert-V07Issue36ExpectedFailure -Description 'unknown manifest field' -Action {
-        Test-V07Issue36AcceptanceManifest -ManifestPath $unknownPath -EvidenceRoot $fixture.EvidenceRoot -RepositoryRoot $repositoryRoot -CurrentCandidate $currentCandidate -AllowDirtyCandidate | Out-Null
+        Invoke-V07Issue36SelftestManifest -Path $unknownPath -EvidenceRoot $fixture.EvidenceRoot -RepositoryRoot $repositoryRoot -CurrentCandidate $currentCandidate | Out-Null
     }
 
     $missing = Copy-V07Issue36SelftestObject -Value $fixture.Manifest
@@ -207,7 +232,7 @@ try {
     $missingPath = Join-Path $fixture.EvidenceRoot 'missing.json'
     Write-V07Issue36SelftestJson -Path $missingPath -Value $missing
     Assert-V07Issue36ExpectedFailure -Description 'missing manifest field' -Action {
-        Test-V07Issue36AcceptanceManifest -ManifestPath $missingPath -EvidenceRoot $fixture.EvidenceRoot -RepositoryRoot $repositoryRoot -CurrentCandidate $currentCandidate -AllowDirtyCandidate | Out-Null
+        Invoke-V07Issue36SelftestManifest -Path $missingPath -EvidenceRoot $fixture.EvidenceRoot -RepositoryRoot $repositoryRoot -CurrentCandidate $currentCandidate | Out-Null
     }
 
     $duplicateJsonPath = Join-Path $fixture.EvidenceRoot 'duplicate-json.json'
@@ -221,7 +246,7 @@ try {
     $zeroHashPath = Join-Path $fixture.EvidenceRoot 'zero-hash.json'
     Write-V07Issue36SelftestJson -Path $zeroHashPath -Value $zeroHash
     Assert-V07Issue36ExpectedFailure -Description 'zero test hash' -Action {
-        Test-V07Issue36AcceptanceManifest -ManifestPath $zeroHashPath -EvidenceRoot $fixture.EvidenceRoot -RepositoryRoot $repositoryRoot -CurrentCandidate $currentCandidate -AllowDirtyCandidate | Out-Null
+        Invoke-V07Issue36SelftestManifest -Path $zeroHashPath -EvidenceRoot $fixture.EvidenceRoot -RepositoryRoot $repositoryRoot -CurrentCandidate $currentCandidate | Out-Null
     }
 
     $stale = Copy-V07Issue36SelftestObject -Value $fixture.Manifest
@@ -229,7 +254,7 @@ try {
     $stalePath = Join-Path $fixture.EvidenceRoot 'stale-source.json'
     Write-V07Issue36SelftestJson -Path $stalePath -Value $stale
     Assert-V07Issue36ExpectedFailure -Description 'stale source commit' -Action {
-        Test-V07Issue36AcceptanceManifest -ManifestPath $stalePath -EvidenceRoot $fixture.EvidenceRoot -RepositoryRoot $repositoryRoot -CurrentCandidate $currentCandidate -AllowDirtyCandidate | Out-Null
+        Invoke-V07Issue36SelftestManifest -Path $stalePath -EvidenceRoot $fixture.EvidenceRoot -RepositoryRoot $repositoryRoot -CurrentCandidate $currentCandidate | Out-Null
     }
 
     $staleReference = Copy-V07Issue36SelftestObject -Value $fixture.Manifest
@@ -237,7 +262,7 @@ try {
     $staleReferencePath = Join-Path $fixture.EvidenceRoot 'stale-reference.json'
     Write-V07Issue36SelftestJson -Path $staleReferencePath -Value $staleReference
     Assert-V07Issue36ExpectedFailure -Description 'stale reference MANIFEST hash' -Action {
-        Test-V07Issue36AcceptanceManifest -ManifestPath $staleReferencePath -EvidenceRoot $fixture.EvidenceRoot -RepositoryRoot $repositoryRoot -CurrentCandidate $currentCandidate -AllowDirtyCandidate | Out-Null
+        Invoke-V07Issue36SelftestManifest -Path $staleReferencePath -EvidenceRoot $fixture.EvidenceRoot -RepositoryRoot $repositoryRoot -CurrentCandidate $currentCandidate | Out-Null
     }
 
     $staleTrx = Copy-V07Issue36SelftestObject -Value $fixture.Manifest
@@ -245,7 +270,7 @@ try {
     $staleTrxPath = Join-Path $fixture.EvidenceRoot 'stale-trx.json'
     Write-V07Issue36SelftestJson -Path $staleTrxPath -Value $staleTrx
     Assert-V07Issue36ExpectedFailure -Description 'stale TRX hash' -Action {
-        Test-V07Issue36AcceptanceManifest -ManifestPath $staleTrxPath -EvidenceRoot $fixture.EvidenceRoot -RepositoryRoot $repositoryRoot -CurrentCandidate $currentCandidate -AllowDirtyCandidate | Out-Null
+        Invoke-V07Issue36SelftestManifest -Path $staleTrxPath -EvidenceRoot $fixture.EvidenceRoot -RepositoryRoot $repositoryRoot -CurrentCandidate $currentCandidate | Out-Null
     }
 
     $duplicateTest = Copy-V07Issue36SelftestObject -Value $fixture.Manifest
@@ -253,7 +278,7 @@ try {
     $duplicateTestPath = Join-Path $fixture.EvidenceRoot 'duplicate-test.json'
     Write-V07Issue36SelftestJson -Path $duplicateTestPath -Value $duplicateTest
     Assert-V07Issue36ExpectedFailure -Description 'duplicate test record' -Action {
-        Test-V07Issue36AcceptanceManifest -ManifestPath $duplicateTestPath -EvidenceRoot $fixture.EvidenceRoot -RepositoryRoot $repositoryRoot -CurrentCandidate $currentCandidate -AllowDirtyCandidate | Out-Null
+        Invoke-V07Issue36SelftestManifest -Path $duplicateTestPath -EvidenceRoot $fixture.EvidenceRoot -RepositoryRoot $repositoryRoot -CurrentCandidate $currentCandidate | Out-Null
     }
 
     $traversal = Copy-V07Issue36SelftestObject -Value $fixture.Manifest
@@ -261,7 +286,7 @@ try {
     $traversalPath = Join-Path $fixture.EvidenceRoot 'traversal.json'
     Write-V07Issue36SelftestJson -Path $traversalPath -Value $traversal
     Assert-V07Issue36ExpectedFailure -Description 'TRX path traversal' -Action {
-        Test-V07Issue36AcceptanceManifest -ManifestPath $traversalPath -EvidenceRoot $fixture.EvidenceRoot -RepositoryRoot $repositoryRoot -CurrentCandidate $currentCandidate -AllowDirtyCandidate | Out-Null
+        Invoke-V07Issue36SelftestManifest -Path $traversalPath -EvidenceRoot $fixture.EvidenceRoot -RepositoryRoot $repositoryRoot -CurrentCandidate $currentCandidate | Out-Null
     }
 
     $forgedHuman = Copy-V07Issue36SelftestObject -Value $fixture.Manifest
@@ -276,7 +301,7 @@ try {
     $forgedHumanPath = Join-Path $fixture.EvidenceRoot 'forged-human.json'
     Write-V07Issue36SelftestJson -Path $forgedHumanPath -Value $forgedHuman
     Assert-V07Issue36ExpectedFailure -Description 'forged human acceptance' -Action {
-        Test-V07Issue36AcceptanceManifest -ManifestPath $forgedHumanPath -EvidenceRoot $fixture.EvidenceRoot -RepositoryRoot $repositoryRoot -CurrentCandidate $currentCandidate -AllowDirtyCandidate | Out-Null
+        Invoke-V07Issue36SelftestManifest -Path $forgedHumanPath -EvidenceRoot $fixture.EvidenceRoot -RepositoryRoot $repositoryRoot -CurrentCandidate $currentCandidate | Out-Null
     }
 
     $failedTrx = Join-Path $fixture.EvidenceRoot 'trx\settings-persistence.trx'
@@ -287,7 +312,7 @@ try {
     $failedPath = Join-Path $fixture.EvidenceRoot 'failed-trx.json'
     Write-V07Issue36SelftestJson -Path $failedPath -Value $failed
     Assert-V07Issue36ExpectedFailure -Description 'failed TRX result' -Action {
-        Test-V07Issue36AcceptanceManifest -ManifestPath $failedPath -EvidenceRoot $fixture.EvidenceRoot -RepositoryRoot $repositoryRoot -CurrentCandidate $currentCandidate -AllowDirtyCandidate | Out-Null
+        Invoke-V07Issue36SelftestManifest -Path $failedPath -EvidenceRoot $fixture.EvidenceRoot -RepositoryRoot $repositoryRoot -CurrentCandidate $currentCandidate | Out-Null
     }
 } finally {
     Remove-Item -LiteralPath $testRoot -Recurse -Force
@@ -301,6 +326,10 @@ try {
     Parser = 'PASS'
     SchemaStrictJson = 'PASS'
     TemplatePending = 'PASS'
+    ExpectedSourcePairMandatory = 'PASS'
+    BothExpectedSourceValuesAbsentFailClosed = 'PASS'
+    OneExpectedSourceValueAbsentFailClosed = 'PASS'
+    WrongExpectedCheckoutFailClosed = 'PASS'
     PositiveExactBinding = 'PASS'
     UnknownFieldFailClosed = 'PASS'
     DuplicateJsonFailClosed = 'PASS'

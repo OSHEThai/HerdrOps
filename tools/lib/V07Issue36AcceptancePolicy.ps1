@@ -437,15 +437,13 @@ function Test-V07Issue36AcceptanceManifest {
         throw 'Issue #36 acceptance manifest.evidenceClass must be Static/Contract/Synthetic.'
     }
 
-    if ([string]::IsNullOrWhiteSpace($ExpectedSourceCommit) -xor [string]::IsNullOrWhiteSpace($ExpectedSourceTree)) {
-        throw 'ExpectedSourceCommit and ExpectedSourceTree must be supplied together.'
+    if ([string]::IsNullOrWhiteSpace($ExpectedSourceCommit) -or [string]::IsNullOrWhiteSpace($ExpectedSourceTree)) {
+        throw 'ExpectedSourceCommit and ExpectedSourceTree are mandatory and must be supplied together.'
     }
-    if (-not [string]::IsNullOrWhiteSpace($ExpectedSourceCommit)) {
-        Assert-V07ReleaseGateHex -Value $ExpectedSourceCommit -Length 40 -Description 'ExpectedSourceCommit' -Case Lower
-        Assert-V07ReleaseGateHex -Value $ExpectedSourceTree -Length 40 -Description 'ExpectedSourceTree' -Case Lower
-        if ($ExpectedSourceCommit -cne $CurrentCandidate.Commit -or $ExpectedSourceTree -cne $CurrentCandidate.Tree) {
-            throw 'The requested expected source commit/tree does not match the current checkout.'
-        }
+    Assert-V07ReleaseGateHex -Value $ExpectedSourceCommit -Length 40 -Description 'ExpectedSourceCommit' -Case Lower
+    Assert-V07ReleaseGateHex -Value $ExpectedSourceTree -Length 40 -Description 'ExpectedSourceTree' -Case Lower
+    if ($ExpectedSourceCommit -cne $CurrentCandidate.Commit -or $ExpectedSourceTree -cne $CurrentCandidate.Tree) {
+        throw 'The requested expected source commit/tree does not match the current checkout.'
     }
 
     Assert-V07Issue36Candidate -Candidate (Get-V07Issue36Property -Object $manifest -Name 'candidate' -Description 'Issue #36 acceptance manifest') -CurrentCandidate $CurrentCandidate -AllowDirtyCandidate:$AllowDirtyCandidate

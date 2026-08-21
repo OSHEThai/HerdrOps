@@ -63,6 +63,11 @@ pwsh -NoProfile -File tools/Test-V07Issue36Acceptance.ps1 `
   -ExpectedSourceTree <exact-lowercase-tree>
 ```
 
+`ExpectedSourceCommit` and `ExpectedSourceTree` are mandatory together for
+every non-`-SelfTest` invocation. Omitting both, omitting either one, or
+requesting a commit/tree different from the current checkout fails closed;
+the operator must not substitute an implicit `HEAD` value.
+
 The same command must be run with Windows PowerShell 5.1 as a parser and
 policy compatibility check. This preparation commit itself does not claim
 that those product tests, captures, Runtime observations, or Release gates

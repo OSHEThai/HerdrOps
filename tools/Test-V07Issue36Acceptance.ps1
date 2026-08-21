@@ -26,6 +26,9 @@ if ($SelfTest) {
 if ([string]::IsNullOrWhiteSpace($ManifestPath)) {
     throw 'ManifestPath is required unless -SelfTest is specified.'
 }
+if ([string]::IsNullOrWhiteSpace($ExpectedSourceCommit) -or [string]::IsNullOrWhiteSpace($ExpectedSourceTree)) {
+    throw 'ExpectedSourceCommit and ExpectedSourceTree are mandatory for every non-SelfTest invocation.'
+}
 if ([string]::IsNullOrWhiteSpace($EvidenceRoot)) {
     $EvidenceRoot = Split-Path -Path ([IO.Path]::GetFullPath($ManifestPath)) -Parent
 }
