@@ -23,6 +23,8 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $false
 
+. (Join-Path $PSScriptRoot 'lib/V02GateProvenance.ps1')
+
 function Get-CleanSourceCommit {
     param([Parameter(Mandatory)][string]$Root)
 
@@ -549,6 +551,7 @@ function Assert-AgentStatusTransitionEvidence {
     })
     Assert-True ($matchingBaselineTransitions.Count -ge 1) "$Name has no exact Core transition correlation for its progress-bound baseline."
     $baselineTransition = $matchingBaselineTransitions[$matchingBaselineTransitions.Count - 1]
+    Assert-AllAgentsHaveLiveIdentity -Transition $baselineTransition -Name "$Name baseline"
     Assert-True ([long]$baselineTransition.BootstrapCount -eq [long]$Evidence.BaselineBootstrapCount) "$Name Core baseline BootstrapCount differs from App evidence."
     Assert-True ([long]$baselineTransition.DisconnectCount -eq [long]$Evidence.BaselineDisconnectCount) "$Name Core baseline DisconnectCount differs from App evidence."
     Assert-True ([long]$baselineTransition.ReconciliationCount -eq [long]$Evidence.BaselineReconciliationCount) "$Name Core baseline ReconciliationCount differs from App evidence."
@@ -585,6 +588,7 @@ function Assert-AgentStatusTransitionEvidence {
         })
         Assert-True ($leadingCandidates.Count -eq 1) "$Name did not contain exactly one Core snapshot reconciliation before the Event."
         $leadingReconciliation = $leadingCandidates[0]
+        Assert-AllAgentsHaveLiveIdentity -Transition $leadingReconciliation -Name "$Name leading reconciliation"
         Assert-True ([long]$leadingReconciliation.BootstrapCount -eq [long]$Evidence.BaselineBootstrapCount) "$Name leading reconciliation changed BootstrapCount."
         Assert-True ([long]$leadingReconciliation.DisconnectCount -eq [long]$Evidence.BaselineDisconnectCount) "$Name leading reconciliation changed DisconnectCount."
         Assert-True ([long]$leadingReconciliation.ReconciliationCount -eq ([long]$Evidence.BaselineReconciliationCount + 1)) "$Name leading reconciliation did not advance ReconciliationCount exactly once."
@@ -611,6 +615,7 @@ function Assert-AgentStatusTransitionEvidence {
     })
     Assert-True ($matchingTransitions.Count -eq 1) "$Name does not have exactly one Core transition correlation for its same-Agent status change."
     $currentTransition = $matchingTransitions[0]
+    Assert-AllAgentsHaveLiveIdentity -Transition $currentTransition -Name "$Name current"
     Assert-True ([long]$currentTransition.BootstrapCount -eq [long]$Evidence.CurrentBootstrapCount) "$Name Core current BootstrapCount differs from App evidence."
     Assert-True ([long]$currentTransition.DisconnectCount -eq [long]$Evidence.CurrentDisconnectCount) "$Name Core current DisconnectCount differs from App evidence."
     Assert-True ([long]$currentTransition.ReconciliationCount -eq [long]$Evidence.CurrentReconciliationCount) "$Name Core current ReconciliationCount differs from App evidence."

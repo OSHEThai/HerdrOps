@@ -346,6 +346,9 @@ public sealed class HerdrRuntimeMonitorTests
         Assert.AreEqual(
             HerdrAgentStatus.Blocked,
             acceptedEventTransition.AcceptedAgentStatusEvent.AgentStatus);
+        Assert.AreEqual("tab-1", acceptedEventTransition.AcceptedAgentStatusEvent.TabId);
+        Assert.AreEqual("Worker 01", acceptedEventTransition.AcceptedAgentStatusEvent.AgentName);
+        Assert.IsTrue(acceptedEventTransition.AllAgentsHaveLiveIdentity);
         Assert.AreEqual(HerdrRuntimeMonitorStatus.Connected, acceptedEventTransition.Status);
     }
 
@@ -848,6 +851,161 @@ public sealed class HerdrRuntimeMonitorTests
         Assert.AreEqual(TimeSpan.FromMilliseconds(120), firstMaximum);
         Assert.AreEqual(TimeSpan.FromMilliseconds(1600), cappedMinimum);
         Assert.AreEqual(TimeSpan.FromMilliseconds(2000), cappedMaximum);
+    }
+
+    [TestMethod]
+    public void AggregateLiveAgentIdentityFailsClosedForEmptyBlankAndUnknownAgents()
+    {
+        var snapshot = CreateSnapshot(revision: 1, HerdrAgentStatus.Working);
+        var state = new HerdrStateReducer().Reconcile(snapshot, 1, 1);
+
+        Assert.IsTrue(HerdrRuntimeMonitor.HasAllLiveAgentIdentities(state));
+        Assert.IsFalse(
+            HerdrRuntimeMonitor.HasAllLiveAgentIdentities(
+                state with
+                {
+                    Agents = new Dictionary<string, HerdrAgentSnapshot>(),
+                }));
+        Assert.IsFalse(
+            HerdrRuntimeMonitor.HasAllLiveAgentIdentities(
+                state with
+                {
+                    Agents = new Dictionary<string, HerdrAgentSnapshot>
+                    {
+                        ["terminal-1"] = state.Agents["terminal-1"] with { Agent = null },
+                    },
+                }));
+        Assert.IsFalse(
+            HerdrRuntimeMonitor.HasAllLiveAgentIdentities(
+                state with
+                {
+                    Agents = new Dictionary<string, HerdrAgentSnapshot>
+                    {
+                        ["terminal-1"] = state.Agents["terminal-1"] with
+                        {
+                            AgentStatus = HerdrAgentStatus.Unknown,
+                        },
+                    },
+                }));
+    }
+
+    [TestMethod]
+    public void AggregateLiveAgentIdentityRejectsIncompleteAndMismatchedTopology()
+    {
+        var state = new HerdrStateReducer().Reconcile(
+            AddSecondPane(CreateSnapshot(revision: 1, HerdrAgentStatus.Working)),
+            1,
+            1);
+
+        Assert.IsFalse(
+            HerdrRuntimeMonitor.HasAllLiveAgentIdentities(
+                state with
+                {
+                    Agents = new Dictionary<string, HerdrAgentSnapshot>
+                    {
+                        ["terminal-1"] = state.Agents["terminal-1"],
+                    },
+                }),
+            "A valid Agent must not mask an Agentless pane.");
+        Assert.IsFalse(
+            HerdrRuntimeMonitor.HasAllLiveAgentIdentities(
+                state with
+                {
+                    Agents = new Dictionary<string, HerdrAgentSnapshot>
+                    {
+                        ["terminal-1"] = state.Agents["terminal-1"],
+                        ["terminal-2"] = state.Agents["terminal-2"] with
+                        {
+                            AgentStatus = HerdrAgentStatus.Unknown,
+                        },
+                    },
+                }),
+            "A valid Agent must not mask an Unknown Agent.");
+        Assert.IsFalse(
+            HerdrRuntimeMonitor.HasAllLiveAgentIdentities(
+                state with
+                {
+                    Panes = new Dictionary<string, HerdrPaneSnapshot>
+                    {
+                        ["pane-1"] = state.Panes["pane-1"],
+                        ["pane-2"] = state.Panes["pane-2"] with { Agent = " " },
+                    },
+                }),
+            "An Agentless pane with an otherwise valid Agent record must fail closed.");
+        Assert.IsFalse(
+            HerdrRuntimeMonitor.HasAllLiveAgentIdentities(
+                state with
+                {
+                    Agents = new Dictionary<string, HerdrAgentSnapshot>
+                    {
+                        ["terminal-1"] = state.Agents["terminal-1"] with { Agent = " " },
+                        ["terminal-2"] = state.Agents["terminal-2"],
+                    },
+                }),
+            "A blank Agent kind must fail closed.");
+        Assert.IsFalse(
+            HerdrRuntimeMonitor.HasAllLiveAgentIdentities(
+                state with
+                {
+                    Agents = new Dictionary<string, HerdrAgentSnapshot>
+                    {
+                        ["terminal-1"] = state.Agents["terminal-1"] with { Name = " " },
+                        ["terminal-2"] = state.Agents["terminal-2"],
+                    },
+                }),
+            "A blank Agent name must fail closed.");
+        Assert.IsFalse(
+            HerdrRuntimeMonitor.HasAllLiveAgentIdentities(
+                state with
+                {
+                    Agents = new Dictionary<string, HerdrAgentSnapshot>
+                    {
+                        ["terminal-1"] = state.Agents["terminal-1"] with
+                        {
+                            AgentStatus = HerdrAgentStatus.Idle,
+                        },
+                        ["terminal-2"] = state.Agents["terminal-2"],
+                    },
+                }),
+            "A pane/Agent status mismatch must fail closed.");
+        Assert.IsFalse(
+            HerdrRuntimeMonitor.HasAllLiveAgentIdentities(
+                state with
+                {
+                    Agents = new Dictionary<string, HerdrAgentSnapshot>
+                    {
+                        ["terminal-1"] = state.Agents["terminal-1"],
+                        ["terminal-2"] = state.Agents["terminal-2"] with { Agent = "claude" },
+                    },
+                }),
+            "A pane/Agent identity mismatch must fail closed.");
+        Assert.IsFalse(
+            HerdrRuntimeMonitor.HasAllLiveAgentIdentities(
+                state with
+                {
+                    Agents = new Dictionary<string, HerdrAgentSnapshot>
+                    {
+                        ["terminal-1"] = state.Agents["terminal-1"],
+                        ["terminal-2"] = state.Agents["terminal-2"] with { PaneId = "orphan-pane" },
+                    },
+                }),
+            "An orphan Agent must fail closed.");
+        Assert.IsFalse(
+            HerdrRuntimeMonitor.HasAllLiveAgentIdentities(
+                state with
+                {
+                    Panes = new Dictionary<string, HerdrPaneSnapshot>
+                    {
+                        ["pane-1"] = state.Panes["pane-1"],
+                        ["pane-2"] = state.Panes["pane-2"] with { TerminalId = "terminal-1" },
+                    },
+                    Agents = new Dictionary<string, HerdrAgentSnapshot>
+                    {
+                        ["terminal-1"] = state.Agents["terminal-1"],
+                        ["terminal-2"] = state.Agents["terminal-2"] with { TerminalId = "terminal-1" },
+                    },
+                }),
+            "A duplicate terminal association must fail closed.");
     }
 
     [TestMethod]
