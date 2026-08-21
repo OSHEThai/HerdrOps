@@ -27,7 +27,7 @@ $contractPath = Join-Path $repositoryRoot 'docs\protocol\v0.5-evidence-audit-sto
 $expectedDomainContractProjectionSha256 = 'E6F5AE4E3AE96AF5A83B5D8C5E9FF4C432DA1CD727824B93121E8E39B79B3E06'
 $expectedDomainContractExtensionSha256 = '86285594E06404570995086185CCB33E9EB2A530159EAA6B777175E312A11425'
 $expectedStoreCoreV3ProjectionSha256 = '9D8CCF4690F5D1CAC445A3EC0A6CEBDEC06D9A29DAB6A608DD3AC6D75951163D'
-$expectedStorageSha256 = '5A6AF41A731C4E0100F909AD3BEEA615729B422555A10FFA7AF463FC49A4D30C'
+$expectedStorageSha256 = '9BFF8707943F81DC4DC2F6BF19446690A51875F42302A666CCB7CB523D120908'
 $expectedMigrationSha256 = 'EE69EA92BC458DDD61214A90CC7EEEF08BB5B2D03FFDC24FDE6103A74C5D1E47'
 $expectedContractSha256 = 'F0F236D957C637509129DC05E644D99C3B0E87FDF97D3B11775ED26B254A32B3'
 
@@ -382,7 +382,17 @@ $requiredChecks = @(
     'ManagedByteTamperingFailsClosedOnRead',
     'VersionOneDatabaseMigratesForwardWithoutLosingHistory',
     'FailedVersionThreeMigrationRollsBackAllPartialChanges',
-    'FutureSchemaFailsClosedWithoutMigration'
+    'FutureSchemaFailsClosedWithoutMigration',
+    'ComplianceReviewRetentionProtectsOpenIncidentEvidenceAndPurgesAfterClose',
+    'ComplianceReviewRetentionProtectsUntilDismissed',
+    'ComplianceReviewRetentionUnknownOrMalformedStateFailsClosed',
+    'ComplianceReviewRetentionCrossIncidentIsolation',
+    'ComplianceReviewRetentionNoOverRetentionWhenEligible',
+    'RetentionWriteReservationSerializesConcurrentReviewBinding',
+    'CommittedRetentionEventRecoversAfterCrashBeforePendingDelete',
+    'NewReviewRegistrationUsesBoundedBusySlicesAndCancellation',
+    'RegisterComplianceReviewIncidentCancellationWhileWaitingForStoreLockFailsClosed',
+    'IncidentStateClassifiesOpenAndTerminalCorrectly'
 )
 foreach ($check in $requiredChecks) {
     if ($combinedTestLog -notmatch [Regex]::Escape($check)) {

@@ -169,7 +169,7 @@ if ($reportSha256 -ne $expectedReportSha256) {
     throw "Lifecycle replay report SHA-256 drifted: expected $expectedReportSha256 observed $reportSha256"
 }
 
-$report = Get-Content -LiteralPath $firstReportPath -Raw | ConvertFrom-Json -Depth 128
+$report = Get-Content -LiteralPath $firstReportPath -Raw | ConvertFrom-Json
 if ($report.evidenceClass -ne 'Synthetic' -or $report.runtimeObserved -ne $false) {
     throw 'The lifecycle replay report must remain synthetic and cannot claim runtime observation.'
 }

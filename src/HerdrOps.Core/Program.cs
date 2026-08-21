@@ -57,7 +57,14 @@ if (args.Length > 0 &&
 }
 
 if (args.Length > 0 &&
-    string.Equals(args[0], "compliance-review-acceptance", StringComparison.Ordinal))
+    (string.Equals(args[0], "trace-compliance-review", StringComparison.Ordinal) ||
+     string.Equals(args[0], "compliance-review-trace", StringComparison.Ordinal)))
+{
+    return ComplianceReviewRuntimeTraceCommand.Run(args, Console.Out, Console.Error);
+}
+
+if (args.Length > 0 &&
+     string.Equals(args[0], "compliance-review-acceptance", StringComparison.Ordinal))
 {
     return ComplianceReviewRuntimeAcceptanceCommand.Run(
         args,
@@ -73,6 +80,16 @@ if (args.Length > 0 && string.Equals(args[0], "trace-herdr-terminal-process", St
 if (args.Length > 0 && string.Equals(args[0], "trace-file-git-activity", StringComparison.Ordinal))
 {
     return await FileGitActivityTraceCommand.RunAsync(args, Console.Out, Console.Error);
+}
+
+if (args.Length > 0 && string.Equals(args[0], "trace-herdr-file-git-activity", StringComparison.Ordinal))
+{
+    return await HerdrFileGitActivityRuntimeTraceCommand.RunAsync(args, Console.Out, Console.Error);
+}
+
+if (args.Length > 0 && string.Equals(args[0], "trace-herdr-notification-runtime", StringComparison.Ordinal))
+{
+    return await HerdrNotificationRuntimeTraceCommand.RunAsync(args, Console.Out, Console.Error);
 }
 
 if (args.Length > 0 && string.Equals(args[0], "trace-herdr-runtime", StringComparison.Ordinal))
