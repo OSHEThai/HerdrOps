@@ -287,6 +287,22 @@ public sealed class ComplianceReviewWorkflowTests
                 auditEvent with { AuditSha256 = new string('0', 64) }));
     }
 
+    [TestMethod]
+    public void IncidentStateClassifiesOpenAndTerminalCorrectly()
+    {
+        Assert.IsTrue(ComplianceReviewWorkflowContract.IsOpen(ComplianceReviewState.Suspected));
+        Assert.IsTrue(ComplianceReviewWorkflowContract.IsOpen(ComplianceReviewState.PendingLeader));
+        Assert.IsTrue(ComplianceReviewWorkflowContract.IsOpen(ComplianceReviewState.PendingProjectManager));
+        Assert.IsFalse(ComplianceReviewWorkflowContract.IsOpen(ComplianceReviewState.Confirmed));
+        Assert.IsFalse(ComplianceReviewWorkflowContract.IsOpen(ComplianceReviewState.Dismissed));
+
+        Assert.IsFalse(ComplianceReviewWorkflowContract.IsTerminal(ComplianceReviewState.Suspected));
+        Assert.IsFalse(ComplianceReviewWorkflowContract.IsTerminal(ComplianceReviewState.PendingLeader));
+        Assert.IsFalse(ComplianceReviewWorkflowContract.IsTerminal(ComplianceReviewState.PendingProjectManager));
+        Assert.IsTrue(ComplianceReviewWorkflowContract.IsTerminal(ComplianceReviewState.Confirmed));
+        Assert.IsTrue(ComplianceReviewWorkflowContract.IsTerminal(ComplianceReviewState.Dismissed));
+    }
+
     private static ComplianceReviewIncident CreateIncident(
         IReadOnlyList<string>? evidence = null,
         string subjectActorId = "backend-worker-01") =>
