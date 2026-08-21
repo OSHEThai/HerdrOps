@@ -480,6 +480,15 @@ jobs:
         shell: pwsh
         run: ./tools/Test-V06ScoringEngine.ps1 -Configuration Release -SkipBuild
 
+      # Static/Synthetic gate-provenance hardening assertions only; no live capture or Actual Herdr Runtime credit.
+      - name: Run v0.6 gate-provenance hardening tests (PowerShell 7)
+        shell: pwsh
+        run: ./tools/lib/V06GateProvenance.Tests.ps1
+
+      - name: Run v0.6 gate-provenance hardening tests (Windows PowerShell 5.1)
+        shell: powershell
+        run: ./tools/lib/V06GateProvenance.Tests.ps1
+
       - name: Run v0.5 role-distinct review implementation gate
         shell: pwsh
         run: ./tools/Test-V05RoleDistinctReview.ps1 -Configuration Release -SkipBuild
