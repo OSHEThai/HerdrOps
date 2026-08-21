@@ -2,3 +2,6 @@
 fa5bb5871fa6278d138e929188a6a9ade9578de2:tests/HerdrOps.UnitTests/LocalSnapshotExportPublisherTests.cs:gitlab-pat:279
 b9424dfbbae4cbd0d25dfcc682c14538729d0634:Plan/DECISIONS.md:generic-api-key:56
 49d49b8b6774ed16a132dd0cc171252f648c6831:Plan/DECISIONS.md:generic-api-key:56
+aa4ee08877dad6af4651bc1fca4a58fdd2c1e62f:tests/HerdrOps.UnitTests/ComplianceReviewRuntimeTraceTests.cs:github-pat:81
+aa4ee08877dad6af4651bc1fca4a58fdd2c1e62f:tests/HerdrOps.UnitTests/ComplianceReviewRuntimeTraceTests.cs:github-pat:85
+aa4ee08877dad6af4651bc1fca4a58fdd2c1e62f:tests/HerdrOps.IntegrationTests/ComplianceReviewRuntimeTraceIntegrationTests.cs:github-pat:414

@@ -331,7 +331,7 @@ internal static class WpfTestHost
         try
         {
             SetMilestone(session, "ThreadEntered");
-            application = new HerdrOps.App.App
+            application = new HerdrOps.App.App(suppressStartupForTestHost: true)
             {
                 ShutdownMode = ShutdownMode.OnExplicitShutdown,
             };
