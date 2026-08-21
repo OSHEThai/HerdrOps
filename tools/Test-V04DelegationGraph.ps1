@@ -179,6 +179,26 @@ if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($sourceCommit)) {
     throw 'Could not resolve the source commit for the v0.4 Delegation Graph gate.'
 }
 
+$reviewBinding = & (Join-Path $repositoryRoot 'tools\lib\Assert-V04ReviewBinding.ps1') `
+    -ReviewRecordPath (Join-Path $repositoryRoot 'docs\reviews\v0.4-issue-20-independent-review.md') `
+    -RepositoryRoot $repositoryRoot `
+    -CurrentHead $sourceCommit `
+    -RequiredReviewedPaths @(
+        'docs/design/reference/04-delegation-graph.png',
+        'docs/design/implementation/v0.4-issue-20-delegation-graph.md',
+        'src/HerdrOps.Domain/Assignments/AssignmentDelegationGraph.cs',
+        'src/HerdrOps.App/Delegation/DelegationGraphState.cs',
+        'src/HerdrOps.App/Views/DelegationGraphView.xaml',
+        'src/HerdrOps.App/Views/DelegationGraphView.xaml.cs',
+        'src/HerdrOps.App/Views/ShellView.xaml',
+        'src/HerdrOps.App/Views/ShellView.xaml.cs',
+        'src/HerdrOps.App/Live/LiveDashboardState.cs',
+        'src/HerdrOps.App/Localization/UiLanguageService.cs',
+        'tests/HerdrOps.UnitTests/AssignmentDelegationGraphTests.cs',
+        'tests/HerdrOps.IntegrationTests/DelegationGraphStateTests.cs',
+        'tests/HerdrOps.RuntimeTests/DelegationGraphRenderingTests.cs',
+        'tools/Test-V04DelegationGraph.ps1')
+
 $gateReportPath = Join-Path $gateDirectory 'gate-report.txt'
 $gateReport = @(
     'HerdrOps v0.4 Issue #20 Delegation Graph Implementation Gate',
@@ -186,12 +206,17 @@ $gateReport = @(
     "SourceCommit: $sourceCommit",
     'Result: IMPLEMENTATION READY / PARTIAL',
     'ImplementationGate: PASS',
-    'IssueAcceptance: PENDING INDEPENDENT REVIEW',
+    "IssueAcceptance: $($reviewBinding.IssueAcceptance)",
     'VersionReleaseGate: PENDING',
+    "LocalIndependentReviewBinding: $($reviewBinding.LocalIndependentReviewBinding)",
+    "IndependentReviewRecordSha256: $($reviewBinding.ReviewRecordSha256)",
+    "IndependentReviewCandidateCommit: $($reviewBinding.CandidateCommit)",
+    "IndependentReviewCandidateTree: $($reviewBinding.CandidateTree)",
+    "IndependentReviewCandidateManifest: $($reviewBinding.CandidateManifest)",
     'EvidenceClass: Contract plus deterministic projection plus actual WPF rendering',
     'ActualHerdrLifecycleFeed: NOT OBSERVED / NOT CLAIMED',
     'InstalledHerdrRuntime: NOT OBSERVED / NOT CLAIMED',
-    'IssueStateRequired: OPEN UNTIL INDEPENDENT REVIEW',
+    "IssueStateRequired: $($reviewBinding.IssueStateRequired)",
     "Tests: $passedTests/$totalTests PASS",
     "ApprovedReferenceSha256: $referenceSha256",
     "ActualWpfCaptures: $($requiredCaptures.Count)",
@@ -212,7 +237,7 @@ $gateReport = @(
     'EvidenceBoundary:',
     'This gate proves deterministic assignment-lifecycle projection, provenance validation, task-tree-authoritative cross-actor filtering, stale-selection removal on ApplyGraph refresh, task/tree/graph/detail/timeline synchronization, distinct status presentation, keyboard-equivalent relationship access, language separation, approved-reference binding, and actual WPF rendering from a deterministic contract-backed fixture.',
     'It does not prove an installed Herdr session, actual Core lifecycle delivery, live handoff timing, actual Agent activity, independent Issue #20 acceptance, or v0.4 release readiness.',
-    'Issue #20 must remain open until an independent reviewer accepts the committed implementation and evidence.'
+    "Independent review is only a local canonical binding when the exact review record and manifest are present; current binding status is $($reviewBinding.LocalIndependentReviewBinding)."
 )
 $gateReport | Set-Content -LiteralPath $gateReportPath -Encoding utf8
 $gateReport | Write-Output
