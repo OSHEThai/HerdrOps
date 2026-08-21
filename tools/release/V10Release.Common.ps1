@@ -8,6 +8,12 @@ if (-not (Test-Path -LiteralPath $packagingCommonPath -PathType Leaf)) {
 }
 . $packagingCommonPath
 
+$issue44ReportCommonPath = Join-Path $PSScriptRoot '..\acceptance\HerdrOps.InstallAcceptance.Common.ps1'
+if (-not (Test-Path -LiteralPath $issue44ReportCommonPath -PathType Leaf)) {
+    throw "Issue #44 report schema helper is missing: $issue44ReportCommonPath"
+}
+. $issue44ReportCommonPath
+
 $script:V10ReleaseProfileRelativePath = 'tools/release/v1.0-package-profile.json'
 $script:V10GoNoGoStatement = 'I approve publishing the exact HerdrOps v1.0.0 candidate identified by this authorization.'
 
@@ -88,6 +94,311 @@ function Assert-V10UtcTimestamp {
     }
     if ($parsed.Offset -ne [TimeSpan]::Zero) {
         throw "$Description must have a zero UTC offset."
+    }
+}
+
+function Assert-V10Issue44NonZeroSha256 {
+    param(
+        [Parameter(Mandatory = $true)][string]$Value,
+        [Parameter(Mandatory = $true)][string]$Description
+    )
+
+    Assert-V10Hex -Value $Value -Length 64 -Description $Description -Uppercase
+    if ($Value -ceq (('0' * 64) -join '')) {
+        throw "$Description must not be the all-zero placeholder hash."
+    }
+}
+
+function Assert-V10Issue44HashList {
+    param(
+        [Parameter(Mandatory = $true)]$Hashes,
+        [Parameter(Mandatory = $true)][string]$Description
+    )
+
+    if ($null -eq $Hashes) {
+        throw "$Description is missing."
+    }
+    $values = @($Hashes)
+    if ($values.Count -eq 0) {
+        throw "$Description must contain at least one installed-file hash."
+    }
+    $seen = @{}
+    foreach ($hash in $values) {
+        if ($null -eq $hash -or [string]::IsNullOrWhiteSpace([string]$hash.path)) {
+            throw "$Description contains an empty hash record."
+        }
+        if ([string]$hash.path -match '(^|[\\/])\.\.([\\/]|$)' -or
+            [string]$hash.path -match '(^|[\\/])\.([\\/]|$)') {
+            throw "$Description contains a traversing path: $($hash.path)"
+        }
+        Assert-V10Issue44NonZeroSha256 -Value ([string]$hash.sha256) -Description "$Description '$($hash.path)' SHA-256"
+        if ([int64]$hash.length -lt 0) {
+            throw "$Description '$($hash.path)' has a negative length."
+        }
+        $key = [string]$hash.path
+        if ($seen.ContainsKey($key)) {
+            throw "$Description contains a duplicate path: $key"
+        }
+        $seen[$key] = $true
+    }
+}
+
+function Assert-V10Issue44HashListsEqual {
+    param(
+        [Parameter(Mandatory = $true)]$Expected,
+        [Parameter(Mandatory = $true)]$Observed,
+        [Parameter(Mandatory = $true)][string]$Description
+    )
+
+    $expectedValues = @($Expected)
+    $observedValues = @($Observed)
+    if ($expectedValues.Count -ne $observedValues.Count) {
+        throw "$Description has a different hash count."
+    }
+    for ($index = 0; $index -lt $expectedValues.Count; $index++) {
+        $expectedHash = $expectedValues[$index]
+        $observedHash = $observedValues[$index]
+        if ([string]$expectedHash.path -cne [string]$observedHash.path -or
+            [int64]$expectedHash.length -ne [int64]$observedHash.length -or
+            [string]$expectedHash.sha256 -cne [string]$observedHash.sha256) {
+            throw "$Description differs at hash index $index."
+        }
+    }
+}
+
+function Assert-V10Issue44ArtifactSemantics {
+    param(
+        [Parameter(Mandatory = $true)]$Artifact,
+        [Parameter(Mandatory = $true)][string]$Name,
+        [Parameter(Mandatory = $true)][string]$ExpectedPackageVersion,
+        [string]$ExpectedSourceCommit,
+        [string]$ExpectedArchiveSha256,
+        [string]$ExpectedManifestSha256,
+        [string]$ExpectedContentSha256,
+        [switch]$AllowSyntheticSource
+    )
+
+    if ($null -eq $Artifact) {
+        throw "Issue #44 $Name artifact is required and must not be null."
+    }
+    Assert-AcceptanceArtifactReportRecord -Artifact $Artifact -Context "Issue #44 $Name artifact"
+    if ([string]$Artifact.name -cne $Name -or
+        [string]$Artifact.packageVersion -cne $ExpectedPackageVersion -or
+        [string]$Artifact.packageRoot -match '[<>]' -or
+        [string]$Artifact.archivePath -match '[<>]' -or
+        [string]$Artifact.manifestPath -match '[<>]') {
+        throw "Issue #44 $Name artifact identity is not exact."
+    }
+    if ([int64]$Artifact.archiveBytes -le 0 -or [int64]$Artifact.manifestBytes -le 0) {
+        throw "Issue #44 $Name artifact byte counts must be positive."
+    }
+    foreach ($hashName in @('archiveSha256', 'manifestSha256', 'contentSha256')) {
+        Assert-V10Issue44NonZeroSha256 -Value ([string]$Artifact.$hashName) -Description "Issue #44 $Name artifact $hashName"
+    }
+
+    $sourceCommit = [string]$Artifact.sourceCommitBinding
+    if ($sourceCommit -ceq 'NOT_BOUND_IN_SYNTHETIC_FIXTURE') {
+        if (-not $AllowSyntheticSource) {
+            throw "Issue #44 $Name artifact has no exact source-commit binding."
+        }
+    } else {
+        Assert-V10Hex -Value $sourceCommit -Length 40 -Description "Issue #44 $Name artifact sourceCommitBinding" -Lowercase
+        if (-not [string]::IsNullOrWhiteSpace($ExpectedSourceCommit) -and $sourceCommit -cne $ExpectedSourceCommit) {
+            throw "Issue #44 $Name artifact sourceCommitBinding does not match the accepted source commit."
+        }
+    }
+    if (-not [string]::IsNullOrWhiteSpace($ExpectedArchiveSha256) -and [string]$Artifact.archiveSha256 -cne $ExpectedArchiveSha256) {
+        throw "Issue #44 $Name artifact archive SHA-256 does not match the accepted candidate."
+    }
+    if (-not [string]::IsNullOrWhiteSpace($ExpectedManifestSha256) -and [string]$Artifact.manifestSha256 -cne $ExpectedManifestSha256) {
+        throw "Issue #44 $Name artifact manifest SHA-256 does not match the accepted candidate."
+    }
+    if (-not [string]::IsNullOrWhiteSpace($ExpectedContentSha256) -and [string]$Artifact.contentSha256 -cne $ExpectedContentSha256) {
+        throw "Issue #44 $Name artifact content SHA-256 does not match the accepted candidate."
+    }
+    Assert-V10Issue44HashList -Hashes $Artifact.installedFileHashes -Description "Issue #44 $Name artifact installedFileHashes"
+}
+
+function Assert-V10Issue44LifecycleSemantics {
+    param(
+        [Parameter(Mandatory = $true)]$Report,
+        [Parameter(Mandatory = $true)]$InitialArtifact,
+        [Parameter(Mandatory = $true)]$UpgradeArtifact
+    )
+
+    $lifecycle = Get-V10RequiredProperty -Object $Report -Name 'lifecycle' -Description 'Issue #44 report'
+    $initialHashes = @($InitialArtifact.installedFileHashes)
+    $upgradeHashes = @($UpgradeArtifact.installedFileHashes)
+    $retainedHash = $null
+    $stepNames = @('cleanInstall', 'upgrade', 'rollback', 'uninstall')
+    foreach ($stepName in $stepNames) {
+        $step = Get-V10RequiredProperty -Object $lifecycle -Name $stepName -Description 'Issue #44 lifecycle'
+        if ([string]$step.status -cne 'PASS' -or [string]$step.retainedDataStatus -cne 'PASS') {
+            throw "Issue #44 lifecycle step '$stepName' is not a complete pass."
+        }
+        Assert-V10Issue44HashList -Hashes $step.installedFileHashes -Description "Issue #44 lifecycle $stepName installedFileHashes"
+        Assert-V10Issue44NonZeroSha256 -Value ([string]$step.retainedDataSha256) -Description "Issue #44 lifecycle $stepName retainedDataSha256"
+        if ($null -eq $retainedHash) {
+            $retainedHash = [string]$step.retainedDataSha256
+        } elseif ($retainedHash -cne [string]$step.retainedDataSha256) {
+            throw "Issue #44 lifecycle retained-data hashes are not continuous."
+        }
+    }
+
+    $cleanInstall = $lifecycle.cleanInstall
+    $upgrade = $lifecycle.upgrade
+    $rollback = $lifecycle.rollback
+    $uninstall = $lifecycle.uninstall
+    if ([string]$cleanInstall.expectedVersion -cne [string]$InitialArtifact.packageVersion -or
+        [string]$cleanInstall.packageVersionObserved -cne [string]$InitialArtifact.packageVersion -or
+        -not [bool]$cleanInstall.installRootPresent -or
+        [string]$upgrade.expectedVersion -cne [string]$UpgradeArtifact.packageVersion -or
+        [string]$upgrade.packageVersionObserved -cne [string]$UpgradeArtifact.packageVersion -or
+        -not [bool]$upgrade.installRootPresent -or
+        [string]$rollback.expectedVersion -cne [string]$InitialArtifact.packageVersion -or
+        [string]$rollback.packageVersionObserved -cne [string]$InitialArtifact.packageVersion -or
+        -not [bool]$rollback.installRootPresent -or
+        [string]$uninstall.packageVersionObserved -cne [string]$InitialArtifact.packageVersion -or
+        [bool]$uninstall.installRootPresent) {
+        throw 'Issue #44 lifecycle version or install-root observations do not bind to the initial/upgrade artifacts.'
+    }
+    Assert-V10Issue44HashListsEqual -Expected $initialHashes -Observed $cleanInstall.installedFileHashes -Description 'Issue #44 clean-install hashes versus initial artifact'
+    Assert-V10Issue44HashListsEqual -Expected $upgradeHashes -Observed $upgrade.installedFileHashes -Description 'Issue #44 upgrade hashes versus upgrade artifact'
+    Assert-V10Issue44HashListsEqual -Expected $initialHashes -Observed $rollback.installedFileHashes -Description 'Issue #44 rollback hashes versus initial artifact'
+    Assert-V10Issue44HashListsEqual -Expected $initialHashes -Observed $uninstall.installedFileHashes -Description 'Issue #44 uninstall hashes versus initial artifact'
+}
+
+function Assert-V10Issue44ReportSemantics {
+    param(
+        [Parameter(Mandatory = $true)]$Report,
+        [Parameter(Mandatory = $true)][string]$SourceCommit,
+        [Parameter(Mandatory = $true)][string]$ArchiveSha256,
+        [string]$ManifestSha256,
+        [string]$ContentSha256,
+        [switch]$RequireLiveCleanMachine
+    )
+
+    Assert-V10Hex -Value $SourceCommit -Length 40 -Description 'Issue #44 accepted source commit' -Lowercase
+    Assert-V10Issue44NonZeroSha256 -Value $ArchiveSha256 -Description 'Issue #44 accepted archive SHA-256'
+    if (-not [string]::IsNullOrWhiteSpace($ManifestSha256)) {
+        Assert-V10Issue44NonZeroSha256 -Value $ManifestSha256 -Description 'Issue #44 accepted manifest SHA-256'
+    }
+    if (-not [string]::IsNullOrWhiteSpace($ContentSha256)) {
+        Assert-V10Issue44NonZeroSha256 -Value $ContentSha256 -Description 'Issue #44 accepted content SHA-256'
+    }
+
+    $schemaPath = Join-Path $PSScriptRoot '..\..\docs\acceptance\issue-44-install-acceptance-report.schema.json'
+    Assert-AcceptanceReportMatchesSchema -Report $Report -SchemaPath $schemaPath
+    if ([int]$Report.schemaVersion -ne 1 -or
+        [string]$Report.reportKind -cne 'HerdrOps.InstallAcceptanceReport' -or
+        [int]$Report.issue -ne 44 -or
+        [string]$Report.acceptanceVersion -cne 'v1.0.0' -or
+        [string]$Report.status -cne 'PASS') {
+        throw 'Issue #44 report top-level identity is not a passing v1.0.0 report.'
+    }
+    Assert-V10UtcTimestamp -Value ([string]$Report.startedAtUtc) -Description 'Issue #44 startedAtUtc'
+    Assert-V10UtcTimestamp -Value ([string]$Report.completedAtUtc) -Description 'Issue #44 completedAtUtc'
+
+    $isLive = ([string]$Report.mode -ceq 'Live' -and [string]$Report.evidenceClass -ceq 'CleanMachine')
+    $isSynthetic = ([string]$Report.mode -ceq 'Fixture' -and [string]$Report.evidenceClass -ceq 'Synthetic')
+    if ($RequireLiveCleanMachine -and -not $isLive) {
+        throw 'Issue #44 report is not passing Live CleanMachine evidence.'
+    }
+    if (-not $RequireLiveCleanMachine -and -not $isSynthetic) {
+        throw 'Synthetic Issue #44 acceptance must remain Fixture/Synthetic evidence.'
+    }
+
+    $machine = Get-V10RequiredProperty -Object $Report -Name 'machine' -Description 'Issue #44 report'
+    foreach ($machineName in @('name', 'expectedName', 'fingerprint', 'expectedFingerprint')) {
+        if ([string]::IsNullOrWhiteSpace([string]$machine.$machineName) -or
+            [string]$machine.$machineName -match '[<>]' -or
+            [string]$machine.$machineName -in @('PENDING', 'UNKNOWN', 'NOT ASSIGNED')) {
+            throw "Issue #44 machine $machineName is not an exact concrete binding."
+        }
+    }
+    Assert-V10Hex -Value ([string]$machine.fingerprint) -Length 64 -Description 'Issue #44 machine fingerprint' -Uppercase
+    Assert-V10Hex -Value ([string]$machine.expectedFingerprint) -Length 64 -Description 'Issue #44 expected machine fingerprint' -Uppercase
+    if ([string]$machine.name -cne [string]$machine.expectedName -or
+        [string]$machine.fingerprint -cne [string]$machine.expectedFingerprint -or
+        [bool]$machine.elevated) {
+        throw 'Issue #44 machine identity or elevation binding is not exact.'
+    }
+
+    $artifacts = Get-V10RequiredProperty -Object $Report -Name 'artifacts' -Description 'Issue #44 report'
+    $initialArtifact = Get-V10RequiredProperty -Object $artifacts -Name 'initial' -Description 'Issue #44 artifacts'
+    $upgradeArtifact = Get-V10RequiredProperty -Object $artifacts -Name 'upgrade' -Description 'Issue #44 artifacts'
+    Assert-V10Issue44ArtifactSemantics `
+        -Artifact $initialArtifact `
+        -Name 'initial' `
+        -ExpectedPackageVersion '0.7.0' `
+        -AllowSyntheticSource:(-not $RequireLiveCleanMachine)
+    Assert-V10Issue44ArtifactSemantics `
+        -Artifact $upgradeArtifact `
+        -Name 'upgrade' `
+        -ExpectedPackageVersion '1.0.0' `
+        -ExpectedSourceCommit $SourceCommit `
+        -ExpectedArchiveSha256 $ArchiveSha256 `
+        -ExpectedManifestSha256 $ManifestSha256 `
+        -ExpectedContentSha256 $ContentSha256 `
+        -AllowSyntheticSource:(-not $RequireLiveCleanMachine)
+    if ([Version]$upgradeArtifact.packageVersion -le [Version]$initialArtifact.packageVersion) {
+        throw 'Issue #44 upgrade artifact version must be greater than the initial artifact version.'
+    }
+
+    $targets = Get-V10RequiredProperty -Object $Report -Name 'targets' -Description 'Issue #44 report'
+    foreach ($targetName in @('installRoot', 'userDataRoot')) {
+        if ([string]::IsNullOrWhiteSpace([string]$targets.$targetName) -or [string]$targets.$targetName -match '[<>]') {
+            throw "Issue #44 target $targetName is not bound."
+        }
+    }
+    if ($RequireLiveCleanMachine -and [string]::IsNullOrWhiteSpace([string]$targets.reportPath)) {
+        throw 'Issue #44 Live report is missing its bound reportPath.'
+    }
+
+    $preflight = Get-V10RequiredProperty -Object $Report -Name 'preflight' -Description 'Issue #44 report'
+    if ([string]$preflight.status -cne 'PASS' -or @($preflight.checks).Count -eq 0 -or
+        @($preflight.checks | Where-Object { [string]$_.status -eq 'FAIL' }).Count -gt 0) {
+        throw 'Issue #44 preflight did not pass without failed checks.'
+    }
+    foreach ($checkName in @('initial-artifact-identity-hash-version', 'upgrade-artifact-identity-hash-version', 'version-order', 'v1-target-version')) {
+        $matchingChecks = @($preflight.checks | Where-Object { [string]$_.name -ceq $checkName })
+        if ($matchingChecks.Count -ne 1 -or [string]$matchingChecks[0].status -cne 'PASS') {
+            throw "Issue #44 preflight check '$checkName' is missing or not PASS."
+        }
+    }
+
+    Assert-V10Issue44LifecycleSemantics -Report $Report -InitialArtifact $initialArtifact -UpgradeArtifact $upgradeArtifact
+    $cleanup = Get-V10RequiredProperty -Object $Report -Name 'cleanup' -Description 'Issue #44 report'
+    if ([string]$cleanup.status -cne 'PASS' -or
+        -not [bool]$cleanup.attempted -or
+        -not [bool]$cleanup.ownedStageRemoved -or
+        -not [bool]$cleanup.ownedBackupRemoved -or
+        -not [bool]$cleanup.retainedDataLeftIntact -or
+        @($cleanup.residuals).Count -ne 0 -or
+        -not [string]::IsNullOrEmpty([string]$Report.failureDetails)) {
+        throw 'Issue #44 cleanup contains residuals or an incomplete failure state.'
+    }
+
+    $boundaries = Get-V10RequiredProperty -Object $Report -Name 'boundaries' -Description 'Issue #44 report'
+    if ([string]$boundaries.static -notlike 'PASS*' -or
+        [string]$boundaries.cleanMachine -notlike 'PASS*' -and $RequireLiveCleanMachine) {
+        throw 'Issue #44 static/clean-machine boundary is not passing for the selected evidence mode.'
+    }
+    if ($isSynthetic -and [string]$boundaries.synthetic -notlike 'PASS*') {
+        throw 'Synthetic Issue #44 fixture must explicitly report Synthetic PASS evidence.'
+    }
+    foreach ($boundaryName in @('runtime', 'release')) {
+        if ([string]$boundaries.$boundaryName -notlike 'NOT OBSERVED*') {
+            throw "Issue #44 $boundaryName boundary must remain NOT OBSERVED."
+        }
+    }
+    foreach ($boundaryName in @('contract', 'independentReview')) {
+        if ([string]$boundaries.$boundaryName -notlike 'NOT OBSERVED*') {
+            throw "Issue #44 $boundaryName boundary must remain NOT OBSERVED."
+        }
+    }
+    if ($isSynthetic -and [string]$boundaries.cleanMachine -notlike 'NOT OBSERVED*') {
+        throw 'Synthetic Issue #44 fixture must not claim CleanMachine evidence.'
     }
 }
 
@@ -934,7 +1245,9 @@ function Assert-V10GateReport {
         [Parameter(Mandatory = $true)][string]$EvidenceClass,
         [Parameter(Mandatory = $true)]$Report,
         [Parameter(Mandatory = $true)][string]$SourceCommit,
-        [Parameter(Mandatory = $true)][string]$ArchiveSha256
+        [Parameter(Mandatory = $true)][string]$ArchiveSha256,
+        [string]$ManifestSha256,
+        [string]$ContentSha256
     )
 
     $value = $Report.Value
@@ -996,39 +1309,13 @@ function Assert-V10GateReport {
             Assert-V10UtcTimestamp -Value ([string](Get-V10RequiredProperty -Object $value -Name 'completedAtUtc' -Description 'Issue #43 report')) -Description 'Issue #43 completedAtUtc'
         }
         44 {
-            if ([int](Get-V10RequiredProperty -Object $value -Name 'schemaVersion' -Description 'Issue #44 report') -ne 1 -or
-                [string](Get-V10RequiredProperty -Object $value -Name 'reportKind' -Description 'Issue #44 report') -cne 'HerdrOps.InstallAcceptanceReport' -or
-                [int](Get-V10RequiredProperty -Object $value -Name 'issue' -Description 'Issue #44 report') -ne 44 -or
-                [string](Get-V10RequiredProperty -Object $value -Name 'acceptanceVersion' -Description 'Issue #44 report') -cne 'v1.0.0' -or
-                [string](Get-V10RequiredProperty -Object $value -Name 'status' -Description 'Issue #44 report') -cne 'PASS' -or
-                [string](Get-V10RequiredProperty -Object $value -Name 'mode' -Description 'Issue #44 report') -cne 'Live' -or
-                [string](Get-V10RequiredProperty -Object $value -Name 'evidenceClass' -Description 'Issue #44 report') -cne 'CleanMachine') {
-                throw 'Issue #44 report is not passing Live CleanMachine evidence.'
-            }
-            $machine = Get-V10RequiredProperty -Object $value -Name 'machine' -Description 'Issue #44 report'
-            if ([bool](Get-V10RequiredProperty -Object $machine -Name 'elevated' -Description 'Issue #44 machine')) {
-                throw 'Issue #44 clean-machine acceptance was elevated.'
-            }
-            $artifacts = Get-V10RequiredProperty -Object $value -Name 'artifacts' -Description 'Issue #44 report'
-            $upgrade = Get-V10RequiredProperty -Object $artifacts -Name 'upgrade' -Description 'Issue #44 artifacts'
-            if ([string](Get-V10RequiredProperty -Object $upgrade -Name 'packageVersion' -Description 'Issue #44 upgrade artifact') -cne '1.0.0' -or
-                [string](Get-V10RequiredProperty -Object $upgrade -Name 'sourceCommitBinding' -Description 'Issue #44 upgrade artifact') -cne $SourceCommit -or
-                [string](Get-V10RequiredProperty -Object $upgrade -Name 'archiveSha256' -Description 'Issue #44 upgrade artifact') -cne $ArchiveSha256) {
-                throw 'Issue #44 accepted a different source commit or archive.'
-            }
-            $lifecycle = Get-V10RequiredProperty -Object $value -Name 'lifecycle' -Description 'Issue #44 report'
-            foreach ($step in @('cleanInstall', 'upgrade', 'rollback', 'uninstall')) {
-                $stepValue = Get-V10RequiredProperty -Object $lifecycle -Name $step -Description 'Issue #44 lifecycle'
-                if ([string](Get-V10RequiredProperty -Object $stepValue -Name 'status' -Description "Issue #44 $step") -cne 'PASS') {
-                    throw "Issue #44 lifecycle step '$step' did not pass."
-                }
-            }
-            $cleanup = Get-V10RequiredProperty -Object $value -Name 'cleanup' -Description 'Issue #44 report'
-            if ([string](Get-V10RequiredProperty -Object $cleanup -Name 'status' -Description 'Issue #44 cleanup') -cne 'PASS' -or
-                -not [string]::IsNullOrEmpty([string](Get-V10RequiredProperty -Object $value -Name 'failureDetails' -Description 'Issue #44 report' -AllowNull))) {
-                throw 'Issue #44 cleanup or failure state is not a complete pass.'
-            }
-            Assert-V10UtcTimestamp -Value ([string](Get-V10RequiredProperty -Object $value -Name 'completedAtUtc' -Description 'Issue #44 report')) -Description 'Issue #44 completedAtUtc'
+            Assert-V10Issue44ReportSemantics `
+                -Report $value `
+                -SourceCommit $SourceCommit `
+                -ArchiveSha256 $ArchiveSha256 `
+                -ManifestSha256 $ManifestSha256 `
+                -ContentSha256 $ContentSha256 `
+                -RequireLiveCleanMachine
         }
         default { throw "Unsupported v1 release gate issue: $Issue" }
     }
@@ -1108,7 +1395,14 @@ function Assert-V10ReleaseAuthorization {
         if ([string]$gate.reportSha256 -cne $report.Sha256) {
             throw "Issue #$($gate.issue) report hash does not match its exact bytes."
         }
-        Assert-V10GateReport -Issue ([int]$gate.issue) -EvidenceClass ([string]$gate.evidenceClass) -Report $report -SourceCommit $acceptedCommit -ArchiveSha256 $candidate.ArchiveSha256
+        Assert-V10GateReport `
+            -Issue ([int]$gate.issue) `
+            -EvidenceClass ([string]$gate.evidenceClass) `
+            -Report $report `
+            -SourceCommit $acceptedCommit `
+            -ArchiveSha256 $candidate.ArchiveSha256 `
+            -ManifestSha256 ([string]$candidate.Record.generation.manifestSha256) `
+            -ContentSha256 ([string]$candidate.Record.generation.contentSha256)
         [void]$gateRecords.Add([pscustomobject][ordered]@{
                 Issue = [int]$gate.issue
                 EvidenceClass = [string]$gate.evidenceClass

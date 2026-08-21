@@ -65,6 +65,188 @@ function Get-TestRelativePath {
     return $full.Substring($prefix.Length).Replace('\', '/')
 }
 
+function New-TestHex64 {
+    param([Parameter(Mandatory = $true)][string]$Character)
+
+    return (($Character * 64) -join '')
+}
+
+function New-TestIssue44Report {
+    param(
+        [Parameter(Mandatory = $true)][string]$SourceCommit,
+        [Parameter(Mandatory = $true)][string]$ArchiveSha256,
+        [Parameter(Mandatory = $true)][string]$ManifestSha256,
+        [Parameter(Mandatory = $true)][string]$ContentSha256,
+        [switch]$LiveShape
+    )
+
+    $initialSourceCommit = if ($LiveShape) { $SourceCommit } else { 'NOT_BOUND_IN_SYNTHETIC_FIXTURE' }
+    $mode = if ($LiveShape) { 'Live' } else { 'Fixture' }
+    $evidenceClass = if ($LiveShape) { 'CleanMachine' } else { 'Synthetic' }
+    $effect = if ($LiveShape) { 'LiveFilesystem' } else { 'FixtureTempOnly' }
+    $machineName = if ($LiveShape) { 'SYNTHETIC-LIVE-HOST' } else { 'SYNTHETIC-FIXTURE-HOST' }
+    $machineFingerprint = New-TestHex64 -Character 'A'
+    $retainedDataSha256 = New-TestHex64 -Character 'B'
+    $initialInstalledHashes = @([ordered]@{
+            path = 'HerdrOps.App.dll'
+            length = [int64]10
+            sha256 = (New-TestHex64 -Character 'C')
+        })
+    $upgradeInstalledHashes = @([ordered]@{
+            path = 'HerdrOps.App.dll'
+            length = [int64]11
+            sha256 = (New-TestHex64 -Character 'D')
+        })
+    $initialArtifact = [ordered]@{
+        name = 'initial'
+        productId = 'HerdrOps'
+        displayName = 'HerdrOps'
+        packagingIssue = 38
+        packageVersion = '0.7.0'
+        targetFramework = 'net10.0-windows'
+        runtimeIdentifier = 'win-x64'
+        deploymentModel = 'per-user-directory'
+        userDataPolicy = 'retain-on-uninstall'
+        packageRoot = 'C:\synthetic\issue-44\initial\package'
+        archivePath = 'C:\synthetic\issue-44\initial\HerdrOps-0.7.0-win-x64.zip'
+        archiveBytes = [int64]128
+        archiveSha256 = (New-TestHex64 -Character 'E')
+        manifestPath = 'C:\synthetic\issue-44\initial\package\package-manifest.json'
+        manifestBytes = [int64]64
+        manifestSha256 = (New-TestHex64 -Character 'F')
+        contentSha256 = (New-TestHex64 -Character '1')
+        sourceCommitBinding = $initialSourceCommit
+        installedFileHashes = $initialInstalledHashes
+    }
+    $upgradeArtifact = [ordered]@{
+        name = 'upgrade'
+        productId = 'HerdrOps'
+        displayName = 'HerdrOps'
+        packagingIssue = 38
+        packageVersion = '1.0.0'
+        targetFramework = 'net10.0-windows'
+        runtimeIdentifier = 'win-x64'
+        deploymentModel = 'per-user-directory'
+        userDataPolicy = 'retain-on-uninstall'
+        packageRoot = 'C:\synthetic\issue-44\upgrade\package'
+        archivePath = 'C:\synthetic\issue-44\upgrade\HerdrOps-1.0.0-win-x64.zip'
+        archiveBytes = [int64]256
+        archiveSha256 = $ArchiveSha256
+        manifestPath = 'C:\synthetic\issue-44\upgrade\package\package-manifest.json'
+        manifestBytes = [int64]96
+        manifestSha256 = $ManifestSha256
+        contentSha256 = $ContentSha256
+        sourceCommitBinding = $(if ($LiveShape) { $SourceCommit } else { 'NOT_BOUND_IN_SYNTHETIC_FIXTURE' })
+        installedFileHashes = $upgradeInstalledHashes
+    }
+    $targets = [ordered]@{
+        installRoot = 'C:\synthetic\issue-44\targets\install\HerdrOps'
+        userDataRoot = 'C:\synthetic\issue-44\targets\data\HerdrOps'
+        reportPath = if ($LiveShape) { 'C:\synthetic\issue-44\evidence\issue-44-live-shape.json' } else { '' }
+        simulationRoot = if ($LiveShape) { '' } else { 'C:\synthetic\issue-44\simulation' }
+        installPathPolicy = '%LOCALAPPDATA%\Programs\HerdrOps'
+        userDataPathPolicy = '%LOCALAPPDATA%\HerdrOps'
+        userDataPolicy = 'retain-on-uninstall'
+    }
+    $lifecycle = [ordered]@{
+        cleanInstall = [ordered]@{
+            status = 'PASS'; expectedVersion = '0.7.0'; installedFileHashes = $initialInstalledHashes
+            installRootPresent = $true; packageVersionObserved = '0.7.0'; retainedDataStatus = 'PASS'
+            retainedDataSha256 = $retainedDataSha256; details = 'Synthetic initial package lifecycle.'
+        }
+        upgrade = [ordered]@{
+            status = 'PASS'; expectedVersion = '1.0.0'; installedFileHashes = $upgradeInstalledHashes
+            installRootPresent = $true; packageVersionObserved = '1.0.0'; retainedDataStatus = 'PASS'
+            retainedDataSha256 = $retainedDataSha256; details = 'Synthetic upgrade package lifecycle.'
+        }
+        rollback = [ordered]@{
+            status = 'PASS'; expectedVersion = '0.7.0'; installedFileHashes = $initialInstalledHashes
+            installRootPresent = $true; packageVersionObserved = '0.7.0'; retainedDataStatus = 'PASS'
+            retainedDataSha256 = $retainedDataSha256; details = 'Synthetic rollback to initial package.'
+        }
+        uninstall = [ordered]@{
+            status = 'PASS'; expectedVersion = 'none'; installedFileHashes = $initialInstalledHashes
+            installRootPresent = $false; packageVersionObserved = '0.7.0'; retainedDataStatus = 'PASS'
+            retainedDataSha256 = $retainedDataSha256; details = 'Synthetic uninstall retained user data.'
+        }
+    }
+    $boundaries = if ($LiveShape) {
+        [ordered]@{
+            static = 'PASS: exact acceptance report shape and bindings checked.'
+            synthetic = 'NOT OBSERVED: no fixture lifecycle credit.'
+            contract = 'NOT OBSERVED: no named-pipe or installed-Herdr compatibility work.'
+            cleanMachine = 'PASS: bound clean-machine filesystem lifecycle.'
+            runtime = 'NOT OBSERVED: no Herdr runtime or application process was started.'
+            independentReview = 'NOT OBSERVED.'
+            release = 'NOT OBSERVED: no release or publication action was performed.'
+        }
+    } else {
+        [ordered]@{
+            static = 'PASS: exact synthetic acceptance report shape and bindings checked.'
+            synthetic = 'PASS: fixture-only lifecycle transitions and retained-data assertions.'
+            contract = 'NOT OBSERVED: no named-pipe or installed-Herdr compatibility work.'
+            cleanMachine = 'NOT OBSERVED: no validated clean-machine filesystem effect.'
+            runtime = 'NOT OBSERVED: no Herdr runtime or application process was started.'
+            independentReview = 'NOT OBSERVED.'
+            release = 'NOT OBSERVED: no release or publication action was performed.'
+        }
+    }
+
+    return [ordered]@{
+        schemaVersion = 1
+        reportKind = 'HerdrOps.InstallAcceptanceReport'
+        issue = 44
+        acceptanceVersion = 'v1.0.0'
+        status = 'PASS'
+        mode = $mode
+        evidenceClass = $evidenceClass
+        startedAtUtc = '2026-08-17T00:35:00.0000000Z'
+        completedAtUtc = '2026-08-17T00:40:00.0000000Z'
+        runId = (('a' * 32) -join '')
+        machine = [ordered]@{
+            name = $machineName
+            expectedName = $machineName
+            fingerprint = $machineFingerprint
+            expectedFingerprint = $machineFingerprint
+            elevated = $false
+        }
+        artifacts = [ordered]@{ initial = $initialArtifact; upgrade = $upgradeArtifact }
+        targets = $targets
+        preflight = [ordered]@{
+            status = 'PASS'
+            checks = @(
+                [ordered]@{ name = 'initial-artifact-identity-hash-version'; status = 'PASS'; details = 'Initial artifact identity and hashes are bound.' },
+                [ordered]@{ name = 'upgrade-artifact-identity-hash-version'; status = 'PASS'; details = 'Upgrade artifact identity and hashes are bound.' },
+                [ordered]@{ name = 'version-order'; status = 'PASS'; details = 'Upgrade is newer than initial.' },
+                [ordered]@{ name = 'v1-target-version'; status = 'PASS'; details = 'Upgrade artifact is v1.0.0.' })
+        }
+        lifecycle = $lifecycle
+        cleanup = [ordered]@{
+            status = 'PASS'
+            attempted = $true
+            simulationRoot = [string]$targets.simulationRoot
+            simulationRootRemoved = (-not $LiveShape)
+            ownedStageRemoved = $true
+            ownedBackupRemoved = $true
+            harnessSeededDataMarkerRemoved = $false
+            retainedDataLeftIntact = $true
+            residuals = @()
+            details = 'Synthetic cleanup completed with zero residuals.'
+        }
+        failureDetails = ''
+        transcript = @([ordered]@{
+                sequence = 1
+                phase = 'Complete'
+                action = 'complete-lifecycle'
+                status = 'PASS'
+                effect = $effect
+                details = 'Synthetic report shape only; no runtime or release evidence.'
+                pathBinding = 'all'
+            })
+        boundaries = $boundaries
+    }
+}
+
 $repositoryRoot = Get-V10RepositoryRoot
 $profilePath = Join-Path $PSScriptRoot 'v1.0-package-profile.json'
 $profile = Read-V10ReleaseProfile -Path $profilePath
@@ -208,6 +390,7 @@ $sourceCommit = ('a' * 40) # Synthetic fixture identity; production verification
     $issue42Path = Join-Path $evidenceRoot 'issue-42.json'
     $issue43Path = Join-Path $evidenceRoot 'issue-43.json'
     $issue44Path = Join-Path $evidenceRoot 'issue-44.json'
+    $issue44LiveShapePath = Join-Path $evidenceRoot 'issue-44-live-shape.json'
     Write-V10NewJsonFile -Path $issue41Path -Value ([ordered]@{
             SchemaVersion = 1
             AuditId = 'V100-01'
@@ -251,7 +434,33 @@ $sourceCommit = ('a' * 40) # Synthetic fixture identity; production verification
             reviewer = 'Synthetic Reviewer Fixture'
             completedAtUtc = '2026-08-17T00:30:00.0000000Z'
         }) | Out-Null
-    Write-V10NewJsonFile -Path $issue44Path -Value ([ordered]@{
+    $issue44SyntheticValue = New-TestIssue44Report `
+        -SourceCommit $sourceCommit `
+        -ArchiveSha256 ([string]$candidate.Record.generation.archiveSha256) `
+        -ManifestSha256 ([string]$candidate.Record.generation.manifestSha256) `
+        -ContentSha256 ([string]$candidate.Record.generation.contentSha256)
+    Write-V10NewJsonFile -Path $issue44Path -Value $issue44SyntheticValue | Out-Null
+    $issue44SyntheticReport = Read-V10StrictJsonFile -Path $issue44Path -Description 'Issue #44 complete synthetic report'
+    Assert-V10Issue44ReportSemantics `
+        -Report $issue44SyntheticReport.Value `
+        -SourceCommit $sourceCommit `
+        -ArchiveSha256 ([string]$candidate.Record.generation.archiveSha256) `
+        -ManifestSha256 ([string]$candidate.Record.generation.manifestSha256) `
+        -ContentSha256 ([string]$candidate.Record.generation.contentSha256)
+    [void]$assertions.Add('Issue44FullSyntheticSchemaAndSemantics')
+    Assert-ExpectedFailure -Description 'synthetic Issue #44 cannot claim CleanMachine' -RequiredFragments @('Live CleanMachine') -Action {
+        Assert-V10GateReport `
+            -Issue 44 `
+            -EvidenceClass 'CleanMachine' `
+            -Report $issue44SyntheticReport `
+            -SourceCommit $sourceCommit `
+            -ArchiveSha256 ([string]$candidate.Record.generation.archiveSha256) `
+            -ManifestSha256 ([string]$candidate.Record.generation.manifestSha256) `
+            -ContentSha256 ([string]$candidate.Record.generation.contentSha256)
+    }
+    [void]$assertions.Add('SyntheticIssue44NeverGrantedCleanMachine')
+    $minimalIssue44Report = [pscustomobject]@{
+        Value = [pscustomobject][ordered]@{
             schemaVersion = 1
             reportKind = 'HerdrOps.InstallAcceptanceReport'
             issue = 44
@@ -259,24 +468,153 @@ $sourceCommit = ('a' * 40) # Synthetic fixture identity; production verification
             status = 'PASS'
             mode = 'Live'
             evidenceClass = 'CleanMachine'
-            machine = [ordered]@{ elevated = $false }
-            artifacts = [ordered]@{
-                upgrade = [ordered]@{
-                    packageVersion = '1.0.0'
-                    sourceCommitBinding = $sourceCommit
-                    archiveSha256 = $candidate.ArchiveSha256
-                }
-            }
-            lifecycle = [ordered]@{
-                cleanInstall = [ordered]@{ status = 'PASS' }
-                upgrade = [ordered]@{ status = 'PASS' }
-                rollback = [ordered]@{ status = 'PASS' }
-                uninstall = [ordered]@{ status = 'PASS' }
-            }
-            cleanup = [ordered]@{ status = 'PASS' }
-            failureDetails = ''
-            completedAtUtc = '2026-08-17T00:40:00.0000000Z'
-        }) | Out-Null
+        }
+    }
+    Assert-ExpectedFailure -Description 'minimal forged Issue #44 report' -RequiredFragments @('acceptance report') -Action {
+        Assert-V10GateReport `
+            -Issue 44 `
+            -EvidenceClass 'CleanMachine' `
+            -Report $minimalIssue44Report `
+            -SourceCommit $sourceCommit `
+            -ArchiveSha256 ([string]$candidate.Record.generation.archiveSha256) `
+            -ManifestSha256 ([string]$candidate.Record.generation.manifestSha256) `
+            -ContentSha256 ([string]$candidate.Record.generation.contentSha256)
+    }
+    [void]$assertions.Add('Issue44MinimalForgedReportRejected')
+    $issue44LiveShapeValue = New-TestIssue44Report `
+        -SourceCommit $sourceCommit `
+        -ArchiveSha256 ([string]$candidate.Record.generation.archiveSha256) `
+        -ManifestSha256 ([string]$candidate.Record.generation.manifestSha256) `
+        -ContentSha256 ([string]$candidate.Record.generation.contentSha256) `
+        -LiveShape
+    Write-V10NewJsonFile -Path $issue44LiveShapePath -Value $issue44LiveShapeValue | Out-Null
+    $issue44LiveShapeReport = Read-V10StrictJsonFile -Path $issue44LiveShapePath -Description 'Issue #44 complete live report shape'
+    Assert-V10GateReport `
+        -Issue 44 `
+        -EvidenceClass 'CleanMachine' `
+        -Report $issue44LiveShapeReport `
+        -SourceCommit $sourceCommit `
+        -ArchiveSha256 ([string]$candidate.Record.generation.archiveSha256) `
+        -ManifestSha256 ([string]$candidate.Record.generation.manifestSha256) `
+        -ContentSha256 ([string]$candidate.Record.generation.contentSha256)
+    [void]$assertions.Add('Issue44CompleteLiveShapeAcceptedSynthetically')
+
+    $missingInitialArtifact = Copy-TestJsonObject -Value $issue44LiveShapeValue
+    $missingInitialArtifact.artifacts.initial = $null
+    Assert-ExpectedFailure -Description 'Issue #44 missing initial artifact' -RequiredFragments @('artifacts') -Action {
+        Assert-V10Issue44ReportSemantics `
+            -Report $missingInitialArtifact `
+            -SourceCommit $sourceCommit `
+            -ArchiveSha256 ([string]$candidate.Record.generation.archiveSha256) `
+            -ManifestSha256 ([string]$candidate.Record.generation.manifestSha256) `
+            -ContentSha256 ([string]$candidate.Record.generation.contentSha256) `
+            -RequireLiveCleanMachine
+    }
+    [void]$assertions.Add('Issue44MissingInitialArtifactRejected')
+
+    $wrongInitialArtifact = Copy-TestJsonObject -Value $issue44LiveShapeValue
+    $wrongInitialArtifact.artifacts.initial.packageVersion = '9.9.9'
+    Assert-ExpectedFailure -Description 'Issue #44 wrong initial artifact identity' -RequiredFragments @('initial artifact identity') -Action {
+        Assert-V10Issue44ReportSemantics `
+            -Report $wrongInitialArtifact `
+            -SourceCommit $sourceCommit `
+            -ArchiveSha256 ([string]$candidate.Record.generation.archiveSha256) `
+            -ManifestSha256 ([string]$candidate.Record.generation.manifestSha256) `
+            -ContentSha256 ([string]$candidate.Record.generation.contentSha256) `
+            -RequireLiveCleanMachine
+    }
+    [void]$assertions.Add('Issue44WrongInitialArtifactRejected')
+
+    $failedPreflight = Copy-TestJsonObject -Value $issue44LiveShapeValue
+    $failedPreflight.preflight.status = 'FAIL'
+    Assert-ExpectedFailure -Description 'Issue #44 failed preflight' -RequiredFragments @('preflight') -Action {
+        Assert-V10Issue44ReportSemantics `
+            -Report $failedPreflight `
+            -SourceCommit $sourceCommit `
+            -ArchiveSha256 ([string]$candidate.Record.generation.archiveSha256) `
+            -ManifestSha256 ([string]$candidate.Record.generation.manifestSha256) `
+            -ContentSha256 ([string]$candidate.Record.generation.contentSha256) `
+            -RequireLiveCleanMachine
+    }
+    [void]$assertions.Add('Issue44FailedPreflightRejected')
+
+    $failedBoundary = Copy-TestJsonObject -Value $issue44LiveShapeValue
+    $failedBoundary.boundaries.cleanMachine = 'NOT OBSERVED: synthetic only.'
+    Assert-ExpectedFailure -Description 'Issue #44 failed CleanMachine boundary' -RequiredFragments @('boundary') -Action {
+        Assert-V10Issue44ReportSemantics `
+            -Report $failedBoundary `
+            -SourceCommit $sourceCommit `
+            -ArchiveSha256 ([string]$candidate.Record.generation.archiveSha256) `
+            -ManifestSha256 ([string]$candidate.Record.generation.manifestSha256) `
+            -ContentSha256 ([string]$candidate.Record.generation.contentSha256) `
+            -RequireLiveCleanMachine
+    }
+    [void]$assertions.Add('Issue44FailedBoundaryRejected')
+
+    $residuals = Copy-TestJsonObject -Value $issue44LiveShapeValue
+    $residuals.cleanup.residuals = @('owned-backup-directory')
+    Assert-ExpectedFailure -Description 'Issue #44 cleanup residual' -RequiredFragments @('residuals') -Action {
+        Assert-V10Issue44ReportSemantics `
+            -Report $residuals `
+            -SourceCommit $sourceCommit `
+            -ArchiveSha256 ([string]$candidate.Record.generation.archiveSha256) `
+            -ManifestSha256 ([string]$candidate.Record.generation.manifestSha256) `
+            -ContentSha256 ([string]$candidate.Record.generation.contentSha256) `
+            -RequireLiveCleanMachine
+    }
+    [void]$assertions.Add('Issue44CleanupResidualRejected')
+
+    $emptyHashes = Copy-TestJsonObject -Value $issue44LiveShapeValue
+    $emptyHashes.artifacts.upgrade.installedFileHashes = @()
+    Assert-ExpectedFailure -Description 'Issue #44 empty installed hashes' -RequiredFragments @('installedFileHashes') -Action {
+        Assert-V10Issue44ReportSemantics `
+            -Report $emptyHashes `
+            -SourceCommit $sourceCommit `
+            -ArchiveSha256 ([string]$candidate.Record.generation.archiveSha256) `
+            -ManifestSha256 ([string]$candidate.Record.generation.manifestSha256) `
+            -ContentSha256 ([string]$candidate.Record.generation.contentSha256) `
+            -RequireLiveCleanMachine
+    }
+    [void]$assertions.Add('Issue44EmptyInstalledHashesRejected')
+
+    $wrongHash = Copy-TestJsonObject -Value $issue44LiveShapeValue
+    $wrongHash.artifacts.upgrade.archiveSha256 = New-TestHex64 -Character '0'
+    Assert-ExpectedFailure -Description 'Issue #44 wrong artifact hash' -RequiredFragments @('all-zero') -Action {
+        Assert-V10Issue44ReportSemantics `
+            -Report $wrongHash `
+            -SourceCommit $sourceCommit `
+            -ArchiveSha256 ([string]$candidate.Record.generation.archiveSha256) `
+            -ManifestSha256 ([string]$candidate.Record.generation.manifestSha256) `
+            -ContentSha256 ([string]$candidate.Record.generation.contentSha256) `
+            -RequireLiveCleanMachine
+    }
+    [void]$assertions.Add('Issue44WrongArtifactHashRejected')
+
+    $wrongMachineBinding = Copy-TestJsonObject -Value $issue44LiveShapeValue
+    $wrongMachineBinding.machine.expectedName = 'OTHER-HOST'
+    Assert-ExpectedFailure -Description 'Issue #44 wrong machine binding' -RequiredFragments @('machine identity') -Action {
+        Assert-V10Issue44ReportSemantics `
+            -Report $wrongMachineBinding `
+            -SourceCommit $sourceCommit `
+            -ArchiveSha256 ([string]$candidate.Record.generation.archiveSha256) `
+            -ManifestSha256 ([string]$candidate.Record.generation.manifestSha256) `
+            -ContentSha256 ([string]$candidate.Record.generation.contentSha256) `
+            -RequireLiveCleanMachine
+    }
+    [void]$assertions.Add('Issue44WrongMachineBindingRejected')
+
+    $wrongSourceBinding = Copy-TestJsonObject -Value $issue44LiveShapeValue
+    $wrongSourceBinding.artifacts.upgrade.sourceCommitBinding = (('b' * 40) -join '')
+    Assert-ExpectedFailure -Description 'Issue #44 wrong source binding' -RequiredFragments @('sourceCommitBinding') -Action {
+        Assert-V10Issue44ReportSemantics `
+            -Report $wrongSourceBinding `
+            -SourceCommit $sourceCommit `
+            -ArchiveSha256 ([string]$candidate.Record.generation.archiveSha256) `
+            -ManifestSha256 ([string]$candidate.Record.generation.manifestSha256) `
+            -ContentSha256 ([string]$candidate.Record.generation.contentSha256) `
+            -RequireLiveCleanMachine
+    }
+    [void]$assertions.Add('Issue44WrongSourceBindingRejected')
 
     $candidateRelative = Get-TestRelativePath -Path $candidateRecordPath -Root $repositoryRoot
     $releaseNotesPath = Join-Path $repositoryRoot 'docs\release\v1.0.0\release-notes.en.md'
@@ -297,7 +635,7 @@ $sourceCommit = ('a' * 40) # Synthetic fixture identity; production verification
             [ordered]@{ issue = 41; evidenceClass = 'ReleaseAudit'; status = 'PASS'; reportPath = (Get-TestRelativePath -Path $issue41Path -Root $repositoryRoot); reportSha256 = ((Get-FileHash $issue41Path -Algorithm SHA256).Hash); sourceCommit = $sourceCommit; archiveSha256 = $candidate.ArchiveSha256; authority = 'Synthetic PM Fixture'; observedAtUtc = '2026-08-17T00:10:00.0000000Z' },
             [ordered]@{ issue = 42; evidenceClass = 'Runtime'; status = 'PASS'; reportPath = (Get-TestRelativePath -Path $issue42Path -Root $repositoryRoot); reportSha256 = ((Get-FileHash $issue42Path -Algorithm SHA256).Hash); sourceCommit = $sourceCommit; archiveSha256 = $candidate.ArchiveSha256; authority = 'Synthetic Runtime Fixture'; observedAtUtc = '2026-08-17T00:20:00.0000000Z' },
             [ordered]@{ issue = 43; evidenceClass = 'IndependentReview'; status = 'PASS'; reportPath = (Get-TestRelativePath -Path $issue43Path -Root $repositoryRoot); reportSha256 = ((Get-FileHash $issue43Path -Algorithm SHA256).Hash); sourceCommit = $sourceCommit; archiveSha256 = $candidate.ArchiveSha256; authority = 'Synthetic Reviewer Fixture'; observedAtUtc = '2026-08-17T00:30:00.0000000Z' },
-            [ordered]@{ issue = 44; evidenceClass = 'CleanMachine'; status = 'PASS'; reportPath = (Get-TestRelativePath -Path $issue44Path -Root $repositoryRoot); reportSha256 = ((Get-FileHash $issue44Path -Algorithm SHA256).Hash); sourceCommit = $sourceCommit; archiveSha256 = $candidate.ArchiveSha256; authority = 'Synthetic Acceptance Fixture'; observedAtUtc = '2026-08-17T00:40:00.0000000Z' })
+            [ordered]@{ issue = 44; evidenceClass = 'CleanMachine'; status = 'PASS'; reportPath = (Get-TestRelativePath -Path $issue44LiveShapePath -Root $repositoryRoot); reportSha256 = ((Get-FileHash $issue44LiveShapePath -Algorithm SHA256).Hash); sourceCommit = $sourceCommit; archiveSha256 = $candidate.ArchiveSha256; authority = 'Synthetic Acceptance Fixture'; observedAtUtc = '2026-08-17T00:40:00.0000000Z' })
         goNoGo = [ordered]@{
             decision = 'GO'
             approver = 'Synthetic Product Owner Fixture'
