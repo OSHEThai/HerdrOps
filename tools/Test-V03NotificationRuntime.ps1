@@ -156,6 +156,10 @@ $sourceCommit = (& git -C $repositoryRoot rev-parse HEAD).Trim()
 if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($sourceCommit)) {
     throw 'Could not resolve the source commit for the v0.3 notification gate.'
 }
+$sourceTree = (& git -C $repositoryRoot rev-parse 'HEAD^{tree}').Trim()
+if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($sourceTree)) {
+    throw 'Could not resolve the source tree for the v0.3 notification gate.'
+}
 $contractSha256 = (Get-FileHash -LiteralPath $contractPath -Algorithm SHA256).Hash
 $reviewRecordSha256 = (Get-FileHash -LiteralPath $reviewRecordPath -Algorithm SHA256).Hash
 $gateReportPath = Join-Path $gateDirectory 'gate-report.txt'
@@ -163,6 +167,7 @@ $gateReport = @(
     'HerdrOps v0.3 Issue #16 Notification and Agent Popup Implementation Gate',
     "GeneratedUtc: $([DateTime]::UtcNow.ToString('O'))",
     "SourceCommit: $sourceCommit",
+    "SourceTree: $sourceTree",
     'Result: IMPLEMENTATION READY / PARTIAL',
     'ImplementationGate: PASS',
     'IssueAcceptance: PENDING',

@@ -7,10 +7,35 @@
     Herdr, a session command, or the runtime trace.
 #>
 
+[CmdletBinding()]
+param(
+    [Parameter(Mandatory)]
+    [ValidatePattern('^[0-9a-fA-F]{40}$')]
+    [string]$ExpectedSourceCommit,
+
+    [Parameter(Mandatory)]
+    [ValidatePattern('^[0-9a-fA-F]{40}$')]
+    [string]$ExpectedSourceTree
+)
+
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 $repositoryRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
+$ExpectedSourceCommit = $ExpectedSourceCommit.ToLowerInvariant()
+$ExpectedSourceTree = $ExpectedSourceTree.ToLowerInvariant()
+$actualSourceCommit = (& git -C $repositoryRoot rev-parse --verify 'HEAD^{commit}').Trim()
+if ($LASTEXITCODE -ne 0 -or $actualSourceCommit -cne $ExpectedSourceCommit) {
+    throw "Issue #14 selftest source commit mismatch: expected $ExpectedSourceCommit, actual $actualSourceCommit."
+}
+$actualSourceTree = (& git -C $repositoryRoot rev-parse --verify 'HEAD^{tree}').Trim()
+if ($LASTEXITCODE -ne 0 -or $actualSourceTree -cne $ExpectedSourceTree) {
+    throw "Issue #14 selftest source tree mismatch: expected $ExpectedSourceTree, actual $actualSourceTree."
+}
+$workingTreeStatus = @(& git -C $repositoryRoot status --porcelain=v1 --untracked-files=all)
+if ($LASTEXITCODE -ne 0 -or $workingTreeStatus.Count -ne 0) {
+    throw 'Issue #14 selftest requires a clean committed checkout.'
+}
 $wrapperPath = Join-Path $PSScriptRoot 'Invoke-V03Issue14TerminalProcessRuntimeAcceptance.ps1'
 $helperPath = Join-Path $PSScriptRoot 'lib/V03Issue14RuntimeAcceptance.ps1'
 $readmePath = Join-Path $PSScriptRoot 'README.md'

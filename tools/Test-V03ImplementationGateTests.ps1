@@ -212,6 +212,8 @@ function Invoke-AggregateWithCleanTestGit {
 
     $helperPath = Join-Path $HelperRoot 'aggregate-clean-git-helper.ps1'
     $realGitPath = (Get-Command git.exe -ErrorAction Stop).Source.Replace("'", "''")
+    $expectedSourceCommit = (& git -C $repositoryRoot rev-parse --verify 'HEAD^{commit}').Trim()
+    $expectedSourceTree = (& git -C $repositoryRoot rev-parse --verify 'HEAD^{tree}').Trim()
     $startupStderrLine = if ($EmitStartupStderr) {
         "[Console]::Error.WriteLine('synthetic helper startup stderr')"
     }
@@ -240,7 +242,7 @@ Remove-Item Env:\HERDR_ENV -ErrorAction SilentlyContinue
 Remove-Item Env:\HERDR_SOCKET_PATH -ErrorAction SilentlyContinue
 $startupStderrLine
 
-& `$AggregateScript -Configuration Debug -SkipBuild -ChildGateRoot `$ChildRoot
+& `$AggregateScript -Configuration Debug -SkipBuild -ChildGateRoot `$ChildRoot -ExpectedSourceCommit '$expectedSourceCommit' -ExpectedSourceTree '$expectedSourceTree'
 exit `$LASTEXITCODE
 "@
     Set-Content -LiteralPath $helperPath -Value $helperText -Encoding utf8
@@ -264,10 +266,14 @@ function New-StubChildGates {
     param(
         [Parameter(Mandatory)][string]$Root,
         [Parameter(Mandatory)][string]$SourceCommit,
+        [string]$SourceTree,
         [string]$FailIssue,
         [string]$PartialIssue
     )
 
+    if ([string]::IsNullOrWhiteSpace($SourceTree)) {
+        $SourceTree = (& git -C $repositoryRoot rev-parse --verify 'HEAD^{tree}').Trim()
+    }
     $definitions = @(Get-V03ImplementationChildGateDefinitions)
     $reportRoot = Join-Path $Root 'reports'
     New-Item -ItemType Directory -Path $reportRoot -Force | Out-Null
@@ -277,7 +283,7 @@ function New-StubChildGates {
         if ($definition.Issue -eq $FailIssue) {
             $scriptText = @"
 [CmdletBinding()]
-param([string]`$Configuration, [switch]`$SkipBuild, [switch]`$ImplementationOnly)
+param([string]`$Configuration, [switch]`$SkipBuild, [switch]`$ImplementationOnly, [string]`$ExpectedSourceCommit, [string]`$ExpectedSourceTree)
 throw 'synthetic child failure'
 "@
         }
@@ -290,10 +296,11 @@ throw 'synthetic child failure'
             }
             $scriptText = @"
 [CmdletBinding()]
-param([string]`$Configuration, [switch]`$SkipBuild, [switch]`$ImplementationOnly)
+param([string]`$Configuration, [switch]`$SkipBuild, [switch]`$ImplementationOnly, [string]`$ExpectedSourceCommit, [string]`$ExpectedSourceTree)
 @(
     'HerdrOps v0.3 Issue #$($definition.Issue) Implementation Gate',
     'SourceCommit: $SourceCommit',
+    'SourceTree: $SourceTree',
     'Result: $resultValue',
     'EvidenceClass: Contract plus Synthetic'
 ) | Set-Content -LiteralPath '$reportPath' -Encoding utf8
@@ -301,6 +308,17 @@ Write-Output 'GateReport: $reportPath'
 "@
         }
         Set-Content -LiteralPath $scriptPath -Value $scriptText -Encoding utf8
+
+        $contractSelfTestProperty = $definition.PSObject.Properties['ContractSelfTestScriptName']
+        if ($null -ne $contractSelfTestProperty -and -not [string]::IsNullOrWhiteSpace([string]$contractSelfTestProperty.Value)) {
+            $contractSelfTestPath = Join-Path $Root ([string]$contractSelfTestProperty.Value)
+            $contractSelfTestText = @"
+[CmdletBinding()]
+param([string]`$ExpectedSourceCommit, [string]`$ExpectedSourceTree)
+Write-Output 'Synthetic Issue #14 contract selftest PASS'
+"@
+            Set-Content -LiteralPath $contractSelfTestPath -Value $contractSelfTestText -Encoding utf8
+        }
     }
 }
 
@@ -312,6 +330,8 @@ function Invoke-AggregateDirectlyWithForcedHerdrEnvironment {
     )
 
     $helperPath = Join-Path $HelperRoot 'aggregate-forced-herdr-helper.ps1'
+    $sourceCommitForHelper = (& git -C $repositoryRoot rev-parse --verify 'HEAD^{commit}').Trim()
+    $sourceTreeForHelper = (& git -C $repositoryRoot rev-parse --verify 'HEAD^{tree}').Trim()
     $envAssignments = @()
     if (-not $SocketPathOnly) {
         $envAssignments += "`$env:HERDR_ENV = '1'"
@@ -326,7 +346,7 @@ param([string]`$AggregateScript)
 Remove-Item Env:\HERDR_ENV -ErrorAction SilentlyContinue
 Remove-Item Env:\HERDR_SOCKET_PATH -ErrorAction SilentlyContinue
 $envAssignmentBlock
-& `$AggregateScript -SkipBuild
+& `$AggregateScript -SkipBuild -ExpectedSourceCommit '$sourceCommitForHelper' -ExpectedSourceTree '$sourceTreeForHelper'
 exit `$LASTEXITCODE
 "@
     Set-Content -LiteralPath $helperPath -Value $helperText -Encoding utf8
@@ -345,11 +365,15 @@ exit `$LASTEXITCODE
 }
 
 $sourceCommit = (& git -C $repositoryRoot rev-parse --verify 'HEAD^{commit}').Trim()
+$sourceTree = (& git -C $repositoryRoot rev-parse --verify 'HEAD^{tree}').Trim()
 $definitions = @(Get-V03ImplementationChildGateDefinitions)
 $aggregateSource = Get-Content -LiteralPath $aggregateScript -Raw
 Assert-Equal -Expected '12,13,14,15,16' -Actual (($definitions | ForEach-Object Issue) -join ',') -Message 'Child issue order drifted.'
 Assert-Equal -Expected 'Test-V03FileGitActivity.ps1' -Actual $definitions[3].ScriptName -Message 'Issue #15 child script drifted.'
 Assert-True -Condition $definitions[3].ImplementationOnly -Message 'Issue #15 must use the implementation-only child mode.'
+Assert-Equal -Expected 'Test-V03Issue14RuntimeAcceptance.Tests.ps1' -Actual $definitions[2].ContractSelfTestScriptName -Message 'Issue #14 contract selftest mapping drifted.'
+Assert-True -Condition ($aggregateSource -match 'ExpectedSourceCommit') -Message 'Aggregate gate lost mandatory expected source commit binding.'
+Assert-True -Condition ($aggregateSource -match 'ExpectedSourceTree') -Message 'Aggregate gate lost mandatory expected source tree binding.'
 Assert-True -Condition ($aggregateSource -match '(?s)Invoke-Build\.ps1.*?-SkipTests') -Message 'Default aggregate build path must not invoke the full WPF test suite.'
 
 $fixtureBaseRoot = Join-Path $artifactRoot 'implementation-gate-test-fixtures'
@@ -370,6 +394,7 @@ try {
     $validReport = @(
         'HerdrOps v0.3 Issue #12 Implementation Gate',
         "SourceCommit: $sourceCommit",
+        "SourceTree: $sourceTree",
         'Result: PASS',
         'EvidenceClass: Contract plus Synthetic'
     )
@@ -379,12 +404,16 @@ try {
         -Output @("GateReport: $validReportPath") `
         -ArtifactRoot $artifactRoot
     Assert-Equal -Expected (Resolve-Path -LiteralPath $validReportPath).Path -Actual $resolved -Message 'Child report path resolution changed.'
-    $validResult = Assert-V03ImplementationChildReport -Name 'Valid' -ReportText (Get-Content -LiteralPath $resolved -Raw) -SourceCommit $sourceCommit
+    $validResult = Assert-V03ImplementationChildReport -Name 'Valid' -ReportText (Get-Content -LiteralPath $resolved -Raw) -ExpectedSourceCommit $sourceCommit -ExpectedSourceTree $sourceTree
     Assert-Equal -Expected 'PASS' -Actual $validResult -Message 'PASS child result was not returned by the validator.'
-    $partialResult = Assert-V03ImplementationChildReport -Name 'Partial' -ReportText "SourceCommit: $sourceCommit`nResult: IMPLEMENTATION READY / PARTIAL`nEvidenceClass: Contract plus Synthetic" -SourceCommit $sourceCommit
+    $partialResult = Assert-V03ImplementationChildReport -Name 'Partial' -ReportText "SourceCommit: $sourceCommit`nSourceTree: $sourceTree`nResult: IMPLEMENTATION READY / PARTIAL`nEvidenceClass: Contract plus Synthetic" -ExpectedSourceCommit $sourceCommit -ExpectedSourceTree $sourceTree
     Assert-Equal -Expected 'IMPLEMENTATION READY / PARTIAL' -Actual $partialResult -Message 'Partial child result was not returned by the validator.'
+    Assert-Throws -Action { Assert-V03ImplementationChildReport -Name 'AbsentIdentity' -ReportText "Result: PASS`nEvidenceClass: Contract plus Synthetic" -ExpectedSourceCommit $sourceCommit -ExpectedSourceTree $sourceTree } -Message 'Child report without source identities was accepted.'
+    Assert-Throws -Action { Assert-V03ImplementationChildReport -Name 'OneMissing' -ReportText "SourceCommit: $sourceCommit`nResult: PASS`nEvidenceClass: Contract plus Synthetic" -ExpectedSourceCommit $sourceCommit -ExpectedSourceTree $sourceTree } -Message 'Child report with one missing source identity was accepted.'
+    Assert-Throws -Action { Assert-V03ImplementationChildReport -Name 'WrongTree' -ReportText "SourceCommit: $sourceCommit`nSourceTree: $('0' * 40)`nResult: PASS`nEvidenceClass: Contract plus Synthetic" -ExpectedSourceCommit $sourceCommit -ExpectedSourceTree $sourceTree } -Message 'Child report with a wrong source tree was accepted.'
+    Assert-Throws -Action { Assert-V03ImplementationChildReport -Name 'StaleIdentity' -ReportText "SourceCommit: $('f' * 40)`nSourceTree: $('e' * 40)`nResult: PASS`nEvidenceClass: Contract plus Synthetic" -ExpectedSourceCommit $sourceCommit -ExpectedSourceTree $sourceTree } -Message 'Child report with stale source identities was accepted.'
     Assert-Throws -Action { Resolve-V03ImplementationReportPath -Output @('GateReport: one', 'GateReport: two') -ArtifactRoot $artifactRoot } -Message 'Duplicate child report paths were accepted.'
-    Assert-Throws -Action { Assert-V03ImplementationChildReport -Name 'Unsafe' -ReportText "SourceCommit: $sourceCommit`nResult: PASS`nEvidenceClass: Runtime" -SourceCommit $sourceCommit } -Message 'Runtime evidence was accepted by the implementation report validator.'
+    Assert-Throws -Action { Assert-V03ImplementationChildReport -Name 'Unsafe' -ReportText "SourceCommit: $sourceCommit`nSourceTree: $sourceTree`nResult: PASS`nEvidenceClass: Runtime" -ExpectedSourceCommit $sourceCommit -ExpectedSourceTree $sourceTree } -Message 'Runtime evidence was accepted by the implementation report validator.'
 
     $fixedTime = [DateTime]::new(2026, 8, 20, 0, 0, 0, [DateTimeKind]::Utc)
     $sampleResults = @(
@@ -392,11 +421,12 @@ try {
         [pscustomobject]@{ Issue = '13'; Name = 'RealtimeActivity'; Status = 'PARTIAL'; Attempted = $true; ReportSha256 = 'B' },
         [pscustomobject]@{ Issue = '14'; Name = 'TerminalProcess'; Status = 'NOT_RUN'; Attempted = $false; ReportSha256 = '' }
     )
-    $firstReport = @(New-V03ImplementationGateReport -SourceCommit $sourceCommit -ChildResults $sampleResults -Result PASS -GeneratedUtc $fixedTime -ExpectedChildGateCount 5) -join "`n"
-    $secondReport = @(New-V03ImplementationGateReport -SourceCommit $sourceCommit -ChildResults $sampleResults -Result PASS -GeneratedUtc $fixedTime -ExpectedChildGateCount 5) -join "`n"
+    $firstReport = @(New-V03ImplementationGateReport -SourceCommit $sourceCommit -SourceTree $sourceTree -ExpectedSourceCommit $sourceCommit -ExpectedSourceTree $sourceTree -ChildResults $sampleResults -Result PASS -GeneratedUtc $fixedTime -ExpectedChildGateCount 5) -join "`n"
+    $secondReport = @(New-V03ImplementationGateReport -SourceCommit $sourceCommit -SourceTree $sourceTree -ExpectedSourceCommit $sourceCommit -ExpectedSourceTree $sourceTree -ChildResults $sampleResults -Result PASS -GeneratedUtc $fixedTime -ExpectedChildGateCount 5) -join "`n"
     Assert-Equal -Expected $firstReport -Actual $secondReport -Message 'Aggregate report bytes were not deterministic.'
     Assert-True -Condition ($firstReport -match 'GateKind: Implementation') -Message 'Aggregate report omitted the implementation scope.'
     Assert-True -Condition ($firstReport -match 'EvidenceClasses: Static, Contract, Synthetic') -Message 'Aggregate report omitted evidence classes.'
+    Assert-True -Condition $firstReport.Contains("SourceTree: $sourceTree") -Message 'Aggregate report omitted the exact source tree.'
     Assert-True -Condition ($firstReport -match '(?m)^ChildGates: 1/5 PASS\r?$') -Message 'Aggregate report masked partial/not-run children as PASS.'
     Assert-True -Condition ($firstReport -match '(?m)^ChildGatesPartial: 1/5 PARTIAL\r?$') -Message 'Aggregate report omitted the partial child count.'
     Assert-True -Condition ($firstReport -match '(?m)^ChildGatesNotRun: 1/5 NOT_RUN\r?$') -Message 'Aggregate report omitted the not-run child count.'

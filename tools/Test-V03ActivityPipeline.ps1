@@ -191,11 +191,16 @@ $sourceCommit = (& git -C $repositoryRoot rev-parse HEAD).Trim()
 if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($sourceCommit)) {
     throw 'Could not resolve the source commit for the v0.3 activity-pipeline gate.'
 }
+$sourceTree = (& git -C $repositoryRoot rev-parse 'HEAD^{tree}').Trim()
+if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($sourceTree)) {
+    throw 'Could not resolve the source tree for the v0.3 activity-pipeline gate.'
+}
 $gateReportPath = Join-Path $gateDirectory 'gate-report.txt'
 $gateReport = @(
     'HerdrOps v0.3 Issue #12 Deterministic Activity Pipeline Gate',
     "GeneratedUtc: $([DateTime]::UtcNow.ToString('O'))",
     "SourceCommit: $sourceCommit",
+    "SourceTree: $sourceTree",
     'Result: PASS',
     'IssueAcceptance: PASS',
     'VersionReleaseGate: PENDING',
