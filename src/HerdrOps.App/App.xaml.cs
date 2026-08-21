@@ -337,6 +337,10 @@ public partial class App : Application
                 {
                     lifecycle.SelectLanguage(language);
                 },
+                theme =>
+                {
+                    lifecycle.SelectTheme(theme);
+                },
                 Shutdown,
                 UiLanguageService.Shared,
                 () =>

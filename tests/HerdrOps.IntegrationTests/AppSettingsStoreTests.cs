@@ -278,6 +278,18 @@ public sealed class AppSettingsStoreTests
     }
 
     [TestMethod]
+    public async Task MissingThemePropertyDefaultsToSystemTheme()
+    {
+        var store = CreateStore();
+        var admitted = await store.SaveAsync(AppSettings.Defaults);
+        var canonicalJson = admitted.CanonicalJson.Replace("\r\n", "\n", StringComparison.Ordinal);
+        var missingThemeJson = canonicalJson.Replace("  \"theme\": \"system\",\n", string.Empty, StringComparison.Ordinal);
+        await File.WriteAllTextAsync(_settingsPath, missingThemeJson, new UTF8Encoding(false));
+        var loaded = await store.LoadAsync();
+        Assert.AreEqual(AppSettingsTheme.System, loaded!.Settings.Theme);
+    }
+
+    [TestMethod]
     public async Task FailedAtomicCommitCleansTemporaryFileAndRetainsPreviousFile()
     {
         var firstStore = CreateStore();

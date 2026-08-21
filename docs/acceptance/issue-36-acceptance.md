@@ -13,7 +13,7 @@ Based on GitHub Issue #36 and `Plan/ROADMAP.md` (v0.7.0):
 1. [x] **Settings persist and are reversible:** Tested via `AppSettingsStoreTests.cs` and `DesktopLifecycleWindowTests.cs`.
 2. [x] **Thai/English UI passes clipping and language-switch tests:** Tested via `LanguageSwitchRenderingTests.cs`.
 3. [x] **Accessibility checklist passes on the reference host:** Tested via `WidgetAccessibilityTests.cs` (Keyboard focus, Screen Reader accessible names, Contrast ratio meeting WCAG AA, Reduced Motion, multi-monitor bounds).
-4. [x] **Theme settings implemented:** Verified via `AppSettingsStoreTests` and `UiThemeIntegrationTests`.
+4. [x] **Theme settings implemented:** Basic Light/Dark/System ResourceDictionary swapping, System theme sync, and backward-compatible settings migration implemented. Tray selector added. Full visual restyling coverage across all views is not guaranteed.
 5. [ ] **Retention settings verified:** FAILED (Not reported in acceptance).
 6. [ ] **Startup (start-at-logon) integration verified:** FAILED (Not reported in acceptance).
 
@@ -22,7 +22,7 @@ Based on GitHub Issue #36 and `Plan/ROADMAP.md` (v0.7.0):
 - **Lifecycle tests:** `DesktopLifecycleWindowTests.cs` verifies idempotency of window show/hide and setting persistence.
 - **Localization screenshots:** Captured and stored in `artifacts/design-evidence/v0.1/issue-60` (as defined in `LanguageSwitchRenderingTests`).
 - **Accessibility report:** Included in `WidgetAccessibilityTests.cs` assertions.
-- **Theme settings tests:** `UiThemeIntegrationTests.cs` verifies apply logic and `AppSettingsStoreTests.cs` verifies persistence.
+- **Theme settings tests:** `UiThemeIntegrationTests.cs` verifies runtime resource swapping and synchronization logic, and `AppSettingsStoreTests.cs` verifies backward-compatible config migration.
 
 ## Evidence Boundary
 

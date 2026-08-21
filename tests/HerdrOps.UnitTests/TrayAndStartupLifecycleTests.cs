@@ -302,6 +302,12 @@ public sealed class TrayAndStartupLifecycleTests
             Languages.Add(language);
         }
 
+        public void SelectTheme(AppSettingsTheme theme)
+        {
+            ThrowIfConfigured();
+            Actions.Add("theme");
+        }
+
         public void Exit()
         {
             ThrowIfConfigured();

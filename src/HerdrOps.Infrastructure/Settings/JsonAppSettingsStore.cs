@@ -591,7 +591,9 @@ public sealed class JsonAppSettingsStore : IAppSettingsStore
 
             var schemaVersion = ReadStrictInt32(root, "schemaVersion");
             var language = ParseLanguage(ReadString(root, "language"));
-            var theme = ParseTheme(ReadString(root, "theme"));
+            var theme = root.TryGetProperty("theme", out var themeProperty) && themeProperty.ValueKind == JsonValueKind.String
+                ? ParseTheme(themeProperty.GetString()!)
+                : AppSettingsTheme.System;
             var widgetVariant = ParseWidgetVariant(ReadString(root, "widgetVariant"));
             var widgetEnabled = ReadBoolean(root, "widgetEnabled");
             var widgetPinned = ReadBoolean(root, "widgetPinned");
@@ -710,7 +712,11 @@ public sealed class JsonAppSettingsStore : IAppSettingsStore
 
         if (seen.Count != expected.Count)
         {
-            throw new SettingsValidationException($"{name} is missing a required property.");
+            var isMissingOnlyTheme = name == "settings" && seen.Count == expected.Count - 1 && !seen.Contains("theme");
+            if (!isMissingOnlyTheme)
+            {
+                throw new SettingsValidationException($"{name} is missing a required property.");
+            }
         }
     }
 

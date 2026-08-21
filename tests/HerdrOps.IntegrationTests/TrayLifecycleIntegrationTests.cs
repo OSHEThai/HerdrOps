@@ -130,6 +130,15 @@ public sealed class TrayLifecycleIntegrationTests
                 ? TrayCommand.SelectThaiLanguage
                 : TrayCommand.SelectEnglishLanguage);
 
+        public void SelectTheme(AppSettingsTheme theme) =>
+            Commands.Add(theme switch
+            {
+                AppSettingsTheme.System => TrayCommand.SelectSystemTheme,
+                AppSettingsTheme.Light => TrayCommand.SelectLightTheme,
+                AppSettingsTheme.Dark => TrayCommand.SelectDarkTheme,
+                _ => TrayCommand.SelectSystemTheme,
+            });
+
         public void Exit() => Commands.Add(TrayCommand.Exit);
     }
 }

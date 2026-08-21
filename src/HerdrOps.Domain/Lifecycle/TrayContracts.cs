@@ -11,6 +11,9 @@ public enum TrayCommand
     HideDashboard,
     ShowConfiguredWidget,
     ToggleWidgetEnabled,
+    SelectSystemTheme,
+    SelectLightTheme,
+    SelectDarkTheme,
     SelectThaiLanguage,
     SelectEnglishLanguage,
     ToggleStartAtLogon,
@@ -133,6 +136,8 @@ public interface ITrayCommandTarget
 
     void SelectLanguage(AppSettingsLanguage language);
 
+    void SelectTheme(AppSettingsTheme theme);
+
     void Exit();
 }
 
@@ -191,6 +196,15 @@ public sealed class TrayCommandRouter
                 break;
             case TrayCommand.SelectEnglishLanguage:
                 _target.SelectLanguage(AppSettingsLanguage.English);
+                break;
+            case TrayCommand.SelectSystemTheme:
+                _target.SelectTheme(AppSettingsTheme.System);
+                break;
+            case TrayCommand.SelectLightTheme:
+                _target.SelectTheme(AppSettingsTheme.Light);
+                break;
+            case TrayCommand.SelectDarkTheme:
+                _target.SelectTheme(AppSettingsTheme.Dark);
                 break;
             case TrayCommand.ToggleStartAtLogon:
                 if (_target is not IStartAtLogonTrayCommandTarget startAtLogonTarget)
