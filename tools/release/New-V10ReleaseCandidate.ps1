@@ -288,7 +288,7 @@ $operationOutput = Invoke-PackagingOperationWithCleanup -Operation {
 
     $manifest = New-PackageManifestObject -Profile $profile -PackageRoot $packageRoot
     Write-PackageManifest -Manifest $manifest -PackageRoot $packageRoot | Out-Null
-    $archivePath = Join-Path $workRoot 'HerdrOps-1.0.0-win-x64.zip'
+    $archivePath = Join-Path $workRoot ("HerdrOps-{0}-{1}.zip" -f $profile.packageVersion, $profile.runtimeIdentifier)
     $hashRecordPath = Join-Path $workRoot 'package-hashes.txt'
     $archive = New-DeterministicPackageArchive -PackageRoot $packageRoot -ArchivePath $archivePath
     Write-PackageHashRecord -Profile $profile -PackageRoot $packageRoot -ArchivePath $archive -Path $hashRecordPath | Out-Null

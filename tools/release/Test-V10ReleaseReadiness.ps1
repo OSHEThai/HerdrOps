@@ -170,7 +170,7 @@ try {
         -HashRecordPath $hashSource `
         -OutputRoot $candidateRoot
 
-    $sourceCommit = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+$sourceCommit = ('a' * 40) # Synthetic fixture identity; production verification reads the real commit.
     $candidateRecord = New-V10CandidateRecord `
         -Profile $profile `
         -RepositoryRoot $repositoryRoot `
