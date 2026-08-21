@@ -182,11 +182,15 @@ $targetAgentLabSocket = Join-Path $env:APPDATA 'herdr\herdr.sock'
 # (self-review must fail closed, PM sends to Leader, Leader escalates to PM,
 # PM confirms) against the observed Herdr runtime and emit the composite
 # runtime acceptance report and runtime gate report.
+$expectedSourceCommit = '<approved-source-commit-40-hex>'
+$expectedSourceTree = '<approved-source-tree-40-hex>'
 ./tools/Invoke-V05ComplianceRuntimeAcceptance.ps1 `
   -ProjectManagerTerminalId '<terminal-id>' `
   -LeaderTerminalId '<terminal-id>' `
   -SubjectTerminalId '<terminal-id>' `
-  -EvidencePath '<verified-evidence-file>'
+  -EvidencePath '<verified-evidence-file>' `
+  -ExpectedSourceCommit $expectedSourceCommit `
+  -ExpectedSourceTree $expectedSourceTree
 
 # From an authorized Herdr pane, capture actual bounded pane-read and
 # Herdr-PID-to-Windows-process evidence without controlling the session.

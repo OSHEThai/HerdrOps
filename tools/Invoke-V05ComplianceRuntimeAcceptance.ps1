@@ -12,6 +12,14 @@ param(
     [Parameter(Mandatory)]
     [string]$EvidencePath,
 
+    [Parameter(Mandatory)]
+    [ValidatePattern('^[0-9a-fA-F]{40}$')]
+    [string]$ExpectedSourceCommit,
+
+    [Parameter(Mandatory)]
+    [ValidatePattern('^[0-9a-fA-F]{40}$')]
+    [string]$ExpectedSourceTree,
+
     [string]$HerdrExecutable = (Join-Path $env:LOCALAPPDATA 'Programs\Herdr\bin\herdr.exe'),
 
     [string]$SocketPath = $env:HERDR_SOCKET_PATH,
@@ -32,24 +40,6 @@ if (-not (Test-Path -LiteralPath $traceOrchestrationPath -PathType Leaf)) {
     throw "Compliance runtime trace orchestration helper is missing: $traceOrchestrationPath"
 }
 . $traceOrchestrationPath
-
-function Get-CleanSourceCommit {
-    param([Parameter(Mandatory)][string]$Root)
-
-    $commit = (& git -C $Root rev-parse HEAD).Trim()
-    if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($commit)) {
-        throw 'Could not resolve the source commit for v0.5 compliance runtime acceptance.'
-    }
-    $changes = @(& git -C $Root status --porcelain=v1 --untracked-files=all)
-    if ($LASTEXITCODE -ne 0) {
-        throw 'Could not inspect the source working tree for v0.5 compliance runtime acceptance.'
-    }
-    if ($changes.Count -ne 0) {
-        throw "Runtime evidence requires a clean committed checkout. Changes: $($changes -join '; ')"
-    }
-
-    return $commit
-}
 
 function Wait-ServiceReady {
     param(
@@ -86,64 +76,75 @@ function Stop-StartedProcess {
     }
 }
 
-if ($env:HERDR_ENV -ne '1') {
-    throw 'The v0.5 compliance runtime harness must run inside an authorized Herdr pane with HERDR_ENV=1.'
-}
-if ([string]::IsNullOrWhiteSpace($SocketPath)) {
-    throw 'The v0.5 compliance runtime harness requires the active HERDR_SOCKET_PATH.'
-}
-if (-not (Test-Path -LiteralPath $HerdrExecutable -PathType Leaf)) {
-    throw "Installed Herdr executable not found: $HerdrExecutable"
-}
-if (-not (Test-Path -LiteralPath $EvidencePath -PathType Leaf)) {
-    throw "Runtime evidence file not found: $EvidencePath"
-}
-
-$terminalIds = @(
-    $ProjectManagerTerminalId,
-    $LeaderTerminalId,
-    $SubjectTerminalId)
-$distinctTerminalIds = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
-foreach ($terminalId in $terminalIds) {
-    if (-not [string]::IsNullOrWhiteSpace($terminalId)) {
-        [void]$distinctTerminalIds.Add($terminalId)
-    }
-}
-if (@($terminalIds | Where-Object { [string]::IsNullOrWhiteSpace($_) }).Count -ne 0 -or
-    $distinctTerminalIds.Count -ne 3) {
-    throw 'Project Manager, Leader, and Subject terminal IDs must be three distinct non-blank values.'
-}
-
 $repositoryRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
 $artifactRoot = Join-Path $repositoryRoot 'artifacts'
-$sourceCommit = Get-CleanSourceCommit -Root $repositoryRoot
-$resolvedEvidencePath = (Resolve-Path -LiteralPath $EvidencePath).Path
-$evidenceSha256 = (Get-FileHash -LiteralPath $resolvedEvidencePath -Algorithm SHA256).Hash
-
-& (Join-Path $PSScriptRoot 'Invoke-Build.ps1') -Configuration $Configuration -VerifyFormat
-if ($LASTEXITCODE -ne 0) {
-    throw 'Build and automated tests failed before v0.5 compliance runtime acceptance.'
-}
-
-$configurationDirectory = $Configuration.ToLowerInvariant()
-$coreExecutable = Join-Path $artifactRoot "bin\HerdrOps.Core\$configurationDirectory\HerdrOps.Core.exe"
-$cliExecutable = Join-Path $artifactRoot "bin\HerdrOps.Cli\$configurationDirectory\HerdrOps.Cli.exe"
-foreach ($executable in @($coreExecutable, $cliExecutable)) {
-    if (-not (Test-Path -LiteralPath $executable -PathType Leaf)) {
-        throw "Required runtime executable not found: $executable"
-    }
-}
-
+$sourceCommit = 'UNRESOLVED'
+$sourceTree = 'UNRESOLVED'
 $runId = "$([DateTimeOffset]::UtcNow.ToString('yyyyMMddTHHmmssZ'))-$([Guid]::NewGuid().ToString('N').Substring(0, 8))"
 $evidenceDirectory = Join-Path $artifactRoot "runtime-evidence\v0.5.0\issue-28\$runId"
-$stateDatabasePath = Join-Path $evidenceDirectory 'herdr-state.db'
-$herdrRuntimeReportPath = Join-Path $evidenceDirectory 'herdr-runtime.json'
-$reviewTracePath = Join-Path $evidenceDirectory 'compliance-review-trace.json'
-$compositeReportPath = Join-Path $evidenceDirectory 'composite-compliance-acceptance.json'
 $runtimeGateReportPath = Join-Path $evidenceDirectory 'runtime-gate-report.txt'
-$stateOutputPath = Join-Path $evidenceDirectory 'state-core.stdout.txt'
-$stateErrorPath = Join-Path $evidenceDirectory 'state-core.stderr.txt'
-New-Item -ItemType Directory -Path $evidenceDirectory -Force | Out-Null
+
+try {
+    if ($env:HERDR_ENV -ne '1') {
+        throw 'The v0.5 compliance runtime harness must run inside an authorized Herdr pane with HERDR_ENV=1.'
+    }
+    if ([string]::IsNullOrWhiteSpace($SocketPath)) {
+        throw 'The v0.5 compliance runtime harness requires the active HERDR_SOCKET_PATH.'
+    }
+    if (-not (Test-Path -LiteralPath $HerdrExecutable -PathType Leaf)) {
+        throw "Installed Herdr executable not found: $HerdrExecutable"
+    }
+    if (-not (Test-Path -LiteralPath $EvidencePath -PathType Leaf)) {
+        throw "Runtime evidence file not found: $EvidencePath"
+    }
+
+    $terminalIds = @(
+        $ProjectManagerTerminalId,
+        $LeaderTerminalId,
+        $SubjectTerminalId)
+    $distinctTerminalIds = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    foreach ($terminalId in $terminalIds) {
+        if (-not [string]::IsNullOrWhiteSpace($terminalId)) {
+            [void]$distinctTerminalIds.Add($terminalId)
+        }
+    }
+    if (@($terminalIds | Where-Object { [string]::IsNullOrWhiteSpace($_) }).Count -ne 0 -or
+        $distinctTerminalIds.Count -ne 3) {
+        throw 'Project Manager, Leader, and Subject terminal IDs must be three distinct non-blank values.'
+    }
+
+    $preRunIdentity = Assert-CleanSourceIdentity `
+        -Root $repositoryRoot `
+        -ExpectedCommit $ExpectedSourceCommit `
+        -ExpectedTree $ExpectedSourceTree `
+        -Phase 'Pre-run'
+    $sourceCommit = $preRunIdentity.Commit
+    $sourceTree = $preRunIdentity.Tree
+    $resolvedEvidencePath = (Resolve-Path -LiteralPath $EvidencePath).Path
+    $evidenceSha256 = (Get-FileHash -LiteralPath $resolvedEvidencePath -Algorithm SHA256).Hash
+
+    & (Join-Path $PSScriptRoot 'Invoke-Build.ps1') -Configuration $Configuration -VerifyFormat
+    if ($LASTEXITCODE -ne 0) {
+        throw 'Build and automated tests failed before v0.5 compliance runtime acceptance.'
+    }
+
+    $configurationDirectory = $Configuration.ToLowerInvariant()
+    $coreExecutable = Join-Path $artifactRoot "bin\HerdrOps.Core\$configurationDirectory\HerdrOps.Core.exe"
+    $cliExecutable = Join-Path $artifactRoot "bin\HerdrOps.Cli\$configurationDirectory\HerdrOps.Cli.exe"
+    foreach ($executable in @($coreExecutable, $cliExecutable)) {
+        if (-not (Test-Path -LiteralPath $executable -PathType Leaf)) {
+            throw "Required runtime executable not found: $executable"
+        }
+    }
+
+    $stateDatabasePath = Join-Path $evidenceDirectory 'herdr-state.db'
+    $herdrRuntimeReportPath = Join-Path $evidenceDirectory 'herdr-runtime.json'
+    $reviewTracePath = Join-Path $evidenceDirectory 'compliance-review-trace.json'
+    $compositeReportPath = Join-Path $evidenceDirectory 'composite-compliance-acceptance.json'
+    $stateOutputPath = Join-Path $evidenceDirectory 'state-core.stdout.txt'
+    $stateErrorPath = Join-Path $evidenceDirectory 'state-core.stderr.txt'
+    New-Item -ItemType Directory -Path $evidenceDirectory -Force | Out-Null
+
 
 $stateArguments = @(
     'serve-herdr-state',
@@ -360,32 +361,47 @@ if ($composite.EvidenceClassification -ne 'Runtime' -or
     throw 'The composite compliance report did not pass every runtime acceptance check.'
 }
 
-$compositeSha256 = (Get-FileHash -LiteralPath $compositeReportPath -Algorithm SHA256).Hash
-$herdrRuntimeSha256 = (Get-FileHash -LiteralPath $herdrRuntimeReportPath -Algorithm SHA256).Hash
+    $verifiedSourceIdentity = Assert-CleanSourceIdentity `
+        -Root $repositoryRoot `
+        -ExpectedCommit $ExpectedSourceCommit `
+        -ExpectedTree $ExpectedSourceTree `
+        -Phase 'Post-run'
 
-$runtimeGateReport = @(
-    'HerdrOps v0.5 Issue #28 Compliance Privacy, Retention, and Runtime Acceptance',
-    "GeneratedUtc: $([DateTime]::UtcNow.ToString('O'))",
-    "SourceCommit: $sourceCommit",
-    'Result: PASS',
-    'EvidenceClass: Runtime',
-    'RuntimeAccepted: true',
-    'SessionControlInvoked: false',
-    "CompositeRuntimeReportSha256: $compositeSha256",
-    "HerdrRuntimeReportSha256: $herdrRuntimeSha256",
-    "EvidenceFileSha256: $evidenceSha256",
-    "CompositeRuntimeReport: $compositeReportPath",
-    "HerdrRuntimeReport: $herdrRuntimeReportPath",
-    "ProjectManagerTerminalId: $ProjectManagerTerminalId",
-    "LeaderTerminalId: $LeaderTerminalId",
-    "SubjectTerminalId: $SubjectTerminalId",
-    '',
-    'EvidenceBoundary:',
-    'This report validates compliance lifecycle routing from suspicion through role-distinct Leader escalation and PM confirmation, retention protection, secret-redacted metadata, and queue consistency against an observed Herdr runtime.',
-    'This runtime acceptance report is not packaged release evidence, clean-install validation, or release authorization.',
-    'Current-user Named Pipe isolation provides operational attestation only.'
-)
-$runtimeGateReport | Set-Content -LiteralPath $runtimeGateReportPath -Encoding utf8
-$runtimeGateReport | Write-Output
-Write-Output "CompositeRuntimeReport: $compositeReportPath"
-Write-Output "RuntimeGateReport: $runtimeGateReportPath"
+    $compositeSha256 = (Get-FileHash -LiteralPath $compositeReportPath -Algorithm SHA256).Hash
+    $herdrRuntimeSha256 = (Get-FileHash -LiteralPath $herdrRuntimeReportPath -Algorithm SHA256).Hash
+
+    $runtimeGateReport = @(
+        'HerdrOps v0.5 Issue #28 Compliance Privacy, Retention, and Runtime Acceptance',
+        "GeneratedUtc: $([DateTime]::UtcNow.ToString('O'))",
+        "SourceCommit: $sourceCommit",
+        "SourceTree: $sourceTree",
+        'Result: PASS',
+        'EvidenceClass: Runtime',
+        'RuntimeAccepted: true',
+        'SessionControlInvoked: false',
+        "CompositeRuntimeReportSha256: $compositeSha256",
+        "HerdrRuntimeReportSha256: $herdrRuntimeSha256",
+        "EvidenceFileSha256: $evidenceSha256",
+        "CompositeRuntimeReport: $compositeReportPath",
+        "HerdrRuntimeReport: $herdrRuntimeReportPath",
+        "ProjectManagerTerminalId: $ProjectManagerTerminalId",
+        "LeaderTerminalId: $LeaderTerminalId",
+        "SubjectTerminalId: $SubjectTerminalId",
+        '',
+        'EvidenceBoundary:',
+        'This report validates compliance lifecycle routing from suspicion through role-distinct Leader escalation and PM confirmation, retention protection, secret-redacted metadata, and queue consistency against an observed Herdr runtime.',
+        'This runtime acceptance report is not packaged release evidence, clean-install validation, or release authorization.',
+        'Current-user Named Pipe isolation provides operational attestation only.'
+    )
+    $runtimeGateReport | Set-Content -LiteralPath $runtimeGateReportPath -Encoding utf8
+    $runtimeGateReport | Write-Output
+    Write-Output "CompositeRuntimeReport: $compositeReportPath"
+    Write-Output "RuntimeGateReport: $runtimeGateReportPath"
+} catch {
+    Write-ComplianceRuntimeFailureReport `
+        -GateReportPath $runtimeGateReportPath `
+        -FailureMessage $_.Exception.Message `
+        -SourceCommit $sourceCommit `
+        -SourceTree $sourceTree
+    throw
+}

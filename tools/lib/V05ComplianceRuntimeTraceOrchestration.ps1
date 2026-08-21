@@ -299,3 +299,101 @@ function Invoke-V05ComplianceReviewTraceProducer {
         TracePath = $ReviewTracePath
     }
 }
+
+function Get-CleanSourceIdentity {
+    param([Parameter(Mandatory)][string]$Root)
+
+    $previousPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = 'Continue'
+        $commitOutput = @(& git -C $Root rev-parse --verify 'HEAD^{commit}' 2>&1 | ForEach-Object { [string]$_ })
+        $commitExit = $LASTEXITCODE
+
+        $treeOutput = @(& git -C $Root rev-parse --verify 'HEAD^{tree}' 2>&1 | ForEach-Object { [string]$_ })
+        $treeExit = $LASTEXITCODE
+
+        $statusOutput = @(& git -C $Root status --porcelain=v1 --untracked-files=all 2>&1 | ForEach-Object { [string]$_ })
+        $statusExit = $LASTEXITCODE
+    }
+    finally {
+        $ErrorActionPreference = $previousPreference
+    }
+
+    $commit = ($commitOutput -join '').Trim()
+    if ($commitExit -ne 0 -or $commit -notmatch '^[0-9a-fA-F]{40}$') {
+        throw "SourceCommitResolutionFailed: could not resolve source commit in '$Root'."
+    }
+
+    $tree = ($treeOutput -join '').Trim()
+    if ($treeExit -ne 0 -or $tree -notmatch '^[0-9a-fA-F]{40}$') {
+        throw "SourceTreeResolutionFailed: could not resolve source tree in '$Root'."
+    }
+
+    if ($statusExit -ne 0) {
+        throw "WorkingTreeInspectionFailed: could not inspect source working tree in '$Root'."
+    }
+    if ($statusOutput.Count -ne 0) {
+        throw "WorkingTreeDirty: runtime evidence requires a clean committed checkout. Changes: $($statusOutput -join '; ')"
+    }
+
+    return [pscustomobject]@{
+        Commit = $commit.ToLowerInvariant()
+        Tree   = $tree.ToLowerInvariant()
+        Clean  = $true
+    }
+}
+
+function Assert-CleanSourceIdentity {
+    param(
+        [Parameter(Mandatory)][string]$Root,
+        [Parameter(Mandatory)][string]$ExpectedCommit,
+        [Parameter(Mandatory)][string]$ExpectedTree,
+        [Parameter(Mandatory)][string]$Phase
+    )
+
+    $current = Get-CleanSourceIdentity -Root $Root
+    if ($current.Commit -ne $ExpectedCommit.ToLowerInvariant()) {
+        throw "SourceCommitMismatch: $Phase source commit mismatch (expected=$($ExpectedCommit.ToLowerInvariant()), actual=$($current.Commit))."
+    }
+    if ($current.Tree -ne $ExpectedTree.ToLowerInvariant()) {
+        throw "SourceTreeMismatch: $Phase source tree mismatch (expected=$($ExpectedTree.ToLowerInvariant()), actual=$($current.Tree))."
+    }
+    if (-not $current.Clean) {
+        throw "WorkingTreeDirty: $Phase source working tree is dirty."
+    }
+
+    return $current
+}
+
+function Write-ComplianceRuntimeFailureReport {
+    param(
+        [Parameter(Mandatory)][string]$GateReportPath,
+        [Parameter(Mandatory)][AllowEmptyString()][string]$FailureMessage,
+        [AllowEmptyString()][string]$SourceCommit = 'UNRESOLVED',
+        [AllowEmptyString()][string]$SourceTree = 'UNRESOLVED'
+    )
+
+    try {
+        $parentDirectory = Split-Path -Parent $GateReportPath
+        if (-not [string]::IsNullOrWhiteSpace($parentDirectory)) {
+            New-Item -ItemType Directory -Path $parentDirectory -Force -ErrorAction SilentlyContinue | Out-Null
+        }
+
+        $reportLines = @(
+            'HerdrOps v0.5 Issue #28 Compliance Privacy, Retention, and Runtime Acceptance',
+            "GeneratedUtc: $([DateTime]::UtcNow.ToString('O'))",
+            "SourceCommit: $SourceCommit",
+            "SourceTree: $SourceTree",
+            'Result: FAIL',
+            'EvidenceClass: NoRuntimeCredit',
+            'RuntimeAccepted: false',
+            'SessionControlInvoked: false',
+            "Failure: $FailureMessage"
+        )
+        $reportLines | Set-Content -LiteralPath $GateReportPath -Encoding utf8 -ErrorAction Stop
+    }
+    catch {
+        Write-Warning "Could not write failure gate report '$GateReportPath': $($_.Exception.Message)"
+    }
+}
+
