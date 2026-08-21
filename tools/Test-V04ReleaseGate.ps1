@@ -58,6 +58,57 @@ foreach ($requiredLine in @(
 $reviewRecords = 18..22 | ForEach-Object {
     Join-Path $repositoryRoot "docs\reviews\v0.4-issue-$($_)-independent-review.md"
 }
+
+$scopedReviewBindings = @(
+    [pscustomobject]@{
+        Issue = 20
+        Path = $reviewRecords[2]
+        RequiredPaths = @(
+            'docs/design/reference/04-delegation-graph.png',
+            'docs/design/implementation/v0.4-issue-20-delegation-graph.md',
+            'src/HerdrOps.Domain/Assignments/AssignmentDelegationGraph.cs',
+            'src/HerdrOps.App/Delegation/DelegationGraphState.cs',
+            'src/HerdrOps.App/Views/DelegationGraphView.xaml',
+            'src/HerdrOps.App/Views/DelegationGraphView.xaml.cs',
+            'src/HerdrOps.App/Views/ShellView.xaml',
+            'src/HerdrOps.App/Views/ShellView.xaml.cs',
+            'src/HerdrOps.App/Live/LiveDashboardState.cs',
+            'src/HerdrOps.App/Localization/UiLanguageService.cs',
+            'tests/HerdrOps.UnitTests/AssignmentDelegationGraphTests.cs',
+            'tests/HerdrOps.IntegrationTests/DelegationGraphStateTests.cs',
+            'tests/HerdrOps.RuntimeTests/DelegationGraphRenderingTests.cs',
+            'tools/Test-V04DelegationGraph.ps1')
+    },
+    [pscustomobject]@{
+        Issue = 22
+        Path = $reviewRecords[4]
+        RequiredPaths = @(
+            'docs/design/reference/11-widget-concepts.png',
+            'docs/design/implementation/v0.4-issue-22-expanded-widget-runtime.md',
+            'docs/protocol/v0.4-runtime-lifecycle-acceptance.md',
+            'docs/protocol/examples/v0.4/assignment.json',
+            'tools/Invoke-V04LifecycleRuntimeAcceptance.ps1',
+            'tools/Test-V04ExpandedWidget.ps1',
+            'tools/Test-V04ReleaseGate.ps1',
+            'src/HerdrOps.App/Widgets/WidgetAssignmentProjection.cs',
+            'src/HerdrOps.App/Widgets/LiveWidgetState.cs',
+            'src/HerdrOps.Core/AssignmentLifecycleIngestionCoordinator.cs',
+            'tests/HerdrOps.IntegrationTests/WidgetAssignmentProjectionTests.cs',
+            'tests/HerdrOps.IntegrationTests/AssignmentLifecycleIngestionCoordinatorTests.cs',
+            'tests/HerdrOps.IntegrationTests/UiLanguageCatalogTests.cs',
+            'tests/HerdrOps.RuntimeTests/LiveWidgetRenderingTests.cs')
+    })
+foreach ($bindingRequest in $scopedReviewBindings) {
+    $binding = & (Join-Path $repositoryRoot 'tools\lib\Assert-V04ReviewBinding.ps1') `
+        -ReviewRecordPath $bindingRequest.Path `
+        -RepositoryRoot $repositoryRoot `
+        -CurrentHead $sourceCommit `
+        -RequiredReviewedPaths $bindingRequest.RequiredPaths
+    if ($binding.LocalIndependentReviewBinding -cne 'PASS') {
+        throw "Issue #$($bindingRequest.Issue) independent review is not bound to the current source: $($binding.LocalIndependentReviewBinding)"
+    }
+}
+
 foreach ($reviewRecord in $reviewRecords) {
     if (-not (Test-Path -LiteralPath $reviewRecord -PathType Leaf)) {
         throw "Independent v0.4 review record is missing: $reviewRecord"
