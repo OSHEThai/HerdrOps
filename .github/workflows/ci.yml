@@ -177,6 +177,14 @@ jobs:
         shell: pwsh
         run: ./tools/Test-V03ImplementationGate.ps1 -Configuration Release -SkipBuild
 
+      - name: Run v0.4 review-binding verifier tests (PowerShell 7)
+        shell: pwsh
+        run: ./tools/Test-V04ReviewBinding.ps1
+
+      - name: Run v0.4 review-binding verifier tests (Windows PowerShell 5.1)
+        shell: powershell
+        run: ./tools/Test-V04ReviewBinding.ps1
+
       - name: Run v0.4 CLI self-report implementation gate
         shell: pwsh
         run: ./tools/Test-V04SelfReportCli.ps1 -Configuration Release -SkipBuild

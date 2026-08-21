@@ -55,14 +55,64 @@ foreach ($requiredLine in @(
     }
 }
 
-$reviewRecords = 18..22 | ForEach-Object {
-    Join-Path $repositoryRoot "docs\reviews\v0.4-issue-$($_)-independent-review.md"
-}
-
-$scopedReviewBindings = @(
+$reviewBindings = @(
+    [pscustomobject]@{
+        Issue = 18
+        Path = Join-Path $repositoryRoot 'docs\reviews\v0.4-issue-18-independent-review.md'
+        RequiredPaths = @(
+            'docs/design/implementation/v0.4-issue-18-cli-self-report.md',
+            'docs/protocol/examples/v0.4/acknowledgement.json',
+            'docs/protocol/examples/v0.4/assignment.json',
+            'docs/protocol/examples/v0.4/delegation.json',
+            'docs/protocol/examples/v0.4/deviation.json',
+            'docs/protocol/examples/v0.4/evidence.json',
+            'docs/protocol/examples/v0.4/handoff.json',
+            'docs/protocol/examples/v0.4/progress.json',
+            'docs/protocol/v0.4-cli-self-report-contract.md',
+            'docs/protocol/v0.4-runtime-lifecycle-acceptance.md',
+            'src/HerdrOps.Cli/HerdrOps.Cli.csproj',
+            'src/HerdrOps.Cli/HerdrOpsCliCommand.cs',
+            'src/HerdrOps.Cli/HerdrOpsSelfReportPipeClient.cs',
+            'src/HerdrOps.Cli/Program.cs',
+            'src/HerdrOps.Contracts/SelfReport/HerdrOpsSelfReportContract.cs',
+            'src/HerdrOps.Contracts/SelfReport/HerdrOpsSelfReportJson.cs',
+            'src/HerdrOps.Contracts/SelfReport/HerdrOpsSelfReportPipeName.cs',
+            'src/HerdrOps.Core/AssignmentLifecycleRuntimeAcceptanceCommand.cs',
+            'src/HerdrOps.Core/HerdrOpsSelfReportAcceptanceService.cs',
+            'src/HerdrOps.Core/HerdrOpsSelfReportServiceCommand.cs',
+            'src/HerdrOps.Core/Program.cs',
+            'src/HerdrOps.Infrastructure/StateIpc/HerdrOpsSelfReportPipeServer.cs',
+            'tests/HerdrOps.ContractTests/SelfReportContractTests.cs',
+            'tests/HerdrOps.ContractTests/V04ImplementationGateScriptContractTests.cs',
+            'tests/HerdrOps.IntegrationTests/AssignmentLifecycleIngestionCoordinatorTests.cs',
+            'tests/HerdrOps.IntegrationTests/SelfReportIntegrationTests.cs',
+            'tests/HerdrOps.UnitTests/SolutionTopologyTests.cs',
+            'tools/Invoke-V04LifecycleRuntimeAcceptance.ps1',
+            'tools/Test-V04SelfReportCli.ps1')
+    },
+    [pscustomobject]@{
+        Issue = 19
+        Path = Join-Path $repositoryRoot 'docs\reviews\v0.4-issue-19-independent-review.md'
+        RequiredPaths = @(
+            'docs/design/implementation/v0.4-issue-19-assignment-lifecycle.md',
+            'docs/protocol/v0.4-assignment-lifecycle-contract.md',
+            'src/HerdrOps.Domain/Assignments/AssignmentLifecycleContract.cs',
+            'src/HerdrOps.Domain/Assignments/AssignmentLifecycleModels.cs',
+            'src/HerdrOps.Domain/Assignments/AssignmentLifecycleReducer.cs',
+            'src/HerdrOps.Core/HerdrOpsAssignmentLifecycleMapper.cs',
+            'src/HerdrOps.Core/AssignmentLifecycleReplayCommand.cs',
+            'src/HerdrOps.Infrastructure/Storage/SqliteHerdrStateStore.cs',
+            'tests/fixtures/v0.4/assignment-lifecycle-replay.json',
+            'tests/HerdrOps.UnitTests/AssignmentLifecycleTests.cs',
+            'tests/HerdrOps.IntegrationTests/AssignmentLifecycleMappingTests.cs',
+            'tests/HerdrOps.IntegrationTests/AssignmentLifecycleStoreTests.cs',
+            'tests/HerdrOps.IntegrationTests/AssignmentLifecycleReplayCommandTests.cs',
+            'tests/HerdrOps.IntegrationTests/SqliteHerdrStateStoreTests.cs',
+            'tools/Test-V04AssignmentLifecycle.ps1')
+    },
     [pscustomobject]@{
         Issue = 20
-        Path = $reviewRecords[2]
+        Path = Join-Path $repositoryRoot 'docs\reviews\v0.4-issue-20-independent-review.md'
         RequiredPaths = @(
             'docs/design/reference/04-delegation-graph.png',
             'docs/design/implementation/v0.4-issue-20-delegation-graph.md',
@@ -80,8 +130,27 @@ $scopedReviewBindings = @(
             'tools/Test-V04DelegationGraph.ps1')
     },
     [pscustomobject]@{
+        Issue = 21
+        Path = Join-Path $repositoryRoot 'docs\reviews\v0.4-issue-21-independent-review.md'
+        RequiredPaths = @(
+            'docs/design/reference/06-task-alignment.png',
+            'src/HerdrOps.Domain/Assignments/TaskAlignmentAnalysis.cs',
+            'src/HerdrOps.App/Alignment/TaskAlignmentState.cs',
+            'src/HerdrOps.App/Views/TaskAlignmentView.xaml',
+            'src/HerdrOps.App/Views/TaskAlignmentView.xaml.cs',
+            'src/HerdrOps.App/Views/ShellView.xaml',
+            'src/HerdrOps.App/Views/ShellView.xaml.cs',
+            'src/HerdrOps.App/Live/LiveDashboardState.cs',
+            'src/HerdrOps.App/Localization/UiLanguageService.cs',
+            'tests/HerdrOps.UnitTests/TaskAlignmentAnalysisTests.cs',
+            'tests/HerdrOps.IntegrationTests/TaskAlignmentStateTests.cs',
+            'tests/HerdrOps.IntegrationTests/UiLanguageCatalogTests.cs',
+            'tests/HerdrOps.RuntimeTests/TaskAlignmentRenderingTests.cs',
+            'tools/Test-V04TaskAlignment.ps1')
+    },
+    [pscustomobject]@{
         Issue = 22
-        Path = $reviewRecords[4]
+        Path = Join-Path $repositoryRoot 'docs\reviews\v0.4-issue-22-independent-review.md'
         RequiredPaths = @(
             'docs/design/reference/11-widget-concepts.png',
             'docs/design/implementation/v0.4-issue-22-expanded-widget-runtime.md',
@@ -97,8 +166,11 @@ $scopedReviewBindings = @(
             'tests/HerdrOps.IntegrationTests/AssignmentLifecycleIngestionCoordinatorTests.cs',
             'tests/HerdrOps.IntegrationTests/UiLanguageCatalogTests.cs',
             'tests/HerdrOps.RuntimeTests/LiveWidgetRenderingTests.cs')
-    })
-foreach ($bindingRequest in $scopedReviewBindings) {
+    }
+)
+$reviewRecords = @($reviewBindings | ForEach-Object { $_.Path })
+
+foreach ($bindingRequest in $reviewBindings) {
     $binding = & (Join-Path $repositoryRoot 'tools\lib\Assert-V04ReviewBinding.ps1') `
         -ReviewRecordPath $bindingRequest.Path `
         -RepositoryRoot $repositoryRoot `
@@ -106,16 +178,6 @@ foreach ($bindingRequest in $scopedReviewBindings) {
         -RequiredReviewedPaths $bindingRequest.RequiredPaths
     if ($binding.LocalIndependentReviewBinding -cne 'PASS') {
         throw "Issue #$($bindingRequest.Issue) independent review is not bound to the current source: $($binding.LocalIndependentReviewBinding)"
-    }
-}
-
-foreach ($reviewRecord in $reviewRecords) {
-    if (-not (Test-Path -LiteralPath $reviewRecord -PathType Leaf)) {
-        throw "Independent v0.4 review record is missing: $reviewRecord"
-    }
-    $reviewText = Get-Content -LiteralPath $reviewRecord -Raw
-    if ($reviewText -notmatch '(?m)^Verdict:\s*PASS\s*$') {
-        throw "Independent v0.4 review is not PASS: $reviewRecord"
     }
 }
 

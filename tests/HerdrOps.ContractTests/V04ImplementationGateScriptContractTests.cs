@@ -207,6 +207,82 @@ public sealed class V04ImplementationGateScriptContractTests
             "Test-V04ReleaseGate.ps1 must throw when the PS5.1 selftest fails.");
     }
 
+    [TestMethod]
+    public void ReleaseGateEnforcesUniformReviewBindingsForIssues18Through22()
+    {
+        var releaseGate = ReadRepositoryFile("tools", "Test-V04ReleaseGate.ps1");
+
+        StringAssert.Contains(
+            releaseGate,
+            "Assert-V04ReviewBinding.ps1",
+            "Test-V04ReleaseGate.ps1 must invoke Assert-V04ReviewBinding.ps1 for review verification.");
+
+        for (var issue = 18; issue <= 22; issue++)
+        {
+            StringAssert.Contains(
+                releaseGate,
+                $"Issue = {issue}",
+                $"Test-V04ReleaseGate.ps1 must define review binding configuration for Issue #{issue}.");
+
+            StringAssert.Contains(
+                releaseGate,
+                $"docs\\reviews\\v0.4-issue-{issue}-independent-review.md",
+                $"Test-V04ReleaseGate.ps1 must bind Issue #{issue} to its canonical review record.");
+        }
+
+        // Canonical required path coverage for each v0.4 issue
+        StringAssert.Contains(releaseGate, "docs/design/implementation/v0.4-issue-18-cli-self-report.md", "Issue #18 required paths must include CLI self-report implementation doc.");
+        StringAssert.Contains(releaseGate, "tools/Test-V04SelfReportCli.ps1", "Issue #18 required paths must include CLI self-report gate.");
+
+        StringAssert.Contains(releaseGate, "docs/design/implementation/v0.4-issue-19-assignment-lifecycle.md", "Issue #19 required paths must include assignment lifecycle implementation doc.");
+        StringAssert.Contains(releaseGate, "src/HerdrOps.Domain/Assignments/AssignmentLifecycleReducer.cs", "Issue #19 required paths must include lifecycle reducer.");
+        StringAssert.Contains(releaseGate, "tools/Test-V04AssignmentLifecycle.ps1", "Issue #19 required paths must include assignment lifecycle gate.");
+
+        StringAssert.Contains(releaseGate, "docs/design/reference/04-delegation-graph.png", "Issue #20 required paths must include delegation graph reference image.");
+        StringAssert.Contains(releaseGate, "src/HerdrOps.Domain/Assignments/AssignmentDelegationGraph.cs", "Issue #20 required paths must include delegation graph domain model.");
+        StringAssert.Contains(releaseGate, "tools/Test-V04DelegationGraph.ps1", "Issue #20 required paths must include delegation graph gate.");
+
+        StringAssert.Contains(releaseGate, "docs/design/reference/06-task-alignment.png", "Issue #21 required paths must include task alignment reference image.");
+        StringAssert.Contains(releaseGate, "src/HerdrOps.Domain/Assignments/TaskAlignmentAnalysis.cs", "Issue #21 required paths must include task alignment analysis.");
+        StringAssert.Contains(releaseGate, "tools/Test-V04TaskAlignment.ps1", "Issue #21 required paths must include task alignment gate.");
+
+        StringAssert.Contains(releaseGate, "docs/design/reference/11-widget-concepts.png", "Issue #22 required paths must include widget concepts reference image.");
+        StringAssert.Contains(releaseGate, "src/HerdrOps.App/Widgets/WidgetAssignmentProjection.cs", "Issue #22 required paths must include widget projection.");
+        StringAssert.Contains(releaseGate, "tools/Test-V04ExpandedWidget.ps1", "Issue #22 required paths must include expanded widget gate.");
+
+        // Fail-closed verification
+        StringAssert.Contains(
+            releaseGate,
+            "$binding.LocalIndependentReviewBinding -cne 'PASS'",
+            "Test-V04ReleaseGate.ps1 must fail closed if any review binding is not PASS.");
+    }
+
+    [TestMethod]
+    public void CiWorkflowWiresV04ReviewBindingVerifierUnderBothEngines()
+    {
+        var ciYaml = ReadRepositoryFile(".github", "workflows", "ci.yml");
+
+        StringAssert.Contains(
+            ciYaml,
+            "Run v0.4 review-binding verifier tests (PowerShell 7)",
+            "ci.yml must include a step for v0.4 review binding verification under PowerShell 7.");
+
+        StringAssert.Contains(
+            ciYaml,
+            "Run v0.4 review-binding verifier tests (Windows PowerShell 5.1)",
+            "ci.yml must include a step for v0.4 review binding verification under Windows PowerShell 5.1.");
+
+        StringAssert.Matches(
+            ciYaml,
+            new Regex(@"Run v0\.4 review-binding verifier tests \(PowerShell 7\)[\s\S]{1,120}shell:\s*pwsh[\s\S]{1,120}Test-V04ReviewBinding\.ps1", RegexOptions.CultureInvariant),
+            "ci.yml must execute Test-V04ReviewBinding.ps1 under pwsh.");
+
+        StringAssert.Matches(
+            ciYaml,
+            new Regex(@"Run v0\.4 review-binding verifier tests \(Windows PowerShell 5\.1\)[\s\S]{1,120}shell:\s*powershell[\s\S]{1,120}Test-V04ReviewBinding\.ps1", RegexOptions.CultureInvariant),
+            "ci.yml must execute Test-V04ReviewBinding.ps1 under Windows PowerShell 5.1 (powershell).");
+    }
+
     private static string[] GateScripts() =>
     [
         "Test-V04SelfReportCli.ps1",
@@ -216,6 +292,7 @@ public sealed class V04ImplementationGateScriptContractTests
         "Test-V04ExpandedWidget.ps1",
         "Test-V04ReleaseGate.ps1",
         "Test-V04ProcessCleanupSelfTests.ps1",
+        "Test-V04ReviewBinding.ps1",
         "Invoke-V04LifecycleRuntimeAcceptance.ps1",
     ];
 
