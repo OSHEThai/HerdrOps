@@ -1727,4 +1727,3 @@ function Test-V07MeasurementBudgetTargets {
     $checks.Add([pscustomobject]@{ Id = 'V07-MEASURE-PRIVILEGE'; Target = 'None (false)'; Observed = $adminObs; Passed = (-not $adminObs) })
     return @($checks)
 }
-
