@@ -341,8 +341,8 @@ function New-SyntheticAcceptanceArtifacts {
             archiveSha256 = ('0' * 64) -join ''
             contentSha256 = ('0' * 64) -join ''
         }
-        $expected.manifestSha256 = ((Get-FileHash -LiteralPath (Join-Path $packageRoot 'package-manifest.json') -Algorithm SHA256).Hash).ToUpperInvariant()
-        $expected.archiveSha256 = ((Get-FileHash -LiteralPath $archivePath -Algorithm SHA256).Hash).ToUpperInvariant()
+        $expected.manifestSha256 = Get-AcceptanceSha256ForFile -Path (Join-Path $packageRoot 'package-manifest.json')
+        $expected.archiveSha256 = Get-AcceptanceSha256ForFile -Path $archivePath
         $expected.contentSha256 = [string]$manifest.contentSha256
         $checked = Assert-AcceptanceArtifact -Expected $expected -Name "synthetic $($definition.Name) artifact"
         $expected.manifestSha256 = $checked.ManifestSha256
@@ -424,7 +424,7 @@ function Get-RetainedDataHash {
         throw "Retained-data marker was not found after uninstall: $Path"
     }
     Assert-AcceptanceNoReparsePath -Path $Path
-    $hash = ((Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash).ToUpperInvariant()
+    $hash = Get-AcceptanceSha256ForFile -Path $Path
     if ($hash -cne $ExpectedSha256) {
         throw 'Retained-data marker hash changed during lifecycle acceptance.'
     }
@@ -531,7 +531,7 @@ function Invoke-AcceptancePreflight {
     } elseif ($Mode -eq 'Live' -and $RetainedDataMode -ceq 'create-test-marker' -and -not $AllowLiveRetainedDataSeed) {
         throw 'Live retained-data marker creation requires -AllowLiveRetainedDataSeed in addition to the live confirmation token.'
     } elseif (Test-Path -LiteralPath $RetainedDataPath) {
-        $markerHash = ((Get-FileHash -LiteralPath $RetainedDataPath -Algorithm SHA256).Hash).ToUpperInvariant()
+        $markerHash = Get-AcceptanceSha256ForFile -Path $RetainedDataPath
         if ($markerHash -cne $RetainedDataSha256) {
             throw 'Existing retained-data marker does not match its exact expected hash.'
         }
@@ -717,7 +717,7 @@ function Invoke-AcceptanceCleanup {
             if ($script:HarnessSeededDataMarker -and $null -ne $script:HarnessDataMarkerPath -and
                 (Test-Path -LiteralPath $script:HarnessDataMarkerPath)) {
                 try {
-                    $markerHash = ((Get-FileHash -LiteralPath $script:HarnessDataMarkerPath -Algorithm SHA256).Hash).ToUpperInvariant()
+                    $markerHash = Get-AcceptanceSha256ForFile -Path $script:HarnessDataMarkerPath
                     if ($markerHash -cne $script:HarnessDataMarkerExpectedSha256) {
                         throw 'Harness-created retained-data marker changed before cleanup.'
                     }

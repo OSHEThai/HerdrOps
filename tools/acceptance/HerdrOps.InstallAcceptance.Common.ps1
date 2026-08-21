@@ -82,6 +82,26 @@ function Assert-AcceptanceSha256 {
     }
 }
 
+function Get-AcceptanceSha256ForFile {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    $safePath = Get-AcceptanceFullPath -Path $Path
+    if (-not (Test-Path -LiteralPath $safePath -PathType Leaf)) {
+        throw "File not found for acceptance SHA-256 calculation: $safePath"
+    }
+
+    $stream = $null
+    $algorithm = $null
+    try {
+        $stream = [IO.File]::Open($safePath, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+        $algorithm = [Security.Cryptography.SHA256]::Create()
+        return ([BitConverter]::ToString($algorithm.ComputeHash($stream))).Replace('-', '').ToUpperInvariant()
+    } finally {
+        if ($null -ne $algorithm) { $algorithm.Dispose() }
+        if ($null -ne $stream) { $stream.Dispose() }
+    }
+}
+
 function Assert-AcceptanceLiveSourceCommitBinding {
     param(
         [Parameter(Mandatory = $true)][string]$AcceptedSourceCommit,
@@ -537,7 +557,7 @@ function Assert-AcceptanceManifestShapeAndBytes {
     }
 
     $manifestInfo = Get-Item -LiteralPath $manifestPath -Force
-    $manifestSha256 = ((Get-FileHash -LiteralPath $manifestPath -Algorithm SHA256).Hash).ToUpperInvariant()
+    $manifestSha256 = Get-AcceptanceSha256ForFile -Path $manifestPath
     $manifestBytes = [int64]$manifestInfo.Length
     Assert-AcceptanceSha256 -Value $manifestSha256 -Context "$Context manifest file hash"
 
@@ -576,7 +596,7 @@ function Assert-AcceptanceArtifact {
         -Expected $Expected `
         -Context $Name
     $archiveInfo = Get-Item -LiteralPath $archivePath -Force
-    $archiveSha256 = ((Get-FileHash -LiteralPath $archivePath -Algorithm SHA256).Hash).ToUpperInvariant()
+    $archiveSha256 = Get-AcceptanceSha256ForFile -Path $archivePath
     $record = Read-AcceptanceHashRecord -Path $hashRecordPath
     $expectedArchiveFile = [IO.Path]::GetFileName($archivePath)
     if ($record.ArchiveFile -cne $expectedArchiveFile -or
@@ -1059,7 +1079,7 @@ function Invoke-AcceptanceUninstallTransition {
             throw "Retained-data marker was not found after uninstall: $retainedPath"
         }
         Assert-AcceptanceNoReparsePath -Path $retainedPath
-        $retainedHash = ((Get-FileHash -LiteralPath $retainedPath -Algorithm SHA256).Hash).ToUpperInvariant()
+        $retainedHash = Get-AcceptanceSha256ForFile -Path $retainedPath
         if ($retainedHash -cne $RetainedDataSha256) {
             throw 'Retained-data marker hash changed during uninstall.'
         }

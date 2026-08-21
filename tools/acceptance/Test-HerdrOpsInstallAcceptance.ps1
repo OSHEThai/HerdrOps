@@ -130,8 +130,8 @@ function New-TestAcceptanceArtifact {
         deploymentModel = [string]$Profile.deploymentModel
         userDataPolicy = [string]$Profile.userDataPolicy
         sourceCommit = 'NOT_BOUND_IN_SYNTHETIC_FIXTURE'
-        manifestSha256 = ((Get-FileHash -LiteralPath (Join-Path $packageRoot 'package-manifest.json') -Algorithm SHA256).Hash).ToUpperInvariant()
-        archiveSha256 = ((Get-FileHash -LiteralPath $archivePath -Algorithm SHA256).Hash).ToUpperInvariant()
+        manifestSha256 = Get-AcceptanceSha256ForFile -Path (Join-Path $packageRoot 'package-manifest.json')
+        archiveSha256 = Get-AcceptanceSha256ForFile -Path $archivePath
         contentSha256 = [string]$manifest.contentSha256
     }
     $artifact = Assert-AcceptanceArtifact -Expected $expected -Name "test $Name artifact"
@@ -199,7 +199,7 @@ function New-MismatchedArchiveBinding {
     $binding = Copy-TestArtifactBinding -Binding $ValidArtifact.Expected
     $binding.archivePath = Get-AcceptanceFullPath -Path $ArchivePath
     $binding.hashRecordPath = Get-AcceptanceFullPath -Path $HashRecordPath
-    $binding.archiveSha256 = ((Get-FileHash -LiteralPath $ArchivePath -Algorithm SHA256).Hash).ToUpperInvariant()
+    $binding.archiveSha256 = Get-AcceptanceSha256ForFile -Path $ArchivePath
     return $binding
 }
 
@@ -209,10 +209,10 @@ foreach ($implementationPath in $implementationPaths) {
             'New-ItemProperty', 'Set-ItemProperty', 'Remove-ItemProperty',
             'Registry::', 'reg.exe', 'Start-Process', 'sc.exe',
             'HERDR_SOCKET_PATH', 'herdr.exe', 'Invoke-WebRequest',
-            'Invoke-RestMethod', 'dotnet')) {
+            'Invoke-RestMethod', 'dotnet', 'Get-FileHash')) {
         Assert-TestCondition `
             -Condition ($text.IndexOf($forbiddenMarker, [StringComparison]::OrdinalIgnoreCase) -lt 0) `
-            -Message "Issue #44 acceptance implementation contains a forbidden runtime/publish marker: $forbiddenMarker"
+            -Message "Issue #44 acceptance implementation '$(Split-Path $implementationPath -Leaf)' contains a forbidden runtime/publish/dependency marker: $forbiddenMarker"
     }
 }
 
@@ -248,6 +248,26 @@ try {
         Assert-TestCondition -Condition $strictJsonRejected -Message "Strict JSON reader accepted $($invalidJsonCase.Name) input."
     }
 
+    $emptyFilePath = Join-Path $testRoot 'empty-file.bin'
+    [IO.File]::WriteAllBytes($emptyFilePath, @())
+    $emptyFileHash = Get-AcceptanceSha256ForFile -Path $emptyFilePath
+    Assert-TestCondition -Condition ($emptyFileHash -ceq 'E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855') -Message 'Cross-shell SHA-256 helper failed for empty file.'
+
+    $sampleContent = "HerdrOps Issue #44 cross-shell SHA-256 helper validation`n"
+    $sampleFilePath = Join-Path $testRoot 'sample-file.txt'
+    [IO.File]::WriteAllText($sampleFilePath, $sampleContent, $utf8)
+    $sampleFileHash = Get-AcceptanceSha256ForFile -Path $sampleFilePath
+    $expectedSampleHash = Get-Sha256ForText -Text $sampleContent
+    Assert-TestCondition -Condition ($sampleFileHash -ceq $expectedSampleHash) -Message 'Cross-shell SHA-256 helper did not match Get-Sha256ForText.'
+
+    $missingFileRejected = $false
+    try {
+        Get-AcceptanceSha256ForFile -Path (Join-Path $testRoot 'missing-file.bin') | Out-Null
+    } catch {
+        $missingFileRejected = ($_.Exception.Message -like '*File not found*')
+    }
+    Assert-TestCondition -Condition $missingFileRejected -Message 'Cross-shell SHA-256 helper did not reject missing file.'
+
     $liveBindingExample = Read-AcceptanceJsonFile -Path $liveBindingExamplePath -Context 'Issue #44 live binding example'
     Assert-TestCondition -Condition (@($liveBindingExample.initialArtifact.PSObject.Properties | Where-Object { $_.Name -ceq 'sourceCommit' }).Count -eq 1) -Message 'Initial artifact sourceCommit binding is missing.'
     Assert-TestCondition -Condition (@($liveBindingExample.upgradeArtifact.PSObject.Properties | Where-Object { $_.Name -ceq 'sourceCommit' }).Count -eq 1) -Message 'Upgrade artifact sourceCommit binding is missing.'
@@ -280,7 +300,7 @@ try {
     $markerExpectedHash = Get-Sha256ForText -Text $markerText
     New-Item -ItemType Directory -Path (Split-Path -Path $safeRetainedPath -Parent) -Force | Out-Null
     [IO.File]::WriteAllText($safeRetainedPath, 'foreign-owner', $utf8)
-    $foreignHashBefore = ((Get-FileHash -LiteralPath $safeRetainedPath -Algorithm SHA256).Hash).ToUpperInvariant()
+    $foreignHashBefore = Get-AcceptanceSha256ForFile -Path $safeRetainedPath
     $foreignMarkerRejected = $false
     try {
         New-AcceptanceRetainedDataMarker -UserDataRoot $retainedSafetyRoot -Path $safeRetainedPath -ExpectedSha256 $markerExpectedHash | Out-Null
@@ -288,10 +308,10 @@ try {
         $foreignMarkerRejected = $true
     }
     Assert-TestCondition -Condition $foreignMarkerRejected -Message 'Atomic retained-data marker creation overwrote a foreign file.'
-    Assert-TestCondition -Condition (((Get-FileHash -LiteralPath $safeRetainedPath -Algorithm SHA256).Hash).ToUpperInvariant() -ceq $foreignHashBefore) -Message 'Foreign retained-data bytes changed after CreateNew rejection.'
+    Assert-TestCondition -Condition ((Get-AcceptanceSha256ForFile -Path $safeRetainedPath) -ceq $foreignHashBefore) -Message 'Foreign retained-data bytes changed after CreateNew rejection.'
     $ownedMarkerPath = Resolve-AcceptanceSafeRelativeFilePath -RootPath $retainedSafetyRoot -RelativePath 'state\owned.marker' -Context 'owned retained path test'
     New-AcceptanceRetainedDataMarker -UserDataRoot $retainedSafetyRoot -Path $ownedMarkerPath -ExpectedSha256 $markerExpectedHash | Out-Null
-    Assert-TestCondition -Condition (((Get-FileHash -LiteralPath $ownedMarkerPath -Algorithm SHA256).Hash).ToUpperInvariant() -ceq $markerExpectedHash) -Message 'Atomic retained-data marker bytes did not match their binding.'
+    Assert-TestCondition -Condition ((Get-AcceptanceSha256ForFile -Path $ownedMarkerPath) -ceq $markerExpectedHash) -Message 'Atomic retained-data marker bytes did not match their binding.'
 
     $fixtureRoot = Get-AcceptanceFullPath -Path (Join-Path $PSScriptRoot '..\..\tests\fixtures\v1.0\packaging')
     $baseProfile = Read-PackageProfile -Path (Join-Path $PSScriptRoot 'issue-44-package-profile.json')
@@ -555,7 +575,7 @@ try {
     }
     Assert-TestCondition -Condition $uninstallRetirementFailed -Message 'Injected uninstall backup-retirement failure did not fail acceptance.'
     Assert-TestCondition -Condition (-not (Test-Path -LiteralPath $atomicInstallRoot)) -Message 'Committed uninstall was incorrectly rolled back from a damaged backup.'
-    Assert-TestCondition -Condition (((Get-FileHash -LiteralPath $atomicDataPath -Algorithm SHA256).Hash).ToUpperInvariant() -ceq $atomicMarkerHash) -Message 'Retained data changed during atomic uninstall failure.'
+    Assert-TestCondition -Condition ((Get-AcceptanceSha256ForFile -Path $atomicDataPath) -ceq $atomicMarkerHash) -Message 'Retained data changed during atomic uninstall failure.'
     $uninstallBackupPath = Join-Path $atomicInstallParent ("HerdrOps.issue-44.backup-$uninstallRetirementRunId")
     Assert-TestCondition -Condition (Test-Path -LiteralPath $uninstallBackupPath -PathType Container) -Message 'Damaged uninstall backup was not preserved as an explicit residual.'
     Remove-AcceptanceOwnedSiblingDirectory -Path $uninstallBackupPath -InstallParent $atomicInstallParent -Role backup -RunId $uninstallRetirementRunId
