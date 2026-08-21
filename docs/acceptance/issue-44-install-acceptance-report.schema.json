@@ -1,0 +1,181 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/OSHEThai/HerdrOps/acceptance/issue-44-install-acceptance-report.schema.json",
+  "title": "HerdrOps Issue 44 install acceptance report",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion", "reportKind", "issue", "acceptanceVersion", "status",
+    "mode", "evidenceClass", "startedAtUtc", "completedAtUtc", "runId",
+    "machine", "artifacts", "targets", "preflight", "lifecycle", "cleanup",
+    "failureDetails", "transcript", "boundaries"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "reportKind": { "const": "HerdrOps.InstallAcceptanceReport" },
+    "issue": { "const": 44 },
+    "acceptanceVersion": { "const": "v1.0.0" },
+    "status": { "enum": ["PASS", "FAIL", "CANCELLED"] },
+    "mode": { "enum": ["DryRun", "Fixture", "Live"] },
+    "evidenceClass": { "enum": ["Static", "Synthetic", "CleanMachine"] },
+    "startedAtUtc": { "type": "string", "format": "date-time" },
+    "completedAtUtc": { "type": "string", "format": "date-time" },
+    "runId": { "type": "string", "pattern": "^[0-9a-f]{32}$" },
+    "machine": {
+      "type": "object", "additionalProperties": false,
+      "required": ["name", "expectedName", "fingerprint", "expectedFingerprint", "elevated"],
+      "properties": {
+        "name": { "type": "string" },
+        "expectedName": { "type": "string" },
+        "fingerprint": { "type": "string", "pattern": "^[0-9A-F]{64}$" },
+        "expectedFingerprint": { "type": "string" },
+        "elevated": { "type": "boolean" }
+      }
+    },
+    "artifacts": {
+      "type": "object", "additionalProperties": false,
+      "required": ["initial", "upgrade"],
+      "properties": {
+        "initial": { "oneOf": [{ "$ref": "#/definitions/artifact" }, { "type": "null" }] },
+        "upgrade": { "oneOf": [{ "$ref": "#/definitions/artifact" }, { "type": "null" }] }
+      }
+    },
+    "targets": {
+      "type": "object", "additionalProperties": false,
+      "required": ["installRoot", "userDataRoot", "reportPath", "simulationRoot", "installPathPolicy", "userDataPathPolicy", "userDataPolicy"],
+      "properties": {
+        "installRoot": { "type": "string" },
+        "userDataRoot": { "type": "string" },
+        "reportPath": { "type": "string" },
+        "simulationRoot": { "type": "string" },
+        "installPathPolicy": { "const": "%LOCALAPPDATA%\\Programs\\HerdrOps" },
+        "userDataPathPolicy": { "const": "%LOCALAPPDATA%\\HerdrOps" },
+        "userDataPolicy": { "const": "retain-on-uninstall" }
+      }
+    },
+    "preflight": {
+      "type": "object", "additionalProperties": false,
+      "required": ["status", "checks"],
+      "properties": {
+        "status": { "enum": ["PASS", "FAIL"] },
+        "checks": { "type": "array", "items": { "$ref": "#/definitions/preflightCheck" } }
+      }
+    },
+    "lifecycle": {
+      "type": "object", "additionalProperties": false,
+      "required": ["cleanInstall", "upgrade", "rollback", "uninstall"],
+      "properties": {
+        "cleanInstall": { "$ref": "#/definitions/lifecycleStep" },
+        "upgrade": { "$ref": "#/definitions/lifecycleStep" },
+        "rollback": { "$ref": "#/definitions/lifecycleStep" },
+        "uninstall": { "$ref": "#/definitions/lifecycleStep" }
+      }
+    },
+    "cleanup": {
+      "type": "object", "additionalProperties": false,
+      "required": ["status", "attempted", "simulationRoot", "simulationRootRemoved", "ownedStageRemoved", "ownedBackupRemoved", "harnessSeededDataMarkerRemoved", "retainedDataLeftIntact", "residuals", "details"],
+      "properties": {
+        "status": { "enum": ["PASS", "FAIL", "NOT_RUN", "NOT_APPLICABLE"] },
+        "attempted": { "type": "boolean" },
+        "simulationRoot": { "type": "string" },
+        "simulationRootRemoved": { "type": "boolean" },
+        "ownedStageRemoved": { "type": "boolean" },
+        "ownedBackupRemoved": { "type": "boolean" },
+        "harnessSeededDataMarkerRemoved": { "type": "boolean" },
+        "retainedDataLeftIntact": { "type": "boolean" },
+        "residuals": { "type": "array", "items": { "type": "string" } },
+        "details": { "type": "string" }
+      }
+    },
+    "failureDetails": { "type": "string" },
+    "transcript": { "type": "array", "items": { "$ref": "#/definitions/transcriptEntry" } },
+    "boundaries": {
+      "type": "object", "additionalProperties": false,
+      "required": ["static", "synthetic", "contract", "cleanMachine", "runtime", "independentReview", "release"],
+      "properties": {
+        "static": { "type": "string" },
+        "synthetic": { "type": "string" },
+        "contract": { "type": "string" },
+        "cleanMachine": { "type": "string" },
+        "runtime": { "type": "string" },
+        "independentReview": { "type": "string" },
+        "release": { "type": "string" }
+      }
+    }
+  },
+  "definitions": {
+    "hash": {
+      "type": "object", "additionalProperties": false,
+      "required": ["path", "length", "sha256"],
+      "properties": {
+        "path": { "type": "string" },
+        "length": { "type": "integer", "minimum": 0 },
+        "sha256": { "type": "string", "pattern": "^[0-9A-F]{64}$" }
+      }
+    },
+    "artifact": {
+      "type": "object", "additionalProperties": false,
+      "required": ["name", "productId", "displayName", "packagingIssue", "packageVersion", "targetFramework", "runtimeIdentifier", "deploymentModel", "userDataPolicy", "packageRoot", "archivePath", "archiveBytes", "archiveSha256", "manifestPath", "manifestBytes", "manifestSha256", "contentSha256", "sourceCommitBinding", "installedFileHashes"],
+      "properties": {
+        "name": { "type": "string" },
+        "productId": { "const": "HerdrOps" },
+        "displayName": { "const": "HerdrOps" },
+        "packagingIssue": { "type": "integer", "minimum": 1 },
+        "packageVersion": { "type": "string", "pattern": "^\\d+\\.\\d+\\.\\d+$" },
+        "targetFramework": { "const": "net10.0-windows" },
+        "runtimeIdentifier": { "const": "win-x64" },
+        "deploymentModel": { "const": "per-user-directory" },
+        "userDataPolicy": { "const": "retain-on-uninstall" },
+        "packageRoot": { "type": "string" },
+        "archivePath": { "type": "string" },
+        "archiveBytes": { "type": "integer", "minimum": 0 },
+        "archiveSha256": { "type": "string", "pattern": "^[0-9A-F]{64}$" },
+        "manifestPath": { "type": "string" },
+        "manifestBytes": { "type": "integer", "minimum": 0 },
+        "manifestSha256": { "type": "string", "pattern": "^[0-9A-F]{64}$" },
+        "contentSha256": { "type": "string", "pattern": "^[0-9A-F]{64}$" },
+        "sourceCommitBinding": {
+          "type": "string",
+          "pattern": "^([0-9a-f]{40}|NOT_BOUND_IN_SYNTHETIC_FIXTURE)$"
+        },
+        "installedFileHashes": { "type": "array", "items": { "$ref": "#/definitions/hash" } }
+      }
+    },
+    "preflightCheck": {
+      "type": "object", "additionalProperties": false,
+      "required": ["name", "status", "details"],
+      "properties": {
+        "name": { "type": "string" },
+        "status": { "enum": ["PASS", "FAIL", "NOT_APPLICABLE"] },
+        "details": { "type": "string" }
+      }
+    },
+    "lifecycleStep": {
+      "type": "object", "additionalProperties": false,
+      "required": ["status", "expectedVersion", "installedFileHashes", "installRootPresent", "packageVersionObserved", "retainedDataStatus", "retainedDataSha256", "details"],
+      "properties": {
+        "status": { "enum": ["PASS", "FAIL", "CANCELLED", "NOT_RUN"] },
+        "expectedVersion": { "type": "string" },
+        "installedFileHashes": { "type": "array", "items": { "$ref": "#/definitions/hash" } },
+        "installRootPresent": { "type": "boolean" },
+        "packageVersionObserved": { "type": "string" },
+        "retainedDataStatus": { "enum": ["PASS", "FAIL", "NOT_RUN", "NOT_APPLICABLE"] },
+        "retainedDataSha256": { "type": "string" },
+        "details": { "type": "string" }
+      }
+    },
+    "transcriptEntry": {
+      "type": "object", "additionalProperties": false,
+      "required": ["sequence", "phase", "action", "status", "effect", "details", "pathBinding"],
+      "properties": {
+        "sequence": { "type": "integer", "minimum": 1 },
+        "phase": { "type": "string" },
+        "action": { "type": "string" },
+        "status": { "enum": ["PASS", "FAIL", "SKIPPED", "CANCELLED", "NOT_RUN"] },
+        "effect": { "enum": ["None", "FixtureTempOnly", "LiveFilesystem"] },
+        "details": { "type": "string" },
+        "pathBinding": { "type": "string" }
+      }
+    }
+  }
+}
