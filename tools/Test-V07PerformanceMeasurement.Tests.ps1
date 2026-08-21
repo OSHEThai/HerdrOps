@@ -80,7 +80,7 @@ $goodFixturePath = Join-Path $fixturesDirectory 'live-measurement-good.json'
 Write-Host "Section 1: Full Deterministic Self-Test Matrix"
 $selfTestResults = @(Invoke-V07MeasurementSelfTests -RepositoryRoot $repositoryRoot -FixturesDirectory $fixturesDirectory)
 $allStPassed = @($selfTestResults | Where-Object Status -ne 'PASS').Count -eq 0
-Assert-Test -Name "Invoke-V07MeasurementSelfTests runs all $($selfTestResults.Count) matrix cases" -Condition ($allStPassed -and $selfTestResults.Count -eq 35) -Message "Statuses: $(($selfTestResults | Where-Object Status -ne 'PASS' | ForEach-Object { $_.TestName }) -join '; ')"
+Assert-Test -Name "Invoke-V07MeasurementSelfTests runs all $($selfTestResults.Count) matrix cases" -Condition ($allStPassed -and $selfTestResults.Count -eq 40) -Message "Statuses: $(($selfTestResults | Where-Object Status -ne 'PASS' | ForEach-Object { $_.TestName }) -join '; ')"
 
 # -----------------------------------------------------------------------------
 # Section 2: Budget-Gate Cross-Validation of the Finalized Runtime Report

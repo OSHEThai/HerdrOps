@@ -587,5 +587,60 @@ function Invoke-V07MeasurementSelfTests {
         & $record 'Negative: Soak crash violation blocks finalization' $false $_.Exception.Message
     }
 
+    # --- Test 36: Declared soak duration must bind to the timestamp span ---
+    try {
+        $synth = New-V07SynthesizedLiveArtifact -BaseArtifact $baseArtifact -RepositoryRoot $resolvedRoot
+        $soak = New-V07SyntheticSoakArtifact -MeasurementArtifact $synth
+        $soak.FinishedUtc = '2020-01-01T07:59:58Z'
+        $check = Test-V07SoakArtifact -SoakArtifact $soak -MeasurementArtifact $synth
+        & $record 'Negative: Forged-short soak timestamp span fails closed' (-not $check.Valid) "Failures: $($check.Failures -join '; ')"
+    } catch {
+        & $record 'Negative: Forged-short soak timestamp span fails closed' $false $_.Exception.Message
+    }
+
+    # --- Test 37: Inverted soak timestamps fail closed ---
+    try {
+        $synth = New-V07SynthesizedLiveArtifact -BaseArtifact $baseArtifact -RepositoryRoot $resolvedRoot
+        $soak = New-V07SyntheticSoakArtifact -MeasurementArtifact $synth
+        $soak.StartedUtc = '2020-01-01T08:00:01Z'
+        $check = Test-V07SoakArtifact -SoakArtifact $soak -MeasurementArtifact $synth
+        & $record 'Negative: Inverted soak timestamps fail closed' (-not $check.Valid) "Failures: $($check.Failures -join '; ')"
+    } catch {
+        & $record 'Negative: Inverted soak timestamps fail closed' $false $_.Exception.Message
+    }
+
+    # --- Test 38: String duration is not a JSON number ---
+    try {
+        $synth = New-V07SynthesizedLiveArtifact -BaseArtifact $baseArtifact -RepositoryRoot $resolvedRoot
+        $soak = New-V07SyntheticSoakArtifact -MeasurementArtifact $synth
+        $soak.Soak.DurationHours = '8'
+        $check = Test-V07SoakArtifact -SoakArtifact $soak -MeasurementArtifact $synth
+        & $record 'Negative: String soak duration fails closed' (-not $check.Valid) "Failures: $($check.Failures -join '; ')"
+    } catch {
+        & $record 'Negative: String soak duration fails closed' $false $_.Exception.Message
+    }
+
+    # --- Test 39: Non-finite duration is not admissible ---
+    try {
+        $synth = New-V07SynthesizedLiveArtifact -BaseArtifact $baseArtifact -RepositoryRoot $resolvedRoot
+        $soak = New-V07SyntheticSoakArtifact -MeasurementArtifact $synth
+        $soak.Soak.DurationHours = [double]::NaN
+        $check = Test-V07SoakArtifact -SoakArtifact $soak -MeasurementArtifact $synth
+        & $record 'Negative: Non-finite soak duration fails closed' (-not $check.Valid) "Failures: $($check.Failures -join '; ')"
+    } catch {
+        & $record 'Negative: Non-finite soak duration fails closed' $false $_.Exception.Message
+    }
+
+    # --- Test 40: The documented one-second tolerance is deterministic ---
+    try {
+        $synth = New-V07SynthesizedLiveArtifact -BaseArtifact $baseArtifact -RepositoryRoot $resolvedRoot
+        $soak = New-V07SyntheticSoakArtifact -MeasurementArtifact $synth
+        $soak.FinishedUtc = '2020-01-01T07:59:59Z'
+        $check = Test-V07SoakArtifact -SoakArtifact $soak -MeasurementArtifact $synth
+        & $record 'Positive: One-second soak timestamp tolerance is accepted' $check.Valid "Failures: $($check.Failures -join '; ')"
+    } catch {
+        & $record 'Positive: One-second soak timestamp tolerance is accepted' $false $_.Exception.Message
+    }
+
     return @($selfTestResults)
 }

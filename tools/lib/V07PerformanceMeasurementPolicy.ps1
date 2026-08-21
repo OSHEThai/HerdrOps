@@ -34,6 +34,7 @@ $script:V07MeasurementMinWorkingSetSamples = 3
 $script:V07MeasurementMaxJsonBytes = 4 * 1024 * 1024
 $script:V07MeasurementMaxRunSeconds = 7200
 $script:V07MeasurementSoakMinHours = 8.0
+$script:V07MeasurementSoakDurationToleranceSeconds = 1.0
 $script:V07MeasurementP95ToleranceMs = 0.05
 $script:V07MeasurementCpuAverageTolerancePercent = 0.01
 $script:V07MeasurementWorkingSetToleranceBytes = 1
@@ -322,6 +323,31 @@ function ConvertTo-V07StrictNonNegativeInteger {
         return $null
     }
     if ($normalized -lt 0) { return $null }
+    return $normalized
+}
+
+function ConvertTo-V07StrictFiniteNumber {
+    <# Converts a JSON numeric value to Double without accepting strings,
+       booleans, NaN, or Infinity. #>
+    param([Parameter(Mandatory)]$Value)
+
+    if ($Value -is [bool] -or
+        ($Value -isnot [System.Byte] -and $Value -isnot [System.SByte] -and
+         $Value -isnot [System.Int16] -and $Value -isnot [System.UInt16] -and
+         $Value -isnot [System.Int32] -and $Value -isnot [System.UInt32] -and
+         $Value -isnot [System.Int64] -and $Value -isnot [System.UInt64] -and
+         $Value -isnot [System.Single] -and $Value -isnot [System.Double] -and
+         $Value -isnot [System.Decimal])) {
+        return $null
+    }
+    try {
+        $normalized = [double]$Value
+    } catch {
+        return $null
+    }
+    if ([double]::IsNaN($normalized) -or [double]::IsInfinity($normalized)) {
+        return $null
+    }
     return $normalized
 }
 
@@ -1505,11 +1531,18 @@ function Test-V07SoakArtifact {
         [string]$SoakArtifact.Mode -ne 'Live') {
         $failures.Add('Soak Mode must be Live; synthetic soak can never satisfy the 8-hour requirement.')
     }
-    if ($null -eq $SoakArtifact.PSObject.Properties['StartedUtc'] -or
-        $null -eq $SoakArtifact.PSObject.Properties['FinishedUtc'] -or
-        -not (Test-V07UtcTimestampText -Text $SoakArtifact.StartedUtc) -or
-        -not (Test-V07UtcTimestampText -Text $SoakArtifact.FinishedUtc) -or
-        ([DateTimeOffset]$SoakArtifact.StartedUtc) -gt ([DateTimeOffset]$SoakArtifact.FinishedUtc)) {
+    $soakStartedUtc = $null
+    $soakFinishedUtc = $null
+    $soakTimeValid = $null -ne $SoakArtifact.PSObject.Properties['StartedUtc'] -and
+        $null -ne $SoakArtifact.PSObject.Properties['FinishedUtc'] -and
+        (Test-V07UtcTimestampText -Text $SoakArtifact.StartedUtc) -and
+        (Test-V07UtcTimestampText -Text $SoakArtifact.FinishedUtc)
+    if ($soakTimeValid) {
+        $soakStartedUtc = [DateTimeOffset]$SoakArtifact.StartedUtc
+        $soakFinishedUtc = [DateTimeOffset]$SoakArtifact.FinishedUtc
+        $soakTimeValid = $soakStartedUtc -le $soakFinishedUtc
+    }
+    if (-not $soakTimeValid) {
         $failures.Add('Soak StartedUtc/FinishedUtc must be valid UTC timestamps in order.')
     }
     if ([bool]$SoakArtifact.Cancelled -or [bool]$SoakArtifact.TimedOut) {
@@ -1559,9 +1592,21 @@ function Test-V07SoakArtifact {
         $failures.Add('Soak source commit does not match the measurement candidate (stale evidence).')
     }
     $soak = $SoakArtifact.Soak
-    if ($null -eq $soak.PSObject.Properties['DurationHours'] -or
-        [double]$soak.DurationHours -lt $script:V07MeasurementSoakMinHours) {
+    $declaredDurationHours = $null
+    if ($null -ne $soak.PSObject.Properties['DurationHours']) {
+        $declaredDurationHours = ConvertTo-V07StrictFiniteNumber -Value $soak.DurationHours
+    }
+    if ($null -eq $declaredDurationHours -or $declaredDurationHours -lt $script:V07MeasurementSoakMinHours) {
         $failures.Add("Soak DurationHours must be at least $($script:V07MeasurementSoakMinHours) hours.")
+    }
+    if ($null -ne $declaredDurationHours -and $soakTimeValid) {
+        $actualDurationSeconds = ($soakFinishedUtc - $soakStartedUtc).TotalSeconds
+        $declaredDurationSeconds = $declaredDurationHours * 3600.0
+        $allowedMinimumSeconds = $declaredDurationSeconds - $script:V07MeasurementSoakDurationToleranceSeconds
+        if ($actualDurationSeconds -lt $allowedMinimumSeconds) {
+            $failures.Add(
+                "Soak timestamp span $actualDurationSeconds seconds is shorter than declared DurationHours $declaredDurationHours by more than the deterministic $($script:V07MeasurementSoakDurationToleranceSeconds)-second tolerance.")
+        }
     }
     if ($null -eq $soak.PSObject.Properties['UnhandledCrashes'] -or
         (ConvertTo-V07StrictNonNegativeInteger -Value $soak.UnhandledCrashes) -ne 0) {
