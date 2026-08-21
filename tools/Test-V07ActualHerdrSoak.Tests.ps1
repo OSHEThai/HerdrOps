@@ -57,6 +57,12 @@ Assert-SoakTest -Name 'live observer wait is bounded and cancellable' -Condition
     $producerText.Contains('$process.Kill()') -and
     $producerText.Contains('V07SoakObserverGraceSeconds')
 )
+Assert-SoakTest -Name 'observer timeout propagates TimedOut=true after cancellation' -Condition (
+    $producerText.Contains('[System.TimeoutException]::new') -and
+    $producerText.Contains('$_.Exception -is [System.TimeoutException]') -and
+    $producerText.Contains('$timedOut = $true') -and
+    $producerText.Contains('TimedOut = [bool]($timedOut -or')
+)
 Assert-SoakTest -Name 'live producer hard-ceils DurationHours at exactly eight hours' -Condition ($producerText.Contains('$DurationHours -ne 8.0') -and $producerText.Contains('hard ceiling'))
 
 . (Join-Path $root 'tools\lib\V07MeasurementSelfTests.ps1')
@@ -99,6 +105,16 @@ $identityTampered = ($soak | ConvertTo-Json -Depth 40) | ConvertFrom-Json
 $identityTampered.Provenance.HeartbeatEntries[3].HerdrProcessId = 99999
 $rejected = Test-V07SoakArtifact -SoakArtifact $identityTampered -MeasurementArtifact $synth
 Assert-SoakTest -Name 'heartbeat PID tampering fails against the admitted Herdr identity' -Condition (-not $rejected.Valid)
+
+$coreIdentityTampered = ($soak | ConvertTo-Json -Depth 40) | ConvertFrom-Json
+$coreIdentityTampered.Provenance.HeartbeatEntries[3].CoreExecutableSha256 = ('0' * 64)
+$rejected = Test-V07SoakArtifact -SoakArtifact $coreIdentityTampered -MeasurementArtifact $synth
+Assert-SoakTest -Name 'heartbeat Core executable identity tampering fails closed' -Condition (-not $rejected.Valid)
+
+$appIdentityTampered = ($soak | ConvertTo-Json -Depth 40) | ConvertFrom-Json
+$appIdentityTampered.Provenance.HeartbeatEntries[3].AppProcessStartUtc = '2020-01-01T12:00:99Z'
+$rejected = Test-V07SoakArtifact -SoakArtifact $appIdentityTampered -MeasurementArtifact $synth
+Assert-SoakTest -Name 'heartbeat App start identity tampering fails closed' -Condition (-not $rejected.Valid)
 
 $observerTampered = ($soak | ConvertTo-Json -Depth 40) | ConvertFrom-Json
 $observerTampered.Producer.ObserverExecutableSha256 = ('0' * 64)
@@ -146,6 +162,12 @@ try {
     $markerRejected = $false
     try { Read-V07SoakOperatorObservation -ObservationPath $markerPath -ExpectedId 'FAULT-01' -EvidenceRoot $markerRoot -ExpectedSchedule $scheduleEntry -SoakStartedUtc ([DateTimeOffset]::Parse('2020-01-01T00:00:00Z')) | Out-Null } catch { $markerRejected = $true }
     Assert-SoakTest -Name 'operator marker rehash rejects tampered referenced evidence' -Condition $markerRejected
+
+    $marker.ObservedUtc = '2099-01-01T02:00:01Z'
+    [IO.File]::WriteAllText($markerPath, ($marker | ConvertTo-Json -Depth 10), (New-Object System.Text.UTF8Encoding($false)))
+    $markerRejected = $false
+    try { Read-V07SoakOperatorObservation -ObservationPath $markerPath -ExpectedId 'FAULT-01' -EvidenceRoot $markerRoot -ExpectedSchedule $scheduleEntry -SoakStartedUtc ([DateTimeOffset]::Parse('2020-01-01T00:00:00Z')) | Out-Null } catch { $markerRejected = $true }
+    Assert-SoakTest -Name 'operator marker rejects future ObservedUtc' -Condition $markerRejected
 } finally {
     if (Test-Path -LiteralPath $markerRoot) { [IO.Directory]::Delete($markerRoot, $true) }
 }

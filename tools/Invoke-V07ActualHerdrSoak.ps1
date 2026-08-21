@@ -106,6 +106,16 @@ $observerBinding = [pscustomobject][ordered]@{
 }
 $admittedHerdrServerIdentity = $session.ControlHerdrServerIdentity
 if ($null -eq $admittedHerdrServerIdentity) { throw 'The live session admission did not retain the exact Herdr server identity.' }
+$admittedRoleIdentities = @{
+    Core = [pscustomobject][ordered]@{
+        ProcessId = [int]$coreRole.ProcessId; ProcessStartUtc = ConvertTo-V07SoakUtcText -Value ([DateTimeOffset]$coreRole.ProcessStartUtc)
+        ExecutablePath = [string]$coreRole.BinaryPath; ExecutableSha256 = [string]$coreRole.BinarySha256
+    }
+    App = [pscustomobject][ordered]@{
+        ProcessId = [int]$appRole.ProcessId; ProcessStartUtc = ConvertTo-V07SoakUtcText -Value ([DateTimeOffset]$appRole.ProcessStartUtc)
+        ExecutablePath = [string]$appRole.BinaryPath; ExecutableSha256 = [string]$appRole.BinarySha256
+    }
+}
 
 $runId = "$([DateTimeOffset]::UtcNow.ToString('yyyyMMddTHHmmssfffZ', [Globalization.CultureInfo]::InvariantCulture))-$([Guid]::NewGuid().ToString('N').Substring(0, 8))"
 $outRoot = if ([string]::IsNullOrWhiteSpace($OutDirectory)) {
@@ -197,7 +207,7 @@ function Invoke-V07RuntimeObserver {
         while (-not $process.HasExited) {
             if ([DateTimeOffset]::UtcNow -ge $observerDeadline) {
                 try { $process.Kill() } catch { }
-                throw "runtime observer exceeded bounded timeout of $($Seconds + $script:V07SoakObserverGraceSeconds) seconds."
+                throw [System.TimeoutException]::new("runtime observer exceeded bounded timeout of $($Seconds + $script:V07SoakObserverGraceSeconds) seconds.")
             }
             Start-Sleep -Milliseconds 250
         }
@@ -247,7 +257,7 @@ function Invoke-V07RuntimeObserver {
         if ($null -ne $process -and -not $process.HasExited) { try { $process.Kill() } catch { } }
         throw
     } catch {
-        if ($_.Exception.Message -like 'runtime observer exceeded bounded timeout*') { throw }
+        if ($_.Exception -is [System.TimeoutException]) { throw }
         return [pscustomobject][ordered]@{
             ObservedUtc = ConvertTo-V07SoakUtcText -Value ([DateTimeOffset]::UtcNow)
             RuntimeObserved = $false; SnapshotObserved = $false; EventObserved = $false; ReconnectObserved = $false
@@ -323,7 +333,8 @@ try {
         Test-V07DueFaults -Now ([DateTimeOffset]::UtcNow)
         $heartbeat = New-V07SoakHeartbeatEntry -Ordinal ($heartbeatEntries.Count + 1) -TargetHerdrSocketPath $session.TargetHerdrSocketPath `
             -InstalledHerdr $installedHerdr -HerdrProcessId $herdrProcessId -CoreProcessId $coreProcessId -AppProcessId $appProcessId `
-            -AdmittedHerdrServerIdentity $admittedHerdrServerIdentity -PreviousSnapshots $previousSnapshots -PreviousEntrySha256 $previousHeartbeatSha
+            -AdmittedHerdrServerIdentity $admittedHerdrServerIdentity -AdmittedRoleIdentities $admittedRoleIdentities `
+            -PreviousSnapshots $previousSnapshots -PreviousEntrySha256 $previousHeartbeatSha
         $heartbeatEntries.Add($heartbeat.Entry)
         $previousHeartbeatSha = [string]$heartbeat.Entry.EntrySha256
         Add-V07SoakJsonLine -Path $heartbeatLogPath -Entry $heartbeat.Entry -State $logStates.heartbeat -MaxEntries $script:V07SoakMaxHeartbeatEntries -MaxBytes $script:V07SoakMaxArtifactBytes
@@ -340,6 +351,7 @@ try {
     $cancelled = $true
     $terminationReason = 'Operator cancellation stopped the bounded soak; Runtime credit is denied.'
 } catch {
+    if ($_.Exception -is [System.TimeoutException]) { $timedOut = $true }
     $terminationReason = $_.Exception.Message
 } finally {
     if ([string]::IsNullOrWhiteSpace($terminationReason)) { $terminationReason = 'Eight-hour observation window completed.' }
@@ -376,7 +388,7 @@ try {
         FinishedUtc = ConvertTo-V07SoakUtcText -Value $finished
         Mode = 'Live'
         Cancelled = [bool]$cancelled
-        TimedOut = [bool]($finished -lt $deadline -and -not $cancelled -and $runtimeObservationFailures -gt 0)
+        TimedOut = [bool]($timedOut -or ($finished -lt $deadline -and -not $cancelled -and $runtimeObservationFailures -gt 0))
         MeasurementRunId = [string]$measurementArtifact.RunId
         MeasurementArtifactSha256 = Get-V07ArtifactCanonicalSha256 -Artifact $measurementArtifact
         Session = [pscustomobject][ordered]@{
@@ -405,6 +417,10 @@ try {
             AdmittedHerdrServerIdentity = [pscustomobject][ordered]@{
                 ProcessId = [int]$admittedHerdrServerIdentity.ProcessId; ProcessStartUtc = [string]$admittedHerdrServerIdentity.ProcessStartUtc
                 ExecutablePath = [string]$admittedHerdrServerIdentity.ExecutablePath; ExecutableSha256 = [string]$admittedHerdrServerIdentity.ExecutableSha256
+            }
+            AdmittedRoleIdentities = [pscustomobject][ordered]@{
+                Core = $admittedRoleIdentities.Core
+                App = $admittedRoleIdentities.App
             }
             FaultSchedule = @($contextSchedule)
             ScheduleContextPath = $contextPath; ScheduleContextSha256 = $contextSha256

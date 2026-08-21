@@ -109,12 +109,18 @@ function New-V07SyntheticSoakArtifact {
     $syntheticServerStartUtc = if ($null -ne $MeasurementArtifact.Session.ControlHerdrServerIdentity) {
         ConvertTo-V07SoakUtcText -Value ([DateTimeOffset]$MeasurementArtifact.Session.ControlHerdrServerIdentity.ProcessStartUtc)
     } else { '2020-01-01T00:00:00Z' }
+    $syntheticCoreRole = @($MeasurementArtifact.Roles | Where-Object { [string]$_.Role -ceq 'Core' })[0]
+    $syntheticAppRole = @($MeasurementArtifact.Roles | Where-Object { [string]$_.Role -ceq 'App' })[0]
+    $syntheticCoreStartUtc = ConvertTo-V07SoakUtcText -Value ([DateTimeOffset]$syntheticCoreRole.ProcessStartUtc)
+    $syntheticAppStartUtc = ConvertTo-V07SoakUtcText -Value ([DateTimeOffset]$syntheticAppRole.ProcessStartUtc)
     for ($hour = 0; $hour -le 8; $hour++) {
         $entry = [pscustomobject][ordered]@{
             Ordinal = $hour + 1; ObservedUtc = $heartbeatStart.AddHours($hour).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ', [Globalization.CultureInfo]::InvariantCulture)
             Status = 'Healthy'; TargetSocketPresent = $true
             HerdrProcessId = 8123; HerdrProcessStartUtc = $syntheticServerStartUtc; HerdrExecutablePath = [string]$installed.ExecutablePath; HerdrExecutableSha256 = [string]$installed.ExecutableSha256
-            CoreProcessId = 41001; AppProcessId = 41002; PreviousEntrySha256 = $previousHeartbeat; EntrySha256 = ''
+            CoreProcessId = 41001; CoreProcessStartUtc = $syntheticCoreStartUtc; CoreExecutablePath = [string]$syntheticCoreRole.BinaryPath; CoreExecutableSha256 = [string]$syntheticCoreRole.BinarySha256
+            AppProcessId = 41002; AppProcessStartUtc = $syntheticAppStartUtc; AppExecutablePath = [string]$syntheticAppRole.BinaryPath; AppExecutableSha256 = [string]$syntheticAppRole.BinarySha256
+            PreviousEntrySha256 = $previousHeartbeat; EntrySha256 = ''
         }
         $entry.EntrySha256 = Get-V07SoakEntrySha256 -Entry $entry
         $heartbeatEntries.Add($entry)
@@ -167,6 +173,16 @@ function New-V07SyntheticSoakArtifact {
         ProcessId = 8123; ProcessStartUtc = $syntheticServerStartUtc
         ExecutablePath = [string]$installed.ExecutablePath; ExecutableSha256 = [string]$installed.ExecutableSha256
     }
+    $admittedRoleIdentities = [pscustomobject][ordered]@{
+        Core = [pscustomobject][ordered]@{
+            ProcessId = 41001; ProcessStartUtc = $syntheticCoreStartUtc
+            ExecutablePath = [string]$syntheticCoreRole.BinaryPath; ExecutableSha256 = [string]$syntheticCoreRole.BinarySha256
+        }
+        App = [pscustomobject][ordered]@{
+            ProcessId = 41002; ProcessStartUtc = $syntheticAppStartUtc
+            ExecutablePath = [string]$syntheticAppRole.BinaryPath; ExecutableSha256 = [string]$syntheticAppRole.BinarySha256
+        }
+    }
 
     return [pscustomobject][ordered]@{
         SchemaVersion = $script:V07SoakSchemaVersion
@@ -211,7 +227,7 @@ function New-V07SyntheticSoakArtifact {
             Tool = 'Invoke-V07ActualHerdrSoak.ps1'; Version = '2'; SessionControlInvoked = $false; ObserverMode = 'ReadOnlyAttached'
             ObserverExecutablePath = [string]$MeasurementArtifact.Roles[0].BinaryPath; ObserverExecutableSha256 = [string]$observerBinding.Sha256
             ObserverReportPath = 'synthetic://runtime-observer-current.json'; ObserverReportSha256 = Get-V07Sha256Hex -Text 'runtime-report'
-            AdmittedHerdrServerIdentity = $admittedIdentity
+            AdmittedHerdrServerIdentity = $admittedIdentity; AdmittedRoleIdentities = $admittedRoleIdentities
             FaultSchedule = @(
                 [pscustomobject][ordered]@{ Id = 'FAULT-01'; Kind = 'TargetHerdrRestartObservation'; OffsetSeconds = 7200; Instruction = 'Synthetic'; DueUtc = '2020-01-01T02:00:00Z' },
                 [pscustomobject][ordered]@{ Id = 'FAULT-02'; Kind = 'CoreReconnectObservation'; OffsetSeconds = 14400; Instruction = 'Synthetic'; DueUtc = '2020-01-01T04:00:00Z' },
@@ -279,22 +295,14 @@ function Invoke-V07MeasurementSelfTests {
         & $record 'Positive: Synthesized live artifact passes fail-closed admission' $false $_.Exception.Message
     }
 
-    # --- Test 2: Positive -- finalizer emits Runtime budget report from live artifact + soak ---
+    # --- Test 2: Negative -- finalizer requires external soak-byte validation ---
     try {
         $synth = New-V07SynthesizedLiveArtifact -BaseArtifact $baseArtifact -RepositoryRoot $resolvedRoot
         $soak = New-V07SyntheticSoakArtifact -MeasurementArtifact $synth
         $finalization = ConvertTo-V07RuntimeBudgetReport -MeasurementArtifact $synth -SoakArtifact $soak -RepositoryRoot $resolvedRoot -CandidateDirectory $candidateDirectory
-        $reportOk = $false
-        if ($finalization.CanFinalize -and $null -ne $finalization.BudgetReport) {
-            $report = $finalization.BudgetReport
-            $reportOk = ([string]$report.EvidenceClass -eq 'Runtime' -and
-                @($report.ProcessTelemetry).Count -eq 2 -and
-                @($report.Metrics.WidgetDeltaLatencySamplesMs).Count -ge $script:V07MeasurementMinLatencySamples -and
-                @($report.Metrics.DashboardColdLaunchSamplesMs).Count -ge $script:V07MeasurementMinLaunchSamples -and
-                [string]$report.EvidenceBoundary.ActualHerdrRuntime -eq 'OBSERVED' -and
-                [string]$report.EvidenceBoundary.SoakExecution -eq 'OBSERVED')
-        }
-        & $record 'Positive: Finalizer emits Runtime budget report with role telemetry and raw samples' ($finalization.CanFinalize -and $reportOk) "Reason: $($finalization.Reason); Blockers: $($finalization.Blockers -join '; ')"
+        $blocked = (-not $finalization.CanFinalize) -and
+            (@($finalization.Blockers | Where-Object { [string]$_ -match 'EvidenceRoot is required' }).Count -gt 0)
+        & $record 'Negative: Finalizer requires external soak-byte validation before Runtime credit' $blocked "Reason: $($finalization.Reason); Blockers: $($finalization.Blockers -join '; ')"
     } catch {
         & $record 'Positive: Finalizer emits Runtime budget report with role telemetry and raw samples' $false $_.Exception.Message
     }
