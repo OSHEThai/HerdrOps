@@ -82,6 +82,16 @@ if (args.Length > 0 && string.Equals(args[0], "trace-file-git-activity", StringC
     return await FileGitActivityTraceCommand.RunAsync(args, Console.Out, Console.Error);
 }
 
+if (args.Length > 0 && string.Equals(args[0], "trace-herdr-file-git-activity", StringComparison.Ordinal))
+{
+    return await HerdrFileGitActivityRuntimeTraceCommand.RunAsync(args, Console.Out, Console.Error);
+}
+
+if (args.Length > 0 && string.Equals(args[0], "trace-herdr-notification-runtime", StringComparison.Ordinal))
+{
+    return await HerdrNotificationRuntimeTraceCommand.RunAsync(args, Console.Out, Console.Error);
+}
+
 if (args.Length > 0 && string.Equals(args[0], "trace-herdr-runtime", StringComparison.Ordinal))
 {
     return await HerdrRuntimeTraceCommand.RunAsync(args, Console.Out, Console.Error);

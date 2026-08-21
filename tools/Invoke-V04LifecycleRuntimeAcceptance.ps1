@@ -366,9 +366,9 @@ if ($compositeExitCode -ne 0) {
     throw "Composite lifecycle acceptance failed with exit $compositeExitCode. $compositeError"
 }
 
-$lifecycleTrace = Get-Content -LiteralPath $lifecycleTracePath -Raw | ConvertFrom-Json -Depth 128
-$herdrRuntime = Get-Content -LiteralPath $herdrRuntimeReportPath -Raw | ConvertFrom-Json -Depth 128
-$composite = Get-Content -LiteralPath $compositeReportPath -Raw | ConvertFrom-Json -Depth 128
+$lifecycleTrace = Get-Content -LiteralPath $lifecycleTracePath -Raw | ConvertFrom-Json
+$herdrRuntime = Get-Content -LiteralPath $herdrRuntimeReportPath -Raw | ConvertFrom-Json
+$composite = Get-Content -LiteralPath $compositeReportPath -Raw | ConvertFrom-Json
 if ($lifecycleTrace.evidenceClassification -ne 'BuiltProcessIntegration' -or
     -not [bool]$lifecycleTrace.durableLifecycleEnabled -or
     @($lifecycleTrace.acceptedEvents).Count -ne 10 -or
