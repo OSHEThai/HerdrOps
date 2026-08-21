@@ -1,0 +1,104 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/OSHEThai/HerdrOps/release/v1.0.0/release-authorization.schema.json",
+  "title": "HerdrOps v1.0.0 release authorization",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion", "reportKind", "issue", "repository", "releaseVersion",
+    "releaseTag", "acceptedCommit", "candidateRecord", "gates", "goNoGo",
+    "releaseNotes", "publication"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "reportKind": { "const": "HerdrOps.ReleaseAuthorization" },
+    "issue": { "const": 45 },
+    "repository": { "const": "OSHEThai/HerdrOps" },
+    "releaseVersion": { "const": "v1.0.0" },
+    "releaseTag": { "const": "v1.0.0" },
+    "acceptedCommit": { "$ref": "#/definitions/commit" },
+    "candidateRecord": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256", "archiveSha256"],
+      "properties": {
+        "path": { "$ref": "#/definitions/relativePath" },
+        "sha256": { "$ref": "#/definitions/sha256" },
+        "archiveSha256": { "$ref": "#/definitions/sha256" }
+      }
+    },
+    "gates": {
+      "type": "array",
+      "minItems": 4,
+      "maxItems": 4,
+      "items": { "$ref": "#/definitions/gate" }
+    },
+    "goNoGo": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["decision", "approver", "approvedAtUtc", "statement", "acceptedCommit", "archiveSha256"],
+      "properties": {
+        "decision": { "enum": ["PENDING", "GO", "NO-GO"] },
+        "approver": { "type": "string" },
+        "approvedAtUtc": { "type": "string", "format": "date-time" },
+        "statement": { "type": "string" },
+        "acceptedCommit": { "$ref": "#/definitions/commit" },
+        "archiveSha256": { "$ref": "#/definitions/sha256" }
+      }
+    },
+    "releaseNotes": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256"],
+      "properties": {
+        "path": { "const": "docs/release/v1.0.0/release-notes.en.md" },
+        "sha256": { "$ref": "#/definitions/sha256" }
+      }
+    },
+    "publication": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "releaseUrl", "publishedArchiveSha256", "publishedHashRecordSha256"],
+      "properties": {
+        "status": { "const": "NOT_PUBLISHED" },
+        "releaseUrl": { "const": "" },
+        "publishedArchiveSha256": { "const": "" },
+        "publishedHashRecordSha256": { "const": "" }
+      }
+    }
+  },
+  "definitions": {
+    "commit": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9A-F]{64}$"
+    },
+    "relativePath": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^(?![A-Za-z]:)(?![\\/])(?!.*(?:^|[\\/])\\.\\.(?:[\\/]|$)).+$"
+    },
+    "gate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "issue", "evidenceClass", "status", "reportPath", "reportSha256",
+        "sourceCommit", "archiveSha256", "authority", "observedAtUtc"
+      ],
+      "properties": {
+        "issue": { "enum": [41, 42, 43, 44] },
+        "evidenceClass": { "enum": ["ReleaseAudit", "Runtime", "IndependentReview", "CleanMachine"] },
+        "status": { "enum": ["PENDING", "PASS"] },
+        "reportPath": { "$ref": "#/definitions/relativePath" },
+        "reportSha256": { "$ref": "#/definitions/sha256" },
+        "sourceCommit": { "$ref": "#/definitions/commit" },
+        "archiveSha256": { "$ref": "#/definitions/sha256" },
+        "authority": { "type": "string", "minLength": 1 },
+        "observedAtUtc": { "type": "string", "format": "date-time" }
+      }
+    }
+  }
+}

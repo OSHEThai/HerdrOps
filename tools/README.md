@@ -268,6 +268,48 @@ The v0.5 role-distinct review implementation gate is Contract plus BuiltProcess 
 
 The gate reports `NoRuntimeCredit`. No actual Herdr runtime credit exists until this behavior is captured from a standard, non-elevated Herdr pane and the exact pane/process observations, role observations, Core responses, and immutable database audit hashes are bound in one fresh runtime record. The gate cannot close Issue #27, provide independent acceptance, or pass the v0.5 release gate.
 
+## v1.0.0 release-candidate preparation
+
+Run the bounded Static/Synthetic validator on both supported PowerShell hosts:
+
+```powershell
+./tools/release/Test-V10ReleaseReadiness.ps1
+& "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" `
+  -NoProfile -NonInteractive -ExecutionPolicy Bypass `
+  -File .\tools\release\Test-V10ReleaseReadiness.ps1
+```
+
+After all candidate source changes are committed, create a three-component v1
+candidate from that exact clean commit. This creates a local ignored artifact;
+it does not install, tag, push, or publish anything:
+
+```powershell
+$commit = git rev-parse HEAD
+./tools/release/New-V10ReleaseCandidate.ps1 `
+  -ExpectedSourceCommit $commit `
+  -OutputRoot .\artifacts\release-candidate\v1.0.0
+```
+
+The output binds the exact commit, locked dependencies, the App/Core/Cli
+self-contained files, deterministic archive, package manifest, hashes, and the
+separate English/Thai release documents. Any unapproved byte conflict, stale
+source identity, changed lockfile, path escape, or reparse point fails closed.
+
+The committed authorization example is intentionally `PENDING` and must fail.
+Only after real reports for Issues #41 through #44 and an explicit product-owner
+`GO` exist may an operator create a new authorization file and run:
+
+```powershell
+./tools/release/Invoke-V10ReleaseReadiness.ps1 `
+  -AuthorizationPath .\artifacts\release-authorization\v1.0.0\authorization.json
+```
+
+`READY_TO_PUBLISH` is Static verification of exact bound input bytes. It does
+not create tag `v1.0.0`, call GitHub, rebuild the candidate, or establish Release
+evidence. Publication and post-publication download/hash verification remain
+separate required actions. See
+`docs/release/v1.0.0/release-readiness-contract.md`.
+
 The v0.7 performance budget gate reports Static, Synthetic, and Contract evidence for non-runtime preparation (Issue #39). It enforces strict schema v0.7.0, source commit binding, candidate executable SHA-256 binding, reparse point and path traversal protections, p95 sample distribution recalculation, PID+StartUtc binding and PID reuse detection, no-native-trim waiver rules, and fault/unreconciled-state fail-closed behavior. Actual Herdr Runtime, 8-hour sustained soak execution, Human UAT decisions, and Release Evidence remain explicitly NOT OBSERVED / NOT CLAIMED in this preparation slice.
 
 # Run the v0.7 lifecycle implementation gate deterministic self-test
@@ -277,3 +319,19 @@ The v0.7 performance budget gate reports Static, Synthetic, and Contract evidenc
 ./tools/Test-V07Lifecycle.ps1 -Configuration Release
 
 The v0.7 lifecycle implementation gate verifies exact committed source and contract invariants, executes locked build and formatting checks, and validates 12/12 unit tests and 39/39 integration tests (51/51 total). Runs with `-SkipBuild` are non-acceptance unless verified same-commit binary provenance proves assemblies match the current commit; the marker verifier requires the exact unique five-assembly path set with canonical casing and the current SHA-256 for every path, rejecting duplicate, unexpected, missing, case-ambiguous, malformed, or mismatched entries. Unverified `-SkipBuild` runs fail closed with a distinct non-zero exit code. Actual Herdr Runtime, installed tray visibility, Windows logon startup registry entries, physical DPI/accessibility verification, and Release evidence are explicitly NOT OBSERVED / NOT CLAIMED.
+
+# Run the v1.0 Issue #45 release-readiness preparation gate (Static/Synthetic only).
+# This is the CI entry point; it never builds, installs, runs Herdr, creates a
+# tag, pushes Git, or calls the GitHub Release API. It reports Static/Synthetic
+# PASS and keeps Runtime/Human/Release NOT OBSERVED.
+./tools/release/Test-V10ReleaseReadiness.ps1
+
+# Reconcile the newly committed v1.0 release tooling/docs onto the current tree
+# and confirm it emits the exact static-preparation boundary (no GO/APPROVED,
+# no Release) below artifacts/release-readiness/v1.0.0/<runId>/readiness.json.
+# -AuthorizationPath must name a release authorization whose four Issue #41-#44
+# gate reports and concrete human approver all validate against the current
+# accepted commit before the verifier will assert any preparation status.
+./tools/release/Invoke-V10ReleaseReadiness.ps1 -AuthorizationPath '<authorization.json>'
+
+The v1.0 Issue #45 release-readiness tooling reports Static and Synthetic evidence only for preparation. It validates exact committed release documents, the v1.0 package profile, deterministic candidate records and archives, and the fail-closed authorization boundary. `Invoke-V10ReleaseReadiness.ps1` will fail closed (no GO/READY_TO_PUBLISH, no Release) unless an externally prepared authorization for the current accepted commit passes all four Issue #41-#44 gate report bindings and a concrete non-placeholder human approver. `Test-V10ReleaseReadiness.ps1` is the only tool CI invokes; `New-V10ReleaseCandidate.ps1` and the readiness invoker are never run automatically. Actual Herdr Runtime, independent review, clean-machine acceptance, human approval, and Release publication remain NOT OBSERVED by these preparation tools.
