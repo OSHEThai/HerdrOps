@@ -108,9 +108,9 @@ High-urgency state changes publish immediately. Noisy terminal, file and process
 - Local-only data by default
 - Command lines, terminal output and files are treated as sensitive
 - Bounded reads, configurable retention and redaction before persistence/export
+- v1 managed evidence bytes retain for 30 days by default from `ObservedUtc`; a caller may override only with a UTC deadline from `ObservedUtc` through `ObservedUtc + 365 days`, and open linked reviews always protect the bytes
 - Optional elevated telemetry, remote aggregation and cloud sync are outside v1
 
 ## Why not a Windows Service
 
 Herdr, Agent processes, interactive desktops and widgets all run in the current user's session. A per-user Core avoids Session 0/UI isolation and unnecessary elevation. An optional elevated helper can be designed later for a narrowly defined telemetry feature.
-

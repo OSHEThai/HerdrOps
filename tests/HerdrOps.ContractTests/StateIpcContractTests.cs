@@ -72,6 +72,71 @@ public sealed class StateIpcContractTests
     }
 
     [TestMethod]
+    public void StrictJsonRejectsDuplicateEnvelopeAndPayloadMembers()
+    {
+        var envelope = HerdrOpsStateIpcJson.CreateEnvelope(
+            HerdrOpsStateIpcProtocol.MessageTypes.Hello,
+            0,
+            new DateTimeOffset(2026, 8, 14, 10, 0, 0, TimeSpan.Zero),
+            HerdrOpsStateIpcProtocol.AppSource,
+            Guid.NewGuid(),
+            new HerdrOpsStateIpcHello("app", "contract-test"));
+        var serializedEnvelope = Encoding.UTF8.GetString(
+            HerdrOpsStateIpcJson.SerializeEnvelope(envelope));
+        var duplicateEnvelopeMember =
+            $"{serializedEnvelope[..^1]},\"messageType\":\"{HerdrOpsStateIpcProtocol.MessageTypes.Hello}\"}}";
+
+        Assert.Throws<HerdrOpsStateIpcProtocolException>(() =>
+            HerdrOpsStateIpcJson.DeserializeEnvelope(
+                Encoding.UTF8.GetBytes(duplicateEnvelopeMember)));
+
+        using var duplicatePayloadDocument = JsonDocument.Parse(
+            "{\"clientRole\":\"app\",\"clientInstanceId\":\"first\",\"clientInstanceId\":\"second\"}");
+        var envelopeWithDuplicatePayloadMember = envelope with
+        {
+            Payload = duplicatePayloadDocument.RootElement.Clone(),
+        };
+
+        Assert.Throws<HerdrOpsStateIpcProtocolException>(() =>
+            HerdrOpsStateIpcJson.DeserializePayload<HerdrOpsStateIpcHello>(
+                envelopeWithDuplicatePayloadMember));
+    }
+
+    [TestMethod]
+    public void AgentEvidenceFingerprintsSeparateTopologyStatusAndPresentationChanges()
+    {
+        var baseline = CreateState(sequence: 1, status: "Idle", revision: 1);
+        var presentationOnly = baseline with
+        {
+            LastIngestSequence = 2,
+            FocusedWorkspaceId = null,
+            FocusedTabId = null,
+            FocusedPaneId = null,
+        };
+        var statusChanged = CreateState(sequence: 2, status: "Working", revision: 2);
+        var topologyChanged = baseline with
+        {
+            Agents = [baseline.Agents[0] with { TerminalId = "terminal-2" }],
+        };
+
+        Assert.AreEqual(
+            HerdrOpsStateIpcJson.ComputeAgentTopologySha256(baseline),
+            HerdrOpsStateIpcJson.ComputeAgentTopologySha256(presentationOnly));
+        Assert.AreEqual(
+            HerdrOpsStateIpcJson.ComputeAgentStatusStateSha256(baseline),
+            HerdrOpsStateIpcJson.ComputeAgentStatusStateSha256(presentationOnly));
+        Assert.AreEqual(
+            HerdrOpsStateIpcJson.ComputeAgentTopologySha256(baseline),
+            HerdrOpsStateIpcJson.ComputeAgentTopologySha256(statusChanged));
+        Assert.AreNotEqual(
+            HerdrOpsStateIpcJson.ComputeAgentStatusStateSha256(baseline),
+            HerdrOpsStateIpcJson.ComputeAgentStatusStateSha256(statusChanged));
+        Assert.AreNotEqual(
+            HerdrOpsStateIpcJson.ComputeAgentTopologySha256(baseline),
+            HerdrOpsStateIpcJson.ComputeAgentTopologySha256(topologyChanged));
+    }
+
+    [TestMethod]
     public void DeltaReducerAppliesOnlyContiguousHashBoundState()
     {
         var current = CreateState(sequence: 1, status: "Working", revision: 1);
@@ -119,40 +184,6 @@ public sealed class StateIpcContractTests
             HerdrSessionStateContractReducer.Apply(
                 current,
                 delta with { ToSequence = 3 }));
-    }
-
-    [TestMethod]
-    public void AgentEvidenceFingerprintsSeparateTopologyStatusAndPresentationChanges()
-    {
-        var baseline = CreateState(sequence: 1, status: "Idle", revision: 1);
-        var presentationOnly = baseline with
-        {
-            LastIngestSequence = 2,
-            FocusedWorkspaceId = null,
-            FocusedTabId = null,
-            FocusedPaneId = null,
-        };
-        var statusChanged = CreateState(sequence: 2, status: "Working", revision: 2);
-        var topologyChanged = baseline with
-        {
-            Agents = [baseline.Agents[0] with { TerminalId = "terminal-2" }],
-        };
-
-        Assert.AreEqual(
-            HerdrOpsStateIpcJson.ComputeAgentTopologySha256(baseline),
-            HerdrOpsStateIpcJson.ComputeAgentTopologySha256(presentationOnly));
-        Assert.AreEqual(
-            HerdrOpsStateIpcJson.ComputeAgentStatusStateSha256(baseline),
-            HerdrOpsStateIpcJson.ComputeAgentStatusStateSha256(presentationOnly));
-        Assert.AreEqual(
-            HerdrOpsStateIpcJson.ComputeAgentTopologySha256(baseline),
-            HerdrOpsStateIpcJson.ComputeAgentTopologySha256(statusChanged));
-        Assert.AreNotEqual(
-            HerdrOpsStateIpcJson.ComputeAgentStatusStateSha256(baseline),
-            HerdrOpsStateIpcJson.ComputeAgentStatusStateSha256(statusChanged));
-        Assert.AreNotEqual(
-            HerdrOpsStateIpcJson.ComputeAgentTopologySha256(baseline),
-            HerdrOpsStateIpcJson.ComputeAgentTopologySha256(topologyChanged));
     }
 
     [TestMethod]

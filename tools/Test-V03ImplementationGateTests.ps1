@@ -538,22 +538,57 @@ try {
     Assert-Equal -Expected 0 -Actual $dotSourceCapture.ExitCode -Message 'Dot-sourced PowerShell script leaked nonzero LASTEXITCODE on success.'
     Assert-True -Condition ($dotSourceCapture.Stdout -match 'RegressionSubscript: PASS') -Message 'Dot-sourced regression subscript output lost.'
 
-    try {
-        $ps5Command = Get-Command powershell.exe -ErrorAction SilentlyContinue
-        if ($null -ne $ps5Command -and -not [string]::IsNullOrWhiteSpace($ps5Command.Source)) {
-            $ps5DotSourceCapture = Invoke-PwshWithCapturedOutput -FilePath $ps5Command.Source -ArgumentList @(
-                '-NoProfile',
-                '-ExecutionPolicy',
-                'Bypass',
-                '-Command',
-                ". '$cleanExitScript'; exit `$LASTEXITCODE"
-            )
-            Assert-Equal -Expected 0 -Actual $ps5DotSourceCapture.ExitCode -Message 'PS5 dot-sourced PowerShell script leaked nonzero LASTEXITCODE on success.'
-            Assert-True -Condition ($ps5DotSourceCapture.Stdout -match 'RegressionSubscript: PASS') -Message 'PS5 dot-sourced regression subscript output lost.'
-        }
+    $ps5Command = Get-Command powershell.exe -ErrorAction SilentlyContinue
+    if ($null -ne $ps5Command -and -not [string]::IsNullOrWhiteSpace($ps5Command.Source)) {
+        $ps5DotSourceCapture = Invoke-PwshWithCapturedOutput -FilePath $ps5Command.Source -ArgumentList @(
+            '-NoProfile',
+            '-ExecutionPolicy',
+            'Bypass',
+            '-Command',
+            ". '$cleanExitScript'; exit `$LASTEXITCODE"
+        )
+        Assert-Equal -Expected 0 -Actual $ps5DotSourceCapture.ExitCode -Message 'PS5 dot-sourced PowerShell script leaked nonzero LASTEXITCODE on success.'
+        Assert-True -Condition ($ps5DotSourceCapture.Stdout -match 'RegressionSubscript: PASS') -Message 'PS5 dot-sourced regression subscript output lost.'
     }
-    catch {
-        # PS5 is Windows-only; non-Windows environments safely skip PS5 check.
+
+    # Regression (PR #141 / Issues #15, #16): Test-V03RuntimeCaptureProvenanceTests.ps1
+    # executes negative git fixtures but must deterministically exit 0 under direct invocation
+    # and CI runner dot-sourcing in both PowerShell 7 and Windows PowerShell 5.1 without leaking LASTEXITCODE.
+    $provenanceTestScript = Join-Path $PSScriptRoot 'Test-V03RuntimeCaptureProvenanceTests.ps1'
+    $pwshProvenanceCapture = Invoke-PwshWithCapturedOutput -FilePath $pwshPath -ArgumentList @(
+        '-NoProfile',
+        '-File',
+        $provenanceTestScript
+    )
+    Assert-Equal -Expected 0 -Actual $pwshProvenanceCapture.ExitCode -Message 'Test-V03RuntimeCaptureProvenanceTests.ps1 failed under pwsh direct invocation.'
+    Assert-True -Condition ($pwshProvenanceCapture.Stdout -match 'All v0.3 runtime-capture provenance hostile selftests passed') -Message 'Test-V03RuntimeCaptureProvenanceTests.ps1 pwsh output missing pass banner.'
+
+    $pwshProvenanceCiCapture = Invoke-PwshWithCapturedOutput -FilePath $pwshPath -ArgumentList @(
+        '-NoProfile',
+        '-Command',
+        ". '$provenanceTestScript'; if ((Test-Path -LiteralPath variable:\LASTEXITCODE)) { exit `$LASTEXITCODE }"
+    )
+    Assert-Equal -Expected 0 -Actual $pwshProvenanceCiCapture.ExitCode -Message 'Test-V03RuntimeCaptureProvenanceTests.ps1 leaked nonzero LASTEXITCODE under pwsh CI runner pattern.'
+
+    if ($null -ne $ps5Command -and -not [string]::IsNullOrWhiteSpace($ps5Command.Source)) {
+        $ps5ProvenanceCapture = Invoke-PwshWithCapturedOutput -FilePath $ps5Command.Source -ArgumentList @(
+            '-NoProfile',
+            '-ExecutionPolicy',
+            'Bypass',
+            '-File',
+            $provenanceTestScript
+        )
+        Assert-Equal -Expected 0 -Actual $ps5ProvenanceCapture.ExitCode -Message 'Test-V03RuntimeCaptureProvenanceTests.ps1 failed under PS5 direct invocation.'
+        Assert-True -Condition ($ps5ProvenanceCapture.Stdout -match 'All v0.3 runtime-capture provenance hostile selftests passed') -Message 'Test-V03RuntimeCaptureProvenanceTests.ps1 PS5 output missing pass banner.'
+
+        $ps5ProvenanceCiCapture = Invoke-PwshWithCapturedOutput -FilePath $ps5Command.Source -ArgumentList @(
+            '-NoProfile',
+            '-ExecutionPolicy',
+            'Bypass',
+            '-Command',
+            ". '$provenanceTestScript'; if ((Test-Path -LiteralPath variable:\LASTEXITCODE)) { exit `$LASTEXITCODE }"
+        )
+        Assert-Equal -Expected 0 -Actual $ps5ProvenanceCiCapture.ExitCode -Message 'Test-V03RuntimeCaptureProvenanceTests.ps1 leaked nonzero LASTEXITCODE under PS5 CI runner pattern.'
     }
 }
 finally {

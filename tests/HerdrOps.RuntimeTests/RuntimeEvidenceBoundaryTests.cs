@@ -11,6 +11,7 @@ public sealed class RuntimeEvidenceBoundaryTests
     [DataRow(EvidenceClass.Contract, false)]
     [DataRow(EvidenceClass.Runtime, true)]
     [DataRow(EvidenceClass.IndependentReview, false)]
+    [DataRow(EvidenceClass.Human, false)]
     [DataRow(EvidenceClass.Release, true)]
     public void OnlyRuntimeAndReleaseEvidenceRequireObservedSystem(
         EvidenceClass evidenceClass,
