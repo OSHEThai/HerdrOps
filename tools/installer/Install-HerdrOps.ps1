@@ -20,7 +20,7 @@ $ErrorActionPreference = 'Stop'
 
 try {
     Write-Host "Starting HerdrOps installation..."
-    
+
     $fullArchivePath = Get-SafeInstallerPath -Path $ArchivePath
     $fullInstallRoot = Get-SafeInstallerPath -Path $InstallRoot
     $fullUserDataRoot = Get-SafeInstallerPath -Path $UserDataRoot

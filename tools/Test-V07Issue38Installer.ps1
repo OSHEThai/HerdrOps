@@ -12,13 +12,13 @@ $userDataRoot = Join-Path $testRoot 'UserData'
 
 try {
     New-Item -ItemType Directory -Path $testRoot -Force | Out-Null
-    
+
     # 1. Create a dummy package
     $packageSource = Join-Path $testRoot 'Source'
     New-Item -ItemType Directory -Path $packageSource -Force | Out-Null
     Set-Content -LiteralPath (Join-Path $packageSource 'file1.txt') -Value "test1"
     Set-Content -LiteralPath (Join-Path $packageSource 'file2.txt') -Value "test2"
-    
+
     Add-Type -AssemblyName System.IO.Compression.FileSystem
     [System.IO.Compression.ZipFile]::CreateFromDirectory($packageSource, $archivePath)
 
@@ -66,7 +66,7 @@ try {
     $archiveDups.CreateEntry("DIR/file.txt").Open().Dispose()
     $archiveDups.CreateEntry("dir/file.txt").Open().Dispose()
     $archiveDups.Dispose()
-    
+
     $caught = $false
     try { Expand-HerdrOpsArchiveSafe -ArchivePath $hostileArchiveDups -DestinationPath (Join-Path $testRoot 'dest') } catch { if ($_.Exception.Message -match 'case-insensitive duplicate') { $caught = $true } }
     if (-not $caught) { throw "Duplicate/case collision not caught!" }
@@ -78,7 +78,7 @@ try {
     $archiveContainer.CreateEntry("file/subfile.txt").Open().Dispose()
     $archiveContainer.CreateEntry("FILE").Open().Dispose()
     $archiveContainer.Dispose()
-    
+
     $caught = $false
     try { Expand-HerdrOpsArchiveSafe -ArchivePath $hostileArchiveContainer -DestinationPath (Join-Path $testRoot 'dest2') } catch { if ($_.Exception.Message -match 'file-vs-directory collision') { $caught = $true } }
     if (-not $caught) { throw "Container collision not caught!" }
@@ -90,11 +90,11 @@ try {
         # Invoke installation in a temp safe directory so we don't mess with real AppData
         # Actually, we can test this by running the uninstaller which doesn't require an archive and see if it throws on paths.
         # But we don't want to actually uninstall real HerdrOps.
-        # Let's just dot source and check if the param works? 
-        # Since we use Get-Command we can't easily parse. 
+        # Let's just dot source and check if the param works?
+        # Since we use Get-Command we can't easily parse.
         # But the requirement says "add hostile/dual-shell tests ... missing LOCALAPPDATA".
         # Let's run a background job that tests the param evaluation.
-        $job = Start-Job -ScriptBlock { 
+        $job = Start-Job -ScriptBlock {
             $env:LOCALAPPDATA = ""
             if ([string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) { return "$env:USERPROFILE\AppData\Local\Programs\HerdrOps" } else { return "$env:LOCALAPPDATA\Programs\HerdrOps" }
         }
@@ -131,7 +131,7 @@ try {
     # 5. Test Uninstall with RemoveUserData
     # first install again
     & (Join-Path $PSScriptRoot 'installer\Install-HerdrOps.ps1') -ArchivePath $archivePath -InstallRoot $installRoot -UserDataRoot $userDataRoot
-    
+
     & (Join-Path $PSScriptRoot 'installer\Uninstall-HerdrOps.ps1') -InstallRoot $installRoot -UserDataRoot $userDataRoot -RemoveUserData
 
     if (Test-Path -LiteralPath $installRoot) {

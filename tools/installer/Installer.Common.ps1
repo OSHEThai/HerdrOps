@@ -94,7 +94,7 @@ function Expand-HerdrOpsArchiveSafe {
 
             $isDir = $entryName.EndsWith('/', [StringComparison]::Ordinal)
             $normalizedPath = $destinationEntryPath.ToLowerInvariant()
-            
+
             if ($extractedPaths.ContainsKey($normalizedPath)) {
                 if ($extractedPaths[$normalizedPath] -ne $isDir) {
                     throw "Archive contains case-insensitive file-vs-directory collision: '$entryName'."
@@ -102,7 +102,7 @@ function Expand-HerdrOpsArchiveSafe {
                 throw "Archive contains case-insensitive duplicate entry: '$entryName'."
             }
             $extractedPaths[$normalizedPath] = $isDir
-            
+
             $current = $destinationEntryPath
             while ($true) {
                 $parent = Split-Path -Path $current -Parent
@@ -172,7 +172,7 @@ function Invoke-AtomicInstallTransition {
     $lockPath = Join-Path $parent "$([IO.Path]::GetFileName($target)).lock"
     $stage = Join-Path $parent "HerdrOps.stage-$RunId"
     $backup = Join-Path $parent "HerdrOps.backup-$RunId"
-    
+
     $oldPresent = Test-Path -LiteralPath $target
     $oldMoved = $false
     $committed = $false
@@ -184,7 +184,7 @@ function Invoke-AtomicInstallTransition {
             New-Item -ItemType Directory -Path $parent -Force | Out-Null
         }
         Assert-NoReparsePath -Path $parent
-        
+
         $retryCount = 0
         while (-not $lockAcquired -and $retryCount -lt 10) {
             try {
@@ -235,7 +235,7 @@ function Invoke-AtomicInstallTransition {
             $preserveTransient = $true
             throw $primaryException
         }
-        
+
         try {
             if ($null -ne $stage -and (Test-Path -LiteralPath $stage)) {
                 Remove-DirectoryTreeSafe -Path $stage -Context "Stage rollback"
@@ -281,7 +281,7 @@ function Invoke-AtomicUninstallTransition {
     $parent = Split-Path -Path $target -Parent
     $lockPath = Join-Path $parent "$([IO.Path]::GetFileName($target)).lock"
     $backup = Join-Path $parent "HerdrOps.backup-$RunId"
-    
+
     $oldMoved = $false
     $committed = $false
     $preserveTransient = $false
@@ -307,18 +307,18 @@ function Invoke-AtomicUninstallTransition {
         }
 
         Assert-NoReparsePath -Path $target
-        
+
         if (Test-Path -LiteralPath $backup) {
             Remove-DirectoryTreeSafe -Path $backup -Context "Pre-existing backup cleanup"
         }
-        
+
         Move-Item -LiteralPath $target -Destination $backup
         $oldMoved = $true
-        
+
         if (Test-Path -LiteralPath $target) {
             throw 'Uninstall target remained after the atomic directory move.'
         }
-        
+
         $committed = $true
 
         try {
@@ -334,7 +334,7 @@ function Invoke-AtomicUninstallTransition {
             $preserveTransient = $true
             throw $primaryException
         }
-        
+
         try {
             if ($oldMoved -and $null -ne $backup -and (Test-Path -LiteralPath $backup)) {
                 if (Test-Path -LiteralPath $target) {

@@ -19,7 +19,7 @@ $ErrorActionPreference = 'Stop'
 
 try {
     Write-Host "Starting HerdrOps uninstallation..."
-    
+
     $fullInstallRoot = Get-SafeInstallerPath -Path $InstallRoot
     $fullUserDataRoot = Get-SafeInstallerPath -Path $UserDataRoot
 
