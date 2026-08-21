@@ -280,13 +280,18 @@ public sealed class RuntimeIdleQuiescenceTracker(int requiredStableSeconds)
 }
 
 /// <summary>
-/// Gates <see cref="RuntimeIdleQuiescenceTracker"/> stability behind full Agent-identity
-/// completeness, so a fingerprint that has merely stopped changing mid-reconnect
-/// (identity/reconciliation churn not yet resolved) is never reported as settled.
+/// Requires a continuous, unbroken window of a stable full <see cref="RuntimeStateFingerprint"/>
+/// with live Core/App and complete Agent identities before reporting settlement. Any tick where
+/// Core/Live or identity completeness is missing discards all prior progress; the stable window
+/// only starts counting once every condition holds, and must then hold unbroken for its full
+/// duration. This prevents a fingerprint that has merely stopped changing mid-reconnect (identity
+/// or reconciliation churn not yet resolved) from being credited toward, or silently substituted
+/// for, the settled baseline.
 /// </summary>
 public sealed class RuntimeReconnectQuiescenceTracker(int requiredStableSeconds)
 {
-    private readonly RuntimeIdleQuiescenceTracker _tracker = new(requiredStableSeconds);
+    private readonly int _requiredStableSeconds = requiredStableSeconds;
+    private RuntimeIdleQuiescenceTracker? _eligibleWindowTracker;
 
     public RuntimeIdleQuiescence? Observe(
         DateTimeOffset observedUtc,
@@ -294,15 +299,16 @@ public sealed class RuntimeReconnectQuiescenceTracker(int requiredStableSeconds)
         bool hasAllLiveAgentIdentities)
     {
         ArgumentNullException.ThrowIfNull(fingerprint);
-        var quiescence = _tracker.Observe(observedUtc, fingerprint);
-        if (quiescence is null)
+        var eligible =
+            fingerprint.IsCoreConnected && fingerprint.IsLive && hasAllLiveAgentIdentities;
+        if (!eligible)
         {
+            _eligibleWindowTracker = null;
             return null;
         }
 
-        return fingerprint.IsCoreConnected && fingerprint.IsLive && hasAllLiveAgentIdentities
-            ? quiescence
-            : null;
+        _eligibleWindowTracker ??= new RuntimeIdleQuiescenceTracker(_requiredStableSeconds);
+        return _eligibleWindowTracker.Observe(observedUtc, fingerprint);
     }
 }
 
@@ -405,8 +411,6 @@ public sealed class RuntimeEvidenceRunner(
     private const int MinimumLatencySamples = 3;
     private const int IdleQuiescenceSeconds = 5;
     private const int IdleQuiescencePollMilliseconds = 100;
-    private const int PostReconnectQuiescenceSeconds = 2;
-    private const int PostReconnectQuiescencePollMilliseconds = 100;
     private const int ResourceSampleIntervalMilliseconds = 250;
     private const string EmptySha256 =
         "0000000000000000000000000000000000000000000000000000000000000000";
@@ -1012,7 +1016,7 @@ public sealed class RuntimeEvidenceRunner(
         DateTimeOffset deadline,
         CancellationToken cancellationToken)
     {
-        var tracker = new RuntimeReconnectQuiescenceTracker(PostReconnectQuiescenceSeconds);
+        var tracker = new RuntimeReconnectQuiescenceTracker(IdleQuiescenceSeconds);
 
         while (true)
         {
@@ -1021,7 +1025,7 @@ public sealed class RuntimeEvidenceRunner(
             if (observedUtc >= deadline)
             {
                 throw new TimeoutException(
-                    $"The post-reconnect Herdr state did not settle into a stable, fully identified fingerprint for {PostReconnectQuiescenceSeconds} seconds before the runtime-evidence timeout.");
+                    $"The post-reconnect Herdr state did not settle into a stable, fully identified fingerprint for {IdleQuiescenceSeconds} continuous seconds before the runtime-evidence timeout.");
             }
 
             var currentState = _state.CurrentState;
@@ -1036,7 +1040,7 @@ public sealed class RuntimeEvidenceRunner(
             }
 
             await Task.Delay(
-                TimeSpan.FromMilliseconds(PostReconnectQuiescencePollMilliseconds),
+                TimeSpan.FromMilliseconds(IdleQuiescencePollMilliseconds),
                 cancellationToken);
         }
     }
