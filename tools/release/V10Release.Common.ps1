@@ -1581,6 +1581,153 @@ function Assert-V10Issue42ReportSemantics {
     Assert-V10UtcTimestamp -Value ([string]$Report.completedAtUtc) -Description 'Issue #42 completedAtUtc'
 }
 
+function Assert-V10Issue43Boundaries {
+    param([Parameter(Mandatory = $true)]$Boundaries)
+
+    Assert-V10ExactProperties -Object $Boundaries -Names @('static', 'synthetic', 'contract', 'cleanMachine', 'runtime', 'independentReview', 'human', 'release') -Description 'Issue #43 evidence boundaries'
+    foreach ($name in @('static', 'synthetic', 'contract', 'cleanMachine', 'runtime', 'independentReview', 'human', 'release')) {
+        Assert-V10ClrStringValue -Value $Boundaries.$name -Description "Issue #43 boundary '$name'"
+    }
+    if ([string]$Boundaries.static -notlike 'PASS*' -or
+        [string]$Boundaries.synthetic -notlike 'PASS*' -or
+        [string]$Boundaries.contract -notlike 'PASS*' -or
+        [string]$Boundaries.cleanMachine -notlike 'NOT OBSERVED*' -or
+        [string]$Boundaries.runtime -notlike 'NOT OBSERVED*' -or
+        [string]$Boundaries.independentReview -notlike 'PASS*' -or
+        [string]$Boundaries.human -notlike 'NOT OBSERVED*' -or
+        [string]$Boundaries.release -notlike 'NOT OBSERVED*') {
+        throw 'Issue #43 evidence boundaries do not preserve the independent-review boundary.'
+    }
+}
+
+function Assert-V10Issue43ReportSemantics {
+    param(
+        [Parameter(Mandatory = $true)]$Report,
+        [Parameter(Mandatory = $true)][string]$SourceCommit,
+        [Parameter(Mandatory = $true)][string]$ArchiveSha256,
+        [Parameter(Mandatory = $true)][long]$ArchiveBytes,
+        [string]$ExpectedSourceTree,
+        [string]$ExpectedParentCommit,
+        [string]$ExpectedBranch
+    )
+
+    Assert-V10ExactProperties -Object $Report -Names @(
+        'schemaVersion', 'reportKind', 'issue', 'reviewVersion', 'status', 'evidenceClass',
+        'sourceCommit', 'sourceTree', 'candidateCommit', 'directParentCommit', 'branch',
+        'candidateHeadMatch', 'directParentMatch', 'candidateArchiveSha256', 'candidateArchiveBytes',
+        'reviewedManifestPath', 'reviewedManifestSha256', 'schemaMigrationReportPath',
+        'schemaMigrationReportSha256', 'gateReportPath', 'gateReportSha256', 'provenanceSha256',
+        'verdict', 'unresolvedHighFindings', 'reviewer', 'checks', 'boundaries', 'completedAtUtc') -Description 'Issue #43 canonical report'
+
+    Assert-V10ClrIntegerValue -Value $Report.schemaVersion -Description 'Issue #43 schemaVersion' -Minimum 1
+    Assert-V10ClrIntegerValue -Value $Report.issue -Description 'Issue #43 issue' -Minimum 43
+    if ([int64]$Report.schemaVersion -ne 1 -or [int64]$Report.issue -ne 43) { throw 'Issue #43 canonical report identity is not exact.' }
+    foreach ($name in @('reportKind', 'reviewVersion', 'status', 'evidenceClass', 'verdict')) { Assert-V10ClrStringValue -Value $Report.$name -Description "Issue #43 $name" }
+    if ([string]$Report.reportKind -cne 'HerdrOps.V10SecurityPrivacyReviewReport' -or
+        [string]$Report.reviewVersion -cne 'v1.0.0' -or [string]$Report.status -cne 'PASS' -or
+        [string]$Report.evidenceClass -cne 'IndependentReview' -or [string]$Report.verdict -cne 'PASS') {
+        throw 'Issue #43 canonical report is not a passing independent-review shape.'
+    }
+
+    foreach ($name in @('sourceCommit', 'sourceTree', 'candidateCommit', 'directParentCommit')) { Assert-V10ClrStringValue -Value $Report.$name -Description "Issue #43 $name" }
+    Assert-V10Hex -Value ([string]$Report.sourceCommit) -Length 40 -Description 'Issue #43 sourceCommit' -Lowercase
+    Assert-V10Hex -Value ([string]$Report.sourceTree) -Length 40 -Description 'Issue #43 sourceTree' -Lowercase
+    Assert-V10Hex -Value ([string]$Report.candidateCommit) -Length 40 -Description 'Issue #43 candidateCommit' -Lowercase
+    Assert-V10Hex -Value ([string]$Report.directParentCommit) -Length 40 -Description 'Issue #43 directParentCommit' -Lowercase
+    if ([string]$Report.sourceCommit -cne $SourceCommit -or [string]$Report.candidateCommit -cne $SourceCommit) { throw 'Issue #43 source/candidate commit binding is not exact.' }
+    if (-not [string]::IsNullOrWhiteSpace($ExpectedSourceTree) -and [string]$Report.sourceTree -cne $ExpectedSourceTree) { throw 'Issue #43 source tree binding does not match the accepted commit.' }
+    if (-not [string]::IsNullOrWhiteSpace($ExpectedParentCommit) -and [string]$Report.directParentCommit -cne $ExpectedParentCommit) { throw 'Issue #43 direct-parent binding does not match the accepted commit.' }
+    Assert-V10ClrStringValue -Value $Report.branch -Description 'Issue #43 branch'
+    if ([string]$Report.branch -match '[<>]' -or [string]$Report.branch -in @('PENDING', 'NOT ASSIGNED')) { throw 'Issue #43 branch binding is not concrete.' }
+    if (-not [string]::IsNullOrWhiteSpace($ExpectedBranch) -and [string]$Report.branch -cne $ExpectedBranch) { throw 'Issue #43 branch binding does not match the reviewed checkout.' }
+    foreach ($name in @('candidateHeadMatch', 'directParentMatch')) { Assert-V10ClrStringValue -Value $Report.$name -Description "Issue #43 $name"; if ([string]$Report.$name -cne 'PASS') { throw "Issue #43 $name must be PASS." } }
+
+    Assert-V10ClrStringValue -Value $Report.candidateArchiveSha256 -Description 'Issue #43 candidateArchiveSha256'
+    Assert-V10Hex -Value ([string]$Report.candidateArchiveSha256) -Length 64 -Description 'Issue #43 candidateArchiveSha256' -Uppercase
+    if ([string]$Report.candidateArchiveSha256 -cne $ArchiveSha256) { throw 'Issue #43 candidate archive SHA-256 does not match the accepted candidate.' }
+    Assert-V10ClrIntegerValue -Value $Report.candidateArchiveBytes -Description 'Issue #43 candidateArchiveBytes' -Minimum 1
+    if ([int64]$Report.candidateArchiveBytes -ne $ArchiveBytes) { throw 'Issue #43 candidate archive byte count does not match the accepted candidate.' }
+
+    foreach ($name in @('reviewedManifestSha256', 'schemaMigrationReportSha256', 'gateReportSha256', 'provenanceSha256')) {
+        Assert-V10ClrStringValue -Value $Report.$name -Description "Issue #43 $name"
+        Assert-V10Hex -Value ([string]$Report.$name) -Length 64 -Description "Issue #43 $name" -Uppercase
+        if ([string]$Report.$name -ceq (('0' * 64) -join '')) { throw "Issue #43 $name cannot be an all-zero placeholder." }
+    }
+    $root = Get-V10RepositoryRoot
+    $manifestPath = Resolve-V10RepositoryFile -RelativePath ([string]$Report.reviewedManifestPath) -RepositoryRoot $root -Description 'Issue #43 reviewed manifest'
+    $schemaPath = Resolve-V10RepositoryFile -RelativePath ([string]$Report.schemaMigrationReportPath) -RepositoryRoot $root -Description 'Issue #43 schema migration report'
+    $gatePath = Resolve-V10RepositoryFile -RelativePath ([string]$Report.gateReportPath) -RepositoryRoot $root -Description 'Issue #43 gate report'
+    $manifestHash = ((Get-FileHash -LiteralPath $manifestPath -Algorithm SHA256 -ErrorAction Stop).Hash).ToUpperInvariant()
+    $schemaHash = ((Get-FileHash -LiteralPath $schemaPath -Algorithm SHA256 -ErrorAction Stop).Hash).ToUpperInvariant()
+    $gateHash = ((Get-FileHash -LiteralPath $gatePath -Algorithm SHA256 -ErrorAction Stop).Hash).ToUpperInvariant()
+    if ($manifestHash -cne [string]$Report.reviewedManifestSha256 -or $schemaHash -cne [string]$Report.schemaMigrationReportSha256 -or $gateHash -cne [string]$Report.gateReportSha256) {
+        throw 'Issue #43 reviewed manifest, schema migration, or gate hash does not match exact bytes.'
+    }
+    $manifestText = [IO.File]::ReadAllText($manifestPath)
+    foreach ($marker in @(
+        'Issue: #43', 'Version: v1.0.0', "CandidateCommit: $($Report.candidateCommit)",
+        "DirectParentCommit: $($Report.directParentCommit)", "CandidateHeadMatch: $($Report.candidateHeadMatch)",
+        "DirectParentMatch: $($Report.directParentMatch)", "Branch: $($Report.branch)", 'ReviewedFiles:')) {
+        if ($manifestText.IndexOf($marker, [StringComparison]::Ordinal) -lt 0) { throw "Issue #43 reviewed manifest is missing canonical marker: $marker" }
+    }
+    $schemaText = [IO.File]::ReadAllText($schemaPath)
+    foreach ($marker in @(
+        'SchemaVersion: v4',
+        'MigrationGraph: v1 initial-state-store -> v2 assignment-lifecycle-provenance -> v3 evidence-metadata-review-retention-audit -> v4 role-distinct-compliance-review-workflow',
+        "SourceCommit: $($Report.sourceCommit)", "CandidateCommit: $($Report.candidateCommit)",
+        "DirectParentCommit: $($Report.directParentCommit)", "Branch: $($Report.branch)",
+        "ReviewedManifestSha256: $($Report.reviewedManifestSha256)")) {
+        if ($schemaText.IndexOf($marker, [StringComparison]::Ordinal) -lt 0) { throw "Issue #43 schema migration report is missing canonical marker: $marker" }
+    }
+    $gateText = [IO.File]::ReadAllText($gatePath)
+    foreach ($marker in @(
+        'Issue: #43', "SourceCommit: $($Report.sourceCommit)", "CandidateCommit: $($Report.candidateCommit)",
+        "DirectParentCommit: $($Report.directParentCommit)", "Branch: $($Report.branch)",
+        "ReviewedManifestSha256: $($Report.reviewedManifestSha256)",
+        "SchemaMigrationReportSha256: $($Report.schemaMigrationReportSha256)")) {
+        if ($gateText.IndexOf($marker, [StringComparison]::Ordinal) -lt 0) { throw "Issue #43 gate report is missing canonical marker: $marker" }
+    }
+    $provenance = ''
+    foreach ($item in @(
+        [pscustomobject]@{ Name = 'reviewed-manifest'; Sha256 = [string]$Report.reviewedManifestSha256 },
+        [pscustomobject]@{ Name = 'schema-migration-report'; Sha256 = [string]$Report.schemaMigrationReportSha256 },
+        [pscustomobject]@{ Name = 'gate-report'; Sha256 = [string]$Report.gateReportSha256 })) {
+        $provenance = Get-V10Sha256TextUpper -Text ($provenance + '|' + $item.Name + '|' + $item.Sha256)
+    }
+    if ([string]$Report.provenanceSha256 -cne $provenance) { throw 'Issue #43 provenance root does not match the ordered review artifact chain.' }
+
+    Assert-V10ExactProperties -Object $Report.reviewer -Names @('name', 'role') -Description 'Issue #43 reviewer'
+    foreach ($name in @('name', 'role')) { Assert-V10ClrStringValue -Value $Report.reviewer.$name -Description "Issue #43 reviewer.$name" }
+    if ([string]$Report.reviewer.name -match '[<>]' -or [string]$Report.reviewer.role -match '[<>]' -or
+        [string]$Report.reviewer.name -in @('PENDING', 'NOT ASSIGNED') -or [string]$Report.reviewer.role -in @('PENDING', 'NOT ASSIGNED')) {
+        throw 'Issue #43 reviewer identity must be concrete and role-distinct.'
+    }
+    Assert-V10ClrIntegerValue -Value $Report.unresolvedHighFindings -Description 'Issue #43 unresolvedHighFindings' -Minimum 0
+    if ([int64]$Report.unresolvedHighFindings -ne 0) { throw 'Issue #43 unresolvedHighFindings must be zero.' }
+
+    Assert-V10ClrArrayValue -Value $Report.checks -Description 'Issue #43 checks' -MinimumCount 18
+    $expectedChecks = [ordered]@{
+        'S-01' = 'Static'; 'S-02' = 'Static'; 'S-03' = 'Static'; 'S-04' = 'Static'; 'S-05' = 'Static';
+        'S-06' = 'Contract'; 'S-07' = 'Static'; 'S-08' = 'Static'; 'S-09' = 'Static'; 'S-10' = 'Static'; 'S-11' = 'Static';
+        'C-01' = 'Contract'; 'C-02' = 'Contract'; 'C-03' = 'Synthetic'; 'C-04' = 'LocalSQLiteIntegration';
+        'C-05' = 'LocalSQLiteIntegration'; 'C-06' = 'LocalSQLiteIntegration'; 'C-07' = 'Synthetic'
+    }
+    if (@($Report.checks).Count -ne $expectedChecks.Count) { throw 'Issue #43 checks must contain the complete canonical S/C inventory exactly once.' }
+    $checkIndex = 0
+    foreach ($expectedId in @($expectedChecks.Keys)) {
+        $check = @($Report.checks)[$checkIndex]
+        Assert-V10ExactProperties -Object $check -Names @('id', 'status', 'evidenceClass', 'detail') -Description "Issue #43 check $expectedId"
+        foreach ($name in @('id', 'status', 'evidenceClass', 'detail')) { Assert-V10ClrStringValue -Value $check.$name -Description "Issue #43 check $expectedId $name" }
+        if ([string]$check.id -cne $expectedId -or [string]$check.status -cne 'PASS' -or [string]$check.evidenceClass -cne [string]$expectedChecks[$expectedId]) {
+            throw "Issue #43 check $expectedId is missing, duplicated, reordered, or has the wrong evidence class."
+        }
+        $checkIndex++
+    }
+    Assert-V10Issue43Boundaries -Boundaries $Report.boundaries
+    Assert-V10ClrStringValue -Value $Report.completedAtUtc -Description 'Issue #43 completedAtUtc'
+    Assert-V10UtcTimestamp -Value ([string]$Report.completedAtUtc) -Description 'Issue #43 completedAtUtc'
+}
+
 function Assert-V10GateReport {
     param(
         [Parameter(Mandatory = $true)][int]$Issue,
@@ -1629,20 +1776,14 @@ function Assert-V10GateReport {
                 -RequireRuntime
         }
         43 {
-            if ([int](Get-V10RequiredProperty -Object $value -Name 'schemaVersion' -Description 'Issue #43 report') -ne 1 -or
-                [string](Get-V10RequiredProperty -Object $value -Name 'reportKind' -Description 'Issue #43 report') -cne 'HerdrOps.V10SecurityPrivacyReviewReport' -or
-                [int](Get-V10RequiredProperty -Object $value -Name 'issue' -Description 'Issue #43 report') -ne 43 -or
-                [string](Get-V10RequiredProperty -Object $value -Name 'reviewVersion' -Description 'Issue #43 report') -cne 'v1.0.0' -or
-                [string](Get-V10RequiredProperty -Object $value -Name 'status' -Description 'Issue #43 report') -cne 'PASS' -or
-                [string](Get-V10RequiredProperty -Object $value -Name 'evidenceClass' -Description 'Issue #43 report') -cne 'IndependentReview' -or
-                [string](Get-V10RequiredProperty -Object $value -Name 'sourceCommit' -Description 'Issue #43 report') -cne $SourceCommit -or
-                [string](Get-V10RequiredProperty -Object $value -Name 'candidateArchiveSha256' -Description 'Issue #43 report') -cne $ArchiveSha256 -or
-                [string](Get-V10RequiredProperty -Object $value -Name 'verdict' -Description 'Issue #43 report') -cne 'PASS' -or
-                [int](Get-V10RequiredProperty -Object $value -Name 'unresolvedHighFindings' -Description 'Issue #43 report') -ne 0 -or
-                [string]::IsNullOrWhiteSpace([string](Get-V10RequiredProperty -Object $value -Name 'reviewer' -Description 'Issue #43 report'))) {
-                throw 'Issue #43 report does not contain a passing role-distinct final review for the exact candidate.'
-            }
-            Assert-V10UtcTimestamp -Value ([string](Get-V10RequiredProperty -Object $value -Name 'completedAtUtc' -Description 'Issue #43 report')) -Description 'Issue #43 completedAtUtc'
+            Assert-V10Issue43ReportSemantics `
+                -Report $value `
+                -SourceCommit $SourceCommit `
+                -ArchiveSha256 $ArchiveSha256 `
+                -ArchiveBytes $ArchiveBytes `
+                -ExpectedSourceTree $ExpectedSourceTree `
+                -ExpectedParentCommit $ExpectedParentCommit `
+                -ExpectedBranch $ExpectedBranch
         }
         44 {
             Assert-V10Issue44ReportSemantics `

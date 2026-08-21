@@ -223,6 +223,102 @@ function New-TestIssue42Report {
     }
 }
 
+function New-TestIssue43Report {
+    param(
+        [Parameter(Mandatory = $true)][string]$RepositoryRoot,
+        [Parameter(Mandatory = $true)][string]$SourceCommit,
+        [Parameter(Mandatory = $true)][string]$SourceTree,
+        [Parameter(Mandatory = $true)][string]$DirectParentCommit,
+        [Parameter(Mandatory = $true)][string]$Branch,
+        [Parameter(Mandatory = $true)][string]$ArchiveSha256,
+        [Parameter(Mandatory = $true)][long]$ArchiveBytes,
+        [Parameter(Mandatory = $true)][string]$EvidenceRoot
+    )
+
+    $manifestPath = Join-Path $EvidenceRoot 'issue-43-reviewed-files.manifest.txt'
+    $schemaPath = Join-Path $EvidenceRoot 'issue-43-schema-migration-report.txt'
+    $gatePath = Join-Path $EvidenceRoot 'issue-43-gate-report.txt'
+    $manifestText = @(
+        'Issue: #43', 'Version: v1.0.0', "CandidateCommit: $SourceCommit",
+        "DirectParentCommit: $DirectParentCommit", 'CandidateHeadMatch: PASS',
+        'DirectParentMatch: PASS', "Branch: $Branch", 'ReviewedFiles:',
+        'src/HerdrOps.Infrastructure/Storage/SqliteHerdrStateStore.cs bytes=1 sha256=' + (New-TestHex64 -Character 'A')
+    ) -join [Environment]::NewLine
+    Write-TestText -Path $manifestPath -Text ($manifestText + [Environment]::NewLine)
+    $manifestHash = ((Get-FileHash -LiteralPath $manifestPath -Algorithm SHA256).Hash).ToUpperInvariant()
+    $schemaText = @(
+        'HerdrOps v1.0.0 Issue #43 Schema and Migration Report',
+        'SchemaVersion: v4',
+        'MigrationGraph: v1 initial-state-store -> v2 assignment-lifecycle-provenance -> v3 evidence-metadata-review-retention-audit -> v4 role-distinct-compliance-review-workflow',
+        "SourceCommit: $SourceCommit", "CandidateCommit: $SourceCommit", "DirectParentCommit: $DirectParentCommit",
+        "Branch: $Branch", "ReviewedManifestSha256: $manifestHash", 'Result: PASS'
+    ) -join [Environment]::NewLine
+    Write-TestText -Path $schemaPath -Text ($schemaText + [Environment]::NewLine)
+    $schemaHash = ((Get-FileHash -LiteralPath $schemaPath -Algorithm SHA256).Hash).ToUpperInvariant()
+    $checkIds = @('S-01', 'S-02', 'S-03', 'S-04', 'S-05', 'S-06', 'S-07', 'S-08', 'S-09', 'S-10', 'S-11', 'C-01', 'C-02', 'C-03', 'C-04', 'C-05', 'C-06', 'C-07')
+    $gateLines = [System.Collections.Generic.List[string]]::new()
+    foreach ($line in @(
+        'HerdrOps v1.0.0 Issue #43 Security and Privacy Review Gate', 'Issue: #43',
+        "SourceCommit: $SourceCommit", "CandidateCommit: $SourceCommit", "DirectParentCommit: $DirectParentCommit",
+        "Branch: $Branch", "ReviewedManifestSha256: $manifestHash", "SchemaMigrationReportSha256: $schemaHash", 'Result: PASS')) {
+        $gateLines.Add($line)
+    }
+    foreach ($id in $checkIds) { $gateLines.Add("PASS $id evidence=Static detail=synthetic canonical positive control") }
+    Write-TestText -Path $gatePath -Text (($gateLines -join [Environment]::NewLine) + [Environment]::NewLine)
+    $gateHash = ((Get-FileHash -LiteralPath $gatePath -Algorithm SHA256).Hash).ToUpperInvariant()
+    $provenance = ''
+    foreach ($item in @(
+        [pscustomobject]@{ Name = 'reviewed-manifest'; Sha256 = $manifestHash },
+        [pscustomobject]@{ Name = 'schema-migration-report'; Sha256 = $schemaHash },
+        [pscustomobject]@{ Name = 'gate-report'; Sha256 = $gateHash })) {
+        $provenance = Get-V10Sha256TextUpper -Text ($provenance + '|' + $item.Name + '|' + $item.Sha256)
+    }
+    $expectedEvidenceClasses = @('Static', 'Static', 'Static', 'Static', 'Static', 'Contract', 'Static', 'Static', 'Static', 'Static', 'Static', 'Contract', 'Contract', 'Synthetic', 'LocalSQLiteIntegration', 'LocalSQLiteIntegration', 'LocalSQLiteIntegration', 'Synthetic')
+    $checks = [System.Collections.Generic.List[object]]::new()
+    for ($index = 0; $index -lt $checkIds.Count; $index++) {
+        $checks.Add([ordered]@{ id = $checkIds[$index]; status = 'PASS'; evidenceClass = $expectedEvidenceClasses[$index]; detail = 'Synthetic canonical positive control.' })
+    }
+    return [ordered]@{
+        schemaVersion = 1
+        reportKind = 'HerdrOps.V10SecurityPrivacyReviewReport'
+        issue = 43
+        reviewVersion = 'v1.0.0'
+        status = 'PASS'
+        evidenceClass = 'IndependentReview'
+        sourceCommit = $SourceCommit
+        sourceTree = $SourceTree
+        candidateCommit = $SourceCommit
+        directParentCommit = $DirectParentCommit
+        branch = $Branch
+        candidateHeadMatch = 'PASS'
+        directParentMatch = 'PASS'
+        candidateArchiveSha256 = $ArchiveSha256
+        candidateArchiveBytes = $ArchiveBytes
+        reviewedManifestPath = Get-TestRelativePath -Path $manifestPath -Root $RepositoryRoot
+        reviewedManifestSha256 = $manifestHash
+        schemaMigrationReportPath = Get-TestRelativePath -Path $schemaPath -Root $RepositoryRoot
+        schemaMigrationReportSha256 = $schemaHash
+        gateReportPath = Get-TestRelativePath -Path $gatePath -Root $RepositoryRoot
+        gateReportSha256 = $gateHash
+        provenanceSha256 = $provenance
+        verdict = 'PASS'
+        unresolvedHighFindings = 0
+        reviewer = [ordered]@{ name = 'Synthetic Independent Reviewer'; role = 'IndependentSecurityPrivacyReviewer' }
+        checks = @($checks.ToArray())
+        boundaries = [ordered]@{
+            static = 'PASS: exact reviewed-source and report bindings are checked.'
+            synthetic = 'PASS: local deterministic fixture evidence only.'
+            contract = 'PASS: local contract checks only.'
+            cleanMachine = 'NOT OBSERVED: no clean-machine installation was performed.'
+            runtime = 'NOT OBSERVED: no actual Herdr runtime was performed.'
+            independentReview = 'PASS: self-test shape only; no independent review credit is granted.'
+            human = 'NOT OBSERVED: no human approval was performed.'
+            release = 'NOT OBSERVED: no release or publication was performed.'
+        }
+        completedAtUtc = '2026-08-17T00:30:00.0000000Z'
+    }
+}
+
 function New-TestIssue44Report {
     param(
         [Parameter(Mandatory = $true)][string]$SourceCommit,
@@ -585,20 +681,16 @@ try {
         -ArchiveBytes $candidate.ArchiveBytes `
         -GateReportPath (Join-Path $evidenceRoot 'issue-42-synthetic-gate-report.txt')
     Write-V10NewJsonFile -Path $issue42SyntheticPath -Value $issue42SyntheticValue | Out-Null
-    Write-V10NewJsonFile -Path $issue43Path -Value ([ordered]@{
-            schemaVersion = 1
-            reportKind = 'HerdrOps.V10SecurityPrivacyReviewReport'
-            issue = 43
-            reviewVersion = 'v1.0.0'
-            status = 'PASS'
-            evidenceClass = 'IndependentReview'
-            sourceCommit = $sourceCommit
-            candidateArchiveSha256 = $candidate.ArchiveSha256
-            verdict = 'PASS'
-            unresolvedHighFindings = 0
-            reviewer = 'Synthetic Reviewer Fixture'
-            completedAtUtc = '2026-08-17T00:30:00.0000000Z'
-        }) | Out-Null
+    $issue43Value = New-TestIssue43Report `
+        -RepositoryRoot $repositoryRoot `
+        -SourceCommit $sourceCommit `
+        -SourceTree $sourceTree `
+        -DirectParentCommit $sourceParent `
+        -Branch $sourceBranch `
+        -ArchiveSha256 $candidate.ArchiveSha256 `
+        -ArchiveBytes $candidate.ArchiveBytes `
+        -EvidenceRoot $evidenceRoot
+    Write-V10NewJsonFile -Path $issue43Path -Value $issue43Value | Out-Null
     $issue44SyntheticValue = New-TestIssue44Report `
         -SourceCommit $sourceCommit `
         -ArchiveSha256 ([string]$candidate.Record.generation.archiveSha256) `
@@ -761,6 +853,75 @@ try {
         Assert-V10GateReport -Issue 42 -EvidenceClass 'Runtime' -Report ([pscustomobject]@{ Value = $issue42WrongType }) -SourceCommit $sourceCommit -ArchiveSha256 $candidate.ArchiveSha256 -ArchiveBytes $candidate.ArchiveBytes -ExpectedSourceTree $sourceTree -ExpectedParentCommit $sourceParent -ExpectedBranch $sourceBranch
     }
     [void]$assertions.Add('Issue42WrongScalarTypeRejected')
+
+    $issue43Report = Read-V10StrictJsonFile -Path $issue43Path -Description 'Issue #43 complete review report shape'
+    Assert-V10GateReport `
+        -Issue 43 `
+        -EvidenceClass 'IndependentReview' `
+        -Report $issue43Report `
+        -SourceCommit $sourceCommit `
+        -ArchiveSha256 $candidate.ArchiveSha256 `
+        -ArchiveBytes $candidate.ArchiveBytes `
+        -ExpectedSourceTree $sourceTree `
+        -ExpectedParentCommit $sourceParent `
+        -ExpectedBranch $sourceBranch
+    [void]$assertions.Add('Issue43CanonicalProducerShapeAcceptedSynthetically')
+
+    $minimalIssue43Report = [pscustomobject]@{
+        Value = [pscustomobject][ordered]@{
+            schemaVersion = 1
+            reportKind = 'HerdrOps.V10SecurityPrivacyReviewReport'
+            issue = 43
+            reviewVersion = 'v1.0.0'
+            status = 'PASS'
+            evidenceClass = 'IndependentReview'
+            sourceCommit = $sourceCommit
+            candidateArchiveSha256 = $candidate.ArchiveSha256
+            verdict = 'PASS'
+            unresolvedHighFindings = 0
+            reviewer = 'Synthetic Reviewer Fixture'
+            completedAtUtc = '2026-08-17T00:30:00.0000000Z'
+        }
+    }
+    Assert-ExpectedFailure -Description 'minimal forged Issue #43 report' -RequiredFragments @('canonical report') -Action {
+        Assert-V10GateReport -Issue 43 -EvidenceClass 'IndependentReview' -Report $minimalIssue43Report -SourceCommit $sourceCommit -ArchiveSha256 $candidate.ArchiveSha256 -ArchiveBytes $candidate.ArchiveBytes -ExpectedSourceTree $sourceTree -ExpectedParentCommit $sourceParent -ExpectedBranch $sourceBranch
+    }
+    [void]$assertions.Add('Issue43MinimalForgedReportRejected')
+
+    $issue43Unknown = Copy-TestJsonObject -Value $issue43Report.Value
+    $issue43Unknown | Add-Member -MemberType NoteProperty -Name unknown -Value 'forged' -Force
+    Assert-ExpectedFailure -Description 'Issue #43 unknown property' -RequiredFragments @('unknown, missing') -Action {
+        Assert-V10GateReport -Issue 43 -EvidenceClass 'IndependentReview' -Report ([pscustomobject]@{ Value = $issue43Unknown }) -SourceCommit $sourceCommit -ArchiveSha256 $candidate.ArchiveSha256 -ArchiveBytes $candidate.ArchiveBytes -ExpectedSourceTree $sourceTree -ExpectedParentCommit $sourceParent -ExpectedBranch $sourceBranch
+    }
+    [void]$assertions.Add('Issue43UnknownPropertyRejected')
+
+    $issue43MissingHash = Copy-TestJsonObject -Value $issue43Report.Value
+    $issue43MissingHash.PSObject.Properties.Remove('reviewedManifestSha256')
+    Assert-ExpectedFailure -Description 'Issue #43 missing reviewed-manifest hash' -RequiredFragments @('unknown, missing') -Action {
+        Assert-V10GateReport -Issue 43 -EvidenceClass 'IndependentReview' -Report ([pscustomobject]@{ Value = $issue43MissingHash }) -SourceCommit $sourceCommit -ArchiveSha256 $candidate.ArchiveSha256 -ArchiveBytes $candidate.ArchiveBytes -ExpectedSourceTree $sourceTree -ExpectedParentCommit $sourceParent -ExpectedBranch $sourceBranch
+    }
+    [void]$assertions.Add('Issue43MissingHashRejected')
+
+    $issue43WrongSource = Copy-TestJsonObject -Value $issue43Report.Value
+    $issue43WrongSource.sourceCommit = ('b' * 40)
+    Assert-ExpectedFailure -Description 'Issue #43 wrong source binding' -RequiredFragments @('source/candidate commit') -Action {
+        Assert-V10GateReport -Issue 43 -EvidenceClass 'IndependentReview' -Report ([pscustomobject]@{ Value = $issue43WrongSource }) -SourceCommit $sourceCommit -ArchiveSha256 $candidate.ArchiveSha256 -ArchiveBytes $candidate.ArchiveBytes -ExpectedSourceTree $sourceTree -ExpectedParentCommit $sourceParent -ExpectedBranch $sourceBranch
+    }
+    [void]$assertions.Add('Issue43WrongSourceRejected')
+
+    $issue43WrongManifest = Copy-TestJsonObject -Value $issue43Report.Value
+    $issue43WrongManifest.reviewedManifestSha256 = New-TestHex64 -Character '8'
+    Assert-ExpectedFailure -Description 'Issue #43 wrong reviewed-manifest hash' -RequiredFragments @('reviewed manifest, schema migration, or gate hash') -Action {
+        Assert-V10GateReport -Issue 43 -EvidenceClass 'IndependentReview' -Report ([pscustomobject]@{ Value = $issue43WrongManifest }) -SourceCommit $sourceCommit -ArchiveSha256 $candidate.ArchiveSha256 -ArchiveBytes $candidate.ArchiveBytes -ExpectedSourceTree $sourceTree -ExpectedParentCommit $sourceParent -ExpectedBranch $sourceBranch
+    }
+    [void]$assertions.Add('Issue43WrongManifestHashRejected')
+
+    $issue43WrongCheck = Copy-TestJsonObject -Value $issue43Report.Value
+    $issue43WrongCheck.checks[0].evidenceClass = 'Synthetic'
+    Assert-ExpectedFailure -Description 'Issue #43 wrong S-01 evidence class' -RequiredFragments @('check S-01') -Action {
+        Assert-V10GateReport -Issue 43 -EvidenceClass 'IndependentReview' -Report ([pscustomobject]@{ Value = $issue43WrongCheck }) -SourceCommit $sourceCommit -ArchiveSha256 $candidate.ArchiveSha256 -ArchiveBytes $candidate.ArchiveBytes -ExpectedSourceTree $sourceTree -ExpectedParentCommit $sourceParent -ExpectedBranch $sourceBranch
+    }
+    [void]$assertions.Add('Issue43WrongCheckRejected')
 
     $missingInitialArtifact = Copy-TestJsonObject -Value $issue44LiveShapeValue
     $missingInitialArtifact.artifacts.initial = $null
