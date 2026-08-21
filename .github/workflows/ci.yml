@@ -863,8 +863,8 @@ jobs:
         with:
           retention-days: 7
           name: v0.5-role-distinct-review-gate-report
-            path: artifacts/release-gates/v0.5.0/issue-27
-            if-no-files-found: warn
+          path: artifacts/release-gates/v0.5.0/issue-27
+          if-no-files-found: warn
 
       - name: 'Upload v1.0 release-readiness preparation gate report (Issue #45)'
         if: always()
