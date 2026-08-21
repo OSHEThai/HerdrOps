@@ -205,10 +205,12 @@ dotnet artifacts/bin/HerdrOps.Core/release/HerdrOps.Core.dll trace-herdr-termina
 # Verify the fail-closed v1.0 Issue #42 24-hour soak/fault-injection contract and
 # harness without running a soak or controlling Herdr/Core/App. Reports PENDING and
 # refuses PASS in synthetic/preparation mode.
-./tools/Test-V10Issue42SoakContract.ps1
+$expectedBranch = (git branch --show-current).Trim()
+./tools/Test-V10Issue42SoakContract.ps1 -ExpectedBranch $expectedBranch
 
 # Optionally validate exact packaged candidate bytes (still refuses a soak/PASS).
 ./tools/Test-V10Issue42SoakContract.ps1 `
+  -ExpectedBranch $expectedBranch `
   -CandidateArchivePath '<candidate-archive>' `
   -CandidateArchiveSha256 '<64-hex>' `
   -CandidateArchiveBytes <bytes>
