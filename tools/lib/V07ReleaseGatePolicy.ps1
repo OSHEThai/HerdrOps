@@ -424,6 +424,55 @@ function Get-V07ReleaseGateCurrentCandidate {
     }
 }
 
+function Assert-V07ReleaseGateCandidateUnchanged {
+    param(
+        [Parameter(Mandatory = $true)][string]$RepositoryRoot,
+        [Parameter(Mandatory = $true)]$ExpectedCandidate,
+        [Parameter(Mandatory = $true)][string]$Description
+    )
+
+    $observed = Get-V07ReleaseGateCurrentCandidate -RepositoryRoot $RepositoryRoot -AllowDirty
+    $differences = New-Object System.Collections.ArrayList
+    if ([string]$observed.Commit -cne [string]$ExpectedCandidate.Commit) {
+        [void]$differences.Add("commit expected $($ExpectedCandidate.Commit), observed $($observed.Commit)")
+    }
+    if ([string]$observed.Tree -cne [string]$ExpectedCandidate.Tree) {
+        [void]$differences.Add("tree expected $($ExpectedCandidate.Tree), observed $($observed.Tree)")
+    }
+    if ([string]$observed.WorkingTree -cne [string]$ExpectedCandidate.WorkingTree) {
+        [void]$differences.Add("workingTree expected $($ExpectedCandidate.WorkingTree), observed $($observed.WorkingTree)")
+    }
+
+    $expectedStatus = @($ExpectedCandidate.Status)
+    $observedStatus = @($observed.Status)
+    if ($expectedStatus.Count -ne $observedStatus.Count) {
+        [void]$differences.Add("status entry count expected $($expectedStatus.Count), observed $($observedStatus.Count)")
+    } else {
+        for ($index = 0; $index -lt $expectedStatus.Count; $index++) {
+            if ([string]$expectedStatus[$index] -cne [string]$observedStatus[$index]) {
+                [void]$differences.Add("status[$index] changed")
+            }
+        }
+    }
+
+    if ($differences.Count -ne 0) {
+        throw "$Description detected a candidate change: $($differences -join '; ')"
+    }
+    return $observed
+}
+
+function Confirm-V07ReleaseGateCheck {
+    param(
+        [Parameter(Mandatory = $true)][string]$Description,
+        [Parameter(Mandatory = $true)][bool]$Passed
+    )
+
+    if (-not $Passed) {
+        throw "$Description did not pass; refusing to emit a release-gate report."
+    }
+    return 'PASS'
+}
+
 function Assert-V07ReleaseGateCandidateObject {
     param(
         [Parameter(Mandatory = $true)]$Candidate,
@@ -437,8 +486,11 @@ function Assert-V07ReleaseGateCandidateObject {
     $workingTree = Get-V07ReleaseGateProperty -Object $Candidate -Name 'workingTree' -Description $Description
     Assert-V07ReleaseGateHex -Value $commit -Length 40 -Description "$Description.commit" -Case Lower
     Assert-V07ReleaseGateHex -Value $tree -Length 40 -Description "$Description.tree" -Case Lower
-    if ($workingTree -cne 'CLEAN') {
-        throw "$Description.workingTree must be exactly CLEAN."
+    if ($workingTree -cne [string]$CurrentCandidate.WorkingTree) {
+        throw "$Description.workingTree is not bound to the current candidate working-tree state."
+    }
+    if ([string]$CurrentCandidate.WorkingTree -cne 'CLEAN') {
+        throw 'The current candidate working tree must be clean for Issue #40 validation.'
     }
     if ([string]$commit -cne [string]$CurrentCandidate.Commit) {
         throw "$Description.commit is not the current exact candidate commit."
@@ -696,18 +748,35 @@ function Test-V07ReleaseGateInput {
             throw "Issue #40 input is missing required dependency #$requiredIssue."
         }
     }
+    $validatedCandidateCommit = [string](Get-V07ReleaseGateProperty -Object $candidate -Name 'commit' -Description 'Issue #40 candidate')
+    $validatedCandidateTree = [string](Get-V07ReleaseGateProperty -Object $candidate -Name 'tree' -Description 'Issue #40 candidate')
     return [pscustomobject][ordered]@{
         InputPath = $inputFile.Path
         InputSha256 = $inputFile.Sha256
         Candidate = [pscustomobject][ordered]@{
-            Commit = [string](Get-V07ReleaseGateProperty -Object $candidate -Name 'commit' -Description 'Issue #40 candidate')
-            Tree = [string](Get-V07ReleaseGateProperty -Object $candidate -Name 'tree' -Description 'Issue #40 candidate')
-            WorkingTree = 'CLEAN'
+            Commit = $validatedCandidateCommit
+            Tree = $validatedCandidateTree
+            WorkingTree = [string]$CurrentCandidate.WorkingTree
         }
         Dependencies = @($validated.ToArray())
         HistoryPolicy = [pscustomobject][ordered]@{
             RebaseAllowed = $false
             RequiredFollowUp = $script:V07ReleaseGateRequiredFollowUp
+        }
+        Validation = [pscustomobject][ordered]@{
+            CandidateCommitAndTree = ($validatedCandidateCommit -ceq [string]$CurrentCandidate.Commit -and
+                $validatedCandidateTree -ceq [string]$CurrentCandidate.Tree)
+            CleanCheckout = ([string]$CurrentCandidate.WorkingTree -ceq 'CLEAN')
+            DependencyManifests = ($validated.Count -eq $script:V07ReleaseGateRequiredIssues.Count)
+            DependencyHashes = (@($validated | Where-Object {
+                        [string]::IsNullOrWhiteSpace([string]$_.ManifestSha256) -or
+                        [string]$_.ManifestSha256 -notmatch '^[0-9A-F]{64}$'
+                    }).Count -eq 0)
+            StrictJsonAndBounds = ($inputFile.Length -gt 0 -and $inputFile.Length -le $script:V07ReleaseGateMaxInputBytes)
+            ContainmentAndReparse = ($inputFile.Path -eq $inputFull -and $seenManifestPaths.Count -eq $script:V07ReleaseGateRequiredIssues.Count)
+            DuplicateAndUnknownFieldRejection = ($seenIssues.Count -eq $script:V07ReleaseGateRequiredIssues.Count -and
+                $seenManifestPaths.Count -eq $script:V07ReleaseGateRequiredIssues.Count -and
+                $seenEvidencePaths.Count -ge $script:V07ReleaseGateRequiredIssues.Count)
         }
     }
 }
@@ -743,6 +812,25 @@ function New-V07ReleaseGatePendingReport {
         [bool]$HumanUatValidated = $false
     )
 
+    $validation = Get-V07ReleaseGateProperty -Object $ValidatedInput -Name 'Validation' -Description 'validated Issue #40 input'
+    Assert-V07ReleaseGateExactProperties -Object $validation -Names @(
+        'CandidateCommitAndTree', 'CleanCheckout', 'DependencyManifests', 'DependencyHashes',
+        'StrictJsonAndBounds', 'ContainmentAndReparse', 'DuplicateAndUnknownFieldRejection') -Description 'validated Issue #40 input.validation'
+
+    $candidateMatchesInput = ([string]$CurrentCandidate.Commit -ceq [string]$ValidatedInput.Candidate.Commit -and
+        [string]$CurrentCandidate.Tree -ceq [string]$ValidatedInput.Candidate.Tree -and
+        [string]$CurrentCandidate.WorkingTree -ceq [string]$ValidatedInput.Candidate.WorkingTree)
+    $checks = [ordered]@{
+        candidateCommitAndTree = Confirm-V07ReleaseGateCheck -Description 'candidate commit and tree binding' -Passed ([bool]$validation.CandidateCommitAndTree -and $candidateMatchesInput)
+        cleanCheckout = Confirm-V07ReleaseGateCheck -Description 'candidate clean checkout binding' -Passed ([bool]$validation.CleanCheckout -and [string]$CurrentCandidate.WorkingTree -ceq 'CLEAN')
+        dependencyManifests = Confirm-V07ReleaseGateCheck -Description 'dependency manifest validation' -Passed ([bool]$validation.DependencyManifests)
+        dependencyHashes = Confirm-V07ReleaseGateCheck -Description 'dependency hash validation' -Passed ([bool]$validation.DependencyHashes)
+        strictJsonAndBounds = Confirm-V07ReleaseGateCheck -Description 'strict JSON and bounds validation' -Passed ([bool]$validation.StrictJsonAndBounds)
+        containmentAndReparse = Confirm-V07ReleaseGateCheck -Description 'containment and reparse validation' -Passed ([bool]$validation.ContainmentAndReparse)
+        duplicateAndUnknownFieldRejection = Confirm-V07ReleaseGateCheck -Description 'duplicate and unknown-field rejection' -Passed ([bool]$validation.DuplicateAndUnknownFieldRejection)
+        humanUat = if ($HumanUatValidated) { 'VALIDATED_INPUT / PENDING' } else { 'PENDING / NOT PROVIDED' }
+    }
+
     return [ordered]@{
         schemaVersion = 1
         reportKind = 'HerdrOps.V07ReleaseGateReport'
@@ -752,7 +840,7 @@ function New-V07ReleaseGatePendingReport {
         candidate = [ordered]@{
             commit = [string]$CurrentCandidate.Commit
             tree = [string]$CurrentCandidate.Tree
-            workingTree = 'CLEAN'
+            workingTree = [string]$CurrentCandidate.WorkingTree
         }
         input = [ordered]@{
             path = [string]$ValidatedInput.InputPath
@@ -768,16 +856,7 @@ function New-V07ReleaseGatePendingReport {
                     evidenceCount = [int]$_.EvidenceCount
                 }
             })
-        checks = [ordered]@{
-            candidateCommitAndTree = 'PASS'
-            cleanCheckout = 'PASS'
-            dependencyManifests = 'PASS'
-            dependencyHashes = 'PASS'
-            strictJsonAndBounds = 'PASS'
-            containmentAndReparse = 'PASS'
-            duplicateAndUnknownFieldRejection = 'PASS'
-            humanUat = if ($HumanUatValidated) { 'VALIDATED_INPUT / PENDING' } else { 'PENDING / NOT PROVIDED' }
-        }
+        checks = $checks
         humanUat = [ordered]@{
             decision = 'PENDING'
             signer = 'PENDING'
@@ -864,5 +943,40 @@ function Write-V07ReleaseGateNewJsonFile {
         if (Test-Path -LiteralPath $temp) {
             Remove-Item -LiteralPath $temp -Force
         }
+    }
+}
+
+function Write-V07ReleaseGateBoundPendingReport {
+    param(
+        [Parameter(Mandatory = $true)][string]$RepositoryRoot,
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)]$ValidatedInput,
+        [Parameter(Mandatory = $true)]$CurrentCandidate,
+        [Parameter(Mandatory = $true)][string[]]$AllowedRoots,
+        [bool]$HumanUatValidated = $false
+    )
+
+    $beforeReport = Assert-V07ReleaseGateCandidateUnchanged `
+        -RepositoryRoot $RepositoryRoot `
+        -ExpectedCandidate $CurrentCandidate `
+        -Description 're-read immediately before report construction'
+    $report = New-V07ReleaseGatePendingReport `
+        -ValidatedInput $ValidatedInput `
+        -CurrentCandidate $beforeReport `
+        -HumanUatValidated $HumanUatValidated
+    $immediatelyBeforeWrite = Assert-V07ReleaseGateCandidateUnchanged `
+        -RepositoryRoot $RepositoryRoot `
+        -ExpectedCandidate $beforeReport `
+        -Description 're-read immediately before report write'
+    $reportPath = Write-V07ReleaseGateNewJsonFile -Path $Path -Value $report -AllowedRoots $AllowedRoots
+    $immediatelyAfterWrite = Assert-V07ReleaseGateCandidateUnchanged `
+        -RepositoryRoot $RepositoryRoot `
+        -ExpectedCandidate $immediatelyBeforeWrite `
+        -Description 're-read immediately after report write'
+    return [pscustomobject][ordered]@{
+        Path = $reportPath
+        Report = $report
+        Candidate = $immediatelyBeforeWrite
+        AfterWriteCandidate = $immediatelyAfterWrite
     }
 }
