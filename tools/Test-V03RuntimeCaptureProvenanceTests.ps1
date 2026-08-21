@@ -1,6 +1,6 @@
 <#
 Deterministic, build-free hostile selftests for the shared v0.3 runtime-capture provenance
-library (Issues #15 and #16, tools/lib/V03RuntimeCaptureProvenance.ps1). No live Herdr session,
+library (Issues #13, #15, and #16, tools/lib/V03RuntimeCaptureProvenance.ps1). No live Herdr session,
 no dotnet build, and no network access are required or permitted here: every case constructs a
 synthetic report fixture on disk and asserts that Assert-RuntimeCaptureReport /
 Assert-NotReplayedTranscript reject it, or accept it, for an explicit reason.
@@ -285,11 +285,63 @@ try {
     $commit = Get-CleanSourceCommit -RepositoryRoot $scratchRepoRoot
     Assert-True -Condition ($commit -match '^[0-9a-f]{40}$') -Message 'Get-CleanSourceCommit resolves a 40-character commit hash for a clean scratch repository'
 
+    $expectedTree = (& git -C $scratchRepoRoot rev-parse --verify 'HEAD^{tree}').Trim()
+    $identity = Get-ExpectedCleanSourceIdentity `
+        -RepositoryRoot $scratchRepoRoot `
+        -ExpectedSourceCommit $commit `
+        -ExpectedSourceTree $expectedTree
+    Assert-True -Condition ($identity.SourceCommit -ceq $commit -and $identity.SourceTree -ceq $expectedTree -and $identity.GitTreeClean) -Message 'Get-ExpectedCleanSourceIdentity binds clean HEAD commit, HEAD tree, and clean status'
+
+    Assert-ThrowsMatching `
+        -ScriptBlock { Get-ExpectedCleanSourceIdentity -RepositoryRoot $scratchRepoRoot -ExpectedSourceCommit $commit -ExpectedSourceTree ('0' * 40) } `
+        -ExpectedPrefix 'SourceTreeMismatch' `
+        -Message 'Get-ExpectedCleanSourceIdentity rejects an unexpected HEAD tree'
+
+    $artifactRoot = Join-Path $scratchRoot 'artifacts'
+    $artifactRunId = '20260822T1234567890123Z-deadbeef'
+    $artifactRunDirectory = Join-Path $artifactRoot $artifactRunId
+    $artifactReportPath = Join-Path $artifactRunDirectory 'runtime.json'
+    $artifactGatePath = Join-Path $artifactRunDirectory 'gate-report.txt'
+    $artifactIdentity = Get-RuntimeArtifactRunIdentity `
+        -IssueEvidenceRoot $artifactRoot `
+        -RunId $artifactRunId `
+        -RunDirectory $artifactRunDirectory `
+        -ReportPath $artifactReportPath `
+        -GateReportPath $artifactGatePath
+    Assert-True -Condition ($artifactIdentity.RunId -ceq $artifactRunId -and $artifactIdentity.ReportPath -ceq $artifactReportPath -and $artifactIdentity.GateReportPath -ceq $artifactGatePath) -Message 'Get-RuntimeArtifactRunIdentity binds report and gate paths to one run directory'
+
+    Assert-ThrowsMatching `
+        -ScriptBlock { Get-RuntimeArtifactRunIdentity -IssueEvidenceRoot $artifactRoot -RunId $artifactRunId -RunDirectory $artifactRunDirectory -ReportPath (Join-Path $artifactRoot 'runtime.json') -GateReportPath $artifactGatePath } `
+        -ExpectedPrefix 'ArtifactRunIdentityMismatch' `
+        -Message 'Get-RuntimeArtifactRunIdentity rejects a report outside its artifact run'
+
+    $failureReportPath = Join-Path $artifactRunDirectory 'failure-gate-report.txt'
+    Write-RuntimeCaptureFailureReport `
+        -GateReportPath $failureReportPath `
+        -SourceCommit $commit `
+        -SourceTree $expectedTree `
+        -ExpectedSourceCommit $commit `
+        -ExpectedSourceTree $expectedTree `
+        -RunId $artifactRunId `
+        -ReportPath $artifactReportPath `
+        -ReportSha256 ('C' * 64) `
+        -FailureMessage 'synthetic failure for provenance selftest'
+    $failureReportText = Get-Content -LiteralPath $failureReportPath -Raw
+    Assert-True -Condition ($failureReportText -match 'EvidenceClass: NoRuntimeCredit' -and
+        $failureReportText -match [regex]::Escape("ExpectedSourceTree: $expectedTree") -and
+        $failureReportText -match [regex]::Escape("RunId: $artifactRunId") -and
+        $failureReportText -match ('ReportSha256: ' + ('C' * 64))) -Message 'Failure reports preserve NoRuntimeCredit and exact source/run/report bindings'
+
     Set-Content -LiteralPath (Join-Path $scratchRepoRoot 'file.txt') -Value 'modified' -Encoding utf8
     Assert-ThrowsMatching `
         -ScriptBlock { Get-CleanSourceCommit -RepositoryRoot $scratchRepoRoot } `
         -ExpectedPrefix 'WorkingTreeDirty' `
         -Message 'Get-CleanSourceCommit fails closed against a repository with uncommitted changes'
+
+    Assert-ThrowsMatching `
+        -ScriptBlock { Get-ExpectedCleanSourceIdentity -RepositoryRoot $scratchRepoRoot -ExpectedSourceCommit $commit -ExpectedSourceTree $expectedTree } `
+        -ExpectedPrefix 'WorkingTreeDirty' `
+        -Message 'Get-ExpectedCleanSourceIdentity fails closed against a repository with uncommitted changes'
 
     Assert-ThrowsMatching `
         -ScriptBlock { Get-CleanSourceCommit -RepositoryRoot $scratchRoot } `
