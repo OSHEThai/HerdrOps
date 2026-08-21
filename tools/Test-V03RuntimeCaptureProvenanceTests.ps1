@@ -85,7 +85,8 @@ function New-ValidReportFixture {
         [hashtable]$RequiredTrueFieldValues = @{ fileSystemWatcherObserved = $true; gitStatusObserved = $true; herdrAgentCorrelationObserved = $true },
         [switch]$OmitAdmission,
         [switch]$InvalidJson,
-        [string]$MonitorServerIdentityExecutableSha256
+        [string]$MonitorServerIdentityExecutableSha256 = $controlExecutableSha256,
+        [switch]$OmitMonitorIdentity
     )
 
     if ($InvalidJson) {
@@ -106,7 +107,10 @@ function New-ValidReportFixture {
         $reportHash['admission'] = @{ executableSha256 = $ExecutableSha256 }
     }
 
-    if (-not [string]::IsNullOrWhiteSpace($MonitorServerIdentityExecutableSha256)) {
+    if (-not $OmitMonitorIdentity) {
+        # $MonitorServerIdentityExecutableSha256 may deliberately be blank or malformed
+        # (never filtered out here) so hostile cases can construct a monitorServerIdentity
+        # object that is present-but-invalid, distinct from an entirely omitted one.
         $reportHash['monitorServerIdentity'] = @{ executableSha256 = $MonitorServerIdentityExecutableSha256 }
     }
 
@@ -215,6 +219,27 @@ try {
         -ScriptBlock { Assert-RuntimeCaptureReport -ReportPath $wrongMonitorPath -RequiredTrueFields @('fileSystemWatcherObserved', 'gitStatusObserved', 'herdrAgentCorrelationObserved') -NotBeforeUtc $captureStartUtc -ExpectedExecutableSha256 $controlExecutableSha256 } `
         -ExpectedPrefix 'WrongSessionEvidence' `
         -Message 'Rejects a report whose monitorServerIdentity does not match the verified control session, even when admission matches'
+
+    $omittedMonitorPath = Join-Path $scratchRoot 'omitted-monitor-identity.json'
+    New-ValidReportFixture -Path $omittedMonitorPath -OmitMonitorIdentity
+    Assert-ThrowsMatching `
+        -ScriptBlock { Assert-RuntimeCaptureReport -ReportPath $omittedMonitorPath -RequiredTrueFields @('fileSystemWatcherObserved', 'gitStatusObserved', 'herdrAgentCorrelationObserved') -NotBeforeUtc $captureStartUtc -ExpectedExecutableSha256 $controlExecutableSha256 } `
+        -ExpectedPrefix 'MissingEvidence' `
+        -Message 'Rejects a report that omits monitorServerIdentity entirely, even when admission matches'
+
+    $blankMonitorPath = Join-Path $scratchRoot 'blank-monitor-identity.json'
+    New-ValidReportFixture -Path $blankMonitorPath -MonitorServerIdentityExecutableSha256 ''
+    Assert-ThrowsMatching `
+        -ScriptBlock { Assert-RuntimeCaptureReport -ReportPath $blankMonitorPath -RequiredTrueFields @('fileSystemWatcherObserved', 'gitStatusObserved', 'herdrAgentCorrelationObserved') -NotBeforeUtc $captureStartUtc -ExpectedExecutableSha256 $controlExecutableSha256 } `
+        -ExpectedPrefix 'SyntheticEvidence' `
+        -Message 'Rejects a report whose monitorServerIdentity.executableSha256 is present but blank'
+
+    $malformedMonitorPath = Join-Path $scratchRoot 'malformed-monitor-identity.json'
+    New-ValidReportFixture -Path $malformedMonitorPath -MonitorServerIdentityExecutableSha256 'not-a-64-hex-sha256'
+    Assert-ThrowsMatching `
+        -ScriptBlock { Assert-RuntimeCaptureReport -ReportPath $malformedMonitorPath -RequiredTrueFields @('fileSystemWatcherObserved', 'gitStatusObserved', 'herdrAgentCorrelationObserved') -NotBeforeUtc $captureStartUtc -ExpectedExecutableSha256 $controlExecutableSha256 } `
+        -ExpectedPrefix 'SyntheticEvidence' `
+        -Message 'Rejects a report whose monitorServerIdentity.executableSha256 is not a well-formed 64-hex SHA-256'
 
     # --- Replayed evidence --------------------------------------------------------
 

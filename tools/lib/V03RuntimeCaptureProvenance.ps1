@@ -218,11 +218,18 @@ function Assert-RuntimeCaptureReport {
     }
 
     $monitorIdentity = Get-JsonPropertyValue -Object $reportObject -Name 'monitorServerIdentity'
+    if ($null -eq $monitorIdentity) {
+        throw 'MissingEvidence: runtime capture report omits monitorServerIdentity.'
+    }
+
     $monitorExecutableSha256 = Get-JsonPropertyValue -Object $monitorIdentity -Name 'executableSha256'
-    if ($null -ne $monitorIdentity -and -not [string]::IsNullOrWhiteSpace([string]$monitorExecutableSha256)) {
-        if (-not [string]::Equals([string]$monitorExecutableSha256, $ExpectedExecutableSha256, [StringComparison]::OrdinalIgnoreCase)) {
-            throw 'WrongSessionEvidence: runtime capture report monitor server identity does not match the verified control session.'
-        }
+    if ([string]::IsNullOrWhiteSpace([string]$monitorExecutableSha256) -or
+        [string]$monitorExecutableSha256 -notmatch '^[0-9A-Fa-f]{64}$') {
+        throw "SyntheticEvidence: runtime capture report monitorServerIdentity.executableSha256 is missing or malformed (found '$([string]$monitorExecutableSha256)')."
+    }
+
+    if (-not [string]::Equals([string]$monitorExecutableSha256, $ExpectedExecutableSha256, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "WrongSessionEvidence: runtime capture report monitor server identity does not match the verified control session (report=$([string]$monitorExecutableSha256), control=$ExpectedExecutableSha256)."
     }
 
     return $reportObject
