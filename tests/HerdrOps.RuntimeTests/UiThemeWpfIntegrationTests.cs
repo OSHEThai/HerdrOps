@@ -23,7 +23,7 @@ public sealed class UiThemeWpfIntegrationTests
 
             // 1. Initially SetTheme(System) should apply the theme
             service.SetTheme(AppSettingsTheme.System);
-            
+
             var lightDict = application.Resources.MergedDictionaries.FirstOrDefault(d => d.Source?.OriginalString.Contains("Tokens.Semantic.Light.xaml") == true);
             Assert.IsNotNull(lightDict, "Light theme dictionary should be present initially (System is light).");
 
