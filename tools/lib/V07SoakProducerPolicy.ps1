@@ -5,6 +5,9 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+$script:V07SoakMaxDurationHours = 8.0
+$script:V07SoakObserverGraceSeconds = 15
+
 $measurementPolicy = Join-Path $PSScriptRoot 'V07PerformanceMeasurementPolicy.ps1'
 if (-not (Test-Path -LiteralPath $measurementPolicy -PathType Leaf)) {
     throw "Required v0.7 measurement policy is missing: $measurementPolicy"
@@ -45,6 +48,9 @@ function Test-V07SoakSchedule {
     $failures = [System.Collections.Generic.List[string]]::new()
     $durationSeconds = [int][Math]::Floor($DurationHours * 3600.0)
     $ids = @{}
+    if ($DurationHours -ne $script:V07SoakMaxDurationHours) {
+        $failures.Add("Actual-Herdr soak duration must be exactly $($script:V07SoakMaxDurationHours) hours.")
+    }
     if ($Schedule.Count -lt 3 -or $Schedule.Count -gt $script:V07SoakMaxFaultObservations) {
         $failures.Add("Fault schedule must contain 3 through $($script:V07SoakMaxFaultObservations) entries.")
     }
@@ -94,6 +100,18 @@ function Get-V07SoakProcessSnapshot {
     try {
         $process = Get-Process -Id $ProcessId -ErrorAction Stop
         $startUtc = $process.StartTime.ToUniversalTime()
+        $executablePath = ''
+        $executableSha256 = ''
+        try {
+            $executablePath = [string]$process.Path
+            if (-not [string]::IsNullOrWhiteSpace($executablePath) -and (Test-Path -LiteralPath $executablePath -PathType Leaf)) {
+                $executablePath = (Resolve-Path -LiteralPath $executablePath).Path
+                $executableSha256 = Get-V07Sha256Hex -Path $executablePath
+            }
+        } catch {
+            $executablePath = ''
+            $executableSha256 = ''
+        }
         $workingSet = [long]$process.WorkingSet64
         $totalCpuSeconds = [double]$process.TotalProcessorTime.TotalSeconds
         $cpuPercent = 0.0
@@ -108,6 +126,8 @@ function Get-V07SoakProcessSnapshot {
             ProcessId = $ProcessId
             Role = $Role
             ProcessStartUtc = ConvertTo-V07SoakUtcText -Value $startUtc
+            ExecutablePath = $executablePath
+            ExecutableSha256 = $executableSha256
             WorkingSetBytes = $workingSet
             TotalCpuSeconds = $totalCpuSeconds
             CpuPercent = [Math]::Max(0.0, $cpuPercent)
@@ -118,7 +138,7 @@ function Get-V07SoakProcessSnapshot {
         return $snapshot
     } catch {
         return [pscustomobject][ordered]@{
-            ProcessId = $ProcessId; Role = $Role; ProcessStartUtc = ''; WorkingSetBytes = 0
+            ProcessId = $ProcessId; Role = $Role; ProcessStartUtc = ''; ExecutablePath = ''; ExecutableSha256 = ''; WorkingSetBytes = 0
             TotalCpuSeconds = 0.0; CpuPercent = 0.0; ObservedUtc = ConvertTo-V07SoakUtcText -Value ([DateTimeOffset]::UtcNow)
             Present = $false; Error = $_.Exception.Message
         }
@@ -133,6 +153,7 @@ function New-V07SoakHeartbeatEntry {
         [Parameter(Mandatory)][int]$HerdrProcessId,
         [Parameter(Mandatory)][int]$CoreProcessId,
         [Parameter(Mandatory)][int]$AppProcessId,
+        [Parameter(Mandatory)]$AdmittedHerdrServerIdentity,
         [Parameter(Mandatory)][hashtable]$PreviousSnapshots,
         [Parameter(Mandatory)][string]$PreviousEntrySha256
     )
@@ -141,7 +162,12 @@ function New-V07SoakHeartbeatEntry {
     $core = Get-V07SoakProcessSnapshot -ProcessId $CoreProcessId -Role 'Core' -Previous $PreviousSnapshots
     $app = Get-V07SoakProcessSnapshot -ProcessId $AppProcessId -Role 'App' -Previous $PreviousSnapshots
     $targetPresent = Test-Path -LiteralPath $TargetHerdrSocketPath -PathType Leaf
-    $healthy = $targetPresent -and $herdr.Present -and $core.Present -and $app.Present
+    $identityMatch = $herdr.Present -and
+        ([int]$herdr.ProcessId -eq [int]$AdmittedHerdrServerIdentity.ProcessId) -and
+        ([string]$herdr.ProcessStartUtc -ceq [string]$AdmittedHerdrServerIdentity.ProcessStartUtc) -and
+        ([string]$herdr.ExecutablePath -ieq [string]$AdmittedHerdrServerIdentity.ExecutablePath) -and
+        ([string]$herdr.ExecutableSha256 -ceq [string]$AdmittedHerdrServerIdentity.ExecutableSha256)
+    $healthy = $targetPresent -and $herdr.Present -and $core.Present -and $app.Present -and $identityMatch
     $entry = [pscustomobject][ordered]@{
         Ordinal = $Ordinal
         ObservedUtc = ConvertTo-V07SoakUtcText -Value ([DateTimeOffset]::UtcNow)
@@ -149,7 +175,8 @@ function New-V07SoakHeartbeatEntry {
         TargetSocketPresent = [bool]$targetPresent
         HerdrProcessId = [int]$herdr.ProcessId
         HerdrProcessStartUtc = [string]$herdr.ProcessStartUtc
-        HerdrExecutableSha256 = [string]$InstalledHerdr.ExecutableSha256
+        HerdrExecutablePath = [string]$herdr.ExecutablePath
+        HerdrExecutableSha256 = [string]$herdr.ExecutableSha256
         CoreProcessId = $CoreProcessId
         AppProcessId = $AppProcessId
         PreviousEntrySha256 = $PreviousEntrySha256
@@ -220,15 +247,36 @@ function Read-V07SoakOperatorObservation {
     param(
         [Parameter(Mandatory)][string]$ObservationPath,
         [Parameter(Mandatory)][string]$ExpectedId,
-        [Parameter(Mandatory)][string]$EvidenceRoot
+        [Parameter(Mandatory)][string]$EvidenceRoot,
+        [Parameter(Mandatory)]$ExpectedSchedule,
+        [Parameter(Mandatory)][DateTimeOffset]$SoakStartedUtc
     )
 
     if (-not (Test-Path -LiteralPath $ObservationPath -PathType Leaf)) { return $null }
     $json = Get-V07BoundedUtf8FileText -Path $ObservationPath -MaxBytes 65536 -Description 'operator observation'
     Assert-V07StrictJsonText -JsonText $json -SourceDescription 'operator observation'
     $marker = $json | ConvertFrom-Json
-    if ([string]$marker.ScheduleId -cne $ExpectedId -or -not [bool]$marker.OperatorAcknowledged) { throw "Operator observation '$ExpectedId' has an invalid schedule binding or acknowledgement." }
+    foreach ($property in @('SchemaVersion', 'ScheduleId', 'Kind', 'ScheduledOffsetSeconds', 'DueUtc', 'ObservedUtc', 'OperatorAcknowledged', 'EvidencePath', 'EvidenceSha256', 'Note', 'ScheduleContextSha256')) {
+        if ($null -eq $marker.PSObject.Properties[$property]) { throw "Operator observation '$ExpectedId' is missing required property '$property'." }
+    }
+    if (@($marker.PSObject.Properties | Where-Object { $_.Name -notin @('SchemaVersion', 'ScheduleId', 'Kind', 'ScheduledOffsetSeconds', 'DueUtc', 'ObservedUtc', 'OperatorAcknowledged', 'EvidencePath', 'EvidenceSha256', 'Note', 'ScheduleContextSha256') }).Count -gt 0) {
+        throw "Operator observation '$ExpectedId' contains an unknown property."
+    }
+    if ([string]$marker.SchemaVersion -cne 'v0.7.0-soak-operator-observation' -or
+        [string]$marker.ScheduleId -cne $ExpectedId -or
+        [string]$marker.Kind -cne [string]$ExpectedSchedule.Kind -or
+        [int]$marker.ScheduledOffsetSeconds -ne [int]$ExpectedSchedule.OffsetSeconds -or
+        -not [bool]$marker.OperatorAcknowledged) {
+        throw "Operator observation '$ExpectedId' has an invalid schedule binding or acknowledgement."
+    }
+    $expectedDue = ConvertTo-V07SoakUtcText -Value $SoakStartedUtc.AddSeconds([int]$ExpectedSchedule.OffsetSeconds)
+    if ([string]$marker.DueUtc -cne $expectedDue) { throw "Operator observation '$ExpectedId' DueUtc does not match the immutable soak schedule context." }
     if (-not (Test-V07UtcTimestampText -Text ([string]$marker.ObservedUtc))) { throw "Operator observation '$ExpectedId' has an invalid timestamp." }
+    if ([DateTimeOffset]$marker.ObservedUtc -lt [DateTimeOffset]$marker.DueUtc) { throw "Operator observation '$ExpectedId' is early: ObservedUtc must be at or after DueUtc." }
+    $contextPath = Join-Path $EvidenceRoot 'soak-context.json'
+    if (-not (Test-Path -LiteralPath $contextPath -PathType Leaf)) { throw "Operator observation '$ExpectedId' is missing the immutable soak context." }
+    $contextSha = Get-V07Sha256Hex -Path $contextPath
+    if ((ConvertTo-V07NormalizedSha256 -Value ([string]$marker.ScheduleContextSha256)) -cne $contextSha) { throw "Operator observation '$ExpectedId' is not bound to the retained soak context bytes." }
     $evidence = [string]$marker.EvidencePath
     if ([string]::IsNullOrWhiteSpace($evidence)) { throw "Operator observation '$ExpectedId' is missing EvidencePath." }
     $resolvedEvidence = Assert-V07PathWithinRoot -Path $evidence -AllowedRoots @($EvidenceRoot) -Description "operator evidence '$ExpectedId'"
@@ -247,5 +295,6 @@ function Read-V07SoakOperatorObservation {
         EvidencePath = $evidence
         EvidenceSha256 = $declaredSha
         Note = [string]$marker.Note
+        ScheduleContextSha256 = $contextSha
     }
 }

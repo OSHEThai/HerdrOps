@@ -24,7 +24,7 @@ param(
     [string]$OutDirectory = '',
     [double]$DurationHours = 8.0,
     [ValidateRange(10, 3600)][int]$HeartbeatSeconds = 60,
-    [ValidateRange(10, 3600)][int]$ObservationWindowSeconds = 60,
+    [ValidateRange(10, 900)][int]$ObservationWindowSeconds = 60,
     [string]$ObserverExecutable = ''
 )
 
@@ -32,7 +32,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $false
 
-if ($DurationHours -lt 8.0) { throw 'DurationHours must be at least 8.0; shorter runs cannot satisfy the v0.7 soak gate.' }
+if ($DurationHours -ne 8.0) { throw 'DurationHours must be exactly 8.0; the live producer has a hard ceiling and cannot run an unbounded duration.' }
 if ($ObservationWindowSeconds -gt $HeartbeatSeconds) { throw 'ObservationWindowSeconds cannot exceed HeartbeatSeconds; the heartbeat cadence must not hide an observation gap.' }
 if ($env:HERDR_ENV -ne '1') { throw 'Actual-Herdr soak requires HERDR_ENV=1 from the isolated Acceptance control pane.' }
 if ([string]::IsNullOrWhiteSpace($env:HERDR_SOCKET_PATH) -or [string]::IsNullOrWhiteSpace($env:HERDR_PANE_ID)) {
@@ -95,6 +95,17 @@ $observer = if ([string]::IsNullOrWhiteSpace($ObserverExecutable)) {
 } else { $ObserverExecutable }
 $observer = (Resolve-Path -LiteralPath $observer).Path
 Assert-V07NotReparsePoint -Path $observer -Description 'HerdrOps.Core observer executable'
+$observer = Assert-V07PathWithinRoot -Path $observer -AllowedRoots @($resolvedRoot, $resolvedCandidate) -Description 'HerdrOps.Core observer executable'
+$observerInfo = Get-Item -LiteralPath $observer -Force -ErrorAction Stop
+$observerSha256 = Get-V07Sha256Hex -Path $observer
+$relativeObserver = $observer.Substring($resolvedRoot.TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar).Length + 1).Replace('\', '/')
+$observerBinding = [pscustomobject][ordered]@{
+    RelativePath = $relativeObserver
+    LengthBytes = [long]$observerInfo.Length
+    Sha256 = $observerSha256
+}
+$admittedHerdrServerIdentity = $session.ControlHerdrServerIdentity
+if ($null -eq $admittedHerdrServerIdentity) { throw 'The live session admission did not retain the exact Herdr server identity.' }
 
 $runId = "$([DateTimeOffset]::UtcNow.ToString('yyyyMMddTHHmmssfffZ', [Globalization.CultureInfo]::InvariantCulture))-$([Guid]::NewGuid().ToString('N').Substring(0, 8))"
 $outRoot = if ([string]::IsNullOrWhiteSpace($OutDirectory)) {
@@ -114,6 +125,7 @@ $heartbeatLogPath = Join-Path $outRoot 'heartbeat.jsonl'
 $faultLogPath = Join-Path $outRoot 'fault-observations.jsonl'
 $resourceLogPath = Join-Path $outRoot 'resources.jsonl'
 $runtimeLogPath = Join-Path $outRoot 'runtime-observations.jsonl'
+$contextPath = Join-Path $outRoot 'soak-context.json'
 $runtimeReportPath = Join-Path $outRoot 'runtime-observer-current.json'
 $artifactPath = Join-Path $outRoot 'soak-artifact.json'
 $gateReportPath = Join-Path $outRoot 'soak-gate-report.txt'
@@ -146,6 +158,29 @@ $timedOut = $false
 $started = [DateTimeOffset]::UtcNow
 $deadline = $started.AddHours($DurationHours)
 
+$contextSchedule = @($schedule | ForEach-Object {
+    [pscustomobject][ordered]@{
+        Id = [string]$_.Id
+        Kind = [string]$_.Kind
+        OffsetSeconds = [int]$_.OffsetSeconds
+        Instruction = [string]$_.Instruction
+        DueUtc = ConvertTo-V07SoakUtcText -Value $started.AddSeconds([int]$_.OffsetSeconds)
+    }
+})
+$context = [pscustomobject][ordered]@{
+    SchemaVersion = 'v0.7.0-soak-context'
+    ArtifactKind = 'SoakContext'
+    RunId = $runId
+    StartedUtc = ConvertTo-V07SoakUtcText -Value $started
+    DurationHours = $DurationHours
+    CandidateSourceCommit = [string]$binding.SourceCommit
+    CandidateSourceTree = [string]$binding.SourceTree
+    Schedule = $contextSchedule
+}
+$contextJson = $context | ConvertTo-Json -Depth 20
+[IO.File]::WriteAllText($contextPath, $contextJson, (New-Object System.Text.UTF8Encoding($false)))
+$contextSha256 = Get-V07Sha256Hex -Path $contextPath
+
 function Invoke-V07RuntimeObserver {
     param([Parameter(Mandatory)][int]$Seconds)
 
@@ -155,14 +190,37 @@ function Invoke-V07RuntimeObserver {
         '--socket-path', [string]$session.TargetHerdrSocketPath,
         '--report', [string]$runtimeReportPath
     )
+    $process = $null
     try {
-        $process = Start-Process -FilePath $observer -ArgumentList $arguments -WorkingDirectory $resolvedRoot -NoNewWindow -PassThru -Wait
+        $process = Start-Process -FilePath $observer -ArgumentList $arguments -WorkingDirectory $resolvedRoot -NoNewWindow -PassThru
+        $observerDeadline = [DateTimeOffset]::UtcNow.AddSeconds($Seconds + $script:V07SoakObserverGraceSeconds)
+        while (-not $process.HasExited) {
+            if ([DateTimeOffset]::UtcNow -ge $observerDeadline) {
+                try { $process.Kill() } catch { }
+                throw "runtime observer exceeded bounded timeout of $($Seconds + $script:V07SoakObserverGraceSeconds) seconds."
+            }
+            Start-Sleep -Milliseconds 250
+        }
+        $process.Refresh()
         if ($process.ExitCode -ne 0) { throw "observer exited with code $($process.ExitCode)" }
         $json = Get-V07BoundedUtf8FileText -Path $runtimeReportPath -Description 'runtime observer report'
         Assert-V07StrictJsonText -JsonText $json -SourceDescription 'runtime observer report'
         $report = $json | ConvertFrom-Json
         if ([bool]$report.SessionControlInvoked) { throw 'runtime observer reported SessionControlInvoked=true' }
         if (-not [bool]$report.RuntimeObserved -or -not [bool]$report.SnapshotObserved) { throw 'runtime observer did not retain actual Herdr snapshot evidence' }
+        $admission = $report.Admission
+        $observedIdentity = $report.ObservedServerIdentity
+        if ($null -eq $admission -or $null -eq $observedIdentity) { throw 'runtime observer omitted the admitted or observed Herdr server identity.' }
+        if ([string]$admission.ExecutablePath -ieq [string]$admittedHerdrServerIdentity.ExecutablePath -and
+            [string]$admission.ExecutableSha256 -ceq [string]$admittedHerdrServerIdentity.ExecutableSha256 -and
+            [int]$observedIdentity.ProcessId -eq [int]$admittedHerdrServerIdentity.ProcessId -and
+            [string]$observedIdentity.ProcessStartUtc -ceq [string]$admittedHerdrServerIdentity.ProcessStartUtc -and
+            [string]$observedIdentity.ExecutablePath -ieq [string]$admittedHerdrServerIdentity.ExecutablePath -and
+            [string]$observedIdentity.ExecutableSha256 -ceq [string]$admittedHerdrServerIdentity.ExecutableSha256) {
+            $serverIdentityBound = $true
+        } else {
+            throw 'runtime observer server identity does not match the admitted Herdr server identity.'
+        }
         $state = $report.FinalMonitorState
         if ($null -eq $state) { throw 'runtime observer omitted FinalMonitorState' }
         return [pscustomobject][ordered]@{
@@ -173,14 +231,30 @@ function Invoke-V07RuntimeObserver {
             ReconnectObserved = [bool]$report.ReconnectObserved
             TransitionCount = @($report.Transitions).Count
             FinalStateSha256 = [string]$report.FinalProjectedStateSha256
+            ObserverExecutablePath = $observer
+            ObserverExecutableSha256 = $observerSha256
+            ObserverReportPath = $runtimeReportPath
+            ObserverReportSha256 = Get-V07Sha256Hex -Path $runtimeReportPath
+            ObservedServerProcessId = [int]$observedIdentity.ProcessId
+            ObservedServerProcessStartUtc = [string]$observedIdentity.ProcessStartUtc
+            ObservedServerExecutablePath = [string]$observedIdentity.ExecutablePath
+            ObservedServerExecutableSha256 = [string]$observedIdentity.ExecutableSha256
+            ServerIdentityBound = [bool]$serverIdentityBound
             Status = 'Observed'
             Detail = [string]$report.Message
         }
+    } catch [System.Management.Automation.PipelineStoppedException] {
+        if ($null -ne $process -and -not $process.HasExited) { try { $process.Kill() } catch { } }
+        throw
     } catch {
+        if ($_.Exception.Message -like 'runtime observer exceeded bounded timeout*') { throw }
         return [pscustomobject][ordered]@{
             ObservedUtc = ConvertTo-V07SoakUtcText -Value ([DateTimeOffset]::UtcNow)
             RuntimeObserved = $false; SnapshotObserved = $false; EventObserved = $false; ReconnectObserved = $false
-            TransitionCount = 0; FinalStateSha256 = ''; Status = 'Fault'; Detail = $_.Exception.Message
+            TransitionCount = 0; FinalStateSha256 = ''; ObserverExecutablePath = $observer; ObserverExecutableSha256 = $observerSha256
+            ObserverReportPath = $runtimeReportPath; ObserverReportSha256 = if (Test-Path -LiteralPath $runtimeReportPath -PathType Leaf) { Get-V07Sha256Hex -Path $runtimeReportPath } else { '' }
+            ObservedServerProcessId = 0; ObservedServerProcessStartUtc = ''; ObservedServerExecutablePath = ''; ObservedServerExecutableSha256 = ''
+            ServerIdentityBound = $false; Status = 'Fault'; Detail = $_.Exception.Message
         }
     }
 }
@@ -222,7 +296,8 @@ function Test-V07DueFaults {
             Write-Host "Write the operator marker only after the target-session action/observation: $markerPath"
         }
         if (Test-Path -LiteralPath $markerPath -PathType Leaf) {
-            $operatorObservation = Read-V07SoakOperatorObservation -ObservationPath $markerPath -ExpectedId $id -EvidenceRoot $outRoot
+            $operatorObservation = Read-V07SoakOperatorObservation -ObservationPath $markerPath -ExpectedId $id -EvidenceRoot $outRoot `
+                -ExpectedSchedule $scheduled -SoakStartedUtc $started
             Add-V07ScheduledFault -Scheduled $scheduled -OperatorObservation $operatorObservation
             $resolvedFaults[$id] = $true
         } elseif ($Now -ge $deadline) {
@@ -248,7 +323,7 @@ try {
         Test-V07DueFaults -Now ([DateTimeOffset]::UtcNow)
         $heartbeat = New-V07SoakHeartbeatEntry -Ordinal ($heartbeatEntries.Count + 1) -TargetHerdrSocketPath $session.TargetHerdrSocketPath `
             -InstalledHerdr $installedHerdr -HerdrProcessId $herdrProcessId -CoreProcessId $coreProcessId -AppProcessId $appProcessId `
-            -PreviousSnapshots $previousSnapshots -PreviousEntrySha256 $previousHeartbeatSha
+            -AdmittedHerdrServerIdentity $admittedHerdrServerIdentity -PreviousSnapshots $previousSnapshots -PreviousEntrySha256 $previousHeartbeatSha
         $heartbeatEntries.Add($heartbeat.Entry)
         $previousHeartbeatSha = [string]$heartbeat.Entry.EntrySha256
         Add-V07SoakJsonLine -Path $heartbeatLogPath -Entry $heartbeat.Entry -State $logStates.heartbeat -MaxEntries $script:V07SoakMaxHeartbeatEntries -MaxBytes $script:V07SoakMaxArtifactBytes
@@ -290,6 +365,7 @@ try {
         Get-V07SoakLogManifest -Root $outRoot -RelativePath 'fault-observations.jsonl' -Entries $faultEntries.Count
         Get-V07SoakLogManifest -Root $outRoot -RelativePath 'resources.jsonl' -Entries $resourceSamples.Count
         Get-V07SoakLogManifest -Root $outRoot -RelativePath 'runtime-observations.jsonl' -Entries $runtimeSummaries.Count
+        Get-V07SoakLogManifest -Root $outRoot -RelativePath 'soak-context.json' -Entries 1
         Get-V07SoakLogManifest -Root $outRoot -RelativePath 'runtime-observer-current.json' -Entries 1
     )
     $artifact = [pscustomobject][ordered]@{
@@ -307,11 +383,11 @@ try {
             ControlPaneId = [string]$session.ControlPaneId; ObservedControlPaneId = [string]$session.ObservedControlPaneId
             ControlHerdrSocketPath = [string]$session.ControlHerdrSocketPath; TargetHerdrSocketPath = [string]$session.TargetHerdrSocketPath
             HerdrExecutablePath = [string]$installedHerdr.ExecutablePath; HerdrExecutableSha256 = [string]$installedHerdr.ExecutableSha256
-            HerdrReleaseId = [string]$installedHerdr.ReleaseId
+            HerdrReleaseId = [string]$installedHerdr.ReleaseId; ControlHerdrServerIdentity = $admittedHerdrServerIdentity
         }
         Candidate = [pscustomobject][ordered]@{
             SourceCommit = [string]$binding.SourceCommit; SourceTree = [string]$binding.SourceTree; GitTreeClean = [bool]$binding.GitTreeClean
-            Binaries = @($binding.Binaries)
+            Binaries = @($binding.Binaries); Observer = $observerBinding
         }
         Soak = [pscustomobject][ordered]@{
             DurationHours = [Math]::Round(($finished - $started).TotalHours, 6)
@@ -322,7 +398,17 @@ try {
             StateEvidenceCount = [int]$stateEvidenceCount; ObservedEvents = [int]$observedEvents; ObservedReconnects = [int]$observedReconnects
         }
         InstalledHerdr = $installedHerdr
-        Producer = [pscustomobject][ordered]@{ Tool = 'Invoke-V07ActualHerdrSoak.ps1'; Version = '1'; SessionControlInvoked = $false; ObserverMode = 'ReadOnlyAttached' }
+        Producer = [pscustomobject][ordered]@{
+            Tool = 'Invoke-V07ActualHerdrSoak.ps1'; Version = '2'; SessionControlInvoked = $false; ObserverMode = 'ReadOnlyAttached'
+            ObserverExecutablePath = $observer; ObserverExecutableSha256 = $observerSha256
+            ObserverReportPath = $runtimeReportPath; ObserverReportSha256 = Get-V07Sha256Hex -Path $runtimeReportPath
+            AdmittedHerdrServerIdentity = [pscustomobject][ordered]@{
+                ProcessId = [int]$admittedHerdrServerIdentity.ProcessId; ProcessStartUtc = [string]$admittedHerdrServerIdentity.ProcessStartUtc
+                ExecutablePath = [string]$admittedHerdrServerIdentity.ExecutablePath; ExecutableSha256 = [string]$admittedHerdrServerIdentity.ExecutableSha256
+            }
+            FaultSchedule = @($contextSchedule)
+            ScheduleContextPath = $contextPath; ScheduleContextSha256 = $contextSha256
+        }
         Provenance = [pscustomobject][ordered]@{
             HeartbeatIntervalSeconds = $HeartbeatSeconds; ExpectedHeartbeatCount = $heartbeatEntries.Count; MissingHeartbeatCount = $missingHeartbeats
             HeartbeatEntries = @($heartbeatEntries); HeartbeatChainHeadSha256 = if ($heartbeatEntries.Count -gt 0) { [string]$heartbeatEntries[-1].EntrySha256 } else { '0' * 64 }

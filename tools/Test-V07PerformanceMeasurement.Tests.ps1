@@ -35,6 +35,7 @@ Remove-Item Env:HERDR_SOCKET_PATH -ErrorAction SilentlyContinue
 Remove-Item Env:HERDR_PANE_ID -ErrorAction SilentlyContinue
 $policyPath = Join-Path $PSScriptRoot 'lib\V07PerformanceMeasurementPolicy.ps1'
 $selfTestsPath = Join-Path $PSScriptRoot 'lib\V07MeasurementSelfTests.ps1'
+$soakPolicyPath = Join-Path $PSScriptRoot 'lib\V07SoakProducerPolicy.ps1'
 $budgetPolicyPath = Join-Path $PSScriptRoot 'lib\V07PerformanceBudgetPolicy.ps1'
 
 if (-not (Test-Path -LiteralPath $policyPath -PathType Leaf)) {
@@ -43,7 +44,11 @@ if (-not (Test-Path -LiteralPath $policyPath -PathType Leaf)) {
 if (-not (Test-Path -LiteralPath $selfTestsPath -PathType Leaf)) {
     throw "Required self-test module missing: $selfTestsPath"
 }
+if (-not (Test-Path -LiteralPath $soakPolicyPath -PathType Leaf)) {
+    throw "Required soak policy module missing: $soakPolicyPath"
+}
 . $policyPath
+. $soakPolicyPath
 . $selfTestsPath
 
 $testCount = 0
