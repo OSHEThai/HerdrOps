@@ -36,6 +36,22 @@ function Read-V02LiveWidgetsJson {
     return $value
 }
 
+function Convert-ToV02UtcDateTimeOffset {
+    param([Parameter(Mandatory)]$Value)
+
+    if ($Value -is [DateTimeOffset]) {
+        return $Value.ToUniversalTime()
+    }
+    if ($Value -is [DateTime]) {
+        return ([DateTimeOffset]$Value).ToUniversalTime()
+    }
+    $dto = [DateTimeOffset]::MinValue
+    if ([DateTimeOffset]::TryParse([string]$Value, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::RoundtripKind, [ref]$dto)) {
+        return $dto.ToUniversalTime()
+    }
+    throw "Invalid date/time value: $Value"
+}
+
 function Assert-V02LiveWidgetsRunManifest {
     param(
         [Parameter(Mandatory)]$Manifest,
@@ -44,13 +60,19 @@ function Assert-V02LiveWidgetsRunManifest {
     )
     if ([string]$Manifest.SourceCommit -cne $ExpectedCommit) { throw 'Run manifest source commit does not match HEAD.' }
     if ([string]$Manifest.RunToken -cne $ExpectedToken) { throw 'Run manifest token does not match the requested run.' }
-    $started = [DateTimeOffset]::MinValue
-    $finished = [DateTimeOffset]::MinValue
-    if (-not [DateTimeOffset]::TryParse([string]$Manifest.StartedUtc, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::RoundtripKind, [ref]$started)) { throw 'Run manifest StartedUtc is invalid.' }
-    if (-not [DateTimeOffset]::TryParse([string]$Manifest.FinishedUtc, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::RoundtripKind, [ref]$finished)) { throw 'Run manifest FinishedUtc is invalid.' }
+    try {
+        $started = Convert-ToV02UtcDateTimeOffset -Value $Manifest.StartedUtc
+    } catch {
+        throw 'Run manifest StartedUtc is invalid.'
+    }
+    try {
+        $finished = Convert-ToV02UtcDateTimeOffset -Value $Manifest.FinishedUtc
+    } catch {
+        throw 'Run manifest FinishedUtc is invalid.'
+    }
     if ($finished -lt $started) { throw 'Run manifest UTC window is inverted.' }
     if (($finished - $started).TotalSeconds -le 0) { throw 'Run manifest UTC window is empty.' }
-    return [pscustomobject]@{ StartedUtc = $started.ToUniversalTime(); FinishedUtc = $finished.ToUniversalTime() }
+    return [pscustomobject]@{ StartedUtc = $started; FinishedUtc = $finished }
 }
 
 function Assert-V02LiveWidgetsTimestampInWindow {
@@ -80,10 +102,16 @@ function Assert-V02LiveWidgetsTrxSet {
         if ([string]::IsNullOrWhiteSpace($id)) { throw "TRX has no run id: $($file.FullName)" }
         if ($ids.ContainsKey($id)) { throw "Duplicate TRX run id detected: $id" }
         $ids[$id] = $file.FullName
-        $start = [DateTimeOffset]::MinValue
-        $finish = [DateTimeOffset]::MinValue
-        if (-not [DateTimeOffset]::TryParse([string]$run.Times.start, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::RoundtripKind, [ref]$start)) { throw "TRX start time is invalid: $($file.FullName)" }
-        if (-not [DateTimeOffset]::TryParse([string]$run.Times.finish, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::RoundtripKind, [ref]$finish)) { throw "TRX finish time is invalid: $($file.FullName)" }
+        try {
+            $start = Convert-ToV02UtcDateTimeOffset -Value $run.Times.start
+        } catch {
+            throw "TRX start time is invalid: $($file.FullName)"
+        }
+        try {
+            $finish = Convert-ToV02UtcDateTimeOffset -Value $run.Times.finish
+        } catch {
+            throw "TRX finish time is invalid: $($file.FullName)"
+        }
         Assert-V02LiveWidgetsTimestampInWindow -Timestamp $start -StartedUtc $StartedUtc -FinishedUtc $FinishedUtc -Description "TRX start $($file.Name)"
         Assert-V02LiveWidgetsTimestampInWindow -Timestamp $finish -StartedUtc $StartedUtc -FinishedUtc $FinishedUtc -Description "TRX finish $($file.Name)"
         if ($finish -lt $start) { throw "TRX time window is inverted: $($file.FullName)" }
@@ -96,16 +124,109 @@ function Get-V02LiveWidgetsTrxSet {
         [Parameter(Mandatory)][DateTimeOffset]$StartedUtc,
         [Parameter(Mandatory)][DateTimeOffset]$FinishedUtc
     )
+    if (-not (Test-Path -LiteralPath $Directory -PathType Container)) {
+        throw "Test result directory is missing: $Directory"
+    }
+    $startBoundary = $StartedUtc.ToUniversalTime()
+    $finishBoundary = $FinishedUtc.ToUniversalTime()
     $files = @(Get-ChildItem -LiteralPath $Directory -Filter '*.trx' -File | Where-Object {
         try {
             [xml]$candidate = Get-Content -LiteralPath $_.FullName -Raw
-            $start = [DateTimeOffset]::Parse([string]$candidate.TestRun.Times.start, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::RoundtripKind)
-            $finish = [DateTimeOffset]::Parse([string]$candidate.TestRun.Times.finish, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::RoundtripKind)
-            $start -ge $StartedUtc -and $finish -le $FinishedUtc
+            $start = Convert-ToV02UtcDateTimeOffset -Value $candidate.TestRun.Times.start
+            $finish = Convert-ToV02UtcDateTimeOffset -Value $candidate.TestRun.Times.finish
+            $start -ge $startBoundary -and $finish -le $finishBoundary
         } catch { $false }
     })
-    Assert-V02LiveWidgetsTrxSet -Files $files -StartedUtc $StartedUtc -FinishedUtc $FinishedUtc
+    Assert-V02LiveWidgetsTrxSet -Files $files -StartedUtc $startBoundary -FinishedUtc $finishBoundary
     return $files
+}
+
+function Get-V02LiveWidgetsInvocationWindow {
+    param(
+        [Parameter(Mandatory)][string]$TestResultDirectory
+    )
+    if (-not (Test-Path -LiteralPath $TestResultDirectory -PathType Container)) {
+        throw "Test result directory is missing: $TestResultDirectory"
+    }
+    $trxFiles = @(Get-ChildItem -LiteralPath $TestResultDirectory -Filter '*.trx' -File |
+        Sort-Object LastWriteTimeUtc -Descending |
+        Select-Object -First 4)
+    if ($trxFiles.Count -ne 4) {
+        throw "Expected TRX output from four test projects, found $($trxFiles.Count)."
+    }
+
+    $starts = @()
+    $finishes = @()
+    foreach ($trxFile in $trxFiles) {
+        [xml]$trx = Get-Content -LiteralPath $trxFile.FullName -Raw
+        $run = $trx.TestRun
+        if ($null -eq $run) { throw "TRX has no TestRun root: $($trxFile.FullName)" }
+        $id = [string]$run.id
+        if ([string]::IsNullOrWhiteSpace($id)) { throw "TRX has no run id: $($trxFile.FullName)" }
+        try {
+            $start = Convert-ToV02UtcDateTimeOffset -Value $run.Times.start
+        } catch {
+            throw "TRX start time is invalid: $($trxFile.FullName)"
+        }
+        try {
+            $finish = Convert-ToV02UtcDateTimeOffset -Value $run.Times.finish
+        } catch {
+            throw "TRX finish time is invalid: $($trxFile.FullName)"
+        }
+        if ($finish -lt $start) { throw "TRX time window is inverted: $($trxFile.FullName)" }
+        $starts += $start
+        $finishes += $finish
+    }
+
+    $minStart = ($starts | Sort-Object)[0]
+    $maxFinish = ($finishes | Sort-Object)[-1]
+    if ($maxFinish -le $minStart) {
+        $maxFinish = $minStart.AddSeconds(1)
+    }
+
+    return [pscustomobject]@{
+        StartedUtc  = $minStart
+        FinishedUtc = $maxFinish
+        TrxFiles    = $trxFiles
+    }
+}
+
+function New-V02LiveWidgetsRunManifest {
+    param(
+        [Parameter(Mandatory)][string]$ArtifactRoot,
+        [Parameter(Mandatory)][string]$SourceCommit,
+        [Parameter(Mandatory)][string]$RunToken,
+        [Parameter(Mandatory)][DateTimeOffset]$StartedUtc,
+        [Parameter(Mandatory)][DateTimeOffset]$FinishedUtc
+    )
+    if ($RunToken -notmatch '^[A-Za-z0-9._-]{8,128}$') {
+        throw 'RunToken must be an explicit safe token of 8-128 characters.'
+    }
+    if ($SourceCommit -notmatch '^[0-9a-fA-F]{40}$') {
+        throw 'SourceCommit must be a 40-character hexadecimal SHA-1 string.'
+    }
+    $start = $StartedUtc.ToUniversalTime()
+    $finish = $FinishedUtc.ToUniversalTime()
+    if ($finish -lt $start) {
+        throw 'Run manifest UTC window is inverted.'
+    }
+    if (($finish - $start).TotalSeconds -le 0) {
+        throw 'Run manifest UTC window is empty.'
+    }
+
+    $manifestPath = Get-V02LiveWidgetsRunManifestPath -ArtifactRoot $ArtifactRoot
+    $manifestDirectory = Split-Path -Parent $manifestPath
+    New-Item -ItemType Directory -Path $manifestDirectory -Force | Out-Null
+
+    $manifest = [pscustomobject]@{
+        Schema       = 'v0.2.issue-10.live-widget-run.v1'
+        RunToken     = $RunToken
+        SourceCommit = $SourceCommit.ToLowerInvariant()
+        StartedUtc   = $start.ToString('O')
+        FinishedUtc  = $finish.ToString('O')
+    }
+    $manifest | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $manifestPath -Encoding utf8
+    return $manifest
 }
 
 function Assert-V02LiveWidgetsEvidenceMetadata {
@@ -122,8 +243,11 @@ function Assert-V02LiveWidgetsEvidenceMetadata {
     if ([string]$Metadata.EvidenceKind -cne $ExpectedKind) { throw "Evidence metadata kind is not '$ExpectedKind'." }
     if ([string]$Metadata.SourceCommit -cne $ExpectedCommit) { throw "Evidence metadata source commit does not match HEAD: $ExpectedKind" }
     if ([string]$Metadata.RunToken -cne $ExpectedToken) { throw "Evidence metadata token does not match the requested run: $ExpectedKind" }
-    $generated = [DateTimeOffset]::MinValue
-    if (-not [DateTimeOffset]::TryParse([string]$Metadata.GeneratedUtc, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::RoundtripKind, [ref]$generated)) { throw "Evidence metadata timestamp is invalid: $ExpectedKind" }
+    try {
+        $generated = Convert-ToV02UtcDateTimeOffset -Value $Metadata.GeneratedUtc
+    } catch {
+        throw "Evidence metadata timestamp is invalid: $ExpectedKind"
+    }
     Assert-V02LiveWidgetsTimestampInWindow -Timestamp $generated -StartedUtc $StartedUtc -FinishedUtc $FinishedUtc -Description "Evidence metadata $ExpectedKind"
     $files = @($Metadata.Files)
     if ($files.Count -ne $ExpectedNames.Count) { throw "Evidence metadata file count is not exact: $ExpectedKind" }

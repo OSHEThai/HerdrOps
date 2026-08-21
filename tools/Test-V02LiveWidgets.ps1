@@ -14,44 +14,74 @@ $ErrorActionPreference = 'Stop'
 $repositoryRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
 $artifactRoot = Join-Path $repositoryRoot 'artifacts'
 $testResultRoot = Join-Path $artifactRoot 'test-results'
+$gateDirectory = Join-Path $artifactRoot 'release-gates\v0.2.0\issue-10'
 . (Join-Path $PSScriptRoot 'lib\V02LiveWidgetsProvenance.ps1')
 
 $sourceCommit = Get-V02LiveWidgetsSourceCommit -RepositoryRoot $repositoryRoot
-if ([string]::IsNullOrWhiteSpace($RunToken)) { $RunToken = [string]$env:HERDOPS_V02_LIVE_WIDGET_RUN_TOKEN }
-if ([string]::IsNullOrWhiteSpace($RunToken) -and -not $SkipBuild) { $RunToken = [guid]::NewGuid().ToString('N') }
-if ($RunToken -notmatch '^[A-Za-z0-9._-]{8,128}$') { throw 'RunToken must be an explicit safe token of 8-128 characters.' }
-$env:HERDOPS_V02_LIVE_WIDGET_RUN_TOKEN = $RunToken
-$env:HERDOPS_V02_LIVE_WIDGET_SOURCE_COMMIT = $sourceCommit
-$manifestPath = Get-V02LiveWidgetsRunManifestPath -ArtifactRoot $artifactRoot
-$runStartedUtc = [DateTimeOffset]::UtcNow
 
-if (-not $SkipBuild) {
-    New-Item -ItemType Directory -Path (Split-Path -Parent $manifestPath) -Force | Out-Null
-    [pscustomobject]@{
-        Schema = 'v0.2.issue-10.live-widget-run.v1'
-        RunToken = $RunToken
-        SourceCommit = $sourceCommit
-        StartedUtc = $runStartedUtc.ToString('O')
-        FinishedUtc = $null
-    } | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $manifestPath -Encoding utf8
+if ([string]::IsNullOrWhiteSpace($RunToken)) {
+    $RunToken = [string]$env:HERDOPS_V02_LIVE_WIDGET_RUN_TOKEN
 }
 
 if (-not $SkipBuild) {
+    if ([string]::IsNullOrWhiteSpace($RunToken)) {
+        $RunToken = [guid]::NewGuid().ToString('N')
+    }
+    if ($RunToken -notmatch '^[A-Za-z0-9._-]{8,128}$') {
+        throw 'RunToken must be an explicit safe token of 8-128 characters.'
+    }
+    $env:HERDOPS_V02_LIVE_WIDGET_RUN_TOKEN = $RunToken
+    $env:HERDOPS_V02_LIVE_WIDGET_SOURCE_COMMIT = $sourceCommit
+
+    $buildStartedUtc = [DateTimeOffset]::UtcNow
+
     & (Join-Path $PSScriptRoot 'Invoke-Build.ps1') -Configuration $Configuration -VerifyFormat
     if ($LASTEXITCODE -ne 0) {
         throw "v0.2 live-widgets implementation gate failed with exit code $LASTEXITCODE."
     }
 
-    $runFinishedUtc = [DateTimeOffset]::UtcNow
-    [pscustomobject]@{
-        Schema = 'v0.2.issue-10.live-widget-run.v1'
-        RunToken = $RunToken
-        SourceCommit = $sourceCommit
-        StartedUtc = $runStartedUtc.ToString('O')
-        FinishedUtc = $runFinishedUtc.ToString('O')
-    } | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $manifestPath -Encoding utf8
+    $buildFinishedUtc = [DateTimeOffset]::UtcNow
+    if ($buildFinishedUtc -le $buildStartedUtc) {
+        $buildFinishedUtc = $buildStartedUtc.AddSeconds(1)
+    }
+
+    $null = New-V02LiveWidgetsRunManifest `
+        -ArtifactRoot $artifactRoot `
+        -SourceCommit $sourceCommit `
+        -RunToken $RunToken `
+        -StartedUtc $buildStartedUtc `
+        -FinishedUtc $buildFinishedUtc
+}
+else {
+    if ([string]::IsNullOrWhiteSpace($RunToken)) {
+        $captureMetadataPath = Join-Path $gateDirectory 'live-widget-captures.json'
+        $measurementMetadataPath = Join-Path $gateDirectory 'live-widget-measurement.json'
+        if (Test-Path -LiteralPath $captureMetadataPath -PathType Leaf) {
+            try {
+                $RunToken = [string]((Get-Content -LiteralPath $captureMetadataPath -Raw | ConvertFrom-Json).RunToken)
+            } catch { }
+        }
+        elseif (Test-Path -LiteralPath $measurementMetadataPath -PathType Leaf) {
+            try {
+                $RunToken = [string]((Get-Content -LiteralPath $measurementMetadataPath -Raw | ConvertFrom-Json).RunToken)
+            } catch { }
+        }
+    }
+
+    if ($RunToken -notmatch '^[A-Za-z0-9._-]{8,128}$') {
+        throw 'RunToken must be an explicit safe token of 8-128 characters.'
+    }
+
+    $invocationWindow = Get-V02LiveWidgetsInvocationWindow -TestResultDirectory $testResultRoot
+    $null = New-V02LiveWidgetsRunManifest `
+        -ArtifactRoot $artifactRoot `
+        -SourceCommit $sourceCommit `
+        -RunToken $RunToken `
+        -StartedUtc $invocationWindow.StartedUtc `
+        -FinishedUtc $invocationWindow.FinishedUtc
 }
 
+$manifestPath = Get-V02LiveWidgetsRunManifestPath -ArtifactRoot $artifactRoot
 $manifest = Read-V02LiveWidgetsJson -Path $manifestPath
 $runWindow = Assert-V02LiveWidgetsRunManifest -Manifest $manifest -ExpectedCommit $sourceCommit -ExpectedToken $RunToken
 $runStartedUtc = $runWindow.StartedUtc
