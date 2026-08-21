@@ -92,6 +92,12 @@ if (args.Length > 0 && string.Equals(args[0], "trace-herdr-notification-runtime"
     return await HerdrNotificationRuntimeTraceCommand.RunAsync(args, Console.Out, Console.Error);
 }
 
+if (args.Length > 0 &&
+    string.Equals(args[0], HerdrRealtimeActivityRuntimeTraceCommand.CommandName, StringComparison.Ordinal))
+{
+    return await HerdrRealtimeActivityRuntimeTraceCommand.RunAsync(args, Console.Out, Console.Error);
+}
+
 if (args.Length > 0 && string.Equals(args[0], "trace-herdr-runtime", StringComparison.Ordinal))
 {
     return await HerdrRuntimeTraceCommand.RunAsync(args, Console.Out, Console.Error);
