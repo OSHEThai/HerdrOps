@@ -303,7 +303,7 @@ try {
         param($installScript, $uninstallScript, $archive, $userProfile)
         $env:LOCALAPPDATA = ""
         $env:USERPROFILE = $userProfile
-        
+
         # Run install without explicit roots
         & $installScript -ArchivePath $archive
         if (-not $?) { throw "Isolated install failed." }
