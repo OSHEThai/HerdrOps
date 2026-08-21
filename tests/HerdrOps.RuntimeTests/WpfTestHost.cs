@@ -183,7 +183,7 @@ internal static class WpfTestHost
 
     internal static string GetDiagnosticsForTest() => GetDiagnostics(null);
 
-    internal static Task<Exception> PostUnhandledExceptionForTest(Exception exception)
+    internal static Task<Exception> PostDispatcherFaultForTest(Exception exception)
     {
         ArgumentNullException.ThrowIfNull(exception);
 
@@ -194,9 +194,13 @@ internal static class WpfTestHost
             dispatcher = session.Dispatcher ?? throw CreateUnavailableException(session);
         }
 
+        // Throwing an actual unhandled exception through a WPF Application can
+        // start its irreversible shutdown after the event is marked handled.
+        // Inject the same pending-fault channel on the owned dispatcher so the
+        // hostile test remains order-independent and does not poison later UI tests.
         dispatcher.BeginInvoke(
             DispatcherPriority.Normal,
-            new Action(() => throw exception));
+            new Action(() => CaptureDispatcherFault(session, exception)));
         return session.DispatcherFaultObserved.Task;
     }
 
@@ -327,7 +331,7 @@ internal static class WpfTestHost
         try
         {
             SetMilestone(session, "ThreadEntered");
-            application = new HerdrOps.App.App
+            application = new HerdrOps.App.App(suppressStartupForTestHost: true)
             {
                 ShutdownMode = ShutdownMode.OnExplicitShutdown,
             };
@@ -519,17 +523,22 @@ internal static class WpfTestHost
         object? sender,
         DispatcherUnhandledExceptionEventArgs eventArgs)
     {
-        lock (HostGate)
-        {
-            session.DispatcherFault ??= eventArgs.Exception;
-            session.LastMilestone = "DispatcherFaultCaptured";
-            session.DispatcherFaultObserved.TrySetResult(eventArgs.Exception);
-        }
+        CaptureDispatcherFault(session, eventArgs.Exception);
 
         // Preserve the owned dispatcher so WpfTestHost.Run can report the
         // original callback fault on the next ordered operation. This is not
         // a silent swallow: Shutdown also fails if the fault is never consumed.
         eventArgs.Handled = true;
+    }
+
+    private static void CaptureDispatcherFault(HostSession session, Exception exception)
+    {
+        lock (HostGate)
+        {
+            session.DispatcherFault ??= exception;
+            session.LastMilestone = "DispatcherFaultCaptured";
+            session.DispatcherFaultObserved.TrySetResult(exception);
+        }
     }
 
     private static void RequestStopLocked(HostSession session)
