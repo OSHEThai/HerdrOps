@@ -127,7 +127,6 @@ public static class HerdrRealtimeActivityRuntimeTraceCommand
         var duplicateCount = 0;
         var rejectedCount = 0;
         var latencies = new List<double>();
-        var sourceSequence = 0L;
 
         void OnStateChanged(object? sender, HerdrRuntimeMonitorSnapshot snapshot)
         {
@@ -169,7 +168,7 @@ public static class HerdrRealtimeActivityRuntimeTraceCommand
                 SourceKind: ActivitySourceKind.Herdr,
                 SourceInstanceId: "herdr-agent-status-monitor",
                 SourceEpoch: admitted.Admission.ExecutableSha256,
-                SourceSequence: Interlocked.Increment(ref sourceSequence),
+                SourceSequence: null,
                 Confidence: ActivityConfidence.Observed,
                 Urgency: urgent ? ActivityUrgency.High : ActivityUrgency.Normal,
                 DeliveryMode: urgent ? ActivityDeliveryMode.Immediate : ActivityDeliveryMode.Debounced,
