@@ -1,0 +1,137 @@
+{
+  "$id": "https://herdrops.local/schema/v0.7/issue-36-acceptance.schema.json",
+  "schemaVersion": 1,
+  "reportKind": "HerdrOps.V07Issue36Acceptance",
+  "issue": 36,
+  "status": "PENDING",
+  "evidenceClass": "Static/Contract/Synthetic",
+  "candidate": {
+    "commit": "replace-with-exact-lowercase-40-hex-commit",
+    "tree": "replace-with-exact-lowercase-40-hex-tree",
+    "workingTree": "PENDING"
+  },
+  "reference": {
+    "manifestPath": "docs/design/reference/MANIFEST.md",
+    "manifestSha256": "replace-with-exact-uppercase-64-hex-manifest-hash",
+    "hashAlgorithm": "SHA-256",
+    "entryCount": "PENDING"
+  },
+  "automatedEvidence": {
+    "status": "PASS",
+    "tests": [
+      {
+        "id": "settings-persistence",
+        "testClass": "AppSettingsStoreTests",
+        "projectPath": "tests/HerdrOps.IntegrationTests/HerdrOps.IntegrationTests.csproj",
+        "testSourcePath": "tests/HerdrOps.IntegrationTests/AppSettingsStoreTests.cs",
+        "testSourceSha256": "replace-with-exact-uppercase-64-hex-test-source-hash",
+        "trxPath": "trx/settings-persistence.trx",
+        "trxSha256": "replace-with-exact-uppercase-64-hex-trx-hash",
+        "testCaseCount": "PENDING",
+        "result": "PENDING",
+        "evidenceClass": "Synthetic",
+        "command": "dotnet test tests/HerdrOps.IntegrationTests/HerdrOps.IntegrationTests.csproj --filter FullyQualifiedName~AppSettingsStoreTests --logger trx"
+      },
+      {
+        "id": "theme-logic",
+        "testClass": "UiThemeIntegrationTests",
+        "projectPath": "tests/HerdrOps.IntegrationTests/HerdrOps.IntegrationTests.csproj",
+        "testSourcePath": "tests/HerdrOps.IntegrationTests/UiThemeIntegrationTests.cs",
+        "testSourceSha256": "replace-with-exact-uppercase-64-hex-test-source-hash",
+        "trxPath": "trx/theme-logic.trx",
+        "trxSha256": "replace-with-exact-uppercase-64-hex-trx-hash",
+        "testCaseCount": "PENDING",
+        "result": "PENDING",
+        "evidenceClass": "Synthetic",
+        "command": "dotnet test tests/HerdrOps.IntegrationTests/HerdrOps.IntegrationTests.csproj --filter FullyQualifiedName~UiThemeIntegrationTests --logger trx"
+      },
+      {
+        "id": "theme-wpf",
+        "testClass": "UiThemeWpfIntegrationTests",
+        "projectPath": "tests/HerdrOps.RuntimeTests/HerdrOps.RuntimeTests.csproj",
+        "testSourcePath": "tests/HerdrOps.RuntimeTests/UiThemeWpfIntegrationTests.cs",
+        "testSourceSha256": "replace-with-exact-uppercase-64-hex-test-source-hash",
+        "trxPath": "trx/theme-wpf.trx",
+        "trxSha256": "replace-with-exact-uppercase-64-hex-trx-hash",
+        "testCaseCount": "PENDING",
+        "result": "PENDING",
+        "evidenceClass": "Synthetic",
+        "command": "dotnet test tests/HerdrOps.RuntimeTests/HerdrOps.RuntimeTests.csproj --filter FullyQualifiedName~UiThemeWpfIntegrationTests --logger trx"
+      },
+      {
+        "id": "language-rendering",
+        "testClass": "LanguageSwitchRenderingTests",
+        "projectPath": "tests/HerdrOps.RuntimeTests/HerdrOps.RuntimeTests.csproj",
+        "testSourcePath": "tests/HerdrOps.RuntimeTests/LanguageSwitchRenderingTests.cs",
+        "testSourceSha256": "replace-with-exact-uppercase-64-hex-test-source-hash",
+        "trxPath": "trx/language-rendering.trx",
+        "trxSha256": "replace-with-exact-uppercase-64-hex-trx-hash",
+        "testCaseCount": "PENDING",
+        "result": "PENDING",
+        "evidenceClass": "Synthetic",
+        "command": "dotnet test tests/HerdrOps.RuntimeTests/HerdrOps.RuntimeTests.csproj --filter FullyQualifiedName~LanguageSwitchRenderingTests --logger trx"
+      },
+      {
+        "id": "accessibility-synthetic",
+        "testClass": "WidgetAccessibilityTests",
+        "projectPath": "tests/HerdrOps.RuntimeTests/HerdrOps.RuntimeTests.csproj",
+        "testSourcePath": "tests/HerdrOps.RuntimeTests/WidgetAccessibilityTests.cs",
+        "testSourceSha256": "replace-with-exact-uppercase-64-hex-test-source-hash",
+        "trxPath": "trx/accessibility-synthetic.trx",
+        "trxSha256": "replace-with-exact-uppercase-64-hex-trx-hash",
+        "testCaseCount": "PENDING",
+        "result": "PENDING",
+        "evidenceClass": "Synthetic",
+        "command": "dotnet test tests/HerdrOps.RuntimeTests/HerdrOps.RuntimeTests.csproj --filter FullyQualifiedName~WidgetAccessibilityTests --logger trx"
+      },
+      {
+        "id": "retention-synthetic",
+        "testClass": "CompliancePrivacyRetentionIntegrationTests",
+        "projectPath": "tests/HerdrOps.IntegrationTests/HerdrOps.IntegrationTests.csproj",
+        "testSourcePath": "tests/HerdrOps.IntegrationTests/CompliancePrivacyRetentionIntegrationTests.cs",
+        "testSourceSha256": "replace-with-exact-uppercase-64-hex-test-source-hash",
+        "trxPath": "trx/retention-synthetic.trx",
+        "trxSha256": "replace-with-exact-uppercase-64-hex-trx-hash",
+        "testCaseCount": "PENDING",
+        "result": "PENDING",
+        "evidenceClass": "Synthetic",
+        "command": "dotnet test tests/HerdrOps.IntegrationTests/HerdrOps.IntegrationTests.csproj --filter FullyQualifiedName~CompliancePrivacyRetentionIntegrationTests --logger trx"
+      },
+      {
+        "id": "tray-startup",
+        "testClass": "TrayAndStartupLifecycleTests",
+        "projectPath": "tests/HerdrOps.UnitTests/HerdrOps.UnitTests.csproj",
+        "testSourcePath": "tests/HerdrOps.UnitTests/TrayAndStartupLifecycleTests.cs",
+        "testSourceSha256": "replace-with-exact-uppercase-64-hex-test-source-hash",
+        "trxPath": "trx/tray-startup.trx",
+        "trxSha256": "replace-with-exact-uppercase-64-hex-trx-hash",
+        "testCaseCount": "PENDING",
+        "result": "PENDING",
+        "evidenceClass": "Synthetic",
+        "command": "dotnet test tests/HerdrOps.UnitTests/HerdrOps.UnitTests.csproj --filter FullyQualifiedName~TrayAndStartupLifecycleTests --logger trx"
+      }
+    ]
+  },
+  "visualReview": {
+    "status": "PENDING",
+    "captureManifestPath": "PENDING",
+    "captureManifestSha256": "PENDING"
+  },
+  "humanAcceptance": {
+    "status": "PENDING",
+    "signer": "PENDING",
+    "role": "PENDING",
+    "signedAtUtc": "PENDING",
+    "signature": "PENDING",
+    "evidencePath": "PENDING",
+    "evidenceSha256": "PENDING"
+  },
+  "boundaries": {
+    "static": "PASS",
+    "contract": "PASS",
+    "synthetic": "PASS",
+    "human": "PENDING",
+    "runtime": "NOT OBSERVED",
+    "release": "NOT OBSERVED"
+  }
+}

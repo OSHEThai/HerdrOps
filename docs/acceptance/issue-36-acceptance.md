@@ -1,42 +1,74 @@
-# Issue #36 Acceptance: Tray, Startup, Settings, Localization, and Accessibility
+# Issue #36 Acceptance: Tray, Startup, Settings, Localization, Theme, Retention, and Accessibility
 
-Status: FAIL-CLOSED (Incomplete runtime evidence)
+Status: PENDING (bounded Static/Contract/Synthetic preparation only)
 
-## Assessment of Missing Scope
-Based on GitHub Issue #36 and `Plan/ROADMAP.md` (v0.7.0):
-- **Theme settings**: Implemented and tested via `UiThemeIntegrationTests` and `AppSettingsStoreTests`.
-- **Retention settings**: Missing from acceptance report criteria (though integration tests exist in `CompliancePrivacyRetentionIntegrationTests.cs`).
-- **Startup (Start-at-logon)**: Missing from acceptance report criteria (though unit tests exist in `TrayAndStartupLifecycleTests.cs`).
+This document records the acceptance boundary. It is not a human visual
+approval and it is not Runtime or Release evidence. A candidate manifest is
+admitted only through `tools/Test-V07Issue36Acceptance.ps1` and
+`docs/acceptance/issue-36-acceptance.schema.json`.
 
-## Acceptance Criteria Status
+## Acceptance matrix
 
-1. [x] **Settings persist and are reversible:** Tested via `AppSettingsStoreTests.cs` and `DesktopLifecycleWindowTests.cs`.
-2. [x] **Thai/English UI passes clipping and language-switch tests:** Tested via `LanguageSwitchRenderingTests.cs`.
-3. [x] **Accessibility checklist passes on the reference host:** Tested via `WidgetAccessibilityTests.cs` (Keyboard focus, Screen Reader accessible names, Contrast ratio meeting WCAG AA, Reduced Motion, multi-monitor bounds).
-4. [x] **Theme settings implemented:** Basic Light/Dark/System ResourceDictionary swapping, System theme sync, and backward-compatible settings migration implemented. Tray selector added. Full visual restyling coverage across all views is not guaranteed.
-5. [ ] **Retention settings verified:** FAILED (Not reported in acceptance).
-6. [ ] **Startup (start-at-logon) integration verified:** FAILED (Not reported in acceptance).
+| Area | Automated preparation | Human/Runtime acceptance |
+|---|---|---|
+| Settings persistence and reversible migration | Required `AppSettingsStoreTests` source and exact TRX binding | PENDING; no live AppData observation |
+| Light/Dark/System theme logic and WPF resource swap | Required `UiThemeIntegrationTests` and `UiThemeWpfIntegrationTests` source/TRX bindings | PENDING; tests do not prove a full reference-host visual review |
+| Thai/English language switching | Required `LanguageSwitchRenderingTests` source/TRX binding | PENDING; no accepted current WPF captures |
+| Keyboard, names, contrast, reduced motion, and bounds | Required `WidgetAccessibilityTests` source/TRX binding | PENDING; no screen-reader or reference-host human sign-off |
+| Retention/compliance behavior | Required `CompliancePrivacyRetentionIntegrationTests` source/TRX binding | PENDING; no production retention observation |
+| Tray and start-at-logon seams | Required `TrayAndStartupLifecycleTests` source/TRX binding | PENDING; no real notification-area, Registry Run, or Startup-folder observation |
 
-## Evidence
+The lifecycle gate's existing 12 unit and 39 integration checks remain a
+bounded implementation gate. They are not, by themselves, complete Issue #36
+acceptance because they do not bind every visual/theme/language/accessibility/
+retention record listed above. The new Issue #36 gate requires all seven
+named test records, their exact source-file SHA-256 values, and their exact
+TRX SHA-256 values.
 
-- **Lifecycle tests:** `DesktopLifecycleWindowTests.cs` verifies idempotency of window show/hide and setting persistence.
-- **Localization screenshots:** Captured and stored in `artifacts/design-evidence/v0.1/issue-60` (as defined in `LanguageSwitchRenderingTests`).
-- **Accessibility report:** Included in `WidgetAccessibilityTests.cs` assertions.
-- **Theme settings tests:** `UiThemeWpfIntegrationTests.cs` and `UiThemeIntegrationTests.cs` verify the internal logic of runtime resource swapping and synchronization, and `AppSettingsStoreTests.cs` verifies backward-compatible config migration. (These tests do not prove full visual runtime swap; visual/human review of the theme is still pending. Reference PNGs remain untouched.)
+## Immutable visual reference
 
-## Evidence Boundary
+The manifest must bind exactly `docs/design/reference/MANIFEST.md`, including
+its current SHA-256 and eleven declared immutable PNG entries. The reference
+PNG files and the manifest are not modified by this preparation change.
+Actual WPF captures, comparison results, DPI/multi-monitor observations, and
+human design/accessibility decisions remain outside this commit.
 
-| Class | Result |
+## Fail-closed fields
+
+The policy rejects unknown or duplicate JSON properties, missing records,
+duplicate test IDs, zero or stale hashes, unsafe evidence paths, failed TRX
+results, and candidate commit/tree drift. A generated gate report is always
+`PENDING`; it cannot populate a signer, role, date, signature, or human
+decision. Human acceptance must be supplied later by a separate independent
+review with real evidence.
+
+## Evidence boundary
+
+| Class | Current boundary |
 |---|---|
-| Static | Harness source, schema validation, and contract files (e.g. `v0.7-settings-contract.md`) are verified. |
-| Synthetic | Automated tests confirm settings storage, localization switching, contrast, layout bounds, tray integration, startup registration logic, and theme apply without modifying real system state. (Note: `HerdrOps.RuntimeTests` only contains Synthetic evidence as it does not test an actual installed Herdr instance). |
-| Contract | Verified via `HerdrOps.ContractTests`. |
-| Runtime | FAILED (No actual installed Herdr runtime tests provided. Evidence previously claimed under Runtime is actually Synthetic/Contract). |
+| Static | PASS for the policy, schema, template, and parser checks in this preparation commit. |
+| Contract | PASS for exact manifest shape, source/tree/reference/test/TRX bindings, and withheld claims. |
+| Synthetic | PASS only for the gate's selftests; product test evidence is credited only when exact TRX files are supplied and verified. |
+| Human | PENDING; no visual or accessibility sign-off is created here. |
+| Runtime | NOT OBSERVED; no installed Herdr instance or live OS resource was used. |
+| Release | NOT OBSERVED; no package, clean-machine run, or release decision was produced. |
 
-## Report SHA / Blockers
+## Required operator checks later
 
-- **Command executed**: `dotnet test HerdrOps.sln`
-- **Result**: UNVERIFIED/FAILED DUE TO TEST ARTIFACT LOCK (1 failed in HerdrOps.RuntimeTests due to IOException file lock on live-organization-compact.png). This is distinct from product defects and runtime blockers.
-- **Blocker 1**: Theme settings are now implemented but Runtime evidence is still missing.
-- **Blocker 2**: Retention and Startup features are not properly documented in the acceptance criteria, even though tests exist.
-- **Blocker 3**: Runtime evidence is incorrectly claimed. Tests in `RuntimeTests` do not use an actual installed Herdr, so they must be classified as Static/Synthetic/Contract. Real Runtime evidence is missing.
+```powershell
+pwsh -NoProfile -File tools/Test-V07Issue36Acceptance.ps1 `
+  -ManifestPath <evidence-root>\issue-36-manifest.json `
+  -EvidenceRoot <evidence-root> `
+  -ExpectedSourceCommit <exact-lowercase-commit> `
+  -ExpectedSourceTree <exact-lowercase-tree>
+```
+
+`ExpectedSourceCommit` and `ExpectedSourceTree` are mandatory together for
+every non-`-SelfTest` invocation. Omitting both, omitting either one, or
+requesting a commit/tree different from the current checkout fails closed;
+the operator must not substitute an implicit `HEAD` value.
+
+The same command must be run with Windows PowerShell 5.1 as a parser and
+policy compatibility check. This preparation commit itself does not claim
+that those product tests, captures, Runtime observations, or Release gates
+have been run.
