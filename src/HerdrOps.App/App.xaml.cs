@@ -27,21 +27,42 @@ public partial class App : Application
     private StartupTransaction? _startupTransaction;
     private Exception? _startupFailure;
     private readonly Func<IApplicationInstanceGate> _instanceGateFactory;
+    private readonly bool _suppressStartupForTestHost;
 
     public App()
-        : this(() => new WindowsPerUserApplicationInstanceGate())
+        : this(() => new WindowsPerUserApplicationInstanceGate(), false)
     {
     }
 
     public App(Func<IApplicationInstanceGate> instanceGateFactory)
+        : this(instanceGateFactory, false)
+    {
+    }
+
+    internal App(bool suppressStartupForTestHost)
+        : this(() => new WindowsPerUserApplicationInstanceGate(), suppressStartupForTestHost)
+    {
+    }
+
+    private App(
+        Func<IApplicationInstanceGate> instanceGateFactory,
+        bool suppressStartupForTestHost)
     {
         _instanceGateFactory = instanceGateFactory ?? throw new ArgumentNullException(nameof(instanceGateFactory));
+        _suppressStartupForTestHost = suppressStartupForTestHost;
     }
+
+    internal bool IsTestHostStartupSuppressed => _suppressStartupForTestHost;
 
     protected override async void OnStartup(StartupEventArgs e)
     {
         base.OnStartup(e);
         ShutdownMode = ShutdownMode.OnExplicitShutdown;
+        if (_suppressStartupForTestHost)
+        {
+            return;
+        }
+
         if (RuntimeEvidenceOptions.IsRequested(e.Args))
         {
             await RunRuntimeEvidenceAsync(e.Args);

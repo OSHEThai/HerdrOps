@@ -38,7 +38,7 @@ if ($VerifyFormat) {
 
 if (-not $SkipTests) {
     $resultsDirectory = Join-Path $artifactRoot 'test-results'
-    & dotnet test $solutionPath --configuration $Configuration --no-restore --no-build --artifacts-path $artifactRoot --results-directory $resultsDirectory --logger trx
+    & dotnet test $solutionPath -m:1 --configuration $Configuration --no-restore --no-build --artifacts-path $artifactRoot --results-directory $resultsDirectory --logger trx
     if ($LASTEXITCODE -ne 0) { throw 'Tests failed.' }
 }
 
