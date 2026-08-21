@@ -1,0 +1,132 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://herdrops.local/schema/v0.7/issue-36-acceptance.schema.json",
+  "title": "HerdrOps v0.7 Issue #36 bounded acceptance manifest",
+  "description": "Fail-closed Static/Contract/Synthetic evidence binding. It does not grant human visual, Runtime, or Release acceptance.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "$id",
+    "schemaVersion",
+    "reportKind",
+    "issue",
+    "status",
+    "evidenceClass",
+    "candidate",
+    "reference",
+    "automatedEvidence",
+    "visualReview",
+    "humanAcceptance",
+    "boundaries"
+  ],
+  "properties": {
+    "$id": { "const": "https://herdrops.local/schema/v0.7/issue-36-acceptance.schema.json" },
+    "schemaVersion": { "const": 1 },
+    "reportKind": { "const": "HerdrOps.V07Issue36Acceptance" },
+    "issue": { "const": 36 },
+    "status": { "enum": ["PENDING", "PASS"] },
+    "evidenceClass": { "const": "Static/Contract/Synthetic" },
+    "candidate": { "$ref": "#/$defs/candidate" },
+    "reference": { "$ref": "#/$defs/reference" },
+    "automatedEvidence": { "$ref": "#/$defs/automatedEvidence" },
+    "visualReview": { "$ref": "#/$defs/visualReview" },
+    "humanAcceptance": { "$ref": "#/$defs/humanAcceptance" },
+    "boundaries": { "$ref": "#/$defs/boundaries" }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9A-F]{64}$"
+    },
+    "candidate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["commit", "tree", "workingTree"],
+      "properties": {
+        "commit": { "anyOf": [{ "type": "string", "pattern": "^[0-9a-f]{40}$" }, { "const": "replace-with-exact-lowercase-40-hex-commit" }] },
+        "tree": { "anyOf": [{ "type": "string", "pattern": "^[0-9a-f]{40}$" }, { "const": "replace-with-exact-lowercase-40-hex-tree" }] },
+        "workingTree": { "enum": ["CLEAN", "DIRTY", "PENDING"] }
+      }
+    },
+    "reference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["manifestPath", "manifestSha256", "hashAlgorithm", "entryCount"],
+      "properties": {
+        "manifestPath": { "const": "docs/design/reference/MANIFEST.md" },
+        "manifestSha256": { "anyOf": [{ "$ref": "#/$defs/sha256" }, { "const": "replace-with-exact-uppercase-64-hex-manifest-hash" }] },
+        "hashAlgorithm": { "const": "SHA-256" },
+        "entryCount": { "anyOf": [{ "const": 11 }, { "const": "PENDING" }] }
+      }
+    },
+    "automatedEvidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "tests"],
+      "properties": {
+        "status": { "const": "PASS" },
+        "tests": {
+          "type": "array",
+          "minItems": 7,
+          "maxItems": 7,
+          "items": { "$ref": "#/$defs/testRecord" }
+        }
+      }
+    },
+    "testRecord": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "testClass", "projectPath", "testSourcePath", "testSourceSha256", "trxPath", "trxSha256", "testCaseCount", "result", "evidenceClass", "command"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "testClass": { "type": "string", "minLength": 1 },
+        "projectPath": { "type": "string", "minLength": 1 },
+        "testSourcePath": { "type": "string", "minLength": 1 },
+        "testSourceSha256": { "anyOf": [{ "$ref": "#/$defs/sha256" }, { "const": "replace-with-exact-uppercase-64-hex-test-source-hash" }] },
+        "trxPath": { "type": "string", "minLength": 1 },
+        "trxSha256": { "anyOf": [{ "$ref": "#/$defs/sha256" }, { "const": "replace-with-exact-uppercase-64-hex-trx-hash" }] },
+        "testCaseCount": { "anyOf": [{ "type": "integer", "minimum": 1, "maximum": 100000 }, { "const": "PENDING" }] },
+        "result": { "enum": ["PASS", "PENDING"] },
+        "evidenceClass": { "const": "Synthetic" },
+        "command": { "type": "string", "minLength": 8, "maxLength": 4096 }
+      }
+    },
+    "visualReview": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "captureManifestPath", "captureManifestSha256"],
+      "properties": {
+        "status": { "const": "PENDING" },
+        "captureManifestPath": { "const": "PENDING" },
+        "captureManifestSha256": { "const": "PENDING" }
+      }
+    },
+    "humanAcceptance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "signer", "role", "signedAtUtc", "signature", "evidencePath", "evidenceSha256"],
+      "properties": {
+        "status": { "enum": ["PENDING", "ACCEPTED"] },
+        "signer": { "type": "string", "minLength": 1 },
+        "role": { "type": "string", "minLength": 1 },
+        "signedAtUtc": { "type": "string", "minLength": 1 },
+        "signature": { "type": "string", "minLength": 1 },
+        "evidencePath": { "type": "string", "minLength": 1 },
+        "evidenceSha256": { "anyOf": [{ "$ref": "#/$defs/sha256" }, { "const": "PENDING" }] }
+      }
+    },
+    "boundaries": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["static", "contract", "synthetic", "human", "runtime", "release"],
+      "properties": {
+        "static": { "const": "PASS" },
+        "contract": { "const": "PASS" },
+        "synthetic": { "const": "PASS" },
+        "human": { "enum": ["PENDING", "ACCEPTED"] },
+        "runtime": { "const": "NOT OBSERVED" },
+        "release": { "const": "NOT OBSERVED" }
+      }
+    }
+  }
+}
