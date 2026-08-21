@@ -132,6 +132,91 @@ public sealed class RuntimeEvidenceQuiescenceTests
             Fingerprint()));
     }
 
+    [TestMethod]
+    public void PostReconnectIdentityChurnDiscardsProgressAndOnlyBaselinesAtTheSettledSequence()
+    {
+        var tracker = new RuntimeReconnectQuiescenceTracker(requiredStableSeconds: 5);
+
+        Assert.IsNull(tracker.Observe(
+            Start,
+            Fingerprint(sequence: 7, reconciliationCount: 2),
+            hasAllLiveAgentIdentities: false));
+        Assert.IsNull(tracker.Observe(
+            Start.AddMilliseconds(300),
+            Fingerprint(sequence: 8, reconciliationCount: 3),
+            hasAllLiveAgentIdentities: false));
+        Assert.IsNull(tracker.Observe(
+            Start.AddMilliseconds(600),
+            Fingerprint(sequence: 9, reconciliationCount: 4),
+            hasAllLiveAgentIdentities: false));
+        Assert.IsNull(tracker.Observe(
+            Start.AddMilliseconds(900),
+            Fingerprint(sequence: 10, reconciliationCount: 5),
+            hasAllLiveAgentIdentities: false));
+
+        // Churn ends: seq11 is reached and identities are now complete. The stable window
+        // opens fresh here; none of the premature seq7-10 progress may carry forward.
+        Assert.IsNull(tracker.Observe(
+            Start.AddMilliseconds(1200),
+            Fingerprint(sequence: 11, reconciliationCount: 6),
+            hasAllLiveAgentIdentities: true));
+
+        // Not yet a full 5s since the window opened at 1200ms.
+        Assert.IsNull(tracker.Observe(
+            Start.AddMilliseconds(6199),
+            Fingerprint(sequence: 11, reconciliationCount: 6),
+            hasAllLiveAgentIdentities: true));
+
+        var settled = tracker.Observe(
+            Start.AddMilliseconds(6200),
+            Fingerprint(sequence: 11, reconciliationCount: 6),
+            hasAllLiveAgentIdentities: true);
+
+        Assert.IsNotNull(settled);
+        Assert.AreEqual(11, settled.StableSequence);
+        Assert.AreEqual(11, settled.InitialSequence);
+        Assert.AreEqual(0, settled.ResetCount);
+    }
+
+    [TestMethod]
+    public void IdentityCompletionRequiresItsOwnFullWindowInsteadOfInheritingAccruedTime()
+    {
+        var tracker = new RuntimeReconnectQuiescenceTracker(requiredStableSeconds: 5);
+        var churnedFingerprint = Fingerprint(sequence: 11, reconciliationCount: 3);
+
+        // The raw fingerprint is already unchanged well past 5 seconds, but identities never
+        // complete, so no stable window may ever open.
+        Assert.IsNull(tracker.Observe(Start, churnedFingerprint, hasAllLiveAgentIdentities: false));
+        Assert.IsNull(tracker.Observe(
+            Start.AddSeconds(2),
+            churnedFingerprint,
+            hasAllLiveAgentIdentities: false));
+        Assert.IsNull(tracker.Observe(
+            Start.AddSeconds(5),
+            churnedFingerprint,
+            hasAllLiveAgentIdentities: false));
+
+        // Identities complete now, at the same instant and with the same unchanged fingerprint.
+        // This must NOT settle immediately by inheriting the 5 seconds that already elapsed
+        // while identities were incomplete; it must open a fresh window from this tick.
+        Assert.IsNull(tracker.Observe(
+            Start.AddSeconds(5),
+            churnedFingerprint,
+            hasAllLiveAgentIdentities: true));
+        Assert.IsNull(tracker.Observe(
+            Start.AddSeconds(9.999),
+            churnedFingerprint,
+            hasAllLiveAgentIdentities: true));
+
+        var settled = tracker.Observe(
+            Start.AddSeconds(10),
+            churnedFingerprint,
+            hasAllLiveAgentIdentities: true);
+
+        Assert.IsNotNull(settled);
+        Assert.AreEqual(11, settled.StableSequence);
+    }
+
     private static RuntimeStateFingerprint Fingerprint(
         bool isLive = true,
         long sequence = 13,
