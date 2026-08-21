@@ -47,6 +47,99 @@ function Get-HumanDesignReviewWidgetVariants {
         'AgentDetailPopup', 'DashboardPreview')
 }
 
+function Get-HumanDesignReviewCanonicalPageCaptureCount {
+    return @(Get-HumanDesignReviewCanonicalPageCaptureKeys).Count
+}
+
+function Get-HumanDesignReviewCanonicalWidgetVariantCount {
+    return @(Get-HumanDesignReviewWidgetVariants).Count
+}
+
+function Test-HumanDesignReviewContactSheetRef {
+    param([Parameter(Mandatory = $true)][string]$RelativePath)
+
+    $normalized = $RelativePath.Replace('\', '/')
+    if ($normalized -eq 'captures/README-placeholder') {
+        return $true
+    }
+    return ($normalized -match '^captures/(th|en)/contact-sheets/[a-z0-9-]+\.png$' -or
+            $normalized -match '^captures/contact-sheets/[a-z0-9-]+\.png$')
+}
+
+function Assert-HumanDesignReviewContainedPath {
+    param(
+        [string]$Root,
+        [Parameter(Mandatory = $true)][string]$RelativePath,
+        [Parameter(Mandatory = $true)][string]$Context
+    )
+
+    if ([string]::IsNullOrWhiteSpace($RelativePath)) {
+        throw "$Context relative path must not be empty."
+    }
+    if ($RelativePath.Contains('\')) {
+        throw "$Context relativePath must use forward slashes only: '$RelativePath'."
+    }
+    if ($RelativePath.StartsWith('/') -or $RelativePath -match '^[a-zA-Z]:') {
+        throw "$Context relativePath must not be an absolute path: '$RelativePath'."
+    }
+    if ($RelativePath.Contains('..') -or $RelativePath.Contains(':')) {
+        throw "$Context relativePath contains invalid path traversal tokens: '$RelativePath'."
+    }
+    if (-not $RelativePath.StartsWith('captures/', [StringComparison]::Ordinal)) {
+        throw "$Context relativePath must start with 'captures/': '$RelativePath'."
+    }
+    if ($RelativePath -notmatch '^[a-zA-Z0-9_\-\.\/]+$') {
+        throw "$Context relativePath contains illegal characters: '$RelativePath'."
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($Root)) {
+        $canonicalRoot = [IO.Path]::GetFullPath($Root)
+        if ($canonicalRoot.Length -gt 3) {
+            $canonicalRoot = $canonicalRoot.TrimEnd('\')
+        }
+        $nativeRel = $RelativePath.Replace('/', [IO.Path]::DirectorySeparatorChar.ToString())
+        $joined = Join-Path $canonicalRoot $nativeRel
+        $full = [IO.Path]::GetFullPath($joined)
+        $rootPrefix = $canonicalRoot + [IO.Path]::DirectorySeparatorChar.ToString()
+        if ($full -ne $canonicalRoot -and -not $full.StartsWith($rootPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+            throw "$Context path traversal detected: path '$RelativePath' escapes EvidenceRoot '$Root'."
+        }
+    }
+}
+
+function Get-HumanDesignReviewGitProvenance {
+    param([string]$RepoRoot)
+
+    if ([string]::IsNullOrWhiteSpace($RepoRoot)) {
+        $RepoRoot = Get-HumanDesignReviewRoot
+    }
+
+    $commitOutput = & git -C $RepoRoot rev-parse HEAD 2>$null
+    if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($commitOutput)) {
+        return $null
+    }
+    $commit = (($commitOutput | Out-String).Trim())
+    if ($commit -notmatch '^[0-9a-fA-F]{40,64}$') {
+        return $null
+    }
+
+    $treeOutput = & git -C $RepoRoot rev-parse 'HEAD^{tree}' 2>$null
+    $tree = if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($treeOutput)) { (($treeOutput | Out-String).Trim()) } else { $null }
+
+    $branchOutput = & git -C $RepoRoot rev-parse --abbrev-ref HEAD 2>$null
+    $branch = if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($branchOutput)) { (($branchOutput | Out-String).Trim()) } else { 'main' }
+
+    $commitSha256 = (Get-HumanDesignReviewSha256ForText -Text "git:commit:$commit|tree:$tree").ToUpperInvariant()
+
+    return [pscustomobject][ordered]@{
+        GitCommit = $commit
+        GitTree = $tree
+        Branch = $branch
+        CommitSha256 = $commitSha256
+        IsVerifiable = $true
+    }
+}
+
 function Get-HumanDesignReviewZeroHash {
     return ('0' * 64)
 }
@@ -715,10 +808,9 @@ function Test-HumanDesignReviewManifestInvariants {
     $captureRefs = @()
     $seenRefs = @{}
     foreach ($capture in $captures) {
-        $relative = [string]$capture.relativePath.Replace('\', '/')
-        if ([string]::IsNullOrWhiteSpace($relative)) {
-            throw 'Review manifest contains a capture with an empty relativePath.'
-        }
+        $relative = [string]$capture.relativePath
+        Assert-HumanDesignReviewContainedPath -Root $EvidenceRoot -RelativePath $relative -Context "Review manifest capture '$relative'"
+        $relative = $relative.Replace('\', '/')
         if ($seenRefs.ContainsKey($relative)) {
             throw "Review manifest declares duplicate capture '$relative'."
         }
@@ -733,8 +825,14 @@ function Test-HumanDesignReviewManifestInvariants {
         if ([string]$capture.language -notin @('th', 'en')) {
             throw "Review manifest capture '$relative' has an invalid language."
         }
-        if ([string]$capture.kind -notin @('page', 'widget-variant', 'dashboard-preview', 'contact-sheet')) {
+        $kind = [string]$capture.kind
+        if ($kind -notin @('page', 'widget-variant', 'dashboard-preview', 'contact-sheet')) {
             throw "Review manifest capture '$relative' has an invalid kind."
+        }
+        if ($kind -eq 'contact-sheet') {
+            if (-not (Test-HumanDesignReviewContactSheetRef -RelativePath $relative)) {
+                throw "Review manifest contact-sheet capture '$relative' does not conform to canonical contact-sheet naming."
+            }
         }
         if (-not (Test-HumanDesignReviewReferenceEntry -Reference ([string]$capture.refersToReference))) {
             throw "Review manifest capture '$relative' refersToReference '$($capture.refersToReference)' is not a valid docs/design/reference/MANIFEST.md entry."
@@ -743,7 +841,7 @@ function Test-HumanDesignReviewManifestInvariants {
             Assert-HumanDesignReviewReferenceBinding -Reference ([string]$capture.refersToReference) -ValidateBindings
         }
         if ($ValidateBindings -and -not [string]::IsNullOrWhiteSpace($EvidenceRoot)) {
-            $onDiskPath = Join-Path $EvidenceRoot $relative
+            $onDiskPath = Join-Path $EvidenceRoot ($relative.Replace('/', [IO.Path]::DirectorySeparatorChar.ToString()))
             if (-not (Test-Path -LiteralPath $onDiskPath -PathType Leaf)) {
                 throw "Review manifest capture '$relative' is declared but missing on disk at '$EvidenceRoot'."
             }
@@ -784,7 +882,7 @@ function Test-HumanDesignReviewManifestInvariants {
         ($normalized -match '^captures/(th|en)/pages/') -and ($canonicalPageRefs -notcontains $normalized)
     })
     if ($extraPageRefs.Count -gt 0) {
-        throw "Review manifest declares an unexpected capture beyond the exact canonical 60 page captures: $($extraPageRefs -join ', ')."
+        throw "Review manifest declares an unexpected capture beyond the exact canonical $($canonicalPageRefs.Count) page captures: $($extraPageRefs -join ', ')."
     }
     if ($pageCaptureRefs.Count -ne $canonicalPageRefs.Count) {
         throw "Review manifest page capture cardinality must be exactly $($canonicalPageRefs.Count); found $($pageCaptureRefs.Count)."
@@ -804,8 +902,7 @@ function Test-HumanDesignReviewManifestInvariants {
             throw "Review manifest declares an unexpected widget capture '$relative'."
         }
     }
-    $widgetNames = @('Compact', 'Normal', 'Expanded', 'FloatingMini', 'FloatingVertical', 'Notification',
-        'AgentDetailPopup', 'DashboardPreview')
+    $widgetNames = Get-HumanDesignReviewWidgetVariants
     $declaredWidgetRefs = @{}
     foreach ($name in $widgetNames) {
         $declaredWidgetRefs[[string]$Manifest.widgets.$name.capturesRef.Replace('\', '/')] = $true
@@ -822,7 +919,8 @@ function Test-HumanDesignReviewManifestInvariants {
         $normalized = $ref.Replace('\', '/')
         $isPage = ($canonicalPageRefs -contains $normalized)
         $isWidget = ($allowedWidgetRefs -contains $normalized)
-        $isContact = ($normalized -like 'captures/*contact*')
+        $matchingCapture = @($captures | Where-Object { [string]$_.relativePath.Replace('\', '/') -eq $normalized })
+        $isContact = ($matchingCapture.Count -gt 0 -and [string]$matchingCapture[0].kind -eq 'contact-sheet' -and (Test-HumanDesignReviewContactSheetRef -RelativePath $normalized))
         if (-not ($isPage -or $isWidget -or $isContact)) {
             throw "Review manifest declares an unexpected capture '$ref'."
         }
@@ -959,19 +1057,43 @@ function Test-HumanDesignReviewManifestInvariants {
         }
     }
 
-if ($reviewStatus -eq 'Accepted') {
-            if (-not [bool]$declarations.humanReviewClaimed) {
-                throw 'An Accepted review manifest must declare humanReviewClaimed=true.'
-            }
-            if (-not [bool]$reviewer.independent) {
-                throw 'An Accepted review manifest requires an independent reviewer declaration.'
-            }
-            foreach ($capture in $captures) {
-                if (-not (Test-HumanDesignReviewBoundHash -Hash ([string]$capture.sha256))) {
-                    throw "An Accepted review manifest capture '$($capture.relativePath)' is not bound."
-                }
+    if ($reviewStatus -eq 'Pending') {
+        if ([bool]$declarations.humanReviewClaimed -ne $false) {
+            throw 'A Pending review manifest must declare humanReviewClaimed=false.'
+        }
+        if ([string]$declarations.runtimeClaims -cne 'NOT OBSERVED') {
+            throw "A Pending review manifest must declare runtimeClaims='NOT OBSERVED'; found '$($declarations.runtimeClaims)'."
+        }
+        if ([string]$declarations.releaseClaims -cne 'NOT PRODUCED') {
+            throw "A Pending review manifest must declare releaseClaims='NOT PRODUCED'; found '$($declarations.releaseClaims)'."
+        }
+    } elseif ($reviewStatus -in @('Draft', 'Rejected')) {
+        if ([bool]$declarations.humanReviewClaimed -ne $false) {
+            throw "A $reviewStatus review manifest must declare humanReviewClaimed=false."
+        }
+        if ([string]$declarations.runtimeClaims -cne 'NOT OBSERVED') {
+            throw "A $reviewStatus review manifest must declare runtimeClaims='NOT OBSERVED'."
+        }
+        if ([string]$declarations.releaseClaims -cne 'NOT PRODUCED') {
+            throw "A $reviewStatus review manifest must declare releaseClaims='NOT PRODUCED'."
+        }
+    } elseif ($reviewStatus -eq 'Accepted') {
+        if (-not [bool]$declarations.humanReviewClaimed) {
+            throw 'An Accepted review manifest must declare humanReviewClaimed=true.'
+        }
+        if (-not [bool]$reviewer.independent) {
+            throw 'An Accepted review manifest requires an independent reviewer declaration.'
+        }
+        foreach ($capture in $captures) {
+            if (-not (Test-HumanDesignReviewBoundHash -Hash ([string]$capture.sha256))) {
+                throw "An Accepted review manifest capture '$($capture.relativePath)' is not bound."
             }
         }
+        $runDescriptor = [string]$provenance.canonicalRunDescriptor
+        if ($runDescriptor -match 'synthetic|fixture|reconciliation') {
+            throw "An Accepted review manifest cannot be bound to a synthetic or fixture run descriptor: '$runDescriptor'."
+        }
+    }
 }
 
 function Read-HumanDesignReviewManifestFile {

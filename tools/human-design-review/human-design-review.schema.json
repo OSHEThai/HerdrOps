@@ -168,6 +168,47 @@
       }
     }
   },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "reviewStatus": { "enum": ["Draft", "Pending", "Rejected"] }
+        }
+      },
+      "then": {
+        "properties": {
+          "declarations": {
+            "properties": {
+              "humanReviewClaimed": { "const": false },
+              "runtimeClaims": { "const": "NOT OBSERVED" },
+              "releaseClaims": { "const": "NOT PRODUCED" }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "reviewStatus": { "const": "Accepted" }
+        }
+      },
+      "then": {
+        "properties": {
+          "reviewer": {
+            "properties": {
+              "independent": { "const": true }
+            }
+          },
+          "declarations": {
+            "properties": {
+              "humanReviewClaimed": { "const": true }
+            }
+          }
+        }
+      }
+    }
+  ],
   "$defs": {
     "sha256": {
       "type": "string",
@@ -186,7 +227,10 @@
       "additionalProperties": false,
       "required": ["relativePath", "sha256", "width", "height", "language", "kind", "refersToReference"],
       "properties": {
-        "relativePath": { "type": "string", "minLength": 1 },
+        "relativePath": {
+          "type": "string",
+          "pattern": "^captures/((th|en)/(pages/[a-z0-9-]+-(100|125|150)\\.png|widgets/[a-z0-9-]+-native\\.png|contact-sheets/[a-z0-9-]+\\.png)|contact-sheets/[a-z0-9-]+\\.png|README-placeholder)$"
+        },
         "sha256": { "$ref": "#/$defs/sha256" },
         "width": { "type": "integer", "minimum": 1 },
         "height": { "type": "integer", "minimum": 1 },

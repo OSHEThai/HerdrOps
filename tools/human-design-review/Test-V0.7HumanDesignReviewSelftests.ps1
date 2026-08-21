@@ -161,6 +161,19 @@ function New-FullReviewFixture {
         }
     }
 
+    $contactRel = 'captures/en/contact-sheets/overview-sheet.png'
+    $contactFull = Join-Path $Root ($contactRel.Replace('/', [IO.Path]::DirectorySeparatorChar.ToString()))
+    Write-ReviewDeterministicFile -Path $contactFull -Text 'fixture contact sheet'
+    $captures += [ordered]@{
+        relativePath = $contactRel
+        sha256 = Get-ReviewFileHash -Path $contactFull
+        width = 1672
+        height = 941
+        language = 'en'
+        kind = 'contact-sheet'
+        refersToReference = '01-overview.png'
+    }
+
     $capturePathToHash = @{}
     foreach ($capture in $captures) {
         $capturePathToHash[[string]$capture.relativePath] = [string]$capture.sha256
@@ -227,7 +240,7 @@ function New-FullReviewFixture {
     }
 
     $artifactHash = Get-HumanDesignReviewArtifactHashFromManifest -Manifest ([pscustomobject]@{ captures = $captures })
-    $descriptor = 'fixture issue-35 review run'
+    $descriptor = 'v0.7.0 issue-35 independent review verification run'
     $runHash = Get-HumanDesignReviewSha256ForText -Text ($descriptor + '|' + $commit + '|SHA-256')
     $today = [DateTime]::UtcNow
     $signatureDateText = $today.ToString('yyyy-MM-dd', [Globalization.CultureInfo]::InvariantCulture)
@@ -302,7 +315,7 @@ try {
     if (-not $positive.Valid -or $positive.ReviewStatus -cne 'Accepted') {
         throw 'The fully bound fixture manifest did not verify cleanly.'
     }
-    if ($positive.BindingsValidated -cne $true -or $positive.PageCaptureCount -ne 60) {
+    if ($positive.BindingsValidated -cne $true -or $positive.PageCaptureCount -ne (Get-HumanDesignReviewCanonicalPageCaptureCount)) {
         throw 'The fully bound fixture verification did not record the expected binding depth and page coverage.'
     }
 
@@ -324,6 +337,20 @@ try {
         }
     } finally {
         [IO.File]::WriteAllBytes($pageProbeFull, $pageProbeOriginal)
+    }
+
+    # Rotate contact sheet capture bytes; on-disk binding must fail-closed.
+    $contactProbeRel = 'captures/en/contact-sheets/overview-sheet.png'
+    $contactProbeFull = Join-Path $fixture.Root ($contactProbeRel.Replace('/', [IO.Path]::DirectorySeparatorChar.ToString()))
+    $contactProbeOriginal = [byte[]][IO.File]::ReadAllBytes($contactProbeFull)
+    try {
+        [IO.File]::WriteAllBytes($contactProbeFull, (New-Object System.Text.UTF8Encoding($false)).GetBytes('tampered contact sheet bytes'))
+        Assert-ReviewSelftestFailure -Description 'rotated contact sheet capture fails on-disk binding' -RequiredFragments @(
+            'on-disk SHA-256 does not match') -Action {
+            Test-HumanDesignReviewManifest -ManifestPath $fixture.ManifestPath -EvidenceRoot $fixture.Root -ValidateBindings | Out-Null
+        }
+    } finally {
+        [IO.File]::WriteAllBytes($contactProbeFull, $contactProbeOriginal)
     }
 
     # Negative: MISSING required capture (remove a page coverage reference from captures[]).
@@ -497,6 +524,146 @@ try {
         ConvertFrom-StrictHumanDesignReviewJson -Json ([IO.File]::ReadAllText($duplicateJsonProbe)) -Description 'duplicate probe' | Out-Null
     }
 
+    # Negative: PATH TRAVERSAL with .. is rejected.
+    $traversalFolder = Join-Path $testRoot 'neg-path-traversal-dots'
+    Copy-Item -LiteralPath $fixture.Root -Destination $traversalFolder -Recurse
+    $traversalPath = Join-Path $traversalFolder 'human-design-review.manifest.json'
+    $traversalManifest = ([IO.File]::ReadAllText($traversalPath)) | ConvertFrom-Json
+    $traversalManifest.captures += [ordered]@{
+        relativePath = 'captures/../../secret.png'
+        sha256 = (Get-HumanDesignReviewSha256ForText -Text 'traversal').ToUpperInvariant()
+        width = 100; height = 100; language = 'en'; kind = 'page'; refersToReference = '01-overview.png'
+    }
+    $traversalManifest.provenance.artifactHash = (Get-HumanDesignReviewArtifactHashFromManifest -Manifest $traversalManifest).ToUpperInvariant()
+    $traversalJson = $traversalManifest | ConvertTo-Json -Depth 100
+    [IO.File]::WriteAllText($traversalPath, $traversalJson, (New-Object System.Text.UTF8Encoding($false)))
+    Assert-ReviewSelftestFailure -Description 'path traversal with .. is rejected' -RequiredFragments @(
+        'path traversal tokens') -Action {
+        Test-HumanDesignReviewManifest -ManifestPath $traversalPath | Out-Null
+    }
+
+    # Negative: BACKSLASH in relativePath is rejected.
+    $backslashFolder = Join-Path $testRoot 'neg-path-backslash'
+    Copy-Item -LiteralPath $fixture.Root -Destination $backslashFolder -Recurse
+    $backslashPath = Join-Path $backslashFolder 'human-design-review.manifest.json'
+    $backslashManifest = ([IO.File]::ReadAllText($backslashPath)) | ConvertFrom-Json
+    $backslashManifest.captures += [ordered]@{
+        relativePath = 'captures\en\pages\overview-100.png'
+        sha256 = (Get-HumanDesignReviewSha256ForText -Text 'backslash').ToUpperInvariant()
+        width = 100; height = 100; language = 'en'; kind = 'page'; refersToReference = '01-overview.png'
+    }
+    $backslashManifest.provenance.artifactHash = (Get-HumanDesignReviewArtifactHashFromManifest -Manifest $backslashManifest).ToUpperInvariant()
+    $backslashJson = $backslashManifest | ConvertTo-Json -Depth 100
+    [IO.File]::WriteAllText($backslashPath, $backslashJson, (New-Object System.Text.UTF8Encoding($false)))
+    Assert-ReviewSelftestFailure -Description 'backslash in relativePath is rejected' -RequiredFragments @(
+        'forward slashes only') -Action {
+        Test-HumanDesignReviewManifest -ManifestPath $backslashPath | Out-Null
+    }
+
+    # Negative: NON-CANONICAL contact-sheet path is rejected.
+    $badContactFolder = Join-Path $testRoot 'neg-bad-contact-sheet'
+    Copy-Item -LiteralPath $fixture.Root -Destination $badContactFolder -Recurse
+    $badContactPath = Join-Path $badContactFolder 'human-design-review.manifest.json'
+    $badContactManifest = ([IO.File]::ReadAllText($badContactPath)) | ConvertFrom-Json
+    $badContactManifest.captures += [ordered]@{
+        relativePath = 'captures/en/invalid-folder/sheet.png'
+        sha256 = (Get-HumanDesignReviewSha256ForText -Text 'bad contact').ToUpperInvariant()
+        width = 100; height = 100; language = 'en'; kind = 'contact-sheet'; refersToReference = '01-overview.png'
+    }
+    $badContactManifest.provenance.artifactHash = (Get-HumanDesignReviewArtifactHashFromManifest -Manifest $badContactManifest).ToUpperInvariant()
+    $badContactJson = $badContactManifest | ConvertTo-Json -Depth 100
+    [IO.File]::WriteAllText($badContactPath, $badContactJson, (New-Object System.Text.UTF8Encoding($false)))
+    Assert-ReviewSelftestFailure -Description 'non-canonical contact-sheet naming is rejected' -RequiredFragments @(
+        'does not conform to canonical contact-sheet naming') -Action {
+        Test-HumanDesignReviewManifest -ManifestPath $badContactPath | Out-Null
+    }
+
+    # Negative: PENDING with humanReviewClaimed=true is rejected.
+    $pendingHumanClaimFolder = Join-Path $testRoot 'neg-pending-human-claim'
+    Copy-Item -LiteralPath $fixture.Root -Destination $pendingHumanClaimFolder -Recurse
+    $pendingHumanClaimPath = Join-Path $pendingHumanClaimFolder 'human-design-review.manifest.json'
+    $pendingHumanClaimManifest = ([IO.File]::ReadAllText($pendingHumanClaimPath)) | ConvertFrom-Json
+    $pendingHumanClaimManifest.reviewStatus = 'Pending'
+    $pendingHumanClaimManifest.declarations.humanReviewClaimed = $true
+    $pendingHumanClaimJson = $pendingHumanClaimManifest | ConvertTo-Json -Depth 100
+    [IO.File]::WriteAllText($pendingHumanClaimPath, $pendingHumanClaimJson, (New-Object System.Text.UTF8Encoding($false)))
+    Assert-ReviewSelftestFailure -Description 'Pending review manifest with humanReviewClaimed=true is rejected' -RequiredFragments @(
+        'Pending review manifest must declare humanReviewClaimed=false') -Action {
+        Test-HumanDesignReviewManifest -ManifestPath $pendingHumanClaimPath | Out-Null
+    }
+
+    # Negative: PENDING with runtimeClaims=OBSERVED is rejected.
+    $pendingRuntimeFolder = Join-Path $testRoot 'neg-pending-runtime-claim'
+    Copy-Item -LiteralPath $fixture.Root -Destination $pendingRuntimeFolder -Recurse
+    $pendingRuntimePath = Join-Path $pendingRuntimeFolder 'human-design-review.manifest.json'
+    $pendingRuntimeManifest = ([IO.File]::ReadAllText($pendingRuntimePath)) | ConvertFrom-Json
+    $pendingRuntimeManifest.reviewStatus = 'Pending'
+    $pendingRuntimeManifest.declarations.humanReviewClaimed = $false
+    $pendingRuntimeManifest.declarations.runtimeClaims = 'OBSERVED'
+    $pendingRuntimeJson = $pendingRuntimeManifest | ConvertTo-Json -Depth 100
+    [IO.File]::WriteAllText($pendingRuntimePath, $pendingRuntimeJson, (New-Object System.Text.UTF8Encoding($false)))
+    Assert-ReviewSelftestFailure -Description 'Pending review manifest with runtimeClaims=OBSERVED is rejected' -RequiredFragments @(
+        "Pending review manifest must declare runtimeClaims='NOT OBSERVED'") -Action {
+        Test-HumanDesignReviewManifest -ManifestPath $pendingRuntimePath | Out-Null
+    }
+
+    # Negative: PENDING with releaseClaims=PRODUCED is rejected.
+    $pendingReleaseFolder = Join-Path $testRoot 'neg-pending-release-claim'
+    Copy-Item -LiteralPath $fixture.Root -Destination $pendingReleaseFolder -Recurse
+    $pendingReleasePath = Join-Path $pendingReleaseFolder 'human-design-review.manifest.json'
+    $pendingReleaseManifest = ([IO.File]::ReadAllText($pendingReleasePath)) | ConvertFrom-Json
+    $pendingReleaseManifest.reviewStatus = 'Pending'
+    $pendingReleaseManifest.declarations.humanReviewClaimed = $false
+    $pendingReleaseManifest.declarations.releaseClaims = 'PRODUCED'
+    $pendingReleaseJson = $pendingReleaseManifest | ConvertTo-Json -Depth 100
+    [IO.File]::WriteAllText($pendingReleasePath, $pendingReleaseJson, (New-Object System.Text.UTF8Encoding($false)))
+    Assert-ReviewSelftestFailure -Description 'Pending review manifest with releaseClaims=PRODUCED is rejected' -RequiredFragments @(
+        "Pending review manifest must declare releaseClaims='NOT PRODUCED'") -Action {
+        Test-HumanDesignReviewManifest -ManifestPath $pendingReleasePath | Out-Null
+    }
+
+    # Negative: DRAFT with humanReviewClaimed=true is rejected.
+    $draftFolder = Join-Path $testRoot 'neg-draft-human-claim'
+    Copy-Item -LiteralPath $fixture.Root -Destination $draftFolder -Recurse
+    $draftPath = Join-Path $draftFolder 'human-design-review.manifest.json'
+    $draftManifest = ([IO.File]::ReadAllText($draftPath)) | ConvertFrom-Json
+    $draftManifest.reviewStatus = 'Draft'
+    $draftManifest.declarations.humanReviewClaimed = $true
+    $draftJson = $draftManifest | ConvertTo-Json -Depth 100
+    [IO.File]::WriteAllText($draftPath, $draftJson, (New-Object System.Text.UTF8Encoding($false)))
+    Assert-ReviewSelftestFailure -Description 'Draft review manifest with humanReviewClaimed=true is rejected' -RequiredFragments @(
+        'Draft review manifest must declare humanReviewClaimed=false') -Action {
+        Test-HumanDesignReviewManifest -ManifestPath $draftPath | Out-Null
+    }
+
+    # Negative: REJECTED with humanReviewClaimed=true is rejected.
+    $rejectedFolder = Join-Path $testRoot 'neg-rejected-human-claim'
+    Copy-Item -LiteralPath $fixture.Root -Destination $rejectedFolder -Recurse
+    $rejectedPath = Join-Path $rejectedFolder 'human-design-review.manifest.json'
+    $rejectedManifest = ([IO.File]::ReadAllText($rejectedPath)) | ConvertFrom-Json
+    $rejectedManifest.reviewStatus = 'Rejected'
+    $rejectedManifest.declarations.humanReviewClaimed = $true
+    $rejectedJson = $rejectedManifest | ConvertTo-Json -Depth 100
+    [IO.File]::WriteAllText($rejectedPath, $rejectedJson, (New-Object System.Text.UTF8Encoding($false)))
+    Assert-ReviewSelftestFailure -Description 'Rejected review manifest with humanReviewClaimed=true is rejected' -RequiredFragments @(
+        'Rejected review manifest must declare humanReviewClaimed=false') -Action {
+        Test-HumanDesignReviewManifest -ManifestPath $rejectedPath | Out-Null
+    }
+
+    # Negative: SYNTHETIC descriptor claiming Accepted is rejected.
+    $syntheticAcceptFolder = Join-Path $testRoot 'neg-synthetic-accepted'
+    Copy-Item -LiteralPath $fixture.Root -Destination $syntheticAcceptFolder -Recurse
+    $syntheticAcceptPath = Join-Path $syntheticAcceptFolder 'human-design-review.manifest.json'
+    $syntheticAcceptManifest = ([IO.File]::ReadAllText($syntheticAcceptPath)) | ConvertFrom-Json
+    $syntheticAcceptManifest.provenance.canonicalRunDescriptor = 'synthetic reconciliation fixture run'
+    $syntheticAcceptManifest.provenance.runHash = (Get-HumanDesignReviewRunHashFromManifest -Manifest $syntheticAcceptManifest).ToUpperInvariant()
+    $syntheticAcceptJson = $syntheticAcceptManifest | ConvertTo-Json -Depth 100
+    [IO.File]::WriteAllText($syntheticAcceptPath, $syntheticAcceptJson, (New-Object System.Text.UTF8Encoding($false)))
+    Assert-ReviewSelftestFailure -Description 'Accepted manifest bound to synthetic descriptor is rejected' -RequiredFragments @(
+        'cannot be bound to a synthetic or fixture run descriptor') -Action {
+        Test-HumanDesignReviewManifest -ManifestPath $syntheticAcceptPath | Out-Null
+    }
+
     # Positive control must still verify after all negatives.
     $positiveRefinal = Test-HumanDesignReviewManifest -ManifestPath $fixture.ManifestPath -EvidenceRoot $fixture.Root -ValidateBindings
     if (-not $positiveRefinal.Valid) {
@@ -515,6 +682,11 @@ try {
     TemplateFailClosed = 'PASS'
     PositiveControlAccepted = 'PASS'
     OnDiskBinding = 'PASS'
+    PathContainmentTraversalFailClosed = 'PASS'
+    ContactSheetBindingFailClosed = 'PASS'
+    PendingInvariantsFailClosed = 'PASS'
+    DraftRejectedInvariantsFailClosed = 'PASS'
+    SyntheticAcceptanceFailClosed = 'PASS'
     MissingCaptureFailClosed = 'PASS'
     DuplicateCaptureFailClosed = 'PASS'
     UnexpectedCaptureFailClosed = 'PASS'

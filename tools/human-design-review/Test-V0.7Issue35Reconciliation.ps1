@@ -115,8 +115,8 @@ function Get-Issue35ReconciliationCandidateDivergence {
             candidatePageCaptureCount = $null
             candidateWidgetVariantCount = $null
             candidateWidgetVariants = @()
-            canonicalPageCaptureCountExpected = 60
-            canonicalWidgetVariantCountExpected = 8
+            canonicalPageCaptureCountExpected = (Get-HumanDesignReviewCanonicalPageCaptureCount)
+            canonicalWidgetVariantCountExpected = (Get-HumanDesignReviewCanonicalWidgetVariantCount)
         }
     }
 
@@ -141,15 +141,24 @@ function Get-Issue35ReconciliationCandidateDivergence {
         candidatePageCaptureCount = $pageCount
         candidateWidgetVariantCount = $variants.Count
         candidateWidgetVariants = @($variants)
-        canonicalPageCaptureCountExpected = @(Get-HumanDesignReviewCanonicalPageCaptureKeys).Count
-        canonicalWidgetVariantCountExpected = @(Get-HumanDesignReviewWidgetVariants).Count
+        canonicalPageCaptureCountExpected = (Get-HumanDesignReviewCanonicalPageCaptureCount)
+        canonicalWidgetVariantCountExpected = (Get-HumanDesignReviewCanonicalWidgetVariantCount)
     }
 }
 
 function New-Issue35ReconciliationPendingManifest {
     param([Parameter(Mandatory = $true)][string]$Root)
 
-    $commit = (Get-HumanDesignReviewSha256ForText -Text 'reconciliation-issue-35-commit').ToUpperInvariant()
+    $gitProv = Get-HumanDesignReviewGitProvenance -RepoRoot (Get-HumanDesignReviewRoot)
+    if ($null -ne $gitProv) {
+        $commit = $gitProv.CommitSha256
+        $branch = $gitProv.Branch
+        $descriptor = "issue-35 reconciliation pending fixture (git:$($gitProv.GitCommit)|tree:$($gitProv.GitTree))"
+    } else {
+        $commit = (Get-HumanDesignReviewSha256ForText -Text 'reconciliation-synthetic-issue-35-commit').ToUpperInvariant()
+        $branch = 'codex/v07-issue-35-remediation'
+        $descriptor = 'issue-35 reconciliation synthetic pending fixture (unverified git repository)'
+    }
     $pages = Get-HumanDesignReviewCanonicalPages
     $languages = Get-HumanDesignReviewLanguages
     $scales = Get-HumanDesignReviewScales
@@ -277,7 +286,7 @@ function New-Issue35ReconciliationPendingManifest {
         provenance = [ordered]@{ boundCommitSha256 = $commit; runHash = $runHash; artifactHash = $artifactHash; hashAlgorithm = 'SHA-256'; canonicalRunDescriptor = $descriptor }
         uiUnderReview = [ordered]@{
             surfaceKind = 'Observed WPF build'
-            wpfBuild = [ordered]@{ assembly = 'HerdrOps.App'; branch = 'codex/v07-issue-35-remediation'; commitSha256 = $commit; configuration = 'Release' }
+            wpfBuild = [ordered]@{ assembly = 'HerdrOps.App'; branch = $branch; commitSha256 = $commit; configuration = 'Release' }
             hostOs = 'Windows 11 23H2 (reconciliation fixture)'
             hostResolutionWidth = 1672
             hostResolutionHeight = 941
@@ -332,8 +341,8 @@ try {
     }
 
     $bind = Test-HumanDesignReviewManifest -ManifestPath $fixture.ManifestPath -EvidenceRoot $fixture.Root -ValidateBindings
-    if (-not $bind.Valid -or $bind.ReviewStatus -cne 'Pending' -or $bind.PageCaptureCount -ne 60) {
-        throw 'The pending reconciliation manifest did not verify cleanly with on-disk binding and 60 page captures.'
+    if (-not $bind.Valid -or $bind.ReviewStatus -cne 'Pending' -or $bind.PageCaptureCount -ne (Get-HumanDesignReviewCanonicalPageCaptureCount)) {
+        throw "The pending reconciliation manifest did not verify cleanly with on-disk binding and $(Get-HumanDesignReviewCanonicalPageCaptureCount) page captures."
     }
     if (-not $bind.BindingsValidated) {
         throw 'The pending reconciliation manifest did not record on-disk binding depth.'
