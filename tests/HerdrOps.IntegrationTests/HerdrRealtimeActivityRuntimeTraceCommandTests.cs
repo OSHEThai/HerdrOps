@@ -1,4 +1,6 @@
 using HerdrOps.Core;
+using HerdrOps.Domain.Activity;
+using HerdrOps.Domain.Herdr;
 
 namespace HerdrOps.IntegrationTests;
 
@@ -21,6 +23,60 @@ public sealed class HerdrRealtimeActivityRuntimeTraceCommandTests
         Assert.AreEqual(3, keys.Count);
         Assert.IsTrue(keys.TryAdd("pane-a:1"), "The oldest key is eligible again only after FIFO eviction.");
         Assert.AreEqual(3, keys.Count);
+    }
+
+    [TestMethod]
+    public void OnStateChangedRetainsOnlyBoundedEventWindowForAnAdversarialStream()
+    {
+        var capture = new HerdrRealtimeActivityRuntimeTraceCapture("adversarial-runtime-sha");
+        var totalEvents = HerdrRealtimeActivityRuntimeTraceCommand.MaximumRetainedEvents + 257;
+
+        for (var eventCount = 1L; eventCount <= totalEvents; eventCount++)
+        {
+            capture.OnStateChanged(null, CreateAcceptedSnapshot(eventCount));
+        }
+
+        var retained = capture.RetainedEvents;
+        Assert.AreEqual(
+            HerdrRealtimeActivityRuntimeTraceCommand.MaximumRetainedEvents,
+            capture.RetainedEventCount);
+        Assert.HasCount(
+            HerdrRealtimeActivityRuntimeTraceCommand.MaximumRetainedEvents,
+            retained);
+        Assert.AreEqual(totalEvents, capture.AcceptedEventCount);
+        Assert.AreEqual(
+            totalEvents - HerdrRealtimeActivityRuntimeTraceCommand.MaximumRetainedEvents + 1,
+            retained[0].HerdrEventCount);
+        Assert.AreEqual(totalEvents, retained[^1].HerdrEventCount);
+    }
+
+    [TestMethod]
+    public void AcceptedCountIsRetentionWindowedWhenBothDedupeCachesEvict()
+    {
+        var capture = new HerdrRealtimeActivityRuntimeTraceCapture(
+            "adversarial-runtime-sha",
+            ActivityPipelineOptions.Default with
+            {
+                MaximumDeduplicationEntries = 2,
+            });
+        var uniqueEvents = HerdrRealtimeActivityRuntimeTraceCommand.MaximumSeenTransitionKeys + 2;
+
+        for (var eventCount = 1L; eventCount <= uniqueEvents; eventCount++)
+        {
+            capture.OnStateChanged(null, CreateAcceptedSnapshot(eventCount));
+        }
+
+        Assert.AreEqual(uniqueEvents, capture.AcceptedEventCount);
+        capture.OnStateChanged(null, CreateAcceptedSnapshot(1));
+
+        Assert.AreEqual(
+            uniqueEvents + 1,
+            capture.AcceptedEventCount,
+            "AcceptedEventCount is a pipeline-disposition count with retention-windowed identity suppression; it is not an absolute unique-transition count.");
+        Assert.AreEqual(
+            HerdrRealtimeActivityRuntimeTraceCommand.MaximumRetainedEvents,
+            capture.RetainedEventCount);
+        Assert.AreEqual(1L, capture.RetainedEvents[^1].HerdrEventCount);
     }
 
     [TestMethod]
@@ -165,5 +221,53 @@ public sealed class HerdrRealtimeActivityRuntimeTraceCommandTests
         Assert.AreEqual(2, exitCode);
         Assert.IsFalse(File.Exists(reportPath));
         StringAssert.Contains(error.ToString(), "Runtime admission failed");
+    }
+
+    private static HerdrRuntimeMonitorSnapshot CreateAcceptedSnapshot(long eventCount)
+    {
+        var pane = new HerdrPaneSnapshot(
+            "pane-1",
+            "terminal-1",
+            "workspace-1",
+            "tab-1",
+            Focused: true,
+            HerdrAgentStatus.Working,
+            (ulong)eventCount,
+            "codex",
+            "Codex",
+            "Worker",
+            "Z:\\HerdrOps",
+            "Z:\\HerdrOps",
+            "Codex");
+        var state = HerdrSessionState.Empty with
+        {
+            ConnectionEpoch = 1,
+            LastIngestSequence = eventCount,
+            Panes = new Dictionary<string, HerdrPaneSnapshot>(StringComparer.Ordinal)
+            {
+                [pane.PaneId] = pane,
+            },
+        };
+        var occurredUtc = DateTimeOffset.UtcNow.AddMilliseconds(-1);
+        return new HerdrRuntimeMonitorSnapshot(
+            HerdrRuntimeMonitorStatus.Connected,
+            state,
+            ServerIdentity: null,
+            BootstrapCount: 1,
+            EventCount: eventCount,
+            DisconnectCount: 0,
+            ReconciliationCount: 0,
+            LastTransitionReason: null,
+            LastTransitionUtc: occurredUtc)
+        {
+            AcceptedEventKind = HerdrRuntimeMonitor.AcceptedAgentStatusEventKind,
+            AcceptedAgentStatusEvent = new HerdrAcceptedAgentStatusEvent(
+                "workspace-1",
+                "pane-1",
+                HerdrAgentStatus.Working,
+                "codex",
+                "Codex",
+                "Worker"),
+        };
     }
 }

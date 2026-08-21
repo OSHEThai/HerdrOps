@@ -86,6 +86,8 @@ $requiredChecks = @(
     'MissingAuthorizedHerdrEnvironmentFailsClosedWithoutWritingReport',
     'RuntimeAdmissionFailureIsReportedWithoutWritingReport',
     'TransitionKeyRetentionHasAnExplicitFifoBound',
+    'OnStateChangedRetainsOnlyBoundedEventWindowForAnAdversarialStream',
+    'AcceptedCountIsRetentionWindowedWhenBothDedupeCachesEvict',
     'TransitionKeyRetentionRemainsBoundedForAnAdversarialUniqueStream',
     'LatencyRetentionKeepsOnlyFirstAndMaximumForAnAdversarialStream',
     'LatencyRetentionRejectsNonFiniteAndNegativeValues',
