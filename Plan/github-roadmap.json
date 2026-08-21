@@ -464,6 +464,15 @@
           "scope": ["Finalize installer, checksums, release notes, user guide, upgrade/rollback, and troubleshooting.", "Obtain explicit user go/no-go.", "Tag v1.0.0 and publish the GitHub Release without rebuilding accepted artifacts."],
           "acceptance": ["User go/no-go is recorded.", "Tag points to the accepted commit.", "Published artifact hashes match acceptance records exactly.", "GitHub Release is visible in OSHEThai/HerdrOps."],
           "evidence": ["Go/no-go record", "Tag/commit verification", "Published checksums", "GitHub Release URL"]
+        },
+        {
+          "key": "V100-06",
+          "title": "[v1.0.0] Prevent WPF host startup starvation in solution test runs",
+          "labels": ["type:quality", "area:tooling", "priority:P0"],
+          "outcome": "Keep the canonical release build deterministic when WPF runtime tests run repeatedly on constrained CI hosts.",
+          "scope": ["Serialize solution-level test-project scheduling.", "Isolate the WPF test host from production single-instance startup and shutdown behavior.", "Guard both invariants with deterministic regressions."],
+          "acceptance": ["Two consecutive full Release builds pass on the same committed tree.", "The affected GitHub evaluation gate passes.", "No production startup, runtime, or release behavior is weakened."],
+          "evidence": ["Repeated full-build transcripts", "WPF host isolation regression", "CI evaluation-gate run link"]
         }
       ]
     }
