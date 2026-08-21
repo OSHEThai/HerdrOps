@@ -266,8 +266,7 @@ try {
         -CoreExecutable $coreExecutable `
         -StateDatabasePath $stateDatabasePath `
         -ReviewTracePath $reviewTracePath `
-        -IncidentId $incidentId `
-        -EvidenceDirectory $evidenceDirectory
+        -IncidentId $incidentId
 
     $waitMilliseconds = ($DurationSeconds + 20) * 1000
     if (-not $stateProcess.WaitForExit($waitMilliseconds)) {

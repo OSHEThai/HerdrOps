@@ -4,7 +4,6 @@ param()
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-$repositoryRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
 $helperPath = Join-Path $PSScriptRoot 'lib\V05ComplianceRuntimeTraceOrchestration.ps1'
 $harnessPath = Join-Path $PSScriptRoot 'Invoke-V05ComplianceRuntimeAcceptance.ps1'
 
@@ -32,6 +31,28 @@ function Assert-Test {
     Write-Output "PASS: $Name"
 }
 
+function New-RunnerResult {
+    param(
+        [int]$ExitCode = 0,
+        [bool]$TimedOut = $false,
+        [long]$StdoutByteCount = 0,
+        [long]$StderrByteCount = 0,
+        [bool]$StdoutExceeded = $false,
+        [bool]$StderrExceeded = $false,
+        [string]$UntrustedOutput = ''
+    )
+
+    [pscustomobject]@{
+        ExitCode = $ExitCode
+        TimedOut = $TimedOut
+        StdoutByteCount = $StdoutByteCount
+        StderrByteCount = $StderrByteCount
+        StdoutExceeded = $StdoutExceeded
+        StderrExceeded = $StderrExceeded
+        UntrustedOutput = $UntrustedOutput
+    }
+}
+
 $harnessSource = Get-Content -LiteralPath $harnessPath -Raw
 $producerCallMatches = [regex]::Matches(
     $harnessSource,
@@ -55,6 +76,7 @@ Assert-Test -Name 'production order is PM confirmation then producer then state 
 
 $scratchRoot = Join-Path ([IO.Path]::GetTempPath()) ("herdrops-v05-trace-orchestration-" + [Guid]::NewGuid().ToString('N'))
 [IO.Directory]::CreateDirectory($scratchRoot) | Out-Null
+$sensitiveToken = 'ghp_issue28_DO_NOT_DISCLOSE_0123456789'
 
 try {
     $successDirectory = Join-Path $scratchRoot 'success'
@@ -67,22 +89,21 @@ try {
         '--report', $successTrace,
         '--incident', 'INC-ORDER')
     $events = New-Object System.Collections.Generic.List[string]
-    $observedArguments = $null
+    $script:observedArguments = $null
     [void]$events.Add('pm-confirmation')
 
     $successRunner = {
-        param($Executable, $Arguments, $StandardErrorPath)
+        param($Executable, $Arguments, $MaximumBytesPerStream, $TimeoutMilliseconds)
         [void]$events.Add('trace-producer')
         $script:observedArguments = @($Arguments)
-        [IO.File]::WriteAllText($successTrace, "{}`n", [Text.UTF8Encoding]::new($false))
-        [pscustomobject]@{ ExitCode = 0; Output = @('trace-produced') }
+        [IO.File]::WriteAllText($successTrace, "{}`n", (New-Object Text.UTF8Encoding($false)))
+        New-RunnerResult
     }
     $successResult = Invoke-V05ComplianceReviewTraceProducer `
         -CoreExecutable 'fake-core.exe' `
         -StateDatabasePath $successDatabase `
         -ReviewTracePath $successTrace `
         -IncidentId 'INC-ORDER' `
-        -EvidenceDirectory $successDirectory `
         -CommandRunner $successRunner
     [void]$events.Add('state-service-completion')
     [void]$events.Add('composite')
@@ -106,51 +127,124 @@ try {
     $nonzeroDirectory = Join-Path $scratchRoot 'nonzero'
     [IO.Directory]::CreateDirectory($nonzeroDirectory) | Out-Null
     $nonzeroCompositeInvoked = $false
-    $nonzeroThrew = $false
+    $nonzeroMessage = ''
     try {
         Invoke-V05ComplianceReviewTraceProducer `
             -CoreExecutable 'fake-core.exe' `
             -StateDatabasePath (Join-Path $nonzeroDirectory 'state.db') `
             -ReviewTracePath (Join-Path $nonzeroDirectory 'trace.json') `
             -IncidentId 'INC-NONZERO' `
-            -EvidenceDirectory $nonzeroDirectory `
             -CommandRunner {
-                param($Executable, $Arguments, $StandardErrorPath)
-                [IO.File]::WriteAllText($StandardErrorPath, 'producer rejected input', [Text.UTF8Encoding]::new($false))
-                [pscustomobject]@{ ExitCode = 23; Output = @() }
+                param($Executable, $Arguments, $MaximumBytesPerStream, $TimeoutMilliseconds)
+                New-RunnerResult -ExitCode 23 -StderrByteCount 41 -UntrustedOutput $sensitiveToken
             } | Out-Null
         $nonzeroCompositeInvoked = $true
     }
     catch {
-        $nonzeroThrew = $_.Exception.Message -match 'exit 23' -and
-            $_.Exception.Message -match 'producer rejected input'
+        $nonzeroMessage = $_.Exception.Message
     }
-    Assert-Test -Name 'producer nonzero fails closed before composite' -Condition (
-        $nonzeroThrew -and -not $nonzeroCompositeInvoked)
+    Assert-Test -Name 'producer nonzero is redacted and suppresses composite' -Condition (
+        $nonzeroMessage -match 'exit 23' -and
+        $nonzeroMessage -match 'No process output was retained' -and
+        $nonzeroMessage -notmatch [regex]::Escape($sensitiveToken) -and
+        -not $nonzeroCompositeInvoked)
 
     $missingDirectory = Join-Path $scratchRoot 'missing'
     [IO.Directory]::CreateDirectory($missingDirectory) | Out-Null
     $missingTracePath = Join-Path $missingDirectory 'trace.json'
     $missingCompositeInvoked = $false
-    $missingThrew = $false
+    $missingMessage = ''
     try {
         Invoke-V05ComplianceReviewTraceProducer `
             -CoreExecutable 'fake-core.exe' `
             -StateDatabasePath (Join-Path $missingDirectory 'state.db') `
             -ReviewTracePath $missingTracePath `
             -IncidentId 'INC-MISSING' `
-            -EvidenceDirectory $missingDirectory `
-            -CommandRunner {
-                param($Executable, $Arguments, $StandardErrorPath)
-                [pscustomobject]@{ ExitCode = 0; Output = @('no file written') }
-            } | Out-Null
+            -CommandRunner { New-RunnerResult } | Out-Null
         $missingCompositeInvoked = $true
     }
     catch {
-        $missingThrew = $_.Exception.Message -ceq "Compliance review trace is missing: $missingTracePath"
+        $missingMessage = $_.Exception.Message
     }
     Assert-Test -Name 'producer success without trace fails closed before composite' -Condition (
-        $missingThrew -and -not $missingCompositeInvoked)
+        $missingMessage -ceq "Compliance review trace is missing: $missingTracePath" -and
+        -not $missingCompositeInvoked)
+
+    $childScript = Join-Path $scratchRoot 'emit-hostile-output.ps1'
+    [IO.File]::WriteAllText(
+        $childScript,
+        @'
+param([string]$Stream, [string]$Token)
+$payload = $Token + ('X' * 8192)
+if ($Stream -ceq 'stdout') {
+    [Console]::Out.Write($payload)
+}
+else {
+    [Console]::Error.Write($payload)
+}
+exit 29
+'@,
+        (New-Object Text.UTF8Encoding($false)))
+    $hostExecutable = (Get-Process -Id $PID).Path
+
+    $nativeStdout = Invoke-V05BoundedProcess `
+        -FilePath $hostExecutable `
+        -ArgumentList @('-NoLogo', '-NoProfile', '-File', $childScript, 'stdout', $sensitiveToken) `
+        -MaximumBytesPerStream 1024 `
+        -TimeoutMilliseconds 30000
+    Assert-Test -Name 'native oversized stdout is drained without retaining content' -Condition (
+        $nativeStdout.ExitCode -eq 29 -and
+        $nativeStdout.StdoutExceeded -and
+        $nativeStdout.StdoutByteCount -gt 1024 -and
+        $nativeStdout.PSObject.Properties.Name -notcontains 'Stdout' -and
+        $nativeStdout.PSObject.Properties.Name -notcontains 'Output')
+
+    $nativeStderr = Invoke-V05BoundedProcess `
+        -FilePath $hostExecutable `
+        -ArgumentList @('-NoLogo', '-NoProfile', '-File', $childScript, 'stderr', $sensitiveToken) `
+        -MaximumBytesPerStream 1024 `
+        -TimeoutMilliseconds 30000
+    Assert-Test -Name 'native oversized stderr is drained without retaining content' -Condition (
+        $nativeStderr.ExitCode -eq 29 -and
+        $nativeStderr.StderrExceeded -and
+        $nativeStderr.StderrByteCount -gt 1024 -and
+        $nativeStderr.PSObject.Properties.Name -notcontains 'Stderr' -and
+        $nativeStderr.PSObject.Properties.Name -notcontains 'Error')
+
+    foreach ($streamName in @('stdout', 'stderr')) {
+        $oversizedDirectory = Join-Path $scratchRoot ("oversized-" + $streamName)
+        [IO.Directory]::CreateDirectory($oversizedDirectory) | Out-Null
+        $oversizedCompositeInvoked = $false
+        $oversizedMessage = ''
+        $isStdout = $streamName -ceq 'stdout'
+        $oversizedRunner = {
+            param($Executable, $Arguments, $MaximumBytesPerStream, $TimeoutMilliseconds)
+            if ($isStdout) {
+                New-RunnerResult -ExitCode 29 -StdoutByteCount 8192 -StdoutExceeded $true -UntrustedOutput $sensitiveToken
+            }
+            else {
+                New-RunnerResult -ExitCode 29 -StderrByteCount 8192 -StderrExceeded $true -UntrustedOutput $sensitiveToken
+            }
+        }
+        try {
+            Invoke-V05ComplianceReviewTraceProducer `
+                -CoreExecutable 'fake-core.exe' `
+                -StateDatabasePath (Join-Path $oversizedDirectory 'state.db') `
+                -ReviewTracePath (Join-Path $oversizedDirectory 'trace.json') `
+                -IncidentId ("INC-OVERSIZED-" + $streamName.ToUpperInvariant()) `
+                -MaximumBytesPerStream 1024 `
+                -CommandRunner $oversizedRunner | Out-Null
+            $oversizedCompositeInvoked = $true
+        }
+        catch {
+            $oversizedMessage = $_.Exception.Message
+        }
+        Assert-Test -Name ("oversized {0} is redacted and suppresses composite" -f $streamName) -Condition (
+            $oversizedMessage -match 'output exceeded' -and
+            $oversizedMessage -match 'No process output was retained' -and
+            $oversizedMessage -notmatch [regex]::Escape($sensitiveToken) -and
+            -not $oversizedCompositeInvoked)
+    }
 }
 finally {
     if (Test-Path -LiteralPath $scratchRoot) {
@@ -161,4 +255,4 @@ finally {
 Write-Output 'EvidenceClass: Static plus deterministic Synthetic orchestration selftest'
 Write-Output 'ActualHerdrRuntime: NOT OBSERVED / NOT CLAIMED'
 Write-Output 'Release: NOT OBSERVED / NOT CLAIMED'
-Write-Output 'v0.5 Issue #28 compliance runtime trace orchestration selftest passed: 6/6 checks.'
+Write-Output 'v0.5 Issue #28 compliance runtime trace orchestration selftest passed: 10/10 checks.'
