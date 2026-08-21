@@ -304,6 +304,7 @@ public partial class App : Application
                 new ShutdownCleanupAction("widgets", DisposeWidgets),
                 new ShutdownCleanupAction("runtime", DisposeRuntime),
                 new ShutdownCleanupAction("review-commands", ClearReviewCommands),
+                new ShutdownCleanupAction("theme-service", () => HerdrOps.App.Themes.UiThemeService.Shared.Dispose()),
                 new ShutdownCleanupAction("single-instance", ReleaseInstanceGate),
                 new ShutdownCleanupAction("application-base", () => base.OnExit(e)),
             ]);
@@ -336,6 +337,11 @@ public partial class App : Application
                 language =>
                 {
                     lifecycle.SelectLanguage(language);
+                },
+                theme =>
+                {
+                    lifecycle.SelectTheme(theme);
+                    _tray?.Refresh();
                 },
                 Shutdown,
                 UiLanguageService.Shared,
@@ -421,6 +427,7 @@ public partial class App : Application
     {
         UiLanguageService.Shared.SetLanguage(
             AppSettingsLifecycleMapping.ToUiLanguage(settings.Language));
+        HerdrOps.App.Themes.UiThemeService.Shared.SetTheme(settings.Theme);
         _widgetLauncher?.ApplySettings(settings);
     }
 

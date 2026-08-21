@@ -34,14 +34,17 @@ public sealed class AppLifecycleIntegrationTests
 
         var original = lifecycle.Snapshot;
         lifecycle.SelectLanguage(AppSettingsLanguage.Thai);
+        lifecycle.SelectTheme(AppSettingsTheme.Dark);
         lifecycle.SelectWidget(AppSettingsWidgetVariant.Compact);
         lifecycle.SetWidgetEnabled(false);
 
         Assert.AreEqual(AppSettingsLanguage.Thai, lifecycle.Settings.Language);
+        Assert.AreEqual(AppSettingsTheme.Dark, lifecycle.Settings.Theme);
         Assert.AreEqual(AppSettingsWidgetVariant.Compact, lifecycle.Settings.WidgetVariant);
         Assert.IsFalse(lifecycle.Settings.WidgetEnabled);
         Assert.IsGreaterThan(1, store.SaveCount);
         Assert.AreEqual(AppSettingsLanguage.Thai, applied[^1].Language);
+        Assert.AreEqual(AppSettingsTheme.Dark, applied[^1].Theme);
         Assert.AreEqual(AppSettingsWidgetVariant.Compact, applied[^1].WidgetVariant);
         Assert.IsFalse(applied[^1].WidgetEnabled);
 

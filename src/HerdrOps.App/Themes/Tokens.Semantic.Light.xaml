@@ -1,0 +1,84 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <!-- Semantic surface and text roles (LIGHT THEME). -->
+    <SolidColorBrush x:Key="HerdrOps.Brush.Background"
+                     Color="{StaticResource HerdrOps.Color.White.100}" />
+    <SolidColorBrush x:Key="HerdrOps.Brush.TopBar"
+                     Color="#FFF0F0F0" /> <!-- Visual/human tuning is pending -->
+    <SolidColorBrush x:Key="HerdrOps.Brush.Sidebar"
+                     Color="#FFE5E5E5" />
+    <SolidColorBrush x:Key="HerdrOps.Brush.Surface"
+                     Color="#FFFFFFFF" />
+    <SolidColorBrush x:Key="HerdrOps.Brush.SurfaceRaised"
+                     Color="#FFFDFDFD" />
+    <SolidColorBrush x:Key="HerdrOps.Brush.SurfaceHover"
+                     Color="#FFF0F0F0" />
+    <SolidColorBrush x:Key="HerdrOps.Brush.Border"
+                     Color="{StaticResource HerdrOps.Color.Slate.300}" />
+    <SolidColorBrush x:Key="HerdrOps.Brush.BorderStrong"
+                     Color="{StaticResource HerdrOps.Color.Slate.400}" />
+    <SolidColorBrush x:Key="HerdrOps.Brush.Primary"
+                     Color="{StaticResource HerdrOps.Color.Blue.500}" />
+    <SolidColorBrush x:Key="HerdrOps.Brush.PrimaryText"
+                     Color="{StaticResource HerdrOps.Color.Blue.900}" />
+    <SolidColorBrush x:Key="HerdrOps.Brush.PrimarySubtle"
+                     Color="{StaticResource HerdrOps.Color.Blue.400}" />
+    <SolidColorBrush x:Key="HerdrOps.Brush.TextPrimary"
+                     Color="{StaticResource HerdrOps.Color.Navy.1000}" />
+    <SolidColorBrush x:Key="HerdrOps.Brush.TextSecondary"
+                     Color="{StaticResource HerdrOps.Color.Slate.700}" />
+    <SolidColorBrush x:Key="HerdrOps.Brush.TextMuted"
+                     Color="{StaticResource HerdrOps.Color.Slate.600}" />
+
+    <!-- Workflow state semantics remain separate from severity semantics. -->
+    <SolidColorBrush x:Key="HerdrOps.Brush.Status.Working"
+                     Color="{StaticResource HerdrOps.Color.Green.500}" />
+    <SolidColorBrush x:Key="HerdrOps.Brush.Status.Idle"
+                     Color="{StaticResource HerdrOps.Color.Amber.500}" />
+    <SolidColorBrush x:Key="HerdrOps.Brush.Status.Blocked"
+                     Color="{StaticResource HerdrOps.Color.Coral.500}" />
+    <SolidColorBrush x:Key="HerdrOps.Brush.Status.Review"
+                     Color="{StaticResource HerdrOps.Color.Purple.500}" />
+    <SolidColorBrush x:Key="HerdrOps.Brush.Status.Done"
+                     Color="{StaticResource HerdrOps.Color.Blue.500}" />
+    <SolidColorBrush x:Key="HerdrOps.Brush.Status.Offline"
+                     Color="{StaticResource HerdrOps.Color.Slate.500}" />
+
+    <!-- Compliance severity semantics are intentionally separate from workflow status. -->
+    <SolidColorBrush x:Key="HerdrOps.Brush.Severity.Critical"
+                     Color="{StaticResource HerdrOps.Color.Coral.500}" />
+    <SolidColorBrush x:Key="HerdrOps.Brush.Severity.High"
+                     Color="{StaticResource HerdrOps.Color.Coral.500}" />
+    <SolidColorBrush x:Key="HerdrOps.Brush.Severity.Medium"
+                     Color="{StaticResource HerdrOps.Color.Amber.500}" />
+    <SolidColorBrush x:Key="HerdrOps.Brush.Severity.Low"
+                     Color="{StaticResource HerdrOps.Color.Blue.500}" />
+
+    <!-- Compliance review-state semantics are intentionally separate from workflow status. -->
+    <SolidColorBrush x:Key="HerdrOps.Brush.Review.Suspected"
+                     Color="{StaticResource HerdrOps.Color.Coral.500}" />
+    <SolidColorBrush x:Key="HerdrOps.Brush.Review.Confirmed"
+                     Color="{StaticResource HerdrOps.Color.Coral.500}" />
+    <SolidColorBrush x:Key="HerdrOps.Brush.Review.PendingLeader"
+                     Color="{StaticResource HerdrOps.Color.Amber.500}" />
+    <SolidColorBrush x:Key="HerdrOps.Brush.Review.PendingProjectManager"
+                     Color="{StaticResource HerdrOps.Color.Purple.500}" />
+    <SolidColorBrush x:Key="HerdrOps.Brush.Review.Dismissed"
+                     Color="{StaticResource HerdrOps.Color.Slate.500}" />
+    <SolidColorBrush x:Key="HerdrOps.Brush.Review.MissingEvidence"
+                     Color="{StaticResource HerdrOps.Color.Coral.500}" />
+
+    <!-- Chart categories deliberately use separate semantic names from workflow state. -->
+    <SolidColorBrush x:Key="HerdrOps.Brush.Chart.Primary"
+                     Color="{StaticResource HerdrOps.Color.Blue.500}" />
+    <SolidColorBrush x:Key="HerdrOps.Brush.Chart.Working"
+                     Color="{StaticResource HerdrOps.Color.Green.500}" />
+    <SolidColorBrush x:Key="HerdrOps.Brush.Chart.Idle"
+                     Color="{StaticResource HerdrOps.Color.Amber.500}" />
+    <SolidColorBrush x:Key="HerdrOps.Brush.Chart.Blocked"
+                     Color="{StaticResource HerdrOps.Color.Coral.500}" />
+    <SolidColorBrush x:Key="HerdrOps.Brush.Chart.Review"
+                     Color="{StaticResource HerdrOps.Color.Purple.500}" />
+    <SolidColorBrush x:Key="HerdrOps.Brush.Chart.Done"
+                     Color="{StaticResource HerdrOps.Color.Blue.400}" />
+</ResourceDictionary>

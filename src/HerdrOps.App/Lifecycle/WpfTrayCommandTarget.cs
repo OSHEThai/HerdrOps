@@ -16,6 +16,7 @@ public sealed class WpfTrayCommandTarget : ITrayCommandTarget, IStartAtLogonTray
     private readonly IWidgetWindowLauncher _widgetLauncher;
     private readonly Func<AppSettings> _settingsProvider;
     private readonly Action<AppSettingsLanguage> _languageSelected;
+    private readonly Action<AppSettingsTheme> _themeSelected;
     private readonly Action _exit;
     private readonly Action _startAtLogonToggled;
     private readonly Action _widgetToggled;
@@ -27,6 +28,7 @@ public sealed class WpfTrayCommandTarget : ITrayCommandTarget, IStartAtLogonTray
         IWidgetWindowLauncher widgetLauncher,
         Func<AppSettings> settingsProvider,
         Action<AppSettingsLanguage> languageSelected,
+        Action<AppSettingsTheme> themeSelected,
         Action exit,
         UiLanguageService? languageService = null,
         Action? startAtLogonToggled = null,
@@ -38,6 +40,7 @@ public sealed class WpfTrayCommandTarget : ITrayCommandTarget, IStartAtLogonTray
         _widgetLauncher = widgetLauncher ?? throw new ArgumentNullException(nameof(widgetLauncher));
         _settingsProvider = settingsProvider ?? throw new ArgumentNullException(nameof(settingsProvider));
         _languageSelected = languageSelected ?? throw new ArgumentNullException(nameof(languageSelected));
+        _themeSelected = themeSelected ?? throw new ArgumentNullException(nameof(themeSelected));
         _exit = exit ?? throw new ArgumentNullException(nameof(exit));
         _ = languageService;
         _startAtLogonToggled = startAtLogonToggled ??
@@ -92,6 +95,14 @@ public sealed class WpfTrayCommandTarget : ITrayCommandTarget, IStartAtLogonTray
         InvokeOnDashboard(() =>
         {
             _languageSelected(language);
+        });
+    }
+
+    public void SelectTheme(AppSettingsTheme theme)
+    {
+        InvokeOnDashboard(() =>
+        {
+            _themeSelected(theme);
         });
     }
 
