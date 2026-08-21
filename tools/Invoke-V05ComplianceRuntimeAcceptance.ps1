@@ -27,6 +27,12 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $false
 
+$traceOrchestrationPath = Join-Path $PSScriptRoot 'lib\V05ComplianceRuntimeTraceOrchestration.ps1'
+if (-not (Test-Path -LiteralPath $traceOrchestrationPath -PathType Leaf)) {
+    throw "Compliance runtime trace orchestration helper is missing: $traceOrchestrationPath"
+}
+. $traceOrchestrationPath
+
 function Get-CleanSourceCommit {
     param([Parameter(Mandatory)][string]$Root)
 
@@ -151,6 +157,19 @@ $stateProcess = $null
 $incidentId = "INC-V05-ACCEPTANCE-$runId"
 $taskId = "TASK-V05-$runId"
 
+$registrationInput = [ordered]@{
+    contractVersion = 1
+    commandId = [Guid]::NewGuid().ToString('D')
+    incidentId = $incidentId
+    taskId = $taskId
+    subjectActorId = $SubjectTerminalId
+    registeredUtc = ([DateTimeOffset]::UtcNow.ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ss.fffffffZ'))
+    evidenceIdentitySha256s = @($evidenceSha256)
+} | ConvertTo-Json -Depth 5
+$registrationInputPath = Join-Path $evidenceDirectory '0-register-incident.json'
+[IO.File]::WriteAllText($registrationInputPath, $registrationInput, [Text.UTF8Encoding]::new($false))
+$registrationErrorPath = Join-Path $evidenceDirectory '0-register.stderr.txt'
+
 try {
     $stateProcess = Start-Process `
         -FilePath $coreExecutable `
@@ -164,6 +183,44 @@ try {
         -OutputPath $stateOutputPath `
         -Pattern 'Core state service starting' `
         -ServiceName 'Core Herdr state service'
+
+    # Step 0: Register the compliance incident through the production registration
+    # path once the running service has ingested the runtime evidence identity.
+    # Registration requires the cited evidence to already exist in the store, so it
+    # is retried with a bounded window until the runtime evidence is available.
+    $registrationExit = 1
+    $registrationDeadline = [DateTime]::UtcNow.AddSeconds($DurationSeconds)
+    $registrationLines = $null
+    while ([DateTime]::UtcNow -lt $registrationDeadline) {
+        $registrationLines = @(& $coreExecutable `
+            'compliance-register-incident' `
+            '--database' $stateDatabasePath `
+            '--input' $registrationInputPath 2> $registrationErrorPath)
+        $registrationExit = $LASTEXITCODE
+        if ($registrationExit -eq 0) {
+            break
+        }
+
+        $registrationError = if (Test-Path -LiteralPath $registrationErrorPath) {
+            Get-Content -LiteralPath $registrationErrorPath -Raw
+        } else {
+            ''
+        }
+        if ($registrationError -notmatch 'does not exist') {
+            throw "Compliance incident registration failed with exit $registrationExit. $registrationError"
+        }
+
+        Start-Sleep -Milliseconds 250
+    }
+
+    if ($registrationExit -ne 0) {
+        throw "Compliance incident registration timed out waiting for runtime evidence '${evidenceSha256}' to be ingested."
+    }
+
+    $registrationResult = ($registrationLines -join "`n") | ConvertFrom-Json
+    if (-not $registrationResult.registered -or $registrationResult.incidentId -ne $incidentId) {
+        throw 'Compliance incident registration did not report a newly registered incident.'
+    }
 
     # Step 1: Attempt unauthorized / self-review action from Subject (Must Fail Closed)
     $selfReviewInput = [ordered]@{
@@ -255,6 +312,12 @@ try {
         $err = if (Test-Path -LiteralPath $confirmErrorPath) { Get-Content -LiteralPath $confirmErrorPath -Raw } else { '' }
         throw "PM Confirm failed with exit $confirmExit. $err"
     }
+
+    $reviewTraceResult = Invoke-V05ComplianceReviewTraceProducer `
+        -CoreExecutable $coreExecutable `
+        -StateDatabasePath $stateDatabasePath `
+        -ReviewTracePath $reviewTracePath `
+        -IncidentId $incidentId
 
     $waitMilliseconds = ($DurationSeconds + 20) * 1000
     if (-not $stateProcess.WaitForExit($waitMilliseconds)) {

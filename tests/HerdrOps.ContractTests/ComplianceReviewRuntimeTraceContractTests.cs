@@ -97,6 +97,9 @@ public sealed class ComplianceReviewRuntimeTraceContractTests
             SessionControlInvoked: false,
             RestartObserved: false,
             ReconnectObserved: false,
+            DurableReviewEnabled: true,
+            RetentionProtectedObserved: true,
+            RestartConsistencyObserved: true,
             DatabasePath: "C:\\data\\herdrops.db",
             DatabaseFileSha256: new string('1', 64),
             DatabaseFileSizeBytes: 123456,
@@ -131,5 +134,11 @@ public sealed class ComplianceReviewRuntimeTraceContractTests
         Assert.IsTrue(restored.RetentionObservations[0].IsProtectedFromPurge);
         Assert.AreEqual(1, restored.IncidentCount);
         Assert.AreEqual(1, restored.AuditEventCount);
+        Assert.IsTrue(restored.DurableReviewEnabled);
+        Assert.IsTrue(restored.RetentionProtectedObserved);
+        Assert.IsTrue(restored.RestartConsistencyObserved);
+        StringAssert.Contains(json, "\"durableReviewEnabled\"");
+        StringAssert.Contains(json, "\"retentionProtectedObserved\"");
+        StringAssert.Contains(json, "\"restartConsistencyObserved\"");
     }
 }

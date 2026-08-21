@@ -85,6 +85,54 @@ public static class HerdrOpsReviewCommandJson
         }
     }
 
+    public static HerdrOpsComplianceIncidentRegistrationInput DeserializeRegistrationInput(
+        ReadOnlySpan<byte> utf8Json)
+    {
+        if (utf8Json.IsEmpty)
+        {
+            throw new HerdrOpsReviewCommandProtocolException(
+                "The compliance incident registration CLI input is empty.");
+        }
+
+        try
+        {
+            var registration = JsonSerializer.Deserialize<HerdrOpsComplianceIncidentRegistrationInput>(
+                utf8Json,
+                SerializerOptions)
+                ?? throw new HerdrOpsReviewCommandProtocolException(
+                    "The compliance incident registration CLI input was null.");
+            if (registration.ContractVersion <= 0 ||
+                registration.CommandId == Guid.Empty ||
+                string.IsNullOrWhiteSpace(registration.IncidentId) ||
+                registration.IncidentId.Length > 128 ||
+                string.IsNullOrWhiteSpace(registration.TaskId) ||
+                registration.TaskId.Length > 128 ||
+                string.IsNullOrWhiteSpace(registration.SubjectActorId) ||
+                registration.SubjectActorId.Length > 128 ||
+                registration.RegisteredUtc.Offset != TimeSpan.Zero ||
+                registration.EvidenceIdentitySha256s is null ||
+                registration.EvidenceIdentitySha256s.Count > 256 ||
+                registration.EvidenceIdentitySha256s.Any(identity =>
+                    string.IsNullOrWhiteSpace(identity) || identity.Length != 64))
+            {
+                throw new HerdrOpsReviewCommandProtocolException(
+                    "The compliance incident registration CLI input failed its bounded contract.");
+            }
+
+            return registration;
+        }
+        catch (HerdrOpsReviewCommandProtocolException)
+        {
+            throw;
+        }
+        catch (JsonException exception)
+        {
+            throw new HerdrOpsReviewCommandProtocolException(
+                "The compliance incident registration CLI input is not valid strict JSON.",
+                exception);
+        }
+    }
+
     public static string Serialize<TValue>(TValue value)
     {
         ArgumentNullException.ThrowIfNull(value);

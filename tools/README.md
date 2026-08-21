@@ -163,6 +163,24 @@ $targetAgentLabSocket = Join-Path $env:APPDATA 'herdr\herdr.sock'
 # migration.
 ./tools/Test-V05RoleDistinctReview.ps1
 
+# Static/Synthetic orchestration only; does not invoke Herdr or claim
+# Runtime/Release evidence. Verifies that the Issue #28 runtime acceptance
+# harness produces the compliance review trace before the composite
+# acceptance and bounds/drains child-process output without retaining
+# oversized or sensitive content.
+./tools/Test-V05ComplianceRuntimeTraceOrchestration.ps1
+
+# From an authorized Herdr pane with three distinct role panes already running,
+# exercise the Issue #27/#28 role-distinct compliance review workflow
+# (self-review must fail closed, PM sends to Leader, Leader escalates to PM,
+# PM confirms) against the observed Herdr runtime and emit the composite
+# runtime acceptance report and runtime gate report.
+./tools/Invoke-V05ComplianceRuntimeAcceptance.ps1 `
+  -ProjectManagerTerminalId '<terminal-id>' `
+  -LeaderTerminalId '<terminal-id>' `
+  -SubjectTerminalId '<terminal-id>' `
+  -EvidencePath '<verified-evidence-file>'
+
 # From an authorized Herdr pane, capture actual bounded pane-read and
 # Herdr-PID-to-Windows-process evidence without controlling the session.
 dotnet artifacts/bin/HerdrOps.Core/release/HerdrOps.Core.dll trace-herdr-terminal-process `

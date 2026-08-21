@@ -88,6 +88,28 @@ public sealed record HerdrOpsReviewCliCommandInput(
     string Reason,
     IReadOnlyList<string> EvidenceIdentitySha256s);
 
+/// <summary>
+/// Strict, bounded production CLI/Core input for registering a compliance review incident.
+/// Carries only immutable registration data; no reviewer role, occurrence timestamp, or
+/// authority fields can be injected here.
+/// </summary>
+public sealed record HerdrOpsComplianceIncidentRegistrationInput(
+    int ContractVersion,
+    Guid CommandId,
+    string IncidentId,
+    string TaskId,
+    string SubjectActorId,
+    DateTimeOffset RegisteredUtc,
+    IReadOnlyList<string> EvidenceIdentitySha256s);
+
+public sealed record HerdrOpsComplianceIncidentRegistrationResult(
+    bool Registered,
+    bool WasAlreadyPresent,
+    string IncidentId,
+    string RegistrationSha256,
+    int State,
+    long Sequence);
+
 public sealed record HerdrOpsReviewCommandResult(
     bool IsAccepted,
     int RejectionCode,
