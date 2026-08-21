@@ -234,6 +234,74 @@ function Test-HumanAcceptanceReport {
     }
 }
 
+function Assert-SingleGateReportScalar {
+    param(
+        [Parameter(Mandatory)][string]$Text,
+        [Parameter(Mandatory)][string]$FieldName,
+        [Parameter(Mandatory)][string]$ExpectedPattern,
+        [Parameter(Mandatory)][string]$ReportPath
+    )
+
+    $matches = [Regex]::Matches($Text, "(?m)^$([Regex]::Escape($FieldName)):\s*(?<value>.*?)\s*$")
+    if ($matches.Count -ne 1) {
+        throw "The runtime gate report must contain exactly one '$FieldName' declaration (found $($matches.Count)): $ReportPath"
+    }
+
+    $value = $matches[0].Groups['value'].Value.Trim()
+    if ($value -notmatch "^$ExpectedPattern$") {
+        throw "The runtime gate report '$FieldName' declaration has invalid value '$value' (expected pattern '^$ExpectedPattern$'): $ReportPath"
+    }
+
+    return $value
+}
+
+function Assert-SingleEvidenceClassGateScalar {
+    param(
+        [Parameter(Mandatory)][string]$Text,
+        [Parameter(Mandatory)][string]$ReportPath
+    )
+
+    $matches = [Regex]::Matches($Text, '(?m)^(?:EvidenceClass|EvidenceClassification):\s*(?<value>.*?)\s*$')
+    if ($matches.Count -ne 1) {
+        throw "The runtime gate report must contain exactly one EvidenceClass/EvidenceClassification declaration (found $($matches.Count)): $ReportPath"
+    }
+
+    $value = $matches[0].Groups['value'].Value.Trim()
+    if ($value -ne 'Runtime') {
+        throw "The runtime gate report EvidenceClass declaration has invalid value '$value' (expected 'Runtime'): $ReportPath"
+    }
+
+    return $value
+}
+
+function Assert-JsonBooleanProperty {
+    param(
+        [Parameter(Mandatory)]$TargetObject,
+        [Parameter(Mandatory)][string]$PropertyName,
+        [Parameter(Mandatory)][bool]$ExpectedValue,
+        [Parameter(Mandatory)][string]$ContextPath
+    )
+
+    $property = $TargetObject.PSObject.Properties[$PropertyName]
+    if ($null -eq $property) {
+        throw "JSON object is missing required boolean property '$PropertyName': $ContextPath"
+    }
+
+    $val = $property.Value
+    if ($null -eq $val) {
+        throw "JSON property '$PropertyName' value is null (expected boolean $ExpectedValue): $ContextPath"
+    }
+
+    if ($val.GetType() -ne [bool]) {
+        $typeName = $val.GetType().FullName
+        throw "JSON property '$PropertyName' must be a CLR Boolean, but found '$typeName' with value '$val': $ContextPath"
+    }
+
+    if ([bool]$val -ne $ExpectedValue) {
+        throw "JSON property '$PropertyName' is $([bool]$val) (expected $ExpectedValue): $ContextPath"
+    }
+}
+
 function Resolve-CanonicalRuntimeReports {
     param(
         [Parameter(Mandatory)][string]$CompositeRuntimeReport,
@@ -259,23 +327,23 @@ function Resolve-CanonicalRuntimeReports {
 
     $runtimeGateText = Get-Content -LiteralPath $resolvedRuntimeGatePath -Raw
 
-    if ($runtimeGateText -notmatch '(?m)^Result:\s*PASS\s*$') {
-        throw "The runtime gate report does not have Result: PASS ($resolvedRuntimeGatePath)"
-    }
-    if ($runtimeGateText -notmatch "(?m)^SourceCommit:\s*$([Regex]::Escape($SourceCommit))\s*$") {
-        throw "The runtime gate report is not bound to source commit $SourceCommit ($resolvedRuntimeGatePath)"
-    }
-    if ($runtimeGateText -notmatch "(?m)^CompositeRuntimeReportSha256:\s*$([Regex]::Escape($compositeSha256))\s*$") {
-        throw "The runtime gate report composite SHA-256 does not match actual composite report: $compositeSha256"
-    }
+    [void](Assert-SingleGateReportScalar -Text $runtimeGateText -FieldName 'Result' -ExpectedPattern 'PASS' -ReportPath $resolvedRuntimeGatePath)
+    [void](Assert-SingleGateReportScalar -Text $runtimeGateText -FieldName 'SourceCommit' -ExpectedPattern ([Regex]::Escape($SourceCommit)) -ReportPath $resolvedRuntimeGatePath)
+    [void](Assert-SingleEvidenceClassGateScalar -Text $runtimeGateText -ReportPath $resolvedRuntimeGatePath)
+    [void](Assert-SingleGateReportScalar -Text $runtimeGateText -FieldName 'RuntimeObserved' -ExpectedPattern 'true' -ReportPath $resolvedRuntimeGatePath)
+    [void](Assert-SingleGateReportScalar -Text $runtimeGateText -FieldName 'SnapshotObserved' -ExpectedPattern 'true' -ReportPath $resolvedRuntimeGatePath)
+    [void](Assert-SingleGateReportScalar -Text $runtimeGateText -FieldName 'EventObserved' -ExpectedPattern 'true' -ReportPath $resolvedRuntimeGatePath)
+    [void](Assert-SingleGateReportScalar -Text $runtimeGateText -FieldName 'ReconnectObserved' -ExpectedPattern 'true' -ReportPath $resolvedRuntimeGatePath)
+    [void](Assert-SingleGateReportScalar -Text $runtimeGateText -FieldName 'SessionControlInvoked' -ExpectedPattern 'false' -ReportPath $resolvedRuntimeGatePath)
+    [void](Assert-SingleGateReportScalar -Text $runtimeGateText -FieldName 'CompositeRuntimeReportSha256' -ExpectedPattern ([Regex]::Escape($compositeSha256)) -ReportPath $resolvedRuntimeGatePath)
+    $declaredHerdrRuntimeSha256 = Assert-SingleGateReportScalar -Text $runtimeGateText -FieldName 'HerdrRuntimeReportSha256' -ExpectedPattern '[0-9a-fA-F]{64}' -ReportPath $resolvedRuntimeGatePath
 
-    if ($runtimeGateText -notmatch '(?m)^HerdrRuntimeReportSha256:\s*(?<sha256>[0-9a-fA-F]{64})\s*$') {
-        throw "The runtime gate report is missing valid HerdrRuntimeReportSha256: $resolvedRuntimeGatePath"
+    $declaredCompositeMatches = [Regex]::Matches($runtimeGateText, '(?m)^CompositeRuntimeReport:\s*(?<path>\S.*?)\s*$')
+    if ($declaredCompositeMatches.Count -gt 1) {
+        throw "The runtime gate report contains multiple CompositeRuntimeReport path declarations (found $($declaredCompositeMatches.Count)): $resolvedRuntimeGatePath"
     }
-    $declaredHerdrRuntimeSha256 = $Matches.sha256
-
-    $declaredCompositePathInGate = if ($runtimeGateText -match '(?m)^CompositeRuntimeReport:\s*(?<path>\S.*?)\s*$') {
-        $Matches.path.Trim()
+    $declaredCompositePathInGate = if ($declaredCompositeMatches.Count -eq 1) {
+        $declaredCompositeMatches[0].Groups['path'].Value.Trim()
     } else {
         $null
     }
@@ -286,19 +354,31 @@ function Resolve-CanonicalRuntimeReports {
         }
     }
 
-    $declaredHerdrPathInGate = if ($runtimeGateText -match '(?m)^HerdrRuntimeReport:\s*(?<path>\S.*?)\s*$') {
-        $Matches.path.Trim()
+    $declaredHerdrMatches = [Regex]::Matches($runtimeGateText, '(?m)^HerdrRuntimeReport:\s*(?<path>\S.*?)\s*$')
+    if ($declaredHerdrMatches.Count -gt 1) {
+        throw "The runtime gate report contains multiple HerdrRuntimeReport path declarations (found $($declaredHerdrMatches.Count)): $resolvedRuntimeGatePath"
+    }
+    $declaredHerdrPathInGate = if ($declaredHerdrMatches.Count -eq 1) {
+        $declaredHerdrMatches[0].Groups['path'].Value.Trim()
     } else {
         $null
     }
 
     $composite = Get-Content -LiteralPath $resolvedCompositePath -Raw | ConvertFrom-Json
-    if ($composite.EvidenceClassification -ne 'Runtime' -or
-        -not [bool]$composite.RuntimeAccepted -or
-        [bool]$composite.SessionControlInvoked -or
-        -not [bool]$composite.Acceptance.Passed) {
-        throw 'The supplied composite report is not passing role-distinct runtime evidence.'
+    if ($null -eq $composite) {
+        throw "Composite runtime report is empty: $resolvedCompositePath"
     }
+
+    $compClassificationProp = $composite.PSObject.Properties['EvidenceClassification']
+    if ($null -eq $compClassificationProp -or $null -eq $compClassificationProp.Value -or $compClassificationProp.Value.GetType() -ne [string] -or $compClassificationProp.Value -ne 'Runtime') {
+        throw 'The supplied composite report EvidenceClassification is not string Runtime.'
+    }
+    Assert-JsonBooleanProperty -TargetObject $composite -PropertyName 'RuntimeAccepted' -ExpectedValue $true -ContextPath $resolvedCompositePath
+    Assert-JsonBooleanProperty -TargetObject $composite -PropertyName 'SessionControlInvoked' -ExpectedValue $false -ContextPath $resolvedCompositePath
+    if ($null -eq $composite.PSObject.Properties['Acceptance'] -or $null -eq $composite.Acceptance) {
+        throw 'The supplied composite report is missing Acceptance object.'
+    }
+    Assert-JsonBooleanProperty -TargetObject $composite.Acceptance -PropertyName 'Passed' -ExpectedValue $true -ContextPath $resolvedCompositePath
 
     if ([string]::IsNullOrWhiteSpace($composite.HerdrRuntimeReportSha256) -or
         $composite.HerdrRuntimeReportSha256 -ne $declaredHerdrRuntimeSha256) {
@@ -355,6 +435,27 @@ function Resolve-CanonicalRuntimeReports {
         throw "Actual Herdr runtime report hash ($actualHerdrSha256) does not match composite report HerdrRuntimeReportSha256 ($($composite.HerdrRuntimeReportSha256))."
     }
 
+    $herdrJsonText = Get-Content -LiteralPath $canonicalHerdrPath -Raw
+    $herdrJson = $null
+    try {
+        $herdrJson = $herdrJsonText | ConvertFrom-Json
+    } catch {
+        throw "Failed to parse Herdr runtime report JSON ($canonicalHerdrPath): $($_.Exception.Message)"
+    }
+    if ($null -eq $herdrJson) {
+        throw "Herdr runtime report JSON payload is empty: $canonicalHerdrPath"
+    }
+
+    $herdrClassificationProp = $herdrJson.PSObject.Properties['EvidenceClassification']
+    if ($null -eq $herdrClassificationProp -or $null -eq $herdrClassificationProp.Value -or $herdrClassificationProp.Value.GetType() -ne [string] -or $herdrClassificationProp.Value -ne 'Runtime') {
+        throw "Herdr runtime report EvidenceClassification must be string 'Runtime': $canonicalHerdrPath"
+    }
+    Assert-JsonBooleanProperty -TargetObject $herdrJson -PropertyName 'RuntimeObserved' -ExpectedValue $true -ContextPath $canonicalHerdrPath
+    Assert-JsonBooleanProperty -TargetObject $herdrJson -PropertyName 'SessionControlInvoked' -ExpectedValue $false -ContextPath $canonicalHerdrPath
+    Assert-JsonBooleanProperty -TargetObject $herdrJson -PropertyName 'SnapshotObserved' -ExpectedValue $true -ContextPath $canonicalHerdrPath
+    Assert-JsonBooleanProperty -TargetObject $herdrJson -PropertyName 'EventObserved' -ExpectedValue $true -ContextPath $canonicalHerdrPath
+    Assert-JsonBooleanProperty -TargetObject $herdrJson -PropertyName 'ReconnectObserved' -ExpectedValue $true -ContextPath $canonicalHerdrPath
+
     return [pscustomobject]@{
         CompositePath = $resolvedCompositePath
         CompositeSha256 = $compositeSha256
@@ -363,6 +464,7 @@ function Resolve-CanonicalRuntimeReports {
         HerdrRuntimePath = $canonicalHerdrPath
         HerdrRuntimeSha256 = $actualHerdrSha256
         CompositeData = $composite
+        HerdrRuntimeData = $herdrJson
     }
 }
 
@@ -514,9 +616,45 @@ function Invoke-V05ReleaseGateSelfTests {
             throw "SelfTest Failed: Test-HumanAcceptanceReport returned incorrect parsed metadata."
         }
 
+        # Helper to construct valid Herdr runtime JSON payload
+        $makeValidHerdrPayload = {
+            return [ordered]@{
+                EvidenceClassification = 'Runtime'
+                RuntimeObserved        = $true
+                SessionControlInvoked  = $false
+                SnapshotObserved       = $true
+                EventObserved          = $true
+                ReconnectObserved      = $true
+                StartedUtc             = '2026-08-20T12:00:00.0000000Z'
+                FinishedUtc            = '2026-08-20T12:05:00.0000000Z'
+                Message                = 'Valid canonical Herdr runtime trace'
+            }
+        }
+
+        # Helper to construct valid runtime gate report text
+        $makeValidGateContent = {
+            param($commit, $compHash, $herdrHash, $compFile, $herdrFile)
+            return @"
+HerdrOps v0.5 Issue #28 Compliance Privacy, Retention, and Runtime Acceptance
+Result: PASS
+EvidenceClass: Runtime
+RuntimeObserved: true
+SnapshotObserved: true
+EventObserved: true
+ReconnectObserved: true
+SessionControlInvoked: false
+SourceCommit: $commit
+CompositeRuntimeReportSha256: $compHash
+HerdrRuntimeReportSha256: $herdrHash
+CompositeRuntimeReport: $compFile
+HerdrRuntimeReport: $herdrFile
+"@
+        }
+
         # Test 17: Canonical Runtime Report matching & mismatch rejection
         $herdrRuntimeFile = Join-Path $tempDir 'herdr-runtime.json'
-        [IO.File]::WriteAllText($herdrRuntimeFile, '{"runtime":true,"id":"herdr"}', [Text.UTF8Encoding]::new($false))
+        $herdrValidObj = & $makeValidHerdrPayload
+        [IO.File]::WriteAllText($herdrRuntimeFile, ($herdrValidObj | ConvertTo-Json -Depth 5), [Text.UTF8Encoding]::new($false))
         $herdrHash = (Get-FileHash -LiteralPath $herdrRuntimeFile -Algorithm SHA256).Hash
 
         $compositeFile = Join-Path $tempDir 'composite-acceptance.json'
@@ -534,15 +672,7 @@ function Invoke-V05ReleaseGateSelfTests {
         $compHash = (Get-FileHash -LiteralPath $compositeFile -Algorithm SHA256).Hash
 
         $gateReportFile = Join-Path $tempDir 'runtime-gate-report.txt'
-        $gateReportContent = @"
-HerdrOps v0.5 Issue #28 Compliance Privacy, Retention, and Runtime Acceptance
-Result: PASS
-SourceCommit: $dummyCommit
-CompositeRuntimeReportSha256: $compHash
-HerdrRuntimeReportSha256: $herdrHash
-CompositeRuntimeReport: $compositeFile
-HerdrRuntimeReport: $herdrRuntimeFile
-"@
+        $gateReportContent = & $makeValidGateContent $dummyCommit $compHash $herdrHash $compositeFile $herdrRuntimeFile
         [IO.File]::WriteAllText($gateReportFile, $gateReportContent, [Text.UTF8Encoding]::new($false))
 
         # Successful resolution
@@ -551,13 +681,13 @@ HerdrRuntimeReport: $herdrRuntimeFile
             -RuntimeGateReport $gateReportFile `
             -RepositoryRoot $RepositoryRoot `
             -SourceCommit $dummyCommit
-        if ($resolved.HerdrRuntimePath -ne $herdrRuntimeFile) {
-            throw "SelfTest Failed: Resolve-CanonicalRuntimeReports did not resolve canonical Herdr runtime path."
+        if ($resolved.HerdrRuntimePath -ne $herdrRuntimeFile -or -not [bool]$resolved.HerdrRuntimeData.EventObserved -or -not [bool]$resolved.HerdrRuntimeData.ReconnectObserved) {
+            throw "SelfTest Failed: Resolve-CanonicalRuntimeReports did not resolve canonical Herdr runtime path and data."
         }
 
         # Path mismatch rejection
         $otherHerdr = Join-Path $tempDir 'other-herdr.json'
-        [IO.File]::WriteAllText($otherHerdr, '{"runtime":true,"id":"herdr"}', [Text.UTF8Encoding]::new($false))
+        [IO.File]::WriteAllText($otherHerdr, ($herdrValidObj | ConvertTo-Json -Depth 5), [Text.UTF8Encoding]::new($false))
         $threw = $false
         try {
             Resolve-CanonicalRuntimeReports `
@@ -573,15 +703,7 @@ HerdrRuntimeReport: $herdrRuntimeFile
 
         # Hash mismatch rejection
         $badHashGate = Join-Path $tempDir 'gate-bad-hash.txt'
-        $badHashContent = @"
-HerdrOps v0.5 Issue #28 Compliance Privacy, Retention, and Runtime Acceptance
-Result: PASS
-SourceCommit: $dummyCommit
-CompositeRuntimeReportSha256: $compHash
-HerdrRuntimeReportSha256: 0000000000000000000000000000000000000000000000000000000000000000
-CompositeRuntimeReport: $compositeFile
-HerdrRuntimeReport: $herdrRuntimeFile
-"@
+        $badHashContent = & $makeValidGateContent $dummyCommit $compHash '0000000000000000000000000000000000000000000000000000000000000000' $compositeFile $herdrRuntimeFile
         [IO.File]::WriteAllText($badHashGate, $badHashContent, [Text.UTF8Encoding]::new($false))
         $threw = $false
         try {
@@ -595,7 +717,336 @@ HerdrRuntimeReport: $herdrRuntimeFile
         }
         if (-not $threw) { throw "SelfTest Failed: Resolve-CanonicalRuntimeReports accepted mismatched HerdrRuntimeReportSha256." }
 
-        Write-Host "All Test-V05ReleaseGate self-tests PASSED (24/24 assertions verified)." -ForegroundColor Green
+        # Test 18: Reject runtime gate report missing EventObserved: true
+        $gateNoEvent = Join-Path $tempDir 'gate-no-event.txt'
+        $gateNoEventText = @"
+Result: PASS
+EvidenceClass: Runtime
+RuntimeObserved: true
+SnapshotObserved: true
+ReconnectObserved: true
+SessionControlInvoked: false
+SourceCommit: $dummyCommit
+CompositeRuntimeReportSha256: $compHash
+HerdrRuntimeReportSha256: $herdrHash
+CompositeRuntimeReport: $compositeFile
+HerdrRuntimeReport: $herdrRuntimeFile
+"@
+        [IO.File]::WriteAllText($gateNoEvent, $gateNoEventText, [Text.UTF8Encoding]::new($false))
+        $threw = $false
+        try {
+            Resolve-CanonicalRuntimeReports `
+                -CompositeRuntimeReport $compositeFile `
+                -RuntimeGateReport $gateNoEvent `
+                -RepositoryRoot $RepositoryRoot `
+                -SourceCommit $dummyCommit
+        } catch {
+            $threw = $true
+        }
+        if (-not $threw) { throw "SelfTest Failed: Resolve-CanonicalRuntimeReports accepted gate report missing EventObserved: true." }
+
+        # Test 19: Reject runtime gate report missing ReconnectObserved: true
+        $gateNoReconnect = Join-Path $tempDir 'gate-no-reconnect.txt'
+        $gateNoReconnectText = @"
+Result: PASS
+EvidenceClass: Runtime
+RuntimeObserved: true
+SnapshotObserved: true
+EventObserved: true
+SessionControlInvoked: false
+SourceCommit: $dummyCommit
+CompositeRuntimeReportSha256: $compHash
+HerdrRuntimeReportSha256: $herdrHash
+CompositeRuntimeReport: $compositeFile
+HerdrRuntimeReport: $herdrRuntimeFile
+"@
+        [IO.File]::WriteAllText($gateNoReconnect, $gateNoReconnectText, [Text.UTF8Encoding]::new($false))
+        $threw = $false
+        try {
+            Resolve-CanonicalRuntimeReports `
+                -CompositeRuntimeReport $compositeFile `
+                -RuntimeGateReport $gateNoReconnect `
+                -RepositoryRoot $RepositoryRoot `
+                -SourceCommit $dummyCommit
+        } catch {
+            $threw = $true
+        }
+        if (-not $threw) { throw "SelfTest Failed: Resolve-CanonicalRuntimeReports accepted gate report missing ReconnectObserved: true." }
+
+        # Test 20: Reject runtime gate report with duplicate conflicting EventObserved lines (true + false)
+        $gateDupConflictEvent = Join-Path $tempDir 'gate-dup-conflict-event.txt'
+        $gateDupConflictEventText = @"
+Result: PASS
+EvidenceClass: Runtime
+RuntimeObserved: true
+SnapshotObserved: true
+EventObserved: false
+EventObserved: true
+ReconnectObserved: true
+SessionControlInvoked: false
+SourceCommit: $dummyCommit
+CompositeRuntimeReportSha256: $compHash
+HerdrRuntimeReportSha256: $herdrHash
+CompositeRuntimeReport: $compositeFile
+HerdrRuntimeReport: $herdrRuntimeFile
+"@
+        [IO.File]::WriteAllText($gateDupConflictEvent, $gateDupConflictEventText, [Text.UTF8Encoding]::new($false))
+        $threw = $false
+        try {
+            Resolve-CanonicalRuntimeReports `
+                -CompositeRuntimeReport $compositeFile `
+                -RuntimeGateReport $gateDupConflictEvent `
+                -RepositoryRoot $RepositoryRoot `
+                -SourceCommit $dummyCommit
+        } catch {
+            $threw = $true
+        }
+        if (-not $threw) { throw "SelfTest Failed: Resolve-CanonicalRuntimeReports accepted gate report with duplicate conflicting EventObserved lines." }
+
+        # Test 21: Reject runtime gate report with duplicate matching EventObserved lines (true + true)
+        $gateDupTrueEvent = Join-Path $tempDir 'gate-dup-true-event.txt'
+        $gateDupTrueEventText = @"
+Result: PASS
+EvidenceClass: Runtime
+RuntimeObserved: true
+SnapshotObserved: true
+EventObserved: true
+EventObserved: true
+ReconnectObserved: true
+SessionControlInvoked: false
+SourceCommit: $dummyCommit
+CompositeRuntimeReportSha256: $compHash
+HerdrRuntimeReportSha256: $herdrHash
+CompositeRuntimeReport: $compositeFile
+HerdrRuntimeReport: $herdrRuntimeFile
+"@
+        [IO.File]::WriteAllText($gateDupTrueEvent, $gateDupTrueEventText, [Text.UTF8Encoding]::new($false))
+        $threw = $false
+        try {
+            Resolve-CanonicalRuntimeReports `
+                -CompositeRuntimeReport $compositeFile `
+                -RuntimeGateReport $gateDupTrueEvent `
+                -RepositoryRoot $RepositoryRoot `
+                -SourceCommit $dummyCommit
+        } catch {
+            $threw = $true
+        }
+        if (-not $threw) { throw "SelfTest Failed: Resolve-CanonicalRuntimeReports accepted gate report with duplicate matching EventObserved lines." }
+
+        # Test 22: Reject runtime gate report with duplicate Result lines
+        $gateDupResult = Join-Path $tempDir 'gate-dup-result.txt'
+        $gateDupResultText = @"
+Result: PASS
+Result: PASS
+EvidenceClass: Runtime
+RuntimeObserved: true
+SnapshotObserved: true
+EventObserved: true
+ReconnectObserved: true
+SessionControlInvoked: false
+SourceCommit: $dummyCommit
+CompositeRuntimeReportSha256: $compHash
+HerdrRuntimeReportSha256: $herdrHash
+CompositeRuntimeReport: $compositeFile
+HerdrRuntimeReport: $herdrRuntimeFile
+"@
+        [IO.File]::WriteAllText($gateDupResult, $gateDupResultText, [Text.UTF8Encoding]::new($false))
+        $threw = $false
+        try {
+            Resolve-CanonicalRuntimeReports `
+                -CompositeRuntimeReport $compositeFile `
+                -RuntimeGateReport $gateDupResult `
+                -RepositoryRoot $RepositoryRoot `
+                -SourceCommit $dummyCommit
+        } catch {
+            $threw = $true
+        }
+        if (-not $threw) { throw "SelfTest Failed: Resolve-CanonicalRuntimeReports accepted gate report with duplicate Result lines." }
+
+        # Test 23: Reject runtime gate report with duplicate EvidenceClass and EvidenceClassification lines
+        $gateDupEvidenceClass = Join-Path $tempDir 'gate-dup-evidence-class.txt'
+        $gateDupEvidenceClassText = @"
+Result: PASS
+EvidenceClass: Runtime
+EvidenceClassification: Runtime
+RuntimeObserved: true
+SnapshotObserved: true
+EventObserved: true
+ReconnectObserved: true
+SessionControlInvoked: false
+SourceCommit: $dummyCommit
+CompositeRuntimeReportSha256: $compHash
+HerdrRuntimeReportSha256: $herdrHash
+CompositeRuntimeReport: $compositeFile
+HerdrRuntimeReport: $herdrRuntimeFile
+"@
+        [IO.File]::WriteAllText($gateDupEvidenceClass, $gateDupEvidenceClassText, [Text.UTF8Encoding]::new($false))
+        $threw = $false
+        try {
+            Resolve-CanonicalRuntimeReports `
+                -CompositeRuntimeReport $compositeFile `
+                -RuntimeGateReport $gateDupEvidenceClass `
+                -RepositoryRoot $RepositoryRoot `
+                -SourceCommit $dummyCommit
+        } catch {
+            $threw = $true
+        }
+        if (-not $threw) { throw "SelfTest Failed: Resolve-CanonicalRuntimeReports accepted gate report with duplicate EvidenceClass and EvidenceClassification lines." }
+
+        # Test 24: Reject runtime gate report with SessionControlInvoked: true
+        $gateSessionControl = Join-Path $tempDir 'gate-session-control.txt'
+        $gateSessionControlText = @"
+Result: PASS
+EvidenceClass: Runtime
+RuntimeObserved: true
+SnapshotObserved: true
+EventObserved: true
+ReconnectObserved: true
+SessionControlInvoked: true
+SourceCommit: $dummyCommit
+CompositeRuntimeReportSha256: $compHash
+HerdrRuntimeReportSha256: $herdrHash
+CompositeRuntimeReport: $compositeFile
+HerdrRuntimeReport: $herdrRuntimeFile
+"@
+        [IO.File]::WriteAllText($gateSessionControl, $gateSessionControlText, [Text.UTF8Encoding]::new($false))
+        $threw = $false
+        try {
+            Resolve-CanonicalRuntimeReports `
+                -CompositeRuntimeReport $compositeFile `
+                -RuntimeGateReport $gateSessionControl `
+                -RepositoryRoot $RepositoryRoot `
+                -SourceCommit $dummyCommit
+        } catch {
+            $threw = $true
+        }
+        if (-not $threw) { throw "SelfTest Failed: Resolve-CanonicalRuntimeReports accepted gate report with SessionControlInvoked: true." }
+
+        # Test 25: Reject runtime gate report with non-Runtime EvidenceClass
+        $gateNonRuntime = Join-Path $tempDir 'gate-non-runtime.txt'
+        $gateNonRuntimeText = @"
+Result: PASS
+EvidenceClass: Synthetic
+RuntimeObserved: true
+SnapshotObserved: true
+EventObserved: true
+ReconnectObserved: true
+SessionControlInvoked: false
+SourceCommit: $dummyCommit
+CompositeRuntimeReportSha256: $compHash
+HerdrRuntimeReportSha256: $herdrHash
+CompositeRuntimeReport: $compositeFile
+HerdrRuntimeReport: $herdrRuntimeFile
+"@
+        [IO.File]::WriteAllText($gateNonRuntime, $gateNonRuntimeText, [Text.UTF8Encoding]::new($false))
+        $threw = $false
+        try {
+            Resolve-CanonicalRuntimeReports `
+                -CompositeRuntimeReport $compositeFile `
+                -RuntimeGateReport $gateNonRuntime `
+                -RepositoryRoot $RepositoryRoot `
+                -SourceCommit $dummyCommit
+        } catch {
+            $threw = $true
+        }
+        if (-not $threw) { throw "SelfTest Failed: Resolve-CanonicalRuntimeReports accepted gate report with non-Runtime EvidenceClass." }
+
+        # Helper to test Herdr JSON variations against fresh files
+        $assertHerdrJsonRejected = {
+            param($rawJson, $testName)
+            $hf = Join-Path $tempDir "herdr-$([Guid]::NewGuid().ToString('N')).json"
+            [IO.File]::WriteAllText($hf, $rawJson, [Text.UTF8Encoding]::new($false))
+            $hh = (Get-FileHash -LiteralPath $hf -Algorithm SHA256).Hash
+            $gf = Join-Path $tempDir "gate-$([Guid]::NewGuid().ToString('N')).txt"
+            [IO.File]::WriteAllText($gf, (& $makeValidGateContent $dummyCommit $compHash $hh $compositeFile $hf), [Text.UTF8Encoding]::new($false))
+            $cf = Join-Path $tempDir "comp-$([Guid]::NewGuid().ToString('N')).json"
+            $co = $compositeJson | ConvertFrom-Json
+            $co.HerdrRuntimeReportPath = $hf
+            $co.HerdrRuntimeReportSha256 = $hh
+            [IO.File]::WriteAllText($cf, ($co | ConvertTo-Json -Depth 5), [Text.UTF8Encoding]::new($false))
+
+            $t = $false
+            try {
+                Resolve-CanonicalRuntimeReports `
+                    -CompositeRuntimeReport $cf `
+                    -RuntimeGateReport $gf `
+                    -HerdrRuntimeReport $hf `
+                    -RepositoryRoot $RepositoryRoot `
+                    -SourceCommit $dummyCommit
+            } catch {
+                $t = $true
+            }
+            if (-not $t) { throw "SelfTest Failed: Resolve-CanonicalRuntimeReports accepted Herdr runtime report with $testName." }
+        }
+
+        # Test 26: Reject Herdr runtime JSON with EventObserved = false (boolean)
+        $p = & $makeValidHerdrPayload; $p['EventObserved'] = $false
+        & $assertHerdrJsonRejected ($p | ConvertTo-Json -Depth 5) "boolean EventObserved = false"
+
+        # Test 27: Reject Herdr runtime JSON with EventObserved = 'false' (string)
+        $p = & $makeValidHerdrPayload; $p['EventObserved'] = 'false'
+        & $assertHerdrJsonRejected ($p | ConvertTo-Json -Depth 5) "string EventObserved = 'false'"
+
+        # Test 28: Reject Herdr runtime JSON with EventObserved = 'true' (string)
+        $p = & $makeValidHerdrPayload; $p['EventObserved'] = 'true'
+        & $assertHerdrJsonRejected ($p | ConvertTo-Json -Depth 5) "string EventObserved = 'true'"
+
+        # Test 29: Reject Herdr runtime JSON with EventObserved = 1 (number)
+        $p = & $makeValidHerdrPayload; $p['EventObserved'] = 1
+        & $assertHerdrJsonRejected ($p | ConvertTo-Json -Depth 5) "numeric EventObserved = 1"
+
+        # Test 30: Reject Herdr runtime JSON with EventObserved = 0 (number)
+        $p = & $makeValidHerdrPayload; $p['EventObserved'] = 0
+        & $assertHerdrJsonRejected ($p | ConvertTo-Json -Depth 5) "numeric EventObserved = 0"
+
+        # Test 31: Reject Herdr runtime JSON with missing EventObserved property
+        $p = & $makeValidHerdrPayload; [void]$p.Remove('EventObserved')
+        & $assertHerdrJsonRejected ($p | ConvertTo-Json -Depth 5) "missing EventObserved property"
+
+        # Test 32: Reject Herdr runtime JSON with ReconnectObserved = false (boolean)
+        $p = & $makeValidHerdrPayload; $p['ReconnectObserved'] = $false
+        & $assertHerdrJsonRejected ($p | ConvertTo-Json -Depth 5) "boolean ReconnectObserved = false"
+
+        # Test 33: Reject Herdr runtime JSON with ReconnectObserved = 'false' (string)
+        $p = & $makeValidHerdrPayload; $p['ReconnectObserved'] = 'false'
+        & $assertHerdrJsonRejected ($p | ConvertTo-Json -Depth 5) "string ReconnectObserved = 'false'"
+
+        # Test 34: Reject Herdr runtime JSON with ReconnectObserved = 1 (number)
+        $p = & $makeValidHerdrPayload; $p['ReconnectObserved'] = 1
+        & $assertHerdrJsonRejected ($p | ConvertTo-Json -Depth 5) "numeric ReconnectObserved = 1"
+
+        # Test 35: Reject Herdr runtime JSON with missing ReconnectObserved property
+        $p = & $makeValidHerdrPayload; [void]$p.Remove('ReconnectObserved')
+        & $assertHerdrJsonRejected ($p | ConvertTo-Json -Depth 5) "missing ReconnectObserved property"
+
+        # Test 36: Reject Herdr runtime JSON with SessionControlInvoked = true (boolean)
+        $p = & $makeValidHerdrPayload; $p['SessionControlInvoked'] = $true
+        & $assertHerdrJsonRejected ($p | ConvertTo-Json -Depth 5) "boolean SessionControlInvoked = true"
+
+        # Test 37: Reject Herdr runtime JSON with SessionControlInvoked = 'false' (string)
+        $p = & $makeValidHerdrPayload; $p['SessionControlInvoked'] = 'false'
+        & $assertHerdrJsonRejected ($p | ConvertTo-Json -Depth 5) "string SessionControlInvoked = 'false'"
+
+        # Test 38: Reject Herdr runtime JSON with SessionControlInvoked = 0 (number)
+        $p = & $makeValidHerdrPayload; $p['SessionControlInvoked'] = 0
+        & $assertHerdrJsonRejected ($p | ConvertTo-Json -Depth 5) "numeric SessionControlInvoked = 0"
+
+        # Test 39: Reject Herdr runtime JSON with RuntimeObserved = 'true' (string)
+        $p = & $makeValidHerdrPayload; $p['RuntimeObserved'] = 'true'
+        & $assertHerdrJsonRejected ($p | ConvertTo-Json -Depth 5) "string RuntimeObserved = 'true'"
+
+        # Test 40: Reject Herdr runtime JSON with SnapshotObserved = 'true' (string)
+        $p = & $makeValidHerdrPayload; $p['SnapshotObserved'] = 'true'
+        & $assertHerdrJsonRejected ($p | ConvertTo-Json -Depth 5) "string SnapshotObserved = 'true'"
+
+        # Test 41: Reject Herdr runtime JSON with non-Runtime EvidenceClassification
+        $p = & $makeValidHerdrPayload; $p['EvidenceClassification'] = 'Synthetic'
+        & $assertHerdrJsonRejected ($p | ConvertTo-Json -Depth 5) "non-Runtime EvidenceClassification"
+
+        # Test 42: Reject Herdr runtime JSON with malformed JSON text
+        & $assertHerdrJsonRejected '{ this is not valid json' "malformed JSON syntax"
+
+        Write-Host "All Test-V05ReleaseGate self-tests PASSED (50/50 assertions verified)." -ForegroundColor Green
     } finally {
         if (Test-Path -LiteralPath $tempDir) {
             Remove-Item -LiteralPath $tempDir -Recurse -Force -ErrorAction SilentlyContinue
@@ -756,6 +1207,10 @@ $gateReport = @(
     'ImplementationGates: 4/4 PASS',
     'IndependentReviews: 5/5 PASS',
     'RoleDistinctRuntimeAcceptance: PASS',
+    'RuntimeObserved: true',
+    'SnapshotObserved: true',
+    'EventObserved: true',
+    'ReconnectObserved: true',
     'SessionControlInvoked: false',
     "CompositeRuntimeReportSha256: $compositeSha256",
     "HerdrRuntimeReportSha256: $herdrRuntimeSha256",
