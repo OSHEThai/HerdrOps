@@ -53,26 +53,48 @@ if (-not $SkipBuild) {
         -FinishedUtc $buildFinishedUtc
 }
 else {
+    $captureMetadataPath = Join-Path $gateDirectory 'live-widget-captures.json'
+    $measurementMetadataPath = Join-Path $gateDirectory 'live-widget-measurement.json'
+
+    if (-not (Test-Path -LiteralPath $captureMetadataPath -PathType Leaf)) {
+        throw "Required captures metadata is missing: $captureMetadataPath"
+    }
+    if (-not (Test-Path -LiteralPath $measurementMetadataPath -PathType Leaf)) {
+        throw "Required measurement metadata is missing: $measurementMetadataPath"
+    }
+
+    $capturesMetadata = Read-V02LiveWidgetsJson -Path $captureMetadataPath
+    $measurementMetadata = Read-V02LiveWidgetsJson -Path $measurementMetadataPath
+
+    if ([string]$capturesMetadata.SourceCommit -cne $sourceCommit) {
+        throw "Evidence metadata source commit does not match HEAD: captures"
+    }
+    if ([string]$measurementMetadata.SourceCommit -cne $sourceCommit) {
+        throw "Evidence metadata source commit does not match HEAD: measurement"
+    }
+
     if ([string]::IsNullOrWhiteSpace($RunToken)) {
-        $captureMetadataPath = Join-Path $gateDirectory 'live-widget-captures.json'
-        $measurementMetadataPath = Join-Path $gateDirectory 'live-widget-measurement.json'
-        if (Test-Path -LiteralPath $captureMetadataPath -PathType Leaf) {
-            try {
-                $RunToken = [string]((Get-Content -LiteralPath $captureMetadataPath -Raw | ConvertFrom-Json).RunToken)
-            } catch { }
-        }
-        elseif (Test-Path -LiteralPath $measurementMetadataPath -PathType Leaf) {
-            try {
-                $RunToken = [string]((Get-Content -LiteralPath $measurementMetadataPath -Raw | ConvertFrom-Json).RunToken)
-            } catch { }
-        }
+        $RunToken = [string]$capturesMetadata.RunToken
     }
 
     if ($RunToken -notmatch '^[A-Za-z0-9._-]{8,128}$') {
         throw 'RunToken must be an explicit safe token of 8-128 characters.'
     }
 
-    $invocationWindow = Get-V02LiveWidgetsInvocationWindow -TestResultDirectory $testResultRoot
+    if ([string]$capturesMetadata.RunToken -cne $RunToken) {
+        throw "Evidence metadata token does not match the requested run: captures"
+    }
+    if ([string]$measurementMetadata.RunToken -cne $RunToken) {
+        throw "Evidence metadata token does not match the requested run: measurement"
+    }
+
+    $captureTimestamp = Convert-ToV02UtcDateTimeOffset -Value $capturesMetadata.GeneratedUtc
+    $measurementTimestamp = Convert-ToV02UtcDateTimeOffset -Value $measurementMetadata.GeneratedUtc
+
+    $invocationWindow = Get-V02LiveWidgetsInvocationWindow `
+        -TestResultDirectory $testResultRoot `
+        -EvidenceTimestamps @($captureTimestamp, $measurementTimestamp)
+
     $null = New-V02LiveWidgetsRunManifest `
         -ArtifactRoot $artifactRoot `
         -SourceCommit $sourceCommit `

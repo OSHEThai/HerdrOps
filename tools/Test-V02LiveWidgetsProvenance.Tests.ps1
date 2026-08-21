@@ -192,7 +192,42 @@ try {
     Remove-Item -LiteralPath (Join-Path $trxSubdir 'p4.trx') -Force
     Assert-Throws { Get-V02LiveWidgetsInvocationWindow -TestResultDirectory $trxSubdir } 'fewer than 4 TRX files is rejected'
 
-    # 5. End-to-End CI -SkipBuild Simulation (reproduces CI execution where live-widget-run.json is missing initially)
+    # 5. Get-V02LiveWidgetsInvocationWindow: Stale TRX touched to newer LastWriteTimeUtc
+    $touchDir = Join-Path $root 'trx-touch-test'
+    New-Item -ItemType Directory -Path $touchDir -Force | Out-Null
+    # 4 current TRX files (XML times: 02:00..02:05)
+    1..4 | ForEach-Object {
+        ('<TestRun id="{0}"><Times start="2026-08-21T02:00:00.0000000Z" finish="2026-08-21T02:05:00.0000000Z" /></TestRun>' -f [guid]::NewGuid()) | Set-Content -LiteralPath (Join-Path $touchDir ("curr-$_.trx")) -Encoding utf8
+    }
+    # 1 stale TRX file (XML times: 01:00..01:05), but touched to future LastWriteTimeUtc (03:00)
+    $staleTouchPath = Join-Path $touchDir 'stale-touched.trx'
+    ('<TestRun id="{0}"><Times start="2026-08-21T01:00:00.0000000Z" finish="2026-08-21T01:05:00.0000000Z" /></TestRun>' -f [guid]::NewGuid()) | Set-Content -LiteralPath $staleTouchPath -Encoding utf8
+    (Get-Item -LiteralPath $staleTouchPath).LastWriteTimeUtc = [DateTime]::UtcNow.AddHours(2)
+
+    $touchInv = Get-V02LiveWidgetsInvocationWindow -TestResultDirectory $touchDir -EvidenceTimestamps @([DateTimeOffset]::Parse('2026-08-21T02:02:00.0000000Z'))
+    if ($touchInv.StartedUtc -ne [DateTimeOffset]::Parse('2026-08-21T02:00:00.0000000Z').ToUniversalTime()) {
+        throw "Expected current start time, got $($touchInv.StartedUtc)"
+    }
+    if ($touchInv.FinishedUtc -ne [DateTimeOffset]::Parse('2026-08-21T02:05:00.0000000Z').ToUniversalTime()) {
+        throw "Expected current finish time, got $($touchInv.FinishedUtc)"
+    }
+    if ($touchInv.TrxFiles.Count -ne 4) {
+        throw "Expected 4 TRX files, got $($touchInv.TrxFiles.Count)"
+    }
+    foreach ($tf in $touchInv.TrxFiles) {
+        if ($tf.Name -eq 'stale-touched.trx') {
+            throw 'Get-V02LiveWidgetsInvocationWindow incorrectly included stale TRX touched to newer LastWriteTimeUtc.'
+        }
+    }
+    Write-Output 'PASS Get-V02LiveWidgetsInvocationWindow ignores newer LastWriteTimeUtc on stale TRX and selects current run'
+
+    # 6. Get-V02LiveWidgetsInvocationWindow: Incomplete current run + touched stale TRX fails closed
+    Remove-Item -LiteralPath (Join-Path $touchDir 'curr-4.trx') -Force
+    Assert-Throws {
+        Get-V02LiveWidgetsInvocationWindow -TestResultDirectory $touchDir -EvidenceTimestamps @([DateTimeOffset]::Parse('2026-08-21T02:02:00.0000000Z'))
+    } 'mixed incomplete current run and touched stale TRX is rejected'
+
+    # 7. End-to-End CI -SkipBuild Simulation (reproduces CI execution where live-widget-run.json is missing initially)
     $mockArtifactRoot = Join-Path $root 'mock-ci-artifacts'
     $mockTrxDir = Join-Path $mockArtifactRoot 'test-results'
     $mockGateDir = Join-Path $mockArtifactRoot 'release-gates\v0.2.0\issue-10'
@@ -241,7 +276,9 @@ try {
     }
 
     # Simulate SkipBuild binding: resolve invocation window and bind fresh manifest
-    $simInvocation = Get-V02LiveWidgetsInvocationWindow -TestResultDirectory $mockTrxDir
+    $simCaptureTs = Convert-ToV02UtcDateTimeOffset -Value '2026-08-21T02:02:00.0000000Z'
+    $simMeasTs = Convert-ToV02UtcDateTimeOffset -Value '2026-08-21T02:03:00.0000000Z'
+    $simInvocation = Get-V02LiveWidgetsInvocationWindow -TestResultDirectory $mockTrxDir -EvidenceTimestamps @($simCaptureTs, $simMeasTs)
     $null = New-V02LiveWidgetsRunManifest `
         -ArtifactRoot $mockArtifactRoot `
         -SourceCommit $ciCommit `
@@ -283,6 +320,64 @@ try {
         -FinishedUtc $verifiedWindow.FinishedUtc
 
     Write-Output 'PASS CI SkipBuild reproduction binds fresh current-run manifest and passes all provenance checks'
+
+    # 8. Stale Pre-Existing Manifest Overwrite Regression
+    # Put a stale manifest on disk with old token and commit
+    [pscustomobject]@{
+        Schema       = 'v0.2.issue-10.live-widget-run.v1'
+        RunToken     = 'stale-token-12345'
+        SourceCommit = ('0' * 40)
+        StartedUtc   = '2026-08-20T00:00:00.0000000Z'
+        FinishedUtc  = '2026-08-20T00:05:00.0000000Z'
+    } | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $runManifestPath -Encoding utf8
+
+    # Re-running SkipBuild binding must overwrite stale manifest with fresh current manifest
+    $reboundInvocation = Get-V02LiveWidgetsInvocationWindow -TestResultDirectory $mockTrxDir -EvidenceTimestamps @($simCaptureTs, $simMeasTs)
+    $null = New-V02LiveWidgetsRunManifest `
+        -ArtifactRoot $mockArtifactRoot `
+        -SourceCommit $ciCommit `
+        -RunToken $ciToken `
+        -StartedUtc $reboundInvocation.StartedUtc `
+        -FinishedUtc $reboundInvocation.FinishedUtc
+
+    $reboundManifest = Read-V02LiveWidgetsJson -Path $runManifestPath
+    $null = Assert-V02LiveWidgetsRunManifest -Manifest $reboundManifest -ExpectedCommit $ciCommit -ExpectedToken $ciToken
+    Write-Output 'PASS Stale pre-existing manifest is cleanly overwritten with verified current run manifest'
+
+    # 9. Overlapping / Multiple Invocation TRX Sets
+    # Add an older completed invocation (4 TRX files at 01:00..01:05) alongside current run (02:00..02:05)
+    1..4 | ForEach-Object {
+        ('<TestRun id="{0}"><Times start="2026-08-21T01:00:00.0000000Z" finish="2026-08-21T01:05:00.0000000Z" /></TestRun>' -f [guid]::NewGuid()) | Set-Content -LiteralPath (Join-Path $mockTrxDir ("old-run-$_.trx")) -Encoding utf8
+    }
+    # Touch old TRX files to have newer LastWriteTimeUtc
+    Get-ChildItem -LiteralPath $mockTrxDir -Filter 'old-run-*.trx' | ForEach-Object {
+        $_.LastWriteTimeUtc = [DateTime]::UtcNow.AddHours(5)
+    }
+
+    $multiInvocation = Get-V02LiveWidgetsInvocationWindow -TestResultDirectory $mockTrxDir -EvidenceTimestamps @($simCaptureTs, $simMeasTs)
+    if ($multiInvocation.StartedUtc -ne [DateTimeOffset]::Parse('2026-08-21T02:00:00.0000000Z').ToUniversalTime()) {
+        throw "Expected multi-invocation to select current run StartedUtc, got $($multiInvocation.StartedUtc)"
+    }
+    if ($multiInvocation.FinishedUtc -ne [DateTimeOffset]::Parse('2026-08-21T02:05:00.0000000Z').ToUniversalTime()) {
+        throw "Expected multi-invocation to select current run FinishedUtc, got $($multiInvocation.FinishedUtc)"
+    }
+    Write-Output 'PASS Multiple overlapping TRX invocations deterministically resolve to the current run matching evidence'
+
+    # 10. Stale Evidence Metadata with Pre-existing Manifest Fails Closed
+    [pscustomobject]@{
+        EvidenceKind = 'captures'
+        RunToken = 'stale-token-99999'
+        SourceCommit = ('f' * 40)
+        GeneratedUtc = '2026-08-21T02:02:00.0000000Z'
+        Files = $capFiles
+    } | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $mockGateDir 'live-widget-captures.json') -Encoding utf8
+
+    Assert-Throws {
+        $staleMeta = Read-V02LiveWidgetsJson -Path (Join-Path $mockGateDir 'live-widget-captures.json')
+        if ([string]$staleMeta.SourceCommit -cne $ciCommit) {
+            throw "Evidence metadata source commit does not match HEAD: captures"
+        }
+    } 'stale evidence metadata commit is rejected before manifest binding'
 
     Write-Output 'Test-V02LiveWidgetsProvenance.Tests: PASS'
 }

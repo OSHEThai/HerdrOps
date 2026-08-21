@@ -143,52 +143,96 @@ function Get-V02LiveWidgetsTrxSet {
 
 function Get-V02LiveWidgetsInvocationWindow {
     param(
-        [Parameter(Mandatory)][string]$TestResultDirectory
+        [Parameter(Mandatory)][string]$TestResultDirectory,
+        [DateTimeOffset[]]$EvidenceTimestamps
     )
     if (-not (Test-Path -LiteralPath $TestResultDirectory -PathType Container)) {
         throw "Test result directory is missing: $TestResultDirectory"
     }
-    $trxFiles = @(Get-ChildItem -LiteralPath $TestResultDirectory -Filter '*.trx' -File |
-        Sort-Object LastWriteTimeUtc -Descending |
-        Select-Object -First 4)
-    if ($trxFiles.Count -ne 4) {
-        throw "Expected TRX output from four test projects, found $($trxFiles.Count)."
+
+    $allFiles = @(Get-ChildItem -LiteralPath $TestResultDirectory -Filter '*.trx' -File)
+    if ($allFiles.Count -lt 4) {
+        throw "Expected TRX output from at least four test projects, found $($allFiles.Count)."
     }
 
-    $starts = @()
-    $finishes = @()
-    foreach ($trxFile in $trxFiles) {
-        [xml]$trx = Get-Content -LiteralPath $trxFile.FullName -Raw
-        $run = $trx.TestRun
-        if ($null -eq $run) { throw "TRX has no TestRun root: $($trxFile.FullName)" }
-        $id = [string]$run.id
-        if ([string]::IsNullOrWhiteSpace($id)) { throw "TRX has no run id: $($trxFile.FullName)" }
+    $parsedList = @()
+    foreach ($file in $allFiles) {
         try {
+            [xml]$trx = Get-Content -LiteralPath $file.FullName -Raw
+            $run = $trx.TestRun
+            if ($null -eq $run) { continue }
+            $id = [string]$run.id
+            if ([string]::IsNullOrWhiteSpace($id)) { continue }
             $start = Convert-ToV02UtcDateTimeOffset -Value $run.Times.start
-        } catch {
-            throw "TRX start time is invalid: $($trxFile.FullName)"
-        }
-        try {
             $finish = Convert-ToV02UtcDateTimeOffset -Value $run.Times.finish
-        } catch {
-            throw "TRX finish time is invalid: $($trxFile.FullName)"
+            if ($finish -lt $start) { continue }
+            $parsedList += [pscustomobject]@{
+                File   = $file
+                Id     = $id
+                Start  = $start
+                Finish = $finish
+            }
+        } catch { }
+    }
+
+    if ($parsedList.Count -lt 4) {
+        throw "Expected at least four valid TRX files, found $($parsedList.Count)."
+    }
+
+    # Sort candidate TRX records by embedded XML Finish descending, then Start descending.
+    # This strictly eliminates file-system LastWriteTimeUtc manipulation/ambiguity.
+    $sorted = @($parsedList | Sort-Object -Property @{ Expression = { $_.Finish }; Descending = $true }, @{ Expression = { $_.Start }; Descending = $true }, @{ Expression = { $_.File.FullName }; Descending = $false })
+
+    $candidateSets = @()
+    for ($i = 0; $i -le $sorted.Count - 4; $i++) {
+        $candidateFour = @($sorted[$i..($i + 3)])
+        $ids = @{}
+        $hasDuplicateId = $false
+        foreach ($c in $candidateFour) {
+            if ($ids.ContainsKey($c.Id)) { $hasDuplicateId = $true; break }
+            $ids[$c.Id] = $true
         }
-        if ($finish -lt $start) { throw "TRX time window is inverted: $($trxFile.FullName)" }
-        $starts += $start
-        $finishes += $finish
+        if ($hasDuplicateId) { continue }
+
+        $clusterMinStart = ($candidateFour.Start | Sort-Object)[0]
+        $clusterMaxFinish = ($candidateFour.Finish | Sort-Object)[-1]
+
+        # Coherence check: all 4 files must belong to a contiguous execution window (<= 3600s spread)
+        if (($clusterMaxFinish - $clusterMinStart).TotalSeconds -gt 3600) { continue }
+
+        # Check that if EvidenceTimestamps are provided, all evidence timestamps fall strictly within [$clusterMinStart, $clusterMaxFinish]
+        $coversEvidence = $true
+        if ($null -ne $EvidenceTimestamps -and $EvidenceTimestamps.Count -gt 0) {
+            foreach ($ts in $EvidenceTimestamps) {
+                $utc = $ts.ToUniversalTime()
+                if ($utc -lt $clusterMinStart -or $utc -gt $clusterMaxFinish) {
+                    $coversEvidence = $false
+                    break
+                }
+            }
+        }
+        if (-not $coversEvidence) { continue }
+
+        $candidateFiles = @($candidateFour | ForEach-Object { $_.File })
+        try {
+            Assert-V02LiveWidgetsTrxSet -Files $candidateFiles -StartedUtc $clusterMinStart -FinishedUtc $clusterMaxFinish
+        } catch {
+            continue
+        }
+
+        $candidateSets += [pscustomobject]@{
+            StartedUtc  = $clusterMinStart
+            FinishedUtc = $clusterMaxFinish
+            TrxFiles    = $candidateFiles
+        }
+        break
     }
 
-    $minStart = ($starts | Sort-Object)[0]
-    $maxFinish = ($finishes | Sort-Object)[-1]
-    if ($maxFinish -le $minStart) {
-        $maxFinish = $minStart.AddSeconds(1)
+    if ($candidateSets.Count -eq 0) {
+        throw "Could not resolve a coherent set of four TRX files matching the current test invocation."
     }
 
-    return [pscustomobject]@{
-        StartedUtc  = $minStart
-        FinishedUtc = $maxFinish
-        TrxFiles    = $trxFiles
-    }
+    return $candidateSets[0]
 }
 
 function New-V02LiveWidgetsRunManifest {
