@@ -453,6 +453,144 @@ public sealed class ComplianceReviewStorageTests
     }
 
     [TestMethod]
+    public void RegisterComplianceReviewIncidentCancellationWhileWaitingForStoreLockFailsClosed()
+    {
+        using var directory = new TemporaryDirectory();
+        var options = Options(directory) with { BusyTimeoutSeconds = 5 };
+        using var store = new SqliteHerdrStateStore(options);
+        var lifecycle = new AssignmentLifecycleReducer();
+        var authority = SeedAuthority(
+            store,
+            lifecycle,
+            "project-manager",
+            "Project Manager",
+            ComplianceReviewerRole.ProjectManager,
+            Guid.Parse("dddddddd-dddd-dddd-dddd-dddddddddddd"),
+            sequence: 1);
+        var evidenceId = CaptureEvidence(store, directory);
+        store.RegisterComplianceReviewIncident(Registration(evidenceId));
+        var command = Command(
+            Guid.Parse("55555555-5555-5555-5555-555555555555"),
+            ComplianceReviewState.Suspected,
+            ComplianceReviewDecisionKind.SendToLeader,
+            "project-manager",
+            RegisteredUtc.AddMinutes(2),
+            evidenceId);
+
+        using var blocker = Open(options.DatabasePath);
+        using (var beginImmediate = blocker.CreateCommand())
+        {
+            beginImmediate.CommandText = "BEGIN IMMEDIATE;";
+            beginImmediate.ExecuteNonQuery();
+        }
+
+        using var applyCancellation = new CancellationTokenSource();
+        using var registrationCancellation = new CancellationTokenSource();
+        using var busySliceObserved = new ManualResetEventSlim();
+        using var monitorLockWaitObserved = new ManualResetEventSlim();
+        using var applyStarted = new ManualResetEventSlim();
+        using var registrationStarted = new ManualResetEventSlim();
+        Exception? applyException = null;
+        Exception? registrationException = null;
+        var applyThread = new Thread(() =>
+        {
+            applyStarted.Set();
+            try
+            {
+                store.ApplyComplianceReviewCommand(
+                    command,
+                    authority,
+                    applyCancellation.Token);
+            }
+            catch (Exception exception)
+            {
+                applyException = exception;
+            }
+        })
+        {
+            IsBackground = true,
+        };
+        var registrationThread = new Thread(() =>
+        {
+            registrationStarted.Set();
+            try
+            {
+                store.RegisterComplianceReviewIncident(
+                    Registration(evidenceId, "INC-CANCEL-WAIT"),
+                    registrationCancellation.Token);
+            }
+            catch (Exception exception)
+            {
+                registrationException = exception;
+            }
+        })
+        {
+            IsBackground = true,
+        };
+
+        try
+        {
+            store.ComplianceReviewBusySliceObserved += () => busySliceObserved.Set();
+            store.ComplianceReviewMonitorLockWaitObserved += () => monitorLockWaitObserved.Set();
+            applyThread.Start();
+            Assert.IsTrue(
+                applyStarted.Wait(TimeSpan.FromSeconds(10)),
+                "The blocking review operation did not start within the probe bound.");
+            Assert.IsTrue(
+                busySliceObserved.Wait(TimeSpan.FromSeconds(10)),
+                "The blocking review operation did not hold the store monitor during SQLite contention.");
+
+            registrationThread.Start();
+            Assert.IsTrue(
+                registrationStarted.Wait(TimeSpan.FromSeconds(10)),
+                "The registration operation did not start within the probe bound.");
+            Assert.IsTrue(
+                monitorLockWaitObserved.Wait(TimeSpan.FromSeconds(10)),
+                "The registration operation did not observe the in-process store lock wait.");
+
+            registrationCancellation.Cancel();
+            Assert.IsTrue(
+                registrationThread.Join(TimeSpan.FromSeconds(1)),
+                "The canceled registration did not exit promptly while waiting for the store lock.");
+        }
+        finally
+        {
+            applyCancellation.Cancel();
+            using (var rollback = blocker.CreateCommand())
+            {
+                rollback.CommandText = "ROLLBACK;";
+                rollback.ExecuteNonQuery();
+            }
+
+            if (!applyThread.Join(TimeSpan.FromSeconds(10)))
+            {
+                throw new InvalidOperationException(
+                    "The blocking review operation did not terminate after the database lock was released.");
+            }
+
+            if (!registrationThread.Join(TimeSpan.FromSeconds(10)))
+            {
+                throw new InvalidOperationException(
+                    "The registration operation thread did not terminate after the blocker was released.");
+            }
+        }
+
+        Assert.IsNotNull(applyException);
+        Assert.IsTrue(
+            applyException is OperationCanceledException,
+            $"Expected OperationCanceledException only, got {applyException.GetType().FullName}: {applyException.Message}");
+        Assert.IsNotNull(registrationException);
+        Assert.IsTrue(
+            registrationException is OperationCanceledException,
+            $"Expected OperationCanceledException only, got {registrationException.GetType().FullName}: {registrationException.Message}");
+        Assert.IsNull(store.ReadComplianceReviewIncident("INC-CANCEL-WAIT"));
+        var incident = store.ReadComplianceReviewIncident("INC-27");
+        Assert.IsNotNull(incident);
+        Assert.AreEqual(ComplianceReviewState.Suspected, incident.State);
+        Assert.AreEqual(0L, incident.Sequence);
+    }
+
+    [TestMethod]
     public void BlockedComplianceReviewOperationFailsClosedAtContentionBoundWithoutCancellation()
     {
         using var directory = new TemporaryDirectory();
@@ -1040,10 +1178,12 @@ public sealed class ComplianceReviewStorageTests
         return capture.StoredEvidence.Metadata.EvidenceIdentitySha256;
     }
 
-    private static ComplianceReviewIncidentRegistration Registration(string evidenceId) =>
+    private static ComplianceReviewIncidentRegistration Registration(
+        string evidenceId,
+        string incidentId = "INC-27") =>
         new(
             ComplianceReviewWorkflowContract.ContractVersion,
-            "INC-27",
+            incidentId,
             "TASK-115",
             "backend-worker-01",
             RegisteredUtc.AddMinutes(1),
