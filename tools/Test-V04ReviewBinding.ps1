@@ -1,6 +1,11 @@
 [CmdletBinding()]
 param()
 
+# Behavioral and fail-closed selftest for Assert-V04ReviewBinding.ps1.
+# Runs against temporary isolated mock fixtures in temp only.
+# NOTE: This selftest does NOT validate real committed records in docs/reviews/;
+# real review binding is enforced exclusively in tools/Test-V04ReleaseGate.ps1.
+
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $false

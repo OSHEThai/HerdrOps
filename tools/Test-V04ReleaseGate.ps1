@@ -254,7 +254,7 @@ $gateReport = @(
     'ReleaseReady: true',
     'ProcessCleanupSelfTests: PS7+PS5.1 PASS',
     'ImplementationGates: 5/5 PASS',
-    'IndependentReviews: 5/5 PASS',
+    "IndependentReviews: $($reviewBindings.Count)/$($reviewBindings.Count) PASS",
     'RoleDistinctRuntimeAcceptance: PASS',
     'SessionControlInvoked: false',
     "CompositeRuntimeReportSha256: $compositeSha256",

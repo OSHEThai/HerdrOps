@@ -255,6 +255,12 @@ public sealed class V04ImplementationGateScriptContractTests
             releaseGate,
             "$binding.LocalIndependentReviewBinding -cne 'PASS'",
             "Test-V04ReleaseGate.ps1 must fail closed if any review binding is not PASS.");
+
+        // Dynamic review count derivation (not hardcoded)
+        StringAssert.Contains(
+            releaseGate,
+            "\"IndependentReviews: $($reviewBindings.Count)/$($reviewBindings.Count) PASS\"",
+            "Test-V04ReleaseGate.ps1 must derive the IndependentReviews gate report line dynamically from $reviewBindings.Count.");
     }
 
     [TestMethod]
@@ -281,6 +287,11 @@ public sealed class V04ImplementationGateScriptContractTests
             ciYaml,
             new Regex(@"Run v0\.4 review-binding verifier tests \(Windows PowerShell 5\.1\)[\s\S]{1,120}shell:\s*powershell[\s\S]{1,120}Test-V04ReviewBinding\.ps1", RegexOptions.CultureInvariant),
             "ci.yml must execute Test-V04ReviewBinding.ps1 under Windows PowerShell 5.1 (powershell).");
+
+        StringAssert.Contains(
+            ciYaml,
+            "does NOT validate real committed review records",
+            "ci.yml must clarify that Test-V04ReviewBinding.ps1 runs against mock fixtures only and real binding is in release gate.");
     }
 
     private static string[] GateScripts() =>

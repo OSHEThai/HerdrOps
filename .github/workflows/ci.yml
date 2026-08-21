@@ -177,6 +177,7 @@ jobs:
         shell: pwsh
         run: ./tools/Test-V03ImplementationGate.ps1 -Configuration Release -SkipBuild
 
+      # Static/Synthetic verifier selftests against temporary mock fixtures only; does NOT validate real committed review records in docs/reviews/. Real canonical review binding is enforced in tools/Test-V04ReleaseGate.ps1 only.
       - name: Run v0.4 review-binding verifier tests (PowerShell 7)
         shell: pwsh
         run: ./tools/Test-V04ReviewBinding.ps1
