@@ -304,6 +304,7 @@ public partial class App : Application
                 new ShutdownCleanupAction("widgets", DisposeWidgets),
                 new ShutdownCleanupAction("runtime", DisposeRuntime),
                 new ShutdownCleanupAction("review-commands", ClearReviewCommands),
+                new ShutdownCleanupAction("theme-service", () => HerdrOps.App.Themes.UiThemeService.Shared.Dispose()),
                 new ShutdownCleanupAction("single-instance", ReleaseInstanceGate),
                 new ShutdownCleanupAction("application-base", () => base.OnExit(e)),
             ]);
@@ -340,6 +341,7 @@ public partial class App : Application
                 theme =>
                 {
                     lifecycle.SelectTheme(theme);
+                    _tray?.Refresh();
                 },
                 Shutdown,
                 UiLanguageService.Shared,

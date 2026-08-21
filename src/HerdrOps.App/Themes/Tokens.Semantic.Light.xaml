@@ -4,7 +4,7 @@
     <SolidColorBrush x:Key="HerdrOps.Brush.Background"
                      Color="{StaticResource HerdrOps.Color.White.100}" />
     <SolidColorBrush x:Key="HerdrOps.Brush.TopBar"
-                     Color="#FFF0F0F0" /> <!-- Placeholder for lighter top bar -->
+                     Color="#FFF0F0F0" /> <!-- Visual/human tuning is pending -->
     <SolidColorBrush x:Key="HerdrOps.Brush.Sidebar"
                      Color="#FFE5E5E5" />
     <SolidColorBrush x:Key="HerdrOps.Brush.Surface"

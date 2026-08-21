@@ -22,7 +22,7 @@ Based on GitHub Issue #36 and `Plan/ROADMAP.md` (v0.7.0):
 - **Lifecycle tests:** `DesktopLifecycleWindowTests.cs` verifies idempotency of window show/hide and setting persistence.
 - **Localization screenshots:** Captured and stored in `artifacts/design-evidence/v0.1/issue-60` (as defined in `LanguageSwitchRenderingTests`).
 - **Accessibility report:** Included in `WidgetAccessibilityTests.cs` assertions.
-- **Theme settings tests:** `UiThemeIntegrationTests.cs` verifies runtime resource swapping and synchronization logic, and `AppSettingsStoreTests.cs` verifies backward-compatible config migration.
+- **Theme settings tests:** `UiThemeWpfIntegrationTests.cs` and `UiThemeIntegrationTests.cs` verify the internal logic of runtime resource swapping and synchronization, and `AppSettingsStoreTests.cs` verifies backward-compatible config migration. (These tests do not prove full visual runtime swap; visual/human review of the theme is still pending. Reference PNGs remain untouched.)
 
 ## Evidence Boundary
 

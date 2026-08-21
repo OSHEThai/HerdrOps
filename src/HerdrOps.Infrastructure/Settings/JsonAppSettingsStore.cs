@@ -591,8 +591,8 @@ public sealed class JsonAppSettingsStore : IAppSettingsStore
 
             var schemaVersion = ReadStrictInt32(root, "schemaVersion");
             var language = ParseLanguage(ReadString(root, "language"));
-            var theme = root.TryGetProperty("theme", out var themeProperty) && themeProperty.ValueKind == JsonValueKind.String
-                ? ParseTheme(themeProperty.GetString()!)
+            var theme = root.TryGetProperty("theme", out var themeProperty)
+                ? (themeProperty.ValueKind == JsonValueKind.String ? ParseTheme(themeProperty.GetString()!) : throw new SettingsValidationException("The property 'theme' must be a string."))
                 : AppSettingsTheme.System;
             var widgetVariant = ParseWidgetVariant(ReadString(root, "widgetVariant"));
             var widgetEnabled = ReadBoolean(root, "widgetEnabled");

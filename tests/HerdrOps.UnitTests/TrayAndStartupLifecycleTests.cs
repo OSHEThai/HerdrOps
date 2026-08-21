@@ -18,14 +18,20 @@ public sealed class TrayAndStartupLifecycleTests
         router.Execute(TrayCommand.ToggleWidgetEnabled);
         router.Execute(TrayCommand.SelectThaiLanguage);
         router.Execute(TrayCommand.SelectEnglishLanguage);
+        router.Execute(TrayCommand.SelectSystemTheme);
+        router.Execute(TrayCommand.SelectLightTheme);
+        router.Execute(TrayCommand.SelectDarkTheme);
         router.Execute(TrayCommand.Exit);
 
         CollectionAssert.AreEqual(
-            new[] { "dashboard", "hide", "widget", "widget-enabled", "language", "language", "exit" },
+            new[] { "dashboard", "hide", "widget", "widget-enabled", "language", "language", "theme", "theme", "theme", "exit" },
             target.Actions);
         CollectionAssert.AreEqual(
             new[] { AppSettingsLanguage.Thai, AppSettingsLanguage.English },
             target.Languages);
+        CollectionAssert.AreEqual(
+            new[] { AppSettingsTheme.System, AppSettingsTheme.Light, AppSettingsTheme.Dark },
+            target.Themes);
     }
 
     [TestMethod]
@@ -269,6 +275,8 @@ public sealed class TrayAndStartupLifecycleTests
 
         public List<AppSettingsLanguage> Languages { get; } = [];
 
+        public List<AppSettingsTheme> Themes { get; } = [];
+
         public Exception? Failure { get; init; }
 
         public void ShowDashboard()
@@ -306,6 +314,7 @@ public sealed class TrayAndStartupLifecycleTests
         {
             ThrowIfConfigured();
             Actions.Add("theme");
+            Themes.Add(theme);
         }
 
         public void Exit()

@@ -13,28 +13,32 @@ public sealed class UiThemeService : INotifyPropertyChanged, IDisposable
     public static UiThemeService Shared { get; } = new();
 
     private AppSettingsTheme _currentTheme = AppSettingsTheme.System;
+    private bool _hasAppliedTheme;
+    private readonly Func<bool> _isWindowsDarkTheme;
 
     public AppSettingsTheme CurrentTheme => _currentTheme;
 
     public event PropertyChangedEventHandler? PropertyChanged;
 
-    public UiThemeService()
+    public UiThemeService(Func<bool>? isWindowsDarkTheme = null)
     {
+        _isWindowsDarkTheme = isWindowsDarkTheme ?? DefaultIsWindowsDarkTheme;
         SystemEvents.UserPreferenceChanged += OnUserPreferenceChanged;
     }
 
     public void SetTheme(AppSettingsTheme theme)
     {
-        if (_currentTheme == theme)
+        if (_currentTheme == theme && _hasAppliedTheme)
         {
             return;
         }
 
         _currentTheme = theme;
+        _hasAppliedTheme = true;
         OnPropertyChanged(nameof(CurrentTheme));
         ApplyTheme();
     }
-    
+
     public void ApplyTheme()
     {
         if (Application.Current == null)
@@ -44,12 +48,12 @@ public sealed class UiThemeService : INotifyPropertyChanged, IDisposable
         {
             AppSettingsTheme.Dark => true,
             AppSettingsTheme.Light => false,
-            AppSettingsTheme.System => IsWindowsDarkTheme(),
+            AppSettingsTheme.System => _isWindowsDarkTheme(),
             _ => true,
         };
 
         var dictionaryName = isDark ? "Tokens.Semantic.Dark.xaml" : "Tokens.Semantic.Light.xaml";
-        var uri = new Uri($"Themes/{dictionaryName}", UriKind.Relative);
+        var uri = new Uri($"pack://application:,,,/HerdrOps.App;component/Themes/{dictionaryName}", UriKind.Absolute);
 
         var existingDictionary = Application.Current.Resources.MergedDictionaries
             .FirstOrDefault(d => d.Source != null && d.Source.OriginalString.Contains("Tokens.Semantic"));
@@ -71,7 +75,7 @@ public sealed class UiThemeService : INotifyPropertyChanged, IDisposable
         }
     }
 
-    private void OnUserPreferenceChanged(object sender, UserPreferenceChangedEventArgs e)
+    internal void OnUserPreferenceChanged(object sender, UserPreferenceChangedEventArgs e)
     {
         if (e.Category == UserPreferenceCategory.General && _currentTheme == AppSettingsTheme.System)
         {
@@ -80,7 +84,7 @@ public sealed class UiThemeService : INotifyPropertyChanged, IDisposable
         }
     }
 
-    private bool IsWindowsDarkTheme()
+    private static bool DefaultIsWindowsDarkTheme()
     {
         try
         {
