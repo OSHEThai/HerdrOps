@@ -10,6 +10,18 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $false
 
+if ($PSVersionTable.PSVersion.Major -lt 6) {
+    # Windows PowerShell 5.1 lacks String.Contains(string, StringComparison).
+    # Keep the source-marker checks ordinal and equivalent across both shells.
+    Update-TypeData -TypeName System.String -MemberType ScriptMethod -MemberName Contains -Value {
+        param(
+            [string]$value,
+            [System.StringComparison]$comparison)
+
+        return $this.IndexOf($value, $comparison) -ge 0
+    } -Force
+}
+
 $repositoryRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
 $artifactRoot = Join-Path $repositoryRoot 'artifacts'
 $requiredRelativePaths = @(
@@ -197,9 +209,13 @@ $requiredMarkers = [ordered]@{
         $evidenceStorageSource.Contains('incident.state NOT IN (4, 5)', [StringComparison]::Ordinal)
     RetentionCancellationInRegistration =
         $storageSource.Contains('RegisterComplianceReviewIncident(', [StringComparison]::Ordinal) -and
+        $storageSource.Contains('EnterComplianceReviewLock(cancellationToken)', [StringComparison]::Ordinal) -and
         $storageSource.Contains('cancellationToken.ThrowIfCancellationRequested()', [StringComparison]::Ordinal) -and
         $storageSource.Contains('ConfigureComplianceReviewCommand(command, cancellationToken)', [StringComparison]::Ordinal)
-    StorageImmediateTransaction = $storageSource.Contains('BeginTransaction(deferred: false)', [StringComparison]::Ordinal)
+    StorageWriteTransaction =
+        $storageSource.Contains('BeginComplianceReviewWriteTransaction(', [StringComparison]::Ordinal) -and
+        $storageSource.Contains('transaction = _connection.BeginTransaction(deferred: true)', [StringComparison]::Ordinal) -and
+        $storageSource.Contains('ExecuteComplianceReviewWriteLockSlice(', [StringComparison]::Ordinal)
     SchemaVersionFourIsCurrent = $storeModelsSource.Contains('CurrentSchemaVersion = 4', [StringComparison]::Ordinal)
     StorageCurrentAuthority = $storageSource.Contains('ReadCurrentAssignmentRoleCore', [StringComparison]::Ordinal)
     RoleHistoryAppendOnly =
@@ -441,6 +457,7 @@ $requiredMarkers = [ordered]@{
         $reviewStorageTestSource.Contains('OrdinarySqlCannotAppendUndeclaredEvidenceToAcceptedReviewEvent', [StringComparison]::Ordinal) -and
         $reviewStorageTestSource.Contains('TamperedSequenceOneEvidenceLinksBlockSequenceTwoAppend', [StringComparison]::Ordinal) -and
         $reviewStorageTestSource.Contains('BlockedComplianceReviewOperationObservesCancellationBeforeMutation', [StringComparison]::Ordinal) -and
+        $reviewStorageTestSource.Contains('RegisterComplianceReviewIncidentCancellationWhileWaitingForStoreLockFailsClosed', [StringComparison]::Ordinal) -and
         $processAuthorizerTestSource.Contains('ExactAdmittedProcessRequiresAStableHeldIdentity', [StringComparison]::Ordinal) -and
         $processAuthorizerTestSource.Contains('DescendantWithMonotonicCreationTimesIsAccepted', [StringComparison]::Ordinal) -and
         $processAuthorizerTestSource.Contains('CreationTimeInversionNearAdmittedRootRejectsPidReuseSimulation', [StringComparison]::Ordinal) -and
@@ -522,12 +539,22 @@ $cliAssembly = Join-Path $artifactRoot "bin\HerdrOps.Cli\$($Configuration.ToLowe
 if (-not (Test-Path -LiteralPath $cliAssembly -PathType Leaf)) {
     throw "The built HerdrOps CLI is missing: $cliAssembly"
 }
-$pipeOverrideOutput = @(& dotnet $cliAssembly review --input - --pipe-name same-user-fake-server 2>&1)
-$pipeOverrideExitCode = $LASTEXITCODE
+$savedErrorActionPreference = $ErrorActionPreference
+try {
+    # Windows PowerShell 5.1 promotes native stderr to NativeCommandError when
+    # EAP is Stop. This probe intentionally expects stderr and exit code 64.
+    $ErrorActionPreference = 'Continue'
+    $pipeOverrideOutput = @(& dotnet $cliAssembly review --input - --pipe-name same-user-fake-server 2>&1)
+    $pipeOverrideExitCode = $LASTEXITCODE
+}
+finally {
+    $ErrorActionPreference = $savedErrorActionPreference
+}
+$pipeOverrideText = @($pipeOverrideOutput | ForEach-Object { [string]$_ }) -join "`n"
 if ($pipeOverrideExitCode -ne 64 -or
-    ($pipeOverrideOutput -join "`n") -notmatch 'invalid-arguments' -or
-    ($pipeOverrideOutput -join "`n") -notmatch '\-\-pipe-name') {
-    throw "The built review CLI did not reject a public pipe override: exit=$pipeOverrideExitCode output=$($pipeOverrideOutput -join ' | ')"
+    $pipeOverrideText -notmatch 'invalid-arguments' -or
+    $pipeOverrideText -notmatch '\-\-pipe-name') {
+    throw "The built review CLI did not reject a public pipe override: exit=$pipeOverrideExitCode output=$pipeOverrideText"
 }
 
 $runId = "$([DateTime]::UtcNow.ToString('yyyyMMddTHHmmssfffffffZ', [Globalization.CultureInfo]::InvariantCulture))-$([Guid]::NewGuid().ToString('N').Substring(0, 8))"
@@ -665,6 +692,7 @@ $requiredChecks = @(
     'RetentionWriteReservationSerializesConcurrentReviewBinding',
     'CommittedRetentionEventRecoversAfterCrashBeforePendingDelete',
     'NewReviewRegistrationUsesBoundedBusySlicesAndCancellation',
+    'RegisterComplianceReviewIncidentCancellationWhileWaitingForStoreLockFailsClosed',
     'IncidentStateClassifiesOpenAndTerminalCorrectly'
 )
 foreach ($check in $requiredChecks) {

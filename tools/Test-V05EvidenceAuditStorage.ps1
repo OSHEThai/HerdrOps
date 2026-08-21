@@ -225,6 +225,7 @@ $requiredChecks = @(
     'RetentionWriteReservationSerializesConcurrentReviewBinding',
     'CommittedRetentionEventRecoversAfterCrashBeforePendingDelete',
     'NewReviewRegistrationUsesBoundedBusySlicesAndCancellation',
+    'RegisterComplianceReviewIncidentCancellationWhileWaitingForStoreLockFailsClosed',
     'IncidentStateClassifiesOpenAndTerminalCorrectly'
 )
 foreach ($check in $requiredChecks) {
