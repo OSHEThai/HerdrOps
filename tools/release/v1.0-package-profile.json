@@ -1,0 +1,62 @@
+{
+  "schemaVersion": 1,
+  "issue": 45,
+  "productId": "HerdrOps",
+  "displayName": "HerdrOps",
+  "packageVersion": "1.0.0",
+  "targetFramework": "net10.0-windows",
+  "runtimeIdentifier": "win-x64",
+  "configuration": "Release",
+  "publishMode": "self-contained",
+  "bundleLayout": "flat-shared-runtime",
+  "canonicalRuntimeComponent": "App",
+  "canonicalRuntimeOverlayPaths": [
+    "Microsoft.VisualBasic.dll",
+    "System.Drawing.dll",
+    "WindowsBase.dll"
+  ],
+  "sourceProject": "src\\HerdrOps.App\\HerdrOps.App.csproj",
+  "deploymentModel": "per-user-directory",
+  "installPathTemplate": "%LOCALAPPDATA%\\Programs\\HerdrOps",
+  "userDataPathTemplate": "%LOCALAPPDATA%\\HerdrOps",
+  "userDataPolicy": "retain-on-uninstall",
+  "startupPolicy": "no-startup-registration-in-preparation-slice",
+  "administratorRequired": false,
+  "runtimeUse": "not-used",
+  "releaseVersion": "v1.0.0",
+  "repository": "OSHEThai/HerdrOps",
+  "releaseTag": "v1.0.0",
+  "components": [
+    {
+      "name": "App",
+      "project": "src\\HerdrOps.App\\HerdrOps.App.csproj",
+      "assemblyName": "HerdrOps.App",
+      "outputType": "WinExe",
+      "useWpf": "true"
+    },
+    {
+      "name": "Core",
+      "project": "src\\HerdrOps.Core\\HerdrOps.Core.csproj",
+      "assemblyName": "HerdrOps.Core",
+      "outputType": "Exe",
+      "useWpf": ""
+    },
+    {
+      "name": "Cli",
+      "project": "src\\HerdrOps.Cli\\HerdrOps.Cli.csproj",
+      "assemblyName": "HerdrOps.Cli",
+      "outputType": "Exe",
+      "useWpf": ""
+    }
+  ],
+  "releaseDocuments": [
+    "docs/release/v1.0.0/release-notes.en.md",
+    "docs/release/v1.0.0/release-notes.th.md",
+    "docs/release/v1.0.0/user-guide.en.md",
+    "docs/release/v1.0.0/user-guide.th.md",
+    "docs/release/v1.0.0/upgrade-rollback.en.md",
+    "docs/release/v1.0.0/upgrade-rollback.th.md",
+    "docs/release/v1.0.0/troubleshooting.en.md",
+    "docs/release/v1.0.0/troubleshooting.th.md"
+  ]
+}
