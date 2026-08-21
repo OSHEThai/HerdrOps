@@ -13,6 +13,8 @@ jobs:
   build-test:
     runs-on: windows-latest
     timeout-minutes: 30
+    env:
+      HERDOPS_V02_LIVE_WIDGET_RUN_TOKEN: ${{ github.run_id }}-${{ github.run_attempt }}
 
     steps:
       - name: Checkout
@@ -139,7 +141,7 @@ jobs:
 
       - name: Run v0.2 live Widgets implementation gate
         shell: pwsh
-        run: ./tools/Test-V02LiveWidgets.ps1 -Configuration Release -SkipBuild
+        run: ./tools/Test-V02LiveWidgets.ps1 -Configuration Release -SkipBuild -RunToken $env:HERDOPS_V02_LIVE_WIDGET_RUN_TOKEN
 
       - name: Run v0.2 Thai and English language-mode gate
         shell: pwsh

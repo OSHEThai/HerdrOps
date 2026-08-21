@@ -3,7 +3,9 @@ param(
     [ValidateSet('Debug', 'Release')]
     [string]$Configuration = 'Release',
 
-    [switch]$SkipBuild
+    [switch]$SkipBuild,
+
+    [string]$RunToken = ''
 )
 
 Set-StrictMode -Version Latest
@@ -12,20 +14,50 @@ $ErrorActionPreference = 'Stop'
 $repositoryRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
 $artifactRoot = Join-Path $repositoryRoot 'artifacts'
 $testResultRoot = Join-Path $artifactRoot 'test-results'
+. (Join-Path $PSScriptRoot 'lib\V02LiveWidgetsProvenance.ps1')
+
+$sourceCommit = Get-V02LiveWidgetsSourceCommit -RepositoryRoot $repositoryRoot
+if ([string]::IsNullOrWhiteSpace($RunToken)) { $RunToken = [string]$env:HERDOPS_V02_LIVE_WIDGET_RUN_TOKEN }
+if ([string]::IsNullOrWhiteSpace($RunToken) -and -not $SkipBuild) { $RunToken = [guid]::NewGuid().ToString('N') }
+if ($RunToken -notmatch '^[A-Za-z0-9._-]{8,128}$') { throw 'RunToken must be an explicit safe token of 8-128 characters.' }
+$env:HERDOPS_V02_LIVE_WIDGET_RUN_TOKEN = $RunToken
+$env:HERDOPS_V02_LIVE_WIDGET_SOURCE_COMMIT = $sourceCommit
+$manifestPath = Get-V02LiveWidgetsRunManifestPath -ArtifactRoot $artifactRoot
+$runStartedUtc = [DateTimeOffset]::UtcNow
+
+if (-not $SkipBuild) {
+    New-Item -ItemType Directory -Path (Split-Path -Parent $manifestPath) -Force | Out-Null
+    [pscustomobject]@{
+        Schema = 'v0.2.issue-10.live-widget-run.v1'
+        RunToken = $RunToken
+        SourceCommit = $sourceCommit
+        StartedUtc = $runStartedUtc.ToString('O')
+        FinishedUtc = $null
+    } | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $manifestPath -Encoding utf8
+}
 
 if (-not $SkipBuild) {
     & (Join-Path $PSScriptRoot 'Invoke-Build.ps1') -Configuration $Configuration -VerifyFormat
     if ($LASTEXITCODE -ne 0) {
         throw "v0.2 live-widgets implementation gate failed with exit code $LASTEXITCODE."
     }
+
+    $runFinishedUtc = [DateTimeOffset]::UtcNow
+    [pscustomobject]@{
+        Schema = 'v0.2.issue-10.live-widget-run.v1'
+        RunToken = $RunToken
+        SourceCommit = $sourceCommit
+        StartedUtc = $runStartedUtc.ToString('O')
+        FinishedUtc = $runFinishedUtc.ToString('O')
+    } | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $manifestPath -Encoding utf8
 }
 
-$testResults = @(Get-ChildItem -LiteralPath $testResultRoot -Filter '*.trx' -File |
-    Sort-Object LastWriteTimeUtc -Descending |
-    Select-Object -First 4)
-if ($testResults.Count -lt 4) {
-    throw "Expected TRX output from four test projects, found $($testResults.Count)."
-}
+$manifest = Read-V02LiveWidgetsJson -Path $manifestPath
+$runWindow = Assert-V02LiveWidgetsRunManifest -Manifest $manifest -ExpectedCommit $sourceCommit -ExpectedToken $RunToken
+$runStartedUtc = $runWindow.StartedUtc
+$runFinishedUtc = $runWindow.FinishedUtc
+
+$testResults = @(Get-V02LiveWidgetsTrxSet -Directory $testResultRoot -StartedUtc $runStartedUtc -FinishedUtc $runFinishedUtc)
 
 $combinedTestLog = ($testResults | ForEach-Object {
     Get-Content -LiteralPath $_.FullName -Raw
@@ -69,6 +101,17 @@ if ($totalTests -le 0 -or $failedTests -ne 0 -or $totalTests -ne $passedTests) {
 }
 
 $captureDirectory = Join-Path $artifactRoot 'design-evidence\v0.2.0\issue-10\contract-backed-wpf'
+$gateDirectory = Join-Path $artifactRoot 'release-gates\v0.2.0\issue-10'
+$captureMetadata = Read-V02LiveWidgetsJson -Path (Join-Path $gateDirectory 'live-widget-captures.json')
+Assert-V02LiveWidgetsEvidenceMetadata `
+    -Metadata $captureMetadata `
+    -ExpectedKind 'captures' `
+    -ExpectedCommit $sourceCommit `
+    -ExpectedToken $RunToken `
+    -EvidenceDirectory $captureDirectory `
+    -ExpectedNames @('compact.png', 'normal.png', 'floating-vertical.png') `
+    -StartedUtc $runStartedUtc `
+    -FinishedUtc $runFinishedUtc
 $requiredCaptures = @(
     'compact.png',
     'normal.png',
@@ -94,6 +137,16 @@ if (-not (Test-Path -LiteralPath $measurementPath -PathType Leaf)) {
     throw "Required contract-backed widget measurement is missing: $measurementPath"
 }
 $measurement = Get-Content -LiteralPath $measurementPath -Raw
+$measurementMetadata = Read-V02LiveWidgetsJson -Path (Join-Path $gateDirectory 'live-widget-measurement.json')
+Assert-V02LiveWidgetsEvidenceMetadata `
+    -Metadata $measurementMetadata `
+    -ExpectedKind 'measurement' `
+    -ExpectedCommit $sourceCommit `
+    -ExpectedToken $RunToken `
+    -EvidenceDirectory (Split-Path -Parent $measurementPath) `
+    -ExpectedNames @('contract-backed-widget-measurement.txt') `
+    -StartedUtc $runStartedUtc `
+    -FinishedUtc $runFinishedUtc
 $requiredMeasurementMarkers = @(
     'EvidenceClass: Synthetic',
     'Samples: 200',
@@ -120,18 +173,17 @@ if ($p95Milliseconds -gt 250) {
 }
 $measurementHash = (Get-FileHash -LiteralPath $measurementPath -Algorithm SHA256).Hash
 
-$gateDirectory = Join-Path $artifactRoot 'release-gates\v0.2.0\issue-10'
 New-Item -ItemType Directory -Path $gateDirectory -Force | Out-Null
 $reportPath = Join-Path $gateDirectory 'gate-report.txt'
-$commit = (& git -C $repositoryRoot rev-parse HEAD).Trim()
-if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($commit)) {
-    throw 'Could not resolve the source commit for the v0.2 live-widgets implementation gate.'
-}
+$commit = $sourceCommit
 
 $report = @(
     'HerdrOps v0.2 Issue #10 Live Widgets Implementation Gate',
     "GeneratedUtc: $([DateTime]::UtcNow.ToString('O'))",
     "Commit: $commit",
+    "RunToken: $RunToken",
+    "RunStartedUtc: $($runStartedUtc.ToString('O'))",
+    "RunFinishedUtc: $($runFinishedUtc.ToString('O'))",
     'Result: IMPLEMENTATION READY / PARTIAL',
     'ImplementationGate: PASS',
     'IssueAcceptance: PENDING',
