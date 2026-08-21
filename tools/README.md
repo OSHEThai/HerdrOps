@@ -57,6 +57,11 @@ $targetAgentLabSocket = Join-Path $env:APPDATA 'herdr\herdr.sock'
 # This remains implementation-only until actual live collector evidence exists.
 ./tools/Test-V03RealtimeActivity.ps1
 
+# From an authorized Herdr pane, capture an actual Agent-status transition through
+# the v0.3 ActivityEventPipeline for Issue #13. This never creates a transition
+# or invokes Herdr session control and fails closed without Runtime evidence.
+./tools/Invoke-V03Issue13RealtimeActivityRuntimeAcceptance.ps1
+
 # Verify the fixed bounded pane.read path, terminal redaction, PID/source
 # correlation, PID-reuse protection, CPU/memory telemetry, and expiry.
 # This remains partial until the authorized Herdr runtime trace is captured.

@@ -45,6 +45,11 @@ $testRuns = @(
         Project = Join-Path $repositoryRoot 'tests\HerdrOps.RuntimeTests\HerdrOps.RuntimeTests.csproj'
         Filter = 'FullyQualifiedName~RealtimeActivityRenderingTests'
         Log = 'realtime-activity-rendering.trx'
+    },
+    [pscustomobject]@{
+        Project = Join-Path $repositoryRoot 'tests\HerdrOps.IntegrationTests\HerdrOps.IntegrationTests.csproj'
+        Filter = 'FullyQualifiedName~HerdrRealtimeActivityRuntimeTraceCommandTests'
+        Log = 'realtime-activity-runtime-trace.trx'
     }
 )
 foreach ($testRun in $testRuns) {
@@ -62,8 +67,8 @@ foreach ($testRun in $testRuns) {
 }
 
 $testResults = @(Get-ChildItem -LiteralPath $testResultDirectory -Filter '*.trx' -File)
-if ($testResults.Count -ne 2) {
-    throw "Expected exactly 2 fresh Realtime Activity TRX files, found $($testResults.Count)."
+if ($testResults.Count -ne 3) {
+    throw "Expected exactly 3 fresh Realtime Activity TRX files, found $($testResults.Count)."
 }
 
 $combinedTestLog = ($testResults | ForEach-Object {
@@ -75,7 +80,11 @@ $requiredChecks = @(
     'PagingIsStableAndNeverExceedsTheDeclaredHistoryBound',
     'LanguageRefreshKeepsFilterIdentityWhileReplacingAllLocalizedPresentation',
     'ProductionStateFailsClosedUntilAnActualActivityStreamIsConnected',
-    'ActualWpfRealtimeActivityRendersLocalizedSynchronizedEvidence'
+    'ActualWpfRealtimeActivityRendersLocalizedSynchronizedEvidence',
+    'MissingReportIsRejectedBeforeRuntimeAdmission',
+    'InvalidDurationIsRejectedDeterministically',
+    'MissingAuthorizedHerdrEnvironmentFailsClosedWithoutWritingReport',
+    'RuntimeAdmissionFailureIsReportedWithoutWritingReport'
 )
 foreach ($check in $requiredChecks) {
     if ($combinedTestLog -notmatch [Regex]::Escape($check)) {
