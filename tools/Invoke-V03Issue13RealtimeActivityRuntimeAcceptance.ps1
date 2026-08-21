@@ -3,6 +3,14 @@ param(
     [ValidateSet('Debug', 'Release')]
     [string]$Configuration = 'Release',
 
+    [Parameter(Mandatory = $true)]
+    [ValidatePattern('^[0-9a-fA-F]{40}$')]
+    [string]$ExpectedSourceCommit,
+
+    [Parameter(Mandatory = $true)]
+    [ValidatePattern('^[0-9a-fA-F]{40}$')]
+    [string]$ExpectedSourceTree,
+
     [ValidateRange(30, 300)]
     [int]$DurationSeconds = 120,
 
@@ -39,13 +47,37 @@ $gateReportPath = Join-Path $runDirectory 'gate-report.txt'
 New-Item -ItemType Directory -Path $runDirectory -Force | Out-Null
 
 $sourceCommit = 'UNRESOLVED'
+$sourceTree = 'UNRESOLVED'
+$preRunSourceCommit = 'NOT_OBSERVED'
+$preRunSourceTree = 'NOT_OBSERVED'
+$preRunGitTreeClean = 'NOT_OBSERVED'
+$postRunSourceCommit = 'NOT_OBSERVED'
+$postRunSourceTree = 'NOT_OBSERVED'
+$postRunGitTreeClean = 'NOT_OBSERVED'
+$reportSha256 = 'NOT_OBSERVED'
+$gateReportSha256 = 'NOT_OBSERVED'
 $process = $null
 try {
     if ($env:HERDR_ENV -ne '1') {
         throw 'AuthorizedHerdrEnvironmentRequired: set HERDR_ENV=1 and run this from an authorized Herdr pane.'
     }
 
-    $sourceCommit = Get-CleanSourceCommit -RepositoryRoot $repositoryRoot
+    $artifactIdentity = Get-RuntimeArtifactRunIdentity `
+        -IssueEvidenceRoot $issueEvidenceRoot `
+        -RunId $runId `
+        -RunDirectory $runDirectory `
+        -ReportPath $reportPath `
+        -GateReportPath $gateReportPath
+
+    $sourceIdentity = Get-ExpectedCleanSourceIdentity `
+        -RepositoryRoot $repositoryRoot `
+        -ExpectedSourceCommit $ExpectedSourceCommit `
+        -ExpectedSourceTree $ExpectedSourceTree
+    $sourceCommit = $sourceIdentity.SourceCommit
+    $sourceTree = $sourceIdentity.SourceTree
+    $preRunSourceCommit = $sourceIdentity.SourceCommit
+    $preRunSourceTree = $sourceIdentity.SourceTree
+    $preRunGitTreeClean = [string]$sourceIdentity.GitTreeClean
     $controlSession = Get-ControlHerdrServerIdentity -ExpectedExecutablePath $HerdrExecutable
 
     if (-not $SkipBuild) {
@@ -83,19 +115,53 @@ try {
         throw "CaptureFailed: trace-herdr-realtime-activity exited with code $($process.ExitCode). See $stderrPath. If no Agent status changed during the window, re-run and trigger a transition."
     }
 
+    $reportSha256BeforeValidation = Get-FileSha256IfExists -Path $reportPath
+    if ($reportSha256BeforeValidation -notmatch '^[0-9A-Fa-f]{64}$') {
+        throw "MissingEvidence: runtime report hash is unavailable: $reportPath"
+    }
+
     $reportObject = Assert-RuntimeCaptureReport `
         -ReportPath $reportPath `
         -RequiredTrueFields @('activityEventObserved', 'activityEmissionObserved') `
         -NotBeforeUtc $notBeforeUtc `
         -ExpectedExecutableSha256 $controlSession.ExecutableSha256
 
-    $transcriptSha256 = Get-FileSha256IfExists -Path $reportPath
-    Assert-NotReplayedTranscript -LedgerPath $ledgerPath -TranscriptSha256 $transcriptSha256
+    $reportSha256 = Get-FileSha256IfExists -Path $reportPath
+    if ($reportSha256 -notmatch '^[0-9A-Fa-f]{64}$') {
+        throw "MissingEvidence: runtime report hash became unavailable: $reportPath"
+    }
+    if ($reportSha256 -cne $reportSha256BeforeValidation) {
+        throw "EvidenceChanged: runtime report changed while it was being validated: before=$reportSha256BeforeValidation after=$reportSha256"
+    }
+
+    Assert-NotReplayedTranscript -LedgerPath $ledgerPath -TranscriptSha256 $reportSha256
+
+    $postSourceIdentity = Get-ExpectedCleanSourceIdentity `
+        -RepositoryRoot $repositoryRoot `
+        -ExpectedSourceCommit $ExpectedSourceCommit `
+        -ExpectedSourceTree $ExpectedSourceTree
+    $postRunSourceCommit = $postSourceIdentity.SourceCommit
+    $postRunSourceTree = $postSourceIdentity.SourceTree
+    $postRunGitTreeClean = [string]$postSourceIdentity.GitTreeClean
+    if ($postRunSourceCommit -cne $preRunSourceCommit -or $postRunSourceTree -cne $preRunSourceTree) {
+        throw "SourceIdentityChanged: pre-run=$preRunSourceCommit/$preRunSourceTree post-run=$postRunSourceCommit/$postRunSourceTree"
+    }
 
     $gateReport = @(
         'HerdrOps v0.3 Issue #13 Realtime Activity Runtime Acceptance',
         "GeneratedUtc: $([DateTimeOffset]::UtcNow.ToString('O'))",
+        "RunId: $($artifactIdentity.RunId)",
+        "ArtifactRunDirectory: $($artifactIdentity.RunDirectory)",
+        "ExpectedSourceCommit: $($ExpectedSourceCommit.ToLowerInvariant())",
+        "ExpectedSourceTree: $($ExpectedSourceTree.ToLowerInvariant())",
         "SourceCommit: $sourceCommit",
+        "SourceTree: $sourceTree",
+        "PreRunSourceCommit: $preRunSourceCommit",
+        "PreRunSourceTree: $preRunSourceTree",
+        "PreRunGitTreeClean: $preRunGitTreeClean",
+        "PostRunSourceCommit: $postRunSourceCommit",
+        "PostRunSourceTree: $postRunSourceTree",
+        "PostRunGitTreeClean: $postRunGitTreeClean",
         'Result: PASS',
         'EvidenceClass: Runtime',
         'SessionControlInvoked: false',
@@ -104,8 +170,8 @@ try {
         "ControlSessionExecutableSha256: $($controlSession.ExecutableSha256)",
         "RequestedDurationSeconds: $DurationSeconds",
         "TimeoutSeconds: $TimeoutSeconds",
-        "ReportPath: $reportPath",
-        "ReportSha256: $transcriptSha256",
+        "ReportPath: $($artifactIdentity.ReportPath)",
+        "ReportSha256: $reportSha256",
         "RuntimeObserved: $($reportObject.runtimeObserved)",
         "ActivityEventObserved: $($reportObject.activityEventObserved)",
         "ActivityEmissionObserved: $($reportObject.activityEmissionObserved)",
@@ -118,9 +184,14 @@ try {
         'It does not prove Task correlation, notification delivery, restart persistence, independent review, or v0.3 release readiness. Issue #13 acceptance remains a separate step.'
     )
     $gateReport | Set-Content -LiteralPath $gateReportPath -Encoding utf8
-    Add-TranscriptLedgerEntry -LedgerPath $ledgerPath -TranscriptSha256 $transcriptSha256
+    $gateReportSha256 = Get-FileSha256IfExists -Path $gateReportPath
+    if ($gateReportSha256 -notmatch '^[0-9A-Fa-f]{64}$') {
+        throw "GateReportWriteFailed: gate report hash is unavailable: $gateReportPath"
+    }
+    Add-TranscriptLedgerEntry -LedgerPath $ledgerPath -TranscriptSha256 $reportSha256
     $gateReport | Write-Output
     Write-Output "GateReport: $gateReportPath"
+    Write-Output "GateReportSha256: $gateReportSha256"
 }
 catch {
     if ($null -ne $process -and -not $process.HasExited) {
@@ -130,6 +201,18 @@ catch {
     Write-RuntimeCaptureFailureReport `
         -GateReportPath $gateReportPath `
         -SourceCommit $sourceCommit `
+        -SourceTree $sourceTree `
+        -ExpectedSourceCommit $ExpectedSourceCommit `
+        -ExpectedSourceTree $ExpectedSourceTree `
+        -PreRunSourceCommit $preRunSourceCommit `
+        -PreRunSourceTree $preRunSourceTree `
+        -PreRunGitTreeClean $preRunGitTreeClean `
+        -PostRunSourceCommit $postRunSourceCommit `
+        -PostRunSourceTree $postRunSourceTree `
+        -PostRunGitTreeClean $postRunGitTreeClean `
+        -RunId $runId `
+        -ReportPath $reportPath `
+        -ReportSha256 $reportSha256 `
         -FailureMessage $_.Exception.Message
     Write-Error "The v0.3 Issue #13 runtime acceptance harness failed: $($_.Exception.Message)" -ErrorAction Continue
     exit 1

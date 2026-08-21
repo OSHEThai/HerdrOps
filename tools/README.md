@@ -59,6 +59,11 @@ $targetAgentLabSocket = Join-Path $env:APPDATA 'herdr\herdr.sock'
 # envelope, bounded pipeline, replay fixture, exact hashes, and fail-closed command.
 ./tools/Test-V03ActivityPipeline.ps1
 
+# For each later actual-runtime capture, replace both values with the separately
+# approved exact candidate identities printed by `git rev-parse` before the run.
+$expectedSourceCommit = '<approved-source-commit>'
+$expectedSourceTree = '<approved-source-tree>'
+
 # Verify the v0.3 Realtime Activity layout, five deterministic filters,
 # bounded paging, language separation, and synchronized detail/evidence panels.
 # This remains implementation-only until actual live collector evidence exists.
@@ -67,7 +72,9 @@ $targetAgentLabSocket = Join-Path $env:APPDATA 'herdr\herdr.sock'
 # From an authorized Herdr pane, capture an actual Agent-status transition through
 # the v0.3 ActivityEventPipeline for Issue #13. This never creates a transition
 # or invokes Herdr session control and fails closed without Runtime evidence.
-./tools/Invoke-V03Issue13RealtimeActivityRuntimeAcceptance.ps1
+./tools/Invoke-V03Issue13RealtimeActivityRuntimeAcceptance.ps1 `
+  -ExpectedSourceCommit $expectedSourceCommit `
+  -ExpectedSourceTree $expectedSourceTree
 
 # Verify the fixed bounded pane.read path, terminal redaction, PID/source
 # correlation, PID-reuse protection, CPU/memory telemetry, and expiry.
@@ -78,6 +85,18 @@ $targetAgentLabSocket = Join-Path $env:APPDATA 'herdr\herdr.sock'
 # fail-closed event/Agent routes, and separate Thai/English WPF rendering.
 # This remains partial until actual Herdr notification delivery is captured.
 ./tools/Test-V03NotificationRuntime.ps1
+
+# From an authorized Herdr pane, capture actual FileSystemWatcher/Git activity
+# for Issue #15. The harness does not start Herdr or invoke session control.
+./tools/Invoke-V03Issue15FileGitActivityRuntimeAcceptance.ps1 `
+  -ExpectedSourceCommit $expectedSourceCommit `
+  -ExpectedSourceTree $expectedSourceTree
+
+# From an authorized Herdr pane, capture actual notification delivery for Issue #16.
+# Trigger a real Agent-status transition during the bounded capture window.
+./tools/Invoke-V03Issue16NotificationRuntimeAcceptance.ps1 `
+  -ExpectedSourceCommit $expectedSourceCommit `
+  -ExpectedSourceTree $expectedSourceTree
 
 # Verify the v0.3 Issue #17 implementation-only aggregation and its
 # deterministic child-gate failure propagation. These checks cover only

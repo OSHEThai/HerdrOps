@@ -1,5 +1,5 @@
 # Shared provenance/validation helpers for v0.3 actual-Herdr runtime capture harnesses
-# (Issues #15 and #16). Deliberately written for both Windows PowerShell 5.1 and PowerShell 7:
+# (Issues #13, #15, and #16). Deliberately written for both Windows PowerShell 5.1 and PowerShell 7:
 # no ternary (?:), null-coalescing (??/??=), or other PS7-only operators.
 
 function Get-CleanSourceCommit {
@@ -24,6 +24,60 @@ function Get-CleanSourceCommit {
     }
 
     return $commit
+}
+
+function Get-ExpectedCleanSourceIdentity {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$RepositoryRoot,
+
+        [Parameter(Mandatory = $true)]
+        [string]$ExpectedSourceCommit,
+
+        [Parameter(Mandatory = $true)]
+        [string]$ExpectedSourceTree
+    )
+
+    $normalizedExpectedCommit = $ExpectedSourceCommit.ToLowerInvariant()
+    $normalizedExpectedTree = $ExpectedSourceTree.ToLowerInvariant()
+    if ($normalizedExpectedCommit -notmatch '^[0-9a-f]{40}$') {
+        throw 'ExpectedSourceCommit must be a 40-character hexadecimal Git commit.'
+    }
+    if ($normalizedExpectedTree -notmatch '^[0-9a-f]{40}$') {
+        throw 'ExpectedSourceTree must be a 40-character hexadecimal Git tree.'
+    }
+
+    $commitOutput = @(& git -C $RepositoryRoot rev-parse --verify 'HEAD^{commit}')
+    $commit = ($commitOutput -join '').Trim().ToLowerInvariant()
+    if ($LASTEXITCODE -ne 0 -or $commit -notmatch '^[0-9a-f]{40}$') {
+        throw 'SourceCommitResolutionFailed: could not resolve the expected source commit for the runtime capture harness.'
+    }
+
+    $treeOutput = @(& git -C $RepositoryRoot rev-parse --verify 'HEAD^{tree}')
+    $tree = ($treeOutput -join '').Trim().ToLowerInvariant()
+    if ($LASTEXITCODE -ne 0 -or $tree -notmatch '^[0-9a-f]{40}$') {
+        throw 'SourceTreeResolutionFailed: could not resolve the expected source tree for the runtime capture harness.'
+    }
+
+    $changes = @(& git -C $RepositoryRoot status --porcelain=v1 --untracked-files=all)
+    if ($LASTEXITCODE -ne 0) {
+        throw 'WorkingTreeInspectionFailed: could not inspect the repository status.'
+    }
+    if ($changes.Count -ne 0) {
+        throw "WorkingTreeDirty: runtime capture requires a clean source checkout. Changes: $($changes -join '; ')"
+    }
+    if ($commit -cne $normalizedExpectedCommit) {
+        throw "SourceCommitMismatch: expected=$normalizedExpectedCommit observed=$commit"
+    }
+    if ($tree -cne $normalizedExpectedTree) {
+        throw "SourceTreeMismatch: expected=$normalizedExpectedTree observed=$tree"
+    }
+
+    return [pscustomobject]@{
+        SourceCommit = $commit
+        SourceTree   = $tree
+        GitTreeClean = $true
+    }
 }
 
 function Test-IsAdministrator {
@@ -138,6 +192,61 @@ function Get-FileSha256IfExists {
     }
     catch {
         return 'UNAVAILABLE'
+    }
+}
+
+function Get-RuntimeArtifactRunIdentity {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$IssueEvidenceRoot,
+
+        [Parameter(Mandatory = $true)]
+        [string]$RunId,
+
+        [Parameter(Mandatory = $true)]
+        [string]$RunDirectory,
+
+        [Parameter(Mandatory = $true)]
+        [string]$ReportPath,
+
+        [Parameter(Mandatory = $true)]
+        [string]$GateReportPath
+    )
+
+    if ($RunId -notmatch '^[0-9]{8}T[0-9]{13}Z-[0-9a-fA-F]{8}$') {
+        throw "ArtifactRunIdentityInvalid: run id '$RunId' is not in the bounded runtime artifact format."
+    }
+
+    try {
+        $rootFull = [IO.Path]::GetFullPath($IssueEvidenceRoot)
+        $runFull = [IO.Path]::GetFullPath($RunDirectory)
+        $reportFull = [IO.Path]::GetFullPath($ReportPath)
+        $gateFull = [IO.Path]::GetFullPath($GateReportPath)
+    }
+    catch {
+        throw "ArtifactRunIdentityInvalid: could not normalize runtime artifact paths: $($_.Exception.Message)"
+    }
+
+    $rootFull = $rootFull.TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
+    $runParent = [IO.Path]::GetDirectoryName($runFull)
+    if (-not [StringComparer]::OrdinalIgnoreCase.Equals($runParent, $rootFull) -or
+        -not [StringComparer]::OrdinalIgnoreCase.Equals([IO.Path]::GetFileName($runFull), $RunId)) {
+        throw "ArtifactRunIdentityMismatch: run directory '$RunDirectory' is not exactly '<IssueEvidenceRoot>\\<RunId>'."
+    }
+
+    if (-not [StringComparer]::OrdinalIgnoreCase.Equals([IO.Path]::GetDirectoryName($reportFull), $runFull)) {
+        throw "ArtifactRunIdentityMismatch: runtime report '$ReportPath' is outside run '$RunId'."
+    }
+    if (-not [StringComparer]::OrdinalIgnoreCase.Equals([IO.Path]::GetDirectoryName($gateFull), $runFull)) {
+        throw "ArtifactRunIdentityMismatch: gate report '$GateReportPath' is outside run '$RunId'."
+    }
+
+    return [pscustomobject]@{
+        RunId            = $RunId
+        IssueEvidenceRoot = $rootFull
+        RunDirectory     = $runFull
+        ReportPath       = $reportFull
+        GateReportPath   = $gateFull
     }
 }
 
@@ -278,6 +387,54 @@ function Write-RuntimeCaptureFailureReport {
         [AllowEmptyString()]
         [string]$SourceCommit,
 
+        [Parameter(Mandatory = $false)]
+        [AllowEmptyString()]
+        [string]$SourceTree = 'UNRESOLVED',
+
+        [Parameter(Mandatory = $false)]
+        [AllowEmptyString()]
+        [string]$ExpectedSourceCommit = 'UNRESOLVED',
+
+        [Parameter(Mandatory = $false)]
+        [AllowEmptyString()]
+        [string]$ExpectedSourceTree = 'UNRESOLVED',
+
+        [Parameter(Mandatory = $false)]
+        [AllowEmptyString()]
+        [string]$PreRunSourceCommit = 'NOT_OBSERVED',
+
+        [Parameter(Mandatory = $false)]
+        [AllowEmptyString()]
+        [string]$PreRunSourceTree = 'NOT_OBSERVED',
+
+        [Parameter(Mandatory = $false)]
+        [AllowEmptyString()]
+        [string]$PreRunGitTreeClean = 'NOT_OBSERVED',
+
+        [Parameter(Mandatory = $false)]
+        [AllowEmptyString()]
+        [string]$PostRunSourceCommit = 'NOT_OBSERVED',
+
+        [Parameter(Mandatory = $false)]
+        [AllowEmptyString()]
+        [string]$PostRunSourceTree = 'NOT_OBSERVED',
+
+        [Parameter(Mandatory = $false)]
+        [AllowEmptyString()]
+        [string]$PostRunGitTreeClean = 'NOT_OBSERVED',
+
+        [Parameter(Mandatory = $false)]
+        [AllowEmptyString()]
+        [string]$RunId = 'UNRESOLVED',
+
+        [Parameter(Mandatory = $false)]
+        [AllowEmptyString()]
+        [string]$ReportPath = 'UNRESOLVED',
+
+        [Parameter(Mandatory = $false)]
+        [AllowEmptyString()]
+        [string]$ReportSha256 = 'NOT_OBSERVED',
+
         [Parameter(Mandatory = $true)]
         [AllowEmptyString()]
         [string]$FailureMessage
@@ -294,7 +451,19 @@ function Write-RuntimeCaptureFailureReport {
             'EvidenceClass: NoRuntimeCredit',
             'SessionControlInvoked: false',
             "GeneratedUtc: $([DateTimeOffset]::UtcNow.ToString('O'))",
+            "RunId: $RunId",
+            "ReportPath: $ReportPath",
+            "ExpectedSourceCommit: $ExpectedSourceCommit",
+            "ExpectedSourceTree: $ExpectedSourceTree",
             "SourceCommit: $SourceCommit",
+            "SourceTree: $SourceTree",
+            "PreRunSourceCommit: $PreRunSourceCommit",
+            "PreRunSourceTree: $PreRunSourceTree",
+            "PreRunGitTreeClean: $PreRunGitTreeClean",
+            "PostRunSourceCommit: $PostRunSourceCommit",
+            "PostRunSourceTree: $PostRunSourceTree",
+            "PostRunGitTreeClean: $PostRunGitTreeClean",
+            "ReportSha256: $ReportSha256",
             "Failure: $FailureMessage"
         )
         $reportLines | Set-Content -LiteralPath $GateReportPath -Encoding utf8 -ErrorAction Stop
