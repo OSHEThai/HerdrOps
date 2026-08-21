@@ -414,6 +414,38 @@ if ($shells.Count -eq 0) {
     throw 'Neither powershell.exe nor pwsh.exe is available for the Issue #41 milestone verifier smoke tests.'
 }
 
+# Missing -Version must fail before any GitHub dependency is touched. The
+# verifier must not enter PowerShell's interactive mandatory-parameter prompt,
+# including when CI invokes it with -NonInteractive.
+foreach ($shell in $shells) {
+    $missingVersionGh = Join-Path $repositoryRoot 'tests\fixtures\v1.0\issue-41\missing-gh.ps1'
+    $previousPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = 'Continue'
+        $missingVersionOutput = @(& $shell.Path `
+                -NoProfile `
+                -NonInteractive `
+                -ExecutionPolicy Bypass `
+                -File $milestoneVerifier `
+                -Repository 'example' `
+                -GhExecutable $missingVersionGh 2>&1 | ForEach-Object { [string]$_ })
+        $missingVersionExitCode = $LASTEXITCODE
+    }
+    finally {
+        $ErrorActionPreference = $previousPreference
+    }
+    $missingVersionOutputText = $missingVersionOutput -join '; '
+    if ($missingVersionExitCode -eq 0) {
+        throw "$($shell.Name) accepted a missing -Version argument (exit 0)."
+    }
+    if ($missingVersionOutputText -notmatch '(?i)-Version parameter is required') {
+        throw "$($shell.Name) missing -Version failure was not explicit: $missingVersionOutputText"
+    }
+    if ($missingVersionOutputText -match '(?i)mandatory parameter|cannot prompt|missing-gh\.ps1|gh api') {
+        throw "$($shell.Name) missing -Version validation reached an interactive/dependency path: $missingVersionOutputText"
+    }
+}
+
 foreach ($shell in $shells) {
     $previousPreference = $ErrorActionPreference
     try {
