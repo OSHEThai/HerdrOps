@@ -75,6 +75,33 @@ if (-not $SkipBuild) {
     }
 }
 
+# Run Stop-CoreProcessBounded behavioral selftests under both PowerShell engines.
+# The shared lib (tools/lib/V04ProcessCleanup.ps1) and selftest
+# (tools/Test-V04ProcessCleanupSelfTests.ps1) are load-bearing gate files in the
+# v0.4 manifest. Both engines must pass; failure throws before any implementation
+# gate runs.
+$selfTestPath = Join-Path $PSScriptRoot 'Test-V04ProcessCleanupSelfTests.ps1'
+
+# PS7 (pwsh) — required; pwsh must be on PATH in the CI environment.
+$ps7Exe = (Get-Command pwsh -ErrorAction SilentlyContinue)
+if ($null -eq $ps7Exe) {
+    throw 'pwsh (PowerShell 7) is not on PATH; behavioral selftest cannot be enforced under PS7.'
+}
+& $ps7Exe.Source -NoProfile -File $selfTestPath | Out-Host
+if ($LASTEXITCODE -ne 0) {
+    throw 'Stop-CoreProcessBounded behavioral selftests FAILED under PowerShell 7.'
+}
+
+# PS5.1 (powershell.exe) — required on Windows; powershell.exe must be on PATH.
+$ps5Exe = (Get-Command powershell.exe -ErrorAction SilentlyContinue)
+if ($null -eq $ps5Exe) {
+    throw 'powershell.exe (Windows PowerShell 5.1) is not on PATH; behavioral selftest cannot be enforced under PS5.1.'
+}
+& $ps5Exe.Source -NoProfile -File $selfTestPath | Out-Host
+if ($LASTEXITCODE -ne 0) {
+    throw 'Stop-CoreProcessBounded behavioral selftests FAILED under Windows PowerShell 5.1.'
+}
+
 $implementationGates = @(
     'Test-V04SelfReportCli.ps1',
     'Test-V04AssignmentLifecycle.ps1',
@@ -112,6 +139,7 @@ $gateReport = @(
     "SourceCommit: $sourceCommit",
     'Result: PASS',
     'ReleaseReady: true',
+    'ProcessCleanupSelfTests: PS7+PS5.1 PASS',
     'ImplementationGates: 5/5 PASS',
     'IndependentReviews: 5/5 PASS',
     'RoleDistinctRuntimeAcceptance: PASS',

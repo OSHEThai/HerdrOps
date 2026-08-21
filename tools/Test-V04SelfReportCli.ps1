@@ -206,20 +206,17 @@ function Invoke-CapturedProcess {
     return $exitCode
 }
 
-$coreArguments = @(
-    'serve-self-reports',
-    '--known-task',
-    'TASK-115',
-    '--pipe-name',
-    $pipeName,
-    '--seconds',
-    '15',
-    '--trace',
-    $tracePath
-)
+# Shared bounded process-cleanup helper (PS5.1- and PS7-compatible, no Kill(bool)).
+. (Join-Path $PSScriptRoot 'lib\V04ProcessCleanup.ps1')
+
 $coreProcess = Start-Process `
     -FilePath $coreExecutable `
-    -ArgumentList $coreArguments `
+    -ArgumentList @(
+        'serve-self-reports',
+        '--known-task', 'TASK-115',
+        '--pipe-name', $pipeName,
+        '--seconds', '15',
+        '--trace', $tracePath) `
     -RedirectStandardOutput $coreOutputPath `
     -RedirectStandardError $coreErrorPath `
     -WindowStyle Hidden `
@@ -232,16 +229,14 @@ while ([DateTime]::UtcNow -lt $readyDeadline) {
         break
     }
     if ((Test-Path -LiteralPath $coreOutputPath) -and
-        ((Get-Content -LiteralPath $coreOutputPath -Raw) -match 'self-report service ready')) {
+        ((Get-Content -LiteralPath $coreOutputPath -Raw -ErrorAction SilentlyContinue) -match 'self-report service ready')) {
         $coreReady = $true
         break
     }
     Start-Sleep -Milliseconds 50
 }
 if (-not $coreReady) {
-    if (-not $coreProcess.HasExited) {
-        $coreProcess.Kill($true)
-    }
+    Stop-CoreProcessBounded -Process $coreProcess
     throw 'The built Core self-report process did not become ready within 5 seconds.'
 }
 
@@ -262,10 +257,9 @@ $invalidExitCode = Invoke-CapturedProcess `
     -StandardErrorPath $invalidErrorPath
 
 if (-not $coreProcess.WaitForExit(20000)) {
-    $coreProcess.Kill($true)
+    Stop-CoreProcessBounded -Process $coreProcess
     throw 'The built Core self-report process did not stop after its evidence duration.'
 }
-$coreProcess.WaitForExit()
 $coreProcess.Refresh()
 $coreExitCode = if ($coreProcess.HasExited) { [int]$coreProcess.ExitCode } else { $null }
 if ($null -eq $coreExitCode -or $coreExitCode -ne 0) {
