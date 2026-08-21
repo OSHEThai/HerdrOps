@@ -331,35 +331,30 @@ try {
     Stop-StartedProcess -Process $stateProcess
 }
 
-if (-not (Test-Path -LiteralPath $herdrRuntimeReportPath -PathType Leaf)) {
-    throw "Herdr runtime report is missing: $herdrRuntimeReportPath"
-}
-
-# Run composite compliance acceptance command
-$compositeErrorPath = Join-Path $evidenceDirectory 'composite.stderr.txt'
-$compositeLines = @(& $coreExecutable `
-    'compliance-review-acceptance' `
-    '--review-trace' $reviewTracePath `
-    '--herdr-runtime-report' $herdrRuntimeReportPath `
-    '--incident-id' $incidentId `
-    '--report' $compositeReportPath 2> $compositeErrorPath)
-$compositeExitCode = $LASTEXITCODE
-if ($compositeExitCode -ne 0) {
-    $compositeError = if (Test-Path -LiteralPath $compositeErrorPath) {
-        Get-Content -LiteralPath $compositeErrorPath -Raw
-    } else {
-        ''
+    if (-not (Test-Path -LiteralPath $herdrRuntimeReportPath -PathType Leaf)) {
+        throw "Herdr runtime report is missing: $herdrRuntimeReportPath"
     }
-    throw "Composite compliance acceptance failed with exit $compositeExitCode. $compositeError"
-}
 
-$composite = Get-Content -LiteralPath $compositeReportPath -Raw | ConvertFrom-Json -Depth 128
-if ($composite.EvidenceClassification -ne 'Runtime' -or
-    -not [bool]$composite.RuntimeAccepted -or
-    [bool]$composite.SessionControlInvoked -or
-    -not [bool]$composite.Acceptance.Passed) {
-    throw 'The composite compliance report did not pass every runtime acceptance check.'
-}
+    # Run composite compliance acceptance command
+    $compositeErrorPath = Join-Path $evidenceDirectory 'composite.stderr.txt'
+    $compositeLines = @(& $coreExecutable `
+        'compliance-review-acceptance' `
+        '--review-trace' $reviewTracePath `
+        '--herdr-runtime-report' $herdrRuntimeReportPath `
+        '--incident-id' $incidentId `
+        '--report' $compositeReportPath 2> $compositeErrorPath)
+    $compositeExitCode = $LASTEXITCODE
+    if ($compositeExitCode -ne 0) {
+        $compositeError = if (Test-Path -LiteralPath $compositeErrorPath) {
+            Get-Content -LiteralPath $compositeErrorPath -Raw
+        } else {
+            ''
+        }
+        throw "Composite compliance acceptance failed with exit $compositeExitCode. $compositeError"
+    }
+
+    $composite = Assert-V05CompositeRuntimeReport -ReportPath $compositeReportPath
+    $herdrRuntime = Assert-V05HerdrRuntimeReport -ReportPath $herdrRuntimeReportPath
 
     $verifiedSourceIdentity = Assert-CleanSourceIdentity `
         -Root $repositoryRoot `
@@ -377,7 +372,10 @@ if ($composite.EvidenceClassification -ne 'Runtime' -or
         "SourceTree: $sourceTree",
         'Result: PASS',
         'EvidenceClass: Runtime',
-        'RuntimeAccepted: true',
+        'RuntimeObserved: true',
+        'SnapshotObserved: true',
+        'EventObserved: true',
+        'ReconnectObserved: true',
         'SessionControlInvoked: false',
         "CompositeRuntimeReportSha256: $compositeSha256",
         "HerdrRuntimeReportSha256: $herdrRuntimeSha256",

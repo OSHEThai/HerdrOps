@@ -214,6 +214,378 @@ try {
     Assert-Condition -Condition ($readmeText -match '\$expectedSourceTree\s*=') -Message 'tools/README.md defines $expectedSourceTree placeholder'
     Assert-Condition -Condition ($readmeText -match 'Invoke-V05ComplianceRuntimeAcceptance\.ps1[\s\S]*?-ExpectedSourceCommit') -Message 'tools/README.md includes -ExpectedSourceCommit parameter'
     Assert-Condition -Condition ($readmeText -match 'Invoke-V05ComplianceRuntimeAcceptance\.ps1[\s\S]*?-ExpectedSourceTree') -Message 'tools/README.md includes -ExpectedSourceTree parameter'
+
+    # 12. Assert-V05JsonBooleanProperty unit tests
+    $dummyObj = [pscustomobject]@{
+        BoolTrue = $true
+        BoolFalse = $false
+        StringTrue = 'true'
+        StringFalse = 'false'
+        NumericOne = 1
+        NumericZero = 0
+        NullProp = $null
+    }
+
+    # Positive: CLR Boolean true and false
+    $boolTruePassed = $true
+    try {
+        Assert-V05JsonBooleanProperty -TargetObject $dummyObj -PropertyName 'BoolTrue' -ExpectedValue $true -ContextPath 'test.json'
+    } catch {
+        $boolTruePassed = $false
+    }
+    Assert-Condition -Condition $boolTruePassed -Message 'Assert-V05JsonBooleanProperty accepts valid CLR Boolean true'
+
+    $boolFalsePassed = $true
+    try {
+        Assert-V05JsonBooleanProperty -TargetObject $dummyObj -PropertyName 'BoolFalse' -ExpectedValue $false -ContextPath 'test.json'
+    } catch {
+        $boolFalsePassed = $false
+    }
+    Assert-Condition -Condition $boolFalsePassed -Message 'Assert-V05JsonBooleanProperty accepts valid CLR Boolean false'
+
+    # Negative: boolean value mismatch
+    Assert-ThrowsPrefix `
+        -ScriptBlock { Assert-V05JsonBooleanProperty -TargetObject $dummyObj -PropertyName 'BoolTrue' -ExpectedValue $false -ContextPath 'test.json' } `
+        -ExpectedPrefix "JSON property 'BoolTrue' is True (expected False)" `
+        -Message 'Assert-V05JsonBooleanProperty rejects Boolean value mismatch'
+
+    # Negative: string 'true' / 'false'
+    Assert-ThrowsPrefix `
+        -ScriptBlock { Assert-V05JsonBooleanProperty -TargetObject $dummyObj -PropertyName 'StringTrue' -ExpectedValue $true -ContextPath 'test.json' } `
+        -ExpectedPrefix "JSON property 'StringTrue' must be a CLR Boolean, but found 'System.String'" `
+        -Message 'Assert-V05JsonBooleanProperty rejects string "true"'
+
+    Assert-ThrowsPrefix `
+        -ScriptBlock { Assert-V05JsonBooleanProperty -TargetObject $dummyObj -PropertyName 'StringFalse' -ExpectedValue $false -ContextPath 'test.json' } `
+        -ExpectedPrefix "JSON property 'StringFalse' must be a CLR Boolean, but found 'System.String'" `
+        -Message 'Assert-V05JsonBooleanProperty rejects string "false"'
+
+    # Negative: numeric 1 / 0
+    Assert-ThrowsPrefix `
+        -ScriptBlock { Assert-V05JsonBooleanProperty -TargetObject $dummyObj -PropertyName 'NumericOne' -ExpectedValue $true -ContextPath 'test.json' } `
+        -ExpectedPrefix "JSON property 'NumericOne' must be a CLR Boolean, but found 'System.Int32'" `
+        -Message 'Assert-V05JsonBooleanProperty rejects numeric 1'
+
+    Assert-ThrowsPrefix `
+        -ScriptBlock { Assert-V05JsonBooleanProperty -TargetObject $dummyObj -PropertyName 'NumericZero' -ExpectedValue $false -ContextPath 'test.json' } `
+        -ExpectedPrefix "JSON property 'NumericZero' must be a CLR Boolean, but found 'System.Int32'" `
+        -Message 'Assert-V05JsonBooleanProperty rejects numeric 0'
+
+    # Negative: missing property
+    Assert-ThrowsPrefix `
+        -ScriptBlock { Assert-V05JsonBooleanProperty -TargetObject $dummyObj -PropertyName 'NonExistent' -ExpectedValue $true -ContextPath 'test.json' } `
+        -ExpectedPrefix "JSON object is missing required boolean property 'NonExistent'" `
+        -Message 'Assert-V05JsonBooleanProperty rejects missing property'
+
+    # Negative: null property
+    Assert-ThrowsPrefix `
+        -ScriptBlock { Assert-V05JsonBooleanProperty -TargetObject $dummyObj -PropertyName 'NullProp' -ExpectedValue $true -ContextPath 'test.json' } `
+        -ExpectedPrefix "JSON property 'NullProp' value is null" `
+        -Message 'Assert-V05JsonBooleanProperty rejects null property value'
+
+    # 13. Assert-V05CompositeRuntimeReport positive and negative hostile tests
+    $validCompositeJson = [ordered]@{
+        EvidenceClassification = 'Runtime'
+        RuntimeAccepted = $true
+        SessionControlInvoked = $false
+        Acceptance = [ordered]@{
+            Passed = $true
+        }
+    }
+
+    $compPath = Join-Path $scratchRoot 'composite-test.json'
+    [IO.File]::WriteAllText($compPath, ($validCompositeJson | ConvertTo-Json -Depth 5), [Text.UTF8Encoding]::new($false))
+    $parsedComp = Assert-V05CompositeRuntimeReport -ReportPath $compPath
+    Assert-Condition -Condition ($null -ne $parsedComp -and [bool]$parsedComp.RuntimeAccepted -and -not [bool]$parsedComp.SessionControlInvoked) -Message 'Assert-V05CompositeRuntimeReport parses valid composite report'
+
+    # Composite: non-Runtime EvidenceClassification
+    $badClassComp = [ordered]@{
+        EvidenceClassification = 'Synthetic'
+        RuntimeAccepted = $true
+        SessionControlInvoked = $false
+        Acceptance = [ordered]@{ Passed = $true }
+    }
+    [IO.File]::WriteAllText($compPath, ($badClassComp | ConvertTo-Json -Depth 5), [Text.UTF8Encoding]::new($false))
+    Assert-ThrowsPrefix `
+        -ScriptBlock { Assert-V05CompositeRuntimeReport -ReportPath $compPath } `
+        -ExpectedPrefix 'Composite compliance report EvidenceClassification must be string' `
+        -Message 'Assert-V05CompositeRuntimeReport rejects non-Runtime EvidenceClassification'
+
+    # Composite: RuntimeAccepted = false
+    $badRuntimeComp = [ordered]@{
+        EvidenceClassification = 'Runtime'
+        RuntimeAccepted = $false
+        SessionControlInvoked = $false
+        Acceptance = [ordered]@{ Passed = $true }
+    }
+    [IO.File]::WriteAllText($compPath, ($badRuntimeComp | ConvertTo-Json -Depth 5), [Text.UTF8Encoding]::new($false))
+    Assert-ThrowsPrefix `
+        -ScriptBlock { Assert-V05CompositeRuntimeReport -ReportPath $compPath } `
+        -ExpectedPrefix "JSON property 'RuntimeAccepted' is False (expected True)" `
+        -Message 'Assert-V05CompositeRuntimeReport rejects RuntimeAccepted = false'
+
+    # Composite: RuntimeAccepted = 'true' (string)
+    $badRuntimeStrComp = [ordered]@{
+        EvidenceClassification = 'Runtime'
+        RuntimeAccepted = 'true'
+        SessionControlInvoked = $false
+        Acceptance = [ordered]@{ Passed = $true }
+    }
+    [IO.File]::WriteAllText($compPath, ($badRuntimeStrComp | ConvertTo-Json -Depth 5), [Text.UTF8Encoding]::new($false))
+    Assert-ThrowsPrefix `
+        -ScriptBlock { Assert-V05CompositeRuntimeReport -ReportPath $compPath } `
+        -ExpectedPrefix "JSON property 'RuntimeAccepted' must be a CLR Boolean" `
+        -Message 'Assert-V05CompositeRuntimeReport rejects string RuntimeAccepted'
+
+    # Composite: SessionControlInvoked = true
+    $badSessionComp = [ordered]@{
+        EvidenceClassification = 'Runtime'
+        RuntimeAccepted = $true
+        SessionControlInvoked = $true
+        Acceptance = [ordered]@{ Passed = $true }
+    }
+    [IO.File]::WriteAllText($compPath, ($badSessionComp | ConvertTo-Json -Depth 5), [Text.UTF8Encoding]::new($false))
+    Assert-ThrowsPrefix `
+        -ScriptBlock { Assert-V05CompositeRuntimeReport -ReportPath $compPath } `
+        -ExpectedPrefix "JSON property 'SessionControlInvoked' is True (expected False)" `
+        -Message 'Assert-V05CompositeRuntimeReport rejects SessionControlInvoked = true'
+
+    # Composite: Missing Acceptance
+    $noAcceptanceComp = [ordered]@{
+        EvidenceClassification = 'Runtime'
+        RuntimeAccepted = $true
+        SessionControlInvoked = $false
+    }
+    [IO.File]::WriteAllText($compPath, ($noAcceptanceComp | ConvertTo-Json -Depth 5), [Text.UTF8Encoding]::new($false))
+    Assert-ThrowsPrefix `
+        -ScriptBlock { Assert-V05CompositeRuntimeReport -ReportPath $compPath } `
+        -ExpectedPrefix 'Composite compliance report is missing Acceptance object' `
+        -Message 'Assert-V05CompositeRuntimeReport rejects missing Acceptance'
+
+    # Composite: Acceptance.Passed = false
+    $badPassedComp = [ordered]@{
+        EvidenceClassification = 'Runtime'
+        RuntimeAccepted = $true
+        SessionControlInvoked = $false
+        Acceptance = [ordered]@{ Passed = $false }
+    }
+    [IO.File]::WriteAllText($compPath, ($badPassedComp | ConvertTo-Json -Depth 5), [Text.UTF8Encoding]::new($false))
+    Assert-ThrowsPrefix `
+        -ScriptBlock { Assert-V05CompositeRuntimeReport -ReportPath $compPath } `
+        -ExpectedPrefix "JSON property 'Passed' is False (expected True)" `
+        -Message 'Assert-V05CompositeRuntimeReport rejects Acceptance.Passed = false'
+
+    # 14. Assert-V05HerdrRuntimeReport positive and negative hostile tests
+    $validHerdrJson = [ordered]@{
+        EvidenceClassification = 'Runtime'
+        RuntimeObserved = $true
+        SnapshotObserved = $true
+        EventObserved = $true
+        ReconnectObserved = $true
+        SessionControlInvoked = $false
+    }
+
+    $herdrPath = Join-Path $scratchRoot 'herdr-test.json'
+    [IO.File]::WriteAllText($herdrPath, ($validHerdrJson | ConvertTo-Json -Depth 5), [Text.UTF8Encoding]::new($false))
+    $parsedHerdr = Assert-V05HerdrRuntimeReport -ReportPath $herdrPath
+    Assert-Condition -Condition ($null -ne $parsedHerdr -and [bool]$parsedHerdr.RuntimeObserved -and [bool]$parsedHerdr.SnapshotObserved -and [bool]$parsedHerdr.EventObserved -and [bool]$parsedHerdr.ReconnectObserved -and -not [bool]$parsedHerdr.SessionControlInvoked) -Message 'Assert-V05HerdrRuntimeReport parses valid Herdr runtime report'
+
+    # Herdr: RuntimeObserved = false
+    $badRuntimeHerdr = [ordered]@{
+        EvidenceClassification = 'Runtime'
+        RuntimeObserved = $false
+        SnapshotObserved = $true
+        EventObserved = $true
+        ReconnectObserved = $true
+        SessionControlInvoked = $false
+    }
+    [IO.File]::WriteAllText($herdrPath, ($badRuntimeHerdr | ConvertTo-Json -Depth 5), [Text.UTF8Encoding]::new($false))
+    Assert-ThrowsPrefix `
+        -ScriptBlock { Assert-V05HerdrRuntimeReport -ReportPath $herdrPath } `
+        -ExpectedPrefix "JSON property 'RuntimeObserved' is False (expected True)" `
+        -Message 'Assert-V05HerdrRuntimeReport rejects RuntimeObserved = false'
+
+    # Herdr: SnapshotObserved = false
+    $badSnapshotHerdr = [ordered]@{
+        EvidenceClassification = 'Runtime'
+        RuntimeObserved = $true
+        SnapshotObserved = $false
+        EventObserved = $true
+        ReconnectObserved = $true
+        SessionControlInvoked = $false
+    }
+    [IO.File]::WriteAllText($herdrPath, ($badSnapshotHerdr | ConvertTo-Json -Depth 5), [Text.UTF8Encoding]::new($false))
+    Assert-ThrowsPrefix `
+        -ScriptBlock { Assert-V05HerdrRuntimeReport -ReportPath $herdrPath } `
+        -ExpectedPrefix "JSON property 'SnapshotObserved' is False (expected True)" `
+        -Message 'Assert-V05HerdrRuntimeReport rejects SnapshotObserved = false'
+
+    # Herdr: EventObserved = false
+    $badEventHerdr = [ordered]@{
+        EvidenceClassification = 'Runtime'
+        RuntimeObserved = $true
+        SnapshotObserved = $true
+        EventObserved = $false
+        ReconnectObserved = $true
+        SessionControlInvoked = $false
+    }
+    [IO.File]::WriteAllText($herdrPath, ($badEventHerdr | ConvertTo-Json -Depth 5), [Text.UTF8Encoding]::new($false))
+    Assert-ThrowsPrefix `
+        -ScriptBlock { Assert-V05HerdrRuntimeReport -ReportPath $herdrPath } `
+        -ExpectedPrefix "JSON property 'EventObserved' is False (expected True)" `
+        -Message 'Assert-V05HerdrRuntimeReport rejects EventObserved = false'
+
+    # Herdr: EventObserved = 'true' (string)
+    $badEventStrHerdr = [ordered]@{
+        EvidenceClassification = 'Runtime'
+        RuntimeObserved = $true
+        SnapshotObserved = $true
+        EventObserved = 'true'
+        ReconnectObserved = $true
+        SessionControlInvoked = $false
+    }
+    [IO.File]::WriteAllText($herdrPath, ($badEventStrHerdr | ConvertTo-Json -Depth 5), [Text.UTF8Encoding]::new($false))
+    Assert-ThrowsPrefix `
+        -ScriptBlock { Assert-V05HerdrRuntimeReport -ReportPath $herdrPath } `
+        -ExpectedPrefix "JSON property 'EventObserved' must be a CLR Boolean" `
+        -Message 'Assert-V05HerdrRuntimeReport rejects string EventObserved'
+
+    # Herdr: EventObserved = 1 (number)
+    $badEventNumHerdr = [ordered]@{
+        EvidenceClassification = 'Runtime'
+        RuntimeObserved = $true
+        SnapshotObserved = $true
+        EventObserved = 1
+        ReconnectObserved = $true
+        SessionControlInvoked = $false
+    }
+    [IO.File]::WriteAllText($herdrPath, ($badEventNumHerdr | ConvertTo-Json -Depth 5), [Text.UTF8Encoding]::new($false))
+    Assert-ThrowsPrefix `
+        -ScriptBlock { Assert-V05HerdrRuntimeReport -ReportPath $herdrPath } `
+        -ExpectedPrefix "JSON property 'EventObserved' must be a CLR Boolean" `
+        -Message 'Assert-V05HerdrRuntimeReport rejects numeric EventObserved'
+
+    # Herdr: Missing EventObserved
+    $noEventHerdr = [ordered]@{
+        EvidenceClassification = 'Runtime'
+        RuntimeObserved = $true
+        SnapshotObserved = $true
+        ReconnectObserved = $true
+        SessionControlInvoked = $false
+    }
+    [IO.File]::WriteAllText($herdrPath, ($noEventHerdr | ConvertTo-Json -Depth 5), [Text.UTF8Encoding]::new($false))
+    Assert-ThrowsPrefix `
+        -ScriptBlock { Assert-V05HerdrRuntimeReport -ReportPath $herdrPath } `
+        -ExpectedPrefix "JSON object is missing required boolean property 'EventObserved'" `
+        -Message 'Assert-V05HerdrRuntimeReport rejects missing EventObserved'
+
+    # Herdr: ReconnectObserved = false
+    $badReconnectHerdr = [ordered]@{
+        EvidenceClassification = 'Runtime'
+        RuntimeObserved = $true
+        SnapshotObserved = $true
+        EventObserved = $true
+        ReconnectObserved = $false
+        SessionControlInvoked = $false
+    }
+    [IO.File]::WriteAllText($herdrPath, ($badReconnectHerdr | ConvertTo-Json -Depth 5), [Text.UTF8Encoding]::new($false))
+    Assert-ThrowsPrefix `
+        -ScriptBlock { Assert-V05HerdrRuntimeReport -ReportPath $herdrPath } `
+        -ExpectedPrefix "JSON property 'ReconnectObserved' is False (expected True)" `
+        -Message 'Assert-V05HerdrRuntimeReport rejects ReconnectObserved = false'
+
+    # Herdr: ReconnectObserved = 'true' (string)
+    $badReconnectStrHerdr = [ordered]@{
+        EvidenceClassification = 'Runtime'
+        RuntimeObserved = $true
+        SnapshotObserved = $true
+        EventObserved = $true
+        ReconnectObserved = 'true'
+        SessionControlInvoked = $false
+    }
+    [IO.File]::WriteAllText($herdrPath, ($badReconnectStrHerdr | ConvertTo-Json -Depth 5), [Text.UTF8Encoding]::new($false))
+    Assert-ThrowsPrefix `
+        -ScriptBlock { Assert-V05HerdrRuntimeReport -ReportPath $herdrPath } `
+        -ExpectedPrefix "JSON property 'ReconnectObserved' must be a CLR Boolean" `
+        -Message 'Assert-V05HerdrRuntimeReport rejects string ReconnectObserved'
+
+    # Herdr: ReconnectObserved = 1 (number)
+    $badReconnectNumHerdr = [ordered]@{
+        EvidenceClassification = 'Runtime'
+        RuntimeObserved = $true
+        SnapshotObserved = $true
+        EventObserved = $true
+        ReconnectObserved = 1
+        SessionControlInvoked = $false
+    }
+    [IO.File]::WriteAllText($herdrPath, ($badReconnectNumHerdr | ConvertTo-Json -Depth 5), [Text.UTF8Encoding]::new($false))
+    Assert-ThrowsPrefix `
+        -ScriptBlock { Assert-V05HerdrRuntimeReport -ReportPath $herdrPath } `
+        -ExpectedPrefix "JSON property 'ReconnectObserved' must be a CLR Boolean" `
+        -Message 'Assert-V05HerdrRuntimeReport rejects numeric ReconnectObserved'
+
+    # Herdr: Missing ReconnectObserved
+    $noReconnectHerdr = [ordered]@{
+        EvidenceClassification = 'Runtime'
+        RuntimeObserved = $true
+        SnapshotObserved = $true
+        EventObserved = $true
+        SessionControlInvoked = $false
+    }
+    [IO.File]::WriteAllText($herdrPath, ($noReconnectHerdr | ConvertTo-Json -Depth 5), [Text.UTF8Encoding]::new($false))
+    Assert-ThrowsPrefix `
+        -ScriptBlock { Assert-V05HerdrRuntimeReport -ReportPath $herdrPath } `
+        -ExpectedPrefix "JSON object is missing required boolean property 'ReconnectObserved'" `
+        -Message 'Assert-V05HerdrRuntimeReport rejects missing ReconnectObserved'
+
+    # Herdr: SessionControlInvoked = true
+    $badSessionHerdr = [ordered]@{
+        EvidenceClassification = 'Runtime'
+        RuntimeObserved = $true
+        SnapshotObserved = $true
+        EventObserved = $true
+        ReconnectObserved = $true
+        SessionControlInvoked = $true
+    }
+    [IO.File]::WriteAllText($herdrPath, ($badSessionHerdr | ConvertTo-Json -Depth 5), [Text.UTF8Encoding]::new($false))
+    Assert-ThrowsPrefix `
+        -ScriptBlock { Assert-V05HerdrRuntimeReport -ReportPath $herdrPath } `
+        -ExpectedPrefix "JSON property 'SessionControlInvoked' is True (expected False)" `
+        -Message 'Assert-V05HerdrRuntimeReport rejects SessionControlInvoked = true'
+
+    # Herdr: SessionControlInvoked = 'false' (string)
+    $badSessionStrHerdr = [ordered]@{
+        EvidenceClassification = 'Runtime'
+        RuntimeObserved = $true
+        SnapshotObserved = $true
+        EventObserved = $true
+        ReconnectObserved = $true
+        SessionControlInvoked = 'false'
+    }
+    [IO.File]::WriteAllText($herdrPath, ($badSessionStrHerdr | ConvertTo-Json -Depth 5), [Text.UTF8Encoding]::new($false))
+    Assert-ThrowsPrefix `
+        -ScriptBlock { Assert-V05HerdrRuntimeReport -ReportPath $herdrPath } `
+        -ExpectedPrefix "JSON property 'SessionControlInvoked' must be a CLR Boolean" `
+        -Message 'Assert-V05HerdrRuntimeReport rejects string SessionControlInvoked'
+
+    # 15. Wrapper script PS5.1 compatibility and runtime scalar emission verification
+    Assert-Condition -Condition ($wrapperText -notmatch 'ConvertFrom-Json\s+-Depth') -Message 'Wrapper script does not contain PS7-only ConvertFrom-Json -Depth'
+    Assert-Condition -Condition ($wrapperText -match 'Assert-V05CompositeRuntimeReport') -Message 'Wrapper script calls Assert-V05CompositeRuntimeReport'
+    Assert-Condition -Condition ($wrapperText -match 'Assert-V05HerdrRuntimeReport') -Message 'Wrapper script calls Assert-V05HerdrRuntimeReport'
+
+    # Verify gate report contains all 5 required scalar lines exactly once
+    $scalarNames = @(
+        'RuntimeObserved: true',
+        'SnapshotObserved: true',
+        'EventObserved: true',
+        'ReconnectObserved: true',
+        'SessionControlInvoked: false'
+    )
+    foreach ($scalar in $scalarNames) {
+        $escapedScalar = [Regex]::Escape($scalar)
+        $scalarMatches = [Regex]::Matches($wrapperText, "'$escapedScalar'")
+        Assert-Condition -Condition ($scalarMatches.Count -eq 1) -Message "Wrapper gate report defines exactly one '$scalar' line"
+    }
 }
 finally {
     Remove-Item -LiteralPath $scratchRoot -Recurse -Force -ErrorAction SilentlyContinue
