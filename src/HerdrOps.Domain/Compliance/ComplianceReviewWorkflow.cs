@@ -110,6 +110,12 @@ public static class ComplianceReviewWorkflowContract
     public const int ContractVersion = 1;
     public const int MaximumEvidenceLinks = 256;
     public const int MaximumReasonLength = 2048;
+    public static bool IsTerminal(ComplianceReviewState state) =>
+        state is ComplianceReviewState.Confirmed or ComplianceReviewState.Dismissed;
+
+    public static bool IsOpen(ComplianceReviewState state) =>
+        !IsTerminal(state);
+
 
     private static readonly HashSet<string> LeaderAssignmentRoles =
         new(StringComparer.Ordinal)

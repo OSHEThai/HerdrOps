@@ -26,6 +26,16 @@ public sealed partial class SqliteHerdrStateStore
             WriteIndented = false,
         };
 
+    // Internal diagnostic hook (InternalsVisibleTo: HerdrOps.IntegrationTests).
+    // Raised only after the retention transaction acquired its IMMEDIATE write
+    // reservation. Tests use it as a deterministic barrier for SQLite
+    // contention; production behavior does not depend on the hook.
+    internal event Action? EvidenceRetentionTransactionStarted;
+
+    // Internal diagnostic hook for the committed-event/pending-delete crash
+    // window. Production code never subscribes to this hook.
+    internal event Action? EvidenceRetentionCommittedBeforePendingDelete;
+
     public HerdrEvidenceWriteResult CaptureEvidence(
         EvidenceCaptureRequest request,
         string artifactPath)
@@ -236,8 +246,17 @@ public sealed partial class SqliteHerdrStateStore
             results.EnsureCapacity(results.Count + identities.Count);
             foreach (var identity in identities)
             {
-                if (IsProtectedByOpenReview(identity))
+                using var transaction = _connection.BeginTransaction(deferred: false);
+                EvidenceRetentionTransactionStarted?.Invoke();
+                var stored = ReadEvidenceCore(
+                        identity,
+                        verifyManagedBytes: true,
+                        transaction: transaction)
+                    ?? throw new HerdrStateStoreException(
+                        $"Due evidence metadata '{identity}' disappeared during retention.");
+                if (IsProtectedByOpenReview(identity, transaction))
                 {
+                    transaction.Commit();
                     results.Add(new HerdrEvidenceRetentionResult(
                         identity,
                         HerdrEvidenceRetentionOutcome.ProtectedByOpenReview,
@@ -247,9 +266,6 @@ public sealed partial class SqliteHerdrStateStore
                     continue;
                 }
 
-                var stored = ReadEvidenceCore(identity, verifyManagedBytes: true)
-                    ?? throw new HerdrStateStoreException(
-                        $"Due evidence metadata '{identity}' disappeared during retention.");
                 var metadata = stored.Metadata;
                 if (metadata.ManagedRelativePath is null ||
                     metadata.ContentLength is null ||
@@ -272,7 +288,9 @@ public sealed partial class SqliteHerdrStateStore
                 }
 
                 var retentionEvent = CreateRetentionAuditEvent(metadata, outcome);
-                InsertRetentionAuditEvent(retentionEvent);
+                InsertRetentionAuditEventInTransaction(retentionEvent, transaction);
+                transaction.Commit();
+                EvidenceRetentionCommittedBeforePendingDelete?.Invoke();
                 if (pendingPath is not null)
                 {
                     DeleteRetentionPendingFile(pendingPath, identity);
@@ -433,9 +451,11 @@ public sealed partial class SqliteHerdrStateStore
     private HerdrStoredEvidence? ReadEvidenceCore(
         string evidenceIdentitySha256,
         bool verifyManagedBytes,
-        bool allowPendingRetention = false)
+        bool allowPendingRetention = false,
+        SqliteTransaction? transaction = null)
     {
         using var command = _connection.CreateCommand();
+        command.Transaction = transaction;
         command.CommandText = """
             SELECT evidence_identity_sha256, contract_version, task_id, actor_id,
                    source_event_id, source, source_reference, observed_utc,
@@ -462,7 +482,7 @@ public sealed partial class SqliteHerdrStateStore
             }
         }
 
-        var retentionCompleted = HasRetentionEvent(evidenceIdentitySha256);
+        var retentionCompleted = HasRetentionEvent(evidenceIdentitySha256, transaction);
         var managedBytesAvailable = false;
         if (metadata.StorageKind == EvidenceArtifactStorageKind.ManagedCopy)
         {
@@ -1032,6 +1052,17 @@ public sealed partial class SqliteHerdrStateStore
                 throw new HerdrStateStoreException(
                     $"Review audit evidence identity '{identity}' does not exist.");
             }
+
+            command.CommandText = """
+                SELECT COUNT(*)
+                FROM evidence_retention_events
+                WHERE evidence_identity_sha256 = $identity;
+                """;
+            if (Convert.ToInt64(command.ExecuteScalar(), System.Globalization.CultureInfo.InvariantCulture) != 0)
+            {
+                throw new HerdrStateStoreException(
+                    $"Review audit evidence identity '{identity}' has already reached terminal retention.");
+            }
         }
     }
 
@@ -1148,10 +1179,12 @@ public sealed partial class SqliteHerdrStateStore
                     $"Pending retention entry '{fileName}' is not canonically named.");
             }
 
+            using var transaction = _connection.BeginTransaction(deferred: false);
             var stored = ReadEvidenceCore(
                 identity,
                 verifyManagedBytes: true,
-                allowPendingRetention: true)
+                allowPendingRetention: true,
+                transaction: transaction)
                 ?? throw new HerdrStateStoreException(
                     $"Pending retention entry '{identity}' has no immutable evidence metadata.");
             var metadata = stored.Metadata;
@@ -1164,7 +1197,7 @@ public sealed partial class SqliteHerdrStateStore
                     $"Pending retention entry '{identity}' has incomplete managed-evidence metadata.");
             }
 
-            var existingEvent = ReadRetentionAuditEvent(identity);
+            var existingEvent = ReadRetentionAuditEvent(identity, transaction);
             if (existingEvent is not null)
             {
                 ValidateRetentionAuditMatchesMetadata(existingEvent, metadata);
@@ -1174,6 +1207,8 @@ public sealed partial class SqliteHerdrStateStore
                         $"Pending retention bytes '{identity}' conflict with an AlreadyMissing audit event.");
                 }
 
+                transaction.Commit();
+                EvidenceRetentionCommittedBeforePendingDelete?.Invoke();
                 DeleteRetentionPendingFile(pendingPath, identity);
                 results.Add(CreateRetentionResult(identity, asOfUtc, existingEvent));
                 continue;
@@ -1185,16 +1220,19 @@ public sealed partial class SqliteHerdrStateStore
                     $"Pending retention bytes '{identity}' are not due at the requested cutoff.");
             }
 
-            if (IsProtectedByOpenReview(identity))
+            if (IsProtectedByOpenReview(identity, transaction))
             {
                 RestorePendingRetentionFile(metadata, pendingPath);
+                transaction.Commit();
                 continue;
             }
 
             var recoveredEvent = CreateRetentionAuditEvent(
                 metadata,
                 HerdrEvidenceRetentionOutcome.Purged);
-            InsertRetentionAuditEvent(recoveredEvent);
+            InsertRetentionAuditEventInTransaction(recoveredEvent, transaction);
+            transaction.Commit();
+            EvidenceRetentionCommittedBeforePendingDelete?.Invoke();
             DeleteRetentionPendingFile(pendingPath, identity);
             results.Add(CreateRetentionResult(identity, asOfUtc, recoveredEvent));
         }
@@ -1386,11 +1424,14 @@ public sealed partial class SqliteHerdrStateStore
         return result;
     }
 
-    private bool IsProtectedByOpenReview(string evidenceIdentitySha256)
+    private bool IsProtectedByOpenReview(
+        string evidenceIdentitySha256,
+        SqliteTransaction transaction)
     {
         using var command = _connection.CreateCommand();
+        command.Transaction = transaction;
         command.CommandText = """
-            SELECT EXISTS (
+            SELECT (EXISTS (
                 SELECT 1
                 FROM review_audit_events AS latest
                 WHERE latest.review_state = 1
@@ -1403,15 +1444,35 @@ public sealed partial class SqliteHerdrStateStore
                   AND latest.sequence = (
                       SELECT MAX(candidate.sequence)
                       FROM review_audit_events AS candidate
-                      WHERE candidate.review_case_id = latest.review_case_id));
+                      WHERE candidate.review_case_id = latest.review_case_id)
+            )) OR (EXISTS (
+                SELECT 1
+                FROM (
+                    SELECT incident_id
+                    FROM compliance_review_incident_evidence
+                    WHERE evidence_identity_sha256 = $identity
+                    UNION
+                    SELECT events.incident_id
+                    FROM compliance_review_event_evidence AS link
+                    INNER JOIN compliance_review_events AS events
+                        ON events.audit_event_id = link.audit_event_id
+                    WHERE link.evidence_identity_sha256 = $identity
+                ) AS linked
+                LEFT JOIN compliance_review_incidents AS incident
+                    ON incident.incident_id = linked.incident_id
+                WHERE incident.state IS NULL OR incident.state NOT IN (4, 5)
+            ));
             """;
         command.Parameters.AddWithValue("$identity", evidenceIdentitySha256);
         return Convert.ToInt64(command.ExecuteScalar(), System.Globalization.CultureInfo.InvariantCulture) == 1;
     }
 
-    private bool HasRetentionEvent(string evidenceIdentitySha256)
+    private bool HasRetentionEvent(
+        string evidenceIdentitySha256,
+        SqliteTransaction? transaction = null)
     {
         using var command = _connection.CreateCommand();
+        command.Transaction = transaction;
         command.CommandText = """
             SELECT COUNT(*)
             FROM evidence_retention_events
@@ -1429,9 +1490,11 @@ public sealed partial class SqliteHerdrStateStore
     }
 
     private HerdrEvidenceRetentionAuditEvent? ReadRetentionAuditEvent(
-        string evidenceIdentitySha256)
+        string evidenceIdentitySha256,
+        SqliteTransaction? transaction = null)
     {
         using var command = _connection.CreateCommand();
+        command.Transaction = transaction;
         command.CommandText = """
             SELECT retention_event_id, evidence_identity_sha256, occurred_utc,
                    outcome, managed_relative_path, expected_content_length,
@@ -1520,11 +1583,21 @@ public sealed partial class SqliteHerdrStateStore
             auditSha256);
     }
 
-    private void InsertRetentionAuditEvent(
-        HerdrEvidenceRetentionAuditEvent auditEvent)
+    private void InsertRetentionAuditEvent(HerdrEvidenceRetentionAuditEvent auditEvent) =>
+        InsertRetentionAuditEventCore(auditEvent, transaction: null);
+
+    private void InsertRetentionAuditEventInTransaction(
+        HerdrEvidenceRetentionAuditEvent auditEvent,
+        SqliteTransaction transaction) =>
+        InsertRetentionAuditEventCore(auditEvent, transaction);
+
+    private void InsertRetentionAuditEventCore(
+        HerdrEvidenceRetentionAuditEvent auditEvent,
+        SqliteTransaction? transaction)
     {
         ValidateRetentionAuditEvent(auditEvent);
-        using var transaction = _connection.BeginTransaction(deferred: false);
+        var ownsTransaction = transaction is null;
+        transaction ??= _connection.BeginTransaction(deferred: false);
         using var command = _connection.CreateCommand();
         command.Transaction = transaction;
         command.CommandText = """
@@ -1545,7 +1618,11 @@ public sealed partial class SqliteHerdrStateStore
         command.Parameters.AddWithValue("$contentSha256", auditEvent.ExpectedContentSha256);
         command.Parameters.AddWithValue("$auditSha256", auditEvent.RetentionAuditSha256);
         command.ExecuteNonQuery();
-        transaction.Commit();
+        if (ownsTransaction)
+        {
+            transaction.Commit();
+            transaction.Dispose();
+        }
     }
 
     private static void ValidateRetentionAuditEvent(

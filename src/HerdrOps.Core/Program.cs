@@ -57,7 +57,14 @@ if (args.Length > 0 &&
 }
 
 if (args.Length > 0 &&
-    string.Equals(args[0], "compliance-review-acceptance", StringComparison.Ordinal))
+    (string.Equals(args[0], "trace-compliance-review", StringComparison.Ordinal) ||
+     string.Equals(args[0], "compliance-review-trace", StringComparison.Ordinal)))
+{
+    return ComplianceReviewRuntimeTraceCommand.Run(args, Console.Out, Console.Error);
+}
+
+if (args.Length > 0 &&
+     string.Equals(args[0], "compliance-review-acceptance", StringComparison.Ordinal))
 {
     return ComplianceReviewRuntimeAcceptanceCommand.Run(
         args,
