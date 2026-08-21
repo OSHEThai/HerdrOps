@@ -35,7 +35,7 @@ Based on GitHub Issue #36 and `Plan/ROADMAP.md` (v0.7.0):
 ## Report SHA / Blockers
 
 - **Command executed**: `dotnet test HerdrOps.sln`
-- **Result**: Tests pass, but acceptance fails due to missing features and missing evidence.
+- **Result**: UNVERIFIED/FAILED DUE TO TEST ARTIFACT LOCK (1 failed in HerdrOps.RuntimeTests due to IOException file lock on live-organization-compact.png). This is distinct from product defects and theme/runtime blockers.
 - **Blocker 1**: Theme settings are completely missing from implementation and tests.
 - **Blocker 2**: Retention and Startup features are not properly documented in the acceptance criteria, even though tests exist.
 - **Blocker 3**: Runtime evidence is incorrectly claimed. Tests in `RuntimeTests` do not use an actual installed Herdr, so they must be classified as Static/Synthetic/Contract. Real Runtime evidence is missing.
