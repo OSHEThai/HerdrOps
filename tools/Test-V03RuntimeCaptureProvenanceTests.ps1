@@ -307,5 +307,7 @@ if ($failures.Count -gt 0) {
     exit 1
 }
 
+$global:LASTEXITCODE = 0
 Write-Host ''
 Write-Host "All v0.3 runtime-capture provenance hostile selftests passed under PowerShell $($PSVersionTable.PSVersion)." -ForegroundColor Green
+exit 0
