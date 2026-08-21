@@ -96,8 +96,11 @@ $expectedSourceTree = '<approved-source-tree>'
   -TimeoutSeconds 300
 
 # Build-free PS5/PS7 parser and hostile selftests for the wrapper. These do not
-# run dotnet, Herdr, a session, or the actual runtime trace.
-./tools/Test-V03Issue14RuntimeAcceptance.Tests.ps1
+# run dotnet, Herdr, a session, or the actual runtime trace. The selftest also
+# refuses a source commit/tree mismatch or dirty checkout.
+./tools/Test-V03Issue14RuntimeAcceptance.Tests.ps1 `
+  -ExpectedSourceCommit $expectedSourceCommit `
+  -ExpectedSourceTree $expectedSourceTree
 
 # Verify bounded notification grouping, exact deduplication, acknowledgement,
 # fail-closed event/Agent routes, and separate Thai/English WPF rendering.
@@ -117,10 +120,14 @@ $expectedSourceTree = '<approved-source-tree>'
   -ExpectedSourceTree $expectedSourceTree
 
 # Verify the v0.3 Issue #17 implementation-only aggregation and its
-# deterministic child-gate failure propagation. These checks cover only
-# Static, Contract, and Synthetic evidence and do not make a version decision.
+# deterministic child-gate failure propagation. Issue #14 also runs its
+# build-free wrapper contract selftest. Supply the exact source commit/tree;
+# these checks cover only Static, Contract, and Synthetic evidence and do not
+# make a version decision.
 ./tools/Test-V03ImplementationGateTests.ps1
-./tools/Test-V03ImplementationGate.ps1 -Configuration Release
+./tools/Test-V03ImplementationGate.ps1 -Configuration Release `
+  -ExpectedSourceCommit $expectedSourceCommit `
+  -ExpectedSourceTree $expectedSourceTree
 
 # Verify v0.4 assignment lifecycle transitions, Core-acceptance mapping,
 # SQLite migration and append-only provenance, restart replay, orphan and

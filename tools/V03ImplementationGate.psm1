@@ -18,6 +18,7 @@ function Get-V03ImplementationChildGateDefinitions {
             Issue = '14'
             Name = 'TerminalProcess'
             ScriptName = 'Test-V03TerminalProcess.ps1'
+            ContractSelfTestScriptName = 'Test-V03Issue14RuntimeAcceptance.Tests.ps1'
             ImplementationOnly = $false
         }
         [pscustomobject]@{
@@ -76,13 +77,24 @@ function Assert-V03ImplementationChildReport {
         [string]$ReportText,
 
         [Parameter(Mandatory)]
-        [string]$SourceCommit
+        [ValidatePattern('^[0-9a-f]{40}$')]
+        [string]$ExpectedSourceCommit,
+
+        [Parameter(Mandatory)]
+        [ValidatePattern('^[0-9a-f]{40}$')]
+        [string]$ExpectedSourceTree
     )
 
     $sourceMatches = [Regex]::Matches($ReportText, '(?m)^SourceCommit:\s*(?<commit>[^\r\n]+)\s*$')
     if ($sourceMatches.Count -ne 1 -or
-        $sourceMatches[0].Groups['commit'].Value.Trim() -cne $SourceCommit) {
-        throw "Child gate $Name report is not bound to source commit $SourceCommit."
+        $sourceMatches[0].Groups['commit'].Value.Trim() -cne $ExpectedSourceCommit) {
+        throw "Child gate $Name report is not bound to source commit $ExpectedSourceCommit."
+    }
+
+    $treeMatches = [Regex]::Matches($ReportText, '(?m)^SourceTree:\s*(?<tree>[^\r\n]+)\s*$')
+    if ($treeMatches.Count -ne 1 -or
+        $treeMatches[0].Groups['tree'].Value.Trim() -cne $ExpectedSourceTree) {
+        throw "Child gate $Name report is not bound to source tree $ExpectedSourceTree."
     }
 
     $resultMatches = [Regex]::Matches($ReportText, '(?m)^Result:\s*(?<result>[^\r\n]+)\s*$')
@@ -127,7 +139,20 @@ function Get-V03ChildResultValue {
 function New-V03ImplementationGateReport {
     param(
         [Parameter(Mandatory)]
+        [ValidatePattern('^[0-9a-f]{40}$')]
         [string]$SourceCommit,
+
+        [Parameter(Mandatory)]
+        [ValidatePattern('^[0-9a-f]{40}$')]
+        [string]$SourceTree,
+
+        [Parameter(Mandatory)]
+        [ValidatePattern('^[0-9a-f]{40}$')]
+        [string]$ExpectedSourceCommit,
+
+        [Parameter(Mandatory)]
+        [ValidatePattern('^[0-9a-f]{40}$')]
+        [string]$ExpectedSourceTree,
 
         [AllowEmptyCollection()]
         [Parameter(Mandatory)]
@@ -145,6 +170,10 @@ function New-V03ImplementationGateReport {
         [int]$ExpectedChildGateCount = 0
     )
 
+    if ($SourceCommit -cne $ExpectedSourceCommit -or $SourceTree -cne $ExpectedSourceTree) {
+        throw 'Aggregate report source identity does not match the expected source identity.'
+    }
+
     $passed = @($ChildResults | Where-Object { (Get-V03ChildResultValue -Child $_ -Name 'Status') -eq 'PASS' }).Count
     $partial = @($ChildResults | Where-Object { (Get-V03ChildResultValue -Child $_ -Name 'Status') -eq 'PARTIAL' }).Count
     $failed = @($ChildResults | Where-Object { (Get-V03ChildResultValue -Child $_ -Name 'Status') -eq 'FAIL' }).Count
@@ -157,6 +186,9 @@ function New-V03ImplementationGateReport {
         'HerdrOps v0.3.0 Issue #17 Implementation Gate',
         "GeneratedUtc: $($GeneratedUtc.ToUniversalTime().ToString('O'))",
         "SourceCommit: $SourceCommit",
+        "SourceTree: $SourceTree",
+        "ExpectedSourceCommit: $ExpectedSourceCommit",
+        "ExpectedSourceTree: $ExpectedSourceTree",
         "Result: $Result",
         'GateKind: Implementation',
         'EvidenceClasses: Static, Contract, Synthetic',
@@ -197,6 +229,12 @@ function New-V03ImplementationGateReport {
                 @{ Label = 'StdoutSha256'; Name = 'StdoutSha256' },
                 @{ Label = 'StderrArtifact'; Name = 'StderrArtifact' },
                 @{ Label = 'StderrSha256'; Name = 'StderrSha256' },
+                @{ Label = 'ContractSelfTestScript'; Name = 'ContractSelfTestScript' },
+                @{ Label = 'ContractSelfTestStatus'; Name = 'ContractSelfTestStatus' },
+                @{ Label = 'ContractSelfTestStdoutArtifact'; Name = 'ContractSelfTestStdoutArtifact' },
+                @{ Label = 'ContractSelfTestStdoutSha256'; Name = 'ContractSelfTestStdoutSha256' },
+                @{ Label = 'ContractSelfTestStderrArtifact'; Name = 'ContractSelfTestStderrArtifact' },
+                @{ Label = 'ContractSelfTestStderrSha256'; Name = 'ContractSelfTestStderrSha256' },
                 @{ Label = 'FailureCode'; Name = 'FailureCode' })) {
             $value = Get-V03ChildResultValue -Child $child -Name $artifact.Name
             if (-not [string]::IsNullOrWhiteSpace($value)) {

@@ -263,6 +263,10 @@ $sourceCommit = (& git -C $repositoryRoot rev-parse HEAD).Trim()
 if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($sourceCommit)) {
     throw 'Could not resolve the source commit for the v0.3 File/Git gate.'
 }
+$sourceTree = (& git -C $repositoryRoot rev-parse 'HEAD^{tree}').Trim()
+if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($sourceTree)) {
+    throw 'Could not resolve the source tree for the v0.3 File/Git gate.'
+}
 $contractSha256 = (Get-FileHash -LiteralPath $contractPath -Algorithm SHA256).Hash
 $reviewRecordSha256 = (Get-FileHash -LiteralPath $reviewRecordPath -Algorithm SHA256).Hash
 $gateReportPath = Join-Path $gateDirectory 'gate-report.txt'
@@ -271,6 +275,7 @@ if ($ImplementationOnly) {
         'HerdrOps v0.3 Issue #15 File/Git Implementation Gate',
         "GeneratedUtc: $([DateTime]::UtcNow.ToString('O'))",
         "SourceCommit: $sourceCommit",
+        "SourceTree: $sourceTree",
         'Result: PASS',
         'GateKind: Implementation',
         'EvidenceClass: Contract plus Synthetic',
@@ -299,6 +304,7 @@ else {
         'HerdrOps v0.3 Issue #15 Scoped File/Git Activity Implementation Gate',
         "GeneratedUtc: $([DateTime]::UtcNow.ToString('O'))",
         "SourceCommit: $sourceCommit",
+        "SourceTree: $sourceTree",
         'Result: IMPLEMENTATION READY / PARTIAL',
         'ImplementationGate: PASS',
         'IssueAcceptance: PENDING',

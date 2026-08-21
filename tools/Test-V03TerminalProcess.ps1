@@ -155,12 +155,17 @@ $sourceCommit = (& git -C $repositoryRoot rev-parse HEAD).Trim()
 if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($sourceCommit)) {
     throw 'Could not resolve the source commit for the v0.3 terminal/process gate.'
 }
+$sourceTree = (& git -C $repositoryRoot rev-parse 'HEAD^{tree}').Trim()
+if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($sourceTree)) {
+    throw 'Could not resolve the source tree for the v0.3 terminal/process gate.'
+}
 
 $gateReportPath = Join-Path $gateDirectory 'gate-report.txt'
 $gateReport = @(
     'HerdrOps v0.3 Issue #14 Bounded Terminal and Windows Process Implementation Gate',
     "GeneratedUtc: $([DateTime]::UtcNow.ToString('O'))",
     "SourceCommit: $sourceCommit",
+    "SourceTree: $sourceTree",
     'Result: IMPLEMENTATION READY / PARTIAL',
     'ImplementationGate: PASS',
     'IssueAcceptance: PENDING',
