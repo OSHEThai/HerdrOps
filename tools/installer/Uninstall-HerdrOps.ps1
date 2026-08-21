@@ -3,10 +3,10 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $false)]
-    [string]$InstallRoot = "$env:LOCALAPPDATA\Programs\HerdrOps",
+    [string]$InstallRoot = (if ([string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) { "$env:USERPROFILE\AppData\Local\Programs\HerdrOps" } else { "$env:LOCALAPPDATA\Programs\HerdrOps" }),
 
     [Parameter(Mandatory = $false)]
-    [string]$UserDataRoot = "$env:LOCALAPPDATA\HerdrOps",
+    [string]$UserDataRoot = (if ([string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) { "$env:USERPROFILE\AppData\Local\HerdrOps" } else { "$env:LOCALAPPDATA\HerdrOps" }),
 
     [Parameter(Mandatory = $false)]
     [switch]$RemoveUserData

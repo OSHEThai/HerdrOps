@@ -67,6 +67,10 @@ function Expand-HerdrOpsArchiveSafe {
     $archive = $null
     try {
         $archive = [IO.Compression.ZipFile]::OpenRead($archiveFullPath)
+        $destWithSeparator = if ($destFullPath.EndsWith('\')) { $destFullPath } else { $destFullPath + '\' }
+        $extractedPaths = @{}
+
+        # Pre-scan for validation
         foreach ($entry in $archive.Entries) {
             $entryName = [string]$entry.FullName
             if ([string]::IsNullOrWhiteSpace($entryName) -or
@@ -79,10 +83,45 @@ function Expand-HerdrOpsArchiveSafe {
                 throw "Archive contains an unsafe entry (zip-slip): '$entryName'."
             }
 
+            if ((($entry.ExternalAttributes -shr 16) -band 0xF000) -eq 0xA000 -or ($entry.ExternalAttributes -band 0x400) -eq 0x400) {
+                throw "Archive contains unsupported symlink or reparse point: '$entryName'."
+            }
+
             $destinationEntryPath = Get-SafeInstallerPath -Path (Join-Path $destFullPath $entryName.Replace('/', '\'))
-            if (-not $destinationEntryPath.StartsWith($destFullPath, [StringComparison]::OrdinalIgnoreCase)) {
+            if (-not $destinationEntryPath.StartsWith($destWithSeparator, [StringComparison]::OrdinalIgnoreCase) -and $destinationEntryPath -ne $destFullPath) {
                 throw "Archive entry attempts to extract outside destination (zip-slip): '$entryName'."
             }
+
+            $isDir = $entryName.EndsWith('/', [StringComparison]::Ordinal)
+            $normalizedPath = $destinationEntryPath.ToLowerInvariant()
+            
+            if ($extractedPaths.ContainsKey($normalizedPath)) {
+                if ($extractedPaths[$normalizedPath] -ne $isDir) {
+                    throw "Archive contains case-insensitive file-vs-directory collision: '$entryName'."
+                }
+                throw "Archive contains case-insensitive duplicate entry: '$entryName'."
+            }
+            $extractedPaths[$normalizedPath] = $isDir
+            
+            $current = $destinationEntryPath
+            while ($true) {
+                $parent = Split-Path -Path $current -Parent
+                if ([string]::IsNullOrWhiteSpace($parent) -or $parent.Equals($current, [StringComparison]::OrdinalIgnoreCase) -or (-not $parent.StartsWith($destWithSeparator, [StringComparison]::OrdinalIgnoreCase) -and $parent -ne $destFullPath)) {
+                    break
+                }
+                $normalizedParent = $parent.ToLowerInvariant()
+                if ($extractedPaths.ContainsKey($normalizedParent) -and -not $extractedPaths[$normalizedParent]) {
+                    throw "Archive entry collides with a file in parent path: '$entryName'."
+                }
+                $extractedPaths[$normalizedParent] = $true
+                $current = $parent
+            }
+        }
+
+        # Actual extraction
+        foreach ($entry in $archive.Entries) {
+            $entryName = [string]$entry.FullName
+            $destinationEntryPath = Get-SafeInstallerPath -Path (Join-Path $destFullPath $entryName.Replace('/', '\'))
 
             if ($entryName.EndsWith('/', [StringComparison]::Ordinal)) {
                 if (-not (Test-Path -LiteralPath $destinationEntryPath)) {
@@ -130,6 +169,7 @@ function Invoke-AtomicInstallTransition {
 
     $target = Get-SafeInstallerPath -Path $InstallRoot
     $parent = Split-Path -Path $target -Parent
+    $lockPath = Join-Path $parent "$([IO.Path]::GetFileName($target)).lock"
     $stage = Join-Path $parent "HerdrOps.stage-$RunId"
     $backup = Join-Path $parent "HerdrOps.backup-$RunId"
     
@@ -137,6 +177,7 @@ function Invoke-AtomicInstallTransition {
     $oldMoved = $false
     $committed = $false
     $preserveTransient = $false
+    $lockAcquired = $false
 
     try {
         if (-not (Test-Path -LiteralPath $parent)) {
@@ -144,6 +185,20 @@ function Invoke-AtomicInstallTransition {
         }
         Assert-NoReparsePath -Path $parent
         
+        $retryCount = 0
+        while (-not $lockAcquired -and $retryCount -lt 10) {
+            try {
+                New-Item -ItemType Directory -Path $lockPath -ErrorAction Stop | Out-Null
+                $lockAcquired = $true
+            } catch {
+                $retryCount++
+                Start-Sleep -Seconds 1
+            }
+        }
+        if (-not $lockAcquired) {
+            throw "Failed to acquire installer lock for target: $target"
+        }
+
         if (Test-Path -LiteralPath $stage) {
             Remove-DirectoryTreeSafe -Path $stage -Context "Pre-existing stage cleanup"
         }
@@ -210,6 +265,9 @@ function Invoke-AtomicInstallTransition {
         if (-not $preserveTransient -and $null -ne $backup -and (Test-Path -LiteralPath $backup)) {
             Remove-DirectoryTreeSafe -Path $backup -Context "Final backup cleanup"
         }
+        if ($lockAcquired -and (Test-Path -LiteralPath $lockPath)) {
+            Remove-DirectoryTreeSafe -Path $lockPath -Context "Lock cleanup"
+        }
     }
 }
 
@@ -221,17 +279,33 @@ function Invoke-AtomicUninstallTransition {
 
     $target = Get-SafeInstallerPath -Path $InstallRoot
     $parent = Split-Path -Path $target -Parent
+    $lockPath = Join-Path $parent "$([IO.Path]::GetFileName($target)).lock"
     $backup = Join-Path $parent "HerdrOps.backup-$RunId"
     
     $oldMoved = $false
     $committed = $false
     $preserveTransient = $false
+    $lockAcquired = $false
 
     if (-not (Test-Path -LiteralPath $target)) {
         return # Already uninstalled
     }
 
     try {
+        $retryCount = 0
+        while (-not $lockAcquired -and $retryCount -lt 10) {
+            try {
+                New-Item -ItemType Directory -Path $lockPath -ErrorAction Stop | Out-Null
+                $lockAcquired = $true
+            } catch {
+                $retryCount++
+                Start-Sleep -Seconds 1
+            }
+        }
+        if (-not $lockAcquired) {
+            throw "Failed to acquire installer lock for target: $target"
+        }
+
         Assert-NoReparsePath -Path $target
         
         if (Test-Path -LiteralPath $backup) {
@@ -282,6 +356,9 @@ function Invoke-AtomicUninstallTransition {
     } finally {
         if (-not $preserveTransient -and $null -ne $backup -and (Test-Path -LiteralPath $backup)) {
             Remove-DirectoryTreeSafe -Path $backup -Context "Final backup cleanup"
+        }
+        if ($lockAcquired -and (Test-Path -LiteralPath $lockPath)) {
+            Remove-DirectoryTreeSafe -Path $lockPath -Context "Lock cleanup"
         }
     }
 }
