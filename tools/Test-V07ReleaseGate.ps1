@@ -110,7 +110,7 @@ function New-V07ReleaseGateSyntheticInput {
             candidate = [ordered]@{
                 commit = [string]$Candidate.Commit
                 tree = [string]$Candidate.Tree
-                workingTree = 'CLEAN'
+                workingTree = [string]$Candidate.WorkingTree
             }
             status = 'PENDING'
             evidenceClass = switch ($issue) {
@@ -151,7 +151,7 @@ function New-V07ReleaseGateSyntheticInput {
         candidate = [ordered]@{
             commit = [string]$Candidate.Commit
             tree = [string]$Candidate.Tree
-            workingTree = 'CLEAN'
+            workingTree = [string]$Candidate.WorkingTree
         }
         dependencies = @($descriptors.ToArray())
         historyPolicy = [ordered]@{
@@ -172,7 +172,7 @@ function Invoke-V07ReleaseGateSelfTests {
     param([Parameter(Mandatory = $true)][string]$RepositoryRoot)
 
     $assertions = New-Object System.Collections.ArrayList
-    $candidate = Get-V07ReleaseGateCurrentCandidate -RepositoryRoot $RepositoryRoot -AllowDirty
+    $candidate = Get-V07ReleaseGateCurrentCandidate -RepositoryRoot $RepositoryRoot
     $ownedParent = Join-Path ([IO.Path]::GetTempPath()) 'herdrops-v07-release-gate-selftests'
     $runId = [Guid]::NewGuid().ToString('N')
     $testRoot = Join-Path $ownedParent $runId
@@ -182,14 +182,50 @@ function Invoke-V07ReleaseGateSelfTests {
         $synthetic = New-V07ReleaseGateSyntheticInput -Root $testRoot -Candidate $candidate
         $validated = Test-V07ReleaseGateInput -InputPath $synthetic.InputPath -EvidenceRoot $testRoot -CurrentCandidate $candidate
         if ($validated.Dependencies.Count -ne 5 -or $validated.Candidate.Commit -cne $candidate.Commit -or
-            $validated.Candidate.Tree -cne $candidate.Tree) {
+            $validated.Candidate.Tree -cne $candidate.Tree -or
+            $validated.Candidate.WorkingTree -cne $candidate.WorkingTree) {
             throw 'SelfTest failed: dynamic exact candidate/dependency binding did not validate.'
         }
         [void]$assertions.Add('DynamicCandidateAndDependencyHashes')
 
-        $pendingReport = New-V07ReleaseGatePendingReport -ValidatedInput $validated -CurrentCandidate $candidate
-        $reportPath = Write-V07ReleaseGateNewJsonFile -Path (Join-Path $testRoot 'pending-report.json') -Value $pendingReport -AllowedRoots @($testRoot)
-        $reportText = [IO.File]::ReadAllText($reportPath)
+        $postValidationCandidate = Assert-V07ReleaseGateCandidateUnchanged `
+            -RepositoryRoot $RepositoryRoot `
+            -ExpectedCandidate $candidate `
+            -Description 'self-test post-validation candidate recheck'
+        if ($postValidationCandidate.Commit -cne $candidate.Commit -or
+            $postValidationCandidate.Tree -cne $candidate.Tree -or
+            $postValidationCandidate.WorkingTree -cne $candidate.WorkingTree) {
+            throw 'SelfTest failed: post-validation candidate recheck returned a different snapshot.'
+        }
+        [void]$assertions.Add('PostValidationCandidateRecheck')
+
+        $staleCandidate = [pscustomobject][ordered]@{
+            Commit = $candidate.Commit
+            Tree = $candidate.Tree
+            WorkingTree = 'DIRTY'
+            Status = @('synthetic stale status')
+        }
+        Assert-V07ReleaseGateExpectedFailure -Description 'changed candidate working-tree snapshot' -Action {
+            Assert-V07ReleaseGateCandidateUnchanged `
+                -RepositoryRoot $RepositoryRoot `
+                -ExpectedCandidate $staleCandidate `
+                -Description 'self-test stale candidate'
+        }
+        [void]$assertions.Add('ChangedCandidateSnapshotRejected')
+
+        $reportResult = Write-V07ReleaseGateBoundPendingReport `
+            -RepositoryRoot $RepositoryRoot `
+            -Path (Join-Path $testRoot 'pending-report.json') `
+            -ValidatedInput $validated `
+            -CurrentCandidate $candidate `
+            -AllowedRoots @($testRoot)
+        $pendingReport = $reportResult.Report
+        $reportText = [IO.File]::ReadAllText($reportResult.Path)
+        if ($pendingReport.candidate.workingTree -cne $candidate.WorkingTree -or
+            $reportResult.AfterWriteCandidate.WorkingTree -cne $candidate.WorkingTree) {
+            throw 'SelfTest failed: report binding did not preserve the observed working-tree state.'
+        }
+        [void]$assertions.Add('PreAndPostReportCandidateRechecks')
         if ($reportText -notmatch '"status"\s*:\s*"PENDING"' -or
             $reportText -notmatch '"decision"\s*:\s*"PENDING"' -or
             $reportText -match '(?i)APPROVED' -or
@@ -197,6 +233,17 @@ function Invoke-V07ReleaseGateSelfTests {
             throw 'SelfTest failed: automation emitted a non-PENDING or human-looking decision.'
         }
         [void]$assertions.Add('AutomationEmitsPendingOnly')
+
+        $dirtyReportCandidate = [pscustomobject][ordered]@{
+            Commit = $candidate.Commit
+            Tree = $candidate.Tree
+            WorkingTree = 'DIRTY'
+            Status = @('synthetic dirty status')
+        }
+        Assert-V07ReleaseGateExpectedFailure -Description 'report cannot synthesize clean checkout from dirty snapshot' -Action {
+            New-V07ReleaseGatePendingReport -ValidatedInput $validated -CurrentCandidate $dirtyReportCandidate | Out-Null
+        }
+        [void]$assertions.Add('DirtyReportSnapshotRejected')
 
         $badCommit = Copy-V07ReleaseGateSelfTestJson -Value $synthetic.Input
         $badCommit.candidate.commit = if ($candidate.Commit[0] -ceq '0') { '1' + $candidate.Commit.Substring(1) } else { '0' + $candidate.Commit.Substring(1) }
@@ -422,10 +469,18 @@ if (-not (Test-Path -LiteralPath $EvidenceRoot -PathType Container)) {
 }
 $EvidenceInputPath = [IO.Path]::GetFullPath($EvidenceInputPath)
 $validatedInput = Test-V07ReleaseGateInput -InputPath $EvidenceInputPath -EvidenceRoot $EvidenceRoot -CurrentCandidate $currentCandidate
+$currentCandidate = Assert-V07ReleaseGateCandidateUnchanged `
+    -RepositoryRoot $repositoryRoot `
+    -ExpectedCandidate $currentCandidate `
+    -Description 're-read after dependency validation'
 
 $humanResult = $null
 if (-not [string]::IsNullOrWhiteSpace($HumanUatPath)) {
     $humanResult = Read-V07ReleaseGateHumanUat -Path ([IO.Path]::GetFullPath($HumanUatPath)) -EvidenceRoot $EvidenceRoot -CurrentCandidate $currentCandidate
+    $currentCandidate = Assert-V07ReleaseGateCandidateUnchanged `
+        -RepositoryRoot $repositoryRoot `
+        -ExpectedCandidate $currentCandidate `
+        -Description 're-read after human UAT validation'
 } elseif ($RequireHumanUat) {
     throw '-RequireHumanUat was specified but no human UAT acceptance input was supplied.'
 }
@@ -434,15 +489,22 @@ if ([string]::IsNullOrWhiteSpace($OutputPath)) {
     $runId = [DateTime]::UtcNow.ToString('yyyyMMddTHHmmssfffffffZ', [Globalization.CultureInfo]::InvariantCulture) + '-' + [Guid]::NewGuid().ToString('N').Substring(0, 8)
     $OutputPath = Join-Path $repositoryRoot ("artifacts\release-gates\v0.7.0\issue-40\$runId\gate-report.json")
 }
-$report = New-V07ReleaseGatePendingReport -ValidatedInput $validatedInput -CurrentCandidate $currentCandidate -HumanUatValidated ($null -ne $humanResult)
-$reportPath = Write-V07ReleaseGateNewJsonFile -Path $OutputPath -Value $report -AllowedRoots @($EvidenceRoot, (Join-Path $repositoryRoot 'artifacts'))
+$reportResult = Write-V07ReleaseGateBoundPendingReport `
+    -RepositoryRoot $repositoryRoot `
+    -Path $OutputPath `
+    -ValidatedInput $validatedInput `
+    -CurrentCandidate $currentCandidate `
+    -AllowedRoots @($EvidenceRoot, (Join-Path $repositoryRoot 'artifacts')) `
+    -HumanUatValidated ($null -ne $humanResult)
+$reportPath = $reportResult.Path
+$currentCandidate = $reportResult.AfterWriteCandidate
 
 [pscustomobject][ordered]@{
     Result = 'PASS / PREPARATION ONLY'
     Status = 'PENDING'
     Issue = 40
-    SourceCommit = $currentCandidate.Commit
-    SourceTree = $currentCandidate.Tree
+    SourceCommit = $reportResult.Candidate.Commit
+    SourceTree = $reportResult.Candidate.Tree
     DependencyCount = $validatedInput.Dependencies.Count
     HumanUat = if ($null -ne $humanResult) { 'VALIDATED INPUT / PENDING' } else { 'PENDING / NOT PROVIDED' }
     Runtime = 'NOT OBSERVED / NOT CLAIMED'
