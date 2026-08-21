@@ -365,6 +365,124 @@ function Assert-CleanSourceIdentity {
     return $current
 }
 
+function Assert-V05JsonBooleanProperty {
+    param(
+        [Parameter(Mandatory)]
+        $TargetObject,
+
+        [Parameter(Mandatory)]
+        [string]$PropertyName,
+
+        [Parameter(Mandatory)]
+        [bool]$ExpectedValue,
+
+        [Parameter(Mandatory)]
+        [string]$ContextPath
+    )
+
+    if ($null -eq $TargetObject) {
+        throw "Target JSON object is null: $ContextPath"
+    }
+
+    $property = $TargetObject.PSObject.Properties[$PropertyName]
+    if ($null -eq $property) {
+        throw "JSON object is missing required boolean property '$PropertyName': $ContextPath"
+    }
+
+    $val = $property.Value
+    if ($null -eq $val) {
+        throw "JSON property '$PropertyName' value is null (expected boolean $ExpectedValue): $ContextPath"
+    }
+
+    if ($val.GetType() -ne [bool]) {
+        $typeName = $val.GetType().FullName
+        throw "JSON property '$PropertyName' must be a CLR Boolean, but found '$typeName' with value '$val': $ContextPath"
+    }
+
+    if ([bool]$val -ne $ExpectedValue) {
+        throw "JSON property '$PropertyName' is $([bool]$val) (expected $ExpectedValue): $ContextPath"
+    }
+}
+
+function Assert-V05CompositeRuntimeReport {
+    param(
+        [Parameter(Mandatory)][string]$ReportPath
+    )
+
+    if (-not (Test-Path -LiteralPath $ReportPath -PathType Leaf)) {
+        throw "Composite compliance report is missing: $ReportPath"
+    }
+
+    $compositeText = Get-Content -LiteralPath $ReportPath -Raw
+    $composite = $null
+    try {
+        $composite = $compositeText | ConvertFrom-Json
+    }
+    catch {
+        throw "Failed to parse composite compliance report JSON ($ReportPath): $($_.Exception.Message)"
+    }
+    if ($null -eq $composite) {
+        throw "Composite compliance report JSON payload is empty: $ReportPath"
+    }
+
+    $compClassificationProp = $composite.PSObject.Properties['EvidenceClassification']
+    if ($null -eq $compClassificationProp -or
+        $null -eq $compClassificationProp.Value -or
+        $compClassificationProp.Value.GetType() -ne [string] -or
+        $compClassificationProp.Value -ne 'Runtime') {
+        throw "Composite compliance report EvidenceClassification must be string 'Runtime': $ReportPath"
+    }
+
+    Assert-V05JsonBooleanProperty -TargetObject $composite -PropertyName 'RuntimeAccepted' -ExpectedValue $true -ContextPath $ReportPath
+    Assert-V05JsonBooleanProperty -TargetObject $composite -PropertyName 'SessionControlInvoked' -ExpectedValue $false -ContextPath $ReportPath
+
+    $acceptanceProp = $composite.PSObject.Properties['Acceptance']
+    if ($null -eq $acceptanceProp -or $null -eq $acceptanceProp.Value) {
+        throw "Composite compliance report is missing Acceptance object: $ReportPath"
+    }
+    Assert-V05JsonBooleanProperty -TargetObject $acceptanceProp.Value -PropertyName 'Passed' -ExpectedValue $true -ContextPath $ReportPath
+
+    return $composite
+}
+
+function Assert-V05HerdrRuntimeReport {
+    param(
+        [Parameter(Mandatory)][string]$ReportPath
+    )
+
+    if (-not (Test-Path -LiteralPath $ReportPath -PathType Leaf)) {
+        throw "Herdr runtime report is missing: $ReportPath"
+    }
+
+    $herdrJsonText = Get-Content -LiteralPath $ReportPath -Raw
+    $herdrJson = $null
+    try {
+        $herdrJson = $herdrJsonText | ConvertFrom-Json
+    }
+    catch {
+        throw "Failed to parse Herdr runtime report JSON ($ReportPath): $($_.Exception.Message)"
+    }
+    if ($null -eq $herdrJson) {
+        throw "Herdr runtime report JSON payload is empty: $ReportPath"
+    }
+
+    $herdrClassificationProp = $herdrJson.PSObject.Properties['EvidenceClassification']
+    if ($null -eq $herdrClassificationProp -or
+        $null -eq $herdrClassificationProp.Value -or
+        $herdrClassificationProp.Value.GetType() -ne [string] -or
+        $herdrClassificationProp.Value -ne 'Runtime') {
+        throw "Herdr runtime report EvidenceClassification must be string 'Runtime': $ReportPath"
+    }
+
+    Assert-V05JsonBooleanProperty -TargetObject $herdrJson -PropertyName 'RuntimeObserved' -ExpectedValue $true -ContextPath $ReportPath
+    Assert-V05JsonBooleanProperty -TargetObject $herdrJson -PropertyName 'SnapshotObserved' -ExpectedValue $true -ContextPath $ReportPath
+    Assert-V05JsonBooleanProperty -TargetObject $herdrJson -PropertyName 'EventObserved' -ExpectedValue $true -ContextPath $ReportPath
+    Assert-V05JsonBooleanProperty -TargetObject $herdrJson -PropertyName 'ReconnectObserved' -ExpectedValue $true -ContextPath $ReportPath
+    Assert-V05JsonBooleanProperty -TargetObject $herdrJson -PropertyName 'SessionControlInvoked' -ExpectedValue $false -ContextPath $ReportPath
+
+    return $herdrJson
+}
+
 function Write-ComplianceRuntimeFailureReport {
     param(
         [Parameter(Mandatory)][string]$GateReportPath,
