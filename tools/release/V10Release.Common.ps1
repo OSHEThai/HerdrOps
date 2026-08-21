@@ -1239,6 +1239,348 @@ function Assert-V10CandidateRecord {
     }
 }
 
+function Assert-V10ClrStringValue {
+    param(
+        [Parameter(Mandatory = $true)]$Value,
+        [Parameter(Mandatory = $true)][string]$Description,
+        [switch]$AllowEmpty
+    )
+
+    if ($null -eq $Value -or -not ($Value -is [string]) -or
+        (-not $AllowEmpty -and [string]::IsNullOrWhiteSpace([string]$Value))) {
+        throw "$Description must be a strict CLR string."
+    }
+}
+
+function Assert-V10ClrBooleanValue {
+    param(
+        [Parameter(Mandatory = $true)]$Value,
+        [Parameter(Mandatory = $true)][string]$Description
+    )
+
+    if ($null -eq $Value -or -not ($Value -is [bool])) {
+        throw "$Description must be a strict CLR Boolean."
+    }
+}
+
+function Assert-V10ClrIntegerValue {
+    param(
+        [Parameter(Mandatory = $true)]$Value,
+        [Parameter(Mandatory = $true)][string]$Description,
+        [long]$Minimum = [long]::MinValue
+    )
+
+    if ($null -eq $Value -or $Value -is [bool] -or
+        -not ($Value -is [byte] -or $Value -is [sbyte] -or $Value -is [int16] -or
+            $Value -is [uint16] -or $Value -is [int32] -or $Value -is [uint32] -or
+            $Value -is [int64] -or $Value -is [uint64]) -or
+        [decimal]$Value -lt [decimal]$Minimum) {
+        throw "$Description must be a strict CLR integer at least $Minimum."
+    }
+}
+
+function Assert-V10ClrNumberValue {
+    param(
+        [Parameter(Mandatory = $true)]$Value,
+        [Parameter(Mandatory = $true)][string]$Description,
+        [double]$Minimum = [double]::NegativeInfinity
+    )
+
+    if ($null -eq $Value -or $Value -is [bool] -or
+        -not ($Value -is [byte] -or $Value -is [sbyte] -or $Value -is [int16] -or
+            $Value -is [uint16] -or $Value -is [int32] -or $Value -is [uint32] -or
+            $Value -is [int64] -or $Value -is [uint64] -or $Value -is [single] -or
+            $Value -is [double] -or $Value -is [decimal]) -or
+        [double]$Value -lt $Minimum -or [double]::IsNaN([double]$Value) -or
+        [double]::IsInfinity([double]$Value)) {
+        throw "$Description must be a strict finite CLR number at least $Minimum."
+    }
+}
+
+function Assert-V10ClrArrayValue {
+    param(
+        [Parameter(Mandatory = $true)]$Value,
+        [Parameter(Mandatory = $true)][string]$Description,
+        [int]$MinimumCount = 0
+    )
+
+    if ($null -eq $Value -or -not ($Value -is [array]) -or $Value.Count -lt $MinimumCount) {
+        throw "$Description must be a CLR array with at least $MinimumCount item(s)."
+    }
+}
+
+function Get-V10Sha256TextUpper {
+    param([Parameter(Mandatory = $true)][string]$Text)
+
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $utf8 = New-Object System.Text.UTF8Encoding($false)
+        return (($sha.ComputeHash($utf8.GetBytes($Text)) | ForEach-Object { $_.ToString('x2') }) -join '').ToUpperInvariant()
+    } finally {
+        $sha.Dispose()
+    }
+}
+
+function Get-V10RelativeFileSha256 {
+    param(
+        [Parameter(Mandatory = $true)][string]$RelativePath,
+        [Parameter(Mandatory = $true)][string]$Description
+    )
+
+    $root = Get-V10RepositoryRoot
+    $path = Resolve-V10RepositoryFile -RelativePath $RelativePath -RepositoryRoot $root -Description $Description
+    return ((Get-FileHash -LiteralPath $path -Algorithm SHA256 -ErrorAction Stop).Hash).ToUpperInvariant()
+}
+
+function Assert-V10Issue42Boundaries {
+    param(
+        [Parameter(Mandatory = $true)]$Boundaries,
+        [Parameter(Mandatory = $true)][bool]$RequireRuntime
+    )
+
+    Assert-V10ExactProperties -Object $Boundaries -Names @('static', 'synthetic', 'contract', 'runtime', 'release') -Description 'Issue #42 evidence boundaries'
+    foreach ($name in @('static', 'synthetic', 'contract', 'runtime', 'release')) {
+        Assert-V10ClrStringValue -Value $Boundaries.$name -Description "Issue #42 boundary '$name'"
+    }
+    if ([string]$Boundaries.static -notlike 'PASS*' -or [string]$Boundaries.contract -notlike 'PASS*') {
+        throw 'Issue #42 static and contract boundaries must pass.'
+    }
+    if ($RequireRuntime) {
+        if ([string]$Boundaries.synthetic -notlike 'NOT OBSERVED*' -or
+            [string]$Boundaries.runtime -notlike 'PASS*' -or
+            [string]$Boundaries.release -notlike 'NOT OBSERVED*') {
+            throw 'Issue #42 Runtime acceptance has an invalid evidence boundary.'
+        }
+    } else {
+        if ([string]$Boundaries.synthetic -notlike 'PASS*' -or
+            [string]$Boundaries.runtime -notlike 'NOT OBSERVED*' -or
+            [string]$Boundaries.release -notlike 'NOT OBSERVED*') {
+            throw 'Synthetic Issue #42 evidence must not claim Runtime or Release.'
+        }
+    }
+}
+
+function Assert-V10Issue42ReportSemantics {
+    param(
+        [Parameter(Mandatory = $true)]$Report,
+        [Parameter(Mandatory = $true)][string]$SourceCommit,
+        [Parameter(Mandatory = $true)][string]$ArchiveSha256,
+        [Parameter(Mandatory = $true)][long]$ArchiveBytes,
+        [string]$ExpectedSourceTree,
+        [string]$ExpectedParentCommit,
+        [string]$ExpectedBranch,
+        [switch]$RequireRuntime
+    )
+
+    Assert-V10ExactProperties -Object $Report -Names @(
+        'schemaVersion', 'reportKind', 'issue', 'acceptanceVersion', 'status', 'evidenceClass',
+        'sourceCommit', 'sourceTree', 'candidateCommit', 'directParentCommit', 'branch',
+        'candidateHeadMatch', 'directParentMatch', 'candidateArchiveSha256', 'candidateArchiveBytes',
+        'policySha256', 'contractSha256', 'fixtureSha256', 'gateReportPath', 'gateReportSha256',
+        'provenanceSha256', 'durationHours', 'actualHerdrObserved', 'unhandledCrashes',
+        'unreconciledStates', 'reconnectResult', 'faultInjectionResult', 'databaseIntegrityResult',
+        'alertConsistencyResult', 'soakArtifact', 'boundaries', 'completedAtUtc') -Description 'Issue #42 canonical report'
+
+    Assert-V10ClrIntegerValue -Value $Report.schemaVersion -Description 'Issue #42 schemaVersion' -Minimum 1
+    Assert-V10ClrIntegerValue -Value $Report.issue -Description 'Issue #42 issue' -Minimum 42
+    if ([int64]$Report.schemaVersion -ne 1 -or [int64]$Report.issue -ne 42) {
+        throw 'Issue #42 canonical report identity is not exact.'
+    }
+    Assert-V10ClrStringValue -Value $Report.reportKind -Description 'Issue #42 reportKind'
+    Assert-V10ClrStringValue -Value $Report.acceptanceVersion -Description 'Issue #42 acceptanceVersion'
+    Assert-V10ClrStringValue -Value $Report.status -Description 'Issue #42 status'
+    Assert-V10ClrStringValue -Value $Report.evidenceClass -Description 'Issue #42 evidenceClass'
+    if ([string]$Report.reportKind -cne 'HerdrOps.V10SoakAcceptanceReport' -or
+        [string]$Report.acceptanceVersion -cne 'v1.0.0' -or [string]$Report.status -cne 'PASS' -or
+        ([bool]$RequireRuntime -and [string]$Report.evidenceClass -cne 'Runtime') -or
+        (-not [bool]$RequireRuntime -and [string]$Report.evidenceClass -cne 'Synthetic')) {
+        throw 'Issue #42 canonical report is not a permitted passing evidence shape.'
+    }
+
+    foreach ($name in @('sourceCommit', 'sourceTree', 'candidateCommit', 'directParentCommit')) {
+        Assert-V10ClrStringValue -Value $Report.$name -Description "Issue #42 $name"
+    }
+    Assert-V10Hex -Value ([string]$Report.sourceCommit) -Length 40 -Description 'Issue #42 sourceCommit' -Lowercase
+    Assert-V10Hex -Value ([string]$Report.sourceTree) -Length 40 -Description 'Issue #42 sourceTree' -Lowercase
+    Assert-V10Hex -Value ([string]$Report.candidateCommit) -Length 40 -Description 'Issue #42 candidateCommit' -Lowercase
+    Assert-V10Hex -Value ([string]$Report.directParentCommit) -Length 40 -Description 'Issue #42 directParentCommit' -Lowercase
+    if ([string]$Report.sourceCommit -cne $SourceCommit -or [string]$Report.candidateCommit -cne $SourceCommit) {
+        throw 'Issue #42 source/candidate commit binding is not exact.'
+    }
+    if (-not [string]::IsNullOrWhiteSpace($ExpectedSourceTree) -and [string]$Report.sourceTree -cne $ExpectedSourceTree) {
+        throw 'Issue #42 source tree binding does not match the accepted commit.'
+    }
+    if (-not [string]::IsNullOrWhiteSpace($ExpectedParentCommit) -and [string]$Report.directParentCommit -cne $ExpectedParentCommit) {
+        throw 'Issue #42 direct-parent binding does not match the accepted commit.'
+    }
+    Assert-V10ClrStringValue -Value $Report.branch -Description 'Issue #42 branch'
+    if ([string]$Report.branch -match '[<>]' -or [string]$Report.branch -in @('PENDING', 'NOT ASSIGNED')) {
+        throw 'Issue #42 branch binding is not concrete.'
+    }
+    if (-not [string]::IsNullOrWhiteSpace($ExpectedBranch) -and [string]$Report.branch -cne $ExpectedBranch) {
+        throw 'Issue #42 branch binding does not match the reviewed checkout.'
+    }
+    foreach ($name in @('candidateHeadMatch', 'directParentMatch')) {
+        Assert-V10ClrStringValue -Value $Report.$name -Description "Issue #42 $name"
+        if ([string]$Report.$name -cne 'PASS') {
+            throw "Issue #42 $name must be PASS."
+        }
+    }
+
+    Assert-V10ClrStringValue -Value $Report.candidateArchiveSha256 -Description 'Issue #42 candidateArchiveSha256'
+    Assert-V10Hex -Value ([string]$Report.candidateArchiveSha256) -Length 64 -Description 'Issue #42 candidateArchiveSha256' -Uppercase
+    if ([string]$Report.candidateArchiveSha256 -cne $ArchiveSha256) {
+        throw 'Issue #42 candidate archive SHA-256 does not match the accepted candidate.'
+    }
+    Assert-V10ClrIntegerValue -Value $Report.candidateArchiveBytes -Description 'Issue #42 candidateArchiveBytes' -Minimum 1
+    if ([int64]$Report.candidateArchiveBytes -ne $ArchiveBytes) {
+        throw 'Issue #42 candidate archive byte count does not match the accepted candidate.'
+    }
+
+    foreach ($name in @('policySha256', 'contractSha256', 'fixtureSha256', 'gateReportSha256', 'provenanceSha256')) {
+        Assert-V10ClrStringValue -Value $Report.$name -Description "Issue #42 $name"
+        Assert-V10Hex -Value ([string]$Report.$name) -Length 64 -Description "Issue #42 $name" -Uppercase
+        if ([string]$Report.$name -ceq (('0' * 64) -join '')) {
+            throw "Issue #42 $name cannot be an all-zero placeholder."
+        }
+    }
+    $expectedPolicy = Get-V10RelativeFileSha256 -RelativePath 'tools/SoakContractPolicy.ps1' -Description 'Issue #42 policy'
+    $expectedContract = Get-V10RelativeFileSha256 -RelativePath 'docs/protocol/v1.0-issue-42-soak-fault-injection-contract.md' -Description 'Issue #42 contract'
+    $expectedFixture = Get-V10RelativeFileSha256 -RelativePath 'tests/fixtures/v1.0/issue-42/soak-alert-consistency.json' -Description 'Issue #42 fixture'
+    if ([string]$Report.policySha256 -cne $expectedPolicy -or
+        [string]$Report.contractSha256 -cne $expectedContract -or
+        [string]$Report.fixtureSha256 -cne $expectedFixture) {
+        throw 'Issue #42 policy, contract, or fixture hash is not bound to the committed bytes.'
+    }
+
+    Assert-V10ClrStringValue -Value $Report.gateReportPath -Description 'Issue #42 gateReportPath'
+    $gatePath = Resolve-V10RepositoryFile -RelativePath ([string]$Report.gateReportPath) -RepositoryRoot (Get-V10RepositoryRoot) -Description 'Issue #42 gate report'
+    $gateHash = ((Get-FileHash -LiteralPath $gatePath -Algorithm SHA256 -ErrorAction Stop).Hash).ToUpperInvariant()
+    if ($gateHash -cne [string]$Report.gateReportSha256) {
+        throw 'Issue #42 gate-report hash does not match its exact bytes.'
+    }
+    $gateText = [IO.File]::ReadAllText($gatePath)
+    foreach ($marker in @(
+        'Issue: #42',
+        "SourceCommit: $($Report.sourceCommit)",
+        "Branch: $($Report.branch)",
+        "CandidateArchiveSha256: $($Report.candidateArchiveSha256)",
+        "PolicySha256: $($Report.policySha256)",
+        "ContractSha256: $($Report.contractSha256)",
+        "FixtureSha256: $($Report.fixtureSha256)")) {
+        if ($gateText.IndexOf($marker, [StringComparison]::Ordinal) -lt 0) {
+            throw "Issue #42 gate report is missing canonical marker: $marker"
+        }
+    }
+    $provenanceState = ''
+    foreach ($item in @(
+        [pscustomobject]@{ Name = 'policy'; Sha256 = [string]$Report.policySha256 },
+        [pscustomobject]@{ Name = 'contract'; Sha256 = [string]$Report.contractSha256 },
+        [pscustomobject]@{ Name = 'fixture'; Sha256 = [string]$Report.fixtureSha256 },
+        [pscustomobject]@{ Name = 'gate-report'; Sha256 = [string]$Report.gateReportSha256 })) {
+        $provenanceState = Get-V10Sha256TextUpper -Text ($provenanceState + '|' + $item.Name + '|' + $item.Sha256)
+    }
+    if ([string]$Report.provenanceSha256 -cne $provenanceState) {
+        throw 'Issue #42 provenance root does not match the ordered policy/contract/fixture/gate chain.'
+    }
+
+    Assert-V10ClrNumberValue -Value $Report.durationHours -Description 'Issue #42 24-hour durationHours' -Minimum 24.0
+    Assert-V10ClrBooleanValue -Value $Report.actualHerdrObserved -Description 'Issue #42 actualHerdrObserved'
+    if (-not [bool]$Report.actualHerdrObserved) {
+        throw 'Issue #42 actualHerdrObserved must be true for Runtime acceptance.'
+    }
+    foreach ($name in @('unhandledCrashes', 'unreconciledStates')) {
+        Assert-V10ClrIntegerValue -Value $Report.$name -Description "Issue #42 $name" -Minimum 0
+        if ([int64]$Report.$name -ne 0) { throw "Issue #42 $name must be zero." }
+    }
+    foreach ($name in @('reconnectResult', 'faultInjectionResult', 'databaseIntegrityResult', 'alertConsistencyResult')) {
+        Assert-V10ClrStringValue -Value $Report.$name -Description "Issue #42 $name"
+        if ([string]$Report.$name -cne 'PASS') { throw "Issue #42 $name must be PASS." }
+    }
+
+    $soak = $Report.soakArtifact
+    Assert-V10ExactProperties -Object $soak -Names @(
+        'SchemaVersion', 'ArtifactKind', 'RunId', 'Mode', 'MeasurementRunId',
+        'MeasurementArtifactSha256', 'Candidate', 'Soak', 'InstalledHerdr', 'Producer',
+        'Provenance', 'Limits', 'Artifacts') -Description 'Issue #42 soakArtifact'
+    foreach ($name in @('SchemaVersion', 'ArtifactKind', 'RunId', 'Mode', 'MeasurementRunId', 'MeasurementArtifactSha256')) {
+        Assert-V10ClrStringValue -Value $soak.$name -Description "Issue #42 soakArtifact.$name"
+    }
+    if ([string]$soak.SchemaVersion -cne 'v0.7.0-soak' -or [string]$soak.ArtifactKind -cne 'SoakRun' -or
+        [string]$soak.Mode -cne 'Live') {
+        throw 'Issue #42 soak artifact identity or Live mode is not exact.'
+    }
+    Assert-V10Hex -Value ([string]$soak.MeasurementArtifactSha256) -Length 64 -Description 'Issue #42 measurement artifact SHA-256' -Uppercase
+
+    Assert-V10ExactProperties -Object $soak.Candidate -Names @('SourceCommit', 'SourceTree', 'GitTreeClean') -Description 'Issue #42 soak candidate'
+    Assert-V10ClrStringValue -Value $soak.Candidate.SourceCommit -Description 'Issue #42 soak candidate SourceCommit'
+    Assert-V10ClrStringValue -Value $soak.Candidate.SourceTree -Description 'Issue #42 soak candidate SourceTree'
+    Assert-V10ClrBooleanValue -Value $soak.Candidate.GitTreeClean -Description 'Issue #42 soak candidate GitTreeClean'
+    Assert-V10Hex -Value ([string]$soak.Candidate.SourceCommit) -Length 40 -Description 'Issue #42 soak candidate SourceCommit' -Lowercase
+    Assert-V10Hex -Value ([string]$soak.Candidate.SourceTree) -Length 40 -Description 'Issue #42 soak candidate SourceTree' -Lowercase
+    if ([string]$soak.Candidate.SourceCommit -cne [string]$Report.sourceCommit -or
+        [string]$soak.Candidate.SourceTree -cne [string]$Report.sourceTree -or
+        -not [bool]$soak.Candidate.GitTreeClean) {
+        throw 'Issue #42 soak candidate identity is not bound to the report source.'
+    }
+
+    Assert-V10ExactProperties -Object $soak.Soak -Names @(
+        'DurationHours', 'UnhandledCrashes', 'UnreconciledStateCount', 'UnboundedTerminalReads',
+        'RuntimeObservationFailures', 'ObservedReconnects') -Description 'Issue #42 soak measurements'
+    Assert-V10ClrNumberValue -Value $soak.Soak.DurationHours -Description 'Issue #42 soak DurationHours' -Minimum 24.0
+    if ([double]$soak.Soak.DurationHours -ne [double]$Report.durationHours) { throw 'Issue #42 report and soak duration differ.' }
+    foreach ($name in @('UnhandledCrashes', 'UnreconciledStateCount', 'UnboundedTerminalReads', 'RuntimeObservationFailures')) {
+        Assert-V10ClrIntegerValue -Value $soak.Soak.$name -Description "Issue #42 soak $name" -Minimum 0
+        if ([int64]$soak.Soak.$name -ne 0) { throw "Issue #42 soak $name must be zero." }
+    }
+    Assert-V10ClrIntegerValue -Value $soak.Soak.ObservedReconnects -Description 'Issue #42 soak ObservedReconnects' -Minimum 1
+
+    Assert-V10ExactProperties -Object $soak.InstalledHerdr -Names @('ProductId', 'ExecutablePath', 'ExecutableSha256', 'ReleaseId', 'PackageRoot', 'PackageIdentitySha256') -Description 'Issue #42 InstalledHerdr'
+    if ([string]$soak.InstalledHerdr.ProductId -cne 'Herdr') { throw 'Issue #42 installed product identity is not Herdr.' }
+    foreach ($name in @('ExecutablePath', 'ReleaseId', 'PackageRoot')) { Assert-V10ClrStringValue -Value $soak.InstalledHerdr.$name -Description "Issue #42 InstalledHerdr.$name" }
+    foreach ($name in @('ExecutableSha256', 'PackageIdentitySha256')) { Assert-V10ClrStringValue -Value $soak.InstalledHerdr.$name -Description "Issue #42 InstalledHerdr.$name"; Assert-V10Hex -Value ([string]$soak.InstalledHerdr.$name) -Length 64 -Description "Issue #42 InstalledHerdr.$name" -Uppercase }
+
+    Assert-V10ExactProperties -Object $soak.Producer -Names @('Tool', 'Version', 'SessionControlInvoked', 'ObserverMode', 'ObserverExecutableSha256', 'ObserverReportSha256', 'ScheduleContextSha256') -Description 'Issue #42 soak Producer'
+    foreach ($name in @('Tool', 'Version', 'ObserverMode')) { Assert-V10ClrStringValue -Value $soak.Producer.$name -Description "Issue #42 soak Producer.$name" }
+    Assert-V10ClrBooleanValue -Value $soak.Producer.SessionControlInvoked -Description 'Issue #42 soak Producer.SessionControlInvoked'
+    if ([string]$soak.Producer.Tool -cne 'Invoke-V07ActualHerdrSoak.ps1' -or [string]$soak.Producer.Version -cne '2' -or
+        [bool]$soak.Producer.SessionControlInvoked -or [string]$soak.Producer.ObserverMode -cne 'ReadOnlyAttached') {
+        throw 'Issue #42 soak producer identity or session-control boundary is not exact.'
+    }
+    foreach ($name in @('ObserverExecutableSha256', 'ObserverReportSha256', 'ScheduleContextSha256')) { Assert-V10ClrStringValue -Value $soak.Producer.$name -Description "Issue #42 soak Producer.$name"; Assert-V10Hex -Value ([string]$soak.Producer.$name) -Length 64 -Description "Issue #42 soak Producer.$name" -Uppercase }
+
+    Assert-V10ExactProperties -Object $soak.Provenance -Names @('HeartbeatIntervalSeconds', 'ExpectedHeartbeatCount', 'MissingHeartbeatCount', 'HeartbeatChainHeadSha256', 'ObservationCount', 'FaultObservationChainHeadSha256') -Description 'Issue #42 soak Provenance'
+    Assert-V10ClrIntegerValue -Value $soak.Provenance.HeartbeatIntervalSeconds -Description 'Issue #42 heartbeat interval' -Minimum 1
+    Assert-V10ClrIntegerValue -Value $soak.Provenance.ExpectedHeartbeatCount -Description 'Issue #42 expected heartbeat count' -Minimum 1
+    Assert-V10ClrIntegerValue -Value $soak.Provenance.MissingHeartbeatCount -Description 'Issue #42 missing heartbeat count' -Minimum 0
+    if ([int64]$soak.Provenance.MissingHeartbeatCount -ne 0) { throw 'Issue #42 missing heartbeat count must be zero.' }
+    Assert-V10ClrIntegerValue -Value $soak.Provenance.ObservationCount -Description 'Issue #42 fault observation count' -Minimum 1
+    foreach ($name in @('HeartbeatChainHeadSha256', 'FaultObservationChainHeadSha256')) { Assert-V10ClrStringValue -Value $soak.Provenance.$name -Description "Issue #42 provenance $name"; Assert-V10Hex -Value ([string]$soak.Provenance.$name) -Length 64 -Description "Issue #42 provenance $name" -Uppercase }
+
+    Assert-V10ExactProperties -Object $soak.Limits -Names @('MaxArtifactBytes', 'MaxHeartbeatEntries', 'MaxFaultObservations', 'MaxResourceSamples', 'MaxManifestEntries') -Description 'Issue #42 soak Limits'
+    foreach ($name in @('MaxArtifactBytes', 'MaxHeartbeatEntries', 'MaxFaultObservations', 'MaxResourceSamples', 'MaxManifestEntries')) { Assert-V10ClrIntegerValue -Value $soak.Limits.$name -Description "Issue #42 soak limit $name" -Minimum 1 }
+    if ([int64]$soak.Limits.MaxArtifactBytes -gt 4194304 -or [int64]$soak.Limits.MaxHeartbeatEntries -gt 10000 -or
+        [int64]$soak.Limits.MaxFaultObservations -gt 64 -or [int64]$soak.Limits.MaxResourceSamples -gt 10000 -or
+        [int64]$soak.Limits.MaxManifestEntries -gt 32) {
+        throw 'Issue #42 soak limits exceed the producer policy bounds.'
+    }
+    Assert-V10ClrArrayValue -Value $soak.Artifacts -Description 'Issue #42 soak Artifacts' -MinimumCount 1
+    $artifactNames = @{}
+    foreach ($artifact in @($soak.Artifacts)) {
+        Assert-V10ExactProperties -Object $artifact -Names @('Name', 'LengthBytes', 'Sha256', 'Lines', 'Entries') -Description 'Issue #42 soak artifact manifest entry'
+        Assert-V10ClrStringValue -Value $artifact.Name -Description 'Issue #42 artifact Name'
+        if ($artifactNames.ContainsKey([string]$artifact.Name)) { throw "Issue #42 artifact manifest contains duplicate name: $($artifact.Name)" }
+        $artifactNames[[string]$artifact.Name] = $true
+        foreach ($name in @('LengthBytes', 'Lines', 'Entries')) { Assert-V10ClrIntegerValue -Value $artifact.$name -Description "Issue #42 artifact $name" -Minimum 0 }
+        Assert-V10ClrStringValue -Value $artifact.Sha256 -Description 'Issue #42 artifact Sha256'
+        Assert-V10Hex -Value ([string]$artifact.Sha256) -Length 64 -Description 'Issue #42 artifact Sha256' -Uppercase
+    }
+
+    Assert-V10Issue42Boundaries -Boundaries $Report.boundaries -RequireRuntime ([bool]$RequireRuntime)
+    Assert-V10ClrStringValue -Value $Report.completedAtUtc -Description 'Issue #42 completedAtUtc'
+    Assert-V10UtcTimestamp -Value ([string]$Report.completedAtUtc) -Description 'Issue #42 completedAtUtc'
+}
+
 function Assert-V10GateReport {
     param(
         [Parameter(Mandatory = $true)][int]$Issue,
@@ -1246,6 +1588,10 @@ function Assert-V10GateReport {
         [Parameter(Mandatory = $true)]$Report,
         [Parameter(Mandatory = $true)][string]$SourceCommit,
         [Parameter(Mandatory = $true)][string]$ArchiveSha256,
+        [long]$ArchiveBytes = 0,
+        [string]$ExpectedSourceTree,
+        [string]$ExpectedParentCommit,
+        [string]$ExpectedBranch,
         [string]$ManifestSha256,
         [string]$ContentSha256
     )
@@ -1272,25 +1618,15 @@ function Assert-V10GateReport {
             }
         }
         42 {
-            if ([int](Get-V10RequiredProperty -Object $value -Name 'schemaVersion' -Description 'Issue #42 report') -ne 1 -or
-                [string](Get-V10RequiredProperty -Object $value -Name 'reportKind' -Description 'Issue #42 report') -cne 'HerdrOps.V10SoakAcceptanceReport' -or
-                [int](Get-V10RequiredProperty -Object $value -Name 'issue' -Description 'Issue #42 report') -ne 42 -or
-                [string](Get-V10RequiredProperty -Object $value -Name 'acceptanceVersion' -Description 'Issue #42 report') -cne 'v1.0.0' -or
-                [string](Get-V10RequiredProperty -Object $value -Name 'status' -Description 'Issue #42 report') -cne 'PASS' -or
-                [string](Get-V10RequiredProperty -Object $value -Name 'evidenceClass' -Description 'Issue #42 report') -cne 'Runtime' -or
-                [string](Get-V10RequiredProperty -Object $value -Name 'sourceCommit' -Description 'Issue #42 report') -cne $SourceCommit -or
-                [string](Get-V10RequiredProperty -Object $value -Name 'candidateArchiveSha256' -Description 'Issue #42 report') -cne $ArchiveSha256 -or
-                [decimal](Get-V10RequiredProperty -Object $value -Name 'durationHours' -Description 'Issue #42 report') -lt [decimal]24 -or
-                -not [bool](Get-V10RequiredProperty -Object $value -Name 'actualHerdrObserved' -Description 'Issue #42 report') -or
-                [int](Get-V10RequiredProperty -Object $value -Name 'unhandledCrashes' -Description 'Issue #42 report') -ne 0 -or
-                [int](Get-V10RequiredProperty -Object $value -Name 'unreconciledStates' -Description 'Issue #42 report') -ne 0 -or
-                [string](Get-V10RequiredProperty -Object $value -Name 'reconnectResult' -Description 'Issue #42 report') -cne 'PASS' -or
-                [string](Get-V10RequiredProperty -Object $value -Name 'faultInjectionResult' -Description 'Issue #42 report') -cne 'PASS' -or
-                [string](Get-V10RequiredProperty -Object $value -Name 'databaseIntegrityResult' -Description 'Issue #42 report') -cne 'PASS' -or
-                [string](Get-V10RequiredProperty -Object $value -Name 'alertConsistencyResult' -Description 'Issue #42 report') -cne 'PASS') {
-                throw 'Issue #42 report does not prove the exact 24-hour actual-Herdr candidate acceptance.'
-            }
-            Assert-V10UtcTimestamp -Value ([string](Get-V10RequiredProperty -Object $value -Name 'completedAtUtc' -Description 'Issue #42 report')) -Description 'Issue #42 completedAtUtc'
+            Assert-V10Issue42ReportSemantics `
+                -Report $value `
+                -SourceCommit $SourceCommit `
+                -ArchiveSha256 $ArchiveSha256 `
+                -ArchiveBytes $ArchiveBytes `
+                -ExpectedSourceTree $ExpectedSourceTree `
+                -ExpectedParentCommit $ExpectedParentCommit `
+                -ExpectedBranch $ExpectedBranch `
+                -RequireRuntime
         }
         43 {
             if ([int](Get-V10RequiredProperty -Object $value -Name 'schemaVersion' -Description 'Issue #43 report') -ne 1 -or
@@ -1363,6 +1699,22 @@ function Assert-V10ReleaseAuthorization {
         [string]$authorization.candidateRecord.archiveSha256 -cne $candidate.ArchiveSha256) {
         throw 'Release authorization candidate record or archive hash does not match independently observed bytes.'
     }
+    $acceptedGit = Get-V10GitIdentity -RepositoryRoot $RepositoryRoot -ExpectedCommit $acceptedCommit -RequireClean
+    $treeOutput = @(& git -C $RepositoryRoot rev-parse --verify "$acceptedCommit^{tree}" 2>&1 | ForEach-Object { [string]$_ })
+    $treeExit = $LASTEXITCODE
+    $expectedSourceTree = if ($treeOutput.Count -eq 1) { $treeOutput[0].Trim().ToLowerInvariant() } else { '' }
+    $parentOutput = @(& git -C $RepositoryRoot rev-parse --verify "$acceptedCommit^1" 2>&1 | ForEach-Object { [string]$_ })
+    $parentExit = $LASTEXITCODE
+    $expectedParentCommit = if ($parentOutput.Count -eq 1) { $parentOutput[0].Trim().ToLowerInvariant() } else { '' }
+    $branchOutput = @(& git -C $RepositoryRoot symbolic-ref --short HEAD 2>&1 | ForEach-Object { [string]$_ })
+    $branchExit = $LASTEXITCODE
+    $expectedBranch = if ($branchOutput.Count -eq 1) { $branchOutput[0].Trim() } else { '' }
+    if ($treeExit -ne 0 -or $parentExit -ne 0 -or $branchExit -ne 0 -or
+        $expectedSourceTree -notmatch '^[0-9a-f]{40}$' -or
+        $expectedParentCommit -notmatch '^[0-9a-f]{40}$' -or
+        [string]::IsNullOrWhiteSpace($expectedBranch)) {
+        throw 'Release authorization could not resolve exact accepted source tree, direct parent, and branch bindings.'
+    }
 
     $expectedGates = @(
         [ordered]@{ issue = 41; evidenceClass = 'ReleaseAudit' },
@@ -1401,6 +1753,10 @@ function Assert-V10ReleaseAuthorization {
             -Report $report `
             -SourceCommit $acceptedCommit `
             -ArchiveSha256 $candidate.ArchiveSha256 `
+            -ArchiveBytes $candidate.ArchiveBytes `
+            -ExpectedSourceTree $expectedSourceTree `
+            -ExpectedParentCommit $expectedParentCommit `
+            -ExpectedBranch $expectedBranch `
             -ManifestSha256 ([string]$candidate.Record.generation.manifestSha256) `
             -ContentSha256 ([string]$candidate.Record.generation.contentSha256)
         [void]$gateRecords.Add([pscustomobject][ordered]@{
