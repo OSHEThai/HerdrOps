@@ -412,6 +412,52 @@ try {
         }
     }
     [void]$assertions.Add('ReadinessHasNoPublicationOrBuild')
+
+    $ciWorkflowPath = Join-Path $repositoryRoot '.github\workflows\ci.yml'
+    $ciWorkflow = [IO.File]::ReadAllText($ciWorkflowPath)
+    $ciWorkflowNormalized = $ciWorkflow.Replace("`r`n", "`n")
+    $authorizedReportPath = 'artifacts/release-gates/v1.0.0/issue-45'
+    foreach ($legacyReportRoot in @('artifacts/release-readiness-gates', 'artifacts\release-readiness-gates')) {
+        if ($ciWorkflow.IndexOf($legacyReportRoot, [StringComparison]::Ordinal) -ge 0) {
+            throw "CI still contains the unauthorized legacy Issue #45 report path: $legacyReportRoot"
+        }
+    }
+    if ([regex]::Matches($ciWorkflow, [regex]::Escape($authorizedReportPath)).Count -ne 3) {
+        throw 'CI must contain the authorized Issue #45 report path exactly three times (two report roots and one upload path).'
+    }
+    [void]$assertions.Add('CiUsesAuthorizedReleaseGatePath')
+
+    $ps7ReadinessStep = "      - name: 'Run v1.0 release-readiness preparation gate (Issue #45) - Static/Synthetic - PowerShell 7 (pwsh)'`n        if: always()"
+    $ps5ReadinessStep = "      - name: 'Run v1.0 release-readiness preparation gate (Issue #45) - Static/Synthetic - Windows PowerShell 5.1'`n        if: always()"
+    foreach ($stepMarker in @($ps7ReadinessStep, $ps5ReadinessStep)) {
+        if ($ciWorkflowNormalized.IndexOf($stepMarker, [StringComparison]::Ordinal) -lt 0) {
+            throw 'Both Issue #45 readiness steps must use equivalent fail-closed if: always() semantics.'
+        }
+    }
+    [void]$assertions.Add('CiReadinessStepsAlways')
+
+    $toolsReadme = [IO.File]::ReadAllText((Join-Path $repositoryRoot 'tools\README.md'))
+    foreach ($requiredEntry in @(
+        './tools/Test-V03ImplementationGateTests.ps1',
+        './tools/Test-V03ImplementationGate.ps1 -Configuration Release'
+    )) {
+        if ($toolsReadme.IndexOf($requiredEntry, [StringComparison]::Ordinal) -lt 0) {
+            throw "tools/README.md is missing the Issue #17 implementation gate entry: $requiredEntry"
+        }
+    }
+    [void]$assertions.Add('ToolsReadmeRestoresIssue17')
+
+    foreach ($requiredEntry in @(
+        './tools/Test-V10Issue42SoakContract.ps1',
+        '-CandidateArchivePath ''<candidate-archive>''',
+        '-CandidateArchiveSha256 ''<64-hex>''',
+        '-CandidateArchiveBytes <bytes>'
+    )) {
+        if ($toolsReadme.IndexOf($requiredEntry, [StringComparison]::Ordinal) -lt 0) {
+            throw "tools/README.md is missing the Issue #42 soak-contract entry: $requiredEntry"
+        }
+    }
+    [void]$assertions.Add('ToolsReadmeRestoresIssue42')
 } finally {
     if (Test-Path -LiteralPath $testRoot) {
         $fullTestRoot = Normalize-ComparablePath -Path $testRoot

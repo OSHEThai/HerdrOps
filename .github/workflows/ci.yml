@@ -23,7 +23,7 @@ jobs:
         with:
           dotnet-version: 10.0.x
 
-      # Static/Synthetic only; Actual Herdr Runtime NOT OBSERVED.
+# Static/Synthetic only; Actual Herdr Runtime NOT OBSERVED.
       - name: 'Run v0.7 packaging gate (Issue #38) - Static/Synthetic - PowerShell 7 (pwsh)'
         shell: pwsh
         run: |
@@ -183,12 +183,13 @@ jobs:
         shell: pwsh
         run: ./tools/Test-V05RoleDistinctReview.ps1 -Configuration Release -SkipBuild
 
-# Static/Synthetic only; Actual Herdr Runtime NOT OBSERVED.
+      # Static/Synthetic only; Actual Herdr Runtime NOT OBSERVED.
       - name: 'Run v1.0 release-readiness preparation gate (Issue #45) - Static/Synthetic - PowerShell 7 (pwsh)'
+        if: always()
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $reportRoot = 'artifacts/release-readiness-gates/v1.0.0/issue-45'
+          $reportRoot = 'artifacts/release-gates/v1.0.0/issue-45'
           try {
             New-Item -ItemType Directory -Path $reportRoot -Force | Out-Null
             $reports = @(./tools/release/Test-V10ReleaseReadiness.ps1)
@@ -196,8 +197,8 @@ jobs:
               throw "Release-readiness gate (PowerShell 7) returned $($reports.Count) objects; expected exactly 1."
             }
             $report = $reports[0]
-            if ([int]$report.AssertionCount -ne 15) {
-              throw "Release-readiness gate (PowerShell 7) AssertionCount=$($report.AssertionCount); expected 15."
+            if ([int]$report.AssertionCount -ne 19) {
+              throw "Release-readiness gate (PowerShell 7) AssertionCount=$($report.AssertionCount); expected 19."
             }
             if ([string]$report.EvidenceClass -cne 'Static/Synthetic') {
               throw 'Release-readiness gate (PowerShell 7) did not return a Static/Synthetic PASS report.'
@@ -233,7 +234,7 @@ jobs:
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
-          $reportRoot = 'artifacts\release-readiness-gates\v1.0.0\issue-45'
+          $reportRoot = 'artifacts/release-gates/v1.0.0/issue-45'
           try {
             New-Item -ItemType Directory -Path $reportRoot -Force | Out-Null
             $reports = @(& .\tools\release\Test-V10ReleaseReadiness.ps1)
@@ -241,8 +242,8 @@ jobs:
               throw "Release-readiness gate (Windows PowerShell 5.1) returned $($reports.Count) objects; expected exactly 1."
             }
             $report = $reports[0]
-            if ([int]$report.AssertionCount -ne 15) {
-              throw "Release-readiness gate (Windows PowerShell 5.1) AssertionCount=$($report.AssertionCount); expected 15."
+            if ([int]$report.AssertionCount -ne 19) {
+              throw "Release-readiness gate (Windows PowerShell 5.1) AssertionCount=$($report.AssertionCount); expected 19."
             }
             if ([string]$report.EvidenceClass -cne 'Static/Synthetic') {
               throw 'Release-readiness gate (Windows PowerShell 5.1) did not return a Static/Synthetic PASS report.'
@@ -493,5 +494,5 @@ jobs:
         with:
           retention-days: 7
           name: v1.0-release-readiness-gate-report
-          path: artifacts/release-readiness-gates/v1.0.0/issue-45
+          path: artifacts/release-gates/v1.0.0/issue-45
           if-no-files-found: warn

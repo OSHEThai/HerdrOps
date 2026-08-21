@@ -67,6 +67,12 @@ $targetAgentLabSocket = Join-Path $env:APPDATA 'herdr\herdr.sock'
 # This remains partial until actual Herdr notification delivery is captured.
 ./tools/Test-V03NotificationRuntime.ps1
 
+# Verify the v0.3 Issue #17 implementation-only aggregation and its
+# deterministic child-gate failure propagation. These checks cover only
+# Static, Contract, and Synthetic evidence and do not make a version decision.
+./tools/Test-V03ImplementationGateTests.ps1
+./tools/Test-V03ImplementationGate.ps1 -Configuration Release
+
 # Verify v0.4 assignment lifecycle transitions, Core-acceptance mapping,
 # SQLite migration and append-only provenance, restart replay, orphan and
 # duplicate-handoff visibility, and exact committed synthetic replay hashes.
@@ -157,6 +163,17 @@ $targetAgentLabSocket = Join-Path $env:APPDATA 'herdr\herdr.sock'
 dotnet artifacts/bin/HerdrOps.Core/release/HerdrOps.Core.dll trace-herdr-terminal-process `
   --report artifacts/runtime-evidence/v0.3.0/issue-14/terminal-process.json `
   --seconds 120 --interval-ms 500 --lines 80
+
+# Verify the fail-closed v1.0 Issue #42 24-hour soak/fault-injection contract and
+# harness without running a soak or controlling Herdr/Core/App. Reports PENDING and
+# refuses PASS in synthetic/preparation mode.
+./tools/Test-V10Issue42SoakContract.ps1
+
+# Optionally validate exact packaged candidate bytes (still refuses a soak/PASS).
+./tools/Test-V10Issue42SoakContract.ps1 `
+  -CandidateArchivePath '<candidate-archive>' `
+  -CandidateArchiveSha256 '<64-hex>' `
+  -CandidateArchiveBytes <bytes>
 
 # From a clean committed checkout, run the deterministic v0.7 performance budget
 # self-test suite (positive passing/waived boundaries and negative violations).
