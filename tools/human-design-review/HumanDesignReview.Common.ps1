@@ -107,6 +107,28 @@ function Assert-HumanDesignReviewContainedPath {
     }
 }
 
+function Test-HumanDesignReviewGitObjectId {
+    param([string]$Value)
+
+    return (-not [string]::IsNullOrWhiteSpace($Value) -and $Value -cmatch '^[0-9a-f]{40}$')
+}
+
+function Get-HumanDesignReviewSourceBindingDigest {
+    param(
+        [Parameter(Mandatory = $true)][string]$SourceCommit,
+        [Parameter(Mandatory = $true)][string]$SourceTree
+    )
+
+    if (-not (Test-HumanDesignReviewGitObjectId -Value $SourceCommit)) {
+        throw 'Source commit must be an exact lowercase 40-character Git object id.'
+    }
+    if (-not (Test-HumanDesignReviewGitObjectId -Value $SourceTree)) {
+        throw 'Source tree must be an exact lowercase 40-character Git object id.'
+    }
+
+    return (Get-HumanDesignReviewSha256ForText -Text "git:commit:$SourceCommit|tree:$SourceTree").ToUpperInvariant()
+}
+
 function Get-HumanDesignReviewGitProvenance {
     param([string]$RepoRoot)
 
@@ -118,26 +140,108 @@ function Get-HumanDesignReviewGitProvenance {
     if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($commitOutput)) {
         return $null
     }
-    $commit = (($commitOutput | Out-String).Trim())
-    if ($commit -notmatch '^[0-9a-fA-F]{40,64}$') {
+    $commit = (($commitOutput | Out-String).Trim()).ToLowerInvariant()
+    if (-not (Test-HumanDesignReviewGitObjectId -Value $commit)) {
         return $null
     }
 
     $treeOutput = & git -C $RepoRoot rev-parse 'HEAD^{tree}' 2>$null
-    $tree = if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($treeOutput)) { (($treeOutput | Out-String).Trim()) } else { $null }
+    if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($treeOutput)) {
+        return $null
+    }
+    $tree = (($treeOutput | Out-String).Trim()).ToLowerInvariant()
+    if (-not (Test-HumanDesignReviewGitObjectId -Value $tree)) {
+        return $null
+    }
 
     $branchOutput = & git -C $RepoRoot rev-parse --abbrev-ref HEAD 2>$null
     $branch = if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($branchOutput)) { (($branchOutput | Out-String).Trim()) } else { 'main' }
 
-    $commitSha256 = (Get-HumanDesignReviewSha256ForText -Text "git:commit:$commit|tree:$tree").ToUpperInvariant()
+    $statusOutput = @(& git -C $RepoRoot status --porcelain=v1 --untracked-files=all 2>$null)
+    $statusExitCode = $LASTEXITCODE
+    $status = @($statusOutput | ForEach-Object { [string]$_ })
+    $statusAvailable = ($statusExitCode -eq 0)
+    $workingTreeClean = ($statusAvailable -and $status.Count -eq 0)
+    $commitSha256 = Get-HumanDesignReviewSourceBindingDigest -SourceCommit $commit -SourceTree $tree
 
     return [pscustomobject][ordered]@{
         GitCommit = $commit
         GitTree = $tree
         Branch = $branch
         CommitSha256 = $commitSha256
+        WorkingTreeStatus = $status
+        WorkingTreeClean = $workingTreeClean
+        StatusAvailable = $statusAvailable
         IsVerifiable = $true
     }
+}
+
+function Assert-HumanDesignReviewExpectedSource {
+    param(
+        [string]$ExpectedSourceCommit,
+        [string]$ExpectedSourceTree
+    )
+
+    if ([string]::IsNullOrWhiteSpace($ExpectedSourceCommit) -or [string]::IsNullOrWhiteSpace($ExpectedSourceTree)) {
+        throw 'ExpectedSourceCommit and ExpectedSourceTree are required when ValidateBindings is set.'
+    }
+    if (-not (Test-HumanDesignReviewGitObjectId -Value $ExpectedSourceCommit)) {
+        throw 'ExpectedSourceCommit must be an exact lowercase 40-character Git commit SHA.'
+    }
+    if (-not (Test-HumanDesignReviewGitObjectId -Value $ExpectedSourceTree)) {
+        throw 'ExpectedSourceTree must be an exact lowercase 40-character Git tree SHA.'
+    }
+
+    return [pscustomobject][ordered]@{
+        Commit = $ExpectedSourceCommit
+        Tree = $ExpectedSourceTree
+        BindingDigest = Get-HumanDesignReviewSourceBindingDigest -SourceCommit $ExpectedSourceCommit -SourceTree $ExpectedSourceTree
+    }
+}
+
+function Assert-HumanDesignReviewGitSnapshot {
+    param(
+        [Parameter(Mandatory = $true)]$Snapshot,
+        [Parameter(Mandatory = $true)][string]$ExpectedSourceCommit,
+        [Parameter(Mandatory = $true)][string]$ExpectedSourceTree,
+        [Parameter(Mandatory = $true)][string]$Context
+    )
+
+    if ($null -eq $Snapshot -or -not [bool]$Snapshot.IsVerifiable) {
+        throw "$Context could not resolve an exact Git commit and tree."
+    }
+    if ([string]$Snapshot.GitCommit -cne $ExpectedSourceCommit) {
+        throw "$Context Git source commit does not match ExpectedSourceCommit: expected '$ExpectedSourceCommit', observed '$($Snapshot.GitCommit)'."
+    }
+    if ([string]$Snapshot.GitTree -cne $ExpectedSourceTree) {
+        throw "$Context Git source tree does not match ExpectedSourceTree: expected '$ExpectedSourceTree', observed '$($Snapshot.GitTree)'."
+    }
+    if (-not [bool]$Snapshot.StatusAvailable) {
+        throw "$Context could not resolve Git working-tree status."
+    }
+    if (-not [bool]$Snapshot.WorkingTreeClean) {
+        $statusText = (@($Snapshot.WorkingTreeStatus) -join '; ')
+        throw "$Context Git working tree must be clean before and after binding validation. Observed: $statusText"
+    }
+}
+
+function Assert-HumanDesignReviewManifestSourceBinding {
+    param(
+        [Parameter(Mandatory = $true)]$Manifest,
+        [Parameter(Mandatory = $true)][string]$ExpectedSourceCommit,
+        [Parameter(Mandatory = $true)][string]$ExpectedSourceTree
+    )
+
+    $expectedDigest = Get-HumanDesignReviewSourceBindingDigest -SourceCommit $ExpectedSourceCommit -SourceTree $ExpectedSourceTree
+    $provenanceDigest = ([string]$Manifest.provenance.boundCommitSha256).ToUpperInvariant()
+    $wpfDigest = ([string]$Manifest.uiUnderReview.wpfBuild.commitSha256).ToUpperInvariant()
+    if ($provenanceDigest -cne $wpfDigest) {
+        throw 'Review manifest provenance.boundCommitSha256 and uiUnderReview.wpfBuild.commitSha256 must be equal.'
+    }
+    if ($provenanceDigest -cne $expectedDigest) {
+        throw 'Review manifest source binding digest does not match the expected source commit/tree binding digest.'
+    }
+    return $expectedDigest
 }
 
 function Get-HumanDesignReviewZeroHash {
@@ -683,8 +787,14 @@ function Test-HumanDesignReviewManifestInvariants {
     param(
         [Parameter(Mandatory = $true)]$Manifest,
         [string]$EvidenceRoot,
-        [switch]$ValidateBindings
+        [switch]$ValidateBindings,
+        [string]$ExpectedSourceCommit,
+        [string]$ExpectedSourceTree
     )
+
+    if ($ValidateBindings) {
+        Assert-HumanDesignReviewExpectedSource -ExpectedSourceCommit $ExpectedSourceCommit -ExpectedSourceTree $ExpectedSourceTree | Out-Null
+    }
 
     $expectedRootNames = @('$id', 'schemaVersion', 'contract', 'reviewStatus', 'reviewer', 'provenance',
         'uiUnderReview', 'captures', 'pages', 'widgets', 'accessibleEvidence', 'declarations')
@@ -762,6 +872,9 @@ function Test-HumanDesignReviewManifestInvariants {
     }
     if (-not (Test-HumanDesignReviewBoundHash -Hash ([string]$ui.wpfBuild.commitSha256))) {
         throw 'Review manifest uiUnderReview.wpfBuild.commitSha256 is unbound.'
+    }
+    if ($ValidateBindings) {
+        Assert-HumanDesignReviewManifestSourceBinding -Manifest $Manifest -ExpectedSourceCommit $ExpectedSourceCommit -ExpectedSourceTree $ExpectedSourceTree | Out-Null
     }
     $uiIdentityPlaceholders = @()
     foreach ($uiFieldValue in @(
@@ -1111,11 +1224,34 @@ function Test-HumanDesignReviewManifest {
     param(
         [Parameter(Mandatory = $true)][string]$ManifestPath,
         [string]$EvidenceRoot,
-        [switch]$ValidateBindings
+        [switch]$ValidateBindings,
+        [string]$ExpectedSourceCommit,
+        [string]$ExpectedSourceTree
     )
 
+    $sourcePre = $null
+    $expectedSource = $null
+    if ($ValidateBindings) {
+        $expectedSource = Assert-HumanDesignReviewExpectedSource -ExpectedSourceCommit $ExpectedSourceCommit -ExpectedSourceTree $ExpectedSourceTree
+        $sourcePre = Get-HumanDesignReviewGitProvenance -RepoRoot (Get-HumanDesignReviewRoot)
+        Assert-HumanDesignReviewGitSnapshot -Snapshot $sourcePre -ExpectedSourceCommit $expectedSource.Commit -ExpectedSourceTree $expectedSource.Tree -Context 'Pre-validation source snapshot'
+    }
+
     $manifest = Read-HumanDesignReviewManifestFile -Path $ManifestPath
-    Test-HumanDesignReviewManifestInvariants -Manifest $manifest -EvidenceRoot $EvidenceRoot -ValidateBindings:$ValidateBindings
+    Test-HumanDesignReviewManifestInvariants -Manifest $manifest -EvidenceRoot $EvidenceRoot -ValidateBindings:$ValidateBindings -ExpectedSourceCommit $ExpectedSourceCommit -ExpectedSourceTree $ExpectedSourceTree
+
+    $sourcePost = $null
+    if ($ValidateBindings) {
+        $sourcePost = Get-HumanDesignReviewGitProvenance -RepoRoot (Get-HumanDesignReviewRoot)
+        Assert-HumanDesignReviewGitSnapshot -Snapshot $sourcePost -ExpectedSourceCommit $expectedSource.Commit -ExpectedSourceTree $expectedSource.Tree -Context 'Post-validation source snapshot'
+        if ([string]$sourcePre.GitCommit -cne [string]$sourcePost.GitCommit -or
+            [string]$sourcePre.GitTree -cne [string]$sourcePost.GitTree -or
+            [bool]$sourcePre.WorkingTreeClean -ne [bool]$sourcePost.WorkingTreeClean) {
+            throw 'Git source identity or clean working-tree state changed during binding validation.'
+        }
+    }
+
+    $evidenceClass = if ($ValidateBindings) { 'Static/Contract/Synthetic' } else { 'Static/Contract' }
 
     return [pscustomobject][ordered]@{
         Valid = $true
@@ -1128,6 +1264,10 @@ function Test-HumanDesignReviewManifest {
         ArtifactHash = [string]$manifest.provenance.artifactHash
         PageCaptureCount = @($manifest.captures | Where-Object { $_.kind -eq 'page' }).Count
         BindingsValidated = [bool]$ValidateBindings
-        EvidenceClass = if ($ValidateBindings) { 'Static/Contract/Synthetic' } else { 'Static/Contract' }
+        SourceCommit = if ($ValidateBindings) { [string]$sourcePost.GitCommit } else { $null }
+        SourceTree = if ($ValidateBindings) { [string]$sourcePost.GitTree } else { $null }
+        SourceBindingSha256 = if ($ValidateBindings) { [string]$expectedSource.BindingDigest } else { $null }
+        WorkingTreeClean = if ($ValidateBindings) { [bool]$sourcePost.WorkingTreeClean } else { $null }
+        EvidenceClass = $evidenceClass
     }
 }

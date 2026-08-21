@@ -150,9 +150,13 @@ function New-Issue35ReconciliationPendingManifest {
     param([Parameter(Mandatory = $true)][string]$Root)
 
     $gitProv = Get-HumanDesignReviewGitProvenance -RepoRoot (Get-HumanDesignReviewRoot)
+    $sourceCommit = $null
+    $sourceTree = $null
     if ($null -ne $gitProv) {
         $commit = $gitProv.CommitSha256
         $branch = $gitProv.Branch
+        $sourceCommit = $gitProv.GitCommit
+        $sourceTree = $gitProv.GitTree
         $descriptor = "issue-35 reconciliation pending fixture (git:$($gitProv.GitCommit)|tree:$($gitProv.GitTree))"
     } else {
         $commit = (Get-HumanDesignReviewSha256ForText -Text 'reconciliation-synthetic-issue-35-commit').ToUpperInvariant()
@@ -316,6 +320,8 @@ function New-Issue35ReconciliationPendingManifest {
     return [pscustomobject]@{
         Root = [IO.Path]::GetFullPath($Root)
         ManifestPath = [IO.Path]::GetFullPath($manifestPath)
+        SourceCommit = $sourceCommit
+        SourceTree = $sourceTree
     }
 }
 
@@ -340,7 +346,8 @@ try {
         throw 'Configuration-only verification did not report the Static/Contract evidence class.'
     }
 
-    $bind = Test-HumanDesignReviewManifest -ManifestPath $fixture.ManifestPath -EvidenceRoot $fixture.Root -ValidateBindings
+    $bind = Test-HumanDesignReviewManifest -ManifestPath $fixture.ManifestPath -EvidenceRoot $fixture.Root -ValidateBindings `
+        -ExpectedSourceCommit $fixture.SourceCommit -ExpectedSourceTree $fixture.SourceTree
     if (-not $bind.Valid -or $bind.ReviewStatus -cne 'Pending' -or $bind.PageCaptureCount -ne (Get-HumanDesignReviewCanonicalPageCaptureCount)) {
         throw "The pending reconciliation manifest did not verify cleanly with on-disk binding and $(Get-HumanDesignReviewCanonicalPageCaptureCount) page captures."
     }
