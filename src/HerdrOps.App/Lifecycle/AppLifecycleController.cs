@@ -54,6 +54,9 @@ public sealed class AppLifecycleController
     public AppSettingsSnapshot SelectLanguage(AppSettingsLanguage language) =>
         UpdateSettings(settings => settings with { Language = language });
 
+    public AppSettingsSnapshot SelectTheme(AppSettingsTheme theme) =>
+        UpdateSettings(settings => settings with { Theme = theme });
+
     public AppSettingsSnapshot SelectWidget(AppSettingsWidgetVariant widgetVariant) =>
         UpdateSettings(settings => settings with { WidgetVariant = widgetVariant });
 

@@ -110,6 +110,7 @@ public sealed class AppSettingsStoreTests
           "widgetPinned": false,
           "widgetEnabled": true,
           "widgetVariant": "normal",
+          "theme": "system",
           "language": "th",
           "schemaVersion": 1
         }
@@ -184,8 +185,8 @@ public sealed class AppSettingsStoreTests
         var invalidDocuments = new[]
         {
             "{\"schemaVersion\":1",
-            "{\"schemaVersion\":2,\"language\":\"th\",\"widgetVariant\":\"normal\",\"widgetEnabled\":true,\"widgetPinned\":false,\"userPreferences\":{\"selectedProjectId\":null,\"showOfflineAgents\":true,\"reducedMotion\":false,\"refreshIntervalSeconds\":5},\"localExportDirectory\":null}",
-            "{\"schemaVersion\":1,\"language\":\"th\",\"widgetVariant\":\"unknown\",\"widgetEnabled\":true,\"widgetPinned\":false,\"userPreferences\":{\"selectedProjectId\":null,\"showOfflineAgents\":true,\"reducedMotion\":false,\"refreshIntervalSeconds\":5},\"localExportDirectory\":null}",
+            "{\"schemaVersion\":2,\"language\":\"th\",\"theme\":\"system\",\"widgetVariant\":\"normal\",\"widgetEnabled\":true,\"widgetPinned\":false,\"userPreferences\":{\"selectedProjectId\":null,\"showOfflineAgents\":true,\"reducedMotion\":false,\"refreshIntervalSeconds\":5},\"localExportDirectory\":null}",
+            "{\"schemaVersion\":1,\"language\":\"th\",\"theme\":\"unknown\",\"widgetVariant\":\"unknown\",\"widgetEnabled\":true,\"widgetPinned\":false,\"userPreferences\":{\"selectedProjectId\":null,\"showOfflineAgents\":true,\"reducedMotion\":false,\"refreshIntervalSeconds\":5},\"localExportDirectory\":null}",
         };
 
         foreach (var invalidDocument in invalidDocuments)
@@ -241,8 +242,8 @@ public sealed class AppSettingsStoreTests
             (
                 "duplicate property",
                 Encoding.UTF8.GetBytes(canonicalJson.Replace(
-                    "  \"language\": \"th\",\n",
-                    "  \"schemaVersion\": 1,\n  \"language\": \"th\",\n",
+                    "  \"theme\": \"system\",\n",
+                    "  \"schemaVersion\": 1,\n  \"theme\": \"system\",\n",
                     StringComparison.Ordinal))),
             (
                 "unknown property",
@@ -742,6 +743,7 @@ public sealed class AppSettingsStoreTests
         {
             AppSettings.Defaults with { SchemaVersion = 99 },
             AppSettings.Defaults with { Language = (AppSettingsLanguage)99 },
+            AppSettings.Defaults with { Theme = (AppSettingsTheme)99 },
             AppSettings.Defaults with { WidgetVariant = (AppSettingsWidgetVariant)99 },
             AppSettings.Defaults with
             {

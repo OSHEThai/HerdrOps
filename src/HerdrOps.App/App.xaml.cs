@@ -421,6 +421,7 @@ public partial class App : Application
     {
         UiLanguageService.Shared.SetLanguage(
             AppSettingsLifecycleMapping.ToUiLanguage(settings.Language));
+        HerdrOps.App.Themes.UiThemeService.Shared.SetTheme(settings.Theme);
         _widgetLauncher?.ApplySettings(settings);
     }
 
