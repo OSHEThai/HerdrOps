@@ -27,6 +27,12 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $false
 
+$traceOrchestrationPath = Join-Path $PSScriptRoot 'lib\V05ComplianceRuntimeTraceOrchestration.ps1'
+if (-not (Test-Path -LiteralPath $traceOrchestrationPath -PathType Leaf)) {
+    throw "Compliance runtime trace orchestration helper is missing: $traceOrchestrationPath"
+}
+. $traceOrchestrationPath
+
 function Get-CleanSourceCommit {
     param([Parameter(Mandatory)][string]$Root)
 
@@ -255,6 +261,13 @@ try {
         $err = if (Test-Path -LiteralPath $confirmErrorPath) { Get-Content -LiteralPath $confirmErrorPath -Raw } else { '' }
         throw "PM Confirm failed with exit $confirmExit. $err"
     }
+
+    $reviewTraceResult = Invoke-V05ComplianceReviewTraceProducer `
+        -CoreExecutable $coreExecutable `
+        -StateDatabasePath $stateDatabasePath `
+        -ReviewTracePath $reviewTracePath `
+        -IncidentId $incidentId `
+        -EvidenceDirectory $evidenceDirectory
 
     $waitMilliseconds = ($DurationSeconds + 20) * 1000
     if (-not $stateProcess.WaitForExit($waitMilliseconds)) {
