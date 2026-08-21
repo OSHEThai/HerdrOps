@@ -67,6 +67,11 @@ public sealed partial class SqliteHerdrStateStore
     internal event Action? ComplianceReviewBusySliceObserved;
 
     // Internal diagnostic hook (InternalsVisibleTo: HerdrOps.IntegrationTests).
+    // Raised when a compliance-review operation is waiting for the in-process
+    // store monitor, so cancellation-before-entry can be tested deterministically.
+    internal event Action? ComplianceReviewMonitorLockWaitObserved;
+
+    // Internal diagnostic hook (InternalsVisibleTo: HerdrOps.IntegrationTests).
     // The hook is raised after the serialized snapshot identity has been captured for
     // the combined trace read and before any trace rows are read. The legacy
     // incident-list API raises the same hook immediately before its read
@@ -75,14 +80,20 @@ public sealed partial class SqliteHerdrStateStore
     internal event Action? ComplianceReviewRuntimeTraceReadBoundaryReached;
 
     public HerdrComplianceReviewRegistrationResult RegisterComplianceReviewIncident(
-        ComplianceReviewIncidentRegistration registration)
+        ComplianceReviewIncidentRegistration registration,
+        CancellationToken cancellationToken = default)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         var candidate = ComplianceReviewWorkflowContract.CreateIncident(registration);
-        lock (_sync)
+        EnterComplianceReviewLock(cancellationToken);
+        try
         {
             ThrowIfDisposed();
+            cancellationToken.ThrowIfCancellationRequested();
             EnsureComplianceReviewSqlFunctions();
-            using var transaction = _connection.BeginTransaction(deferred: false);
+            using var transaction = BeginComplianceReviewWriteTransaction(
+                candidate.IncidentId,
+                cancellationToken);
             var existing = ReadComplianceReviewIncidentCore(
                 candidate.IncidentId,
                 transaction);
@@ -99,6 +110,7 @@ public sealed partial class SqliteHerdrStateStore
             EnsureEvidenceLinksExist(
                 candidate.InitialEvidenceIdentitySha256s,
                 transaction);
+            cancellationToken.ThrowIfCancellationRequested();
             using (var command = _connection.CreateCommand())
             {
                 command.Transaction = transaction;
@@ -141,6 +153,7 @@ public sealed partial class SqliteHerdrStateStore
                     SerializeComplianceReviewRegistration(candidate));
                 command.Parameters.AddWithValue("$state", (int)candidate.State);
                 command.Parameters.AddWithValue("$updatedUtc", FormatUtc(candidate.UpdatedUtc));
+                ConfigureComplianceReviewCommand(command, cancellationToken);
                 command.ExecuteNonQuery();
             }
 
@@ -149,11 +162,17 @@ public sealed partial class SqliteHerdrStateStore
                 "incident_id",
                 candidate.IncidentId,
                 candidate.InitialEvidenceIdentitySha256s,
-                transaction);
+                transaction,
+                cancellationToken);
+            cancellationToken.ThrowIfCancellationRequested();
             transaction.Commit();
             return new HerdrComplianceReviewRegistrationResult(
                 candidate,
                 WasAlreadyPresent: false);
+        }
+        finally
+        {
+            Monitor.Exit(_sync);
         }
     }
 
@@ -1707,6 +1726,9 @@ public sealed partial class SqliteHerdrStateStore
     private void OnComplianceReviewBusySliceObserved() =>
         ComplianceReviewBusySliceObserved?.Invoke();
 
+    private void OnComplianceReviewMonitorLockWaitObserved() =>
+        ComplianceReviewMonitorLockWaitObserved?.Invoke();
+
     private void OnComplianceReviewRuntimeTraceReadBoundaryReached() =>
         ComplianceReviewRuntimeTraceReadBoundaryReached?.Invoke();
 
@@ -1752,6 +1774,7 @@ public sealed partial class SqliteHerdrStateStore
     {
         while (!Monitor.TryEnter(_sync, TimeSpan.FromMilliseconds(25)))
         {
+            OnComplianceReviewMonitorLockWaitObserved();
             cancellationToken.ThrowIfCancellationRequested();
         }
     }
