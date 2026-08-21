@@ -81,6 +81,24 @@ $expectedSourceTree = '<approved-source-tree>'
 # This remains partial until the authorized Herdr runtime trace is captured.
 ./tools/Test-V03TerminalProcess.ps1
 
+# From an authorized Herdr pane, run the bounded Issue #14 terminal/process
+# acceptance wrapper. Supply the exact source commit/tree and the exact installed
+# Herdr executable path/SHA-256 captured before the run. The wrapper never starts
+# Herdr or controls a session; every failure writes NoRuntimeCredit.
+./tools/Invoke-V03Issue14TerminalProcessRuntimeAcceptance.ps1 `
+  -ExpectedSourceCommit $expectedSourceCommit `
+  -ExpectedSourceTree $expectedSourceTree `
+  -ExpectedHerdrExecutablePath '<exact-herdr.exe-path>' `
+  -ExpectedHerdrExecutableSha256 '<exact-herdr.exe-sha256>' `
+  -DurationSeconds 120 `
+  -IntervalMilliseconds 500 `
+  -MaximumLines 80 `
+  -TimeoutSeconds 300
+
+# Build-free PS5/PS7 parser and hostile selftests for the wrapper. These do not
+# run dotnet, Herdr, a session, or the actual runtime trace.
+./tools/Test-V03Issue14RuntimeAcceptance.Tests.ps1
+
 # Verify bounded notification grouping, exact deduplication, acknowledgement,
 # fail-closed event/Agent routes, and separate Thai/English WPF rendering.
 # This remains partial until actual Herdr notification delivery is captured.
