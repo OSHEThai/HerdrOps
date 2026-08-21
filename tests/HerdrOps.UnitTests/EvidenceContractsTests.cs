@@ -65,6 +65,31 @@ public sealed class EvidenceContractsTests
     }
 
     [TestMethod]
+    public void NullRetentionUsesTheVersionedThirtyDayDefault()
+    {
+        var resolved = EvidenceRetentionPolicy.ResolveRetainUntil(ObservedUtc, null);
+
+        Assert.AreEqual(ObservedUtc.AddDays(EvidenceRetentionPolicy.DefaultManagedArtifactRetentionDays), resolved);
+    }
+
+    [TestMethod]
+    public void RetentionOverrideIsBoundedToTheVersionedMaximum()
+    {
+        var request = CreateCaptureRequest() with
+        {
+            RetainUntilUtc = ObservedUtc.AddDays(EvidenceRetentionPolicy.MaximumManagedArtifactRetentionDays + 1),
+        };
+
+        Assert.Throws<EvidenceContractException>(() =>
+            EvidenceMetadataContract.Create(
+                request,
+                EvidenceArtifactAvailability.Present,
+                5,
+                new string('A', 64),
+                "objects/AA/AA/first.evidence"));
+    }
+
+    [TestMethod]
     public void ManagedEvidencePathRejectsControlAndReservedCharacters()
     {
         Assert.Throws<EvidenceContractException>(() =>

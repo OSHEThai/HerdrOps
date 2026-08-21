@@ -279,6 +279,39 @@ public sealed class RuntimeIdleQuiescenceTracker(int requiredStableSeconds)
     }
 }
 
+/// <summary>
+/// Requires a continuous, unbroken window of a stable full <see cref="RuntimeStateFingerprint"/>
+/// with live Core/App and complete Agent identities before reporting settlement. Any tick where
+/// Core/Live or identity completeness is missing discards all prior progress; the stable window
+/// only starts counting once every condition holds, and must then hold unbroken for its full
+/// duration. This prevents a fingerprint that has merely stopped changing mid-reconnect (identity
+/// or reconciliation churn not yet resolved) from being credited toward, or silently substituted
+/// for, the settled baseline.
+/// </summary>
+public sealed class RuntimeReconnectQuiescenceTracker(int requiredStableSeconds)
+{
+    private readonly int _requiredStableSeconds = requiredStableSeconds;
+    private RuntimeIdleQuiescenceTracker? _eligibleWindowTracker;
+
+    public RuntimeIdleQuiescence? Observe(
+        DateTimeOffset observedUtc,
+        RuntimeStateFingerprint fingerprint,
+        bool hasAllLiveAgentIdentities)
+    {
+        ArgumentNullException.ThrowIfNull(fingerprint);
+        var eligible =
+            fingerprint.IsCoreConnected && fingerprint.IsLive && hasAllLiveAgentIdentities;
+        if (!eligible)
+        {
+            _eligibleWindowTracker = null;
+            return null;
+        }
+
+        _eligibleWindowTracker ??= new RuntimeIdleQuiescenceTracker(_requiredStableSeconds);
+        return _eligibleWindowTracker.Observe(observedUtc, fingerprint);
+    }
+}
+
 public sealed record RuntimeResourceMeasurement(
     int DurationSeconds,
     int SampleIntervalMilliseconds,
@@ -498,6 +531,7 @@ public sealed class RuntimeEvidenceRunner(
             cancellationToken);
         var reconnectObservedAfterDashboardClose = true;
         var reconnectObservedUtc = DateTimeOffset.UtcNow;
+        await WaitForPostReconnectQuiescenceAsync(deadline, cancellationToken);
         var reconnectedConnectionEpoch = _state.CurrentState.ConnectionEpoch;
         var reconnectedBootstrapCount = _state.CurrentRuntimeHealth.BootstrapCount;
         var reconnectedDisconnectCount = _state.CurrentRuntimeHealth.DisconnectCount;
@@ -976,6 +1010,39 @@ public sealed class RuntimeEvidenceRunner(
             Math.Round(ToMegabytes(app.PrivateMemorySize64), 3),
             Math.Round(ToMegabytes(managedHeapBefore), 3),
             Math.Round(ToMegabytes(GC.GetTotalMemory(forceFullCollection: false)), 3));
+    }
+
+    private async Task WaitForPostReconnectQuiescenceAsync(
+        DateTimeOffset deadline,
+        CancellationToken cancellationToken)
+    {
+        var tracker = new RuntimeReconnectQuiescenceTracker(IdleQuiescenceSeconds);
+
+        while (true)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var observedUtc = DateTimeOffset.UtcNow;
+            if (observedUtc >= deadline)
+            {
+                throw new TimeoutException(
+                    $"The post-reconnect Herdr state did not settle into a stable, fully identified fingerprint for {IdleQuiescenceSeconds} continuous seconds before the runtime-evidence timeout.");
+            }
+
+            var currentState = _state.CurrentState;
+            var fingerprint = CurrentFingerprint();
+            var quiescence = tracker.Observe(
+                observedUtc,
+                fingerprint,
+                HasAllLiveAgentIdentities(currentState));
+            if (quiescence is not null)
+            {
+                return;
+            }
+
+            await Task.Delay(
+                TimeSpan.FromMilliseconds(IdleQuiescencePollMilliseconds),
+                cancellationToken);
+        }
     }
 
     private async Task<RuntimeIdleQuiescence> WaitForIdleQuiescenceAsync(
