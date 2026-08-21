@@ -1,0 +1,66 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/OSHEThai/HerdrOps/v0.7/issue-40/release-gate-input.schema.json",
+  "title": "HerdrOps v0.7 Issue #40 release-gate input",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "reportKind", "issue", "candidate", "dependencies", "historyPolicy"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "reportKind": { "const": "HerdrOps.V07ReleaseGateInput" },
+    "issue": { "const": 40 },
+    "candidate": { "$ref": "#/$defs/candidate" },
+    "dependencies": {
+      "type": "array",
+      "minItems": 5,
+      "maxItems": 5,
+      "items": { "$ref": "#/$defs/dependency" }
+    },
+    "historyPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["rebaseAllowed", "requiredFollowUp"],
+      "properties": {
+        "rebaseAllowed": { "const": false },
+        "requiredFollowUp": { "const": "HISTORY_PRESERVING_MERGE_FINAL_ISSUE_39_SUCCESSOR_REGENERATE_REVIEW" }
+      }
+    }
+  },
+  "$defs": {
+    "commit": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9A-F]{64}$"
+    },
+    "relativePath": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512,
+      "pattern": "^(?![A-Za-z]:)(?![\\/])(?!.*(?:^|[\\/])\\.\\.(?:[\\/]|$)).+$"
+    },
+    "candidate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["commit", "tree", "workingTree"],
+      "properties": {
+        "commit": { "$ref": "#/$defs/commit" },
+        "tree": { "$ref": "#/$defs/commit" },
+        "workingTree": { "const": "CLEAN" }
+      }
+    },
+    "dependency": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["issue", "manifestPath", "manifestSha256", "status"],
+      "properties": {
+        "issue": { "enum": [35, 36, 37, 38, 39] },
+        "manifestPath": { "$ref": "#/$defs/relativePath" },
+        "manifestSha256": { "$ref": "#/$defs/sha256" },
+        "status": { "enum": ["PENDING", "PASS"] }
+      }
+    }
+  }
+}
