@@ -694,10 +694,13 @@ try {
     # Finalization (requires a validated matching soak artifact).
     $finalization = $null
     if (-not [string]::IsNullOrWhiteSpace($SoakEvidencePath)) {
-        $soakJson = Get-V07BoundedUtf8FileText -Path $SoakEvidencePath -Description 'Soak evidence'
+        $resolvedSoakEvidencePath = (Resolve-Path -LiteralPath $SoakEvidencePath).Path
+        $soakEvidenceRoot = Split-Path -LiteralPath $resolvedSoakEvidencePath -Parent
+        $soakJson = Get-V07BoundedUtf8FileText -Path $resolvedSoakEvidencePath -Description 'Soak evidence'
         Assert-V07StrictJsonText -JsonText $soakJson -SourceDescription 'Soak evidence'
         $soakArtifact = $soakJson | ConvertFrom-Json
-        $finalization = ConvertTo-V07RuntimeBudgetReport -MeasurementArtifact $artifact -SoakArtifact $soakArtifact -RepositoryRoot $resolvedRepoRoot -CandidateDirectory $CandidateDirectory
+        $finalization = ConvertTo-V07RuntimeBudgetReport -MeasurementArtifact $artifact -SoakArtifact $soakArtifact `
+            -RepositoryRoot $resolvedRepoRoot -CandidateDirectory $CandidateDirectory -EvidenceRoot $soakEvidenceRoot
         if ($finalization.CanFinalize -and $null -ne $finalization.BudgetReport) {
             $finalization.BudgetReport | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $budgetReportPath -Encoding UTF8
         }

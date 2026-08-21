@@ -39,6 +39,7 @@ function New-V07SynthesizedLiveArtifact {
     $synthesized = $jsonCopy | ConvertFrom-Json
 
     $synthesized.Candidate.SourceCommit = $binding.SourceCommit
+    $synthesized.Candidate | Add-Member -MemberType NoteProperty -Name SourceTree -Value $binding.SourceTree -Force
     $synthesized.Candidate.GitTreeClean = $binding.GitTreeClean
     $synthesized.Candidate | Add-Member -MemberType NoteProperty -Name Binaries -Value @($binding.Binaries) -Force
 
@@ -92,7 +93,98 @@ function New-V07SyntheticSoakArtifact {
         [double]$DurationHours = 8.0
     )
 
-    return [pscustomobject]@{
+    $installed = [pscustomobject][ordered]@{
+        ProductId = 'Herdr'
+        ExecutablePath = [string]$MeasurementArtifact.Session.HerdrExecutablePath
+        ExecutableSha256 = [string]$MeasurementArtifact.Session.HerdrExecutableSha256
+        ReleaseId = if ($null -ne $MeasurementArtifact.Session.PSObject.Properties['HerdrReleaseId']) { [string]$MeasurementArtifact.Session.HerdrReleaseId } else { 'synthetic-herdr' }
+        PackageRoot = Split-Path -Path ([string]$MeasurementArtifact.Session.HerdrExecutablePath) -Parent
+        PackageIdentitySha256 = ''
+    }
+    $installed.PackageIdentitySha256 = Get-V07InstalledHerdrIdentitySha256 -Identity $installed
+
+    $heartbeatEntries = [System.Collections.Generic.List[object]]::new()
+    $previousHeartbeat = '0' * 64
+    $heartbeatStart = [DateTimeOffset]::Parse('2020-01-01T00:00:00Z')
+    $syntheticServerStartUtc = if ($null -ne $MeasurementArtifact.Session.ControlHerdrServerIdentity) {
+        ConvertTo-V07SoakUtcText -Value ([DateTimeOffset]$MeasurementArtifact.Session.ControlHerdrServerIdentity.ProcessStartUtc)
+    } else { '2020-01-01T00:00:00Z' }
+    $syntheticCoreRole = @($MeasurementArtifact.Roles | Where-Object { [string]$_.Role -ceq 'Core' })[0]
+    $syntheticAppRole = @($MeasurementArtifact.Roles | Where-Object { [string]$_.Role -ceq 'App' })[0]
+    $syntheticCoreStartUtc = ConvertTo-V07SoakUtcText -Value ([DateTimeOffset]$syntheticCoreRole.ProcessStartUtc)
+    $syntheticAppStartUtc = ConvertTo-V07SoakUtcText -Value ([DateTimeOffset]$syntheticAppRole.ProcessStartUtc)
+    for ($hour = 0; $hour -le 8; $hour++) {
+        $entry = [pscustomobject][ordered]@{
+            Ordinal = $hour + 1; ObservedUtc = $heartbeatStart.AddHours($hour).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ', [Globalization.CultureInfo]::InvariantCulture)
+            Status = 'Healthy'; TargetSocketPresent = $true
+            HerdrProcessId = 8123; HerdrProcessStartUtc = $syntheticServerStartUtc; HerdrExecutablePath = [string]$installed.ExecutablePath; HerdrExecutableSha256 = [string]$installed.ExecutableSha256
+            CoreProcessId = 41001; CoreProcessStartUtc = $syntheticCoreStartUtc; CoreExecutablePath = [string]$syntheticCoreRole.BinaryPath; CoreExecutableSha256 = [string]$syntheticCoreRole.BinarySha256
+            AppProcessId = 41002; AppProcessStartUtc = $syntheticAppStartUtc; AppExecutablePath = [string]$syntheticAppRole.BinaryPath; AppExecutableSha256 = [string]$syntheticAppRole.BinarySha256
+            PreviousEntrySha256 = $previousHeartbeat; EntrySha256 = ''
+        }
+        $entry.EntrySha256 = Get-V07SoakEntrySha256 -Entry $entry
+        $heartbeatEntries.Add($entry)
+        $previousHeartbeat = [string]$entry.EntrySha256
+    }
+
+    $faultEntries = [System.Collections.Generic.List[object]]::new()
+    $faultSchedule = @(
+        @{ Id = 'FAULT-01'; Kind = 'TargetHerdrRestartObservation'; Due = '2020-01-01T02:00:00Z'; Offset = 7200 },
+        @{ Id = 'FAULT-02'; Kind = 'CoreReconnectObservation'; Due = '2020-01-01T04:00:00Z'; Offset = 14400 },
+        @{ Id = 'FAULT-03'; Kind = 'AppRecoveryObservation'; Due = '2020-01-01T06:00:00Z'; Offset = 21600 }
+    )
+    $previousFault = '0' * 64
+    foreach ($scheduled in $faultSchedule) {
+        $fault = [pscustomobject][ordered]@{
+            Id = $scheduled.Id; Kind = $scheduled.Kind; ScheduledOffsetSeconds = $scheduled.Offset
+            DueUtc = $scheduled.Due; ObservedUtc = $scheduled.Due; Status = 'Observed'; OperatorAcknowledged = $true
+            EvidencePath = 'synthetic://' + $scheduled.Id; EvidenceSha256 = Get-V07Sha256Hex -Text $scheduled.Id
+            Note = 'Synthetic positive-control observation only.'; PreviousEntrySha256 = $previousFault; EntrySha256 = ''
+        }
+        $fault.EntrySha256 = Get-V07SoakEntrySha256 -Entry $fault
+        $previousFault = [string]$fault.EntrySha256
+        $faultEntries.Add($fault)
+    }
+
+    $resourceSamples = @(
+        [pscustomobject][ordered]@{ ObservedUtc = '2020-01-01T00:00:00Z'; HerdrProcessId = 8123; CoreProcessId = 41001; AppProcessId = 41002; CombinedWorkingSetBytes = 100; CombinedCpuPercent = 0.2 },
+        [pscustomobject][ordered]@{ ObservedUtc = '2020-01-01T04:00:00Z'; HerdrProcessId = 8123; CoreProcessId = 41001; AppProcessId = 41002; CombinedWorkingSetBytes = 120; CombinedCpuPercent = 0.4 },
+        [pscustomobject][ordered]@{ ObservedUtc = '2020-01-01T08:00:00Z'; HerdrProcessId = 8123; CoreProcessId = 41001; AppProcessId = 41002; CombinedWorkingSetBytes = 110; CombinedCpuPercent = 0.3 }
+    )
+    $limits = [pscustomobject][ordered]@{
+        MaxArtifactBytes = $script:V07SoakMaxArtifactBytes; MaxHeartbeatEntries = $script:V07SoakMaxHeartbeatEntries
+        MaxFaultObservations = $script:V07SoakMaxFaultObservations; MaxResourceSamples = $script:V07SoakMaxResourceSamples
+        MaxManifestEntries = $script:V07SoakMaxManifestEntries
+    }
+    $artifacts = @(
+        [pscustomobject][ordered]@{ Name = 'heartbeat.jsonl'; RelativePath = 'synthetic://heartbeat.jsonl'; LengthBytes = 1; Sha256 = Get-V07Sha256Hex -Text 'heartbeat'; Lines = $heartbeatEntries.Count; Entries = $heartbeatEntries.Count },
+        [pscustomobject][ordered]@{ Name = 'fault-observations.jsonl'; RelativePath = 'synthetic://fault-observations.jsonl'; LengthBytes = 1; Sha256 = Get-V07Sha256Hex -Text 'faults'; Lines = 3; Entries = 3 },
+        [pscustomobject][ordered]@{ Name = 'resources.jsonl'; RelativePath = 'synthetic://resources.jsonl'; LengthBytes = 1; Sha256 = Get-V07Sha256Hex -Text 'resources'; Lines = 3; Entries = 3 },
+        [pscustomobject][ordered]@{ Name = 'soak-context.json'; RelativePath = 'synthetic://soak-context.json'; LengthBytes = 1; Sha256 = Get-V07Sha256Hex -Text 'context'; Lines = 1; Entries = 1 },
+        [pscustomobject][ordered]@{ Name = 'runtime-observer-current.json'; RelativePath = 'synthetic://runtime-observer-current.json'; LengthBytes = 1; Sha256 = Get-V07Sha256Hex -Text 'runtime-report'; Lines = 1; Entries = 1 }
+    )
+
+    $observerBinding = [pscustomobject][ordered]@{
+        RelativePath = [string]$MeasurementArtifact.Candidate.Binaries[0].RelativePath
+        LengthBytes = [long]$MeasurementArtifact.Candidate.Binaries[0].LengthBytes
+        Sha256 = [string]$MeasurementArtifact.Candidate.Binaries[0].Sha256
+    }
+    $admittedIdentity = [pscustomobject][ordered]@{
+        ProcessId = 8123; ProcessStartUtc = $syntheticServerStartUtc
+        ExecutablePath = [string]$installed.ExecutablePath; ExecutableSha256 = [string]$installed.ExecutableSha256
+    }
+    $admittedRoleIdentities = [pscustomobject][ordered]@{
+        Core = [pscustomobject][ordered]@{
+            ProcessId = 41001; ProcessStartUtc = $syntheticCoreStartUtc
+            ExecutablePath = [string]$syntheticCoreRole.BinaryPath; ExecutableSha256 = [string]$syntheticCoreRole.BinarySha256
+        }
+        App = [pscustomobject][ordered]@{
+            ProcessId = 41002; ProcessStartUtc = $syntheticAppStartUtc
+            ExecutablePath = [string]$syntheticAppRole.BinaryPath; ExecutableSha256 = [string]$syntheticAppRole.BinarySha256
+        }
+    }
+
+    return [pscustomobject][ordered]@{
         SchemaVersion = $script:V07SoakSchemaVersion
         ArtifactKind  = $script:V07SoakArtifactKind
         RunId         = 'soak-' + [Guid]::NewGuid().ToString('N').Substring(0, 8)
@@ -104,19 +196,57 @@ function New-V07SyntheticSoakArtifact {
         MeasurementRunId = [string]$MeasurementArtifact.RunId
         MeasurementArtifactSha256 = Get-V07ArtifactCanonicalSha256 -Artifact $MeasurementArtifact
         Session       = [pscustomobject]@{
+            ControlPaneId = if ($null -ne $MeasurementArtifact.Session.PSObject.Properties['ControlPaneId']) { [string]$MeasurementArtifact.Session.ControlPaneId } else { 'synthetic-control' }
+            ObservedControlPaneId = if ($null -ne $MeasurementArtifact.Session.PSObject.Properties['ObservedControlPaneId']) { [string]$MeasurementArtifact.Session.ObservedControlPaneId } else { 'synthetic-control' }
             ControlHerdrSocketPath = [string]$MeasurementArtifact.Session.ControlHerdrSocketPath
             TargetHerdrSocketPath  = [string]$MeasurementArtifact.Session.TargetHerdrSocketPath
+            HerdrExecutablePath    = [string]$MeasurementArtifact.Session.HerdrExecutablePath
             HerdrExecutableSha256  = [string]$MeasurementArtifact.Session.HerdrExecutableSha256
+            HerdrReleaseId         = [string]$installed.ReleaseId
+            ControlHerdrServerIdentity = $admittedIdentity
         }
         Candidate     = [pscustomobject]@{
             SourceCommit = [string]$MeasurementArtifact.Candidate.SourceCommit
+            SourceTree = if ($null -ne $MeasurementArtifact.Candidate.PSObject.Properties['SourceTree']) { [string]$MeasurementArtifact.Candidate.SourceTree } else { ('0' * 40) }
+            GitTreeClean = $true
+            Binaries = @($MeasurementArtifact.Candidate.Binaries); Observer = $observerBinding
         }
         Soak          = [pscustomobject]@{
             DurationHours           = $DurationHours
             UnhandledCrashes        = 0
             UnreconciledStateCount  = 0
             UnboundedTerminalReads  = 0
+            RuntimeObservationCount = 3
+            RuntimeObservationFailures = 0
+            StateEvidenceCount = 3
+            ObservedEvents = 3
+            ObservedReconnects = 1
         }
+        InstalledHerdr = $installed
+        Producer = [pscustomobject][ordered]@{
+            Tool = 'Invoke-V07ActualHerdrSoak.ps1'; Version = '2'; SessionControlInvoked = $false; ObserverMode = 'ReadOnlyAttached'
+            ObserverExecutablePath = [string]$MeasurementArtifact.Roles[0].BinaryPath; ObserverExecutableSha256 = [string]$observerBinding.Sha256
+            ObserverReportPath = 'synthetic://runtime-observer-current.json'; ObserverReportSha256 = Get-V07Sha256Hex -Text 'runtime-report'
+            AdmittedHerdrServerIdentity = $admittedIdentity; AdmittedRoleIdentities = $admittedRoleIdentities
+            FaultSchedule = @(
+                [pscustomobject][ordered]@{ Id = 'FAULT-01'; Kind = 'TargetHerdrRestartObservation'; OffsetSeconds = 7200; Instruction = 'Synthetic'; DueUtc = '2020-01-01T02:00:00Z' },
+                [pscustomobject][ordered]@{ Id = 'FAULT-02'; Kind = 'CoreReconnectObservation'; OffsetSeconds = 14400; Instruction = 'Synthetic'; DueUtc = '2020-01-01T04:00:00Z' },
+                [pscustomobject][ordered]@{ Id = 'FAULT-03'; Kind = 'AppRecoveryObservation'; OffsetSeconds = 21600; Instruction = 'Synthetic'; DueUtc = '2020-01-01T06:00:00Z' }
+            )
+            ScheduleContextPath = 'synthetic://soak-context.json'; ScheduleContextSha256 = Get-V07Sha256Hex -Text 'context'
+        }
+        Provenance = [pscustomobject][ordered]@{
+            HeartbeatIntervalSeconds = 3600; ExpectedHeartbeatCount = $heartbeatEntries.Count; MissingHeartbeatCount = 0
+            HeartbeatEntries = @($heartbeatEntries); HeartbeatChainHeadSha256 = [string]$heartbeatEntries[-1].EntrySha256
+            FirstHeartbeatUtc = '2020-01-01T00:00:00Z'; LastHeartbeatUtc = '2020-01-01T08:00:00Z'
+            ObservationCount = $faultEntries.Count; FaultObservations = @($faultEntries); FaultObservationChainHeadSha256 = $previousFault
+        }
+        Resources = [pscustomobject][ordered]@{
+            MaxSamples = $script:V07SoakMaxResourceSamples; Samples = @($resourceSamples)
+            PeakWorkingSetBytes = 120; PeakCpuPercent = 0.4
+        }
+        Limits = $limits
+        Artifacts = $artifacts
     }
 }
 
@@ -165,22 +295,14 @@ function Invoke-V07MeasurementSelfTests {
         & $record 'Positive: Synthesized live artifact passes fail-closed admission' $false $_.Exception.Message
     }
 
-    # --- Test 2: Positive -- finalizer emits Runtime budget report from live artifact + soak ---
+    # --- Test 2: Negative -- finalizer requires external soak-byte validation ---
     try {
         $synth = New-V07SynthesizedLiveArtifact -BaseArtifact $baseArtifact -RepositoryRoot $resolvedRoot
         $soak = New-V07SyntheticSoakArtifact -MeasurementArtifact $synth
         $finalization = ConvertTo-V07RuntimeBudgetReport -MeasurementArtifact $synth -SoakArtifact $soak -RepositoryRoot $resolvedRoot -CandidateDirectory $candidateDirectory
-        $reportOk = $false
-        if ($finalization.CanFinalize -and $null -ne $finalization.BudgetReport) {
-            $report = $finalization.BudgetReport
-            $reportOk = ([string]$report.EvidenceClass -eq 'Runtime' -and
-                @($report.ProcessTelemetry).Count -eq 2 -and
-                @($report.Metrics.WidgetDeltaLatencySamplesMs).Count -ge $script:V07MeasurementMinLatencySamples -and
-                @($report.Metrics.DashboardColdLaunchSamplesMs).Count -ge $script:V07MeasurementMinLaunchSamples -and
-                [string]$report.EvidenceBoundary.ActualHerdrRuntime -eq 'OBSERVED' -and
-                [string]$report.EvidenceBoundary.SoakExecution -eq 'OBSERVED')
-        }
-        & $record 'Positive: Finalizer emits Runtime budget report with role telemetry and raw samples' ($finalization.CanFinalize -and $reportOk) "Reason: $($finalization.Reason); Blockers: $($finalization.Blockers -join '; ')"
+        $blocked = (-not $finalization.CanFinalize) -and
+            (@($finalization.Blockers | Where-Object { [string]$_ -match 'EvidenceRoot is required' }).Count -gt 0)
+        & $record 'Negative: Finalizer requires external soak-byte validation before Runtime credit' $blocked "Reason: $($finalization.Reason); Blockers: $($finalization.Blockers -join '; ')"
     } catch {
         & $record 'Positive: Finalizer emits Runtime budget report with role telemetry and raw samples' $false $_.Exception.Message
     }

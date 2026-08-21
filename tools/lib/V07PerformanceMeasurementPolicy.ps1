@@ -35,6 +35,11 @@ $script:V07MeasurementMaxJsonBytes = 4 * 1024 * 1024
 $script:V07MeasurementMaxRunSeconds = 7200
 $script:V07MeasurementSoakMinHours = 8.0
 $script:V07MeasurementSoakDurationToleranceSeconds = 1.0
+$script:V07SoakMaxHeartbeatEntries = 10000
+$script:V07SoakMaxFaultObservations = 64
+$script:V07SoakMaxResourceSamples = 10000
+$script:V07SoakMaxManifestEntries = 32
+$script:V07SoakMaxArtifactBytes = 4 * 1024 * 1024
 $script:V07MeasurementP95ToleranceMs = 0.05
 $script:V07MeasurementCpuAverageTolerancePercent = 0.01
 $script:V07MeasurementWorkingSetToleranceBytes = 1
@@ -387,9 +392,32 @@ function Get-V07ArtifactCanonicalSha256 {
     return Get-V07Sha256Hex -Text $canonical
 }
 
+function Get-V07SoakEntrySha256 {
+    param([Parameter(Mandatory)]$Entry)
+
+    $copy = ($Entry | ConvertTo-Json -Depth 20 -Compress) | ConvertFrom-Json
+    if ($null -ne $copy.PSObject.Properties['EntrySha256']) {
+        $copy.PSObject.Properties.Remove('EntrySha256')
+    }
+    return Get-V07ArtifactCanonicalSha256 -Artifact $copy
+}
+
+function Get-V07InstalledHerdrIdentitySha256 {
+    param([Parameter(Mandatory)]$Identity)
+
+    $canonical = [ordered]@{
+        ProductId = [string]$Identity.ProductId
+        ExecutablePath = [string]$Identity.ExecutablePath
+        ExecutableSha256 = [string]$Identity.ExecutableSha256
+        ReleaseId = [string]$Identity.ReleaseId
+        PackageRoot = [string]$Identity.PackageRoot
+    }
+    return Get-V07ArtifactCanonicalSha256 -Artifact ([pscustomobject]$canonical)
+}
+
 function Test-V07AllowedProperties {
     param(
-        [Parameter(Mandatory)]$Object,
+        [object]$Object,
         [Parameter(Mandatory)][string[]]$Allowed,
         [Parameter(Mandatory)][string]$Context
     )
@@ -580,8 +608,14 @@ function New-V07CandidateBinding {
         })
     }
 
+    $sourceTree = (@(& git -C $resolvedRoot rev-parse 'HEAD^{tree}' 2>&1 | ForEach-Object { [string]$_ }) -join '').Trim()
+    if ($LASTEXITCODE -ne 0 -or $sourceTree -notmatch '^[0-9a-f]{40}$') {
+        throw "Could not resolve the exact Git tree for candidate HEAD: $sourceTree"
+    }
+
     return [pscustomobject]@{
         SourceCommit = $sourceCommit
+        SourceTree   = $sourceTree.ToLowerInvariant()
         GitTreeClean = $true
         Binaries     = @($bindings)
     }
@@ -1058,7 +1092,7 @@ function Test-V07MeasurementArtifactSchema {
 
     $candidate = if ($null -ne $Artifact.PSObject.Properties['Candidate']) { $Artifact.Candidate } else { $null }
     foreach ($failure in @(Test-V07AllowedProperties -Object $candidate -Allowed @(
-            'SourceCommit', 'GitTreeClean', 'Binaries') -Context 'Candidate')) {
+            'SourceCommit', 'SourceTree', 'GitTreeClean', 'Binaries') -Context 'Candidate')) {
         $failures.Add($failure)
     }
     if ($null -ne $candidate -and $null -ne $candidate.PSObject.Properties['Binaries']) {
@@ -1135,23 +1169,608 @@ function Test-V07SoakArtifactSchema {
     foreach ($failure in @(Test-V07AllowedProperties -Object $SoakArtifact -Allowed @(
             'SchemaVersion', 'ArtifactKind', 'RunId', 'StartedUtc', 'FinishedUtc', 'Mode',
             'Cancelled', 'TimedOut', 'Session', 'Candidate', 'Soak', 'MeasurementRunId',
-            'MeasurementArtifactSha256') -Context 'SoakArtifact')) {
+            'MeasurementArtifactSha256', 'InstalledHerdr', 'Producer', 'Provenance',
+            'Resources', 'Limits', 'Artifacts') -Context 'SoakArtifact')) {
         $failures.Add($failure)
     }
     $session = if ($null -ne $SoakArtifact.PSObject.Properties['Session']) { $SoakArtifact.Session } else { $null }
     foreach ($failure in @(Test-V07AllowedProperties -Object $session -Allowed @(
-            'ControlHerdrSocketPath', 'TargetHerdrSocketPath', 'HerdrExecutableSha256') -Context 'Soak.Session')) {
+            'ControlPaneId', 'ObservedControlPaneId', 'ControlHerdrSocketPath', 'TargetHerdrSocketPath',
+            'HerdrExecutablePath', 'HerdrExecutableSha256', 'HerdrReleaseId', 'ControlHerdrServerIdentity') -Context 'Soak.Session')) {
+        $failures.Add($failure)
+    }
+    $sessionIdentity = if ($null -ne $session -and $null -ne $session.PSObject.Properties['ControlHerdrServerIdentity']) { $session.ControlHerdrServerIdentity } else { $null }
+    foreach ($failure in @(Test-V07AllowedProperties -Object $sessionIdentity -Allowed @(
+            'ProcessId', 'ProcessStartUtc', 'ExecutablePath', 'ExecutableSha256') -Context 'Soak.Session.ControlHerdrServerIdentity')) {
         $failures.Add($failure)
     }
     $candidate = if ($null -ne $SoakArtifact.PSObject.Properties['Candidate']) { $SoakArtifact.Candidate } else { $null }
-    foreach ($failure in @(Test-V07AllowedProperties -Object $candidate -Allowed @('SourceCommit') -Context 'Soak.Candidate')) {
+    foreach ($failure in @(Test-V07AllowedProperties -Object $candidate -Allowed @(
+            'SourceCommit', 'SourceTree', 'GitTreeClean', 'Binaries', 'Observer') -Context 'Soak.Candidate')) {
+        $failures.Add($failure)
+    }
+    if ($null -ne $candidate -and $null -ne $candidate.PSObject.Properties['Binaries']) {
+        foreach ($binary in @($candidate.Binaries)) {
+            foreach ($failure in @(Test-V07AllowedProperties -Object $binary -Allowed @(
+                    'RelativePath', 'LengthBytes', 'Sha256') -Context 'Soak.Candidate.Binaries[]')) {
+                $failures.Add($failure)
+            }
+        }
+    }
+    $observerBinding = if ($null -ne $candidate -and $null -ne $candidate.PSObject.Properties['Observer']) { $candidate.Observer } else { $null }
+    foreach ($failure in @(Test-V07AllowedProperties -Object $observerBinding -Allowed @(
+            'RelativePath', 'LengthBytes', 'Sha256') -Context 'Soak.Candidate.Observer')) {
         $failures.Add($failure)
     }
     $soak = if ($null -ne $SoakArtifact.PSObject.Properties['Soak']) { $SoakArtifact.Soak } else { $null }
     foreach ($failure in @(Test-V07AllowedProperties -Object $soak -Allowed @(
-            'DurationHours', 'UnhandledCrashes', 'UnreconciledStateCount', 'UnboundedTerminalReads') -Context 'Soak.Soak')) {
+            'DurationHours', 'UnhandledCrashes', 'UnreconciledStateCount', 'UnboundedTerminalReads',
+            'RuntimeObservationCount', 'RuntimeObservationFailures', 'StateEvidenceCount',
+            'ObservedEvents', 'ObservedReconnects') -Context 'Soak.Soak')) {
         $failures.Add($failure)
     }
+
+    $installed = if ($null -ne $SoakArtifact.PSObject.Properties['InstalledHerdr']) { $SoakArtifact.InstalledHerdr } else { $null }
+    foreach ($failure in @(Test-V07AllowedProperties -Object $installed -Allowed @(
+            'ProductId', 'ExecutablePath', 'ExecutableSha256', 'ReleaseId', 'PackageRoot',
+            'PackageIdentitySha256') -Context 'Soak.InstalledHerdr')) {
+        $failures.Add($failure)
+    }
+    $producer = if ($null -ne $SoakArtifact.PSObject.Properties['Producer']) { $SoakArtifact.Producer } else { $null }
+    foreach ($failure in @(Test-V07AllowedProperties -Object $producer -Allowed @(
+            'Tool', 'Version', 'SessionControlInvoked', 'ObserverMode', 'ObserverExecutablePath',
+            'ObserverExecutableSha256', 'ObserverReportPath', 'ObserverReportSha256',
+            'AdmittedHerdrServerIdentity', 'AdmittedRoleIdentities', 'FaultSchedule', 'ScheduleContextPath',
+            'ScheduleContextSha256') -Context 'Soak.Producer')) {
+        $failures.Add($failure)
+    }
+    $admittedIdentity = if ($null -ne $producer -and $null -ne $producer.PSObject.Properties['AdmittedHerdrServerIdentity']) { $producer.AdmittedHerdrServerIdentity } else { $null }
+    foreach ($failure in @(Test-V07AllowedProperties -Object $admittedIdentity -Allowed @(
+            'ProcessId', 'ProcessStartUtc', 'ExecutablePath', 'ExecutableSha256') -Context 'Soak.Producer.AdmittedHerdrServerIdentity')) {
+        $failures.Add($failure)
+    }
+    $admittedRoleIdentities = if ($null -ne $producer -and $null -ne $producer.PSObject.Properties['AdmittedRoleIdentities']) { $producer.AdmittedRoleIdentities } else { $null }
+    foreach ($failure in @(Test-V07AllowedProperties -Object $admittedRoleIdentities -Allowed @('Core', 'App') -Context 'Soak.Producer.AdmittedRoleIdentities')) {
+        $failures.Add($failure)
+    }
+    foreach ($roleName in @('Core', 'App')) {
+        $roleIdentity = if ($null -ne $admittedRoleIdentities -and $null -ne $admittedRoleIdentities.PSObject.Properties[$roleName]) { $admittedRoleIdentities.$roleName } else { $null }
+        foreach ($failure in @(Test-V07AllowedProperties -Object $roleIdentity -Allowed @(
+                'ProcessId', 'ProcessStartUtc', 'ExecutablePath', 'ExecutableSha256') -Context "Soak.Producer.AdmittedRoleIdentities.$roleName")) {
+            $failures.Add($failure)
+        }
+    }
+    if ($null -ne $producer -and $null -ne $producer.PSObject.Properties['FaultSchedule']) {
+        foreach ($scheduled in @($producer.FaultSchedule)) {
+            foreach ($failure in @(Test-V07AllowedProperties -Object $scheduled -Allowed @(
+                    'Id', 'Kind', 'OffsetSeconds', 'Instruction', 'DueUtc') -Context 'Soak.Producer.FaultSchedule[]')) {
+                $failures.Add($failure)
+            }
+        }
+    }
+    $provenance = if ($null -ne $SoakArtifact.PSObject.Properties['Provenance']) { $SoakArtifact.Provenance } else { $null }
+    foreach ($failure in @(Test-V07AllowedProperties -Object $provenance -Allowed @(
+            'HeartbeatIntervalSeconds', 'ExpectedHeartbeatCount', 'MissingHeartbeatCount',
+            'HeartbeatEntries', 'HeartbeatChainHeadSha256', 'FirstHeartbeatUtc', 'LastHeartbeatUtc',
+            'ObservationCount', 'FaultObservations', 'FaultObservationChainHeadSha256') -Context 'Soak.Provenance')) {
+        $failures.Add($failure)
+    }
+    if ($null -ne $provenance -and $null -ne $provenance.PSObject.Properties['HeartbeatEntries']) {
+        foreach ($entry in @($provenance.HeartbeatEntries)) {
+            foreach ($failure in @(Test-V07AllowedProperties -Object $entry -Allowed @(
+                    'Ordinal', 'ObservedUtc', 'Status', 'TargetSocketPresent', 'HerdrProcessId',
+                    'HerdrProcessStartUtc', 'HerdrExecutablePath', 'HerdrExecutableSha256', 'CoreProcessId',
+                    'CoreProcessStartUtc', 'CoreExecutablePath', 'CoreExecutableSha256', 'AppProcessId',
+                    'AppProcessStartUtc', 'AppExecutablePath', 'AppExecutableSha256',
+                    'PreviousEntrySha256', 'EntrySha256') -Context 'Soak.Provenance.HeartbeatEntries[]')) {
+                $failures.Add($failure)
+            }
+        }
+    }
+    if ($null -ne $provenance -and $null -ne $provenance.PSObject.Properties['FaultObservations']) {
+        foreach ($entry in @($provenance.FaultObservations)) {
+            foreach ($failure in @(Test-V07AllowedProperties -Object $entry -Allowed @(
+                    'Id', 'Kind', 'ScheduledOffsetSeconds', 'DueUtc', 'ObservedUtc', 'Status',
+                    'OperatorAcknowledged', 'EvidencePath', 'EvidenceSha256', 'Note',
+                    'PreviousEntrySha256', 'EntrySha256') -Context 'Soak.Provenance.FaultObservations[]')) {
+                $failures.Add($failure)
+            }
+        }
+    }
+    $resources = if ($null -ne $SoakArtifact.PSObject.Properties['Resources']) { $SoakArtifact.Resources } else { $null }
+    foreach ($failure in @(Test-V07AllowedProperties -Object $resources -Allowed @(
+            'MaxSamples', 'Samples', 'PeakWorkingSetBytes', 'PeakCpuPercent') -Context 'Soak.Resources')) {
+        $failures.Add($failure)
+    }
+    if ($null -ne $resources -and $null -ne $resources.PSObject.Properties['Samples']) {
+        foreach ($sample in @($resources.Samples)) {
+            foreach ($failure in @(Test-V07AllowedProperties -Object $sample -Allowed @(
+                    'ObservedUtc', 'HerdrProcessId', 'CoreProcessId', 'AppProcessId',
+                    'CombinedWorkingSetBytes', 'CombinedCpuPercent') -Context 'Soak.Resources.Samples[]')) {
+                $failures.Add($failure)
+            }
+        }
+    }
+    $limits = if ($null -ne $SoakArtifact.PSObject.Properties['Limits']) { $SoakArtifact.Limits } else { $null }
+    foreach ($failure in @(Test-V07AllowedProperties -Object $limits -Allowed @(
+            'MaxArtifactBytes', 'MaxHeartbeatEntries', 'MaxFaultObservations', 'MaxResourceSamples',
+            'MaxManifestEntries') -Context 'Soak.Limits')) {
+        $failures.Add($failure)
+    }
+    if ($null -ne $SoakArtifact.PSObject.Properties['Artifacts']) {
+        foreach ($artifact in @($SoakArtifact.Artifacts)) {
+            foreach ($failure in @(Test-V07AllowedProperties -Object $artifact -Allowed @(
+                    'Name', 'RelativePath', 'LengthBytes', 'Sha256', 'Lines', 'Entries') -Context 'Soak.Artifacts[]')) {
+                $failures.Add($failure)
+            }
+        }
+    }
+    return @($failures)
+}
+
+function Test-V07SoakProvenance {
+    <#
+    .SYNOPSIS
+        Validates the producer-owned provenance that turns the historical compact
+        v0.7 soak shape into an admissible actual-Herdr observation. This remains
+        evidence validation only: it never starts, stops, or restarts a process.
+    #>
+    param(
+        [Parameter(Mandatory)]$SoakArtifact,
+        [Parameter(Mandatory)]$MeasurementArtifact,
+        [string]$RepositoryRoot = '',
+        [string]$EvidenceRoot = '',
+        [switch]$ValidateExternalBindings
+    )
+
+    $failures = [System.Collections.Generic.List[string]]::new()
+    $zeroSha = '0' * 64
+    $start = $null
+    $finish = $null
+    if ((Test-V07UtcTimestampText -Text ([string]$SoakArtifact.StartedUtc)) -and
+        (Test-V07UtcTimestampText -Text ([string]$SoakArtifact.FinishedUtc))) {
+        $start = [DateTimeOffset]$SoakArtifact.StartedUtc
+        $finish = [DateTimeOffset]$SoakArtifact.FinishedUtc
+    }
+
+    $requiredTop = @('InstalledHerdr', 'Producer', 'Provenance', 'Resources', 'Limits', 'Artifacts')
+    foreach ($name in $requiredTop) {
+        if ($null -eq $SoakArtifact.PSObject.Properties[$name] -or $null -eq $SoakArtifact.$name) {
+            $failures.Add("Soak artifact is missing required provenance object '$name'.")
+        }
+    }
+    if ($failures.Count -gt 0) { return @($failures) }
+
+    $installed = $SoakArtifact.InstalledHerdr
+    foreach ($name in @('ProductId', 'ExecutablePath', 'ExecutableSha256', 'ReleaseId', 'PackageRoot', 'PackageIdentitySha256')) {
+        if ($null -eq $installed.PSObject.Properties[$name] -or [string]::IsNullOrWhiteSpace([string]$installed.$name)) {
+            $failures.Add("InstalledHerdr.$name is required for package identity binding.")
+        }
+    }
+    if ([string]$installed.ProductId -cne 'Herdr') { $failures.Add("InstalledHerdr.ProductId must be 'Herdr'.") }
+    $installedSha = try { ConvertTo-V07NormalizedSha256 -Value ([string]$installed.ExecutableSha256) } catch { '' }
+    $identitySha = try { ConvertTo-V07NormalizedSha256 -Value ([string]$installed.PackageIdentitySha256) } catch { '' }
+    if ([string]::IsNullOrWhiteSpace($installedSha)) { $failures.Add('InstalledHerdr.ExecutableSha256 must be a valid SHA-256.') }
+    if ([string]::IsNullOrWhiteSpace($identitySha)) { $failures.Add('InstalledHerdr.PackageIdentitySha256 must be a valid SHA-256.') }
+    if (-not [string]::IsNullOrWhiteSpace($identitySha)) {
+        try {
+            $computedIdentity = Get-V07InstalledHerdrIdentitySha256 -Identity $installed
+            if ($computedIdentity -ne $identitySha) { $failures.Add('InstalledHerdr.PackageIdentitySha256 does not match the canonical installed identity.') }
+        } catch { $failures.Add("InstalledHerdr identity hash could not be recomputed: $($_.Exception.Message)") }
+    }
+
+    $producer = $SoakArtifact.Producer
+    if ([string]$producer.Tool -cne 'Invoke-V07ActualHerdrSoak.ps1') { $failures.Add('Soak.Producer.Tool is not the authorized actual-Herdr soak producer.') }
+    if ([string]::IsNullOrWhiteSpace([string]$producer.Version)) { $failures.Add('Soak.Producer.Version is required.') }
+    if ([bool]$producer.SessionControlInvoked) { $failures.Add('Soak producer must never invoke Herdr/session control.') }
+    if ([string]$producer.ObserverMode -cne 'ReadOnlyAttached') { $failures.Add("Soak.Producer.ObserverMode must be 'ReadOnlyAttached'.") }
+    foreach ($name in @('ObserverExecutablePath', 'ObserverExecutableSha256', 'ObserverReportPath', 'ObserverReportSha256', 'AdmittedHerdrServerIdentity', 'FaultSchedule', 'ScheduleContextPath', 'ScheduleContextSha256')) {
+        if ($null -eq $producer.PSObject.Properties[$name] -or $null -eq $producer.$name) {
+            $failures.Add("Soak.Producer.$name is required for exact observer and schedule provenance.")
+        }
+    }
+    $producerObserverSha = try { ConvertTo-V07NormalizedSha256 -Value ([string]$producer.ObserverExecutableSha256) } catch { '' }
+    $producerReportSha = try { ConvertTo-V07NormalizedSha256 -Value ([string]$producer.ObserverReportSha256) } catch { '' }
+    $contextSha = try { ConvertTo-V07NormalizedSha256 -Value ([string]$producer.ScheduleContextSha256) } catch { '' }
+    if ([string]::IsNullOrWhiteSpace($producerObserverSha)) { $failures.Add('Soak.Producer.ObserverExecutableSha256 must be a valid SHA-256.') }
+    if ([string]::IsNullOrWhiteSpace($producerReportSha)) { $failures.Add('Soak.Producer.ObserverReportSha256 must be a valid SHA-256.') }
+    if ([string]::IsNullOrWhiteSpace($contextSha)) { $failures.Add('Soak.Producer.ScheduleContextSha256 must be a valid SHA-256.') }
+    $admittedIdentity = $producer.AdmittedHerdrServerIdentity
+    foreach ($name in @('ProcessId', 'ProcessStartUtc', 'ExecutablePath', 'ExecutableSha256')) {
+        if ($null -eq $admittedIdentity.PSObject.Properties[$name] -or [string]::IsNullOrWhiteSpace([string]$admittedIdentity.$name)) {
+            $failures.Add("Soak.Producer.AdmittedHerdrServerIdentity.$name is required.")
+        }
+    }
+    if ($null -eq (ConvertTo-V07PositiveProcessId -Value $admittedIdentity.ProcessId)) { $failures.Add('Admitted Herdr server ProcessId must be positive.') }
+    if (-not (Test-V07UtcTimestampText -Text $admittedIdentity.ProcessStartUtc)) { $failures.Add('Admitted Herdr server ProcessStartUtc is invalid.') }
+    $admittedStartText = if (Test-V07UtcTimestampText -Text $admittedIdentity.ProcessStartUtc) {
+        ConvertTo-V07UtcText -Value $admittedIdentity.ProcessStartUtc
+    } else { [string]$admittedIdentity.ProcessStartUtc }
+    $admittedSha = try { ConvertTo-V07NormalizedSha256 -Value ([string]$admittedIdentity.ExecutableSha256) } catch { '' }
+    if ([string]::IsNullOrWhiteSpace($admittedSha)) { $failures.Add('Admitted Herdr server ExecutableSha256 must be a valid SHA-256.') }
+    if ([string]$admittedIdentity.ExecutablePath -ine [string]$installed.ExecutablePath -or
+        $admittedSha -ne $installedSha) {
+        $failures.Add('Admitted Herdr server identity does not match the installed Herdr identity.')
+    }
+
+    $admittedRoleIdentities = if ($null -ne $producer.PSObject.Properties['AdmittedRoleIdentities']) { $producer.AdmittedRoleIdentities } else { $null }
+    $roleIdentityByName = @{}
+    foreach ($roleName in @('Core', 'App')) {
+        $roleIdentity = if ($null -ne $admittedRoleIdentities -and $null -ne $admittedRoleIdentities.PSObject.Properties[$roleName]) { $admittedRoleIdentities.$roleName } else { $null }
+        if ($null -eq $roleIdentity) {
+            $failures.Add("Soak.Producer.AdmittedRoleIdentities.$roleName is required for every heartbeat identity binding.")
+            continue
+        }
+        $roleIdentityByName[$roleName] = $roleIdentity
+        foreach ($name in @('ProcessId', 'ProcessStartUtc', 'ExecutablePath', 'ExecutableSha256')) {
+            if ($null -eq $roleIdentity.PSObject.Properties[$name] -or [string]::IsNullOrWhiteSpace([string]$roleIdentity.$name)) {
+                $failures.Add("Soak.Producer.AdmittedRoleIdentities.$roleName.$name is required.")
+            }
+        }
+        $rolePid = if ($null -ne $roleIdentity.PSObject.Properties['ProcessId']) { ConvertTo-V07PositiveProcessId -Value $roleIdentity.ProcessId } else { $null }
+        if ($null -eq $rolePid) { $failures.Add("Admitted $roleName role ProcessId must be positive.") }
+        $roleStartText = if ($null -ne $roleIdentity.PSObject.Properties['ProcessStartUtc']) { [string]$roleIdentity.ProcessStartUtc } else { '' }
+        $rolePath = if ($null -ne $roleIdentity.PSObject.Properties['ExecutablePath']) { [string]$roleIdentity.ExecutablePath } else { '' }
+        if (-not (Test-V07UtcTimestampText -Text $roleStartText)) { $failures.Add("Admitted $roleName role ProcessStartUtc is invalid.") }
+        $roleSha = try { ConvertTo-V07NormalizedSha256 -Value ([string]$roleIdentity.ExecutableSha256) } catch { '' }
+        if ([string]::IsNullOrWhiteSpace($roleSha)) { $failures.Add("Admitted $roleName role ExecutableSha256 must be a valid SHA-256.") }
+        $measurementRole = @($MeasurementArtifact.Roles | Where-Object { [string]$_.Role -ceq $roleName })
+        if ($measurementRole.Count -ne 1) {
+            $failures.Add("Measurement artifact must contain exactly one admitted $roleName role identity.")
+        } else {
+            $measurementRoleStart = if (Test-V07UtcTimestampText -Text ([string]$measurementRole[0].ProcessStartUtc)) {
+                ConvertTo-V07UtcText -Value ([DateTimeOffset]$measurementRole[0].ProcessStartUtc)
+            } else { [string]$measurementRole[0].ProcessStartUtc }
+            $measurementRoleSha = try { ConvertTo-V07NormalizedSha256 -Value ([string]$measurementRole[0].BinarySha256) } catch { '' }
+            if ([int]$rolePid -ne [int]$measurementRole[0].ProcessId -or
+                $roleStartText -cne $measurementRoleStart -or
+                $rolePath -ine [string]$measurementRole[0].BinaryPath -or
+                $roleSha -ne $measurementRoleSha) {
+                $failures.Add("Admitted $roleName role identity does not match the measurement artifact role identity.")
+            }
+        }
+    }
+    if ([string]::IsNullOrWhiteSpace([string]$producer.ObserverExecutablePath)) {
+        $failures.Add('Soak.Producer.ObserverExecutablePath must be non-empty.')
+    }
+    if ([string]::IsNullOrWhiteSpace([string]$producer.ObserverReportPath) -or [string]::IsNullOrWhiteSpace([string]$producer.ScheduleContextPath)) {
+        $failures.Add('Soak observer report and schedule context paths must be non-empty.')
+    }
+
+    $candidate = $SoakArtifact.Candidate
+    foreach ($name in @('SourceCommit', 'SourceTree', 'Binaries')) {
+        if ($null -eq $candidate.PSObject.Properties[$name] -or $null -eq $candidate.$name) {
+            $failures.Add("Soak.Candidate.$name is required for exact candidate binding.")
+        }
+    }
+    if ([string]$candidate.SourceCommit -notmatch '^[0-9a-f]{40}$') { $failures.Add('Soak.Candidate.SourceCommit must be a lowercase 40-hex commit.') }
+    if ([string]$candidate.SourceTree -notmatch '^[0-9a-f]{40}$') { $failures.Add('Soak.Candidate.SourceTree must be a lowercase 40-hex Git tree.') }
+    if ($null -eq $candidate.PSObject.Properties['GitTreeClean'] -or -not [bool]$candidate.GitTreeClean) { $failures.Add('Soak.Candidate.GitTreeClean must be true.') }
+    $candidateObserver = if ($null -ne $candidate.PSObject.Properties['Observer']) { $candidate.Observer } else { $null }
+    foreach ($name in @('RelativePath', 'LengthBytes', 'Sha256')) {
+        if ($null -eq $candidateObserver -or $null -eq $candidateObserver.PSObject.Properties[$name]) { $failures.Add("Soak.Candidate.Observer.$name is required.") }
+    }
+    $candidateObserverSha = try { ConvertTo-V07NormalizedSha256 -Value ([string]$candidateObserver.Sha256) } catch { '' }
+    if ([string]::IsNullOrWhiteSpace($candidateObserverSha)) { $failures.Add('Soak.Candidate.Observer.Sha256 must be a valid SHA-256.') }
+    if (-not [string]::IsNullOrWhiteSpace($producerObserverSha) -and -not [string]::IsNullOrWhiteSpace($candidateObserverSha) -and $producerObserverSha -ne $candidateObserverSha) {
+        $failures.Add('Soak observer executable SHA-256 does not match the exact candidate observer binding.')
+    }
+    if ([string]$candidateObserver.RelativePath -match '\\' -or [string]$candidateObserver.RelativePath -match '(^|/)\.\.?(/|$)' -or [IO.Path]::IsPathRooted([string]$candidateObserver.RelativePath)) {
+        $failures.Add('Soak.Candidate.Observer.RelativePath must be a forward-slash, non-rooted path without dot segments.')
+    }
+    $measurementCandidate = $MeasurementArtifact.Candidate
+    if ([string]$candidate.SourceCommit.ToLowerInvariant() -ne [string]$measurementCandidate.SourceCommit.ToLowerInvariant()) {
+        $failures.Add('Soak source commit does not match the measurement candidate.')
+    }
+    if ($null -ne $measurementCandidate.PSObject.Properties['SourceTree'] -and
+        [string]$candidate.SourceTree.ToLowerInvariant() -ne [string]$measurementCandidate.SourceTree.ToLowerInvariant()) {
+        $failures.Add('Soak source tree does not match the measurement candidate.')
+    }
+    if (@($candidate.Binaries).Count -lt 2) { $failures.Add('Soak.Candidate.Binaries must retain Core and App candidate bindings.') }
+    if (@($measurementCandidate.Binaries).Count -gt 0) {
+        foreach ($measurementBinary in @($measurementCandidate.Binaries)) {
+            $matching = @($candidate.Binaries | Where-Object { [string]$_.RelativePath -ceq [string]$measurementBinary.RelativePath })
+            if ($matching.Count -ne 1 -or [long]$matching[0].LengthBytes -ne [long]$measurementBinary.LengthBytes -or
+                [string]$matching[0].Sha256 -ine [string]$measurementBinary.Sha256) {
+                $failures.Add("Soak candidate binary binding does not match measurement binary '$($measurementBinary.RelativePath)'.")
+            }
+        }
+    }
+
+    $session = $SoakArtifact.Session
+    $sessionIdentity = if ($null -ne $session.PSObject.Properties['ControlHerdrServerIdentity']) { $session.ControlHerdrServerIdentity } else { $null }
+    $measurementSession = $MeasurementArtifact.Session
+    if ([string]$session.HerdrExecutableSha256 -ine [string]$installed.ExecutableSha256 -or
+        [string]$session.HerdrExecutableSha256 -ine [string]$measurementSession.HerdrExecutableSha256) {
+        $failures.Add('Soak/session/installed Herdr executable SHA-256 values do not match.')
+    }
+    if ($null -ne $measurementSession.PSObject.Properties['ControlHerdrServerIdentity'] -and $null -ne $measurementSession.ControlHerdrServerIdentity) {
+        $measurementIdentity = $measurementSession.ControlHerdrServerIdentity
+        if ([int]$admittedIdentity.ProcessId -ne [int]$measurementIdentity.ProcessId -or
+            $admittedStartText -cne (ConvertTo-V07UtcText -Value $measurementIdentity.ProcessStartUtc) -or
+            [string]$admittedIdentity.ExecutablePath -ine [string]$measurementIdentity.ExecutablePath -or
+            [string]$admittedIdentity.ExecutableSha256 -ine [string]$measurementIdentity.ExecutableSha256) {
+            $failures.Add('Soak admitted Herdr server identity does not match the measurement admission server identity.')
+        }
+    }
+    if ($null -eq $sessionIdentity) {
+        $failures.Add('Soak.Session.ControlHerdrServerIdentity is required for exact server provenance.')
+    } elseif ([int]$sessionIdentity.ProcessId -ne [int]$admittedIdentity.ProcessId -or
+        (ConvertTo-V07UtcText -Value $sessionIdentity.ProcessStartUtc) -cne $admittedStartText -or
+        [string]$sessionIdentity.ExecutablePath -ine [string]$admittedIdentity.ExecutablePath -or
+        [string]$sessionIdentity.ExecutableSha256 -ine [string]$admittedIdentity.ExecutableSha256) {
+        $failures.Add('Soak session server identity does not match the admitted producer server identity.')
+    }
+    if ([string]$session.TargetHerdrSocketPath -ieq [string]$session.ControlHerdrSocketPath) { $failures.Add('Soak control and target sockets must be distinct.') }
+
+    $soakMetrics = $SoakArtifact.Soak
+    foreach ($name in @('RuntimeObservationCount', 'RuntimeObservationFailures', 'StateEvidenceCount', 'ObservedEvents', 'ObservedReconnects')) {
+        if ($null -eq $soakMetrics.PSObject.Properties[$name]) { $failures.Add("Soak.$name is required for continuous runtime observation provenance.") }
+    }
+    try {
+        if ([int]$soakMetrics.RuntimeObservationCount -lt 3) { $failures.Add('Soak.RuntimeObservationCount must contain at least three bounded runtime observer windows.') }
+        if ([int]$soakMetrics.RuntimeObservationFailures -ne 0) { $failures.Add('Soak.RuntimeObservationFailures must be zero.') }
+        if ([int]$soakMetrics.StateEvidenceCount -ne [int]$soakMetrics.RuntimeObservationCount) { $failures.Add('Soak.StateEvidenceCount must equal RuntimeObservationCount.') }
+        if ([int]$soakMetrics.ObservedEvents -lt 0 -or [int]$soakMetrics.ObservedReconnects -lt 0) { $failures.Add('Soak observed event/reconnect counts must be non-negative.') }
+    } catch { $failures.Add('Soak runtime observation fields must be integral numbers.') }
+
+    $provenance = $SoakArtifact.Provenance
+    $heartbeatWindowFinish = if ($null -ne $finish) {
+        $finish.AddSeconds($script:V07MeasurementSoakDurationToleranceSeconds)
+    } else {
+        $null
+    }
+    $interval = 0
+    try { $interval = [int](ConvertTo-V07StrictNonNegativeInteger -Value $provenance.HeartbeatIntervalSeconds) } catch { $interval = 0 }
+    if ($interval -lt 1 -or $interval -gt 3600) { $failures.Add('Provenance.HeartbeatIntervalSeconds must be from 1 through 3600.') }
+    $heartbeatEntries = @($provenance.HeartbeatEntries)
+    if ($heartbeatEntries.Count -lt 2) { $failures.Add('Provenance.HeartbeatEntries must contain at least two observations.') }
+    if ($heartbeatEntries.Count -gt $script:V07SoakMaxHeartbeatEntries) { $failures.Add('Provenance.HeartbeatEntries exceeds the bounded entry limit.') }
+    $declaredSoakHours = if ($null -ne $soakMetrics.PSObject.Properties['DurationHours']) {
+        ConvertTo-V07StrictFiniteNumber -Value $soakMetrics.DurationHours
+    } else { $null }
+    if ($null -eq $declaredSoakHours -or $declaredSoakHours -lt $script:V07MeasurementSoakMinHours) {
+        $failures.Add("Soak duration must be at least $($script:V07MeasurementSoakMinHours) hours before heartbeat coverage can be admitted.")
+    }
+    if ($interval -gt 0 -and $null -ne $declaredSoakHours) {
+        $minimumHeartbeatEntries = [int][Math]::Floor(($declaredSoakHours * 3600.0) / $interval) + 1
+        if ($heartbeatEntries.Count -lt $minimumHeartbeatEntries) {
+            $failures.Add("HeartbeatEntries contains $($heartbeatEntries.Count) observations but a continuous $declaredSoakHours-hour run at $interval-second cadence requires at least $minimumHeartbeatEntries.")
+        }
+    }
+    try {
+        if ([int]$provenance.ExpectedHeartbeatCount -ne $heartbeatEntries.Count) { $failures.Add('ExpectedHeartbeatCount does not equal retained heartbeat entries.') }
+        if ([int]$provenance.MissingHeartbeatCount -ne 0) { $failures.Add('MissingHeartbeatCount must be zero for an admitted soak.') }
+    } catch { $failures.Add('Heartbeat count fields must be integral numbers.') }
+    $previous = $zeroSha
+    foreach ($entry in $heartbeatEntries) {
+        if (-not (Test-V07UtcTimestampText -Text ([string]$entry.ObservedUtc))) { $failures.Add('Heartbeat entry has an invalid ObservedUtc.'); continue }
+        $observed = [DateTimeOffset]$entry.ObservedUtc
+        if ($null -ne $start -and ($observed -lt $start -or $observed -gt $heartbeatWindowFinish)) { $failures.Add('Heartbeat entry is outside the soak timestamp window.') }
+        if ([string]$entry.Status -cne 'Healthy' -or -not [bool]$entry.TargetSocketPresent) { $failures.Add('Every heartbeat must be a healthy, present-target observation.') }
+        if ($null -eq (ConvertTo-V07PositiveProcessId -Value $entry.HerdrProcessId)) { $failures.Add('Heartbeat HerdrProcessId must be positive.') }
+        if (-not (Test-V07UtcTimestampText -Text ([string]$entry.HerdrProcessStartUtc))) { $failures.Add('Heartbeat HerdrProcessStartUtc is invalid.') }
+        if ([string]::IsNullOrWhiteSpace([string]$entry.HerdrExecutablePath)) { $failures.Add('Heartbeat HerdrExecutablePath is required for exact server identity binding.') }
+        if ([string]$entry.HerdrProcessId -ne [string]$admittedIdentity.ProcessId -or
+            [string]$entry.HerdrProcessStartUtc -cne $admittedStartText -or
+            [string]$entry.HerdrExecutablePath -ine [string]$admittedIdentity.ExecutablePath -or
+            [string]$entry.HerdrExecutableSha256 -ine [string]$admittedIdentity.ExecutableSha256 -or
+            [string]$entry.HerdrExecutableSha256 -ine [string]$installed.ExecutableSha256) {
+            $failures.Add('Heartbeat Herdr PID/start/path/SHA does not match the admitted Herdr server identity.')
+        }
+        foreach ($roleBinding in @(
+                [pscustomobject]@{ Name = 'Core'; Identity = if ($roleIdentityByName.ContainsKey('Core')) { $roleIdentityByName['Core'] } else { $null }; ProcessId = 'CoreProcessId'; StartUtc = 'CoreProcessStartUtc'; Path = 'CoreExecutablePath'; Sha = 'CoreExecutableSha256' },
+                [pscustomobject]@{ Name = 'App'; Identity = if ($roleIdentityByName.ContainsKey('App')) { $roleIdentityByName['App'] } else { $null }; ProcessId = 'AppProcessId'; StartUtc = 'AppProcessStartUtc'; Path = 'AppExecutablePath'; Sha = 'AppExecutableSha256' }
+            )) {
+            $roleIdentity = $roleBinding.Identity
+            $entryPid = if ($null -ne $entry.PSObject.Properties[$roleBinding.ProcessId]) { ConvertTo-V07PositiveProcessId -Value $entry.($roleBinding.ProcessId) } else { $null }
+            $entryStart = if ($null -ne $entry.PSObject.Properties[$roleBinding.StartUtc]) { [string]$entry.($roleBinding.StartUtc) } else { '' }
+            $entryPath = if ($null -ne $entry.PSObject.Properties[$roleBinding.Path]) { [string]$entry.($roleBinding.Path) } else { '' }
+            $entrySha = if ($null -ne $entry.PSObject.Properties[$roleBinding.Sha]) { try { ConvertTo-V07NormalizedSha256 -Value ([string]$entry.($roleBinding.Sha)) } catch { '' } } else { '' }
+            $expectedPid = if ($null -ne $roleIdentity -and $null -ne $roleIdentity.PSObject.Properties['ProcessId']) { ConvertTo-V07PositiveProcessId -Value $roleIdentity.ProcessId } else { $null }
+            $expectedStart = if ($null -ne $roleIdentity -and $null -ne $roleIdentity.PSObject.Properties['ProcessStartUtc'] -and (Test-V07UtcTimestampText -Text ([string]$roleIdentity.ProcessStartUtc))) {
+                ConvertTo-V07UtcText -Value ([DateTimeOffset]$roleIdentity.ProcessStartUtc)
+            } else { '' }
+            $expectedPath = if ($null -ne $roleIdentity -and $null -ne $roleIdentity.PSObject.Properties['ExecutablePath']) { [string]$roleIdentity.ExecutablePath } else { '' }
+            $expectedSha = if ($null -ne $roleIdentity -and $null -ne $roleIdentity.PSObject.Properties['ExecutableSha256']) { try { ConvertTo-V07NormalizedSha256 -Value ([string]$roleIdentity.ExecutableSha256) } catch { '' } } else { '' }
+            if ($null -eq $expectedPid -or $null -eq $entryPid -or $entryPid -ne $expectedPid -or
+                $entryStart -cne $expectedStart -or $entryPath -ine $expectedPath -or $entrySha -ne $expectedSha) {
+                $failures.Add("Heartbeat $($roleBinding.Name) PID/start/path/SHA does not match the admitted $($roleBinding.Name) role identity.")
+            }
+        }
+        if ([string]$entry.PreviousEntrySha256 -ine $previous) { $failures.Add('Heartbeat hash chain previous entry does not match.') }
+        $entrySha = try { ConvertTo-V07NormalizedSha256 -Value ([string]$entry.EntrySha256) } catch { '' }
+        if ([string]::IsNullOrWhiteSpace($entrySha)) { $failures.Add('Heartbeat EntrySha256 is invalid.') } else {
+            try { if ((Get-V07SoakEntrySha256 -Entry $entry) -ne $entrySha) { $failures.Add('Heartbeat EntrySha256 does not match entry content.') } } catch { $failures.Add("Heartbeat entry hash could not be recomputed: $($_.Exception.Message)") }
+            $previous = $entrySha
+        }
+    }
+    if ($heartbeatEntries.Count -gt 0) {
+        if ([string]$provenance.HeartbeatChainHeadSha256 -ine $previous) { $failures.Add('HeartbeatChainHeadSha256 does not match the final heartbeat.') }
+        if ([string]$provenance.FirstHeartbeatUtc -ine [string]$heartbeatEntries[0].ObservedUtc -or
+            [string]$provenance.LastHeartbeatUtc -ine [string]$heartbeatEntries[-1].ObservedUtc) { $failures.Add('Heartbeat first/last timestamps do not bind to retained entries.') }
+        for ($index = 1; $index -lt $heartbeatEntries.Count; $index++) {
+            $delta = ([DateTimeOffset]$heartbeatEntries[$index].ObservedUtc - [DateTimeOffset]$heartbeatEntries[$index - 1].ObservedUtc).TotalSeconds
+            if ($delta -lt 0 -or ($interval -gt 0 -and $delta -gt ($interval * 2 + 1))) { $failures.Add('Heartbeat cadence contains a gap larger than the bounded observation window.') }
+        }
+        if ($null -ne $start -and ([DateTimeOffset]$heartbeatEntries[0].ObservedUtc -gt $start.AddSeconds($interval + 1))) {
+            $failures.Add('First heartbeat does not cover the beginning of the soak window.')
+        }
+        if ($null -ne $finish -and ([DateTimeOffset]$heartbeatEntries[-1].ObservedUtc -lt $finish.AddSeconds(-$interval - 1))) {
+            $failures.Add('Last heartbeat does not cover the end of the soak window.')
+        }
+    }
+
+    $faults = @($provenance.FaultObservations)
+    $finalizationNowUtc = [DateTimeOffset]::UtcNow
+    if ($faults.Count -lt 3) { $failures.Add('At least three scheduled restart/fault observations are required.') }
+    if ($faults.Count -gt $script:V07SoakMaxFaultObservations) { $failures.Add('FaultObservations exceeds the bounded entry limit.') }
+    try { if ([int]$provenance.ObservationCount -ne $faults.Count) { $failures.Add('ObservationCount does not equal retained fault observations.') } } catch { $failures.Add('ObservationCount must be an integral number.') }
+    $scheduledFaults = @($producer.FaultSchedule)
+    if ($scheduledFaults.Count -lt 3 -or $scheduledFaults.Count -gt $script:V07SoakMaxFaultObservations) {
+        $failures.Add('Producer.FaultSchedule must retain the bounded scheduled observation set.')
+    }
+    $scheduledById = @{}
+    foreach ($scheduled in $scheduledFaults) {
+        $scheduledId = [string]$scheduled.Id
+        if ([string]::IsNullOrWhiteSpace($scheduledId) -or $scheduledById.ContainsKey($scheduledId)) { $failures.Add('Producer.FaultSchedule ids must be non-empty and unique.') } else { $scheduledById[$scheduledId] = $scheduled }
+        if ([string]::IsNullOrWhiteSpace([string]$scheduled.Kind) -or [int]$scheduled.OffsetSeconds -le 0) { $failures.Add("Producer.FaultSchedule '$scheduledId' has invalid kind or offset.") }
+        if ($null -ne $start -and [string]$scheduled.DueUtc -cne (ConvertTo-V07SoakUtcText -Value $start.AddSeconds([int]$scheduled.OffsetSeconds))) {
+            $failures.Add("Producer.FaultSchedule '$scheduledId' DueUtc is not derived from StartedUtc and OffsetSeconds.")
+        }
+    }
+    $previous = $zeroSha
+    $faultIds = @{}
+    foreach ($fault in $faults) {
+        $faultId = [string]$fault.Id
+        if ([string]::IsNullOrWhiteSpace($faultId) -or $faultIds.ContainsKey($faultId)) { $failures.Add('Fault observation ids must be non-empty and unique.') } else { $faultIds[$faultId] = $true }
+        $scheduled = if ($scheduledById.ContainsKey($faultId)) { $scheduledById[$faultId] } else { $null }
+        if ($null -eq $scheduled) {
+            $failures.Add("Fault observation '$faultId' is not present in the immutable producer schedule.")
+        } else {
+            if ([string]$fault.Kind -cne [string]$scheduled.Kind -or [int]$fault.ScheduledOffsetSeconds -ne [int]$scheduled.OffsetSeconds) {
+                $failures.Add("Fault observation '$faultId' kind/offset does not match the immutable producer schedule.")
+            }
+            $expectedDue = if ($null -ne $start) { ConvertTo-V07SoakUtcText -Value $start.AddSeconds([int]$scheduled.OffsetSeconds) } else { '' }
+            if ([string]$fault.DueUtc -cne $expectedDue) { $failures.Add("Fault observation '$faultId' DueUtc does not match its scheduled offset.") }
+        }
+        if ([string]$fault.Status -cne 'Observed' -or -not [bool]$fault.OperatorAcknowledged) { $failures.Add("Fault observation '$faultId' is not an operator-acknowledged observation.") }
+        foreach ($timestampName in @('DueUtc', 'ObservedUtc')) { if (-not (Test-V07UtcTimestampText -Text ([string]$fault.$timestampName))) { $failures.Add("Fault observation '$faultId' has invalid $timestampName.") } }
+        if ((Test-V07UtcTimestampText -Text ([string]$fault.DueUtc)) -and (Test-V07UtcTimestampText -Text ([string]$fault.ObservedUtc)) -and
+            ([DateTimeOffset]$fault.ObservedUtc -lt [DateTimeOffset]$fault.DueUtc)) {
+            $failures.Add("Fault observation '$faultId' is early: ObservedUtc must be at or after DueUtc.")
+        }
+        if ((Test-V07UtcTimestampText -Text ([string]$fault.ObservedUtc)) -and
+            ([DateTimeOffset]$fault.ObservedUtc -gt $finalizationNowUtc)) {
+            $failures.Add("Fault observation '$faultId' is in the future: ObservedUtc cannot exceed finalization time.")
+        }
+        $faultSha = try { ConvertTo-V07NormalizedSha256 -Value ([string]$fault.EvidenceSha256) } catch { '' }
+        if ([string]::IsNullOrWhiteSpace([string]$fault.EvidencePath) -or [string]::IsNullOrWhiteSpace($faultSha)) { $failures.Add("Fault observation '$faultId' must bind operator evidence path and SHA-256.") }
+        if ($ValidateExternalBindings -and -not [string]::IsNullOrWhiteSpace([string]$fault.EvidencePath)) {
+            try {
+                $evidenceFull = Assert-V07PathWithinRoot -Path ([string]$fault.EvidencePath) -AllowedRoots @($EvidenceRoot) -Description "Fault observation '$faultId' evidence"
+                Assert-V07NotReparsePoint -Path $evidenceFull -Description "Fault observation '$faultId' evidence"
+                if (-not (Test-Path -LiteralPath $evidenceFull -PathType Leaf)) { throw 'referenced evidence file is missing' }
+                if ((Get-V07Sha256Hex -Path $evidenceFull) -ne $faultSha) { throw 'referenced evidence SHA-256 does not match final bytes' }
+            } catch { $failures.Add("Fault observation '$faultId' referenced evidence finalization rehash failed: $($_.Exception.Message)") }
+        }
+        if ([string]$fault.PreviousEntrySha256 -ine $previous) { $failures.Add("Fault observation '$faultId' hash chain previous entry does not match.") }
+        $entrySha = try { ConvertTo-V07NormalizedSha256 -Value ([string]$fault.EntrySha256) } catch { '' }
+        if ([string]::IsNullOrWhiteSpace($entrySha)) { $failures.Add("Fault observation '$faultId' EntrySha256 is invalid.") } else {
+            try { if ((Get-V07SoakEntrySha256 -Entry $fault) -ne $entrySha) { $failures.Add("Fault observation '$faultId' EntrySha256 does not match entry content.") } } catch { $failures.Add("Fault observation '$faultId' hash could not be recomputed: $($_.Exception.Message)") }
+            $previous = $entrySha
+        }
+    }
+    if ($faults.Count -gt 0 -and [string]$provenance.FaultObservationChainHeadSha256 -ine $previous) { $failures.Add('FaultObservationChainHeadSha256 does not match the final observation.') }
+
+    $resources = $SoakArtifact.Resources
+    $resourceSamples = @($resources.Samples)
+    if ($resourceSamples.Count -lt 3) { $failures.Add('Resources.Samples must retain at least three bounded samples.') }
+    try {
+        if ([int]$resources.MaxSamples -lt $resourceSamples.Count -or [int]$resources.MaxSamples -gt $script:V07SoakMaxResourceSamples) { $failures.Add('Resources.MaxSamples is outside the bounded resource limit.') }
+    } catch { $failures.Add('Resources.MaxSamples must be an integral number.') }
+    $peakWs = 0L
+    $peakCpu = 0.0
+    foreach ($sample in $resourceSamples) {
+        if (-not (Test-V07UtcTimestampText -Text ([string]$sample.ObservedUtc))) { $failures.Add('Resource sample has an invalid ObservedUtc.'); continue }
+        if ($null -eq (ConvertTo-V07PositiveProcessId -Value $sample.HerdrProcessId)) { $failures.Add('Resource HerdrProcessId must be positive.') }
+        try {
+            $ws = [long]$sample.CombinedWorkingSetBytes
+            $cpu = [double]$sample.CombinedCpuPercent
+            if ($ws -lt 0 -or $cpu -lt 0 -or [double]::IsNaN($cpu) -or [double]::IsInfinity($cpu)) { throw 'negative or non-finite resource value' }
+            if ($ws -gt $peakWs) { $peakWs = $ws }
+            if ($cpu -gt $peakCpu) { $peakCpu = $cpu }
+        } catch { $failures.Add("Resource sample values are invalid: $($_.Exception.Message)") }
+    }
+    try {
+        if ([long]$resources.PeakWorkingSetBytes -ne $peakWs) { $failures.Add('PeakWorkingSetBytes does not recompute from retained resource samples.') }
+        if ([Math]::Abs([double]$resources.PeakCpuPercent - $peakCpu) -gt $script:V07MeasurementCpuAverageTolerancePercent) { $failures.Add('PeakCpuPercent does not recompute from retained resource samples.') }
+    } catch { $failures.Add('Resource peak fields are invalid.') }
+
+    $limits = $SoakArtifact.Limits
+    foreach ($name in @('MaxArtifactBytes', 'MaxHeartbeatEntries', 'MaxFaultObservations', 'MaxResourceSamples', 'MaxManifestEntries')) {
+        try { if ([long]$limits.$name -le 0) { $failures.Add("Limits.$name must be positive.") } } catch { $failures.Add("Limits.$name must be integral.") }
+    }
+    if ([long]$limits.MaxArtifactBytes -gt $script:V07SoakMaxArtifactBytes -or
+        [int]$limits.MaxHeartbeatEntries -gt $script:V07SoakMaxHeartbeatEntries -or
+        [int]$limits.MaxFaultObservations -gt $script:V07SoakMaxFaultObservations -or
+        [int]$limits.MaxResourceSamples -gt $script:V07SoakMaxResourceSamples -or
+        [int]$limits.MaxManifestEntries -gt $script:V07SoakMaxManifestEntries) {
+        $failures.Add('Soak limits exceed the producer safety caps.')
+    }
+    $manifests = @($SoakArtifact.Artifacts)
+    if ($manifests.Count -lt 3 -or $manifests.Count -gt [int]$limits.MaxManifestEntries) { $failures.Add('Artifacts manifest must retain bounded heartbeat, fault, and resource logs.') }
+    foreach ($manifest in $manifests) {
+        $relative = [string]$manifest.RelativePath
+        $sha = try { ConvertTo-V07NormalizedSha256 -Value ([string]$manifest.Sha256) } catch { '' }
+        if ([string]::IsNullOrWhiteSpace([string]$manifest.Name) -or [string]::IsNullOrWhiteSpace($relative) -or $relative.Contains('..') -or [IO.Path]::IsPathRooted($relative)) { $failures.Add('Artifact manifest path is unsafe or missing.') }
+        if ([long]$manifest.LengthBytes -lt 0 -or [long]$manifest.LengthBytes -gt [long]$limits.MaxArtifactBytes) { $failures.Add("Artifact '$($manifest.Name)' exceeds its bounded byte limit.") }
+        if ([string]::IsNullOrWhiteSpace($sha)) { $failures.Add("Artifact '$($manifest.Name)' has an invalid SHA-256.") }
+        if ($ValidateExternalBindings) {
+            if ([string]::IsNullOrWhiteSpace($EvidenceRoot)) { $failures.Add('EvidenceRoot is required when validating external soak artifacts.') } else {
+                try {
+                    $full = Assert-V07PathWithinRoot -Path (Join-Path $EvidenceRoot $relative) -AllowedRoots @($EvidenceRoot) -Description "Soak artifact $relative"
+                    Assert-V07NotReparsePoint -Path $full -Description "Soak artifact $relative"
+                    if (-not (Test-Path -LiteralPath $full -PathType Leaf)) { throw 'manifest file is missing' }
+                    $actual = Get-Item -LiteralPath $full -Force
+                    if ([long]$actual.Length -ne [long]$manifest.LengthBytes -or (Get-V07Sha256Hex -Path $full) -ne $sha) { throw 'manifest length or SHA-256 does not match on-disk bytes' }
+                } catch { $failures.Add("Artifact '$($manifest.Name)' external binding failed: $($_.Exception.Message)") }
+            }
+        }
+    }
+
+    if ($ValidateExternalBindings) {
+        if ([string]::IsNullOrWhiteSpace($EvidenceRoot)) {
+            $failures.Add('EvidenceRoot is required for observer report, schedule context, and referenced fault evidence rehash.')
+        } else {
+            foreach ($binding in @(
+                    [pscustomobject]@{ Label = 'ObserverReport'; Path = [string]$producer.ObserverReportPath; Sha256 = $producerReportSha; RelativePath = 'runtime-observer-current.json' },
+                    [pscustomobject]@{ Label = 'ScheduleContext'; Path = [string]$producer.ScheduleContextPath; Sha256 = $contextSha; RelativePath = 'soak-context.json' })) {
+                try {
+                    $resolvedBinding = Assert-V07PathWithinRoot -Path $binding.Path -AllowedRoots @($EvidenceRoot) -Description "Soak $($binding.Label)"
+                    Assert-V07NotReparsePoint -Path $resolvedBinding -Description "Soak $($binding.Label)"
+                    if (-not (Test-Path -LiteralPath $resolvedBinding -PathType Leaf)) { throw 'bound file is missing' }
+                    if ((Get-V07Sha256Hex -Path $resolvedBinding) -ne [string]$binding.Sha256) { throw 'bound SHA-256 does not match final bytes' }
+                    $matchingManifest = @($manifests | Where-Object { [string]$_.RelativePath -ceq $binding.RelativePath })
+                    if ($matchingManifest.Count -ne 1) { throw "artifact manifest must contain exactly one '$($binding.RelativePath)' entry" }
+                    $manifestFull = Assert-V07PathWithinRoot -Path (Join-Path $EvidenceRoot $binding.RelativePath) -AllowedRoots @($EvidenceRoot) -Description "Soak $($binding.Label) manifest"
+                    if (-not [StringComparer]::OrdinalIgnoreCase.Equals($resolvedBinding, $manifestFull) -or
+                        [string]$matchingManifest[0].Sha256 -ine [string]$binding.Sha256) {
+                        throw 'producer path/hash and artifact manifest path/hash are not identical'
+                    }
+                } catch { $failures.Add("Soak $($binding.Label) external binding failed: $($_.Exception.Message)") }
+            }
+        }
+    }
+
+    if ($ValidateExternalBindings -and -not [string]::IsNullOrWhiteSpace($RepositoryRoot)) {
+        try {
+            $currentCommit = Test-V07CleanRepositoryState -RepositoryRoot $RepositoryRoot
+            $currentTree = (@(& git -C $RepositoryRoot rev-parse 'HEAD^{tree}' 2>&1 | ForEach-Object { [string]$_ }) -join '').Trim().ToLowerInvariant()
+            if ([string]$candidate.SourceCommit -cne $currentCommit) { $failures.Add('Soak candidate source commit does not match the current clean checkout.') }
+            if ([string]$candidate.SourceTree -cne $currentTree) { $failures.Add('Soak candidate source tree does not match the current checkout tree.') }
+        } catch { $failures.Add("Soak external Git binding failed: $($_.Exception.Message)") }
+        try {
+            if (-not (Test-Path -LiteralPath $installed.ExecutablePath -PathType Leaf)) { throw 'installed Herdr executable is missing' }
+            Assert-V07NotReparsePoint -Path $installed.ExecutablePath -Description 'installed Herdr executable'
+            if ((Get-V07Sha256Hex -Path $installed.ExecutablePath) -ne $installedSha) { throw 'installed Herdr executable SHA-256 does not match' }
+        } catch { $failures.Add("Installed Herdr external binding failed: $($_.Exception.Message)") }
+        try {
+            $resolvedObserver = Assert-V07PathWithinRoot -Path ([string]$producer.ObserverExecutablePath) -AllowedRoots @($RepositoryRoot) -Description 'observer executable'
+            Assert-V07NotReparsePoint -Path $resolvedObserver -Description 'observer executable'
+            if (-not (Test-Path -LiteralPath $resolvedObserver -PathType Leaf)) { throw 'observer executable is missing' }
+            $observerInfo = Get-Item -LiteralPath $resolvedObserver -Force -ErrorAction Stop
+            $observerActualSha = Get-V07Sha256Hex -Path $resolvedObserver
+            $expectedObserverPath = Assert-V07PathWithinRoot -Path (Join-Path $RepositoryRoot ([string]$candidateObserver.RelativePath).Replace('/', [IO.Path]::DirectorySeparatorChar)) -AllowedRoots @($RepositoryRoot) -Description 'candidate observer executable'
+            if (-not [StringComparer]::OrdinalIgnoreCase.Equals($resolvedObserver, $expectedObserverPath) -or
+                $observerActualSha -ne $producerObserverSha -or
+                $observerActualSha -ne $candidateObserverSha -or
+                [long]$observerInfo.Length -ne [long]$candidateObserver.LengthBytes) {
+                throw 'observer executable path, length, or SHA-256 does not match the exact candidate binding'
+            }
+        } catch { $failures.Add("Observer executable external binding failed: $($_.Exception.Message)") }
+    }
+
     return @($failures)
 }
 
@@ -1510,7 +2129,10 @@ function Test-V07SoakArtifact {
     #>
     param(
         [Parameter(Mandatory)]$SoakArtifact,
-        [Parameter(Mandatory)]$MeasurementArtifact
+        [Parameter(Mandatory)]$MeasurementArtifact,
+        [string]$RepositoryRoot = '',
+        [string]$EvidenceRoot = '',
+        [switch]$ValidateExternalBindings
     )
 
     $failures = [System.Collections.Generic.List[string]]::new()
@@ -1621,6 +2243,11 @@ function Test-V07SoakArtifact {
         $failures.Add('Soak UnboundedTerminalReads must be zero.')
     }
 
+    foreach ($failure in @(Test-V07SoakProvenance -SoakArtifact $SoakArtifact -MeasurementArtifact $MeasurementArtifact `
+            -RepositoryRoot $RepositoryRoot -EvidenceRoot $EvidenceRoot -ValidateExternalBindings:$ValidateExternalBindings)) {
+        $failures.Add($failure)
+    }
+
     return [pscustomobject]@{
         Valid    = ($failures.Count -eq 0)
         Failures = @($failures)
@@ -1645,6 +2272,7 @@ function ConvertTo-V07RuntimeBudgetReport {
         $SoakArtifact = $null,
         [Parameter(Mandatory)][string]$RepositoryRoot,
         [Parameter(Mandatory)][string]$CandidateDirectory,
+        [string]$EvidenceRoot = '',
         [string]$RunId = '',
         [switch]$SkipDiskVerification
     )
@@ -1669,13 +2297,22 @@ function ConvertTo-V07RuntimeBudgetReport {
             BudgetReport = $null
         }
     }
+    if ([string]::IsNullOrWhiteSpace($EvidenceRoot)) {
+        return [pscustomobject]@{
+            CanFinalize  = $false
+            Reason       = 'External soak evidence root is required before Runtime credit can be finalized.'
+            Blockers     = @('EvidenceRoot is required; finalization always rehashes the retained soak logs, observer report, schedule context, and referenced operator evidence.')
+            BudgetReport = $null
+        }
+    }
 
     $session = $MeasurementArtifact.Session
     $candidate = $MeasurementArtifact.Candidate
     $metrics = $MeasurementArtifact.Metrics
     $rawSamples = $MeasurementArtifact.RawSamples
 
-    $soakCheck = Test-V07SoakArtifact -SoakArtifact $SoakArtifact -MeasurementArtifact $MeasurementArtifact
+    $soakCheck = Test-V07SoakArtifact -SoakArtifact $SoakArtifact -MeasurementArtifact $MeasurementArtifact `
+        -RepositoryRoot $RepositoryRoot -EvidenceRoot $EvidenceRoot -ValidateExternalBindings
     foreach ($failure in $soakCheck.Failures) { $blockers.Add($failure) }
     if (-not $soakCheck.Valid) {
         return [pscustomobject]@{
