@@ -35,58 +35,64 @@ function Stop-OwnedProcessSafely([System.Diagnostics.Process]$Process, [DateTime
     }
 }
 
-function Test-LiveProcessIdentityGuard {
+function New-V02TestTelemetryPacket {
     param(
-        [Parameter(Mandatory = $true)]
-        [System.Diagnostics.Process]$Process,
-
-        [Parameter(Mandatory = $true)]
-        [int]$ExpectedProcessId,
-
-        [Parameter(Mandatory = $true)]
-        [DateTime]$ExpectedStartTimeUtc,
-
-        [Parameter(Mandatory = $true)]
-        [ValidateSet('App', 'Core')]
-        [string]$Role,
-
-        [Parameter(Mandatory = $true)]
-        [int]$BinIndex,
-
-        [Parameter(Mandatory = $true)]
-        [int]$SampleIndex
+        [Parameter(Mandatory = $true)][string]$Nonce,
+        [Parameter(Mandatory = $true)][long]$SequenceNumber,
+        [Parameter(Mandatory = $true)][int]$BinIndex,
+        [Parameter(Mandatory = $true)][int]$SampleIndex,
+        [Parameter(Mandatory = $true)][int]$AppProcessId,
+        [Parameter(Mandatory = $true)][int]$CoreProcessId,
+        [Parameter(Mandatory = $true)][DateTime]$AppStartTimeUtc,
+        [Parameter(Mandatory = $true)][DateTime]$CoreStartTimeUtc,
+        [Parameter(Mandatory = $true)][string]$AppExecutablePath,
+        [Parameter(Mandatory = $true)][string]$CoreExecutablePath,
+        [Parameter(Mandatory = $true)][string]$AppExecutableSha256,
+        [Parameter(Mandatory = $true)][string]$CoreExecutableSha256,
+        [Parameter(Mandatory = $true)][string]$ObservedUtc,
+        [Parameter(Mandatory = $false)][long[]]$LatencyMicroseconds = @(1..20 | ForEach-Object { 100000L }),
+        [Parameter(Mandatory = $false)][long[]]$UiStallMicroseconds = @(1..20 | ForEach-Object { 10000L }),
+        [Parameter(Mandatory = $false)][bool]$RendererStable = $true,
+        [Parameter(Mandatory = $false)][string]$RepositoryRoot = $null
     )
 
-    $hasExited = $false
-    $observedProcessId = $ExpectedProcessId
-    $observedStartTimeUtc = $null
-    try {
-        $Process.Refresh()
-        $hasExited = [bool]$Process.HasExited
-        if (-not $hasExited) {
-            $observedProcessId = [int]$Process.Id
-            $observedStartTimeUtc = $Process.StartTime.ToUniversalTime()
+    $raw = [pscustomobject][ordered]@{
+        schemaVersion = 1
+        nonce = $Nonce
+        sequenceNumber = $SequenceNumber
+        observedUtc = $ObservedUtc
+        binIndex = $BinIndex
+        sampleIndex = $SampleIndex
+        producer = [pscustomobject][ordered]@{
+            appProcessId = $AppProcessId
+            coreProcessId = $CoreProcessId
+            appStartTimeUtc = $AppStartTimeUtc.ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ss.fffffffZ', [Globalization.CultureInfo]::InvariantCulture)
+            coreStartTimeUtc = $CoreStartTimeUtc.ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ss.fffffffZ', [Globalization.CultureInfo]::InvariantCulture)
+            appExecutablePath = $AppExecutablePath
+            coreExecutablePath = $CoreExecutablePath
+            appExecutableSha256 = $AppExecutableSha256
+            coreExecutableSha256 = $CoreExecutableSha256
         }
-    } catch {
-        throw "$Role process identity observation failed during soak bin $BinIndex sample ${SampleIndex}: $($_.Exception.Message)"
+        metrics = [pscustomobject][ordered]@{
+            latencyMicroseconds = @($LatencyMicroseconds | ForEach-Object { [long]$_ })
+            uiStallMicroseconds = @($UiStallMicroseconds | ForEach-Object { [long]$_ })
+            rendererStable = $RendererStable
+        }
     }
 
-    if ($hasExited) {
-        throw "$Role process ($ExpectedProcessId) terminated unexpectedly during soak bin $BinIndex sample $SampleIndex."
-    }
-
-    if ($observedProcessId -ne $ExpectedProcessId) {
-        throw "$Role process PID continuity failed: expected PID $ExpectedProcessId, observed PID $observedProcessId during soak bin $BinIndex sample $SampleIndex."
-    }
-
-    if ($null -eq $observedStartTimeUtc -or $observedStartTimeUtc -ne $ExpectedStartTimeUtc) {
-        throw "$Role process PID ($ExpectedProcessId) was recycled during soak bin $BinIndex sample $SampleIndex."
-    }
+    $canonicalBody = ConvertTo-RendererCanonicalJson $raw $RepositoryRoot
+    $hash = Get-HumanDesignReviewSha256ForText $canonicalBody
 
     return [pscustomobject][ordered]@{
-        ProcessId = [int]$observedProcessId
-        HasExited = [bool]$hasExited
-        StartTimeUtc = $observedStartTimeUtc
+        schemaVersion = 1
+        nonce = $Nonce
+        sequenceNumber = $SequenceNumber
+        observedUtc = $ObservedUtc
+        binIndex = $BinIndex
+        sampleIndex = $SampleIndex
+        producer = $raw.producer
+        metrics = $raw.metrics
+        packetSha256 = $hash
     }
 }
 
@@ -121,9 +127,9 @@ function Invoke-V02LiveGuardProbe {
         $coreStartTimeUtc = Get-OwnedProcessStartTimeUtc $core
         Start-Sleep -Milliseconds 500
 
-        # Sample 0: Both alive, valid identities
-        $null = Test-LiveProcessIdentityGuard -Process $app -ExpectedProcessId $app.Id -ExpectedStartTimeUtc $appStartTimeUtc -Role 'App' -BinIndex 0 -SampleIndex 0
-        $null = Test-LiveProcessIdentityGuard -Process $core -ExpectedProcessId $core.Id -ExpectedStartTimeUtc $coreStartTimeUtc -Role 'Core' -BinIndex 0 -SampleIndex 0
+        # Sample 0: Both alive, reaching the SHARED production Get-V02LiveProcessIdentity guard
+        $null = Get-V02LiveProcessIdentity -Process $app -ExpectedProcessId $app.Id -ExpectedStartTimeUtc $appStartTimeUtc -Role 'App' -BinIndex 0 -SampleIndex 0
+        $null = Get-V02LiveProcessIdentity -Process $core -ExpectedProcessId $core.Id -ExpectedStartTimeUtc $coreStartTimeUtc -Role 'Core' -BinIndex 0 -SampleIndex 0
 
         if ($GuardMode -eq 'UnexpectedExit') {
             # Terminate the App child
@@ -133,13 +139,13 @@ function Invoke-V02LiveGuardProbe {
                 throw 'Controlled live probe could not terminate its owned App child.'
             }
 
-            # Sample 1: Must throw unexpected exit
-            $null = Test-LiveProcessIdentityGuard -Process $app -ExpectedProcessId $app.Id -ExpectedStartTimeUtc $appStartTimeUtc -Role 'App' -BinIndex 0 -SampleIndex 1
+            # Sample 1: Must reach shared production guard and throw unexpected exit
+            $null = Get-V02LiveProcessIdentity -Process $app -ExpectedProcessId $app.Id -ExpectedStartTimeUtc $appStartTimeUtc -Role 'App' -BinIndex 0 -SampleIndex 1
         }
         elseif ($GuardMode -eq 'PidStartContinuity') {
             # Provide drifted expected start time (simulating PID recycle)
             $driftedStartTime = $appStartTimeUtc.AddSeconds(5)
-            $null = Test-LiveProcessIdentityGuard -Process $app -ExpectedProcessId $app.Id -ExpectedStartTimeUtc $driftedStartTime -Role 'App' -BinIndex 0 -SampleIndex 1
+            $null = Get-V02LiveProcessIdentity -Process $app -ExpectedProcessId $app.Id -ExpectedStartTimeUtc $driftedStartTime -Role 'App' -BinIndex 0 -SampleIndex 1
         }
     } finally {
         Stop-OwnedProcessSafely $app $appStartTimeUtc

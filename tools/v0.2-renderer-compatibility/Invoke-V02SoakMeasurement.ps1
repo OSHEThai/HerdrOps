@@ -29,7 +29,10 @@ param(
     [string]$ExpectedSourceTree,
 
     [Parameter(ParameterSetName = 'Live')]
-    [scriptblock]$LiveTelemetryProvider,
+    [object]$TelemetryChannel,
+
+    [Parameter(ParameterSetName = 'Live')]
+    [string]$ChannelNonce,
 
     [Parameter(Mandatory = $true)]
     [ValidateSet('AC', 'Battery')]
@@ -129,61 +132,6 @@ function Assert-SoakExactProperties {
     }
 }
 
-function Get-LiveProcessIdentity {
-    param(
-        [Parameter(Mandatory = $true)]
-        [System.Diagnostics.Process]$Process,
-
-        [Parameter(Mandatory = $true)]
-        [int]$ExpectedProcessId,
-
-        [Parameter(Mandatory = $true)]
-        [DateTime]$ExpectedStartTimeUtc,
-
-        [Parameter(Mandatory = $true)]
-        [ValidateSet('App', 'Core')]
-        [string]$Role,
-
-        [Parameter(Mandatory = $true)]
-        [int]$BinIndex,
-
-        [Parameter(Mandatory = $true)]
-        [int]$SampleIndex
-    )
-
-    $hasExited = $false
-    $observedProcessId = $ExpectedProcessId
-    $observedStartTimeUtc = $null
-    try {
-        $Process.Refresh()
-        $hasExited = [bool]$Process.HasExited
-        if (-not $hasExited) {
-            $observedProcessId = [int]$Process.Id
-            $observedStartTimeUtc = $Process.StartTime.ToUniversalTime()
-        }
-    } catch {
-        throw "$Role process identity observation failed during soak bin $BinIndex sample ${SampleIndex}: $($_.Exception.Message)"
-    }
-
-    if ($hasExited) {
-        throw "$Role process ($ExpectedProcessId) terminated unexpectedly during soak bin $BinIndex sample $SampleIndex."
-    }
-
-    if ($observedProcessId -ne $ExpectedProcessId) {
-        throw "$Role process PID continuity failed: expected PID $ExpectedProcessId, observed PID $observedProcessId during soak bin $BinIndex sample $SampleIndex."
-    }
-
-    if ($null -eq $observedStartTimeUtc -or $observedStartTimeUtc -ne $ExpectedStartTimeUtc) {
-        throw "$Role process PID ($ExpectedProcessId) was recycled during soak bin $BinIndex sample $SampleIndex."
-    }
-
-    return [pscustomobject][ordered]@{
-        ProcessId = [int]$observedProcessId
-        HasExited = [bool]$hasExited
-        StartTimeUtc = $observedStartTimeUtc
-    }
-}
-
 # Resolve repository root
 if ([string]::IsNullOrWhiteSpace($RepositoryRoot)) {
     $RepositoryRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
@@ -234,8 +182,11 @@ if (-not $Synthetic) {
         [string]::IsNullOrWhiteSpace($ExtractedPackageRoot)) {
         throw 'Live soak measurement requires exact candidate package bindings: PackageIdentityPath, PackageArchivePath, and ExtractedPackageRoot are mandatory.'
     }
-    if ($null -eq $LiveTelemetryProvider) {
-        throw 'Live soak measurement requires an authenticated telemetry source for latency and UI stall observations; hardcoded defaults are forbidden.'
+    if ($null -eq $TelemetryChannel) {
+        throw 'Live soak measurement requires an authenticated TelemetryChannel; hardcoded defaults and arbitrary caller scriptblocks are forbidden.'
+    }
+    if ([string]::IsNullOrWhiteSpace($ChannelNonce)) {
+        throw 'Live soak measurement requires a non-empty ChannelNonce for the trusted telemetry channel.'
     }
 }
 
@@ -402,6 +353,9 @@ if (-not $Synthetic) {
     $prevSampleTicks = $soakStopwatch.ElapsedTicks
 }
 
+$globalSequenceNumber = 0
+$lastObservedTelemetryUtc = [DateTime]::MinValue
+
 for ($binIndex = 0; $binIndex -lt $totalBins; $binIndex++) {
     $binStartUtc = [DateTime]::UtcNow
     $binStartUtcStr = $binStartUtc.ToString('yyyy-MM-ddTHH:mm:ss.fffffff+00:00')
@@ -465,14 +419,14 @@ for ($binIndex = 0; $binIndex -lt $totalBins; $binIndex++) {
             }
         } else {
             # LIVE PROCESS VERIFICATION AND TELEMETRY
-            $appIdentity = Get-LiveProcessIdentity `
+            $appIdentity = Get-V02LiveProcessIdentity `
                 -Process $appProcess `
                 -ExpectedProcessId $AppProcessId `
                 -ExpectedStartTimeUtc $appStartTimeUtc `
                 -Role 'App' `
                 -BinIndex $binIndex `
                 -SampleIndex $sampleIdx
-            $coreIdentity = Get-LiveProcessIdentity `
+            $coreIdentity = Get-V02LiveProcessIdentity `
                 -Process $coreProcess `
                 -ExpectedProcessId $CoreProcessId `
                 -ExpectedStartTimeUtc $coreStartTimeUtc `
@@ -510,60 +464,44 @@ for ($binIndex = 0; $binIndex -lt $totalBins; $binIndex++) {
             $prevCoreCpuTime = $curCoreCpu
             $prevSampleTicks = $curSampleTicks
 
-            # Authenticated live latency and UI stall source
-            if ($null -eq $LiveTelemetryProvider) {
-                throw 'Live soak measurement requires an authenticated telemetry source for latency and UI stall observations; hardcoded defaults are forbidden.'
-            }
-
+            # Authenticated live latency and UI stall source across trusted channel
+            $packet = $null
             try {
-                $liveResults = @(& $LiveTelemetryProvider $binIndex $sampleIdx $elapsedMs)
-                if ($liveResults.Count -ne 1) {
-                    throw 'Live telemetry provider must return exactly one authenticated sample.'
+                $packet = if ($TelemetryChannel -is [scriptblock]) {
+                    & $TelemetryChannel $binIndex $sampleIdx $elapsedMs
+                } else {
+                    $TelemetryChannel.ReadPacket($binIndex, $sampleIdx)
                 }
-                $liveSample = $liveResults[0]
             } catch {
-                throw "Live telemetry provider threw an exception during bin $binIndex sample $($sampleIdx): $($_.Exception.Message)"
+                throw "Telemetry channel failed to read packet during bin $binIndex sample $($sampleIdx): $($_.Exception.Message)"
             }
 
-            Assert-SoakExactProperties $liveSample @(
-                'Authenticated', 'Source', 'AppProcessId', 'CoreProcessId',
-                'AppStartTimeUtc', 'CoreStartTimeUtc', 'ObservedUtc',
-                'LatencyMicroseconds', 'UiStallMicroseconds', 'RendererStable'
-            ) "Live telemetry sample bin $binIndex sample $sampleIdx"
+            Assert-V02TrustedTelemetryPacket `
+                -Packet $packet `
+                -ExpectedNonce $ChannelNonce `
+                -ExpectedSequenceNumber $globalSequenceNumber `
+                -ExpectedBinIndex $binIndex `
+                -ExpectedSampleIndex $sampleIdx `
+                -ExpectedAppProcessId $AppProcessId `
+                -ExpectedCoreProcessId $CoreProcessId `
+                -ExpectedAppStartTimeUtc $appStartTimeUtc `
+                -ExpectedCoreStartTimeUtc $coreStartTimeUtc `
+                -ExpectedAppExecutablePath $packageBinding.AppPath `
+                -ExpectedCoreExecutablePath $packageBinding.CorePath `
+                -ExpectedAppExecutableSha256 $packageBinding.AppSha256 `
+                -ExpectedCoreExecutableSha256 $packageBinding.CoreSha256 `
+                -PreviousTimestampRef ([ref]$lastObservedTelemetryUtc) `
+                -RepositoryRoot $RepositoryRoot
 
-            if ($liveSample.Authenticated -isnot [bool] -or -not $liveSample.Authenticated) {
-                throw "Live telemetry sample bin $binIndex sample $sampleIdx is not authenticated."
-            }
-            if ([string]::IsNullOrWhiteSpace([string]$liveSample.Source)) {
-                throw "Live telemetry sample bin $binIndex sample $sampleIdx has no authenticated source."
-            }
-            if ($liveSample.AppProcessId -isnot [int] -or [int]$liveSample.AppProcessId -ne $AppProcessId) {
-                throw "Live telemetry sample bin $binIndex sample $sampleIdx is not bound to App PID $AppProcessId."
-            }
-            if ($liveSample.CoreProcessId -isnot [int] -or [int]$liveSample.CoreProcessId -ne $CoreProcessId) {
-                throw "Live telemetry sample bin $binIndex sample $sampleIdx is not bound to Core PID $CoreProcessId."
-            }
-
-            $telemetryAppStart = if ($liveSample.AppStartTimeUtc -is [DateTime]) { $liveSample.AppStartTimeUtc.ToUniversalTime() } else { [DateTimeOffset]::Parse([string]$liveSample.AppStartTimeUtc, [Globalization.CultureInfo]::InvariantCulture).UtcDateTime }
-            $telemetryCoreStart = if ($liveSample.CoreStartTimeUtc -is [DateTime]) { $liveSample.CoreStartTimeUtc.ToUniversalTime() } else { [DateTimeOffset]::Parse([string]$liveSample.CoreStartTimeUtc, [Globalization.CultureInfo]::InvariantCulture).UtcDateTime }
-
-            if ($telemetryAppStart -ne $appStartTimeUtc) {
-                throw "Live telemetry sample bin $binIndex sample $sampleIdx App start time does not match authenticated process creation time."
-            }
-            if ($telemetryCoreStart -ne $coreStartTimeUtc) {
-                throw "Live telemetry sample bin $binIndex sample $sampleIdx Core start time does not match authenticated process creation time."
+            $globalSequenceNumber++
+            $sampleUtcStr = [string]$packet.observedUtc
+            if ($sampleIdx -eq 0) {
+                $binStartUtcStr = $sampleUtcStr
             }
 
-            if ($null -eq $liveSample.LatencyMicroseconds -or @($liveSample.LatencyMicroseconds).Count -eq 0) {
-                throw "Live telemetry sample bin $binIndex sample $sampleIdx contains empty latency measurements."
-            }
-            if ($null -eq $liveSample.UiStallMicroseconds -or @($liveSample.UiStallMicroseconds).Count -eq 0) {
-                throw "Live telemetry sample bin $binIndex sample $sampleIdx contains empty UI stall measurements."
-            }
-
-            $liveLatency = $liveSample.LatencyMicroseconds
-            $liveStall = $liveSample.UiStallMicroseconds
-            $liveStable = [bool]$liveSample.RendererStable
+            $liveLatency = @($packet.metrics.latencyMicroseconds)
+            $liveStall = @($packet.metrics.uiStallMicroseconds)
+            $liveStable = [bool]$packet.metrics.rendererStable
 
             $sampleData = [pscustomobject][ordered]@{
                 AppWorkingSetBytes = $appWs

@@ -464,7 +464,8 @@ try {
             -ExtractedPackageRoot $packageRoot `
             -ExpectedSourceCommit $repo.Commit `
             -ExpectedSourceTree $repo.Tree `
-            -LiveTelemetryProvider { $null } `
+            -TelemetryChannel { $null } `
+            -ChannelNonce 'test-nonce' `
             -AppProcessId 0 `
             -CoreProcessId 0
     } 'Live soak measurement requires positive AppProcessId and CoreProcessId' 'live mode invalid process IDs (zero or negative) produces zero output' $negProc1Dest
@@ -482,7 +483,8 @@ try {
             -ExtractedPackageRoot $packageRoot `
             -ExpectedSourceCommit $repo.Commit `
             -ExpectedSourceTree $repo.Tree `
-            -LiveTelemetryProvider { $null } `
+            -TelemetryChannel { $null } `
+            -ChannelNonce 'test-nonce' `
             -AppProcessId 1234 `
             -CoreProcessId 1234
     } 'AppProcessId and CoreProcessId must be distinct processes' 'live mode identical process IDs for App and Core produces zero output' $negProcIdentDest
@@ -500,7 +502,8 @@ try {
             -ExtractedPackageRoot $packageRoot `
             -ExpectedSourceCommit $repo.Commit `
             -ExpectedSourceTree $repo.Tree `
-            -LiveTelemetryProvider { $null } `
+            -TelemetryChannel { $null } `
+            -ChannelNonce 'test-nonce' `
             -AppProcessId 999999 `
             -CoreProcessId 999998
     } 'Unable to connect to target App' 'live mode non-existent process ID produces zero output' $negProc2Dest
@@ -519,12 +522,13 @@ try {
             -ExtractedPackageRoot $packageRoot `
             -ExpectedSourceCommit $repo.Commit `
             -ExpectedSourceTree $repo.Tree `
-            -LiveTelemetryProvider { $null } `
+            -TelemetryChannel { $null } `
+            -ChannelNonce 'test-nonce' `
             -AppProcessId $currentPid `
             -CoreProcessId 4
     } 'Process session ID mismatch' 'live mode process session ID mismatch produces zero output' $negSessDest
 
-    # 17. Live mode missing live telemetry provider fails closed
+    # 17. Live mode missing live telemetry channel fails closed
     $negLiveTelDest = Join-Path $tempRoot 'matrix\neg-live-tel.json'
     $dummy1 = Start-Process -FilePath 'powershell.exe' -ArgumentList '-NoProfile -Command Start-Sleep -Seconds 30' -PassThru
     $dummy2 = Start-Process -FilePath 'powershell.exe' -ArgumentList '-NoProfile -Command Start-Sleep -Seconds 30' -PassThru
@@ -542,7 +546,7 @@ try {
                 -ExpectedSourceTree $repo.Tree `
                 -AppProcessId $dummy1.Id `
                 -CoreProcessId $dummy2.Id
-        } 'Live soak measurement requires an authenticated telemetry source' 'live mode missing live telemetry provider fails closed' $negLiveTelDest
+        } 'Live soak measurement requires an authenticated TelemetryChannel' 'live mode missing telemetry channel fails closed' $negLiveTelDest
     } finally {
         if ($null -ne $dummy1 -and -not $dummy1.HasExited) { Stop-Process -Id $dummy1.Id -Force -ErrorAction SilentlyContinue }
         if ($null -ne $dummy2 -and -not $dummy2.HasExited) { Stop-Process -Id $dummy2.Id -Force -ErrorAction SilentlyContinue }
@@ -558,6 +562,8 @@ try {
             -RepositoryRoot $repoRoot `
             -ExpectedSourceCommit $repo.Commit `
             -ExpectedSourceTree $repo.Tree `
+            -TelemetryChannel { $null } `
+            -ChannelNonce 'test-nonce' `
             -AppProcessId 123 `
             -CoreProcessId 456
     } 'PackageIdentityPath|exact candidate package bindings' 'live mode missing package parameters fails closed' $negMissingPkgDest
@@ -618,44 +624,15 @@ try {
         $boundCoreStart = Get-OwnedProcessStartTimeUtc $boundCoreProc
         Start-Sleep -Milliseconds 500
 
-        # Unauthenticated live telemetry rejected fail-closed
-        $negUnauthDest = Join-Path $tempRoot 'matrix\neg-unauth.json'
-        Assert-ThrowsMatchAndZeroOutput {
-            & $script:InvokeSoakPath `
-                -PowerSource 'AC' `
-                -DestinationPath $negUnauthDest `
-                -EvidenceRoot $tempRoot `
-                -RepositoryRoot $repoRoot `
-                -PackageIdentityPath $liveReceiptPath `
-                -PackageArchivePath $liveArchivePath `
-                -ExtractedPackageRoot $livePkgRoot `
-                -ExpectedSourceCommit $repo.Commit `
-                -ExpectedSourceTree $repo.Tree `
-                -AppProcessId $boundAppProc.Id `
-                -CoreProcessId $boundCoreProc.Id `
-                -LiveTelemetryProvider {
-                    param($b, $s, $e)
-                    [pscustomobject][ordered]@{
-                        Authenticated = $false
-                        Source = 'FakeSource'
-                        AppProcessId = $boundAppProc.Id
-                        CoreProcessId = $boundCoreProc.Id
-                        AppStartTimeUtc = $boundAppStart
-                        CoreStartTimeUtc = $boundCoreStart
-                        ObservedUtc = (Get-Date).ToUniversalTime()
-                        LatencyMicroseconds = @(100000L)
-                        UiStallMicroseconds = @(10000L)
-                        RendererStable = $true
-                    }
-                }
-        } 'is not authenticated' 'unauthenticated live telemetry sample is rejected fail-closed' $negUnauthDest
+        $validNonce = [Guid]::NewGuid().ToString('N')
+        $baseUtc = (Get-Date).ToUniversalTime()
 
-        # Missing source in live telemetry rejected fail-closed
-        $negNoSourceDest = Join-Path $tempRoot 'matrix\neg-nosource.json'
+        # 1. Telemetry packet with wrong nonce is rejected
+        $negWrongNonceDest = Join-Path $tempRoot 'matrix\neg-wrong-nonce.json'
         Assert-ThrowsMatchAndZeroOutput {
             & $script:InvokeSoakPath `
                 -PowerSource 'AC' `
-                -DestinationPath $negNoSourceDest `
+                -DestinationPath $negWrongNonceDest `
                 -EvidenceRoot $tempRoot `
                 -RepositoryRoot $repoRoot `
                 -PackageIdentityPath $liveReceiptPath `
@@ -665,29 +642,25 @@ try {
                 -ExpectedSourceTree $repo.Tree `
                 -AppProcessId $boundAppProc.Id `
                 -CoreProcessId $boundCoreProc.Id `
-                -LiveTelemetryProvider {
+                -ChannelNonce $validNonce `
+                -TelemetryChannel {
                     param($b, $s, $e)
-                    [pscustomobject][ordered]@{
-                        Authenticated = $true
-                        Source = ''
-                        AppProcessId = $boundAppProc.Id
-                        CoreProcessId = $boundCoreProc.Id
-                        AppStartTimeUtc = $boundAppStart
-                        CoreStartTimeUtc = $boundCoreStart
-                        ObservedUtc = (Get-Date).ToUniversalTime()
-                        LatencyMicroseconds = @(100000L)
-                        UiStallMicroseconds = @(10000L)
-                        RendererStable = $true
-                    }
+                    New-V02TestTelemetryPacket -Nonce 'wrong-nonce' -SequenceNumber 0 -BinIndex 0 -SampleIndex 0 `
+                        -AppProcessId $boundAppProc.Id -CoreProcessId $boundCoreProc.Id `
+                        -AppStartTimeUtc $boundAppStart -CoreStartTimeUtc $boundCoreStart `
+                        -AppExecutablePath $liveAppPath -CoreExecutablePath $liveCorePath `
+                        -AppExecutableSha256 $liveAppStable.Sha256 -CoreExecutableSha256 $liveCoreStable.Sha256 `
+                        -ObservedUtc ($baseUtc.AddSeconds(1).ToString('yyyy-MM-ddTHH:mm:ss.fffffffZ')) `
+                        -RepositoryRoot $repoRoot
                 }
-        } 'has no authenticated source' 'live telemetry sample missing source is rejected fail-closed' $negNoSourceDest
+        } 'Telemetry packet nonce mismatch' 'telemetry packet with wrong nonce is rejected fail-closed' $negWrongNonceDest
 
-        # Mismatched AppProcessId in live telemetry rejected fail-closed
-        $negWrongAppPidDest = Join-Path $tempRoot 'matrix\neg-wrong-app-pid.json'
+        # 2. Telemetry packet with broken sequence number is rejected
+        $negSeqDest = Join-Path $tempRoot 'matrix\neg-seq.json'
         Assert-ThrowsMatchAndZeroOutput {
             & $script:InvokeSoakPath `
                 -PowerSource 'AC' `
-                -DestinationPath $negWrongAppPidDest `
+                -DestinationPath $negSeqDest `
                 -EvidenceRoot $tempRoot `
                 -RepositoryRoot $repoRoot `
                 -PackageIdentityPath $liveReceiptPath `
@@ -697,29 +670,25 @@ try {
                 -ExpectedSourceTree $repo.Tree `
                 -AppProcessId $boundAppProc.Id `
                 -CoreProcessId $boundCoreProc.Id `
-                -LiveTelemetryProvider {
+                -ChannelNonce $validNonce `
+                -TelemetryChannel {
                     param($b, $s, $e)
-                    [pscustomobject][ordered]@{
-                        Authenticated = $true
-                        Source = 'ValidSource'
-                        AppProcessId = ($boundAppProc.Id + 1)
-                        CoreProcessId = $boundCoreProc.Id
-                        AppStartTimeUtc = $boundAppStart
-                        CoreStartTimeUtc = $boundCoreStart
-                        ObservedUtc = (Get-Date).ToUniversalTime()
-                        LatencyMicroseconds = @(100000L)
-                        UiStallMicroseconds = @(10000L)
-                        RendererStable = $true
-                    }
+                    New-V02TestTelemetryPacket -Nonce $validNonce -SequenceNumber 5 -BinIndex 0 -SampleIndex 0 `
+                        -AppProcessId $boundAppProc.Id -CoreProcessId $boundCoreProc.Id `
+                        -AppStartTimeUtc $boundAppStart -CoreStartTimeUtc $boundCoreStart `
+                        -AppExecutablePath $liveAppPath -CoreExecutablePath $liveCorePath `
+                        -AppExecutableSha256 $liveAppStable.Sha256 -CoreExecutableSha256 $liveCoreStable.Sha256 `
+                        -ObservedUtc ($baseUtc.AddSeconds(1).ToString('yyyy-MM-ddTHH:mm:ss.fffffffZ')) `
+                        -RepositoryRoot $repoRoot
                 }
-        } 'is not bound to App PID' 'live telemetry sample bound to wrong App PID is rejected fail-closed' $negWrongAppPidDest
+        } 'Telemetry packet sequenceNumber mismatch' 'telemetry packet with broken sequence number is rejected fail-closed' $negSeqDest
 
-        # Mismatched CoreProcessId in live telemetry rejected fail-closed
-        $negWrongCorePidDest = Join-Path $tempRoot 'matrix\neg-wrong-core-pid.json'
+        # 3. Telemetry packet with mismatched BinIndex is rejected
+        $negBinIdxDest = Join-Path $tempRoot 'matrix\neg-bin-idx.json'
         Assert-ThrowsMatchAndZeroOutput {
             & $script:InvokeSoakPath `
                 -PowerSource 'AC' `
-                -DestinationPath $negWrongCorePidDest `
+                -DestinationPath $negBinIdxDest `
                 -EvidenceRoot $tempRoot `
                 -RepositoryRoot $repoRoot `
                 -PackageIdentityPath $liveReceiptPath `
@@ -729,29 +698,25 @@ try {
                 -ExpectedSourceTree $repo.Tree `
                 -AppProcessId $boundAppProc.Id `
                 -CoreProcessId $boundCoreProc.Id `
-                -LiveTelemetryProvider {
+                -ChannelNonce $validNonce `
+                -TelemetryChannel {
                     param($b, $s, $e)
-                    [pscustomobject][ordered]@{
-                        Authenticated = $true
-                        Source = 'ValidSource'
-                        AppProcessId = $boundAppProc.Id
-                        CoreProcessId = ($boundCoreProc.Id + 1)
-                        AppStartTimeUtc = $boundAppStart
-                        CoreStartTimeUtc = $boundCoreStart
-                        ObservedUtc = (Get-Date).ToUniversalTime()
-                        LatencyMicroseconds = @(100000L)
-                        UiStallMicroseconds = @(10000L)
-                        RendererStable = $true
-                    }
+                    New-V02TestTelemetryPacket -Nonce $validNonce -SequenceNumber 0 -BinIndex 1 -SampleIndex 0 `
+                        -AppProcessId $boundAppProc.Id -CoreProcessId $boundCoreProc.Id `
+                        -AppStartTimeUtc $boundAppStart -CoreStartTimeUtc $boundCoreStart `
+                        -AppExecutablePath $liveAppPath -CoreExecutablePath $liveCorePath `
+                        -AppExecutableSha256 $liveAppStable.Sha256 -CoreExecutableSha256 $liveCoreStable.Sha256 `
+                        -ObservedUtc ($baseUtc.AddSeconds(1).ToString('yyyy-MM-ddTHH:mm:ss.fffffffZ')) `
+                        -RepositoryRoot $repoRoot
                 }
-        } 'is not bound to Core PID' 'live telemetry sample bound to wrong Core PID is rejected fail-closed' $negWrongCorePidDest
+        } 'Telemetry packet binIndex mismatch' 'telemetry packet with mismatched binIndex is rejected fail-closed' $negBinIdxDest
 
-        # Drifted AppStartTimeUtc in live telemetry rejected fail-closed
-        $negDriftAppStartDest = Join-Path $tempRoot 'matrix\neg-drift-app-start.json'
+        # 4. Telemetry packet with mismatched AppProcessId is rejected
+        $negAppPidDest = Join-Path $tempRoot 'matrix\neg-app-pid.json'
         Assert-ThrowsMatchAndZeroOutput {
             & $script:InvokeSoakPath `
                 -PowerSource 'AC' `
-                -DestinationPath $negDriftAppStartDest `
+                -DestinationPath $negAppPidDest `
                 -EvidenceRoot $tempRoot `
                 -RepositoryRoot $repoRoot `
                 -PackageIdentityPath $liveReceiptPath `
@@ -761,29 +726,25 @@ try {
                 -ExpectedSourceTree $repo.Tree `
                 -AppProcessId $boundAppProc.Id `
                 -CoreProcessId $boundCoreProc.Id `
-                -LiveTelemetryProvider {
+                -ChannelNonce $validNonce `
+                -TelemetryChannel {
                     param($b, $s, $e)
-                    [pscustomobject][ordered]@{
-                        Authenticated = $true
-                        Source = 'ValidSource'
-                        AppProcessId = $boundAppProc.Id
-                        CoreProcessId = $boundCoreProc.Id
-                        AppStartTimeUtc = $boundAppStart.AddSeconds(2)
-                        CoreStartTimeUtc = $boundCoreStart
-                        ObservedUtc = (Get-Date).ToUniversalTime()
-                        LatencyMicroseconds = @(100000L)
-                        UiStallMicroseconds = @(10000L)
-                        RendererStable = $true
-                    }
+                    New-V02TestTelemetryPacket -Nonce $validNonce -SequenceNumber 0 -BinIndex 0 -SampleIndex 0 `
+                        -AppProcessId ($boundAppProc.Id + 1) -CoreProcessId $boundCoreProc.Id `
+                        -AppStartTimeUtc $boundAppStart -CoreStartTimeUtc $boundCoreStart `
+                        -AppExecutablePath $liveAppPath -CoreExecutablePath $liveCorePath `
+                        -AppExecutableSha256 $liveAppStable.Sha256 -CoreExecutableSha256 $liveCoreStable.Sha256 `
+                        -ObservedUtc ($baseUtc.AddSeconds(1).ToString('yyyy-MM-ddTHH:mm:ss.fffffffZ')) `
+                        -RepositoryRoot $repoRoot
                 }
-        } 'App start time does not match authenticated process creation time' 'live telemetry sample with drifted App start time is rejected fail-closed' $negDriftAppStartDest
+        } 'Telemetry packet producer appProcessId mismatch' 'telemetry packet with mismatched App PID is rejected fail-closed' $negAppPidDest
 
-        # Drifted CoreStartTimeUtc in live telemetry rejected fail-closed
-        $negDriftCoreStartDest = Join-Path $tempRoot 'matrix\neg-drift-core-start.json'
+        # 5. Telemetry packet with drifted AppStartTimeUtc is rejected
+        $negAppStartDest = Join-Path $tempRoot 'matrix\neg-app-start.json'
         Assert-ThrowsMatchAndZeroOutput {
             & $script:InvokeSoakPath `
                 -PowerSource 'AC' `
-                -DestinationPath $negDriftCoreStartDest `
+                -DestinationPath $negAppStartDest `
                 -EvidenceRoot $tempRoot `
                 -RepositoryRoot $repoRoot `
                 -PackageIdentityPath $liveReceiptPath `
@@ -793,29 +754,25 @@ try {
                 -ExpectedSourceTree $repo.Tree `
                 -AppProcessId $boundAppProc.Id `
                 -CoreProcessId $boundCoreProc.Id `
-                -LiveTelemetryProvider {
+                -ChannelNonce $validNonce `
+                -TelemetryChannel {
                     param($b, $s, $e)
-                    [pscustomobject][ordered]@{
-                        Authenticated = $true
-                        Source = 'ValidSource'
-                        AppProcessId = $boundAppProc.Id
-                        CoreProcessId = $boundCoreProc.Id
-                        AppStartTimeUtc = $boundAppStart
-                        CoreStartTimeUtc = $boundCoreStart.AddSeconds(2)
-                        ObservedUtc = (Get-Date).ToUniversalTime()
-                        LatencyMicroseconds = @(100000L)
-                        UiStallMicroseconds = @(10000L)
-                        RendererStable = $true
-                    }
+                    New-V02TestTelemetryPacket -Nonce $validNonce -SequenceNumber 0 -BinIndex 0 -SampleIndex 0 `
+                        -AppProcessId $boundAppProc.Id -CoreProcessId $boundCoreProc.Id `
+                        -AppStartTimeUtc ($boundAppStart.AddSeconds(3)) -CoreStartTimeUtc $boundCoreStart `
+                        -AppExecutablePath $liveAppPath -CoreExecutablePath $liveCorePath `
+                        -AppExecutableSha256 $liveAppStable.Sha256 -CoreExecutableSha256 $liveCoreStable.Sha256 `
+                        -ObservedUtc ($baseUtc.AddSeconds(1).ToString('yyyy-MM-ddTHH:mm:ss.fffffffZ')) `
+                        -RepositoryRoot $repoRoot
                 }
-        } 'Core start time does not match authenticated process creation time' 'live telemetry sample with drifted Core start time is rejected fail-closed' $negDriftCoreStartDest
+        } 'Telemetry packet producer appStartTimeUtc mismatch' 'telemetry packet with drifted App start time is rejected fail-closed' $negAppStartDest
 
-        # Empty LatencyMicroseconds in live telemetry rejected fail-closed
-        $negEmptyLatDest = Join-Path $tempRoot 'matrix\neg-empty-lat.json'
+        # 6. Telemetry packet with forged executable hash is rejected
+        $negExeHashDest = Join-Path $tempRoot 'matrix\neg-exe-hash.json'
         Assert-ThrowsMatchAndZeroOutput {
             & $script:InvokeSoakPath `
                 -PowerSource 'AC' `
-                -DestinationPath $negEmptyLatDest `
+                -DestinationPath $negExeHashDest `
                 -EvidenceRoot $tempRoot `
                 -RepositoryRoot $repoRoot `
                 -PackageIdentityPath $liveReceiptPath `
@@ -825,29 +782,25 @@ try {
                 -ExpectedSourceTree $repo.Tree `
                 -AppProcessId $boundAppProc.Id `
                 -CoreProcessId $boundCoreProc.Id `
-                -LiveTelemetryProvider {
+                -ChannelNonce $validNonce `
+                -TelemetryChannel {
                     param($b, $s, $e)
-                    [pscustomobject][ordered]@{
-                        Authenticated = $true
-                        Source = 'ValidSource'
-                        AppProcessId = $boundAppProc.Id
-                        CoreProcessId = $boundCoreProc.Id
-                        AppStartTimeUtc = $boundAppStart
-                        CoreStartTimeUtc = $boundCoreStart
-                        ObservedUtc = (Get-Date).ToUniversalTime()
-                        LatencyMicroseconds = @()
-                        UiStallMicroseconds = @(10000L)
-                        RendererStable = $true
-                    }
+                    New-V02TestTelemetryPacket -Nonce $validNonce -SequenceNumber 0 -BinIndex 0 -SampleIndex 0 `
+                        -AppProcessId $boundAppProc.Id -CoreProcessId $boundCoreProc.Id `
+                        -AppStartTimeUtc $boundAppStart -CoreStartTimeUtc $boundCoreStart `
+                        -AppExecutablePath $liveAppPath -CoreExecutablePath $liveCorePath `
+                        -AppExecutableSha256 '0000000000000000000000000000000000000000000000000000000000000000' -CoreExecutableSha256 $liveCoreStable.Sha256 `
+                        -ObservedUtc ($baseUtc.AddSeconds(1).ToString('yyyy-MM-ddTHH:mm:ss.fffffffZ')) `
+                        -RepositoryRoot $repoRoot
                 }
-        } 'contains empty latency measurements' 'live telemetry sample with empty latency array is rejected fail-closed' $negEmptyLatDest
+        } 'Telemetry packet producer appExecutableSha256 mismatch' 'telemetry packet with forged App executable hash is rejected fail-closed' $negExeHashDest
 
-        # Empty UiStallMicroseconds in live telemetry rejected fail-closed
-        $negEmptyStlDest = Join-Path $tempRoot 'matrix\neg-empty-stl.json'
+        # 7. Telemetry packet with too few latency observations is rejected
+        $negFewLatDest = Join-Path $tempRoot 'matrix\neg-few-lat.json'
         Assert-ThrowsMatchAndZeroOutput {
             & $script:InvokeSoakPath `
                 -PowerSource 'AC' `
-                -DestinationPath $negEmptyStlDest `
+                -DestinationPath $negFewLatDest `
                 -EvidenceRoot $tempRoot `
                 -RepositoryRoot $repoRoot `
                 -PackageIdentityPath $liveReceiptPath `
@@ -857,22 +810,49 @@ try {
                 -ExpectedSourceTree $repo.Tree `
                 -AppProcessId $boundAppProc.Id `
                 -CoreProcessId $boundCoreProc.Id `
-                -LiveTelemetryProvider {
+                -ChannelNonce $validNonce `
+                -TelemetryChannel {
                     param($b, $s, $e)
-                    [pscustomobject][ordered]@{
-                        Authenticated = $true
-                        Source = 'ValidSource'
-                        AppProcessId = $boundAppProc.Id
-                        CoreProcessId = $boundCoreProc.Id
-                        AppStartTimeUtc = $boundAppStart
-                        CoreStartTimeUtc = $boundCoreStart
-                        ObservedUtc = (Get-Date).ToUniversalTime()
-                        LatencyMicroseconds = @(100000L)
-                        UiStallMicroseconds = @()
-                        RendererStable = $true
-                    }
+                    New-V02TestTelemetryPacket -Nonce $validNonce -SequenceNumber 0 -BinIndex 0 -SampleIndex 0 `
+                        -AppProcessId $boundAppProc.Id -CoreProcessId $boundCoreProc.Id `
+                        -AppStartTimeUtc $boundAppStart -CoreStartTimeUtc $boundCoreStart `
+                        -AppExecutablePath $liveAppPath -CoreExecutablePath $liveCorePath `
+                        -AppExecutableSha256 $liveAppStable.Sha256 -CoreExecutableSha256 $liveCoreStable.Sha256 `
+                        -ObservedUtc ($baseUtc.AddSeconds(1).ToString('yyyy-MM-ddTHH:mm:ss.fffffffZ')) `
+                        -LatencyMicroseconds @(1..19 | ForEach-Object { 100000L }) `
+                        -RepositoryRoot $repoRoot
                 }
-        } 'contains empty UI stall measurements' 'live telemetry sample with empty UI stall array is rejected fail-closed' $negEmptyStlDest
+        } 'Telemetry packet requires at least 20 latency observations' 'telemetry packet with <20 latency samples is rejected fail-closed' $negFewLatDest
+
+        # 8. Correct identity with forged good metrics but tampered packetSha256 hash is rejected
+        $negTamperedShaDest = Join-Path $tempRoot 'matrix\neg-tampered-sha.json'
+        Assert-ThrowsMatchAndZeroOutput {
+            & $script:InvokeSoakPath `
+                -PowerSource 'AC' `
+                -DestinationPath $negTamperedShaDest `
+                -EvidenceRoot $tempRoot `
+                -RepositoryRoot $repoRoot `
+                -PackageIdentityPath $liveReceiptPath `
+                -PackageArchivePath $liveArchivePath `
+                -ExtractedPackageRoot $livePkgRoot `
+                -ExpectedSourceCommit $repo.Commit `
+                -ExpectedSourceTree $repo.Tree `
+                -AppProcessId $boundAppProc.Id `
+                -CoreProcessId $boundCoreProc.Id `
+                -ChannelNonce $validNonce `
+                -TelemetryChannel {
+                    param($b, $s, $e)
+                    $pkt = New-V02TestTelemetryPacket -Nonce $validNonce -SequenceNumber 0 -BinIndex 0 -SampleIndex 0 `
+                        -AppProcessId $boundAppProc.Id -CoreProcessId $boundCoreProc.Id `
+                        -AppStartTimeUtc $boundAppStart -CoreStartTimeUtc $boundCoreStart `
+                        -AppExecutablePath $liveAppPath -CoreExecutablePath $liveCorePath `
+                        -AppExecutableSha256 $liveAppStable.Sha256 -CoreExecutableSha256 $liveCoreStable.Sha256 `
+                        -ObservedUtc ($baseUtc.AddSeconds(1).ToString('yyyy-MM-ddTHH:mm:ss.fffffffZ')) `
+                        -RepositoryRoot $repoRoot
+                    $pkt.packetSha256 = '0000000000000000000000000000000000000000000000000000000000000000'
+                    return $pkt
+                }
+        } 'Telemetry packet SHA-256 hash mismatch' 'telemetry packet with tampered packetSha256 hash is rejected fail-closed' $negTamperedShaDest
 
     } finally {
         Stop-OwnedProcessSafely $boundAppProc $boundAppStart
