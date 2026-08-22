@@ -155,6 +155,35 @@ $script:TranscriptSequence = 1
 $script:OwnedStagingDirectory = $null
 $script:OwnedSimulationDirectory = $null
 
+# These defaults deliberately make a preflight failure reportable.  Binding
+# parsing happens before target setup, so every report field must already have
+# a schema-safe value if that parse fails.
+$machineName = [Environment]::MachineName
+if ([string]::IsNullOrWhiteSpace($machineName)) { $machineName = 'NOT_OBSERVED' }
+try { $machineFingerprint = Get-AcceptanceMachineFingerprint } catch { $machineFingerprint = ('0' * 64) }
+$isElevated = $false
+$actualHeadCommit = 'NOT_OBSERVED'
+$actualHeadTree = 'NOT_OBSERVED'
+$actualParentCommit = 'NOT_OBSERVED'
+$installRootFull = ''
+$userDataRootFull = ''
+$installParent = ''
+$retainedDataFullPath = ''
+$bindingParseFailure = ''
+$bindingWasProvided = -not [string]::IsNullOrWhiteSpace($BindingPath)
+$initialArtifactBinding = $null
+$upgradeArtifactBinding = $null
+$initialBindingPackageRoot = ''
+$initialBindingHashRecordPath = ''
+$candidateBindingPackageRoot = ''
+$candidateBindingHashRecordPath = ''
+$initialAcceptedArtifact = $null
+$candidateAcceptedArtifact = $null
+$initialDurableManifest = $null
+$candidateDurableManifest = $null
+$betaReportFull = ''
+$betaReportJson = $null
+
 function Add-OperatorTranscript {
     param(
         [Parameter(Mandatory = $true)][string]$Phase,
@@ -271,6 +300,321 @@ function Invoke-WithStagedArchiveLocked {
     }
 }
 
+function Resolve-Issue44ManifestEvidence {
+    param(
+        [Parameter(Mandatory = $true)][string]$ArchivePath,
+        [string]$ExpectedManifestPath,
+        [Parameter(Mandatory = $true)][long]$ExpectedBytes,
+        [Parameter(Mandatory = $true)][string]$ExpectedSha256,
+        [Parameter(Mandatory = $true)][string]$ArtifactName
+    )
+
+    $archiveFull = Get-AcceptanceFullPath -Path $ArchivePath
+    $archiveParent = Split-Path -Path $archiveFull -Parent
+    $candidates = New-Object System.Collections.ArrayList
+    foreach ($candidate in @(
+            $ExpectedManifestPath,
+            (Join-Path $archiveParent 'package-manifest.json'),
+            (Join-Path $archiveParent 'package\package-manifest.json'))) {
+        if ([string]::IsNullOrWhiteSpace($candidate)) { continue }
+        $candidateFull = Get-AcceptanceFullPath -Path $candidate
+        if (@($candidates | Where-Object { $_.Equals($candidateFull, [StringComparison]::OrdinalIgnoreCase) }).Count -eq 0) {
+            [void]$candidates.Add($candidateFull)
+        }
+    }
+
+    $mismatchDetails = New-Object System.Collections.ArrayList
+    foreach ($candidateFull in @($candidates.ToArray())) {
+        if (-not (Test-Path -LiteralPath $candidateFull -PathType Leaf)) { continue }
+        Assert-OperatorNoReparse -Path $candidateFull
+        $data = Get-FileSha256AndBytes -Path $candidateFull
+        if ($data.Length -ne $ExpectedBytes -or $data.Sha256 -cne $ExpectedSha256.ToUpperInvariant()) {
+            [void]$mismatchDetails.Add("$candidateFull bytes=$($data.Length) sha256=$($data.Sha256)")
+            continue
+        }
+        return [pscustomobject][ordered]@{
+            Path = $candidateFull
+            PackageRoot = (Split-Path -Path $candidateFull -Parent)
+            Bytes = [int64]$data.Length
+            Sha256 = $data.Sha256
+        }
+    }
+
+    $suffix = if ($mismatchDetails.Count -gt 0) { " Mismatches: $($mismatchDetails -join '; ')" } else { '' }
+    throw "$ArtifactName durable package-manifest.json evidence was not found with the accepted bytes/hash.$suffix"
+}
+
+function Get-Issue44NestedPropertyValue {
+    param(
+        [Parameter(Mandatory = $true)]$Object,
+        [Parameter(Mandatory = $true)][string[]]$Path
+    )
+
+    $current = $Object
+    foreach ($segment in $Path) {
+        if ($null -eq $current -or $current -is [string]) { return $null }
+        $property = $current.PSObject.Properties | Where-Object { $_.Name -ceq $segment }
+        if (@($property).Count -ne 1) { return $null }
+        $current = $property[0].Value
+    }
+    return $current
+}
+
+function Get-Issue44FirstNestedValue {
+    param(
+        [Parameter(Mandatory = $true)]$Object,
+        [Parameter(Mandatory = $true)][string[][]]$Paths
+    )
+
+    foreach ($path in $Paths) {
+        $value = Get-Issue44NestedPropertyValue -Object $Object -Path $path
+        if ($null -ne $value -and -not [string]::IsNullOrWhiteSpace([string]$value)) {
+            return $value
+        }
+    }
+    return $null
+}
+
+function Assert-Issue44NonPlaceholder {
+    param(
+        [AllowNull()]$Value,
+        [Parameter(Mandatory = $true)][string]$Context
+    )
+
+    $text = [string]$Value
+    if ([string]::IsNullOrWhiteSpace($text) -or $text -match '(?i)^(PENDING|NOT[_ -]?OBSERVED|REPLACE[_ -]?WITH|TODO|UNKNOWN)$') {
+        throw "$Context is missing or still a placeholder."
+    }
+    return $text
+}
+
+function Assert-Issue44AcceptedBetaReport {
+    param(
+        [Parameter(Mandatory = $true)]$Report,
+        [Parameter(Mandatory = $true)][string]$ReportStatus,
+        [Parameter(Mandatory = $true)][string]$ExpectedSourceCommit,
+        [Parameter(Mandatory = $true)][string]$ExpectedSourceTree,
+        [Parameter(Mandatory = $true)][string]$ExpectedPackageVersion,
+        [Parameter(Mandatory = $true)][string]$ExpectedArchiveSha256,
+        [Parameter(Mandatory = $true)][string]$ExpectedManifestSha256,
+        [Parameter(Mandatory = $true)][string]$ExpectedContentSha256
+    )
+
+    if ($ReportStatus -cne 'ACCEPTED') {
+        throw "Live accepted-Beta status binding must be exactly 'ACCEPTED', not '$ReportStatus'."
+    }
+    $actualStatus = Get-Issue44FirstNestedValue -Object $Report -Paths @(
+        @('status'), @('decision'))
+    if ([string]$actualStatus -cne 'ACCEPTED') {
+        throw "Accepted-Beta report status must be exactly 'ACCEPTED'; observed '$actualStatus'."
+    }
+
+    $actualCommit = Get-Issue44FirstNestedValue -Object $Report -Paths @(
+        @('sourceCommit'), @('sourceCommitBinding'), @('provenance', 'sourceCommit'),
+        @('artifact', 'sourceCommit'), @('artifact', 'sourceCommitBinding'),
+        @('initialArtifact', 'sourceCommit'), @('initialArtifact', 'sourceCommitBinding'),
+        @('artifacts', 'initial', 'sourceCommit'), @('artifacts', 'initial', 'sourceCommitBinding'))
+    $actualTree = Get-Issue44FirstNestedValue -Object $Report -Paths @(
+        @('sourceTree'), @('sourceTreeBinding'), @('provenance', 'sourceTree'),
+        @('artifact', 'sourceTree'), @('initialArtifact', 'sourceTree'),
+        @('artifacts', 'initial', 'sourceTree'), @('git', 'sourceTree'))
+    if ([string]$actualCommit -cne $ExpectedSourceCommit) {
+        throw "Accepted-Beta report sourceCommit mismatch: expected '$ExpectedSourceCommit', observed '$actualCommit'."
+    }
+    if ([string]$actualTree -cne $ExpectedSourceTree) {
+        throw "Accepted-Beta report sourceTree mismatch: expected '$ExpectedSourceTree', observed '$actualTree'."
+    }
+
+    $actualPackageVersion = Get-Issue44FirstNestedValue -Object $Report -Paths @(
+        @('packageVersion'), @('artifact', 'packageVersion'), @('initialArtifact', 'packageVersion'),
+        @('artifacts', 'initial', 'packageVersion'))
+    $actualArchiveSha256 = Get-Issue44FirstNestedValue -Object $Report -Paths @(
+        @('archiveSha256'), @('artifact', 'archiveSha256'), @('initialArtifact', 'archiveSha256'),
+        @('artifacts', 'initial', 'archiveSha256'))
+    $actualManifestSha256 = Get-Issue44FirstNestedValue -Object $Report -Paths @(
+        @('manifestSha256'), @('artifact', 'manifestSha256'), @('initialArtifact', 'manifestSha256'),
+        @('artifacts', 'initial', 'manifestSha256'))
+    $actualContentSha256 = Get-Issue44FirstNestedValue -Object $Report -Paths @(
+        @('contentSha256'), @('artifact', 'contentSha256'), @('initialArtifact', 'contentSha256'),
+        @('artifacts', 'initial', 'contentSha256'))
+    if ([string]$actualPackageVersion -cne $ExpectedPackageVersion -or
+        [string]$actualArchiveSha256 -cne $ExpectedArchiveSha256.ToUpperInvariant() -or
+        [string]$actualManifestSha256 -cne $ExpectedManifestSha256.ToUpperInvariant() -or
+        [string]$actualContentSha256 -cne $ExpectedContentSha256.ToUpperInvariant()) {
+        throw 'Accepted-Beta packageVersion/archiveSha256/manifestSha256/contentSha256 do not match the accepted initial artifact.'
+    }
+
+    $human = Get-Issue44FirstNestedValue -Object $Report -Paths @(
+        @('humanAcceptance'), @('humanApproval'), @('approval'), @('human'))
+    if ($null -eq $human -or $human -is [string]) {
+        throw 'Accepted-Beta report is missing an object-shaped human acceptance record.'
+    }
+    $humanDecision = Get-Issue44FirstNestedValue -Object $human -Paths @(@('status'), @('decision'))
+    if ([string]$humanDecision -cne 'ACCEPTED') {
+        throw "Accepted-Beta human acceptance must be ACCEPTED; observed '$humanDecision'."
+    }
+    [void](Assert-Issue44NonPlaceholder -Value (Get-Issue44FirstNestedValue -Object $human -Paths @(@('signer'), @('name'), @('approver'))) -Context 'Accepted-Beta human signer')
+    [void](Assert-Issue44NonPlaceholder -Value (Get-Issue44FirstNestedValue -Object $human -Paths @(@('role'))) -Context 'Accepted-Beta human role')
+    $signedAt = Assert-Issue44NonPlaceholder -Value (Get-Issue44FirstNestedValue -Object $human -Paths @(@('signedAtUtc'), @('acceptedAtUtc'), @('date'))) -Context 'Accepted-Beta human date'
+    try { [void][DateTimeOffset]::Parse($signedAt, [Globalization.CultureInfo]::InvariantCulture) } catch { throw 'Accepted-Beta human date is not a valid timestamp.' }
+    [void](Assert-Issue44NonPlaceholder -Value (Get-Issue44FirstNestedValue -Object $human -Paths @(@('signature'))) -Context 'Accepted-Beta human signature')
+}
+
+function Get-Issue44ProcessIdentity {
+    param([Parameter(Mandatory = $true)][Diagnostics.Process]$Process)
+
+    try {
+        $startUtc = $Process.StartTime.ToUniversalTime()
+        return [pscustomobject][ordered]@{
+            Id = [int]$Process.Id
+            StartUtcTicks = [int64]$startUtc.Ticks
+            StartUtc = $startUtc.ToString('o', [Globalization.CultureInfo]::InvariantCulture)
+            Path = [string]$Process.Path
+        }
+    } catch {
+        throw "Cannot establish process identity for PID $($Process.Id): $($_.Exception.Message)"
+    }
+}
+
+function Assert-Issue44ProcessIdentity {
+    param(
+        [Parameter(Mandatory = $true)]$Identity,
+        [Parameter(Mandatory = $true)][Diagnostics.Process]$Process,
+        [Parameter(Mandatory = $true)][string]$Context
+    )
+
+    $current = Get-Issue44ProcessIdentity -Process $Process
+    if ([int]$current.Id -ne [int]$Identity.Id -or [int64]$current.StartUtcTicks -ne [int64]$Identity.StartUtcTicks) {
+        throw "$Context process identity changed for PID $($Identity.Id); refusing to touch a possible PID reuse."
+    }
+    if (-not [string]::IsNullOrWhiteSpace([string]$Identity.Path) -and
+        -not [string]::IsNullOrWhiteSpace([string]$current.Path) -and
+        [string]$current.Path -cne [string]$Identity.Path) {
+        throw "$Context process path changed for PID $($Identity.Id); refusing to touch a possible PID reuse."
+    }
+}
+
+function Get-Issue44StatePipeName {
+    $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+    try {
+        if ($null -eq $identity.User -or [string]::IsNullOrWhiteSpace($identity.User.Value)) {
+            throw 'Current Windows user SID is unavailable for Core readiness probe.'
+        }
+        $text = "HerdrOps.StateIpc.v2|$($identity.User.Value)"
+        $sha = [Security.Cryptography.SHA256]::Create()
+        try {
+            $hash = ([BitConverter]::ToString($sha.ComputeHash((New-Object System.Text.UTF8Encoding($false)).GetBytes($text)))).Replace('-', '').ToLowerInvariant()
+        } finally { $sha.Dispose() }
+        return "herdrops-state-v2-$($hash.Substring(0, 24))"
+    } finally { $identity.Dispose() }
+}
+
+function Write-Issue44PipeFrame {
+    param([Parameter(Mandatory = $true)][IO.Stream]$Stream, [Parameter(Mandatory = $true)]$Object)
+
+    $json = $Object | ConvertTo-Json -Depth 30 -Compress
+    $bytes = (New-Object System.Text.UTF8Encoding($false)).GetBytes($json)
+    if ($bytes.Length -le 0 -or $bytes.Length -gt (4 * 1024 * 1024)) { throw 'Core readiness frame is outside the bounded size.' }
+    $writer = New-Object IO.BinaryWriter($Stream)
+    $writer.Write([int]$bytes.Length)
+    $writer.Write($bytes)
+    $writer.Flush()
+}
+
+function Read-Issue44PipeFrame {
+    param([Parameter(Mandatory = $true)][IO.Stream]$Stream)
+
+    $reader = New-Object IO.BinaryReader($Stream)
+    $length = $reader.ReadInt32()
+    if ($length -le 0 -or $length -gt (4 * 1024 * 1024)) { throw 'Core readiness frame length is outside the bounded size.' }
+    $bytes = New-Object byte[] $length
+    $offset = 0
+    while ($offset -lt $length) {
+        $read = $reader.Read($bytes, $offset, $length - $offset)
+        if ($read -le 0) { throw 'Core readiness pipe ended before a complete frame was received.' }
+        $offset += $read
+    }
+    $json = (New-Object System.Text.UTF8Encoding($false, $true)).GetString($bytes)
+    return ConvertFrom-StrictPackageJson -Json $json -Description 'Issue #44 Core readiness frame'
+}
+
+function Wait-Issue44CoreSemanticReadiness {
+    param(
+        [Parameter(Mandatory = $true)][Diagnostics.Process]$CoreProcess,
+        [Parameter(Mandatory = $true)][int]$TimeoutMilliseconds
+    )
+
+    $deadline = [DateTime]::UtcNow.AddMilliseconds($TimeoutMilliseconds)
+    $pipeName = Get-Issue44StatePipeName
+    $lastRetryMessage = 'pipe not yet available'
+    while ([DateTime]::UtcNow -lt $deadline) {
+        if ($CoreProcess.HasExited) { throw "Core exited before semantic readiness: $($CoreProcess.ExitCode)." }
+        $pipe = $null
+        try {
+            $pipe = New-Object System.IO.Pipes.NamedPipeClientStream('.', $pipeName, [IO.Pipes.PipeDirection]::InOut, [IO.Pipes.PipeOptions]::None)
+            $remaining = [int][Math]::Max(1, [Math]::Min(500, ($deadline - [DateTime]::UtcNow).TotalMilliseconds))
+            $pipe.Connect($remaining)
+            $instanceId = [Guid]::NewGuid().ToString()
+            $now = [DateTime]::UtcNow.ToString('o', [Globalization.CultureInfo]::InvariantCulture)
+            Write-Issue44PipeFrame -Stream $pipe -Object ([ordered]@{
+                    protocolVersion = 2
+                    messageType = 'hello'
+                    sequence = 0
+                    sentUtc = $now
+                    source = 'HerdrOps.App'
+                    correlationId = $instanceId
+                    payload = [ordered]@{ clientRole = 'app'; clientInstanceId = $instanceId }
+                })
+            $accepted = Read-Issue44PipeFrame -Stream $pipe
+            Assert-AcceptanceExactProperties -Object $accepted -Names @('protocolVersion', 'messageType', 'sequence', 'sentUtc', 'source', 'correlationId', 'payload') -Context 'Core readiness hello-accepted envelope'
+            if ([int]$accepted.protocolVersion -ne 2 -or
+                [string]$accepted.messageType -cne 'hello-accepted' -or
+                [string]$accepted.source -cne 'HerdrOps.Core' -or
+                [string]$accepted.correlationId -cne $instanceId) {
+                throw 'Core readiness handshake response was not hello-accepted from HerdrOps.Core.'
+            }
+            Assert-AcceptanceExactProperties -Object $accepted.payload -Names @('serverInstanceId', 'authorizationScope') -Context 'Core readiness hello-accepted payload'
+            if ([string]$accepted.payload.authorizationScope -cne 'current-user' -or [string]::IsNullOrWhiteSpace([string]$accepted.payload.serverInstanceId)) {
+                throw 'Core readiness handshake did not prove current-user authorization.'
+            }
+            $snapshot = Read-Issue44PipeFrame -Stream $pipe
+            Assert-AcceptanceExactProperties -Object $snapshot -Names @('protocolVersion', 'messageType', 'sequence', 'sentUtc', 'source', 'correlationId', 'payload') -Context 'Core readiness snapshot envelope'
+            if ([int]$snapshot.protocolVersion -ne 2 -or
+                [string]$snapshot.messageType -cne 'state-snapshot' -or
+                [string]$snapshot.source -cne 'HerdrOps.Core' -or
+                [string]$snapshot.correlationId -cne $instanceId -or
+                [int64]$snapshot.sequence -ne [int64]$accepted.sequence) {
+                throw 'Core readiness did not return a state-snapshot from HerdrOps.Core.'
+            }
+            Assert-AcceptanceExactProperties -Object $snapshot.payload -Names @('state', 'stateSha256', 'runtimeHealth') -Context 'Core readiness snapshot payload'
+            Assert-AcceptanceSha256 -Value ([string]$snapshot.payload.stateSha256) -Context 'Core readiness stateSha256'
+            Assert-AcceptanceExactProperties -Object $snapshot.payload.runtimeHealth -Names @('status', 'lastTransitionUtc', 'lastAcceptedStateUtc', 'bootstrapCount', 'eventCount', 'disconnectCount', 'reconciliationCount') -Context 'Core readiness runtimeHealth'
+            if ([string]$snapshot.payload.runtimeHealth.status -notin @('Starting', 'Connected', 'Reconnecting')) {
+                throw "Core readiness returned an unknown runtime health status '$($snapshot.payload.runtimeHealth.status)'."
+            }
+            if ($CoreProcess.HasExited) {
+                throw 'Core exited immediately after semantic readiness was observed.'
+            }
+            return [pscustomobject][ordered]@{
+                Ready = $true
+                PipeName = $pipeName
+                MessageType = [string]$snapshot.messageType
+                RuntimeHealthStatus = [string]$snapshot.payload.runtimeHealth.status
+                StateSha256 = [string]$snapshot.payload.stateSha256
+                Details = 'Core current-user state pipe accepted an App hello and returned a strict state snapshot with runtime-health payload.'
+            }
+        } catch [TimeoutException] {
+            $lastRetryMessage = $_.Exception.Message
+        } catch [IO.IOException] {
+            $lastRetryMessage = $_.Exception.Message
+        } finally {
+            if ($null -ne $pipe) { $pipe.Dispose() }
+        }
+        Start-Sleep -Milliseconds 100
+    }
+    throw "Core semantic readiness timed out after $TimeoutMilliseconds milliseconds: $lastRetryMessage"
+}
+
 function Stage-AcceptedArchiveAtomically {
     param(
         [Parameter(Mandatory = $true)][string]$SourcePath,
@@ -279,7 +623,8 @@ function Stage-AcceptedArchiveAtomically {
         [long]$ExpectedBytes = 0,
         [string]$ExpectedSha256,
         [string]$ExpectedManifestSha256,
-        [string]$ExpectedContentSha256
+        [string]$ExpectedContentSha256,
+        [string]$ExpectedPackageVersion
     )
 
     $sourceFull = Get-AcceptanceFullPath -Path $SourcePath
@@ -315,7 +660,8 @@ function Stage-AcceptedArchiveAtomically {
         throw "Staged $ArtifactName archive failed byte integrity verification."
     }
 
-    # Extract manifest, validate all zip entries, and compute canonical contentSha256
+    # Extract the canonical manifest contract.  The production package schema
+    # names the inventory `files`; `contents` is deliberately rejected.
     $zip = [System.IO.Compression.ZipFile]::OpenRead($stagedPath)
     $manifestBytes = $null
     $manifestSha256 = ''
@@ -325,13 +671,15 @@ function Stage-AcceptedArchiveAtomically {
     $stagedManifestPath = Join-Path $StagingDirectory "$ArtifactName-package-manifest.json"
 
     try {
-        $manifestEntry = $zip.GetEntry('package/package-manifest.json')
-        if ($null -eq $manifestEntry) {
-            $manifestEntry = $zip.GetEntry('package-manifest.json')
-        }
-        if ($null -eq $manifestEntry) {
+        $manifestEntriesInArchive = @($zip.Entries | Where-Object {
+                [string]$_.FullName -ceq 'package/package-manifest.json' -or
+                [string]$_.FullName -ceq 'package-manifest.json'
+            })
+        if ($manifestEntriesInArchive.Count -ne 1) {
             throw "$ArtifactName archive is missing package-manifest.json."
         }
+        $manifestEntry = $manifestEntriesInArchive[0]
+        $archivePrefix = if ([string]$manifestEntry.FullName -ceq 'package/package-manifest.json') { 'package/' } else { '' }
         $stream = $manifestEntry.Open()
         $ms = New-Object System.IO.MemoryStream
         try {
@@ -353,21 +701,91 @@ function Stage-AcceptedArchiveAtomically {
 
         $manifestRaw = (New-Object System.Text.UTF8Encoding($false, $true)).GetString($manifestBytes)
         $manifestJson = ConvertFrom-StrictPackageJson -Json $manifestRaw -Description "$ArtifactName package manifest"
+        Assert-ExactJsonPropertyOrder -Object $manifestJson -ExpectedNames @(
+            'schemaVersion', 'issue', 'productId', 'packageVersion', 'targetFramework',
+            'runtimeIdentifier', 'deploymentModel', 'userDataPolicy', 'contentHashAlgorithm',
+            'fileCount', 'totalBytes', 'contentSha256', 'files', 'evidenceClass') -Description "$ArtifactName package manifest"
+        foreach ($numeric in @(
+                @{ Name = 'schemaVersion'; Value = $manifestJson.schemaVersion },
+                @{ Name = 'issue'; Value = $manifestJson.issue },
+                @{ Name = 'fileCount'; Value = $manifestJson.fileCount },
+                @{ Name = 'totalBytes'; Value = $manifestJson.totalBytes })) {
+            Assert-JsonIntegerValue -Value $numeric.Value -Name "$ArtifactName manifest $($numeric.Name)"
+        }
+        foreach ($text in @(
+                @{ Name = 'productId'; Value = $manifestJson.productId },
+                @{ Name = 'packageVersion'; Value = $manifestJson.packageVersion },
+                @{ Name = 'targetFramework'; Value = $manifestJson.targetFramework },
+                @{ Name = 'runtimeIdentifier'; Value = $manifestJson.runtimeIdentifier },
+                @{ Name = 'deploymentModel'; Value = $manifestJson.deploymentModel },
+                @{ Name = 'userDataPolicy'; Value = $manifestJson.userDataPolicy },
+                @{ Name = 'contentHashAlgorithm'; Value = $manifestJson.contentHashAlgorithm },
+                @{ Name = 'contentSha256'; Value = $manifestJson.contentSha256 },
+                @{ Name = 'evidenceClass'; Value = $manifestJson.evidenceClass })) {
+            Assert-JsonStringValue -Value $text.Value -Name "$ArtifactName manifest $($text.Name)"
+        }
+        if ([int]$manifestJson.schemaVersion -ne 1 -or
+            [string]$manifestJson.productId -cne 'HerdrOps' -or
+            [string]$manifestJson.targetFramework -cne 'net10.0-windows' -or
+            [string]$manifestJson.runtimeIdentifier -cne 'win-x64' -or
+            [string]$manifestJson.deploymentModel -cne 'per-user-directory' -or
+            [string]$manifestJson.userDataPolicy -cne 'retain-on-uninstall' -or
+            [string]$manifestJson.contentHashAlgorithm -cne 'SHA-256' -or
+            [string]$manifestJson.evidenceClass -cne 'Static') {
+            throw "$ArtifactName package manifest identity is invalid."
+        }
+        if (-not [string]::IsNullOrWhiteSpace($ExpectedPackageVersion) -and
+            [string]$manifestJson.packageVersion -cne $ExpectedPackageVersion) {
+            throw "$ArtifactName package version mismatch: expected '$ExpectedPackageVersion', observed '$($manifestJson.packageVersion)'."
+        }
+        Assert-AcceptanceSha256 -Value ([string]$manifestJson.contentSha256) -Context "$ArtifactName manifest contentSha256"
         $contentSha256 = [string]$manifestJson.contentSha256
 
         # Write manifest as a real staging file
         [IO.File]::WriteAllBytes($stagedManifestPath, $manifestBytes)
 
-        # Enumerate and hash all zip entries to validate against manifest contents
+        # Validate the `files` inventory, its totals, and every corresponding
+        # ZIP entry.  The manifest itself is an archive entry but is not part
+        # of the contentSha256 inventory.
+        $manifestFiles = @($manifestJson.files)
+        if ($null -eq $manifestJson.files -or $manifestFiles.Count -ne [int]$manifestJson.fileCount) {
+            throw "$ArtifactName manifest fileCount does not match its files array."
+        }
+        $manifestTotalBytes = [int64]0
+        $zipExpectedEntries = New-Object System.Collections.ArrayList
+        $seenManifestPaths = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
         $zipEntryHashes = New-Object System.Collections.ArrayList
-        if ($null -ne $manifestJson.contents) {
-            foreach ($item in @($manifestJson.contents)) {
+        foreach ($item in $manifestFiles) {
+                Assert-ExactJsonPropertyOrder -Object $item -ExpectedNames @('path', 'length', 'sha256') -Description "$ArtifactName manifest files entry"
                 $itemRelPath = [string]$item.path
                 $itemLength = [int64]$item.length
                 $itemSha256 = [string]$item.sha256
-
-                $zipEntryName = if ($manifestEntry.FullName.StartsWith('package/')) { "package/$itemRelPath" } else { $itemRelPath }
-                $entryInZip = $zip.GetEntry($zipEntryName)
+                Assert-JsonStringValue -Value $item.path -Name "$ArtifactName manifest files.path"
+                Assert-JsonIntegerValue -Value $item.length -Name "$ArtifactName manifest files.length"
+                Assert-JsonStringValue -Value $item.sha256 -Name "$ArtifactName manifest files.sha256"
+                Assert-AcceptanceSha256 -Value $itemSha256.ToUpperInvariant() -Context "$ArtifactName manifest files '$itemRelPath' sha256"
+                if ($itemLength -lt 0 -or
+                    [string]::IsNullOrWhiteSpace($itemRelPath) -or
+                    $itemRelPath -ceq 'package-manifest.json' -or
+                    [IO.Path]::IsPathRooted($itemRelPath) -or
+                    $itemRelPath.StartsWith('/', [StringComparison]::Ordinal) -or
+                    $itemRelPath.Contains('\') -or
+                    $itemRelPath.Contains('//') -or
+                    $itemRelPath.EndsWith('/', [StringComparison]::Ordinal) -or
+                    $itemRelPath -match '(^|/)\.\.?(/|$)' -or
+                    $itemRelPath -match '[\x00-\x1F<>:"|?*]') {
+                    throw "$ArtifactName manifest files path is unsafe: '$itemRelPath'."
+                }
+                if (-not $seenManifestPaths.Add($itemRelPath)) {
+                    throw "$ArtifactName manifest files contains a duplicate Windows path: '$itemRelPath'."
+                }
+                $manifestTotalBytes += $itemLength
+                $zipEntryName = "$archivePrefix$itemRelPath"
+                $entryMatches = @($zip.Entries | Where-Object { [string]$_.FullName -ceq $zipEntryName })
+                if ($entryMatches.Count -ne 1) {
+                    throw "$ArtifactName archive must contain exactly one entry '$zipEntryName' declared in manifest files."
+                }
+                $entryInZip = $entryMatches[0]
                 if ($null -eq $entryInZip) {
                     throw "$ArtifactName archive is missing entry '$zipEntryName' declared in manifest."
                 }
@@ -385,7 +803,10 @@ function Stage-AcceptedArchiveAtomically {
                     $entryStream.Dispose()
                     $entryMs.Dispose()
                 }
-                $entryHash = ([BitConverter]::ToString(([System.Security.Cryptography.SHA256]::Create()).ComputeHash($entryBytes))).Replace('-', '').ToUpperInvariant()
+                $entrySha = [System.Security.Cryptography.SHA256]::Create()
+                try {
+                    $entryHash = ([BitConverter]::ToString($entrySha.ComputeHash($entryBytes))).Replace('-', '').ToUpperInvariant()
+                } finally { $entrySha.Dispose() }
                 if ($entryHash -cne $itemSha256.ToUpperInvariant()) {
                     throw "$ArtifactName archive entry '$zipEntryName' hash mismatch: expected '$itemSha256', observed '$entryHash'."
                 }
@@ -393,13 +814,76 @@ function Stage-AcceptedArchiveAtomically {
                 [void]$contentEntries.Add([pscustomobject][ordered]@{
                     Path = $itemRelPath
                     Length = $itemLength
-                    Sha256 = $itemSha256
+                    Sha256 = $itemSha256.ToUpperInvariant()
                 })
                 [void]$zipEntryHashes.Add([pscustomobject][ordered]@{
                     Path = $itemRelPath
                     Length = $itemLength
-                    Sha256 = $itemSha256
+                    Sha256 = $itemSha256.ToUpperInvariant()
                 })
+                [void]$zipExpectedEntries.Add([pscustomobject][ordered]@{
+                    Path = $zipEntryName
+                    Length = $itemLength
+                    Sha256 = $itemSha256.ToUpperInvariant()
+                })
+        }
+        if ([int64]$manifestJson.totalBytes -ne $manifestTotalBytes) {
+            throw "$ArtifactName manifest totalBytes does not match files entries."
+        }
+
+        $manifestArchiveHash = $sha256 = [System.Security.Cryptography.SHA256]::Create()
+        try {
+            $manifestArchiveHashValue = ([BitConverter]::ToString($manifestArchiveHash.ComputeHash($manifestBytes))).Replace('-', '').ToUpperInvariant()
+        } finally { $manifestArchiveHash.Dispose() }
+        [void]$zipExpectedEntries.Add([pscustomobject][ordered]@{
+            Path = [string]$manifestEntry.FullName
+            Length = [int64]$manifestBytes.Length
+            Sha256 = $manifestArchiveHashValue
+        })
+
+        # Enumerate every archive entry, including the manifest, and reject
+        # unlisted, duplicate, directory, traversal, device-like, or unsafe names.
+        $zipActualEntries = New-Object System.Collections.ArrayList
+        $seenZipNames = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+        foreach ($entry in @($zip.Entries)) {
+            $entryName = [string]$entry.FullName
+            if ([string]::IsNullOrWhiteSpace($entryName) -or
+                $entryName.EndsWith('/', [StringComparison]::Ordinal) -or
+                $entryName.Contains('\') -or
+                $entryName.StartsWith('/', [StringComparison]::Ordinal) -or
+                $entryName.Contains('//') -or
+                $entryName -match '(^|/)\.\.?(/|$)' -or
+                $entryName -match '[\x00-\x1F<>:"|?*]' -or
+                [IO.Path]::IsPathRooted($entryName)) {
+                throw "$ArtifactName archive contains an unsafe or non-file entry: '$entryName'."
+            }
+            if (-not $seenZipNames.Add($entryName)) {
+                throw "$ArtifactName archive contains a duplicate Windows path: '$entryName'."
+            }
+            $entryStream = $entry.Open()
+            $entrySha = [System.Security.Cryptography.SHA256]::Create()
+            try {
+                $entryHash = ([BitConverter]::ToString($entrySha.ComputeHash($entryStream))).Replace('-', '').ToUpperInvariant()
+            } finally {
+                $entrySha.Dispose()
+                $entryStream.Dispose()
+            }
+            [void]$zipActualEntries.Add([pscustomobject][ordered]@{
+                Path = $entryName
+                Length = [int64]$entry.Length
+                Sha256 = $entryHash
+            })
+        }
+        $expectedSorted = @(Sort-PackageEntriesOrdinal -Entries @($zipExpectedEntries.ToArray()))
+        $actualSorted = @(Sort-PackageEntriesOrdinal -Entries @($zipActualEntries.ToArray()))
+        if ($actualSorted.Count -ne $expectedSorted.Count) {
+            throw "$ArtifactName archive entry count does not match manifest files plus package-manifest.json."
+        }
+        for ($entryIndex = 0; $entryIndex -lt $expectedSorted.Count; $entryIndex++) {
+            if ([string]$actualSorted[$entryIndex].Path -cne [string]$expectedSorted[$entryIndex].Path -or
+                [int64]$actualSorted[$entryIndex].Length -ne [int64]$expectedSorted[$entryIndex].Length -or
+                [string]$actualSorted[$entryIndex].Sha256 -cne [string]$expectedSorted[$entryIndex].Sha256) {
+                throw "$ArtifactName archive entry mismatch at index ${entryIndex}: expected '$($expectedSorted[$entryIndex].Path)'."
             }
         }
 
@@ -437,63 +921,73 @@ function Assert-OperatorNoReparse {
     Assert-AcceptanceTreeNoReparse -Path $Path -Context 'Operator path'
 }
 
-# 1. Parse JSON binding if provided
+# 1. Parse JSON binding if provided.  Keep the failure inside the reportable
+# lifecycle so malformed preflight input still produces a schema-valid FAIL.
 if (-not [string]::IsNullOrWhiteSpace($BindingPath)) {
-    $bindingFullPath = Get-AcceptanceFullPath -Path $BindingPath
-    if (-not (Test-Path -LiteralPath $bindingFullPath -PathType Leaf)) {
-        throw "Live binding file was not found: $bindingFullPath"
+    try {
+        $bindingFullPath = Get-AcceptanceFullPath -Path $BindingPath
+        if (-not (Test-Path -LiteralPath $bindingFullPath -PathType Leaf)) {
+            throw "Live binding file was not found: $bindingFullPath"
+        }
+        Assert-OperatorNoReparse -Path $bindingFullPath
+        $binding = Read-AcceptanceJsonFile -Path $bindingFullPath -Context 'Issue #44 live binding'
+        Assert-AcceptanceExactProperties -Object $binding -Names @(
+            'schemaVersion', 'issue', 'acceptanceVersion', 'mode', 'machineRole',
+            'machineName', 'machineFingerprint', 'sourceCommit', 'initialArtifact',
+            'upgradeArtifact', 'installRoot', 'userDataRoot', 'reportPath',
+            'retainedDataRelativePath', 'retainedDataSha256', 'retainedDataMode') -Context 'Issue #44 live binding'
+
+        if ([int]$binding.schemaVersion -ne 1 -or [int]$binding.issue -ne 44 -or [string]$binding.acceptanceVersion -cne 'v1.0.0') {
+            throw 'Live binding schema version, issue, or acceptanceVersion is invalid.'
+        }
+        $Mode = [string]$binding.mode
+        $ExpectedMachineName = [string]$binding.machineName
+        $ExpectedMachineFingerprint = [string]$binding.machineFingerprint
+        $ExpectedSourceCommit = [string]$binding.sourceCommit
+        $CandidateSourceCommit = [string]$binding.sourceCommit
+
+        $initialArtifactBinding = $binding.initialArtifact
+        Assert-AcceptanceExactProperties -Object $initialArtifactBinding -Names @(
+            'packageRoot', 'archivePath', 'hashRecordPath', 'productId', 'displayName',
+            'packagingIssue', 'packageVersion', 'targetFramework', 'runtimeIdentifier',
+            'deploymentModel', 'userDataPolicy', 'sourceCommit', 'manifestSha256',
+            'archiveSha256', 'contentSha256') -Context 'Initial artifact binding'
+
+        $InitialArchivePath = [string]$initialArtifactBinding.archivePath
+        $InitialArchiveSha256 = [string]$initialArtifactBinding.archiveSha256
+        $InitialManifestSha256 = [string]$initialArtifactBinding.manifestSha256
+        $InitialContentSha256 = [string]$initialArtifactBinding.contentSha256
+        $InitialPackageVersion = [string]$initialArtifactBinding.packageVersion
+        $InitialSourceCommit = [string]$initialArtifactBinding.sourceCommit
+        $initialBindingPackageRoot = [string]$initialArtifactBinding.packageRoot
+        $initialBindingHashRecordPath = [string]$initialArtifactBinding.hashRecordPath
+
+        $upgradeArtifactBinding = $binding.upgradeArtifact
+        Assert-AcceptanceExactProperties -Object $upgradeArtifactBinding -Names @(
+            'packageRoot', 'archivePath', 'hashRecordPath', 'productId', 'displayName',
+            'packagingIssue', 'packageVersion', 'targetFramework', 'runtimeIdentifier',
+            'deploymentModel', 'userDataPolicy', 'sourceCommit', 'manifestSha256',
+            'archiveSha256', 'contentSha256') -Context 'Upgrade artifact binding'
+
+        $CandidateArchivePath = [string]$upgradeArtifactBinding.archivePath
+        $CandidateArchiveSha256 = [string]$upgradeArtifactBinding.archiveSha256
+        $CandidateManifestSha256 = [string]$upgradeArtifactBinding.manifestSha256
+        $CandidateContentSha256 = [string]$upgradeArtifactBinding.contentSha256
+        $CandidatePackageVersion = [string]$upgradeArtifactBinding.packageVersion
+        $CandidateSourceCommit = [string]$upgradeArtifactBinding.sourceCommit
+        $candidateBindingPackageRoot = [string]$upgradeArtifactBinding.packageRoot
+        $candidateBindingHashRecordPath = [string]$upgradeArtifactBinding.hashRecordPath
+
+        $InstallRoot = [string]$binding.installRoot
+        $UserDataRoot = [string]$binding.userDataRoot
+        $ReportDestination = [string]$binding.reportPath
+        $RetainedDataRelativePath = [string]$binding.retainedDataRelativePath
+        $RetainedDataSha256 = [string]$binding.retainedDataSha256
+        $RetainedDataMode = [string]$binding.retainedDataMode
+    } catch {
+        $bindingParseFailure = $_.Exception.Message
+        if ($Mode -notin @('Live', 'Fixture', 'DryRun')) { $Mode = 'Live' }
     }
-    Assert-OperatorNoReparse -Path $bindingFullPath
-    $binding = Read-AcceptanceJsonFile -Path $bindingFullPath -Context 'Issue #44 live binding'
-    Assert-AcceptanceExactProperties -Object $binding -Names @(
-        'schemaVersion', 'issue', 'acceptanceVersion', 'mode', 'machineRole',
-        'machineName', 'machineFingerprint', 'sourceCommit', 'initialArtifact',
-        'upgradeArtifact', 'installRoot', 'userDataRoot', 'reportPath',
-        'retainedDataRelativePath', 'retainedDataSha256', 'retainedDataMode') -Context 'Issue #44 live binding'
-
-    if ([int]$binding.schemaVersion -ne 1 -or [int]$binding.issue -ne 44 -or [string]$binding.acceptanceVersion -cne 'v1.0.0') {
-        throw 'Live binding schema version, issue, or acceptanceVersion is invalid.'
-    }
-    $Mode = [string]$binding.mode
-    $ExpectedMachineName = [string]$binding.machineName
-    $ExpectedMachineFingerprint = [string]$binding.machineFingerprint
-    $ExpectedSourceCommit = [string]$binding.sourceCommit
-    $CandidateSourceCommit = [string]$binding.sourceCommit
-
-    $initialArtifactBinding = $binding.initialArtifact
-    Assert-AcceptanceExactProperties -Object $initialArtifactBinding -Names @(
-        'packageRoot', 'archivePath', 'hashRecordPath', 'productId', 'displayName',
-        'packagingIssue', 'packageVersion', 'targetFramework', 'runtimeIdentifier',
-        'deploymentModel', 'userDataPolicy', 'sourceCommit', 'manifestSha256',
-        'archiveSha256', 'contentSha256') -Context 'Initial artifact binding'
-
-    $InitialArchivePath = [string]$initialArtifactBinding.archivePath
-    $InitialArchiveSha256 = [string]$initialArtifactBinding.archiveSha256
-    $InitialManifestSha256 = [string]$initialArtifactBinding.manifestSha256
-    $InitialContentSha256 = [string]$initialArtifactBinding.contentSha256
-    $InitialPackageVersion = [string]$initialArtifactBinding.packageVersion
-    $InitialSourceCommit = [string]$initialArtifactBinding.sourceCommit
-
-    $upgradeArtifactBinding = $binding.upgradeArtifact
-    Assert-AcceptanceExactProperties -Object $upgradeArtifactBinding -Names @(
-        'packageRoot', 'archivePath', 'hashRecordPath', 'productId', 'displayName',
-        'packagingIssue', 'packageVersion', 'targetFramework', 'runtimeIdentifier',
-        'deploymentModel', 'userDataPolicy', 'sourceCommit', 'manifestSha256',
-        'archiveSha256', 'contentSha256') -Context 'Upgrade artifact binding'
-
-    $CandidateArchivePath = [string]$upgradeArtifactBinding.archivePath
-    $CandidateArchiveSha256 = [string]$upgradeArtifactBinding.archiveSha256
-    $CandidateManifestSha256 = [string]$upgradeArtifactBinding.manifestSha256
-    $CandidateContentSha256 = [string]$upgradeArtifactBinding.contentSha256
-    $CandidatePackageVersion = [string]$upgradeArtifactBinding.packageVersion
-    $CandidateSourceCommit = [string]$upgradeArtifactBinding.sourceCommit
-
-    $InstallRoot = [string]$binding.installRoot
-    $UserDataRoot = [string]$binding.userDataRoot
-    $ReportDestination = [string]$binding.reportPath
-    $RetainedDataRelativePath = [string]$binding.retainedDataRelativePath
-    $RetainedDataSha256 = [string]$binding.retainedDataSha256
-    $RetainedDataMode = [string]$binding.retainedDataMode
 }
 
 $repositoryRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..\..')).Path
@@ -572,6 +1066,15 @@ $upgradeArtifactReport = $null
 try {
     Add-OperatorTranscript -Phase 'Preflight' -Action 'initialize-operator' -Status 'PASS' -Effect 'None' -Details "Issue #44 live operator initialized in mode '$Mode'." -PathBinding 'none'
 
+    if (-not [string]::IsNullOrWhiteSpace($bindingParseFailure)) {
+        Add-OperatorPreflightCheck -Name 'live-binding-parse' -Status 'FAIL' -Details $bindingParseFailure
+        throw "Issue #44 binding preflight failed: $bindingParseFailure"
+    }
+    if ($Mode -eq 'Live' -and -not $bindingWasProvided) {
+        Add-OperatorPreflightCheck -Name 'live-binding-required' -Status 'FAIL' -Details 'Live mode requires an exact JSON binding with expanded package roots and hash-record sidecars.'
+        throw 'Live mode requires -BindingPath; direct unbound Live invocation is not accepted.'
+    }
+
     # Preflight Check 1: OS Platform
     if ([Environment]::OSVersion.Platform -ne [PlatformID]::Win32NT) {
         throw 'Issue #44 acceptance operator requires a Windows NT host.'
@@ -586,7 +1089,8 @@ try {
     Add-OperatorPreflightCheck -Name 'process-elevation-policy' -Status 'PASS' -Details "Elevation check passed (Elevated=$isElevated)."
 
     # Preflight Check 3: Designated Clean Machine Identity & Fingerprint
-    $machineName = [string]$env:COMPUTERNAME
+    $machineName = [Environment]::MachineName
+    if ([string]::IsNullOrWhiteSpace($machineName)) { $machineName = 'NOT_OBSERVED' }
     $machineFingerprint = Get-AcceptanceMachineFingerprint
     if ($Mode -eq 'Live') {
         if ([string]::IsNullOrWhiteSpace($ExpectedMachineName)) {
@@ -713,6 +1217,25 @@ try {
                 throw "Accepted-Beta provenance report sourceCommit mismatch: expected '$BetaReportSourceCommit', observed '$betaCommit'."
             }
         }
+        if ($Mode -eq 'Live') {
+            Assert-AcceptanceSha256 -Value $BetaReportSha256.ToUpperInvariant() -Context 'Accepted-Beta report SHA-256'
+            if ($BetaReportSourceCommit -notmatch '^[0-9a-f]{40}$' -or
+                $BetaReportSourceTree -notmatch '^[0-9a-f]{40}$') {
+                throw 'Accepted-Beta sourceCommit and sourceTree must be exact lowercase 40-character commit/tree values.'
+            }
+            if ($InitialSourceCommit -notmatch '^[0-9a-f]{40}$' -or $BetaReportSourceCommit -cne $InitialSourceCommit) {
+                throw 'Accepted-Beta sourceCommit must equal the accepted initial artifact sourceCommit.'
+            }
+            Assert-Issue44AcceptedBetaReport `
+                -Report $betaReportJson `
+                -ReportStatus $BetaReportStatus `
+                -ExpectedSourceCommit $BetaReportSourceCommit `
+                -ExpectedSourceTree $BetaReportSourceTree `
+                -ExpectedPackageVersion $InitialPackageVersion `
+                -ExpectedArchiveSha256 $InitialArchiveSha256 `
+                -ExpectedManifestSha256 $InitialManifestSha256 `
+                -ExpectedContentSha256 $InitialContentSha256
+        }
         Add-OperatorPreflightCheck -Name 'accepted-beta-provenance' -Status 'PASS' -Details "Beta report verified at '$betaReportFull'."
     } else {
         Add-OperatorPreflightCheck -Name 'accepted-beta-provenance' -Status 'NOT_APPLICABLE' -Details 'No external Beta report path specified.'
@@ -824,6 +1347,50 @@ try {
     New-Item -ItemType Directory -Path $script:OwnedStagingDirectory -Force | Out-Null
     Assert-OperatorNoReparse -Path $script:OwnedStagingDirectory
 
+    if ($bindingWasProvided) {
+        $initialExpectedArtifact = [ordered]@{
+            packageRoot = $initialBindingPackageRoot
+            archivePath = $InitialArchivePath
+            hashRecordPath = $initialBindingHashRecordPath
+            productId = [string]$initialArtifactBinding.productId
+            displayName = [string]$initialArtifactBinding.displayName
+            packagingIssue = [int]$initialArtifactBinding.packagingIssue
+            packageVersion = $InitialPackageVersion
+            targetFramework = [string]$initialArtifactBinding.targetFramework
+            runtimeIdentifier = [string]$initialArtifactBinding.runtimeIdentifier
+            deploymentModel = [string]$initialArtifactBinding.deploymentModel
+            userDataPolicy = [string]$initialArtifactBinding.userDataPolicy
+            sourceCommit = $InitialSourceCommit
+            manifestSha256 = $InitialManifestSha256
+            archiveSha256 = $InitialArchiveSha256
+            contentSha256 = $InitialContentSha256
+        }
+        $initialAcceptedArtifact = Assert-AcceptanceArtifact -Expected $initialExpectedArtifact -Name 'Initial accepted artifact'
+
+        $candidateExpectedArtifact = [ordered]@{
+            packageRoot = $candidateBindingPackageRoot
+            archivePath = $CandidateArchivePath
+            hashRecordPath = $candidateBindingHashRecordPath
+            productId = [string]$upgradeArtifactBinding.productId
+            displayName = [string]$upgradeArtifactBinding.displayName
+            packagingIssue = [int]$upgradeArtifactBinding.packagingIssue
+            packageVersion = $CandidatePackageVersion
+            targetFramework = [string]$upgradeArtifactBinding.targetFramework
+            runtimeIdentifier = [string]$upgradeArtifactBinding.runtimeIdentifier
+            deploymentModel = [string]$upgradeArtifactBinding.deploymentModel
+            userDataPolicy = [string]$upgradeArtifactBinding.userDataPolicy
+            sourceCommit = $CandidateSourceCommit
+            manifestSha256 = $CandidateManifestSha256
+            archiveSha256 = $CandidateArchiveSha256
+            contentSha256 = $CandidateContentSha256
+        }
+        $candidateAcceptedArtifact = Assert-AcceptanceArtifact -Expected $candidateExpectedArtifact -Name 'Candidate accepted artifact'
+        if ($Mode -eq 'Live' -and [string]$candidateAcceptedArtifact.SourceCommit -cne $ExpectedSourceCommit) {
+            throw 'Candidate accepted artifact sourceCommit is not the exact top-level accepted source commit.'
+        }
+        Add-OperatorPreflightCheck -Name 'expanded-package-and-sidecar-binding' -Status 'PASS' -Details 'Expanded package roots, package manifests, archives, and hash-record sidecars match their exact binding values.'
+    }
+
     $stagedInitial = Stage-AcceptedArchiveAtomically `
         -SourcePath $InitialArchivePath `
         -StagingDirectory $script:OwnedStagingDirectory `
@@ -831,7 +1398,8 @@ try {
         -ExpectedBytes $InitialArchiveBytes `
         -ExpectedSha256 $InitialArchiveSha256 `
         -ExpectedManifestSha256 $InitialManifestSha256 `
-        -ExpectedContentSha256 $InitialContentSha256
+        -ExpectedContentSha256 $InitialContentSha256 `
+        -ExpectedPackageVersion $InitialPackageVersion
 
     $stagedCandidate = Stage-AcceptedArchiveAtomically `
         -SourcePath $CandidateArchivePath `
@@ -840,10 +1408,25 @@ try {
         -ExpectedBytes $CandidateArchiveBytes `
         -ExpectedSha256 $CandidateArchiveSha256 `
         -ExpectedManifestSha256 $CandidateManifestSha256 `
-        -ExpectedContentSha256 $CandidateContentSha256
+        -ExpectedContentSha256 $CandidateContentSha256 `
+        -ExpectedPackageVersion $CandidatePackageVersion
+
+    $initialDurableManifest = Resolve-Issue44ManifestEvidence `
+        -ArchivePath $InitialArchivePath `
+        -ExpectedManifestPath $(if ($null -ne $initialAcceptedArtifact) { $initialAcceptedArtifact.ManifestPath } else { '' }) `
+        -ExpectedBytes $stagedInitial.ManifestBytes `
+        -ExpectedSha256 $stagedInitial.ManifestSha256 `
+        -ArtifactName 'Initial'
+    $candidateDurableManifest = Resolve-Issue44ManifestEvidence `
+        -ArchivePath $CandidateArchivePath `
+        -ExpectedManifestPath $(if ($null -ne $candidateAcceptedArtifact) { $candidateAcceptedArtifact.ManifestPath } else { '' }) `
+        -ExpectedBytes $stagedCandidate.ManifestBytes `
+        -ExpectedSha256 $stagedCandidate.ManifestSha256 `
+        -ArtifactName 'Candidate'
 
     Add-OperatorPreflightCheck -Name 'v1-target-version' -Status 'PASS' -Details "Initial version '$InitialPackageVersion' and upgrade target version '$CandidatePackageVersion' validated."
-    Add-OperatorPreflightCheck -Name 'archive-hashes-and-bytes' -Status 'PASS' -Details 'Initial and Candidate archive bytes, manifests, entries, and SHA-256 verified and staged.'
+    Add-OperatorPreflightCheck -Name 'archive-hashes-and-bytes' -Status 'PASS' -Details 'Initial and Candidate archive bytes, files entries, manifest bytes, archive entries, and SHA-256 values verified and staged.'
+    Add-OperatorPreflightCheck -Name 'durable-manifest-evidence' -Status 'PASS' -Details "Initial manifest '$($initialDurableManifest.Path)' and Candidate manifest '$($candidateDurableManifest.Path)' are existing accepted evidence files."
 
     # Construct Artifact Report Records referencing durable accepted inputs
     $initialArchiveDurable = Get-AcceptanceFullPath -Path $InitialArchivePath
@@ -851,19 +1434,19 @@ try {
 
     $initialArtifactReport = [ordered]@{
         name = 'initial'
-        productId = 'HerdrOps'
-        displayName = 'HerdrOps'
-        packagingIssue = 38
+        productId = $(if ($null -ne $initialAcceptedArtifact) { $initialAcceptedArtifact.ProductId } else { 'HerdrOps' })
+        displayName = $(if ($null -ne $initialAcceptedArtifact) { $initialAcceptedArtifact.ProductId } else { 'HerdrOps' })
+        packagingIssue = $(if ($null -ne $initialAcceptedArtifact) { [int]$initialAcceptedArtifact.PackagingIssue } else { 38 })
         packageVersion = $InitialPackageVersion
-        targetFramework = 'net10.0-windows'
-        runtimeIdentifier = 'win-x64'
-        deploymentModel = 'per-user-directory'
-        userDataPolicy = 'retain-on-uninstall'
-        packageRoot = (Split-Path -Path $initialArchiveDurable -Parent)
+        targetFramework = $(if ($null -ne $initialAcceptedArtifact) { $initialAcceptedArtifact.TargetFramework } else { 'net10.0-windows' })
+        runtimeIdentifier = $(if ($null -ne $initialAcceptedArtifact) { $initialAcceptedArtifact.RuntimeIdentifier } else { 'win-x64' })
+        deploymentModel = $(if ($null -ne $initialAcceptedArtifact) { $initialAcceptedArtifact.DeploymentModel } else { 'per-user-directory' })
+        userDataPolicy = $(if ($null -ne $initialAcceptedArtifact) { $initialAcceptedArtifact.UserDataPolicy } else { 'retain-on-uninstall' })
+        packageRoot = $initialDurableManifest.PackageRoot
         archivePath = $initialArchiveDurable
         archiveBytes = [int64]$stagedInitial.Length
         archiveSha256 = $stagedInitial.Sha256
-        manifestPath = (Join-Path (Split-Path -Path $initialArchiveDurable -Parent) 'package-manifest.json')
+        manifestPath = $initialDurableManifest.Path
         manifestBytes = [int64]$stagedInitial.ManifestBytes
         manifestSha256 = $stagedInitial.ManifestSha256
         contentSha256 = $stagedInitial.ContentSha256
@@ -873,19 +1456,19 @@ try {
 
     $upgradeArtifactReport = [ordered]@{
         name = 'upgrade'
-        productId = 'HerdrOps'
-        displayName = 'HerdrOps'
-        packagingIssue = 44
+        productId = $(if ($null -ne $candidateAcceptedArtifact) { $candidateAcceptedArtifact.ProductId } else { 'HerdrOps' })
+        displayName = $(if ($null -ne $candidateAcceptedArtifact) { $candidateAcceptedArtifact.ProductId } else { 'HerdrOps' })
+        packagingIssue = $(if ($null -ne $candidateAcceptedArtifact) { [int]$candidateAcceptedArtifact.PackagingIssue } else { 44 })
         packageVersion = $CandidatePackageVersion
-        targetFramework = 'net10.0-windows'
-        runtimeIdentifier = 'win-x64'
-        deploymentModel = 'per-user-directory'
-        userDataPolicy = 'retain-on-uninstall'
-        packageRoot = (Split-Path -Path $candidateArchiveDurable -Parent)
+        targetFramework = $(if ($null -ne $candidateAcceptedArtifact) { $candidateAcceptedArtifact.TargetFramework } else { 'net10.0-windows' })
+        runtimeIdentifier = $(if ($null -ne $candidateAcceptedArtifact) { $candidateAcceptedArtifact.RuntimeIdentifier } else { 'win-x64' })
+        deploymentModel = $(if ($null -ne $candidateAcceptedArtifact) { $candidateAcceptedArtifact.DeploymentModel } else { 'per-user-directory' })
+        userDataPolicy = $(if ($null -ne $candidateAcceptedArtifact) { $candidateAcceptedArtifact.UserDataPolicy } else { 'retain-on-uninstall' })
+        packageRoot = $candidateDurableManifest.PackageRoot
         archivePath = $candidateArchiveDurable
         archiveBytes = [int64]$stagedCandidate.Length
         archiveSha256 = $stagedCandidate.Sha256
-        manifestPath = (Join-Path (Split-Path -Path $candidateArchiveDurable -Parent) 'package-manifest.json')
+        manifestPath = $candidateDurableManifest.Path
         manifestBytes = [int64]$stagedCandidate.ManifestBytes
         manifestSha256 = $stagedCandidate.ManifestSha256
         contentSha256 = $stagedCandidate.ContentSha256
@@ -1046,9 +1629,12 @@ try {
             $coreData = Get-FileSha256AndBytes -Path $coreExe
             $appData = Get-FileSha256AndBytes -Path $appExe
 
-            $admittedPids = New-Object 'System.Collections.Generic.HashSet[int]'
+            $admittedIdentities = New-Object 'System.Collections.Generic.Dictionary[int,object]'
             $coreProc = $null
             $appProc = $null
+            $coreIdentity = $null
+            $appIdentity = $null
+            $cleanupFailures = New-Object System.Collections.ArrayList
 
             try {
                 # 1. Start Core with exact argument 'serve-herdr-state'
@@ -1062,7 +1648,8 @@ try {
                 if ($null -eq $coreProc) {
                     throw "Failed to start Core process: $coreExe serve-herdr-state"
                 }
-                [void]$admittedPids.Add($coreProc.Id)
+                $coreIdentity = Get-Issue44ProcessIdentity -Process $coreProc
+                $admittedIdentities[$coreIdentity.Id] = $coreIdentity
 
                 # 2. Start App with NO invented arguments
                 $appPsi = New-Object System.Diagnostics.ProcessStartInfo
@@ -1075,78 +1662,94 @@ try {
                 if ($null -eq $appProc) {
                     throw "Failed to start App process: $appExe"
                 }
-                [void]$admittedPids.Add($appProc.Id)
+                $appIdentity = Get-Issue44ProcessIdentity -Process $appProc
+                $admittedIdentities[$appIdentity.Id] = $appIdentity
 
-                # 3. Bounded stable dwell and health observation
-                $sw = [System.Diagnostics.Stopwatch]::StartNew()
-                $observedHealthy = $false
-                while ($sw.ElapsedMilliseconds -lt $TimeoutMilliseconds) {
-                    Start-Sleep -Milliseconds 200
-                    if (-not $coreProc.HasExited -and -not $appProc.HasExited) {
-                        $observedHealthy = $true
-                        break
-                    }
+                # 3. Bounded semantic readiness: Core must accept its strict
+                # current-user App handshake and return a state snapshot with
+                # runtime-health fields.  HasExited alone is not readiness.
+                $coreReadiness = Wait-Issue44CoreSemanticReadiness -CoreProcess $coreProc -TimeoutMilliseconds $TimeoutMilliseconds
+                if ($appProc.HasExited) {
+                    throw "App exited before Core semantic readiness was observed."
                 }
 
-                if (-not $observedHealthy) {
-                    if ($coreProc.HasExited) { throw "Core process exited unexpectedly with code $($coreProc.ExitCode)." }
-                    if ($appProc.HasExited) { throw "App process exited unexpectedly with code $($appProc.ExitCode)." }
-                }
-
-                # 4. Discover recursive descendants of admitted PIDs only
+                # 4. Discover recursive descendants of admitted process
+                # identities only.  A PID without a provable start time is
+                # never admitted and therefore never killed.
                 $queue = New-Object 'System.Collections.Generic.Queue[int]'
-                foreach ($p in $admittedPids) { $queue.Enqueue($p) }
+                foreach ($p in @($admittedIdentities.Keys)) { $queue.Enqueue([int]$p) }
                 while ($queue.Count -gt 0) {
                     $curr = $queue.Dequeue()
+                    $parentIdentity = $admittedIdentities[[int]$curr]
                     try {
-                        $children = @(Get-CimInstance Win32_Process -Filter "ParentProcessId = $curr" -ErrorAction SilentlyContinue)
-                        foreach ($c in $children) {
-                            $cPid = [int]$c.ProcessId
-                            if (-not $admittedPids.Contains($cPid)) {
-                                [void]$admittedPids.Add($cPid)
-                                $queue.Enqueue($cPid)
+                        $parentProc = [System.Diagnostics.Process]::GetProcessById([int]$curr)
+                        Assert-Issue44ProcessIdentity -Identity $parentIdentity -Process $parentProc -Context 'Descendant parent enumeration'
+                        if ($parentProc.HasExited) { continue }
+                    } catch [ArgumentException] {
+                        continue
+                    }
+                    $children = @(Get-CimInstance Win32_Process -Filter "ParentProcessId = $curr" -ErrorAction Stop)
+                    foreach ($c in $children) {
+                        $cPid = [int]$c.ProcessId
+                        if ($admittedIdentities.ContainsKey($cPid)) { continue }
+                        $childProc = $null
+                        try {
+                            $childProc = Get-Process -Id $cPid -ErrorAction Stop
+                            $childIdentity = Get-Issue44ProcessIdentity -Process $childProc
+                            if ($c.CreationDate) {
+                                $cimStartUtc = [Management.ManagementDateTimeConverter]::ToDateTime([string]$c.CreationDate).ToUniversalTime()
+                                if ($childIdentity.StartUtcTicks -ne $cimStartUtc.Ticks) {
+                                    throw "Child PID $cPid start-time mismatch; refusing possible PID reuse."
+                                }
                             }
+                            $admittedIdentities[$childIdentity.Id] = $childIdentity
+                            $queue.Enqueue($childIdentity.Id)
+                        } catch {
+                            throw "Could not safely admit descendant PID ${cPid}: $($_.Exception.Message)"
                         }
-                    } catch { }
+                    }
                 }
             } finally {
-                # Kill ONLY admitted PIDs and direct descendants
-                if ($null -ne $appProc -and -not $appProc.HasExited) {
+                # Initial Process objects are handles obtained directly from
+                # our Start calls; descendants require an identity recheck.
+                foreach ($initial in @(
+                        [pscustomobject]@{ Process = $appProc; Identity = $appIdentity; Name = 'App' },
+                        [pscustomobject]@{ Process = $coreProc; Identity = $coreIdentity; Name = 'Core' })) {
                     try {
-                        if (Get-Command -Name Stop-CoreProcessBounded -ErrorAction SilentlyContinue) {
-                            Stop-CoreProcessBounded -Process $appProc -DrainMilliseconds 2000
-                        } else {
-                            $appProc.Kill()
-                            $appProc.WaitForExit(2000)
+                        if ($null -ne $initial.Process -and -not $initial.Process.HasExited) {
+                            if ($null -ne $initial.Identity) {
+                                Assert-Issue44ProcessIdentity -Identity $initial.Identity -Process $initial.Process -Context "$($initial.Name) cleanup"
+                            }
+                            $initial.Process.Kill()
+                            $initial.Process.WaitForExit(2000)
                         }
-                    } catch { }
+                    } catch { [void]$cleanupFailures.Add($_.Exception.Message) }
                 }
-                if ($null -ne $coreProc -and -not $coreProc.HasExited) {
+                foreach ($identity in @($admittedIdentities.Values)) {
+                    if ($null -ne $coreIdentity -and [int]$identity.Id -eq [int]$coreIdentity.Id) { continue }
+                    if ($null -ne $appIdentity -and [int]$identity.Id -eq [int]$appIdentity.Id) { continue }
                     try {
-                        if (Get-Command -Name Stop-CoreProcessBounded -ErrorAction SilentlyContinue) {
-                            Stop-CoreProcessBounded -Process $coreProc -DrainMilliseconds 2000
-                        } else {
-                            $coreProc.Kill()
-                            $coreProc.WaitForExit(2000)
-                        }
-                    } catch { }
-                }
-                foreach ($pidToKill in @($admittedPids)) {
-                    try {
-                        $proc = [System.Diagnostics.Process]::GetProcessById($pidToKill)
+                        $proc = [System.Diagnostics.Process]::GetProcessById([int]$identity.Id)
                         if ($null -ne $proc -and -not $proc.HasExited) {
+                            Assert-Issue44ProcessIdentity -Identity $identity -Process $proc -Context 'Descendant cleanup'
                             $proc.Kill()
                             $proc.WaitForExit(1000)
                         }
-                    } catch { }
+                    } catch [ArgumentException] {
+                        # The admitted process exited before cleanup.
+                    } catch { [void]$cleanupFailures.Add($_.Exception.Message) }
                 }
             }
 
-            foreach ($pidToCheck in @($admittedPids)) {
+            if ($cleanupFailures.Count -gt 0) {
+                throw "Process cleanup failed closed without touching an unproven process: $($cleanupFailures -join '; ')"
+            }
+            foreach ($identity in @($admittedIdentities.Values)) {
                 try {
-                    $proc = [System.Diagnostics.Process]::GetProcessById($pidToCheck)
+                    $proc = [System.Diagnostics.Process]::GetProcessById([int]$identity.Id)
+                    Assert-Issue44ProcessIdentity -Identity $identity -Process $proc -Context 'Process exit verification'
                     if ($null -ne $proc -and -not $proc.HasExited) {
-                        throw "Admitted process $pidToCheck failed to exit."
+                        throw "Admitted process $($identity.Id) failed to exit."
                     }
                 } catch [ArgumentException] {
                     # Process has exited cleanly
@@ -1161,8 +1764,11 @@ try {
                 AppPath = $appExe
                 CoreSha256 = $coreData.Sha256
                 AppSha256 = $appData.Sha256
-                AdmittedPids = @($admittedPids)
-                Details = 'Core serve-herdr-state and App launched cleanly, observed healthy, and all admitted PIDs terminated cleanly.'
+                CoreHealthReady = [bool]$coreReadiness.Ready
+                CoreHealthDetails = [string]$coreReadiness.Details
+                CoreRuntimeHealthStatus = [string]$coreReadiness.RuntimeHealthStatus
+                AdmittedPids = @($admittedIdentities.Keys)
+                Details = 'Core serve-herdr-state and App launched cleanly; Core returned semantic state readiness and all identity-bound admitted PIDs terminated cleanly.'
             }
         }
     }
@@ -1226,6 +1832,24 @@ try {
         Add-OperatorTranscript -Phase 'FirstRun' -Action 'invoke-bounded-first-run' -Status 'PASS' -Effect $effect -Details 'Executing bounded first-run verification and process-tree cleanup.' -PathBinding 'installRoot'
         $firstRunResult = & $effectiveFirstRunRunner -InstallRoot $installRootFull -UserDataRoot $userDataRootFull
         Assert-RunnerResultPass -Result $firstRunResult -Context 'First-run'
+        if (-not $firstRunResult.PSObject.Properties['CoreHealthReady'] -or $firstRunResult.CoreHealthReady -isnot [bool] -or -not $firstRunResult.CoreHealthReady) {
+            throw 'First-run runner did not provide a true semantic CoreHealthReady result.'
+        }
+        if (-not $firstRunResult.PSObject.Properties['CoreHealthDetails'] -or [string]::IsNullOrWhiteSpace([string]$firstRunResult.CoreHealthDetails)) {
+            throw 'First-run runner did not provide bounded semantic readiness details.'
+        }
+        foreach ($binary in @(
+                [pscustomobject]@{ Name = 'HerdrOps.Core.exe'; ResultProperty = 'CoreSha256' },
+                [pscustomobject]@{ Name = 'HerdrOps.App.exe'; ResultProperty = 'AppSha256' })) {
+            $expectedBinary = @($initialInstalledHashes | Where-Object { [string]$_.Path -ceq $binary.Name })
+            if ($expectedBinary.Count -ne 1) {
+                throw "First-run artifact manifest does not contain exactly one $($binary.Name) entry."
+            }
+            if (-not $firstRunResult.PSObject.Properties[$binary.ResultProperty] -or
+                [string]$firstRunResult.($binary.ResultProperty) -cne [string]$expectedBinary[0].Sha256) {
+                throw "First-run $($binary.Name) hash is not cross-bound to the installed manifest bytes."
+            }
+        }
 
         $postFirstRunData = Get-FileSha256AndBytes -Path $retainedDataFullPath
         if ($postFirstRunData.Sha256 -cne $activeRetainedSha256) {
@@ -1346,6 +1970,26 @@ try {
         throw "Cleanup residual check failed: $($residuals -join '; ')"
     }
 
+    # Re-read the durable accepted manifest evidence immediately before the
+    # report is constructed/written.  A changed or deleted source manifest
+    # invalidates the run instead of leaving a stale manifestPath in PASS.
+    $initialDurableManifest = Resolve-Issue44ManifestEvidence `
+        -ArchivePath $InitialArchivePath `
+        -ExpectedManifestPath $(if ($null -ne $initialAcceptedArtifact) { $initialAcceptedArtifact.ManifestPath } else { '' }) `
+        -ExpectedBytes $stagedInitial.ManifestBytes `
+        -ExpectedSha256 $stagedInitial.ManifestSha256 `
+        -ArtifactName 'Initial'
+    $candidateDurableManifest = Resolve-Issue44ManifestEvidence `
+        -ArchivePath $CandidateArchivePath `
+        -ExpectedManifestPath $(if ($null -ne $candidateAcceptedArtifact) { $candidateAcceptedArtifact.ManifestPath } else { '' }) `
+        -ExpectedBytes $stagedCandidate.ManifestBytes `
+        -ExpectedSha256 $stagedCandidate.ManifestSha256 `
+        -ArtifactName 'Candidate'
+    $initialArtifactReport.packageRoot = $initialDurableManifest.PackageRoot
+    $initialArtifactReport.manifestPath = $initialDurableManifest.Path
+    $upgradeArtifactReport.packageRoot = $candidateDurableManifest.PackageRoot
+    $upgradeArtifactReport.manifestPath = $candidateDurableManifest.Path
+
 } catch {
     $status = 'FAIL'
     $failureDetails = $_.Exception.Message
@@ -1369,20 +2013,24 @@ try {
     }
 }
 
-$evidenceClass = if ($Mode -eq 'Live' -and $status -eq 'PASS') {
+$preflightPassed = ($script:PreflightChecks.Count -gt 0 -and
+    @($script:PreflightChecks | Where-Object { $_.status -eq 'FAIL' }).Count -eq 0)
+$allLifecyclePassed = @(@('cleanInstall', 'upgrade', 'rollback', 'uninstall') | Where-Object {
+        [string]$lifecycle[$_].status -cne 'PASS'
+    }).Count -eq 0
+$cleanMachinePassed = ($Mode -ceq 'Live' -and
+    $status -ceq 'PASS' -and
+    $preflightPassed -and
+    $script:CleanMachineFilesystemObserved -and
+    $allLifecyclePassed -and
+    [string]$cleanup.status -ceq 'PASS')
+$evidenceClass = if ($cleanMachinePassed) {
     'CleanMachine'
 } elseif ($Mode -eq 'Fixture') {
     'Synthetic'
 } else {
     'Static'
 }
-
-$preflightPassed = ($script:PreflightChecks.Count -gt 0 -and
-    @($script:PreflightChecks | Where-Object { $_.status -eq 'FAIL' }).Count -eq 0)
-$allLifecyclePassed = @(@('cleanInstall', 'upgrade', 'rollback', 'uninstall') | Where-Object {
-        [string]$lifecycle[$_].status -cne 'PASS'
-    }).Count -eq 0
-$cleanMachinePassed = ($evidenceClass -ceq 'CleanMachine' -and $status -ceq 'PASS' -and $allLifecyclePassed -and [string]$cleanup.status -ceq 'PASS')
 
 $report = [ordered]@{
     schemaVersion = 1
@@ -1396,10 +2044,10 @@ $report = [ordered]@{
     completedAtUtc = Get-OperatorUtcNow
     runId = $script:RunId
     machine = [ordered]@{
-        name = $(if ([string]::IsNullOrWhiteSpace($machineName)) { [string]$env:COMPUTERNAME } else { $machineName })
-        expectedName = $(if ([string]::IsNullOrWhiteSpace($ExpectedMachineName)) { [string]$env:COMPUTERNAME } else { $ExpectedMachineName })
-        fingerprint = $(if ([string]::IsNullOrWhiteSpace($machineFingerprint)) { Get-AcceptanceMachineFingerprint } else { $machineFingerprint })
-        expectedFingerprint = $(if ([string]::IsNullOrWhiteSpace($ExpectedMachineFingerprint)) { Get-AcceptanceMachineFingerprint } else { $ExpectedMachineFingerprint })
+        name = $(if ([string]::IsNullOrWhiteSpace($machineName)) { 'NOT_OBSERVED' } else { $machineName })
+        expectedName = $(if ([string]::IsNullOrWhiteSpace($ExpectedMachineName)) { 'NOT_OBSERVED' } else { $ExpectedMachineName })
+        fingerprint = $(if ([string]::IsNullOrWhiteSpace($machineFingerprint)) { ('0' * 64) } else { $machineFingerprint })
+        expectedFingerprint = $(if ([string]::IsNullOrWhiteSpace($ExpectedMachineFingerprint)) { ('0' * 64) } else { $ExpectedMachineFingerprint })
         elevated = $isElevated
     }
     artifacts = [ordered]@{
@@ -1431,7 +2079,9 @@ if (Test-Path -LiteralPath $reportSchemaPath -PathType Leaf) {
     Assert-AcceptanceReportMatchesSchema -Report $report -SchemaPath $reportSchemaPath
 }
 
-if (-not [string]::IsNullOrWhiteSpace($ReportDestination) -and $null -ne $targetsReport.installRoot) {
+if (-not [string]::IsNullOrWhiteSpace($ReportDestination) -and
+    -not [string]::IsNullOrWhiteSpace([string]$targetsReport.installRoot) -and
+    -not [string]::IsNullOrWhiteSpace([string]$targetsReport.userDataRoot)) {
     $script:ReportDestination = Write-AcceptanceReportAtomically `
         -Report $report `
         -Path $ReportDestination `
