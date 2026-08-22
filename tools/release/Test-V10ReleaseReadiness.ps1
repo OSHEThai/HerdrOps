@@ -1057,8 +1057,7 @@ try {
 
     $issue41NotObservedMixedInventory = Copy-TestJsonObject -Value $issue41Report.Value
     $issue41NotObservedMixedInventory.EvidenceStatus.Contract.ObservedVersions = @('v0.2.0')
-    $issue41NotObservedMixedInventory.EvidenceStatus.Contract.NotObservedVersions = @()
-    Assert-ExpectedFailure -Description 'Issue #41 NOT_OBSERVED inventory mixed' -RequiredFragments @('NOT_OBSERVED must place') -Action {
+    Assert-ExpectedFailure -Description 'Issue #41 NOT_OBSERVED inventory mixed' -RequiredFragments @('overlaps') -Action {
         Assert-V10Issue41ReportSemantics -Report $issue41NotObservedMixedInventory -SourceCommit $sourceCommit -ExpectedSourceTree $sourceTree | Out-Null
     }
     [void]$assertions.Add('Issue41NotObservedInventoryPartitionRejected')
