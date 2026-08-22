@@ -26,25 +26,82 @@ Test-Case 'blank target Agent session attestation fails closed' { New-V02TargetA
 Test-Case 'multiline target Agent session attestation fails closed' { New-V02TargetAgentSessionAttestation "a`nb" } $true
 Test-Case 'operator attestation boundary is explicit' { $a=New-V02TargetAgentSessionAttestation 'opencode:session-1';if($a.EvidenceSource -cne 'OperatorAttestation' -or $a.ObservableByGate -ne $false){throw 'Attestation boundary changed.'} }
 Test-Case 'missing package binding inputs fail closed before validation' { Resolve-V02RuntimePackageBinding -IdentityPath 'Z:\definitely-missing-v02-receipt.json' -ArchivePath 'Z:\definitely-missing-v02.zip' -PackageRoot 'Z:\definitely-missing-v02-root' -RepositoryRoot $PSScriptRoot -ProfilePath $PSCommandPath -ExpectedSourceCommit ('1'*40) -ExpectedSourceTree ('2'*40) } $true
+Test-Case 'governed passing-test count is exact current aggregate' { if($script:V02GovernedPassingTestCount-ne 888){throw "Governed passing-test count drifted: $script:V02GovernedPassingTestCount"} }
 
 $temp = Join-Path ([IO.Path]::GetTempPath()) ('v02-trx-binding-' + [guid]::NewGuid().ToString('N'))
 try {
     $results=Join-Path $temp 'results';$evidence=Join-Path $temp 'evidence';New-Item -ItemType Directory $results,$evidence|Out-Null
-    $started=[DateTime]::UtcNow.AddSeconds(-1)
-    $template='<?xml version="1.0"?><TestRun><ResultSummary><Counters total="{0}" passed="{0}" failed="0" /></ResultSummary></TestRun>'
-    $counts=@(222,221,221,221);1..4|ForEach-Object{[IO.File]::WriteAllText((Join-Path $results "test$_.trx"),($template -f $counts[$_-1]))}
-    Test-Case 'four fresh passing TRX files are preserved with receipt' { $x=Save-V02FreshTrxEvidence $results $started $evidence;if($x.Passed-ne 885-or-not(Test-Path -LiteralPath $x.ReceiptPath)){throw 'TRX receipt missing.'};foreach($f in $x.Files){Assert-V02RuntimeBindingSha256 $f.Sha256 'TRX hash'} }
+    $utf8=New-Object Text.UTF8Encoding($false);$started=[DateTime]::UtcNow.AddMinutes(-2)
+    $runIds=@([guid]::NewGuid(),[guid]::NewGuid(),[guid]::NewGuid(),[guid]::NewGuid())
+    $runStarted=[DateTimeOffset]::UtcNow.AddMinutes(-1);$runFinished=[DateTimeOffset]::UtcNow.AddSeconds(-20)
+    function Write-Trx([string]$Path,[string]$Assembly,[guid]$RunId,[int]$Total=222,[int]$Passed=222,[int]$Failed=0,[int]$NotExecuted=0,[int]$Skipped=0,[DateTimeOffset]$Start=$runStarted,[DateTimeOffset]$Finish=$runFinished) {
+        $xml='<?xml version="1.0"?><TestRun id="{0}" name="{1}"><Times start="{2}" finish="{3}"/><TestDefinitions><UnitTest storage="Z:\fixture\{1}"/></TestDefinitions><ResultSummary><Counters total="{4}" passed="{5}" failed="{6}" notExecuted="{7}" skipped="{8}"/></ResultSummary></TestRun>' -f $RunId.ToString('D'),$Assembly,$Start.ToString('O'),$Finish.ToString('O'),$Total,$Passed,$Failed,$NotExecuted,$Skipped
+        [IO.File]::WriteAllText($Path,$xml,$utf8)
+    }
+    function Write-ValidTrxSet {
+        0..3|ForEach-Object{Write-Trx (Join-Path $results "test$($_+1).trx") $script:V02GovernedTestAssemblyFileNames[$_] $runIds[$_]}
+    }
+    function Assert-RolledBack {
+        if(Test-Path -LiteralPath (Join-Path $evidence 'test-results')){throw 'Invalid TRX evidence was published.'}
+        if(@(Get-ChildItem -LiteralPath $evidence -Filter '.test-results.*.staging' -Force -ErrorAction SilentlyContinue).Count-ne 0){throw 'TRX staging was not rolled back.'}
+    }
+    function Assert-ExactTrxFailure([string]$Expected,[scriptblock]$Body) {
+        $observed=$null
+        try{&$Body}catch{$observed=$_.Exception.Message}
+        if($null-eq$observed){throw "Expected TRX failure was not observed: $Expected"}
+        if($observed-cne$Expected){throw "Wrong TRX failure. expected='$Expected' observed='$observed'"}
+        Assert-RolledBack
+    }
+    Write-ValidTrxSet
+    Test-Case 'four exact governed fresh test runs are preserved with receipt' { $x=Save-V02FreshTrxEvidence $results $started $evidence;if($x.Total-ne 888-or$x.Passed-ne 888-or$x.Failed-ne 0-or$x.NotExecuted-ne 0-or$x.Skipped-ne 0-or-not(Test-Path -LiteralPath $x.ReceiptPath)){throw 'TRX receipt missing or counters drifted.'};if(@($x.Files.TestRunId|Sort-Object -Unique).Count-ne4){throw 'TestRun ids not bound.'};$expected=@($script:V02GovernedTestAssemblyFileNames|ForEach-Object{[IO.Path]::ChangeExtension($_,'.trx')}|Sort-Object);$actual=@($x.Files.Name|Sort-Object);if(@(Compare-Object $expected $actual).Count-ne0){throw 'Canonical evidence filenames drifted.'};foreach($f in $x.Files){Assert-V02RuntimeBindingSha256 $f.Sha256 'TRX hash'} }
     Test-Case 'existing TRX evidence directory fails closed' { Save-V02FreshTrxEvidence $results $started $evidence } $true
-    Remove-Item -LiteralPath (Join-Path $evidence 'test-results') -Recurse -Force
+    if(Test-Path -LiteralPath (Join-Path $evidence 'test-results')){Remove-Item -LiteralPath (Join-Path $evidence 'test-results') -Recurse -Force}
+
+    Write-Trx (Join-Path $results 'test4.trx') $script:V02GovernedTestAssemblyFileNames[3] $runIds[3] 219 219
+    Test-Case 'stale 885-test aggregate fails closed and rolls back' { Assert-ExactTrxFailure 'Fresh test counters are not the governed all-passing aggregate: total=885 passed=885' { Save-V02FreshTrxEvidence $results $started $evidence } }
+    Write-ValidTrxSet
     Remove-Item -LiteralPath (Join-Path $results 'test4.trx')
     Test-Case 'three fresh TRX files fail closed' { Save-V02FreshTrxEvidence $results $started $evidence } $true
-    [IO.File]::WriteAllText((Join-Path $results 'test4.trx'),(($template -f 221).Replace('passed="221"','passed="220"').Replace('failed="0"','failed="1"')))
-    Test-Case 'failed TRX counter fails closed' { Save-V02FreshTrxEvidence $results $started $evidence } $true
-    if(Test-Path -LiteralPath (Join-Path $evidence 'test-results')){Remove-Item -LiteralPath (Join-Path $evidence 'test-results') -Recurse -Force}
-    [IO.File]::WriteAllText((Join-Path $results 'test4.trx'),($template -f 221))
-    $script:V02TrxAfterSelectionForTest={ [IO.File]::AppendAllText((Join-Path $results 'test1.trx'),' ') }
-    try { Test-Case 'TRX mutation after selection fails closed' { Save-V02FreshTrxEvidence $results $started $evidence } $true }
-    finally { $script:V02TrxAfterSelectionForTest=$null;[IO.File]::WriteAllText((Join-Path $results 'test1.trx'),($template -f 222)) }
+    Write-Trx (Join-Path $results 'test4.trx') $script:V02GovernedTestAssemblyFileNames[3] $runIds[3] 222 221 1
+    Test-Case 'failed TRX counter fails closed and rolls back' { Assert-ExactTrxFailure 'Fresh test counters contain failures: failed=1' { Save-V02FreshTrxEvidence $results $started $evidence } }
+    Write-Trx (Join-Path $results 'test4.trx') $script:V02GovernedTestAssemblyFileNames[3] $runIds[3] 222 222 0 1
+    Test-Case 'inconsistent total=passed=888 but notExecuted=1 reaches exact skipped guard' { Assert-ExactTrxFailure 'Fresh test counters contain skipped/notExecuted tests: skipped=0 notExecuted=1' { Save-V02FreshTrxEvidence $results $started $evidence } }
+    Write-Trx (Join-Path $results 'test4.trx') $script:V02GovernedTestAssemblyFileNames[3] $runIds[3] 222 222 0 0 1
+    Test-Case 'inconsistent total=passed=888 but skipped=1 reaches exact skipped guard' { Assert-ExactTrxFailure 'Fresh test counters contain skipped/notExecuted tests: skipped=1 notExecuted=0' { Save-V02FreshTrxEvidence $results $started $evidence } }
+
+    Write-ValidTrxSet
+    $oldStart=[DateTimeOffset]::UtcNow.AddHours(-2);$oldFinish=$oldStart.AddMinutes(1)
+    0..3|ForEach-Object{Write-Trx (Join-Path $results "test$($_+1).trx") $script:V02GovernedTestAssemblyFileNames[$_] $runIds[$_] 222 222 0 0 0 $oldStart $oldFinish}
+    Test-Case 'touched old 888 TRX set fails exact run-window guard' { Assert-ExactTrxFailure 'TRX TestRun is outside the exact invocation window: test1.trx' { Save-V02FreshTrxEvidence $results $started $evidence } }
+    Write-ValidTrxSet;[IO.File]::SetLastWriteTimeUtc((Join-Path $results 'test1.trx'),[DateTime]::UtcNow.AddMinutes(5))
+    Test-Case 'future-dated TRX fails exact file-window guard' { Assert-ExactTrxFailure 'TRX file timestamp is outside the exact invocation window: test1.trx' { Save-V02FreshTrxEvidence $results $started $evidence } }
+
+    Write-ValidTrxSet
+    $script:mutationPath=Join-Path $results 'test1.trx';$script:mutationOldId=$runIds[0].ToString('D');$script:mutationNewId=[guid]::NewGuid().ToString('D');$script:mutationEncoding=$utf8
+    $script:V02TrxAfterSelectionForTest={ $stamp=[IO.File]::GetLastWriteTimeUtc($script:mutationPath);$text=[IO.File]::ReadAllText($script:mutationPath).Replace($script:mutationOldId,$script:mutationNewId);[IO.File]::WriteAllText($script:mutationPath,$text,$script:mutationEncoding);[IO.File]::SetLastWriteTimeUtc($script:mutationPath,$stamp) }
+    try { Test-Case 'same-length post-selection mutation with restored mtime fails exact hash/run guard' { Assert-ExactTrxFailure 'TRX preselection identity/hash/run binding changed: test1.trx' { Save-V02FreshTrxEvidence $results $started $evidence } } }
+    finally { $script:V02TrxAfterSelectionForTest=$null;Write-ValidTrxSet }
+
+    $script:V02TrxAfterFinalCopyForTest={param($stage);$path=Join-Path $stage 'HerdrOps.UnitTests.trx';$bytes=[IO.File]::ReadAllBytes($path);$bytes[0]=$bytes[0]-bxor 1;[IO.File]::WriteAllBytes($path,$bytes)}
+    try { Test-Case 'final staged copy mutation fails exact guard and rolls back' { Assert-ExactTrxFailure 'Final staged TRX copy changed after validation: HerdrOps.UnitTests.trx' { Save-V02FreshTrxEvidence $results $started $evidence } } }
+    finally { $script:V02TrxAfterFinalCopyForTest=$null }
+    $script:V02TrxAfterReceiptWriteForTest={param($path);$bytes=[IO.File]::ReadAllBytes($path);$bytes[0]=$bytes[0]-bxor 1;[IO.File]::WriteAllBytes($path,$bytes)}
+    try { Test-Case 'receipt mutation fails exact guard and rolls back' { Assert-ExactTrxFailure 'TRX selection receipt changed after atomic write.' { Save-V02FreshTrxEvidence $results $started $evidence } } }
+    finally { $script:V02TrxAfterReceiptWriteForTest=$null }
+
+    $script:blockedPublishWrites=0
+    $script:V02TrxBeforePublishForTest={param($stage,$destination);foreach($path in @((Join-Path $stage 'HerdrOps.UnitTests.trx'),(Join-Path $stage 'selection-receipt.json'))){try{[IO.File]::AppendAllText($path,'x')}catch{$script:blockedPublishWrites++}}}
+    try { Test-Case 'held handles block TRX and receipt writes through atomic publication' { $x=Save-V02FreshTrxEvidence $results $started $evidence;if($script:blockedPublishWrites-ne2-or-not(Test-Path $x.ReceiptPath)){throw 'Pre-publish held-handle guard was not observed.'} } }
+    finally { $script:V02TrxBeforePublishForTest=$null;if(Test-Path (Join-Path $evidence 'test-results')){Remove-Item (Join-Path $evidence 'test-results') -Recurse -Force} }
+
+    $script:V02TrxBeforePublishForTest={param($stage,$destination);$path=Join-Path $stage 'HerdrOps.UnitTests.trx';$bytes=[IO.File]::ReadAllBytes($path);Remove-Item $path -Force;$bytes[0]=$bytes[0]-bxor 1;[IO.File]::WriteAllBytes($path,$bytes)}
+    try { Test-Case 'delete-replace during publish is detected and owned target rolls back' { Assert-ExactTrxFailure 'Held TRX evidence changed across atomic publication: HerdrOps.UnitTests.trx' { Save-V02FreshTrxEvidence $results $started $evidence } } }
+    finally { $script:V02TrxBeforePublishForTest=$null }
+
+    $script:V02TrxBeforePublishForTest={param($stage,$destination);New-Item -ItemType Directory -Path $destination|Out-Null;[IO.File]::WriteAllText((Join-Path $destination 'unowned.txt'),'unowned')}
+    try { Test-Case 'destination collision preserves unowned target and rolls back only staging' { $threw=$false;try{Save-V02FreshTrxEvidence $results $started $evidence}catch{$threw=$true};if(-not$threw){throw 'Destination collision did not fail.'};if(-not(Test-Path (Join-Path $evidence 'test-results\unowned.txt'))){throw 'Unowned target was deleted.'};if(@(Get-ChildItem $evidence -Filter '.test-results.*.staging' -Force).Count-ne0){throw 'Owned staging was not rolled back.'} } }
+    finally { $script:V02TrxBeforePublishForTest=$null;if(Test-Path (Join-Path $evidence 'test-results')){Remove-Item (Join-Path $evidence 'test-results') -Recurse -Force} }
+
     $bindingFiles=@{};foreach($name in @('identity','profile','archive','manifest','app','core')){$path=Join-Path $temp "$name.bin";[IO.File]::WriteAllText($path,"original-$name");$bindingFiles[$name]=$path}
     $binding=[pscustomobject]@{
         IdentityPath=$bindingFiles.identity;IdentityFileSha256=(Get-FileHash $bindingFiles.identity -Algorithm SHA256).Hash
