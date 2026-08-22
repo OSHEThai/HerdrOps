@@ -48,6 +48,34 @@ namespace RendererCompatibility {
         [DllImport("kernel32.dll", SetLastError = true)]
         private static extern bool GetNamedPipeClientProcessId(IntPtr pipe, out uint processId);
 
+        private delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
+
+        [DllImport("user32.dll")]
+        private static extern bool EnumWindows(EnumWindowsProc lpEnumFunc, IntPtr lParam);
+
+        [DllImport("user32.dll")]
+        private static extern bool IsWindowVisible(IntPtr hWnd);
+
+        [DllImport("user32.dll")]
+        private static extern IntPtr GetWindow(IntPtr hWnd, uint uCmd);
+
+        [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+        private static extern int GetClassName(IntPtr hWnd, StringBuilder lpClassName, int nMaxCount);
+
+        [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+        private static extern int GetWindowText(IntPtr hWnd, StringBuilder lpString, int nMaxCount);
+
+        [DllImport("user32.dll")]
+        private static extern int GetWindowLong(IntPtr hWnd, int nIndex);
+
+        private const uint GW_OWNER = 4;
+        private const int GWL_STYLE = -16;
+        private const int GWL_EXSTYLE = -20;
+        private const int WS_VISIBLE = 0x10000000;
+        private const int WS_CHILD = 0x40000000;
+        private const int WS_CAPTION = 0x00C00000;
+        private const int WS_EX_TOOLWINDOW = 0x00000080;
+
         public static bool IsLiveWindow(IntPtr hWnd) {
             return hWnd != IntPtr.Zero && IsWindow(hWnd);
         }
@@ -66,6 +94,35 @@ namespace RendererCompatibility {
                 throw new InvalidOperationException("The target observation pipe has no identifiable client process.");
             }
             return checked((int)processId);
+        }
+
+        public static IntPtr GetProcessMainWindow(int processId) {
+            if (processId <= 0) return IntPtr.Zero;
+            IntPtr candidate = IntPtr.Zero;
+            EnumWindows((hWnd, lParam) => {
+                uint pid;
+                if (GetWindowThreadProcessId(hWnd, out pid) != 0 && pid == (uint)processId) {
+                    if (IsWindowVisible(hWnd) && GetWindow(hWnd, GW_OWNER) == IntPtr.Zero) {
+                        int style = GetWindowLong(hWnd, GWL_STYLE);
+                        int exStyle = GetWindowLong(hWnd, GWL_EXSTYLE);
+                        if ((style & WS_CHILD) == 0 && (exStyle & WS_EX_TOOLWINDOW) == 0) {
+                            var sbClass = new StringBuilder(256);
+                            GetClassName(hWnd, sbClass, 256);
+                            string cls = sbClass.ToString();
+                            if (cls != "MSCTFIME UI" && cls != "IME" && cls != "UAC_InputIndicatorOverlayWnd" && cls != "Default IME") {
+                                var sbText = new StringBuilder(256);
+                                GetWindowText(hWnd, sbText, 256);
+                                if ((style & WS_CAPTION) == WS_CAPTION || sbText.Length > 0) {
+                                    candidate = hWnd;
+                                    return false;
+                                }
+                            }
+                        }
+                    }
+                }
+                return true;
+            }, IntPtr.Zero);
+            return candidate;
         }
     }
 }
@@ -435,12 +492,19 @@ function Assert-RendererProcessIdentityEqual { param($Actual,$Expected,[string]$
     foreach($name in @('role','pid','startTimeUtc','executablePath','executableFinalPath','bytes','sha256','processName')) { if ($Actual.$name -cne $Expected.$name) { throw "$Context '$name' changed; PID reuse or executable replacement detected." } }
 }
 function Get-RendererWindowObservation { param([int]$TargetAppPid,[string]$TargetAppStartTimeUtc,[string]$Context)
-    try { $process=Get-Process -Id $TargetAppPid -ErrorAction Stop; $process.Refresh(); $hwnd=[Int64]$process.MainWindowHandle } catch { throw "$Context target App window could not be observed: $($_.Exception.Message)" }
+    try {
+        $process = Get-Process -Id $TargetAppPid -ErrorAction Stop
+        $process.Refresh()
+        $hwnd = [Int64][RendererCompatibility.NativePath]::GetProcessMainWindow($TargetAppPid)
+        if ($hwnd -eq 0) { $hwnd = [Int64]$process.MainWindowHandle }
+    } catch {
+        throw "$Context target App window could not be observed: $($_.Exception.Message)"
+    }
     if ($hwnd -eq 0) { return [pscustomobject][ordered]@{hasAnyHwnd=$false;hwnd=[long]0;ownerPid=[int]0;ownerStartTimeUtc=$null} }
     if (-not [RendererCompatibility.NativePath]::IsLiveWindow([IntPtr]$hwnd)) { throw "$Context reported an HWND that is no longer live." }
-    $ownerPid=[RendererCompatibility.NativePath]::GetWindowOwnerProcessId([IntPtr]$hwnd)
+    $ownerPid = [RendererCompatibility.NativePath]::GetWindowOwnerProcessId([IntPtr]$hwnd)
     if ($ownerPid -ne $TargetAppPid) { throw "$Context HWND owner PID does not equal the target App PID." }
-    $owner=Get-RendererProcessIdentity $ownerPid $process.MainModule.FileName "$Context HWND owner"
+    $owner = Get-RendererProcessIdentity $ownerPid $process.MainModule.FileName "$Context HWND owner"
     if ($owner.startTimeUtc -cne $TargetAppStartTimeUtc) { throw "$Context HWND owner start time does not equal the target App start time." }
     [pscustomobject][ordered]@{hasAnyHwnd=$true;hwnd=[long]$hwnd;ownerPid=[int]$ownerPid;ownerStartTimeUtc=[string]$owner.startTimeUtc}
 }

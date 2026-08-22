@@ -221,7 +221,174 @@ function New-MockObservationAction {
 }
 
 function New-LiveTargetFixtureScript([string]$Path) {
-    $scriptText = @'
+    $csharpCode = @'
+using System;
+using System.Runtime.InteropServices;
+using System.Threading;
+
+namespace HerdrOps.Testing {
+    public static class NativeWindowFixture {
+        private delegate IntPtr WndProc(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam);
+
+        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+        private struct WNDCLASSEX {
+            public int cbSize;
+            public int style;
+            public IntPtr lpfnWndProc;
+            public int cbClsExtra;
+            public int cbWndExtra;
+            public IntPtr hInstance;
+            public IntPtr hIcon;
+            public IntPtr hCursor;
+            public IntPtr hbrBackground;
+            public string lpszMenuName;
+            public string lpszClassName;
+            public IntPtr hIconSm;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct MSG {
+            public IntPtr hwnd;
+            public uint message;
+            public IntPtr wParam;
+            public IntPtr lParam;
+            public uint time;
+            public int pt_x;
+            public int pt_y;
+        }
+
+        [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+        private static extern ushort RegisterClassEx(ref WNDCLASSEX lpwcx);
+
+        [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+        private static extern IntPtr CreateWindowEx(
+            int dwExStyle, string lpClassName, string lpWindowName,
+            int dwStyle, int x, int y, int nWidth, int nHeight,
+            IntPtr hWndParent, IntPtr hMenu, IntPtr hInstance, IntPtr lpParam);
+
+        [DllImport("user32.dll")]
+        private static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+
+        [DllImport("user32.dll")]
+        private static extern bool UpdateWindow(IntPtr hWnd);
+
+        [DllImport("user32.dll")]
+        private static extern sbyte GetMessage(out MSG lpMsg, IntPtr hWnd, uint wMsgFilterMin, uint wMsgFilterMax);
+
+        [DllImport("user32.dll")]
+        private static extern bool TranslateMessage(ref MSG lpMsg);
+
+        [DllImport("user32.dll")]
+        private static extern IntPtr DispatchMessage(ref MSG lpMsg);
+
+        [DllImport("user32.dll")]
+        private static extern IntPtr DefWindowProc(IntPtr hWnd, uint uMsg, IntPtr wParam, IntPtr lParam);
+
+        [DllImport("user32.dll")]
+        private static extern bool PostMessage(IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam);
+
+        [DllImport("user32.dll")]
+        private static extern bool DestroyWindow(IntPtr hWnd);
+
+        [DllImport("user32.dll")]
+        private static extern void PostQuitMessage(int nExitCode);
+
+        [DllImport("kernel32.dll")]
+        private static extern IntPtr GetModuleHandle(string lpModuleName);
+
+        private const int WS_OVERLAPPEDWINDOW = 0x00CF0000;
+        private const int WS_VISIBLE = 0x10000000;
+        private const int SW_SHOW = 5;
+        private const uint WM_DESTROY = 0x0002;
+        private const uint WM_CLOSE = 0x0010;
+
+        private static Thread _uiThread;
+        private static IntPtr _hwnd = IntPtr.Zero;
+        private static WndProc _wndProcDelegate;
+        private static readonly object _lock = new object();
+
+        private static IntPtr CustomWndProc(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam) {
+            if (msg == WM_CLOSE) {
+                DestroyWindow(hWnd);
+                return IntPtr.Zero;
+            }
+            if (msg == WM_DESTROY) {
+                PostQuitMessage(0);
+                return IntPtr.Zero;
+            }
+            return DefWindowProc(hWnd, msg, wParam, lParam);
+        }
+
+        public static IntPtr StartWindow(string title, int width, int height) {
+            lock (_lock) {
+                if (_uiThread != null) {
+                    return _hwnd;
+                }
+                var ready = new ManualResetEvent(false);
+                _wndProcDelegate = CustomWndProc;
+                _uiThread = new Thread(() => {
+                    string className = "HerdrOpsFixtureWindowClass_" + Guid.NewGuid().ToString("N");
+                    IntPtr hInstance = GetModuleHandle(null);
+                    var wcx = new WNDCLASSEX {
+                        cbSize = Marshal.SizeOf(typeof(WNDCLASSEX)),
+                        style = 0,
+                        lpfnWndProc = Marshal.GetFunctionPointerForDelegate(_wndProcDelegate),
+                        cbClsExtra = 0,
+                        cbWndExtra = 0,
+                        hInstance = hInstance,
+                        hIcon = IntPtr.Zero,
+                        hCursor = IntPtr.Zero,
+                        hbrBackground = (IntPtr)6,
+                        lpszMenuName = null,
+                        lpszClassName = className,
+                        hIconSm = IntPtr.Zero
+                    };
+                    RegisterClassEx(ref wcx);
+                    _hwnd = CreateWindowEx(
+                        0, className, title,
+                        WS_OVERLAPPEDWINDOW | WS_VISIBLE,
+                        100, 100, width, height,
+                        IntPtr.Zero, IntPtr.Zero, hInstance, IntPtr.Zero);
+
+                    ShowWindow(_hwnd, SW_SHOW);
+                    UpdateWindow(_hwnd);
+                    ready.Set();
+
+                    MSG msg;
+                    while (GetMessage(out msg, IntPtr.Zero, 0, 0) > 0) {
+                        TranslateMessage(ref msg);
+                        DispatchMessage(ref msg);
+                    }
+                });
+                _uiThread.SetApartmentState(ApartmentState.STA);
+                _uiThread.IsBackground = true;
+                _uiThread.Start();
+                if (!ready.WaitOne(5000)) {
+                    throw new TimeoutException("Live fixture window did not show within 5 seconds.");
+                }
+                ready.Close();
+                return _hwnd;
+            }
+        }
+
+        public static void StopWindow() {
+            lock (_lock) {
+                if (_hwnd != IntPtr.Zero) {
+                    PostMessage(_hwnd, WM_CLOSE, IntPtr.Zero, IntPtr.Zero);
+                }
+                _hwnd = IntPtr.Zero;
+                _uiThread = null;
+            }
+        }
+
+        public static IntPtr CurrentWindowHandle {
+            get { return _hwnd; }
+        }
+    }
+}
+'@
+
+    $psScript = @'
 param(
     [ValidateSet('App','Core')][string]$Role,
     [string]$PipeName,
@@ -234,7 +401,8 @@ if ($Role -eq 'Core') {
     while ($true) { Start-Sleep -Seconds 1 }
     exit 0
 }
-Add-Type -AssemblyName System.Windows.Forms
+$csharp = @__CSHARP_CODE__@
+Add-Type -TypeDefinition $csharp
 $process = [Diagnostics.Process]::GetCurrentProcess()
 $startUtc = $process.StartTime.ToUniversalTime().ToString('O',[Globalization.CultureInfo]::InvariantCulture)
 $client = $null
@@ -250,7 +418,6 @@ while ($null -eq $client) {
 $reader = New-Object IO.StreamReader($client, (New-Object Text.UTF8Encoding($false)), $false, 65536, $true)
 $writer = New-Object IO.StreamWriter($client, (New-Object Text.UTF8Encoding($false)), 65536, $true)
 $writer.AutoFlush = $true
-$form = $null
 function Get-FixtureCaptures([string]$ObservedUtc, [string]$LanguageFilter) {
     $items = @()
     foreach ($language in @('Thai','English')) {
@@ -271,14 +438,9 @@ try {
     while ($null -ne ($line = $reader.ReadLine())) {
         $request = $line | ConvertFrom-Json
         $stage = [string]$request.stage
-        if ($stage -eq 'PostFirstWindowShown' -and $null -eq $form) {
-            $form = New-Object Windows.Forms.Form
-            $form.Text = 'HerdrOps renderer fixture'
-            $form.Width = 320
-            $form.Height = 200
-            $form.Show()
-            [Windows.Forms.Application]::DoEvents()
-            Start-Sleep -Milliseconds 100
+        if ($stage -eq 'PostFirstWindowShown') {
+            $null = [HerdrOps.Testing.NativeWindowFixture]::StartWindow('HerdrOps renderer fixture', 320, 200)
+            $process.Refresh()
         }
         if ($stage -eq 'AfterThaiCaptures') {
             $captureLanguageRoot = Join-Path $CaptureRoot 'captures\Thai'
@@ -303,7 +465,8 @@ try {
         $coreProcess.Refresh()
         $coreStartUtc = $coreProcess.StartTime.ToUniversalTime().ToString('O',[Globalization.CultureInfo]::InvariantCulture)
         $coreBytes = [IO.File]::ReadAllBytes($CorePath)
-        $hwnd = [Int64]$process.MainWindowHandle
+        $hwnd = [Int64][HerdrOps.Testing.NativeWindowFixture]::CurrentWindowHandle
+        if ($hwnd -eq 0) { $hwnd = [Int64]$process.MainWindowHandle }
         $hasWindow = $hwnd -ne 0
         $captures = if ($stage -eq 'AfterThaiCaptures') { @(Get-FixtureCaptures ([DateTimeOffset]::UtcNow.ToString('O',[Globalization.CultureInfo]::InvariantCulture)) 'Thai') } elseif ($stage -eq 'AfterEnglishCaptures' -or $stage -eq 'Final') { @(Get-FixtureCaptures ([DateTimeOffset]::UtcNow.ToString('O',[Globalization.CultureInfo]::InvariantCulture)) 'Both') } else { @() }
         $observedUtc = [DateTimeOffset]::UtcNow.ToString('O',[Globalization.CultureInfo]::InvariantCulture)
@@ -320,13 +483,14 @@ try {
         $writer.WriteLine(($response | ConvertTo-Json -Depth 30 -Compress))
     }
 } finally {
-    if ($null -ne $form) { $form.Close(); $form.Dispose() }
+    try { [HerdrOps.Testing.NativeWindowFixture]::StopWindow() } catch { }
     if ($null -ne $writer) { $writer.Dispose() }
     if ($null -ne $reader) { $reader.Dispose() }
     if ($null -ne $client) { $client.Dispose() }
 }
 '@
-    [IO.File]::WriteAllText($Path, $scriptText, (New-Object Text.UTF8Encoding($false)))
+    $scriptContent = $psScript.Replace('@__CSHARP_CODE__@', "@'`n$csharpCode`n'@")
+    [IO.File]::WriteAllText($Path, $scriptContent, (New-Object Text.UTF8Encoding($false)))
     return $Path
 }
 
@@ -397,6 +561,21 @@ function Invoke-LiveTargetFixtureCase([string]$Root,[string]$RepositoryRoot,[str
                 -TargetObservationPipeName $pipeName `
                 -TestEnvironmentSnapshotPath $environmentPath
             if ($result.CaptureMode -cne 'LiveOperator' -or $result.ActualHerdrRuntime -cne 'NOT_OBSERVED' -or [bool]$result.ReleaseCredit -or $result.CaptureCount -ne 20 -or $result.LifecycleStages -ne 8) { throw 'Positive LiveOperator fixture did not preserve exact no-credit result boundaries.' }
+
+            # HWND stability regression: verify all post-first-HWND stages (stages 2-7) maintained the exact same responsive window HWND and App ownership
+            $receiptObj = Get-Content -Raw -LiteralPath (Join-Path $output 'proofs/target-binding.json') | ConvertFrom-Json
+            $postFirstObservations = @($receiptObj.observations | Where-Object { [int]$_.ordinal -ge 2 })
+            if ($postFirstObservations.Count -ne 6) { throw "Expected 6 post-first-HWND observations; found $($postFirstObservations.Count)." }
+            $firstObs = $postFirstObservations[0]
+            $expectedHwnd = [Int64]$firstObs.window.hwnd
+            if ($expectedHwnd -eq 0 -or -not [bool]$firstObs.window.hasAnyHwnd) { throw 'First post-first-HWND observation did not report a non-zero live HWND.' }
+            $expectedOwnerPid = [int]$firstObs.window.ownerPid
+            $expectedOwnerStartUtc = [string]$receiptObj.appProcess.startTimeUtc
+            foreach ($obs in $postFirstObservations) {
+                if (-not [bool]$obs.window.hasAnyHwnd -or [Int64]$obs.window.hwnd -ne $expectedHwnd -or [int]$obs.window.ownerPid -ne $expectedOwnerPid -or [string]$obs.window.ownerStartTimeUtc -cne $expectedOwnerStartUtc) {
+                    throw "Post-first-HWND observation '$($obs.stage)' HWND ($($obs.window.hwnd)) or owner ($($obs.window.ownerPid)) changed from initial HWND ($expectedHwnd) / owner ($expectedOwnerPid)."
+                }
+            }
             return $result
         }
         $expectedPatterns = @{
