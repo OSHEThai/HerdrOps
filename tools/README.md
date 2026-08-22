@@ -24,9 +24,14 @@ Build, verification, GitHub roadmap, evidence capture, and packaging helpers liv
 # From a fresh, unmoved pane in the authorized Acceptance control session,
 # capture target Agent Lab
 # snapshot/Agent-status-event/reconnect evidence. The two sockets must differ.
+# Replace both values with the separately approved final candidate identities.
+$expectedSourceCommit = '<approved-source-commit>'
+$expectedSourceTree = '<approved-source-tree>'
 $targetAgentLabSocket = Join-Path $env:APPDATA 'herdr\herdr.sock'
 ./tools/Test-V02HerdrRuntime.ps1 `
     -TargetHerdrSocketPath $targetAgentLabSocket `
+    -ExpectedSourceCommit $expectedSourceCommit `
+    -ExpectedSourceTree $expectedSourceTree `
     -DurationSeconds 120
 
 # From a standard non-elevated pane in the separate Acceptance control session,
@@ -34,6 +39,8 @@ $targetAgentLabSocket = Join-Path $env:APPDATA 'herdr\herdr.sock'
 # Restart only the target Agent Lab session when the gate prompts for it.
 ./tools/Test-V02LiveRuntimeAcceptance.ps1 `
     -TargetHerdrSocketPath $targetAgentLabSocket `
+    -ExpectedSourceCommit $expectedSourceCommit `
+    -ExpectedSourceTree $expectedSourceTree `
     -Language Thai `
     -DurationSeconds 600
 
@@ -190,7 +197,7 @@ dotnet artifacts/bin/HerdrOps.Core/release/HerdrOps.Core.dll trace-herdr-termina
   -CandidateArchiveSha256 '<64-hex>' `
   -CandidateArchiveBytes <bytes>
 
-The composite gate binds production WPF captures to exact state hashes from the admitted Herdr Core trace and requires each Event phase to contain exactly one Core-labelled `pane.agent_status_changed` transition with matching accepted workspace/pane/status and App Agent evidence. It admits either a direct Event sequence or exactly one unlabelled connected snapshot reconciliation immediately before that Event; extra sequences, Events, topology changes or unrelated panes fail closed. It verifies Dashboard-close Widget continuity, waits for five seconds of an unchanged complete runtime fingerprint with SHA-256-chained append-only phase provenance, and then measures Widget latency plus combined Core/App idle resources. Dashboard and capture resources are released before managed large-object-heap cleanup, and weak references must show every tracked capture bitmap was collected; no native working-set trim is used and the 180 MB target is unchanged. The gate also compares prelaunch and post-run App/Core executable hashes, emits a `NoRuntimeCredit` report on every terminating failure, fails closed outside an authorized Herdr pane, and does not control the Herdr session itself.
+The composite gate binds production WPF captures to exact state hashes from the admitted Herdr Core trace and requires each Event phase to contain exactly one Core-labelled `pane.agent_status_changed` transition with matching accepted workspace/pane/status and App Agent evidence. It admits either a direct Event sequence or exactly one unlabelled connected snapshot reconciliation immediately before that Event; extra sequences, Events, topology changes or unrelated panes fail closed. It verifies Dashboard-close Widget continuity, waits for five seconds of an unchanged complete runtime fingerprint with SHA-256-chained append-only phase provenance, and then measures Widget latency plus combined Core/App idle resources. Dashboard and capture resources are released before managed large-object-heap cleanup, and weak references must show every tracked capture bitmap was collected; no native working-set trim is used. Under D-023, a future exact v0.2 candidate may use the 255 MiB (`267,386,880` byte) combined-maximum target only when producer and independent validator bind profile SHA-256 `96D01ED15A536F2DF50B59B43CFDEB3683DCE8667AE2E7BF6A96124182FE13A3`, schema SHA-256 `98AC6A2D823D88960A79299B7B20424FF60E9C5299D458A30AB9A42BE4FC0FB3`, every independently observed `environmentBinding` leaf and every pinned/recomputed or observed `candidatePolicy` leaf, including process-wide WPF `SoftwareOnly`; any mismatch fails closed. Thai and English require separate complete report/capture sets with observed languages equal to their CLI requests, disjoint capture roots and an atomic same-candidate matrix manifest; that automated manifest remains pending human approval. Prior 180 MiB failures remain `NoRuntimeCredit`, and v0.7 remains at 180 MiB. The gate also compares prelaunch and post-run App/Core executable hashes, emits a `NoRuntimeCredit` report on every terminating failure, fails closed outside an authorized Herdr pane, and does not control the Herdr session itself.
 
 The v0.3 activity-pipeline gate is Contract plus Synthetic evidence only. It does not claim a live Herdr trace, process telemetry, file collection, bounded `pane.read`, redaction against actual data, or v0.3 release readiness.
 

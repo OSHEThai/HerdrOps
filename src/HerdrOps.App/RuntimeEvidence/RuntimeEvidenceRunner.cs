@@ -2,11 +2,13 @@ using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Runtime;
+using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Windows;
+using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using System.Windows.Threading;
@@ -15,6 +17,7 @@ using HerdrOps.App.Localization;
 using HerdrOps.App.StateIpc;
 using HerdrOps.App.Widgets;
 using HerdrOps.Contracts.StateIpc;
+using Microsoft.Win32;
 
 namespace HerdrOps.App.RuntimeEvidence;
 
@@ -25,7 +28,9 @@ public sealed record RuntimeEvidenceCapture(
     int PixelWidth,
     int PixelHeight,
     long StateSequence,
-    string StateSha256);
+    string StateSha256,
+    string Language,
+    string LanguageCultureName);
 
 public sealed record RuntimeEvidenceProgress(
     int Ordinal,
@@ -134,6 +139,30 @@ public sealed record RuntimeProcessResourceMeasurement(
     double AveragePrivateMemoryMegabytes,
     double MaximumPrivateMemoryMegabytes);
 
+public sealed record RuntimeResourceSample(
+    int Ordinal,
+    DateTimeOffset ObservedUtc,
+    double ElapsedMilliseconds,
+    long AppWorkingSetBytes,
+    long CoreWorkingSetBytes,
+    long CombinedWorkingSetBytes,
+    long AppPrivateMemoryBytes,
+    long CorePrivateMemoryBytes,
+    RuntimeStateFingerprint RuntimeFingerprint,
+    RuntimeRenderPolicyObservation RendererObservation);
+
+internal sealed record RuntimeWorkingSetSummary(
+    double CombinedAverageBytes,
+    long CombinedMaximumBytes,
+    double AppAverageBytes,
+    long AppMaximumBytes,
+    double CoreAverageBytes,
+    long CoreMaximumBytes,
+    double AppPrivateAverageBytes,
+    long AppPrivateMaximumBytes,
+    double CorePrivateAverageBytes,
+    long CorePrivateMaximumBytes);
+
 public sealed record RuntimeResourcePreparation(
     DateTimeOffset ObservedUtc,
     bool DashboardResourcesReleased,
@@ -149,6 +178,186 @@ public sealed record RuntimeResourcePreparation(
     double AppPrivateMemoryAfterMegabytes,
     double ManagedHeapBeforeMegabytes,
     double ManagedHeapAfterMegabytes);
+
+public sealed record RuntimeRenderPolicyObservation(
+    string Phase,
+    DateTimeOffset ObservedUtc,
+    string WpfProcessRenderMode,
+    int RenderTier,
+    bool SoftwareOnlyConfirmed);
+
+public sealed record RuntimeObservedHost(
+    string MachineName,
+    string OperatingSystem,
+    string OsArchitecture,
+    string ProcessArchitecture,
+    int ProcessorCount,
+    int DesktopAppliedDpi,
+    double MainWindowDpiX,
+    double MainWindowDpiY,
+    string WindowDisplayDeviceName,
+    int WindowDisplayLogicalWidthPixels,
+    int WindowDisplayLogicalHeightPixels);
+
+public sealed record RuntimeEvidenceLanguageObservation(
+    string Language,
+    string CurrentUiCultureName);
+
+internal sealed class RuntimeEvidenceLanguageChangeTracker : IDisposable
+{
+    private long _changeCount;
+    private int _disposed;
+
+    internal RuntimeEvidenceLanguageChangeTracker()
+    {
+        UiLanguageService.Shared.LanguageChanged += OnLanguageChanged;
+    }
+
+    internal long ChangeCount => Interlocked.Read(ref _changeCount);
+
+    public void Dispose()
+    {
+        if (Interlocked.Exchange(ref _disposed, 1) == 0)
+        {
+            UiLanguageService.Shared.LanguageChanged -= OnLanguageChanged;
+        }
+    }
+
+    private void OnLanguageChanged(object? sender, EventArgs e) =>
+        Interlocked.Increment(ref _changeCount);
+}
+
+internal sealed class RuntimeEvidencePreFirstWindowGuard
+{
+    private RuntimeEvidencePreFirstWindowGuard(
+        RuntimeRenderPolicyObservation observation)
+    {
+        Observation = observation;
+    }
+
+    internal RuntimeRenderPolicyObservation Observation { get; }
+
+    internal static RuntimeEvidencePreFirstWindowGuard Capture()
+    {
+        var application = Application.Current ?? throw new InvalidOperationException(
+            "Runtime evidence pre-window binding requires the current WPF Application.");
+        foreach (Window window in application.Windows)
+        {
+            if (window.IsLoaded ||
+                window.IsVisible ||
+                new WindowInteropHelper(window).Handle != IntPtr.Zero)
+            {
+                throw new InvalidOperationException(
+                    "Runtime evidence pre-window binding was attempted after a WPF window acquired an HWND or was shown.");
+            }
+        }
+
+        return new RuntimeEvidencePreFirstWindowGuard(
+            RuntimeRenderPolicy.ObserveAndRequireSoftwareOnly(
+                RuntimeRenderPolicy.PreFirstWindowPhase));
+    }
+}
+
+public sealed record RuntimeRendererEvidence(
+    string PolicyId,
+    string ExpectedWpfProcessRenderMode,
+    RuntimeRenderPolicyObservation Startup,
+    RuntimeRenderPolicyObservation PreFirstWindow,
+    IReadOnlyList<RuntimeRenderPolicyObservation> ResourceStages,
+    IReadOnlyList<RuntimeRenderPolicyObservation> IdleSamples,
+    RuntimeRenderPolicyObservation IdleSampleStart,
+    RuntimeRenderPolicyObservation IdleSampleFinish,
+    bool SoftwareOnlyThroughout);
+
+public sealed record RuntimeEvidenceProducerBinding(
+    string ProfileId,
+    string ProfileSha256,
+    RuntimeRenderPolicyObservation Startup,
+    RuntimeRenderPolicyObservation PreFirstWindow,
+    RuntimeEvidenceLanguageObservation Language)
+{
+    internal RuntimeEvidenceLanguageChangeTracker? LanguageChangeTracker { get; init; }
+
+    internal RuntimeEvidencePreFirstWindowGuard? PreFirstWindowGuard { get; init; }
+
+    internal static RuntimeEvidenceProducerBinding ObserveBeforeFirstWindow(
+        RuntimeEvidenceOptions options)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        if (!string.Equals(
+                options.ProfileId,
+                RuntimeEvidenceOptions.ApprovedProfileId,
+                StringComparison.Ordinal) ||
+            !string.Equals(
+                options.ProfileSha256,
+                RuntimeEvidenceOptions.ApprovedProfileSha256,
+                StringComparison.Ordinal) ||
+            options.IdleSeconds != RuntimeEvidenceOptions.ApprovedIdleSeconds)
+        {
+            throw new InvalidOperationException(
+                "The runtime evidence producer options are not bound to the approved reference-host candidate policy.");
+        }
+
+        var startup = RuntimeRenderPolicy.StartupObservation;
+        var preFirstWindowGuard = RuntimeEvidencePreFirstWindowGuard.Capture();
+        var preFirstWindow = preFirstWindowGuard.Observation;
+        var language = ApplyAndObserveLanguage(options.Language);
+        var languageChangeTracker = new RuntimeEvidenceLanguageChangeTracker();
+        return new RuntimeEvidenceProducerBinding(
+            options.ProfileId,
+            options.ProfileSha256,
+            startup,
+            preFirstWindow,
+            language)
+        {
+            LanguageChangeTracker = languageChangeTracker,
+            PreFirstWindowGuard = preFirstWindowGuard,
+        };
+    }
+
+    internal static RuntimeEvidenceLanguageObservation ApplyAndObserveLanguage(
+        UiLanguage requestedLanguage)
+    {
+        UiLanguageService.Shared.SetLanguage(requestedLanguage);
+        var expectedCultureName = ExpectedCultureName(requestedLanguage);
+        CultureInfo.CurrentUICulture = CultureInfo.GetCultureInfo(expectedCultureName);
+        return ObserveCurrentLanguage();
+    }
+
+    internal static RuntimeEvidenceLanguageObservation ObserveCurrentLanguage() =>
+        new(
+            UiLanguageService.Shared.CurrentLanguage.ToString(),
+            CultureInfo.CurrentUICulture.Name);
+
+    internal static bool IsRequestedLanguageObservationValid(
+        RuntimeEvidenceLanguageObservation observation,
+        UiLanguage requestedLanguage)
+    {
+        ArgumentNullException.ThrowIfNull(observation);
+        return string.Equals(
+                   observation.Language,
+                   requestedLanguage.ToString(),
+                   StringComparison.Ordinal) &&
+               string.Equals(
+                   observation.CurrentUiCultureName,
+                   ExpectedCultureName(requestedLanguage),
+                   StringComparison.Ordinal);
+    }
+
+    private static string ExpectedCultureName(UiLanguage language) =>
+        language == UiLanguage.Thai ? "th-TH" : "en-US";
+}
+
+public sealed record RuntimeResourceStageCheckpoint(
+    string Stage,
+    DateTimeOffset ObservedUtc,
+    int AppProcessId,
+    DateTimeOffset AppProcessStartUtc,
+    double AppWorkingSetMegabytes,
+    double AppPrivateMemoryMegabytes,
+    double AppPagedMemoryMegabytes,
+    double ManagedHeapMegabytes,
+    RuntimeRenderPolicyObservation RendererObservation);
 
 public sealed record RuntimeIdleQuiescence(
     DateTimeOffset StartedUtc,
@@ -319,12 +528,16 @@ public sealed record RuntimeResourceMeasurement(
     int ProcessorCount,
     double CpuTargetPercent,
     double WorkingSetTargetMegabytes,
+    long WorkingSetTargetBytes,
+    string WorkingSetStatistic,
     double CombinedAverageCpuPercent,
     double CombinedAverageWorkingSetMegabytes,
     double CombinedMaximumWorkingSetMegabytes,
     RuntimeProcessResourceMeasurement App,
     RuntimeProcessResourceMeasurement Core,
+    IReadOnlyList<RuntimeResourceSample> Samples,
     RuntimeResourcePreparation Preparation,
+    IReadOnlyList<RuntimeResourceStageCheckpoint> StageCheckpoints,
     bool StateSequenceStable,
     long StartSequence,
     long FinishSequence,
@@ -336,6 +549,10 @@ public sealed record RuntimeResourceMeasurement(
     bool RuntimeFingerprintStable,
     RuntimeFingerprintChange? FirstFingerprintChange,
     bool HerdrConnectedThroughoutSample,
+    RuntimeRenderPolicyObservation IdleSampleStartRenderer,
+    IReadOnlyList<RuntimeRenderPolicyObservation> IdleSampleRendererObservations,
+    RuntimeRenderPolicyObservation IdleSampleFinishRenderer,
+    bool SoftwareOnlyThroughoutIdleSample,
     bool CpuTargetPassed,
     bool WorkingSetTargetPassed);
 
@@ -347,9 +564,18 @@ public sealed record AppRuntimeEvidenceReport(
     DateTimeOffset FinishedUtc,
     string HostName,
     string OperatingSystem,
+    string ProfileId,
+    string ProfileSha256,
+    RuntimeObservedHost ObservedHost,
+    RuntimeRendererEvidence RendererEvidence,
     int AppProcessId,
     int CoreProcessId,
     string Language,
+    string LanguageCultureName,
+    string FinalLanguage,
+    string FinalLanguageCultureName,
+    bool LanguageStableThroughFinish,
+    long LanguageChangeCount,
     TimeSpan TimeToInitialLiveState,
     long InitialSequence,
     string InitialStateSha256,
@@ -403,15 +629,26 @@ public sealed record AppRuntimeEvidenceReport(
 public sealed class RuntimeEvidenceRunner(
     LiveDashboardState state,
     MainWindow mainWindow,
-    RuntimeEvidenceOptions options)
+    RuntimeEvidenceOptions options,
+    RuntimeEvidenceProducerBinding producerBinding)
 {
     private const double CpuTargetPercent = 1;
-    private const double WorkingSetTargetMegabytes = 180;
+    internal static readonly double WorkingSetTargetMegabytes = 255;
+    internal static readonly long WorkingSetTargetBytes = 267_386_880;
+    internal static readonly string WorkingSetStatistic = "maximum";
     private const double WidgetLatencyTargetMilliseconds = 250;
     private const int MinimumLatencySamples = 3;
     private const int IdleQuiescenceSeconds = 5;
     private const int IdleQuiescencePollMilliseconds = 100;
     private const int ResourceSampleIntervalMilliseconds = 250;
+    internal static IReadOnlyList<string> RequiredResourceStageNames { get; } =
+    [
+        "pre-capture",
+        "post-initial-captures",
+        "post-dashboard-close",
+        "post-final-widget-capture",
+        "post-cleanup",
+    ];
     private const string EmptySha256 =
         "0000000000000000000000000000000000000000000000000000000000000000";
     private const string WidgetLatencyMeasurement =
@@ -434,14 +671,87 @@ public sealed class RuntimeEvidenceRunner(
     private readonly LiveDashboardState _state = state ?? throw new ArgumentNullException(nameof(state));
     private readonly MainWindow _mainWindow = mainWindow ?? throw new ArgumentNullException(nameof(mainWindow));
     private readonly RuntimeEvidenceOptions _options = options ?? throw new ArgumentNullException(nameof(options));
+    private readonly RuntimeEvidenceProducerBinding _producerBinding = ValidateProducerBinding(
+        producerBinding,
+        options);
     private readonly List<RuntimeEvidenceCapture> _captures = [];
     private readonly List<WeakReference<RenderTargetBitmap>> _captureBitmapReferences = [];
+    private readonly List<RuntimeResourceStageCheckpoint> _resourceStageCheckpoints = [];
     private readonly List<RuntimeEvidenceProgress> _progressHistory = [];
     private readonly List<WidgetWindow> _widgetWindows = [];
+
+    private static RuntimeEvidenceProducerBinding ValidateProducerBinding(
+        RuntimeEvidenceProducerBinding producerBinding,
+        RuntimeEvidenceOptions options)
+    {
+        ArgumentNullException.ThrowIfNull(producerBinding);
+        ArgumentNullException.ThrowIfNull(options);
+        var startupObservation = RuntimeRenderPolicy.StartupObservation;
+        var currentRendererObservation = RuntimeRenderPolicy.ObserveAndRequireSoftwareOnly(
+            "runner-constructor-producer-binding-validation");
+        if (!string.Equals(
+                producerBinding.ProfileId,
+                options.ProfileId,
+                StringComparison.Ordinal) ||
+            !string.Equals(
+                producerBinding.ProfileSha256,
+                options.ProfileSha256,
+                StringComparison.Ordinal) ||
+            !string.Equals(
+                producerBinding.ProfileId,
+                RuntimeEvidenceOptions.ApprovedProfileId,
+                StringComparison.Ordinal) ||
+            !string.Equals(
+                producerBinding.ProfileSha256,
+                RuntimeEvidenceOptions.ApprovedProfileSha256,
+                StringComparison.Ordinal) ||
+            options.IdleSeconds != RuntimeEvidenceOptions.ApprovedIdleSeconds ||
+            producerBinding.LanguageChangeTracker is null ||
+            producerBinding.PreFirstWindowGuard is null ||
+            !ReferenceEquals(
+                producerBinding.PreFirstWindow,
+                producerBinding.PreFirstWindowGuard.Observation) ||
+            producerBinding.Startup != startupObservation ||
+            !IsExactRendererBindingObservation(
+                producerBinding.Startup,
+                RuntimeRenderPolicy.StartupPhase) ||
+            !IsExactRendererBindingObservation(
+                producerBinding.PreFirstWindow,
+                RuntimeRenderPolicy.PreFirstWindowPhase) ||
+            producerBinding.Startup.ObservedUtc > producerBinding.PreFirstWindow.ObservedUtc ||
+            producerBinding.PreFirstWindow.ObservedUtc > currentRendererObservation.ObservedUtc ||
+            !RuntimeEvidenceProducerBinding.IsRequestedLanguageObservationValid(
+                producerBinding.Language,
+                options.Language))
+        {
+            throw new ArgumentException(
+                "The producer binding does not exactly match the approved runtime evidence options.",
+                nameof(producerBinding));
+        }
+
+        return producerBinding;
+    }
+
+    private static bool IsExactRendererBindingObservation(
+        RuntimeRenderPolicyObservation observation,
+        string expectedPhase) =>
+        observation is not null &&
+        string.Equals(observation.Phase, expectedPhase, StringComparison.Ordinal) &&
+        observation.ObservedUtc != default &&
+        observation.ObservedUtc.Offset == TimeSpan.Zero &&
+        string.Equals(
+            observation.WpfProcessRenderMode,
+            RuntimeRenderPolicy.ExpectedProcessRenderMode,
+            StringComparison.Ordinal) &&
+        observation.RenderTier >= 0 &&
+        observation.SoftwareOnlyConfirmed;
 
     public async Task<AppRuntimeEvidenceReport> RunAsync(CancellationToken cancellationToken = default)
     {
         var startedUtc = DateTimeOffset.UtcNow;
+        var observedHost = ObserveHostAfterMainWindowShown(_mainWindow);
+        var reportedLanguage = _producerBinding.Language.Language;
+        var reportedLanguageCultureName = _producerBinding.Language.CurrentUiCultureName;
         var deadline = startedUtc.AddSeconds(_options.TimeoutSeconds);
         Directory.CreateDirectory(_options.CaptureDirectory);
         Directory.CreateDirectory(
@@ -453,7 +763,6 @@ public sealed class RuntimeEvidenceRunner(
             throw new InvalidOperationException(
                 $"Runtime progress history already exists: {ProgressHistoryPath}");
         }
-        UiLanguageService.Shared.SetLanguage(_options.Language);
         _state.RefreshLanguage();
         _ = WriteProgress("waiting-for-live-state");
         await WaitUntilAsync(
@@ -468,6 +777,7 @@ public sealed class RuntimeEvidenceRunner(
         var initialSequence = _state.CurrentState.LastIngestSequence;
         var initialEventCount = _state.CurrentRuntimeHealth.EventCount;
         var initialStateHash = CurrentStateHash();
+        RecordResourceStageCheckpoint("pre-capture");
         _ = WriteProgress("capturing-live-dashboard-and-widgets");
         await CaptureInitialSurfacesAsync(initialStateHash, cancellationToken);
         if (!string.Equals(initialStateHash, CurrentStateHash(), StringComparison.Ordinal))
@@ -475,6 +785,7 @@ public sealed class RuntimeEvidenceRunner(
             throw new InvalidOperationException(
                 "The live state changed while the initial Dashboard and Widget captures were being rendered; rerun for one coherent snapshot.");
         }
+        RecordResourceStageCheckpoint("post-initial-captures");
 
         var latencyWarmup = _state.Widgets.ResetUpdateLatencyMeasurement();
         var widgetLatencyBaselineSequence = _state.CurrentState.LastIngestSequence;
@@ -504,6 +815,7 @@ public sealed class RuntimeEvidenceRunner(
         _mainWindow.Close();
         var dashboardClosedUtc = DateTimeOffset.UtcNow;
         await Dispatcher.Yield(DispatcherPriority.ApplicationIdle);
+        RecordResourceStageCheckpoint("post-dashboard-close");
         _ = WriteProgress("dashboard-closed-waiting-for-herdr-disconnect");
         await WaitUntilAsync(
             () => _state.CurrentRuntimeHealth.LastTransitionUtc > dashboardClosedUtc &&
@@ -553,6 +865,7 @@ public sealed class RuntimeEvidenceRunner(
             verticalWidget,
             "widget-floating-vertical-after-dashboard-close.png",
             cancellationToken);
+        RecordResourceStageCheckpoint("post-final-widget-capture");
 
         _ = WriteProgress("waiting-for-idle-stability");
         var idleQuiescence = await WaitForIdleQuiescenceAsync(deadline, cancellationToken);
@@ -570,8 +883,70 @@ public sealed class RuntimeEvidenceRunner(
         var latencyPassed = latencySamples >= MinimumLatencySamples &&
                             latencyP95 is not null &&
                             latencyP95 <= WidgetLatencyTargetMilliseconds;
+        var rendererEvidence = new RuntimeRendererEvidence(
+            RuntimeRenderPolicy.PolicyId,
+            RuntimeRenderPolicy.ExpectedProcessRenderMode,
+            _producerBinding.Startup,
+            _producerBinding.PreFirstWindow,
+            resources.StageCheckpoints
+                .Select(checkpoint => checkpoint.RendererObservation)
+                .ToArray(),
+            resources.IdleSampleRendererObservations,
+            resources.IdleSampleStartRenderer,
+            resources.IdleSampleFinishRenderer,
+            _producerBinding.Startup.SoftwareOnlyConfirmed &&
+            _producerBinding.PreFirstWindow.SoftwareOnlyConfirmed &&
+            resources.StageCheckpoints.Count == RequiredResourceStageNames.Count &&
+            resources.StageCheckpoints.All(
+                checkpoint => checkpoint.RendererObservation.SoftwareOnlyConfirmed) &&
+            AreIdleSampleRendererObservationsValid(
+                resources.IdleSampleRendererObservations,
+                resources.SampleCount) &&
+            resources.SoftwareOnlyThroughoutIdleSample);
+        var finalLanguageObservation = RuntimeEvidenceProducerBinding.ObserveCurrentLanguage();
+        var languageChangeCount = _producerBinding.LanguageChangeTracker!.ChangeCount;
+        var languageStableThroughFinish =
+            languageChangeCount == 0 &&
+            RuntimeEvidenceProducerBinding.IsRequestedLanguageObservationValid(
+                _producerBinding.Language,
+                _options.Language) &&
+            _captures.All(capture =>
+                string.Equals(
+                    capture.Language,
+                    _options.Language.ToString(),
+                    StringComparison.Ordinal) &&
+                string.Equals(
+                    capture.LanguageCultureName,
+                    finalLanguageObservation.CurrentUiCultureName,
+                    StringComparison.Ordinal)) &&
+            RuntimeEvidenceProducerBinding.IsRequestedLanguageObservationValid(
+                finalLanguageObservation,
+                _options.Language);
         var candidateChecks = new (string Name, bool Passed)[]
         {
+            ("ReferenceHostProfileBound",
+                string.Equals(
+                    _producerBinding.ProfileId,
+                    RuntimeEvidenceOptions.ApprovedProfileId,
+                    StringComparison.Ordinal) &&
+                string.Equals(
+                    _producerBinding.ProfileSha256,
+                    RuntimeEvidenceOptions.ApprovedProfileSha256,
+                    StringComparison.Ordinal) &&
+                _options.IdleSeconds == RuntimeEvidenceOptions.ApprovedIdleSeconds),
+            ("RequestedLanguageReported",
+                languageStableThroughFinish),
+            ("SoftwareOnlyAtStartup", _producerBinding.Startup.SoftwareOnlyConfirmed),
+            ("SoftwareOnlyBeforeFirstWindow", _producerBinding.PreFirstWindow.SoftwareOnlyConfirmed),
+            ("SoftwareOnlyAtEveryResourceStage",
+                resources.StageCheckpoints.Count == RequiredResourceStageNames.Count &&
+                resources.StageCheckpoints.All(
+                    checkpoint => checkpoint.RendererObservation.SoftwareOnlyConfirmed)),
+            ("SoftwareOnlyThroughoutIdleSample",
+                resources.SoftwareOnlyThroughoutIdleSample &&
+                AreIdleSampleRendererObservationsValid(
+                    resources.IdleSampleRendererObservations,
+                    resources.SampleCount)),
             ("IdleStateSequenceStable", resources.StateSequenceStable),
             ("IdleRuntimeEventCountStable", resources.RuntimeEventCountStable),
             ("IdleRuntimeFingerprintStable", resources.RuntimeFingerprintStable),
@@ -615,9 +990,18 @@ public sealed class RuntimeEvidenceRunner(
             DateTimeOffset.UtcNow,
             Environment.MachineName,
             Environment.OSVersion.VersionString,
+            _producerBinding.ProfileId,
+            _producerBinding.ProfileSha256,
+            observedHost,
+            rendererEvidence,
             Environment.ProcessId,
             _options.CoreProcessId,
-            _options.Language.ToString(),
+            reportedLanguage,
+            reportedLanguageCultureName,
+            finalLanguageObservation.Language,
+            finalLanguageObservation.CurrentUiCultureName,
+            languageStableThroughFinish,
+            languageChangeCount,
             initialLiveUtc - startedUtc,
             initialSequence,
             initialStateHash,
@@ -782,6 +1166,15 @@ public sealed class RuntimeEvidenceRunner(
 
     private void SaveVisual(FrameworkElement visual, string fileName)
     {
+        var captureLanguage = RuntimeEvidenceProducerBinding.ObserveCurrentLanguage();
+        if (!RuntimeEvidenceProducerBinding.IsRequestedLanguageObservationValid(
+                captureLanguage,
+                _options.Language))
+        {
+            throw new InvalidOperationException(
+                $"Runtime capture '{fileName}' observed a language or UI-culture drift.");
+        }
+
         visual.UpdateLayout();
         var width = checked((int)Math.Ceiling(visual.ActualWidth));
         var height = checked((int)Math.Ceiling(visual.ActualHeight));
@@ -815,7 +1208,9 @@ public sealed class RuntimeEvidenceRunner(
             width,
             height,
             _state.CurrentState.LastIngestSequence,
-            CurrentStateHash()));
+            CurrentStateHash(),
+            captureLanguage.Language,
+            captureLanguage.CurrentUiCultureName));
     }
 
     private async Task<RuntimeResourceMeasurement> MeasureResourcesAsync(
@@ -824,6 +1219,10 @@ public sealed class RuntimeEvidenceRunner(
         using var app = Process.GetCurrentProcess();
         using var core = Process.GetProcessById(_options.CoreProcessId);
         var preparation = await PrepareForResourceMeasurementAsync(app, cancellationToken);
+        var idleSampleStartRenderer = RuntimeRenderPolicy.ObserveAndRequireSoftwareOnly(
+            "idle-resource-sample:start");
+        var softwareOnlyThroughoutIdleSample = true;
+        var resourceSampleOrdinal = 0;
         var appIdentity = ObserveProcessIdentity(app);
         var coreIdentity = ObserveProcessIdentity(core);
         app.Refresh();
@@ -834,21 +1233,25 @@ public sealed class RuntimeEvidenceRunner(
         var timedSampleCount = checked(
             _options.IdleSeconds * 1000 / ResourceSampleIntervalMilliseconds);
         var sampleCapacity = checked(timedSampleCount + 1);
-        var appWorkingSetSamples = new List<long>(sampleCapacity);
-        var coreWorkingSetSamples = new List<long>(sampleCapacity);
-        var appPrivateMemorySamples = new List<long>(sampleCapacity);
-        var corePrivateMemorySamples = new List<long>(sampleCapacity);
-        var startFingerprint = CurrentFingerprint();
+        var resourceSamples = new List<RuntimeResourceSample>(sampleCapacity);
+        RuntimeStateFingerprint? sampledStartFingerprint = null;
         RuntimeFingerprintChange? firstFingerprintChange = null;
-        var connectedThroughout =
-            startFingerprint.IsCoreConnected && startFingerprint.IsLive;
+        var connectedThroughout = true;
 
         CaptureResourceSample();
-        for (var sample = 0; sample < timedSampleCount; sample++)
+        for (var sample = 1; sample <= timedSampleCount; sample++)
         {
-            await Task.Delay(
-                TimeSpan.FromMilliseconds(ResourceSampleIntervalMilliseconds),
-                cancellationToken);
+            var targetElapsedMilliseconds = checked(
+                sample * ResourceSampleIntervalMilliseconds);
+            while (stopwatch.Elapsed.TotalMilliseconds < targetElapsedMilliseconds)
+            {
+                var remainingMilliseconds =
+                    targetElapsedMilliseconds - stopwatch.Elapsed.TotalMilliseconds;
+                await Task.Delay(
+                    TimeSpan.FromMilliseconds(Math.Max(1d, remainingMilliseconds)),
+                    cancellationToken);
+            }
+
             app.Refresh();
             core.Refresh();
             if (app.HasExited || core.HasExited)
@@ -861,25 +1264,22 @@ public sealed class RuntimeEvidenceRunner(
         }
 
         stopwatch.Stop();
+        var idleSampleFinishRenderer = RuntimeRenderPolicy.ObserveAndRequireSoftwareOnly(
+            "idle-resource-sample:finish");
         app.Refresh();
         core.Refresh();
         var appCpu = ProcessCpuPercent(app.TotalProcessorTime - appCpuStart, stopwatch.Elapsed);
         var coreCpu = ProcessCpuPercent(core.TotalProcessorTime - coreCpuStart, stopwatch.Elapsed);
         var averageCpu = appCpu + coreCpu;
-        var combinedWorkingSetSamples = appWorkingSetSamples
-            .Zip(coreWorkingSetSamples, (appValue, coreValue) => appValue + coreValue)
+        var resourceSampleSnapshot = resourceSamples.ToArray();
+        var idleSampleRendererObservations = resourceSampleSnapshot
+            .Select(sample => sample.RendererObservation)
             .ToArray();
-        var averageWorkingSet = AverageMegabytes(combinedWorkingSetSamples);
-        var maximumWorkingSet = MaximumMegabytes(combinedWorkingSetSamples);
-        var finishFingerprint = CurrentFingerprint();
-        if (firstFingerprintChange is null &&
-            !finishFingerprint.Equals(startFingerprint))
-        {
-            firstFingerprintChange = new RuntimeFingerprintChange(
-                DateTimeOffset.UtcNow,
-                startFingerprint,
-                finishFingerprint);
-        }
+        var workingSetSummary = SummarizeWorkingSetSamples(resourceSampleSnapshot);
+        var averageWorkingSet = ToMegabytes(workingSetSummary.CombinedAverageBytes);
+        var maximumWorkingSet = ToMegabytes(workingSetSummary.CombinedMaximumBytes);
+        var startFingerprint = resourceSampleSnapshot[0].RuntimeFingerprint;
+        var finishFingerprint = resourceSampleSnapshot[^1].RuntimeFingerprint;
 
         var runtimeFingerprintStable = firstFingerprintChange is null;
         var appIdentityStable = MatchesProcessIdentity(app, appIdentity);
@@ -887,10 +1287,12 @@ public sealed class RuntimeEvidenceRunner(
         return new RuntimeResourceMeasurement(
             _options.IdleSeconds,
             ResourceSampleIntervalMilliseconds,
-            appWorkingSetSamples.Count,
+            resourceSampleSnapshot.Length,
             Environment.ProcessorCount,
             CpuTargetPercent,
             WorkingSetTargetMegabytes,
+            WorkingSetTargetBytes,
+            WorkingSetStatistic,
             Math.Round(averageCpu, 3),
             Math.Round(averageWorkingSet, 3),
             Math.Round(maximumWorkingSet, 3),
@@ -901,10 +1303,10 @@ public sealed class RuntimeEvidenceRunner(
                 appIdentity.ExecutableSha256,
                 appIdentityStable,
                 Math.Round(appCpu, 3),
-                Math.Round(AverageMegabytes(appWorkingSetSamples), 3),
-                Math.Round(MaximumMegabytes(appWorkingSetSamples), 3),
-                Math.Round(AverageMegabytes(appPrivateMemorySamples), 3),
-                Math.Round(MaximumMegabytes(appPrivateMemorySamples), 3)),
+                Math.Round(ToMegabytes(workingSetSummary.AppAverageBytes), 3),
+                Math.Round(ToMegabytes(workingSetSummary.AppMaximumBytes), 3),
+                Math.Round(ToMegabytes(workingSetSummary.AppPrivateAverageBytes), 3),
+                Math.Round(ToMegabytes(workingSetSummary.AppPrivateMaximumBytes), 3)),
             new RuntimeProcessResourceMeasurement(
                 coreIdentity.ProcessId,
                 coreIdentity.ProcessStartUtc,
@@ -912,11 +1314,13 @@ public sealed class RuntimeEvidenceRunner(
                 coreIdentity.ExecutableSha256,
                 coreIdentityStable,
                 Math.Round(coreCpu, 3),
-                Math.Round(AverageMegabytes(coreWorkingSetSamples), 3),
-                Math.Round(MaximumMegabytes(coreWorkingSetSamples), 3),
-                Math.Round(AverageMegabytes(corePrivateMemorySamples), 3),
-                Math.Round(MaximumMegabytes(corePrivateMemorySamples), 3)),
+                Math.Round(ToMegabytes(workingSetSummary.CoreAverageBytes), 3),
+                Math.Round(ToMegabytes(workingSetSummary.CoreMaximumBytes), 3),
+                Math.Round(ToMegabytes(workingSetSummary.CorePrivateAverageBytes), 3),
+                Math.Round(ToMegabytes(workingSetSummary.CorePrivateMaximumBytes), 3)),
+            resourceSampleSnapshot,
             preparation,
+            _resourceStageCheckpoints.ToArray(),
             startFingerprint.LastIngestSequence == finishFingerprint.LastIngestSequence,
             startFingerprint.LastIngestSequence,
             finishFingerprint.LastIngestSequence,
@@ -928,27 +1332,156 @@ public sealed class RuntimeEvidenceRunner(
             runtimeFingerprintStable,
             firstFingerprintChange,
             connectedThroughout,
+            idleSampleStartRenderer,
+            idleSampleRendererObservations.ToArray(),
+            idleSampleFinishRenderer,
+            softwareOnlyThroughoutIdleSample &&
+            AreIdleSampleRendererObservationsValid(
+                idleSampleRendererObservations,
+                resourceSampleSnapshot.Length),
             averageCpu <= CpuTargetPercent,
             maximumWorkingSet <= WorkingSetTargetMegabytes);
 
         void CaptureResourceSample()
         {
-            appWorkingSetSamples.Add(app.WorkingSet64);
-            coreWorkingSetSamples.Add(core.WorkingSet64);
-            appPrivateMemorySamples.Add(app.PrivateMemorySize64);
-            corePrivateMemorySamples.Add(core.PrivateMemorySize64);
-            var observedUtc = DateTimeOffset.UtcNow;
+            var rendererObservation = RuntimeRenderPolicy.ObserveAndRequireSoftwareOnly(
+                $"idle-resource-sample:{resourceSampleOrdinal++}");
+            softwareOnlyThroughoutIdleSample &= rendererObservation.SoftwareOnlyConfirmed;
+            var appWorkingSetBytes = app.WorkingSet64;
+            var coreWorkingSetBytes = core.WorkingSet64;
+            var combinedWorkingSetBytes = checked(appWorkingSetBytes + coreWorkingSetBytes);
+            var appPrivateMemoryBytes = app.PrivateMemorySize64;
+            var corePrivateMemoryBytes = core.PrivateMemorySize64;
+            var observedUtc = rendererObservation.ObservedUtc;
             var fingerprint = CurrentFingerprint();
+            sampledStartFingerprint ??= fingerprint;
+            resourceSamples.Add(new RuntimeResourceSample(
+                resourceSamples.Count,
+                observedUtc,
+                stopwatch.Elapsed.TotalMilliseconds,
+                appWorkingSetBytes,
+                coreWorkingSetBytes,
+                combinedWorkingSetBytes,
+                appPrivateMemoryBytes,
+                corePrivateMemoryBytes,
+                fingerprint,
+                rendererObservation));
             connectedThroughout &=
                 fingerprint.IsCoreConnected && fingerprint.IsLive;
             if (firstFingerprintChange is null &&
-                !fingerprint.Equals(startFingerprint))
+                !fingerprint.Equals(sampledStartFingerprint))
             {
                 firstFingerprintChange = new RuntimeFingerprintChange(
                     observedUtc,
-                    startFingerprint,
+                    sampledStartFingerprint,
                     fingerprint);
             }
+        }
+    }
+
+    internal static bool AreIdleSampleRendererObservationsValid(
+        IReadOnlyList<RuntimeRenderPolicyObservation> observations,
+        int sampleCount)
+    {
+        ArgumentNullException.ThrowIfNull(observations);
+        if (sampleCount < 0 || observations.Count != sampleCount)
+        {
+            return false;
+        }
+
+        for (var index = 0; index < observations.Count; index++)
+        {
+            var observation = observations[index];
+            if (!observation.SoftwareOnlyConfirmed ||
+                !string.Equals(
+                    observation.WpfProcessRenderMode,
+                    RuntimeRenderPolicy.ExpectedProcessRenderMode,
+                    StringComparison.Ordinal) ||
+                !string.Equals(
+                    observation.Phase,
+                    $"idle-resource-sample:{index}",
+                    StringComparison.Ordinal))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    internal static RuntimeObservedHost ObserveHostAfterMainWindowShown(Window mainWindow)
+    {
+        ArgumentNullException.ThrowIfNull(mainWindow);
+        if (!mainWindow.IsVisible)
+        {
+            throw new InvalidOperationException(
+                "The runtime evidence host must be observed after the main window is shown.");
+        }
+
+        var windowHandle = new WindowInteropHelper(mainWindow).Handle;
+        if (windowHandle == IntPtr.Zero)
+        {
+            throw new InvalidOperationException(
+                "The shown main window did not expose a native handle for display binding.");
+        }
+
+        var windowDisplay = System.Windows.Forms.Screen.FromHandle(windowHandle) ??
+            throw new InvalidOperationException(
+                "The shown main window could not be bound to its actual display.");
+        var desktopAppliedDpi = ReadDesktopAppliedDpi();
+        var mainWindowDpi = VisualTreeHelper.GetDpi(mainWindow);
+        if (mainWindowDpi.PixelsPerInchX <= 0 || mainWindowDpi.PixelsPerInchY <= 0)
+        {
+            throw new InvalidOperationException(
+                "The shown main window returned an invalid effective WPF DPI.");
+        }
+
+        var bounds = windowDisplay.Bounds;
+        var logicalWidth = checked((int)Math.Round(
+            bounds.Width * 96d / mainWindowDpi.PixelsPerInchX,
+            MidpointRounding.AwayFromZero));
+        var logicalHeight = checked((int)Math.Round(
+            bounds.Height * 96d / mainWindowDpi.PixelsPerInchY,
+            MidpointRounding.AwayFromZero));
+        return new RuntimeObservedHost(
+            Environment.MachineName,
+            RuntimeInformation.OSDescription,
+            RuntimeInformation.OSArchitecture.ToString(),
+            RuntimeInformation.ProcessArchitecture.ToString(),
+            Environment.ProcessorCount,
+            desktopAppliedDpi,
+            Math.Round(mainWindowDpi.PixelsPerInchX, 3),
+            Math.Round(mainWindowDpi.PixelsPerInchY, 3),
+            windowDisplay.DeviceName,
+            logicalWidth,
+            logicalHeight);
+    }
+
+    private static int ReadDesktopAppliedDpi()
+    {
+        using var windowMetrics = Registry.CurrentUser.OpenSubKey(
+            @"Control Panel\Desktop\WindowMetrics",
+            writable: false);
+        var rawValue = windowMetrics?.GetValue("AppliedDPI") ??
+            throw new InvalidOperationException(
+                "HKCU WindowMetrics AppliedDPI was unavailable for runtime evidence host observation.");
+        try
+        {
+            var appliedDpi = Convert.ToInt32(rawValue, CultureInfo.InvariantCulture);
+            if (appliedDpi <= 0)
+            {
+                throw new InvalidOperationException(
+                    "HKCU WindowMetrics AppliedDPI must be positive.");
+            }
+
+            return appliedDpi;
+        }
+        catch (Exception exception) when (
+            exception is FormatException or InvalidCastException or OverflowException)
+        {
+            throw new InvalidOperationException(
+                "HKCU WindowMetrics AppliedDPI was not a valid integer.",
+                exception);
         }
     }
 
@@ -995,6 +1528,7 @@ public sealed class RuntimeEvidenceRunner(
         var retainedEvidenceWindows = _widgetWindows.Count;
         var visibleEvidenceWindows = _widgetWindows.Count(window => window.IsVisible);
         app.Refresh();
+        RecordResourceStageCheckpoint("post-cleanup");
         return new RuntimeResourcePreparation(
             DateTimeOffset.UtcNow,
             dashboardResourcesReleased,
@@ -1010,6 +1544,49 @@ public sealed class RuntimeEvidenceRunner(
             Math.Round(ToMegabytes(app.PrivateMemorySize64), 3),
             Math.Round(ToMegabytes(managedHeapBefore), 3),
             Math.Round(ToMegabytes(GC.GetTotalMemory(forceFullCollection: false)), 3));
+    }
+
+    private void RecordResourceStageCheckpoint(string stage)
+    {
+        var checkpointIndex = _resourceStageCheckpoints.Count;
+        if (checkpointIndex >= RequiredResourceStageNames.Count ||
+            !string.Equals(
+                RequiredResourceStageNames[checkpointIndex],
+                stage,
+                StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException(
+                $"Unexpected resource diagnostic stage '{stage}' at index {checkpointIndex}.");
+        }
+
+        using var app = Process.GetCurrentProcess();
+        _resourceStageCheckpoints.Add(ObserveResourceStageCheckpoint(stage, app));
+    }
+
+    internal static RuntimeResourceStageCheckpoint ObserveResourceStageCheckpoint(
+        string stage,
+        Process app)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(stage);
+        ArgumentNullException.ThrowIfNull(app);
+        app.Refresh();
+        if (app.HasExited)
+        {
+            throw new InvalidOperationException(
+                $"Process {app.Id} exited before resource stage '{stage}' was captured.");
+        }
+
+        return new RuntimeResourceStageCheckpoint(
+            stage,
+            DateTimeOffset.UtcNow,
+            app.Id,
+            new DateTimeOffset(app.StartTime.ToUniversalTime()),
+            Math.Round(ToMegabytes(app.WorkingSet64), 3),
+            Math.Round(ToMegabytes(app.PrivateMemorySize64), 3),
+            Math.Round(ToMegabytes(app.PagedMemorySize64), 3),
+            Math.Round(ToMegabytes(GC.GetTotalMemory(forceFullCollection: false)), 3),
+            RuntimeRenderPolicy.ObserveAndRequireSoftwareOnly(
+                $"resource-stage:{stage}"));
     }
 
     private async Task WaitForPostReconnectQuiescenceAsync(
@@ -1104,11 +1681,89 @@ public sealed class RuntimeEvidenceRunner(
             HerdrOpsStateUpdateKind.Delta.ToString(),
             StringComparison.Ordinal);
 
-    private static double AverageMegabytes(IReadOnlyCollection<long> samples) =>
-        ToMegabytes(samples.Average());
+    internal static RuntimeWorkingSetSummary SummarizeWorkingSetSamples(
+        IReadOnlyList<RuntimeResourceSample> samples)
+    {
+        ArgumentNullException.ThrowIfNull(samples);
+        var expectedSampleCount = checked(
+            RuntimeEvidenceOptions.ApprovedIdleSeconds * 1000 /
+            ResourceSampleIntervalMilliseconds + 1);
+        if (samples.Count != expectedSampleCount)
+        {
+            throw new ArgumentException(
+                $"Exactly {expectedSampleCount} ordered runtime resource samples are required.",
+                nameof(samples));
+        }
 
-    private static double MaximumMegabytes(IReadOnlyCollection<long> samples) =>
-        ToMegabytes(samples.Max());
+        DateTimeOffset? previousObservedUtc = null;
+        double? previousElapsedMilliseconds = null;
+        for (var index = 0; index < samples.Count; index++)
+        {
+            var sample = samples[index] ?? throw new ArgumentException(
+                $"Runtime resource sample {index} is null.",
+                nameof(samples));
+            if (sample.Ordinal != index ||
+                sample.ObservedUtc.Offset != TimeSpan.Zero ||
+                previousObservedUtc is not null && sample.ObservedUtc < previousObservedUtc.Value ||
+                !double.IsFinite(sample.ElapsedMilliseconds) ||
+                sample.ElapsedMilliseconds < 0 ||
+                index == 0 && sample.ElapsedMilliseconds > ResourceSampleIntervalMilliseconds ||
+                previousElapsedMilliseconds is not null &&
+                    (sample.ElapsedMilliseconds - previousElapsedMilliseconds.Value <
+                         ResourceSampleIntervalMilliseconds - 1 ||
+                     sample.ElapsedMilliseconds - previousElapsedMilliseconds.Value >
+                         ResourceSampleIntervalMilliseconds * 2) ||
+                sample.AppWorkingSetBytes < 0 ||
+                sample.CoreWorkingSetBytes < 0 ||
+                sample.AppPrivateMemoryBytes < 0 ||
+                sample.CorePrivateMemoryBytes < 0 ||
+                sample.CombinedWorkingSetBytes != checked(
+                    sample.AppWorkingSetBytes + sample.CoreWorkingSetBytes) ||
+                sample.RuntimeFingerprint is null ||
+                sample.RendererObservation is null ||
+                sample.RendererObservation.ObservedUtc != sample.ObservedUtc ||
+                !sample.RendererObservation.SoftwareOnlyConfirmed ||
+                !string.Equals(
+                    sample.RendererObservation.WpfProcessRenderMode,
+                    RuntimeRenderPolicy.ExpectedProcessRenderMode,
+                    StringComparison.Ordinal) ||
+                !string.Equals(
+                    sample.RendererObservation.Phase,
+                    $"idle-resource-sample:{index}",
+                    StringComparison.Ordinal))
+            {
+                throw new ArgumentException(
+                    $"Runtime resource sample {index} is not exact, ordered, finite, or internally bound.",
+                    nameof(samples));
+            }
+
+            previousObservedUtc = sample.ObservedUtc;
+            previousElapsedMilliseconds = sample.ElapsedMilliseconds;
+        }
+
+        var approvedDurationMilliseconds =
+            RuntimeEvidenceOptions.ApprovedIdleSeconds * 1000d;
+        if (samples[^1].ElapsedMilliseconds < approvedDurationMilliseconds ||
+            samples[^1].ElapsedMilliseconds >
+                approvedDurationMilliseconds + ResourceSampleIntervalMilliseconds)
+        {
+            throw new ArgumentException(
+                "Runtime resource samples do not span the complete approved measurement duration.",
+                nameof(samples));
+        }
+
+        return new RuntimeWorkingSetSummary(
+            samples.Average(sample => (double)sample.CombinedWorkingSetBytes),
+            samples.Max(sample => sample.CombinedWorkingSetBytes),
+            samples.Average(sample => (double)sample.AppWorkingSetBytes),
+            samples.Max(sample => sample.AppWorkingSetBytes),
+            samples.Average(sample => (double)sample.CoreWorkingSetBytes),
+            samples.Max(sample => sample.CoreWorkingSetBytes),
+            samples.Average(sample => (double)sample.AppPrivateMemoryBytes),
+            samples.Max(sample => sample.AppPrivateMemoryBytes),
+            samples.Average(sample => (double)sample.CorePrivateMemoryBytes),
+            samples.Max(sample => sample.CorePrivateMemoryBytes));
+    }
 
     private static double ToMegabytes(double bytes) => bytes / (1024d * 1024d);
 

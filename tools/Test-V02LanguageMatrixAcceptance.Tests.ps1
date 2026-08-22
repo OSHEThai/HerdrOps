@@ -1,0 +1,50 @@
+Set-StrictMode -Version Latest
+$ErrorActionPreference='Stop'
+$tool=Join-Path $PSScriptRoot 'Test-V02LanguageMatrixAcceptance.ps1';$engine=(Get-Process -Id $PID).Path;$utf8=New-Object Text.UTF8Encoding($false)
+. (Join-Path $PSScriptRoot 'lib\V02ReferenceHostProfile.ps1')
+$testRoot=Join-Path ([IO.Path]::GetTempPath()) ('herdrops-v02-language-matrix-'+[Guid]::NewGuid().ToString('N'));[IO.Directory]::CreateDirectory($testRoot)|Out-Null
+
+function Write-TestText([string]$Path,[string]$Text){$parent=[IO.Path]::GetDirectoryName($Path);if(-not[IO.Directory]::Exists($parent)){[IO.Directory]::CreateDirectory($parent)|Out-Null};[IO.File]::WriteAllText($Path,$Text,$utf8)}
+function Hash([string]$Path){(Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToUpperInvariant()}
+function New-RunFixture {
+    param([string]$Root,[string]$Language,[string]$AppLanguage=$Language,[string]$Commit=('a'*40),[string]$Tree=('b'*40),[string]$AppBinary=('E'*64),[string]$CoreBinary=('F'*64),[string]$ProfileId=$script:V02ReferenceHostProfileId,[string]$ProfileSha=$script:V02ReferenceHostProfileSha256,[string]$ReferenceSchemaSha=$script:V02ReferenceHostSchemaSha256,[string]$Result='PASS')
+    [IO.Directory]::CreateDirectory($Root)|Out-Null;$captureRoot=Join-Path $Root 'captures';[IO.Directory]::CreateDirectory($captureRoot)|Out-Null
+    $captures=@();for($index=0;$index-lt 8;$index++){ $path=Join-Path $captureRoot ("capture-$index.png");Write-TestText $path ("synthetic-capture-$index");$captures+=[ordered]@{Name="capture-$index";Path=[IO.Path]::GetFullPath($path);Sha256=(Hash $path)} }
+    $app=[ordered]@{EvidenceClassification='RuntimeCandidate';CompositeCandidateChecksPassed=$true;Language=$AppLanguage;ProfileId=$ProfileId;ProfileSha256=$ProfileSha;ResourceMeasurement=[ordered]@{App=[ordered]@{ExecutableSha256=$AppBinary};Core=[ordered]@{ExecutableSha256=$CoreBinary}};Captures=$captures}
+    $core=[ordered]@{EvidenceClassification='Runtime';RuntimeObserved=$true;Admission=[ordered]@{ReleaseId='0.8.2-synthetic-x86_64-pc-windows-msvc';ExecutableSha256=('D'*64);BundledSchemaSha256=('A'*64);Protocol=20}}
+    $appPath=Join-Path $Root 'app-runtime.json';$corePath=Join-Path $Root 'core-runtime.json';Write-TestText $appPath ($app|ConvertTo-Json -Depth 12);Write-TestText $corePath ($core|ConvertTo-Json -Depth 8)
+    $lines=@('HerdrOps v0.2 Composite Actual Herdr Runtime Acceptance',"ExpectedSourceCommit: $Commit","ExpectedSourceTree: $Tree","SourceCommit: $Commit","SourceTree: $Tree","PreRunSourceCommit: $Commit","PreRunSourceTree: $Tree",'PreRunGitTreeClean: True',"PostRunSourceCommit: $Commit","PostRunSourceTree: $Tree",'PostRunGitTreeClean: True',"Result: $Result",'EvidenceClass: Runtime','SessionControlInvoked: false',"Language: $AppLanguage",'HerdrReleaseId: 0.8.2-synthetic-x86_64-pc-windows-msvc',('HerdrExecutableSha256: '+('D'*64)),"HerdrOpsCoreExecutableSha256BeforeLaunch: $CoreBinary","HerdrOpsCoreExecutableSha256AfterRun: $CoreBinary","HerdrOpsAppExecutableSha256BeforeLaunch: $AppBinary","HerdrOpsAppExecutableSha256AfterRun: $AppBinary","HerdrOpsCoreExecutableSha256BoundToReports: $CoreBinary","HerdrOpsAppExecutableSha256BoundToReports: $AppBinary","CoreRuntimeReportSha256: $(Hash $corePath)","AppRuntimeReportSha256: $(Hash $appPath)",('BundledSchemaSha256: '+('A'*64)),'HerdrProtocol: 20',"ReferenceHostProfileId: $ProfileId","ReferenceHostProfileSha256: $ProfileSha","ReferenceHostSchemaSha256: $ReferenceSchemaSha",'RendererPolicyId: software-only-process-wide','WpfProcessRenderMode: SoftwareOnly','SoftwareOnlyThroughout: True','RuntimeWpfCaptures: 8','','CaptureHashes:')
+    $lines+=@($captures|ForEach-Object{"SHA256 $($_.Sha256) $($_.Name)"});Write-TestText (Join-Path $Root 'gate-report.txt') ($lines-join [Environment]::NewLine)
+    return [pscustomobject]@{Root=$Root;AppPath=$appPath;CorePath=$corePath;CaptureRoot=$captureRoot}
+}
+function Invoke-Matrix([string]$Thai,[string]$English,[string]$Output){$all=@('-NoProfile','-File',$tool,'-ThaiEvidenceDirectory',$Thai,'-EnglishEvidenceDirectory',$English,'-OutputPath',$Output);$previous=$ErrorActionPreference;$ErrorActionPreference='Continue';try{$text=@(& $engine @all 2>&1);$code=$LASTEXITCODE}finally{$ErrorActionPreference=$previous;$global:LASTEXITCODE=0};[pscustomobject]@{ExitCode=$code;Text=($text-join [Environment]::NewLine)}}
+function Pass([string]$Name,[scriptblock]$Body){&$Body;Write-Output "PASS Synthetic: $Name"}
+function Expect-Failure([string]$Name,[scriptblock]$Arrange){$case=Join-Path $testRoot ([Guid]::NewGuid().ToString('N'));$thai=New-RunFixture (Join-Path $case 'thai') 'Thai';$english=New-RunFixture (Join-Path $case 'english') 'English';&$Arrange $thai $english;$out=Join-Path $case 'matrix.json';$result=Invoke-Matrix $thai.Root $english.Root $out;if($result.ExitCode-eq 0-or(Test-Path $out)){throw "$Name did not fail closed. $($result.Text)"};Write-Output "PASS Synthetic: $Name"}
+
+try {
+    Pass 'happy path emits hash-bound non-release candidate' {
+        $case=Join-Path $testRoot 'happy';$thai=New-RunFixture (Join-Path $case 'thai') 'Thai';$english=New-RunFixture (Join-Path $case 'english') 'English';$out=Join-Path $case 'matrix.json';$result=Invoke-Matrix $thai.Root $english.Root $out
+        if($result.ExitCode-ne 0){throw $result.Text};$manifest=Get-Content $out -Raw|ConvertFrom-Json
+        if($manifest.EvidenceClassification-cne'RuntimeMatrixCandidate'-or$manifest.IndependentHumanReview-cne'NOT_OBSERVED'-or[bool]$manifest.ReleaseCredit-or$manifest.Payload.IndependentHumanReview-cne'NOT_OBSERVED'-or[bool]$manifest.Payload.ReleaseCredit){throw 'Happy manifest boundary fields are wrong.'}
+        $payloadJson=ConvertTo-V02Jcs $manifest.Payload;$observed=([BitConverter]::ToString([Security.Cryptography.SHA256]::Create().ComputeHash($utf8.GetBytes($payloadJson)))).Replace('-','');if($observed-cne[string]$manifest.ManifestPayloadSha256){throw 'Manifest payload SHA mismatch.'}
+    }
+    foreach($caseInfo in @(
+        @{Name='mixed source commit';Args=@{Commit=('c'*40)}},
+        @{Name='mixed source tree';Args=@{Tree=('d'*40)}},
+        @{Name='mixed App binary';Args=@{AppBinary=('B'*64)}},
+        @{Name='mixed profile hash';Args=@{ProfileSha=('B'*64)}})) {
+        $case=Join-Path $testRoot ([Guid]::NewGuid().ToString('N'));$thai=New-RunFixture (Join-Path $case 'thai') 'Thai';$fixtureArgs=$caseInfo.Args;$english=New-RunFixture -Root (Join-Path $case 'english') -Language 'English' @fixtureArgs;$out=Join-Path $case 'matrix.json';$result=Invoke-Matrix $thai.Root $english.Root $out;if($result.ExitCode-eq 0-or(Test-Path $out)){throw "$($caseInfo.Name) did not fail closed."};Write-Output "PASS Synthetic: $($caseInfo.Name)"
+    }
+    Expect-Failure 'swapped Thai language' {param($thai,$english);$replacement=New-RunFixture -Root $thai.Root -Language Thai -AppLanguage English}
+    Expect-Failure 'duplicate Thai language' {param($thai,$english);$replacement=New-RunFixture -Root $english.Root -Language English -AppLanguage Thai}
+    Pass 'same evidence directory rejected' {$case=Join-Path $testRoot 'same-dir';$thai=New-RunFixture $case 'Thai';$out=Join-Path $testRoot 'same-dir-output.json';$result=Invoke-Matrix $thai.Root $thai.Root $out;if($result.ExitCode-eq 0-or(Test-Path $out)){throw 'Same evidence directory did not fail closed.'}}
+    Expect-Failure 'shared capture paths rejected' {param($thai,$english);$app=Get-Content $english.AppPath -Raw|ConvertFrom-Json;$thaiApp=Get-Content $thai.AppPath -Raw|ConvertFrom-Json;for($i=0;$i-lt$app.Captures.Count;$i++){$app.Captures[$i].Path=$thaiApp.Captures[$i].Path;$app.Captures[$i].Sha256=$thaiApp.Captures[$i].Sha256};Write-TestText $english.AppPath ($app|ConvertTo-Json -Depth 12);$gate=Get-Content (Join-Path $english.Root 'gate-report.txt') -Raw;$gate=[regex]::Replace($gate,'(?m)^AppRuntimeReportSha256: .+$',"AppRuntimeReportSha256: $(Hash $english.AppPath)");Write-TestText (Join-Path $english.Root 'gate-report.txt') $gate}
+    Expect-Failure 'failed gate result rejected' {param($thai,$english);$gate=Get-Content (Join-Path $english.Root 'gate-report.txt') -Raw;$gate=$gate.Replace('Result: PASS','Result: FAIL');Write-TestText (Join-Path $english.Root 'gate-report.txt') $gate}
+    Expect-Failure 'gate-declared report hash mismatch rejected' {param($thai,$english);$gate=Get-Content (Join-Path $english.Root 'gate-report.txt') -Raw;$gate=[regex]::Replace($gate,'(?m)^AppRuntimeReportSha256: .+$',('AppRuntimeReportSha256: '+('0'*64)));Write-TestText (Join-Path $english.Root 'gate-report.txt') $gate}
+    Pass 'wrong but matching profile rejected' {$case=Join-Path $testRoot 'wrong-profile';$wrong=('B'*64);$thai=New-RunFixture -Root (Join-Path $case 'thai') -Language Thai -ProfileSha $wrong;$english=New-RunFixture -Root (Join-Path $case 'english') -Language English -ProfileSha $wrong;$out=Join-Path $case 'matrix.json';$result=Invoke-Matrix $thai.Root $english.Root $out;if($result.ExitCode-eq 0-or(Test-Path $out)){throw 'Matching unapproved profile did not fail closed.'}}
+    Pass 'wrong but matching reference-host schema rejected' {$case=Join-Path $testRoot 'wrong-schema';$wrong=('B'*64);$thai=New-RunFixture -Root (Join-Path $case 'thai') -Language Thai -ReferenceSchemaSha $wrong;$english=New-RunFixture -Root (Join-Path $case 'english') -Language English -ReferenceSchemaSha $wrong;$out=Join-Path $case 'matrix.json';$result=Invoke-Matrix $thai.Root $english.Root $out;if($result.ExitCode-eq 0-or(Test-Path $out)){throw 'Matching unapproved reference-host schema did not fail closed.'}}
+    Pass 'output inside accepted evidence rejected' {$case=Join-Path $testRoot 'inside-output';$thai=New-RunFixture (Join-Path $case 'thai') Thai;$english=New-RunFixture (Join-Path $case 'english') English;$out=Join-Path $thai.Root 'matrix.json';$result=Invoke-Matrix $thai.Root $english.Root $out;if($result.ExitCode-eq 0-or(Test-Path $out)){throw 'Output inside accepted evidence did not fail closed.'}}
+    Write-Output 'All 14 v0.2 language-matrix cases passed. EvidenceClass: Synthetic.'
+} finally {
+    if(Test-Path -LiteralPath $testRoot){Remove-Item -LiteralPath $testRoot -Recurse -Force}
+}

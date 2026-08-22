@@ -4,6 +4,14 @@ param(
     [ValidateNotNullOrEmpty()]
     [string]$TargetHerdrSocketPath,
 
+    [Parameter(Mandatory)]
+    [ValidatePattern('^[0-9a-fA-F]{40}$')]
+    [string]$ExpectedSourceCommit,
+
+    [Parameter(Mandatory)]
+    [ValidatePattern('^[0-9a-fA-F]{40}$')]
+    [string]$ExpectedSourceTree,
+
     [string]$HerdrExecutable = (Join-Path $env:LOCALAPPDATA 'Programs\Herdr\bin\herdr.exe'),
 
     [ValidateRange(90, 900)]
@@ -24,21 +32,52 @@ $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $false
 
 . (Join-Path $PSScriptRoot 'lib/V02GateProvenance.ps1')
+. (Join-Path $PSScriptRoot 'lib/V02ResourceStageCheckpoints.ps1')
+. (Join-Path $PSScriptRoot 'lib/V02WorkingSetBudgetPolicy.ps1')
+. (Join-Path $PSScriptRoot 'lib/V02ReferenceHostProfile.ps1')
+. (Join-Path $PSScriptRoot 'lib/V02RendererEvidence.ps1')
 
-function Get-CleanSourceCommit {
-    param([Parameter(Mandatory)][string]$Root)
+function Get-ExpectedCleanSourceIdentity {
+    param(
+        [Parameter(Mandatory)][string]$Root,
+        [Parameter(Mandatory)][string]$ExpectedCommit,
+        [Parameter(Mandatory)][string]$ExpectedTree
+    )
 
-    $commit = (& git -C $Root rev-parse HEAD).Trim()
-    if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($commit)) {
+    $normalizedExpectedCommit = $ExpectedCommit.ToLowerInvariant()
+    $normalizedExpectedTree = $ExpectedTree.ToLowerInvariant()
+    if ($normalizedExpectedCommit -notmatch '^[0-9a-f]{40}$') {
+        throw 'ExpectedSourceCommit must be a 40-character hexadecimal Git commit.'
+    }
+    if ($normalizedExpectedTree -notmatch '^[0-9a-f]{40}$') {
+        throw 'ExpectedSourceTree must be a 40-character hexadecimal Git tree.'
+    }
+
+    $commit = (& git -C $Root rev-parse HEAD).Trim().ToLowerInvariant()
+    if ($LASTEXITCODE -ne 0 -or $commit -notmatch '^[0-9a-f]{40}$') {
         throw 'Could not resolve the source commit for the v0.2 live runtime gate.'
     }
-    $changes = @(& git -C $Root status --porcelain --untracked-files=all)
+    $tree = (& git -C $Root rev-parse 'HEAD^{tree}').Trim().ToLowerInvariant()
+    if ($LASTEXITCODE -ne 0 -or $tree -notmatch '^[0-9a-f]{40}$') {
+        throw 'Could not resolve the source tree for the v0.2 live runtime gate.'
+    }
+    $changes = @(& git -C $Root status --porcelain=v1 --untracked-files=all)
     if ($LASTEXITCODE -ne 0) { throw 'Could not inspect repository status.' }
     if ($changes.Count -ne 0) {
         throw "Runtime evidence requires a clean source checkout. Changes: $($changes -join '; ')"
     }
+    if ($commit -cne $normalizedExpectedCommit) {
+        throw "Source commit does not match ExpectedSourceCommit: expected=$normalizedExpectedCommit observed=$commit"
+    }
+    if ($tree -cne $normalizedExpectedTree) {
+        throw "Source tree does not match ExpectedSourceTree: expected=$normalizedExpectedTree observed=$tree"
+    }
 
-    return $commit
+    return [pscustomobject]@{
+        SourceCommit = $commit
+        SourceTree   = $tree
+        GitTreeClean = $true
+    }
 }
 
 function Test-IsAdministrator {
@@ -172,6 +211,13 @@ function Write-FailureGateReport {
         [Parameter(Mandatory)][string]$GateReportPath,
         [Parameter(Mandatory)][AllowEmptyString()][string]$FailureMessage,
         [AllowEmptyString()][string]$SourceCommit = 'UNRESOLVED',
+        [AllowEmptyString()][string]$SourceTree = 'UNRESOLVED',
+        [AllowEmptyString()][string]$ExpectedSourceCommit = 'UNRESOLVED',
+        [AllowEmptyString()][string]$ExpectedSourceTree = 'UNRESOLVED',
+        [AllowEmptyString()][string]$PostRunSourceCommit = 'NOT_OBSERVED',
+        [AllowEmptyString()][string]$PostRunSourceTree = 'NOT_OBSERVED',
+        [AllowEmptyString()][string]$PreRunGitTreeClean = 'NOT_OBSERVED',
+        [AllowEmptyString()][string]$PostRunGitTreeClean = 'NOT_OBSERVED',
         [AllowEmptyString()][string]$CoreReportPath = '',
         [AllowEmptyString()][string]$AppReportPath = '',
         [AllowEmptyString()][string]$ProgressHistoryPath = '',
@@ -182,6 +228,9 @@ function Write-FailureGateReport {
         [AllowEmptyString()][string]$AppExitCode = 'NOT_OBSERVED',
         [AllowEmptyString()][string]$CoreExitCode = 'NOT_OBSERVED',
         [AllowEmptyString()][string]$CoreAcceptedEventKindCheck = 'NOT_EVALUATED',
+        [AllowEmptyString()][string]$ObservedLanguage = 'NOT_OBSERVED',
+        [AllowEmptyString()][string]$CaptureDirectory = '',
+        [AllowEmptyString()][string]$ReferenceHostSchemaSha256 = 'NOT_OBSERVED',
         [AllowEmptyString()][string]$FailureType = 'TerminatingFailure'
     )
 
@@ -194,7 +243,16 @@ function Write-FailureGateReport {
         $reportLines = @(
             'HerdrOps v0.2 Composite Actual Herdr Runtime Acceptance',
             "GeneratedUtc: $([DateTimeOffset]::UtcNow.ToString('O'))",
+            "ExpectedSourceCommit: $ExpectedSourceCommit",
+            "ExpectedSourceTree: $ExpectedSourceTree",
             "SourceCommit: $SourceCommit",
+            "SourceTree: $SourceTree",
+            "PreRunSourceCommit: $SourceCommit",
+            "PreRunSourceTree: $SourceTree",
+            "PreRunGitTreeClean: $PreRunGitTreeClean",
+            "PostRunSourceCommit: $PostRunSourceCommit",
+            "PostRunSourceTree: $PostRunSourceTree",
+            "PostRunGitTreeClean: $PostRunGitTreeClean",
             'Result: FAIL',
             'EvidenceClass: NoRuntimeCredit',
             'SessionControlInvoked: false',
@@ -202,6 +260,9 @@ function Write-FailureGateReport {
             "OriginalAppExitCode: $AppExitCode",
             "OriginalCoreExitCode: $CoreExitCode",
             "CoreAcceptedEventKindCheck: $CoreAcceptedEventKindCheck",
+            "Language: $ObservedLanguage",
+            "ReferenceHostSchemaSha256: $ReferenceHostSchemaSha256",
+            "CaptureDirectory: $CaptureDirectory",
             "CoreRuntimeReportPath: $CoreReportPath",
             "CoreRuntimeReportSha256: $(Get-OptionalFileSha256 -Path $CoreReportPath)",
             "AppRuntimeReportPath: $AppReportPath",
@@ -667,8 +728,15 @@ $progressHistoryPath = $progressPath + '.history.jsonl'
 $coreOutputPath = Join-Path $evidenceDirectory 'core.stdout.log'
 $coreErrorPath = Join-Path $evidenceDirectory 'core.stderr.log'
 $gateReportPath = Join-Path $evidenceDirectory 'gate-report.txt'
+$referenceHostProfilePath = Join-Path $repositoryRoot 'Plan\reference-hosts\v0.2.json'
+$referenceHostSchemaPath = Join-Path $repositoryRoot 'Plan\reference-hosts\reference-host-profile.schema.json'
 $completionSignalPath = Join-Path $evidenceDirectory "core-completion-$([guid]::NewGuid().ToString('N')).signal"
 $sourceCommit = 'UNRESOLVED'
+$sourceTree = 'UNRESOLVED'
+$postRunSourceCommit = 'NOT_OBSERVED'
+$postRunSourceTree = 'NOT_OBSERVED'
+$preRunGitTreeClean = 'NOT_OBSERVED'
+$postRunGitTreeClean = 'NOT_OBSERVED'
 $coreExecutableHashBeforeLaunch = 'NOT_OBSERVED'
 $appExecutableHashBeforeLaunch = 'NOT_OBSERVED'
 $coreExecutableHashAfterRun = 'NOT_OBSERVED'
@@ -682,6 +750,9 @@ $coreExitCode = $null
 $appExitCode = $null
 $tcpListeners = @{}
 $coreAcceptedEventKindCheck = 'NOT_EVALUATED'
+$referenceHostProfile = $null
+$trustedReferenceHost = $null
+$observedAppLanguage = 'NOT_OBSERVED'
 
 try {
     New-Item -ItemType Directory -Path $captureDirectory -Force | Out-Null
@@ -723,6 +794,14 @@ $targetHerdrSocketPath = (Resolve-Path -LiteralPath $TargetHerdrSocketPath).Path
 if ([StringComparer]::OrdinalIgnoreCase.Equals($controlHerdrSocketPath, $targetHerdrSocketPath)) {
     throw 'Acceptance control and target Agent Lab sockets must be different. Restarting the control session would terminate the gate process.'
 }
+$sessionListOutput = @(& $HerdrExecutable session list --json)
+if ($LASTEXITCODE -ne 0 -or $sessionListOutput.Count -eq 0) {
+    throw 'Could not enumerate Herdr named sessions before the runtime gate.'
+}
+$sessionTopology = Assert-V02AcceptanceSessionTopology `
+    -SessionListJson ($sessionListOutput -join [Environment]::NewLine) `
+    -ControlSocketPath $controlHerdrSocketPath `
+    -TargetSocketPath $targetHerdrSocketPath
 
 $controlPaneOutput = @(& $HerdrExecutable pane current --current)
 if ($LASTEXITCODE -ne 0 -or $controlPaneOutput.Count -eq 0) {
@@ -742,7 +821,33 @@ if ($observedControlPaneId -ne $env:HERDR_PANE_ID) {
 }
 $controlServerIdentity = Get-ControlHerdrServerIdentity -ExpectedExecutablePath $HerdrExecutable
 
-$sourceCommit = Get-CleanSourceCommit -Root $repositoryRoot
+$referenceHostProfile = Assert-V02ReferenceHostProfile `
+    -ProfilePath $referenceHostProfilePath `
+    -SchemaPath $referenceHostSchemaPath
+$trustedReferenceHost = Get-V02TrustedReferenceHostObservation `
+    -Profile $referenceHostProfile.Profile `
+    -HerdrExecutable $HerdrExecutable `
+    -DurationSeconds $IdleSeconds `
+    -IntervalMilliseconds 250
+Assert-V02BindingEqual `
+    -Expected $referenceHostProfile.Profile.environmentBinding `
+    -Observed $trustedReferenceHost.EnvironmentBinding `
+    -Path 'environmentBinding'
+Assert-V02BindingEqual `
+    -Expected $referenceHostProfile.Profile.candidatePolicy `
+    -Observed $trustedReferenceHost.CandidatePolicy `
+    -Path 'candidatePolicy'
+$approvedLanguageMatrix = @($referenceHostProfile.Profile.candidatePolicy.sampling.requiredLanguageMatrix)
+Assert-True ($approvedLanguageMatrix -ccontains $Language) 'The requested language is not a member of the approved reference-host language matrix.'
+$expectedLanguageCultureName = if ($Language -ceq 'Thai') { 'th-TH' } else { 'en-US' }
+
+$sourceIdentity = Get-ExpectedCleanSourceIdentity `
+    -Root $repositoryRoot `
+    -ExpectedCommit $ExpectedSourceCommit `
+    -ExpectedTree $ExpectedSourceTree
+$sourceCommit = $sourceIdentity.SourceCommit
+$sourceTree = $sourceIdentity.SourceTree
+$preRunGitTreeClean = [string]$sourceIdentity.GitTreeClean
 $buildStartedUtc = [DateTime]::UtcNow
 & (Join-Path $PSScriptRoot 'Invoke-Build.ps1') -Configuration $Configuration -VerifyFormat
 if ($LASTEXITCODE -ne 0) { throw 'Build and automated tests failed before runtime acceptance.' }
@@ -773,7 +878,9 @@ $appArguments = @(
     '--core-pid', '0',
     '--timeout-seconds', $DurationSeconds,
     '--idle-seconds', $IdleSeconds,
-    '--language', $Language
+    '--language', $Language,
+    '--reference-host-profile-id', $referenceHostProfile.Profile.profileId,
+    '--reference-host-profile-sha256', $referenceHostProfile.Sha256
 )
 
 $tcpListeners = @{}
@@ -961,7 +1068,9 @@ foreach ($requiredReport in @($coreReportPath, $appReportPath, $progressPath, $p
     }
 }
 $coreReport = Get-Content -LiteralPath $coreReportPath -Raw | ConvertFrom-Json
-$appReport = Get-Content -LiteralPath $appReportPath -Raw | ConvertFrom-Json
+$appReport = ConvertFrom-V02CheckpointJson (
+    Get-Content -LiteralPath $appReportPath -Raw)
+$observedAppLanguage = if ($appReport.PSObject.Properties.Name -contains 'Language' -and $appReport.Language -is [string]) { [string]$appReport.Language } else { 'NOT_OBSERVED' }
 $progressReport = Get-Content -LiteralPath $progressPath -Raw | ConvertFrom-Json
 $coreExecutableHash = $coreExecutableHashBeforeLaunch
 $appExecutableHash = $appExecutableHashBeforeLaunch
@@ -980,6 +1089,18 @@ Assert-True ($coreReport.Admission.BundledSchemaSha256 -eq '3B34717C8B828FAF4E4A
 Assert-True ([int]$coreReport.Admission.Protocol -eq 20) 'Unexpected Herdr protocol.'
 
 Assert-True ($appReport.EvidenceClassification -eq 'RuntimeCandidate') 'App report is not a Runtime candidate.'
+Assert-True ($appReport.ProfileId -is [string] -and [string]$appReport.ProfileId -ceq [string]$referenceHostProfile.Profile.profileId) 'App report is not bound to the approved reference-host profile ID.'
+Assert-True ($appReport.ProfileSha256 -is [string] -and [string]$appReport.ProfileSha256 -ceq [string]$referenceHostProfile.Sha256) 'App report is not bound to the approved canonical reference-host profile hash.'
+Assert-True ($appReport.Language -is [string] -and [string]$appReport.Language -ceq $Language) 'App report language does not exactly match the requested gate language.'
+Assert-True ($approvedLanguageMatrix -ccontains [string]$appReport.Language) 'App report language is not a member of the approved reference-host language matrix.'
+Assert-True ($appReport.LanguageCultureName -is [string] -and [string]$appReport.LanguageCultureName -ceq $expectedLanguageCultureName) 'App report initial UI culture does not match the requested language.'
+Assert-True ($appReport.FinalLanguage -is [string] -and [string]$appReport.FinalLanguage -ceq $Language) 'App report final language drifted from the requested language.'
+Assert-True ($appReport.FinalLanguageCultureName -is [string] -and [string]$appReport.FinalLanguageCultureName -ceq $expectedLanguageCultureName) 'App report final UI culture drifted from the requested language.'
+Assert-True ($appReport.LanguageStableThroughFinish -is [bool] -and [bool]$appReport.LanguageStableThroughFinish) 'LanguageStableThroughFinish must be native boolean true.'
+$languageChangeCountType=[Type]::GetTypeCode($appReport.LanguageChangeCount.GetType())
+Assert-True (@([TypeCode]::Byte,[TypeCode]::SByte,[TypeCode]::UInt16,[TypeCode]::UInt32,[TypeCode]::UInt64,[TypeCode]::Int16,[TypeCode]::Int32,[TypeCode]::Int64) -contains $languageChangeCountType -and [int64]$appReport.LanguageChangeCount -eq 0) 'LanguageChangeCount must be the native JSON integer 0.'
+Assert-V02ObservedHostReport -Reported $appReport.ObservedHost -Trusted $trustedReferenceHost.ReportObservedHost
+$rendererEvidence = Assert-V02RendererEvidence -AppReport $appReport
 Assert-True ([bool]$appReport.CoreStateObserved) 'App did not observe Core state.'
 Assert-True (-not [bool]$appReport.SessionControlInvoked) 'App must not invoke Herdr session control.'
 Assert-True ([bool]$appReport.UpdateObservedBeforeDashboardClose) 'No App update was observed before Dashboard close.'
@@ -1126,7 +1247,9 @@ foreach ($reset in $quiescenceResets) {
     Assert-True ([long]$reset.CurrentEventCount -ge [long]$reset.PreviousEventCount) 'A quiescence reset hid an event-count regression.'
 }
 Assert-True ([double]$appReport.ResourceMeasurement.CpuTargetPercent -eq 1) 'Unexpected Core + App idle CPU target.'
-Assert-True ([double]$appReport.ResourceMeasurement.WorkingSetTargetMegabytes -eq 180) 'Unexpected Core + App working-set target.'
+Assert-True ([double]$appReport.ResourceMeasurement.WorkingSetTargetMegabytes -eq 255) 'Unexpected Core + App working-set target.'
+Assert-True ([long]$appReport.ResourceMeasurement.WorkingSetTargetBytes -eq 267386880L) 'Unexpected Core + App working-set target bytes.'
+Assert-True ([string]$appReport.ResourceMeasurement.WorkingSetStatistic -ceq 'maximum') 'Unexpected Core + App working-set statistic.'
 Assert-True ([int]$appReport.ResourceMeasurement.SampleIntervalMilliseconds -eq 250) 'Unexpected idle resource sampling interval.'
 $expectedResourceSampleCount = [int]($IdleSeconds * 1000 / [int]$appReport.ResourceMeasurement.SampleIntervalMilliseconds) + 1
 Assert-True ([int]$appReport.ResourceMeasurement.SampleCount -eq $expectedResourceSampleCount) 'Idle resource samples do not include the post-preparation baseline plus the complete measurement window.'
@@ -1138,6 +1261,7 @@ Assert-True ([bool]$appReport.ResourceMeasurement.HerdrConnectedThroughoutSample
 $combinedCpu = [double]$appReport.ResourceMeasurement.CombinedAverageCpuPercent
 $averageWorkingSet = [double]$appReport.ResourceMeasurement.CombinedAverageWorkingSetMegabytes
 $maximumWorkingSet = [double]$appReport.ResourceMeasurement.CombinedMaximumWorkingSetMegabytes
+$workingSetBudgetEvidence = Assert-V02WorkingSetBudgetEvidence -ResourceMeasurement $appReport.ResourceMeasurement
 Assert-True ((Test-FiniteNumber $combinedCpu) -and $combinedCpu -ge 0 -and $combinedCpu -le [double]$appReport.ResourceMeasurement.CpuTargetPercent) 'Measured Core + App idle CPU does not independently satisfy its target.'
 Assert-True ((Test-FiniteNumber $averageWorkingSet) -and $averageWorkingSet -ge 0) 'Measured average Core + App working set is invalid.'
 Assert-True ((Test-FiniteNumber $maximumWorkingSet) -and $maximumWorkingSet -ge $averageWorkingSet -and $maximumWorkingSet -le [double]$appReport.ResourceMeasurement.WorkingSetTargetMegabytes) 'Measured maximum Core + App working set does not independently satisfy its target.'
@@ -1172,6 +1296,7 @@ $reportedAppStartUtc = ([DateTimeOffset]$appReport.ResourceMeasurement.App.Proce
 $reportedCoreStartUtc = ([DateTimeOffset]$appReport.ResourceMeasurement.Core.ProcessStartUtc).ToUniversalTime()
 Assert-True ($reportedAppStartUtc.UtcDateTime.Ticks -eq $appProcess.StartTime.ToUniversalTime().Ticks) 'App resource samples are bound to an unexpected process lifetime.'
 Assert-True ($reportedCoreStartUtc.UtcDateTime.Ticks -eq $coreProcess.StartTime.ToUniversalTime().Ticks) 'Core resource samples are bound to an unexpected process lifetime.'
+$resourceStageCheckpoints = @(Assert-V02ResourceStageCheckpoints -AppReport $appReport)
 Assert-True (@($appReport.FailedCandidateChecks).Count -eq 0) 'The App report contains failed candidate checks.'
 Assert-True ([bool]$appReport.CompositeCandidateChecksPassed) 'App runtime candidate checks did not all pass.'
 Assert-True ([long]$coreReport.FinalMonitorState.EventCount -ge 2) 'The Core trace requires at least two real Herdr events.'
@@ -1340,14 +1465,22 @@ foreach ($appStateHash in @(
 $captures = @($appReport.Captures)
 Assert-True ($captures.Count -ge 8) "Expected at least eight runtime WPF captures, found $($captures.Count)."
 foreach ($capture in $captures) {
+    Assert-True ($capture.Language -is [string] -and [string]$capture.Language -ceq $Language) "Runtime capture language drifted: $($capture.Name)"
+    Assert-True ($capture.LanguageCultureName -is [string] -and [string]$capture.LanguageCultureName -ceq $expectedLanguageCultureName) "Runtime capture UI culture drifted: $($capture.Name)"
     Assert-True (Test-Path -LiteralPath $capture.Path -PathType Leaf) "Runtime capture is missing: $($capture.Path)"
     $actualHash = (Get-FileHash -LiteralPath $capture.Path -Algorithm SHA256).Hash
     Assert-True ($actualHash -eq $capture.Sha256) "Runtime capture hash mismatch: $($capture.Name)"
 }
 
-$finalSourceCommit = Get-CleanSourceCommit -Root $repositoryRoot
-if ($finalSourceCommit -ne $sourceCommit) {
-    throw "Source commit changed during runtime acceptance: $sourceCommit -> $finalSourceCommit"
+$finalSourceIdentity = Get-ExpectedCleanSourceIdentity `
+    -Root $repositoryRoot `
+    -ExpectedCommit $ExpectedSourceCommit `
+    -ExpectedTree $ExpectedSourceTree
+$postRunSourceCommit = $finalSourceIdentity.SourceCommit
+$postRunSourceTree = $finalSourceIdentity.SourceTree
+$postRunGitTreeClean = [string]$finalSourceIdentity.GitTreeClean
+if ($postRunSourceCommit -ne $sourceCommit -or $postRunSourceTree -ne $sourceTree) {
+    throw "Source identity changed during runtime acceptance: $sourceCommit/$sourceTree -> $postRunSourceCommit/$postRunSourceTree"
 }
 $coreReportHash = (Get-FileHash -LiteralPath $coreReportPath -Algorithm SHA256).Hash
 $appReportHash = (Get-FileHash -LiteralPath $appReportPath -Algorithm SHA256).Hash
@@ -1355,12 +1488,23 @@ $appReportHash = (Get-FileHash -LiteralPath $appReportPath -Algorithm SHA256).Ha
 $reportLines = @(
     'HerdrOps v0.2 Composite Actual Herdr Runtime Acceptance',
     "GeneratedUtc: $([DateTimeOffset]::UtcNow.ToString('O'))",
+    "ExpectedSourceCommit: $($ExpectedSourceCommit.ToLowerInvariant())",
+    "ExpectedSourceTree: $($ExpectedSourceTree.ToLowerInvariant())",
     "SourceCommit: $sourceCommit",
+    "SourceTree: $sourceTree",
+    "PreRunSourceCommit: $($sourceIdentity.SourceCommit)",
+    "PreRunSourceTree: $($sourceIdentity.SourceTree)",
+    "PreRunGitTreeClean: $preRunGitTreeClean",
+    "PostRunSourceCommit: $postRunSourceCommit",
+    "PostRunSourceTree: $postRunSourceTree",
+    "PostRunGitTreeClean: $postRunGitTreeClean",
     'Result: PASS',
     'EvidenceClass: Runtime',
     'SessionControlInvoked: false',
     "AcceptanceControlPaneEnvironmentId: $($env:HERDR_PANE_ID)",
     "AcceptanceControlPaneObservedId: $observedControlPaneId",
+    "AcceptanceControlSession: $($sessionTopology.ControlSessionName)",
+    "TargetAgentLabSession: $($sessionTopology.TargetSessionName)",
     "AcceptanceControlSocketPath: $controlHerdrSocketPath",
     "AcceptanceControlServerIdentity: pid=$($controlServerIdentity.ProcessId) start=$($controlServerIdentity.ProcessStartUtc.ToString('O')) path=$($controlServerIdentity.ExecutablePath) sha256=$($controlServerIdentity.ExecutableSha256)",
     "TargetAgentLabSocketPath: $targetHerdrSocketPath",
@@ -1393,6 +1537,14 @@ $reportLines = @(
     "ProgressHistoryLastEntrySha256: $expectedPreviousEntrySha256",
     "BundledSchemaSha256: $($coreReport.Admission.BundledSchemaSha256)",
     "HerdrProtocol: $($coreReport.Admission.Protocol)",
+    "ReferenceHostProfileId: $($referenceHostProfile.Profile.profileId)",
+    "ReferenceHostProfileSha256: $($referenceHostProfile.Sha256)",
+    "ReferenceHostSchemaSha256: $script:V02ReferenceHostSchemaSha256",
+    "Language: $observedAppLanguage",
+    "CaptureDirectory: $captureDirectory",
+    "RendererPolicyId: $($rendererEvidence.PolicyId)",
+    "WpfProcessRenderMode: $($rendererEvidence.ExpectedWpfProcessRenderMode)",
+    "SoftwareOnlyThroughout: $($rendererEvidence.SoftwareOnlyThroughout)",
     "SnapshotObserved: $($coreReport.SnapshotObserved)",
     "EventObserved: $($coreReport.EventObserved)",
     "ReconnectObserved: $($coreReport.ReconnectObserved)",
@@ -1428,6 +1580,8 @@ $reportLines = @(
     "IdleQuiescenceState: sequence=$($appReport.IdleQuiescence.StableSequence) event=$($appReport.IdleQuiescence.StableEventCount) resets=$($appReport.IdleQuiescence.ResetCount)",
     "IdleCpuTargetPercent: $($appReport.ResourceMeasurement.CpuTargetPercent)",
     "IdleWorkingSetTargetMB: $($appReport.ResourceMeasurement.WorkingSetTargetMegabytes)",
+    "IdleWorkingSetTargetBytes: $($appReport.ResourceMeasurement.WorkingSetTargetBytes)",
+    "IdleWorkingSetStatistic: $($appReport.ResourceMeasurement.WorkingSetStatistic)",
     "ResourceSampleIntervalMs: $($appReport.ResourceMeasurement.SampleIntervalMilliseconds)",
     "ResourceSampleCount: $($appReport.ResourceMeasurement.SampleCount)",
     "CombinedIdleCpuPercent: $($appReport.ResourceMeasurement.CombinedAverageCpuPercent)",
@@ -1452,6 +1606,11 @@ $reportLines = @(
     "AppWorkingSetPreparationMB: before=$($appReport.ResourceMeasurement.Preparation.AppWorkingSetBeforeMegabytes) after=$($appReport.ResourceMeasurement.Preparation.AppWorkingSetAfterMegabytes)",
     "AppPrivateMemoryPreparationMB: before=$($appReport.ResourceMeasurement.Preparation.AppPrivateMemoryBeforeMegabytes) after=$($appReport.ResourceMeasurement.Preparation.AppPrivateMemoryAfterMegabytes)",
     "ManagedHeapPreparationMB: before=$($appReport.ResourceMeasurement.Preparation.ManagedHeapBeforeMegabytes) after=$($appReport.ResourceMeasurement.Preparation.ManagedHeapAfterMegabytes)",
+    "ResourceStagePreparationToleranceMB: $script:V02ResourceStagePreparationToleranceMegabytes",
+    'ResourceStageCheckpoints:'
+) + ($resourceStageCheckpoints | ForEach-Object {
+    "stage=$($_.Stage) observed=$($_.ObservedUtc) pid=$($_.AppProcessId) start=$($_.AppProcessStartUtc) workingSetMB=$($_.AppWorkingSetMegabytes) privateMB=$($_.AppPrivateMemoryMegabytes) pagedMB=$($_.AppPagedMemoryMegabytes) managedHeapMB=$($_.ManagedHeapMegabytes)"
+}) + @(
     "IdleStateSequence: $($appReport.ResourceMeasurement.StartSequence)",
     "IdleEventCount: $($appReport.ResourceMeasurement.StartEventCount)",
     "RuntimeWpfCaptures: $($captures.Count)",
@@ -1504,6 +1663,13 @@ Write-Output "AppRuntimeReport: $appReportPath"
         -GateReportPath $gateReportPath `
         -FailureMessage $failureMessage `
         -SourceCommit $sourceCommit `
+        -SourceTree $sourceTree `
+        -ExpectedSourceCommit $ExpectedSourceCommit `
+        -ExpectedSourceTree $ExpectedSourceTree `
+        -PostRunSourceCommit $postRunSourceCommit `
+        -PostRunSourceTree $postRunSourceTree `
+        -PreRunGitTreeClean $preRunGitTreeClean `
+        -PostRunGitTreeClean $postRunGitTreeClean `
         -CoreReportPath $coreReportPath `
         -AppReportPath $appReportPath `
         -ProgressHistoryPath $progressHistoryPath `
@@ -1514,6 +1680,9 @@ Write-Output "AppRuntimeReport: $appReportPath"
         -AppExitCode $reportedAppExitCode `
         -CoreExitCode $reportedCoreExitCode `
         -CoreAcceptedEventKindCheck $coreAcceptedEventKindCheck `
+        -ObservedLanguage $observedAppLanguage `
+        -CaptureDirectory $captureDirectory `
+        -ReferenceHostSchemaSha256 $script:V02ReferenceHostSchemaSha256 `
         -FailureType $failureType
     throw $failureRecord
 }
