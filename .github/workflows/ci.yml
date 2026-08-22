@@ -266,6 +266,22 @@ jobs:
         shell: powershell
         run: ./tools/packaging/v0.2/Test-V02PackageIdentity.Tests.ps1
 
+      - name: Run v0.2 packaging lifecycle verifier self-tests (PowerShell 7)
+        shell: pwsh
+        run: ./tools/packaging/v0.2/Test-V02Packaging.Tests.ps1
+
+      - name: Run v0.2 packaging lifecycle verifier self-tests (Windows PowerShell 5.1)
+        shell: powershell
+        run: ./tools/packaging/v0.2/Test-V02Packaging.Tests.ps1
+
+      - name: Run v0.2 clean machine acceptance verifier self-tests (PowerShell 7)
+        shell: pwsh
+        run: ./tools/packaging/v0.2/Test-V02CleanMachineAcceptance.Tests.ps1
+
+      - name: Run v0.2 clean machine acceptance verifier self-tests (Windows PowerShell 5.1)
+        shell: powershell
+        run: ./tools/packaging/v0.2/Test-V02CleanMachineAcceptance.Tests.ps1
+
       - name: Run v0.2 renderer compatibility verifier self-tests (PowerShell 7)
         shell: pwsh
         run: ./tools/v0.2-renderer-compatibility/Test-V02RendererCompatibilityManifest.SelfTests.ps1

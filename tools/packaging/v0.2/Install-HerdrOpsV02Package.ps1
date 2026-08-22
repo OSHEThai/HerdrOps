@@ -30,7 +30,7 @@ if(([string]::IsNullOrWhiteSpace($ArchivePath) -and [string]::IsNullOrWhiteSpace
 Assert-V02PackagingPathsDoNotOverlap @([pscustomobject]@{Name='install root';Path=$safeInstallRoot},[pscustomobject]@{Name='user data root';Path=$safeUserDataRoot},[pscustomobject]@{Name='identity receipt';Path=$identityFullPath})
 
 $tempWorkRoot=New-PackagingTempDirectory -Prefix 'HerdrOps-V02Install-'
-$stagingInstallDir=$null; $backupDir=$null; $committed=$false; $targetOwnedByTransaction=$false
+$script:stagingInstallDir=$null; $script:stagingIdentity=$null; $script:targetIdentity=$null; $script:backupDir=$null; $script:backupIdentity=$null; $script:backupCreated=$false; $script:backupRetired=$false; $script:committed=$false; $script:targetOwnedByTransaction=$false
 $startupBefore=Get-V02UserStartupState -ValueName $StartupValueName -MockRegistryHive $MockRegistryHive
 $installOutput=Invoke-PackagingOperationWithCleanup -Operation {
     $heldReceipt=Join-Path $tempWorkRoot 'identity.json'; $null=Copy-V02StableFile $identityFullPath $heldReceipt
@@ -50,15 +50,15 @@ $installOutput=Invoke-PackagingOperationWithCleanup -Operation {
     $validated=Assert-V02PackageIdentity $identity $profile $repositoryRoot $heldArchive $heldPayload $profilePath $receiptParsed.ReceiptSha256 $receiptParsed.CanonicalJson
 
     $installParent=Split-Path $safeInstallRoot -Parent; if(-not(Test-Path -LiteralPath $installParent -PathType Container)){New-Item -ItemType Directory $installParent -Force|Out-Null}; Assert-V02PathNoReparse $installParent
-    $installName=[IO.Path]::GetFileName($safeInstallRoot); $stagingInstallDir=Join-Path $installParent ('.'+$installName+'.staging-'+[Guid]::NewGuid().ToString('N')); New-Item -ItemType Directory $stagingInstallDir|Out-Null
-    Copy-V02StableTreeForInstall -Source $heldPayload -Destination $stagingInstallDir -InstallRoot $safeInstallRoot
+    $installName=[IO.Path]::GetFileName($safeInstallRoot); $script:stagingInstallDir=Join-Path $installParent ('.'+$installName+'.staging-'+[Guid]::NewGuid().ToString('N')); New-Item -ItemType Directory $script:stagingInstallDir|Out-Null; $script:stagingIdentity=Get-V02DirectoryPathIdentity $script:stagingInstallDir 'created install staging directory'
+    Copy-V02StableTreeForInstall -Source $heldPayload -Destination $script:stagingInstallDir -InstallRoot $safeInstallRoot
     $stageArchiveRoot=Join-Path $tempWorkRoot 'stage-archive';New-Item -ItemType Directory $stageArchiveRoot|Out-Null
-    $stageArchive=Join-Path $stageArchiveRoot ([string]$profile.archiveFileName); $null=New-DeterministicPackageArchive $stagingInstallDir $stageArchive
-    if($TestFaultInjectionStage -eq 'StageMutation'){[IO.File]::AppendAllText((Join-Path $stagingInstallDir ([string]$profile.components.appRelativePath)),'MUTATED')}
-    $null=Assert-V02PackageIdentity $identity $profile $repositoryRoot $stageArchive $stagingInstallDir $profilePath $receiptParsed.ReceiptSha256 $receiptParsed.CanonicalJson
-    $null=Copy-V02StableFile $heldReceipt (Join-Path $stagingInstallDir 'identity.json')
+    $stageArchive=Join-Path $stageArchiveRoot ([string]$profile.archiveFileName); $null=New-DeterministicPackageArchive $script:stagingInstallDir $stageArchive
+    if($TestFaultInjectionStage -eq 'StageMutation'){[IO.File]::AppendAllText((Join-Path $script:stagingInstallDir ([string]$profile.components.appRelativePath)),'MUTATED')}
+    $null=Assert-V02PackageIdentity $identity $profile $repositoryRoot $stageArchive $script:stagingInstallDir $profilePath $receiptParsed.ReceiptSha256 $receiptParsed.CanonicalJson
+    $null=Copy-V02StableFile $heldReceipt (Join-Path $script:stagingInstallDir 'identity.json')
     $state=[pscustomobject][ordered]@{productId='HerdrOps';packageVersion='0.2.0';runtimeIdentifier='win-x64';receiptSha256=$receiptParsed.ReceiptSha256;installRoot=$safeInstallRoot;userDataRoot=$safeUserDataRoot;startupRegistered=[bool]$RegisterStartup;autoUpdate='disabled-by-policy'}
-    Write-V02CanonicalJsonFile $state (Join-Path $stagingInstallDir 'install-state.json') $repositoryRoot
+    Write-V02CanonicalJsonFile $state (Join-Path $script:stagingInstallDir 'install-state.json') $repositoryRoot
     if($TestFaultInjectionStage -eq 'MidCopy'){throw 'Injected install failure during copy.'}
 
     if(Test-Path -LiteralPath $safeInstallRoot){
@@ -67,27 +67,34 @@ $installOutput=Invoke-PackagingOperationWithCleanup -Operation {
         $null=Assert-V02CompleteInstalledBinding $safeInstallRoot $profile $profilePath $repositoryRoot $bindingRoot
     }
     if($TestFaultInjectionStage -eq 'BeforeCommit'){throw 'Injected install failure before atomic directory commit.'}
-    if(Test-Path -LiteralPath $safeInstallRoot){$backupDir=Join-Path $installParent ('.'+$installName+'.backup-'+[Guid]::NewGuid().ToString('N'));[IO.Directory]::Move($safeInstallRoot,$backupDir)}
+    if(Test-Path -LiteralPath $safeInstallRoot){
+        $existingIdentity=Get-V02DirectoryPathIdentity $safeInstallRoot 'existing install before backup'
+        $script:backupDir=Join-Path $installParent ('.'+$installName+'.backup-'+[Guid]::NewGuid().ToString('N'))
+        [IO.Directory]::Move($safeInstallRoot,$script:backupDir)
+        $script:backupIdentity=Get-V02DirectoryPathIdentity $script:backupDir 'created install backup'
+        if($script:backupIdentity.VolumeSerialNumber -cne $existingIdentity.VolumeSerialNumber -or $script:backupIdentity.FileId -cne $existingIdentity.FileId -or $script:backupIdentity.LinkCount -ne $existingIdentity.LinkCount){throw 'Created backup does not equal the exact prior installed directory identity.'}
+        $script:backupCreated=$true
+    }
     if($TestConcurrentTargetAppearance){New-Item -ItemType Directory -Path $safeInstallRoot|Out-Null;[IO.File]::WriteAllText((Join-Path $safeInstallRoot 'unowned-race-sentinel.keep'),'UNOWNED')}
     try {
-        [IO.Directory]::Move($stagingInstallDir,$safeInstallRoot); $stagingInstallDir=$null; $targetOwnedByTransaction=$true
+        [IO.Directory]::Move($script:stagingInstallDir,$safeInstallRoot); $script:targetIdentity=Get-V02DirectoryPathIdentity $safeInstallRoot 'committed install target'; if($script:targetIdentity.VolumeSerialNumber -cne $script:stagingIdentity.VolumeSerialNumber -or $script:targetIdentity.FileId -cne $script:stagingIdentity.FileId){throw 'Committed install target does not equal the exact owned staging identity.'}; $script:stagingInstallDir=$null; $script:targetOwnedByTransaction=$true
         if($TestFaultInjectionStage -eq 'AfterReplace'){throw 'Injected install failure after directory replace.'}
         $finalBindingRoot=Join-Path $tempWorkRoot 'final-binding';New-Item -ItemType Directory $finalBindingRoot|Out-Null
         $null=Assert-V02CompleteInstalledBinding $safeInstallRoot $profile $profilePath $repositoryRoot $finalBindingRoot
         if($RegisterStartup){Register-V02UserStartup (Join-Path $safeInstallRoot ([string]$profile.components.appRelativePath)) $StartupValueName $MockRegistryHive}else{Unregister-V02UserStartup $StartupValueName $MockRegistryHive}
         if($TestFaultInjectionStage -eq 'AfterStartup'){throw 'Injected install failure after startup mutation.'}
-        $committed=$true
+        $script:committed=$true
     } catch {
         Restore-V02UserStartupState -State $startupBefore -ValueName $StartupValueName -MockRegistryHive $MockRegistryHive
-        if($targetOwnedByTransaction -and (Test-Path -LiteralPath $safeInstallRoot)){Remove-V02TransactionDirectory $safeInstallRoot $installParent;$targetOwnedByTransaction=$false}
-        if($null -ne $backupDir -and (Test-Path -LiteralPath $backupDir) -and -not(Test-Path -LiteralPath $safeInstallRoot)){[IO.Directory]::Move($backupDir,$safeInstallRoot);$backupDir=$null}
+        if($script:targetOwnedByTransaction -and (Test-Path -LiteralPath $safeInstallRoot)){Remove-V02TransactionDirectory $safeInstallRoot $installParent $script:targetIdentity;$script:targetOwnedByTransaction=$false}
+        if($null -ne $script:backupDir -and (Test-Path -LiteralPath $script:backupDir) -and -not(Test-Path -LiteralPath $safeInstallRoot)){[IO.Directory]::Move($script:backupDir,$safeInstallRoot);$restoredIdentity=Get-V02DirectoryPathIdentity $safeInstallRoot 'restored install backup';if($restoredIdentity.VolumeSerialNumber -cne $script:backupIdentity.VolumeSerialNumber -or $restoredIdentity.FileId -cne $script:backupIdentity.FileId){throw 'Rollback restored a different directory object than the exact owned backup.'};$script:backupDir=$null}
         throw
     }
-    if($null -ne $backupDir -and (Test-Path -LiteralPath $backupDir)){Remove-V02TransactionDirectory $backupDir $installParent;$backupDir=$null}
-    [pscustomobject][ordered]@{EvidenceClass='Static/PackagedCompatibilityPreparation';Status='Installed';PackageVersion='0.2.0';InstallRoot=$safeInstallRoot;UserDataRoot=$safeUserDataRoot;ReceiptSha256=$receiptParsed.ReceiptSha256;AppSha256=$validated.AppSha256;CoreSha256=$validated.CoreSha256;StartupRegistered=[bool]$RegisterStartup;UserDataRetained=$true;AutoUpdatePolicy='NoAutoUpdate';RuntimeCredit='NOT CLAIMED';ReleaseCredit='NOT CLAIMED'}
+    if($null -ne $script:backupDir -and (Test-Path -LiteralPath $script:backupDir)){Remove-V02TransactionDirectory $script:backupDir $installParent $script:backupIdentity;$script:backupRetired=(-not(Test-Path -LiteralPath $script:backupDir));$script:backupDir=$null}
+    [pscustomobject][ordered]@{EvidenceClass='Static/PackagedCompatibilityPreparation';Status='Installed';PackageVersion='0.2.0';InstallRoot=$safeInstallRoot;UserDataRoot=$safeUserDataRoot;ReceiptSha256=$receiptParsed.ReceiptSha256;AppSha256=$validated.AppSha256;CoreSha256=$validated.CoreSha256;StartupRegistered=[bool]$RegisterStartup;UserDataRetained=$true;BackupCreated=[bool]$script:backupCreated;BackupRetired=[bool]$script:backupRetired;BackupVolumeSerialNumber=$(if($null -ne $script:backupIdentity){$script:backupIdentity.VolumeSerialNumber}else{''});BackupFileId=$(if($null -ne $script:backupIdentity){$script:backupIdentity.FileId}else{''});BackupLinkCount=$(if($null -ne $script:backupIdentity){[int]$script:backupIdentity.LinkCount}else{0});AutoUpdatePolicy='NoAutoUpdate';RuntimeCredit='NOT CLAIMED';ReleaseCredit='NOT CLAIMED'}
 } -Cleanup {
-    if($null -ne $stagingInstallDir -and (Test-Path -LiteralPath $stagingInstallDir)){Remove-V02TransactionDirectory $stagingInstallDir (Split-Path $safeInstallRoot -Parent)}
-    if($null -ne $backupDir -and (Test-Path -LiteralPath $backupDir) -and -not(Test-Path -LiteralPath $safeInstallRoot)){[IO.Directory]::Move($backupDir,$safeInstallRoot);$backupDir=$null}
+    if($null -ne $script:stagingInstallDir -and (Test-Path -LiteralPath $script:stagingInstallDir)){Remove-V02TransactionDirectory $script:stagingInstallDir (Split-Path $safeInstallRoot -Parent) $script:stagingIdentity; $script:stagingInstallDir=$null}
+    if($null -ne $script:backupDir -and (Test-Path -LiteralPath $script:backupDir) -and -not(Test-Path -LiteralPath $safeInstallRoot)){[IO.Directory]::Move($script:backupDir,$safeInstallRoot);$restoredIdentity=Get-V02DirectoryPathIdentity $safeInstallRoot 'cleanup-restored install backup';if($restoredIdentity.VolumeSerialNumber -cne $script:backupIdentity.VolumeSerialNumber -or $restoredIdentity.FileId -cne $script:backupIdentity.FileId){throw 'Cleanup rollback restored a different directory object than the exact owned backup.'};$script:backupDir=$null}
     if($TestInjectCleanupFailure){if(Test-Path -LiteralPath $tempWorkRoot){Remove-PackagingTempDirectory $tempWorkRoot};throw 'Injected install cleanup failure.'}
     if(Test-Path -LiteralPath $tempWorkRoot){Remove-PackagingTempDirectory $tempWorkRoot}
 }
