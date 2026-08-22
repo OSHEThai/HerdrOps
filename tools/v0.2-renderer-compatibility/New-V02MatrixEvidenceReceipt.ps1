@@ -13,7 +13,8 @@ param(
     [Parameter(Mandatory=$false)][string]$EvidenceRoot,
     [Parameter(Mandatory=$false)][string]$RepositoryRoot,
     [Parameter(DontShow=$true)][ValidateRange(0,25)][int]$SimulateFailureAfterReceiptCount = 0,
-    [Parameter(DontShow=$true)][ValidateRange(0,120000)][int]$PauseAfterStagingReadyMilliseconds = 0
+    [Parameter(DontShow=$true)][ValidateRange(0,120000)][int]$PauseAfterStagingReadyMilliseconds = 0,
+    [Parameter(DontShow=$true)][ValidateRange(0,120000)][int]$PauseBeforeRecoveryDeleteMilliseconds = 0
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
@@ -26,7 +27,7 @@ function Test-MatrixReceiptOwnerActive {
     try{return $owner.StartTime.ToUniversalTime().ToString('O')-ceq$ProcessStartUtc}catch{return $false}
 }
 function Remove-OwnedStaleMatrixStaging {
-    param([string]$Path,[string]$Destination,[string]$Root,[string]$Repository,[DateTimeOffset]$NowUtc)
+    param([string]$Path,[string]$Destination,[string]$Root,[string]$Repository,[DateTimeOffset]$NowUtc,[int]$PauseBeforeDeleteMilliseconds)
     $name=[IO.Path]::GetFileName($Path)
     if($name-cnotmatch'^\.matrix-receipts-staging-([0-9a-f]{32})$'){return}
     $expectedTransactionId=[string]$Matches[1]
@@ -46,9 +47,11 @@ function Remove-OwnedStaleMatrixStaging {
         Assert-RendererPositiveInteger $marker.ownerPid 'Recovery marker ownerPid';Assert-RendererUtc $marker.ownerProcessStartUtc 'Recovery marker ownerProcessStartUtc';Assert-RendererUtc $marker.createdUtc 'Recovery marker createdUtc'
         $age=$NowUtc-[DateTimeOffset]::Parse($marker.createdUtc);if($age.TotalSeconds-lt2){return}
         if(Test-MatrixReceiptOwnerActive ([int]$marker.ownerPid) ([string]$marker.ownerProcessStartUtc)){return}
+        if($PauseBeforeDeleteMilliseconds-gt0){[IO.File]::WriteAllText((Join-Path $Root '.recovery-ready'),'ready',(New-Object Text.UTF8Encoding($false)));Start-Sleep -Milliseconds $PauseBeforeDeleteMilliseconds}
         Assert-RendererDirectoryLease $lease $Root $Path 'Recovery staging directory before delete'
+        Remove-Item -LiteralPath $lease.FinalPath -Recurse -Force -ErrorAction Stop
+        if(Test-Path -LiteralPath $lease.FinalPath){throw 'Recovery staging directory remained after same-handle owned deletion.'}
     }finally{$lease.Handle.Dispose()}
-    Remove-Item -LiteralPath $Path -Recurse -Force -ErrorAction Stop
 }
 
 $cases = @(Get-RendererGovernedMatrixCases)
@@ -76,10 +79,11 @@ if ($destinationFull -cne $evidenceRootFull -and -not $destinationFull.StartsWit
 if (Test-Path -LiteralPath $destinationFull) { throw 'DestinationPath already exists; receipt publication is no-clobber.' }
 
 $parentLease=Open-RendererDirectoryLease $evidenceRootFull $destinationParent 'Destination parent lease'
+$rawLeases=@{}
 try {
     # Recover only authenticated, old transactions whose exact PID/start-time owner is dead.
     $staleStaging=@(Get-ChildItem -LiteralPath $destinationParent -Directory -Filter '.matrix-receipts-staging-*' -ErrorAction Stop)
-    foreach($stale in $staleStaging){Remove-OwnedStaleMatrixStaging $stale.FullName $destinationFull $evidenceRootFull $repositoryFull ([DateTimeOffset]::UtcNow)}
+    foreach($stale in $staleStaging){Remove-OwnedStaleMatrixStaging $stale.FullName $destinationFull $evidenceRootFull $repositoryFull ([DateTimeOffset]::UtcNow) $PauseBeforeRecoveryDeleteMilliseconds}
 
 $rawKeys = @($RawEvidencePaths.Keys | ForEach-Object { [string]$_ })
 if ($rawKeys.Count -ne $cases.Count) { throw "RawEvidencePaths must contain exactly the 25 governed case IDs; observed $($rawKeys.Count)." }
@@ -105,14 +109,17 @@ $derivedClasses = @{}
 $derivedObservedUtcs = @{}
 $seenRawFileIdentities = @{}
 $previousRawUtc = $null
+$commonRunFingerprint = $null
 
 foreach ($case in $cases) {
     $relativePath = $RawEvidencePaths[$case]
     Assert-RendererRelativePath $relativePath "Raw evidence '$case' relativePath"
     $rawFull = Resolve-RendererBoundPath $evidenceRootFull ([string]$relativePath) "Raw evidence '$case'"
     if (-not (Test-Path -LiteralPath $rawFull -PathType Leaf)) { throw "Raw evidence '$case' is missing." }
-    $identity = Get-RendererStableFileIdentity $evidenceRootFull $rawFull "Raw evidence '$case'" -IncludeBytes
+    $identity = Get-RendererStableFileIdentity $evidenceRootFull $rawFull "Raw evidence '$case'" -IncludeBytes -KeepOpen
+    $rawLeases[$case]=$identity
     if ($identity.Bytes -le 0) { throw "Raw evidence '$case' must be nonempty." }
+    if ($identity.LinkCount -ne 1) { throw "Raw evidence '$case' must have link count exactly 1; hardlinked raw evidence is prohibited." }
     if($seenRawFileIdentities.ContainsKey($identity.FileIdentity)){throw "Raw evidence '$case' is a hardlink/identity alias of '$($seenRawFileIdentities[$identity.FileIdentity])'."}
     $seenRawFileIdentities[$identity.FileIdentity]=$case
 
@@ -123,6 +130,8 @@ foreach ($case in $cases) {
     }
 
     $validated = Assert-RendererMatrixRawPayload -Payload $payload -ExpectedCaseId $case -Context "Raw evidence '$case'" -RepositoryRoot $repositoryFull -EvidenceRoot $evidenceRootFull
+    if($null-eq$commonRunFingerprint){$commonRunFingerprint=$validated.RunFingerprint}else{if($commonRunFingerprint-cne$validated.RunFingerprint){throw "Raw evidence '$case' does not share the exact common run/session/candidate/package identity."}}
+    $runEnd=[DateTimeOffset]::Parse($validated.RunEndedUtc);if($runEnd-gt$callerBatchUtc-or($callerBatchUtc-$runEnd).TotalMinutes-gt5){throw "Raw evidence '$case' is outside the fresh five-minute publication window."}
 
     $rawObsUtc = [DateTimeOffset]::Parse($validated.ObservedUtc)
     if ($rawObsUtc -gt $callerBatchUtc) {
@@ -193,10 +202,7 @@ try {
     Assert-RendererSet $stagedNames $expectedNames 'Staged receipt files'
     foreach ($case in $cases) {
         $rawFull = Resolve-RendererBoundPath $evidenceRootFull ([string]$rawIdentities[$case].relativePath) "Pre-publication raw evidence '$case'"
-        $current = Get-RendererStableFileIdentity $evidenceRootFull $rawFull "Pre-publication raw evidence '$case'"
-        if ($current.Bytes -ne [long]$rawIdentities[$case].bytes -or $current.Sha256 -cne [string]$rawIdentities[$case].sha256) {
-            throw "Raw evidence '$case' changed before publication."
-        }
+        Assert-RendererStableFileLease $rawLeases[$case] $evidenceRootFull $rawFull "Pre-publication raw evidence '$case'"
     }
     Assert-RendererDirectoryLease $parentLease $evidenceRootFull $destinationParent 'Destination parent before final move'
     Assert-RendererDirectoryLease $stagingLease $evidenceRootFull $stagingDirectory 'Staging directory before final move'
@@ -208,11 +214,12 @@ try {
     if (-not $published -and $null-ne$stagingLease -and (Test-Path -LiteralPath $stagingDirectory)) {
         $ownedCleanup=$false
         try{Assert-RendererDirectoryLease $stagingLease $evidenceRootFull $stagingDirectory 'Failed transaction cleanup';$ownedCleanup=$true}catch{$ownedCleanup=$false}
-        if($ownedCleanup){$stagingLease.Handle.Dispose();$stagingLease=$null;Remove-Item -LiteralPath $stagingDirectory -Recurse -Force -ErrorAction Stop}
+        if($ownedCleanup){Remove-Item -LiteralPath $stagingLease.FinalPath -Recurse -Force -ErrorAction Stop;if(Test-Path -LiteralPath $stagingLease.FinalPath){throw 'Failed transaction staging remained after same-handle owned deletion.'}}
     }
     if($null-ne$stagingLease){$stagingLease.Handle.Dispose()}
 }
     return @($cases | ForEach-Object { Join-Path $destinationFull "matrix-evidence-$_.json" })
 } finally {
+    foreach($lease in @($rawLeases.Values)){if($null-ne$lease.Stream){$lease.Stream.Dispose()}}
     $parentLease.Handle.Dispose()
 }

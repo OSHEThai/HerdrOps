@@ -58,7 +58,12 @@ namespace RendererCompatibility {
         public static string GetIdentity(SafeFileHandle handle) {
             ByHandleFileInformation value;
             if (!GetFileInformationByHandle(handle, out value)) throw new Win32Exception(Marshal.GetLastWin32Error(), "GetFileInformationByHandle failed");
-            return value.VolumeSerialNumber.ToString("X8") + ":" + value.FileIndexHigh.ToString("X8") + value.FileIndexLow.ToString("X8") + ":" + value.NumberOfLinks.ToString();
+            return value.VolumeSerialNumber.ToString("X8") + ":" + value.FileIndexHigh.ToString("X8") + value.FileIndexLow.ToString("X8");
+        }
+        public static uint GetLinkCount(SafeFileHandle handle) {
+            ByHandleFileInformation value;
+            if (!GetFileInformationByHandle(handle, out value)) throw new Win32Exception(Marshal.GetLastWin32Error(), "GetFileInformationByHandle failed");
+            return value.NumberOfLinks;
         }
         public static SafeFileHandle OpenDirectory(string path, bool allowDelete) {
             const uint ShareRead = 1, ShareWrite = 2, ShareDelete = 4, OpenExisting = 3;
@@ -242,15 +247,22 @@ function Assert-RendererDirectoryLease {
         if($probe.Identity-cne$Lease.Identity-or$probe.FinalPath-cne$Lease.FinalPath){throw "$Context path no longer resolves to the held directory identity."}
     } finally {$probe.Handle.Dispose()}
 }
-function Get-RendererStableFileIdentity { param([string]$Root,[string]$Path,[string]$Context,[switch]$IncludeBytes)
+function Get-RendererStableFileIdentity { param([string]$Root,[string]$Path,[string]$Context,[switch]$IncludeBytes,[switch]$KeepOpen)
     $rootFull=[IO.Path]::GetFullPath($Root).TrimEnd('\','/');$pathFull=[IO.Path]::GetFullPath($Path);Assert-RendererNonReparsePath $rootFull $pathFull $Context
     $stream=New-Object IO.FileStream($pathFull,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read)
     try{
         $final=[IO.Path]::GetFullPath([RendererCompatibility.NativePath]::GetFinalPath($stream.SafeFileHandle));if($final-cne$rootFull-and-not$final.StartsWith($rootFull+[IO.Path]::DirectorySeparatorChar,[StringComparison]::OrdinalIgnoreCase)){throw "$Context final opened path escaped the evidence root."}
         $before=$stream.Length;$algorithm=[Security.Cryptography.SHA256]::Create();try{$hash=([BitConverter]::ToString($algorithm.ComputeHash($stream))).Replace('-','').ToUpperInvariant()}finally{$algorithm.Dispose()};$after=$stream.Length;if($before-ne$after-or$stream.Position-ne$after){throw "$Context changed during the same-handle read."}
         $bytes=$null;if($IncludeBytes){if($after-gt$script:RendererMaximumManifestBytes){throw "$Context exceeds the bounded read."};$stream.Position=0;$bytes=New-Object byte[] ([int]$after);$offset=0;while($offset-lt$bytes.Length){$read=$stream.Read($bytes,$offset,$bytes.Length-$offset);if($read-le0){throw "$Context ended during the same-handle read."};$offset+=$read}}
-        return [pscustomobject]@{Bytes=[long]$after;Sha256=$hash;Content=$bytes;FinalPath=$final;FileIdentity=[RendererCompatibility.NativePath]::GetIdentity($stream.SafeFileHandle)}
-    }finally{$stream.Dispose()}
+        return [pscustomobject]@{Bytes=[long]$after;Sha256=$hash;Content=$bytes;FinalPath=$final;FileIdentity=[RendererCompatibility.NativePath]::GetIdentity($stream.SafeFileHandle);LinkCount=[long][RendererCompatibility.NativePath]::GetLinkCount($stream.SafeFileHandle);Stream=if($KeepOpen){$stream}else{$null}}
+    }finally{if(-not$KeepOpen){$stream.Dispose()}}
+}
+function Assert-RendererStableFileLease { param($Lease,[string]$Root,[string]$Path,[string]$Context)
+    if($null-eq$Lease.Stream-or$Lease.Stream.SafeFileHandle.IsClosed-or$Lease.Stream.SafeFileHandle.IsInvalid){throw "$Context raw evidence lease is not held."}
+    $heldFinal=[IO.Path]::GetFullPath([RendererCompatibility.NativePath]::GetFinalPath($Lease.Stream.SafeFileHandle));$heldId=[RendererCompatibility.NativePath]::GetIdentity($Lease.Stream.SafeFileHandle);$heldLinks=[long][RendererCompatibility.NativePath]::GetLinkCount($Lease.Stream.SafeFileHandle)
+    if($heldFinal-cne$Lease.FinalPath-or$heldId-cne$Lease.FileIdentity-or$heldLinks-ne1){throw "$Context held raw evidence FinalPath/FileId/link-count changed."}
+    $probe=Get-RendererStableFileIdentity $Root $Path "$Context current path"
+    if($probe.FinalPath-cne$Lease.FinalPath-or$probe.FileIdentity-cne$Lease.FileIdentity-or$probe.LinkCount-ne1-or$probe.Bytes-ne$Lease.Bytes-or$probe.Sha256-cne$Lease.Sha256){throw "$Context path no longer resolves to the held raw evidence identity."}
 }
 function Get-RendererPngIdentity { param([string]$Root,[string]$Path,[string]$Context)
     $identity=Get-RendererStableFileIdentity $Root $Path $Context -IncludeBytes;$stream=New-Object IO.MemoryStream(,$identity.Content);try{$decoder=New-Object Windows.Media.Imaging.PngBitmapDecoder($stream,[Windows.Media.Imaging.BitmapCreateOptions]::PreservePixelFormat,[Windows.Media.Imaging.BitmapCacheOption]::OnLoad);if($decoder.Frames.Count-ne1){throw "$Context must decode as exactly one PNG frame."};$frame=$decoder.Frames[0];if($frame.PixelWidth-le0-or$frame.PixelHeight-le0){throw "$Context decoded PNG dimensions are invalid."};return [pscustomobject]@{Width=[int]$frame.PixelWidth;Height=[int]$frame.PixelHeight;Bytes=$identity.Bytes;Sha256=$identity.Sha256;Content=$identity.Content;Frame=$frame}}catch{throw "$Context is not a complete decodable PNG: $($_.Exception.Message)"}finally{$stream.Dispose()}
@@ -458,10 +470,14 @@ function Get-RendererMatrixExpectedCheckValue {
 
 function Assert-RendererMatrixRawPayload {
     param($Payload,[string]$ExpectedCaseId,[string]$Context,[string]$RepositoryRoot,[string]$EvidenceRoot)
-    Assert-RendererExactProperties $Payload @('schemaVersion','caseId','observedUtc','observation','provenance','details') $Context
-    Assert-RendererNonnegativeInteger $Payload.schemaVersion "$Context schemaVersion";if([long]$Payload.schemaVersion-ne2){throw "$Context schemaVersion must be 2."}
+    Assert-RendererExactProperties $Payload @('schemaVersion','caseId','observedUtc','run','observation','provenance','details') $Context
+    Assert-RendererNonnegativeInteger $Payload.schemaVersion "$Context schemaVersion";if([long]$Payload.schemaVersion-ne3){throw "$Context schemaVersion must be 3."}
     Assert-RendererString $Payload.caseId "$Context caseId";if($Payload.caseId-cne$ExpectedCaseId){throw "$Context caseId '$($Payload.caseId)' does not match expected caseId '$ExpectedCaseId'."}
     Assert-RendererUtc $Payload.observedUtc "$Context observedUtc";Assert-RendererString $Payload.details "$Context details"
+    $run=$Payload.run;Assert-RendererExactProperties $run @('runId','startedUtc','endedUtc','sessionId','candidateCommitSha','candidateTreeSha','packageReceiptCanonicalSha256') "$Context run"
+    foreach($name in @('runId','sessionId')){Assert-RendererString $run.$name "$Context run $name"};if($run.runId-cnotmatch'^[0-9A-Za-z][0-9A-Za-z._-]{7,127}$'-or$run.sessionId-cnotmatch'^[0-9A-Za-z][0-9A-Za-z._-]{7,127}$'){throw "$Context run/session identity is invalid."}
+    Assert-RendererUtc $run.startedUtc "$Context run startedUtc";Assert-RendererUtc $run.endedUtc "$Context run endedUtc";foreach($name in @('candidateCommitSha','candidateTreeSha')){if([string]$run.$name-cnotmatch'^[0-9a-f]{40}$'-or[string]$run.$name-ceq('0'*40)){throw "$Context run $name must be a nonzero lowercase Git SHA."}};Assert-RendererSha $run.packageReceiptCanonicalSha256 "$Context run packageReceiptCanonicalSha256"
+    $started=[DateTimeOffset]::Parse($run.startedUtc);$ended=[DateTimeOffset]::Parse($run.endedUtc);$observed=[DateTimeOffset]::Parse($Payload.observedUtc);if($ended-le$started-or($ended-$started).TotalHours-gt4-or$observed-lt$started-or$observed-gt$ended){throw "$Context observedUtc is outside the bounded common run window."}
     $contract=Get-RendererMatrixCaseContract $ExpectedCaseId
     Assert-RendererExactProperties $Payload.observation @('kind','target','checks') "$Context observation"
     if($Payload.observation.kind-cne$contract.Kind-or$Payload.observation.target-cne$ExpectedCaseId){throw "$Context observation type/target does not match the governed case contract."}
@@ -474,14 +490,10 @@ function Assert-RendererMatrixRawPayload {
         $collector=switch -CaseSensitive($p.kind){'StaticInspection'{'RendererMatrixStaticInspector'};'SyntheticFixture'{'RendererMatrixSyntheticFixture'};'ContractHarness'{'RendererMatrixContractHarness'}};if($p.collector-cne$collector){throw "$Context provenance collector does not match kind '$($p.kind)'."}
         $evidenceClass=switch -CaseSensitive($p.kind){'StaticInspection'{'Static'};'SyntheticFixture'{'Synthetic'};'ContractHarness'{'Contract'}}
     }elseif($p.kind-ceq'ActualHerdrRuntime'){
-        Assert-RendererExactProperties $p @('kind','collector','actualHerdrObserved','candidate','session','semanticEvent') "$Context Runtime provenance";if($p.collector-cne'HerdrOpsMatrixRuntimeCollector'){throw "$Context claims unearned Runtime: collector is not governed."};Assert-RendererBoolean $p.actualHerdrObserved "$Context Runtime actualHerdrObserved";if(-not[bool]$p.actualHerdrObserved){throw "$Context claims unearned Runtime: actualHerdrObserved is false."};if([string]::IsNullOrWhiteSpace($RepositoryRoot)){throw "$Context claims unearned Runtime: RepositoryRoot is required."}
-        Assert-RendererExactProperties $p.candidate @('commitSha','treeSha','packageReceipt') "$Context Runtime candidate";try{$git=Get-RendererGitIdentity $RepositoryRoot}catch{throw "$Context claims unearned Runtime: exact clean candidate binding is unavailable."};if($p.candidate.commitSha-cne$git.CommitSha-or$p.candidate.treeSha-cne$git.TreeSha){throw "$Context claims unearned Runtime: candidate does not equal the exact clean repository."};if([string]::IsNullOrWhiteSpace($EvidenceRoot)){throw "$Context claims unearned Runtime: EvidenceRoot is required."}
-        Assert-RendererExactProperties $p.session @('kind','elevated','userScope','processId','processStartUtc','executablePath','executableSha256') "$Context Runtime session";if($p.session.kind-cne'LocalConsole'){throw "$Context claims unearned Runtime: session is not LocalConsole."};Assert-RendererBoolean $p.session.elevated "$Context Runtime elevated";if([bool]$p.session.elevated){throw "$Context claims unearned Runtime: session is elevated."};if($p.session.userScope-cne'SingleUser'){throw "$Context claims unearned Runtime: userScope is not SingleUser."};Assert-RendererPositiveInteger $p.session.processId "$Context Runtime processId";Assert-RendererUtc $p.session.processStartUtc "$Context Runtime processStartUtc";Assert-RendererString $p.session.executablePath "$Context Runtime executablePath";Assert-RendererSha $p.session.executableSha256 "$Context Runtime executableSha256"
-        $proc=Get-Process -Id ([int]$p.session.processId) -ErrorAction SilentlyContinue;if($null-eq$proc){throw "$Context claims unearned Runtime: bound Herdr process is not live."};try{$actualStart=$proc.StartTime.ToUniversalTime().ToString('O');$actualPath=$proc.MainModule.FileName}catch{throw "$Context claims unearned Runtime: bound process identity is unavailable."};if($actualStart-cne$p.session.processStartUtc-or[IO.Path]::GetFullPath($actualPath)-cne[IO.Path]::GetFullPath([string]$p.session.executablePath)){throw "$Context claims unearned Runtime: PID/start/path continuity failed."};$executableName=[IO.Path]::GetFileName($actualPath);if($executableName-cnotin@('HerdrOps.App.exe','HerdrOps.Core.exe')){throw "$Context claims unearned Runtime: process is not HerdrOps App/Core."};$executableIdentity=Get-RendererStableFileIdentity ([IO.Path]::GetDirectoryName($actualPath)) $actualPath "$Context Runtime executable";if($executableIdentity.Sha256-cne$p.session.executableSha256){throw "$Context claims unearned Runtime: executable hash mismatch."}
-        try{$packageReceipt=(Read-RendererEvidenceReceipt $p.candidate.packageReceipt "$Context Runtime package receipt" $EvidenceRoot $RepositoryRoot).Value;Assert-RendererExactProperties $packageReceipt @('schemaVersion','profileId','issue','packageVersion','runtimeIdentifier','source','profile','archive','packageManifest','components','referenceHost','renderer','evidenceBoundary') "$Context Runtime package receipt";Assert-RendererExactProperties $packageReceipt.source @('commitSha','treeSha') "$Context Runtime package receipt source";Assert-RendererExactProperties $packageReceipt.components @('app','core') "$Context Runtime package receipt components"}catch{throw "$Context claims unearned Runtime: package receipt binding/schema failed."};if($packageReceipt.source.commitSha-cne$p.candidate.commitSha-or$packageReceipt.source.treeSha-cne$p.candidate.treeSha){throw "$Context claims unearned Runtime: package receipt source does not equal the candidate."};$component=if($executableName-ceq'HerdrOps.App.exe'){$packageReceipt.components.app}else{$packageReceipt.components.core};Assert-RendererExactProperties $component @('relativePath','bytes','sha256') "$Context Runtime package component";if($component.sha256-cne$executableIdentity.Sha256){throw "$Context claims unearned Runtime: live executable is not the candidate package component."}
-        Assert-RendererExactProperties $p.semanticEvent @('caseId','eventName','observedUtc') "$Context Runtime semanticEvent";if($p.semanticEvent.caseId-cne$ExpectedCaseId-or$p.semanticEvent.eventName-cne("matrix-case-observed:"+$ExpectedCaseId)-or$p.semanticEvent.observedUtc-cne$Payload.observedUtc){throw "$Context claims unearned Runtime: semantic event is not bound to this case/time."};$evidenceClass='Runtime'
+        throw "$Context claims unearned Runtime: caller-authored matrix payloads cannot establish independently observed Herdr/App/Core/session/semantic provenance; a trusted production runtime collector receipt is required."
     }else{throw "$Context provenance kind '$($p.kind)' is not governed."}
-    return [pscustomobject][ordered]@{CaseId=[string]$Payload.caseId;ObservedUtc=[string]$Payload.observedUtc;EvidenceClass=$evidenceClass;Outcome=if($allPassed){'PASS'}else{'FAIL'};Details=[string]$Payload.details}
+    $runFingerprint=@($run.runId,$run.startedUtc,$run.endedUtc,$run.sessionId,$run.candidateCommitSha,$run.candidateTreeSha,$run.packageReceiptCanonicalSha256)-join'|'
+    return [pscustomobject][ordered]@{CaseId=[string]$Payload.caseId;ObservedUtc=[string]$Payload.observedUtc;EvidenceClass=$evidenceClass;Outcome=if($allPassed){'PASS'}else{'FAIL'};Details=[string]$Payload.details;RunFingerprint=$runFingerprint;RunStartedUtc=[string]$run.startedUtc;RunEndedUtc=[string]$run.endedUtc}
 }
 
 function Assert-RendererMatrixCases { param([object[]]$Cases,[string[]]$Expected,[string]$Context,[string]$Root,[string]$RepositoryRoot,[switch]$ValidateBindings)
@@ -489,6 +501,7 @@ function Assert-RendererMatrixCases { param([object[]]$Cases,[string[]]$Expected
     if([string]::IsNullOrWhiteSpace($RepositoryRoot)){$RepositoryRoot=$script:RendererCurrentRepositoryRoot}
     if($script:RendererCurrentValidateBindings){$ValidateBindings=$true}
     Assert-RendererSet @($Cases|ForEach-Object{$_.id}) $Expected "$Context IDs"
+    $matrixRunFingerprint=$null
     foreach($case in $Cases){
         Assert-RendererExactProperties $case @('id','status','evidenceReceipt','notes') "$Context '$($case.id)'"
         Assert-RendererString $case.id "$Context id"
@@ -524,6 +537,7 @@ function Assert-RendererMatrixCases { param([object[]]$Cases,[string[]]$Expected
             $rawPayload = $rawJson | ConvertFrom-Json -DateKind String
         }
         $validatedRaw = Assert-RendererMatrixRawPayload -Payload $rawPayload -ExpectedCaseId $case.id -Context "$Context '$($case.id)' raw evidence payload" -RepositoryRoot $RepositoryRoot -EvidenceRoot $Root
+        if($null-eq$matrixRunFingerprint){$matrixRunFingerprint=$validatedRaw.RunFingerprint}elseif($matrixRunFingerprint-cne$validatedRaw.RunFingerprint){throw "$Context '$($case.id)' does not share the exact run/session/candidate/package identity."}
         if ($receipt.observedUtc -cne $validatedRaw.ObservedUtc) {
             throw "$Context '$($case.id)' receipt observedUtc '$($receipt.observedUtc)' does not match raw evidence observedUtc '$($validatedRaw.ObservedUtc)'."
         }
