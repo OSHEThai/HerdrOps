@@ -243,6 +243,16 @@ jobs:
         shell: powershell
         run: ./tools/Test-V05ComplianceRuntimeTraceOrchestration.ps1
 
+      # Static/Synthetic hostile checks only. The legacy one-process wrapper is
+      # intentionally disabled and cannot grant Actual Herdr Runtime credit.
+      - name: Run v0.5 distributed role provenance selftest (PowerShell 7)
+        shell: pwsh
+        run: ./tools/Test-V05DistributedRoleProvenance.ps1
+
+      - name: Run v0.5 distributed role provenance selftest (Windows PowerShell 5.1)
+        shell: powershell
+        run: ./tools/Test-V05DistributedRoleProvenance.ps1
+
       # Static/Synthetic/Contract/local SQLite integration only; Actual Herdr Runtime and Release NOT OBSERVED.
       - name: Prepare v1.0 Issue #43 CI candidate binding
         if: always()

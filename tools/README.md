@@ -221,20 +221,15 @@ $expectedSourceTree = '<approved-source-tree>'
 # oversized or sensitive content.
 ./tools/Test-V05ComplianceRuntimeTraceOrchestration.ps1
 
-# From an authorized Herdr pane with three distinct role panes already running,
-# exercise the Issue #27/#28 role-distinct compliance review workflow
-# (self-review must fail closed, PM sends to Leader, Leader escalates to PM,
-# PM confirms) against the observed Herdr runtime and emit the composite
-# runtime acceptance report and runtime gate report.
-$expectedSourceCommit = '<approved-source-commit-40-hex>'
-$expectedSourceTree = '<approved-source-tree-40-hex>'
-./tools/Invoke-V05ComplianceRuntimeAcceptance.ps1 `
-  -ProjectManagerTerminalId '<terminal-id>' `
-  -LeaderTerminalId '<terminal-id>' `
-  -SubjectTerminalId '<terminal-id>' `
-  -EvidencePath '<verified-evidence-file>' `
-  -ExpectedSourceCommit $expectedSourceCommit `
-  -ExpectedSourceTree $expectedSourceTree
+# Static/Synthetic hostile checks for the Issue #27/#28 distributed-role
+# provenance contract. The legacy Invoke-V05ComplianceRuntimeAcceptance.ps1
+# entry point is intentionally fail-closed: one orchestrator process cannot
+# impersonate PM, Leader, and Subject by changing HERDR_PANE_ID. A live
+# successor must have each already-running pane invoke its own command and
+# retain the canonical server-observed PID/start ancestry chain and a
+# canonical-payload receipt hash under one non-zero run nonce. These checks do
+# not grant Actual Herdr Runtime or cryptographic provenance credit.
+./tools/Test-V05DistributedRoleProvenance.ps1
 
 # From an authorized Herdr pane, capture actual bounded pane-read and
 # Herdr-PID-to-Windows-process evidence without controlling the session.

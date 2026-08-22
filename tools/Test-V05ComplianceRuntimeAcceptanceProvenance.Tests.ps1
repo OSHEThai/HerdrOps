@@ -210,10 +210,10 @@ try {
     Assert-Condition -Condition (Test-Path -LiteralPath $readmePath -PathType Leaf) -Message 'tools/README.md exists'
 
     $readmeText = Get-Content -LiteralPath $readmePath -Raw
-    Assert-Condition -Condition ($readmeText -match '\$expectedSourceCommit\s*=') -Message 'tools/README.md defines $expectedSourceCommit placeholder'
-    Assert-Condition -Condition ($readmeText -match '\$expectedSourceTree\s*=') -Message 'tools/README.md defines $expectedSourceTree placeholder'
-    Assert-Condition -Condition ($readmeText -match 'Invoke-V05ComplianceRuntimeAcceptance\.ps1[\s\S]*?-ExpectedSourceCommit') -Message 'tools/README.md includes -ExpectedSourceCommit parameter'
-    Assert-Condition -Condition ($readmeText -match 'Invoke-V05ComplianceRuntimeAcceptance\.ps1[\s\S]*?-ExpectedSourceTree') -Message 'tools/README.md includes -ExpectedSourceTree parameter'
+    Assert-Condition -Condition ($readmeText -match 'Invoke-V05ComplianceRuntimeAcceptance\.ps1[\s\S]*?intentionally fail-closed') -Message 'tools/README.md documents the disabled legacy wrapper'
+    Assert-Condition -Condition ($readmeText -match 'one orchestrator process cannot[\s\S]*?changing HERDR_PANE_ID') -Message 'tools/README.md documents why environment reassignment is not role provenance'
+    Assert-Condition -Condition ($readmeText -match 'Test-V05DistributedRoleProvenance\.ps1') -Message 'tools/README.md routes static verification to the distributed provenance selftest'
+    Assert-Condition -Condition ($wrapperText -match 'DistributedRoleProvenanceRequired:[^\r\n]*NoRuntimeCredit') -Message 'Wrapper records the fail-closed NoRuntimeCredit boundary'
 
     # 12. Assert-V05JsonBooleanProperty unit tests
     $dummyObj = [pscustomobject]@{

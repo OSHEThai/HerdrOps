@@ -31,6 +31,15 @@ param(
     [string]$Configuration = 'Release'
 )
 
+# This legacy wrapper used to execute every review command as a child of one
+# orchestrator while changing HERDR_PANE_ID between calls.  Core correctly
+# authorizes the connected client PID against the claimed pane process tree, so
+# that topology cannot prove role-distinct action authorship.  Keep the entry
+# point fail-closed until the distributed successor has each already-running
+# pane invoke its own command and emits server-observed PID/start/ancestry
+# receipts bound to one run nonce.
+throw 'DistributedRoleProvenanceRequired: the single-process v0.5 runtime wrapper is disabled and grants NoRuntimeCredit; use a reviewed distributed per-pane successor.'
+
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $false
@@ -237,7 +246,6 @@ try {
     $selfReviewInputPath = Join-Path $evidenceDirectory 'self-review-attempt.json'
     [IO.File]::WriteAllText($selfReviewInputPath, $selfReviewInput, [Text.UTF8Encoding]::new($false))
 
-    $env:HERDR_PANE_ID = $SubjectTerminalId
     $selfReviewErrorPath = Join-Path $evidenceDirectory 'self-review.stderr.txt'
     $selfReviewLines = @(& $cliExecutable review --input $selfReviewInputPath 2> $selfReviewErrorPath)
     $selfReviewExit = $LASTEXITCODE
@@ -259,7 +267,6 @@ try {
     $sendInputPath = Join-Path $evidenceDirectory '1-send-to-leader.json'
     [IO.File]::WriteAllText($sendInputPath, $sendToLeaderInput, [Text.UTF8Encoding]::new($false))
 
-    $env:HERDR_PANE_ID = $ProjectManagerTerminalId
     $sendErrorPath = Join-Path $evidenceDirectory '1-send.stderr.txt'
     $sendLines = @(& $cliExecutable review --input $sendInputPath 2> $sendErrorPath)
     $sendExit = $LASTEXITCODE
@@ -282,7 +289,6 @@ try {
     $escalateInputPath = Join-Path $evidenceDirectory '2-escalate.json'
     [IO.File]::WriteAllText($escalateInputPath, $escalateInput, [Text.UTF8Encoding]::new($false))
 
-    $env:HERDR_PANE_ID = $LeaderTerminalId
     $escalateErrorPath = Join-Path $evidenceDirectory '2-escalate.stderr.txt'
     $escalateLines = @(& $cliExecutable review --input $escalateInputPath 2> $escalateErrorPath)
     $escalateExit = $LASTEXITCODE
@@ -305,7 +311,6 @@ try {
     $confirmInputPath = Join-Path $evidenceDirectory '3-confirm.json'
     [IO.File]::WriteAllText($confirmInputPath, $confirmInput, [Text.UTF8Encoding]::new($false))
 
-    $env:HERDR_PANE_ID = $ProjectManagerTerminalId
     $confirmErrorPath = Join-Path $evidenceDirectory '3-confirm.stderr.txt'
     $confirmLines = @(& $cliExecutable review --input $confirmInputPath 2> $confirmErrorPath)
     $confirmExit = $LASTEXITCODE
