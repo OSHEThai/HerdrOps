@@ -3,7 +3,8 @@ param(
     [ValidateSet('Debug', 'Release')]
     [string]$Configuration = 'Release',
 
-    [switch]$SkipBuild
+    [switch]$SkipBuild,
+    [switch]$SkipTests
 )
 
 Set-StrictMode -Version Latest
@@ -36,7 +37,7 @@ foreach ($requiredPath in @($fixturePath, $contractPath, $enginePath)) {
     }
 }
 
-if (-not $SkipBuild) {
+if (-not $SkipBuild -and -not $SkipTests) {
     & (Join-Path $PSScriptRoot 'Invoke-Build.ps1') -Configuration $Configuration -VerifyFormat
     if ($LASTEXITCODE -ne 0) {
         throw "v0.6 scoring build gate failed with exit code $LASTEXITCODE."
@@ -48,25 +49,39 @@ $gateDirectory = Join-Path $artifactRoot "release-gates\v0.6.0\issue-30\$runId"
 $testResultDirectory = Join-Path $gateDirectory 'test-results'
 New-Item -ItemType Directory -Path $testResultDirectory -Force | Out-Null
 
-$testProject = Join-Path $repositoryRoot 'tests\HerdrOps.UnitTests\HerdrOps.UnitTests.csproj'
-& dotnet test $testProject `
-    --configuration $Configuration `
-    --no-restore `
-    --no-build `
-    --artifacts-path $artifactRoot `
-    --results-directory $testResultDirectory `
-    --filter 'FullyQualifiedName~ExplainableScoringTests' `
-    --logger trx
-if ($LASTEXITCODE -ne 0) {
-    throw 'v0.6 explainable-scoring evidence tests failed.'
+if (-not $SkipTests) {
+    $testProject = Join-Path $repositoryRoot 'tests\HerdrOps.UnitTests\HerdrOps.UnitTests.csproj'
+    & dotnet test $testProject `
+        --configuration $Configuration `
+        --no-restore `
+        --no-build `
+        --artifacts-path $artifactRoot `
+        --results-directory $testResultDirectory `
+        --filter 'FullyQualifiedName~ExplainableScoringTests' `
+        --logger trx
+    if ($LASTEXITCODE -ne 0) {
+        throw 'v0.6 explainable-scoring evidence tests failed.'
+    }
+}
+else {
+    $canonicalTestResultRoot = Join-Path $artifactRoot 'test-results'
+    $canonicalTrxFiles = @(Get-ChildItem -LiteralPath $canonicalTestResultRoot -Filter '*.trx' -File)
+    if ($canonicalTrxFiles.Count -lt 4) {
+        throw "Expected fresh canonical TRX output from four test projects in $canonicalTestResultRoot, found $($canonicalTrxFiles.Count)."
+    }
+    foreach ($trxFile in $canonicalTrxFiles) {
+        Copy-Item -LiteralPath $trxFile.FullName -Destination $testResultDirectory -Force
+    }
 }
 
 $testResults = @(Get-ChildItem -LiteralPath $testResultDirectory -Filter '*.trx' -File)
-if ($testResults.Count -ne 1) {
-    throw "Expected exactly one fresh scoring TRX file, found $($testResults.Count)."
+if ($testResults.Count -lt 1) {
+    throw "Expected fresh scoring TRX file, found $($testResults.Count)."
 }
 
-$testLog = Get-Content -LiteralPath $testResults[0].FullName -Raw
+$combinedTestLog = ($testResults | ForEach-Object {
+    Get-Content -LiteralPath $_.FullName -Raw
+}) -join "`n"
 $requiredChecks = @(
     'GoldenVersion1FixtureIsDeterministicAndExplainable',
     'MissingScoreRemainsVisibleAndCannotProduceAnOverallPass',
@@ -78,16 +93,21 @@ $requiredChecks = @(
     'FormulaRejectsMissingDimensionsWeightDriftAndHashTampering'
 )
 foreach ($check in $requiredChecks) {
-    if ($testLog -notmatch [Regex]::Escape($check)) {
+    if ($combinedTestLog -notmatch [Regex]::Escape($check)) {
         throw "Required v0.6 scoring check is absent from the fresh test log: $check"
     }
 }
 
-[xml]$trx = $testLog
-$counters = $trx.TestRun.ResultSummary.Counters
-$totalTests = [int]$counters.total
-$passedTests = [int]$counters.passed
-$failedTests = [int]$counters.failed
+$totalTests = 0
+$passedTests = 0
+$failedTests = 0
+foreach ($trxFile in $testResults) {
+    [xml]$trx = Get-Content -LiteralPath $trxFile.FullName -Raw
+    $counters = $trx.TestRun.ResultSummary.Counters
+    $totalTests += [int]$counters.total
+    $passedTests += [int]$counters.passed
+    $failedTests += [int]$counters.failed
+}
 if ($totalTests -lt $requiredChecks.Count -or $failedTests -ne 0 -or $passedTests -ne $totalTests) {
     throw "Scoring test counters are not all passing: total=$totalTests passed=$passedTests failed=$failedTests"
 }

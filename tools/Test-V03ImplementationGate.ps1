@@ -4,6 +4,7 @@ param(
     [string]$Configuration = 'Release',
 
     [switch]$SkipBuild,
+    [switch]$SkipTests,
 
     # Test seam for deterministic child-failure tests. Production callers use
     # the committed child gates in this tools directory.
@@ -164,7 +165,7 @@ try {
         throw [InvalidOperationException]::new($failureCode)
     }
 
-    if (-not $SkipBuild) {
+    if (-not $SkipBuild -and -not $SkipTests) {
         try {
             # The parent gate performs only the deterministic build/format
             # preflight. Its child gates own their scoped Contract/Synthetic
@@ -219,6 +220,9 @@ try {
             $Configuration,
             '-SkipBuild'
         )
+        if ($SkipTests) {
+            $childArguments += '-SkipTests'
+        }
         if ($definition.ImplementationOnly) {
             $childArguments += '-ImplementationOnly'
         }

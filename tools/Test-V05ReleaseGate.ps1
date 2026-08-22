@@ -31,6 +31,9 @@ param(
     [Parameter(ParameterSetName = 'ReleaseGate')]
     [switch]$SkipBuild,
 
+    [Parameter(ParameterSetName = 'ReleaseGate')]
+    [switch]$SkipTests,
+
     [Parameter(Mandatory, ParameterSetName = 'SelfTest')]
     [switch]$SelfTest
 )
@@ -700,7 +703,7 @@ if ($RequireReleaseReady -and -not $releaseReady) {
     throw "Release readiness required (-RequireReleaseReady) but release evidence is incomplete: $($missing -join ', ')"
 }
 
-if (-not $SkipBuild) {
+if (-not $SkipBuild -and -not $SkipTests) {
     & (Join-Path $PSScriptRoot 'Invoke-Build.ps1') -Configuration $Configuration -VerifyFormat
     if ($LASTEXITCODE -ne 0) {
         throw 'The v0.5 release build and test suite failed.'

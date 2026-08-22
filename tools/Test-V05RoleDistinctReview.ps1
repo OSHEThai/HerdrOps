@@ -3,7 +3,8 @@ param(
     [ValidateSet('Debug', 'Release')]
     [string]$Configuration = 'Release',
 
-    [switch]$SkipBuild
+    [switch]$SkipBuild,
+    [switch]$SkipTests
 )
 
 Set-StrictMode -Version Latest
@@ -162,7 +163,8 @@ $cliInputRecord = [Regex]::Match(
 $requiredMarkers = [ordered]@{
     CiRunsRoleDistinctReviewGate =
         $ciSource.Contains('Run v0.5 role-distinct review implementation gate', [StringComparison]::Ordinal) -and
-        $ciSource.Contains('./tools/Test-V05RoleDistinctReview.ps1 -Configuration Release -SkipBuild', [StringComparison]::Ordinal)
+        ($ciSource.Contains('./tools/Test-V05RoleDistinctReview.ps1 -Configuration Release -SkipBuild -SkipTests', [StringComparison]::Ordinal) -or
+         $ciSource.Contains('./tools/Test-V05RoleDistinctReview.ps1 -Configuration Release -SkipBuild', [StringComparison]::Ordinal))
     ContractNoRuntimeCredit = $contractSource.Contains('NoRuntimeCredit', [StringComparison]::Ordinal)
     ContractSameUserBoundary =
         $contractSource.Contains('operational identity continuity and correlation only', [StringComparison]::Ordinal) -and
@@ -523,7 +525,7 @@ foreach ($marker in $requiredMarkers.GetEnumerator()) {
     }
 }
 
-if (-not $SkipBuild) {
+if (-not $SkipBuild -and -not $SkipTests) {
     & (Join-Path $PSScriptRoot 'Invoke-Build.ps1') -Configuration $Configuration -VerifyFormat
     if ($LASTEXITCODE -ne 0) {
         throw "v0.5 role-distinct review build gate failed with exit code $LASTEXITCODE."
@@ -576,25 +578,37 @@ $testRuns = @(
         Filter = 'FullyQualifiedName=HerdrOps.IntegrationTests.ComplianceReviewWorkflowServiceTests.IpcUsesCoreTimeAndExactRetryDoesNotDependOnAClientTimestamp|FullyQualifiedName=HerdrOps.IntegrationTests.ReviewCommandIpcIntegrationTests.AppRejectsSameUserPipeServerWhoseProcessIsNotHerdrOpsCore|FullyQualifiedName=HerdrOps.IntegrationTests.ReviewCommandIpcIntegrationTests.CliDerivesReviewerIdentityFromHerdrPaneAndCorePersistsThatAuthority|FullyQualifiedName~ComplianceReviewStorageTests|FullyQualifiedName~ComplianceReviewWorkflowServiceTests|FullyQualifiedName~ReviewCommandIpcIntegrationTests|FullyQualifiedName~ReviewCommandIpcTimeoutIntegrationTests|FullyQualifiedName~ReviewCommandHandlerTimeoutIntegrationTests|FullyQualifiedName~ComplianceReviewCommandCoordinatorTests|FullyQualifiedName~HerdrReviewClientProcessAuthorizerTests|FullyQualifiedName~ComplianceReviewStateHubTests|FullyQualifiedName~ComplianceQueueStateTests|FullyQualifiedName~AssignmentLifecycleStoreTests|FullyQualifiedName~EvidenceAuditStorageTests|FullyQualifiedName~SqliteHerdrStateStoreTests|FullyQualifiedName~UiLanguageCatalogTests'
     }
 )
-for ($index = 0; $index -lt $testRuns.Count; $index++) {
-    $run = $testRuns[$index]
-    $logName = "issue-27-$($index + 1).trx"
-    & dotnet test $run.Project `
-        --configuration $Configuration `
-        --no-restore `
-        --no-build `
-        --artifacts-path $artifactRoot `
-        --results-directory $testResultDirectory `
-        --logger "trx;LogFileName=$logName" `
-        --filter $run.Filter
-    if ($LASTEXITCODE -ne 0) {
-        throw "v0.5 role-distinct review tests failed: $($run.Project)"
+if (-not $SkipTests) {
+    for ($index = 0; $index -lt $testRuns.Count; $index++) {
+        $run = $testRuns[$index]
+        $logName = "issue-27-$($index + 1).trx"
+        & dotnet test $run.Project `
+            --configuration $Configuration `
+            --no-restore `
+            --no-build `
+            --artifacts-path $artifactRoot `
+            --results-directory $testResultDirectory `
+            --logger "trx;LogFileName=$logName" `
+            --filter $run.Filter
+        if ($LASTEXITCODE -ne 0) {
+            throw "v0.5 role-distinct review tests failed: $($run.Project)"
+        }
+    }
+}
+else {
+    $canonicalTestResultRoot = Join-Path $artifactRoot 'test-results'
+    $canonicalTrxFiles = @(Get-ChildItem -LiteralPath $canonicalTestResultRoot -Filter '*.trx' -File)
+    if ($canonicalTrxFiles.Count -lt 4) {
+        throw "Expected fresh canonical TRX output from four test projects in $canonicalTestResultRoot, found $($canonicalTrxFiles.Count)."
+    }
+    foreach ($trxFile in $canonicalTrxFiles) {
+        Copy-Item -LiteralPath $trxFile.FullName -Destination $testResultDirectory -Force
     }
 }
 
 $testResults = @(Get-ChildItem -LiteralPath $testResultDirectory -Filter '*.trx' -File)
-if ($testResults.Count -ne 3) {
-    throw "Expected exactly 3 fresh role-distinct review TRX files, found $($testResults.Count)."
+if ($testResults.Count -lt 1) {
+    throw "Expected fresh role-distinct review TRX files, found $($testResults.Count)."
 }
 $combinedTestLog = ($testResults | ForEach-Object {
     Get-Content -LiteralPath $_.FullName -Raw

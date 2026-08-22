@@ -3,7 +3,8 @@ param(
     [ValidateSet('Debug', 'Release')]
     [string]$Configuration = 'Release',
 
-    [switch]$SkipBuild
+    [switch]$SkipBuild,
+    [switch]$SkipTests
 )
 
 Set-StrictMode -Version Latest
@@ -14,7 +15,7 @@ $repositoryRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Pat
 $artifactRoot = Join-Path $repositoryRoot 'artifacts'
 $testResultRoot = Join-Path $artifactRoot 'test-results'
 
-if (-not $SkipBuild) {
+if (-not $SkipBuild -and -not $SkipTests) {
     & (Join-Path $PSScriptRoot 'Invoke-Build.ps1') -Configuration $Configuration -VerifyFormat
     if ($LASTEXITCODE -ne 0) {
         throw "v0.2 state-store/IPC build gate failed with exit code $LASTEXITCODE."

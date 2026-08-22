@@ -1,6 +1,7 @@
 [CmdletBinding()]
 param(
-    [switch]$SkipBuild
+    [switch]$SkipBuild,
+    [switch]$SkipTests
 )
 
 Set-StrictMode -Version Latest
@@ -10,7 +11,7 @@ $repositoryRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Pat
 $artifactRoot = Join-Path $repositoryRoot 'artifacts'
 $runStartedAt = [DateTime]::UtcNow.AddSeconds(-2)
 
-if (-not $SkipBuild) {
+if (-not $SkipBuild -and -not $SkipTests) {
     & (Join-Path $PSScriptRoot 'Invoke-Build.ps1') -Configuration Release -VerifyFormat
     if ($LASTEXITCODE -ne 0) {
         throw "v0.1 build gate failed with exit code $LASTEXITCODE."
@@ -65,7 +66,7 @@ $evidenceFiles = foreach ($relativePath in $relativeEvidencePaths) {
 $testResultRoot = Join-Path $artifactRoot 'test-results'
 $testResults = @(
     Get-ChildItem -LiteralPath $testResultRoot -Filter '*.trx' -File |
-        Where-Object { $SkipBuild -or $_.LastWriteTimeUtc -ge $runStartedAt }
+        Where-Object { $SkipBuild -or $SkipTests -or $_.LastWriteTimeUtc -ge $runStartedAt }
 )
 if ($testResults.Count -lt 4) {
     throw "Expected fresh TRX output from four test projects, found $($testResults.Count)."

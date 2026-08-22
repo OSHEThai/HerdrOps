@@ -4,6 +4,7 @@ param(
     [string]$Configuration = 'Release',
 
     [switch]$SkipBuild,
+    [switch]$SkipTests,
 
     [string]$RunToken = ''
 )
@@ -23,7 +24,7 @@ if ([string]::IsNullOrWhiteSpace($RunToken)) {
     $RunToken = [string]$env:HERDOPS_V02_LIVE_WIDGET_RUN_TOKEN
 }
 
-if (-not $SkipBuild) {
+if (-not $SkipBuild -and -not $SkipTests) {
     if ([string]::IsNullOrWhiteSpace($RunToken)) {
         $RunToken = [guid]::NewGuid().ToString('N')
     }

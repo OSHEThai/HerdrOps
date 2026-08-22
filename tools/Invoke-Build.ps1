@@ -37,6 +37,9 @@ if ($VerifyFormat) {
 }
 
 if (-not $SkipTests) {
+    if ([string]::IsNullOrWhiteSpace($env:HERDOPS_V02_LIVE_WIDGET_RUN_TOKEN)) {
+        $env:HERDOPS_V02_LIVE_WIDGET_RUN_TOKEN = "$([DateTime]::UtcNow.ToString('yyyyMMddTHHmmssfffffffZ', [Globalization.CultureInfo]::InvariantCulture))-$([Guid]::NewGuid().ToString('N').Substring(0, 8))"
+    }
     $resultsDirectory = Join-Path $artifactRoot 'test-results'
     & dotnet test $solutionPath -m:1 --configuration $Configuration --no-restore --no-build --artifacts-path $artifactRoot --results-directory $resultsDirectory --logger trx
     if ($LASTEXITCODE -ne 0) { throw 'Tests failed.' }
