@@ -335,6 +335,88 @@ function Assert-CiAggregatorResults {
     return $true
 }
 
+function Get-CiGovernedCommandInventory {
+    <#
+    Each entry is an explicit workflow command contract.  RequiresReleaseBuild
+    is intentionally opt-in: it identifies commands whose implementation reads
+    the current runner's Release binaries even when the command has no
+    -SkipBuild switch.
+    #>
+    return @(
+        @{ Pattern = 'Test-V07Issue37ManifestIntegrity\.ps1\s+-SelfTest'; Job = 'build-and-v01'; Shell = 'pwsh' },
+        @{ Pattern = 'Test-BuildTestScheduling\.ps1'; Job = 'build-and-v01'; Shell = 'pwsh' },
+        @{ Pattern = 'Test-BuildTestScheduling\.ps1'; Job = 'build-and-v01'; Shell = 'powershell' },
+        @{ Pattern = 'Test-BuildTestScheduling\.Tests\.ps1'; Job = 'build-and-v01'; Shell = 'pwsh' },
+        @{ Pattern = 'Test-BuildTestScheduling\.Tests\.ps1'; Job = 'build-and-v01'; Shell = 'powershell' },
+        @{ Pattern = 'Test-HerdrOpsPackaging\.ps1'; Job = 'build-and-v01'; Shell = 'pwsh' },
+        @{ Pattern = 'Test-HerdrOpsPackaging\.ps1'; Job = 'build-and-v01'; Shell = 'powershell' },
+        @{ Pattern = 'Test-V01ReleaseGate\.ps1'; Job = 'build-and-v01'; Shell = 'pwsh' },
+
+        @{ Pattern = 'Test-V02StateStoreIpc\.ps1'; Job = 'v02-gates'; Shell = 'pwsh' },
+        @{ Pattern = 'Test-V02LivePages\.ps1'; Job = 'v02-gates'; Shell = 'pwsh' },
+        @{ Pattern = 'Test-V02LiveWidgetsProvenance\.Tests\.ps1'; Job = 'v02-gates'; Shell = 'pwsh' },
+        @{ Pattern = 'Test-V02LiveWidgetsProvenance\.Tests\.ps1'; Job = 'v02-gates'; Shell = 'powershell' },
+        @{ Pattern = 'V02ResourceStageCheckpoints\.Tests\.ps1'; Job = 'v02-gates'; Shell = 'pwsh' },
+        @{ Pattern = 'V02ResourceStageCheckpoints\.Tests\.ps1'; Job = 'v02-gates'; Shell = 'powershell' },
+        @{ Pattern = 'V02ReferenceHostProfile\.Tests\.ps1'; Job = 'v02-gates'; Shell = 'pwsh' },
+        @{ Pattern = 'V02ReferenceHostProfile\.Tests\.ps1'; Job = 'v02-gates'; Shell = 'powershell' },
+        @{ Pattern = 'Test-V02WorkingSetBudget\.Tests\.ps1'; Job = 'v02-gates'; Shell = 'pwsh' },
+        @{ Pattern = 'Test-V02WorkingSetBudget\.Tests\.ps1'; Job = 'v02-gates'; Shell = 'powershell' },
+        @{ Pattern = 'V02RendererEvidence\.Tests\.ps1'; Job = 'v02-gates'; Shell = 'pwsh' },
+        @{ Pattern = 'V02RendererEvidence\.Tests\.ps1'; Job = 'v02-gates'; Shell = 'powershell' },
+        @{ Pattern = 'Test-V02PackageIdentity\.Tests\.ps1'; Job = 'v02-gates'; Shell = 'pwsh' },
+        @{ Pattern = 'Test-V02PackageIdentity\.Tests\.ps1'; Job = 'v02-gates'; Shell = 'powershell' },
+        @{ Pattern = 'Test-V02RendererCompatibilityManifest\.SelfTests\.ps1'; Job = 'v02-gates'; Shell = 'pwsh' },
+        @{ Pattern = 'Test-V02RendererCompatibilityManifest\.SelfTests\.ps1'; Job = 'v02-gates'; Shell = 'powershell' },
+        @{ Pattern = 'Test-V02ExactBinding\.Tests\.ps1'; Job = 'v02-gates'; Shell = 'pwsh' },
+        @{ Pattern = 'Test-V02ExactBinding\.Tests\.ps1'; Job = 'v02-gates'; Shell = 'powershell' },
+        @{ Pattern = 'V02RuntimePackageBinding\.Tests\.ps1'; Job = 'v02-gates'; Shell = 'pwsh' },
+        @{ Pattern = 'V02RuntimePackageBinding\.Tests\.ps1'; Job = 'v02-gates'; Shell = 'powershell' },
+        @{ Pattern = 'V02RuntimeSemanticBinding\.Tests\.ps1'; Job = 'v02-gates'; Shell = 'pwsh' },
+        @{ Pattern = 'V02RuntimeSemanticBinding\.Tests\.ps1'; Job = 'v02-gates'; Shell = 'powershell' },
+        @{ Pattern = 'Test-V02LanguageMatrixAcceptance\.Tests\.ps1'; Job = 'v02-gates'; Shell = 'pwsh' },
+        @{ Pattern = 'Test-V02LanguageMatrixAcceptance\.Tests\.ps1'; Job = 'v02-gates'; Shell = 'powershell' },
+        @{ Pattern = 'Test-V02LiveWidgets\.ps1'; Job = 'v02-gates'; Shell = 'pwsh' },
+        @{ Pattern = 'Test-V02LanguageModes\.ps1'; Job = 'v02-gates'; Shell = 'pwsh' },
+        @{ Pattern = 'Invoke-V02SoakMeasurement\.SelfTests\.ps1'; Job = 'v02-gates'; Shell = 'pwsh' },
+        @{ Pattern = 'Invoke-V02SoakMeasurement\.SelfTests\.ps1'; Job = 'v02-gates'; Shell = 'powershell' },
+
+        @{ Pattern = 'Test-V03ImplementationGateTests\.ps1'; Job = 'v03-v04-gates'; Shell = 'pwsh' },
+        @{ Pattern = 'Test-V03RuntimeCaptureProvenanceTests\.ps1'; Job = 'v03-v04-gates'; Shell = 'pwsh' },
+        @{ Pattern = 'Test-V03RuntimeCaptureProvenanceTests\.ps1'; Job = 'v03-v04-gates'; Shell = 'powershell' },
+        @{ Pattern = 'Test-V03ImplementationGate\.ps1'; Job = 'v03-v04-gates'; Shell = 'pwsh' },
+        @{ Pattern = 'Test-V04SelfReportCli\.ps1'; Job = 'v03-v04-gates'; Shell = 'pwsh' },
+        @{ Pattern = 'Test-V04AssignmentLifecycle\.ps1'; Job = 'v03-v04-gates'; Shell = 'pwsh' },
+        @{ Pattern = 'Test-V04DelegationGraph\.ps1'; Job = 'v03-v04-gates'; Shell = 'pwsh' },
+        @{ Pattern = 'Test-V04TaskAlignment\.ps1'; Job = 'v03-v04-gates'; Shell = 'pwsh' },
+        @{ Pattern = 'Test-V04ExpandedWidget\.ps1'; Job = 'v03-v04-gates'; Shell = 'pwsh' },
+
+        @{ Pattern = 'Test-V05ComplianceRuleEngine\.ps1'; Job = 'v05-v06-gates'; Shell = 'pwsh' },
+        @{ Pattern = 'Test-V05EvidenceAuditStorage\.ps1\s+-Configuration'; Job = 'v05-v06-gates'; Shell = 'pwsh' },
+        @{ Pattern = 'Test-V05EvidenceAuditStorage\.ps1\s+-SelfTest'; Job = 'v05-v06-gates'; Shell = 'pwsh' },
+        @{ Pattern = 'Test-V05EvidenceAuditStorage\.ps1\s+-SelfTest'; Job = 'v05-v06-gates'; Shell = 'powershell' },
+        @{ Pattern = 'Test-V05ComplianceQueue\.ps1'; Job = 'v05-v06-gates'; Shell = 'pwsh' },
+        @{ Pattern = 'Test-V06ScoringEngine\.ps1'; Job = 'v05-v06-gates'; Shell = 'pwsh' },
+        @{ Pattern = 'Test-V05RoleDistinctReview\.ps1'; Job = 'v05-v06-gates'; Shell = 'pwsh' },
+
+        @{ Pattern = 'Test-V10Issue43SecurityReviewFixtures\.ps1'; Job = 'v07-v10-gates'; Shell = 'pwsh' },
+        @{ Pattern = 'Test-V10Issue43SecurityReviewFixtures\.ps1'; Job = 'v07-v10-gates'; Shell = 'powershell' },
+        @{ Pattern = 'Test-V10Issue43SecurityReview\.ps1'; Job = 'v07-v10-gates'; Shell = 'pwsh' },
+        @{ Pattern = 'Test-V10Issue43SecurityReview\.ps1'; Job = 'v07-v10-gates'; Shell = 'powershell' },
+        @{ Pattern = 'Test-V07Lifecycle\.ps1\s+-SelfTest'; Job = 'v07-v10-gates'; Shell = 'pwsh' },
+        @{ Pattern = 'Test-V07Lifecycle\.ps1\s+-SelfTest'; Job = 'v07-v10-gates'; Shell = 'powershell' },
+        @{ Pattern = 'Test-V07PerformanceBudgets\.Tests\.ps1'; Job = 'v07-v10-gates'; Shell = 'pwsh'; RequiresReleaseBuild = $true },
+        @{ Pattern = 'Test-V07PerformanceBudgets\.Tests\.ps1'; Job = 'v07-v10-gates'; Shell = 'powershell'; RequiresReleaseBuild = $true },
+        @{ Pattern = 'Test-V07PerformanceMeasurement\.Tests\.ps1'; Job = 'v07-v10-gates'; Shell = 'pwsh'; RequiresReleaseBuild = $true },
+        @{ Pattern = 'Test-V07PerformanceMeasurement\.Tests\.ps1'; Job = 'v07-v10-gates'; Shell = 'powershell'; RequiresReleaseBuild = $true },
+        @{ Pattern = 'Test-HerdrOpsInstallAcceptance\.ps1'; Job = 'v07-v10-gates'; Shell = 'pwsh' },
+        @{ Pattern = 'Test-HerdrOpsInstallAcceptance\.ps1'; Job = 'v07-v10-gates'; Shell = 'powershell' },
+        @{ Pattern = 'Invoke-HerdrOpsInstallAcceptance\.ps1\s+-Mode\s+DryRun'; Job = 'v07-v10-gates'; Shell = 'pwsh' },
+        @{ Pattern = 'Invoke-HerdrOpsInstallAcceptance\.ps1\s+-Mode\s+Fixture'; Job = 'v07-v10-gates'; Shell = 'pwsh' },
+        @{ Pattern = 'Test-V07Issue37ManifestIntegrity\.ps1$'; Job = 'v07-v10-gates'; Shell = 'pwsh' }
+    )
+}
+
 function Test-CiWorkflowCleanRunnerIndependence {
     param(
         [Parameter(Mandatory)]
@@ -381,27 +463,45 @@ function Test-CiWorkflowCleanRunnerIndependence {
 
         $skipBuildIndexes = @()
         $buildPrerequisiteIndexes = @()
+        $buildRequiredIndexes = @()
         for ($index = 0; $index -lt $job.Steps.Count; $index++) {
+            $step = $job.Steps[$index]
             $stepRun = ([string]$job.Steps[$index].Run).Trim()
             if ($stepRun -match '(?i)(^|\s)-SkipBuild(\s|$)') {
                 $skipBuildIndexes += $index
             }
+
             if ($stepRun -ceq './tools/Invoke-Build.ps1 -Configuration Release -VerifyFormat') {
-                if ($job.Steps[$index].Shell -cne 'pwsh') {
+                if ($step.Shell -cne 'pwsh') {
                     throw "Partitioned job '$requiredJob' clean-runner build prerequisite must use shell pwsh."
                 }
                 $buildPrerequisiteIndexes += $index
             }
+
+            foreach ($entry in @(Get-CiGovernedCommandInventory | Where-Object {
+                        $_.Job -ceq $requiredJob -and
+                        $_.ContainsKey('RequiresReleaseBuild') -and
+                        $_['RequiresReleaseBuild'] -eq $true
+                    })) {
+                if ($stepRun -match $entry.Pattern -and $step.Shell -ceq $entry.Shell) {
+                    $buildRequiredIndexes += $index
+                    break
+                }
+            }
         }
 
-        if ($skipBuildIndexes.Count -gt 0) {
+        $requiresReleaseBuild = ($skipBuildIndexes.Count -gt 0 -or $buildRequiredIndexes.Count -gt 0)
+        if ($requiresReleaseBuild) {
             if ($buildPrerequisiteIndexes.Count -ne 1) {
-                throw "Partitioned job '$requiredJob' must have exactly one canonical clean-runner build prerequisite before -SkipBuild gates."
+                throw "Partitioned job '$requiredJob' must have exactly one canonical clean-runner build prerequisite before -SkipBuild or build-required governed gates."
             }
 
-            foreach ($skipBuildIndex in $skipBuildIndexes) {
-                if ($buildPrerequisiteIndexes[0] -ge $skipBuildIndex) {
-                    throw "Partitioned job '$requiredJob' clean-runner build prerequisite must precede every -SkipBuild gate."
+            foreach ($requiredIndex in @($skipBuildIndexes + $buildRequiredIndexes)) {
+                if ($buildPrerequisiteIndexes[0] -ge $requiredIndex) {
+                    if ($buildRequiredIndexes.Count -eq 0) {
+                        throw "Partitioned job '$requiredJob' clean-runner build prerequisite must precede every -SkipBuild gate."
+                    }
+                    throw "Partitioned job '$requiredJob' clean-runner build prerequisite must precede every -SkipBuild or build-required governed gate."
                 }
             }
         }
@@ -527,81 +627,7 @@ function Test-CiWorkflowScheduling {
         }
     }
 
-    # Static inventory of governed commands:
-    # Each entry defines CommandPattern, TargetJob, RequiredShell, and ExactPattern
-    $governedInventory = @(
-        @{ Pattern = 'Test-V07Issue37ManifestIntegrity\.ps1\s+-SelfTest'; Job = 'build-and-v01'; Shell = 'pwsh' },
-        @{ Pattern = 'Test-BuildTestScheduling\.ps1'; Job = 'build-and-v01'; Shell = 'pwsh' },
-        @{ Pattern = 'Test-BuildTestScheduling\.ps1'; Job = 'build-and-v01'; Shell = 'powershell' },
-        @{ Pattern = 'Test-BuildTestScheduling\.Tests\.ps1'; Job = 'build-and-v01'; Shell = 'pwsh' },
-        @{ Pattern = 'Test-BuildTestScheduling\.Tests\.ps1'; Job = 'build-and-v01'; Shell = 'powershell' },
-        @{ Pattern = 'Test-HerdrOpsPackaging\.ps1'; Job = 'build-and-v01'; Shell = 'pwsh' },
-        @{ Pattern = 'Test-HerdrOpsPackaging\.ps1'; Job = 'build-and-v01'; Shell = 'powershell' },
-        @{ Pattern = 'Test-V01ReleaseGate\.ps1'; Job = 'build-and-v01'; Shell = 'pwsh' },
-
-        @{ Pattern = 'Test-V02StateStoreIpc\.ps1'; Job = 'v02-gates'; Shell = 'pwsh' },
-        @{ Pattern = 'Test-V02LivePages\.ps1'; Job = 'v02-gates'; Shell = 'pwsh' },
-        @{ Pattern = 'Test-V02LiveWidgetsProvenance\.Tests\.ps1'; Job = 'v02-gates'; Shell = 'pwsh' },
-        @{ Pattern = 'Test-V02LiveWidgetsProvenance\.Tests\.ps1'; Job = 'v02-gates'; Shell = 'powershell' },
-        @{ Pattern = 'V02ResourceStageCheckpoints\.Tests\.ps1'; Job = 'v02-gates'; Shell = 'pwsh' },
-        @{ Pattern = 'V02ResourceStageCheckpoints\.Tests\.ps1'; Job = 'v02-gates'; Shell = 'powershell' },
-        @{ Pattern = 'V02ReferenceHostProfile\.Tests\.ps1'; Job = 'v02-gates'; Shell = 'pwsh' },
-        @{ Pattern = 'V02ReferenceHostProfile\.Tests\.ps1'; Job = 'v02-gates'; Shell = 'powershell' },
-        @{ Pattern = 'Test-V02WorkingSetBudget\.Tests\.ps1'; Job = 'v02-gates'; Shell = 'pwsh' },
-        @{ Pattern = 'Test-V02WorkingSetBudget\.Tests\.ps1'; Job = 'v02-gates'; Shell = 'powershell' },
-        @{ Pattern = 'V02RendererEvidence\.Tests\.ps1'; Job = 'v02-gates'; Shell = 'pwsh' },
-        @{ Pattern = 'V02RendererEvidence\.Tests\.ps1'; Job = 'v02-gates'; Shell = 'powershell' },
-        @{ Pattern = 'Test-V02PackageIdentity\.Tests\.ps1'; Job = 'v02-gates'; Shell = 'pwsh' },
-        @{ Pattern = 'Test-V02PackageIdentity\.Tests\.ps1'; Job = 'v02-gates'; Shell = 'powershell' },
-        @{ Pattern = 'Test-V02RendererCompatibilityManifest\.SelfTests\.ps1'; Job = 'v02-gates'; Shell = 'pwsh' },
-        @{ Pattern = 'Test-V02RendererCompatibilityManifest\.SelfTests\.ps1'; Job = 'v02-gates'; Shell = 'powershell' },
-        @{ Pattern = 'Test-V02ExactBinding\.Tests\.ps1'; Job = 'v02-gates'; Shell = 'pwsh' },
-        @{ Pattern = 'Test-V02ExactBinding\.Tests\.ps1'; Job = 'v02-gates'; Shell = 'powershell' },
-        @{ Pattern = 'V02RuntimePackageBinding\.Tests\.ps1'; Job = 'v02-gates'; Shell = 'pwsh' },
-        @{ Pattern = 'V02RuntimePackageBinding\.Tests\.ps1'; Job = 'v02-gates'; Shell = 'powershell' },
-        @{ Pattern = 'V02RuntimeSemanticBinding\.Tests\.ps1'; Job = 'v02-gates'; Shell = 'pwsh' },
-        @{ Pattern = 'V02RuntimeSemanticBinding\.Tests\.ps1'; Job = 'v02-gates'; Shell = 'powershell' },
-        @{ Pattern = 'Test-V02LanguageMatrixAcceptance\.Tests\.ps1'; Job = 'v02-gates'; Shell = 'pwsh' },
-        @{ Pattern = 'Test-V02LanguageMatrixAcceptance\.Tests\.ps1'; Job = 'v02-gates'; Shell = 'powershell' },
-        @{ Pattern = 'Test-V02LiveWidgets\.ps1'; Job = 'v02-gates'; Shell = 'pwsh' },
-        @{ Pattern = 'Test-V02LanguageModes\.ps1'; Job = 'v02-gates'; Shell = 'pwsh' },
-        @{ Pattern = 'Invoke-V02SoakMeasurement\.SelfTests\.ps1'; Job = 'v02-gates'; Shell = 'pwsh' },
-        @{ Pattern = 'Invoke-V02SoakMeasurement\.SelfTests\.ps1'; Job = 'v02-gates'; Shell = 'powershell' },
-
-        @{ Pattern = 'Test-V03ImplementationGateTests\.ps1'; Job = 'v03-v04-gates'; Shell = 'pwsh' },
-        @{ Pattern = 'Test-V03RuntimeCaptureProvenanceTests\.ps1'; Job = 'v03-v04-gates'; Shell = 'pwsh' },
-        @{ Pattern = 'Test-V03RuntimeCaptureProvenanceTests\.ps1'; Job = 'v03-v04-gates'; Shell = 'powershell' },
-        @{ Pattern = 'Test-V03ImplementationGate\.ps1'; Job = 'v03-v04-gates'; Shell = 'pwsh' },
-        @{ Pattern = 'Test-V04SelfReportCli\.ps1'; Job = 'v03-v04-gates'; Shell = 'pwsh' },
-        @{ Pattern = 'Test-V04AssignmentLifecycle\.ps1'; Job = 'v03-v04-gates'; Shell = 'pwsh' },
-        @{ Pattern = 'Test-V04DelegationGraph\.ps1'; Job = 'v03-v04-gates'; Shell = 'pwsh' },
-        @{ Pattern = 'Test-V04TaskAlignment\.ps1'; Job = 'v03-v04-gates'; Shell = 'pwsh' },
-        @{ Pattern = 'Test-V04ExpandedWidget\.ps1'; Job = 'v03-v04-gates'; Shell = 'pwsh' },
-
-        @{ Pattern = 'Test-V05ComplianceRuleEngine\.ps1'; Job = 'v05-v06-gates'; Shell = 'pwsh' },
-        @{ Pattern = 'Test-V05EvidenceAuditStorage\.ps1\s+-Configuration'; Job = 'v05-v06-gates'; Shell = 'pwsh' },
-        @{ Pattern = 'Test-V05EvidenceAuditStorage\.ps1\s+-SelfTest'; Job = 'v05-v06-gates'; Shell = 'pwsh' },
-        @{ Pattern = 'Test-V05EvidenceAuditStorage\.ps1\s+-SelfTest'; Job = 'v05-v06-gates'; Shell = 'powershell' },
-        @{ Pattern = 'Test-V05ComplianceQueue\.ps1'; Job = 'v05-v06-gates'; Shell = 'pwsh' },
-        @{ Pattern = 'Test-V06ScoringEngine\.ps1'; Job = 'v05-v06-gates'; Shell = 'pwsh' },
-        @{ Pattern = 'Test-V05RoleDistinctReview\.ps1'; Job = 'v05-v06-gates'; Shell = 'pwsh' },
-
-        @{ Pattern = 'Test-V10Issue43SecurityReviewFixtures\.ps1'; Job = 'v07-v10-gates'; Shell = 'pwsh' },
-        @{ Pattern = 'Test-V10Issue43SecurityReviewFixtures\.ps1'; Job = 'v07-v10-gates'; Shell = 'powershell' },
-        @{ Pattern = 'Test-V10Issue43SecurityReview\.ps1'; Job = 'v07-v10-gates'; Shell = 'pwsh' },
-        @{ Pattern = 'Test-V10Issue43SecurityReview\.ps1'; Job = 'v07-v10-gates'; Shell = 'powershell' },
-        @{ Pattern = 'Test-V07Lifecycle\.ps1\s+-SelfTest'; Job = 'v07-v10-gates'; Shell = 'pwsh' },
-        @{ Pattern = 'Test-V07Lifecycle\.ps1\s+-SelfTest'; Job = 'v07-v10-gates'; Shell = 'powershell' },
-        @{ Pattern = 'Test-V07PerformanceBudgets\.Tests\.ps1'; Job = 'v07-v10-gates'; Shell = 'pwsh' },
-        @{ Pattern = 'Test-V07PerformanceBudgets\.Tests\.ps1'; Job = 'v07-v10-gates'; Shell = 'powershell' },
-        @{ Pattern = 'Test-V07PerformanceMeasurement\.Tests\.ps1'; Job = 'v07-v10-gates'; Shell = 'pwsh' },
-        @{ Pattern = 'Test-V07PerformanceMeasurement\.Tests\.ps1'; Job = 'v07-v10-gates'; Shell = 'powershell' },
-        @{ Pattern = 'Test-HerdrOpsInstallAcceptance\.ps1'; Job = 'v07-v10-gates'; Shell = 'pwsh' },
-        @{ Pattern = 'Test-HerdrOpsInstallAcceptance\.ps1'; Job = 'v07-v10-gates'; Shell = 'powershell' },
-        @{ Pattern = 'Invoke-HerdrOpsInstallAcceptance\.ps1\s+-Mode\s+DryRun'; Job = 'v07-v10-gates'; Shell = 'pwsh' },
-        @{ Pattern = 'Invoke-HerdrOpsInstallAcceptance\.ps1\s+-Mode\s+Fixture'; Job = 'v07-v10-gates'; Shell = 'pwsh' },
-        @{ Pattern = 'Test-V07Issue37ManifestIntegrity\.ps1$'; Job = 'v07-v10-gates'; Shell = 'pwsh' }
-    )
+    $governedInventory = @(Get-CiGovernedCommandInventory)
 
     foreach ($entry in $governedInventory) {
         $pat = $entry.Pattern

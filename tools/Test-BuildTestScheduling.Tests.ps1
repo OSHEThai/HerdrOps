@@ -116,7 +116,43 @@ try {
             Test-CiWorkflowScheduling -WorkflowPath $tamperedCiPath
         }
 
-    # 4. Hostile CI Test: Cross-runner artifact download is rejected
+    # 4. Hostile CI Test: Missing v0.7 build prerequisite is rejected even without -SkipBuild
+    Assert-Throws -TestName 'Hostile CI: Missing v0.7 binary prerequisite is rejected' `
+        -ExpectedMessagePattern "Partitioned job 'v07-v10-gates' must have exactly one canonical clean-runner build prerequisite" `
+        -ScriptBlock {
+            $ciContent = Get-Content -LiteralPath (Join-Path $repositoryRoot '.github\workflows\ci.yml') -Raw
+            $buildStepPattern = '(?ms)      - name: Run v0\.7-v1\.0 canonical Release build prerequisite \(clean runner\)\r?\n        shell: pwsh\r?\n        run: \./tools/Invoke-Build\.ps1 -Configuration Release -VerifyFormat\r?\n'
+            $tamperedCi = [Regex]::Replace($ciContent, $buildStepPattern, '')
+            $tamperedCiPath = Join-Path $tempRoot 'tampered-ci-v07-missing-build-prerequisite.yml'
+            Set-Content -LiteralPath $tamperedCiPath -Value $tamperedCi -Encoding utf8
+
+            . $schedulerScript
+            Test-CiWorkflowScheduling -WorkflowPath $tamperedCiPath
+        }
+
+    # 5. Hostile CI Test: v0.7 build prerequisite after a binary-dependent command is rejected
+    Assert-Throws -TestName 'Hostile CI: Misordered v0.7 binary prerequisite is rejected' `
+        -ExpectedMessagePattern "Partitioned job 'v07-v10-gates' clean-runner build prerequisite must precede every .*build-required governed gate" `
+        -ScriptBlock {
+            $ciContent = Get-Content -LiteralPath (Join-Path $repositoryRoot '.github\workflows\ci.yml') -Raw
+            $buildStepPattern = '(?ms)      - name: Run v0\.7-v1\.0 canonical Release build prerequisite \(clean runner\)\r?\n        shell: pwsh\r?\n        run: \./tools/Invoke-Build\.ps1 -Configuration Release -VerifyFormat\r?\n'
+            $buildStep = [Regex]::Match($ciContent, $buildStepPattern).Value
+            if ([string]::IsNullOrWhiteSpace($buildStep)) {
+                throw 'Test fixture could not locate the v0.7 build prerequisite.'
+            }
+            $tamperedCi = [Regex]::Replace($ciContent, $buildStepPattern, '')
+            $tamperedCi = [Regex]::Replace(
+                $tamperedCi,
+                '(?ms)(      - name: Run v0\.7 performance budget policy tests \(PowerShell 7\)\r?\n        shell: pwsh\r?\n        run: \./tools/Test-V07PerformanceBudgets\.Tests\.ps1\r?\n)',
+                ('$1' + $buildStep))
+            $tamperedCiPath = Join-Path $tempRoot 'tampered-ci-v07-misordered-build-prerequisite.yml'
+            Set-Content -LiteralPath $tamperedCiPath -Value $tamperedCi -Encoding utf8
+
+            . $schedulerScript
+            Test-CiWorkflowScheduling -WorkflowPath $tamperedCiPath
+        }
+
+    # 6. Hostile CI Test: Cross-runner artifact download is rejected
     Assert-Throws -TestName 'Hostile CI: Cross-runner artifact download is rejected' `
         -ExpectedMessagePattern 'must not download artifacts from another runner' `
         -ScriptBlock {
@@ -131,7 +167,7 @@ try {
             Test-CiWorkflowScheduling -WorkflowPath $tamperedCiPath
         }
 
-    # 5. Hostile CI Test: SkipTests is rejected
+    # 7. Hostile CI Test: SkipTests is rejected
     Assert-Throws -TestName 'Hostile CI: SkipTests is rejected' `
         -ExpectedMessagePattern 'must not use -SkipTests' `
         -ScriptBlock {
@@ -146,7 +182,7 @@ try {
             Test-CiWorkflowScheduling -WorkflowPath $tamperedCiPath
         }
 
-    # 6. Hostile CI Test: Aggregator without always() is rejected
+    # 8. Hostile CI Test: Aggregator without always() is rejected
     Assert-Throws -TestName 'Hostile CI: Aggregator without if always is rejected' `
         -ExpectedMessagePattern "must use if: always\(\)" `
         -ScriptBlock {
@@ -159,7 +195,7 @@ try {
             Test-CiWorkflowScheduling -WorkflowPath $tamperedCiPath
         }
 
-    # 7. Hostile CI Test: Aggregator with one missing dependency result is rejected
+    # 9. Hostile CI Test: Aggregator with one missing dependency result is rejected
     Assert-Throws -TestName 'Hostile CI: Aggregator missing a dependency result binding is rejected' `
         -ExpectedMessagePattern 'result expression.*v05-v06-gates.*found 0' `
         -ScriptBlock {
@@ -174,7 +210,7 @@ try {
             Test-CiWorkflowScheduling -WorkflowPath $tamperedCiPath
         }
 
-    # 8. Hostile CI Test: Aggregator failure result fails closed
+    # 10. Hostile CI Test: Aggregator failure result fails closed
     Assert-Throws -TestName 'Hostile CI: Aggregator failure result fails closed' `
         -ExpectedMessagePattern 'must fail closed; non-success dependency results:.*v05-v06-gates=failure' `
         -ScriptBlock {
@@ -188,7 +224,7 @@ try {
             } | Out-Null
         }
 
-    # 9. Hostile CI Test: Aggregator skipped result fails closed
+    # 11. Hostile CI Test: Aggregator skipped result fails closed
     Assert-Throws -TestName 'Hostile CI: Aggregator skipped result fails closed' `
         -ExpectedMessagePattern 'must fail closed; non-success dependency results:.*v05-v06-gates=skipped' `
         -ScriptBlock {
@@ -202,7 +238,7 @@ try {
             } | Out-Null
         }
 
-    # 10. Hostile CI Test: Aggregator cancelled result fails closed
+    # 12. Hostile CI Test: Aggregator cancelled result fails closed
     Assert-Throws -TestName 'Hostile CI: Aggregator cancelled result fails closed' `
         -ExpectedMessagePattern 'must fail closed; non-success dependency results:.*v05-v06-gates=cancelled' `
         -ScriptBlock {
@@ -216,7 +252,7 @@ try {
             } | Out-Null
         }
 
-    # 11. Hostile CI Test: Cancellation policy disabled is rejected
+    # 13. Hostile CI Test: Cancellation policy disabled is rejected
     Assert-Throws -TestName 'Hostile CI: Disabled concurrency cancellation is rejected' `
         -ExpectedMessagePattern 'must cancel superseded runs' `
         -ScriptBlock {
@@ -229,7 +265,7 @@ try {
             Test-CiWorkflowScheduling -WorkflowPath $tamperedCiPath
         }
 
-    # 12. Hostile CI Test: Missing required partitioned job (e.g. v02-gates)
+    # 14. Hostile CI Test: Missing required partitioned job (e.g. v02-gates)
     Assert-Throws -TestName 'Hostile CI: Missing required partitioned job is rejected' `
         -ExpectedMessagePattern 'missing required partitioned job' `
         -ScriptBlock {
@@ -242,7 +278,7 @@ try {
             Test-CiWorkflowScheduling -WorkflowPath $tamperedCiPath
         }
 
-    # 13. Hostile CI Test: Missing governed gate command
+    # 15. Hostile CI Test: Missing governed gate command
     Assert-Throws -TestName 'Hostile CI: Missing governed gate command is rejected' `
         -ExpectedMessagePattern 'was not found in CI workflow' `
         -ScriptBlock {
@@ -255,7 +291,7 @@ try {
             Test-CiWorkflowScheduling -WorkflowPath $tamperedCiPath
         }
 
-    # 14. Hostile CI Test: Governed step in wrong job
+    # 16. Hostile CI Test: Governed step in wrong job
     Assert-Throws -TestName 'Hostile CI: Governed step in wrong job is rejected' `
         -ExpectedMessagePattern 'expected in job' `
         -ScriptBlock {
@@ -270,7 +306,7 @@ try {
             Test-CiWorkflowScheduling -WorkflowPath $tamperedCiPath
         }
 
-    # 15. Hostile CI Test: Governed step with wrong shell
+    # 17. Hostile CI Test: Governed step with wrong shell
     Assert-Throws -TestName 'Hostile CI: Governed step with wrong shell is rejected' `
         -ExpectedMessagePattern 'appears 2 times in CI workflow|was not found in CI workflow' `
         -ScriptBlock {
@@ -284,7 +320,7 @@ try {
             Test-CiWorkflowScheduling -WorkflowPath $tamperedCiPath
         }
 
-    # 16. Hostile CI Test: Duplicate governed step across jobs
+    # 18. Hostile CI Test: Duplicate governed step across jobs
     Assert-Throws -TestName 'Hostile CI: Duplicate governed step is rejected' `
         -ExpectedMessagePattern 'appears 2 times in CI workflow; expected exactly 1' `
         -ScriptBlock {
@@ -297,7 +333,7 @@ try {
             Test-CiWorkflowScheduling -WorkflowPath $tamperedCiPath
         }
 
-    # 17. Hostile CI Test: Direct dotnet test in single-line CI step
+    # 19. Hostile CI Test: Direct dotnet test in single-line CI step
     Assert-Throws -TestName 'Hostile CI: Direct dotnet test in CI workflow step is rejected' `
         -ExpectedMessagePattern 'Direct ''dotnet test'' execution found in workflow step' `
         -ScriptBlock {
@@ -310,7 +346,7 @@ try {
             Test-CiWorkflowScheduling -WorkflowPath $tamperedCiPath
         }
 
-    # 18. Hostile CI Test: Direct dotnet test in multiline block scalar (run: |)
+    # 20. Hostile CI Test: Direct dotnet test in multiline block scalar (run: |)
     Assert-Throws -TestName 'Hostile CI: Direct dotnet test in multiline run: | block is rejected' `
         -ExpectedMessagePattern 'Direct ''dotnet test'' execution found in workflow step' `
         -ScriptBlock {
@@ -324,7 +360,7 @@ try {
             Test-CiWorkflowScheduling -WorkflowPath $tamperedCiPath
         }
 
-    # 19. Hostile CI Test: Direct dotnet test in multiline block scalar (run: >)
+    # 21. Hostile CI Test: Direct dotnet test in multiline block scalar (run: >)
     Assert-Throws -TestName 'Hostile CI: Direct dotnet test in multiline run: > block is rejected' `
         -ExpectedMessagePattern 'Direct ''dotnet test'' execution found in workflow step' `
         -ScriptBlock {
@@ -338,7 +374,7 @@ try {
             Test-CiWorkflowScheduling -WorkflowPath $tamperedCiPath
         }
 
-    # 20. Hostile CI Test: Direct dotnet test split across folded lines (run: >)
+    # 22. Hostile CI Test: Direct dotnet test split across folded lines (run: >)
     Assert-Throws -TestName 'Hostile CI: Direct dotnet test split across folded lines in run: > block is rejected' `
         -ExpectedMessagePattern 'Direct ''dotnet test'' execution found in workflow step' `
         -ScriptBlock {
@@ -352,7 +388,7 @@ try {
             Test-CiWorkflowScheduling -WorkflowPath $tamperedCiPath
         }
 
-    # 21. Hostile CI Test: Direct dotnet test in run: >- block modifier
+    # 23. Hostile CI Test: Direct dotnet test in run: >- block modifier
     Assert-Throws -TestName 'Hostile CI: Direct dotnet test in run: >- block modifier is rejected' `
         -ExpectedMessagePattern 'Direct ''dotnet test'' execution found in workflow step' `
         -ScriptBlock {
@@ -366,7 +402,7 @@ try {
             Test-CiWorkflowScheduling -WorkflowPath $tamperedCiPath
         }
 
-    # 22. Hostile Build Script Test: Unbounded concurrency (-m:2 or missing -m:1)
+    # 24. Hostile Build Script Test: Unbounded concurrency (-m:2 or missing -m:1)
     Assert-Throws -TestName 'Hostile Build: Concurrency without -m:1 is rejected' `
         -ExpectedMessagePattern 'must serialize project scheduling with exactly one -m:1 or --maxcpucount:1' `
         -ScriptBlock {
@@ -379,7 +415,7 @@ try {
             Test-BuildScriptScheduling -ScriptPath $tamperedBuildPath
         }
 
-    # 23. Hostile Build Script Test: Duplicate concurrency flags (-m:1 -m:4)
+    # 25. Hostile Build Script Test: Duplicate concurrency flags (-m:1 -m:4)
     Assert-Throws -TestName 'Hostile Build: Duplicate concurrency arguments -m:1 -m:4 are rejected' `
         -ExpectedMessagePattern 'must contain exactly one concurrency argument' `
         -ScriptBlock {
@@ -392,7 +428,7 @@ try {
             Test-BuildScriptScheduling -ScriptPath $tamperedBuildPath
         }
 
-    # 24. Hostile Build Script Test: Target is not solution ($solutionPath / HerdrOps.sln)
+    # 26. Hostile Build Script Test: Target is not solution ($solutionPath / HerdrOps.sln)
     Assert-Throws -TestName 'Hostile Build: Non-solution target passed to dotnet test is rejected' `
         -ExpectedMessagePattern 'must target \$solutionPath or HerdrOps\.sln at repo root' `
         -ScriptBlock {
@@ -405,7 +441,7 @@ try {
             Test-BuildScriptScheduling -ScriptPath $tamperedBuildPath
         }
 
-    # 25. Hostile Build Script Test: Attacker external path target (e.g. C:/attacker/HerdrOps.sln)
+    # 27. Hostile Build Script Test: Attacker external path target (e.g. C:/attacker/HerdrOps.sln)
     Assert-Throws -TestName 'Hostile Build: Attacker external path target is rejected' `
         -ExpectedMessagePattern 'must target \$solutionPath or HerdrOps\.sln at repo root' `
         -ScriptBlock {
@@ -418,7 +454,7 @@ try {
             Test-BuildScriptScheduling -ScriptPath $tamperedBuildPath
         }
 
-    # 26. Hostile Build Script Test: Duplicate dotnet test commands
+    # 28. Hostile Build Script Test: Duplicate dotnet test commands
     Assert-Throws -TestName 'Hostile Build: Duplicate dotnet test commands in Invoke-Build are rejected' `
         -ExpectedMessagePattern 'must contain exactly one canonical dotnet test command' `
         -ScriptBlock {
@@ -431,7 +467,7 @@ try {
             Test-BuildScriptScheduling -ScriptPath $tamperedBuildPath
         }
 
-    # 27. Hostile Build Script Test: Zero dotnet test commands
+    # 29. Hostile Build Script Test: Zero dotnet test commands
     Assert-Throws -TestName 'Hostile Build: Zero dotnet test commands in Invoke-Build are rejected' `
         -ExpectedMessagePattern 'must contain exactly one canonical dotnet test command' `
         -ScriptBlock {
@@ -444,7 +480,7 @@ try {
             Test-BuildScriptScheduling -ScriptPath $tamperedBuildPath
         }
 
-    # 28. Hostile CI Test: Aggregator renamed away from the required branch-protection context is rejected
+    # 30. Hostile CI Test: Aggregator renamed away from the required branch-protection context is rejected
     Assert-Throws -TestName 'Hostile CI: Aggregator renamed compatibility display name is rejected' `
         -ExpectedMessagePattern "must expose compatibility display name 'build-test'" `
         -ScriptBlock {
@@ -457,7 +493,7 @@ try {
             Test-CiWorkflowScheduling -WorkflowPath $tamperedCiPath
         }
 
-    # 29. Hostile CI Test: Aggregator without the required compatibility display name is rejected
+    # 31. Hostile CI Test: Aggregator without the required compatibility display name is rejected
     Assert-Throws -TestName 'Hostile CI: Aggregator missing compatibility display name is rejected' `
         -ExpectedMessagePattern "must expose compatibility display name 'build-test'" `
         -ScriptBlock {
