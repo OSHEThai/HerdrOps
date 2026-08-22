@@ -12,6 +12,7 @@ param(
     [string]$ThaiEvidenceDirectory,
     [string]$EnglishEvidenceDirectory,
     [string]$RuntimeMatrixManifestPath,
+    [string]$Issue9CandidatePath,
     [string]$ContractEvidencePath,
     [string]$SyntheticEvidencePath,
     [string]$HumanReviewPath,
@@ -78,6 +79,7 @@ $script:V02ReleaseGateHumanArtifactCheckIds = @(
     'tracker-11-readiness'
 )
 $script:V02ReleaseGateTransitiveGovernanceRelativePaths = @(
+    '.github/workflows/ci.yml',
     'tools/Test-V02ReleaseGate.ps1',
     'tools/lib/V02ReferenceHostProfile.ps1',
     'tools/packaging/v0.2/Test-V02PackageIdentity.ps1',
@@ -87,6 +89,14 @@ $script:V02ReleaseGateTransitiveGovernanceRelativePaths = @(
     'tools/v0.2-renderer-compatibility/RendererCompatibility.Common.ps1',
     'tools/human-design-review/HumanDesignReview.Common.ps1',
     'tools/Test-V02LanguageMatrixAcceptance.ps1',
+    'tools/v0.2-issue9-live-ui/Test-V02Issue9LiveUiAcceptance.ps1',
+    'tools/v0.2-issue9-live-ui/Issue9LiveUi.Common.ps1',
+    'tools/v0.2-issue9-live-ui/issue9-live-ui-candidate.schema.json',
+    'tools/v0.2-renderer-compatibility/Invoke-V02PerformanceMeasurement.ps1',
+    'tools/v0.2-renderer-compatibility/New-V02PerformanceEvidenceReceipt.ps1',
+    'tools/v0.2-renderer-compatibility/Invoke-V02SoakMeasurement.ps1',
+    'tools/v0.2-renderer-compatibility/lib/V02PerformanceTestHarness.ps1',
+    'tools/v0.2-renderer-compatibility/lib/V02SoakTestHarness.ps1',
     'Plan/DECISIONS.md',
     'Plan/reference-hosts/v0.2.json',
     'Plan/reference-hosts/reference-host-profile.schema.json',
@@ -898,8 +908,8 @@ function Read-V02ReleaseGateExternalIndependentCandidateReceipt {
         'AuthorityReference', 'AuthorityReferenceSha256', 'Candidate', 'Owner', 'IndependentReviewer',
         'Authentication', 'RoleDistinct', 'Runtime', 'Human', 'Release', 'CreditGranted'
     ) 'External independent candidate receipt'
-    Assert-V02ReleaseGateInteger $receipt.SchemaVersion 'External independent candidate receipt SchemaVersion' 2
-    Assert-V02ReleaseGateEqual $receipt.SchemaVersion 2 'External independent candidate receipt SchemaVersion'
+    Assert-V02ReleaseGateInteger $receipt.SchemaVersion 'External independent candidate receipt SchemaVersion' 3
+    Assert-V02ReleaseGateEqual $receipt.SchemaVersion 3 'External independent candidate receipt SchemaVersion'
     Assert-V02ReleaseGateExactString $receipt.EvidenceClass $script:V02ReleaseGateIndependentReceiptEvidenceClass 'External independent candidate receipt EvidenceClass'
     Assert-V02ReleaseGateExactString $receipt.Result 'APPROVED_CANDIDATE_ONLY' 'External independent candidate receipt Result'
     Assert-V02ReleaseGateExactString $receipt.DecisionId $script:V02ReleaseGateDecisionId 'External independent candidate receipt DecisionId'
@@ -910,7 +920,7 @@ function Read-V02ReleaseGateExternalIndependentCandidateReceipt {
         'SourceCommit', 'SourceTree', 'ProfileId', 'ProfileFileSha256', 'ProfileCanonicalSha256',
         'PackageReceiptSha256', 'PackageReceiptFileSha256', 'PackageArchiveSha256',
         'PackageManifestSha256', 'PackageAppSha256', 'PackageCoreSha256',
-        'RendererManifestSha256', 'RuntimeMatrixManifestSha256'
+        'RendererManifestSha256', 'RuntimeMatrixManifestSha256', 'Issue9CandidateSha256'
     ) 'External independent candidate receipt Candidate'
     Assert-V02ReleaseGateGitObjectId $receipt.Candidate.SourceCommit 'External independent candidate receipt SourceCommit' | Out-Null
     Assert-V02ReleaseGateGitObjectId $receipt.Candidate.SourceTree 'External independent candidate receipt SourceTree' | Out-Null
@@ -921,7 +931,7 @@ function Read-V02ReleaseGateExternalIndependentCandidateReceipt {
             'ProfileFileSha256', 'ProfileCanonicalSha256', 'PackageReceiptSha256',
             'PackageReceiptFileSha256', 'PackageArchiveSha256', 'PackageManifestSha256',
             'PackageAppSha256', 'PackageCoreSha256', 'RendererManifestSha256',
-            'RuntimeMatrixManifestSha256'
+            'RuntimeMatrixManifestSha256', 'Issue9CandidateSha256'
         )) {
         Assert-V02ReleaseGateSha256 $receipt.Candidate.$name "External independent candidate receipt Candidate.$name" | Out-Null
     }
@@ -1064,10 +1074,10 @@ function Read-V02ReleaseGateCandidateLock {
         'ProfileId', 'ProfileFileSha256', 'ProfileCanonicalSha256', 'PackageReceiptSha256',
         'PackageReceiptFileSha256', 'PackageArchiveSha256', 'PackageManifestSha256',
         'PackageAppSha256', 'PackageCoreSha256', 'RendererManifestSha256',
-        'RuntimeMatrixManifestSha256', 'Authority', 'Runtime', 'Human', 'Release'
+        'RuntimeMatrixManifestSha256', 'Issue9CandidateSha256', 'Authority', 'Runtime', 'Human', 'Release'
     ) 'Approved candidate lock'
-    Assert-V02ReleaseGateInteger $document.Value.SchemaVersion 'Approved candidate lock SchemaVersion' 1
-    Assert-V02ReleaseGateEqual $document.Value.SchemaVersion 1 'Approved candidate lock SchemaVersion'
+    Assert-V02ReleaseGateInteger $document.Value.SchemaVersion 'Approved candidate lock SchemaVersion' 2
+    Assert-V02ReleaseGateEqual $document.Value.SchemaVersion 2 'Approved candidate lock SchemaVersion'
     Assert-V02ReleaseGateExactString $document.Value.EvidenceClass 'ApprovedCandidateLock' 'Approved candidate lock EvidenceClass'
     Assert-V02ReleaseGateExactString $document.Value.Result 'APPROVED' 'Approved candidate lock Result'
     if (-not (Assert-V02ReleaseGateBoolean $document.Value.Immutable 'Approved candidate lock Immutable')) {
@@ -1086,7 +1096,7 @@ function Read-V02ReleaseGateCandidateLock {
     foreach ($name in @(
             'PackageReceiptSha256', 'PackageReceiptFileSha256', 'PackageArchiveSha256',
             'PackageManifestSha256', 'PackageAppSha256', 'PackageCoreSha256',
-            'RendererManifestSha256', 'RuntimeMatrixManifestSha256'
+            'RendererManifestSha256', 'RuntimeMatrixManifestSha256', 'Issue9CandidateSha256'
         )) {
         Assert-V02ReleaseGateSha256 $document.Value.$name "Approved candidate lock $name" | Out-Null
     }
@@ -1094,7 +1104,7 @@ function Read-V02ReleaseGateCandidateLock {
             'SourceCommit', 'SourceTree', 'ProfileId', 'ProfileFileSha256', 'ProfileCanonicalSha256',
             'PackageReceiptSha256', 'PackageReceiptFileSha256', 'PackageArchiveSha256',
             'PackageManifestSha256', 'PackageAppSha256', 'PackageCoreSha256',
-            'RendererManifestSha256', 'RuntimeMatrixManifestSha256'
+            'RendererManifestSha256', 'RuntimeMatrixManifestSha256', 'Issue9CandidateSha256'
         )) {
         Assert-V02ReleaseGateEqual $document.Value.$name $IndependentReceipt.Candidate.$name `
             "Approved candidate lock external receipt Candidate.$name"
@@ -1141,6 +1151,7 @@ function Read-V02ReleaseGateCandidateLock {
         PackageCoreSha256 = [string]$document.Value.PackageCoreSha256
         RendererManifestSha256 = [string]$document.Value.RendererManifestSha256
         RuntimeMatrixManifestSha256 = [string]$document.Value.RuntimeMatrixManifestSha256
+        Issue9CandidateSha256 = [string]$document.Value.Issue9CandidateSha256
         Authority = $Authority
         IndependentReceipt = $IndependentReceipt
         Authentication = 'TRUSTED_OWNER_PLUS_EXTERNAL_RSA_AUTHENTICATED_RECEIPT'
@@ -1609,12 +1620,190 @@ function Invoke-V02ReleaseGateMatrixValidation {
     }
 }
 
+function Assert-V02ReleaseGateIssue9CandidateBinding {
+    param(
+        [Parameter(Mandatory = $true)]$Candidate,
+        [Parameter(Mandatory = $true)]$Context,
+        [Parameter(Mandatory = $true)]$Package,
+        [Parameter(Mandatory = $true)]$Matrix,
+        [Parameter(Mandatory = $true)][string]$ExpectedSourceCommit,
+        [Parameter(Mandatory = $true)][string]$ExpectedSourceTree,
+        [string]$Description = 'Issue #9 runtime candidate'
+    )
+
+    Assert-V02ReleaseGateExactProperties $Candidate @(
+        'SchemaVersion', 'EvidenceClassification', 'Issue', 'Result', 'Source', 'Package',
+        'Herdr', 'Sessions', 'MatrixCandidate', 'Languages', 'EvidenceBoundary'
+    ) $Description
+    Assert-V02ReleaseGateInteger $Candidate.SchemaVersion "$Description SchemaVersion" 1
+    Assert-V02ReleaseGateEqual $Candidate.SchemaVersion 1 "$Description SchemaVersion"
+    Assert-V02ReleaseGateExactString $Candidate.EvidenceClassification 'Issue9RuntimeCandidate' "$Description classification"
+    Assert-V02ReleaseGateInteger $Candidate.Issue "$Description Issue" 9
+    Assert-V02ReleaseGateEqual $Candidate.Issue 9 "$Description Issue"
+    Assert-V02ReleaseGateExactString $Candidate.Result 'PASS' "$Description Result"
+
+    Assert-V02ReleaseGateExactProperties $Candidate.Source @('CommitSha', 'TreeSha', 'GitTreeClean') "$Description Source"
+    Assert-V02ReleaseGateEqual $Candidate.Source.CommitSha $ExpectedSourceCommit "$Description source commit"
+    Assert-V02ReleaseGateEqual $Candidate.Source.TreeSha $ExpectedSourceTree "$Description source tree"
+    if (-not (Assert-V02ReleaseGateBoolean $Candidate.Source.GitTreeClean "$Description GitTreeClean")) {
+        throw "$Description requires a clean source tree."
+    }
+
+    $packageNames = @(
+        'IdentityPath', 'IdentityFileSha256', 'ReceiptSha256', 'ArchivePath', 'ArchiveSha256',
+        'ManifestPath', 'ManifestSha256', 'AppPath', 'AppSha256', 'CorePath', 'CoreSha256'
+    )
+    Assert-V02ReleaseGateExactProperties $Candidate.Package $packageNames "$Description Package"
+    foreach ($name in @('IdentityFileSha256', 'ReceiptSha256', 'ArchiveSha256', 'ManifestSha256', 'AppSha256', 'CoreSha256')) {
+        Assert-V02ReleaseGateSha256 $Candidate.Package.$name "$Description Package.$name" | Out-Null
+    }
+    foreach ($binding in @(
+            [pscustomobject]@{ Name = 'IdentityPath'; Actual = $Candidate.Package.IdentityPath; Expected = $Package.IdentityPath; Path = $true }
+            [pscustomobject]@{ Name = 'IdentityFileSha256'; Actual = $Candidate.Package.IdentityFileSha256; Expected = $Package.ReceiptFileSha256 }
+            [pscustomobject]@{ Name = 'ReceiptSha256'; Actual = $Candidate.Package.ReceiptSha256; Expected = $Package.ReceiptSha256 }
+            [pscustomobject]@{ Name = 'ArchivePath'; Actual = $Candidate.Package.ArchivePath; Expected = $Package.ArchivePath; Path = $true }
+            [pscustomobject]@{ Name = 'ArchiveSha256'; Actual = $Candidate.Package.ArchiveSha256; Expected = $Package.ArchiveSha256 }
+            [pscustomobject]@{ Name = 'ManifestPath'; Actual = $Candidate.Package.ManifestPath; Expected = $Package.ManifestPath; Path = $true }
+            [pscustomobject]@{ Name = 'ManifestSha256'; Actual = $Candidate.Package.ManifestSha256; Expected = $Package.ManifestSha256 }
+            [pscustomobject]@{ Name = 'AppPath'; Actual = $Candidate.Package.AppPath; Expected = $Package.AppPath; Path = $true }
+            [pscustomobject]@{ Name = 'AppSha256'; Actual = $Candidate.Package.AppSha256; Expected = $Package.AppSha256 }
+            [pscustomobject]@{ Name = 'CorePath'; Actual = $Candidate.Package.CorePath; Expected = $Package.CorePath; Path = $true }
+            [pscustomobject]@{ Name = 'CoreSha256'; Actual = $Candidate.Package.CoreSha256; Expected = $Package.CoreSha256 }
+        )) {
+        $actual = if ($binding.PSObject.Properties.Name -contains 'Path') { [IO.Path]::GetFullPath([string]$binding.Actual) } else { [string]$binding.Actual }
+        $expected = if ($binding.PSObject.Properties.Name -contains 'Path') { [IO.Path]::GetFullPath([string]$binding.Expected) } else { [string]$binding.Expected }
+        Assert-V02ReleaseGateEqual $actual $expected "$Description package $($binding.Name)"
+    }
+
+    $matrixBinding = $Matrix.Candidate.Payload.Binding
+    Assert-V02ReleaseGateExactProperties $Candidate.Herdr @('ReleaseId', 'ExecutableSha256', 'BundledSchemaSha256', 'Protocol') "$Description Herdr"
+    Assert-V02ReleaseGateEqual $Candidate.Herdr.ReleaseId $matrixBinding.HerdrReleaseId "$Description Herdr release"
+    Assert-V02ReleaseGateEqual $Candidate.Herdr.ExecutableSha256 $matrixBinding.HerdrExecutableSha256 "$Description Herdr executable"
+    Assert-V02ReleaseGateEqual $Candidate.Herdr.BundledSchemaSha256 $matrixBinding.BundledSchemaSha256 "$Description Herdr schema"
+    Assert-V02ReleaseGateEqual ([string]$Candidate.Herdr.Protocol) ([string]$matrixBinding.HerdrProtocol) "$Description Herdr protocol"
+
+    Assert-V02ReleaseGateExactProperties $Candidate.Sessions @('Control', 'Target') "$Description Sessions"
+    Assert-V02ReleaseGateExactProperties $Candidate.Sessions.Control @('Name', 'SocketPath', 'ServerIdentity') "$Description control session"
+    Assert-V02ReleaseGateExactProperties $Candidate.Sessions.Target @('Name', 'SocketPath', 'Reference') "$Description target session"
+    foreach ($value in @($Candidate.Sessions.Control.Name, $Candidate.Sessions.Control.SocketPath, $Candidate.Sessions.Control.ServerIdentity,
+            $Candidate.Sessions.Target.Name, $Candidate.Sessions.Target.SocketPath, $Candidate.Sessions.Target.Reference)) {
+        Assert-V02ReleaseGateString $value "$Description session value" | Out-Null
+    }
+    Assert-V02ReleaseGateDistinctSet -Values @($Candidate.Sessions.Control.Name, $Candidate.Sessions.Target.Name) -Context "$Description session names"
+    Assert-V02ReleaseGateDistinctSet -Values @($Candidate.Sessions.Control.SocketPath, $Candidate.Sessions.Target.SocketPath) -Context "$Description session sockets"
+
+    Assert-V02ReleaseGateExactProperties $Candidate.MatrixCandidate @(
+        'Path', 'FileSha256', 'PayloadSha256', 'EvidenceClassification', 'IndependentHumanReview', 'ReleaseCredit'
+    ) "$Description MatrixCandidate"
+    Assert-V02ReleaseGateEqual ([IO.Path]::GetFullPath([string]$Candidate.MatrixCandidate.Path)) ([IO.Path]::GetFullPath([string]$Matrix.ManifestPath)) "$Description matrix path"
+    Assert-V02ReleaseGateEqual $Candidate.MatrixCandidate.FileSha256 $Matrix.ManifestFileSha256 "$Description matrix file hash"
+    Assert-V02ReleaseGateEqual $Candidate.MatrixCandidate.PayloadSha256 $Matrix.ManifestPayloadSha256 "$Description matrix payload hash"
+    Assert-V02ReleaseGateExactString $Candidate.MatrixCandidate.EvidenceClassification 'RuntimeMatrixCandidate' "$Description matrix classification"
+    Assert-V02ReleaseGateExactString $Candidate.MatrixCandidate.IndependentHumanReview 'NOT_OBSERVED' "$Description matrix Human boundary"
+    if (Assert-V02ReleaseGateBoolean $Candidate.MatrixCandidate.ReleaseCredit "$Description matrix ReleaseCredit") { throw "$Description matrix cannot grant Release credit." }
+
+    $languages = @($Candidate.Languages)
+    if ($languages.Count -ne 2) { throw "$Description must contain exactly Thai and English language legs." }
+    $expectedLanguages = @('Thai', 'English')
+    $expectedRuntimeRoots = @($Context.ThaiEvidenceDirectory, $Context.EnglishEvidenceDirectory)
+    for ($index = 0; $index -lt 2; $index++) {
+        $leg = $languages[$index]
+        Assert-V02ReleaseGateExactProperties $leg @(
+            'Language', 'RuntimeEvidenceDirectory', 'UiEvidenceDirectory', 'UiReceiptPath',
+            'UiReceiptSha256', 'SideBySideCaptureSha256', 'Pages', 'Selection', 'Lifecycle'
+        ) "$Description language leg $index"
+        Assert-V02ReleaseGateExactString $leg.Language $expectedLanguages[$index] "$Description language leg $index Language"
+        Assert-V02ReleaseGateEqual ([IO.Path]::GetFullPath([string]$leg.RuntimeEvidenceDirectory)) ([IO.Path]::GetFullPath([string]$expectedRuntimeRoots[$index])) "$Description language leg $index runtime root"
+        $uiRoot = Resolve-V02ReleaseGateExistingPath -Path ([string]$leg.UiEvidenceDirectory) -Type Container -Context "$Description language leg $index UI root"
+        Assert-V02ReleaseGatePathWithinRoot -Path $uiRoot -Root $Context.ReleaseEvidenceRoot -Context "$Description language leg $index UI root" | Out-Null
+        $uiReceipt = Resolve-V02ReleaseGateExistingPath -Path ([string]$leg.UiReceiptPath) -Type Leaf -Context "$Description language leg $index UI receipt"
+        Assert-V02ReleaseGatePathWithinRoot -Path $uiReceipt -Root $uiRoot -Context "$Description language leg $index UI receipt" | Out-Null
+        Assert-V02ReleaseGateSha256 $leg.UiReceiptSha256 "$Description language leg $index UI receipt hash" | Out-Null
+        Assert-V02ReleaseGateSha256 $leg.SideBySideCaptureSha256 "$Description language leg $index side-by-side hash" | Out-Null
+        if (@($leg.Pages).Count -ne 3) { throw "$Description language leg $index must contain exactly three pages." }
+        $expectedPages = @('Overview', 'LiveOrganization', 'AgentDetail')
+        for ($pageIndex = 0; $pageIndex -lt 3; $pageIndex++) {
+            $page = $leg.Pages[$pageIndex]
+            Assert-V02ReleaseGateExactProperties $page @('Name', 'Language', 'UiCapturePath', 'UiCaptureSha256', 'StateSha256', 'WorkspaceId', 'ProjectId', 'AgentId', 'TaskId', 'AgentStatus', 'PaneId') "$Description language leg $index page $pageIndex"
+            Assert-V02ReleaseGateExactString $page.Name $expectedPages[$pageIndex] "$Description language leg $index page name"
+            Assert-V02ReleaseGateExactString $page.Language $expectedLanguages[$index] "$Description language leg $index page language"
+            foreach ($name in @('UiCaptureSha256', 'StateSha256')) { Assert-V02ReleaseGateSha256 $page.$name "$Description language leg $index page $name" | Out-Null }
+        }
+        Assert-V02ReleaseGateExactProperties $leg.Selection @('WorkspaceId', 'ProjectId', 'AgentId', 'TaskId', 'AgentStatus', 'PaneId', 'StateSha256', 'Source') "$Description language leg $index Selection"
+        Assert-V02ReleaseGateExactString $leg.Selection.Source 'CoreSnapshot' "$Description language leg $index Selection.Source"
+        Assert-V02ReleaseGateSha256 $leg.Selection.StateSha256 "$Description language leg $index Selection.StateSha256" | Out-Null
+        Assert-V02ReleaseGateExactProperties $leg.Lifecycle @('DashboardClosed', 'CoreConnectedAfterDashboardClose', 'DisconnectObserved', 'ReconnectObserved', 'ReconciliationObserved', 'EventAStateSha256', 'EventBStateSha256', 'ReconciledStateSha256', 'ControlServerSurvivedTargetRestart') "$Description language leg $index Lifecycle"
+        foreach ($name in @('DashboardClosed', 'CoreConnectedAfterDashboardClose', 'DisconnectObserved', 'ReconnectObserved', 'ReconciliationObserved', 'ControlServerSurvivedTargetRestart')) {
+            if (-not (Assert-V02ReleaseGateBoolean $leg.Lifecycle.$name "$Description language leg $index Lifecycle.$name")) { throw "$Description language leg $index Lifecycle.$name must be true." }
+        }
+        foreach ($name in @('EventAStateSha256', 'EventBStateSha256', 'ReconciledStateSha256')) { Assert-V02ReleaseGateSha256 $leg.Lifecycle.$name "$Description language leg $index Lifecycle.$name" | Out-Null }
+    }
+
+    Assert-V02ReleaseGateExactProperties $Candidate.EvidenceBoundary @('Runtime', 'HumanVisual', 'ReleaseCredit', 'OutputAuthority', 'FixtureMode') "$Description EvidenceBoundary"
+    Assert-V02ReleaseGateExactString $Candidate.EvidenceBoundary.Runtime 'NOT_OBSERVED' "$Description Runtime boundary"
+    Assert-V02ReleaseGateExactString $Candidate.EvidenceBoundary.HumanVisual 'NOT_OBSERVED' "$Description Human boundary"
+    Assert-V02ReleaseGateExactString $Candidate.EvidenceBoundary.OutputAuthority 'RuntimeCandidate' "$Description output authority"
+    if (Assert-V02ReleaseGateBoolean $Candidate.EvidenceBoundary.ReleaseCredit "$Description ReleaseCredit") { throw "$Description cannot grant Release credit." }
+    if (Assert-V02ReleaseGateBoolean $Candidate.EvidenceBoundary.FixtureMode "$Description FixtureMode") { throw "$Description production ingestion rejects fixture mode." }
+}
+
+function Invoke-V02ReleaseGateIssue9Validation {
+    param(
+        [Parameter(Mandatory = $true)]$Context,
+        [Parameter(Mandatory = $true)]$Package,
+        [Parameter(Mandatory = $true)]$Matrix,
+        [Parameter(Mandatory = $true)][string]$ExpectedSourceCommit,
+        [Parameter(Mandatory = $true)][string]$ExpectedSourceTree,
+        [Parameter(Mandatory = $true)][string]$Issue9CandidatePath
+    )
+
+    $candidateDocument = Read-V02ReleaseGateJsonFile -Path $Issue9CandidatePath -Context 'Issue #9 runtime candidate'
+    Assert-V02ReleaseGateIssue9CandidateBinding -Candidate $candidateDocument.Value -Context $Context -Package $Package -Matrix $Matrix `
+        -ExpectedSourceCommit $ExpectedSourceCommit -ExpectedSourceTree $ExpectedSourceTree
+    $validatorPath = Join-Path $Context.RepositoryRoot 'tools\v0.2-issue9-live-ui\Test-V02Issue9LiveUiAcceptance.ps1'
+    Assert-V02ReleaseGateValidatorHeld -Path $validatorPath -Context 'Issue #9 production validator' | Out-Null
+    $temporary = Join-Path ([IO.Path]::GetTempPath()) ('.herdrops-v02-issue9-' + [Guid]::NewGuid().ToString('N') + '.json')
+    try {
+        $languages = @($candidateDocument.Value.Languages)
+        $null = @(& $validatorPath `
+            -ThaiRuntimeEvidenceDirectory $Context.ThaiEvidenceDirectory `
+            -EnglishRuntimeEvidenceDirectory $Context.EnglishEvidenceDirectory `
+            -ThaiUiEvidenceDirectory ([string]$languages[0].UiEvidenceDirectory) `
+            -EnglishUiEvidenceDirectory ([string]$languages[1].UiEvidenceDirectory) `
+            -MatrixCandidatePath $Matrix.ManifestPath `
+            -PackageIdentityPath $Package.IdentityPath `
+            -PackageArchivePath $Package.ArchivePath `
+            -ExtractedPackageRoot $Package.PackageRoot `
+            -RepositoryRoot $Context.RepositoryRoot `
+            -ExpectedSourceCommit $ExpectedSourceCommit `
+            -ExpectedSourceTree $ExpectedSourceTree `
+            -OutputPath $temporary)
+        $generatedDocument = Read-V02ReleaseGateJsonFile -Path $temporary -Context 'Independently regenerated Issue #9 runtime candidate'
+        Assert-V02ReleaseGateIssue9CandidateBinding -Candidate $generatedDocument.Value -Context $Context -Package $Package -Matrix $Matrix `
+            -ExpectedSourceCommit $ExpectedSourceCommit -ExpectedSourceTree $ExpectedSourceTree -Description 'Independently regenerated Issue #9 runtime candidate'
+        Assert-V02ReleaseGateEqual (ConvertTo-V02Jcs $candidateDocument.Value) (ConvertTo-V02Jcs $generatedDocument.Value) 'Issue #9 independently regenerated candidate bytes'
+    }
+    finally {
+        if (Test-Path -LiteralPath $temporary) { Remove-Item -LiteralPath $temporary -Force }
+    }
+    return [pscustomobject][ordered]@{
+        CandidatePath = $candidateDocument.Path
+        CandidateSha256 = $candidateDocument.FileSha256
+        Candidate = $candidateDocument.Value
+        Result = 'PASS_CANDIDATE_ONLY'
+        Runtime = 'NOT_OBSERVED'
+        Human = 'NOT_OBSERVED'
+        Release = 'NOT_OBSERVED'
+    }
+}
+
 function Assert-V02ReleaseGateCandidateByteBinding {
     param(
         [Parameter(Mandatory = $true)]$CandidateLock,
         [Parameter(Mandatory = $true)]$Package,
         [Parameter(Mandatory = $true)]$Renderer,
-        [Parameter(Mandatory = $true)]$Matrix
+        [Parameter(Mandatory = $true)]$Matrix,
+        [Parameter(Mandatory = $true)]$Issue9
     )
 
     foreach ($binding in @(
@@ -1626,6 +1815,7 @@ function Assert-V02ReleaseGateCandidateByteBinding {
             [pscustomobject]@{ Name = 'PackageCoreSha256'; Actual = $Package.CoreSha256; Expected = $CandidateLock.PackageCoreSha256 }
             [pscustomobject]@{ Name = 'RendererManifestSha256'; Actual = $Renderer.ManifestSha256; Expected = $CandidateLock.RendererManifestSha256 }
             [pscustomobject]@{ Name = 'RuntimeMatrixManifestSha256'; Actual = $Matrix.ManifestFileSha256; Expected = $CandidateLock.RuntimeMatrixManifestSha256 }
+            [pscustomobject]@{ Name = 'Issue9CandidateSha256'; Actual = $Issue9.CandidateSha256; Expected = $CandidateLock.Issue9CandidateSha256 }
         )) {
         Assert-V02ReleaseGateEqual $binding.Actual $binding.Expected "Approved candidate lock $($binding.Name)"
     }
@@ -1638,7 +1828,8 @@ function Assert-V02ReleaseGateIndependentReceiptBinding {
         [Parameter(Mandatory = $true)]$Identity,
         [Parameter(Mandatory = $true)]$Package,
         [Parameter(Mandatory = $true)]$Renderer,
-        [Parameter(Mandatory = $true)]$Matrix
+        [Parameter(Mandatory = $true)]$Matrix,
+        [Parameter(Mandatory = $true)]$Issue9
     )
 
     Assert-V02ReleaseGateEqual $IndependentReceipt.Candidate.SourceCommit $Identity.Commit 'External independent receipt source commit'
@@ -1655,6 +1846,7 @@ function Assert-V02ReleaseGateIndependentReceiptBinding {
             [pscustomobject]@{ Name = 'PackageCoreSha256'; Actual = $Package.CoreSha256; Expected = $IndependentReceipt.Candidate.PackageCoreSha256 }
             [pscustomobject]@{ Name = 'RendererManifestSha256'; Actual = $Renderer.ManifestSha256; Expected = $IndependentReceipt.Candidate.RendererManifestSha256 }
             [pscustomobject]@{ Name = 'RuntimeMatrixManifestSha256'; Actual = $Matrix.ManifestFileSha256; Expected = $IndependentReceipt.Candidate.RuntimeMatrixManifestSha256 }
+            [pscustomobject]@{ Name = 'Issue9CandidateSha256'; Actual = $Issue9.CandidateSha256; Expected = $IndependentReceipt.Candidate.Issue9CandidateSha256 }
         )) {
         Assert-V02ReleaseGateEqual $binding.Actual $binding.Expected "External independent receipt $($binding.Name)"
         Assert-V02ReleaseGateEqual $binding.Expected $CandidateLock.$($binding.Name) "Candidate lock/external receipt $($binding.Name)"
@@ -1734,6 +1926,7 @@ function Assert-V02ReleaseGateHumanReview {
         [Parameter(Mandatory = $true)]$Package,
         [Parameter(Mandatory = $true)]$Renderer,
         [Parameter(Mandatory = $true)]$Matrix,
+        [Parameter(Mandatory = $true)]$Issue9,
         [Parameter(Mandatory = $true)][string]$GitHubSnapshotPath,
         [Parameter(Mandatory = $true)][string]$GitHubSnapshotSha256,
         [Parameter(Mandatory = $true)][string]$EvidenceRoot
@@ -1743,8 +1936,8 @@ function Assert-V02ReleaseGateHumanReview {
         'SchemaVersion', 'EvidenceClass', 'Result', 'Decision', 'Reviewer', 'Candidate',
         'Checks', 'OpenFindings', 'ActualHerdrRuntime', 'ReleaseCredit'
     ) 'Human review'
-    Assert-V02ReleaseGateInteger $Review.SchemaVersion 'Human review SchemaVersion' 1
-    Assert-V02ReleaseGateEqual $Review.SchemaVersion 1 'Human review SchemaVersion'
+    Assert-V02ReleaseGateInteger $Review.SchemaVersion 'Human review SchemaVersion' 2
+    Assert-V02ReleaseGateEqual $Review.SchemaVersion 2 'Human review SchemaVersion'
     Assert-V02ReleaseGateExactString $Review.EvidenceClass 'Human' 'Human review EvidenceClass'
     Assert-V02ReleaseGateExactString $Review.Result 'PASS' 'Human review Result'
     Assert-V02ReleaseGateExactString $Review.Decision 'GO' 'Human review Decision'
@@ -1770,7 +1963,7 @@ function Assert-V02ReleaseGateHumanReview {
     Assert-V02ReleaseGateExactProperties $Review.Candidate @(
         'SourceCommit', 'SourceTree', 'PackageReceiptSha256', 'PackageReceiptFileSha256',
         'PackageArchiveSha256', 'PackageAppSha256', 'PackageCoreSha256',
-        'RendererManifestSha256', 'RuntimeMatrixManifestSha256', 'GitHubSnapshotSha256'
+        'RendererManifestSha256', 'RuntimeMatrixManifestSha256', 'Issue9CandidateSha256', 'GitHubSnapshotSha256'
     ) 'Human review candidate binding'
     Assert-V02ReleaseGateEqual $Review.Candidate.SourceCommit $ExpectedSourceCommit 'Human review source commit'
     Assert-V02ReleaseGateEqual $Review.Candidate.SourceTree $ExpectedSourceTree 'Human review source tree'
@@ -1781,11 +1974,12 @@ function Assert-V02ReleaseGateHumanReview {
     Assert-V02ReleaseGateEqual $Review.Candidate.PackageCoreSha256 $Package.CoreSha256 'Human review package Core'
     Assert-V02ReleaseGateEqual $Review.Candidate.RendererManifestSha256 $Renderer.ManifestSha256 'Human review renderer manifest'
     Assert-V02ReleaseGateEqual $Review.Candidate.RuntimeMatrixManifestSha256 $Matrix.ManifestFileSha256 'Human review runtime matrix'
+    Assert-V02ReleaseGateEqual $Review.Candidate.Issue9CandidateSha256 $Issue9.CandidateSha256 'Human review Issue #9 candidate'
     Assert-V02ReleaseGateEqual $Review.Candidate.GitHubSnapshotSha256 $GitHubSnapshotSha256 'Human review GitHub snapshot'
     foreach ($name in @(
             'PackageReceiptSha256', 'PackageReceiptFileSha256', 'PackageArchiveSha256',
             'PackageAppSha256', 'PackageCoreSha256', 'RendererManifestSha256',
-            'RuntimeMatrixManifestSha256', 'GitHubSnapshotSha256'
+            'RuntimeMatrixManifestSha256', 'Issue9CandidateSha256', 'GitHubSnapshotSha256'
         )) {
         Assert-V02ReleaseGateSha256 $Review.Candidate.$name "Human review candidate $name" | Out-Null
     }
@@ -1804,6 +1998,7 @@ function Assert-V02ReleaseGateHumanReview {
         'renderer-compatibility' = [IO.Path]::GetFullPath($Renderer.ManifestPath).TrimEnd([char[]]@('\', '/'))
         'runtime-matrix-thai' = [IO.Path]::GetFullPath($Matrix.ManifestPath).TrimEnd([char[]]@('\', '/'))
         'runtime-matrix-english' = [IO.Path]::GetFullPath($Matrix.ManifestPath).TrimEnd([char[]]@('\', '/'))
+        'issue-9-acceptance' = [IO.Path]::GetFullPath($Issue9.CandidatePath).TrimEnd([char[]]@('\', '/'))
         'tracker-11-readiness' = [IO.Path]::GetFullPath($GitHubSnapshotPath).TrimEnd([char[]]@('\', '/'))
     }
     foreach ($check in $checks) {
@@ -1948,6 +2143,7 @@ function Invoke-V02ReleaseGate {
         [Parameter(Mandatory = $true)][string]$ThaiEvidenceDirectory,
         [Parameter(Mandatory = $true)][string]$EnglishEvidenceDirectory,
         [Parameter(Mandatory = $true)][string]$RuntimeMatrixManifestPath,
+        [Parameter(Mandatory = $true)][string]$Issue9CandidatePath,
         [Parameter(Mandatory = $true)][string]$ContractEvidencePath,
         [Parameter(Mandatory = $true)][string]$SyntheticEvidencePath,
         [Parameter(Mandatory = $true)][string]$HumanReviewPath,
@@ -1995,6 +2191,7 @@ function Invoke-V02ReleaseGate {
         [pscustomobject]@{ Path = $ThaiEvidenceDirectory; Type = 'Container'; Name = 'Thai evidence directory' }
         [pscustomobject]@{ Path = $EnglishEvidenceDirectory; Type = 'Container'; Name = 'English evidence directory' }
         [pscustomobject]@{ Path = $RuntimeMatrixManifestPath; Type = 'Leaf'; Name = 'Runtime matrix manifest' }
+        [pscustomobject]@{ Path = $Issue9CandidatePath; Type = 'Leaf'; Name = 'Issue #9 runtime candidate' }
         [pscustomobject]@{ Path = $ContractEvidencePath; Type = 'Leaf'; Name = 'Contract evidence receipt' }
         [pscustomobject]@{ Path = $SyntheticEvidencePath; Type = 'Leaf'; Name = 'Synthetic evidence receipt' }
         [pscustomobject]@{ Path = $HumanReviewPath; Type = 'Leaf'; Name = 'Human review record' }
@@ -2050,6 +2247,7 @@ function Invoke-V02ReleaseGate {
         ProfilePath = $profilePath
         ManifestPath = Resolve-V02ReleaseGateExistingPath -Path $RendererManifestPath -Type Leaf -Context 'Renderer compatibility manifest'
         EvidenceRoot = $rendererEvidenceRootPath
+        ReleaseEvidenceRoot = $evidenceRootPath
         ThaiEvidenceDirectory = Resolve-V02ReleaseGateExistingPath -Path $ThaiEvidenceDirectory -Type Container -Context 'Thai evidence directory'
         EnglishEvidenceDirectory = Resolve-V02ReleaseGateExistingPath -Path $EnglishEvidenceDirectory -Type Container -Context 'English evidence directory'
     }
@@ -2060,6 +2258,7 @@ function Invoke-V02ReleaseGate {
     $boundFilePaths = @(
         $context.IdentityPath, $context.ArchivePath, $packageManifestPath, $appPath, $corePath, $context.ProfilePath,
         $context.ManifestPath, (Resolve-V02ReleaseGateExistingPath -Path $RuntimeMatrixManifestPath -Type Leaf -Context 'Runtime matrix manifest'),
+        (Resolve-V02ReleaseGateExistingPath -Path $Issue9CandidatePath -Type Leaf -Context 'Issue #9 runtime candidate'),
         (Resolve-V02ReleaseGateExistingPath -Path $ContractEvidencePath -Type Leaf -Context 'Contract evidence receipt'),
         (Resolve-V02ReleaseGateExistingPath -Path $SyntheticEvidencePath -Type Leaf -Context 'Synthetic evidence receipt'),
         (Resolve-V02ReleaseGateExistingPath -Path $HumanReviewPath -Type Leaf -Context 'Human review record'),
@@ -2092,16 +2291,18 @@ function Invoke-V02ReleaseGate {
     $matrix = Invoke-V02ReleaseGateMatrixValidation -Context $context -Package $package `
         -ExpectedSourceCommit $ExpectedSourceCommit -ExpectedSourceTree $ExpectedSourceTree `
         -RuntimeMatrixManifestPath $RuntimeMatrixManifestPath
-    Assert-V02ReleaseGateCandidateByteBinding -CandidateLock $candidateLock -Package $package -Renderer $renderer -Matrix $matrix
+    $issue9 = Invoke-V02ReleaseGateIssue9Validation -Context $context -Package $package -Matrix $matrix `
+        -ExpectedSourceCommit $ExpectedSourceCommit -ExpectedSourceTree $ExpectedSourceTree -Issue9CandidatePath $Issue9CandidatePath
+    Assert-V02ReleaseGateCandidateByteBinding -CandidateLock $candidateLock -Package $package -Renderer $renderer -Matrix $matrix -Issue9 $issue9
     Assert-V02ReleaseGateIndependentReceiptBinding -IndependentReceipt $candidateLock.IndependentReceipt `
-        -CandidateLock $candidateLock -Identity $identityBefore -Package $package -Renderer $renderer -Matrix $matrix
-    Assert-V02ReleaseGateBoundSnapshots -Snapshots $preValidationSnapshots -Phase 'Post-matrix validation'
+        -CandidateLock $candidateLock -Identity $identityBefore -Package $package -Renderer $renderer -Matrix $matrix -Issue9 $issue9
+    Assert-V02ReleaseGateBoundSnapshots -Snapshots $preValidationSnapshots -Phase 'Post-matrix/Issue9 validation'
     try {
         $githubDocument = Read-V02ReleaseGateJsonFile -Path $GitHubSnapshotPath -Context 'GitHub read-only snapshot'
         $githubAssessment = Assert-V02ReleaseGateGitHubSnapshot $githubDocument.Value
         $reviewDocument = Read-V02ReleaseGateJsonFile -Path $HumanReviewPath -Context 'Human review record'
         $humanDisposition = Assert-V02ReleaseGateHumanReview -Review $reviewDocument.Value -ReviewPath $reviewDocument.Path -ExpectedSourceCommit $ExpectedSourceCommit `
-            -ExpectedSourceTree $ExpectedSourceTree -Package $package -Renderer $renderer -Matrix $matrix `
+            -ExpectedSourceTree $ExpectedSourceTree -Package $package -Renderer $renderer -Matrix $matrix -Issue9 $issue9 `
             -GitHubSnapshotPath $githubDocument.Path -GitHubSnapshotSha256 $githubDocument.FileSha256 -EvidenceRoot $evidenceRootPath
     }
     catch {
@@ -2178,6 +2379,15 @@ function Invoke-V02ReleaseGate {
             IndependentHumanReview = [string]$matrix.Candidate.IndependentHumanReview
             ReleaseCredit = [bool]$matrix.Candidate.ReleaseCredit
             Languages = @('Thai', 'English')
+        }
+        Issue9 = [pscustomobject][ordered]@{
+            EvidenceClass = [string]$issue9.Candidate.EvidenceClassification
+            CandidatePath = $issue9.CandidatePath
+            CandidateSha256 = $issue9.CandidateSha256
+            Result = $issue9.Result
+            Runtime = $issue9.Runtime
+            Human = $issue9.Human
+            Release = $issue9.Release
         }
         ContractEvidence = [pscustomobject][ordered]@{
             Path = $contract.Path
@@ -2260,6 +2470,7 @@ if ($MyInvocation.InvocationName -ne '.') {
         -ThaiEvidenceDirectory $ThaiEvidenceDirectory `
         -EnglishEvidenceDirectory $EnglishEvidenceDirectory `
         -RuntimeMatrixManifestPath $RuntimeMatrixManifestPath `
+        -Issue9CandidatePath $Issue9CandidatePath `
         -ContractEvidencePath $ContractEvidencePath `
         -SyntheticEvidencePath $SyntheticEvidencePath `
         -HumanReviewPath $HumanReviewPath `

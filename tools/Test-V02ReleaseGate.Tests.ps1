@@ -111,10 +111,11 @@ function New-V02ReleaseGateTestCandidateLock {
         [string]$PackageAppSha256 = ('5' * 64),
         [string]$PackageCoreSha256 = ('6' * 64),
         [string]$RendererManifestSha256 = ('7' * 64),
-        [string]$RuntimeMatrixManifestSha256 = ('8' * 64)
+        [string]$RuntimeMatrixManifestSha256 = ('8' * 64),
+        [string]$Issue9CandidateSha256 = ('9' * 64)
     )
     $lock = [pscustomobject][ordered]@{
-        SchemaVersion = 1
+        SchemaVersion = 2
         EvidenceClass = 'ApprovedCandidateLock'
         Result = 'APPROVED'
         Immutable = $true
@@ -131,6 +132,7 @@ function New-V02ReleaseGateTestCandidateLock {
         PackageCoreSha256 = $PackageCoreSha256
         RendererManifestSha256 = $RendererManifestSha256
         RuntimeMatrixManifestSha256 = $RuntimeMatrixManifestSha256
+        Issue9CandidateSha256 = $Issue9CandidateSha256
         Authority = [pscustomobject][ordered]@{
             DecisionId = $Authority.DecisionId
             ApprovalReference = $Authority.ApprovalReference
@@ -170,6 +172,7 @@ function New-V02ReleaseGateTestExternalIndependentReceipt {
         [string]$PackageCoreSha256 = ('6' * 64),
         [string]$RendererManifestSha256 = ('7' * 64),
         [string]$RuntimeMatrixManifestSha256 = ('8' * 64),
+        [string]$Issue9CandidateSha256 = ('9' * 64),
         [string]$ReviewerIdentity = '@independent-reviewer',
         [System.Security.Cryptography.RSA]$RsaKey = $null
     )
@@ -202,6 +205,7 @@ function New-V02ReleaseGateTestExternalIndependentReceipt {
             PackageCoreSha256 = $PackageCoreSha256
             RendererManifestSha256 = $RendererManifestSha256
             RuntimeMatrixManifestSha256 = $RuntimeMatrixManifestSha256
+            Issue9CandidateSha256 = $Issue9CandidateSha256
         }
         Owner = [pscustomobject][ordered]@{ Identity = '@yutthaphon'; Role = 'ProductOwner' }
         IndependentReviewer = [pscustomobject][ordered]@{ Identity = $ReviewerIdentity; Role = 'IndependentGateReviewer' }
@@ -214,7 +218,7 @@ function New-V02ReleaseGateTestExternalIndependentReceipt {
     $modulusFingerprint = (Get-V02Sha256Hex -Bytes $pubParams.Modulus).ToUpperInvariant()
 
     $receipt = [pscustomobject][ordered]@{
-        SchemaVersion = 2
+        SchemaVersion = 3
         EvidenceClass = 'ExternalIndependentCandidateReceipt'
         Result = 'APPROVED_CANDIDATE_ONLY'
         DecisionId = 'herdrops-rec-all-v2'
@@ -288,6 +292,7 @@ function New-V02ReleaseGateTestHumanReview {
         [Parameter(Mandatory = $true)]$Package,
         [Parameter(Mandatory = $true)]$Renderer,
         [Parameter(Mandatory = $true)]$Matrix,
+        [Parameter(Mandatory = $true)]$Issue9,
         [Parameter(Mandatory = $true)][string]$GitHubPath,
         [Parameter(Mandatory = $true)][string]$GitHubSha,
         [Parameter(Mandatory = $true)]$Identity
@@ -303,6 +308,7 @@ function New-V02ReleaseGateTestHumanReview {
     $artifactPaths['renderer-compatibility'] = $Renderer.ManifestPath
     $artifactPaths['runtime-matrix-thai'] = $Matrix.ManifestPath
     $artifactPaths['runtime-matrix-english'] = $Matrix.ManifestPath
+    $artifactPaths['issue-9-acceptance'] = $Issue9.CandidatePath
     $artifactPaths['tracker-11-readiness'] = $GitHubPath
     $checks = @($ids | ForEach-Object {
             $checkArtifactPath = $artifactPaths[$_]
@@ -315,7 +321,7 @@ function New-V02ReleaseGateTestHumanReview {
             }
         })
     $review = [pscustomobject][ordered]@{
-        SchemaVersion = 1
+        SchemaVersion = 2
         EvidenceClass = 'Human'
         Result = 'PASS'
         Decision = 'GO'
@@ -337,6 +343,7 @@ function New-V02ReleaseGateTestHumanReview {
             PackageCoreSha256 = $Package.CoreSha256
             RendererManifestSha256 = $Renderer.ManifestSha256
             RuntimeMatrixManifestSha256 = $Matrix.ManifestFileSha256
+            Issue9CandidateSha256 = $Issue9.CandidateSha256
             GitHubSnapshotSha256 = $GitHubSha
         }
         Checks = $checks
@@ -346,6 +353,66 @@ function New-V02ReleaseGateTestHumanReview {
     }
     Write-V02ReleaseGateTestJson -Path $Path -Value $review | Out-Null
     return $review
+}
+
+function New-V02ReleaseGateTestIssue9Candidate {
+    param(
+        [Parameter(Mandatory = $true)][string]$Root,
+        [Parameter(Mandatory = $true)]$Identity
+    )
+    $packageRoot = Join-Path $Root 'package'
+    New-V02ReleaseGateTestDirectory $packageRoot
+    $package = [pscustomobject][ordered]@{
+        IdentityPath = Join-Path $Root 'identity.json'; ReceiptFileSha256 = ('1' * 64); ReceiptSha256 = ('2' * 64)
+        ArchivePath = Join-Path $Root 'archive.zip'; ArchiveSha256 = ('3' * 64)
+        ManifestPath = Join-Path $packageRoot 'package-manifest.json'; ManifestSha256 = ('4' * 64)
+        AppPath = Join-Path $packageRoot 'HerdrOps.App.exe'; AppSha256 = ('5' * 64)
+        CorePath = Join-Path $packageRoot 'HerdrOps.Core.exe'; CoreSha256 = ('6' * 64)
+    }
+    foreach ($path in @($package.IdentityPath, $package.ArchivePath, $package.ManifestPath, $package.AppPath, $package.CorePath)) {
+        Write-V02ReleaseGateTestText -Path $path -Text 'fixture' | Out-Null
+    }
+    $matrixPath = Join-Path $Root 'matrix.json'; Write-V02ReleaseGateTestText $matrixPath 'matrix' | Out-Null
+    $matrix = [pscustomobject][ordered]@{
+        ManifestPath = $matrixPath
+        ManifestFileSha256 = Get-V02ReleaseGateFileSha256 $matrixPath
+        ManifestPayloadSha256 = ('7' * 64)
+        Candidate = [pscustomobject][ordered]@{ Payload = [pscustomobject][ordered]@{ Binding = [pscustomobject][ordered]@{
+            HerdrReleaseId = $script:V02ReleaseGateHerdrReleaseId
+            HerdrExecutableSha256 = $script:V02ReleaseGateHerdrExecutableSha256
+            BundledSchemaSha256 = ('8' * 64)
+            HerdrProtocol = 20
+        } } }
+    }
+    $runtimeRoots = @(); $uiRoots = @(); $legs = @()
+    foreach ($language in @('Thai', 'English')) {
+        $runtimeRoot = Join-Path $Root "$language-runtime"; New-V02ReleaseGateTestDirectory $runtimeRoot; $runtimeRoots += $runtimeRoot
+        $uiRoot = Join-Path $Root "$language-ui"; New-V02ReleaseGateTestDirectory $uiRoot; $uiRoots += $uiRoot
+        $receiptPath = Join-Path $uiRoot 'issue9-ui-receipt.json'; Write-V02ReleaseGateTestText $receiptPath '{}' | Out-Null
+        $pages = @(); foreach ($pageName in @('Overview', 'LiveOrganization', 'AgentDetail')) {
+            $pages += [pscustomobject][ordered]@{ Name = $pageName; Language = $language; UiCapturePath = Join-Path $uiRoot "$pageName.png"; UiCaptureSha256 = ('A' * 64); StateSha256 = ('B' * 64); WorkspaceId = 'workspace'; ProjectId = 'project'; AgentId = 'agent'; TaskId = 'task'; AgentStatus = 'Working'; PaneId = 'pane' }
+        }
+        $legs += [pscustomobject][ordered]@{
+            Language = $language; RuntimeEvidenceDirectory = $runtimeRoot; UiEvidenceDirectory = $uiRoot; UiReceiptPath = $receiptPath
+            UiReceiptSha256 = Get-V02ReleaseGateFileSha256 $receiptPath; SideBySideCaptureSha256 = ('C' * 64); Pages = $pages
+            Selection = [pscustomobject][ordered]@{ WorkspaceId = 'workspace'; ProjectId = 'project'; AgentId = 'agent'; TaskId = 'task'; AgentStatus = 'Working'; PaneId = 'pane'; StateSha256 = ('B' * 64); Source = 'CoreSnapshot' }
+            Lifecycle = [pscustomobject][ordered]@{ DashboardClosed = $true; CoreConnectedAfterDashboardClose = $true; DisconnectObserved = $true; ReconnectObserved = $true; ReconciliationObserved = $true; EventAStateSha256 = ('D' * 64); EventBStateSha256 = ('E' * 64); ReconciledStateSha256 = ('F' * 64); ControlServerSurvivedTargetRestart = $true }
+        }
+    }
+    $candidate = [pscustomobject][ordered]@{
+        SchemaVersion = 1; EvidenceClassification = 'Issue9RuntimeCandidate'; Issue = 9; Result = 'PASS'
+        Source = [pscustomobject][ordered]@{ CommitSha = $Identity.Commit; TreeSha = $Identity.Tree; GitTreeClean = $true }
+        Package = [pscustomobject][ordered]@{ IdentityPath = $package.IdentityPath; IdentityFileSha256 = $package.ReceiptFileSha256; ReceiptSha256 = $package.ReceiptSha256; ArchivePath = $package.ArchivePath; ArchiveSha256 = $package.ArchiveSha256; ManifestPath = $package.ManifestPath; ManifestSha256 = $package.ManifestSha256; AppPath = $package.AppPath; AppSha256 = $package.AppSha256; CorePath = $package.CorePath; CoreSha256 = $package.CoreSha256 }
+        Herdr = [pscustomobject][ordered]@{ ReleaseId = $script:V02ReleaseGateHerdrReleaseId; ExecutableSha256 = $script:V02ReleaseGateHerdrExecutableSha256; BundledSchemaSha256 = ('8' * 64); Protocol = '20' }
+        Sessions = [pscustomobject][ordered]@{ Control = [pscustomobject][ordered]@{ Name = 'acceptance'; SocketPath = 'C:\fixture\control.sock'; ServerIdentity = 'control-server' }; Target = [pscustomobject][ordered]@{ Name = 'agent-lab'; SocketPath = 'C:\fixture\target.sock'; Reference = 'target-agent' } }
+        MatrixCandidate = [pscustomobject][ordered]@{ Path = $matrixPath; FileSha256 = $matrix.ManifestFileSha256; PayloadSha256 = $matrix.ManifestPayloadSha256; EvidenceClassification = 'RuntimeMatrixCandidate'; IndependentHumanReview = 'NOT_OBSERVED'; ReleaseCredit = $false }
+        Languages = $legs
+        EvidenceBoundary = [pscustomobject][ordered]@{ Runtime = 'NOT_OBSERVED'; HumanVisual = 'NOT_OBSERVED'; ReleaseCredit = $false; OutputAuthority = 'RuntimeCandidate'; FixtureMode = $false }
+    }
+    return [pscustomobject][ordered]@{
+        Candidate = $candidate; Package = $package; Matrix = $matrix
+        Context = [pscustomobject][ordered]@{ ThaiEvidenceDirectory = $runtimeRoots[0]; EnglishEvidenceDirectory = $runtimeRoots[1]; ReleaseEvidenceRoot = $Root }
+    }
 }
 
 $script:GateRepositoryRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
@@ -427,6 +494,70 @@ try {
                 -RepositoryRoot $script:GateRepositoryRoot -EvidenceRoot (Join-Path $script:TestRoot 'tampered-payload-evidence') `
                 -ExpectedSourceCommit $script:GateIdentity.Commit -ExpectedSourceTree $script:GateIdentity.Tree
         } 'cryptographic signature verification failed'
+    }
+
+    Invoke-V02ReleaseGateTestCase 'signed receipt Issue9 field is mandatory closed and signature-bound' {
+        $receipt = New-V02ReleaseGateTestExternalIndependentReceipt -Path (Join-Path $script:TestRoot 'external-issue9-schema\receipt.json') `
+            -Identity $script:GateIdentity -ProfileFileSha256 $script:GateProfileSha -ProfileCanonicalSha256 $script:GateProfileCanonicalSha
+        $missing = $receipt.Value | ConvertTo-Json -Depth 100 | ConvertFrom-Json
+        $missing.Candidate.PSObject.Properties.Remove('Issue9CandidateSha256')
+        Write-V02ReleaseGateTestJson -Path $receipt.Path -Value $missing | Out-Null
+        Assert-V02ReleaseGateTestThrows {
+            Read-V02ReleaseGateExternalIndependentCandidateReceipt -Path $receipt.Path `
+                -RepositoryRoot $script:GateRepositoryRoot -EvidenceRoot (Join-Path $script:TestRoot 'external-issue9-missing') `
+                -ExpectedSourceCommit $script:GateIdentity.Commit -ExpectedSourceTree $script:GateIdentity.Tree
+        } 'exactly'
+
+        $receipt = New-V02ReleaseGateTestExternalIndependentReceipt -Path $receipt.Path `
+            -Identity $script:GateIdentity -ProfileFileSha256 $script:GateProfileSha -ProfileCanonicalSha256 $script:GateProfileCanonicalSha
+        $extra = $receipt.Value | ConvertTo-Json -Depth 100 | ConvertFrom-Json
+        $extra.Candidate | Add-Member -MemberType NoteProperty -Name Issue9Authority -Value 'caller-authored'
+        Write-V02ReleaseGateTestJson -Path $receipt.Path -Value $extra | Out-Null
+        Assert-V02ReleaseGateTestThrows {
+            Read-V02ReleaseGateExternalIndependentCandidateReceipt -Path $receipt.Path `
+                -RepositoryRoot $script:GateRepositoryRoot -EvidenceRoot (Join-Path $script:TestRoot 'external-issue9-extra') `
+                -ExpectedSourceCommit $script:GateIdentity.Commit -ExpectedSourceTree $script:GateIdentity.Tree
+        } 'exactly'
+
+        $receipt = New-V02ReleaseGateTestExternalIndependentReceipt -Path $receipt.Path `
+            -Identity $script:GateIdentity -ProfileFileSha256 $script:GateProfileSha -ProfileCanonicalSha256 $script:GateProfileCanonicalSha
+        $stale = $receipt.Value | ConvertTo-Json -Depth 100 | ConvertFrom-Json
+        $stale.Candidate.Issue9CandidateSha256 = ('A' * 64)
+        Write-V02ReleaseGateTestJson -Path $receipt.Path -Value $stale | Out-Null
+        Assert-V02ReleaseGateTestThrows {
+            Read-V02ReleaseGateExternalIndependentCandidateReceipt -Path $receipt.Path `
+                -RepositoryRoot $script:GateRepositoryRoot -EvidenceRoot (Join-Path $script:TestRoot 'external-issue9-stale') `
+                -ExpectedSourceCommit $script:GateIdentity.Commit -ExpectedSourceTree $script:GateIdentity.Tree
+        } 'cryptographic signature verification failed'
+    }
+
+    Invoke-V02ReleaseGateTestCase 'candidate lock Issue9 field is mandatory closed and externally bound' {
+        $evidenceRoot = Join-Path $script:TestRoot 'issue9-lock-schema'
+        New-V02ReleaseGateTestDirectory -Path $evidenceRoot
+        $authority = Read-V02ReleaseGateAuthorityReference -RepositoryRoot $script:GateRepositoryRoot `
+            -AuthorityReferencePath (Join-Path $script:GateRepositoryRoot 'Plan\DECISIONS.md')
+        $receipt = New-V02ReleaseGateTestExternalIndependentReceipt -Path (Join-Path $script:TestRoot 'external-issue9-lock\receipt.json') `
+            -Identity $script:GateIdentity -ProfileFileSha256 $script:GateProfileSha -ProfileCanonicalSha256 $script:GateProfileCanonicalSha
+        $lockPath = Join-Path $evidenceRoot 'candidate-lock.json'
+        New-V02ReleaseGateTestCandidateLock -Path $lockPath -Identity $script:GateIdentity `
+            -ProfileFileSha256 $script:GateProfileSha -ProfileCanonicalSha256 $script:GateProfileCanonicalSha -Authority $authority -IndependentReceipt $receipt | Out-Null
+        $missing = Get-Content -LiteralPath $lockPath -Raw | ConvertFrom-Json
+        $missing.PSObject.Properties.Remove('Issue9CandidateSha256')
+        Write-V02ReleaseGateTestJson -Path $lockPath -Value $missing | Out-Null
+        Assert-V02ReleaseGateTestThrows {
+            Read-V02ReleaseGateCandidateLock -Path $lockPath -EvidenceRoot $evidenceRoot `
+                -ExpectedSourceCommit $script:GateIdentity.Commit -ExpectedSourceTree $script:GateIdentity.Tree `
+                -PackageProfilePath $script:GateProfilePath -RepositoryRoot $script:GateRepositoryRoot `
+                -AuthorityReferencePath (Join-Path $script:GateRepositoryRoot 'Plan\DECISIONS.md') -IndependentCandidateReceiptPath $receipt.Path
+        } 'exactly'
+        New-V02ReleaseGateTestCandidateLock -Path $lockPath -Identity $script:GateIdentity `
+            -ProfileFileSha256 $script:GateProfileSha -ProfileCanonicalSha256 $script:GateProfileCanonicalSha -Authority $authority -IndependentReceipt $receipt -Issue9CandidateSha256 ('A' * 64) | Out-Null
+        Assert-V02ReleaseGateTestThrows {
+            Read-V02ReleaseGateCandidateLock -Path $lockPath -EvidenceRoot $evidenceRoot `
+                -ExpectedSourceCommit $script:GateIdentity.Commit -ExpectedSourceTree $script:GateIdentity.Tree `
+                -PackageProfilePath $script:GateProfilePath -RepositoryRoot $script:GateRepositoryRoot `
+                -AuthorityReferencePath (Join-Path $script:GateRepositoryRoot 'Plan\DECISIONS.md') -IndependentCandidateReceiptPath $receipt.Path
+        } 'Issue9CandidateSha256'
     }
 
     Invoke-V02ReleaseGateTestCase 'weak RSA key (<2048 bits) in external receipt fails closed' {
@@ -577,17 +708,19 @@ try {
         $package.CorePath = Join-Path $evidenceRoot 'core.exe'; Write-V02ReleaseGateTestText -Path $package.CorePath -Text 'core' | Out-Null
         $rendererPath = Join-Path $evidenceRoot 'renderer.json'; Write-V02ReleaseGateTestText -Path $rendererPath -Text 'renderer' | Out-Null
         $matrixPath = Join-Path $evidenceRoot 'matrix.json'; Write-V02ReleaseGateTestText -Path $matrixPath -Text 'matrix' | Out-Null
+        $issue9Path = Join-Path $evidenceRoot 'issue9.json'; Write-V02ReleaseGateTestText -Path $issue9Path -Text 'issue9' | Out-Null
         $githubPath = Join-Path $evidenceRoot 'github.json'; New-V02ReleaseGateTestGitHubSnapshot -Path $githubPath | Out-Null
         $renderer = [pscustomobject][ordered]@{ ManifestPath = $rendererPath; ManifestSha256 = Get-V02ReleaseGateFileSha256 -Path $rendererPath }
         $matrix = [pscustomobject][ordered]@{ ManifestPath = $matrixPath; ManifestFileSha256 = Get-V02ReleaseGateFileSha256 -Path $matrixPath }
+        $issue9 = [pscustomobject][ordered]@{ CandidatePath = $issue9Path; CandidateSha256 = Get-V02ReleaseGateFileSha256 -Path $issue9Path }
         $reviewPath = Join-Path $evidenceRoot 'human-review.json'
         New-V02ReleaseGateTestHumanReview -Path $reviewPath -EvidenceRoot $evidenceRoot -Package $package `
-            -Renderer $renderer -Matrix $matrix -GitHubPath $githubPath -GitHubSha (Get-V02ReleaseGateFileSha256 -Path $githubPath) `
+            -Renderer $renderer -Matrix $matrix -Issue9 $issue9 -GitHubPath $githubPath -GitHubSha (Get-V02ReleaseGateFileSha256 -Path $githubPath) `
             -Identity $script:GateIdentity | Out-Null
         $review = Read-V02ReleaseGateJsonFile -Path $reviewPath -Context 'test Human review'
         $disposition = Assert-V02ReleaseGateHumanReview -Review $review.Value -ReviewPath $review.Path `
             -ExpectedSourceCommit $script:GateIdentity.Commit -ExpectedSourceTree $script:GateIdentity.Tree `
-            -Package $package -Renderer $renderer -Matrix $matrix -GitHubSnapshotPath $githubPath `
+            -Package $package -Renderer $renderer -Matrix $matrix -Issue9 $issue9 -GitHubSnapshotPath $githubPath `
             -GitHubSnapshotSha256 (Get-V02ReleaseGateFileSha256 -Path $githubPath) -EvidenceRoot $evidenceRoot
         if ($disposition.Status -cne 'NOT_OBSERVED' -or $disposition.Authenticated) { throw 'Local Human GO was credited.' }
         $tampered = $review.Value
@@ -595,7 +728,7 @@ try {
         Assert-V02ReleaseGateTestThrows {
             Assert-V02ReleaseGateHumanReview -Review $tampered -ReviewPath $review.Path `
                 -ExpectedSourceCommit $script:GateIdentity.Commit -ExpectedSourceTree $script:GateIdentity.Tree `
-                -Package $package -Renderer $renderer -Matrix $matrix -GitHubSnapshotPath $githubPath `
+                -Package $package -Renderer $renderer -Matrix $matrix -Issue9 $issue9 -GitHubSnapshotPath $githubPath `
                 -GitHubSnapshotSha256 (Get-V02ReleaseGateFileSha256 -Path $githubPath) -EvidenceRoot $evidenceRoot
         } 'binding'
         $pathTampered = $review.Value | ConvertTo-Json -Depth 100 | ConvertFrom-Json
@@ -607,7 +740,7 @@ try {
         Assert-V02ReleaseGateTestThrows {
             Assert-V02ReleaseGateHumanReview -Review $pathTampered -ReviewPath $review.Path `
                 -ExpectedSourceCommit $script:GateIdentity.Commit -ExpectedSourceTree $script:GateIdentity.Tree `
-                -Package $package -Renderer $renderer -Matrix $matrix -GitHubSnapshotPath $githubPath `
+                -Package $package -Renderer $renderer -Matrix $matrix -Issue9 $issue9 -GitHubSnapshotPath $githubPath `
                 -GitHubSnapshotSha256 (Get-V02ReleaseGateFileSha256 -Path $githubPath) -EvidenceRoot $evidenceRoot
         } 'semantic path'
     }
@@ -632,6 +765,7 @@ try {
             PackageCoreSha256 = ('F' * 64)
             RendererManifestSha256 = ('1' * 64)
             RuntimeMatrixManifestSha256 = ('2' * 64)
+            Issue9CandidateSha256 = ('3' * 64)
         }
         $package = [pscustomobject][ordered]@{
             ReceiptSha256 = $lock.PackageReceiptSha256
@@ -643,11 +777,54 @@ try {
         }
         $renderer = [pscustomobject][ordered]@{ ManifestSha256 = $lock.RendererManifestSha256 }
         $matrix = [pscustomobject][ordered]@{ ManifestFileSha256 = $lock.RuntimeMatrixManifestSha256 }
-        Assert-V02ReleaseGateCandidateByteBinding -CandidateLock $lock -Package $package -Renderer $renderer -Matrix $matrix
+        $issue9 = [pscustomobject][ordered]@{ CandidateSha256 = $lock.Issue9CandidateSha256 }
+        Assert-V02ReleaseGateCandidateByteBinding -CandidateLock $lock -Package $package -Renderer $renderer -Matrix $matrix -Issue9 $issue9
         $package.ArchiveSha256 = ('9' * 64)
         Assert-V02ReleaseGateTestThrows {
-            Assert-V02ReleaseGateCandidateByteBinding -CandidateLock $lock -Package $package -Renderer $renderer -Matrix $matrix
+            Assert-V02ReleaseGateCandidateByteBinding -CandidateLock $lock -Package $package -Renderer $renderer -Matrix $matrix -Issue9 $issue9
         } 'PackageArchiveSha256'
+        $package.ArchiveSha256 = $lock.PackageArchiveSha256
+        $issue9.CandidateSha256 = ('4' * 64)
+        Assert-V02ReleaseGateTestThrows {
+            Assert-V02ReleaseGateCandidateByteBinding -CandidateLock $lock -Package $package -Renderer $renderer -Matrix $matrix -Issue9 $issue9
+        } 'Issue9CandidateSha256'
+    }
+
+    Invoke-V02ReleaseGateTestCase 'typed Issue9 candidate rejects missing extra stale unbound and fixture authority' {
+        $fixture = New-V02ReleaseGateTestIssue9Candidate -Root (Join-Path $script:TestRoot 'issue9-typed') -Identity $script:GateIdentity
+        Assert-V02ReleaseGateIssue9CandidateBinding -Candidate $fixture.Candidate -Context $fixture.Context -Package $fixture.Package -Matrix $fixture.Matrix `
+            -ExpectedSourceCommit $script:GateIdentity.Commit -ExpectedSourceTree $script:GateIdentity.Tree
+
+        $extra = $fixture.Candidate | ConvertTo-Json -Depth 100 | ConvertFrom-Json
+        $extra | Add-Member -MemberType NoteProperty -Name HumanAuthority -Value 'caller-authored'
+        Assert-V02ReleaseGateTestThrows {
+            Assert-V02ReleaseGateIssue9CandidateBinding -Candidate $extra -Context $fixture.Context -Package $fixture.Package -Matrix $fixture.Matrix `
+                -ExpectedSourceCommit $script:GateIdentity.Commit -ExpectedSourceTree $script:GateIdentity.Tree
+        } 'exactly'
+        $missing = $fixture.Candidate | ConvertTo-Json -Depth 100 | ConvertFrom-Json
+        $missing.Languages[0].PSObject.Properties.Remove('Lifecycle')
+        Assert-V02ReleaseGateTestThrows {
+            Assert-V02ReleaseGateIssue9CandidateBinding -Candidate $missing -Context $fixture.Context -Package $fixture.Package -Matrix $fixture.Matrix `
+                -ExpectedSourceCommit $script:GateIdentity.Commit -ExpectedSourceTree $script:GateIdentity.Tree
+        } 'exactly'
+        $stale = $fixture.Candidate | ConvertTo-Json -Depth 100 | ConvertFrom-Json
+        $stale.Source.TreeSha = ('a' * 40)
+        Assert-V02ReleaseGateTestThrows {
+            Assert-V02ReleaseGateIssue9CandidateBinding -Candidate $stale -Context $fixture.Context -Package $fixture.Package -Matrix $fixture.Matrix `
+                -ExpectedSourceCommit $script:GateIdentity.Commit -ExpectedSourceTree $script:GateIdentity.Tree
+        } 'source tree'
+        $unbound = $fixture.Candidate | ConvertTo-Json -Depth 100 | ConvertFrom-Json
+        $unbound.Package.ArchiveSha256 = ('0' * 64)
+        Assert-V02ReleaseGateTestThrows {
+            Assert-V02ReleaseGateIssue9CandidateBinding -Candidate $unbound -Context $fixture.Context -Package $fixture.Package -Matrix $fixture.Matrix `
+                -ExpectedSourceCommit $script:GateIdentity.Commit -ExpectedSourceTree $script:GateIdentity.Tree
+        } 'ArchiveSha256'
+        $fixtureAuthority = $fixture.Candidate | ConvertTo-Json -Depth 100 | ConvertFrom-Json
+        $fixtureAuthority.EvidenceBoundary.FixtureMode = $true
+        Assert-V02ReleaseGateTestThrows {
+            Assert-V02ReleaseGateIssue9CandidateBinding -Candidate $fixtureAuthority -Context $fixture.Context -Package $fixture.Package -Matrix $fixture.Matrix `
+                -ExpectedSourceCommit $script:GateIdentity.Commit -ExpectedSourceTree $script:GateIdentity.Tree
+        } 'fixture mode'
     }
 
     Invoke-V02ReleaseGateTestCase 'path escape and reparse-style aliases fail closed' {
@@ -699,14 +876,14 @@ try {
         } 'hardlink|identity|alias|final path'
     }
 
-    Invoke-V02ReleaseGateTestCase 'transitive governance set of 28 files is fully snapshot and held' {
+    Invoke-V02ReleaseGateTestCase 'transitive governance set of 37 files is fully snapshot and held' {
         $snapshots = @(Get-V02ReleaseGateValidatorSnapshots -RepositoryRoot $script:GateRepositoryRoot)
         try {
             if ($snapshots.Count -ne $script:V02ReleaseGateTransitiveGovernanceRelativePaths.Count) {
                 throw "Expected $($script:V02ReleaseGateTransitiveGovernanceRelativePaths.Count) governance snapshots; observed $($snapshots.Count)."
             }
-            if ($snapshots.Count -ne 28) {
-                throw "Expected exactly 28 governance snapshots; observed $($snapshots.Count)."
+            if ($snapshots.Count -ne 37) {
+                throw "Expected exactly 37 governance snapshots; observed $($snapshots.Count)."
             }
             Assert-V02ReleaseGateBoundSnapshots -Snapshots $snapshots -Phase 'transitive governance stability fixture'
             foreach ($snapshot in $snapshots) {
@@ -717,6 +894,50 @@ try {
         }
         finally {
             Close-V02ReleaseGateHeldSnapshots -Snapshots $snapshots
+        }
+    }
+
+    Invoke-V02ReleaseGateTestCase 'Issue9 CI performance receipt soak and harness governance cannot mutate delete or disappear' {
+        $required = @(
+            '.github/workflows/ci.yml',
+            'tools/v0.2-issue9-live-ui/Test-V02Issue9LiveUiAcceptance.ps1',
+            'tools/v0.2-issue9-live-ui/Issue9LiveUi.Common.ps1',
+            'tools/v0.2-issue9-live-ui/issue9-live-ui-candidate.schema.json',
+            'tools/v0.2-renderer-compatibility/Invoke-V02PerformanceMeasurement.ps1',
+            'tools/v0.2-renderer-compatibility/New-V02PerformanceEvidenceReceipt.ps1',
+            'tools/v0.2-renderer-compatibility/Invoke-V02SoakMeasurement.ps1',
+            'tools/v0.2-renderer-compatibility/lib/V02PerformanceTestHarness.ps1',
+            'tools/v0.2-renderer-compatibility/lib/V02SoakTestHarness.ps1'
+        )
+        foreach ($path in $required) {
+            if ($script:V02ReleaseGateTransitiveGovernanceRelativePaths -cnotcontains $path) { throw "Missing governed production path: $path" }
+        }
+        $fixtureRepo = New-V02ReleaseGateTestCleanRepository
+        try {
+            $snapshots = @(Get-V02ReleaseGateValidatorSnapshots -RepositoryRoot $fixtureRepo)
+            try {
+                foreach ($relative in @($required[1], $required[4], $required[0])) {
+                    $target = Join-Path $fixtureRepo ($relative -replace '/', '\')
+                    $mutationSucceeded = $false
+                    try { [IO.File]::WriteAllText($target, 'mutated'); $mutationSucceeded = $true } catch { $mutationSucceeded = $false }
+                    if ($mutationSucceeded) { throw "Governed mutation unexpectedly succeeded: $relative" }
+                    $deletionSucceeded = $false
+                    try { Remove-Item -LiteralPath $target -Force; $deletionSucceeded = $true } catch { $deletionSucceeded = $false }
+                    if ($deletionSucceeded) { throw "Governed deletion unexpectedly succeeded: $relative" }
+                }
+                Assert-V02ReleaseGateBoundSnapshots -Snapshots $snapshots -Phase 'Issue9/performance/CI hostile stability'
+            }
+            finally { Close-V02ReleaseGateHeldSnapshots -Snapshots $snapshots }
+
+            $missingPath = Join-Path $fixtureRepo ($required[2] -replace '/', '\')
+            Remove-Item -LiteralPath $missingPath -Force
+            Assert-V02ReleaseGateTestThrows {
+                $unexpected = @(Get-V02ReleaseGateValidatorSnapshots -RepositoryRoot $fixtureRepo)
+                Close-V02ReleaseGateHeldSnapshots -Snapshots $unexpected
+            } 'missing'
+        }
+        finally {
+            if (Test-Path -LiteralPath $fixtureRepo) { Remove-Item -LiteralPath $fixtureRepo -Recurse -Force }
         }
     }
 
@@ -821,7 +1042,7 @@ try {
 
     Invoke-V02ReleaseGateTestCase 'production gate exposes no injectable validators' {
         $parameters = @((Get-Command Invoke-V02ReleaseGate -CommandType Function).Parameters.Keys)
-        foreach ($name in @('PackageValidator', 'RendererValidator', 'RuntimeMatrixValidator')) {
+        foreach ($name in @('PackageValidator', 'RendererValidator', 'RuntimeMatrixValidator', 'Issue9Validator')) {
             if ($parameters -contains $name) { throw "Production gate still exposes $name." }
         }
         Assert-V02ReleaseGateTestThrows {
@@ -838,7 +1059,7 @@ try {
             New-V02ReleaseGateTestDirectory -Path $packageRoot
             New-V02ReleaseGateTestDirectory -Path (Join-Path $root 'Thai')
             New-V02ReleaseGateTestDirectory -Path (Join-Path $root 'English')
-            foreach ($file in @('package-identity.json', 'archive.zip', 'renderer.json', 'matrix.json', 'contract.json', 'synthetic.json', 'human.json', 'github.json')) {
+            foreach ($file in @('package-identity.json', 'archive.zip', 'renderer.json', 'matrix.json', 'issue9.json', 'contract.json', 'synthetic.json', 'human.json', 'github.json')) {
                 Write-V02ReleaseGateTestText -Path (Join-Path $root $file) -Text '{}' | Out-Null
             }
             foreach ($file in @('package-manifest.json', 'HerdrOps.App.exe', 'HerdrOps.Core.exe')) {
@@ -855,6 +1076,7 @@ try {
                 ThaiEvidenceDirectory = Join-Path $root 'Thai'
                 EnglishEvidenceDirectory = Join-Path $root 'English'
                 RuntimeMatrixManifestPath = Join-Path $root 'matrix.json'
+                Issue9CandidatePath = Join-Path $root 'issue9.json'
                 ContractEvidencePath = Join-Path $root 'contract.json'
                 SyntheticEvidencePath = Join-Path $root 'synthetic.json'
                 HumanReviewPath = Join-Path $root 'human.json'
