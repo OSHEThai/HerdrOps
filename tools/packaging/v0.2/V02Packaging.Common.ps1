@@ -4,6 +4,39 @@ Set-StrictMode -Version Latest
 
 . (Join-Path $PSScriptRoot 'V02PackageIdentity.Common.ps1')
 
+if ($null -eq ('HerdrOps.V02DirectoryLeaseNative' -as [type])) {
+    Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+using Microsoft.Win32.SafeHandles;
+namespace HerdrOps {
+    public static class V02DirectoryLeaseNative {
+        [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
+        public static extern SafeFileHandle CreateFile(
+            string name, uint access, uint share, IntPtr security,
+            uint disposition, uint flags, IntPtr template);
+    }
+}
+'@
+}
+
+function Open-V02DirectoryMutationLease {
+    param([Parameter(Mandatory = $true)][string]$Path)
+    $full = [IO.Path]::GetFullPath($Path)
+    if (-not (Test-Path -LiteralPath $full -PathType Container)) { throw "Mutation parent directory does not exist: $full" }
+    Assert-V02PathNoReparse -Path $full
+    # FILE_READ_ATTRIBUTES, FILE_SHARE_READ|FILE_SHARE_WRITE (intentionally no
+    # FILE_SHARE_DELETE), OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS.  Holding
+    # this handle prevents rename/delete of the resolved parent during commit.
+    $handle = [HerdrOps.V02DirectoryLeaseNative]::CreateFile($full,0x80,0x3,[IntPtr]::Zero,3,0x02000000,[IntPtr]::Zero)
+    if ($null -eq $handle -or $handle.IsInvalid) {
+        $errorCode = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
+        if ($null -ne $handle) { $handle.Dispose() }
+        throw "Could not hold mutation parent directory '$full' (Win32 $errorCode)."
+    }
+    return $handle
+}
+
 function Get-V02DefaultInstallRoot {
     return (Join-Path $env:LOCALAPPDATA 'Programs\HerdrOps')
 }
@@ -512,16 +545,38 @@ function Copy-V02StableFile {
         New-Item -ItemType Directory -Path $parent -Force | Out-Null
     }
     Assert-V02PathNoReparse -Path $parent
-    if (Test-Path -LiteralPath $destinationFullPath) {
-        throw "Refusing to overwrite stable-copy destination: $destinationFullPath"
+    $parentLease = Open-V02DirectoryMutationLease -Path $parent
+    try {
+        if (Test-Path -LiteralPath $destinationFullPath) {
+            throw "Refusing to overwrite stable-copy destination: $destinationFullPath"
+        }
+    # FileMode.CreateNew is the no-clobber boundary.  A hostile file or hardlink
+    # appearing after the Test-Path preflight must make the atomic create fail;
+    # WriteAllBytes/Create would otherwise truncate that unowned object.
+        $destinationStream = $null
+        try {
+            $destinationStream = [IO.File]::Open(
+                $destinationFullPath,
+                [IO.FileMode]::CreateNew,
+                [IO.FileAccess]::Write,
+                [IO.FileShare]::None)
+            $destinationStream.Write($sourceIdentity.Bytes, 0, $sourceIdentity.Bytes.Length)
+            $destinationStream.Flush($true)
+        }
+        finally {
+            if ($null -ne $destinationStream) { $destinationStream.Dispose() }
+        }
+        Assert-V02PathNoReparse -Path $destinationFullPath
+        $destinationIdentity = Get-V02StableFileIdentity -Path $destinationFullPath
+        if ($destinationIdentity.Length -ne $sourceIdentity.Length -or
+            $destinationIdentity.Sha256 -cne $sourceIdentity.Sha256) {
+            throw "Stable copy did not preserve source bytes: $Source"
+        }
+        return $destinationIdentity
     }
-    [IO.File]::WriteAllBytes($destinationFullPath, $sourceIdentity.Bytes)
-    $destinationIdentity = Get-V02StableFileIdentity -Path $destinationFullPath
-    if ($destinationIdentity.Length -ne $sourceIdentity.Length -or
-        $destinationIdentity.Sha256 -cne $sourceIdentity.Sha256) {
-        throw "Stable copy did not preserve source bytes: $Source"
+    finally {
+        $parentLease.Dispose()
     }
-    return $destinationIdentity
 }
 
 function Copy-V02StableTreeForInstall {

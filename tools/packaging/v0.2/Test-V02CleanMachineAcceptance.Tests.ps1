@@ -10,6 +10,14 @@ $testRoot = New-PackagingTempDirectory -Prefix 'HerdrOps-V02CleanMachineTests-'
 $script:Passed = 0
 $script:Failed = 0
 
+function Get-PathSurfaceSnapshot {
+    param([Parameter(Mandatory = $true)][string]$Path)
+    $full = [IO.Path]::GetFullPath($Path)
+    if (-not (Test-Path -LiteralPath $full)) { return "ABSENT|$full" }
+    $item = Get-Item -LiteralPath $full -Force
+    return "PRESENT|$full|$($item.Attributes)|$($item.LastWriteTimeUtc.Ticks)"
+}
+
 function Invoke-Case {
     param(
         [Parameter(Mandatory = $true)][string]$Name,
@@ -50,6 +58,11 @@ function Assert-Throws {
 }
 
 try {
+    $realInstallRoot = Get-V02DefaultInstallRoot
+    $realUserDataRoot = Get-V02DefaultUserDataRoot
+    $realInstallBefore = Get-PathSurfaceSnapshot $realInstallRoot
+    $realUserDataBefore = Get-PathSurfaceSnapshot $realUserDataRoot
+    $realStartupBefore = Get-V02UserStartupState
     $worktree = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..\..'))
     $repo = Join-Path $testRoot 'repo'
 
@@ -172,6 +185,9 @@ try {
             -ReportPath $reportPath `
             -ExpectedSourceCommit $fixtureCommit `
             -ExpectedSourceTree $fixtureTree `
+            -ExpectedReplacementSourceCommit $fixtureCommit `
+            -ExpectedReplacementSourceTree $fixtureTree `
+            -FixtureRoot $testRoot `
             -MockRegistryHive $mockRegistry `
             -AllowElevatedForTesting
 
@@ -187,13 +203,13 @@ try {
         Assert-V02CleanMachineReportSchema -Report $report -RepositoryRoot $repo
     }
 
-    # 3. Positive: Live simulation mode with verified tokens
-    Invoke-Case 'Live simulation mode earns CleanMachine with strict token' {
+    # 3. Hostile: synthetic roots/mocks can never earn Live CleanMachine credit.
+    Invoke-Case 'Live simulation with test roots and mock registry is rejected before mutation' {
         $liveInstall = Join-Path $testRoot 'live-sim\Programs\HerdrOps'
         $liveUserData = Join-Path $testRoot 'live-sim\HerdrOps'
         $liveReportPath = Join-Path $testRoot 'live-report.json'
         $liveRegistry = @{}
-        $report = & $scriptPath `
+        Assert-Throws { & $scriptPath `
             -Mode 'Live' `
             -IdentityReceiptPath $receiptPath `
             -ArchivePath $archivePath `
@@ -211,18 +227,27 @@ try {
             -LiveConfirmationToken 'HERDROPS-V02-CLEAN-MACHINE' `
             -IUnderstandLiveMutation `
             -MockRegistryHive $liveRegistry `
-            -AllowElevatedForTesting
-
-        if ($report.status -ne 'PASS' -or $report.mode -ne 'Live') { throw 'Live report status was not PASS.' }
-        if ($report.scope -ne 'InstallLifecycleOnly') { throw 'Scope was not InstallLifecycleOnly.' }
-        if ($report.actualHerdrStarted -ne $false -or $report.herdrOpsStarted -ne $false -or $report.networkContacted -ne $false) { throw 'Execution flag was not false.' }
-        if ($report.evidenceBoundary.evidenceClass -ne 'CleanMachine') { throw 'Live mode did not record CleanMachine evidence class.' }
-        if ($report.evidenceBoundary.creditGranted -ne $true) { throw 'Live clean-machine report did not grant install lifecycle credit.' }
-        if ($report.evidenceBoundary.actualHerdrRuntime -ne 'NOT_OBSERVED' -or $report.evidenceBoundary.independentReview -ne 'NOT_OBSERVED' -or $report.evidenceBoundary.humanGo -ne 'NOT_OBSERVED' -or $report.evidenceBoundary.releaseCredit -ne 'NOT_OBSERVED') { throw 'Live clean-machine report claimed unearned runtime/independent/human/release credit.' }
-        Assert-V02CleanMachineReportSchema -Report $report -RepositoryRoot $repo
+            -AllowElevatedForTesting } 'rejects mock registry|test-only controls'
+        if ((Test-Path -LiteralPath $liveInstall) -or (Test-Path -LiteralPath $liveReportPath)) { throw 'Rejected Live simulation mutated its target or report path.' }
     }
 
     # Hostile Matrix
+    Invoke-Case 'Hostile 0: Fixture defaults fail before any target or registry mutation' {
+        $unsafeTarget = Join-Path $testRoot 'missing-fixture-contract\Programs\HerdrOps'
+        Assert-Throws {
+            & $scriptPath `
+                -Mode 'Fixture' `
+                -IdentityReceiptPath $receiptPath `
+                -ArchivePath $archivePath `
+                -InstallRoot $unsafeTarget `
+                -UserDataRoot (Join-Path $testRoot 'missing-fixture-contract\HerdrOps') `
+                -RepositoryRoot $repo `
+                -ProfilePath $profilePath `
+                -AllowElevatedForTesting
+        } 'requires an explicit FixtureRoot and MockRegistryHive'
+        if (Test-Path -LiteralPath $unsafeTarget) { throw 'Rejected Fixture invocation created its target.' }
+    }
+
     # Hostile 1: Forged machine name / machine fingerprint in Live mode
     Invoke-Case 'Hostile 1: Machine name mismatch in Live mode fails closed' {
         Assert-Throws {
@@ -287,10 +312,18 @@ try {
                 -Mode 'Fixture' `
                 -IdentityReceiptPath $receiptPath `
                 -ArchivePath $corruptArchive `
+                -ReplacementIdentityReceiptPath $replacementReceiptPath `
+                -ReplacementArchivePath $replacementArchivePath `
                 -InstallRoot (Join-Path $testRoot 'hostile-corrupt\Programs\HerdrOps') `
                 -UserDataRoot (Join-Path $testRoot 'hostile-corrupt\HerdrOps') `
                 -RepositoryRoot $repo `
                 -ProfilePath $profilePath `
+                -ExpectedSourceCommit $fixtureCommit `
+                -ExpectedSourceTree $fixtureTree `
+                -ExpectedReplacementSourceCommit $fixtureCommit `
+                -ExpectedReplacementSourceTree $fixtureTree `
+                -FixtureRoot $testRoot `
+                -MockRegistryHive (@{}) `
                 -AllowElevatedForTesting
         } 'Package identity verification failed|SHA-256|does not match'
     }
@@ -351,6 +384,8 @@ try {
                         -UserDataRoot $mockUserDataRoot `
                         -RepositoryRoot $repo `
                         -ProfilePath $profilePath `
+                        -FixtureRoot $testRoot `
+                        -MockRegistryHive (@{}) `
                         -AllowElevatedForTesting
                 } 'reparse'
             } finally {
@@ -378,6 +413,12 @@ try {
                 -UserDataRoot (Join-Path $testRoot 'rep-fail\HerdrOps') `
                 -RepositoryRoot $repo `
                 -ProfilePath $profilePath `
+                -ExpectedSourceCommit $fixtureCommit `
+                -ExpectedSourceTree $fixtureTree `
+                -ExpectedReplacementSourceCommit $fixtureCommit `
+                -ExpectedReplacementSourceTree $fixtureTree `
+                -FixtureRoot $testRoot `
+                -MockRegistryHive (@{}) `
                 -AllowElevatedForTesting
         } 'Package identity verification failed|SHA-256|does not match'
     }
@@ -389,10 +430,18 @@ try {
                 -Mode 'Fixture' `
                 -IdentityReceiptPath $receiptPath `
                 -ArchivePath $archivePath `
+                -ReplacementIdentityReceiptPath $replacementReceiptPath `
+                -ReplacementArchivePath $replacementArchivePath `
                 -InstallRoot (Join-Path $testRoot 'residue-fail\Programs\HerdrOps') `
                 -UserDataRoot (Join-Path $testRoot 'residue-fail\HerdrOps') `
                 -RepositoryRoot $repo `
                 -ProfilePath $profilePath `
+                -ExpectedSourceCommit $fixtureCommit `
+                -ExpectedSourceTree $fixtureTree `
+                -ExpectedReplacementSourceCommit $fixtureCommit `
+                -ExpectedReplacementSourceTree $fixtureTree `
+                -FixtureRoot $testRoot `
+                -MockRegistryHive (@{}) `
                 -TestInjectResidueFailure `
                 -AllowElevatedForTesting
         } 'Residue inspection failed'
@@ -430,6 +479,81 @@ try {
         Assert-Throws {
             Assert-V02CleanMachineReportSchema -Report $tamperedReport -RepositoryRoot $repo
         } 'creditGranted = false'
+    }
+
+    Invoke-Case 'Hostile 10: Existing report is never overwritten and staging is retired' {
+        $reportPath = Join-Path $testRoot 'no-clobber-report.json'
+        $null = & $scriptPath `
+            -Mode 'DryRun' `
+            -IdentityReceiptPath $receiptPath `
+            -ArchivePath $archivePath `
+            -InstallRoot $mockInstallRoot `
+            -UserDataRoot $mockUserDataRoot `
+            -RepositoryRoot $repo `
+            -ProfilePath $profilePath `
+            -ReportPath $reportPath `
+            -AllowElevatedForTesting
+        $before = Get-V02StableFileIdentity $reportPath
+        Assert-Throws {
+            & $scriptPath `
+                -Mode 'DryRun' `
+                -IdentityReceiptPath $receiptPath `
+                -ArchivePath $archivePath `
+                -InstallRoot $mockInstallRoot `
+                -UserDataRoot $mockUserDataRoot `
+                -RepositoryRoot $repo `
+                -ProfilePath $profilePath `
+                -ReportPath $reportPath `
+                -AllowElevatedForTesting
+        } 'Refusing to overwrite existing report'
+        $after = Get-V02StableFileIdentity $reportPath
+        if ($before.Sha256 -cne $after.Sha256 -or $before.Length -ne $after.Length) { throw 'Existing report bytes changed.' }
+        if (@(Get-ChildItem -LiteralPath $testRoot -Filter '.no-clobber-report.json.staging-*' -Force).Count -ne 0) { throw 'Report staging residue remained.' }
+    }
+
+    Invoke-Case 'Hostile 10b: Caller-authored clean-host authorization cannot verify' {
+        $forgedAuthorization = Join-Path $testRoot 'forged-clean-host-authorization.json'
+        $forgedSignature = Join-Path $testRoot 'forged-clean-host-authorization.p7s'
+        [IO.File]::WriteAllText($forgedAuthorization,'{}',(New-Object Text.UTF8Encoding($false)))
+        [IO.File]::WriteAllBytes($forgedSignature,[byte[]](1,2,3,4,5,6,7,8))
+        Assert-Throws {
+            Read-V02CleanHostAuthorization `
+                -AuthorizationPath $forgedAuthorization `
+                -SignaturePath $forgedSignature `
+                -MachineName ([Environment]::MachineName) `
+                -MachineFingerprint (Get-V02MachineFingerprint) `
+                -PrincipalSid (Get-V02ExecutingPrincipalSid) `
+                -InitialBinding ([pscustomobject]@{}) `
+                -FinalBinding ([pscustomobject]@{})
+        } 'signature is invalid or untrusted'
+    }
+
+    Invoke-Case 'Hostile 11: Stable copy refuses a pre-existing hardlink without clobbering it' {
+        $hardlinkSource = Join-Path $testRoot 'hardlink-source.bin'
+        $hardlinkVictim = Join-Path $testRoot 'hardlink-victim.bin'
+        $hardlinkDestination = Join-Path $testRoot 'hardlink-destination.bin'
+        [IO.File]::WriteAllBytes($hardlinkSource,[byte[]](1,2,3,4))
+        [IO.File]::WriteAllBytes($hardlinkVictim,[byte[]](9,8,7,6))
+        try {
+            New-Item -ItemType HardLink -Path $hardlinkDestination -Target $hardlinkVictim -ErrorAction Stop | Out-Null
+        } catch {
+            throw "Hardlink hostile fixture could not be created: $($_.Exception.Message)"
+        }
+        Assert-Throws { Copy-V02StableFile -Source $hardlinkSource -Destination $hardlinkDestination } 'Refusing to overwrite stable-copy destination'
+        if ((Get-V02StableFileIdentity $hardlinkVictim).Sha256 -cne (Get-V02StableFileIdentity $hardlinkDestination).Sha256) { throw 'Hardlink victim changed.' }
+    }
+
+    Invoke-Case 'Fixture suite never mutates real per-user roots or HKCU startup state' {
+        if ((Get-PathSurfaceSnapshot $realInstallRoot) -cne $realInstallBefore) { throw 'Real LOCALAPPDATA install-root surface changed.' }
+        if ((Get-PathSurfaceSnapshot $realUserDataRoot) -cne $realUserDataBefore) { throw 'Real LOCALAPPDATA user-data surface changed.' }
+        $realStartupAfter = Get-V02UserStartupState
+        if ($realStartupAfter.Exists -ne $realStartupBefore.Exists -or [string]$realStartupAfter.Value -cne [string]$realStartupBefore.Value -or [string]$realStartupAfter.Kind -cne [string]$realStartupBefore.Kind) { throw 'Real HKCU startup state changed.' }
+        $productionSources = @(
+            (Get-Content -LiteralPath $scriptPath -Raw)
+            (Get-Content -LiteralPath (Join-Path $PSScriptRoot 'Install-HerdrOpsV02Package.ps1') -Raw)
+            (Get-Content -LiteralPath (Join-Path $PSScriptRoot 'Uninstall-HerdrOpsV02Package.ps1') -Raw)
+        ) -join "`n"
+        if ($productionSources -match '(?im)\bStart-Process\b|&[^\r\n]*HerdrOps\.App\.exe') { throw 'Fixture production path contains a product-launch primitive.' }
     }
 
 } finally {
