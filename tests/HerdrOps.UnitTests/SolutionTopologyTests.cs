@@ -160,10 +160,11 @@ public sealed class SolutionTopologyTests
                     $"Normal mode must not declare a localhost HTTP server or Administrator requirement: {path} contains {token}");
             }
         }
+
+        AssertPlanDocumentsPreserveSingleLanguageAndAuthorityInvariants();
     }
 
-    [TestMethod]
-    public void PlanDocumentsPreserveSingleLanguageAndAuthorityInvariants()
+    private static void AssertPlanDocumentsPreserveSingleLanguageAndAuthorityInvariants()
     {
         var repositoryRoot = FindRepositoryRoot();
         var designContract = File.ReadAllText(Path.Combine(repositoryRoot, "Plan", "DESIGN-CONTRACT.md"));
