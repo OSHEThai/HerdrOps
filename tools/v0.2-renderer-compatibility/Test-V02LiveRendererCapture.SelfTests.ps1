@@ -82,17 +82,21 @@ function New-IsolatedTestRepository([string]$Root) {
     }
 }
 
-function New-IsolatedTestPackage([string]$Root, [string]$RepositoryRoot, [string]$Commit, [string]$Tree) {
+function New-IsolatedTestPackage([string]$Root, [string]$RepositoryRoot, [string]$Commit, [string]$Tree, [switch]$ExecutableFixture) {
     New-Item -ItemType Directory -Path $Root -Force | Out-Null
     $packageRoot = Join-Path $Root 'package'
     New-Item -ItemType Directory -Path $packageRoot -Force | Out-Null
 
-    $appBytes = [Text.Encoding]::UTF8.GetBytes('App Binary Content')
-    $coreBytes = [Text.Encoding]::UTF8.GetBytes('Core Binary Content')
     $appPath = Join-Path $packageRoot 'HerdrOps.App.exe'
     $corePath = Join-Path $packageRoot 'HerdrOps.Core.exe'
-    [IO.File]::WriteAllBytes($appPath, $appBytes)
-    [IO.File]::WriteAllBytes($corePath, $coreBytes)
+    if ($ExecutableFixture) {
+        $powershellPath = (Get-Command powershell.exe -ErrorAction Stop).Source
+        Copy-Item -LiteralPath $powershellPath -Destination $appPath -Force
+        Copy-Item -LiteralPath $powershellPath -Destination $corePath -Force
+    } else {
+        [IO.File]::WriteAllBytes($appPath, [Text.Encoding]::UTF8.GetBytes('App Binary Content'))
+        [IO.File]::WriteAllBytes($corePath, [Text.Encoding]::UTF8.GetBytes('Core Binary Content'))
+    }
 
     $profilePath = Join-Path $RepositoryRoot 'tools\packaging\v0.2\package-identity-profile.json'
     $profileValue = Read-RendererPackageProfile $profilePath
@@ -216,6 +220,213 @@ function New-MockObservationAction {
     }.GetNewClosure()
 }
 
+function New-LiveTargetFixtureScript([string]$Path) {
+    $scriptText = @'
+param(
+    [ValidateSet('App','Core')][string]$Role,
+    [string]$PipeName,
+    [string]$CaptureRoot,
+    [string]$TemplateRoot,
+    [int]$CorePid,
+    [string]$CorePath)
+$ErrorActionPreference = 'Stop'
+if ($Role -eq 'Core') {
+    while ($true) { Start-Sleep -Seconds 1 }
+    exit 0
+}
+Add-Type -AssemblyName System.Windows.Forms
+$process = [Diagnostics.Process]::GetCurrentProcess()
+$startUtc = $process.StartTime.ToUniversalTime().ToString('O',[Globalization.CultureInfo]::InvariantCulture)
+$client = $null
+while ($null -eq $client) {
+    try {
+        $client = New-Object IO.Pipes.NamedPipeClientStream('.', $PipeName, [IO.Pipes.PipeDirection]::InOut, [IO.Pipes.PipeOptions]::None)
+        $client.Connect(1000)
+    } catch {
+        if ($null -ne $client) { $client.Dispose(); $client = $null }
+        Start-Sleep -Milliseconds 100
+    }
+}
+$reader = New-Object IO.StreamReader($client, (New-Object Text.UTF8Encoding($false)), $false, 65536, $true)
+$writer = New-Object IO.StreamWriter($client, (New-Object Text.UTF8Encoding($false)), 65536, $true)
+$writer.AutoFlush = $true
+$form = $null
+function Get-FixtureCaptures([string]$ObservedUtc, [string]$LanguageFilter) {
+    $items = @()
+    foreach ($language in @('Thai','English')) {
+        if (-not [string]::IsNullOrWhiteSpace($LanguageFilter) -and $language -ne $LanguageFilter -and $LanguageFilter -ne 'Both') { continue }
+        foreach ($name in @('dashboard-overview','dashboard-live-organization','dashboard-agent-detail','widget-compact','widget-normal','widget-floating-vertical','dashboard-overview-after-event','widget-floating-vertical-after-dashboard-close','widget-floating-vertical-offline','widget-floating-vertical-reconnected')) {
+            $relative = "captures/$language/$name.png"
+            $path = Join-Path $CaptureRoot $relative
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { continue }
+            $bytes = [IO.File]::ReadAllBytes($path)
+            $fileObservedUtc = ([DateTimeOffset]([IO.File]::GetLastWriteTimeUtc($path))).ToUniversalTime().ToString('O',[Globalization.CultureInfo]::InvariantCulture)
+            $sha = ([BitConverter]::ToString(([Security.Cryptography.SHA256]::Create()).ComputeHash($bytes))).Replace('-','').ToUpperInvariant()
+            $items += ,([ordered]@{language=$language;name=$name;relativePath=$relative;bytes=[long]$bytes.Length;sha256=$sha;widthPixels=64;heightPixels=48;observedUtc=$fileObservedUtc;producerPid=[int]$process.Id;producerStartUtc=$startUtc})
+        }
+    }
+    return $items
+}
+try {
+    while ($null -ne ($line = $reader.ReadLine())) {
+        $request = $line | ConvertFrom-Json
+        $stage = [string]$request.stage
+        if ($stage -eq 'PostFirstWindowShown' -and $null -eq $form) {
+            $form = New-Object Windows.Forms.Form
+            $form.Text = 'HerdrOps renderer fixture'
+            $form.Width = 320
+            $form.Height = 200
+            $form.Show()
+            [Windows.Forms.Application]::DoEvents()
+            Start-Sleep -Milliseconds 100
+        }
+        if ($stage -eq 'AfterThaiCaptures') {
+            $captureLanguageRoot = Join-Path $CaptureRoot 'captures\Thai'
+            New-Item -ItemType Directory -Path $captureLanguageRoot -Force | Out-Null
+            foreach ($template in Get-ChildItem -LiteralPath (Join-Path $TemplateRoot 'Thai') -Filter '*.png' -File) {
+                $capturePath = Join-Path $captureLanguageRoot $template.Name
+                Copy-Item -LiteralPath $template.FullName -Destination $capturePath -Force
+                [IO.File]::SetLastWriteTimeUtc($capturePath, [DateTime]::UtcNow)
+            }
+        }
+        if ($stage -eq 'AfterEnglishCaptures') {
+            $captureLanguageRoot = Join-Path $CaptureRoot 'captures\English'
+            New-Item -ItemType Directory -Path $captureLanguageRoot -Force | Out-Null
+            foreach ($template in Get-ChildItem -LiteralPath (Join-Path $TemplateRoot 'English') -Filter '*.png' -File) {
+                $capturePath = Join-Path $captureLanguageRoot $template.Name
+                Copy-Item -LiteralPath $template.FullName -Destination $capturePath -Force
+                [IO.File]::SetLastWriteTimeUtc($capturePath, [DateTime]::UtcNow)
+            }
+        }
+        $process.Refresh()
+        $coreProcess = Get-Process -Id $CorePid -ErrorAction Stop
+        $coreProcess.Refresh()
+        $coreStartUtc = $coreProcess.StartTime.ToUniversalTime().ToString('O',[Globalization.CultureInfo]::InvariantCulture)
+        $coreBytes = [IO.File]::ReadAllBytes($CorePath)
+        $hwnd = [Int64]$process.MainWindowHandle
+        $hasWindow = $hwnd -ne 0
+        $captures = if ($stage -eq 'AfterThaiCaptures') { @(Get-FixtureCaptures ([DateTimeOffset]::UtcNow.ToString('O',[Globalization.CultureInfo]::InvariantCulture)) 'Thai') } elseif ($stage -eq 'AfterEnglishCaptures' -or $stage -eq 'Final') { @(Get-FixtureCaptures ([DateTimeOffset]::UtcNow.ToString('O',[Globalization.CultureInfo]::InvariantCulture)) 'Both') } else { @() }
+        $observedUtc = [DateTimeOffset]::UtcNow.ToString('O',[Globalization.CultureInfo]::InvariantCulture)
+        $response = [ordered]@{
+            stage = $stage
+            ordinal = [int]$request.ordinal
+            observedUtc = $observedUtc
+            appProcess = [ordered]@{role='App';pid=[int]$process.Id;startTimeUtc=$startUtc;executablePath=[IO.Path]::GetFullPath($process.MainModule.FileName);executableFinalPath=[IO.Path]::GetFullPath($process.MainModule.FileName);bytes=[long](Get-Item -LiteralPath $process.MainModule.FileName).Length;sha256=([BitConverter]::ToString(([Security.Cryptography.SHA256]::Create()).ComputeHash([IO.File]::ReadAllBytes($process.MainModule.FileName)))).Replace('-','').ToUpperInvariant();processName=[string]$process.ProcessName}
+            coreProcess = [ordered]@{role='Core';pid=[int]$coreProcess.Id;startTimeUtc=$coreStartUtc;executablePath=[IO.Path]::GetFullPath($coreProcess.MainModule.FileName);executableFinalPath=[IO.Path]::GetFullPath($coreProcess.MainModule.FileName);bytes=[long]$coreBytes.Length;sha256=([BitConverter]::ToString(([Security.Cryptography.SHA256]::Create()).ComputeHash($coreBytes))).Replace('-','').ToUpperInvariant();processName=[string]$coreProcess.ProcessName}
+            window = [ordered]@{hasAnyHwnd=$hasWindow;hwnd=$hwnd;ownerPid=if($hasWindow){[int]$process.Id}else{0};ownerStartTimeUtc=if($hasWindow){$startUtc}else{$null}}
+            render = [ordered]@{source='TargetProcessNativeObservation';processId=[int]$process.Id;processStartUtc=$startUtc;effectiveMode='SoftwareOnly';softwareOnlyConfirmed=$true;nativeProcessRenderMode='SoftwareOnly';nativeRenderCapabilityTier=2}
+            captures = @($captures)
+        }
+        $writer.WriteLine(($response | ConvertTo-Json -Depth 30 -Compress))
+    }
+} finally {
+    if ($null -ne $form) { $form.Close(); $form.Dispose() }
+    if ($null -ne $writer) { $writer.Dispose() }
+    if ($null -ne $reader) { $reader.Dispose() }
+    if ($null -ne $client) { $client.Dispose() }
+}
+'@
+    [IO.File]::WriteAllText($Path, $scriptText, (New-Object Text.UTF8Encoding($false)))
+    return $Path
+}
+
+function New-LiveReferenceEnvironmentSnapshot([string]$Path, [string]$RepositoryRoot) {
+    # The live fixture reads the repository reference host below.
+    $reference = Get-Content -Raw -LiteralPath (Join-Path $RepositoryRoot 'Plan\reference-hosts\v0.2.json') | ConvertFrom-Json
+    $hostRecord = $reference.environmentBinding.host
+    $display = $reference.environmentBinding.activeDisplay
+    $adapters = @($reference.environmentBinding.graphicsAdapters | ForEach-Object { [ordered]@{displayName=$_.displayName;pnpDeviceId=$_.pnpDeviceId;driverVersion=$_.driverVersion} })
+    $value = [ordered]@{
+        os = [ordered]@{caption=$hostRecord.operatingSystemCaption;version=$hostRecord.operatingSystemVersion;build=[int]$hostRecord.operatingSystemBuild;architecture='x64'}
+        graphicsAdapters = $adapters
+        display = [ordered]@{deviceName=$display.primaryDisplayDeviceName;physicalWidthPixels=[int]$display.physicalWidthPixels;physicalHeightPixels=[int]$display.physicalHeightPixels;logicalWidthPixels=[int]$display.logicalWidthPixels;logicalHeightPixels=[int]$display.logicalHeightPixels;desktopAppliedDpi=[int]$display.desktopAppliedDpi;scalePercent=[int]$display.scalePercent;refreshRateHz=[int]$display.refreshRateHz;monitorCount=[int]$display.activeMonitorCount}
+        session = [ordered]@{kind='LocalConsole';name='Console';sessionId=1;transport='Physical';powerSource='AC';thermalState='Nominal';elevated=$false;userScope='SingleUser'}
+        supportScope = [ordered]@{supported=@('windows11-x64-build26220','local-console','non-elevated','single-user','physical-display-matrix','ac-power','battery-power');excluded=@('rdp-runtime','vm-runtime','arm64','remote-cloud','multi-user');vmCleanInstallOnly=$true;vmRuntimeCredit=$false}
+    }
+    [IO.File]::WriteAllText($Path, ($value | ConvertTo-Json -Depth 20), (New-Object Text.UTF8Encoding($false)))
+    return $Path
+}
+
+function Start-LiveFixtureProcess([string]$Executable,[string]$ScriptPath,[string]$Role,[string]$PipeName,[string]$CaptureRoot,[string]$TemplateRoot,[int]$CorePid=0,[string]$CorePath='') {
+    $psi = New-Object Diagnostics.ProcessStartInfo
+    $psi.FileName = $Executable
+    $psi.Arguments = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$ScriptPath`" -Role $Role -PipeName $PipeName -CaptureRoot `"$CaptureRoot`" -TemplateRoot `"$TemplateRoot`" -CorePid $CorePid -CorePath `"$CorePath`""
+    $psi.UseShellExecute = $false
+    $psi.CreateNoWindow = $true
+    $psi.WorkingDirectory = Split-Path -Parent $Executable
+    $process = [Diagnostics.Process]::Start($psi)
+    if ($null -eq $process) { throw "Unable to start live fixture process '$Role'." }
+    return $process
+}
+
+function Stop-OwnedFixtureProcess($Process) {
+    if ($null -ne $Process) {
+        try { if (-not $Process.HasExited) { [void]$Process.Kill(); [void]$Process.WaitForExit(5000) } } catch { }
+        [void]$Process.Dispose()
+    }
+}
+
+function Invoke-LiveTargetFixtureCase([string]$Root,[string]$RepositoryRoot,[string]$Commit,[string]$Tree,[string]$FaultStage) {
+    $fixtureRoot = Join-Path $Root ('live-' + $(if ([string]::IsNullOrWhiteSpace($FaultStage)) { 'positive' } else { $FaultStage.ToLowerInvariant() }))
+    $pkg = New-IsolatedTestPackage (Join-Path $fixtureRoot 'pkg') $RepositoryRoot $Commit $Tree -ExecutableFixture
+    $templates = New-CaptureSourceDirectory (Join-Path $fixtureRoot 'templates')
+    $runtimeRoot = Join-Path $fixtureRoot 'runtime-evidence'
+    New-Item -ItemType Directory -Path $runtimeRoot -Force | Out-Null
+    $environmentPath = New-LiveReferenceEnvironmentSnapshot (Join-Path $fixtureRoot 'environment.json') $RepositoryRoot
+    $targetScript = New-LiveTargetFixtureScript (Join-Path $fixtureRoot 'target.ps1')
+    $pipeName = 'herdrops-v02-' + [Guid]::NewGuid().ToString('N')
+    $core = $null
+    $app = $null
+    try {
+        $core = Start-LiveFixtureProcess $pkg.CorePath $targetScript 'Core' $pipeName $runtimeRoot $templates
+        $app = Start-LiveFixtureProcess $pkg.AppPath $targetScript 'App' $pipeName $runtimeRoot $templates $core.Id $pkg.CorePath
+        Start-Sleep -Milliseconds 250
+        $invoke = Join-Path $PSScriptRoot 'Invoke-V02LiveRendererCapture.ps1'
+        $output = Join-Path $fixtureRoot 'output'
+        if ([string]::IsNullOrWhiteSpace($FaultStage)) {
+            $result = & $invoke `
+                -OutputDirectory $output `
+                -PackageRoot $pkg.PackageRoot `
+                -ArchivePath $pkg.ArchivePath `
+                -IdentityReceiptPath $pkg.ReceiptPath `
+                -RepositoryRoot $RepositoryRoot `
+                -ProfilePath $pkg.ProfilePath `
+                -RuntimeEvidenceRoot $runtimeRoot `
+                -TargetAppPid $app.Id `
+                -TargetCorePid $core.Id `
+                -TargetObservationPipeName $pipeName `
+                -TestEnvironmentSnapshotPath $environmentPath
+            if ($result.CaptureMode -cne 'LiveOperator' -or $result.ActualHerdrRuntime -cne 'NOT_OBSERVED' -or [bool]$result.ReleaseCredit -or $result.CaptureCount -ne 20 -or $result.LifecycleStages -ne 8) { throw 'Positive LiveOperator fixture did not preserve exact no-credit result boundaries.' }
+            return $result
+        }
+        $expectedPatterns = @{
+            PidReuse = 'start identity|PID reuse|does not equal'
+            WrongProcess = 'PID reuse|process identity|does not equal'
+            WrongWindow = 'HWND ownership|window.*independently observed'
+            ArbitraryPng = 'target-process PNG binding|PNG|changed between stable reads'
+            TransientCaptureReplacement = 'changed between stable reads|target-process PNG binding'
+        }
+        Assert-Throws {
+            & $invoke `
+                -OutputDirectory $output `
+                -PackageRoot $pkg.PackageRoot `
+                -ArchivePath $pkg.ArchivePath `
+                -IdentityReceiptPath $pkg.ReceiptPath `
+                -RepositoryRoot $RepositoryRoot `
+                -ProfilePath $pkg.ProfilePath `
+                -RuntimeEvidenceRoot $runtimeRoot `
+                -TargetAppPid $app.Id `
+                -TargetCorePid $core.Id `
+                -TargetObservationPipeName $pipeName `
+                -TestEnvironmentSnapshotPath $environmentPath `
+                -TestFaultStage $FaultStage
+        } $expectedPatterns[$FaultStage] "LiveOperator hostile fixture '$FaultStage'"
+    } finally {
+        Stop-OwnedFixtureProcess $app
+        Stop-OwnedFixtureProcess $core
+    }
+}
+
 $temp = Join-Path ([IO.Path]::GetTempPath()) ('herdrops-capture-harness-' + [Guid]::NewGuid().ToString('N'))
 try {
     New-Item -ItemType Directory -Path $temp -Force | Out-Null
@@ -297,11 +508,40 @@ try {
     }
     Pass 'contained real-capture input path and injected native observation are preserved as synthetic/no-credit'
 
+    # 3. Positive LiveOperator fixture: copied PowerShell processes implement
+    # the target-process protocol. This reaches the same PID/start/executable,
+    # HWND, render-mode, and capture-binding guards without being Herdr.
+    $livePositive = Invoke-LiveTargetFixtureCase $temp $repo.Root $repo.Commit $repo.Tree ''
+    if ($livePositive.EvidenceClassification -cne 'PackagedCompatibilityCandidate' -or
+        $livePositive.CaptureMode -cne 'LiveOperator' -or
+        $livePositive.ActualHerdrRuntime -cne 'NOT_OBSERVED' -or
+        [bool]$livePositive.ReleaseCredit -or
+        $livePositive.CaptureCount -ne 20 -or
+        $livePositive.LifecycleStages -ne 8) {
+        throw 'Positive LiveOperator target-process fixture did not retain exact evidence boundaries.'
+    }
+    Pass 'LiveOperator positive target-process binding reaches exact guards without Runtime/Release credit'
+
+    foreach ($liveFault in @('PidReuse','WrongProcess','WrongWindow','ArbitraryPng','TransientCaptureReplacement')) {
+        Invoke-LiveTargetFixtureCase $temp $repo.Root $repo.Commit $repo.Tree $liveFault | Out-Null
+    }
+    Pass-Negative 'LiveOperator hostile target/process/window/capture replacement cases fail closed'
+
     # Production invocation must not silently fall back to synthetic lifecycle
     # values or a hardcoded renderer mode.
     Assert-Throws {
         & (Join-Path $PSScriptRoot 'Invoke-V02LiveRendererCapture.ps1') -OutputDirectory (Join-Path $temp 'missing-live-observation')
-    } 'requires -OperatorObservationAction' 'live mode requires native observation action'
+    } 'requires positive target App/Core PIDs' 'live mode requires bound target processes'
+
+    Assert-Throws {
+        & (Join-Path $PSScriptRoot 'Invoke-V02LiveRendererCapture.ps1') `
+            -OutputDirectory (Join-Path $temp 'opaque-live-observation') `
+            -RuntimeEvidenceRoot $temp `
+            -TargetAppPid 1 `
+            -TargetCorePid 2 `
+            -TargetObservationPipeName 'opaque-guard' `
+            -OperatorObservationAction (New-MockObservationAction)
+    } 'opaque observation' 'LiveOperator rejects opaque operator observations'
 
     # 3. Hostile: No-clobber target directory protection
     Assert-Throws {

@@ -38,6 +38,35 @@ namespace RendererCompatibility {
             if (value.StartsWith(@"\\?\", StringComparison.OrdinalIgnoreCase)) return value.Substring(4);
             return value;
         }
+
+        [DllImport("user32.dll", SetLastError = true)]
+        private static extern bool IsWindow(IntPtr hWnd);
+
+        [DllImport("user32.dll", SetLastError = true)]
+        private static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool GetNamedPipeClientProcessId(IntPtr pipe, out uint processId);
+
+        public static bool IsLiveWindow(IntPtr hWnd) {
+            return hWnd != IntPtr.Zero && IsWindow(hWnd);
+        }
+
+        public static int GetWindowOwnerProcessId(IntPtr hWnd) {
+            uint processId;
+            if (!IsLiveWindow(hWnd) || GetWindowThreadProcessId(hWnd, out processId) == 0 || processId == 0) {
+                throw new InvalidOperationException("The HWND is not live or has no owning process.");
+            }
+            return checked((int)processId);
+        }
+
+        public static int GetPipeClientProcessId(IntPtr pipeHandle) {
+            uint processId;
+            if (pipeHandle == IntPtr.Zero || !GetNamedPipeClientProcessId(pipeHandle, out processId) || processId == 0) {
+                throw new InvalidOperationException("The target observation pipe has no identifiable client process.");
+            }
+            return checked((int)processId);
+        }
     }
 }
 '@
@@ -354,12 +383,12 @@ function Assert-RendererLiveEnvironment {
     if (-not (Test-Path -LiteralPath $referencePath -PathType Leaf)) { throw 'Reference-host profile is missing for live environment binding.' }
     $referenceJson = [IO.File]::ReadAllText($referencePath)
     $reference = if ($PSVersionTable.PSVersion.Major -ge 7 -and (Get-Command ConvertFrom-Json).Parameters.ContainsKey('DateKind')) { $referenceJson | ConvertFrom-Json -DateKind String } else { $referenceJson | ConvertFrom-Json }
-    $host = $reference.environmentBinding.host
+    $referenceHost = $reference.environmentBinding.host
     $display = $reference.environmentBinding.activeDisplay
-    if ([string]$Environment.os.caption -cne [string]$host.operatingSystemCaption -or
-        [string]$Environment.os.version -cne [string]$host.operatingSystemVersion -or
-        [int]$Environment.os.build -ne [int]$host.operatingSystemBuild -or
-        [string]$Environment.os.architecture -cne [string]$host.architecture) { throw 'Observed live OS does not match the approved reference-host profile.' }
+    if ([string]$Environment.os.caption -cne [string]$referenceHost.operatingSystemCaption -or
+        [string]$Environment.os.version -cne [string]$referenceHost.operatingSystemVersion -or
+        [int]$Environment.os.build -ne [int]$referenceHost.operatingSystemBuild -or
+        [string]$Environment.os.architecture -cne [string]$referenceHost.architecture) { throw 'Observed live OS does not match the approved reference-host profile.' }
     if ([string]$Environment.display.deviceName -cne [string]$display.primaryDisplayDeviceName -or
         [int]$Environment.display.physicalWidthPixels -ne [int]$display.physicalWidthPixels -or
         [int]$Environment.display.physicalHeightPixels -ne [int]$display.physicalHeightPixels -or
@@ -387,6 +416,75 @@ function Get-RendererStableFileIdentity { param([string]$Root,[string]$Path,[str
         $bytes=$null;if($IncludeBytes){if($after-gt$script:RendererMaximumManifestBytes){throw "$Context exceeds the bounded read."};$stream.Position=0;$bytes=New-Object byte[] ([int]$after);$offset=0;while($offset-lt$bytes.Length){$read=$stream.Read($bytes,$offset,$bytes.Length-$offset);if($read-le0){throw "$Context ended during the same-handle read."};$offset+=$read}}
         return [pscustomobject]@{Bytes=[long]$after;Sha256=$hash;Content=$bytes;FinalPath=$final}
     }finally{$stream.Dispose()}
+}
+function Assert-RendererRequiredProperties { param($Value,[string[]]$Names,[string]$Context)
+    if ($null -eq $Value) { throw "$Context is missing." }
+    foreach ($name in $Names) { if (-not (@($Value.PSObject.Properties.Name) -ccontains $name)) { throw "$Context omitted '$name'." } }
+}
+function Get-RendererProcessIdentity { param([int]$ProcessId,[string]$ExpectedPath,[string]$Context)
+    if ($ProcessId -le 0) { throw "$Context PID must be positive." }
+    $expectedFull=[IO.Path]::GetFullPath($ExpectedPath)
+    if (-not (Test-Path -LiteralPath $expectedFull -PathType Leaf)) { throw "$Context expected executable is missing: $expectedFull" }
+    try { $process=Get-Process -Id $ProcessId -ErrorAction Stop; $process.Refresh(); $modulePath=[IO.Path]::GetFullPath([string]$process.MainModule.FileName); $start=$process.StartTime.ToUniversalTime() } catch { throw "$Context process identity could not be observed: $($_.Exception.Message)" }
+    if (-not [string]::Equals($modulePath,$expectedFull,[StringComparison]::OrdinalIgnoreCase)) { throw "$Context executable path does not equal the bound package component." }
+    $stable=Get-RendererStableFileIdentity (Split-Path $expectedFull -Parent) $expectedFull "$Context executable"
+    if (-not [string]::Equals($stable.FinalPath,$expectedFull,[StringComparison]::OrdinalIgnoreCase)) { throw "$Context executable final path changed during observation." }
+    [pscustomobject][ordered]@{role=$Context;pid=[int]$process.Id;startTimeUtc=$start.ToUniversalTime().ToString('O',[Globalization.CultureInfo]::InvariantCulture);executablePath=$modulePath;executableFinalPath=$stable.FinalPath;bytes=[long]$stable.Bytes;sha256=[string]$stable.Sha256;processName=[string]$process.ProcessName}
+}
+function Assert-RendererProcessIdentityEqual { param($Actual,$Expected,[string]$Context)
+    foreach($name in @('role','pid','startTimeUtc','executablePath','executableFinalPath','bytes','sha256','processName')) { if ($Actual.$name -cne $Expected.$name) { throw "$Context '$name' changed; PID reuse or executable replacement detected." } }
+}
+function Get-RendererWindowObservation { param([int]$TargetAppPid,[string]$TargetAppStartTimeUtc,[string]$Context)
+    try { $process=Get-Process -Id $TargetAppPid -ErrorAction Stop; $process.Refresh(); $hwnd=[Int64]$process.MainWindowHandle } catch { throw "$Context target App window could not be observed: $($_.Exception.Message)" }
+    if ($hwnd -eq 0) { return [pscustomobject][ordered]@{hasAnyHwnd=$false;hwnd=[long]0;ownerPid=[int]0;ownerStartTimeUtc=$null} }
+    if (-not [RendererCompatibility.NativePath]::IsLiveWindow([IntPtr]$hwnd)) { throw "$Context reported an HWND that is no longer live." }
+    $ownerPid=[RendererCompatibility.NativePath]::GetWindowOwnerProcessId([IntPtr]$hwnd)
+    if ($ownerPid -ne $TargetAppPid) { throw "$Context HWND owner PID does not equal the target App PID." }
+    $owner=Get-RendererProcessIdentity $ownerPid $process.MainModule.FileName "$Context HWND owner"
+    if ($owner.startTimeUtc -cne $TargetAppStartTimeUtc) { throw "$Context HWND owner start time does not equal the target App start time." }
+    [pscustomobject][ordered]@{hasAnyHwnd=$true;hwnd=[long]$hwnd;ownerPid=[int]$ownerPid;ownerStartTimeUtc=[string]$owner.startTimeUtc}
+}
+function Assert-RendererPipeName { param([string]$Name)
+    if ([string]::IsNullOrWhiteSpace($Name) -or $Name -notmatch '^[A-Za-z0-9_.-]{1,200}$') { throw 'Target observation pipe name is invalid.' }
+}
+function New-RendererTargetObservationPipe { param([string]$Name)
+    Assert-RendererPipeName $Name
+    New-Object IO.Pipes.NamedPipeServerStream($Name,[IO.Pipes.PipeDirection]::InOut,1,[IO.Pipes.PipeTransmissionMode]::Byte,[IO.Pipes.PipeOptions]::Asynchronous)
+}
+function Wait-RendererTargetObservationPipe { param($Pipe,[int]$TimeoutSeconds=30)
+    $async=$Pipe.BeginWaitForConnection($null,$null)
+    if (-not $async.AsyncWaitHandle.WaitOne($TimeoutSeconds*1000)) { throw "Target observation pipe did not connect within $TimeoutSeconds seconds." }
+    $Pipe.EndWaitForConnection($async)
+    [RendererCompatibility.NativePath]::GetPipeClientProcessId($Pipe.SafePipeHandle.DangerousGetHandle())
+}
+function Read-RendererTargetPipeLine { param([IO.StreamReader]$Reader,[int]$TimeoutSeconds=30)
+    $task=$Reader.ReadLineAsync()
+    if (-not $task.Wait($TimeoutSeconds*1000)) { throw "Target observation pipe response timed out after $TimeoutSeconds seconds." }
+    $line=$task.GetAwaiter().GetResult()
+    if ([string]::IsNullOrWhiteSpace($line)) { throw 'Target observation pipe closed without a response.' }
+    $line
+}
+function Write-RendererTargetPipeLine { param([IO.StreamWriter]$Writer,[string]$Line)
+    $Writer.WriteLine($Line);$Writer.Flush()
+}
+function Assert-RendererTargetBindingReceipt { param($Receipt,$Manifest)
+    Assert-RendererExactProperties $Receipt @('receiptType','protocolVersion','appProcess','coreProcess','pipeClientPid','observations','captureBindings') 'Target binding receipt'
+    if ($Receipt.receiptType -cne 'V02RendererTargetBinding' -or [int]$Receipt.protocolVersion -ne 1) { throw 'Target binding receipt identity is invalid.' }
+    foreach($pair in @(@('App',$Receipt.appProcess),@('Core',$Receipt.coreProcess))) {
+        $role=[string]$pair[0];$process=$pair[1];Assert-RendererExactProperties $process @('role','pid','startTimeUtc','executablePath','executableFinalPath','bytes','sha256','processName') "Target $role process";if($process.role-cne$role){throw "Target $role process role is invalid."};Assert-RendererPositiveInteger $process.pid "Target $role PID";Assert-RendererUtc $process.startTimeUtc "Target $role start time";Assert-RendererString $process.executablePath "Target $role executable path";Assert-RendererString $process.executableFinalPath "Target $role executable final path";Assert-RendererPositiveInteger $process.bytes "Target $role executable bytes";Assert-RendererSha $process.sha256 "Target $role executable SHA-256";Assert-RendererString $process.processName "Target $role process name"
+    }
+    if ([int]$Receipt.pipeClientPid -ne [int]$Receipt.appProcess.pid) { throw 'Target observation pipe client is not the bound App PID.' }
+    $observations=@($Receipt.observations);if($observations.Count-ne$script:RendererObservationStages.Count){throw 'Target binding receipt must contain exactly 8 observations.'}
+    $manifestObservations=@($Manifest.rendererEvidence.throughoutObservations);$previous=$null
+    for($i=0;$i-lt$script:RendererObservationStages.Count;$i++){
+        $observation=$observations[$i];Assert-RendererExactProperties $observation @('stage','ordinal','observedUtc','appProcess','coreProcess','window','render','captures') "Target observation $i";if($observation.stage-cne$script:RendererObservationStages[$i]-or[int]$observation.ordinal-ne$i){throw "Target observation $i stage/ordinal is invalid."};Assert-RendererUtc $observation.observedUtc "Target observation $i UTC";if($null-ne$previous-and[DateTimeOffset]$observation.observedUtc-lt$previous){throw 'Target observations are not ordered by UTC.'};$previous=[DateTimeOffset]$observation.observedUtc;Assert-RendererProcessIdentityEqual $observation.appProcess $Receipt.appProcess "Target observation $i App";Assert-RendererProcessIdentityEqual $observation.coreProcess $Receipt.coreProcess "Target observation $i Core"
+        $window=$observation.window;Assert-RendererExactProperties $window @('hasAnyHwnd','hwnd','ownerPid','ownerStartTimeUtc') "Target observation $i window";Assert-RendererBoolean $window.hasAnyHwnd "Target observation $i HWND state";Assert-RendererNonnegativeInteger $window.hwnd "Target observation $i HWND";Assert-RendererNonnegativeInteger $window.ownerPid "Target observation $i HWND owner PID";Assert-RendererNullableUtc $window.ownerStartTimeUtc "Target observation $i HWND owner start";if($i-lt2-and[bool]$window.hasAnyHwnd){throw 'Target observation reported an HWND before PreFirstWindow.'};if($i-ge2-and-not[bool]$window.hasAnyHwnd){throw 'Target observation omitted the HWND after first-window boundary.'};if(-not[bool]$window.hasAnyHwnd-and([long]$window.hwnd-ne0-or[int]$window.ownerPid-ne0-or$null-ne$window.ownerStartTimeUtc)){throw 'Target no-HWND observation contains ownership data.'};if([bool]$window.hasAnyHwnd-and([long]$window.hwnd-le0-or[int]$window.ownerPid-ne[int]$Receipt.appProcess.pid-or[string]$window.ownerStartTimeUtc-cne[string]$Receipt.appProcess.startTimeUtc)){throw 'Target HWND ownership is not bound to the App PID/start identity.'}
+        $render=$observation.render;Assert-RendererExactProperties $render @('source','processId','processStartUtc','effectiveMode','softwareOnlyConfirmed','nativeProcessRenderMode','nativeRenderCapabilityTier') "Target observation $i render";if($render.source-cne'TargetProcessNativeObservation'-or[int]$render.processId-ne[int]$Receipt.appProcess.pid-or[string]$render.processStartUtc-cne[string]$Receipt.appProcess.startTimeUtc-or$render.effectiveMode-cne'SoftwareOnly'-or-not[bool]$render.softwareOnlyConfirmed-or$render.nativeProcessRenderMode-cne'SoftwareOnly'){throw "Target observation $i render-mode provenance is invalid."};Assert-RendererUtc $render.processStartUtc "Target observation $i render process start";Assert-RendererNonnegativeInteger $render.nativeRenderCapabilityTier "Target observation $i render tier"
+        $manifestObservation=$manifestObservations[$i];if($observation.stage-cne$manifestObservation.stage-or$observation.observedUtc-cne$manifestObservation.observedUtc-or$observation.render.effectiveMode-cne$manifestObservation.effectiveMode-or$observation.render.softwareOnlyConfirmed-cne$manifestObservation.softwareOnlyConfirmed){throw "Target observation $i does not equal the manifest renderer observation."}
+    }
+    $captureBindings=@($Receipt.captureBindings);if($captureBindings.Count-ne$Manifest.captures.Count){throw 'Target binding receipt capture count does not equal manifest capture count.'};$expectedKeys=@($Manifest.captures|ForEach-Object{"$($_.language)|$($_.name)"});$actualKeys=@()
+    for($i=0;$i-lt$captureBindings.Count;$i++){$capture=$captureBindings[$i];Assert-RendererExactProperties $capture @('language','name','relativePath','bytes','sha256','widthPixels','heightPixels','observedUtc','producerPid','producerStartUtc') "Target capture $i";$actualKeys+="$($capture.language)|$($capture.name)";Assert-RendererRelativePath $capture.relativePath "Target capture $i path";Assert-RendererPositiveInteger $capture.bytes "Target capture $i bytes";Assert-RendererSha $capture.sha256 "Target capture $i SHA-256";Assert-RendererPositiveInteger $capture.widthPixels "Target capture $i width";Assert-RendererPositiveInteger $capture.heightPixels "Target capture $i height";Assert-RendererUtc $capture.observedUtc "Target capture $i UTC";Assert-RendererPositiveInteger $capture.producerPid "Target capture $i producer PID";Assert-RendererUtc $capture.producerStartUtc "Target capture $i producer start";if($capture.producerPid-ne$Receipt.appProcess.pid-or$capture.producerStartUtc-cne$Receipt.appProcess.startTimeUtc){throw "Target capture $i producer identity does not equal the App PID/start identity."};$manifestCapture=$Manifest.captures[$i];foreach($name in @('language','name','relativePath','bytes','sha256','widthPixels','heightPixels','observedUtc')){if($capture.$name-cne$manifestCapture.$name){throw "Target capture $i does not equal manifest capture '$name'."}}}
+    for($i=0;$i-lt$expectedKeys.Count;$i++){if($actualKeys[$i]-cne$expectedKeys[$i]){throw "Target capture index $i is not '$($expectedKeys[$i])'."}}
 }
 function Get-RendererPngIdentity { param([string]$Root,[string]$Path,[string]$Context)
     $identity=Get-RendererStableFileIdentity $Root $Path $Context -IncludeBytes;$stream=New-Object IO.MemoryStream(,$identity.Content);try{$decoder=New-Object Windows.Media.Imaging.PngBitmapDecoder($stream,[Windows.Media.Imaging.BitmapCreateOptions]::PreservePixelFormat,[Windows.Media.Imaging.BitmapCacheOption]::OnLoad);if($decoder.Frames.Count-ne1){throw "$Context must decode as exactly one PNG frame."};$frame=$decoder.Frames[0];if($frame.PixelWidth-le0-or$frame.PixelHeight-le0){throw "$Context decoded PNG dimensions are invalid."};return [pscustomobject]@{Width=[int]$frame.PixelWidth;Height=[int]$frame.PixelHeight;Bytes=$identity.Bytes;Sha256=$identity.Sha256;Content=$identity.Content;Frame=$frame}}catch{throw "$Context is not a complete decodable PNG: $($_.Exception.Message)"}finally{$stream.Dispose()}
@@ -486,14 +584,15 @@ function Test-RendererCompatibilityManifest {
     Assert-RendererExactProperties $candidate.renderer @('policy','wpfProcessRenderMode') 'Candidate renderer';if($candidate.renderer.policy-cne'software-only-process-wide'-or$candidate.renderer.wpfProcessRenderMode-cne'SoftwareOnly'){throw 'Candidate renderer is invalid.'}
     $boundGit=$null;if($ValidateBindings){if([string]::IsNullOrWhiteSpace($RepositoryRoot)){throw 'RepositoryRoot is required for production binding validation.'};$boundGit=Test-RendererCandidateBindings $candidate $root $RepositoryRoot}
 
+    $renderer=$manifest.rendererEvidence
     $environment=$manifest.environment;Assert-RendererEnvironmentSnapshot $environment
     $captureMode=[string]$manifest.evidenceBoundary.captureMode
     if ($environment.os.architecture -eq 'arm64') { throw 'ARM64 renderer evidence is outside the approved v0.2 scope.' }
     if ($environment.session.kind -eq 'Rdp' -or $environment.session.transport -eq 'Rdp') { throw 'RDP renderer evidence is outside the approved v0.2 scope.' }
     if ([bool]$environment.session.elevated) { throw 'Elevated renderer evidence is outside the approved v0.2 scope.' }
-    if ($captureMode -eq 'LiveOperator') { Assert-RendererLiveEnvironment $environment $RepositoryRoot }
+    if ($captureMode -eq 'LiveOperator') { Assert-RendererLiveEnvironment $environment $RepositoryRoot; if ($null -eq $renderer.targetBindingReceipt) { throw 'LiveOperator renderer evidence requires a bound target-process receipt.' }; $targetReceipt=(Read-RendererEvidenceReceipt $renderer.targetBindingReceipt 'Target binding receipt' $root $RepositoryRoot).Value; Assert-RendererTargetBindingReceipt $targetReceipt $manifest } elseif ($null -ne $renderer.targetBindingReceipt) { throw 'Synthetic renderer evidence cannot contain a target-process receipt.' }
 
-    $renderer=$manifest.rendererEvidence;Assert-RendererExactProperties $renderer @('policyId','trigger','fallback','producerReport','preFirstHwnd','throughoutObservations') 'Renderer evidence';if($renderer.policyId-cne'software-only-process-wide'-or$renderer.trigger-cne'ApprovedV02CandidatePolicy'-or$renderer.fallback-cne'None'){throw 'Renderer policy/trigger/fallback is invalid.'};Assert-RendererExactProperties $renderer.producerReport @('relativePath','bytes','fileSha256','canonicalSha256') 'Producer report binding'
+    $renderer=$manifest.rendererEvidence;Assert-RendererExactProperties $renderer @('policyId','trigger','fallback','producerReport','targetBindingReceipt','preFirstHwnd','throughoutObservations') 'Renderer evidence';if($renderer.policyId-cne'software-only-process-wide'-or$renderer.trigger-cne'ApprovedV02CandidatePolicy'-or$renderer.fallback-cne'None'){throw 'Renderer policy/trigger/fallback is invalid.'};Assert-RendererExactProperties $renderer.producerReport @('relativePath','bytes','fileSha256','canonicalSha256') 'Producer report binding'
     Assert-RendererExactProperties $renderer.preFirstHwnd @('hasAnyHwnd','observation','firstHwndCreatedUtc') 'Pre-first-HWND proof';Assert-RendererBoolean $renderer.preFirstHwnd.hasAnyHwnd 'Pre-first-HWND hasAnyHwnd';if([bool]$renderer.preFirstHwnd.hasAnyHwnd){throw 'Pre-first-HWND proof must report native false.'};Assert-RendererUtc $renderer.preFirstHwnd.firstHwndCreatedUtc 'First HWND UTC'
     $throughout=@($renderer.throughoutObservations);Assert-RendererSet @($throughout|ForEach-Object{$_.stage}) $script:RendererObservationStages 'Renderer observation stages'
     for($i=0;$i-lt$script:RendererObservationStages.Count;$i++){if([string]$throughout[$i].stage-cne$script:RendererObservationStages[$i]){throw "Renderer observation index $i must be '$($script:RendererObservationStages[$i])'."}}

@@ -17,13 +17,25 @@ param(
 
     [string]$CaptureSourceDirectory,
 
+    [string]$RuntimeEvidenceRoot,
+
+    [int]$TargetAppPid,
+
+    [int]$TargetCorePid,
+
+    [string]$TargetObservationPipeName,
+
     [scriptblock]$OperatorCaptureAction,
 
     [scriptblock]$OperatorObservationAction,
 
     [switch]$SyntheticCapturesForTesting,
 
-    [string]$TestFaultStage
+    [string]$TestFaultStage,
+
+    [string]$TestEnvironmentSnapshotPath,
+
+    [scriptblock]$TestLifecycleAction
 )
 
 Set-StrictMode -Version Latest
@@ -35,14 +47,68 @@ $selfTestMode = ([string]$env:HERDROPS_RENDERER_SELFTEST -ceq '1')
 if (($SyntheticCapturesForTesting -or -not [string]::IsNullOrWhiteSpace($TestFaultStage)) -and -not $selfTestMode) {
     throw 'Synthetic capture and fault-injection switches are reserved for the guarded renderer selftest process.'
 }
-$captureMode = if ($SyntheticCapturesForTesting) { 'SyntheticSelfTest' } else { 'LiveOperator' }
-if ($captureMode -eq 'LiveOperator' -and $null -eq $OperatorObservationAction) {
-    throw 'Live renderer capture requires -OperatorObservationAction with native process observations.'
+if (($null -ne $TestLifecycleAction -or -not [string]::IsNullOrWhiteSpace($TestEnvironmentSnapshotPath)) -and -not $selfTestMode) {
+    throw 'Renderer selftest lifecycle/environment controls are reserved for the guarded renderer selftest process.'
 }
-if (-not $SyntheticCapturesForTesting -and
-    [string]::IsNullOrWhiteSpace($CaptureSourceDirectory) -and
-    $null -eq $OperatorCaptureAction) {
-    throw 'Live renderer capture requires -CaptureSourceDirectory or -OperatorCaptureAction.'
+$captureMode = if ($SyntheticCapturesForTesting) { 'SyntheticSelfTest' } else { 'LiveOperator' }
+if ($captureMode -eq 'LiveOperator') {
+    if ($TargetAppPid -le 0 -or $TargetCorePid -le 0) { throw 'Live renderer capture requires positive target App/Core PIDs.' }
+    if ([string]::IsNullOrWhiteSpace($TargetObservationPipeName)) { throw 'Live renderer capture requires a target-process observation pipe.' }
+    if ([string]::IsNullOrWhiteSpace($RuntimeEvidenceRoot)) { throw 'Live renderer capture requires a bounded runtime evidence root.' }
+    if ($null -ne $OperatorObservationAction -or $null -ne $OperatorCaptureAction -or $null -ne $TestLifecycleAction -or -not [string]::IsNullOrWhiteSpace($CaptureSourceDirectory)) {
+        throw 'LiveOperator does not accept opaque observation, capture-action, lifecycle, or source-directory claims.'
+    }
+}
+
+function Get-RendererLiveTargetObservation {
+    param(
+        [IO.StreamReader]$Reader,
+        [IO.StreamWriter]$Writer,
+        [string]$Stage,
+        [int]$Ordinal,
+        [int]$TargetAppPid,
+        [int]$TargetCorePid,
+        [string]$TargetAppPath,
+        [string]$TargetCorePath,
+        [string]$TargetAppStartTimeUtc,
+        [string]$TargetCoreStartTimeUtc,
+        [string]$TestFaultStage)
+
+    $request = [ordered]@{ protocol = 'V02RendererTargetObservation'; version = 1; issue = 149; stage = $Stage; ordinal = $Ordinal }
+    Write-RendererTargetPipeLine $Writer ($request | ConvertTo-Json -Depth 20 -Compress)
+    $targetJson = Read-RendererTargetPipeLine $Reader
+    $strictRaw = ConvertFrom-StrictHumanDesignReviewJson -Json $targetJson -Description "Target observation '$Stage'"
+    $raw = if ($PSVersionTable.PSVersion.Major -ge 7 -and (Get-Command ConvertFrom-Json).Parameters.ContainsKey('DateKind')) {
+        $targetJson | ConvertFrom-Json -DateKind String
+    } else {
+        $strictRaw
+    }
+    Assert-RendererExactProperties $raw @('stage','ordinal','observedUtc','appProcess','coreProcess','window','render','captures') "Target observation '$Stage'"
+    if ($raw.stage -cne $Stage -or [int]$raw.ordinal -ne $Ordinal) { throw "Target observation '$Stage' stage/ordinal does not match the requested stage." }
+    Assert-RendererUtc $raw.observedUtc "Target observation '$Stage' UTC"
+
+    $actualApp = Get-RendererProcessIdentity $TargetAppPid $TargetAppPath 'App'
+    $actualCore = Get-RendererProcessIdentity $TargetCorePid $TargetCorePath 'Core'
+    if ($actualApp.startTimeUtc -cne $TargetAppStartTimeUtc -or $actualCore.startTimeUtc -cne $TargetCoreStartTimeUtc) { throw "Target process start identity changed during '$Stage'." }
+    $actualWindow = Get-RendererWindowObservation $TargetAppPid $TargetAppStartTimeUtc "Target observation '$Stage'"
+
+    if ($TestFaultStage -eq 'PidReuse' -and $Ordinal -eq 2) { $raw.appProcess.startTimeUtc = ([DateTimeOffset]$raw.appProcess.startTimeUtc).AddSeconds(-1).ToUniversalTime().ToString('O',[Globalization.CultureInfo]::InvariantCulture) }
+    if ($TestFaultStage -eq 'WrongProcess' -and $Ordinal -eq 0) { $raw.appProcess.pid = $TargetCorePid }
+    if ($TestFaultStage -eq 'WrongWindow' -and $Ordinal -eq 2) { $raw.window.ownerPid = $TargetCorePid }
+
+    Assert-RendererProcessIdentityEqual $raw.appProcess $actualApp "Target observation '$Stage' App"
+    Assert-RendererProcessIdentityEqual $raw.coreProcess $actualCore "Target observation '$Stage' Core"
+    Assert-RendererExactProperties $raw.window @('hasAnyHwnd','hwnd','ownerPid','ownerStartTimeUtc') "Target observation '$Stage' window"
+    foreach($name in @('hasAnyHwnd','hwnd','ownerPid','ownerStartTimeUtc')) { if ($raw.window.$name -cne $actualWindow.$name) { throw "Target observation '$Stage' HWND ownership field '$name' does not equal the independently observed window." } }
+    Assert-RendererExactProperties $raw.render @('source','processId','processStartUtc','effectiveMode','softwareOnlyConfirmed','nativeProcessRenderMode','nativeRenderCapabilityTier') "Target observation '$Stage' render"
+    Assert-RendererUtc $raw.render.processStartUtc "Target observation '$Stage' render process start"
+    Assert-RendererNonnegativeInteger $raw.render.processId "Target observation '$Stage' render process ID"
+    Assert-RendererBoolean $raw.render.softwareOnlyConfirmed "Target observation '$Stage' SoftwareOnly confirmation"
+    Assert-RendererString $raw.render.effectiveMode "Target observation '$Stage' effective mode"
+    Assert-RendererString $raw.render.nativeProcessRenderMode "Target observation '$Stage' native process render mode"
+    Assert-RendererNonnegativeInteger $raw.render.nativeRenderCapabilityTier "Target observation '$Stage' render tier"
+    if ($raw.render.source -cne 'TargetProcessNativeObservation' -or [int]$raw.render.processId -ne $actualApp.pid -or [string]$raw.render.processStartUtc -cne $actualApp.startTimeUtc -or $raw.render.effectiveMode -cne 'SoftwareOnly' -or -not [bool]$raw.render.softwareOnlyConfirmed -or $raw.render.nativeProcessRenderMode -cne 'SoftwareOnly') { throw "Target observation '$Stage' render-mode provenance is not bound to the target App process." }
+    [pscustomobject][ordered]@{ raw = $raw; app = $actualApp; core = $actualCore; window = $actualWindow }
 }
 
 if ([string]::IsNullOrWhiteSpace($RepositoryRoot)) {
@@ -127,11 +193,23 @@ $validatedCommittedPackage = Assert-RendererCommittedPackageIdentity `
 Write-Host 'INFO [harness] package identity validated.'
 
 # Observe the host at invocation time. Synthetic selftests retain the observation
-# in the report but do not receive Runtime/Release credit.
-$environment = Copy-RendererValue (Get-RendererEnvironmentSnapshot)
+# in the report but do not receive Runtime/Release credit. The fixture-only
+# environment override still passes through the exact live admission guard.
+if (-not [string]::IsNullOrWhiteSpace($TestEnvironmentSnapshotPath)) {
+    $TestEnvironmentSnapshotPath = [IO.Path]::GetFullPath($TestEnvironmentSnapshotPath)
+    Assert-RendererNonReparsePath $TestEnvironmentSnapshotPath $TestEnvironmentSnapshotPath 'Renderer selftest environment snapshot'
+    $environmentJson = [IO.File]::ReadAllText($TestEnvironmentSnapshotPath)
+    $environment = if ($PSVersionTable.PSVersion.Major -ge 7 -and (Get-Command ConvertFrom-Json).Parameters.ContainsKey('DateKind')) { $environmentJson | ConvertFrom-Json -DateKind String } else { $environmentJson | ConvertFrom-Json }
+} else {
+    $environment = Copy-RendererValue (Get-RendererEnvironmentSnapshot)
+}
 Assert-RendererEnvironmentSnapshot $environment
 if ($captureMode -eq 'LiveOperator') {
     Assert-RendererLiveEnvironment $environment $RepositoryRoot
+    $RuntimeEvidenceRoot = [IO.Path]::GetFullPath($RuntimeEvidenceRoot)
+    if (-not (Test-Path -LiteralPath $RuntimeEvidenceRoot -PathType Container)) { throw "Runtime evidence root was not found: $RuntimeEvidenceRoot" }
+    Assert-RendererNonReparsePath $RuntimeEvidenceRoot $RuntimeEvidenceRoot 'Runtime evidence root'
+    Assert-RendererPipeName $TargetObservationPipeName
 }
 
 if (-not [string]::IsNullOrWhiteSpace($CaptureSourceDirectory)) {
@@ -162,6 +240,9 @@ New-Item -ItemType Directory -Path $stagingDir -ErrorAction Stop | Out-Null
 Assert-RendererNonReparsePath $parentOut $stagingDir 'Renderer staging directory'
 
 $commitSuccessful = $false
+$targetPipe = $null
+$targetPipeReader = $null
+$targetPipeWriter = $null
 try {
     # 1. Stage package artifacts
     Write-Host 'INFO [harness] staging package artifacts...'
@@ -185,14 +266,33 @@ try {
     $stagedAppStable = Get-RendererPackageStableIdentity $stagedAppPath
     $stagedCoreStable = Get-RendererPackageStableIdentity $stagedCorePath
 
+    $targetAppPath = Join-Path $PackageRoot ([string]$profile.components.appRelativePath)
+    $targetCorePath = Join-Path $PackageRoot ([string]$profile.components.coreRelativePath)
+    $targetAppIdentity = $null
+    $targetCoreIdentity = $null
+    $pipeClientPid = $null
+    if ($captureMode -eq 'LiveOperator') {
+        $targetAppIdentity = Get-RendererProcessIdentity $TargetAppPid $targetAppPath 'App'
+        $targetCoreIdentity = Get-RendererProcessIdentity $TargetCorePid $targetCorePath 'Core'
+        if ($targetAppIdentity.sha256 -cne [string]$initialReceiptRead.Identity.components.app.sha256 -or $targetCoreIdentity.sha256 -cne [string]$initialReceiptRead.Identity.components.core.sha256) { throw 'Target App/Core executable identities do not equal the exact package receipt components.' }
+        $targetPipe = New-RendererTargetObservationPipe $TargetObservationPipeName
+        $pipeClientPid = Wait-RendererTargetObservationPipe $targetPipe 30
+        if ([int]$pipeClientPid -ne $TargetAppPid) { throw 'Target observation pipe was not connected by the bound App PID.' }
+        $targetPipeReader = New-Object IO.StreamReader($targetPipe, (New-Object Text.UTF8Encoding($false)), $false, 65536, $true)
+        $targetPipeWriter = New-Object IO.StreamWriter($targetPipe, (New-Object Text.UTF8Encoding($false)), 65536, $true)
+        [void]($targetPipeWriter.AutoFlush = $true)
+    }
+
     # 2. Establish 8 lifecycle stage observations & pre-first-HWND proof.
-    # Live mode accepts only operator-supplied native observations; synthetic
-    # mode is explicit and remains outside Runtime/Release evidence.
+    # Live mode accepts only target-process native observations; synthetic mode
+    # is explicit and remains outside Runtime/Release evidence.
     Write-Host "INFO [harness] recording 8 $captureMode lifecycle observations..."
     $proofDir = Join-Path $stagingDir 'proofs'
     New-Item -ItemType Directory -Path $proofDir -ErrorAction Stop | Out-Null
 
     $observations = @()
+    $targetObservations = @()
+    $targetCaptureMap = @{}
     $syntheticLastUtc = [DateTimeOffset]::UtcNow
     $firstHwndCreatedUtc = $null
     $preFirstHasAnyHwnd = $null
@@ -202,7 +302,41 @@ try {
             continue
         }
 
-        if ($null -ne $OperatorObservationAction) {
+        $targetStage = $null
+        if ($captureMode -eq 'LiveOperator') {
+            $targetStage = Get-RendererLiveTargetObservation `
+                -Reader $targetPipeReader `
+                -Writer $targetPipeWriter `
+                -Stage $stage `
+                -Ordinal $i `
+                -TargetAppPid $TargetAppPid `
+                -TargetCorePid $TargetCorePid `
+                -TargetAppPath $targetAppPath `
+                -TargetCorePath $targetCorePath `
+                -TargetAppStartTimeUtc $targetAppIdentity.startTimeUtc `
+                -TargetCoreStartTimeUtc $targetCoreIdentity.startTimeUtc `
+                -TestFaultStage $TestFaultStage
+            $raw = $targetStage.raw
+            $targetObservations += ,([pscustomobject][ordered]@{
+                stage = [string]$raw.stage
+                ordinal = [int]$raw.ordinal
+                observedUtc = [string]$raw.observedUtc
+                appProcess = (Copy-RendererValue $targetStage.app)
+                coreProcess = (Copy-RendererValue $targetStage.core)
+                window = (Copy-RendererValue $targetStage.window)
+                render = (Copy-RendererValue $raw.render)
+                captures = @($raw.captures | ForEach-Object { Copy-RendererValue $_ })
+            })
+            foreach ($captureBinding in @($raw.captures)) {
+                Assert-RendererExactProperties $captureBinding @('language','name','relativePath','bytes','sha256','widthPixels','heightPixels','observedUtc','producerPid','producerStartUtc') "Target capture '$($captureBinding.language)|$($captureBinding.name)'"
+                if ($captureBinding.relativePath -cne "captures/$($captureBinding.language)/$($captureBinding.name).png") { throw "Target capture '$($captureBinding.language)|$($captureBinding.name)' path is not the exact isolated capture path." }
+                if ($captureBinding.producerPid -ne $targetAppIdentity.pid -or $captureBinding.producerStartUtc -cne $targetAppIdentity.startTimeUtc) { throw "Target capture '$($captureBinding.language)|$($captureBinding.name)' is not bound to the target App PID/start identity." }
+                $captureKey = "$($captureBinding.language)|$($captureBinding.name)"
+                if ($targetCaptureMap.ContainsKey($captureKey)) {
+                    foreach ($field in @('relativePath','bytes','sha256','widthPixels','heightPixels','observedUtc','producerPid','producerStartUtc')) { if ($targetCaptureMap[$captureKey].$field -cne $captureBinding.$field) { throw "Target capture '$captureKey' changed between lifecycle observations." } }
+                } else { $targetCaptureMap[$captureKey] = Copy-RendererValue $captureBinding }
+            }
+        } elseif ($null -ne $OperatorObservationAction) {
             $rawResults = @(& $OperatorObservationAction -Stage $stage -Ordinal $i)
             if ($rawResults.Count -ne 1) { throw "Operator observation action must return exactly one record for '$stage'." }
             $raw = $rawResults[0]
@@ -223,16 +357,18 @@ try {
             }
         }
 
-        Assert-RendererString $raw.effectiveMode "Renderer observation '$stage' effectiveMode"
-        Assert-RendererBoolean $raw.softwareOnlyConfirmed "Renderer observation '$stage' softwareOnlyConfirmed"
-        Assert-RendererString $raw.nativeProcessRenderMode "Renderer observation '$stage' nativeProcessRenderMode"
-        Assert-RendererNonnegativeInteger $raw.nativeRenderCapabilityTier "Renderer observation '$stage' nativeRenderCapabilityTier"
-        Assert-RendererBoolean $raw.hasAnyHwnd "Renderer observation '$stage' hasAnyHwnd"
-        $mode = [string]$raw.effectiveMode
-        $confirmed = [bool]$raw.softwareOnlyConfirmed
+        if ($captureMode -ne 'LiveOperator') {
+            Assert-RendererString $raw.effectiveMode "Renderer observation '$stage' effectiveMode"
+            Assert-RendererBoolean $raw.softwareOnlyConfirmed "Renderer observation '$stage' softwareOnlyConfirmed"
+            Assert-RendererString $raw.nativeProcessRenderMode "Renderer observation '$stage' nativeProcessRenderMode"
+            Assert-RendererNonnegativeInteger $raw.nativeRenderCapabilityTier "Renderer observation '$stage' nativeRenderCapabilityTier"
+            Assert-RendererBoolean $raw.hasAnyHwnd "Renderer observation '$stage' hasAnyHwnd"
+        }
+        $mode = if ($captureMode -eq 'LiveOperator') { [string]$raw.render.effectiveMode } else { [string]$raw.effectiveMode }
+        $confirmed = if ($captureMode -eq 'LiveOperator') { [bool]$raw.render.softwareOnlyConfirmed } else { [bool]$raw.softwareOnlyConfirmed }
         $timeStr = [string]$raw.observedUtc
-        $hasAnyHwnd = [bool]$raw.hasAnyHwnd
-        $rawFirstHwnd = $raw.firstHwndCreatedUtc
+        $hasAnyHwnd = if ($captureMode -eq 'LiveOperator') { [bool]$raw.window.hasAnyHwnd } else { [bool]$raw.hasAnyHwnd }
+        $rawFirstHwnd = if ($captureMode -eq 'LiveOperator') { if ($hasAnyHwnd) { $timeStr } else { $null } } else { $raw.firstHwndCreatedUtc }
         if ($i -lt 2 -and $hasAnyHwnd) { throw "Operator observation '$stage' reports an HWND before the first-window boundary." }
         if ($i -ge 2 -and -not $hasAnyHwnd) { throw "Operator observation '$stage' did not report the already-created HWND." }
         Assert-RendererUtc $timeStr "Renderer observation '$stage' UTC"
@@ -249,8 +385,8 @@ try {
             effectiveMode = $mode
             softwareOnlyConfirmed = $confirmed
             observedUtc = $timeStr
-            nativeProcessRenderMode = [string]$raw.nativeProcessRenderMode
-            nativeRenderCapabilityTier = [int]$raw.nativeRenderCapabilityTier
+            nativeProcessRenderMode = if ($captureMode -eq 'LiveOperator') { [string]$raw.render.nativeProcessRenderMode } else { [string]$raw.nativeProcessRenderMode }
+            nativeRenderCapabilityTier = if ($captureMode -eq 'LiveOperator') { [int]$raw.render.nativeRenderCapabilityTier } else { [int]$raw.nativeRenderCapabilityTier }
         }
 
         $proofRel = "proofs/$i-$stage.json"
@@ -282,6 +418,9 @@ try {
     if ([bool]$preFirstHasAnyHwnd -or [string]::IsNullOrWhiteSpace($firstHwndCreatedUtc)) {
         throw 'Pre-first-HWND observation did not prove the actual first HWND boundary.'
     }
+    if ($captureMode -eq 'LiveOperator' -and $targetCaptureMap.Count -ne 20) {
+        throw "Target process did not provide exactly 20 bound captures; found $($targetCaptureMap.Count)."
+    }
 
     # 3. Capture 20 PNG captures (10 Thai, 10 English)
     Write-Host 'INFO [harness] ingesting and validating 20 named captures...'
@@ -310,7 +449,20 @@ try {
             $relPath = "captures/$language/$name.png"
 
             $captureUtc = $midTime.ToUniversalTime().ToString('O', [Globalization.CultureInfo]::InvariantCulture)
-            if (-not [string]::IsNullOrWhiteSpace($CaptureSourceDirectory)) {
+            if ($captureMode -eq 'LiveOperator') {
+                $captureKey = "$language|$name"
+                if (-not $targetCaptureMap.ContainsKey($captureKey)) { throw "Target process did not bind required capture '$captureKey'." }
+                $targetBinding = $targetCaptureMap[$captureKey]
+                $sourcePng = Resolve-RendererBoundPath $RuntimeEvidenceRoot $targetBinding.relativePath "Target capture '$captureKey' source path"
+                if ($TestFaultStage -eq 'ArbitraryPng' -and $captureKey -eq 'Thai|dashboard-overview') { New-RendererTestPng -Path $sourcePng -Width 32 -Height 32 }
+                $firstSourceIdentity = Get-RendererPngIdentity $RuntimeEvidenceRoot $sourcePng "Target capture '$captureKey' source"
+                if ($TestFaultStage -eq 'TransientCaptureReplacement' -and $captureKey -eq 'Thai|dashboard-overview') { New-RendererTestPng -Path $sourcePng -Width 31 -Height 31 }
+                $sourceIdentity = Get-RendererPngIdentity $RuntimeEvidenceRoot $sourcePng "Target capture '$captureKey' source re-read"
+                if ($firstSourceIdentity.Bytes -ne $sourceIdentity.Bytes -or $firstSourceIdentity.Sha256 -cne $sourceIdentity.Sha256 -or $firstSourceIdentity.Width -ne $sourceIdentity.Width -or $firstSourceIdentity.Height -ne $sourceIdentity.Height) { throw "Target capture '$captureKey' changed between stable reads." }
+                if ($sourceIdentity.Bytes -ne [long]$targetBinding.bytes -or $sourceIdentity.Sha256 -cne [string]$targetBinding.sha256 -or $sourceIdentity.Width -ne [int]$targetBinding.widthPixels -or $sourceIdentity.Height -ne [int]$targetBinding.heightPixels) { throw "Target capture '$captureKey' does not equal the target-process PNG binding." }
+                [IO.File]::WriteAllBytes($destPng, $sourceIdentity.Content)
+                $captureUtc = [string]$targetBinding.observedUtc
+            } elseif (-not [string]::IsNullOrWhiteSpace($CaptureSourceDirectory)) {
                 $sourceRelative = (Join-Path $language "$name.png") -replace '\\','/'
                 $sourcePng = Resolve-RendererBoundPath $CaptureSourceDirectory $sourceRelative "Capture '$language|$name' source path"
                 if (-not (Test-Path -LiteralPath $sourcePng -PathType Leaf)) {
@@ -409,6 +561,35 @@ try {
         bytes = [long]$producerStable.Length
         fileSha256 = $producerStable.Sha256
         canonicalSha256 = $producerCanonicalSha
+    }
+
+    $targetBindingReceipt = $null
+    if ($captureMode -eq 'LiveOperator') {
+        $orderedTargetCaptures = @()
+        foreach ($language in @('Thai','English')) {
+            foreach ($name in $script:RendererCaptureNames) {
+                $orderedTargetCaptures += ,(Copy-RendererValue $targetCaptureMap["$language|$name"])
+            }
+        }
+        $targetReceiptValue = [pscustomobject][ordered]@{
+            receiptType = 'V02RendererTargetBinding'
+            protocolVersion = 1
+            appProcess = (Copy-RendererValue $targetAppIdentity)
+            coreProcess = (Copy-RendererValue $targetCoreIdentity)
+            pipeClientPid = [int]$pipeClientPid
+            observations = @($targetObservations)
+            captureBindings = @($orderedTargetCaptures)
+        }
+        $targetReceiptPath = Join-Path $stagingDir 'proofs/target-binding.json'
+        Write-RendererPackageCanonicalJson $targetReceiptValue $targetReceiptPath $RepositoryRoot
+        $targetReceiptStable = Get-RendererPackageStableIdentity $targetReceiptPath
+        $targetReceiptCanonical = ConvertTo-RendererCanonicalJson $targetReceiptValue $RepositoryRoot
+        $targetBindingReceipt = [pscustomobject][ordered]@{
+            relativePath = 'proofs/target-binding.json'
+            bytes = [long]$targetReceiptStable.Length
+            fileSha256 = $targetReceiptStable.Sha256
+            canonicalSha256 = (Get-HumanDesignReviewSha256ForText -Text $targetReceiptCanonical)
+        }
     }
 
     # 5. References and comparison results
@@ -524,6 +705,7 @@ try {
             trigger = 'ApprovedV02CandidatePolicy'
             fallback = 'None'
             producerReport = $producerBinding
+            targetBindingReceipt = $targetBindingReceipt
             preFirstHwnd = [ordered]@{
                 hasAnyHwnd = [bool]$preFirstHasAnyHwnd
                 observation = (Copy-RendererValue $observations[1])
@@ -617,7 +799,7 @@ try {
     }
     [IO.Directory]::Move($stagingDir, $outFull)
     Assert-RendererNonReparsePath $parentOut $outFull 'Published renderer evidence directory'
-    $commitSuccessful = $true
+    [void]($commitSuccessful = $true)
 
     $finalManifestPath = Join-Path $outFull 'v0.2-renderer-compatibility-manifest.json'
     $finalManifestSha = (Get-RendererStableFileIdentity $outFull $finalManifestPath 'Published renderer manifest').Sha256
@@ -633,6 +815,14 @@ try {
         ThaiCaptures = 10
         EnglishCaptures = 10
         LifecycleStages = $observations.Count
+        TargetAppPid = if ($captureMode -eq 'LiveOperator') { [int]$targetAppIdentity.pid } else { $null }
+        TargetCorePid = if ($captureMode -eq 'LiveOperator') { [int]$targetCoreIdentity.pid } else { $null }
+        TargetAppStartTimeUtc = if ($captureMode -eq 'LiveOperator') { [string]$targetAppIdentity.startTimeUtc } else { $null }
+        TargetCoreStartTimeUtc = if ($captureMode -eq 'LiveOperator') { [string]$targetCoreIdentity.startTimeUtc } else { $null }
+        TargetAppExecutableSha256 = if ($captureMode -eq 'LiveOperator') { [string]$targetAppIdentity.sha256 } else { $null }
+        TargetCoreExecutableSha256 = if ($captureMode -eq 'LiveOperator') { [string]$targetCoreIdentity.sha256 } else { $null }
+        TargetObservationPipeClientPid = if ($captureMode -eq 'LiveOperator') { [int]$pipeClientPid } else { $null }
+        TargetBindingReceipt = $targetBindingReceipt
         SoftwareOnlyConfirmed = (@($observations | Where-Object { $_.effectiveMode -ne 'SoftwareOnly' -or -not [bool]$_.softwareOnlyConfirmed }).Count -eq 0)
         PreFirstHwndProofConfirmed = (-not [bool]$preFirstHasAnyHwnd -and -not [string]::IsNullOrWhiteSpace($firstHwndCreatedUtc))
         HumanReview = 'NOT_OBSERVED'
@@ -641,6 +831,9 @@ try {
         PackagedCompatibilityReadyForIssue149Closure = $false
     }
 } finally {
+    if ($null -ne $targetPipeWriter) { $targetPipeWriter.Dispose() }
+    if ($null -ne $targetPipeReader) { $targetPipeReader.Dispose() }
+    if ($null -ne $targetPipe) { $targetPipe.Dispose() }
     if (-not $commitSuccessful -and (Test-Path -LiteralPath $stagingDir)) {
         Remove-Item -LiteralPath $stagingDir -Recurse -Force -ErrorAction SilentlyContinue
     }

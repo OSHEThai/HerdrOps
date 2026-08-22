@@ -72,9 +72,9 @@
     },
     "rendererEvidence": {
       "type": "object", "additionalProperties": false,
-      "required": ["policyId", "trigger", "fallback", "producerReport", "preFirstHwnd", "throughoutObservations"],
+      "required": ["policyId", "trigger", "fallback", "producerReport", "targetBindingReceipt", "preFirstHwnd", "throughoutObservations"],
       "properties": {
-        "policyId": { "const": "software-only-process-wide" }, "trigger": { "const": "ApprovedV02CandidatePolicy" }, "fallback": { "const": "None" }, "producerReport": { "$ref": "#/$defs/jsonBinding" },
+        "policyId": { "const": "software-only-process-wide" }, "trigger": { "const": "ApprovedV02CandidatePolicy" }, "fallback": { "const": "None" }, "producerReport": { "$ref": "#/$defs/jsonBinding" }, "targetBindingReceipt": { "anyOf": [{ "$ref": "#/$defs/jsonBinding" }, { "type": "null" }] },
         "preFirstHwnd": { "type": "object", "additionalProperties": false, "required": ["hasAnyHwnd", "observation", "firstHwndCreatedUtc"], "properties": { "hasAnyHwnd": { "type": "boolean" }, "observation": { "$ref": "#/$defs/rendererObservation" }, "firstHwndCreatedUtc": { "$ref": "#/$defs/utc" } } },
         "throughoutObservations": { "type": "array", "minItems": 8, "maxItems": 8, "items": { "$ref": "#/$defs/rendererObservation" } }
       }
