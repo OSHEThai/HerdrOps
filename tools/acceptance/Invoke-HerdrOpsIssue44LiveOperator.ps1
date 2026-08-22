@@ -1826,7 +1826,7 @@ try {
 
     # Setup Retained Data Target
     $retainedDataFullPath = Get-AcceptanceFullPath -Path (Join-Path $userDataRootFull $RetainedDataRelativePath)
-    Assert-AcceptanceSafeDescendantFilePath -Path $retainedDataFullPath -Root $userDataRootFull -Context 'Retained data marker'
+    [void](Assert-AcceptanceSafeDescendantFilePath -Path $retainedDataFullPath -RootPath $userDataRootFull -Context 'Retained data marker')
 
     $effect = if ($Mode -eq 'Live') { 'LiveFilesystem' } else { 'FixtureTempOnly' }
 
