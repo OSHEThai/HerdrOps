@@ -390,7 +390,9 @@ function New-V02ReleaseGateTestIssue9Candidate {
         $uiRoot = Join-Path $Root "$language-ui"; New-V02ReleaseGateTestDirectory $uiRoot; $uiRoots += $uiRoot
         $receiptPath = Join-Path $uiRoot 'issue9-ui-receipt.json'; Write-V02ReleaseGateTestText $receiptPath '{}' | Out-Null
         $pages = @(); foreach ($pageName in @('Overview', 'LiveOrganization', 'AgentDetail')) {
-            $pages += [pscustomobject][ordered]@{ Name = $pageName; Language = $language; UiCapturePath = Join-Path $uiRoot "$pageName.png"; UiCaptureSha256 = ('A' * 64); StateSha256 = ('B' * 64); WorkspaceId = 'workspace'; ProjectId = 'project'; AgentId = 'agent'; TaskId = 'task'; AgentStatus = 'Working'; PaneId = 'pane' }
+            $capturePath = Join-Path $uiRoot "$pageName.png"
+            Write-V02ReleaseGateTestText $capturePath "$language $pageName capture" | Out-Null
+            $pages += [pscustomobject][ordered]@{ Name = $pageName; Language = $language; UiCapturePath = $capturePath; UiCaptureSha256 = Get-V02ReleaseGateFileSha256 $capturePath; StateSha256 = ('B' * 64); WorkspaceId = 'workspace'; ProjectId = 'project'; AgentId = 'agent'; TaskId = 'task'; AgentStatus = 'Working'; PaneId = 'pane' }
         }
         $legs += [pscustomobject][ordered]@{
             Language = $language; RuntimeEvidenceDirectory = $runtimeRoot; UiEvidenceDirectory = $uiRoot; UiReceiptPath = $receiptPath
@@ -723,6 +725,37 @@ try {
             -Package $package -Renderer $renderer -Matrix $matrix -Issue9 $issue9 -GitHubSnapshotPath $githubPath `
             -GitHubSnapshotSha256 (Get-V02ReleaseGateFileSha256 -Path $githubPath) -EvidenceRoot $evidenceRoot
         if ($disposition.Status -cne 'NOT_OBSERVED' -or $disposition.Authenticated) { throw 'Local Human GO was credited.' }
+        if ($script:V02ReleaseGateHumanArtifactCheckIds -notcontains 'issue-9-acceptance') {
+            throw 'Issue #9 acceptance is missing from the canonical Human artifact check inventory.'
+        }
+        $missingIssue9 = $review.Value | ConvertTo-Json -Depth 100 | ConvertFrom-Json
+        $missingIssue9.Reviewer.ReviewedUtc = [string]$review.Value.Reviewer.ReviewedUtc
+        $missingIssue9.Checks = @($missingIssue9.Checks | Where-Object { $_.Id -cne 'issue-9-acceptance' })
+        Assert-V02ReleaseGateTestThrows {
+            Assert-V02ReleaseGateHumanReview -Review $missingIssue9 -ReviewPath $review.Path `
+                -ExpectedSourceCommit $script:GateIdentity.Commit -ExpectedSourceTree $script:GateIdentity.Tree `
+                -Package $package -Renderer $renderer -Matrix $matrix -Issue9 $issue9 -GitHubSnapshotPath $githubPath `
+                -GitHubSnapshotSha256 (Get-V02ReleaseGateFileSha256 -Path $githubPath) -EvidenceRoot $evidenceRoot
+        } 'exactly'
+        $extraIssue9 = $review.Value | ConvertTo-Json -Depth 100 | ConvertFrom-Json
+        $extraIssue9.Reviewer.ReviewedUtc = [string]$review.Value.Reviewer.ReviewedUtc
+        $extraIssue9.Checks = @($extraIssue9.Checks) + @($extraIssue9.Checks | Where-Object { $_.Id -ceq 'issue-9-acceptance' } | Select-Object -First 1)
+        Assert-V02ReleaseGateTestThrows {
+            Assert-V02ReleaseGateHumanReview -Review $extraIssue9 -ReviewPath $review.Path `
+                -ExpectedSourceCommit $script:GateIdentity.Commit -ExpectedSourceTree $script:GateIdentity.Tree `
+                -Package $package -Renderer $renderer -Matrix $matrix -Issue9 $issue9 -GitHubSnapshotPath $githubPath `
+                -GitHubSnapshotSha256 (Get-V02ReleaseGateFileSha256 -Path $githubPath) -EvidenceRoot $evidenceRoot
+        } 'exactly'
+        $mismatchedIssue9 = $review.Value | ConvertTo-Json -Depth 100 | ConvertFrom-Json
+        $mismatchedIssue9.Reviewer.ReviewedUtc = [string]$review.Value.Reviewer.ReviewedUtc
+        $mismatchedIssue9.Candidate.Issue9CandidateSha256 = ('9' * 64)
+        $issue9Mismatch = [pscustomobject][ordered]@{ CandidatePath = $issue9.CandidatePath; CandidateSha256 = ('9' * 64) }
+        Assert-V02ReleaseGateTestThrows {
+            Assert-V02ReleaseGateHumanReview -Review $mismatchedIssue9 -ReviewPath $review.Path `
+                -ExpectedSourceCommit $script:GateIdentity.Commit -ExpectedSourceTree $script:GateIdentity.Tree `
+                -Package $package -Renderer $renderer -Matrix $matrix -Issue9 $issue9Mismatch -GitHubSnapshotPath $githubPath `
+                -GitHubSnapshotSha256 (Get-V02ReleaseGateFileSha256 -Path $githubPath) -EvidenceRoot $evidenceRoot
+        } 'Issue #9 candidate artifact binding'
         $tampered = $review.Value
         $tampered.Checks[0].Binding = 'HumanCheck:renderer-compatibility'
         Assert-V02ReleaseGateTestThrows {
@@ -825,6 +858,52 @@ try {
             Assert-V02ReleaseGateIssue9CandidateBinding -Candidate $fixtureAuthority -Context $fixture.Context -Package $fixture.Package -Matrix $fixture.Matrix `
                 -ExpectedSourceCommit $script:GateIdentity.Commit -ExpectedSourceTree $script:GateIdentity.Tree
         } 'fixture mode'
+
+        $outsideCapture = Join-Path $script:TestRoot 'issue9-outside-capture.png'
+        Write-V02ReleaseGateTestText $outsideCapture 'outside UI root' | Out-Null
+        $escapedCapture = $fixture.Candidate | ConvertTo-Json -Depth 100 | ConvertFrom-Json
+        $escapedCapture.Languages[0].Pages[0].UiCapturePath = $outsideCapture
+        $escapedCapture.Languages[0].Pages[0].UiCaptureSha256 = Get-V02ReleaseGateFileSha256 $outsideCapture
+        Assert-V02ReleaseGateTestThrows {
+            Assert-V02ReleaseGateIssue9CandidateBinding -Candidate $escapedCapture -Context $fixture.Context -Package $fixture.Package -Matrix $fixture.Matrix `
+                -ExpectedSourceCommit $script:GateIdentity.Commit -ExpectedSourceTree $script:GateIdentity.Tree
+        } 'escapes its evidence root'
+
+        $thaiUiRoot = [string]$fixture.Candidate.Languages[0].UiEvidenceDirectory
+        $aliasDirectory = Join-Path $thaiUiRoot 'canonical-alias-segment'
+        New-V02ReleaseGateTestDirectory $aliasDirectory
+        $nonCanonical = $fixture.Candidate | ConvertTo-Json -Depth 100 | ConvertFrom-Json
+        $nonCanonical.Languages[0].Pages[0].UiCapturePath = Join-Path $aliasDirectory '..\Overview.png'
+        Assert-V02ReleaseGateTestThrows {
+            Assert-V02ReleaseGateIssue9CandidateBinding -Candidate $nonCanonical -Context $fixture.Context -Package $fixture.Package -Matrix $fixture.Matrix `
+                -ExpectedSourceCommit $script:GateIdentity.Commit -ExpectedSourceTree $script:GateIdentity.Tree
+        } 'not canonical'
+
+        $outsideDirectory = Join-Path $script:TestRoot 'issue9-capture-reparse-target'
+        New-V02ReleaseGateTestDirectory $outsideDirectory
+        $reparseTarget = Join-Path $outsideDirectory 'capture.png'
+        Write-V02ReleaseGateTestText $reparseTarget 'reparse target' | Out-Null
+        $captureJunction = Join-Path $thaiUiRoot 'capture-reparse-alias'
+        New-Item -ItemType Junction -Path $captureJunction -Target $outsideDirectory | Out-Null
+        $reparseCapture = $fixture.Candidate | ConvertTo-Json -Depth 100 | ConvertFrom-Json
+        $reparseCapture.Languages[0].Pages[0].UiCapturePath = Join-Path $captureJunction 'capture.png'
+        $reparseCapture.Languages[0].Pages[0].UiCaptureSha256 = Get-V02ReleaseGateFileSha256 $reparseTarget
+        Assert-V02ReleaseGateTestThrows {
+            Assert-V02ReleaseGateIssue9CandidateBinding -Candidate $reparseCapture -Context $fixture.Context -Package $fixture.Package -Matrix $fixture.Matrix `
+                -ExpectedSourceCommit $script:GateIdentity.Commit -ExpectedSourceTree $script:GateIdentity.Tree
+        } 'reparse'
+
+        $hardlinkSource = Join-Path $script:TestRoot 'issue9-capture-hardlink-source.png'
+        Write-V02ReleaseGateTestText $hardlinkSource 'hardlink source' | Out-Null
+        $hardlinkAlias = Join-Path $thaiUiRoot 'hardlink-alias.png'
+        New-Item -ItemType HardLink -Path $hardlinkAlias -Target $hardlinkSource | Out-Null
+        $hardlinkedCapture = $fixture.Candidate | ConvertTo-Json -Depth 100 | ConvertFrom-Json
+        $hardlinkedCapture.Languages[0].Pages[0].UiCapturePath = $hardlinkAlias
+        $hardlinkedCapture.Languages[0].Pages[0].UiCaptureSha256 = Get-V02ReleaseGateFileSha256 $hardlinkAlias
+        Assert-V02ReleaseGateTestThrows {
+            Assert-V02ReleaseGateIssue9CandidateBinding -Candidate $hardlinkedCapture -Context $fixture.Context -Package $fixture.Package -Matrix $fixture.Matrix `
+                -ExpectedSourceCommit $script:GateIdentity.Commit -ExpectedSourceTree $script:GateIdentity.Tree
+        } 'hardlink|path alias'
     }
 
     Invoke-V02ReleaseGateTestCase 'path escape and reparse-style aliases fail closed' {

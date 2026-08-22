@@ -76,6 +76,7 @@ $script:V02ReleaseGateHumanArtifactCheckIds = @(
     'renderer-compatibility',
     'runtime-matrix-thai',
     'runtime-matrix-english',
+    'issue-9-acceptance',
     'tracker-11-readiness'
 )
 $script:V02ReleaseGateTransitiveGovernanceRelativePaths = @(
@@ -440,6 +441,19 @@ function Get-V02ReleaseGateHandleFileIdentity {
     return ('{0:X8}:{1:X8}{2:X8}' -f $information.VolumeSerialNumber, $information.FileIndexHigh, $information.FileIndexLow)
 }
 
+function Get-V02ReleaseGateHandleLinkCount {
+    param(
+        [Parameter(Mandatory = $true)][Microsoft.Win32.SafeHandles.SafeFileHandle]$Handle,
+        [Parameter(Mandatory = $true)][string]$Context
+    )
+
+    $information = New-Object V02ReleaseGateNative+ByHandleFileInformation
+    if (-not [V02ReleaseGateNative]::GetFileInformationByHandle($Handle, [ref]$information)) {
+        throw "$Context link-count lookup failed: $([ComponentModel.Win32Exception]::new([Runtime.InteropServices.Marshal]::GetLastWin32Error()).Message)"
+    }
+    return [uint32]$information.NumberOfLinks
+}
+
 function Open-V02ReleaseGateParentHandle {
     param(
         [Parameter(Mandatory = $true)][string]$ParentPath,
@@ -501,6 +515,7 @@ function Get-V02ReleaseGateStableFileSnapshot {
         Assert-V02ReleaseGateHandlePath -Actual $leafFinalBefore -Expected $fullPath -Context "$Context leaf"
         Assert-V02ReleaseGateHandlePath -Actual $parentFinalBefore -Expected $expectedParent -Context "$Context parent"
         $fileIdentity = Get-V02ReleaseGateHandleFileIdentity -Handle $stream.SafeFileHandle -Context "$Context leaf"
+        $linkCount = Get-V02ReleaseGateHandleLinkCount -Handle $stream.SafeFileHandle -Context "$Context leaf"
         $parentIdentity = Get-V02ReleaseGateHandleFileIdentity -Handle $parentHandle -Context "$Context parent"
         if ($stream.Length -gt $script:V02ReleaseGateMaximumSnapshotBytes) {
             throw "$Context exceeds bounded snapshot size of $script:V02ReleaseGateMaximumSnapshotBytes bytes: $fullPath"
@@ -524,8 +539,10 @@ function Get-V02ReleaseGateStableFileSnapshot {
         Assert-V02ReleaseGateHandlePath -Actual $leafFinalAfter -Expected $fullPath -Context "$Context leaf after read"
         Assert-V02ReleaseGateHandlePath -Actual $parentFinalAfter -Expected $expectedParent -Context "$Context parent after read"
         $leafIdentityAfter = Get-V02ReleaseGateHandleFileIdentity -Handle $stream.SafeFileHandle -Context "$Context leaf after read"
+        $linkCountAfter = Get-V02ReleaseGateHandleLinkCount -Handle $stream.SafeFileHandle -Context "$Context leaf after read"
         $parentIdentityAfter = Get-V02ReleaseGateHandleFileIdentity -Handle $parentHandle -Context "$Context parent after read"
         Assert-V02ReleaseGateEqual $leafIdentityAfter $fileIdentity "$Context leaf file identity"
+        Assert-V02ReleaseGateEqual $linkCountAfter $linkCount "$Context leaf hardlink count"
         Assert-V02ReleaseGateEqual $parentIdentityAfter $parentIdentity "$Context parent file identity"
         $completed = $true
     }
@@ -540,6 +557,7 @@ function Get-V02ReleaseGateStableFileSnapshot {
         FinalPath = $leafFinalAfter
         ParentFinalPath = $parentFinalAfter
         FileId = $fileIdentity
+        LinkCount = [uint32]$linkCount
         ParentFileId = $parentIdentity
         Bytes = [byte[]]$bytes
         Length = [int64]$bytes.Length
@@ -1728,6 +1746,21 @@ function Assert-V02ReleaseGateIssue9CandidateBinding {
             Assert-V02ReleaseGateExactString $page.Name $expectedPages[$pageIndex] "$Description language leg $index page name"
             Assert-V02ReleaseGateExactString $page.Language $expectedLanguages[$index] "$Description language leg $index page language"
             foreach ($name in @('UiCaptureSha256', 'StateSha256')) { Assert-V02ReleaseGateSha256 $page.$name "$Description language leg $index page $name" | Out-Null }
+            $captureInput = Assert-V02ReleaseGateString $page.UiCapturePath "$Description language leg $index page $pageIndex UI capture path"
+            if (-not [IO.Path]::IsPathRooted($captureInput)) {
+                throw "$Description language leg $index page $pageIndex UI capture path must be absolute."
+            }
+            $captureCanonical = Resolve-V02ReleaseGateExistingPath -Path $captureInput -Type Leaf -Context "$Description language leg $index page $pageIndex UI capture"
+            Assert-V02ReleaseGatePathWithinRoot -Path $captureCanonical -Root $uiRoot -Context "$Description language leg $index page $pageIndex UI capture" | Out-Null
+            $declaredCanonical = $captureInput.TrimEnd([char[]]@('\', '/'))
+            if (-not [StringComparer]::OrdinalIgnoreCase.Equals($declaredCanonical, $captureCanonical)) {
+                throw "$Description language leg $index page $pageIndex UI capture path is not canonical. Declared='$captureInput' Canonical='$captureCanonical'."
+            }
+            $captureSnapshot = Get-V02ReleaseGateStableFileSnapshot -Path $captureCanonical -Context "$Description language leg $index page $pageIndex UI capture"
+            if ($captureSnapshot.LinkCount -ne 1) {
+                throw "$Description language leg $index page $pageIndex UI capture is a hardlink/path alias."
+            }
+            Assert-V02ReleaseGateEqual $captureSnapshot.Sha256 $page.UiCaptureSha256 "$Description language leg $index page $pageIndex UI capture hash"
         }
         Assert-V02ReleaseGateExactProperties $leg.Selection @('WorkspaceId', 'ProjectId', 'AgentId', 'TaskId', 'AgentStatus', 'PaneId', 'StateSha256', 'Source') "$Description language leg $index Selection"
         Assert-V02ReleaseGateExactString $leg.Selection.Source 'CoreSnapshot' "$Description language leg $index Selection.Source"
@@ -2034,6 +2067,9 @@ function Assert-V02ReleaseGateHumanReview {
         }
         elseif ($id -ceq 'runtime-matrix-thai' -or $id -ceq 'runtime-matrix-english') {
             Assert-V02ReleaseGateEqual $declared $Matrix.ManifestFileSha256 "Human review runtime matrix binding"
+        }
+        elseif ($id -ceq 'issue-9-acceptance') {
+            Assert-V02ReleaseGateEqual $declared $Issue9.CandidateSha256 "Human review Issue #9 candidate artifact binding"
         }
         elseif ($id -ceq 'tracker-11-readiness') {
             Assert-V02ReleaseGateEqual $declared $GitHubSnapshotSha256 "Human review tracker snapshot binding"
