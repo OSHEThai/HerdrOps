@@ -106,18 +106,6 @@ function Get-ControlHerdrServerIdentity {
     throw 'The gate process is not descended from a live Herdr server. Run it directly in a fresh Acceptance session pane.'
 }
 
-function Test-SameHerdrServerProcess {
-    param(
-        [Parameter(Mandatory)]$Left,
-        [Parameter(Mandatory)]$Right
-    )
-
-    $leftStart = ([DateTimeOffset]$Left.ProcessStartUtc).ToUniversalTime()
-    $rightStart = ([DateTimeOffset]$Right.ProcessStartUtc).ToUniversalTime()
-    return [int]$Left.ProcessId -eq [int]$Right.ProcessId -and
-        $leftStart.UtcDateTime.Ticks -eq $rightStart.UtcDateTime.Ticks
-}
-
 if ($env:HERDR_ENV -ne '1') {
     throw 'Runtime gate requires an authorized Herdr environment with HERDR_ENV=1.'
 }
@@ -131,14 +119,18 @@ if (-not (Get-Command Get-CimInstance -ErrorAction SilentlyContinue)) {
     throw 'Get-CimInstance is required to bind the gate process to its Acceptance control Herdr server.'
 }
 
+$runStartedUtc = [DateTimeOffset]::UtcNow
 $repositoryRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
 $solutionPath = Join-Path $repositoryRoot 'HerdrOps.sln'
 $artifactRoot = Join-Path $repositoryRoot 'artifacts'
-$runId = (Get-Date).ToUniversalTime().ToString('yyyyMMddTHHmmssZ')
-$evidenceDirectory = Join-Path $artifactRoot "runtime-evidence\v0.2\issue-7\$runId"
+$issueEvidenceRoot = Join-Path $artifactRoot 'runtime-evidence\v0.2\issue-7'
+$ledgerPath = Join-Path $issueEvidenceRoot '.transcript-ledger.txt'
+$runId = "$([DateTime]::UtcNow.ToString('yyyyMMddTHHmmssfffffffZ', [Globalization.CultureInfo]::InvariantCulture))-$([Guid]::NewGuid().ToString('N').Substring(0, 8))"
+$evidenceDirectory = Join-Path $issueEvidenceRoot $runId
 $testResultsDirectory = Join-Path $evidenceDirectory 'test-results'
 $tracePath = Join-Path $evidenceDirectory 'actual-herdr-runtime-trace.json'
 $gateReportPath = Join-Path $evidenceDirectory 'gate-report.txt'
+
 $sourceIdentity = Get-ExpectedCleanSourceIdentity `
     -Root $repositoryRoot `
     -ExpectedCommit $ExpectedSourceCommit `
@@ -155,6 +147,7 @@ if (-not (Test-Path -LiteralPath $env:HERDR_SOCKET_PATH -PathType Leaf)) {
 if (-not (Test-Path -LiteralPath $TargetHerdrSocketPath -PathType Leaf)) {
     throw "The target Agent Lab socket does not exist: $TargetHerdrSocketPath"
 }
+
 $controlHerdrSocketPath = (Resolve-Path -LiteralPath $env:HERDR_SOCKET_PATH).Path
 $targetHerdrSocketPath = (Resolve-Path -LiteralPath $TargetHerdrSocketPath).Path
 if ([StringComparer]::OrdinalIgnoreCase.Equals($controlHerdrSocketPath, $targetHerdrSocketPath)) {
@@ -185,349 +178,213 @@ if ([string]::IsNullOrWhiteSpace($observedControlPaneId)) {
 if ($observedControlPaneId -ne $env:HERDR_PANE_ID) {
     throw 'Use a fresh, unmoved Acceptance control pane so HERDR_PANE_ID exactly matches pane current --current.'
 }
-$controlServerIdentity = Get-ControlHerdrServerIdentity -ExpectedExecutablePath $HerdrExecutable
-New-Item -ItemType Directory -Path $testResultsDirectory -Force | Out-Null
 
-& dotnet restore $solutionPath --locked-mode --artifacts-path $artifactRoot
-if ($LASTEXITCODE -ne 0) { throw 'Locked restore failed.' }
-& dotnet build $solutionPath --configuration $Configuration --no-restore --artifacts-path $artifactRoot
-if ($LASTEXITCODE -ne 0) { throw 'Build failed.' }
+$heldHerdrStream = $null
+try {
+    $heldHerdrStream = Open-V02HeldFileStream -Path $HerdrExecutable
+    $baselineHerdrFileInfo = Get-V02FileInformation -FileStream $heldHerdrStream
+    if ($baselineHerdrFileInfo.NumberOfLinks -ne 1) {
+        throw "Installed Herdr executable has non-singular hard link count: $($baselineHerdrFileInfo.NumberOfLinks)."
+    }
 
-$testProjects = @(
-    (Join-Path $repositoryRoot 'tests\HerdrOps.UnitTests\HerdrOps.UnitTests.csproj'),
-    (Join-Path $repositoryRoot 'tests\HerdrOps.ContractTests\HerdrOps.ContractTests.csproj'),
-    (Join-Path $repositoryRoot 'tests\HerdrOps.IntegrationTests\HerdrOps.IntegrationTests.csproj')
-)
-foreach ($testProject in $testProjects) {
-    & dotnet test $testProject `
-        --configuration $Configuration `
-        --no-restore `
-        --no-build `
-        --artifacts-path $artifactRoot `
-        --results-directory $testResultsDirectory `
-        --logger trx
-    if ($LASTEXITCODE -ne 0) { throw "Pre-runtime tests failed: $testProject" }
-}
+    $controlServerIdentity = Get-ControlHerdrServerIdentity -ExpectedExecutablePath $HerdrExecutable
+    $heldControlExecutableStream = Open-V02HeldFileStream -Path $controlServerIdentity.ExecutablePath
+    try {
+        $controlFileInfo = Get-V02FileInformation -FileStream $heldControlExecutableStream
+        Assert-V02FileIdentityContinuity -BaselineInfo $baselineHerdrFileInfo -CurrentInfo $controlFileInfo -Context 'Control Herdr server executable'
+    } finally {
+        $heldControlExecutableStream.Dispose()
+    }
 
-Write-Host "Acceptance control socket: $controlHerdrSocketPath"
-Write-Host "Target Agent Lab socket: $targetHerdrSocketPath"
-Write-Host 'Runtime trace started. Trigger a genuine Agent-status transition, restart only the target Agent Lab session, wait for reconnect, and trigger another genuine Agent-status transition.'
-$coreDll = Join-Path $artifactRoot "bin\HerdrOps.Core\$($Configuration.ToLowerInvariant())\HerdrOps.Core.dll"
-& dotnet $coreDll trace-herdr-runtime `
-    --herdr $HerdrExecutable `
-    --socket-path $targetHerdrSocketPath `
-    --seconds $DurationSeconds `
-    --report $tracePath
-if ($LASTEXITCODE -ne 0) { throw 'Actual Herdr runtime trace command failed.' }
+    Assert-V02NoOwnedTcpListeners -ProcessIds @([int]$PID)
 
-$runtimeTraceSha256AtRead = ((Get-FileHash -LiteralPath $tracePath -Algorithm SHA256).Hash).ToUpperInvariant()
-$trace = Get-Content -LiteralPath $tracePath -Raw | ConvertFrom-Json
-if ($trace.EvidenceClassification -ne 'Runtime' -or $trace.RuntimeObserved -ne $true) {
-    throw 'Trace did not earn actual Herdr runtime credit.'
-}
-if ($trace.SessionControlInvoked -ne $false) {
-    throw 'HerdrOps runtime trace must not claim or invoke session control.'
-}
-if ($trace.SnapshotObserved -ne $true) { throw 'Actual Herdr snapshot was not observed.' }
-if ($trace.EventObserved -ne $true) { throw 'Actual Herdr event was not observed.' }
-if ($trace.ReconnectObserved -ne $true) {
-    throw 'Actual disconnect/reconnect with a fresh snapshot was not observed.'
-}
-if ($trace.Admission.ReleaseId -ne '0.8.2-preview.2026-08-19-b5c4a0176e91-x86_64-pc-windows-msvc') {
-    throw "Unexpected Herdr release: $($trace.Admission.ReleaseId)"
-}
-if ($trace.Admission.ExecutableSha256 -ne 'AFE7BAD9B77946917B509C9B638BB2A47BC1D4F19254957D15B0FAAFBEDB3E93') {
-    throw "Unexpected Herdr executable SHA-256: $($trace.Admission.ExecutableSha256)"
-}
-if ($trace.Admission.BundledSchemaSha256 -ne '3B34717C8B828FAF4E4A1D4DAC5953417712C8EB71A54237FFAD7582C7FF5679') {
-    throw "Unexpected bundled schema SHA-256: $($trace.Admission.BundledSchemaSha256)"
-}
-if ([int]$trace.Admission.Protocol -ne 20) {
-    throw "Unexpected runtime protocol: $($trace.Admission.Protocol)"
-}
-if ($null -eq $trace.ObservedServerIdentity -or [int]$trace.ObservedServerIdentity.ProcessId -le 0) {
-    throw 'Runtime trace did not bind the Named Pipe to a server process.'
-}
-if ($trace.ObservedServerIdentity.ExecutableSha256 -ne $trace.Admission.ExecutableSha256) {
-    throw 'Named Pipe server executable hash does not match the admitted Herdr executable hash.'
-}
-if ([string]::IsNullOrWhiteSpace($trace.ObservedServerIdentity.ExecutablePath)) {
-    throw 'Runtime trace did not retain the verified Named Pipe server executable path.'
-}
-if ($null -eq $trace.ObservedServerIdentity.ProcessStartUtc) {
-    throw 'Runtime trace did not retain the verified Named Pipe server process start time.'
-}
+    New-Item -ItemType Directory -Path $testResultsDirectory -Force | Out-Null
 
-$connectedBootstraps = @($trace.Transitions | Where-Object {
-    $_.Status -eq 'Connected' -and [long]$_.BootstrapCount -gt 0
-} | Sort-Object BootstrapCount -Unique)
-if ($connectedBootstraps.Count -lt 2) {
-    throw "Expected at least two connected snapshot bootstraps, found $($connectedBootstraps.Count)."
-}
-foreach ($connectedBootstrap in $connectedBootstraps) {
-    $identity = $connectedBootstrap.ServerIdentity
-    if ($null -eq $identity -or [int]$identity.ProcessId -le 0) {
-        throw "Bootstrap $($connectedBootstrap.BootstrapCount) has no verified server PID."
-    }
-    if ($null -eq $identity.ProcessStartUtc) {
-        throw "Bootstrap $($connectedBootstrap.BootstrapCount) has no verified server process start time."
-    }
-    if ([string]::IsNullOrWhiteSpace($identity.ExecutablePath)) {
-        throw "Bootstrap $($connectedBootstrap.BootstrapCount) has no verified server executable path."
-    }
-    if ($identity.ExecutableSha256 -ne $trace.Admission.ExecutableSha256) {
-        throw "Bootstrap $($connectedBootstrap.BootstrapCount) server hash does not match admission."
-    }
-}
+    & dotnet restore $solutionPath --locked-mode --artifacts-path $artifactRoot
+    if ($LASTEXITCODE -ne 0) { throw 'Locked restore failed.' }
+    & dotnet build $solutionPath --configuration $Configuration --no-restore --artifacts-path $artifactRoot
+    if ($LASTEXITCODE -ne 0) { throw 'Build failed.' }
 
-if ($controlServerIdentity.ExecutableSha256 -ne $trace.Admission.ExecutableSha256) {
-    throw 'Acceptance control server executable hash does not match the admitted Herdr executable.'
-}
-$transitions = @($trace.Transitions)
-$initialConnectedTransitionIndex = -1
-for ($index = 0; $index -lt $transitions.Count; $index++) {
-    if ($transitions[$index].Status -eq 'Connected' -and $null -ne $transitions[$index].ServerIdentity) {
-        $initialConnectedTransitionIndex = $index
-        break
+    $testProjects = @(
+        (Join-Path $repositoryRoot 'tests\HerdrOps.UnitTests\HerdrOps.UnitTests.csproj'),
+        (Join-Path $repositoryRoot 'tests\HerdrOps.ContractTests\HerdrOps.ContractTests.csproj'),
+        (Join-Path $repositoryRoot 'tests\HerdrOps.IntegrationTests\HerdrOps.IntegrationTests.csproj')
+    )
+    foreach ($testProject in $testProjects) {
+        & dotnet test $testProject `
+            --configuration $Configuration `
+            --no-restore `
+            --no-build `
+            --artifacts-path $artifactRoot `
+            --results-directory $testResultsDirectory `
+            --logger trx
+        if ($LASTEXITCODE -ne 0) { throw "Pre-runtime tests failed: $testProject" }
     }
-}
-if ($initialConnectedTransitionIndex -lt 0) {
-    throw 'Runtime trace does not contain an initial connected target snapshot.'
-}
-$initialConnectedTransition = $transitions[$initialConnectedTransitionIndex]
-if (Test-SameHerdrServerProcess -Left $controlServerIdentity -Right $initialConnectedTransition.ServerIdentity) {
-    throw 'Acceptance control and target Agent Lab resolved to the same Herdr server process.'
-}
 
-$eventATransitionIndex = -1
-for ($index = $initialConnectedTransitionIndex + 1; $index -lt $transitions.Count; $index++) {
-    if ([long]$transitions[$index].EventCount -gt [long]$initialConnectedTransition.EventCount) {
-        $eventATransitionIndex = $index
-        break
-    }
-}
-if ($eventATransitionIndex -lt 0) { throw 'Event A was not observed before target restart.' }
-$eventATransition = $transitions[$eventATransitionIndex]
-if ($null -eq $eventATransition.ServerIdentity) {
-    throw 'Event A is not bound to a verified target server identity.'
-}
-if ([long]$eventATransition.DisconnectCount -ne [long]$initialConnectedTransition.DisconnectCount) {
-    throw 'Event A coincided with a target transport disconnect instead of preceding it.'
-}
-if ([long]$eventATransition.BootstrapCount -ne [long]$initialConnectedTransition.BootstrapCount) {
-    throw 'Event A coincided with a target bootstrap instead of preceding the restart.'
-}
-if (-not (Test-SameHerdrServerProcess -Left $initialConnectedTransition.ServerIdentity -Right $eventATransition.ServerIdentity)) {
-    throw 'Target server identity changed before Event A.'
-}
-for ($index = $initialConnectedTransitionIndex + 1; $index -lt $eventATransitionIndex; $index++) {
-    $candidate = $transitions[$index]
-    if ([long]$candidate.DisconnectCount -ne [long]$initialConnectedTransition.DisconnectCount) {
-        throw 'A target transport disconnect occurred before Event A.'
-    }
-    if ([long]$candidate.BootstrapCount -ne [long]$initialConnectedTransition.BootstrapCount) {
-        throw 'A target bootstrap occurred before Event A.'
-    }
-    if ($null -ne $candidate.ServerIdentity -and
-        -not (Test-SameHerdrServerProcess -Left $initialConnectedTransition.ServerIdentity -Right $candidate.ServerIdentity)) {
-        throw 'Target server identity changed before Event A.'
-    }
-}
+    Write-Host "Acceptance control socket: $controlHerdrSocketPath"
+    Write-Host "Target Agent Lab socket: $targetHerdrSocketPath"
+    Write-Host 'Runtime trace started. Trigger a genuine Agent-status transition, restart only the target Agent Lab session, wait for reconnect, and trigger another genuine Agent-status transition.'
+    $coreDll = Join-Path $artifactRoot "bin\HerdrOps.Core\$($Configuration.ToLowerInvariant())\HerdrOps.Core.dll"
+    & dotnet $coreDll trace-herdr-runtime `
+        --herdr $HerdrExecutable `
+        --socket-path $targetHerdrSocketPath `
+        --seconds $DurationSeconds `
+        --report $tracePath
+    if ($LASTEXITCODE -ne 0) { throw 'Actual Herdr runtime trace command failed.' }
 
-$targetDisconnectTransitionIndex = -1
-for ($index = $eventATransitionIndex + 1; $index -lt $transitions.Count; $index++) {
-    if ([long]$transitions[$index].DisconnectCount -gt [long]$eventATransition.DisconnectCount) {
-        $targetDisconnectTransitionIndex = $index
-        break
-    }
-}
-if ($targetDisconnectTransitionIndex -lt 0) {
-    throw 'No target transport disconnect occurred after Event A.'
-}
-$targetDisconnectTransition = $transitions[$targetDisconnectTransitionIndex]
+    $runtimeTraceSha256AtRead = ((Get-FileHash -LiteralPath $tracePath -Algorithm SHA256).Hash).ToUpperInvariant()
+    Assert-V02NotReplayedTranscript -LedgerPath $ledgerPath -TranscriptSha256 $runtimeTraceSha256AtRead
 
-$targetReconnectTransitionIndex = -1
-for ($index = $targetDisconnectTransitionIndex + 1; $index -lt $transitions.Count; $index++) {
-    $candidate = $transitions[$index]
-    if ($candidate.Status -eq 'Connected' -and
-        [long]$candidate.BootstrapCount -gt [long]$eventATransition.BootstrapCount -and
-        $null -ne $candidate.ServerIdentity -and
-        -not (Test-SameHerdrServerProcess -Left $eventATransition.ServerIdentity -Right $candidate.ServerIdentity)) {
-        $targetReconnectTransitionIndex = $index
-        break
-    }
-}
-if ($targetReconnectTransitionIndex -lt 0) {
-    throw 'No replacement target Herdr server connected after the post-Event-A disconnect.'
-}
-$targetReconnectTransition = $transitions[$targetReconnectTransitionIndex]
-if (Test-SameHerdrServerProcess -Left $controlServerIdentity -Right $targetReconnectTransition.ServerIdentity) {
-    throw 'Restarted target Agent Lab resolved to the Acceptance control server process.'
-}
+    $currentHerdrFileInfo = Get-V02FileInformation -FileStream $heldHerdrStream
+    Assert-V02FileIdentityContinuity -BaselineInfo $baselineHerdrFileInfo -CurrentInfo $currentHerdrFileInfo -Context 'Installed Herdr executable held handle after trace'
 
-$eventBIncrementTransitionIndex = -1
-for ($index = $targetReconnectTransitionIndex + 1; $index -lt $transitions.Count; $index++) {
-    $candidate = $transitions[$index]
-    $previous = $transitions[$index - 1]
-    if ([long]$candidate.EventCount -gt [long]$previous.EventCount -and
-        $null -ne $candidate.ServerIdentity -and
-        (Test-SameHerdrServerProcess -Left $targetReconnectTransition.ServerIdentity -Right $candidate.ServerIdentity)) {
-        $eventBIncrementTransitionIndex = $index
-        break
-    }
-}
-if ($eventBIncrementTransitionIndex -lt 0) {
-    throw 'No EventCount increment from Event B was observed after the replacement target connected.'
-}
-$eventBIncrementTransition = $transitions[$eventBIncrementTransitionIndex]
+    $trace = Get-Content -LiteralPath $tracePath -Raw | ConvertFrom-Json
 
-$eventBTransitionIndex = -1
-for ($index = $eventBIncrementTransitionIndex; $index -lt $transitions.Count; $index++) {
-    $candidate = $transitions[$index]
-    if ($candidate.Status -eq 'Connected' -and
-        [long]$candidate.EventCount -ge [long]$eventBIncrementTransition.EventCount -and
-        $null -ne $candidate.ServerIdentity -and
-        (Test-SameHerdrServerProcess -Left $targetReconnectTransition.ServerIdentity -Right $candidate.ServerIdentity)) {
-        $eventBTransitionIndex = $index
-        break
-    }
-}
-if ($eventBTransitionIndex -lt $eventBIncrementTransitionIndex) {
-    throw 'No connected target state carried Event B after its post-reconnect increment.'
-}
-$eventBTransition = $transitions[$eventBTransitionIndex]
-if ([long]$trace.FinalMonitorState.EventCount -lt 2) {
-    throw 'The collector runtime gate requires at least two genuine Agent-status events.'
-}
+    $validationResult = Assert-V02HerdrRuntimeTraceReport `
+        -Trace $trace `
+        -ControlServerIdentity $controlServerIdentity `
+        -NotBeforeUtc $runStartedUtc
 
-$controlProcessAfter = Get-Process -Id ([int]$controlServerIdentity.ProcessId) -ErrorAction SilentlyContinue
-if ($null -eq $controlProcessAfter) {
-    throw 'Acceptance control Herdr server did not survive the target restart.'
-}
-$controlIdentityAfter = [pscustomobject]@{
-    ProcessId = [int]$controlServerIdentity.ProcessId
-    ProcessStartUtc = $controlProcessAfter.StartTime.ToUniversalTime()
-}
-if (-not (Test-SameHerdrServerProcess -Left $controlServerIdentity -Right $controlIdentityAfter)) {
-    throw 'Acceptance control Herdr server identity changed during the target restart.'
-}
+    $initialConnectedTransitionIndex = $validationResult.InitialConnectedTransitionIndex
+    $initialConnectedTransition      = $validationResult.InitialConnectedTransition
+    $eventATransitionIndex           = $validationResult.EventATransitionIndex
+    $eventATransition                = $validationResult.EventATransition
+    $targetDisconnectTransitionIndex = $validationResult.TargetDisconnectTransitionIndex
+    $targetDisconnectTransition      = $validationResult.TargetDisconnectTransition
+    $targetReconnectTransitionIndex  = $validationResult.TargetReconnectTransitionIndex
+    $targetReconnectTransition       = $validationResult.TargetReconnectTransition
+    $eventBIncrementTransitionIndex  = $validationResult.EventBIncrementTransitionIndex
+    $eventBIncrementTransition       = $validationResult.EventBIncrementTransition
+    $eventBTransitionIndex           = $validationResult.EventBTransitionIndex
+    $eventBTransition                = $validationResult.EventBTransition
+    $connectedBootstraps             = $validationResult.ConnectedBootstraps
 
-$firstState = $initialConnectedTransition
-$finalState = $targetReconnectTransition
-foreach ($stateFingerprint in @($firstState.StateFingerprintSha256, $finalState.StateFingerprintSha256)) {
-    if ($stateFingerprint -notmatch '^[0-9A-F]{64}$') {
-        throw "Invalid state fingerprint: $stateFingerprint"
+    $controlProcessAfter = Get-Process -Id ([int]$controlServerIdentity.ProcessId) -ErrorAction SilentlyContinue
+    if ($null -eq $controlProcessAfter) {
+        throw 'Acceptance control Herdr server did not survive the target restart.'
     }
-}
-foreach ($contractStateHash in @($firstState.ContractStateSha256, $finalState.ContractStateSha256)) {
-    if ($contractStateHash -notmatch '^[0-9A-F]{64}$') {
-        throw "Invalid normalized contract-state hash: $contractStateHash"
+    $controlIdentityAfter = [pscustomobject]@{
+        ProcessId = [int]$controlServerIdentity.ProcessId
+        ProcessStartUtc = $controlProcessAfter.StartTime.ToUniversalTime()
     }
-}
-foreach ($transition in $transitions) {
-    foreach ($agentFingerprint in @(
-        [string]$transition.AgentTopologySha256,
-        [string]$transition.AgentStatusStateSha256
-    )) {
-        if ($agentFingerprint -notmatch '^[0-9A-F]{64}$') {
-            throw "Invalid Agent evidence fingerprint: $agentFingerprint"
+    if (-not (Test-SameHerdrServerProcess -Left $controlServerIdentity -Right $controlIdentityAfter)) {
+        throw 'Acceptance control Herdr server identity changed during the target restart.'
+    }
+
+    Assert-V02NoOwnedTcpListeners -ProcessIds @([int]$PID)
+
+    $trxFiles = @(Get-ChildItem -LiteralPath $testResultsDirectory -Filter '*.trx' -File)
+    if ($trxFiles.Count -ne 3) { throw "Expected 3 fresh TRX files, found $($trxFiles.Count)." }
+    $totalTests = 0
+    $passedTests = 0
+    $failedTests = 0
+    foreach ($trxFile in $trxFiles) {
+        if ($trxFile.LastWriteTimeUtc -lt $runStartedUtc.AddSeconds(-2)) {
+            throw "StaleTrxFileDetected: $($trxFile.FullName) predates the gate run start."
         }
+        [xml]$trx = Get-Content -LiteralPath $trxFile.FullName -Raw
+        $counters = $trx.TestRun.ResultSummary.Counters
+        $totalTests += [int]$counters.total
+        $passedTests += [int]$counters.passed
+        $failedTests += [int]$counters.failed
+    }
+    if ($totalTests -le 0 -or $failedTests -ne 0 -or $totalTests -ne $passedTests) {
+        throw "Pre-runtime test counters are not all passing: total=$totalTests passed=$passedTests failed=$failedTests"
+    }
+
+    $finalSourceIdentity = Get-ExpectedCleanSourceIdentity `
+        -Root $repositoryRoot `
+        -ExpectedCommit $ExpectedSourceCommit `
+        -ExpectedTree $ExpectedSourceTree
+    $finalSourceCommit = $finalSourceIdentity.SourceCommit
+    $finalSourceTree = $finalSourceIdentity.SourceTree
+    if ($finalSourceCommit -ne $sourceCommit -or $finalSourceTree -ne $sourceTree) {
+        throw "Source identity changed during the runtime gate: $sourceCommit/$sourceTree -> $finalSourceCommit/$finalSourceTree"
+    }
+
+    $runtimeTraceSha256 = ((Get-FileHash -LiteralPath $tracePath -Algorithm SHA256).Hash).ToUpperInvariant()
+    if ($runtimeTraceSha256 -cne $runtimeTraceSha256AtRead) {
+        throw "Raw Issue #7 runtime trace changed during validation: $runtimeTraceSha256AtRead -> $runtimeTraceSha256"
+    }
+
+    $firstState = $initialConnectedTransition
+    $finalState = $targetReconnectTransition
+
+    $reportLines = @(
+        'HerdrOps v0.2 Issue #7 Actual Herdr Runtime Gate',
+        "GeneratedUtc: $((Get-Date).ToUniversalTime().ToString('O'))",
+        "ExpectedSourceCommit: $($ExpectedSourceCommit.ToLowerInvariant())",
+        "ExpectedSourceTree: $($ExpectedSourceTree.ToLowerInvariant())",
+        "SourceCommit: $sourceCommit",
+        "SourceTree: $sourceTree",
+        "PreRunSourceCommit: $($sourceIdentity.SourceCommit)",
+        "PreRunSourceTree: $($sourceIdentity.SourceTree)",
+        "PreRunGitTreeClean: $($sourceIdentity.GitTreeClean)",
+        "PostRunSourceCommit: $finalSourceCommit",
+        "PostRunSourceTree: $finalSourceTree",
+        "PostRunGitTreeClean: $($finalSourceIdentity.GitTreeClean)",
+        'Result: PASS',
+        'EvidenceClass: Runtime',
+        'RuntimeObserved: true',
+        'SessionControlInvoked: false',
+        'SnapshotObserved: true',
+        'EventObserved: true',
+        'ReconnectObserved: true',
+        "AcceptanceControlPaneEnvironmentId: $($env:HERDR_PANE_ID)",
+        "AcceptanceControlPaneObservedId: $observedControlPaneId",
+        "AcceptanceControlSession: $($sessionTopology.ControlSessionName)",
+        "TargetAgentLabSession: $($sessionTopology.TargetSessionName)",
+        "AcceptanceControlSocketPath: $controlHerdrSocketPath",
+        "AcceptanceControlServerIdentity: pid=$($controlServerIdentity.ProcessId) start=$($controlServerIdentity.ProcessStartUtc.ToString('O')) path=$($controlServerIdentity.ExecutablePath) sha256=$($controlServerIdentity.ExecutableSha256)",
+        "TargetAgentLabSocketPath: $targetHerdrSocketPath",
+        'SeparateSessionSockets: true',
+        "HerdrExecutableVolumeSerialNumber: $($baselineHerdrFileInfo.VolumeSerialNumber)",
+        "HerdrExecutableFileIndex: $($baselineHerdrFileInfo.FileIndex)",
+        "HerdrExecutableNumberOfLinks: $($baselineHerdrFileInfo.NumberOfLinks)",
+        'TcpListenersOwnedByHerdrOps: 0',
+        "InitialTargetTransition: index=$initialConnectedTransitionIndex utc=$($initialConnectedTransition.ObservedUtc) eventCount=$($initialConnectedTransition.EventCount) bootstrapCount=$($initialConnectedTransition.BootstrapCount) disconnectCount=$($initialConnectedTransition.DisconnectCount) targetPid=$($initialConnectedTransition.ServerIdentity.ProcessId) targetStart=$($initialConnectedTransition.ServerIdentity.ProcessStartUtc)",
+        "EventATransition: index=$eventATransitionIndex utc=$($eventATransition.ObservedUtc) eventCount=$($eventATransition.EventCount) targetPid=$($eventATransition.ServerIdentity.ProcessId) targetStart=$($eventATransition.ServerIdentity.ProcessStartUtc)",
+        "TargetDisconnectTransition: index=$targetDisconnectTransitionIndex utc=$($targetDisconnectTransition.ObservedUtc) disconnectCount=$($targetDisconnectTransition.DisconnectCount)",
+        "TargetReconnectTransition: index=$targetReconnectTransitionIndex utc=$($targetReconnectTransition.ObservedUtc) bootstrapCount=$($targetReconnectTransition.BootstrapCount) targetPid=$($targetReconnectTransition.ServerIdentity.ProcessId) targetStart=$($targetReconnectTransition.ServerIdentity.ProcessStartUtc)",
+        "EventBIncrementTransition: index=$eventBIncrementTransitionIndex utc=$($eventBIncrementTransition.ObservedUtc) eventCount=$($eventBIncrementTransition.EventCount)",
+        "EventBTransition: index=$eventBTransitionIndex utc=$($eventBTransition.ObservedUtc) eventCount=$($eventBTransition.EventCount)",
+        "ObservedDisconnectCount: $($trace.FinalMonitorState.DisconnectCount)",
+        "HerdrReleaseId: $($trace.Admission.ReleaseId)",
+        "HerdrExecutableSha256: $($trace.Admission.ExecutableSha256)",
+        "RuntimeTracePath: $tracePath",
+        "RuntimeTraceSha256: $runtimeTraceSha256",
+        "ObservedHerdrServerPid: $($trace.ObservedServerIdentity.ProcessId)",
+        "ObservedHerdrServerProcessStartUtc: $($trace.ObservedServerIdentity.ProcessStartUtc)",
+        "ObservedHerdrServerExecutablePath: $($trace.ObservedServerIdentity.ExecutablePath)",
+        "ObservedHerdrServerExecutableSha256: $($trace.ObservedServerIdentity.ExecutableSha256)",
+        "BundledSchemaSha256: $($trace.Admission.BundledSchemaSha256)",
+        "Protocol: $($trace.Admission.Protocol)",
+        "PreRuntimeTests: $passedTests/$totalTests PASS",
+        "FirstBootstrapCount: $($firstState.BootstrapCount)",
+        "FirstBootstrapServerIdentity: pid=$($firstState.ServerIdentity.ProcessId) start=$($firstState.ServerIdentity.ProcessStartUtc) path=$($firstState.ServerIdentity.ExecutablePath) sha256=$($firstState.ServerIdentity.ExecutableSha256)",
+        "FirstStateFingerprintSha256: $($firstState.StateFingerprintSha256)",
+        "FirstContractStateSha256: $($firstState.ContractStateSha256)",
+        "FirstStateCounts: workspaces=$($firstState.WorkspaceCount) tabs=$($firstState.TabCount) panes=$($firstState.PaneCount) agents=$($firstState.AgentCount)",
+        "FinalBootstrapCount: $($finalState.BootstrapCount)",
+        "FinalBootstrapServerIdentity: pid=$($finalState.ServerIdentity.ProcessId) start=$($finalState.ServerIdentity.ProcessStartUtc) path=$($finalState.ServerIdentity.ExecutablePath) sha256=$($finalState.ServerIdentity.ExecutableSha256)",
+        "FinalStateFingerprintSha256: $($finalState.StateFingerprintSha256)",
+        "FinalContractStateSha256: $($finalState.ContractStateSha256)",
+        "FinalStateCounts: workspaces=$($finalState.WorkspaceCount) tabs=$($finalState.TabCount) panes=$($finalState.PaneCount) agents=$($finalState.AgentCount)",
+        '',
+        'EvidenceBoundary:',
+        'This gate proves an actual admitted Herdr snapshot, event observation, disconnect/reconnect, and fresh-snapshot reconciliation on this host and run.',
+        'It produces a RuntimeCandidate diagnostic trace without granting release, human acceptance, or future version waivers.'
+    )
+
+    Set-V02AtomicTextFile -Path $gateReportPath -Content ($reportLines -join [Environment]::NewLine)
+
+    Get-Content -LiteralPath $gateReportPath
+    Write-Host "RuntimeTraceJson: $tracePath"
+    Write-Host "RuntimeGateReport: $gateReportPath"
+}
+finally {
+    if ($null -ne $heldHerdrStream) {
+        $heldHerdrStream.Dispose()
     }
 }
 
-$trxFiles = @(Get-ChildItem -LiteralPath $testResultsDirectory -Filter '*.trx' -File)
-if ($trxFiles.Count -ne 3) { throw "Expected 3 fresh TRX files, found $($trxFiles.Count)." }
-$totalTests = 0
-$passedTests = 0
-$failedTests = 0
-foreach ($trxFile in $trxFiles) {
-    [xml]$trx = Get-Content -LiteralPath $trxFile.FullName -Raw
-    $counters = $trx.TestRun.ResultSummary.Counters
-    $totalTests += [int]$counters.total
-    $passedTests += [int]$counters.passed
-    $failedTests += [int]$counters.failed
-}
-if ($totalTests -le 0 -or $failedTests -ne 0 -or $totalTests -ne $passedTests) {
-    throw "Pre-runtime test counters are not all passing: total=$totalTests passed=$passedTests failed=$failedTests"
-}
-
-$finalSourceIdentity = Get-ExpectedCleanSourceIdentity `
-    -Root $repositoryRoot `
-    -ExpectedCommit $ExpectedSourceCommit `
-    -ExpectedTree $ExpectedSourceTree
-$finalSourceCommit = $finalSourceIdentity.SourceCommit
-$finalSourceTree = $finalSourceIdentity.SourceTree
-if ($finalSourceCommit -ne $sourceCommit -or $finalSourceTree -ne $sourceTree) {
-    throw "Source identity changed during the runtime gate: $sourceCommit/$sourceTree -> $finalSourceCommit/$finalSourceTree"
-}
-$runtimeTraceSha256 = ((Get-FileHash -LiteralPath $tracePath -Algorithm SHA256).Hash).ToUpperInvariant()
-if ($runtimeTraceSha256 -cne $runtimeTraceSha256AtRead) {
-    throw "Raw Issue #7 runtime trace changed during validation: $runtimeTraceSha256AtRead -> $runtimeTraceSha256"
-}
-
-$reportLines = @(
-    'HerdrOps v0.2 Issue #7 Actual Herdr Runtime Gate',
-    "GeneratedUtc: $((Get-Date).ToUniversalTime().ToString('O'))",
-    "ExpectedSourceCommit: $($ExpectedSourceCommit.ToLowerInvariant())",
-    "ExpectedSourceTree: $($ExpectedSourceTree.ToLowerInvariant())",
-    "SourceCommit: $sourceCommit",
-    "SourceTree: $sourceTree",
-    "PreRunSourceCommit: $($sourceIdentity.SourceCommit)",
-    "PreRunSourceTree: $($sourceIdentity.SourceTree)",
-    "PreRunGitTreeClean: $($sourceIdentity.GitTreeClean)",
-    "PostRunSourceCommit: $finalSourceCommit",
-    "PostRunSourceTree: $finalSourceTree",
-    "PostRunGitTreeClean: $($finalSourceIdentity.GitTreeClean)",
-    'Result: PASS',
-    'EvidenceClass: Runtime',
-    'RuntimeObserved: true',
-    'SessionControlInvoked: false',
-    'SnapshotObserved: true',
-    'EventObserved: true',
-    'ReconnectObserved: true',
-    "AcceptanceControlPaneEnvironmentId: $($env:HERDR_PANE_ID)",
-    "AcceptanceControlPaneObservedId: $observedControlPaneId",
-    "AcceptanceControlSession: $($sessionTopology.ControlSessionName)",
-    "TargetAgentLabSession: $($sessionTopology.TargetSessionName)",
-    "AcceptanceControlSocketPath: $controlHerdrSocketPath",
-    "AcceptanceControlServerIdentity: pid=$($controlServerIdentity.ProcessId) start=$($controlServerIdentity.ProcessStartUtc.ToString('O')) path=$($controlServerIdentity.ExecutablePath) sha256=$($controlServerIdentity.ExecutableSha256)",
-    "TargetAgentLabSocketPath: $targetHerdrSocketPath",
-    'SeparateSessionSockets: true',
-    "InitialTargetTransition: index=$initialConnectedTransitionIndex utc=$($initialConnectedTransition.ObservedUtc) eventCount=$($initialConnectedTransition.EventCount) bootstrapCount=$($initialConnectedTransition.BootstrapCount) disconnectCount=$($initialConnectedTransition.DisconnectCount) targetPid=$($initialConnectedTransition.ServerIdentity.ProcessId) targetStart=$($initialConnectedTransition.ServerIdentity.ProcessStartUtc)",
-    "EventATransition: index=$eventATransitionIndex utc=$($eventATransition.ObservedUtc) eventCount=$($eventATransition.EventCount) targetPid=$($eventATransition.ServerIdentity.ProcessId) targetStart=$($eventATransition.ServerIdentity.ProcessStartUtc)",
-    "TargetDisconnectTransition: index=$targetDisconnectTransitionIndex utc=$($targetDisconnectTransition.ObservedUtc) disconnectCount=$($targetDisconnectTransition.DisconnectCount)",
-    "TargetReconnectTransition: index=$targetReconnectTransitionIndex utc=$($targetReconnectTransition.ObservedUtc) bootstrapCount=$($targetReconnectTransition.BootstrapCount) targetPid=$($targetReconnectTransition.ServerIdentity.ProcessId) targetStart=$($targetReconnectTransition.ServerIdentity.ProcessStartUtc)",
-    "EventBIncrementTransition: index=$eventBIncrementTransitionIndex utc=$($eventBIncrementTransition.ObservedUtc) eventCount=$($eventBIncrementTransition.EventCount)",
-    "EventBTransition: index=$eventBTransitionIndex utc=$($eventBTransition.ObservedUtc) eventCount=$($eventBTransition.EventCount)",
-    "ObservedDisconnectCount: $($trace.FinalMonitorState.DisconnectCount)",
-    "HerdrReleaseId: $($trace.Admission.ReleaseId)",
-    "HerdrExecutableSha256: $($trace.Admission.ExecutableSha256)",
-    "RuntimeTracePath: $tracePath",
-    "RuntimeTraceSha256: $runtimeTraceSha256",
-    "ObservedHerdrServerPid: $($trace.ObservedServerIdentity.ProcessId)",
-    "ObservedHerdrServerProcessStartUtc: $($trace.ObservedServerIdentity.ProcessStartUtc)",
-    "ObservedHerdrServerExecutablePath: $($trace.ObservedServerIdentity.ExecutablePath)",
-    "ObservedHerdrServerExecutableSha256: $($trace.ObservedServerIdentity.ExecutableSha256)",
-    "BundledSchemaSha256: $($trace.Admission.BundledSchemaSha256)",
-    "Protocol: $($trace.Admission.Protocol)",
-    "PreRuntimeTests: $passedTests/$totalTests PASS",
-    "FirstBootstrapCount: $($firstState.BootstrapCount)",
-    "FirstBootstrapServerIdentity: pid=$($firstState.ServerIdentity.ProcessId) start=$($firstState.ServerIdentity.ProcessStartUtc) path=$($firstState.ServerIdentity.ExecutablePath) sha256=$($firstState.ServerIdentity.ExecutableSha256)",
-    "FirstStateFingerprintSha256: $($firstState.StateFingerprintSha256)",
-    "FirstContractStateSha256: $($firstState.ContractStateSha256)",
-    "FirstStateCounts: workspaces=$($firstState.WorkspaceCount) tabs=$($firstState.TabCount) panes=$($firstState.PaneCount) agents=$($firstState.AgentCount)",
-    "FinalBootstrapCount: $($finalState.BootstrapCount)",
-    "FinalBootstrapServerIdentity: pid=$($finalState.ServerIdentity.ProcessId) start=$($finalState.ServerIdentity.ProcessStartUtc) path=$($finalState.ServerIdentity.ExecutablePath) sha256=$($finalState.ServerIdentity.ExecutableSha256)",
-    "FinalStateFingerprintSha256: $($finalState.StateFingerprintSha256)",
-    "FinalContractStateSha256: $($finalState.ContractStateSha256)",
-    "FinalStateCounts: workspaces=$($finalState.WorkspaceCount) tabs=$($finalState.TabCount) panes=$($finalState.PaneCount) agents=$($finalState.AgentCount)",
-    '',
-    'EvidenceBoundary:',
-    'This gate proves an actual admitted Herdr snapshot, event observation, disconnect/reconnect, and fresh-snapshot reconciliation on this host and run.',
-    'It does not prove package installation, release readiness, or future Herdr versions.'
-)
-$reportLines | Set-Content -LiteralPath $gateReportPath -Encoding utf8
-
-Get-Content -LiteralPath $gateReportPath
-Write-Host "RuntimeTraceJson: $tracePath"
-Write-Host "RuntimeGateReport: $gateReportPath"

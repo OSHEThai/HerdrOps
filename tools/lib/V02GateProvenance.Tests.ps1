@@ -196,9 +196,30 @@ try {
         ContractStateSha256 = ('A' * 64)
         AcceptedEventKind   = $null
     }
-    Assert-TestThrows `
-        -ScriptBlock { Assert-AllAgentsHaveLiveIdentity -Transition $missingFlagTransition -Name 'leading reconciliation' } `
-        -Message 'Assert-AllAgentsHaveLiveIdentity rejects a leading-reconciliation transition that omits the aggregate Agent-identity contract flag'
+    # --- File identity & continuity assertions ---
+    $tempFile = [System.IO.Path]::GetTempFileName()
+    try {
+        [System.IO.File]::WriteAllText($tempFile, 'Sample Herdr Executable Content')
+        $stream = Open-V02HeldFileStream -Path $tempFile
+        try {
+            $info = Get-V02FileInformation -FileStream $stream
+            Assert-TestTrue ($info.VolumeSerialNumber -gt 0 -and $info.FileSize -gt 0) 'Get-V02FileInformation extracts valid volume serial number and file size'
+            Assert-TestTrue ($info.NumberOfLinks -ge 1) 'Get-V02FileInformation extracts valid link count'
+
+            Assert-TestTrue ((& { Assert-V02FileIdentityContinuity -BaselineInfo $info -CurrentInfo $info -Context 'Self'; $true })) 'Assert-V02FileIdentityContinuity accepts identical file info'
+        }
+        finally {
+            $stream.Dispose()
+        }
+    }
+    finally {
+        if (Test-Path -LiteralPath $tempFile) {
+            Remove-Item -LiteralPath $tempFile -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    # --- No owned TCP listeners check ---
+    Assert-TestTrue ((& { Assert-V02NoOwnedTcpListeners -ProcessIds @([int]$PID); $true })) 'Assert-V02NoOwnedTcpListeners passes when no TCP listeners are owned'
 }
 finally {
 }

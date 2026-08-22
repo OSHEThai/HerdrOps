@@ -99,6 +99,10 @@ $runtimePackageBindingTests = Join-Path $repositoryRoot 'tools\lib\V02RuntimePac
 $runtimeSemanticBinding = Join-Path $repositoryRoot 'tools\lib\V02RuntimeSemanticBinding.ps1'
 $runtimeSemanticBindingTests = Join-Path $repositoryRoot 'tools\lib\V02RuntimeSemanticBinding.Tests.ps1'
 
+$gateProvenance = Join-Path $repositoryRoot 'tools\lib\V02GateProvenance.ps1'
+$gateProvenanceTests = Join-Path $repositoryRoot 'tools\lib\V02GateProvenance.Tests.ps1'
+$herdrRuntimeTests = Join-Path $repositoryRoot 'tools\Test-V02HerdrRuntime.Tests.ps1'
+
 foreach ($path in @($herdrRuntime, $compositeRuntime)) {
     Assert-ParserClean -Path $path
     Assert-SourceContains -Path $path -Text '[string]$ExpectedSourceCommit' -Description "$(Split-Path -Leaf $path) requires ExpectedSourceCommit"
@@ -111,7 +115,15 @@ foreach ($path in @($herdrRuntime, $compositeRuntime)) {
     Assert-SourceContains -Path $path -Text 'PostRunSourceTree' -Description "$(Split-Path -Leaf $path) reports post-run source tree"
 }
 
-foreach ($path in @($runtimePackageBinding,$runtimePackageBindingTests,$runtimeSemanticBinding,$runtimeSemanticBindingTests)) {
+foreach ($path in @(
+    $runtimePackageBinding,
+    $runtimePackageBindingTests,
+    $runtimeSemanticBinding,
+    $runtimeSemanticBindingTests,
+    $gateProvenance,
+    $gateProvenanceTests,
+    $herdrRuntimeTests
+)) {
     Assert-ParserClean -Path $path
 }
 Assert-SourceContains -Path $compositeRuntime -Text '[string]$PackageIdentityPath' -Description 'Composite gate requires the package identity receipt'
