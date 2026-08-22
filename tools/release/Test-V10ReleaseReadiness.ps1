@@ -983,7 +983,7 @@ try {
 
     $issue41IncompleteDependency = Copy-TestJsonObject -Value $issue41Report.Value
     $issue41IncompleteDependency.DependencyMap = @($issue41IncompleteDependency.DependencyMap | Where-Object { [int]$_.IssueNumber -ne 40 })
-    Assert-ExpectedFailure -Description 'Issue #41 incomplete dependency inventory' -RequiredFragments @('complete version') -Action {
+    Assert-ExpectedFailure -Description 'Issue #41 incomplete dependency inventory' -RequiredFragments @('at least 7 item') -Action {
         Assert-V10Issue41ReportSemantics -Report $issue41IncompleteDependency -SourceCommit $sourceCommit -ExpectedSourceTree $sourceTree | Out-Null
     }
     [void]$assertions.Add('Issue41IncompleteDependencyRejected')
