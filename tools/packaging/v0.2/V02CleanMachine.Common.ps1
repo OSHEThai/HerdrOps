@@ -325,7 +325,18 @@ function Write-V02CleanMachineReportFile {
         # Direct CreateNew plus an exclusive read/write handle is the atomic
         # no-clobber publication boundary.  The same final-path handle remains
         # held through write, flush, byte verification, FileId and link checks.
-        $stream = [IO.File]::Open($full,[IO.FileMode]::CreateNew,[IO.FileAccess]::ReadWrite,[IO.FileShare]::None)
+        # GENERIC_READ|GENERIC_WRITE|DELETE, no sharing, CREATE_NEW.  DELETE is
+        # required so a failed publication can retire this exact object without
+        # ever releasing and reopening its reusable pathname.
+        $reportHandle = [HerdrOps.V02DirectoryLeaseNative]::CreateFile($full,[uint32]3221291008,0,[IntPtr]::Zero,1,0x80,[IntPtr]::Zero)
+        if ($null -eq $reportHandle -or $reportHandle.IsInvalid) {
+            $errorCode = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
+            if ($null -ne $reportHandle) { $reportHandle.Dispose() }
+            if ($errorCode -eq 80 -or $errorCode -eq 183) { throw "Refusing to overwrite existing report: $full" }
+            throw "Could not create clean-machine report '$full' (Win32 $errorCode)."
+        }
+        try { $stream = [IO.FileStream]::new($reportHandle,[IO.FileAccess]::ReadWrite) }
+        catch { $reportHandle.Dispose(); throw }
         $created = $true
         $reportIdentity = Get-V02HandleIdentity -Handle $stream.SafeFileHandle -Context 'clean-machine report'
         $null = Assert-V02SameHandleIdentity -Handle $stream.SafeFileHandle -Expected $reportIdentity -ExpectedPath $full -Context 'clean-machine report' -RequireSingleLink
@@ -339,16 +350,21 @@ function Write-V02CleanMachineReportFile {
         if ($stream.Length -ne $bytes.Length -or $writtenSha -cne $expectedSha) { throw 'Published clean-machine report bytes changed.' }
         $published = $true
     } finally {
-        if ($null -ne $stream) { $stream.Dispose() }
-        if ($created -and -not $published -and (Test-Path -LiteralPath $full -PathType Leaf)) {
-            $failedReportLease = Open-V02FileDeletionLease -Path $full
-            try {
+        try {
+            if ($created -and -not $published -and $null -ne $stream) {
+                # The exclusive CreateNew handle is the only cleanup authority.
+                # Never close it and reopen this reusable pathname: a hostile leaf
+                # could replace the failed report between those operations.
+                $null = Assert-V02SameHandleIdentity -Handle $stream.SafeFileHandle -Expected $reportIdentity -ExpectedPath $full -Context 'clean-machine report' -RequireSingleLink
                 $disposition = New-Object HerdrOps.V02FileDispositionInfo; $disposition.DeleteFile = $true
-                if (-not [HerdrOps.V02DirectoryLeaseNative]::SetFileInformationByHandle($failedReportLease,4,[ref]$disposition,4)) { throw "Failed report cleanup failed (Win32 $([Runtime.InteropServices.Marshal]::GetLastWin32Error()))." }
-            } finally { $failedReportLease.Dispose() }
+                if (-not [HerdrOps.V02DirectoryLeaseNative]::SetFileInformationByHandle($stream.SafeFileHandle,4,[ref]$disposition,4)) { throw "Failed report cleanup failed (Win32 $([Runtime.InteropServices.Marshal]::GetLastWin32Error()))." }
+            }
+        } finally {
+            if ($null -ne $stream) { $stream.Dispose() }
+            try {
+                $null = Assert-V02SameHandleIdentity -Handle $parentLease -Expected $parentLease.V02Identity -ExpectedPath $parentLease.V02Path -Context 'clean-machine report parent' -RequireSingleLink
+            } finally { $parentLease.Dispose() }
         }
-        $null = Assert-V02SameHandleIdentity -Handle $parentLease -Expected $parentLease.V02Identity -ExpectedPath $parentLease.V02Path -Context 'clean-machine report parent' -RequireSingleLink
-        $parentLease.Dispose()
     }
 }
 

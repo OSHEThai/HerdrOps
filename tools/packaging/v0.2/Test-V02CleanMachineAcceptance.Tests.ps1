@@ -558,6 +558,69 @@ try {
         } 'signature is invalid or untrusted'
     }
 
+    Invoke-Case 'Hostile 10c: Failed report cleanup keeps its original handle and never deletes a leaf-swap victim' {
+        $failedReport = Join-Path $testRoot 'failed-report.json'
+        $quarantinedOriginal = Join-Path $testRoot 'failed-report-original.json'
+        $victim = Join-Path $testRoot 'failed-report-victim.bin'
+        $victimBytes = [byte[]](91,82,73,64,55,46)
+        [IO.File]::WriteAllBytes($victim,$victimBytes)
+        $victimSha256 = (Get-V02StableFileIdentity $victim).Sha256
+
+        $originalAssert = ${function:script:Assert-V02SameHandleIdentity}
+        $originalOpenDeletionLease = ${function:script:Open-V02FileDeletionLease}
+        $script:V02FailedReportCleanupProbe = @{
+            FailureInjected = $false
+            CleanupReached = $false
+            MoveBlocked = $false
+            SwapBlocked = $false
+            LegacyPathReopenReached = $false
+            FailedReport = $failedReport
+            QuarantinedOriginal = $quarantinedOriginal
+            Victim = $victim
+            OriginalAssert = $originalAssert
+            OriginalOpenDeletionLease = $originalOpenDeletionLease
+        }
+        try {
+            Set-Item -LiteralPath Function:\script:Assert-V02SameHandleIdentity -Value {
+                param($Handle,$Expected,[string]$ExpectedPath,[string]$Context,[switch]$RequireSingleLink)
+                if ($Context -ceq 'clean-machine report' -and -not $script:V02FailedReportCleanupProbe.FailureInjected) {
+                    $script:V02FailedReportCleanupProbe.FailureInjected = $true
+                    throw 'INJECTED_POST_CREATE_REPORT_FAILURE'
+                }
+                if ($Context -ceq 'clean-machine report' -and -not $script:V02FailedReportCleanupProbe.CleanupReached) {
+                    $script:V02FailedReportCleanupProbe.CleanupReached = $true
+                    try { [IO.File]::Move($script:V02FailedReportCleanupProbe.FailedReport,$script:V02FailedReportCleanupProbe.QuarantinedOriginal) }
+                    catch { $script:V02FailedReportCleanupProbe.MoveBlocked = $true }
+                    try { [IO.File]::Move($script:V02FailedReportCleanupProbe.Victim,$script:V02FailedReportCleanupProbe.FailedReport) }
+                    catch { $script:V02FailedReportCleanupProbe.SwapBlocked = $true }
+                }
+                & $script:V02FailedReportCleanupProbe.OriginalAssert @PSBoundParameters
+            }
+            Set-Item -LiteralPath Function:\script:Open-V02FileDeletionLease -Value {
+                param([string]$Path)
+                if ([StringComparer]::OrdinalIgnoreCase.Equals([IO.Path]::GetFullPath($Path),[IO.Path]::GetFullPath($script:V02FailedReportCleanupProbe.FailedReport))) {
+                    $script:V02FailedReportCleanupProbe.LegacyPathReopenReached = $true
+                    [IO.File]::Move($script:V02FailedReportCleanupProbe.FailedReport,$script:V02FailedReportCleanupProbe.QuarantinedOriginal)
+                    [IO.File]::Move($script:V02FailedReportCleanupProbe.Victim,$script:V02FailedReportCleanupProbe.FailedReport)
+                }
+                & $script:V02FailedReportCleanupProbe.OriginalOpenDeletionLease -Path $Path
+            }
+
+            Assert-Throws {
+                Write-V02CleanMachineReportFile -Value ([pscustomobject][ordered]@{ probe = 'failed-report-cleanup' }) -Path $failedReport -RepositoryRoot $repo
+            } '^INJECTED_POST_CREATE_REPORT_FAILURE$'
+        } finally {
+            Set-Item -LiteralPath Function:\script:Assert-V02SameHandleIdentity -Value $originalAssert
+            Set-Item -LiteralPath Function:\script:Open-V02FileDeletionLease -Value $originalOpenDeletionLease
+        }
+
+        if (-not $script:V02FailedReportCleanupProbe.CleanupReached -or -not $script:V02FailedReportCleanupProbe.MoveBlocked -or -not $script:V02FailedReportCleanupProbe.SwapBlocked) { throw 'Hostile move/swap fixture did not reach the held-handle failed-report cleanup boundary.' }
+        if ($script:V02FailedReportCleanupProbe.LegacyPathReopenReached) { throw 'Failed report cleanup reopened a reusable pathname after releasing the original handle.' }
+        if ((Test-Path -LiteralPath $failedReport) -or (Test-Path -LiteralPath $quarantinedOriginal)) { throw 'Failed report original object was not retired through its held handle.' }
+        if (-not (Test-Path -LiteralPath $victim -PathType Leaf) -or (Get-V02StableFileIdentity $victim).Sha256 -cne $victimSha256) { throw 'Failed report cleanup deleted or changed the leaf-swap victim canary.' }
+        $script:V02FailedReportCleanupProbe = $null
+    }
+
     Invoke-Case 'Hostile 11: Stable copy refuses a pre-existing hardlink without clobbering it' {
         $hardlinkSource = Join-Path $testRoot 'hardlink-source.bin'
         $hardlinkVictim = Join-Path $testRoot 'hardlink-victim.bin'
