@@ -16,6 +16,25 @@ if ($timeoutParameterAst.Count -ne 1 -or
     [int]$timeoutParameterAst[0].DefaultValue.SafeGetValue() -ne 120000) {
     throw 'MSBuild property evaluation must retain the bounded 120000 ms cold-start timeout.'
 }
+$ownedTimeoutProbe = New-Object Diagnostics.Process
+$ownedTimeoutProbe.StartInfo = New-Object Diagnostics.ProcessStartInfo
+$ownedTimeoutProbe.StartInfo.FileName = 'powershell.exe'
+$ownedTimeoutProbe.StartInfo.Arguments = '-NoLogo -NoProfile -Command "Start-Sleep -Seconds 30"'
+$ownedTimeoutProbe.StartInfo.UseShellExecute = $false
+$ownedTimeoutProbe.StartInfo.CreateNoWindow = $true
+$ownedTimeoutProbeStarted = $false
+try {
+    if (-not $ownedTimeoutProbe.Start()) { throw 'Could not start the owned timeout-termination probe.' }
+    $ownedTimeoutProbeStarted = $true
+    Stop-PackagingOwnedProcessAfterTimeout -Process $ownedTimeoutProbe -ExitConfirmationTimeoutMilliseconds 5000
+    if (-not $ownedTimeoutProbe.HasExited) { throw 'Owned timeout-termination probe remained active.' }
+} finally {
+    if ($ownedTimeoutProbeStarted -and -not $ownedTimeoutProbe.HasExited) {
+        try { $ownedTimeoutProbe.Kill() } catch { }
+        try { [void]$ownedTimeoutProbe.WaitForExit(5000) } catch { }
+    }
+    $ownedTimeoutProbe.Dispose()
+}
 
 if ([string]::IsNullOrWhiteSpace($ProfilePath)) {
     $ProfilePath = Join-Path $PSScriptRoot 'package-profile.json'
