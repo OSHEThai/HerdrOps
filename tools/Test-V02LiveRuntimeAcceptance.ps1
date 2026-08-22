@@ -13,6 +13,10 @@ param(
     [string]$ExpectedSourceTree,
 
     [Parameter(Mandatory)]
+    [ValidatePattern('^[0-9a-f]{32}$')]
+    [string]$EvidenceRunNonce,
+
+    [Parameter(Mandatory)]
     [ValidateNotNullOrEmpty()]
     [string]$PackageIdentityPath,
 
@@ -242,6 +246,7 @@ function Write-FailureGateReport {
         $reportLines = @(
             'HerdrOps v0.2 Composite Actual Herdr Runtime Acceptance',
             "GeneratedUtc: $([DateTimeOffset]::UtcNow.ToString('O'))",
+            "RunNonce: $EvidenceRunNonce",
             "ExpectedSourceCommit: $ExpectedSourceCommit",
             "ExpectedSourceTree: $ExpectedSourceTree",
             "SourceCommit: $SourceCommit",
@@ -1527,6 +1532,7 @@ $appReportHash = (Get-FileHash -LiteralPath $appReportPath -Algorithm SHA256).Ha
 $reportLines = @(
     'HerdrOps v0.2 Composite Actual Herdr Runtime Acceptance',
     "GeneratedUtc: $([DateTimeOffset]::UtcNow.ToString('O'))",
+    "RunNonce: $EvidenceRunNonce",
     "ExpectedSourceCommit: $($ExpectedSourceCommit.ToLowerInvariant())",
     "ExpectedSourceTree: $($ExpectedSourceTree.ToLowerInvariant())",
     "SourceCommit: $sourceCommit",
