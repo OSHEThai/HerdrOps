@@ -184,6 +184,16 @@ jobs:
         shell: powershell
         run: ./tools/lib/V02RendererEvidence.Tests.ps1
 
+      # Synthetic hostile coverage for the live-renderer operator contract only.
+      # These fixtures do not start Herdr or grant Runtime/Release credit.
+      - name: Run v0.2 live renderer capture hostile selftests (PowerShell 7)
+        shell: pwsh
+        run: ./tools/v0.2-renderer-compatibility/Test-V02LiveRendererCapture.SelfTests.ps1
+
+      - name: Run v0.2 live renderer capture hostile selftests (Windows PowerShell 5.1)
+        shell: powershell
+        run: ./tools/v0.2-renderer-compatibility/Test-V02LiveRendererCapture.SelfTests.ps1
+
       # Static/Contract/Synthetic verifier self-tests only. These fixtures do not build or
       # validate a release package, observe actual Herdr Runtime, grant Human GO, or authorize publication.
       - name: Run v0.2 package identity verifier self-tests (PowerShell 7)

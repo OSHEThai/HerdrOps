@@ -19,21 +19,31 @@ param(
 
     [scriptblock]$OperatorCaptureAction,
 
+    [scriptblock]$OperatorObservationAction,
+
     [switch]$SyntheticCapturesForTesting,
 
-    [switch]$AllowElevatedForTesting,
-
-    [switch]$AllowNonReferenceHostForTesting,
-
-    [string]$TestFaultStage,
-
-    [switch]$Force
+    [string]$TestFaultStage
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 . (Join-Path $PSScriptRoot 'RendererCompatibility.Common.ps1')
+
+$selfTestMode = ([string]$env:HERDROPS_RENDERER_SELFTEST -ceq '1')
+if (($SyntheticCapturesForTesting -or -not [string]::IsNullOrWhiteSpace($TestFaultStage)) -and -not $selfTestMode) {
+    throw 'Synthetic capture and fault-injection switches are reserved for the guarded renderer selftest process.'
+}
+$captureMode = if ($SyntheticCapturesForTesting) { 'SyntheticSelfTest' } else { 'LiveOperator' }
+if ($captureMode -eq 'LiveOperator' -and $null -eq $OperatorObservationAction) {
+    throw 'Live renderer capture requires -OperatorObservationAction with native process observations.'
+}
+if (-not $SyntheticCapturesForTesting -and
+    [string]::IsNullOrWhiteSpace($CaptureSourceDirectory) -and
+    $null -eq $OperatorCaptureAction) {
+    throw 'Live renderer capture requires -CaptureSourceDirectory or -OperatorCaptureAction.'
+}
 
 if ([string]::IsNullOrWhiteSpace($RepositoryRoot)) {
     $RepositoryRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
@@ -116,38 +126,31 @@ $validatedCommittedPackage = Assert-RendererCommittedPackageIdentity `
     -CanonicalReceiptJson $initialReceiptRead.CanonicalJson
 Write-Host 'INFO [harness] package identity validated.'
 
-# Check session environment constraints
-$sessionName = $env:SESSIONNAME
-$isRdp = $false
-if (-not [string]::IsNullOrWhiteSpace($sessionName) -and $sessionName -match '^(RDP|ICA)') {
-    $isRdp = $true
+# Observe the host at invocation time. Synthetic selftests retain the observation
+# in the report but do not receive Runtime/Release credit.
+$environment = Copy-RendererValue (Get-RendererEnvironmentSnapshot)
+Assert-RendererEnvironmentSnapshot $environment
+if ($captureMode -eq 'LiveOperator') {
+    Assert-RendererLiveEnvironment $environment $RepositoryRoot
 }
 
-$isElevated = $false
-$windowsIdentity = [Security.Principal.WindowsIdentity]::GetCurrent()
-if ($null -ne $windowsIdentity) {
-    $principal = New-Object Security.Principal.WindowsPrincipal($windowsIdentity)
-    $isElevated = $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-}
-
-if ($isElevated -and -not $AllowElevatedForTesting) {
-    throw 'Live renderer capture harness must be executed in a non-elevated user session for production candidate evidence.'
-}
-if ($isRdp -and -not $AllowNonReferenceHostForTesting) {
-    throw 'Live renderer capture harness must be executed on a local physical console session; RDP is excluded.'
+if (-not [string]::IsNullOrWhiteSpace($CaptureSourceDirectory)) {
+    $CaptureSourceDirectory = [IO.Path]::GetFullPath($CaptureSourceDirectory)
+    if (-not (Test-Path -LiteralPath $CaptureSourceDirectory -PathType Container)) {
+        throw "Capture source directory was not found: $CaptureSourceDirectory"
+    }
+    Assert-RendererNonReparsePath $CaptureSourceDirectory $CaptureSourceDirectory 'Capture source directory'
 }
 
 # Check output directory and setup staging (atomic output / no-clobber)
 $outFull = [IO.Path]::GetFullPath($OutputDirectory)
 if (Test-Path -LiteralPath $outFull) {
-    if (-not $Force) {
-        throw "Output directory already exists: $outFull (no-clobber policy). Specify -Force to replace."
-    }
+    throw "Output directory already exists: $outFull (no-clobber policy)."
 }
 
 $parentOut = Split-Path -Path $outFull -Parent
 if (-not [string]::IsNullOrWhiteSpace($parentOut) -and -not (Test-Path -LiteralPath $parentOut -PathType Container)) {
-    New-Item -ItemType Directory -Path $parentOut -Force | Out-Null
+    New-Item -ItemType Directory -Path $parentOut -ErrorAction Stop | Out-Null
 }
 if (-not [string]::IsNullOrWhiteSpace($parentOut)) {
     Assert-RendererNonReparsePath $parentOut $parentOut 'Output parent directory'
@@ -155,7 +158,8 @@ if (-not [string]::IsNullOrWhiteSpace($parentOut)) {
 
 $stagingParent = if ([string]::IsNullOrWhiteSpace($parentOut)) { [IO.Path]::GetTempPath() } else { $parentOut }
 $stagingDir = Join-Path $stagingParent ('.' + (Split-Path $outFull -Leaf) + '.staging-' + [Guid]::NewGuid().ToString('N'))
-New-Item -ItemType Directory -Path $stagingDir -Force | Out-Null
+New-Item -ItemType Directory -Path $stagingDir -ErrorAction Stop | Out-Null
+Assert-RendererNonReparsePath $parentOut $stagingDir 'Renderer staging directory'
 
 $commitSuccessful = $false
 try {
@@ -181,61 +185,72 @@ try {
     $stagedAppStable = Get-RendererPackageStableIdentity $stagedAppPath
     $stagedCoreStable = Get-RendererPackageStableIdentity $stagedCorePath
 
-    # 2. Establish 8 lifecycle stage observations & pre-first-HWND proof
-    Write-Host 'INFO [harness] recording 8 lifecycle stage observations & pre-first-HWND proof...'
-    $baseUtc = [DateTimeOffset]::UtcNow
-    $timeStartup = $baseUtc
-    $timePreFirst = $timeStartup.AddMilliseconds(100)
-    $timeFirstHwnd = $timePreFirst.AddMilliseconds(200)
-    $timePostFirst = $timeFirstHwnd.AddMilliseconds(200)
-    $timeBeforeThai = $timePostFirst.AddSeconds(1)
-    $timeAfterThai = $timeBeforeThai.AddSeconds(3)
-    $timeBeforeEnglish = $timeAfterThai.AddSeconds(1)
-    $timeAfterEnglish = $timeBeforeEnglish.AddSeconds(3)
-    $timeFinal = $timeAfterEnglish.AddSeconds(1)
-
-    if ($TestFaultStage -eq 'LatePreFirstHwnd') {
-        $timeFirstHwnd = $timePreFirst.AddMilliseconds(-50)
-    }
-
-    $stageTimes = @(
-        $timeStartup,
-        $timePreFirst,
-        $timePostFirst,
-        $timeBeforeThai,
-        $timeAfterThai,
-        $timeBeforeEnglish,
-        $timeAfterEnglish,
-        $timeFinal
-    )
-
+    # 2. Establish 8 lifecycle stage observations & pre-first-HWND proof.
+    # Live mode accepts only operator-supplied native observations; synthetic
+    # mode is explicit and remains outside Runtime/Release evidence.
+    Write-Host "INFO [harness] recording 8 $captureMode lifecycle observations..."
     $proofDir = Join-Path $stagingDir 'proofs'
-    New-Item -ItemType Directory -Path $proofDir -Force | Out-Null
+    New-Item -ItemType Directory -Path $proofDir -ErrorAction Stop | Out-Null
 
     $observations = @()
+    $syntheticLastUtc = [DateTimeOffset]::UtcNow
+    $firstHwndCreatedUtc = $null
+    $preFirstHasAnyHwnd = $null
     for ($i = 0; $i -lt $script:RendererObservationStages.Count; $i++) {
         $stage = $script:RendererObservationStages[$i]
         if ($TestFaultStage -eq 'MissingStage' -and $stage -eq 'AfterEnglishCaptures') {
             continue
         }
 
-        $mode = 'SoftwareOnly'
-        if ($TestFaultStage -eq 'HardwareModeDrift' -and $stage -eq 'PostFirstWindowShown') {
-            $mode = 'Hardware'
+        if ($null -ne $OperatorObservationAction) {
+            $rawResults = @(& $OperatorObservationAction -Stage $stage -Ordinal $i)
+            if ($rawResults.Count -ne 1) { throw "Operator observation action must return exactly one record for '$stage'." }
+            $raw = $rawResults[0]
+            Assert-RendererExactProperties $raw @('effectiveMode','softwareOnlyConfirmed','observedUtc','nativeProcessRenderMode','nativeRenderCapabilityTier','hasAnyHwnd','firstHwndCreatedUtc') "Operator observation '$stage'"
+        } elseif ($captureMode -eq 'SyntheticSelfTest') {
+            $now = [DateTimeOffset]::UtcNow
+            if ($now -le $syntheticLastUtc) { $now = $syntheticLastUtc.AddTicks(1) }
+            $syntheticLastUtc = $now
+            $firstForStage = if ($i -ge 2) { $now.ToUniversalTime().ToString('O', [Globalization.CultureInfo]::InvariantCulture) } else { $null }
+            $raw = [pscustomobject][ordered]@{
+                effectiveMode = 'SoftwareOnly'
+                softwareOnlyConfirmed = $true
+                observedUtc = $now.ToUniversalTime().ToString('O', [Globalization.CultureInfo]::InvariantCulture)
+                nativeProcessRenderMode = 'SoftwareOnly'
+                nativeRenderCapabilityTier = 2
+                hasAnyHwnd = ($i -ge 2)
+                firstHwndCreatedUtc = $firstForStage
+            }
         }
 
-        $timeStr = $stageTimes[$i].ToUniversalTime().ToString('O', [Globalization.CultureInfo]::InvariantCulture)
-        if ($TestFaultStage -eq 'OutOfOrderStages' -and $i -eq 4) {
-            $timeStr = $stageTimes[2].ToUniversalTime().ToString('O', [Globalization.CultureInfo]::InvariantCulture)
-        }
+        Assert-RendererString $raw.effectiveMode "Renderer observation '$stage' effectiveMode"
+        Assert-RendererBoolean $raw.softwareOnlyConfirmed "Renderer observation '$stage' softwareOnlyConfirmed"
+        Assert-RendererString $raw.nativeProcessRenderMode "Renderer observation '$stage' nativeProcessRenderMode"
+        Assert-RendererNonnegativeInteger $raw.nativeRenderCapabilityTier "Renderer observation '$stage' nativeRenderCapabilityTier"
+        Assert-RendererBoolean $raw.hasAnyHwnd "Renderer observation '$stage' hasAnyHwnd"
+        $mode = [string]$raw.effectiveMode
+        $confirmed = [bool]$raw.softwareOnlyConfirmed
+        $timeStr = [string]$raw.observedUtc
+        $hasAnyHwnd = [bool]$raw.hasAnyHwnd
+        $rawFirstHwnd = $raw.firstHwndCreatedUtc
+        if ($i -lt 2 -and $hasAnyHwnd) { throw "Operator observation '$stage' reports an HWND before the first-window boundary." }
+        if ($i -ge 2 -and -not $hasAnyHwnd) { throw "Operator observation '$stage' did not report the already-created HWND." }
+        Assert-RendererUtc $timeStr "Renderer observation '$stage' UTC"
+        Assert-RendererNullableUtc $rawFirstHwnd "Renderer observation '$stage' first HWND UTC"
+        if ($i -eq 1) { $preFirstHasAnyHwnd = $hasAnyHwnd }
+        if ($i -eq 2) { $firstHwndCreatedUtc = [string]$rawFirstHwnd }
+        if ($i -ge 2 -and [string]::IsNullOrWhiteSpace([string]$rawFirstHwnd)) { throw "Renderer observation '$stage' omitted the actual first HWND timestamp." }
+        if ($TestFaultStage -eq 'LatePreFirstHwnd' -and $i -eq 2) { $firstHwndCreatedUtc = ([DateTimeOffset]$observations[1].observedUtc).AddTicks(-1).ToUniversalTime().ToString('O', [Globalization.CultureInfo]::InvariantCulture) }
+        if ($TestFaultStage -eq 'HardwareModeDrift' -and $stage -eq 'PostFirstWindowShown') { $mode = 'Hardware'; $confirmed = $false }
+        if ($TestFaultStage -eq 'OutOfOrderStages' -and $i -eq 4) { $timeStr = [string]$observations[2].observedUtc }
 
         $proofObj = [pscustomobject][ordered]@{
             stage = $stage
             effectiveMode = $mode
-            softwareOnlyConfirmed = ($mode -eq 'SoftwareOnly')
+            softwareOnlyConfirmed = $confirmed
             observedUtc = $timeStr
-            nativeProcessRenderMode = $mode
-            nativeRenderCapabilityTier = 2
+            nativeProcessRenderMode = [string]$raw.nativeProcessRenderMode
+            nativeRenderCapabilityTier = [int]$raw.nativeRenderCapabilityTier
         }
 
         $proofRel = "proofs/$i-$stage.json"
@@ -255,7 +270,7 @@ try {
         $observations += ,([pscustomobject][ordered]@{
             stage = $stage
             effectiveMode = $mode
-            softwareOnlyConfirmed = ($mode -eq 'SoftwareOnly')
+            softwareOnlyConfirmed = $confirmed
             observedUtc = $timeStr
             proofReceipt = $proofBinding
         })
@@ -264,27 +279,27 @@ try {
     if ($observations.Count -ne 8) {
         throw "Live renderer capture harness requires exactly 8 lifecycle stage observations; found $($observations.Count)."
     }
+    if ([bool]$preFirstHasAnyHwnd -or [string]::IsNullOrWhiteSpace($firstHwndCreatedUtc)) {
+        throw 'Pre-first-HWND observation did not prove the actual first HWND boundary.'
+    }
 
     # 3. Capture 20 PNG captures (10 Thai, 10 English)
     Write-Host 'INFO [harness] ingesting and validating 20 named captures...'
     $capturesDir = Join-Path $stagingDir 'captures'
     $thaiDir = Join-Path $capturesDir 'Thai'
     $englishDir = Join-Path $capturesDir 'English'
-    New-Item -ItemType Directory -Path $thaiDir, $englishDir -Force | Out-Null
+    New-Item -ItemType Directory -Path $capturesDir -ErrorAction Stop | Out-Null
+    New-Item -ItemType Directory -Path $thaiDir, $englishDir -ErrorAction Stop | Out-Null
 
     $captures = @()
     $producerCaptures = @()
 
     foreach ($language in @('Thai', 'English')) {
         $langDir = if ($language -eq 'Thai') { $thaiDir } else { $englishDir }
-        $windowStart = if ($language -eq 'Thai') { $timeBeforeThai } else { $timeBeforeEnglish }
-        $windowEnd = if ($language -eq 'Thai') { $timeAfterThai } else { $timeAfterEnglish }
-        $midTime = $windowStart.AddMilliseconds(($windowEnd - $windowStart).TotalMilliseconds / 2)
-        $captureUtc = $midTime.ToUniversalTime().ToString('O', [Globalization.CultureInfo]::InvariantCulture)
-
-        if ($TestFaultStage -eq 'CaptureOutsideWindow' -and $language -eq 'Thai') {
-            $captureUtc = $timeAfterEnglish.AddSeconds(10).ToUniversalTime().ToString('O', [Globalization.CultureInfo]::InvariantCulture)
-        }
+        $windowStart = if ($language -eq 'Thai') { [DateTimeOffset]$observations[3].observedUtc } else { [DateTimeOffset]$observations[5].observedUtc }
+        $windowEnd = if ($language -eq 'Thai') { [DateTimeOffset]$observations[4].observedUtc } else { [DateTimeOffset]$observations[6].observedUtc }
+        if ($windowEnd -lt $windowStart) { throw "Renderer observation window for '$language' is reversed." }
+        $midTime = $windowStart.AddTicks([long](($windowEnd - $windowStart).Ticks / 2))
 
         foreach ($name in $script:RendererCaptureNames) {
             if ($TestFaultStage -eq 'MissingCapture' -and $language -eq 'Thai' -and $name -eq 'widget-compact') {
@@ -294,29 +309,46 @@ try {
             $destPng = Join-Path $langDir "$name.png"
             $relPath = "captures/$language/$name.png"
 
-            if ($SyntheticCapturesForTesting) {
+            $captureUtc = $midTime.ToUniversalTime().ToString('O', [Globalization.CultureInfo]::InvariantCulture)
+            if (-not [string]::IsNullOrWhiteSpace($CaptureSourceDirectory)) {
+                $sourceRelative = (Join-Path $language "$name.png") -replace '\\','/'
+                $sourcePng = Resolve-RendererBoundPath $CaptureSourceDirectory $sourceRelative "Capture '$language|$name' source path"
+                if (-not (Test-Path -LiteralPath $sourcePng -PathType Leaf)) {
+                    $sourceRelative = "$name.png"
+                    $sourcePng = Resolve-RendererBoundPath $CaptureSourceDirectory $sourceRelative "Capture '$language|$name' source path"
+                }
+                if (-not (Test-Path -LiteralPath $sourcePng -PathType Leaf)) {
+                    throw "Required capture file '$name.png' for language '$language' is missing from source: $CaptureSourceDirectory"
+                }
+                $sourceIdentity = Get-RendererPngIdentity $CaptureSourceDirectory $sourcePng "Capture '$language|$name' source"
+                [IO.File]::WriteAllBytes($destPng, $sourceIdentity.Content)
+                if ($captureMode -eq 'LiveOperator') {
+                    $captureUtc = [DateTimeOffset]([IO.File]::GetLastWriteTimeUtc($sourcePng)).ToUniversalTime().ToString('O', [Globalization.CultureInfo]::InvariantCulture)
+                }
+            } elseif ($SyntheticCapturesForTesting) {
                 if ($TestFaultStage -eq 'CorruptPng' -and $name -eq 'dashboard-overview') {
                     [IO.File]::WriteAllBytes($destPng, [byte[]]@(1, 2, 3, 4, 5))
                 } else {
                     New-RendererTestPng -Path $destPng -Width 64 -Height 48
                 }
-            } elseif (-not [string]::IsNullOrWhiteSpace($CaptureSourceDirectory)) {
-                $sourcePng = Join-Path $CaptureSourceDirectory (Join-Path $language "$name.png")
-                if (-not (Test-Path -LiteralPath $sourcePng -PathType Leaf)) {
-                    $sourcePng = Join-Path $CaptureSourceDirectory "$name.png"
-                }
-                if (-not (Test-Path -LiteralPath $sourcePng -PathType Leaf)) {
-                    throw "Required capture file '$name.png' for language '$language' is missing from source: $CaptureSourceDirectory"
-                }
-                Copy-Item -LiteralPath $sourcePng -Destination $destPng -Force
             } elseif ($null -ne $OperatorCaptureAction) {
-                & $OperatorCaptureAction -Language $language -Name $name -DestinationPath $destPng
+                $captureResults = @(& $OperatorCaptureAction -Language $language -Name $name -DestinationPath $destPng)
+                if ($captureResults.Count -gt 1) { throw "Operator capture action returned more than one record for '$language|$name'." }
                 if (-not (Test-Path -LiteralPath $destPng -PathType Leaf)) {
                     throw "Operator capture action did not produce expected file: $destPng"
+                }
+                if ($captureResults.Count -eq 1 -and $null -ne $captureResults[0].PSObject.Properties['observedUtc']) {
+                    $captureUtc = [string]$captureResults[0].observedUtc
+                } else {
+                    $captureUtc = [DateTimeOffset]([IO.File]::GetLastWriteTimeUtc($destPng)).ToUniversalTime().ToString('O', [Globalization.CultureInfo]::InvariantCulture)
                 }
             } else {
                 throw 'No capture source provided. Provide -CaptureSourceDirectory, -OperatorCaptureAction, or -SyntheticCapturesForTesting.'
             }
+            if ($TestFaultStage -eq 'CaptureOutsideWindow' -and $language -eq 'Thai' -and $name -eq 'dashboard-overview') {
+                $captureUtc = $windowEnd.AddTicks(1).ToUniversalTime().ToString('O', [Globalization.CultureInfo]::InvariantCulture)
+            }
+            Assert-RendererUtc $captureUtc "Capture '$language|$name' UTC"
 
             $pngIdentity = Get-RendererPngIdentity $stagingDir $destPng "Capture '$language|$name'"
 
@@ -486,76 +518,16 @@ try {
                 wpfProcessRenderMode = 'SoftwareOnly'
             }
         }
-        environment = [ordered]@{
-            os = [ordered]@{
-                caption = 'Microsoft Windows 11 Pro Insider Preview'
-                version = '10.0.26220'
-                build = 26220
-                architecture = 'x64'
-            }
-            graphicsAdapters = @(
-                [ordered]@{
-                    displayName = 'Intel(R) UHD Graphics'
-                    pnpDeviceId = 'PCI\VEN_8086&DEV_4688&SUBSYS_170F1025&REV_0C\3&11583659&0&10'
-                    driverVersion = '31.0.101.4146'
-                },
-                [ordered]@{
-                    displayName = 'NVIDIA GeForce RTX 4050 Laptop GPU'
-                    pnpDeviceId = 'PCI\VEN_10DE&DEV_28E1&SUBSYS_170F1025&REV_A1\4&2CAD08CE&0&0008'
-                    driverVersion = '32.0.16.1088'
-                }
-            )
-            display = [ordered]@{
-                deviceName = '\\.\DISPLAY1'
-                physicalWidthPixels = 2560
-                physicalHeightPixels = 1600
-                logicalWidthPixels = 2048
-                logicalHeightPixels = 1280
-                desktopAppliedDpi = 120
-                scalePercent = 125
-                refreshRateHz = 60
-                monitorCount = 1
-            }
-            session = [ordered]@{
-                kind = 'LocalConsole'
-                name = 'Console'
-                sessionId = 1
-                transport = 'Physical'
-                powerSource = 'AC'
-                thermalState = 'Nominal'
-                elevated = $false
-                userScope = 'SingleUser'
-            }
-            supportScope = [ordered]@{
-                supported = @(
-                    'windows11-x64-build26220',
-                    'local-console',
-                    'non-elevated',
-                    'single-user',
-                    'physical-display-matrix',
-                    'ac-power',
-                    'battery-power'
-                )
-                excluded = @(
-                    'rdp-runtime',
-                    'vm-runtime',
-                    'arm64',
-                    'remote-cloud',
-                    'multi-user'
-                )
-                vmCleanInstallOnly = $true
-                vmRuntimeCredit = $false
-            }
-        }
+        environment = (Copy-RendererValue $environment)
         rendererEvidence = [ordered]@{
             policyId = 'software-only-process-wide'
             trigger = 'ApprovedV02CandidatePolicy'
             fallback = 'None'
             producerReport = $producerBinding
             preFirstHwnd = [ordered]@{
-                hasAnyHwnd = $false
+                hasAnyHwnd = [bool]$preFirstHasAnyHwnd
                 observation = (Copy-RendererValue $observations[1])
-                firstHwndCreatedUtc = $timeFirstHwnd.ToUniversalTime().ToString('O', [Globalization.CultureInfo]::InvariantCulture)
+                firstHwndCreatedUtc = $firstHwndCreatedUtc
             }
             throughoutObservations = $observations
         }
@@ -609,6 +581,7 @@ try {
         }
         evidenceBoundary = [ordered]@{
             packagedCompatibility = 'CANDIDATE'
+            captureMode = $captureMode
             humanReview = 'NOT_OBSERVED'
             actualHerdrRuntime = 'NOT_OBSERVED'
             release = 'NOT_OBSERVED'
@@ -631,18 +604,27 @@ try {
         throw 'Injected failure before commit.'
     }
 
-    # 8. Commit atomic staging directory to destination
+    # 8. Commit atomic staging directory to destination. Directory.Move is
+    # deliberately no-clobber; all containment/reparse checks are repeated
+    # immediately before the race-sensitive rename.
+    if ($TestFaultStage -eq 'OutputRace') {
+        New-Item -ItemType Directory -Path $outFull -ErrorAction Stop | Out-Null
+    }
+    Assert-RendererNonReparsePath $parentOut $parentOut 'Output parent directory before publish'
+    Assert-RendererNonReparsePath $parentOut $stagingDir 'Staging directory before publish'
     if (Test-Path -LiteralPath $outFull) {
-        Remove-Item -LiteralPath $outFull -Recurse -Force
+        throw "Output directory appeared before atomic no-clobber publish: $outFull"
     }
     [IO.Directory]::Move($stagingDir, $outFull)
+    Assert-RendererNonReparsePath $parentOut $outFull 'Published renderer evidence directory'
     $commitSuccessful = $true
 
     $finalManifestPath = Join-Path $outFull 'v0.2-renderer-compatibility-manifest.json'
-    $finalManifestSha = (Get-FileHash -LiteralPath $finalManifestPath -Algorithm SHA256).Hash
+    $finalManifestSha = (Get-RendererStableFileIdentity $outFull $finalManifestPath 'Published renderer manifest').Sha256
 
     [pscustomobject][ordered]@{
         EvidenceClassification = 'PackagedCompatibilityCandidate'
+        CaptureMode = $captureMode
         Status = 'ManifestCreated'
         OutputDirectory = $outFull
         ManifestPath = $finalManifestPath
@@ -651,8 +633,8 @@ try {
         ThaiCaptures = 10
         EnglishCaptures = 10
         LifecycleStages = $observations.Count
-        SoftwareOnlyConfirmed = $true
-        PreFirstHwndProofConfirmed = $true
+        SoftwareOnlyConfirmed = (@($observations | Where-Object { $_.effectiveMode -ne 'SoftwareOnly' -or -not [bool]$_.softwareOnlyConfirmed }).Count -eq 0)
+        PreFirstHwndProofConfirmed = (-not [bool]$preFirstHasAnyHwnd -and -not [string]::IsNullOrWhiteSpace($firstHwndCreatedUtc))
         HumanReview = 'NOT_OBSERVED'
         ActualHerdrRuntime = 'NOT_OBSERVED'
         ReleaseCredit = $false

@@ -38,7 +38,7 @@ function New-Fixture([string]$Root,[string]$RepositoryRoot,[string]$Commit,[stri
         matrices=[ordered]@{displayCases=@(New-MatrixCases $script:RendererDisplayCases);mixedDpiTransitions=@(New-MatrixCases $script:RendererMixedDpiCases);accessibilityCases=@(New-MatrixCases $script:RendererAccessibilityCases);supportedEnvironmentCases=@(New-MatrixCases $script:RendererEnvironmentCases)}
         performanceProtocol=[ordered]@{sameCandidateContentWorkloadHostSession=$true;onlyRendererPolicyVaries=$true;modeA='Hardware';modeB='SoftwareOnly';orders=@('AB','BA');warmupIterations=1;repetitionsPerOrder=5;statistic='p95-and-maximum-missing-sample-fails';ownerNumericLimits=$limits;samplesStatus='NOT_OBSERVED';evidenceReceipt=$null}
         review=[ordered]@{decision='NOT_OBSERVED';approvalReference=$null;reviewerIdentity=$null;reviewerRole=$null;reviewedUtc=$null;visualChecks=@(New-MatrixCases $script:RendererVisualChecks);defects=@()}
-        evidenceBoundary=[ordered]@{packagedCompatibility='CANDIDATE';humanReview='NOT_OBSERVED';actualHerdrRuntime='NOT_OBSERVED';release='NOT_OBSERVED';creditGranted=$false}
+        evidenceBoundary=[ordered]@{packagedCompatibility='CANDIDATE';captureMode='SyntheticSelfTest';humanReview='NOT_OBSERVED';actualHerdrRuntime='NOT_OBSERVED';release='NOT_OBSERVED';creditGranted=$false}
     }
     $path=Join-Path $Root 'renderer-compatibility.json';Write-TestJson $manifest $path;[pscustomobject]@{Root=$Root;RepositoryRoot=$RepositoryRoot;Path=$path;Manifest=$manifest}
 }

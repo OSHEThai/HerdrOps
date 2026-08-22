@@ -6,6 +6,14 @@ param()
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+$previousSelfTestMarker = [Environment]::GetEnvironmentVariable('HERDROPS_RENDERER_SELFTEST', 'Process')
+[Environment]::SetEnvironmentVariable('HERDROPS_RENDERER_SELFTEST', '1', 'Process')
+
+$invokeSource = Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot 'Invoke-V02LiveRendererCapture.ps1')
+if ($invokeSource -match 'AllowElevatedForTesting|AllowNonReferenceHostForTesting|\[switch\]\$Force') {
+    throw 'Production renderer capture script still exposes an unguarded testing bypass.'
+}
+
 . (Join-Path $PSScriptRoot 'RendererCompatibility.Common.ps1')
 
 $script:PositiveCases = 0
@@ -176,6 +184,38 @@ function New-IsolatedTestPackage([string]$Root, [string]$RepositoryRoot, [string
     }
 }
 
+function New-CaptureSourceDirectory([string]$Root) {
+    New-Item -ItemType Directory -Path $Root -Force | Out-Null
+    foreach ($language in @('Thai', 'English')) {
+        $languageRoot = Join-Path $Root $language
+        New-Item -ItemType Directory -Path $languageRoot -Force | Out-Null
+        foreach ($name in $script:RendererCaptureNames) {
+            New-RendererTestPng -Path (Join-Path $languageRoot "$name.png") -Width 64 -Height 48
+        }
+    }
+    return $Root
+}
+
+function New-MockObservationAction {
+    $state = @{ last = [DateTimeOffset]::UtcNow; first = $null }
+    return {
+        param([string]$Stage, [int]$Ordinal)
+        $now = [DateTimeOffset]::UtcNow
+        if ($now -le $state.last) { $now = $state.last.AddTicks(1) }
+        $state.last = $now
+        if ($Ordinal -eq 2) { $state.first = $now }
+        [pscustomobject][ordered]@{
+            effectiveMode = 'SoftwareOnly'
+            softwareOnlyConfirmed = $true
+            observedUtc = $now.ToUniversalTime().ToString('O', [Globalization.CultureInfo]::InvariantCulture)
+            nativeProcessRenderMode = 'SoftwareOnly'
+            nativeRenderCapabilityTier = 3
+            hasAnyHwnd = ($Ordinal -ge 2)
+            firstHwndCreatedUtc = if ($Ordinal -ge 2) { $state.first.ToUniversalTime().ToString('O', [Globalization.CultureInfo]::InvariantCulture) } else { $null }
+        }
+    }.GetNewClosure()
+}
+
 $temp = Join-Path ([IO.Path]::GetTempPath()) ('herdrops-capture-harness-' + [Guid]::NewGuid().ToString('N'))
 try {
     New-Item -ItemType Directory -Path $temp -Force | Out-Null
@@ -194,9 +234,7 @@ try {
         -IdentityReceiptPath $pkg.ReceiptPath `
         -RepositoryRoot $repo.Root `
         -ProfilePath $pkg.ProfilePath `
-        -SyntheticCapturesForTesting `
-        -AllowElevatedForTesting `
-        -AllowNonReferenceHostForTesting
+        -SyntheticCapturesForTesting
     Write-Host 'INFO positive baseline execution complete.'
 
     if ($result1.EvidenceClassification -cne 'PackagedCompatibilityCandidate' -or
@@ -230,9 +268,42 @@ try {
         [bool]$manifestValidation.PackagedCompatibilityReadyForIssue149Closure) {
         throw 'Self-validation of positive baseline manifest failed.'
     }
-    Pass 'operator-driven capture harness generates strict validated candidate evidence'
+    if ($result1.CaptureMode -cne 'SyntheticSelfTest' -or $manifestValidation.CaptureMode -cne 'SyntheticSelfTest') {
+        throw 'Synthetic baseline did not retain its explicit SyntheticSelfTest boundary.'
+    }
+    Pass 'operator-driven capture harness generates strict validated synthetic candidate evidence'
 
-    # 2. Hostile: No-clobber target directory protection
+    # 2. Positive real-capture input path: PNG bytes are admitted from a
+    # contained source directory, but the result remains synthetic/no-credit.
+    $sourceCaptures = New-CaptureSourceDirectory (Join-Path $temp 'capture-source')
+    $outSource = Join-Path $temp 'evidence-out-source'
+    $sourceResult = & (Join-Path $PSScriptRoot 'Invoke-V02LiveRendererCapture.ps1') `
+        -OutputDirectory $outSource `
+        -PackageRoot $pkg.PackageRoot `
+        -ArchivePath $pkg.ArchivePath `
+        -IdentityReceiptPath $pkg.ReceiptPath `
+        -RepositoryRoot $repo.Root `
+        -ProfilePath $pkg.ProfilePath `
+        -CaptureSourceDirectory $sourceCaptures `
+        -OperatorObservationAction (New-MockObservationAction) `
+        -SyntheticCapturesForTesting
+    $sourceManifest = Get-Content -Raw -LiteralPath $sourceResult.ManifestPath | ConvertFrom-Json
+    $sourceProofPath = Join-Path $outSource $sourceManifest.rendererEvidence.throughoutObservations[0].proofReceipt.relativePath
+    $sourceProof = Get-Content -Raw -LiteralPath $sourceProofPath | ConvertFrom-Json
+    if ($sourceResult.CaptureCount -ne 20 -or $sourceResult.CaptureMode -cne 'SyntheticSelfTest' -or
+        [int]$sourceProof.nativeRenderCapabilityTier -ne 3 -or
+        $sourceResult.ActualHerdrRuntime -cne 'NOT_OBSERVED' -or [bool]$sourceResult.ReleaseCredit) {
+        throw 'Contained real-capture input path or injected observation was not preserved as synthetic/no-credit.'
+    }
+    Pass 'contained real-capture input path and injected native observation are preserved as synthetic/no-credit'
+
+    # Production invocation must not silently fall back to synthetic lifecycle
+    # values or a hardcoded renderer mode.
+    Assert-Throws {
+        & (Join-Path $PSScriptRoot 'Invoke-V02LiveRendererCapture.ps1') -OutputDirectory (Join-Path $temp 'missing-live-observation')
+    } 'requires -OperatorObservationAction' 'live mode requires native observation action'
+
+    # 3. Hostile: No-clobber target directory protection
     Assert-Throws {
         & (Join-Path $PSScriptRoot 'Invoke-V02LiveRendererCapture.ps1') `
             -OutputDirectory $out1 `
@@ -241,12 +312,27 @@ try {
             -IdentityReceiptPath $pkg.ReceiptPath `
             -RepositoryRoot $repo.Root `
             -ProfilePath $pkg.ProfilePath `
-            -SyntheticCapturesForTesting `
-            -AllowElevatedForTesting `
-            -AllowNonReferenceHostForTesting
+            -SyntheticCapturesForTesting
     } 'already exists.*no-clobber' 'no-clobber existing directory protection'
 
-    # 3. Hostile: Missing capture file (9 Thai instead of 10)
+    # 3b. Hostile: destination appears after validation; atomic rename must
+    # fail without deleting or replacing the competing directory.
+    $outRace = Join-Path $temp 'evidence-out-race'
+    Assert-Throws {
+        & (Join-Path $PSScriptRoot 'Invoke-V02LiveRendererCapture.ps1') `
+            -OutputDirectory $outRace `
+            -PackageRoot $pkg.PackageRoot `
+            -ArchivePath $pkg.ArchivePath `
+            -IdentityReceiptPath $pkg.ReceiptPath `
+            -RepositoryRoot $repo.Root `
+            -ProfilePath $pkg.ProfilePath `
+            -SyntheticCapturesForTesting `
+            -TestFaultStage 'OutputRace'
+    } 'appeared before atomic no-clobber publish' 'publish race fails closed without clobber'
+    if (-not (Test-Path -LiteralPath $outRace -PathType Container)) { throw 'Publish race did not preserve the competing destination.' }
+    Pass-Negative 'publish race preserves destination'
+
+    # 4. Hostile: Missing capture file (9 Thai instead of 10)
     $outMissing = Join-Path $temp 'evidence-out-missing-capture'
     Assert-Throws {
         & (Join-Path $PSScriptRoot 'Invoke-V02LiveRendererCapture.ps1') `
@@ -257,8 +343,6 @@ try {
             -RepositoryRoot $repo.Root `
             -ProfilePath $pkg.ProfilePath `
             -SyntheticCapturesForTesting `
-            -AllowElevatedForTesting `
-            -AllowNonReferenceHostForTesting `
             -TestFaultStage 'MissingCapture'
     } 'requires exactly 20 captures' 'missing capture fails closed'
 
@@ -278,8 +362,6 @@ try {
             -RepositoryRoot $repo.Root `
             -ProfilePath $pkg.ProfilePath `
             -SyntheticCapturesForTesting `
-            -AllowElevatedForTesting `
-            -AllowNonReferenceHostForTesting `
             -TestFaultStage 'CorruptPng'
     } 'not a complete decodable PNG' 'corrupt PNG capture fails closed'
 
@@ -294,8 +376,6 @@ try {
             -RepositoryRoot $repo.Root `
             -ProfilePath $pkg.ProfilePath `
             -SyntheticCapturesForTesting `
-            -AllowElevatedForTesting `
-            -AllowNonReferenceHostForTesting `
             -TestFaultStage 'LatePreFirstHwnd'
     } 'The JSON is not valid with the schema|HWND ordering is invalid|outside exact order' 'late pre-first-HWND proof fails closed'
 
@@ -310,8 +390,6 @@ try {
             -RepositoryRoot $repo.Root `
             -ProfilePath $pkg.ProfilePath `
             -SyntheticCapturesForTesting `
-            -AllowElevatedForTesting `
-            -AllowNonReferenceHostForTesting `
             -TestFaultStage 'HardwareModeDrift'
     } 'The JSON is not valid with the schema|not native SoftwareOnly true|SoftwareOnly' 'hardware mode drift fails closed'
 
@@ -326,10 +404,8 @@ try {
             -RepositoryRoot $repo.Root `
             -ProfilePath $pkg.ProfilePath `
             -SyntheticCapturesForTesting `
-            -AllowElevatedForTesting `
-            -AllowNonReferenceHostForTesting `
             -TestFaultStage 'OutOfOrderStages'
-    } 'The JSON is not valid with the schema|ordered by nondecreasing UTC' 'out-of-order stages fail closed'
+    } 'The JSON is not valid with the schema|ordered by nondecreasing UTC|window.*reversed' 'out-of-order stages fail closed'
 
     # 8. Hostile: Missing lifecycle stage (7 instead of 8)
     $outMissingStage = Join-Path $temp 'evidence-out-missing-stage'
@@ -342,8 +418,6 @@ try {
             -RepositoryRoot $repo.Root `
             -ProfilePath $pkg.ProfilePath `
             -SyntheticCapturesForTesting `
-            -AllowElevatedForTesting `
-            -AllowNonReferenceHostForTesting `
             -TestFaultStage 'MissingStage'
     } 'The JSON is not valid with the schema|requires exactly 8 lifecycle stage observations' 'missing lifecycle stage fails closed'
 
@@ -358,8 +432,6 @@ try {
             -RepositoryRoot $repo.Root `
             -ProfilePath $pkg.ProfilePath `
             -SyntheticCapturesForTesting `
-            -AllowElevatedForTesting `
-            -AllowNonReferenceHostForTesting `
             -TestFaultStage 'CaptureOutsideWindow'
     } 'The JSON is not valid with the schema|falls outside its renderer-observation language window' 'capture timestamp outside window fails closed'
 
@@ -375,9 +447,7 @@ try {
             -IdentityReceiptPath $pkgTampered.ReceiptPath `
             -RepositoryRoot $repo.Root `
             -ProfilePath $pkgTampered.ProfilePath `
-            -SyntheticCapturesForTesting `
-            -AllowElevatedForTesting `
-            -AllowNonReferenceHostForTesting
+            -SyntheticCapturesForTesting
     } 'Manifest/package-root inventories are not exact and coherent|App/Core receipt bytes/hashes do not match|App executable in payload does not match|tamper detected' 'tampered packaged App binary fails closed'
 
     # 11. Hostile: Reparse point in output parent directory
@@ -395,9 +465,7 @@ try {
                 -IdentityReceiptPath $pkg.ReceiptPath `
                 -RepositoryRoot $repo.Root `
                 -ProfilePath $pkg.ProfilePath `
-                -SyntheticCapturesForTesting `
-                -AllowElevatedForTesting `
-                -AllowNonReferenceHostForTesting
+                -SyntheticCapturesForTesting
         } 'reparse' 'reparse junction output path fails closed'
     } finally {
         if (Test-Path -LiteralPath $junctionDir) {
@@ -416,8 +484,6 @@ try {
             -RepositoryRoot $repo.Root `
             -ProfilePath $pkg.ProfilePath `
             -SyntheticCapturesForTesting `
-            -AllowElevatedForTesting `
-            -AllowNonReferenceHostForTesting `
             -TestFaultStage 'PreCommit'
     } 'Injected failure before commit' 'pre-commit failure cleans up staging'
 
@@ -440,4 +506,5 @@ try {
     if (Test-Path -LiteralPath $temp) {
         Remove-Item -LiteralPath $temp -Recurse -Force -ErrorAction SilentlyContinue
     }
+    [Environment]::SetEnvironmentVariable('HERDROPS_RENDERER_SELFTEST', $previousSelfTestMarker, 'Process')
 }
