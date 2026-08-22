@@ -47,6 +47,7 @@ $script:V02RuntimeReviewMaximumAgeMinutes = 120
 $script:V02RuntimeReviewHeldPaths = $null
 $script:V02RuntimeReviewFixtureModeActive = $false
 $script:V02RuntimeReviewFixtureReadHook = $null
+$script:V02RuntimeReviewFixtureBeforeOpenHook = $null
 $script:V02RuntimeReviewFixturePublishHook = $null
 
 function Start-V02RuntimeReviewHoldScope { $script:V02RuntimeReviewHeldPaths = New-Object Collections.Generic.List[IDisposable] }
@@ -120,12 +121,16 @@ function Read-V02RuntimeReviewHeldFile {
     $full = Get-V02RuntimeReviewFullPath $Path 'held file'
     Assert-V02RuntimeReviewNoReparseComponents $full 'held file'
     if ($MaximumBytes -lt 1 -or $MaximumBytes -gt $script:V02RuntimeReviewMaximumFileBytes) { throw 'Held-file byte bound is invalid.' }
+    $snapshot = [HerdrOps.RuntimeReview.HeldPath]::OpenFile($full)
+    try { $snapshotVolume=$snapshot.VolumeSerialNumber;$snapshotFileId=$snapshot.FileId;$snapshotFinal=$snapshot.FinalPath } finally { $snapshot.Dispose() }
+    if($script:V02RuntimeReviewFixtureModeActive-and$null-ne$script:V02RuntimeReviewFixtureBeforeOpenHook){& $script:V02RuntimeReviewFixtureBeforeOpenHook $full}
     $parentHold = [HerdrOps.RuntimeReview.HeldPath]::OpenDirectory([IO.Path]::GetDirectoryName($full))
     if(-not$parentHold.FinalPath.Equals([IO.Path]::GetDirectoryName($full),[StringComparison]::OrdinalIgnoreCase)){$parentHold.Dispose();throw "Held parent final path differs from its requested path: $full"}
     $fileHold = $null
     try {
         $fileHold = [HerdrOps.RuntimeReview.HeldPath]::OpenFile($full)
         if (-not $fileHold.FinalPath.Equals($full,[StringComparison]::OrdinalIgnoreCase)) { throw "Held file final path differs from its requested path: $full" }
+        if($fileHold.VolumeSerialNumber-ne$snapshotVolume-or$fileHold.FileId-cne$snapshotFileId-or-not$fileHold.FinalPath.Equals($snapshotFinal,[StringComparison]::OrdinalIgnoreCase)){throw "Held file identity changed before open: $full"}
         if($script:V02RuntimeReviewFixtureModeActive-and$null-ne$script:V02RuntimeReviewFixtureReadHook){& $script:V02RuntimeReviewFixtureReadHook $full}
         $bytes = $fileHold.ReadAllBytes($MaximumBytes); $heldLength=[int64]$bytes.Length
         $hash = Get-V02RuntimeReviewHash $bytes
@@ -248,16 +253,17 @@ function Get-V02RuntimeReviewGateMap {
     param([Parameter(Mandatory)][string]$Path)
     $held = Read-V02RuntimeReviewHeldFile $Path -MaximumBytes 1048576 -IncludeBytes
     try { $text = (New-Object Text.UTF8Encoding($false, $true)).GetString($held.Content) } catch { throw "Gate report is not strict UTF-8: $Path" }
-    $recognized = @('ExpectedSourceCommit','ExpectedSourceTree','SourceCommit','SourceTree','PreRunSourceCommit','PreRunSourceTree','PreRunGitTreeClean','PostRunSourceCommit','PostRunSourceTree','PostRunGitTreeClean','Result','EvidenceClass','SessionControlInvoked','AcceptanceControlSession','TargetAgentLabSession','AcceptanceControlSocketPath','TargetAgentLabSocketPath','SeparateSessionSockets','AcceptanceControlServerIdentity','TargetAgentSessionReference','HerdrReleaseId','PackageIdentityPath','PackageIdentityFileSha256','PackageIdentityReceiptSha256','PackageArchivePath','PackageArchiveSha256','ExtractedPackageRoot','PackageManifestPath','PackageManifestSha256','PackageProfileId','PackageValidationEvidenceClass','AppSha256','CoreSha256','HerdrExecutableSha256','BundledSchemaSha256','HerdrProtocol','ReferenceHostProfileId','ReferenceHostProfileSha256','ReferenceHostSchemaSha256','Language','RendererPolicyId','WpfProcessRenderMode','SoftwareOnlyThroughout','SnapshotObserved','EventObserved','ReconnectObserved','CoreAcceptedEventKindCheck','SemanticCaptureBindingCheck','AppRuntimeReportSha256','CoreRuntimeReportSha256','TrxSelectionReceiptPath','TrxSelectionReceiptSha256','ProgressHistoryPath','ProgressHistorySha256','ProgressHistoryLastEntrySha256','CaptureDirectory')
+    $recognized = @('ExpectedSourceCommit','ExpectedSourceTree','SourceCommit','SourceTree','PreRunSourceCommit','PreRunSourceTree','PreRunGitTreeClean','PostRunSourceCommit','PostRunSourceTree','PostRunGitTreeClean','Result','EvidenceClass','SessionControlInvoked','AcceptanceControlSession','TargetAgentLabSession','AcceptanceControlSocketPath','TargetAgentLabSocketPath','SeparateSessionSockets','AcceptanceControlServerIdentity','TargetAgentSessionReference','HerdrReleaseId','PackageIdentityPath','PackageIdentityFileSha256','PackageIdentityReceiptSha256','PackageArchivePath','PackageArchiveSha256','ExtractedPackageRoot','PackageManifestPath','PackageManifestSha256','PackageProfileId','PackageValidationEvidenceClass','AppSha256','CoreSha256','HerdrExecutableSha256','BundledSchemaSha256','HerdrProtocol','ReferenceHostProfileId','ReferenceHostProfileSha256','ReferenceHostSchemaSha256','Language','RendererPolicyId','WpfProcessRenderMode','SoftwareOnlyThroughout','SnapshotObserved','EventObserved','ReconnectObserved','CoreAcceptedEventKindCheck','SemanticCaptureBindingCheck','AppRuntimeReportSha256','CoreRuntimeReportSha256','TrxSelectionReceiptPath','TrxSelectionReceiptSha256','ProgressHistoryPath','ProgressHistorySha256','ProgressHistoryEntries','ProgressHistoryLastEntrySha256','CaptureDirectory')
     $map = @{}
     foreach ($line in ($text -split "`r?`n")) {
         if ([string]::IsNullOrWhiteSpace($line)) { continue }
         if ($line -notmatch '^([^:]{1,128}):[ ]?(.*)$') { continue }
         $name = [string]$matches[1]
-        if ($recognized -notcontains $name) { continue }
+        if ($recognized -notcontains $name) { throw "Gate report contains unknown field '$name'." }
         if ($map.ContainsKey($name)) { throw "Gate report contains duplicate field '$name'." }
         $map[$name] = [string]$matches[2]
     }
+    if($map.Count-ne$recognized.Count){throw 'Gate report has missing fields.'}
     return [pscustomobject][ordered]@{ Values = $map; Sha256 = $held.Sha256; Bytes = $held.Bytes; Path = $held.Path }
 }
 
@@ -294,6 +300,7 @@ function Assert-V02RuntimeReviewGate {
 function Assert-V02RuntimeReviewEvent {
     param([Parameter(Mandatory)]$Event, [Parameter(Mandatory)][string]$Context)
     if ($null -eq $Event -or $Event -isnot [pscustomobject]) { throw "$Context must be a semantic event object." }
+    Assert-V02RuntimeReviewExactProperties $Event @('AdmissionPath','AcceptedEventKind','PhaseEnteredUtc','ObservedUtc','CurrentStateSha256','BaselineSequence','CurrentSequence','BaselineEventCount','CurrentEventCount','Changes') $Context
     foreach ($name in @('AdmissionPath','AcceptedEventKind','PhaseEnteredUtc','ObservedUtc','CurrentStateSha256','BaselineSequence','CurrentSequence','BaselineEventCount','CurrentEventCount','Changes')) { $null = Get-V02RuntimeReviewProperty $Event $name $Context }
     Assert-V02RuntimeReviewString $Event.AdmissionPath "$Context admission path" | Out-Null
     Assert-V02RuntimeReviewString $Event.AcceptedEventKind "$Context event kind" 'pane.agent_status_changed' | Out-Null
@@ -306,7 +313,7 @@ function Assert-V02RuntimeReviewEvent {
     if (@($Event.Changes).Count -ne 1) { throw "$Context must contain exactly one semantic Agent change." }
     $phase=[DateTimeOffset]::MinValue;$observed=[DateTimeOffset]::MinValue
     if (-not [DateTimeOffset]::TryParse([string]$Event.PhaseEnteredUtc,[Globalization.CultureInfo]::InvariantCulture,[Globalization.DateTimeStyles]::RoundtripKind,[ref]$phase) -or -not [DateTimeOffset]::TryParse([string]$Event.ObservedUtc,[Globalization.CultureInfo]::InvariantCulture,[Globalization.DateTimeStyles]::RoundtripKind,[ref]$observed) -or $phase -gt $observed) { throw "$Context timestamps are invalid or reversed." }
-    $change=@($Event.Changes)[0];foreach($name in @('TerminalId','WorkspaceId','TabId','PaneId','PreviousStatus','CurrentStatus')){Assert-V02RuntimeReviewString (Get-V02RuntimeReviewProperty $change $name "$Context change") "$Context change $name"|Out-Null}
+    $change=@($Event.Changes)[0];Assert-V02RuntimeReviewExactProperties $change @('TerminalId','WorkspaceId','TabId','PaneId','PreviousStatus','CurrentStatus') "$Context change";foreach($name in @('TerminalId','WorkspaceId','TabId','PaneId','PreviousStatus','CurrentStatus')){Assert-V02RuntimeReviewString (Get-V02RuntimeReviewProperty $change $name "$Context change") "$Context change $name"|Out-Null}
     if([string]$change.PreviousStatus-ceq[string]$change.CurrentStatus){throw "$Context did not change Agent status."}
     return [pscustomobject]@{PhaseEnteredUtc=$phase.ToUniversalTime();ObservedUtc=$observed.ToUniversalTime();Change=$change}
 }
@@ -318,6 +325,48 @@ function Assert-V02RuntimeReviewStateMappings {
     for($i=0;$i-lt$expected.Count;$i++){Assert-V02RuntimeReviewExactProperties $actual[$i] @('SourceState','PresentationState') "$Context[$i]";if([string]$actual[$i].SourceState-cne$expected[$i]-or[string]$actual[$i].PresentationState-cne$expected[$i].ToLowerInvariant()){throw "$Context[$i] is not the exact canonical state mapping."}}
 }
 
+function Get-V02RuntimeReviewProgressCanonicalPayload {
+    param([Parameter(Mandatory)]$Entry)
+    $culture=[Globalization.CultureInfo]::InvariantCulture
+    $accepted=if($null-eq$Entry.LastAcceptedStateUtc){''}else{([DateTimeOffset]$Entry.LastAcceptedStateUtc).ToUniversalTime().ToString('O',$culture)}
+    return @(([int]$Entry.Ordinal).ToString($culture),[string]$Entry.Phase,([DateTimeOffset]$Entry.ObservedUtc).ToUniversalTime().ToString('O',$culture),([long]$Entry.Sequence).ToString($culture),$(if([bool]$Entry.IsCoreConnected){'True'}else{'False'}),$(if([bool]$Entry.IsLive){'True'}else{'False'}),[string]$Entry.RuntimeStatus,([DateTimeOffset]$Entry.LastTransitionUtc).ToUniversalTime().ToString('O',$culture),$accepted,([long]$Entry.ConnectionEpoch).ToString($culture),([long]$Entry.BootstrapCount).ToString($culture),([long]$Entry.EventCount).ToString($culture),([long]$Entry.DisconnectCount).ToString($culture),([long]$Entry.ReconciliationCount).ToString($culture),[string]$Entry.StateSha256,[string]$Entry.PreviousEntrySha256)-join'|'
+}
+
+function Assert-V02RuntimeReviewProgressEntry {
+    param([Parameter(Mandatory)]$Entry,[int]$Ordinal,[string]$Previous,[string]$Context)
+    $names=@('Ordinal','Phase','ObservedUtc','Sequence','IsCoreConnected','IsLive','RuntimeStatus','LastTransitionUtc','LastAcceptedStateUtc','ConnectionEpoch','BootstrapCount','EventCount','DisconnectCount','ReconciliationCount','StateSha256','PreviousEntrySha256','CanonicalPayload','EntrySha256')
+    Assert-V02RuntimeReviewExactProperties $Entry $names $Context
+    if((Assert-V02RuntimeReviewInteger $Entry.Ordinal "$Context ordinal" 1)-ne$Ordinal){throw "$Context ordinal is not exact."}
+    foreach($name in @('Sequence','ConnectionEpoch','BootstrapCount','EventCount','DisconnectCount','ReconciliationCount')){$null=Assert-V02RuntimeReviewInteger $Entry.$name "$Context $name"}
+    foreach($name in @('IsCoreConnected','IsLive')){if($Entry.$name-isnot[bool]){throw "$Context $name must be a native boolean."}}
+    $observed=[DateTimeOffset]::MinValue;$transition=[DateTimeOffset]::MinValue;if(-not[DateTimeOffset]::TryParse([string]$Entry.ObservedUtc,[Globalization.CultureInfo]::InvariantCulture,[Globalization.DateTimeStyles]::RoundtripKind,[ref]$observed)-or-not[DateTimeOffset]::TryParse([string]$Entry.LastTransitionUtc,[Globalization.CultureInfo]::InvariantCulture,[Globalization.DateTimeStyles]::RoundtripKind,[ref]$transition)){throw "$Context timestamps are invalid."}
+    $state=Assert-V02RuntimeReviewSha256 $Entry.StateSha256 "$Context state hash";$prior=Assert-V02RuntimeReviewSha256 $Entry.PreviousEntrySha256 "$Context previous hash";if($prior-cne$Previous){throw "$Context hash chain is broken."}
+    $canonical=Get-V02RuntimeReviewProgressCanonicalPayload $Entry;if([string]$Entry.CanonicalPayload-cne$canonical){throw "$Context canonical payload is not exact."};$entryHash=Get-V02RuntimeReviewHash ([Text.UTF8Encoding]::new($false).GetBytes($canonical));if((Assert-V02RuntimeReviewSha256 $Entry.EntrySha256 "$Context entry hash")-cne$entryHash){throw "$Context entry hash is invalid."}
+    return [pscustomobject]@{Value=$Entry;ObservedUtc=$observed.ToUniversalTime();StateSha256=$state;EntrySha256=$entryHash}
+}
+
+function Assert-V02RuntimeReviewProgress {
+    param([string]$EvidenceDirectory,$Gate,$App,[string]$Context)
+    $historyPath=Resolve-V02RuntimeReviewPath $EvidenceDirectory (Get-V02RuntimeReviewGateValue $Gate 'ProgressHistoryPath' $Context) "$Context progress history";if(-not$historyPath.Equals((Join-Path $EvidenceDirectory 'app-progress.json.history.jsonl'),[StringComparison]::OrdinalIgnoreCase)){throw "$Context progress history path is not canonical."}
+    $historyHeld=Read-V02RuntimeReviewHeldFile $historyPath -IncludeBytes;if($historyHeld.Sha256-cne(Get-V02RuntimeReviewGateValue $Gate 'ProgressHistorySha256' $Context)){throw "$Context progress history hash is not exact."}
+    try{$historyText=(New-Object Text.UTF8Encoding($false,$true)).GetString($historyHeld.Content)}catch{throw "$Context progress history is not strict UTF-8."};$lines=@($historyText -split "`r?`n"|Where-Object{$_-cne''})
+    $phases=@('waiting-for-live-state','capturing-live-dashboard-and-widgets','waiting-for-pre-close-update','dashboard-closed-waiting-for-herdr-disconnect','herdr-disconnected-waiting-for-reconnect','herdr-reconnected-waiting-for-post-reconnect-update','waiting-for-idle-stability','measuring-idle-resources','complete');if($lines.Count-ne9-or[int](Get-V02RuntimeReviewGateValue $Gate 'ProgressHistoryEntries' $Context)-ne9){throw "$Context progress history must contain exactly nine records."}
+    $entries=@();$previous='0'*64;$previousUtc=[DateTimeOffset]::MinValue;$previousEntry=$null;for($i=0;$i-lt9;$i++){try{$raw=(New-Object Text.UTF8Encoding($false)).GetBytes($lines[$i]);$entry=(ConvertFrom-V02RuntimeReviewStrictJson -Bytes $raw -Context "$Context progress entry $($i+1)").Value}catch{throw};$checked=Assert-V02RuntimeReviewProgressEntry $entry ($i+1) $previous "$Context progress entry $($i+1)";if([string]$entry.Phase-cne$phases[$i]-or($i-gt0-and$checked.ObservedUtc-le$previousUtc)){throw "$Context progress chronology/phase is invalid."};if($null-ne$previousEntry){foreach($name in @('Sequence','ConnectionEpoch','BootstrapCount','EventCount','DisconnectCount','ReconciliationCount')){if([long]$entry.$name-lt[long]$previousEntry.$name){throw "$Context progress counter $name moved backward."}}};$previousEntry=$entry;$previousUtc=$checked.ObservedUtc;$previous=$checked.EntrySha256;$entries+=$entry}
+    if(-not[bool]$entries[3].IsCoreConnected-or[string]$entries[3].RuntimeStatus-cne'Connected'-or[bool]$entries[4].IsCoreConnected-or[string]$entries[4].RuntimeStatus-cne'Reconnecting'-or-not[bool]$entries[5].IsCoreConnected-or[string]$entries[5].RuntimeStatus-cne'Connected'){throw "$Context progress disconnect/reconnect semantics are invalid."}
+    if((Get-V02RuntimeReviewGateValue $Gate 'ProgressHistoryLastEntrySha256' $Context)-cne$previous){throw "$Context progress final-entry hash is not derived."}
+    $progressPath=Join-Path $EvidenceDirectory 'app-progress.json';$progress=(Read-V02RuntimeReviewStrictJsonFile $progressPath "$Context progress report").Value;$progressNames=@($entries[8].PSObject.Properties.Name)+@('ProgressHistoryPath','History');Assert-V02RuntimeReviewExactProperties $progress $progressNames "$Context progress report";if(-not([IO.Path]::GetFullPath([string]$progress.ProgressHistoryPath)).Equals($historyPath,[StringComparison]::OrdinalIgnoreCase)-or@($progress.History).Count-ne9){throw "$Context progress mirror is incomplete."}
+    for($i=0;$i-lt9;$i++){Assert-V02RuntimeReviewExactProperties $progress.History[$i] $entries[$i].PSObject.Properties.Name "$Context progress mirror[$i]";if((ConvertTo-V02Jcs $progress.History[$i])-cne(ConvertTo-V02Jcs $entries[$i])){throw "$Context progress mirror differs from history."}}
+    if([string]$progress.EntrySha256-cne$previous-or[string]$progress.StateSha256-cne[string]$App.EventB.CurrentStateSha256-or[long]$progress.Sequence-ne[long]$App.EventB.CurrentSequence){throw "$Context final progress is not EventB-bound."}
+    return [pscustomobject]@{HistorySha256=$historyHeld.Sha256;LastEntrySha256=$previous;Entries=$entries;FirstUtc=([DateTimeOffset]$entries[0].ObservedUtc).ToUniversalTime();LastUtc=$previousUtc}
+}
+
+function Assert-V02RuntimeReviewSelectionReceipt {
+    param([string]$EvidenceDirectory,$Gate,[string]$Context)
+    $path=Resolve-V02RuntimeReviewPath $EvidenceDirectory (Get-V02RuntimeReviewGateValue $Gate 'TrxSelectionReceiptPath' $Context) "$Context selection receipt";if(-not$path.Equals((Join-Path $EvidenceDirectory 'test-results\selection-receipt.json'),[StringComparison]::OrdinalIgnoreCase)){throw "$Context selection receipt path is not canonical."};$doc=Read-V02RuntimeReviewStrictJsonFile $path "$Context selection receipt";if($doc.Sha256-cne(Get-V02RuntimeReviewGateValue $Gate 'TrxSelectionReceiptSha256' $Context)){throw "$Context selection receipt hash is not exact."}
+    $r=$doc.Value;Assert-V02RuntimeReviewExactProperties $r @('SchemaVersion','InvocationStartedUtc','SelectionUpperBoundUtc','FileCount','Total','Passed','Failed','NotExecuted','Skipped','Files') "$Context selection receipt";if([int64]$r.SchemaVersion-ne2-or[int64]$r.FileCount-ne4-or[int64]$r.Total-ne888-or[int64]$r.Passed-ne888-or[int64]$r.Failed-ne0-or[int64]$r.NotExecuted-ne0-or[int64]$r.Skipped-ne0-or@($r.Files).Count-ne4){throw "$Context selection receipt counters are not governed and all-passing."};$started=[DateTimeOffset]$r.InvocationStartedUtc;$upper=[DateTimeOffset]$r.SelectionUpperBoundUtc;if($started-ge$upper){throw "$Context selection receipt chronology is invalid."}
+    $names=@('HerdrOps.UnitTests.trx','HerdrOps.ContractTests.trx','HerdrOps.IntegrationTests.trx','HerdrOps.RuntimeTests.trx');$seen=@{};$runIds=@{};$sum=0;foreach($entry in @($r.Files)){Assert-V02RuntimeReviewExactProperties $entry @('Name','SourceName','Bytes','Sha256','LastWriteUtc','TestRunId','RunStartedUtc','RunFinishedUtc','TestAssemblyFileName','Total','Passed','Failed','NotExecuted','Skipped') "$Context selection entry";if($names-notcontains[string]$entry.Name-or$seen.ContainsKey([string]$entry.Name)-or$runIds.ContainsKey([string]$entry.TestRunId)){throw "$Context selection names/run identities are not exact and unique."};$seen[[string]$entry.Name]=$true;$runIds[[string]$entry.TestRunId]=$true;$runStart=[DateTimeOffset]$entry.RunStartedUtc;$runFinish=[DateTimeOffset]$entry.RunFinishedUtc;if($runStart-ge$runFinish-or$runStart-lt$started-or$runFinish-gt$upper){throw "$Context selection entry chronology is out of bounds."};$file=Resolve-V02RuntimeReviewPath ([IO.Path]::GetDirectoryName($path)) (Join-Path ([IO.Path]::GetDirectoryName($path)) ([string]$entry.Name)) "$Context selected TRX";$held=Read-V02RuntimeReviewHeldFile $file;if($held.Bytes-ne[int64]$entry.Bytes-or$held.Sha256-cne[string]$entry.Sha256-or[int64]$entry.Total-ne[int64]$entry.Passed-or[int64]$entry.Failed-ne0-or[int64]$entry.NotExecuted-ne0-or[int64]$entry.Skipped-ne0){throw "$Context selected TRX is not byte/counter bound."};$sum+=[int64]$entry.Total};if($sum-ne888){throw "$Context selected TRX aggregate is not 888."}
+}
+
 function Assert-V02RuntimeReviewReports {
     param([Parameter(Mandatory)]$Gate, [Parameter(Mandatory)][string]$EvidenceDirectory, [Parameter(Mandatory)][ValidateSet('Thai', 'English')][string]$Language)
     $context = "$Language runtime evidence"
@@ -326,6 +375,8 @@ function Assert-V02RuntimeReviewReports {
     $appDoc = Read-V02RuntimeReviewStrictJsonFile $appPath "$context App report"
     $coreDoc = Read-V02RuntimeReviewStrictJsonFile $corePath "$context Core report"
     $app = $appDoc.Value; $core = $coreDoc.Value
+    Assert-V02RuntimeReviewExactProperties $app @('EvidenceClassification','ProfileId','ProfileSha256','Language','FinalLanguage','LanguageStableThroughFinish','LanguageChangeCount','CompositeCandidateChecksPassed','CoreStateObserved','UpdateObservedBeforeDashboardClose','DashboardClosed','UpdateObservedAfterDashboardClose','CoreConnectedAfterDashboardClose','DisconnectObservedAfterDashboardClose','ReconnectObservedAfterDashboardClose','SessionControlInvoked','InitialStateSha256','PreCloseStateSha256','PostCloseStateSha256','DisconnectStateSha256','ReconnectStateSha256','EventA','EventB','StateMappings','Captures') "$context App report"
+    Assert-V02RuntimeReviewExactProperties $core @('EvidenceClassification','RuntimeObserved','SnapshotObserved','EventObserved','ReconnectObserved','CompletionSignalObserved','SessionControlInvoked','Admission','Transitions') "$context Core report"
     foreach ($pair in @(@($app, 'EvidenceClassification', 'RuntimeCandidate'), @($app, 'Language', $Language), @($app, 'FinalLanguage', $Language), @($core, 'EvidenceClassification', 'Runtime'))) {
         if ((Get-V02RuntimeReviewProperty $pair[0] $pair[1] $context) -cne $pair[2]) { throw "$context $($pair[1]) is not bound to $($pair[2])." }
     }
@@ -337,29 +388,32 @@ function Assert-V02RuntimeReviewReports {
     Assert-V02RuntimeReviewFalse (Get-V02RuntimeReviewProperty $core 'SessionControlInvoked' $context) "$context Core.SessionControlInvoked"
     if ([string](Get-V02RuntimeReviewProperty $app 'ProfileId' $context) -cne (Get-V02RuntimeReviewGateValue $Gate 'ReferenceHostProfileId' $context) -or [string](Get-V02RuntimeReviewProperty $app 'ProfileSha256' $context) -cne (Get-V02RuntimeReviewGateValue $Gate 'ReferenceHostProfileSha256' $context)) { throw "$context App reference-host profile is not gate-bound." }
     $admission = Get-V02RuntimeReviewProperty $core 'Admission' $context
+    Assert-V02RuntimeReviewExactProperties $admission @('ReleaseId','ExecutableSha256','BundledSchemaSha256','Protocol') "$context Core.Admission"
     foreach ($name in @('ReleaseId','ExecutableSha256','BundledSchemaSha256','Protocol')) { $null = Get-V02RuntimeReviewProperty $admission $name "$context Core.Admission" }
     Assert-V02RuntimeReviewSha256 $admission.ExecutableSha256 "$context Herdr executable" | Out-Null
     Assert-V02RuntimeReviewSha256 $admission.BundledSchemaSha256 "$context bundled schema" | Out-Null
     Assert-V02RuntimeReviewInteger $admission.Protocol "$context protocol" | Out-Null
     foreach ($pair in @(@('HerdrReleaseId', [string]$admission.ReleaseId), @('HerdrExecutableSha256', [string]$admission.ExecutableSha256), @('BundledSchemaSha256', [string]$admission.BundledSchemaSha256), @('HerdrProtocol', [string]$admission.Protocol))) { if ((Get-V02RuntimeReviewGateValue $Gate $pair[0] $context) -cne $pair[1]) { throw "$context gate $($pair[0]) is not bound to Core admission." } }
     Assert-V02RuntimeReviewStateMappings (Get-V02RuntimeReviewProperty $app 'StateMappings' $context) "$context App.StateMappings"
-    foreach($name in @('InitialStateSha256','PreCloseStateSha256','PostCloseStateSha256')){Assert-V02RuntimeReviewSha256 (Get-V02RuntimeReviewProperty $app $name $context) "$context App.$name"|Out-Null}
+    foreach($name in @('InitialStateSha256','PreCloseStateSha256','PostCloseStateSha256','DisconnectStateSha256','ReconnectStateSha256')){Assert-V02RuntimeReviewSha256 (Get-V02RuntimeReviewProperty $app $name $context) "$context App.$name"|Out-Null}
     $eventA=Assert-V02RuntimeReviewEvent $app.EventA "$context App.EventA";$eventB=Assert-V02RuntimeReviewEvent $app.EventB "$context App.EventB"
-    $transitions = @((Get-V02RuntimeReviewProperty $core 'Transitions' $context));$kinds=@('Snapshot','EventA','DashboardClose','Disconnect','Reconnect','EventB');$statuses=@('Connected','Connected','Connected','Stopped','Connected','Connected');$agentStatuses=@('Working','Idle','Idle','Offline','Unknown','Blocked');$hashes=@([string]$app.InitialStateSha256,[string]$app.EventA.CurrentStateSha256,[string]$app.PreCloseStateSha256,$null,$null,[string]$app.EventB.CurrentStateSha256)
+    $transitions = @((Get-V02RuntimeReviewProperty $core 'Transitions' $context));$kinds=@('Snapshot','EventA','DashboardClose','Disconnect','Reconnect','EventB');$statuses=@('Connected','Connected','Connected','Stopped','Connected','Connected');$agentStatuses=@('Working','Idle','Done','Offline','Unknown','Blocked');$hashes=@([string]$app.InitialStateSha256,[string]$app.EventA.CurrentStateSha256,[string]$app.PreCloseStateSha256,[string]$app.DisconnectStateSha256,[string]$app.ReconnectStateSha256,[string]$app.EventB.CurrentStateSha256)
     if ($transitions.Count -ne $kinds.Count) { throw "$context Core must contain the exact six-transition lifecycle catalog." }
     $previousUtc=[DateTimeOffset]::MinValue;$serverKey=$null;$agentKey=$null
     for($i=0;$i-lt$transitions.Count;$i++){$transition=$transitions[$i]
+        Assert-V02RuntimeReviewExactProperties $transition @('Kind','Status','ServerIdentity','AgentIdentity','AgentStatus','ContractStateSha256','ObservedUtc') "$context Core transition[$i]"
         foreach($name in @('Kind','Status','ServerIdentity','AgentIdentity','AgentStatus','ContractStateSha256','ObservedUtc')){$null=Get-V02RuntimeReviewProperty $transition $name "$context Core transition[$i]"}
         if([string]$transition.Kind-cne$kinds[$i]-or[string]$transition.Status-cne$statuses[$i]-or[string]$transition.AgentStatus-cne$agentStatuses[$i]){throw "$context Core transition[$i] kind/status mapping is not exact."}
         Assert-V02RuntimeReviewSha256 $transition.ContractStateSha256 "$context Core transition[$i] hash"|Out-Null;if($null-ne$hashes[$i]-and[string]$transition.ContractStateSha256-cne$hashes[$i]){throw "$context Core transition[$i] state hash is not App-bound."}
         $utc=[DateTimeOffset]::MinValue;if(-not[DateTimeOffset]::TryParse([string]$transition.ObservedUtc,[Globalization.CultureInfo]::InvariantCulture,[Globalization.DateTimeStyles]::RoundtripKind,[ref]$utc)-or$utc.ToUniversalTime()-le$previousUtc){throw "$context Core transition timestamps must be unique and strictly increasing."};$previousUtc=$utc.ToUniversalTime()
         $serverIdentity = Get-V02RuntimeReviewProperty $transition 'ServerIdentity' "$context Core transition"
+        Assert-V02RuntimeReviewExactProperties $serverIdentity @('ProcessId','ProcessStartUtc','ExecutablePath','ExecutableSha256') "$context Core transition identity"
         foreach ($name in @('ProcessId','ProcessStartUtc','ExecutablePath','ExecutableSha256')) { $null = Get-V02RuntimeReviewProperty $serverIdentity $name "$context Core transition identity" }
         Assert-V02RuntimeReviewInteger $serverIdentity.ProcessId "$context Core transition PID" 1 | Out-Null
         Assert-V02RuntimeReviewString $serverIdentity.ProcessStartUtc "$context Core transition start" | Out-Null
         Assert-V02RuntimeReviewString $serverIdentity.ExecutablePath "$context Core transition executable" | Out-Null
         Assert-V02RuntimeReviewSha256 $serverIdentity.ExecutableSha256 "$context Core transition executable hash" | Out-Null
-        $agentIdentity=$transition.AgentIdentity;foreach($name in @('TerminalId','WorkspaceId','TabId','PaneId')){Assert-V02RuntimeReviewString (Get-V02RuntimeReviewProperty $agentIdentity $name "$context Core Agent identity") "$context Core Agent identity $name"|Out-Null}
+        $agentIdentity=$transition.AgentIdentity;Assert-V02RuntimeReviewExactProperties $agentIdentity @('TerminalId','WorkspaceId','TabId','PaneId') "$context Core Agent identity";foreach($name in @('TerminalId','WorkspaceId','TabId','PaneId')){Assert-V02RuntimeReviewString (Get-V02RuntimeReviewProperty $agentIdentity $name "$context Core Agent identity") "$context Core Agent identity $name"|Out-Null}
         $currentServer=@($serverIdentity.ProcessId,$serverIdentity.ProcessStartUtc,$serverIdentity.ExecutablePath,$serverIdentity.ExecutableSha256)-join'|';$currentAgent=@($agentIdentity.TerminalId,$agentIdentity.WorkspaceId,$agentIdentity.TabId,$agentIdentity.PaneId)-join'|'
         if($null-eq$serverKey){$serverKey=$currentServer;$agentKey=$currentAgent}elseif($currentServer-cne$serverKey-or$currentAgent-cne$agentKey){throw "$context Core process/session/Agent identity changed across transitions."}
     }
@@ -370,14 +424,17 @@ function Assert-V02RuntimeReviewReports {
     if(-not(([DateTimeOffset]$transitions[0].ObservedUtc).ToUniversalTime()-lt$eventA.PhaseEnteredUtc-and$eventA.PhaseEnteredUtc-lt$eventA.ObservedUtc-and$eventA.ObservedUtc-lt([DateTimeOffset]$transitions[2].ObservedUtc).ToUniversalTime()-and([DateTimeOffset]$transitions[4].ObservedUtc).ToUniversalTime()-lt$eventB.PhaseEnteredUtc-and$eventB.PhaseEnteredUtc-lt$eventB.ObservedUtc)){throw "$context lifecycle/event chronology is not strictly increasing and unique."}
     if([string]$eventA.Change.PreviousStatus-cne'Working'-or[string]$eventA.Change.CurrentStatus-cne'Idle'-or[string]$eventB.Change.PreviousStatus-cne'Unknown'-or[string]$eventB.Change.CurrentStatus-cne'Blocked'){throw "$context Event state mapping does not match the exact lifecycle catalog."}
     if((@($eventA.Change.TerminalId,$eventA.Change.WorkspaceId,$eventA.Change.TabId,$eventA.Change.PaneId)-join'|')-cne$agentKey-or(@($eventB.Change.TerminalId,$eventB.Change.WorkspaceId,$eventB.Change.TabId,$eventB.Change.PaneId)-join'|')-cne$agentKey){throw "$context Event Agent identities are not transition-bound."}
+    $captureDirectory = Resolve-V02RuntimeReviewPath $EvidenceDirectory (Get-V02RuntimeReviewGateValue $Gate 'CaptureDirectory' $context) "$context capture directory" 'Container'
     $captures = @((Get-V02RuntimeReviewProperty $app 'Captures' $context))
     if ($captures.Count -ne 8) { throw "$context must contain exactly eight runtime captures." }
     $captureHashes = @{}
     foreach ($capture in $captures) {
+        Assert-V02RuntimeReviewExactProperties $capture @('Name','Language','Path','Sha256') "$context capture"
         $name = Assert-V02RuntimeReviewString (Get-V02RuntimeReviewProperty $capture 'Name' $context) "$context capture name"
         if ($captureHashes.ContainsKey($name)) { throw "$context contains duplicate capture '$name'." }
         if ((Get-V02RuntimeReviewProperty $capture 'Language' $context) -cne $Language) { throw "$context capture language mismatch." }
         $capturePath = Resolve-V02RuntimeReviewPath $EvidenceDirectory (Get-V02RuntimeReviewProperty $capture 'Path' $context) "$context capture '$name'"
+        if(-not([IO.Path]::GetDirectoryName($capturePath)).Equals($captureDirectory,[StringComparison]::OrdinalIgnoreCase)){throw "$context capture '$name' is outside the declared capture directory."}
         $declared = Assert-V02RuntimeReviewSha256 (Get-V02RuntimeReviewProperty $capture 'Sha256' $context) "$context capture '$name' hash"
         $actual = Read-V02RuntimeReviewHeldFile $capturePath
         if ($actual.Sha256 -cne $declared) { throw "$context capture '$name' bytes do not match its declared hash." }
@@ -387,18 +444,11 @@ function Assert-V02RuntimeReviewReports {
     $declaredAppHash = Assert-V02RuntimeReviewSha256 (Get-V02RuntimeReviewGateValue $Gate 'AppRuntimeReportSha256' $context) "$context gate App hash"
     $declaredCoreHash = Assert-V02RuntimeReviewSha256 (Get-V02RuntimeReviewGateValue $Gate 'CoreRuntimeReportSha256' $context) "$context gate Core hash"
     if ($declaredAppHash -cne $appDoc.Sha256 -or $declaredCoreHash -cne $coreDoc.Sha256) { throw "$context gate report hashes do not match held App/Core reports." }
-    $selectionPath = Resolve-V02RuntimeReviewPath $EvidenceDirectory (Get-V02RuntimeReviewGateValue $Gate 'TrxSelectionReceiptPath' $context) "$context TRX selection receipt"
-    $selection = Read-V02RuntimeReviewHeldFile $selectionPath
-    if ($selection.Sha256 -cne (Get-V02RuntimeReviewGateValue $Gate 'TrxSelectionReceiptSha256' $context)) { throw "$context TRX selection receipt hash is not bound." }
-    $historyPath = Resolve-V02RuntimeReviewPath $EvidenceDirectory (Get-V02RuntimeReviewGateValue $Gate 'ProgressHistoryPath' $context) "$context progress history"
-    if (-not $historyPath.Equals((Join-Path $EvidenceDirectory 'app-progress.json.history.jsonl'), [StringComparison]::OrdinalIgnoreCase)) { throw "$context progress history is not the canonical held file." }
-    $history = Read-V02RuntimeReviewHeldFile $historyPath
-    if ($history.Sha256 -cne (Get-V02RuntimeReviewGateValue $Gate 'ProgressHistorySha256' $context)) { throw "$context progress history hash is not bound." }
-    $captureDirectory = Resolve-V02RuntimeReviewPath $EvidenceDirectory (Get-V02RuntimeReviewGateValue $Gate 'CaptureDirectory' $context) "$context capture directory" 'Container'
-    $firstCapturePath = [string]$captureHashes[[string]@($captureHashes.Keys)[0]].Path
-    $captureRoot = Split-Path -Parent $firstCapturePath
-    if (-not $captureRoot.Equals($captureDirectory, [StringComparison]::OrdinalIgnoreCase)) { throw "$context capture directory is not the real capture root." }
-    return [pscustomobject][ordered]@{ Language=$Language;EvidenceDirectory=[IO.Path]::GetFullPath($EvidenceDirectory);CaptureRoot=$captureRoot;Gate=$Gate;GateReportSha256=$Gate.Sha256;AppRuntimeReportSha256=$appDoc.Sha256;CoreRuntimeReportSha256=$coreDoc.Sha256;ProgressHistorySha256=$history.Sha256;ProgressHistoryLastEntrySha256=(Get-V02RuntimeReviewGateValue $Gate 'ProgressHistoryLastEntrySha256' $context);LastObservedUtc=$previousUtc;AppRuntimeReportBytes=$appDoc.Bytes;CoreRuntimeReportBytes=$coreDoc.Bytes;App=$app;Core=$core;Captures=@($captureHashes.Values|Sort-Object Name) }
+    Assert-V02RuntimeReviewSelectionReceipt $EvidenceDirectory $Gate $context
+    $progress=Assert-V02RuntimeReviewProgress $EvidenceDirectory $Gate $app $context
+    $progressIndexes=@(1,2,3,4,5,8);for($i=0;$i-lt6;$i++){$entry=$progress.Entries[$progressIndexes[$i]];if([string]$entry.StateSha256-cne[string]$transitions[$i].ContractStateSha256-or([DateTimeOffset]$entry.ObservedUtc).ToUniversalTime()-lt([DateTimeOffset]$transitions[$i].ObservedUtc).ToUniversalTime()){throw "$context progress lifecycle state/hash/chronology is not transition-bound."}}
+    $lastObserved=if($progress.LastUtc-gt$previousUtc){$progress.LastUtc}else{$previousUtc}
+    return [pscustomobject][ordered]@{ Language=$Language;EvidenceDirectory=[IO.Path]::GetFullPath($EvidenceDirectory);CaptureRoot=$captureDirectory;Gate=$Gate;GateReportSha256=$Gate.Sha256;AppRuntimeReportSha256=$appDoc.Sha256;CoreRuntimeReportSha256=$coreDoc.Sha256;ProgressHistorySha256=$progress.HistorySha256;ProgressHistoryLastEntrySha256=$progress.LastEntrySha256;FirstObservedUtc=([DateTimeOffset]$transitions[0].ObservedUtc).ToUniversalTime();LastObservedUtc=$lastObserved;ServerKey=$serverKey;AgentKey=$agentKey;AppRuntimeReportBytes=$appDoc.Bytes;CoreRuntimeReportBytes=$coreDoc.Bytes;App=$app;Core=$core;Captures=@($captureHashes.Values|Sort-Object Name) }
 }
 
 function Get-V02RuntimeReviewDirectoryInventory {
@@ -486,14 +536,14 @@ function Assert-V02RuntimeReviewMatrixCandidate {
     foreach ($run in $runs) { $language = Assert-V02RuntimeReviewString $run.Language 'matrix run language'; if ($byLanguage.ContainsKey($language)) { throw 'Matrix candidate contains duplicate language legs.' }; $byLanguage[$language] = $run }
     foreach ($expected in @(@('Thai', $Thai), @('English', $English))) {
         $language = [string]$expected[0]; if (-not $byLanguage.ContainsKey($language)) { throw "Matrix candidate is missing $language." }; $run = $byLanguage[$language]; $actual = $expected[1]
-        foreach ($name in @('EvidenceDirectory','CaptureRoot','GateReportSha256','AppRuntimeReportSha256','CoreRuntimeReportSha256','ProgressHistorySha256','PackageIdentityReceiptSha256','SourceCommit','SourceTree','ProfileId','ProfileSha256','ReferenceHostSchemaSha256','HerdrReleaseId','HerdrExecutableSha256','AppExecutableSha256','CoreExecutableSha256','BundledSchemaSha256','HerdrProtocol','RendererPolicyId','WpfProcessRenderMode','CaptureCount','Captures')) { $null = Get-V02RuntimeReviewProperty $run $name "matrix $language run" }
+        $runNames=@('Language','EvidenceDirectory','CaptureRoot','GateReportSha256','AppRuntimeReportSha256','CoreRuntimeReportSha256','ProgressHistorySha256','ProgressHistoryLastEntrySha256','PackageIdentityReceiptSha256','SourceCommit','SourceTree','ProfileId','ProfileSha256','ReferenceHostSchemaSha256','HerdrReleaseId','HerdrExecutableSha256','AppExecutableSha256','CoreExecutableSha256','BundledSchemaSha256','HerdrProtocol','RendererPolicyId','WpfProcessRenderMode','CaptureCount','Captures');Assert-V02RuntimeReviewExactProperties $run $runNames "matrix $language run"
         $gate=$actual.Gate
         $exact=@{
           EvidenceDirectory=$actual.EvidenceDirectory;CaptureRoot=$actual.CaptureRoot;GateReportSha256=$actual.GateReportSha256;AppRuntimeReportSha256=$actual.AppRuntimeReportSha256;CoreRuntimeReportSha256=$actual.CoreRuntimeReportSha256;ProgressHistorySha256=$actual.ProgressHistorySha256;ProgressHistoryLastEntrySha256=$actual.ProgressHistoryLastEntrySha256;SourceCommit=$ExpectedSourceCommit;SourceTree=$ExpectedSourceTree;ProfileId=[string]$actual.App.ProfileId;ProfileSha256=[string]$actual.App.ProfileSha256;ReferenceHostSchemaSha256=(Get-V02RuntimeReviewGateValue $gate 'ReferenceHostSchemaSha256' "matrix $language");HerdrReleaseId=(Get-V02RuntimeReviewGateValue $gate 'HerdrReleaseId' "matrix $language");HerdrExecutableSha256=(Get-V02RuntimeReviewGateValue $gate 'HerdrExecutableSha256' "matrix $language");AppExecutableSha256=$Package.AppSha256;CoreExecutableSha256=$Package.CoreSha256;BundledSchemaSha256=(Get-V02RuntimeReviewGateValue $gate 'BundledSchemaSha256' "matrix $language");HerdrProtocol=(Get-V02RuntimeReviewGateValue $gate 'HerdrProtocol' "matrix $language");RendererPolicyId=(Get-V02RuntimeReviewGateValue $gate 'RendererPolicyId' "matrix $language");WpfProcessRenderMode=(Get-V02RuntimeReviewGateValue $gate 'WpfProcessRenderMode' "matrix $language")}
         foreach($name in $exact.Keys){if([string]$run.$name-cne[string]$exact[$name]){throw "Matrix $language $name is not exactly bound to held runtime evidence."}}
         if ([string]$run.PackageIdentityReceiptSha256 -cne $Package.ReceiptSha256) { throw "Matrix $language run is not bound to the package receipt." }
         if ([int64]$run.CaptureCount -ne 8) { throw "Matrix $language capture count is not eight." }
-        $declared=@($run.Captures);if($declared.Count-ne$actual.Captures.Count){throw "Matrix $language capture inventory count differs from held evidence."};for($i=0;$i-lt$declared.Count;$i++){$expectedCapture=$actual.Captures[$i];$candidateCapture=@($declared|Where-Object{[string]$_.Name-ceq[string]$expectedCapture.Name});if($candidateCapture.Count-ne1-or[string]$candidateCapture[0].Path-cne[string]$expectedCapture.Path-or[string]$candidateCapture[0].Sha256-cne[string]$expectedCapture.Sha256-or[string]$candidateCapture[0].Language-cne$language){throw "Matrix $language capture inventory is not exactly held-byte bound."}}
+        $declared=@($run.Captures);if($declared.Count-ne$actual.Captures.Count){throw "Matrix $language capture inventory count differs from held evidence."};for($i=0;$i-lt$declared.Count;$i++){$candidate=$declared[$i];Assert-V02RuntimeReviewExactProperties $candidate @('Name','Language','Path','Sha256') "matrix $language capture[$i]";$expectedCapture=$actual.Captures[$i];if([string]$candidate.Name-cne[string]$expectedCapture.Name-or[string]$candidate.Path-cne[string]$expectedCapture.Path-or[string]$candidate.Sha256-cne[string]$expectedCapture.Sha256-or[string]$candidate.Language-cne$language){throw "Matrix $language capture inventory[$i] is not exactly ordered and held-byte bound."}}
         if($actual.LastObservedUtc-ge$generatedUtc){throw "Matrix $language chronology is stale or reversed."}
     }
     foreach($name in @('ProfileId','ProfileSha256','ReferenceHostSchemaSha256','HerdrReleaseId','HerdrExecutableSha256','AppExecutableSha256','CoreExecutableSha256','BundledSchemaSha256','HerdrProtocol')){if([string]$binding.$name-cne[string]$runs[0].$name-or[string]$binding.$name-cne[string]$runs[1].$name){throw "Matrix payload binding $name is not exact across both language legs."}}
@@ -564,6 +614,8 @@ function Invoke-V02RuntimeReviewVerificationCore {
     Assert-V02RuntimeReviewGate $thaiGate 'Thai' $ExpectedSourceCommit $ExpectedSourceTree | Out-Null; Assert-V02RuntimeReviewGate $englishGate 'English' $ExpectedSourceCommit $ExpectedSourceTree | Out-Null
     $thai = Assert-V02RuntimeReviewReports $thaiGate $thaiRoot 'Thai'; $english = Assert-V02RuntimeReviewReports $englishGate $englishRoot 'English'
     if([string]$thai.Core.Transitions[0].ServerIdentity.ExecutablePath-cne[string]$english.Core.Transitions[0].ServerIdentity.ExecutablePath){throw 'Thai and English held Herdr executable paths are not exact.'}
+    if($thai.LastObservedUtc-ge$english.FirstObservedUtc){throw 'Thai and English runtime legs must have disjoint strictly ordered chronology.'}
+    if($thai.ServerKey-cne$english.ServerKey-or$thai.AgentKey-cne$english.AgentKey){throw 'Thai and English runtime legs do not bind the same intended process/session/Agent identity.'}
     foreach ($pair in @(@('Thai/English package receipt', $thaiGate, $englishGate, 'PackageIdentityReceiptSha256'), @('Thai/English package archive', $thaiGate, $englishGate, 'PackageArchiveSha256'), @('Thai/English package manifest', $thaiGate, $englishGate, 'PackageManifestSha256'), @('Thai/English package App', $thaiGate, $englishGate, 'AppSha256'), @('Thai/English package Core', $thaiGate, $englishGate, 'CoreSha256'), @('Thai/English Herdr', $thaiGate, $englishGate, 'HerdrExecutableSha256'), @('Thai/English schema', $thaiGate, $englishGate, 'BundledSchemaSha256'))) { if ((Get-V02RuntimeReviewGateValue $pair[1] $pair[3] $pair[0]) -cne (Get-V02RuntimeReviewGateValue $pair[2] $pair[3] $pair[0])) { throw "$($pair[0]) is not identical." } }
     foreach ($name in @('AcceptanceControlSession','TargetAgentLabSession','AcceptanceControlSocketPath','TargetAgentLabSocketPath','TargetAgentSessionReference','AcceptanceControlServerIdentity')) { if ((Get-V02RuntimeReviewGateValue $thaiGate $name 'Thai session') -cne (Get-V02RuntimeReviewGateValue $englishGate $name 'English session')) { throw "Thai and English $name identities are not exact." } }
     foreach ($pair in @(@('PackageIdentityPath', $package.IdentityPath), @('PackageArchivePath', $package.ArchivePath), @('ExtractedPackageRoot', $ExtractedPackageRoot), @('PackageManifestPath', $package.ManifestPath))) {
