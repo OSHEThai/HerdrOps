@@ -69,6 +69,16 @@ $script:RendererEnvironmentCases = @(
     'windows11-x64-build26220-local-console-non-elevated-single-user',
     'physical-mixed-dpi-primary-switch-unplug', 'ac-power', 'battery-power',
     'soak-ac-60-minutes', 'soak-battery-60-minutes', 'thermal-observation')
+
+function Get-RendererGovernedMatrixCases {
+    return @(
+        $script:RendererDisplayCases +
+        $script:RendererMixedDpiCases +
+        $script:RendererAccessibilityCases +
+        $script:RendererEnvironmentCases
+    )
+}
+$script:RendererGovernedMatrixCases = @(Get-RendererGovernedMatrixCases)
 $script:RendererVisualChecks = @(
     'no-blank-black-transparent-surface', 'no-missing-glyph', 'no-clipping-overlap',
     'status-meaning-preserved', 'brand-hierarchy-preserved',
@@ -222,6 +232,138 @@ function Assert-RendererPackageReceipt { param($Receipt,$Candidate)
     Assert-RendererExactProperties $Receipt.renderer @('policy','wpfProcessRenderMode') 'Package receipt renderer';if($Receipt.renderer.policy-cne$Candidate.renderer.policy-or$Receipt.renderer.wpfProcessRenderMode-cne$Candidate.renderer.wpfProcessRenderMode){throw 'Package receipt renderer does not equal the renderer candidate.'}
     Assert-RendererExactProperties $Receipt.evidenceBoundary @('evidenceClass','runtimeUse','actualHerdrUsed','runtimeCredit','releaseCredit') 'Package receipt evidenceBoundary';Assert-RendererBoolean $Receipt.evidenceBoundary.actualHerdrUsed 'Package receipt actualHerdrUsed';if($Receipt.evidenceBoundary.evidenceClass-cne'PackagedCompatibilityPreparation'-or$Receipt.evidenceBoundary.runtimeUse-cne'not-used'-or$Receipt.evidenceBoundary.actualHerdrUsed-or$Receipt.evidenceBoundary.runtimeCredit-cne'NOT CLAIMED'-or$Receipt.evidenceBoundary.releaseCredit-cne'NOT CLAIMED'){throw 'Package receipt inflates evidence.'}
 }
+function Assert-RendererMatrixRawPayload {
+    param(
+        [Parameter(Mandatory=$true)]$Payload,
+        [Parameter(Mandatory=$true)][string]$ExpectedCaseId,
+        [Parameter(Mandatory=$true)][string]$Context
+    )
+    if ($null -eq $Payload -or $Payload -isnot [pscustomobject]) { throw "$Context must be a JSON object." }
+    
+    $propNames = @($Payload.PSObject.Properties.Name)
+    $requiredBase = @('schemaVersion','caseId','observedUtc','evidenceClass','outcome','details')
+    foreach ($req in $requiredBase) {
+        if (-not ($propNames -ccontains $req)) { throw "$Context omitted '$req'." }
+    }
+
+    Assert-RendererNonnegativeInteger $Payload.schemaVersion "$Context schemaVersion"
+    if ([long]$Payload.schemaVersion -ne 1) { throw "$Context schemaVersion must be 1." }
+
+    Assert-RendererString $Payload.caseId "$Context caseId"
+    if ($Payload.caseId -cne $ExpectedCaseId) { throw "$Context caseId '$($Payload.caseId)' does not match expected caseId '$ExpectedCaseId'." }
+
+    Assert-RendererUtc $Payload.observedUtc "$Context observedUtc"
+
+    Assert-RendererString $Payload.evidenceClass "$Context evidenceClass"
+    if ($Payload.evidenceClass -cnotin @('Static','Synthetic','Contract','Runtime')) {
+        throw "$Context evidenceClass '$($Payload.evidenceClass)' is invalid or inflates release authority."
+    }
+
+    Assert-RendererString $Payload.outcome "$Context outcome"
+    if ($Payload.outcome -cnotin @('PASS','FAIL')) {
+        throw "$Context outcome '$($Payload.outcome)' must be exact PASS or FAIL."
+    }
+
+    Assert-RendererString $Payload.details "$Context details"
+
+    $allowedProps = [System.Collections.Generic.List[string]]::new([string[]]$requiredBase)
+    $allowedProps.Add('checksPassed')
+    $allowedProps.Add('errorCount')
+
+    if ($Payload.evidenceClass -ceq 'Runtime') {
+        $allowedProps.Add('actualHerdrObserved')
+        $allowedProps.Add('sessionKind')
+        $allowedProps.Add('elevated')
+        $allowedProps.Add('userScope')
+        $allowedProps.Add('isSynthetic')
+
+        foreach ($runtimeReq in @('actualHerdrObserved','sessionKind','elevated','userScope')) {
+            if (-not ($propNames -ccontains $runtimeReq)) {
+                throw "$Context claims unearned Runtime: omitted '$runtimeReq'."
+            }
+        }
+
+        Assert-RendererBoolean $Payload.actualHerdrObserved "$Context actualHerdrObserved"
+        if (-not [bool]$Payload.actualHerdrObserved) {
+            throw "$Context claims unearned Runtime: actualHerdrObserved is false."
+        }
+
+        Assert-RendererString $Payload.sessionKind "$Context sessionKind"
+        if ($Payload.sessionKind -cne 'LocalConsole') {
+            throw "$Context claims unearned Runtime: sessionKind '$($Payload.sessionKind)' is not LocalConsole."
+        }
+
+        Assert-RendererBoolean $Payload.elevated "$Context elevated"
+        if ([bool]$Payload.elevated) {
+            throw "$Context claims unearned Runtime: session is elevated."
+        }
+
+        Assert-RendererString $Payload.userScope "$Context userScope"
+        if ($Payload.userScope -cne 'SingleUser') {
+            throw "$Context claims unearned Runtime: userScope '$($Payload.userScope)' is not SingleUser."
+        }
+
+        if ($propNames -ccontains 'isSynthetic') {
+            Assert-RendererBoolean $Payload.isSynthetic "$Context isSynthetic"
+            if ([bool]$Payload.isSynthetic) {
+                throw "$Context claims unearned Runtime: isSynthetic is true."
+            }
+        }
+    } else {
+        if ($propNames -ccontains 'actualHerdrObserved') {
+            Assert-RendererBoolean $Payload.actualHerdrObserved "$Context actualHerdrObserved"
+            if ([bool]$Payload.actualHerdrObserved) {
+                throw "$Context non-Runtime evidenceClass '$($Payload.evidenceClass)' contradicts actualHerdrObserved=true."
+            }
+            $allowedProps.Add('actualHerdrObserved')
+        }
+        if ($propNames -ccontains 'sessionKind') {
+            Assert-RendererString $Payload.sessionKind "$Context sessionKind"
+            $allowedProps.Add('sessionKind')
+        }
+        if ($propNames -ccontains 'elevated') {
+            Assert-RendererBoolean $Payload.elevated "$Context elevated"
+            $allowedProps.Add('elevated')
+        }
+        if ($propNames -ccontains 'userScope') {
+            Assert-RendererString $Payload.userScope "$Context userScope"
+            $allowedProps.Add('userScope')
+        }
+        if ($propNames -ccontains 'isSynthetic') {
+            Assert-RendererBoolean $Payload.isSynthetic "$Context isSynthetic"
+            $allowedProps.Add('isSynthetic')
+        }
+    }
+
+    foreach ($name in $propNames) {
+        if (-not $allowedProps.Contains($name)) {
+            throw "$Context contains unexpected property '$name'."
+        }
+    }
+
+    if ($propNames -ccontains 'checksPassed') {
+        Assert-RendererBoolean $Payload.checksPassed "$Context checksPassed"
+        if ($Payload.outcome -ceq 'PASS' -and -not [bool]$Payload.checksPassed) {
+            throw "$Context forged PASS: outcome is PASS but checksPassed is false."
+        }
+    }
+
+    if ($propNames -ccontains 'errorCount') {
+        Assert-RendererNonnegativeInteger $Payload.errorCount "$Context errorCount"
+        if ($Payload.outcome -ceq 'PASS' -and [long]$Payload.errorCount -gt 0) {
+            throw "$Context forged PASS: outcome is PASS but errorCount is nonzero."
+        }
+    }
+
+    return [pscustomobject][ordered]@{
+        CaseId = [string]$Payload.caseId
+        ObservedUtc = [string]$Payload.observedUtc
+        EvidenceClass = [string]$Payload.evidenceClass
+        Outcome = [string]$Payload.outcome
+        Details = [string]$Payload.details
+    }
+}
+
 function Assert-RendererMatrixCases { param([object[]]$Cases,[string[]]$Expected,[string]$Context,[string]$Root,[string]$RepositoryRoot,[switch]$ValidateBindings)
     if([string]::IsNullOrWhiteSpace($Root)){$Root=$script:RendererCurrentEvidenceRoot}
     if([string]::IsNullOrWhiteSpace($RepositoryRoot)){$RepositoryRoot=$script:RendererCurrentRepositoryRoot}
@@ -248,12 +390,29 @@ function Assert-RendererMatrixCases { param([object[]]$Cases,[string[]]$Expected
             Assert-RendererString $role.Value.identity "$Context '$($case.id)' $($role.Name) identity"
             if($role.Value.role-cne$role.Expected){throw "$Context '$($case.id)' $($role.Name) role is invalid."}
         }
-        if($receipt.operator.identity-ceq$receipt.observer.identity){throw "$Context '$($case.id)' operator and observer identities must be distinct."}
+        if($receipt.operator.identity.Trim().Equals($receipt.observer.identity.Trim(),[StringComparison]::OrdinalIgnoreCase)){throw "$Context '$($case.id)' operator and observer identities must be distinct."}
         Assert-RendererExactProperties $receipt.evidenceBoundary @('evidenceClass','finalHumanGo','release','creditGranted') "$Context '$($case.id)' evidenceBoundary"
         if($receipt.evidenceBoundary.evidenceClass-cnotin@('Static','Synthetic','Contract','Runtime')-or$receipt.evidenceBoundary.finalHumanGo-cne'NOT_OBSERVED'-or$receipt.evidenceBoundary.release-cne'NOT_OBSERVED'){throw "$Context '$($case.id)' receipt inflated its evidence boundary."}
         Assert-RendererBoolean $receipt.evidenceBoundary.creditGranted "$Context '$($case.id)' creditGranted"
         if($receipt.evidenceBoundary.creditGranted){throw "$Context '$($case.id)' receipt cannot grant final credit."}
         Assert-RendererFileBinding $receipt.rawEvidence "$Context '$($case.id)' rawEvidence" $Root -ValidateBindings
+        $rawPath=Resolve-RendererBoundPath $Root $receipt.rawEvidence.relativePath "$Context '$($case.id)' rawEvidence"
+        $rawStable=Get-RendererStableFileIdentity $Root $rawPath "$Context '$($case.id)' rawEvidence" -IncludeBytes
+        $rawJson=(New-Object Text.UTF8Encoding($false,$true)).GetString($rawStable.Content)
+        $rawPayload=ConvertFrom-StrictHumanDesignReviewJson -Json $rawJson -Description "$Context '$($case.id)' raw evidence payload"
+        if ($PSVersionTable.PSVersion.Major -ge 7 -and (Get-Command ConvertFrom-Json).Parameters.ContainsKey('DateKind')) {
+            $rawPayload = $rawJson | ConvertFrom-Json -DateKind String
+        }
+        $validatedRaw = Assert-RendererMatrixRawPayload -Payload $rawPayload -ExpectedCaseId $case.id -Context "$Context '$($case.id)' raw evidence payload"
+        if ($receipt.observedUtc -cne $validatedRaw.ObservedUtc) {
+            throw "$Context '$($case.id)' receipt observedUtc '$($receipt.observedUtc)' does not match raw evidence observedUtc '$($validatedRaw.ObservedUtc)'."
+        }
+        if ($receipt.outcome -cne $validatedRaw.Outcome) {
+            throw "$Context '$($case.id)' receipt outcome '$($receipt.outcome)' contradicts raw evidence outcome '$($validatedRaw.Outcome)'."
+        }
+        if ($receipt.evidenceBoundary.evidenceClass -cne $validatedRaw.EvidenceClass) {
+            throw "$Context '$($case.id)' receipt evidenceClass '$($receipt.evidenceBoundary.evidenceClass)' contradicts raw evidence evidenceClass '$($validatedRaw.EvidenceClass)'."
+        }
         if($case.status-cne$receipt.outcome){throw "$Context '$($case.id)' status is not recomputed from the bound receipt outcome."}
     }
 }
