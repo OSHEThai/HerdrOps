@@ -325,3 +325,55 @@ function Test-RendererCompatibilityManifest {
     $ready=[bool]$ValidateBindings-and$authorityProfileConsistent-and$finalHumanAuthorityConfigured-and$visualComplete-and$matrixComplete-and$limits.status-ceq'APPROVED'-and$performance.samplesStatus-ceq'PASS'-and$review.decision-ceq'GO'-and$visualReviewComplete-and$defectsComplete
     [pscustomobject][ordered]@{EvidenceClassification='PackagedCompatibilityCandidate';ManifestVersion=1;StructuralValidation='PASS';BindingValidation=if($ValidateBindings){'PASS'}else{'NOT_REQUESTED'};GovernanceProfileConsistency=if($authorityProfileConsistent){'PASS'}else{'FAIL'};FinalHumanGoAuthority=if($finalHumanAuthorityConfigured){'CONFIGURED'}else{'NOT_OBSERVED'};OwnerNumericLimits=$limits.status;HumanReview=$review.decision;ActualHerdrRuntime='NOT_OBSERVED';Release='NOT_OBSERVED';CreditGranted=$false;PackagedCompatibilityReadyForIssue149Closure=$ready}
 }
+
+function Copy-RendererValue {
+    param([Parameter(Mandatory=$true)]$Value)
+    $json = $Value | ConvertTo-Json -Depth 80
+    if ($PSVersionTable.PSVersion.Major -ge 7) {
+        return ($json | ConvertFrom-Json -DateKind String)
+    } else {
+        return ($json | ConvertFrom-Json)
+    }
+}
+
+function New-RendererTestPng {
+    param(
+        [Parameter(Mandatory=$true)][string]$Path,
+        [Parameter(Mandatory=$true)][int]$Width,
+        [Parameter(Mandatory=$true)][int]$Height
+    )
+    $stride = $Width * 4
+    $pixels = New-Object byte[] ($stride * $Height)
+    for ($i = 0; $i -lt $pixels.Length; $i += 4) {
+        $pixels[$i] = 20
+        $pixels[$i + 1] = 40
+        $pixels[$i + 2] = 60
+        $pixels[$i + 3] = 255
+    }
+    $bitmap = [Windows.Media.Imaging.BitmapSource]::Create($Width, $Height, 96, 96, [Windows.Media.PixelFormats]::Bgra32, $null, $pixels, $stride)
+    $encoder = New-Object Windows.Media.Imaging.PngBitmapEncoder
+    $encoder.Frames.Add([Windows.Media.Imaging.BitmapFrame]::Create($bitmap))
+    $parent = Split-Path -Parent $Path
+    if (-not [string]::IsNullOrWhiteSpace($parent) -and -not (Test-Path -LiteralPath $parent)) {
+        New-Item -ItemType Directory -Path $parent -Force | Out-Null
+    }
+    $stream = [IO.File]::Open($Path, [IO.FileMode]::Create, [IO.FileAccess]::Write, [IO.FileShare]::None)
+    try {
+        $encoder.Save($stream)
+    } finally {
+        $stream.Dispose()
+    }
+}
+
+function New-RendererMatrixCases {
+    param([Parameter(Mandatory=$true)][string[]]$Ids)
+    return @($Ids | ForEach-Object {
+        [pscustomobject][ordered]@{
+            id = $_
+            status = 'NOT_OBSERVED'
+            evidenceReceipt = $null
+            notes = $null
+        }
+    })
+}
+
