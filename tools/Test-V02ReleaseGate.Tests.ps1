@@ -83,7 +83,6 @@ function New-V02ReleaseGateTestCleanRepository {
     New-V02ReleaseGateTestDirectory -Path (Join-Path $root 'Plan')
     New-V02ReleaseGateTestDirectory -Path (Join-Path $root 'tools\packaging\v0.2')
     Copy-Item -LiteralPath (Join-Path $script:GateRepositoryRoot 'Plan\DECISIONS.md') -Destination (Join-Path $root 'Plan\DECISIONS.md')
-    Copy-Item -LiteralPath (Join-Path $script:GateRepositoryRoot 'Plan\v0.2-release-gate-independent-receipt.json') -Destination (Join-Path $root 'Plan\v0.2-release-gate-independent-receipt.json')
     Copy-Item -LiteralPath (Join-Path $script:GateRepositoryRoot 'tools\packaging\v0.2\package-identity-profile.json') -Destination (Join-Path $root 'tools\packaging\v0.2\package-identity-profile.json')
     & git -C $root init --quiet
     & git -C $root -c user.name=HerdrOps-Gate-Test -c user.email=test@example.invalid add --all
@@ -99,6 +98,7 @@ function New-V02ReleaseGateTestCandidateLock {
         [Parameter(Mandatory = $true)][string]$ProfileFileSha256,
         [Parameter(Mandatory = $true)][string]$ProfileCanonicalSha256,
         [Parameter(Mandatory = $true)]$Authority,
+        [Parameter(Mandatory = $true)]$IndependentReceipt,
         [string]$PackageReceiptSha256 = ('1' * 64),
         [string]$PackageReceiptFileSha256 = ('2' * 64),
         [string]$PackageArchiveSha256 = ('3' * 64),
@@ -134,12 +134,12 @@ function New-V02ReleaseGateTestCandidateLock {
             ReferenceSha256 = $Authority.FileSha256
             OwnerIdentity = $Authority.OwnerIdentity
             OwnerRole = $Authority.OwnerRole
-            Authentication = $Authority.Authentication
-            IndependentReceiptPath = $Authority.IndependentReceipt.RelativePath
-            IndependentReceiptSha256 = $Authority.IndependentReceipt.FileSha256
-            IndependentReceiptIdentity = $Authority.IndependentReceipt.ReviewerIdentity
-            IndependentReceiptRole = $Authority.IndependentReceipt.ReviewerRole
-            IndependentReceiptAuthentication = $Authority.IndependentReceipt.Authentication
+            Authentication = 'TRUSTED_OWNER_PLUS_EXTERNAL_INDEPENDENT_RECEIPT'
+            IndependentReceiptPath = $IndependentReceipt.Path
+            IndependentReceiptSha256 = $IndependentReceipt.FileSha256
+            IndependentReceiptIdentity = $IndependentReceipt.ReviewerIdentity
+            IndependentReceiptRole = $IndependentReceipt.ReviewerRole
+            IndependentReceiptAuthentication = $IndependentReceipt.Authentication
         }
         Runtime = 'NOT_OBSERVED'
         Human = 'NOT_OBSERVED'
@@ -147,6 +147,73 @@ function New-V02ReleaseGateTestCandidateLock {
     }
     Write-V02ReleaseGateTestJson -Path $Path -Value $lock | Out-Null
     return $lock
+}
+
+function New-V02ReleaseGateTestExternalIndependentReceipt {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)]$Identity,
+        [Parameter(Mandatory = $true)][string]$ProfileFileSha256,
+        [Parameter(Mandatory = $true)][string]$ProfileCanonicalSha256,
+        [string]$PackageReceiptSha256 = ('1' * 64),
+        [string]$PackageReceiptFileSha256 = ('2' * 64),
+        [string]$PackageArchiveSha256 = ('3' * 64),
+        [string]$PackageManifestSha256 = ('4' * 64),
+        [string]$PackageAppSha256 = ('5' * 64),
+        [string]$PackageCoreSha256 = ('6' * 64),
+        [string]$RendererManifestSha256 = ('7' * 64),
+        [string]$RuntimeMatrixManifestSha256 = ('8' * 64),
+        [string]$ReviewerIdentity = '@independent-reviewer'
+    )
+    $receipt = [pscustomobject][ordered]@{
+        SchemaVersion = 2
+        EvidenceClass = 'ExternalIndependentCandidateReceipt'
+        Result = 'APPROVED_CANDIDATE_ONLY'
+        DecisionId = 'herdrops-rec-all-v2'
+        ApprovalReference = 'https://github.com/OSHEThai/HerdrOps/issues/149#issuecomment-5380637664'
+        AuthorityReference = 'Plan/DECISIONS.md#D-024'
+        AuthorityReferenceSha256 = 'BFADC29EA34BAA13FF5D3F43013795C0258CF691369E5E150774D3F646F4F730'
+        Candidate = [pscustomobject][ordered]@{
+            SourceCommit = $Identity.Commit
+            SourceTree = $Identity.Tree
+            ProfileId = $script:V02ReleaseGatePackageProfileId
+            ProfileFileSha256 = $ProfileFileSha256
+            ProfileCanonicalSha256 = $ProfileCanonicalSha256
+            PackageReceiptSha256 = $PackageReceiptSha256
+            PackageReceiptFileSha256 = $PackageReceiptFileSha256
+            PackageArchiveSha256 = $PackageArchiveSha256
+            PackageManifestSha256 = $PackageManifestSha256
+            PackageAppSha256 = $PackageAppSha256
+            PackageCoreSha256 = $PackageCoreSha256
+            RendererManifestSha256 = $RendererManifestSha256
+            RuntimeMatrixManifestSha256 = $RuntimeMatrixManifestSha256
+        }
+        Owner = [pscustomobject][ordered]@{ Identity = '@yutthaphon'; Role = 'ProductOwner' }
+        IndependentReviewer = [pscustomobject][ordered]@{ Identity = $ReviewerIdentity; Role = 'IndependentGateReviewer' }
+        Authentication = [pscustomobject][ordered]@{
+            Method = 'EXTERNAL_AUTHENTICATED_INDEPENDENT_REVIEW'
+            Reference = 'https://external-review.invalid/herdrops/v0.2/candidate'
+            VerifiedBy = $ReviewerIdentity
+            VerifiedRole = 'IndependentGateReviewer'
+            ProofSha256 = ('F' * 64)
+            Authenticated = $true
+        }
+        RoleDistinct = $true
+        Runtime = 'NOT_OBSERVED'
+        Human = 'NOT_OBSERVED'
+        Release = 'NOT_OBSERVED'
+        CreditGranted = $false
+    }
+    $hash = Write-V02ReleaseGateTestJson -Path $Path -Value $receipt
+    return [pscustomobject][ordered]@{
+        Path = [IO.Path]::GetFullPath($Path)
+        FileSha256 = $hash
+        ReviewerIdentity = $ReviewerIdentity
+        ReviewerRole = 'IndependentGateReviewer'
+        Authentication = 'EXTERNAL_AUTHENTICATED_INDEPENDENT_REVIEW'
+        Candidate = $receipt.Candidate
+        Value = $receipt
+    }
 }
 
 function New-V02ReleaseGateTestGitHubSnapshot {
@@ -256,16 +323,44 @@ try {
         New-V02ReleaseGateTestDirectory -Path $evidenceRoot
         $authority = Read-V02ReleaseGateAuthorityReference -RepositoryRoot $script:GateRepositoryRoot `
             -AuthorityReferencePath (Join-Path $script:GateRepositoryRoot 'Plan\DECISIONS.md')
+        $receipt = New-V02ReleaseGateTestExternalIndependentReceipt -Path (Join-Path $script:TestRoot 'external-lock\receipt.json') `
+            -Identity $script:GateIdentity -ProfileFileSha256 $script:GateProfileSha -ProfileCanonicalSha256 $script:GateProfileCanonicalSha
         $lockPath = Join-Path $evidenceRoot 'candidate-lock.json'
         New-V02ReleaseGateTestCandidateLock -Path $lockPath -Identity $script:GateIdentity `
-            -ProfileFileSha256 $script:GateProfileSha -ProfileCanonicalSha256 $script:GateProfileCanonicalSha -Authority $authority | Out-Null
+            -ProfileFileSha256 $script:GateProfileSha -ProfileCanonicalSha256 $script:GateProfileCanonicalSha -Authority $authority -IndependentReceipt $receipt | Out-Null
         $lock = Read-V02ReleaseGateCandidateLock -Path $lockPath -EvidenceRoot $evidenceRoot `
             -ExpectedSourceCommit $script:GateIdentity.Commit -ExpectedSourceTree $script:GateIdentity.Tree `
             -PackageProfilePath $script:GateProfilePath -RepositoryRoot $script:GateRepositoryRoot `
-            -AuthorityReferencePath (Join-Path $script:GateRepositoryRoot 'Plan\DECISIONS.md')
-        if ($lock.Result -cne 'APPROVED_CANDIDATE_ONLY' -or $lock.Authentication -cne 'TRUSTED_COMMITTED_PLAN_AND_INDEPENDENT_RECEIPT') {
+            -AuthorityReferencePath (Join-Path $script:GateRepositoryRoot 'Plan\DECISIONS.md') -IndependentCandidateReceiptPath $receipt.Path
+        if ($lock.Result -cne 'APPROVED_CANDIDATE_ONLY' -or $lock.Authentication -cne 'TRUSTED_OWNER_PLUS_EXTERNAL_INDEPENDENT_RECEIPT') {
             throw 'Candidate lock did not remain candidate-only and owner/independent-receipt bound.'
         }
+    }
+
+    Invoke-V02ReleaseGateTestCase 'builder-authored committed receipt is not an authority source' {
+        $committedReceiptPath = Join-Path $script:GateRepositoryRoot 'Plan\v0.2-release-gate-independent-receipt.json'
+        if (Test-Path -LiteralPath $committedReceiptPath) {
+            throw 'A builder-authored committed independent receipt still exists.'
+        }
+        Assert-V02ReleaseGateTestThrows {
+            Read-V02ReleaseGateExternalIndependentCandidateReceipt -Path $committedReceiptPath `
+                -RepositoryRoot $script:GateRepositoryRoot -EvidenceRoot (Join-Path $script:TestRoot 'receipt-authority') `
+                -ExpectedSourceCommit $script:GateIdentity.Commit -ExpectedSourceTree $script:GateIdentity.Tree
+        } 'missing'
+    }
+
+    Invoke-V02ReleaseGateTestCase 'forged external receipt authentication fails closed' {
+        $receipt = New-V02ReleaseGateTestExternalIndependentReceipt -Path (Join-Path $script:TestRoot 'external-forged-receipt\receipt.json') `
+            -Identity $script:GateIdentity -ProfileFileSha256 $script:GateProfileSha -ProfileCanonicalSha256 $script:GateProfileCanonicalSha
+        $forged = $receipt.Value | ConvertTo-Json -Depth 100 | ConvertFrom-Json
+        $forged.Authentication.Authenticated = $false
+        $forged.Authentication.Reference = (Join-Path $script:TestRoot 'local-proof.json')
+        Write-V02ReleaseGateTestJson -Path $receipt.Path -Value $forged | Out-Null
+        Assert-V02ReleaseGateTestThrows {
+            Read-V02ReleaseGateExternalIndependentCandidateReceipt -Path $receipt.Path `
+                -RepositoryRoot $script:GateRepositoryRoot -EvidenceRoot (Join-Path $script:TestRoot 'external-forged-evidence') `
+                -ExpectedSourceCommit $script:GateIdentity.Commit -ExpectedSourceTree $script:GateIdentity.Tree
+        } 'external HTTPS|authenticated'
     }
 
     Invoke-V02ReleaseGateTestCase 'copied Plan JSON cannot self-authorize a candidate lock' {
@@ -273,9 +368,11 @@ try {
         New-V02ReleaseGateTestDirectory -Path $evidenceRoot
         $authority = Read-V02ReleaseGateAuthorityReference -RepositoryRoot $script:GateRepositoryRoot `
             -AuthorityReferencePath (Join-Path $script:GateRepositoryRoot 'Plan\DECISIONS.md')
+        $receipt = New-V02ReleaseGateTestExternalIndependentReceipt -Path (Join-Path $script:TestRoot 'external-copied-plan\receipt.json') `
+            -Identity $script:GateIdentity -ProfileFileSha256 $script:GateProfileSha -ProfileCanonicalSha256 $script:GateProfileCanonicalSha
         $lockPath = Join-Path $evidenceRoot 'candidate-lock.json'
         New-V02ReleaseGateTestCandidateLock -Path $lockPath -Identity $script:GateIdentity `
-            -ProfileFileSha256 $script:GateProfileSha -ProfileCanonicalSha256 $script:GateProfileCanonicalSha -Authority $authority | Out-Null
+            -ProfileFileSha256 $script:GateProfileSha -ProfileCanonicalSha256 $script:GateProfileCanonicalSha -Authority $authority -IndependentReceipt $receipt | Out-Null
         $copiedPlanOnly = Get-Content -LiteralPath $lockPath -Raw | ConvertFrom-Json
         foreach ($name in @('IndependentReceiptPath', 'IndependentReceiptSha256', 'IndependentReceiptIdentity', 'IndependentReceiptRole', 'IndependentReceiptAuthentication')) {
             $copiedPlanOnly.Authority.PSObject.Properties.Remove($name)
@@ -285,7 +382,7 @@ try {
             Read-V02ReleaseGateCandidateLock -Path $lockPath -EvidenceRoot $evidenceRoot `
                 -ExpectedSourceCommit $script:GateIdentity.Commit -ExpectedSourceTree $script:GateIdentity.Tree `
                 -PackageProfilePath $script:GateProfilePath -RepositoryRoot $script:GateRepositoryRoot `
-                -AuthorityReferencePath (Join-Path $script:GateRepositoryRoot 'Plan\DECISIONS.md')
+                -AuthorityReferencePath (Join-Path $script:GateRepositoryRoot 'Plan\DECISIONS.md') -IndependentCandidateReceiptPath $receipt.Path
         } 'exactly'
     }
 
@@ -294,9 +391,11 @@ try {
         New-V02ReleaseGateTestDirectory -Path $evidenceRoot
         $authority = Read-V02ReleaseGateAuthorityReference -RepositoryRoot $script:GateRepositoryRoot `
             -AuthorityReferencePath (Join-Path $script:GateRepositoryRoot 'Plan\DECISIONS.md')
+        $receipt = New-V02ReleaseGateTestExternalIndependentReceipt -Path (Join-Path $script:TestRoot 'external-forged-lock\receipt.json') `
+            -Identity $script:GateIdentity -ProfileFileSha256 $script:GateProfileSha -ProfileCanonicalSha256 $script:GateProfileCanonicalSha
         $lockPath = Join-Path $evidenceRoot 'candidate-lock.json'
         New-V02ReleaseGateTestCandidateLock -Path $lockPath -Identity $script:GateIdentity `
-            -ProfileFileSha256 $script:GateProfileSha -ProfileCanonicalSha256 $script:GateProfileCanonicalSha -Authority $authority | Out-Null
+            -ProfileFileSha256 $script:GateProfileSha -ProfileCanonicalSha256 $script:GateProfileCanonicalSha -Authority $authority -IndependentReceipt $receipt | Out-Null
         $forged = Get-Content -LiteralPath $lockPath -Raw | ConvertFrom-Json
         $forged.Authority.Reference = 'Plan/forged-authority.json'
         Write-V02ReleaseGateTestJson -Path $lockPath -Value $forged | Out-Null
@@ -304,7 +403,7 @@ try {
             Read-V02ReleaseGateCandidateLock -Path $lockPath -EvidenceRoot $evidenceRoot `
                 -ExpectedSourceCommit $script:GateIdentity.Commit -ExpectedSourceTree $script:GateIdentity.Tree `
                 -PackageProfilePath $script:GateProfilePath -RepositoryRoot $script:GateRepositoryRoot `
-                -AuthorityReferencePath (Join-Path $script:GateRepositoryRoot 'Plan\DECISIONS.md')
+                -AuthorityReferencePath (Join-Path $script:GateRepositoryRoot 'Plan\DECISIONS.md') -IndependentCandidateReceiptPath $receipt.Path
         } 'authority source'
     }
 
@@ -313,9 +412,11 @@ try {
         New-V02ReleaseGateTestDirectory -Path $evidenceRoot
         $authority = Read-V02ReleaseGateAuthorityReference -RepositoryRoot $script:GateRepositoryRoot `
             -AuthorityReferencePath (Join-Path $script:GateRepositoryRoot 'Plan\DECISIONS.md')
+        $receipt = New-V02ReleaseGateTestExternalIndependentReceipt -Path (Join-Path $script:TestRoot 'external-drift-lock\receipt.json') `
+            -Identity $script:GateIdentity -ProfileFileSha256 $script:GateProfileSha -ProfileCanonicalSha256 $script:GateProfileCanonicalSha
         $lockPath = Join-Path $evidenceRoot 'candidate-lock.json'
         New-V02ReleaseGateTestCandidateLock -Path $lockPath -Identity $script:GateIdentity `
-            -ProfileFileSha256 $script:GateProfileSha -ProfileCanonicalSha256 $script:GateProfileCanonicalSha -Authority $authority | Out-Null
+            -ProfileFileSha256 $script:GateProfileSha -ProfileCanonicalSha256 $script:GateProfileCanonicalSha -Authority $authority -IndependentReceipt $receipt | Out-Null
         $drifted = Get-Content -LiteralPath $lockPath -Raw | ConvertFrom-Json
         $drifted.SourceTree = ('a' * 40)
         Write-V02ReleaseGateTestJson -Path $lockPath -Value $drifted | Out-Null
@@ -323,10 +424,10 @@ try {
             Read-V02ReleaseGateCandidateLock -Path $lockPath -EvidenceRoot $evidenceRoot `
                 -ExpectedSourceCommit $script:GateIdentity.Commit -ExpectedSourceTree $script:GateIdentity.Tree `
                 -PackageProfilePath $script:GateProfilePath -RepositoryRoot $script:GateRepositoryRoot `
-                -AuthorityReferencePath (Join-Path $script:GateRepositoryRoot 'Plan\DECISIONS.md')
+                -AuthorityReferencePath (Join-Path $script:GateRepositoryRoot 'Plan\DECISIONS.md') -IndependentCandidateReceiptPath $receipt.Path
         } 'source tree'
         New-V02ReleaseGateTestCandidateLock -Path $lockPath -Identity $script:GateIdentity `
-            -ProfileFileSha256 $script:GateProfileSha -ProfileCanonicalSha256 $script:GateProfileCanonicalSha -Authority $authority | Out-Null
+            -ProfileFileSha256 $script:GateProfileSha -ProfileCanonicalSha256 $script:GateProfileCanonicalSha -Authority $authority -IndependentReceipt $receipt | Out-Null
         $drifted = Get-Content -LiteralPath $lockPath -Raw | ConvertFrom-Json
         $drifted.ProfileFileSha256 = ('a' * 64)
         Write-V02ReleaseGateTestJson -Path $lockPath -Value $drifted | Out-Null
@@ -334,7 +435,7 @@ try {
             Read-V02ReleaseGateCandidateLock -Path $lockPath -EvidenceRoot $evidenceRoot `
                 -ExpectedSourceCommit $script:GateIdentity.Commit -ExpectedSourceTree $script:GateIdentity.Tree `
                 -PackageProfilePath $script:GateProfilePath -RepositoryRoot $script:GateRepositoryRoot `
-                -AuthorityReferencePath (Join-Path $script:GateRepositoryRoot 'Plan\DECISIONS.md')
+                -AuthorityReferencePath (Join-Path $script:GateRepositoryRoot 'Plan\DECISIONS.md') -IndependentCandidateReceiptPath $receipt.Path
         } 'profile bytes'
     }
 
@@ -498,6 +599,7 @@ try {
 
     Invoke-V02ReleaseGateTestCase 'validator and helper snapshots stay bound for the entire run' {
         $snapshots = @(Get-V02ReleaseGateValidatorSnapshots -RepositoryRoot $script:GateRepositoryRoot)
+        try {
         if ($snapshots.Count -ne $script:V02ReleaseGateValidatorRelativePaths.Count) {
             throw "Expected $($script:V02ReleaseGateValidatorRelativePaths.Count) validator/helper snapshots; observed $($snapshots.Count)."
         }
@@ -517,6 +619,64 @@ try {
         }
         finally {
             if (Test-Path -LiteralPath $copy) { Remove-Item -LiteralPath $copy -Force }
+        }
+        }
+        finally {
+            Close-V02ReleaseGateHeldSnapshots -Snapshots $snapshots
+        }
+    }
+
+    Invoke-V02ReleaseGateTestCase 'validator swap-execute-restore hostile path is held and restored' {
+        $root = Join-Path $script:TestRoot 'validator-swap'
+        New-V02ReleaseGateTestDirectory -Path $root
+        $target = Join-Path $root 'validator.ps1'
+        $replacement = Join-Path $root 'validator.replacement.ps1'
+        $backup = Join-Path $root 'validator.backup.ps1'
+        Write-V02ReleaseGateTestText -Path $target -Text "param(); 'ORIGINAL'`r`n" | Out-Null
+        Write-V02ReleaseGateTestText -Path $replacement -Text "param(); 'REPLACED'`r`n" | Out-Null
+        $snapshot = Get-V02ReleaseGateStableFileSnapshot -Path $target -Context 'validator swap fixture' -KeepOpen
+        try {
+            $swapSucceededWhileHeld = $false
+            try {
+                Move-Item -LiteralPath $target -Destination $backup -Force
+                Move-Item -LiteralPath $replacement -Destination $target -Force
+                $swapSucceededWhileHeld = $true
+            }
+            catch {
+                $swapSucceededWhileHeld = $false
+            }
+            if ($swapSucceededWhileHeld) {
+                throw 'Validator/helper swap unexpectedly succeeded while the held file and parent handles were open.'
+            }
+            $observed = @(& $target)
+            if ($observed.Count -ne 1 -or [string]$observed[0] -cne 'ORIGINAL') {
+                throw "Held validator execution observed unexpected output: $($observed -join ',')."
+            }
+        }
+        finally {
+            Close-V02ReleaseGateHeldSnapshots -Snapshots @($snapshot)
+        }
+
+        Move-Item -LiteralPath $target -Destination $backup -Force
+        Move-Item -LiteralPath $replacement -Destination $target -Force
+        try {
+            $swapped = @(& $target)
+            if ($swapped.Count -ne 1 -or [string]$swapped[0] -cne 'REPLACED') {
+                throw 'The hostile replacement did not execute after the held validator was released.'
+            }
+            $pinned = [scriptblock]::Create(([Text.UTF8Encoding]::new($false, $true)).GetString([byte[]]$snapshot.Bytes))
+            $pinnedOutput = @(& $pinned)
+            if ($pinnedOutput.Count -ne 1 -or [string]$pinnedOutput[0] -cne 'ORIGINAL') {
+                throw 'Pinned validator bytes did not remain the original bytes during the swap.'
+            }
+        }
+        finally {
+            if (Test-Path -LiteralPath $target) { Remove-Item -LiteralPath $target -Force }
+            if (Test-Path -LiteralPath $backup) { Move-Item -LiteralPath $backup -Destination $target -Force }
+        }
+        $restored = Get-V02ReleaseGateStableFileSnapshot -Path $target -Context 'validator swap restored fixture'
+        if ($restored.Sha256 -cne $snapshot.Sha256) {
+            throw 'Validator/helper swap fixture was not restored to its original bytes.'
         }
     }
 

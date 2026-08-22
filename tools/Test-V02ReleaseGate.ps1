@@ -18,6 +18,7 @@ param(
     [string]$GitHubSnapshotPath,
     [string]$CandidateLockPath,
     [string]$AuthorityReferencePath,
+    [string]$IndependentCandidateReceiptPath,
     [string]$EvidenceRoot,
     [string]$RepositoryRoot,
     [string]$RendererEvidenceRoot,
@@ -47,9 +48,8 @@ $script:V02ReleaseGateAuthorityReferenceRelativePath = 'Plan/DECISIONS.md#D-024'
 $script:V02ReleaseGateAuthorityFileSha256 = 'BFADC29EA34BAA13FF5D3F43013795C0258CF691369E5E150774D3F646F4F730'
 $script:V02ReleaseGateAuthorityOwner = '@yutthaphon'
 $script:V02ReleaseGateAuthorityRole = 'ProductOwner'
-$script:V02ReleaseGateIndependentReceiptRelativePath = 'Plan/v0.2-release-gate-independent-receipt.json'
-$script:V02ReleaseGateIndependentReceiptFileSha256 = 'A36CD9B4672640CC09C3CC4BA637C4B24AE4D3E9942944A8AFC10AEB9409ED05'
-$script:V02ReleaseGateIndependentReceiptIdentity = '@release-gate-independent'
+$script:V02ReleaseGateIndependentReceiptEvidenceClass = 'ExternalIndependentCandidateReceipt'
+$script:V02ReleaseGateIndependentReceiptAuthenticationMethod = 'EXTERNAL_AUTHENTICATED_INDEPENDENT_REVIEW'
 $script:V02ReleaseGateIndependentReceiptRole = 'IndependentGateReviewer'
 $script:V02ReleaseGateMaximumSnapshotBytes = [int64]16777216
 $script:V02ReleaseGateHerdrReleaseId = '0.8.2-preview.2026-08-19-b5c4a0176e91-x86_64-pc-windows-msvc'
@@ -78,9 +78,14 @@ $script:V02ReleaseGateValidatorRelativePaths = @(
     'tools/Test-V02ReleaseGate.ps1',
     'tools/lib/V02ReferenceHostProfile.ps1',
     'tools/packaging/v0.2/Test-V02PackageIdentity.ps1',
+    'tools/packaging/v0.2/V02PackageIdentity.Common.ps1',
+    'tools/packaging/Packaging.Common.ps1',
     'tools/v0.2-renderer-compatibility/Test-V02RendererCompatibilityManifest.ps1',
+    'tools/v0.2-renderer-compatibility/RendererCompatibility.Common.ps1',
+    'tools/human-design-review/HumanDesignReview.Common.ps1',
     'tools/Test-V02LanguageMatrixAcceptance.ps1'
 )
+$script:V02ReleaseGateHeldValidatorIndex = $null
 
 if (-not ('V02ReleaseGateNative' -as [type])) {
     Add-Type -TypeDefinition @'
@@ -138,6 +143,27 @@ public static class V02ReleaseGateNative
 $referenceHostHelper = Join-Path $PSScriptRoot 'lib\V02ReferenceHostProfile.ps1'
 if (-not (Test-Path -LiteralPath $referenceHostHelper -PathType Leaf)) {
     throw "v0.2 reference-host helper is missing: $referenceHostHelper"
+}
+$script:V02ReleaseGateBootstrapHelperStream = [IO.File]::Open(
+    [IO.Path]::GetFullPath($referenceHostHelper),
+    [IO.FileMode]::Open,
+    [IO.FileAccess]::Read,
+    [IO.FileShare]::Read)
+$bootstrapParentPath = [IO.Path]::GetDirectoryName([IO.Path]::GetFullPath($referenceHostHelper))
+$script:V02ReleaseGateBootstrapHelperParentHandle = [V02ReleaseGateNative]::CreateFile(
+    $bootstrapParentPath,
+    [uint32][int64]2147483648,
+    [uint32]0x00000003,
+    [IntPtr]::Zero,
+    [uint32]3,
+    [uint32]0x02000000,
+    [IntPtr]::Zero)
+if ($null -eq $script:V02ReleaseGateBootstrapHelperParentHandle -or $script:V02ReleaseGateBootstrapHelperParentHandle.IsInvalid) {
+    if ($null -ne $script:V02ReleaseGateBootstrapHelperParentHandle) { $script:V02ReleaseGateBootstrapHelperParentHandle.Dispose() }
+    $script:V02ReleaseGateBootstrapHelperParentHandle = $null
+    $script:V02ReleaseGateBootstrapHelperStream.Dispose()
+    $script:V02ReleaseGateBootstrapHelperStream = $null
+    throw "v0.2 reference-host helper parent handle could not be held: $bootstrapParentPath"
 }
 . $referenceHostHelper
 
@@ -324,6 +350,23 @@ function Assert-V02ReleaseGatePathWithinRoot {
     return $full
 }
 
+function Assert-V02ReleaseGatePathOutsideRoot {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$Root,
+        [Parameter(Mandatory = $true)][string]$Context
+    )
+
+    $full = [IO.Path]::GetFullPath($Path).TrimEnd([char[]]@('\', '/'))
+    $rootFull = [IO.Path]::GetFullPath($Root).TrimEnd([char[]]@('\', '/'))
+    $prefix = $rootFull + [IO.Path]::DirectorySeparatorChar
+    if ([StringComparer]::OrdinalIgnoreCase.Equals($full, $rootFull) -or
+        $full.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "$Context must be externally supplied outside '$rootFull'. Path='$full'."
+    }
+    return $full
+}
+
 function Get-V02ReleaseGateFinalPathByHandle {
     param(
         [Parameter(Mandatory = $true)][Microsoft.Win32.SafeHandles.SafeFileHandle]$Handle,
@@ -367,13 +410,15 @@ function Get-V02ReleaseGateHandleFileIdentity {
 function Open-V02ReleaseGateParentHandle {
     param(
         [Parameter(Mandatory = $true)][string]$ParentPath,
-        [Parameter(Mandatory = $true)][string]$Context
+        [Parameter(Mandatory = $true)][string]$Context,
+        [switch]$DenyDelete
     )
 
+    $shareMode = if ($DenyDelete) { [uint32]0x00000003 } else { [uint32]0x00000007 }
     $handle = [V02ReleaseGateNative]::CreateFile(
         $ParentPath,
         [uint32][int64]2147483648,
-        [uint32]0x00000007,
+        $shareMode,
         [IntPtr]::Zero,
         [uint32]3,
         [uint32]0x02000000,
@@ -403,19 +448,21 @@ function Assert-V02ReleaseGateHandlePath {
 function Get-V02ReleaseGateStableFileSnapshot {
     param(
         [Parameter(Mandatory = $true)][string]$Path,
-        [Parameter(Mandatory = $true)][string]$Context
+        [Parameter(Mandatory = $true)][string]$Context,
+        [switch]$KeepOpen
     )
 
     $fullPath = Resolve-V02ReleaseGateExistingPath -Path $Path -Type Leaf -Context $Context
     $expectedParent = [IO.Path]::GetDirectoryName($fullPath)
     $stream = $null
     $parentHandle = $null
+    $completed = $false
     try {
         # FileShare.Read holds the leaf against write/delete/rename while the bytes
         # are read. The native parent handle and final-path checks close the
         # leaf/parent reparse or replacement window around this open.
         $stream = [IO.File]::Open($fullPath, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
-        $parentHandle = Open-V02ReleaseGateParentHandle -ParentPath $expectedParent -Context $Context
+        $parentHandle = Open-V02ReleaseGateParentHandle -ParentPath $expectedParent -Context $Context -DenyDelete:$KeepOpen
         $leafFinalBefore = Get-V02ReleaseGateFinalPathByHandle -Handle $stream.SafeFileHandle -Context "$Context leaf"
         $parentFinalBefore = Get-V02ReleaseGateFinalPathByHandle -Handle $parentHandle -Context "$Context parent"
         Assert-V02ReleaseGateHandlePath -Actual $leafFinalBefore -Expected $fullPath -Context "$Context leaf"
@@ -447,10 +494,13 @@ function Get-V02ReleaseGateStableFileSnapshot {
         $parentIdentityAfter = Get-V02ReleaseGateHandleFileIdentity -Handle $parentHandle -Context "$Context parent after read"
         Assert-V02ReleaseGateEqual $leafIdentityAfter $fileIdentity "$Context leaf file identity"
         Assert-V02ReleaseGateEqual $parentIdentityAfter $parentIdentity "$Context parent file identity"
+        $completed = $true
     }
     finally {
-        if ($null -ne $parentHandle) { $parentHandle.Dispose() }
-        if ($null -ne $stream) { $stream.Dispose() }
+        if (-not $KeepOpen -or -not $completed) {
+            if ($null -ne $parentHandle) { $parentHandle.Dispose() }
+            if ($null -ne $stream) { $stream.Dispose() }
+        }
     }
     return [pscustomobject][ordered]@{
         Path = $fullPath
@@ -461,7 +511,33 @@ function Get-V02ReleaseGateStableFileSnapshot {
         Bytes = [byte[]]$bytes
         Length = [int64]$bytes.Length
         Sha256 = (Get-V02Sha256Hex -Bytes $bytes).ToUpperInvariant()
+        HeldStream = if ($KeepOpen) { $stream } else { $null }
+        HeldParentHandle = if ($KeepOpen) { $parentHandle } else { $null }
     }
+}
+
+function Close-V02ReleaseGateHeldSnapshots {
+    param(
+        [Parameter(Mandatory = $true)]$Snapshots
+    )
+
+    foreach ($snapshot in @($Snapshots)) {
+        if ($null -ne $snapshot.HeldParentHandle) {
+            $snapshot.HeldParentHandle.Dispose()
+        }
+        if ($null -ne $snapshot.HeldStream) {
+            $snapshot.HeldStream.Dispose()
+        }
+    }
+    if ($null -ne $script:V02ReleaseGateBootstrapHelperParentHandle) {
+        $script:V02ReleaseGateBootstrapHelperParentHandle.Dispose()
+        $script:V02ReleaseGateBootstrapHelperParentHandle = $null
+    }
+    if ($null -ne $script:V02ReleaseGateBootstrapHelperStream) {
+        $script:V02ReleaseGateBootstrapHelperStream.Dispose()
+        $script:V02ReleaseGateBootstrapHelperStream = $null
+    }
+    $script:V02ReleaseGateHeldValidatorIndex = $null
 }
 
 function ConvertFrom-V02ReleaseGateStrictJsonBytes {
@@ -567,16 +643,43 @@ function Get-V02ReleaseGateValidatorSnapshots {
     )
 
     $snapshots = New-Object System.Collections.Generic.List[object]
-    foreach ($relativePath in $script:V02ReleaseGateValidatorRelativePaths) {
-        $expectedPath = [IO.Path]::GetFullPath((Join-Path $RepositoryRoot ($relativePath -replace '/', '\'))).TrimEnd([char[]]@('\', '/'))
-        $actualPath = Resolve-V02ReleaseGateExistingPath -Path $expectedPath -Type Leaf -Context "Validator/helper '$relativePath'"
-        if (-not [StringComparer]::OrdinalIgnoreCase.Equals($actualPath, $expectedPath)) {
-            throw "Validator/helper '$relativePath' was not opened at its committed path."
+    try {
+        foreach ($relativePath in $script:V02ReleaseGateValidatorRelativePaths) {
+            $expectedPath = [IO.Path]::GetFullPath((Join-Path $RepositoryRoot ($relativePath -replace '/', '\'))).TrimEnd([char[]]@('\', '/'))
+            $actualPath = Resolve-V02ReleaseGateExistingPath -Path $expectedPath -Type Leaf -Context "Validator/helper '$relativePath'"
+            if (-not [StringComparer]::OrdinalIgnoreCase.Equals($actualPath, $expectedPath)) {
+                throw "Validator/helper '$relativePath' was not opened at its committed path."
+            }
+            [void]$snapshots.Add((Get-V02ReleaseGateStableFileSnapshot -Path $actualPath -Context "Validator/helper '$relativePath'" -KeepOpen))
         }
-        [void]$snapshots.Add((Get-V02ReleaseGateStableFileSnapshot -Path $actualPath -Context "Validator/helper '$relativePath'"))
+        Assert-V02ReleaseGateDistinctFileIdentities -Snapshots $snapshots.ToArray() -Context 'Validator/helper snapshots'
+        $script:V02ReleaseGateHeldValidatorIndex = @{}
+        foreach ($snapshot in $snapshots.ToArray()) {
+            $key = ([IO.Path]::GetFullPath([string]$snapshot.Path)).TrimEnd([char[]]@('\', '/')).ToUpperInvariant()
+            $script:V02ReleaseGateHeldValidatorIndex[$key] = $snapshot
+        }
+        return $snapshots.ToArray()
     }
-    Assert-V02ReleaseGateDistinctFileIdentities -Snapshots $snapshots.ToArray() -Context 'Validator/helper snapshots'
-    return $snapshots.ToArray()
+    catch {
+        Close-V02ReleaseGateHeldSnapshots -Snapshots $snapshots.ToArray()
+        throw
+    }
+}
+
+function Assert-V02ReleaseGateValidatorHeld {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$Context
+    )
+
+    $key = ([IO.Path]::GetFullPath($Path)).TrimEnd([char[]]@('\', '/')).ToUpperInvariant()
+    if ($null -eq $script:V02ReleaseGateHeldValidatorIndex -or
+        -not $script:V02ReleaseGateHeldValidatorIndex.ContainsKey($key) -or
+        $null -eq $script:V02ReleaseGateHeldValidatorIndex[$key].HeldStream -or
+        $script:V02ReleaseGateHeldValidatorIndex[$key].HeldStream.SafeFileHandle.IsClosed) {
+        throw "$Context is not executing a held validator/helper file: $Path"
+    }
+    return $script:V02ReleaseGateHeldValidatorIndex[$key]
 }
 
 function Get-V02ReleaseGateGitIdentity {
@@ -740,7 +843,6 @@ function Read-V02ReleaseGateAuthorityReference {
             throw "Authority reference is missing its trusted binding: $required"
         }
     }
-    $independentReceipt = Read-V02ReleaseGateIndependentAuthorityReceipt -RepositoryRoot $RepositoryRoot
     return [pscustomobject][ordered]@{
         Path = $snapshot.Path
         FileSha256 = $snapshot.Sha256
@@ -750,65 +852,100 @@ function Read-V02ReleaseGateAuthorityReference {
         PayloadSha256 = $script:V02ReleaseGateDecisionPayloadSha256
         OwnerIdentity = $script:V02ReleaseGateAuthorityOwner
         OwnerRole = $script:V02ReleaseGateAuthorityRole
-        IndependentReceipt = $independentReceipt
-        Authentication = 'TRUSTED_COMMITTED_PLAN_AND_INDEPENDENT_RECEIPT'
+        Authentication = 'TRUSTED_COMMITTED_PLAN_OWNER_DECISION_ONLY'
     }
 }
 
-function Read-V02ReleaseGateIndependentAuthorityReceipt {
+function Read-V02ReleaseGateExternalIndependentCandidateReceipt {
     param(
-        [Parameter(Mandatory = $true)][string]$RepositoryRoot
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$RepositoryRoot,
+        [Parameter(Mandatory = $true)][string]$EvidenceRoot,
+        [Parameter(Mandatory = $true)][string]$ExpectedSourceCommit,
+        [Parameter(Mandatory = $true)][string]$ExpectedSourceTree
     )
 
-    $expectedPath = [IO.Path]::GetFullPath((Join-Path $RepositoryRoot ($script:V02ReleaseGateIndependentReceiptRelativePath -replace '/', '\'))).TrimEnd([char[]]@('\', '/'))
-    $actualPath = Resolve-V02ReleaseGateExistingPath -Path $expectedPath -Type Leaf -Context 'Independent authority receipt'
-    if (-not [StringComparer]::OrdinalIgnoreCase.Equals($actualPath, $expectedPath)) {
-        throw "Independent authority receipt must be the committed pinned path: $expectedPath"
-    }
-    $document = Read-V02ReleaseGateJsonFile -Path $actualPath -Context 'Independent authority receipt'
-    if ($document.FileSha256 -cne $script:V02ReleaseGateIndependentReceiptFileSha256) {
-        throw "Independent authority receipt hash is not pinned. Expected=$script:V02ReleaseGateIndependentReceiptFileSha256 Observed=$($document.FileSha256)"
-    }
+    $actualPath = Resolve-V02ReleaseGateExistingPath -Path $Path -Type Leaf -Context 'External independent candidate receipt'
+    Assert-V02ReleaseGatePathOutsideRoot -Path $actualPath -Root $RepositoryRoot -Context 'External independent candidate receipt' | Out-Null
+    Assert-V02ReleaseGatePathOutsideRoot -Path $actualPath -Root $EvidenceRoot -Context 'External independent candidate receipt' | Out-Null
+    $document = Read-V02ReleaseGateJsonFile -Path $actualPath -Context 'External independent candidate receipt'
     $receipt = $document.Value
     Assert-V02ReleaseGateExactProperties $receipt @(
         'SchemaVersion', 'EvidenceClass', 'Result', 'DecisionId', 'ApprovalReference',
-        'AuthorityReference', 'AuthorityReferenceSha256', 'Owner', 'IndependentReviewer',
-        'RoleDistinct', 'Runtime', 'Human', 'Release', 'CreditGranted'
-    ) 'Independent authority receipt'
-    Assert-V02ReleaseGateInteger $receipt.SchemaVersion 'Independent authority receipt SchemaVersion' 1
-    Assert-V02ReleaseGateEqual $receipt.SchemaVersion 1 'Independent authority receipt SchemaVersion'
-    Assert-V02ReleaseGateExactString $receipt.EvidenceClass 'IndependentAuthorityReceipt' 'Independent authority receipt EvidenceClass'
-    Assert-V02ReleaseGateExactString $receipt.Result 'APPROVED_CANDIDATE_ONLY' 'Independent authority receipt Result'
-    Assert-V02ReleaseGateExactString $receipt.DecisionId $script:V02ReleaseGateDecisionId 'Independent authority receipt DecisionId'
-    Assert-V02ReleaseGateExactString $receipt.ApprovalReference $script:V02ReleaseGateDecisionReference 'Independent authority receipt ApprovalReference'
-    Assert-V02ReleaseGateExactString $receipt.AuthorityReference $script:V02ReleaseGateAuthorityReferenceRelativePath 'Independent authority receipt AuthorityReference'
-    Assert-V02ReleaseGateExactString $receipt.AuthorityReferenceSha256 $script:V02ReleaseGateAuthorityFileSha256 'Independent authority receipt AuthorityReferenceSha256'
-    Assert-V02ReleaseGateExactProperties $receipt.Owner @('Identity', 'Role') 'Independent authority receipt Owner'
-    Assert-V02ReleaseGateExactString $receipt.Owner.Identity $script:V02ReleaseGateAuthorityOwner 'Independent authority receipt owner identity'
-    Assert-V02ReleaseGateExactString $receipt.Owner.Role $script:V02ReleaseGateAuthorityRole 'Independent authority receipt owner role'
-    Assert-V02ReleaseGateExactProperties $receipt.IndependentReviewer @('Identity', 'Role') 'Independent authority receipt IndependentReviewer'
-    Assert-V02ReleaseGateExactString $receipt.IndependentReviewer.Identity $script:V02ReleaseGateIndependentReceiptIdentity 'Independent authority receipt reviewer identity'
-    Assert-V02ReleaseGateExactString $receipt.IndependentReviewer.Role $script:V02ReleaseGateIndependentReceiptRole 'Independent authority receipt reviewer role'
-    if (-not (Assert-V02ReleaseGateBoolean $receipt.RoleDistinct 'Independent authority receipt RoleDistinct')) {
-        throw 'Independent authority receipt must keep owner and independent reviewer roles distinct.'
+        'AuthorityReference', 'AuthorityReferenceSha256', 'Candidate', 'Owner', 'IndependentReviewer',
+        'Authentication', 'RoleDistinct', 'Runtime', 'Human', 'Release', 'CreditGranted'
+    ) 'External independent candidate receipt'
+    Assert-V02ReleaseGateInteger $receipt.SchemaVersion 'External independent candidate receipt SchemaVersion' 2
+    Assert-V02ReleaseGateEqual $receipt.SchemaVersion 2 'External independent candidate receipt SchemaVersion'
+    Assert-V02ReleaseGateExactString $receipt.EvidenceClass $script:V02ReleaseGateIndependentReceiptEvidenceClass 'External independent candidate receipt EvidenceClass'
+    Assert-V02ReleaseGateExactString $receipt.Result 'APPROVED_CANDIDATE_ONLY' 'External independent candidate receipt Result'
+    Assert-V02ReleaseGateExactString $receipt.DecisionId $script:V02ReleaseGateDecisionId 'External independent candidate receipt DecisionId'
+    Assert-V02ReleaseGateExactString $receipt.ApprovalReference $script:V02ReleaseGateDecisionReference 'External independent candidate receipt ApprovalReference'
+    Assert-V02ReleaseGateExactString $receipt.AuthorityReference $script:V02ReleaseGateAuthorityReferenceRelativePath 'External independent candidate receipt AuthorityReference'
+    Assert-V02ReleaseGateExactString $receipt.AuthorityReferenceSha256 $script:V02ReleaseGateAuthorityFileSha256 'External independent candidate receipt AuthorityReferenceSha256'
+    Assert-V02ReleaseGateExactProperties $receipt.Candidate @(
+        'SourceCommit', 'SourceTree', 'ProfileId', 'ProfileFileSha256', 'ProfileCanonicalSha256',
+        'PackageReceiptSha256', 'PackageReceiptFileSha256', 'PackageArchiveSha256',
+        'PackageManifestSha256', 'PackageAppSha256', 'PackageCoreSha256',
+        'RendererManifestSha256', 'RuntimeMatrixManifestSha256'
+    ) 'External independent candidate receipt Candidate'
+    Assert-V02ReleaseGateGitObjectId $receipt.Candidate.SourceCommit 'External independent candidate receipt SourceCommit' | Out-Null
+    Assert-V02ReleaseGateGitObjectId $receipt.Candidate.SourceTree 'External independent candidate receipt SourceTree' | Out-Null
+    Assert-V02ReleaseGateEqual $receipt.Candidate.SourceCommit $ExpectedSourceCommit 'External independent candidate receipt source commit'
+    Assert-V02ReleaseGateEqual $receipt.Candidate.SourceTree $ExpectedSourceTree 'External independent candidate receipt source tree'
+    Assert-V02ReleaseGateExactString $receipt.Candidate.ProfileId $script:V02ReleaseGatePackageProfileId 'External independent candidate receipt ProfileId'
+    foreach ($name in @(
+            'ProfileFileSha256', 'ProfileCanonicalSha256', 'PackageReceiptSha256',
+            'PackageReceiptFileSha256', 'PackageArchiveSha256', 'PackageManifestSha256',
+            'PackageAppSha256', 'PackageCoreSha256', 'RendererManifestSha256',
+            'RuntimeMatrixManifestSha256'
+        )) {
+        Assert-V02ReleaseGateSha256 $receipt.Candidate.$name "External independent candidate receipt Candidate.$name" | Out-Null
     }
-    Assert-V02ReleaseGateDistinctSet -Values @($receipt.Owner.Identity, $receipt.IndependentReviewer.Identity) -Context 'Independent authority receipt identities'
-    Assert-V02ReleaseGateExactString $receipt.Runtime 'NOT_OBSERVED' 'Independent authority receipt Runtime boundary'
-    Assert-V02ReleaseGateExactString $receipt.Human 'NOT_OBSERVED' 'Independent authority receipt Human boundary'
-    Assert-V02ReleaseGateExactString $receipt.Release 'NOT_OBSERVED' 'Independent authority receipt Release boundary'
-    if (Assert-V02ReleaseGateBoolean $receipt.CreditGranted 'Independent authority receipt CreditGranted') {
-        throw 'Independent authority receipt cannot grant Runtime, Human, or Release credit.'
+    Assert-V02ReleaseGateExactProperties $receipt.Owner @('Identity', 'Role') 'External independent candidate receipt Owner'
+    Assert-V02ReleaseGateExactString $receipt.Owner.Identity $script:V02ReleaseGateAuthorityOwner 'External independent candidate receipt owner identity'
+    Assert-V02ReleaseGateExactString $receipt.Owner.Role $script:V02ReleaseGateAuthorityRole 'External independent candidate receipt owner role'
+    Assert-V02ReleaseGateExactProperties $receipt.IndependentReviewer @('Identity', 'Role') 'External independent candidate receipt IndependentReviewer'
+    Assert-V02ReleaseGateString $receipt.IndependentReviewer.Identity 'External independent candidate receipt reviewer identity' | Out-Null
+    Assert-V02ReleaseGateExactString $receipt.IndependentReviewer.Role $script:V02ReleaseGateIndependentReceiptRole 'External independent candidate receipt reviewer role'
+    Assert-V02ReleaseGateDistinctSet -Values @($receipt.Owner.Identity, $receipt.IndependentReviewer.Identity) -Context 'External independent candidate receipt identities'
+    Assert-V02ReleaseGateExactProperties $receipt.Authentication @(
+        'Method', 'Reference', 'VerifiedBy', 'VerifiedRole', 'ProofSha256', 'Authenticated'
+    ) 'External independent candidate receipt Authentication'
+    Assert-V02ReleaseGateExactString $receipt.Authentication.Method $script:V02ReleaseGateIndependentReceiptAuthenticationMethod 'External independent candidate receipt authentication method'
+    Assert-V02ReleaseGateString $receipt.Authentication.Reference 'External independent candidate receipt authentication reference' | Out-Null
+    if ([string]$receipt.Authentication.Reference -notmatch '^https://[^\s/]+(?:/|$)') {
+        throw 'External independent candidate receipt authentication reference must be an external HTTPS reference.'
+    }
+    if ([string]$receipt.Authentication.Reference -ceq $script:V02ReleaseGateDecisionReference) {
+        throw 'External independent candidate receipt authentication must be distinct from the owner approval reference.'
+    }
+    Assert-V02ReleaseGateExactString $receipt.Authentication.VerifiedBy $receipt.IndependentReviewer.Identity 'External independent candidate receipt verifier identity'
+    Assert-V02ReleaseGateExactString $receipt.Authentication.VerifiedRole $receipt.IndependentReviewer.Role 'External independent candidate receipt verifier role'
+    Assert-V02ReleaseGateSha256 $receipt.Authentication.ProofSha256 'External independent candidate receipt authentication proof' | Out-Null
+    if (-not (Assert-V02ReleaseGateBoolean $receipt.Authentication.Authenticated 'External independent candidate receipt Authenticated')) {
+        throw 'External independent candidate receipt must be externally authenticated.'
+    }
+    if (-not (Assert-V02ReleaseGateBoolean $receipt.RoleDistinct 'External independent candidate receipt RoleDistinct')) {
+        throw 'External independent candidate receipt must keep owner and independent reviewer roles distinct.'
+    }
+    Assert-V02ReleaseGateExactString $receipt.Runtime 'NOT_OBSERVED' 'External independent candidate receipt Runtime boundary'
+    Assert-V02ReleaseGateExactString $receipt.Human 'NOT_OBSERVED' 'External independent candidate receipt Human boundary'
+    Assert-V02ReleaseGateExactString $receipt.Release 'NOT_OBSERVED' 'External independent candidate receipt Release boundary'
+    if (Assert-V02ReleaseGateBoolean $receipt.CreditGranted 'External independent candidate receipt CreditGranted') {
+        throw 'External independent candidate receipt cannot grant Runtime, Human, or Release credit.'
     }
     return [pscustomobject][ordered]@{
         Path = $document.Path
         FileSha256 = $document.FileSha256
-        RelativePath = $script:V02ReleaseGateIndependentReceiptRelativePath
-        DecisionId = [string]$receipt.DecisionId
+        Candidate = $receipt.Candidate
         OwnerIdentity = [string]$receipt.Owner.Identity
         OwnerRole = [string]$receipt.Owner.Role
         ReviewerIdentity = [string]$receipt.IndependentReviewer.Identity
         ReviewerRole = [string]$receipt.IndependentReviewer.Role
-        Authentication = 'TRUSTED_COMMITTED_INDEPENDENT_RECEIPT'
+        AuthenticationReference = [string]$receipt.Authentication.Reference
+        AuthenticationProofSha256 = [string]$receipt.Authentication.ProofSha256
+        Authentication = 'EXTERNAL_AUTHENTICATED_INDEPENDENT_REVIEW'
         Result = 'APPROVED_CANDIDATE_ONLY'
     }
 }
@@ -821,14 +958,18 @@ function Read-V02ReleaseGateCandidateLock {
         [Parameter(Mandatory = $true)][string]$ExpectedSourceTree,
         [Parameter(Mandatory = $true)][string]$PackageProfilePath,
         [Parameter(Mandatory = $true)][string]$RepositoryRoot,
-        [Parameter(Mandatory = $true)][string]$AuthorityReferencePath
+        [Parameter(Mandatory = $true)][string]$AuthorityReferencePath,
+        [Parameter(Mandatory = $true)][string]$IndependentCandidateReceiptPath
     )
 
     # Never accept an Authority object supplied by the candidate lock or its
-    # caller. Re-read the exact committed owner decision and pinned independent
-    # receipt from the repository so copied Plan JSON cannot self-authorize.
+    # caller. Re-read the exact committed owner decision and separately supplied
+    # candidate receipt so copied Plan JSON cannot self-authorize.
     $Authority = Read-V02ReleaseGateAuthorityReference -RepositoryRoot $RepositoryRoot `
         -AuthorityReferencePath $AuthorityReferencePath
+    $IndependentReceipt = Read-V02ReleaseGateExternalIndependentCandidateReceipt `
+        -Path $IndependentCandidateReceiptPath -RepositoryRoot $RepositoryRoot -EvidenceRoot $EvidenceRoot `
+        -ExpectedSourceCommit $ExpectedSourceCommit -ExpectedSourceTree $ExpectedSourceTree
     $lockPath = Resolve-V02ReleaseGateExistingPath -Path $Path -Type Leaf -Context 'Approved candidate lock'
     Assert-V02ReleaseGatePathWithinRoot -Path $lockPath -Root $EvidenceRoot -Context 'Approved candidate lock' | Out-Null
     $document = Read-V02ReleaseGateJsonFile -Path $lockPath -Context 'Approved candidate lock'
@@ -863,6 +1004,15 @@ function Read-V02ReleaseGateCandidateLock {
         )) {
         Assert-V02ReleaseGateSha256 $document.Value.$name "Approved candidate lock $name" | Out-Null
     }
+    foreach ($name in @(
+            'SourceCommit', 'SourceTree', 'ProfileId', 'ProfileFileSha256', 'ProfileCanonicalSha256',
+            'PackageReceiptSha256', 'PackageReceiptFileSha256', 'PackageArchiveSha256',
+            'PackageManifestSha256', 'PackageAppSha256', 'PackageCoreSha256',
+            'RendererManifestSha256', 'RuntimeMatrixManifestSha256'
+        )) {
+        Assert-V02ReleaseGateEqual $document.Value.$name $IndependentReceipt.Candidate.$name `
+            "Approved candidate lock external receipt Candidate.$name"
+    }
     Assert-V02ReleaseGateExactString $document.Value.Runtime 'NOT_OBSERVED' 'Approved candidate lock Runtime boundary'
     Assert-V02ReleaseGateExactString $document.Value.Human 'NOT_OBSERVED' 'Approved candidate lock Human boundary'
     Assert-V02ReleaseGateExactString $document.Value.Release 'NOT_OBSERVED' 'Approved candidate lock Release boundary'
@@ -880,12 +1030,12 @@ function Read-V02ReleaseGateCandidateLock {
     Assert-V02ReleaseGateEqual $document.Value.Authority.ReferenceSha256 $Authority.FileSha256 'Approved candidate lock authority bytes'
     Assert-V02ReleaseGateExactString $document.Value.Authority.OwnerIdentity $Authority.OwnerIdentity 'Approved candidate lock authority owner'
     Assert-V02ReleaseGateExactString $document.Value.Authority.OwnerRole $Authority.OwnerRole 'Approved candidate lock authority role'
-    Assert-V02ReleaseGateExactString $document.Value.Authority.Authentication $Authority.Authentication 'Approved candidate lock authority authentication'
-    Assert-V02ReleaseGateExactString $document.Value.Authority.IndependentReceiptPath $Authority.IndependentReceipt.RelativePath 'Approved candidate lock independent receipt path'
-    Assert-V02ReleaseGateEqual $document.Value.Authority.IndependentReceiptSha256 $Authority.IndependentReceipt.FileSha256 'Approved candidate lock independent receipt bytes'
-    Assert-V02ReleaseGateExactString $document.Value.Authority.IndependentReceiptIdentity $Authority.IndependentReceipt.ReviewerIdentity 'Approved candidate lock independent receipt identity'
-    Assert-V02ReleaseGateExactString $document.Value.Authority.IndependentReceiptRole $Authority.IndependentReceipt.ReviewerRole 'Approved candidate lock independent receipt role'
-    Assert-V02ReleaseGateExactString $document.Value.Authority.IndependentReceiptAuthentication $Authority.IndependentReceipt.Authentication 'Approved candidate lock independent receipt authentication'
+    Assert-V02ReleaseGateExactString $document.Value.Authority.Authentication 'TRUSTED_OWNER_PLUS_EXTERNAL_INDEPENDENT_RECEIPT' 'Approved candidate lock authority authentication'
+    Assert-V02ReleaseGateExactString $document.Value.Authority.IndependentReceiptPath $IndependentReceipt.Path 'Approved candidate lock independent receipt path'
+    Assert-V02ReleaseGateEqual $document.Value.Authority.IndependentReceiptSha256 $IndependentReceipt.FileSha256 'Approved candidate lock independent receipt bytes'
+    Assert-V02ReleaseGateExactString $document.Value.Authority.IndependentReceiptIdentity $IndependentReceipt.ReviewerIdentity 'Approved candidate lock independent receipt identity'
+    Assert-V02ReleaseGateExactString $document.Value.Authority.IndependentReceiptRole $IndependentReceipt.ReviewerRole 'Approved candidate lock independent receipt role'
+    Assert-V02ReleaseGateExactString $document.Value.Authority.IndependentReceiptAuthentication $IndependentReceipt.Authentication 'Approved candidate lock independent receipt authentication'
     return [pscustomobject][ordered]@{
         Path = $document.Path
         FileSha256 = $document.FileSha256
@@ -903,7 +1053,8 @@ function Read-V02ReleaseGateCandidateLock {
         RendererManifestSha256 = [string]$document.Value.RendererManifestSha256
         RuntimeMatrixManifestSha256 = [string]$document.Value.RuntimeMatrixManifestSha256
         Authority = $Authority
-        Authentication = $Authority.Authentication
+        IndependentReceipt = $IndependentReceipt
+        Authentication = 'TRUSTED_OWNER_PLUS_EXTERNAL_INDEPENDENT_RECEIPT'
         Result = 'APPROVED_CANDIDATE_ONLY'
     }
 }
@@ -998,6 +1149,7 @@ function Invoke-V02ReleaseGatePackageValidation {
     if (-not (Test-Path -LiteralPath $validatorPath -PathType Leaf)) {
         throw "Committed v0.2 package validator is missing: $validatorPath"
     }
+    Assert-V02ReleaseGateValidatorHeld -Path $validatorPath -Context 'Package validator' | Out-Null
     $firstOutput = @(& $validatorPath -IdentityPath $Context.IdentityPath -ArchivePath $Context.ArchivePath `
         -PackageRoot $Context.PackageRoot -RepositoryRoot $Context.RepositoryRoot -ProfilePath $Context.ProfilePath)
     if ($firstOutput.Count -ne 1) {
@@ -1107,6 +1259,7 @@ function Invoke-V02ReleaseGateRendererValidation {
     if (-not (Test-Path -LiteralPath $validatorPath -PathType Leaf)) {
         throw "Committed v0.2 renderer validator is missing: $validatorPath"
     }
+    Assert-V02ReleaseGateValidatorHeld -Path $validatorPath -Context 'Renderer validator' | Out-Null
     $manifestPath = Resolve-V02ReleaseGateExistingPath -Path $Context.ManifestPath -Type Leaf -Context 'Renderer compatibility manifest'
     $evidenceRoot = if ([string]::IsNullOrWhiteSpace($Context.EvidenceRoot)) {
         [IO.Path]::GetDirectoryName($manifestPath)
@@ -1323,6 +1476,7 @@ function Invoke-V02ReleaseGateMatrixValidation {
     if (-not (Test-Path -LiteralPath $validatorPath -PathType Leaf)) {
         throw "Committed v0.2 language-matrix validator is missing: $validatorPath"
     }
+    Assert-V02ReleaseGateValidatorHeld -Path $validatorPath -Context 'Language-matrix validator' | Out-Null
     $validatorContext = [pscustomobject][ordered]@{
         ValidatorPath = $validatorPath
         ThaiEvidenceDirectory = $Context.ThaiEvidenceDirectory
@@ -1385,6 +1539,36 @@ function Assert-V02ReleaseGateCandidateByteBinding {
             [pscustomobject]@{ Name = 'RuntimeMatrixManifestSha256'; Actual = $Matrix.ManifestFileSha256; Expected = $CandidateLock.RuntimeMatrixManifestSha256 }
         )) {
         Assert-V02ReleaseGateEqual $binding.Actual $binding.Expected "Approved candidate lock $($binding.Name)"
+    }
+}
+
+function Assert-V02ReleaseGateIndependentReceiptBinding {
+    param(
+        [Parameter(Mandatory = $true)]$IndependentReceipt,
+        [Parameter(Mandatory = $true)]$CandidateLock,
+        [Parameter(Mandatory = $true)]$Identity,
+        [Parameter(Mandatory = $true)]$Package,
+        [Parameter(Mandatory = $true)]$Renderer,
+        [Parameter(Mandatory = $true)]$Matrix
+    )
+
+    Assert-V02ReleaseGateEqual $IndependentReceipt.Candidate.SourceCommit $Identity.Commit 'External independent receipt source commit'
+    Assert-V02ReleaseGateEqual $IndependentReceipt.Candidate.SourceTree $Identity.Tree 'External independent receipt source tree'
+    foreach ($binding in @(
+            [pscustomobject]@{ Name = 'ProfileId'; Actual = $Package.ProfileId; Expected = $IndependentReceipt.Candidate.ProfileId }
+            [pscustomobject]@{ Name = 'ProfileFileSha256'; Actual = $Package.ProfileFileSha256; Expected = $IndependentReceipt.Candidate.ProfileFileSha256 }
+            [pscustomobject]@{ Name = 'ProfileCanonicalSha256'; Actual = $Package.ProfileCanonicalSha256; Expected = $IndependentReceipt.Candidate.ProfileCanonicalSha256 }
+            [pscustomobject]@{ Name = 'PackageReceiptSha256'; Actual = $Package.ReceiptSha256; Expected = $IndependentReceipt.Candidate.PackageReceiptSha256 }
+            [pscustomobject]@{ Name = 'PackageReceiptFileSha256'; Actual = $Package.ReceiptFileSha256; Expected = $IndependentReceipt.Candidate.PackageReceiptFileSha256 }
+            [pscustomobject]@{ Name = 'PackageArchiveSha256'; Actual = $Package.ArchiveSha256; Expected = $IndependentReceipt.Candidate.PackageArchiveSha256 }
+            [pscustomobject]@{ Name = 'PackageManifestSha256'; Actual = $Package.ManifestSha256; Expected = $IndependentReceipt.Candidate.PackageManifestSha256 }
+            [pscustomobject]@{ Name = 'PackageAppSha256'; Actual = $Package.AppSha256; Expected = $IndependentReceipt.Candidate.PackageAppSha256 }
+            [pscustomobject]@{ Name = 'PackageCoreSha256'; Actual = $Package.CoreSha256; Expected = $IndependentReceipt.Candidate.PackageCoreSha256 }
+            [pscustomobject]@{ Name = 'RendererManifestSha256'; Actual = $Renderer.ManifestSha256; Expected = $IndependentReceipt.Candidate.RendererManifestSha256 }
+            [pscustomobject]@{ Name = 'RuntimeMatrixManifestSha256'; Actual = $Matrix.ManifestFileSha256; Expected = $IndependentReceipt.Candidate.RuntimeMatrixManifestSha256 }
+        )) {
+        Assert-V02ReleaseGateEqual $binding.Actual $binding.Expected "External independent receipt $($binding.Name)"
+        Assert-V02ReleaseGateEqual $binding.Expected $CandidateLock.$($binding.Name) "Candidate lock/external receipt $($binding.Name)"
     }
 }
 
@@ -1681,6 +1865,7 @@ function Invoke-V02ReleaseGate {
         [Parameter(Mandatory = $true)][string]$GitHubSnapshotPath,
         [string]$CandidateLockPath,
         [string]$AuthorityReferencePath,
+        [string]$IndependentCandidateReceiptPath,
         [string]$EvidenceRoot,
         [string]$RepositoryRoot,
         [string]$RendererEvidenceRoot,
@@ -1746,13 +1931,16 @@ function Invoke-V02ReleaseGate {
         }
         $authority = Read-V02ReleaseGateAuthorityReference -RepositoryRoot $identityBefore.RepositoryRoot `
             -AuthorityReferencePath $AuthorityReferencePath
+        if ([string]::IsNullOrWhiteSpace($IndependentCandidateReceiptPath)) {
+            throw 'IndependentCandidateReceiptPath is required and must identify an externally authenticated candidate-specific receipt.'
+        }
         if ([string]::IsNullOrWhiteSpace($CandidateLockPath)) {
             throw 'CandidateLockPath is required and must identify an immutable approved candidate lock.'
         }
         $candidateLock = Read-V02ReleaseGateCandidateLock -Path $CandidateLockPath -EvidenceRoot $evidenceRootPath `
             -ExpectedSourceCommit $ExpectedSourceCommit -ExpectedSourceTree $ExpectedSourceTree `
             -PackageProfilePath $profilePath -RepositoryRoot $identityBefore.RepositoryRoot `
-            -AuthorityReferencePath $AuthorityReferencePath
+            -AuthorityReferencePath $AuthorityReferencePath -IndependentCandidateReceiptPath $IndependentCandidateReceiptPath
     }
     catch {
         $report = New-V02ReleaseGateNotReadyReport -Identity $identityBefore -Reason $_.Exception.Message `
@@ -1787,7 +1975,7 @@ function Invoke-V02ReleaseGate {
         (Resolve-V02ReleaseGateExistingPath -Path $SyntheticEvidencePath -Type Leaf -Context 'Synthetic evidence receipt'),
         (Resolve-V02ReleaseGateExistingPath -Path $HumanReviewPath -Type Leaf -Context 'Human review record'),
         (Resolve-V02ReleaseGateExistingPath -Path $GitHubSnapshotPath -Type Leaf -Context 'GitHub snapshot'),
-        $candidateLock.Path, $authority.Path, $authority.IndependentReceipt.Path
+        $candidateLock.Path, $authority.Path, $candidateLock.IndependentReceipt.Path
     )
     $validatorSnapshots = Get-V02ReleaseGateValidatorSnapshots -RepositoryRoot $identityBefore.RepositoryRoot
     $preValidationSnapshots = @(
@@ -1796,7 +1984,8 @@ function Invoke-V02ReleaseGate {
         }
         $validatorSnapshots
     )
-    Assert-V02ReleaseGateDistinctFileIdentities -Snapshots $preValidationSnapshots -Context 'Pre-validation bound artifacts and validators'
+    try {
+        Assert-V02ReleaseGateDistinctFileIdentities -Snapshots $preValidationSnapshots -Context 'Pre-validation bound artifacts and validators'
 
     $package = Invoke-V02ReleaseGatePackageValidation -Context $context `
         -ExpectedSourceCommit $ExpectedSourceCommit -ExpectedSourceTree $ExpectedSourceTree
@@ -1812,6 +2001,8 @@ function Invoke-V02ReleaseGate {
         -ExpectedSourceCommit $ExpectedSourceCommit -ExpectedSourceTree $ExpectedSourceTree `
         -RuntimeMatrixManifestPath $RuntimeMatrixManifestPath
     Assert-V02ReleaseGateCandidateByteBinding -CandidateLock $candidateLock -Package $package -Renderer $renderer -Matrix $matrix
+    Assert-V02ReleaseGateIndependentReceiptBinding -IndependentReceipt $candidateLock.IndependentReceipt `
+        -CandidateLock $candidateLock -Identity $identityBefore -Package $package -Renderer $renderer -Matrix $matrix
     Assert-V02ReleaseGateBoundSnapshots -Snapshots $preValidationSnapshots -Phase 'Post-matrix validation'
     try {
         $githubDocument = Read-V02ReleaseGateJsonFile -Path $GitHubSnapshotPath -Context 'GitHub read-only snapshot'
@@ -1952,6 +2143,10 @@ function Invoke-V02ReleaseGate {
         $report | Add-Member -MemberType NoteProperty -Name ReportTextPath -Value $written.TextPath
     }
     return $report
+    }
+    finally {
+        Close-V02ReleaseGateHeldSnapshots -Snapshots $validatorSnapshots
+    }
 }
 
 # Dot-sourcing imports the functions for read-only selftests without invoking
@@ -1974,6 +2169,7 @@ if ($MyInvocation.InvocationName -ne '.') {
         -GitHubSnapshotPath $GitHubSnapshotPath `
         -CandidateLockPath $CandidateLockPath `
         -AuthorityReferencePath $AuthorityReferencePath `
+        -IndependentCandidateReceiptPath $IndependentCandidateReceiptPath `
         -EvidenceRoot $EvidenceRoot `
         -RepositoryRoot $RepositoryRoot `
         -RendererEvidenceRoot $RendererEvidenceRoot `
