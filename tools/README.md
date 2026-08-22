@@ -55,6 +55,10 @@ powershell -File ./tools/v0.2-renderer-compatibility/Test-V02RendererCompatibili
 $expectedSourceCommit = '<approved-source-commit>'
 $expectedSourceTree = '<approved-source-tree>'
 $targetAgentLabSocket = Join-Path $env:APPDATA 'herdr\herdr.sock'
+$packageIdentityPath = '<identity.json>'
+$packageArchivePath = '<HerdrOps-0.2.0-win-x64.zip>'
+$extractedPackageRoot = '<exact-extracted-package-root>'
+$targetAgentSessionReference = '<operator-attested-native-agent-session-reference>'
 ./tools/Test-V02HerdrRuntime.ps1 `
     -TargetHerdrSocketPath $targetAgentLabSocket `
     -ExpectedSourceCommit $expectedSourceCommit `
@@ -68,6 +72,10 @@ $targetAgentLabSocket = Join-Path $env:APPDATA 'herdr\herdr.sock'
     -TargetHerdrSocketPath $targetAgentLabSocket `
     -ExpectedSourceCommit $expectedSourceCommit `
     -ExpectedSourceTree $expectedSourceTree `
+    -PackageIdentityPath $packageIdentityPath `
+    -PackageArchivePath $packageArchivePath `
+    -ExtractedPackageRoot $extractedPackageRoot `
+    -TargetAgentSessionReference $targetAgentSessionReference `
     -Language Thai `
     -DurationSeconds 600
 
