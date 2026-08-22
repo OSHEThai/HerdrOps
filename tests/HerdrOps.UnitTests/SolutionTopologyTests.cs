@@ -162,6 +162,30 @@ public sealed class SolutionTopologyTests
         }
     }
 
+    [TestMethod]
+    public void PlanDocumentsPreserveSingleLanguageAndAuthorityInvariants()
+    {
+        var repositoryRoot = FindRepositoryRoot();
+        var designContract = File.ReadAllText(Path.Combine(repositoryRoot, "Plan", "DESIGN-CONTRACT.md"));
+        var roadmap = File.ReadAllText(Path.Combine(repositoryRoot, "Plan", "ROADMAP.md"));
+        var releaseGates = File.ReadAllText(Path.Combine(repositoryRoot, "Plan", "RELEASE-GATES.md"));
+        var architecture = File.ReadAllText(Path.Combine(repositoryRoot, "Plan", "ARCHITECTURE.md"));
+
+        Assert.IsFalse(
+            designContract.Contains("Thai primary labels with English supporting labels", StringComparison.Ordinal),
+            "DESIGN-CONTRACT must not permit stacked dual-language labels.");
+        StringAssert.Contains(designContract, "Render exactly one selected UI language at a time");
+
+        StringAssert.Contains(architecture, "Status: Approved baseline; v0.2 implementation active");
+
+        StringAssert.Contains(releaseGates, "atomic packaged compatibility, reference-host runtime matrix");
+        Assert.IsFalse(
+            releaseGates.Contains("Until the atomic producer/validator implementation lands", StringComparison.Ordinal),
+            "RELEASE-GATES must not retain stale pre-implementation phrasing.");
+
+        StringAssert.Contains(roadmap, "Atomic package identity validation");
+    }
+
     private static string FindRepositoryRoot()
     {
         var directory = new DirectoryInfo(AppContext.BaseDirectory);

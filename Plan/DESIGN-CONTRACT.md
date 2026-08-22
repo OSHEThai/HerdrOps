@@ -27,7 +27,7 @@ If derived UI differs materially from the images, the images win unless the user
 - Main content region using compact cards and data-dense layouts
 - Bottom status bar with application health, last update and connection latency
 - Thin cool-blue borders, restrained glow, small radius and minimal shadow
-- Thai primary labels with English supporting labels where shown
+- Render exactly one selected UI language at a time (Thai default, English selectable); do not stack dual-language translation labels
 
 ## Status semantics
 
