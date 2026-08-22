@@ -55,7 +55,6 @@ public static class ComplianceReviewRuntimeTraceCommand
             return SuccessExitCode;
         }
 
-        var startedUtc = DateTimeOffset.UtcNow;
         string? databasePath = null;
         string? reportPath = null;
         string? taskIdFilter = null;
@@ -162,6 +161,10 @@ public static class ComplianceReviewRuntimeTraceCommand
 
             var rawIncidents = snapshot.Incidents;
 
+            var startedUtc = ComputeEarliestObservedUtc(
+                rawIncidents,
+                snapshot.AuditEvents) ?? DateTimeOffset.UtcNow;
+
             if (incidentFilters.Count > 0)
             {
                 var foundIds = new HashSet<string>(rawIncidents.Select(i => i.IncidentId), StringComparer.Ordinal);
@@ -217,6 +220,11 @@ public static class ComplianceReviewRuntimeTraceCommand
             }
 
             var mappedIncidents = rawIncidents.Select(MapIncident).ToArray();
+            var durableReviewEnabled = snapshot.SchemaVersion >= 4;
+            var retentionProtectedObserved = snapshot.RetentionObservations
+                .Any(observation => observation.IsProtectedFromPurge && observation.HasOpenIncident);
+            var restartConsistencyObserved = durableReviewEnabled &&
+                DetermineRestartConsistency(rawIncidents, snapshot.AuditEvents);
             var finishedUtc = DateTimeOffset.UtcNow;
 
             var report = new ComplianceReviewRuntimeTraceReport(
@@ -226,6 +234,9 @@ public static class ComplianceReviewRuntimeTraceCommand
                 SessionControlInvoked: false,
                 RestartObserved: false,
                 ReconnectObserved: false,
+                DurableReviewEnabled: durableReviewEnabled,
+                RetentionProtectedObserved: retentionProtectedObserved,
+                RestartConsistencyObserved: restartConsistencyObserved,
                 DatabasePath: CreatePathToken(databasePath),
                 DatabaseFileSha256: snapshot.DatabaseFileSha256,
                 DatabaseFileSizeBytes: snapshot.DatabaseFileSizeBytes,
@@ -314,6 +325,102 @@ public static class ComplianceReviewRuntimeTraceCommand
             auditEvent.PreviousAuditSha256,
             auditEvent.AuditSha256);
     }
+
+    private static DateTimeOffset? ComputeEarliestObservedUtc(
+        IReadOnlyList<ComplianceReviewIncident> incidents,
+        IReadOnlyList<ComplianceReviewAuditEvent> auditEvents)
+    {
+        var observedAny = false;
+        var earliest = DateTimeOffset.MaxValue;
+        foreach (var incident in incidents)
+        {
+            observedAny = true;
+            if (incident.RegisteredUtc < earliest)
+            {
+                earliest = incident.RegisteredUtc;
+            }
+        }
+
+        foreach (var auditEvent in auditEvents)
+        {
+            observedAny = true;
+            if (auditEvent.OccurredUtc < earliest)
+            {
+                earliest = auditEvent.OccurredUtc;
+            }
+        }
+
+        return observedAny ? earliest : null;
+    }
+
+    private static bool DetermineRestartConsistency(
+        IReadOnlyList<ComplianceReviewIncident> incidents,
+        IReadOnlyList<ComplianceReviewAuditEvent> auditEvents)
+    {
+        var byIncidentId = auditEvents
+            .GroupBy(auditEvent => auditEvent.IncidentId, StringComparer.Ordinal)
+            .ToDictionary(group => group.Key, group => group.ToList(), StringComparer.Ordinal);
+
+        foreach (var incident in incidents)
+        {
+            if (incident.LastAuditSha256 is null)
+            {
+                if (HasStrayChainState(incident, byIncidentId))
+                {
+                    return false;
+                }
+
+                continue;
+            }
+
+            if (!byIncidentId.TryGetValue(incident.IncidentId, out var chain))
+            {
+                return false;
+            }
+
+            var ordered = chain.OrderBy(auditEvent => auditEvent.Sequence).ToArray();
+            if (ordered.Length != chain.Count ||
+                ordered.Length != incident.Sequence ||
+                ordered[0].Sequence != 1)
+            {
+                return false;
+            }
+
+            for (var index = 0; index < ordered.Length; index++)
+            {
+                if (ordered[index].Sequence != index + 1)
+                {
+                    return false;
+                }
+
+                if (index > 0 &&
+                    !string.Equals(
+                        ordered[index].PreviousAuditSha256,
+                        ordered[index - 1].AuditSha256,
+                        StringComparison.Ordinal))
+                {
+                    return false;
+                }
+            }
+
+            if (!string.Equals(
+                    ordered[^1].AuditSha256,
+                    incident.LastAuditSha256,
+                    StringComparison.Ordinal))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static bool HasStrayChainState(
+        ComplianceReviewIncident incident,
+        IReadOnlyDictionary<string, List<ComplianceReviewAuditEvent>> byIncidentId) =>
+        incident.Sequence != 0 ||
+        byIncidentId.ContainsKey(incident.IncidentId) ||
+        incident.State != ComplianceReviewState.Suspected;
 
     private static string ComputeProductAssemblySha256()
     {

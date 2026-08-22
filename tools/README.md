@@ -24,9 +24,14 @@ Build, verification, GitHub roadmap, evidence capture, and packaging helpers liv
 # From a fresh, unmoved pane in the authorized Acceptance control session,
 # capture target Agent Lab
 # snapshot/Agent-status-event/reconnect evidence. The two sockets must differ.
+# Replace both values with the separately approved final candidate identities.
+$expectedSourceCommit = '<approved-source-commit>'
+$expectedSourceTree = '<approved-source-tree>'
 $targetAgentLabSocket = Join-Path $env:APPDATA 'herdr\herdr.sock'
 ./tools/Test-V02HerdrRuntime.ps1 `
     -TargetHerdrSocketPath $targetAgentLabSocket `
+    -ExpectedSourceCommit $expectedSourceCommit `
+    -ExpectedSourceTree $expectedSourceTree `
     -DurationSeconds 120
 
 # From a standard non-elevated pane in the separate Acceptance control session,
@@ -34,6 +39,8 @@ $targetAgentLabSocket = Join-Path $env:APPDATA 'herdr\herdr.sock'
 # Restart only the target Agent Lab session when the gate prompts for it.
 ./tools/Test-V02LiveRuntimeAcceptance.ps1 `
     -TargetHerdrSocketPath $targetAgentLabSocket `
+    -ExpectedSourceCommit $expectedSourceCommit `
+    -ExpectedSourceTree $expectedSourceTree `
     -Language Thai `
     -DurationSeconds 600
 
@@ -52,26 +59,75 @@ $targetAgentLabSocket = Join-Path $env:APPDATA 'herdr\herdr.sock'
 # envelope, bounded pipeline, replay fixture, exact hashes, and fail-closed command.
 ./tools/Test-V03ActivityPipeline.ps1
 
+# For each later actual-runtime capture, replace both values with the separately
+# approved exact candidate identities printed by `git rev-parse` before the run.
+$expectedSourceCommit = '<approved-source-commit>'
+$expectedSourceTree = '<approved-source-tree>'
+
 # Verify the v0.3 Realtime Activity layout, five deterministic filters,
 # bounded paging, language separation, and synchronized detail/evidence panels.
 # This remains implementation-only until actual live collector evidence exists.
 ./tools/Test-V03RealtimeActivity.ps1
+
+# From an authorized Herdr pane, capture an actual Agent-status transition through
+# the v0.3 ActivityEventPipeline for Issue #13. This never creates a transition
+# or invokes Herdr session control and fails closed without Runtime evidence.
+./tools/Invoke-V03Issue13RealtimeActivityRuntimeAcceptance.ps1 `
+  -ExpectedSourceCommit $expectedSourceCommit `
+  -ExpectedSourceTree $expectedSourceTree
 
 # Verify the fixed bounded pane.read path, terminal redaction, PID/source
 # correlation, PID-reuse protection, CPU/memory telemetry, and expiry.
 # This remains partial until the authorized Herdr runtime trace is captured.
 ./tools/Test-V03TerminalProcess.ps1
 
+# From an authorized Herdr pane, run the bounded Issue #14 terminal/process
+# acceptance wrapper. Supply the exact source commit/tree and the exact installed
+# Herdr executable path/SHA-256 captured before the run. The wrapper never starts
+# Herdr or controls a session; every failure writes NoRuntimeCredit.
+./tools/Invoke-V03Issue14TerminalProcessRuntimeAcceptance.ps1 `
+  -ExpectedSourceCommit $expectedSourceCommit `
+  -ExpectedSourceTree $expectedSourceTree `
+  -ExpectedHerdrExecutablePath '<exact-herdr.exe-path>' `
+  -ExpectedHerdrExecutableSha256 '<exact-herdr.exe-sha256>' `
+  -DurationSeconds 120 `
+  -IntervalMilliseconds 500 `
+  -MaximumLines 80 `
+  -TimeoutSeconds 300
+
+# Build-free PS5/PS7 parser and hostile selftests for the wrapper. These do not
+# run dotnet, Herdr, a session, or the actual runtime trace. The selftest also
+# refuses a source commit/tree mismatch or dirty checkout.
+./tools/Test-V03Issue14RuntimeAcceptance.Tests.ps1 `
+  -ExpectedSourceCommit $expectedSourceCommit `
+  -ExpectedSourceTree $expectedSourceTree
+
 # Verify bounded notification grouping, exact deduplication, acknowledgement,
 # fail-closed event/Agent routes, and separate Thai/English WPF rendering.
 # This remains partial until actual Herdr notification delivery is captured.
 ./tools/Test-V03NotificationRuntime.ps1
 
+# From an authorized Herdr pane, capture actual FileSystemWatcher/Git activity
+# for Issue #15. The harness does not start Herdr or invoke session control.
+./tools/Invoke-V03Issue15FileGitActivityRuntimeAcceptance.ps1 `
+  -ExpectedSourceCommit $expectedSourceCommit `
+  -ExpectedSourceTree $expectedSourceTree
+
+# From an authorized Herdr pane, capture actual notification delivery for Issue #16.
+# Trigger a real Agent-status transition during the bounded capture window.
+./tools/Invoke-V03Issue16NotificationRuntimeAcceptance.ps1 `
+  -ExpectedSourceCommit $expectedSourceCommit `
+  -ExpectedSourceTree $expectedSourceTree
+
 # Verify the v0.3 Issue #17 implementation-only aggregation and its
-# deterministic child-gate failure propagation. These checks cover only
-# Static, Contract, and Synthetic evidence and do not make a version decision.
+# deterministic child-gate failure propagation. Issue #14 also runs its
+# build-free wrapper contract selftest. Supply the exact source commit/tree;
+# these checks cover only Static, Contract, and Synthetic evidence and do not
+# make a version decision.
 ./tools/Test-V03ImplementationGateTests.ps1
-./tools/Test-V03ImplementationGate.ps1 -Configuration Release
+./tools/Test-V03ImplementationGate.ps1 -Configuration Release `
+  -ExpectedSourceCommit $expectedSourceCommit `
+  -ExpectedSourceTree $expectedSourceTree
 
 # Verify v0.4 assignment lifecycle transitions, Core-acceptance mapping,
 # SQLite migration and append-only provenance, restart replay, orphan and
@@ -158,6 +214,28 @@ $targetAgentLabSocket = Join-Path $env:APPDATA 'herdr\herdr.sock'
 # migration.
 ./tools/Test-V05RoleDistinctReview.ps1
 
+# Static/Synthetic orchestration only; does not invoke Herdr or claim
+# Runtime/Release evidence. Verifies that the Issue #28 runtime acceptance
+# harness produces the compliance review trace before the composite
+# acceptance and bounds/drains child-process output without retaining
+# oversized or sensitive content.
+./tools/Test-V05ComplianceRuntimeTraceOrchestration.ps1
+
+# From an authorized Herdr pane with three distinct role panes already running,
+# exercise the Issue #27/#28 role-distinct compliance review workflow
+# (self-review must fail closed, PM sends to Leader, Leader escalates to PM,
+# PM confirms) against the observed Herdr runtime and emit the composite
+# runtime acceptance report and runtime gate report.
+$expectedSourceCommit = '<approved-source-commit-40-hex>'
+$expectedSourceTree = '<approved-source-tree-40-hex>'
+./tools/Invoke-V05ComplianceRuntimeAcceptance.ps1 `
+  -ProjectManagerTerminalId '<terminal-id>' `
+  -LeaderTerminalId '<terminal-id>' `
+  -SubjectTerminalId '<terminal-id>' `
+  -EvidencePath '<verified-evidence-file>' `
+  -ExpectedSourceCommit $expectedSourceCommit `
+  -ExpectedSourceTree $expectedSourceTree
+
 # From an authorized Herdr pane, capture actual bounded pane-read and
 # Herdr-PID-to-Windows-process evidence without controlling the session.
 dotnet artifacts/bin/HerdrOps.Core/release/HerdrOps.Core.dll trace-herdr-terminal-process `
@@ -182,10 +260,12 @@ dotnet artifacts/bin/HerdrOps.Core/release/HerdrOps.Core.dll trace-herdr-termina
 # Verify the fail-closed v1.0 Issue #42 24-hour soak/fault-injection contract and
 # harness without running a soak or controlling Herdr/Core/App. Reports PENDING and
 # refuses PASS in synthetic/preparation mode.
-./tools/Test-V10Issue42SoakContract.ps1
+$expectedBranch = (git branch --show-current).Trim()
+./tools/Test-V10Issue42SoakContract.ps1 -ExpectedBranch $expectedBranch
 
 # Optionally validate exact packaged candidate bytes (still refuses a soak/PASS).
 ./tools/Test-V10Issue42SoakContract.ps1 `
+  -ExpectedBranch $expectedBranch `
   -CandidateArchivePath '<candidate-archive>' `
   -CandidateArchiveSha256 '<64-hex>' `
   -CandidateArchiveBytes <bytes>
@@ -245,6 +325,48 @@ The v0.5 role-distinct review implementation gate is Contract plus BuiltProcess 
 
 The gate reports `NoRuntimeCredit`. No actual Herdr runtime credit exists until this behavior is captured from a standard, non-elevated Herdr pane and the exact pane/process observations, role observations, Core responses, and immutable database audit hashes are bound in one fresh runtime record. The gate cannot close Issue #27, provide independent acceptance, or pass the v0.5 release gate.
 
+## v1.0.0 release-candidate preparation
+
+Run the bounded Static/Synthetic validator on both supported PowerShell hosts:
+
+```powershell
+./tools/release/Test-V10ReleaseReadiness.ps1
+& "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" `
+  -NoProfile -NonInteractive -ExecutionPolicy Bypass `
+  -File .\tools\release\Test-V10ReleaseReadiness.ps1
+```
+
+After all candidate source changes are committed, create a three-component v1
+candidate from that exact clean commit. This creates a local ignored artifact;
+it does not install, tag, push, or publish anything:
+
+```powershell
+$commit = git rev-parse HEAD
+./tools/release/New-V10ReleaseCandidate.ps1 `
+  -ExpectedSourceCommit $commit `
+  -OutputRoot .\artifacts\release-candidate\v1.0.0
+```
+
+The output binds the exact commit, locked dependencies, the App/Core/Cli
+self-contained files, deterministic archive, package manifest, hashes, and the
+separate English/Thai release documents. Any unapproved byte conflict, stale
+source identity, changed lockfile, path escape, or reparse point fails closed.
+
+The committed authorization example is intentionally `PENDING` and must fail.
+Only after real reports for Issues #41 through #44 and an explicit product-owner
+`GO` exist may an operator create a new authorization file and run:
+
+```powershell
+./tools/release/Invoke-V10ReleaseReadiness.ps1 `
+  -AuthorizationPath .\artifacts\release-authorization\v1.0.0\authorization.json
+```
+
+`READY_TO_PUBLISH` is Static verification of exact bound input bytes. It does
+not create tag `v1.0.0`, call GitHub, rebuild the candidate, or establish Release
+evidence. Publication and post-publication download/hash verification remain
+separate required actions. See
+`docs/release/v1.0.0/release-readiness-contract.md`.
+
 The v0.7 performance budget gate reports Static, Synthetic, and Contract evidence for non-runtime preparation (Issue #39). It enforces strict schema v0.7.0, source commit binding, candidate executable SHA-256 binding, reparse point and path traversal protections, p95 sample distribution recalculation, PID+StartUtc binding and PID reuse detection, no-native-trim waiver rules, and fault/unreconciled-state fail-closed behavior. Actual Herdr Runtime, 8-hour sustained soak execution, Human UAT decisions, and Release Evidence remain explicitly NOT OBSERVED / NOT CLAIMED in this preparation slice.
 
 # Run the v0.7 lifecycle implementation gate deterministic self-test
@@ -254,3 +376,19 @@ The v0.7 performance budget gate reports Static, Synthetic, and Contract evidenc
 ./tools/Test-V07Lifecycle.ps1 -Configuration Release
 
 The v0.7 lifecycle implementation gate verifies exact committed source and contract invariants, executes locked build and formatting checks, and validates 12/12 unit tests and 39/39 integration tests (51/51 total). Runs with `-SkipBuild` are non-acceptance unless verified same-commit binary provenance proves assemblies match the current commit; the marker verifier requires the exact unique five-assembly path set with canonical casing and the current SHA-256 for every path, rejecting duplicate, unexpected, missing, case-ambiguous, malformed, or mismatched entries. Unverified `-SkipBuild` runs fail closed with a distinct non-zero exit code. Actual Herdr Runtime, installed tray visibility, Windows logon startup registry entries, physical DPI/accessibility verification, and Release evidence are explicitly NOT OBSERVED / NOT CLAIMED.
+
+# Run the v1.0 Issue #45 release-readiness preparation gate (Static/Synthetic only).
+# This is the CI entry point; it never builds, installs, runs Herdr, creates a
+# tag, pushes Git, or calls the GitHub Release API. It reports Static/Synthetic
+# PASS and keeps Runtime/Human/Release NOT OBSERVED.
+./tools/release/Test-V10ReleaseReadiness.ps1
+
+# Reconcile the newly committed v1.0 release tooling/docs onto the current tree
+# and confirm it emits the exact static-preparation boundary (no GO/APPROVED,
+# no Release) below artifacts/release-readiness/v1.0.0/<runId>/readiness.json.
+# -AuthorizationPath must name a release authorization whose four Issue #41-#44
+# gate reports and concrete human approver all validate against the current
+# accepted commit before the verifier will assert any preparation status.
+./tools/release/Invoke-V10ReleaseReadiness.ps1 -AuthorizationPath '<authorization.json>'
+
+The v1.0 Issue #45 release-readiness tooling reports Static and Synthetic evidence only for preparation. It validates exact committed release documents, the v1.0 package profile, deterministic candidate records and archives, and the fail-closed authorization boundary. `Invoke-V10ReleaseReadiness.ps1` will fail closed (no GO/READY_TO_PUBLISH, no Release) unless an externally prepared authorization for the current accepted commit passes all four Issue #41-#44 gate report bindings and a concrete non-placeholder human approver. `Test-V10ReleaseReadiness.ps1` is the only tool CI invokes; `New-V10ReleaseCandidate.ps1` and the readiness invoker are never run automatically. Actual Herdr Runtime, independent review, clean-machine acceptance, human approval, and Release publication remain NOT OBSERVED by these preparation tools.

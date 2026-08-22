@@ -1,0 +1,46 @@
+{
+  "schemaVersion": 1,
+  "reportKind": "HerdrOps.V07ReleaseGateInput",
+  "issue": 40,
+  "candidate": {
+    "commit": "replace-with-runtime-lowercase-40-hex-commit",
+    "tree": "replace-with-runtime-lowercase-40-hex-tree",
+    "workingTree": "CLEAN"
+  },
+  "dependencies": [
+    {
+      "issue": 35,
+      "manifestPath": "issue-35/manifest.json",
+      "manifestSha256": "replace-with-runtime-uppercase-64-hex-hash",
+      "status": "PENDING"
+    },
+    {
+      "issue": 36,
+      "manifestPath": "issue-36/manifest.json",
+      "manifestSha256": "replace-with-runtime-uppercase-64-hex-hash",
+      "status": "PENDING"
+    },
+    {
+      "issue": 37,
+      "manifestPath": "issue-37/manifest.json",
+      "manifestSha256": "replace-with-runtime-uppercase-64-hex-hash",
+      "status": "PENDING"
+    },
+    {
+      "issue": 38,
+      "manifestPath": "issue-38/manifest.json",
+      "manifestSha256": "replace-with-runtime-uppercase-64-hex-hash",
+      "status": "PENDING"
+    },
+    {
+      "issue": 39,
+      "manifestPath": "issue-39/manifest.json",
+      "manifestSha256": "replace-with-runtime-uppercase-64-hex-hash",
+      "status": "PENDING"
+    }
+  ],
+  "historyPolicy": {
+    "rebaseAllowed": false,
+    "requiredFollowUp": "HISTORY_PRESERVING_MERGE_FINAL_ISSUE_39_SUCCESSOR_REGENERATE_REVIEW"
+  }
+}

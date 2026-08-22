@@ -1,0 +1,78 @@
+{
+  "schemaVersion": 1,
+  "reportKind": "HerdrOps.ReleaseAuthorization",
+  "issue": 45,
+  "repository": "OSHEThai/HerdrOps",
+  "releaseVersion": "v1.0.0",
+  "releaseTag": "v1.0.0",
+  "acceptedCommit": "0000000000000000000000000000000000000000",
+  "candidateRecord": {
+    "path": "artifacts/release-candidate/v1.0.0/release-candidate.json",
+    "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+    "archiveSha256": "0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "gates": [
+    {
+      "issue": 41,
+      "evidenceClass": "ReleaseAudit",
+      "status": "PENDING",
+      "reportPath": "artifacts/release-gates/v1.0.0/issue-41/dependency-audit.json",
+      "reportSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "sourceCommit": "0000000000000000000000000000000000000000",
+      "archiveSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "authority": "PENDING",
+      "observedAtUtc": "2026-08-17T00:00:00Z"
+    },
+    {
+      "issue": 42,
+      "evidenceClass": "Runtime",
+      "status": "PENDING",
+      "reportPath": "artifacts/release-gates/v1.0.0/issue-42/soak-report.json",
+      "reportSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "sourceCommit": "0000000000000000000000000000000000000000",
+      "archiveSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "authority": "PENDING",
+      "observedAtUtc": "2026-08-17T00:00:00Z"
+    },
+    {
+      "issue": 43,
+      "evidenceClass": "IndependentReview",
+      "status": "PENDING",
+      "reportPath": "artifacts/release-gates/v1.0.0/issue-43/final-review.json",
+      "reportSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "sourceCommit": "0000000000000000000000000000000000000000",
+      "archiveSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "authority": "PENDING",
+      "observedAtUtc": "2026-08-17T00:00:00Z"
+    },
+    {
+      "issue": 44,
+      "evidenceClass": "CleanMachine",
+      "status": "PENDING",
+      "reportPath": "artifacts/release-gates/v1.0.0/issue-44/install-acceptance.json",
+      "reportSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "sourceCommit": "0000000000000000000000000000000000000000",
+      "archiveSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "authority": "PENDING",
+      "observedAtUtc": "2026-08-17T00:00:00Z"
+    }
+  ],
+  "goNoGo": {
+    "decision": "PENDING",
+    "approver": "PENDING",
+    "approvedAtUtc": "2026-08-17T00:00:00Z",
+    "statement": "PENDING",
+    "acceptedCommit": "0000000000000000000000000000000000000000",
+    "archiveSha256": "0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "releaseNotes": {
+    "path": "docs/release/v1.0.0/release-notes.en.md",
+    "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "publication": {
+    "status": "NOT_PUBLISHED",
+    "releaseUrl": "",
+    "publishedArchiveSha256": "",
+    "publishedHashRecordSha256": ""
+  }
+}

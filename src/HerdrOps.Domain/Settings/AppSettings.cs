@@ -12,6 +12,16 @@ public enum AppSettingsLanguage
 }
 
 /// <summary>
+/// The selected UI theme.
+/// </summary>
+public enum AppSettingsTheme
+{
+    Light,
+    Dark,
+    System,
+}
+
+/// <summary>
 /// The seven widget variants defined by the visual contract.
 /// </summary>
 public enum AppSettingsWidgetVariant
@@ -56,6 +66,7 @@ public sealed record AppSettings
     public AppSettings(
         int schemaVersion,
         AppSettingsLanguage language,
+        AppSettingsTheme theme,
         AppSettingsWidgetVariant widgetVariant,
         bool widgetEnabled,
         bool widgetPinned,
@@ -64,6 +75,7 @@ public sealed record AppSettings
     {
         SchemaVersion = schemaVersion;
         Language = language;
+        Theme = theme;
         WidgetVariant = widgetVariant;
         WidgetEnabled = widgetEnabled;
         WidgetPinned = widgetPinned;
@@ -74,6 +86,8 @@ public sealed record AppSettings
     public int SchemaVersion { get; init; }
 
     public AppSettingsLanguage Language { get; init; }
+
+    public AppSettingsTheme Theme { get; init; }
 
     public AppSettingsWidgetVariant WidgetVariant { get; init; }
 
@@ -92,6 +106,7 @@ public sealed record AppSettings
     public static AppSettings Defaults => new(
         AppSettingsContract.CurrentSchemaVersion,
         AppSettingsLanguage.Thai,
+        AppSettingsTheme.System,
         AppSettingsWidgetVariant.Normal,
         widgetEnabled: true,
         widgetPinned: false,
@@ -146,6 +161,11 @@ public static class AppSettingsContract
         if (!Enum.IsDefined(settings.Language))
         {
             throw new SettingsValidationException("The settings language is unsupported.");
+        }
+
+        if (!Enum.IsDefined(settings.Theme))
+        {
+            throw new SettingsValidationException("The settings theme is unsupported.");
         }
 
         if (!Enum.IsDefined(settings.WidgetVariant))

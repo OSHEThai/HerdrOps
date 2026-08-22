@@ -4,6 +4,14 @@ param(
     [ValidateNotNullOrEmpty()]
     [string]$TargetHerdrSocketPath,
 
+    [Parameter(Mandatory)]
+    [ValidatePattern('^[0-9a-fA-F]{40}$')]
+    [string]$ExpectedSourceCommit,
+
+    [Parameter(Mandatory)]
+    [ValidatePattern('^[0-9a-fA-F]{40}$')]
+    [string]$ExpectedSourceTree,
+
     [string]$HerdrExecutable = (Join-Path $env:LOCALAPPDATA 'Programs\Herdr\bin\herdr.exe'),
 
     [ValidateRange(10, 3600)]
@@ -16,21 +24,49 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $false
+. (Join-Path $PSScriptRoot 'lib/V02GateProvenance.ps1')
 
-function Get-CleanSourceCommit {
-    param([Parameter(Mandatory)][string]$Root)
+function Get-ExpectedCleanSourceIdentity {
+    param(
+        [Parameter(Mandatory)][string]$Root,
+        [Parameter(Mandatory)][string]$ExpectedCommit,
+        [Parameter(Mandatory)][string]$ExpectedTree
+    )
 
-    $commit = (& git -C $Root rev-parse HEAD).Trim()
-    if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($commit)) {
+    $normalizedExpectedCommit = $ExpectedCommit.ToLowerInvariant()
+    $normalizedExpectedTree = $ExpectedTree.ToLowerInvariant()
+    if ($normalizedExpectedCommit -notmatch '^[0-9a-f]{40}$') {
+        throw 'ExpectedSourceCommit must be a 40-character hexadecimal Git commit.'
+    }
+    if ($normalizedExpectedTree -notmatch '^[0-9a-f]{40}$') {
+        throw 'ExpectedSourceTree must be a 40-character hexadecimal Git tree.'
+    }
+
+    $commit = (& git -C $Root rev-parse HEAD).Trim().ToLowerInvariant()
+    if ($LASTEXITCODE -ne 0 -or $commit -notmatch '^[0-9a-f]{40}$') {
         throw 'Could not resolve the source commit for the Herdr runtime gate.'
     }
-    $changes = @(& git -C $Root status --porcelain --untracked-files=all)
+    $tree = (& git -C $Root rev-parse 'HEAD^{tree}').Trim().ToLowerInvariant()
+    if ($LASTEXITCODE -ne 0 -or $tree -notmatch '^[0-9a-f]{40}$') {
+        throw 'Could not resolve the source tree for the Herdr runtime gate.'
+    }
+    $changes = @(& git -C $Root status --porcelain=v1 --untracked-files=all)
     if ($LASTEXITCODE -ne 0) { throw 'Could not inspect repository status.' }
     if ($changes.Count -ne 0) {
         throw "Herdr runtime evidence requires a clean source checkout. Changes: $($changes -join '; ')"
     }
+    if ($commit -cne $normalizedExpectedCommit) {
+        throw "Source commit does not match ExpectedSourceCommit: expected=$normalizedExpectedCommit observed=$commit"
+    }
+    if ($tree -cne $normalizedExpectedTree) {
+        throw "Source tree does not match ExpectedSourceTree: expected=$normalizedExpectedTree observed=$tree"
+    }
 
-    return $commit
+    return [pscustomobject]@{
+        SourceCommit = $commit
+        SourceTree   = $tree
+        GitTreeClean = $true
+    }
 }
 
 function Get-ControlHerdrServerIdentity {
@@ -103,7 +139,12 @@ $evidenceDirectory = Join-Path $artifactRoot "runtime-evidence\v0.2\issue-7\$run
 $testResultsDirectory = Join-Path $evidenceDirectory 'test-results'
 $tracePath = Join-Path $evidenceDirectory 'actual-herdr-runtime-trace.json'
 $gateReportPath = Join-Path $evidenceDirectory 'gate-report.txt'
-$sourceCommit = Get-CleanSourceCommit -Root $repositoryRoot
+$sourceIdentity = Get-ExpectedCleanSourceIdentity `
+    -Root $repositoryRoot `
+    -ExpectedCommit $ExpectedSourceCommit `
+    -ExpectedTree $ExpectedSourceTree
+$sourceCommit = $sourceIdentity.SourceCommit
+$sourceTree = $sourceIdentity.SourceTree
 
 if (-not (Test-Path -LiteralPath $HerdrExecutable -PathType Leaf)) {
     throw "Installed Herdr executable not found: $HerdrExecutable"
@@ -119,6 +160,15 @@ $targetHerdrSocketPath = (Resolve-Path -LiteralPath $TargetHerdrSocketPath).Path
 if ([StringComparer]::OrdinalIgnoreCase.Equals($controlHerdrSocketPath, $targetHerdrSocketPath)) {
     throw 'Acceptance control and target Agent Lab sockets must be different. Restarting the control session would terminate the gate process.'
 }
+$sessionListOutput = @(& $HerdrExecutable session list --json)
+if ($LASTEXITCODE -ne 0 -or $sessionListOutput.Count -eq 0) {
+    throw 'Could not enumerate Herdr named sessions before the runtime gate.'
+}
+$sessionTopology = Assert-V02AcceptanceSessionTopology `
+    -SessionListJson ($sessionListOutput -join [Environment]::NewLine) `
+    -ControlSocketPath $controlHerdrSocketPath `
+    -TargetSocketPath $targetHerdrSocketPath
+
 $controlPaneOutput = @(& $HerdrExecutable pane current --current)
 if ($LASTEXITCODE -ne 0 -or $controlPaneOutput.Count -eq 0) {
     throw 'Could not verify the active Acceptance control pane through its Herdr socket.'
@@ -170,6 +220,7 @@ $coreDll = Join-Path $artifactRoot "bin\HerdrOps.Core\$($Configuration.ToLowerIn
     --report $tracePath
 if ($LASTEXITCODE -ne 0) { throw 'Actual Herdr runtime trace command failed.' }
 
+$runtimeTraceSha256AtRead = ((Get-FileHash -LiteralPath $tracePath -Algorithm SHA256).Hash).ToUpperInvariant()
 $trace = Get-Content -LiteralPath $tracePath -Raw | ConvertFrom-Json
 if ($trace.EvidenceClassification -ne 'Runtime' -or $trace.RuntimeObserved -ne $true) {
     throw 'Trace did not earn actual Herdr runtime credit.'
@@ -400,15 +451,33 @@ if ($totalTests -le 0 -or $failedTests -ne 0 -or $totalTests -ne $passedTests) {
     throw "Pre-runtime test counters are not all passing: total=$totalTests passed=$passedTests failed=$failedTests"
 }
 
-$finalSourceCommit = Get-CleanSourceCommit -Root $repositoryRoot
-if ($finalSourceCommit -ne $sourceCommit) {
-    throw "Source commit changed during the runtime gate: $sourceCommit -> $finalSourceCommit"
+$finalSourceIdentity = Get-ExpectedCleanSourceIdentity `
+    -Root $repositoryRoot `
+    -ExpectedCommit $ExpectedSourceCommit `
+    -ExpectedTree $ExpectedSourceTree
+$finalSourceCommit = $finalSourceIdentity.SourceCommit
+$finalSourceTree = $finalSourceIdentity.SourceTree
+if ($finalSourceCommit -ne $sourceCommit -or $finalSourceTree -ne $sourceTree) {
+    throw "Source identity changed during the runtime gate: $sourceCommit/$sourceTree -> $finalSourceCommit/$finalSourceTree"
+}
+$runtimeTraceSha256 = ((Get-FileHash -LiteralPath $tracePath -Algorithm SHA256).Hash).ToUpperInvariant()
+if ($runtimeTraceSha256 -cne $runtimeTraceSha256AtRead) {
+    throw "Raw Issue #7 runtime trace changed during validation: $runtimeTraceSha256AtRead -> $runtimeTraceSha256"
 }
 
 $reportLines = @(
     'HerdrOps v0.2 Issue #7 Actual Herdr Runtime Gate',
     "GeneratedUtc: $((Get-Date).ToUniversalTime().ToString('O'))",
+    "ExpectedSourceCommit: $($ExpectedSourceCommit.ToLowerInvariant())",
+    "ExpectedSourceTree: $($ExpectedSourceTree.ToLowerInvariant())",
     "SourceCommit: $sourceCommit",
+    "SourceTree: $sourceTree",
+    "PreRunSourceCommit: $($sourceIdentity.SourceCommit)",
+    "PreRunSourceTree: $($sourceIdentity.SourceTree)",
+    "PreRunGitTreeClean: $($sourceIdentity.GitTreeClean)",
+    "PostRunSourceCommit: $finalSourceCommit",
+    "PostRunSourceTree: $finalSourceTree",
+    "PostRunGitTreeClean: $($finalSourceIdentity.GitTreeClean)",
     'Result: PASS',
     'EvidenceClass: Runtime',
     'RuntimeObserved: true',
@@ -418,6 +487,8 @@ $reportLines = @(
     'ReconnectObserved: true',
     "AcceptanceControlPaneEnvironmentId: $($env:HERDR_PANE_ID)",
     "AcceptanceControlPaneObservedId: $observedControlPaneId",
+    "AcceptanceControlSession: $($sessionTopology.ControlSessionName)",
+    "TargetAgentLabSession: $($sessionTopology.TargetSessionName)",
     "AcceptanceControlSocketPath: $controlHerdrSocketPath",
     "AcceptanceControlServerIdentity: pid=$($controlServerIdentity.ProcessId) start=$($controlServerIdentity.ProcessStartUtc.ToString('O')) path=$($controlServerIdentity.ExecutablePath) sha256=$($controlServerIdentity.ExecutableSha256)",
     "TargetAgentLabSocketPath: $targetHerdrSocketPath",
@@ -431,6 +502,8 @@ $reportLines = @(
     "ObservedDisconnectCount: $($trace.FinalMonitorState.DisconnectCount)",
     "HerdrReleaseId: $($trace.Admission.ReleaseId)",
     "HerdrExecutableSha256: $($trace.Admission.ExecutableSha256)",
+    "RuntimeTracePath: $tracePath",
+    "RuntimeTraceSha256: $runtimeTraceSha256",
     "ObservedHerdrServerPid: $($trace.ObservedServerIdentity.ProcessId)",
     "ObservedHerdrServerProcessStartUtc: $($trace.ObservedServerIdentity.ProcessStartUtc)",
     "ObservedHerdrServerExecutablePath: $($trace.ObservedServerIdentity.ExecutablePath)",

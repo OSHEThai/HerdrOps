@@ -7,7 +7,15 @@ param(
 
     # Test seam for deterministic child-failure tests. Production callers use
     # the committed child gates in this tools directory.
-    [string]$ChildGateRoot
+    [string]$ChildGateRoot,
+
+    [Parameter(Mandatory)]
+    [ValidatePattern('^[0-9a-fA-F]{40}$')]
+    [string]$ExpectedSourceCommit,
+
+    [Parameter(Mandatory)]
+    [ValidatePattern('^[0-9a-fA-F]{40}$')]
+    [string]$ExpectedSourceTree
 )
 
 Set-StrictMode -Version Latest
@@ -75,6 +83,9 @@ $repositoryRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $artifactRoot = Join-Path $repositoryRoot 'artifacts'
 $implementationArtifactRoot = Join-Path $artifactRoot 'release-gates\v0.3.0\issue-17'
 $sourceCommit = 'UNRESOLVED'
+$sourceTree = 'UNRESOLVED'
+$ExpectedSourceCommit = $ExpectedSourceCommit.ToLowerInvariant()
+$ExpectedSourceTree = $ExpectedSourceTree.ToLowerInvariant()
 $initialStatus = @()
 $finalStatus = @()
 $childDefinitions = @()
@@ -113,6 +124,12 @@ try {
             StdoutSha256 = ''
             StderrArtifact = "child-gates/issue-$($definition.Issue).stderr.txt"
             StderrSha256 = ''
+            ContractSelfTestStatus = 'NOT_RUN'
+            ContractSelfTestScript = ''
+            ContractSelfTestStdoutArtifact = ''
+            ContractSelfTestStdoutSha256 = ''
+            ContractSelfTestStderrArtifact = ''
+            ContractSelfTestStderrSha256 = ''
             FailureCode = ''
             StdoutPath = $stdoutPath
             StderrPath = $stderrPath
@@ -124,6 +141,19 @@ try {
     if ($LASTEXITCODE -ne 0 -or $sourceCommit -notmatch '^[0-9a-f]{40}$') {
         $sourceCommit = 'UNRESOLVED'
         $failureCode = 'SourceCommitResolutionFailed'
+        throw [InvalidOperationException]::new($failureCode)
+    }
+
+    $sourceTreeOutput = @(& git -C $repositoryRoot rev-parse --verify 'HEAD^{tree}')
+    $sourceTree = ($sourceTreeOutput -join '').Trim()
+    if ($LASTEXITCODE -ne 0 -or $sourceTree -notmatch '^[0-9a-f]{40}$') {
+        $sourceTree = 'UNRESOLVED'
+        $failureCode = 'SourceTreeResolutionFailed'
+        throw [InvalidOperationException]::new($failureCode)
+    }
+
+    if ($sourceCommit -cne $ExpectedSourceCommit -or $sourceTree -cne $ExpectedSourceTree) {
+        $failureCode = 'SourceIdentityMismatch'
         throw [InvalidOperationException]::new($failureCode)
     }
 
@@ -210,6 +240,62 @@ try {
             continue
         }
 
+        $contractSelfTestProperty = $definition.PSObject.Properties['ContractSelfTestScriptName']
+        if ($null -ne $contractSelfTestProperty -and -not [string]::IsNullOrWhiteSpace([string]$contractSelfTestProperty.Value)) {
+            $contractSelfTestName = [string]$contractSelfTestProperty.Value
+            $contractSelfTestPath = Join-Path $resolvedChildGateRoot $contractSelfTestName
+            $contractSelfTestStdoutPath = Join-Path $diagnosticDirectory "issue-$($child.Issue).contract-selftest.stdout.txt"
+            $contractSelfTestStderrPath = Join-Path $diagnosticDirectory "issue-$($child.Issue).contract-selftest.stderr.txt"
+            $child.ContractSelfTestScript = $contractSelfTestName
+            $child.ContractSelfTestStdoutArtifact = "child-gates/issue-$($child.Issue).contract-selftest.stdout.txt"
+            $child.ContractSelfTestStderrArtifact = "child-gates/issue-$($child.Issue).contract-selftest.stderr.txt"
+            New-V03EmptyDiagnosticFile -Path $contractSelfTestStdoutPath
+            New-V03EmptyDiagnosticFile -Path $contractSelfTestStderrPath
+
+            if (-not (Test-Path -LiteralPath $contractSelfTestPath -PathType Leaf)) {
+                $child.Status = 'FAIL'
+                $child.ContractSelfTestStatus = 'FAIL'
+                $child.FailureCode = "ChildContractSelfTestMissing:$($child.Issue)"
+                Set-Content -LiteralPath $contractSelfTestStderrPath -Value $child.FailureCode -Encoding utf8
+                $child.ContractSelfTestStdoutSha256 = Get-V03Sha256 -Path $contractSelfTestStdoutPath
+                $child.ContractSelfTestStderrSha256 = Get-V03Sha256 -Path $contractSelfTestStderrPath
+                $child.StdoutSha256 = Get-V03Sha256 -Path $stdoutPath
+                $child.StderrSha256 = Get-V03Sha256 -Path $stderrPath
+                continue
+            }
+
+            try {
+                $contractSelfTestArguments = @(
+                    '-NoProfile',
+                    '-File',
+                    $contractSelfTestPath,
+                    '-ExpectedSourceCommit',
+                    $ExpectedSourceCommit,
+                    '-ExpectedSourceTree',
+                    $ExpectedSourceTree
+                )
+                & $pwshPath @contractSelfTestArguments 1> $contractSelfTestStdoutPath 2> $contractSelfTestStderrPath
+                if ($LASTEXITCODE -ne 0) {
+                    throw [InvalidOperationException]::new("ChildContractSelfTestFailed:$($child.Issue)")
+                }
+                $child.ContractSelfTestStatus = 'PASS'
+            }
+            catch {
+                $child.Status = 'FAIL'
+                $child.ContractSelfTestStatus = 'FAIL'
+                $child.FailureCode = "ChildContractSelfTestFailed:$($child.Issue)"
+                Add-V03DiagnosticException -Path $contractSelfTestStderrPath -ErrorRecord $_
+                $child.ContractSelfTestStdoutSha256 = Get-V03Sha256 -Path $contractSelfTestStdoutPath
+                $child.ContractSelfTestStderrSha256 = Get-V03Sha256 -Path $contractSelfTestStderrPath
+                $child.StdoutSha256 = Get-V03Sha256 -Path $stdoutPath
+                $child.StderrSha256 = Get-V03Sha256 -Path $stderrPath
+                continue
+            }
+
+            $child.ContractSelfTestStdoutSha256 = Get-V03Sha256 -Path $contractSelfTestStdoutPath
+            $child.ContractSelfTestStderrSha256 = Get-V03Sha256 -Path $contractSelfTestStderrPath
+        }
+
         $child.Attempted = $true
         $childArguments = @(
             '-NoProfile',
@@ -253,7 +339,8 @@ try {
             $childResultValue = Assert-V03ImplementationChildReport `
                 -Name $definition.Name `
                 -ReportText $reportText `
-                -SourceCommit $sourceCommit
+                -ExpectedSourceCommit $sourceCommit `
+                -ExpectedSourceTree $sourceTree
 
             $reportArtifactPath = Join-Path $diagnosticDirectory "issue-$($child.Issue).gate-report.txt"
             Copy-Item -LiteralPath $reportCandidate -Destination $reportArtifactPath -Force
@@ -316,6 +403,14 @@ finally {
                 $result = 'FAIL'
                 $failureCode = 'SourceChangedDuringGate'
             }
+            else {
+                $finalTreeOutput = @(& git -C $repositoryRoot rev-parse --verify 'HEAD^{tree}')
+                $finalTree = ($finalTreeOutput -join '').Trim()
+                if ($LASTEXITCODE -ne 0 -or $finalTree -cne $sourceTree) {
+                    $result = 'FAIL'
+                    $failureCode = 'SourceChangedDuringGate'
+                }
+            }
         }
         catch {
             $result = 'FAIL'
@@ -327,6 +422,9 @@ finally {
         New-Item -ItemType Directory -Path $runDirectory -Force | Out-Null
         $report = @(New-V03ImplementationGateReport `
             -SourceCommit $sourceCommit `
+            -SourceTree $sourceTree `
+            -ExpectedSourceCommit $ExpectedSourceCommit `
+            -ExpectedSourceTree $ExpectedSourceTree `
             -ChildResults $childResults `
             -Result $result `
             -FailureCode $failureCode `
@@ -341,6 +439,9 @@ finally {
         $report = @(
             'HerdrOps v0.3.0 Issue #17 Implementation Gate',
             "SourceCommit: $sourceCommit",
+            "SourceTree: $sourceTree",
+            "ExpectedSourceCommit: $ExpectedSourceCommit",
+            "ExpectedSourceTree: $ExpectedSourceTree",
             'Result: FAIL',
             'GateKind: Implementation',
             'EvidenceClasses: Static, Contract, Synthetic',

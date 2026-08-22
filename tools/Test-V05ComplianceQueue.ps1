@@ -20,7 +20,8 @@ $shellXamlPath = Join-Path $repositoryRoot 'src\HerdrOps.App\Views\ShellView.xam
 $shellCodeBehindPath = Join-Path $repositoryRoot 'src\HerdrOps.App\Views\ShellView.xaml.cs'
 $dashboardStatePath = Join-Path $repositoryRoot 'src\HerdrOps.App\Live\LiveDashboardState.cs'
 $dashboardRuntimePath = Join-Path $repositoryRoot 'src\HerdrOps.App\Live\LiveDashboardRuntime.cs'
-$semanticTokensPath = Join-Path $repositoryRoot 'src\HerdrOps.App\Themes\Tokens.Semantic.xaml'
+$semanticDarkTokensPath = Join-Path $repositoryRoot 'src\HerdrOps.App\Themes\Tokens.Semantic.Dark.xaml'
+$semanticLightTokensPath = Join-Path $repositoryRoot 'src\HerdrOps.App\Themes\Tokens.Semantic.Light.xaml'
 $languageCatalogPath = Join-Path $repositoryRoot 'src\HerdrOps.App\Localization\UiLanguageService.cs'
 $contractPath = Join-Path $repositoryRoot 'docs\protocol\v0.5-compliance-queue-presentation-contract.md'
 $referencePath = Join-Path $repositoryRoot 'docs\design\reference\08-compliance-queue.png'
@@ -81,7 +82,8 @@ $sharedIntegrationFiles = [ordered]@{
     ShellViewCodeBehind = $shellCodeBehindPath
     LiveDashboardState = $dashboardStatePath
     LiveDashboardRuntime = $dashboardRuntimePath
-    SemanticTokens = $semanticTokensPath
+    SemanticDarkTokens = $semanticDarkTokensPath
+    SemanticLightTokens = $semanticLightTokensPath
     UiLanguageCatalog = $languageCatalogPath
     UiLanguageCatalogTest = $languageCatalogTestSourcePath
     LiveDashboardStateTest = $dashboardStateTestSourcePath
@@ -343,10 +345,11 @@ Assert-ContainsText `
     -RequiredText @(
         'Owns the single App-wide Core subscription',
         'LiveDashboardSession')
-Assert-ContainsText `
-    -Path $semanticTokensPath `
-    -Description 'shared semantic tokens' `
-    -RequiredText @(
+foreach ($semanticTokensPath in @($semanticDarkTokensPath, $semanticLightTokensPath)) {
+    Assert-ContainsText `
+        -Path $semanticTokensPath `
+        -Description "shared semantic tokens ($(Split-Path -Leaf $semanticTokensPath))" `
+        -RequiredText @(
         'HerdrOps.Brush.Severity.Critical',
         'HerdrOps.Brush.Severity.High',
         'HerdrOps.Brush.Review.Suspected',
@@ -354,6 +357,7 @@ Assert-ContainsText `
         'HerdrOps.Brush.Review.PendingLeader',
         'HerdrOps.Brush.Review.PendingProjectManager',
         'HerdrOps.Brush.Review.MissingEvidence')
+}
 Assert-ContainsText `
     -Path $languageCatalogPath `
     -Description 'shared UI language catalog' `

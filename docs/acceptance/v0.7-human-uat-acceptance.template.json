@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "reportKind": "HerdrOps.V07HumanUatAcceptance",
+  "issue": 40,
+  "candidate": {
+    "commit": "replace-with-runtime-lowercase-40-hex-commit",
+    "tree": "replace-with-runtime-lowercase-40-hex-tree"
+  },
+  "decision": "PENDING",
+  "signer": "PENDING",
+  "role": "PENDING",
+  "signedAtUtc": "PENDING",
+  "signature": "PENDING"
+}

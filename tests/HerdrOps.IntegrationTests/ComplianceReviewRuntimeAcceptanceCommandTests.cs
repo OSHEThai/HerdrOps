@@ -2,12 +2,14 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using HerdrOps.Contracts;
+using HerdrOps.Contracts.ReviewIpc;
 using HerdrOps.Contracts.StateIpc;
 using HerdrOps.Core;
 using HerdrOps.Domain.Compliance;
 using HerdrOps.Domain.Herdr;
 using HerdrOps.Infrastructure.Herdr;
 using HerdrOps.Infrastructure.StateIpc;
+using HerdrOps.Infrastructure.Storage;
 
 namespace HerdrOps.IntegrationTests;
 
@@ -89,12 +91,84 @@ public sealed class ComplianceReviewRuntimeAcceptanceCommandTests
         using var directory = new TemporaryDirectory();
         const string incidentId = "INC-28-SYNTHETIC";
         const string taskId = "TASK-28-SYNTHETIC";
+        var result = RunValidAcceptance(directory.Path, incidentId, taskId);
+
+        Assert.AreEqual(0, result.ExitCode);
+        Assert.IsNotNull(result.Composite);
+
+        Assert.IsTrue(result.Composite!.RuntimeAccepted);
+        Assert.AreEqual("Runtime", result.Composite.EvidenceClassification);
+        Assert.IsTrue(result.Composite.Acceptance.Passed);
+        Assert.AreEqual(incidentId, result.Composite.IncidentId);
+        Assert.AreEqual(Path.GetFullPath(result.ReviewTracePath), result.Composite.ReviewTracePath);
+        Assert.AreEqual(Path.GetFullPath(result.HerdrReportPath), result.Composite.HerdrRuntimeReportPath);
+    }
+
+    [TestMethod]
+    public void MissingEventObservationFailsClosedWithoutRuntimeCredit()
+    {
+        using var directory = new TemporaryDirectory();
+        var result = RunValidAcceptance(
+            directory.Path,
+            "INC-28-NO-EVENT",
+            "TASK-28-NO-EVENT",
+            eventObserved: false);
+
+        Assert.AreEqual(2, result.ExitCode);
+        Assert.IsNotNull(result.Composite);
+        Assert.IsFalse(result.Composite!.RuntimeAccepted);
+        Assert.AreEqual("NoRuntimeCredit", result.Composite.EvidenceClassification);
+    }
+
+    [TestMethod]
+    public void EventFlagWithoutAcceptedTransitionFailsClosedWithoutRuntimeCredit()
+    {
+        using var directory = new TemporaryDirectory();
+        var result = RunValidAcceptance(
+            directory.Path,
+            "INC-28-NO-ACCEPTED-TRANSITION",
+            "TASK-28-NO-ACCEPTED-TRANSITION",
+            transitions: Array.Empty<HerdrRuntimeTraceTransition>());
+
+        Assert.AreEqual(2, result.ExitCode);
+        Assert.IsNotNull(result.Composite);
+        Assert.IsFalse(result.Composite!.RuntimeAccepted);
+        Assert.AreEqual("NoRuntimeCredit", result.Composite.EvidenceClassification);
+    }
+
+    [TestMethod]
+    public void MissingReconnectObservationFailsClosedWithoutRuntimeCredit()
+    {
+        using var directory = new TemporaryDirectory();
+        var result = RunValidAcceptance(
+            directory.Path,
+            "INC-28-NO-RECONNECT",
+            "TASK-28-NO-RECONNECT",
+            reconnectObserved: false);
+
+        Assert.AreEqual(2, result.ExitCode);
+        Assert.IsNotNull(result.Composite);
+        Assert.IsFalse(result.Composite!.RuntimeAccepted);
+        Assert.AreEqual("NoRuntimeCredit", result.Composite.EvidenceClassification);
+    }
+
+    private static (
+        int ExitCode,
+        string ReviewTracePath,
+        string HerdrReportPath,
+        ComplianceReviewCompositeRuntimeReport? Composite) RunValidAcceptance(
+        string directoryPath,
+        string incidentId,
+        string taskId,
+        bool eventObserved = true,
+        bool reconnectObserved = true,
+        IReadOnlyList<HerdrRuntimeTraceTransition>? transitions = null)
+    {
         const string subjectId = "worker-terminal";
         const string pmId = "pm-terminal";
-
-        var reviewTracePath = Path.Combine(directory.Path, "review-trace.json");
-        var herdrReportPath = Path.Combine(directory.Path, "herdr-runtime.json");
-        var compositeReportPath = Path.Combine(directory.Path, "composite-report.json");
+        var reviewTracePath = Path.Combine(directoryPath, "review-trace.json");
+        var herdrReportPath = Path.Combine(directoryPath, "herdr-runtime.json");
+        var compositeReportPath = Path.Combine(directoryPath, "composite-report.json");
 
         var incident = ComplianceReviewWorkflowContract.CreateIncident(
             new ComplianceReviewIncidentRegistration(
@@ -129,36 +203,29 @@ public sealed class ComplianceReviewRuntimeAcceptanceCommandTests
             incident,
             cmd,
             authority);
-
         var appliedIncident = ComplianceReviewWorkflowContract.Apply(
             incident,
             auditEvent);
-
-        var reviewTrace = new ComplianceReviewRuntimeTrace(
-            ContractVersion: 1,
-            StartedUtc: BaseTime,
-            FinishedUtc: BaseTime.AddSeconds(10),
-            EvidenceClassification: "BuiltProcessIntegration",
-            DurableReviewEnabled: true,
-            AuditEvents: new[] { auditEvent },
-            Incidents: new[] { appliedIncident },
-            RetentionProtectedObserved: true,
-            RestartConsistencyObserved: true);
-
+        var reviewTrace = CreateTraceReport(
+            new[] { appliedIncident },
+            new[] { auditEvent },
+            retentionProtectedObserved: true,
+            restartConsistencyObserved: true);
         File.WriteAllText(
             reviewTracePath,
             JsonSerializer.Serialize(reviewTrace, new JsonSerializerOptions { WriteIndented = true }));
 
-        var sessionContract = CreateSessionState();
-        var herdrReport = CreateRuntimeReport(sessionContract);
-
+        var herdrReport = CreateRuntimeReport(
+            CreateSessionState(),
+            eventObserved: eventObserved,
+            reconnectObserved: reconnectObserved,
+            transitions: transitions);
         File.WriteAllText(
             herdrReportPath,
             JsonSerializer.Serialize(herdrReport, new JsonSerializerOptions { WriteIndented = true }));
 
         var output = new StringWriter();
         var error = new StringWriter();
-
         var exitCode = ComplianceReviewRuntimeAcceptanceCommand.Run(
             new[]
             {
@@ -171,20 +238,15 @@ public sealed class ComplianceReviewRuntimeAcceptanceCommandTests
             output,
             error);
 
-        Assert.AreEqual(0, exitCode);
-        Assert.IsTrue(File.Exists(compositeReportPath));
+        ComplianceReviewCompositeRuntimeReport? composite = null;
+        if (File.Exists(compositeReportPath))
+        {
+            composite = JsonSerializer.Deserialize<ComplianceReviewCompositeRuntimeReport>(
+                File.ReadAllText(compositeReportPath),
+                new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+        }
 
-        var composite = JsonSerializer.Deserialize<ComplianceReviewCompositeRuntimeReport>(
-            File.ReadAllText(compositeReportPath),
-            new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
-
-        Assert.IsNotNull(composite);
-        Assert.IsTrue(composite.RuntimeAccepted);
-        Assert.AreEqual("Runtime", composite.EvidenceClassification);
-        Assert.IsTrue(composite.Acceptance.Passed);
-        Assert.AreEqual(incidentId, composite.IncidentId);
-        Assert.AreEqual(Path.GetFullPath(reviewTracePath), composite.ReviewTracePath);
-        Assert.AreEqual(Path.GetFullPath(herdrReportPath), composite.HerdrRuntimeReportPath);
+        return (exitCode, reviewTracePath, herdrReportPath, composite);
     }
 
     [TestMethod]
@@ -232,16 +294,7 @@ public sealed class ComplianceReviewRuntimeAcceptanceCommandTests
             null,
             new string('C', 64));
 
-        var reviewTrace = new ComplianceReviewRuntimeTrace(
-            ContractVersion: 1,
-            StartedUtc: BaseTime,
-            FinishedUtc: BaseTime.AddSeconds(10),
-            EvidenceClassification: "BuiltProcessIntegration",
-            DurableReviewEnabled: true,
-            AuditEvents: new[] { badAudit },
-            Incidents: new[] { incident },
-            RetentionProtectedObserved: true,
-            RestartConsistencyObserved: true);
+        var reviewTrace = CreateTraceReport(new[] { incident }, new[] { badAudit }, true, true);
 
         File.WriteAllText(
             reviewTracePath,
@@ -332,16 +385,7 @@ public sealed class ComplianceReviewRuntimeAcceptanceCommandTests
             incident,
             auditEvent);
 
-        var reviewTrace = new ComplianceReviewRuntimeTrace(
-            ContractVersion: 1,
-            StartedUtc: BaseTime,
-            FinishedUtc: BaseTime.AddSeconds(10),
-            EvidenceClassification: "BuiltProcessIntegration",
-            DurableReviewEnabled: true,
-            AuditEvents: new[] { auditEvent },
-            Incidents: new[] { appliedIncident },
-            RetentionProtectedObserved: true,
-            RestartConsistencyObserved: true);
+        var reviewTrace = CreateTraceReport(new[] { appliedIncident }, new[] { auditEvent }, true, true);
 
         File.WriteAllText(
             reviewTracePath,
@@ -417,6 +461,91 @@ public sealed class ComplianceReviewRuntimeAcceptanceCommandTests
         Assert.Contains("Compliance review runtime acceptance failed:", error.ToString());
     }
 
+    [TestMethod]
+    public void RegisteredStoreProducerToAcceptorSharesExactReportBytes()
+    {
+        using var directory = new TemporaryDirectory();
+        const string incidentId = "INC-28-E2E";
+        const string taskId = "TASK-28-E2E";
+        const string subjectId = "worker-terminal";
+
+        var dbPath = Path.Combine(directory.Path, "store.db");
+        var reportPath = Path.Combine(directory.Path, "producer-report.json");
+        var herdrReportPath = Path.Combine(directory.Path, "herdr-runtime.json");
+        var compositeReportPath = Path.Combine(directory.Path, "composite-report.json");
+
+        using (var store = new SqliteHerdrStateStore(new HerdrStateStoreOptions(dbPath)))
+        {
+            var result = store.RegisterComplianceReviewIncident(
+                new ComplianceReviewIncidentRegistration(
+                    1,
+                    incidentId,
+                    taskId,
+                    subjectId,
+                    BaseTime,
+                    Array.Empty<string>()));
+            Assert.IsFalse(result.WasAlreadyPresent);
+            Assert.AreEqual(incidentId, result.Incident.IncidentId);
+        }
+
+        var producerOutput = new StringWriter();
+        var producerError = new StringWriter();
+        var producerExit = ComplianceReviewRuntimeTraceCommand.Run(
+            new[]
+            {
+                "trace-compliance-review",
+                "--database", dbPath,
+                "--report", reportPath,
+            },
+            producerOutput,
+            producerError);
+        Assert.AreEqual(0, producerExit, producerError.ToString());
+        Assert.AreEqual(string.Empty, producerError.ToString());
+        Assert.IsTrue(File.Exists(reportPath));
+
+        var producerBytes = File.ReadAllBytes(reportPath);
+        var report = JsonSerializer.Deserialize<ComplianceReviewRuntimeTraceReport>(
+            producerBytes,
+            new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+        Assert.IsNotNull(report);
+        Assert.AreEqual(1, report.IncidentCount);
+        Assert.IsTrue(report.DurableReviewEnabled);
+        Assert.IsTrue(report.RestartConsistencyObserved);
+        Assert.IsFalse(report.RetentionProtectedObserved);
+        Assert.IsTrue(
+            report.StartedUtc <= BaseTime,
+            "trace start must be bounded by the earliest durable event, not the produce timestamp");
+
+        var herdrReport = CreateRuntimeReport(CreateSessionState());
+        File.WriteAllText(
+            herdrReportPath,
+            JsonSerializer.Serialize(herdrReport, new JsonSerializerOptions { WriteIndented = true }));
+
+        var acceptorOutput = new StringWriter();
+        var acceptorError = new StringWriter();
+        var acceptorExit = ComplianceReviewRuntimeAcceptanceCommand.Run(
+            new[]
+            {
+                "compliance-review-acceptance",
+                "--review-trace", reportPath,
+                "--herdr-runtime-report", herdrReportPath,
+                "--incident-id", incidentId,
+                "--report", compositeReportPath,
+            },
+            acceptorOutput,
+            acceptorError);
+
+        Assert.IsTrue(File.Exists(compositeReportPath));
+        var composite = JsonSerializer.Deserialize<ComplianceReviewCompositeRuntimeReport>(
+            File.ReadAllText(compositeReportPath),
+            new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+        Assert.IsNotNull(composite);
+        Assert.AreEqual(incidentId, composite.IncidentId);
+        Assert.AreEqual("NoRuntimeCredit", composite.EvidenceClassification);
+        Assert.IsFalse(composite.RuntimeAccepted);
+        Assert.AreNotEqual(64, acceptorExit);
+    }
+
     private static HerdrSessionStateContract CreateSessionState()
     {
         var identities = new[]
@@ -474,7 +603,10 @@ public sealed class ComplianceReviewRuntimeAcceptanceCommandTests
 
     private static HerdrCoreRuntimeEvidenceReport CreateRuntimeReport(
         HerdrSessionStateContract state,
-        string? evidenceClassification = null)
+        string? evidenceClassification = null,
+        bool eventObserved = true,
+        bool reconnectObserved = true,
+        IReadOnlyList<HerdrRuntimeTraceTransition>? transitions = null)
     {
         var executableHash = Hash("herdr-executable");
         var endpoint = HerdrPipeEndpoint.FromSocketPath("test-herdr-pipe");
@@ -505,13 +637,24 @@ public sealed class ComplianceReviewRuntimeAcceptanceCommandTests
             0,
             "contract-backed test",
             BaseTime.AddSeconds(5));
+        var acceptedEventTransition = HerdrRuntimeEvidence.CreateTransition(monitor with
+        {
+            AcceptedEventKind = HerdrRuntimeMonitor.AcceptedAgentStatusEventKind,
+            AcceptedAgentStatusEvent = new HerdrAcceptedAgentStatusEvent(
+                "workspace-1",
+                "pane-1",
+                HerdrAgentStatus.Working,
+                "codex",
+                "Codex",
+                "Working"),
+        });
         return new HerdrCoreRuntimeEvidenceReport(
             evidenceClassification ?? EvidenceClass.Runtime.ToString(),
             RuntimeObserved: true,
             SessionControlInvoked: false,
             SnapshotObserved: true,
-            EventObserved: true,
-            ReconnectObserved: false,
+            EventObserved: eventObserved,
+            ReconnectObserved: reconnectObserved,
             BaseTime,
             BaseTime.AddSeconds(10),
             120,
@@ -521,9 +664,82 @@ public sealed class ComplianceReviewRuntimeAcceptanceCommandTests
             monitor,
             state,
             HerdrOpsStateIpcJson.ComputeSha256(state),
-            Array.Empty<HerdrRuntimeTraceTransition>(),
+            transitions ?? new[] { acceptedEventTransition },
             "Contract-backed test report.");
     }
+
+    private static ComplianceReviewRuntimeTraceReport CreateTraceReport(
+        IReadOnlyList<ComplianceReviewIncident> incidents,
+        IReadOnlyList<ComplianceReviewAuditEvent> auditEvents,
+        bool retentionProtectedObserved,
+        bool restartConsistencyObserved) =>
+        new(
+            ContractVersion: 1,
+            EvidenceClassification: "BuiltProcessIntegration",
+            RuntimeObserved: false,
+            SessionControlInvoked: false,
+            RestartObserved: false,
+            ReconnectObserved: false,
+            DurableReviewEnabled: true,
+            RetentionProtectedObserved: retentionProtectedObserved,
+            RestartConsistencyObserved: restartConsistencyObserved,
+            DatabasePath: "C:\\data\\herdrops.db",
+            DatabaseFileSha256: new string('1', 64),
+            DatabaseFileSizeBytes: 123456,
+            SchemaVersion: 4,
+            ProductAssemblySha256: new string('2', 64),
+            HostName: "TEST-HOST",
+            OperatingSystem: "Windows 11",
+            ProducerProcessId: 4321,
+            StartedUtc: BaseTime,
+            FinishedUtc: BaseTime.AddSeconds(10),
+            IncidentCount: incidents.Count,
+            AuditEventCount: auditEvents.Count,
+            EvidenceLinkCount: auditEvents.Sum(item => item.EvidenceIdentitySha256s.Count),
+            Incidents: incidents.Select(MapContractIncident).ToArray(),
+            AuditEvents: auditEvents.Select(MapContractAuditEvent).ToArray(),
+            RetentionObservations: Array.Empty<ComplianceReviewEvidenceRetentionObservation>(),
+            EvidenceBoundary: ComplianceReviewRuntimeTraceContract.EvidenceBoundaryText);
+
+    private static HerdrOpsComplianceReviewIncident MapContractIncident(
+        ComplianceReviewIncident incident) =>
+        new(
+            incident.ContractVersion,
+            incident.IncidentId,
+            incident.TaskId,
+            incident.SubjectActorId,
+            incident.RegisteredUtc,
+            incident.InitialEvidenceIdentitySha256s,
+            incident.RegistrationSha256,
+            (int)incident.State,
+            incident.Sequence,
+            incident.UpdatedUtc,
+            incident.LastAuditEventId,
+            incident.LastAuditSha256);
+
+    private static HerdrOpsComplianceReviewAuditEvent MapContractAuditEvent(
+        ComplianceReviewAuditEvent auditEvent) =>
+        new(
+            auditEvent.ContractVersion,
+            auditEvent.AuditEventId,
+            auditEvent.IncidentId,
+            auditEvent.TaskId,
+            auditEvent.SubjectActorId,
+            auditEvent.Sequence,
+            auditEvent.ReviewerActorId,
+            (int)auditEvent.ReviewerRole,
+            auditEvent.AuthorityProvenanceEventId,
+            auditEvent.AuthorityProvenanceSequence,
+            auditEvent.AuthorityProvenanceSha256,
+            (int)auditEvent.DecisionKind,
+            (int)auditEvent.PreviousState,
+            (int)auditEvent.ResultState,
+            auditEvent.Reason,
+            auditEvent.OccurredUtc,
+            auditEvent.EvidenceIdentitySha256s,
+            auditEvent.EvidenceSetSha256,
+            auditEvent.PreviousAuditSha256,
+            auditEvent.AuditSha256);
 
     private static string Hash(string value) => Convert.ToHexString(
         SHA256.HashData(Encoding.UTF8.GetBytes(value)));

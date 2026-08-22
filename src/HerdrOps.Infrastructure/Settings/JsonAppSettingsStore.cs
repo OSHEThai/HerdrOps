@@ -74,6 +74,7 @@ public sealed class JsonAppSettingsStore : IAppSettingsStore
     [
         "schemaVersion",
         "language",
+        "theme",
         "widgetVariant",
         "widgetEnabled",
         "widgetPinned",
@@ -590,6 +591,9 @@ public sealed class JsonAppSettingsStore : IAppSettingsStore
 
             var schemaVersion = ReadStrictInt32(root, "schemaVersion");
             var language = ParseLanguage(ReadString(root, "language"));
+            var theme = root.TryGetProperty("theme", out var themeProperty)
+                ? (themeProperty.ValueKind == JsonValueKind.String ? ParseTheme(themeProperty.GetString()!) : throw new SettingsValidationException("The property 'theme' must be a string."))
+                : AppSettingsTheme.System;
             var widgetVariant = ParseWidgetVariant(ReadString(root, "widgetVariant"));
             var widgetEnabled = ReadBoolean(root, "widgetEnabled");
             var widgetPinned = ReadBoolean(root, "widgetPinned");
@@ -606,6 +610,7 @@ public sealed class JsonAppSettingsStore : IAppSettingsStore
             return AppSettingsContract.Admit(new AppSettings(
                 schemaVersion,
                 language,
+                theme,
                 widgetVariant,
                 widgetEnabled,
                 widgetPinned,
@@ -640,6 +645,7 @@ public sealed class JsonAppSettingsStore : IAppSettingsStore
         var document = new SettingsFileDocument(
             settings.SchemaVersion,
             ToLanguageValue(settings.Language),
+            ToThemeValue(settings.Theme),
             ToWidgetValue(settings.WidgetVariant),
             settings.WidgetEnabled,
             settings.WidgetPinned,
@@ -706,7 +712,11 @@ public sealed class JsonAppSettingsStore : IAppSettingsStore
 
         if (seen.Count != expected.Count)
         {
-            throw new SettingsValidationException($"{name} is missing a required property.");
+            var isMissingOnlyTheme = name == "settings" && seen.Count == expected.Count - 1 && !seen.Contains("theme");
+            if (!isMissingOnlyTheme)
+            {
+                throw new SettingsValidationException($"{name} is missing a required property.");
+            }
         }
     }
 
@@ -778,6 +788,14 @@ public sealed class JsonAppSettingsStore : IAppSettingsStore
         _ => throw new SettingsValidationException("The settings language value is unsupported."),
     };
 
+    private static AppSettingsTheme ParseTheme(string value) => value switch
+    {
+        "light" => AppSettingsTheme.Light,
+        "dark" => AppSettingsTheme.Dark,
+        "system" => AppSettingsTheme.System,
+        _ => throw new SettingsValidationException("The settings theme value is unsupported."),
+    };
+
     private static AppSettingsWidgetVariant ParseWidgetVariant(string value) => value switch
     {
         "compact" => AppSettingsWidgetVariant.Compact,
@@ -795,6 +813,14 @@ public sealed class JsonAppSettingsStore : IAppSettingsStore
         AppSettingsLanguage.Thai => "th",
         AppSettingsLanguage.English => "en",
         _ => throw new SettingsValidationException("The settings language value is unsupported."),
+    };
+
+    private static string ToThemeValue(AppSettingsTheme theme) => theme switch
+    {
+        AppSettingsTheme.Light => "light",
+        AppSettingsTheme.Dark => "dark",
+        AppSettingsTheme.System => "system",
+        _ => throw new SettingsValidationException("The settings theme value is unsupported."),
     };
 
     private static string ToWidgetValue(AppSettingsWidgetVariant variant) => variant switch
@@ -822,6 +848,7 @@ public sealed class JsonAppSettingsStore : IAppSettingsStore
     private sealed record SettingsFileDocument(
         int SchemaVersion,
         string Language,
+        string Theme,
         string WidgetVariant,
         bool WidgetEnabled,
         bool WidgetPinned,

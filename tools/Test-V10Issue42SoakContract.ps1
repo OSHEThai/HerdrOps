@@ -1,5 +1,6 @@
 [CmdletBinding()]
 param(
+    [Parameter(Mandatory = $true)][ValidateNotNullOrEmpty()][string]$ExpectedBranch,
     [string]$CandidateArchivePath = '',
     [string]$CandidateArchiveSha256 = '',
     [long]$CandidateArchiveBytes = 0
@@ -10,7 +11,6 @@ $ErrorActionPreference = 'Stop'
 
 $repositoryRoot = [IO.Path]::GetFullPath((Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path)
 $artifactRoot = [IO.Path]::GetFullPath((Join-Path $repositoryRoot 'artifacts'))
-$expectedBranch = 'codex/v10-issue-42-soak-contract'
 $version = 'v1.0.0'
 $issueNumber = '#42'
 $contractRelativePath = 'docs/protocol/v1.0-issue-42-soak-fault-injection-contract.md'
@@ -92,10 +92,10 @@ if ($sourceCommitResult.ExitCode -ne 0 -or $sourceCommit -notmatch '^[0-9a-f]{40
 
 $branchResult = Get-GitOutput -Arguments @('symbolic-ref', '--short', 'HEAD')
 $branch = $branchResult.Text
-if ($branchResult.ExitCode -ne 0 -or $branch -ne $expectedBranch) {
-    Record-Check -Id 'BOUND-02' -Status 'FAIL' -EvidenceClass 'Static' -Detail "expected branch $expectedBranch but observed $branch"
+if ($branchResult.ExitCode -ne 0 -or $branch -cne $ExpectedBranch) {
+    Record-Check -Id 'BOUND-02' -Status 'FAIL' -EvidenceClass 'Static' -Detail "expected branch $ExpectedBranch but observed $branch"
 } else {
-    Record-Check -Id 'BOUND-02' -Status 'PASS' -EvidenceClass 'Static' -Detail "branch is $expectedBranch"
+    Record-Check -Id 'BOUND-02' -Status 'PASS' -EvidenceClass 'Static' -Detail "branch is $ExpectedBranch"
 }
 
 $statusResult = Get-GitOutput -Arguments @('status', '--porcelain=v1', '--untracked-files=all')

@@ -18,6 +18,12 @@ if (args.Length > 0 &&
 }
 
 if (args.Length > 0 &&
+    string.Equals(args[0], DiagnosticBundleCommand.CommandName, StringComparison.Ordinal))
+{
+    return DiagnosticBundleCommand.Run(args, Console.Out, Console.Error);
+}
+
+if (args.Length > 0 &&
     string.Equals(args[0], ComplianceDiagnosticExportCommand.ServiceCommandName, StringComparison.Ordinal))
 {
     using var shutdown = new CancellationTokenSource();
@@ -72,6 +78,16 @@ if (args.Length > 0 &&
         Console.Error);
 }
 
+if (args.Length > 0 &&
+    string.Equals(args[0], ComplianceReviewRegistrationCommand.CommandName, StringComparison.Ordinal))
+{
+    return ComplianceReviewRegistrationCommand.Run(
+        args,
+        Console.In,
+        Console.Out,
+        Console.Error);
+}
+
 if (args.Length > 0 && string.Equals(args[0], "trace-herdr-terminal-process", StringComparison.Ordinal))
 {
     return await HerdrTerminalProcessTraceCommand.RunAsync(args, Console.Out, Console.Error);
@@ -90,6 +106,12 @@ if (args.Length > 0 && string.Equals(args[0], "trace-herdr-file-git-activity", S
 if (args.Length > 0 && string.Equals(args[0], "trace-herdr-notification-runtime", StringComparison.Ordinal))
 {
     return await HerdrNotificationRuntimeTraceCommand.RunAsync(args, Console.Out, Console.Error);
+}
+
+if (args.Length > 0 &&
+    string.Equals(args[0], HerdrRealtimeActivityRuntimeTraceCommand.CommandName, StringComparison.Ordinal))
+{
+    return await HerdrRealtimeActivityRuntimeTraceCommand.RunAsync(args, Console.Out, Console.Error);
 }
 
 if (args.Length > 0 && string.Equals(args[0], "trace-herdr-runtime", StringComparison.Ordinal))

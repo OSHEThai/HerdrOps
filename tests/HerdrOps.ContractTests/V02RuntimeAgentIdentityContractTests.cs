@@ -36,6 +36,8 @@ public sealed class V02RuntimeAgentIdentityContractTests
         StringAssert.Contains(sharedContract, "agentsByPaneId.TryAdd(agent.PaneId, agent)");
         StringAssert.Contains(gate, "Assert-AllAgentsHaveLiveIdentity");
         StringAssert.Contains(gate, "AllAgentsHaveLiveIdentity");
+        StringAssert.Contains(gate, "session list --json");
+        StringAssert.Contains(gate, "Assert-V02AcceptanceSessionTopology");
         StringAssert.Contains(
             gate,
             "Assert-AllAgentsHaveLiveIdentity -Transition $leadingReconciliation");

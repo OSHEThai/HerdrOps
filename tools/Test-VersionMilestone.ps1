@@ -1,6 +1,5 @@
 [CmdletBinding()]
 param(
-    [Parameter(Mandatory)]
     [ValidateSet('v0.1.0', 'v0.2.0', 'v0.3.0', 'v0.4.0', 'v0.5.0', 'v0.6.0', 'v0.7.0', 'v1.0.0')]
     [string]$Version,
 
@@ -14,6 +13,10 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+
+if ([string]::IsNullOrWhiteSpace($Version)) {
+    throw 'The -Version parameter is required; provide it explicitly for noninteractive execution.'
+}
 
 $paginationPolicyPath = Join-Path $PSScriptRoot 'GitHubPaginationPolicy.ps1'
 if (-not (Test-Path -LiteralPath $paginationPolicyPath -PathType Leaf)) {

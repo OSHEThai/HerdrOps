@@ -5,7 +5,7 @@
         <ResourceDictionary>
             <ResourceDictionary.MergedDictionaries>
                 <ResourceDictionary Source="Themes/Tokens.Primitives.xaml" />
-                <ResourceDictionary Source="Themes/Tokens.Semantic.xaml" />
+                <ResourceDictionary Source="Themes/Tokens.Semantic.Dark.xaml" />
                 <ResourceDictionary Source="Themes/Tokens.Components.xaml" />
             </ResourceDictionary.MergedDictionaries>
         </ResourceDictionary>

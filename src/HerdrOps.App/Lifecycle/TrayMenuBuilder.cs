@@ -51,6 +51,18 @@ public sealed class TrayMenuBuilder
                 TrayCommand.SelectEnglishLanguage,
                 text["LanguageEnglish"],
                 text.CurrentLanguage == UiLanguage.English),
+            new(
+                TrayCommand.SelectSystemTheme,
+                text["TrayThemeSystem"],
+                settings.Theme == AppSettingsTheme.System),
+            new(
+                TrayCommand.SelectLightTheme,
+                text["TrayThemeLight"],
+                settings.Theme == AppSettingsTheme.Light),
+            new(
+                TrayCommand.SelectDarkTheme,
+                text["TrayThemeDark"],
+                settings.Theme == AppSettingsTheme.Dark),
         };
 
         if (_startupStatusProvider is not null)

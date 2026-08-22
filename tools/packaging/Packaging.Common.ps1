@@ -73,8 +73,8 @@ function Assert-PackageProfile {
     if ([int]$Profile.schemaVersion -ne 1) {
         throw "Unsupported packaging profile schema: $($Profile.schemaVersion)."
     }
-    if ([int]$Profile.issue -ne 38) {
-        throw "Packaging profile is not bound to Issue #38: $($Profile.issue)."
+    if ([int]$Profile.issue -notin @(38, 45)) {
+        throw "Packaging profile is not bound to an approved packaging issue (38 or 45): $($Profile.issue)."
     }
     if ([string]$Profile.productId -ne 'HerdrOps' -or [string]$Profile.displayName -ne 'HerdrOps') {
         throw 'Packaging profile product identity must be HerdrOps.'
@@ -128,8 +128,8 @@ function Assert-V070PreparationProfile {
     param([Parameter(Mandatory = $true)]$Profile)
 
     Assert-PackageProfile -Profile $Profile
-    if ([string]$Profile.packageVersion -cne '0.7.0') {
-        throw "Packaging preparation profiles are fenced to v0.7.0: $($Profile.packageVersion)."
+    if ([int]$Profile.issue -ne 38 -or [string]$Profile.packageVersion -cne '0.7.0') {
+        throw "Packaging preparation profiles are fenced to Issue #38 and v0.7.0: issue=$($Profile.issue), version=$($Profile.packageVersion)."
     }
 }
 
@@ -363,6 +363,10 @@ function ConvertFrom-StrictPackageJson {
 
     Assert-NoDuplicateJsonObjectProperties -Json $Json -Description $Description
     try {
+        $convertFromJson = Get-Command ConvertFrom-Json -CommandType Cmdlet -ErrorAction Stop
+        if ($convertFromJson.Parameters.ContainsKey('DateKind')) {
+            return ($Json | ConvertFrom-Json -DateKind String)
+        }
         return ($Json | ConvertFrom-Json)
     } catch {
         throw "$Description is not valid JSON: $($_.Exception.Message)"
@@ -2242,54 +2246,61 @@ function Invoke-PackagingMSBuildPropertyEvaluation {
         }
     }
 
-    $propertyRequest = '-getProperty:' + ($propertyNames -join ',')
-    $arguments = @(
-        'msbuild',
-        $ProjectPath,
-        $propertyRequest,
-        '-p:Configuration=Release',
-        ('-p:RuntimeIdentifier=' + [string]$Profile.runtimeIdentifier),
-        '-p:SelfContained=true',
-        '-nologo',
-        '-verbosity:quiet')
-    $quotedArguments = @($arguments | ForEach-Object {
-            '"' + ([string]$_).Replace('"', '\"') + '"'
-        }) -join ' '
-
-    $startInfo = New-Object Diagnostics.ProcessStartInfo
-    $startInfo.FileName = $commandPath
-    $startInfo.Arguments = $quotedArguments
-    $startInfo.WorkingDirectory = Split-Path -Path $ProjectPath -Parent
-    $startInfo.UseShellExecute = $false
-    $startInfo.CreateNoWindow = $true
-    $startInfo.RedirectStandardOutput = $true
-    $startInfo.RedirectStandardError = $true
-    $process = New-Object Diagnostics.Process
-    $process.StartInfo = $startInfo
-    $stdoutTask = $null
-    $stderrTask = $null
+    $evaluationRoot = New-PackagingTempDirectory -Prefix 'HerdrOps-MSBuild-Evaluation-'
     try {
-        if (-not $process.Start()) {
-            throw 'MSBuild property evaluation process could not be started.'
+        $isolatedExtensionsPath = $evaluationRoot.Replace('\', '/') + '/'
+        $propertyRequest = '-getProperty:' + ($propertyNames -join ',')
+        $arguments = @(
+            'msbuild',
+            $ProjectPath,
+            $propertyRequest,
+            '-p:Configuration=Release',
+            ('-p:RuntimeIdentifier=' + [string]$Profile.runtimeIdentifier),
+            '-p:SelfContained=true',
+            ('-p:MSBuildProjectExtensionsPath=' + $isolatedExtensionsPath),
+            '-nologo',
+            '-verbosity:quiet')
+        $quotedArguments = @($arguments | ForEach-Object {
+                '"' + ([string]$_).Replace('"', '\"') + '"'
+            }) -join ' '
+
+        $startInfo = New-Object Diagnostics.ProcessStartInfo
+        $startInfo.FileName = $commandPath
+        $startInfo.Arguments = $quotedArguments
+        $startInfo.WorkingDirectory = Split-Path -Path $ProjectPath -Parent
+        $startInfo.UseShellExecute = $false
+        $startInfo.CreateNoWindow = $true
+        $startInfo.RedirectStandardOutput = $true
+        $startInfo.RedirectStandardError = $true
+        $process = New-Object Diagnostics.Process
+        $process.StartInfo = $startInfo
+        $stdoutTask = $null
+        $stderrTask = $null
+        try {
+            if (-not $process.Start()) {
+                throw 'MSBuild property evaluation process could not be started.'
+            }
+            $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+            $stderrTask = $process.StandardError.ReadToEndAsync()
+            if (-not $process.WaitForExit($TimeoutMilliseconds)) {
+                try { $process.Kill() } catch { }
+                throw "MSBuild property evaluation exceeded the $TimeoutMilliseconds ms timeout."
+            }
+            $process.WaitForExit()
+            $stdout = $stdoutTask.GetAwaiter().GetResult()
+            $stderr = $stderrTask.GetAwaiter().GetResult()
+            if ($process.ExitCode -ne 0) {
+                throw "MSBuild property evaluation failed with exit code $($process.ExitCode): $stderr"
+            }
+            if (-not [string]::IsNullOrWhiteSpace($stderr)) {
+                throw "MSBuild property evaluation wrote unexpected stderr: $stderr"
+            }
+            return (ConvertFrom-StrictMSBuildPropertyJson -Json $stdout -ExpectedPropertyNames $propertyNames)
+        } finally {
+            $process.Dispose()
         }
-        $stdoutTask = $process.StandardOutput.ReadToEndAsync()
-        $stderrTask = $process.StandardError.ReadToEndAsync()
-        if (-not $process.WaitForExit($TimeoutMilliseconds)) {
-            try { $process.Kill() } catch { }
-            throw "MSBuild property evaluation exceeded the $TimeoutMilliseconds ms timeout."
-        }
-        $process.WaitForExit()
-        $stdout = $stdoutTask.GetAwaiter().GetResult()
-        $stderr = $stderrTask.GetAwaiter().GetResult()
-        if ($process.ExitCode -ne 0) {
-            throw "MSBuild property evaluation failed with exit code $($process.ExitCode): $stderr"
-        }
-        if (-not [string]::IsNullOrWhiteSpace($stderr)) {
-            throw "MSBuild property evaluation wrote unexpected stderr: $stderr"
-        }
-        return (ConvertFrom-StrictMSBuildPropertyJson -Json $stdout -ExpectedPropertyNames $propertyNames)
     } finally {
-        $process.Dispose()
+        Remove-PackagingTempDirectory -Path $evaluationRoot
     }
 }
 

@@ -35,6 +35,7 @@ Remove-Item Env:HERDR_SOCKET_PATH -ErrorAction SilentlyContinue
 Remove-Item Env:HERDR_PANE_ID -ErrorAction SilentlyContinue
 $policyPath = Join-Path $PSScriptRoot 'lib\V07PerformanceMeasurementPolicy.ps1'
 $selfTestsPath = Join-Path $PSScriptRoot 'lib\V07MeasurementSelfTests.ps1'
+$soakPolicyPath = Join-Path $PSScriptRoot 'lib\V07SoakProducerPolicy.ps1'
 $budgetPolicyPath = Join-Path $PSScriptRoot 'lib\V07PerformanceBudgetPolicy.ps1'
 
 if (-not (Test-Path -LiteralPath $policyPath -PathType Leaf)) {
@@ -43,7 +44,11 @@ if (-not (Test-Path -LiteralPath $policyPath -PathType Leaf)) {
 if (-not (Test-Path -LiteralPath $selfTestsPath -PathType Leaf)) {
     throw "Required self-test module missing: $selfTestsPath"
 }
+if (-not (Test-Path -LiteralPath $soakPolicyPath -PathType Leaf)) {
+    throw "Required soak policy module missing: $soakPolicyPath"
+}
 . $policyPath
+. $soakPolicyPath
 . $selfTestsPath
 
 $testCount = 0
@@ -98,25 +103,14 @@ if (Test-Path -LiteralPath $budgetPolicyPath -PathType Leaf) {
     $synth = New-V07SynthesizedLiveArtifact -BaseArtifact $baseArtifact -RepositoryRoot $repositoryRoot
     $soak = New-V07SyntheticSoakArtifact -MeasurementArtifact $synth
     $finalization = ConvertTo-V07RuntimeBudgetReport -MeasurementArtifact $synth -SoakArtifact $soak -RepositoryRoot $repositoryRoot -CandidateDirectory $candidateDirectory
-    Assert-Test -Name 'Finalizer admits synthesized live artifact plus matching soak' -Condition ($finalization.CanFinalize -and $null -ne $finalization.BudgetReport) -Message "Blockers: $($finalization.Blockers -join '; ')"
-
-    if ($finalization.CanFinalize -and $null -ne $finalization.BudgetReport) {
-        $budgetJson = $finalization.BudgetReport | ConvertTo-Json -Depth 20
-        $strictOk = $false
-        $strictError = ''
-        try {
-            $null = ConvertFrom-StrictPerformanceBudgetJson -JsonText $budgetJson -SourceDescription 'finalized budget report'
-            $strictOk = $true
-        } catch {
-            $strictOk = $false
-            $strictError = $_.Exception.Message
-        }
-        Assert-Test -Name 'Finalized budget report passes the strict v0.7.0 schema' -Condition $strictOk -Message $strictError
-
-        $parsedReport = ConvertFrom-StrictPerformanceBudgetJson -JsonText $budgetJson -SourceDescription 'finalized budget report'
-        $gateEval = Test-PerformanceBudgetReport -ReportObject $parsedReport -CandidateDirectory $candidateDirectory -RepositoryRoot $repositoryRoot -ExpectedSourceCommit ([string]$synth.Candidate.SourceCommit)
-        Assert-Test -Name 'Finalized budget report passes the existing budget gate (Runtime admission)' -Condition ($gateEval.Passed -and $gateEval.OverallStatus -eq 'PASS') -Message "OverallStatus=$($gateEval.OverallStatus); Failures=$(($gateEval.Checks | Where-Object Status -notin @('PASS','PASS (WAIVED)') | ForEach-Object { "$($_.Id):$($_.Status)" }) -join ',')"
-    }
+    Assert-Test -Name 'Finalizer blocks synthesized soak without external byte validation' -Condition (
+        (-not $finalization.CanFinalize) -and
+        (@($finalization.Blockers | Where-Object { [string]$_ -match 'EvidenceRoot is required' }).Count -gt 0)
+    ) -Message "Blockers: $($finalization.Blockers -join '; ')"
+    $policyText = [IO.File]::ReadAllText($policyPath)
+    Assert-Test -Name 'Finalizer always passes EvidenceRoot and external binding validation' -Condition (
+        $policyText.Contains('-EvidenceRoot $EvidenceRoot') -and $policyText.Contains('-ValidateExternalBindings')
+    )
 } else {
     Assert-Test -Name 'Budget-gate cross-validation available' -Condition $false -Message "Budget policy not found: $budgetPolicyPath"
 }
@@ -154,15 +148,20 @@ Assert-Test -Name 'External admission rejects stale source commit and binary has
 Write-Host "`nSection 4: Soak Artifact Validation"
 $goodSoakJson = Get-V07BoundedUtf8FileText -Path (Join-Path $fixturesDirectory 'soak-evidence-good.json') -Description 'Good soak fixture'
 Assert-V07StrictJsonText -JsonText $goodSoakJson -SourceDescription 'Good soak fixture'
-$goodSoak = $goodSoakJson | ConvertFrom-Json
 $baseArtifact = (Get-V07BoundedUtf8FileText -Path $goodFixturePath -Description 'Good fixture') | ConvertFrom-Json
-$soakCheck = Test-V07SoakArtifact -SoakArtifact $goodSoak -MeasurementArtifact $baseArtifact
-Assert-Test -Name 'Committed good soak fixture validates against the good session' -Condition $soakCheck.Valid -Message "Failures: $($soakCheck.Failures -join '; ')"
+$synthForSoak = New-V07SynthesizedLiveArtifact -BaseArtifact $baseArtifact -RepositoryRoot $repositoryRoot
+$goodSoak = New-V07SyntheticSoakArtifact -MeasurementArtifact $synthForSoak
+$legacySoak = $goodSoakJson | ConvertFrom-Json
+$legacySoakCheck = Test-V07SoakArtifact -SoakArtifact $legacySoak -MeasurementArtifact $baseArtifact
+Assert-Test -Name 'Legacy compact soak fixture fails closed without producer provenance' -Condition (-not $legacySoakCheck.Valid)
+$soakCheck = Test-V07SoakArtifact -SoakArtifact $goodSoak -MeasurementArtifact $synthForSoak -RepositoryRoot $repositoryRoot
+Assert-Test -Name 'Synthetic soak producer provenance validates against the good session' -Condition $soakCheck.Valid -Message "Failures: $($soakCheck.Failures -join '; ')"
 
 $cancelledSoakJson = Get-V07BoundedUtf8FileText -Path (Join-Path $fixturesDirectory 'soak-evidence-cancelled.json') -Description 'Cancelled soak fixture'
 Assert-V07StrictJsonText -JsonText $cancelledSoakJson -SourceDescription 'Cancelled soak fixture'
-$cancelledSoak = $cancelledSoakJson | ConvertFrom-Json
-$cancelledSoakCheck = Test-V07SoakArtifact -SoakArtifact $cancelledSoak -MeasurementArtifact $baseArtifact
+$cancelledSoak = New-V07SyntheticSoakArtifact -MeasurementArtifact $synthForSoak
+$cancelledSoak.Cancelled = $true
+$cancelledSoakCheck = Test-V07SoakArtifact -SoakArtifact $cancelledSoak -MeasurementArtifact $synthForSoak
 Assert-Test -Name 'Cancelled soak artifact is rejected' -Condition (-not $cancelledSoakCheck.Valid) -Message "Failures: $($cancelledSoakCheck.Failures -join '; ')"
 
 # -----------------------------------------------------------------------------

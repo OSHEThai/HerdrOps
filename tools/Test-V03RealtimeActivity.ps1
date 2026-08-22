@@ -45,6 +45,11 @@ $testRuns = @(
         Project = Join-Path $repositoryRoot 'tests\HerdrOps.RuntimeTests\HerdrOps.RuntimeTests.csproj'
         Filter = 'FullyQualifiedName~RealtimeActivityRenderingTests'
         Log = 'realtime-activity-rendering.trx'
+    },
+    [pscustomobject]@{
+        Project = Join-Path $repositoryRoot 'tests\HerdrOps.IntegrationTests\HerdrOps.IntegrationTests.csproj'
+        Filter = 'FullyQualifiedName~HerdrRealtimeActivityRuntimeTraceCommandTests'
+        Log = 'realtime-activity-runtime-trace.trx'
     }
 )
 foreach ($testRun in $testRuns) {
@@ -62,8 +67,8 @@ foreach ($testRun in $testRuns) {
 }
 
 $testResults = @(Get-ChildItem -LiteralPath $testResultDirectory -Filter '*.trx' -File)
-if ($testResults.Count -ne 2) {
-    throw "Expected exactly 2 fresh Realtime Activity TRX files, found $($testResults.Count)."
+if ($testResults.Count -ne 3) {
+    throw "Expected exactly 3 fresh Realtime Activity TRX files, found $($testResults.Count)."
 }
 
 $combinedTestLog = ($testResults | ForEach-Object {
@@ -75,7 +80,18 @@ $requiredChecks = @(
     'PagingIsStableAndNeverExceedsTheDeclaredHistoryBound',
     'LanguageRefreshKeepsFilterIdentityWhileReplacingAllLocalizedPresentation',
     'ProductionStateFailsClosedUntilAnActualActivityStreamIsConnected',
-    'ActualWpfRealtimeActivityRendersLocalizedSynchronizedEvidence'
+    'ActualWpfRealtimeActivityRendersLocalizedSynchronizedEvidence',
+    'MissingReportIsRejectedBeforeRuntimeAdmission',
+    'InvalidDurationIsRejectedDeterministically',
+    'MissingAuthorizedHerdrEnvironmentFailsClosedWithoutWritingReport',
+    'RuntimeAdmissionFailureIsReportedWithoutWritingReport',
+    'TransitionKeyRetentionHasAnExplicitFifoBound',
+    'OnStateChangedRetainsOnlyBoundedEventWindowForAnAdversarialStream',
+    'AcceptedCountIsRetentionWindowedWhenBothDedupeCachesEvict',
+    'TransitionKeyRetentionRemainsBoundedForAnAdversarialUniqueStream',
+    'LatencyRetentionKeepsOnlyFirstAndMaximumForAnAdversarialStream',
+    'LatencyRetentionRejectsNonFiniteAndNegativeValues',
+    'RuntimeTraceRetentionBoundsAreExplicitAndAligned'
 )
 foreach ($check in $requiredChecks) {
     if ($combinedTestLog -notmatch [Regex]::Escape($check)) {
@@ -134,12 +150,17 @@ $sourceCommit = (& git -C $repositoryRoot rev-parse HEAD).Trim()
 if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($sourceCommit)) {
     throw 'Could not resolve the source commit for the v0.3 Realtime Activity gate.'
 }
+$sourceTree = (& git -C $repositoryRoot rev-parse 'HEAD^{tree}').Trim()
+if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($sourceTree)) {
+    throw 'Could not resolve the source tree for the v0.3 Realtime Activity gate.'
+}
 
 $gateReportPath = Join-Path $gateDirectory 'gate-report.txt'
 $gateReport = @(
     'HerdrOps v0.3 Issue #13 Realtime Activity Implementation Gate',
     "GeneratedUtc: $([DateTime]::UtcNow.ToString('O'))",
     "SourceCommit: $sourceCommit",
+    "SourceTree: $sourceTree",
     'Result: IMPLEMENTATION READY / PARTIAL',
     'ImplementationGate: PASS',
     'IssueAcceptance: PENDING',

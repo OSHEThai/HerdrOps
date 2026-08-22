@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "reportKind": "HerdrOps.V07DependencyManifest",
+  "issue": 35,
+  "candidate": {
+    "commit": "replace-with-runtime-lowercase-40-hex-commit",
+    "tree": "replace-with-runtime-lowercase-40-hex-tree",
+    "workingTree": "CLEAN"
+  },
+  "status": "PENDING",
+  "evidenceClass": "Static",
+  "evidenceFiles": [
+    {
+      "path": "issue-35/evidence.json",
+      "sha256": "replace-with-runtime-uppercase-64-hex-hash"
+    }
+  ],
+  "humanAcceptance": {
+    "status": "PENDING",
+    "signer": "PENDING",
+    "role": "PENDING",
+    "signedAtUtc": "PENDING",
+    "signature": "PENDING"
+  }
+}

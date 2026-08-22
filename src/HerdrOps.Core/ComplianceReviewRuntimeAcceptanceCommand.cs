@@ -3,6 +3,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using HerdrOps.Contracts;
+using HerdrOps.Contracts.ReviewIpc;
 using HerdrOps.Contracts.StateIpc;
 using HerdrOps.Domain.Compliance;
 using HerdrOps.Infrastructure.StateIpc;
@@ -114,9 +115,10 @@ public static class ComplianceReviewRuntimeAcceptanceCommand
             reportPath = Path.GetFullPath(reportPath);
             var reviewBytes = ReadBounded(reviewTracePath);
             var runtimeBytes = ReadBounded(herdrRuntimeReportPath);
-            var reviewTrace = Deserialize<ComplianceReviewRuntimeTrace>(
+            var reviewReport = Deserialize<ComplianceReviewRuntimeTraceReport>(
                 reviewBytes,
                 "compliance review trace");
+            var reviewTrace = MapToDomainTrace(reviewReport);
             var herdrRuntime = Deserialize<HerdrCoreRuntimeEvidenceReport>(
                 runtimeBytes,
                 "Herdr runtime report");
@@ -191,6 +193,12 @@ public static class ComplianceReviewRuntimeAcceptanceCommand
                                    item.OccurredUtc >= overlapStartedUtc &&
                                    item.OccurredUtc <= overlapFinishedUtc);
 
+            var acceptedAgentStatusEventObserved =
+                herdrRuntime.EventObserved &&
+                herdrRuntime.Transitions is not null &&
+                HerdrRuntimeEvidence.HasAcceptedAgentStatusEvent(
+                    herdrRuntime.Transitions);
+
             var runtimeAccepted = acceptance.Passed &&
                                   timeCoherent &&
                                   string.Equals(
@@ -198,6 +206,8 @@ public static class ComplianceReviewRuntimeAcceptanceCommand
                                       "BuiltProcessIntegration",
                                       StringComparison.Ordinal) &&
                                   herdrRuntime.RuntimeObserved &&
+                                  acceptedAgentStatusEventObserved &&
+                                  herdrRuntime.ReconnectObserved &&
                                   string.Equals(
                                       herdrRuntime.EvidenceClassification,
                                       EvidenceClass.Runtime.ToString(),
@@ -240,6 +250,68 @@ public static class ComplianceReviewRuntimeAcceptanceCommand
             return RuntimeFailureExitCode;
         }
     }
+
+    private static ComplianceReviewRuntimeTrace MapToDomainTrace(
+        ComplianceReviewRuntimeTraceReport report)
+    {
+        ArgumentNullException.ThrowIfNull(report);
+        if (report.AuditEvents is null || report.Incidents is null)
+        {
+            throw new InvalidDataException(
+                "The compliance review trace has no audit events or incidents.");
+        }
+
+        return new ComplianceReviewRuntimeTrace(
+            report.ContractVersion,
+            report.StartedUtc,
+            report.FinishedUtc,
+            report.EvidenceClassification,
+            report.DurableReviewEnabled,
+            report.AuditEvents.Select(MapAuditEvent).ToArray(),
+            report.Incidents.Select(MapIncident).ToArray(),
+            report.RetentionProtectedObserved,
+            report.RestartConsistencyObserved);
+    }
+
+    private static ComplianceReviewIncident MapIncident(
+        HerdrOpsComplianceReviewIncident incident) =>
+        new(
+            incident.ContractVersion,
+            incident.IncidentId,
+            incident.TaskId,
+            incident.SubjectActorId,
+            incident.RegisteredUtc,
+            incident.InitialEvidenceIdentitySha256s,
+            incident.RegistrationSha256,
+            (ComplianceReviewState)incident.State,
+            incident.Sequence,
+            incident.UpdatedUtc,
+            incident.LastAuditEventId,
+            incident.LastAuditSha256);
+
+    private static ComplianceReviewAuditEvent MapAuditEvent(
+        HerdrOpsComplianceReviewAuditEvent auditEvent) =>
+        new(
+            auditEvent.ContractVersion,
+            auditEvent.AuditEventId,
+            auditEvent.IncidentId,
+            auditEvent.TaskId,
+            auditEvent.SubjectActorId,
+            auditEvent.Sequence,
+            auditEvent.ReviewerActorId,
+            (ComplianceReviewerRole)auditEvent.ReviewerRole,
+            auditEvent.AuthorityProvenanceEventId,
+            auditEvent.AuthorityProvenanceSequence,
+            auditEvent.AuthorityProvenanceSha256,
+            (ComplianceReviewDecisionKind)auditEvent.DecisionKind,
+            (ComplianceReviewState)auditEvent.PreviousState,
+            (ComplianceReviewState)auditEvent.ResultState,
+            auditEvent.Reason,
+            auditEvent.OccurredUtc,
+            auditEvent.EvidenceIdentitySha256s,
+            auditEvent.EvidenceSetSha256,
+            auditEvent.PreviousAuditSha256,
+            auditEvent.AuditSha256);
 
     private static byte[] ReadBounded(string path)
     {
