@@ -319,7 +319,7 @@ function Save-V02FreshTrxEvidence {
             $total += $current.Total; $passed += $current.Passed; $failed += $current.Failed
             $notExecuted += $current.NotExecuted; $skipped += $current.Skipped
             $entries += [pscustomobject][ordered]@{
-                Name=$current.EvidenceFileName;SourceName=$current.Name;Bytes=[int64]$current.Bytes.Length;Sha256=$current.Sha256
+                Name=$current.EvidenceFileName;SourceName=$current.EvidenceFileName;Bytes=[int64]$current.Bytes.Length;Sha256=$current.Sha256
                 LastWriteUtc=$current.LastWriteUtc.ToString('O');TestRunId=$current.TestRunId
                 RunStartedUtc=$current.RunStartedUtc.ToString('O');RunFinishedUtc=$current.RunFinishedUtc.ToString('O')
                 TestAssemblyFileName=$current.TestAssemblyFileName;Total=$current.Total;Passed=$current.Passed
