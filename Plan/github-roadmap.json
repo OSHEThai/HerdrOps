@@ -61,10 +61,12 @@
         "Contract tests pass against the installed Herdr schema.",
         "Actual snapshot, event subscription, disconnect, reconnect, and reconciliation traces pass.",
         "State mappings preserve working, idle, blocked, done, and unknown/offline semantics.",
+        "Disconnect and reconnect restore state matching snapshot.",
         "Atomic package identity and process-wide SoftwareOnly renderer policy validation pass.",
-        "Reference-host runtime matrix (Thai and English) passes on governed Windows 11 build 26220 profile 96D01ED15A536F2DF50B59B43CFDEB3683DCE8667AE2E7BF6A96124182FE13A3.",
+        "Renderer compatibility and visual parity pass on governed Windows 11 build 26220 reference-host profile 96D01ED15A536F2DF50B59B43CFDEB3683DCE8667AE2E7BF6A96124182FE13A3.",
+        "Atomic Thai/English language matrix reports with disjoint capture roots and Narrator accessibility pass.",
         "Display coverage (1920x1080, 1366x768 @ 100/125/150%, mixed-DPI) and Narrator accessibility pass.",
-        "Performance budgets (CPU <=1%, event-to-WPF p95 <=250 ms, UI-stall p95 <=50 ms, regression <=10%) and 120-minute soak (60m AC + 60m battery, working set <=255 MiB, slope <=1 MiB/10 min) pass.",
+        "Performance budgets (CPU <=1%, event-to-WPF p95 <=250 ms, UI-stall p95 <=50 ms max <=100 ms, regression <=10%) and 120-minute soak (60m AC + 60m battery, working set <=255 MiB, slope <=1 MiB/10 min) pass.",
         "Normal operation opens no localhost HTTP listener and requires no Administrator privilege."
       ],
       "issues": [

@@ -170,6 +170,7 @@ public sealed class SolutionTopologyTests
         var roadmap = File.ReadAllText(Path.Combine(repositoryRoot, "Plan", "ROADMAP.md"));
         var releaseGates = File.ReadAllText(Path.Combine(repositoryRoot, "Plan", "RELEASE-GATES.md"));
         var architecture = File.ReadAllText(Path.Combine(repositoryRoot, "Plan", "ARCHITECTURE.md"));
+        var githubRoadmap = File.ReadAllText(Path.Combine(repositoryRoot, "Plan", "github-roadmap.json"));
 
         Assert.IsFalse(
             designContract.Contains("Thai primary labels with English supporting labels", StringComparison.Ordinal),
@@ -179,11 +180,22 @@ public sealed class SolutionTopologyTests
         StringAssert.Contains(architecture, "Status: Approved baseline; v0.2 implementation active");
 
         StringAssert.Contains(releaseGates, "atomic packaged compatibility, reference-host runtime matrix");
+        StringAssert.Contains(releaseGates, "UI-stall p95 <=50 ms and maximum <=100 ms");
         Assert.IsFalse(
             releaseGates.Contains("Until the atomic producer/validator implementation lands", StringComparison.Ordinal),
             "RELEASE-GATES must not retain stale pre-implementation phrasing.");
 
+        StringAssert.Contains(roadmap, "Disconnect/reconnect แล้ว state กลับมาตรงกับ snapshot");
         StringAssert.Contains(roadmap, "Atomic package identity validation");
+        StringAssert.Contains(roadmap, "Renderer compatibility และ visual parity");
+        StringAssert.Contains(roadmap, "Atomic Thai/English language matrix reports");
+        StringAssert.Contains(roadmap, "UI-stall p95 <=50 ms max <=100 ms");
+
+        StringAssert.Contains(githubRoadmap, "Disconnect and reconnect restore state matching snapshot.");
+        StringAssert.Contains(githubRoadmap, "Atomic package identity and process-wide SoftwareOnly renderer policy validation pass.");
+        StringAssert.Contains(githubRoadmap, "Renderer compatibility and visual parity pass");
+        StringAssert.Contains(githubRoadmap, "Atomic Thai/English language matrix reports");
+        StringAssert.Contains(githubRoadmap, "UI-stall p95 <=50 ms max <=100 ms");
     }
 
     private static string FindRepositoryRoot()

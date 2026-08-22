@@ -64,6 +64,7 @@ Versioning: Semantic Versioning; every version has a version-local acceptance ga
 
 - Contract tests และ Runtime test กับ Herdr ที่ติดตั้งจริง (snapshot, event subscription, disconnect, reconnect, reconciliation)
 - สถานะ `working`, `idle`, `blocked`, `done`, `unknown/offline` ถูกแมปอย่างมีหลักฐาน
+- Disconnect/reconnect แล้ว state กลับมาตรงกับ snapshot
 - Atomic package identity validation สำหรับ self-contained `win-x64` ZIP + PowerShell installer และ process-wide `SoftwareOnly` renderer policy
 - Renderer compatibility และ visual parity บน reference-host profile (`96D01ED15A536F2DF50B59B43CFDEB3683DCE8667AE2E7BF6A96124182FE13A3`, Windows 11 build 26220, non-elevated single-user)
 - Atomic Thai/English language matrix reports พร้อม disjoint capture roots และ Narrator accessibility
