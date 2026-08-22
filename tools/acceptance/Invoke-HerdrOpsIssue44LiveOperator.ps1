@@ -958,6 +958,9 @@ if (-not [string]::IsNullOrWhiteSpace($BindingPath)) {
         if ([int]$binding.schemaVersion -ne 1 -or [int]$binding.issue -ne 44 -or [string]$binding.acceptanceVersion -cne 'v1.0.0') {
             throw 'Live binding schema version, issue, or acceptanceVersion is invalid.'
         }
+        if ([string]$binding.machineRole -cne 'clean-windows-test-machine') {
+            throw "Live binding machineRole must be exactly 'clean-windows-test-machine'."
+        }
         $Mode = [string]$binding.mode
         $ExpectedMachineName = [string]$binding.machineName
         $ExpectedMachineFingerprint = [string]$binding.machineFingerprint
@@ -1091,6 +1094,9 @@ try {
     if ($Mode -eq 'Live' -and -not $bindingWasProvided) {
         Add-OperatorPreflightCheck -Name 'live-binding-required' -Status 'FAIL' -Details 'Live mode requires an exact JSON binding with expanded package roots and hash-record sidecars.'
         throw 'Live mode requires -BindingPath; direct unbound Live invocation is not accepted.'
+    }
+    if ($Mode -eq 'Live' -and [string]::IsNullOrWhiteSpace($ReportDestination)) {
+        throw 'Live mode requires a non-empty exact reportPath/ReportDestination for durable evidence.'
     }
 
     # Preflight Check 1: OS Platform
@@ -1265,6 +1271,12 @@ try {
         }
         $installRootFull = Get-AcceptanceFullPath -Path $InstallRoot
         $userDataRootFull = Get-AcceptanceFullPath -Path $UserDataRoot
+        $canonicalInstallRoot = Get-AcceptanceFullPath -Path (Get-DefaultHerdrOpsInstallRoot)
+        $canonicalUserDataRoot = Get-AcceptanceFullPath -Path (Get-DefaultHerdrOpsUserDataRoot)
+        if (-not $installRootFull.Equals($canonicalInstallRoot, [StringComparison]::OrdinalIgnoreCase) -or
+            -not $userDataRootFull.Equals($canonicalUserDataRoot, [StringComparison]::OrdinalIgnoreCase)) {
+            throw "Live mode requires canonical InstallRoot '$canonicalInstallRoot' and UserDataRoot '$canonicalUserDataRoot'."
+        }
     } else {
         if ([string]::IsNullOrWhiteSpace($SimulationRoot)) {
             $SimulationRoot = Join-Path $env:TEMP "HerdrOps.simulation-$($script:RunId)"
@@ -1354,8 +1366,8 @@ try {
     if ([string]$CandidatePackageVersion -cne '1.0.0') {
         throw "Candidate package version must be exactly '1.0.0'; observed '$CandidatePackageVersion'."
     }
-    if ([string]$InitialPackageVersion -cne '0.7.0' -and [string]$InitialPackageVersion -ge [string]$CandidatePackageVersion) {
-        throw "Initial package version ($InitialPackageVersion) must be lower than candidate package version ($CandidatePackageVersion)."
+    if ([string]$InitialPackageVersion -cne '0.7.0') {
+        throw "Initial package version must be exactly '0.7.0'; observed '$InitialPackageVersion'."
     }
 
     # Create operator-owned staging directory

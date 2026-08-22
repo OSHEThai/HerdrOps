@@ -670,7 +670,7 @@ try {
         issue = 44
         acceptanceVersion = 'v1.0.0'
         mode = 'Live'
-        machineRole = 'clean-install-host'
+        machineRole = 'clean-windows-test-machine'
         machineName = $liveMachineName
         machineFingerprint = $liveMachineFingerprint
         sourceCommit = $liveRunHead
@@ -708,8 +708,8 @@ try {
             archiveSha256 = [string]$upgradeArtifact.Expected.ArchiveSha256
             contentSha256 = [string]$upgradeArtifact.Expected.ContentSha256
         }
-        installRoot = (Get-AcceptanceFullPath -Path (Join-Path $simRoot 'Programs\HerdrOps'))
-        userDataRoot = (Get-AcceptanceFullPath -Path (Join-Path $simRoot 'HerdrOps'))
+        installRoot = (Get-AcceptanceFullPath -Path (Get-DefaultHerdrOpsInstallRoot))
+        userDataRoot = (Get-AcceptanceFullPath -Path (Get-DefaultHerdrOpsUserDataRoot))
         reportPath = (Join-Path $reportsDir 'live-injected-runners.json')
         retainedDataRelativePath = 'state\issue-44-harness.marker'
         retainedDataSha256 = $markerExpectedHash
