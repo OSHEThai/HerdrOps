@@ -1,6 +1,6 @@
 # HerdrOps Architecture Baseline
 
-Status: Approved baseline; v0.2 implementation active  
+Status: Approved baseline; v0.2 implementation active
 Target: Windows 11, per-user local application
 
 ## Process model
