@@ -187,6 +187,15 @@ if (@($terminalIds | Where-Object { [string]::IsNullOrWhiteSpace($_) }).Count -n
     throw 'Project Manager, Leader, Worker, and Reviewer terminal IDs must be four distinct non-blank values.'
 }
 
+throw @'
+NO_RUNTIME_CREDIT: the v0.4 lifecycle acceptance harness is disabled until the
+self-report service issues server-derived, run-nonce-bound receipts for actions
+executed by four distinct Herdr pane process trees. The legacy orchestrator wrote
+ActorId and ActorRole into every submission from one process, so its output cannot
+prove Project Manager, Leader, Worker, or Reviewer provenance. See
+docs/design/implementation/v0.4-distributed-role-provenance.md.
+'@
+
 $repositoryRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
 $artifactRoot = Join-Path $repositoryRoot 'artifacts'
 $sourceCommit = Get-CleanSourceCommit -Root $repositoryRoot
