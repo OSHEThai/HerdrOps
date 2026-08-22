@@ -40,6 +40,8 @@ operator before invoking the command):
   -PackageProfilePath <tools/packaging/v0.2/package-identity-profile.json> `
   -ExpectedSourceCommit <40-hex> `
   -ExpectedSourceTree <40-hex> `
+  -RunNonce <lowercase-32-hex> `
+  -EvidenceStartedUtc <trusted-invocation-start-UTC> `
   -RepositoryRoot <clean-worktree> `
   -OutputPath <issue10-runtime-candidate.json>
 ```
@@ -47,8 +49,15 @@ operator before invoking the command):
 The raw performance receipt keeps the existing v0.2 shape (`provenance`,
 `rawSource`, `orders`, `soakBins`, `aggregateStatus`) and must contain exactly
 AB then BA, one warmup and five measured repetitions per order, twenty raw
-latency/stall observations per mode, and 24 five-minute bins. The separate soak
-receipt contains `provenance`, `soakBins`, and `aggregateStatus`.
+latency/stall observations per mode, and 24 five-minute bins. Its governed
+provenance must carry the same invocation `runNonce` and both raw-byte and
+canonical package-receipt hashes. The separate soak receipt carries the same
+nonce and contains `provenance`, `soakBins`, and `aggregateStatus`.
+
+The verifier uses its own trusted UTC clock, accepts evidence only from the
+preceding six hours and rejects a reused nonce with an atomic CreateNew claim.
+Package and evidence handles remain open and their volume, FileId, link-count,
+file-attribute/reparse identity is revalidated immediately before publication.
 
 The governed limits are the approved 255 MiB / 267386880-byte working set,
 1% CPU, 250 ms Widget latency p95, 50 ms UI-stall p95, 100 ms UI-stall maximum,

@@ -13,6 +13,8 @@ param(
     [Parameter(Mandatory = $true)][string]$PackageProfilePath,
     [Parameter(Mandatory = $true)][ValidatePattern('^[0-9a-f]{40}$')][string]$ExpectedSourceCommit,
     [Parameter(Mandatory = $true)][ValidatePattern('^[0-9a-f]{40}$')][string]$ExpectedSourceTree,
+    [Parameter(Mandatory = $true)][ValidatePattern('^[0-9a-f]{32}$')][string]$RunNonce,
+    [Parameter(Mandatory = $true)][DateTimeOffset]$EvidenceStartedUtc,
     [Parameter(Mandatory = $true)][string]$RepositoryRoot,
     [Parameter(Mandatory = $true)][string]$OutputPath
 )
@@ -52,6 +54,8 @@ $result = Invoke-I10Issue10Acceptance `
     -SoakReceiptPath $SoakReceiptPath `
     -ExpectedSourceCommit $ExpectedSourceCommit `
     -ExpectedSourceTree $ExpectedSourceTree `
+    -RunNonce $RunNonce `
+    -EvidenceStartedUtc $EvidenceStartedUtc `
     -PackageBinding $packageBinding `
     -OutputPath $OutputPath
 

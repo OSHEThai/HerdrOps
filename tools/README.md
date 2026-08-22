@@ -54,6 +54,8 @@ powershell -File ./tools/v0.2-renderer-compatibility/Test-V02RendererCompatibili
 # Replace both values with the separately approved final candidate identities.
 $expectedSourceCommit = '<approved-source-commit>'
 $expectedSourceTree = '<approved-source-tree>'
+$evidenceRunNonce = '<lowercase-32-hex-invocation-nonce>'
+$evidenceRunNonce = '<lowercase-32-hex-invocation-nonce>'
 $targetAgentLabSocket = Join-Path $env:APPDATA 'herdr\herdr.sock'
 $packageIdentityPath = '<identity.json>'
 $packageArchivePath = '<HerdrOps-0.2.0-win-x64.zip>'
@@ -72,6 +74,7 @@ $targetAgentSessionReference = '<operator-attested-native-agent-session-referenc
     -TargetHerdrSocketPath $targetAgentLabSocket `
     -ExpectedSourceCommit $expectedSourceCommit `
     -ExpectedSourceTree $expectedSourceTree `
+    -EvidenceRunNonce $evidenceRunNonce `
     -PackageIdentityPath $packageIdentityPath `
     -PackageArchivePath $packageArchivePath `
     -ExtractedPackageRoot $extractedPackageRoot `
