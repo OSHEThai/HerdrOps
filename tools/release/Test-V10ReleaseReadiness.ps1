@@ -929,7 +929,7 @@ try {
         }) | Out-Null
     $offlineFixtureHash = ((Get-FileHash -LiteralPath $offlineFixturePath -Algorithm SHA256).Hash).ToUpperInvariant()
     $issue41Offline = Copy-TestJsonObject -Value $issue41Report.Value
-    $issue41Offline.Query = [ordered]@{
+    $issue41Offline.Query = [pscustomobject][ordered]@{
         Source = 'OfflineFixture'
         FixturePath = $offlineFixturePath
         FixtureSha256 = $offlineFixtureHash
