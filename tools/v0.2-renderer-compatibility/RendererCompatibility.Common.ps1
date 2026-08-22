@@ -230,11 +230,238 @@ function Assert-RendererMatrixCases { param([object[]]$Cases,[string[]]$Expected
 function Get-RendererP95Microseconds { param($Values,[string]$Context)
     $items=@($Values);if($items.Count-ne20){throw "$Context must contain exactly 20 raw observations; missing or extra samples fail closed."};foreach($value in $items){Assert-RendererNonnegativeInteger $value "$Context observation"};$sorted=@($items|Sort-Object {[long]$_});return [long]$sorted[[Math]::Ceiling(0.95*$sorted.Count)-1]
 }
-function Assert-RendererPerformanceReceipt { param($Binding,[string]$Root,[string]$RepositoryRoot,$Limits)
-    $receipt=(Read-RendererEvidenceReceipt $Binding 'Performance/soak evidence receipt' $Root $RepositoryRoot).Value;Assert-RendererExactProperties $receipt @('orders','soakBins','aggregateStatus') 'Performance receipt';$passed=$true;$orders=@($receipt.orders);if($orders.Count-ne2){throw 'Performance receipt must contain exact AB and BA orders.'};for($oi=0;$oi-lt2;$oi++){$order=$orders[$oi];Assert-RendererExactProperties $order @('order','repetitions') "Performance order $oi";$expectedOrder=@('AB','BA')[$oi];if($order.order-cne$expectedOrder){throw "Performance order $oi is not $expectedOrder."};$reps=@($order.repetitions);if($reps.Count-ne5){throw "Performance order $expectedOrder must contain five raw repetitions."};for($ri=0;$ri-lt5;$ri++){$rep=$reps[$ri];Assert-RendererExactProperties $rep @('ordinal','observedUtc','a','b') "Performance $expectedOrder repetition $ri";Assert-RendererNonnegativeInteger $rep.ordinal 'Performance ordinal';if([long]$rep.ordinal-ne$ri){throw 'Performance repetition ordinal is invalid.'};Assert-RendererUtc $rep.observedUtc 'Performance repetition UTC';$derived=@{};foreach($modeName in @('a','b')){$sample=$rep.$modeName;Assert-RendererExactProperties $sample @('cpuBasisPoints','workingSetMaximumBytes','latencyMicroseconds','uiStallMicroseconds') "Performance $modeName sample";Assert-RendererNonnegativeInteger $sample.cpuBasisPoints "Performance $modeName CPU";Assert-RendererNonnegativeInteger $sample.workingSetMaximumBytes "Performance $modeName working set";$latencyP95=Get-RendererP95Microseconds $sample.latencyMicroseconds "Performance $modeName latency";$stallP95=Get-RendererP95Microseconds $sample.uiStallMicroseconds "Performance $modeName UI stall";$stallMaximum=[long](@($sample.uiStallMicroseconds|Sort-Object {[long]$_})[-1]);$derived[$modeName]=[pscustomobject]@{Cpu=[double]$sample.cpuBasisPoints/100;WorkingSet=[long]$sample.workingSetMaximumBytes;LatencyP95=[double]$latencyP95/1000;StallP95=[double]$stallP95/1000;StallMaximum=[double]$stallMaximum/1000}};$a=$derived.a;$b=$derived.b;$cpuDelta=$b.Cpu-$a.Cpu;$cpuPercent=if($a.Cpu-gt0){100*$cpuDelta/$a.Cpu}else{[double]::PositiveInfinity};$latencyPercent=if($a.LatencyP95-gt0){100*($b.LatencyP95-$a.LatencyP95)/$a.LatencyP95}else{[double]::PositiveInfinity};if($b.Cpu-gt[double]$Limits.cpuMaximumPercent-or$cpuDelta-gt[double]$Limits.cpuRegressionMaximumPercentagePoints-or$cpuPercent-gt[double]$Limits.cpuRegressionMaximumPercent-or$b.LatencyP95-gt[double]$Limits.eventToWpfP95Milliseconds-or$latencyPercent-gt[double]$Limits.latencyRegressionMaximumPercent-or$b.StallP95-gt[double]$Limits.uiStallP95Milliseconds-or$b.StallMaximum-gt[double]$Limits.uiStallMaximumMilliseconds-or$b.WorkingSet-gt[long]$Limits.workingSetMaximumBytes){$passed=$false}}}
-    $bins=@($receipt.soakBins);if($bins.Count-ne24){throw 'Performance receipt must contain exact 24 five-minute soak bins.'};for($i=0;$i-lt24;$i++){$bin=$bins[$i];Assert-RendererExactProperties $bin @('powerSource','ordinal','durationMinutes','observedUtc','workingSetStartBytes','workingSetEndBytes','rendererStable') "Soak bin $i";$expectedPower=if($i-lt12){'AC'}else{'Battery'};$expectedOrdinal=$i%12;if($bin.powerSource-cne$expectedPower){throw "Soak bin $i power source is invalid."};Assert-RendererNonnegativeInteger $bin.ordinal 'Soak ordinal';Assert-RendererPositiveInteger $bin.durationMinutes 'Soak duration';Assert-RendererNonnegativeInteger $bin.workingSetStartBytes 'Soak start working set';Assert-RendererNonnegativeInteger $bin.workingSetEndBytes 'Soak end working set';Assert-RendererBoolean $bin.rendererStable 'Soak renderer stability';Assert-RendererUtc $bin.observedUtc 'Soak observed UTC';if([long]$bin.ordinal-ne$expectedOrdinal-or[long]$bin.durationMinutes-ne5-or-not[bool]$bin.rendererStable){$passed=$false};$slope=[Math]::Abs([double]$bin.workingSetEndBytes-[double]$bin.workingSetStartBytes)*2;if([long]$bin.workingSetStartBytes-gt[long]$Limits.workingSetMaximumBytes-or[long]$bin.workingSetEndBytes-gt[long]$Limits.workingSetMaximumBytes-or$slope-gt[double]$Limits.resourceSlopeMaximumBytesPerTenMinutes){$passed=$false}}
-    $computed=if($passed){'PASS'}else{'FAIL'};if($receipt.aggregateStatus-cne$computed){throw 'Performance receipt aggregateStatus is not recomputed from raw AB/BA samples and soak bins.'};return $computed
+function Assert-RendererPerformanceJsonBinding {
+    param($Value,[string]$Context)
+    Assert-RendererExactProperties $Value @('relativePath','bytes','fileSha256','canonicalSha256') $Context
+    Assert-RendererRelativePath $Value.relativePath "$Context relativePath"
+    Assert-RendererPositiveInteger $Value.bytes "$Context bytes"
+    Assert-RendererSha $Value.fileSha256 "$Context fileSha256"
+    Assert-RendererSha $Value.canonicalSha256 "$Context canonicalSha256"
 }
+
+function Assert-RendererPerformanceProvenance {
+    param($Value,[string]$Context='Performance provenance')
+    Assert-RendererExactProperties $Value @('candidate','package','profile','referenceHost','renderer','session') $Context
+
+    Assert-RendererExactProperties $Value.candidate @('commitSha','treeSha') "$Context candidate"
+    foreach ($name in @('commitSha','treeSha')) {
+        if ($Value.candidate.$name -isnot [string] -or [string]$Value.candidate.$name -cnotmatch '^[0-9a-f]{40}$') {
+            throw "$Context candidate $name must be lowercase 40-hex."
+        }
+    }
+
+    Assert-RendererExactProperties $Value.package @('profileId','receipt','archive','packageRootRelativePath','components') "$Context package"
+    Assert-RendererString $Value.package.profileId "$Context package profileId"
+    if ($Value.package.profileId -cne $script:RendererPackageProfileId) { throw "$Context package profileId does not bind the approved v0.2 issue-149 package profile." }
+    Assert-RendererPerformanceJsonBinding $Value.package.receipt "$Context package receipt"
+    Assert-RendererExactProperties $Value.package.archive @('relativePath','fileName','bytes','sha256') "$Context package archive"
+    Assert-RendererRelativePath $Value.package.archive.relativePath "$Context package archive relativePath"
+    Assert-RendererString $Value.package.archive.fileName "$Context package archive fileName"
+    Assert-RendererPositiveInteger $Value.package.archive.bytes "$Context package archive bytes"
+    Assert-RendererSha $Value.package.archive.sha256 "$Context package archive sha256"
+    Assert-RendererRelativePath $Value.package.packageRootRelativePath "$Context package root"
+    Assert-RendererExactProperties $Value.package.components @('app','core') "$Context package components"
+    foreach ($name in @('app','core')) {
+        Assert-RendererExactProperties $Value.package.components.$name @('relativePath','bytes','sha256') "$Context package component $name"
+        Assert-RendererRelativePath $Value.package.components.$name.relativePath "$Context package component $name relativePath"
+        Assert-RendererPositiveInteger $Value.package.components.$name.bytes "$Context package component $name bytes"
+        Assert-RendererSha $Value.package.components.$name.sha256 "$Context package component $name sha256"
+    }
+
+    Assert-RendererExactProperties $Value.profile @('id','relativePath','bytes','fileSha256','canonicalSha256') "$Context profile"
+    Assert-RendererString $Value.profile.id "$Context profile id"
+    if ($Value.profile.id -cne $script:RendererPackageProfileId) { throw "$Context profile id does not bind the approved v0.2 issue-149 package profile." }
+    Assert-RendererRelativePath $Value.profile.relativePath "$Context profile relativePath"
+    Assert-RendererPositiveInteger $Value.profile.bytes "$Context profile bytes"
+    Assert-RendererSha $Value.profile.fileSha256 "$Context profile fileSha256"
+    Assert-RendererSha $Value.profile.canonicalSha256 "$Context profile canonicalSha256"
+
+    Assert-RendererExactProperties $Value.referenceHost @('profileId','profileSha256') "$Context referenceHost"
+    Assert-RendererString $Value.referenceHost.profileId "$Context referenceHost profileId"
+    Assert-RendererSha $Value.referenceHost.profileSha256 "$Context referenceHost profileSha256"
+    if ($Value.referenceHost.profileId -cne $script:RendererProfileId -or $Value.referenceHost.profileSha256 -cne $script:RendererProfileSha256) { throw "$Context referenceHost does not bind the approved reference host profile." }
+
+    Assert-RendererExactProperties $Value.renderer @('policy','wpfProcessRenderMode','policySha256') "$Context renderer"
+    Assert-RendererString $Value.renderer.policy "$Context renderer policy"
+    Assert-RendererString $Value.renderer.wpfProcessRenderMode "$Context renderer wpfProcessRenderMode"
+    Assert-RendererSha $Value.renderer.policySha256 "$Context renderer policySha256"
+    if ($Value.renderer.policy -cne 'software-only-process-wide' -or $Value.renderer.wpfProcessRenderMode -cne 'SoftwareOnly' -or $Value.renderer.policySha256 -cne $script:RendererPolicySha256) { throw "$Context renderer policy does not bind the approved SoftwareOnly policy." }
+
+    Assert-RendererExactProperties $Value.session @('kind','name','sessionId','transport','powerSource','thermalState','elevated','userScope') "$Context session"
+    foreach ($name in @('kind','name','transport','powerSource','thermalState','userScope')) {
+        Assert-RendererString $Value.session.$name "$Context session $name"
+    }
+    Assert-RendererNonnegativeInteger $Value.session.sessionId "$Context session sessionId"
+    Assert-RendererBoolean $Value.session.elevated "$Context session elevated"
+}
+
+function New-RendererPerformanceProvenance {
+    param([Parameter(Mandatory=$true)]$Candidate,[Parameter(Mandatory=$true)]$Session)
+    [pscustomobject][ordered]@{
+        candidate = [pscustomobject][ordered]@{
+            commitSha = [string]$Candidate.source.commitSha
+            treeSha = [string]$Candidate.source.treeSha
+        }
+        package = [pscustomobject][ordered]@{
+            profileId = [string]$Candidate.profile.id
+            receipt = [pscustomobject][ordered]@{
+                relativePath = [string]$Candidate.receipt.relativePath
+                bytes = [long]$Candidate.receipt.bytes
+                fileSha256 = [string]$Candidate.receipt.fileSha256
+                canonicalSha256 = [string]$Candidate.receipt.canonicalSha256
+            }
+            archive = [pscustomobject][ordered]@{
+                relativePath = [string]$Candidate.archive.relativePath
+                fileName = [string]$Candidate.archive.fileName
+                bytes = [long]$Candidate.archive.bytes
+                sha256 = [string]$Candidate.archive.sha256
+            }
+            packageRootRelativePath = [string]$Candidate.packageRootRelativePath
+            components = [pscustomobject][ordered]@{
+                app = [pscustomobject][ordered]@{
+                    relativePath = [string]$Candidate.components.app.relativePath
+                    bytes = [long]$Candidate.components.app.bytes
+                    sha256 = [string]$Candidate.components.app.sha256
+                }
+                core = [pscustomobject][ordered]@{
+                    relativePath = [string]$Candidate.components.core.relativePath
+                    bytes = [long]$Candidate.components.core.bytes
+                    sha256 = [string]$Candidate.components.core.sha256
+                }
+            }
+        }
+        profile = [pscustomobject][ordered]@{
+            id = [string]$Candidate.profile.id
+            relativePath = [string]$Candidate.profile.relativePath
+            bytes = [long]$Candidate.profile.bytes
+            fileSha256 = [string]$Candidate.profile.fileSha256
+            canonicalSha256 = [string]$Candidate.profile.canonicalSha256
+        }
+        referenceHost = [pscustomobject][ordered]@{
+            profileId = [string]$Candidate.referenceHost.profileId
+            profileSha256 = [string]$Candidate.referenceHost.profileSha256
+        }
+        renderer = [pscustomobject][ordered]@{
+            policy = [string]$Candidate.renderer.policy
+            wpfProcessRenderMode = [string]$Candidate.renderer.wpfProcessRenderMode
+            policySha256 = [string]$script:RendererPolicySha256
+        }
+        session = [pscustomobject][ordered]@{
+            kind = [string]$Session.kind
+            name = [string]$Session.name
+            sessionId = [long]$Session.sessionId
+            transport = [string]$Session.transport
+            powerSource = [string]$Session.powerSource
+            thermalState = [string]$Session.thermalState
+            elevated = [bool]$Session.elevated
+            userScope = [string]$Session.userScope
+        }
+    }
+}
+
+function Assert-RendererPerformanceSampleProperties {
+    param($Sample,[string]$Context)
+    Assert-RendererExactProperties $Sample @('cpuBasisPoints','workingSetMaximumBytes','latencyMicroseconds','uiStallMicroseconds') $Context
+    Assert-RendererNonnegativeInteger $Sample.cpuBasisPoints "$Context cpuBasisPoints"
+    Assert-RendererNonnegativeInteger $Sample.workingSetMaximumBytes "$Context workingSetMaximumBytes"
+    foreach ($name in @('latencyMicroseconds','uiStallMicroseconds')) {
+        $values = @($Sample.$name)
+        if ($values.Count -ne 20) { throw "$Context $name must contain exactly 20 raw observations; found $($values.Count)." }
+        foreach ($value in $values) { Assert-RendererNonnegativeInteger $value "$Context $name observation" }
+    }
+}
+
+function Assert-RendererPerformanceRepetitionProperties {
+    param($Repetition,[int]$ExpectedOrdinal,[string]$Context,[switch]$Warmup)
+    Assert-RendererExactProperties $Repetition @('ordinal','observedUtc','a','b') $Context
+    Assert-RendererNonnegativeInteger $Repetition.ordinal "$Context ordinal"
+    if ([long]$Repetition.ordinal -ne $ExpectedOrdinal) { throw "$Context ordinal must equal $ExpectedOrdinal; found $($Repetition.ordinal)." }
+    Assert-RendererUtc $Repetition.observedUtc "$Context observedUtc"
+    Assert-RendererPerformanceSampleProperties $Repetition.a "$Context mode A sample"
+    Assert-RendererPerformanceSampleProperties $Repetition.b "$Context mode B sample"
+}
+
+function Assert-RendererPerformanceReceipt {
+    param($Binding,[string]$Root,[string]$RepositoryRoot,$Limits,$ExpectedProvenance)
+    if ($null -eq $ExpectedProvenance) { throw 'Performance receipt validation requires expected candidate provenance.' }
+    Assert-RendererPerformanceProvenance $ExpectedProvenance 'Expected performance provenance'
+    $receipt=(Read-RendererEvidenceReceipt $Binding 'Performance/soak evidence receipt' $Root $RepositoryRoot).Value
+    Assert-RendererExactProperties $receipt @('provenance','rawSource','orders','soakBins','aggregateStatus') 'Performance receipt'
+    Assert-RendererPerformanceProvenance $receipt.provenance 'Performance receipt provenance'
+    $expectedProvenanceJson=ConvertTo-RendererCanonicalJson $ExpectedProvenance $RepositoryRoot
+    $actualProvenanceJson=ConvertTo-RendererCanonicalJson $receipt.provenance $RepositoryRoot
+    if ($actualProvenanceJson -cne $expectedProvenanceJson) { throw 'Performance receipt provenance does not equal the exact candidate binding.' }
+
+    Assert-RendererPerformanceJsonBinding $receipt.rawSource 'Performance raw-source binding'
+    if ($receipt.rawSource.relativePath -ceq $Binding.relativePath) { throw 'Performance raw-source binding must not point to the receipt itself.' }
+    $rawSource=(Read-RendererEvidenceReceipt $receipt.rawSource 'Performance raw-source evidence' $Root $RepositoryRoot).Value
+    Assert-RendererExactProperties $rawSource @('orders','soakBins') 'Performance raw-source document'
+    $measurementObject=[pscustomobject][ordered]@{orders=$receipt.orders;soakBins=$receipt.soakBins}
+    if ((ConvertTo-RendererCanonicalJson $rawSource $RepositoryRoot) -cne (ConvertTo-RendererCanonicalJson $measurementObject $RepositoryRoot)) {
+        throw 'Performance receipt raw measurements do not equal the held raw-source document.'
+    }
+
+    $passed=$true
+    $orders=@($receipt.orders)
+    if ($orders.Count -ne 2) { throw 'Performance receipt must contain exact AB and BA orders.' }
+    for ($oi=0; $oi -lt 2; $oi++) {
+        $order=$orders[$oi]
+        Assert-RendererExactProperties $order @('order','warmup','repetitions') "Performance order $oi"
+        $expectedOrder=@('AB','BA')[$oi]
+        if ($order.order -cne $expectedOrder) { throw "Performance order $oi is not $expectedOrder." }
+        $warmups=@($order.warmup)
+        if ($warmups.Count -ne 1) { throw "Performance order $expectedOrder must contain exactly one warmup repetition." }
+        Assert-RendererPerformanceRepetitionProperties $warmups[0] 0 "Performance $expectedOrder warmup" -Warmup
+        $reps=@($order.repetitions)
+        if ($reps.Count -ne 5) { throw "Performance order $expectedOrder must contain five measured raw repetitions." }
+        for ($ri=0; $ri -lt 5; $ri++) {
+            $rep=$reps[$ri]
+            Assert-RendererPerformanceRepetitionProperties $rep $ri "Performance $expectedOrder repetition $ri"
+            $derived=@{}
+            foreach ($modeName in @('a','b')) {
+                $sample=$rep.$modeName
+                $latencyP95=Get-RendererP95Microseconds $sample.latencyMicroseconds "Performance $expectedOrder $modeName latency"
+                $stallP95=Get-RendererP95Microseconds $sample.uiStallMicroseconds "Performance $expectedOrder $modeName UI stall"
+                $stallMaximum=[long](@($sample.uiStallMicroseconds|Sort-Object {[long]$_})[-1])
+                $derived[$modeName]=[pscustomobject]@{
+                    Cpu=[double]$sample.cpuBasisPoints/100
+                    WorkingSet=[long]$sample.workingSetMaximumBytes
+                    LatencyP95=[double]$latencyP95/1000
+                    StallP95=[double]$stallP95/1000
+                    StallMaximum=[double]$stallMaximum/1000
+                }
+                if ($derived[$modeName].Cpu -gt [double]$Limits.cpuMaximumPercent -or $derived[$modeName].WorkingSet -gt [long]$Limits.workingSetMaximumBytes) { $passed=$false }
+            }
+            $a=$derived.a;$b=$derived.b
+            $cpuDelta=$b.Cpu-$a.Cpu
+            $cpuPercent=if($a.Cpu -gt 0){100*$cpuDelta/$a.Cpu}elseif($b.Cpu -eq 0){0}else{[double]::PositiveInfinity}
+            $latencyPercent=if($a.LatencyP95 -gt 0){100*($b.LatencyP95-$a.LatencyP95)/$a.LatencyP95}elseif($b.LatencyP95 -eq 0){0}else{[double]::PositiveInfinity}
+            if ($cpuDelta -gt [double]$Limits.cpuRegressionMaximumPercentagePoints -or $cpuPercent -gt [double]$Limits.cpuRegressionMaximumPercent -or $b.LatencyP95 -gt [double]$Limits.eventToWpfP95Milliseconds -or $latencyPercent -gt [double]$Limits.latencyRegressionMaximumPercent -or $b.StallP95 -gt [double]$Limits.uiStallP95Milliseconds -or $b.StallMaximum -gt [double]$Limits.uiStallMaximumMilliseconds) { $passed=$false }
+        }
+    }
+
+    $bins=@($receipt.soakBins)
+    if ($bins.Count -ne 24) { throw 'Performance receipt must contain exact 24 five-minute soak bins.' }
+    for ($i=0; $i -lt 24; $i++) {
+        $bin=$bins[$i]
+        Assert-RendererExactProperties $bin @('powerSource','ordinal','durationMinutes','observedUtc','workingSetStartBytes','workingSetEndBytes','rendererStable') "Soak bin $i"
+        $expectedPower=if($i -lt 12){'AC'}else{'Battery'}
+        $expectedOrdinal=$i%12
+        if ($bin.powerSource -cne $expectedPower) { throw "Soak bin $i power source is invalid." }
+        Assert-RendererNonnegativeInteger $bin.ordinal "Soak bin $i ordinal"
+        Assert-RendererPositiveInteger $bin.durationMinutes "Soak bin $i durationMinutes"
+        Assert-RendererUtc $bin.observedUtc "Soak bin $i observedUtc"
+        Assert-RendererNonnegativeInteger $bin.workingSetStartBytes "Soak bin $i workingSetStartBytes"
+        Assert-RendererNonnegativeInteger $bin.workingSetEndBytes "Soak bin $i workingSetEndBytes"
+        Assert-RendererBoolean $bin.rendererStable "Soak bin $i rendererStable"
+        $slope=[Math]::Abs([double]$bin.workingSetEndBytes-[double]$bin.workingSetStartBytes)*2
+        if ([long]$bin.ordinal -ne $expectedOrdinal -or [long]$bin.durationMinutes -ne 5 -or -not[bool]$bin.rendererStable -or [long]$bin.workingSetStartBytes -gt [long]$Limits.workingSetMaximumBytes -or [long]$bin.workingSetEndBytes -gt [long]$Limits.workingSetMaximumBytes -or $slope -gt [double]$Limits.resourceSlopeMaximumBytesPerTenMinutes) { $passed=$false }
+    }
+    $computed=if($passed){'PASS'}else{'FAIL'}
+    if ($receipt.aggregateStatus -cne $computed) { throw 'Performance receipt aggregateStatus is not recomputed from raw AB/BA samples and soak bins.' }
+    return $computed
+}
+
 function Get-RendererBgraPixels { param($Frame)
     $converted=New-Object Windows.Media.Imaging.FormatConvertedBitmap($Frame,[Windows.Media.PixelFormats]::Bgra32,$null,0);$stride=$converted.PixelWidth*4;$pixels=New-Object byte[] ($stride*$converted.PixelHeight);$converted.CopyPixels($pixels,$stride,0);[pscustomobject]@{Width=$converted.PixelWidth;Height=$converted.PixelHeight;Pixels=$pixels}
 }
@@ -315,7 +542,7 @@ function Test-RendererCompatibilityManifest {
     $matrixComplete=@($matrices.displayCases+$matrices.mixedDpiTransitions+$matrices.accessibilityCases+$matrices.supportedEnvironmentCases|Where-Object{$_.status-cne'PASS'}).Count-eq0
 
     $performance=$manifest.performanceProtocol;Assert-RendererExactProperties $performance @('sameCandidateContentWorkloadHostSession','onlyRendererPolicyVaries','modeA','modeB','orders','warmupIterations','repetitionsPerOrder','statistic','ownerNumericLimits','samplesStatus','evidenceReceipt') 'Performance protocol';Assert-RendererBoolean $performance.sameCandidateContentWorkloadHostSession 'Performance same binding';Assert-RendererBoolean $performance.onlyRendererPolicyVaries 'Performance only renderer varies';if(-not[bool]$performance.sameCandidateContentWorkloadHostSession-or-not[bool]$performance.onlyRendererPolicyVaries-or$performance.modeA-cne'Hardware'-or$performance.modeB-cne'SoftwareOnly'){throw 'Performance protocol must compare Hardware A with SoftwareOnly B on the same binding.'};Assert-RendererSet @($performance.orders) @('AB','BA') 'Performance order';for($i=0;$i-lt2;$i++){if($performance.orders[$i]-cne@('AB','BA')[$i]){throw 'Performance order must be exact AB, BA.'}};Assert-RendererPositiveInteger $performance.warmupIterations 'Warm-up iterations';Assert-RendererPositiveInteger $performance.repetitionsPerOrder 'Repetitions';Assert-RendererString $performance.statistic 'Performance statistic'
-    $limitNames=@('cpuMaximumPercent','eventToWpfP95Milliseconds','cpuRegressionMaximumPercent','cpuRegressionMaximumPercentagePoints','latencyRegressionMaximumPercent','uiStallP95Milliseconds','uiStallMaximumMilliseconds','soakAcDurationMinutes','soakBatteryDurationMinutes','soakBinMinutes','workingSetMaximumBytes','resourceSlopeMaximumBytesPerTenMinutes');$limits=$performance.ownerNumericLimits;Assert-RendererExactProperties $limits (@('status','approvalReference')+$limitNames) 'Owner numeric limits';if($limits.status-cnotin@('NOT_OBSERVED','APPROVED')){throw 'Owner numeric-limit status is invalid.'};if($limits.status-ceq'NOT_OBSERVED'){foreach($n in @('approvalReference')+$limitNames){if($null-ne$limits.$n){throw 'Unapproved owner numeric limits must remain null.'}}}else{if($limits.approvalReference-cne$script:RendererAuthorizedApprovalReference){throw 'Owner numeric limits do not bind REC-ALL v2.'};$expectedLimits=[ordered]@{cpuMaximumPercent=1;eventToWpfP95Milliseconds=250;cpuRegressionMaximumPercent=10;cpuRegressionMaximumPercentagePoints=0.5;latencyRegressionMaximumPercent=10;uiStallP95Milliseconds=50;uiStallMaximumMilliseconds=100;soakAcDurationMinutes=60;soakBatteryDurationMinutes=60;soakBinMinutes=5;workingSetMaximumBytes=267386880;resourceSlopeMaximumBytesPerTenMinutes=1048576};foreach($n in $limitNames){Assert-RendererFiniteNumber $limits.$n "Owner numeric limit $n" 0 ([double]::MaxValue) -ExclusiveMinimum;if([decimal]$limits.$n-ne[decimal]($expectedLimits[$n])){throw "Owner numeric limit $n does not equal REC-ALL v2."}};foreach($n in @('workingSetMaximumBytes','resourceSlopeMaximumBytesPerTenMinutes')){Assert-RendererPositiveInteger $limits.$n "Owner numeric limit $n"}};if($performance.warmupIterations-ne1-or$performance.repetitionsPerOrder-ne5-or$performance.statistic-cne'p95-and-maximum-missing-sample-fails'){throw 'Performance repetitions/statistic do not equal REC-ALL v2.'};if($performance.samplesStatus-cnotin@('PASS','FAIL','NOT_OBSERVED')){throw 'Performance samples status is invalid.'};if($performance.samplesStatus-ceq'NOT_OBSERVED'){if($null-ne$performance.evidenceReceipt){throw 'Unobserved performance samples cannot claim a receipt.'}}else{if($limits.status-cne'APPROVED'-or-not$ValidateBindings){throw 'Performance samples require approved limits and production binding validation.'};$computedPerformance=Assert-RendererPerformanceReceipt $performance.evidenceReceipt $root $RepositoryRoot $limits;if($performance.samplesStatus-cne$computedPerformance){throw 'Performance samplesStatus does not equal independently recomputed raw evidence.'}}
+    $limitNames=@('cpuMaximumPercent','eventToWpfP95Milliseconds','cpuRegressionMaximumPercent','cpuRegressionMaximumPercentagePoints','latencyRegressionMaximumPercent','uiStallP95Milliseconds','uiStallMaximumMilliseconds','soakAcDurationMinutes','soakBatteryDurationMinutes','soakBinMinutes','workingSetMaximumBytes','resourceSlopeMaximumBytesPerTenMinutes');$limits=$performance.ownerNumericLimits;Assert-RendererExactProperties $limits (@('status','approvalReference')+$limitNames) 'Owner numeric limits';if($limits.status-cnotin@('NOT_OBSERVED','APPROVED')){throw 'Owner numeric-limit status is invalid.'};if($limits.status-ceq'NOT_OBSERVED'){foreach($n in @('approvalReference')+$limitNames){if($null-ne$limits.$n){throw 'Unapproved owner numeric limits must remain null.'}}}else{if($limits.approvalReference-cne$script:RendererAuthorizedApprovalReference){throw 'Owner numeric limits do not bind REC-ALL v2.'};$expectedLimits=[ordered]@{cpuMaximumPercent=1;eventToWpfP95Milliseconds=250;cpuRegressionMaximumPercent=10;cpuRegressionMaximumPercentagePoints=0.5;latencyRegressionMaximumPercent=10;uiStallP95Milliseconds=50;uiStallMaximumMilliseconds=100;soakAcDurationMinutes=60;soakBatteryDurationMinutes=60;soakBinMinutes=5;workingSetMaximumBytes=267386880;resourceSlopeMaximumBytesPerTenMinutes=1048576};foreach($n in $limitNames){Assert-RendererFiniteNumber $limits.$n "Owner numeric limit $n" 0 ([double]::MaxValue) -ExclusiveMinimum;if([decimal]$limits.$n-ne[decimal]($expectedLimits[$n])){throw "Owner numeric limit $n does not equal REC-ALL v2."}};foreach($n in @('workingSetMaximumBytes','resourceSlopeMaximumBytesPerTenMinutes')){Assert-RendererPositiveInteger $limits.$n "Owner numeric limit $n"}};if($performance.warmupIterations-ne1-or$performance.repetitionsPerOrder-ne5-or$performance.statistic-cne'p95-and-maximum-missing-sample-fails'){throw 'Performance repetitions/statistic do not equal REC-ALL v2.'};if($performance.samplesStatus-cnotin@('PASS','FAIL','NOT_OBSERVED')){throw 'Performance samples status is invalid.'};if($performance.samplesStatus-ceq'NOT_OBSERVED'){if($null-ne$performance.evidenceReceipt){throw 'Unobserved performance samples cannot claim a receipt.'}}else{if($limits.status-cne'APPROVED'-or-not$ValidateBindings){throw 'Performance samples require approved limits and production binding validation.'};$expectedPerformanceProvenance=New-RendererPerformanceProvenance $candidate $environment.session;$computedPerformance=Assert-RendererPerformanceReceipt $performance.evidenceReceipt $root $RepositoryRoot $limits $expectedPerformanceProvenance;if($performance.samplesStatus-cne$computedPerformance){throw 'Performance samplesStatus does not equal independently recomputed raw evidence.'}}
 
     $review=$manifest.review;Assert-RendererExactProperties $review @('decision','approvalReference','reviewerIdentity','reviewerRole','reviewedUtc','visualChecks','defects') 'Review';if($review.decision-cnotin@('GO','NO_GO','NOT_OBSERVED')){throw 'Review decision is invalid.'};Assert-RendererMatrixCases @($review.visualChecks) $script:RendererVisualChecks 'Human visual review';$visualReviewComplete=@($review.visualChecks|Where-Object{$_.status-cne'PASS'}).Count-eq0;if($review.decision-ceq'NOT_OBSERVED'){if($null-ne$review.approvalReference-or$null-ne$review.reviewerIdentity-or$null-ne$review.reviewerRole-or$null-ne$review.reviewedUtc-or@($review.visualChecks|Where-Object{$_.status-cne'NOT_OBSERVED'}).Count-ne0){throw 'Unobserved review cannot claim approval/reviewer/time/checks.'}}else{if([string]::IsNullOrWhiteSpace($script:RendererAuthorizedFinalHumanGoReference)-or$review.approvalReference-cne$script:RendererAuthorizedFinalHumanGoReference){throw 'Final Human packaged-compatibility review remains NOT_OBSERVED and is not authorized by REC-ALL.'};if($review.reviewerIdentity-cne$script:RendererAuthorizedReviewerIdentity-or$review.reviewerRole-cne$script:RendererAuthorizedReviewerRole){throw 'Human review identity/role does not equal the hard-pinned REC-ALL authority.'};Assert-RendererUtc $review.reviewedUtc 'Review UTC';if(($review.decision-ceq'GO')-ne$visualReviewComplete){throw 'Human review decision contradicts the exact visual checks.'}};$defectIds=@();$defectsComplete=$true;foreach($defect in @($review.defects)){Assert-RendererExactProperties $defect @('id','severity','summary','status','disposition') 'Defect';$defectIds+=[string]$defect.id;Assert-RendererString $defect.id 'Defect id';if($defect.severity-cnotin@('P0','P1','P2','P3')-or$defect.status-cnotin@('Open','Resolved','Accepted')){throw "Defect '$($defect.id)' enum is invalid."};Assert-RendererString $defect.summary 'Defect summary';Assert-RendererString $defect.disposition 'Defect disposition';if($defect.status-ceq'Open'){$defectsComplete=$false}};if((@($defectIds|Select-Object -Unique)).Count-ne$defectIds.Count){throw 'Defect IDs must be unique.'};if($review.decision-ceq'GO'-and-not$defectsComplete){throw 'Human GO cannot retain an open defect.'}
     $boundary=$manifest.evidenceBoundary;Assert-RendererExactProperties $boundary @('packagedCompatibility','humanReview','actualHerdrRuntime','release','creditGranted') 'Evidence boundary';if($boundary.packagedCompatibility-cne'CANDIDATE'-or$boundary.humanReview-cne$review.decision-or$boundary.actualHerdrRuntime-cne'NOT_OBSERVED'-or$boundary.release-cne'NOT_OBSERVED'-or$boundary.creditGranted-isnot[bool]-or[bool]$boundary.creditGranted){throw 'Evidence boundary inflates or contradicts the candidate classification.'}

@@ -5,8 +5,14 @@ param(
     [Parameter(Mandatory = $true, ValueFromPipeline = $true)]
     $RawObservations,
 
+[Parameter(Mandatory = $true)]
+[string]$DestinationDirectory,
+
     [Parameter(Mandatory = $true)]
-    [string]$DestinationPath,
+    [string]$RawSourcePath,
+
+    [Parameter(Mandatory = $true)]
+    [object]$CandidateProvenance,
 
     [string]$EvidenceRoot,
 
@@ -14,7 +20,8 @@ param(
 
     [object]$OwnerNumericLimits,
 
-    [switch]$AllowThresholdBreach
+    # Fixture-only synchronization point used to inspect the pre-rename state.
+    [string]$TestBeforeAtomicMoveSignalPath
 )
 
 Set-StrictMode -Version Latest
@@ -121,12 +128,56 @@ function Assert-RepetitionProperties {
     param($Repetition, [int]$ExpectedOrdinal, [string]$Context, [switch]$IsWarmup)
     Assert-PerfReceiptExactProperties $Repetition @('ordinal','observedUtc','a','b') $Context
     Assert-RendererNonnegativeInteger $Repetition.ordinal "$Context ordinal"
-    if (-not $IsWarmup -and [long]$Repetition.ordinal -ne $ExpectedOrdinal) {
+    if ([long]$Repetition.ordinal -ne $ExpectedOrdinal) {
         throw "$Context ordinal must equal $ExpectedOrdinal; found $($Repetition.ordinal)."
     }
     Assert-RendererUtc $Repetition.observedUtc "$Context observedUtc"
     Assert-SampleProperties $Repetition.a "$Context mode A sample"
     Assert-SampleProperties $Repetition.b "$Context mode B sample"
+}
+
+function ConvertTo-CanonicalPerformanceRepetition {
+    param([Parameter(Mandatory=$true)]$Repetition)
+    [pscustomobject][ordered]@{
+        ordinal = [int]$Repetition.ordinal
+        observedUtc = [string]$Repetition.observedUtc
+        a = [pscustomobject][ordered]@{
+            cpuBasisPoints = [long]$Repetition.a.cpuBasisPoints
+            workingSetMaximumBytes = [long]$Repetition.a.workingSetMaximumBytes
+            latencyMicroseconds = @($Repetition.a.latencyMicroseconds | ForEach-Object { [long]$_ })
+            uiStallMicroseconds = @($Repetition.a.uiStallMicroseconds | ForEach-Object { [long]$_ })
+        }
+        b = [pscustomobject][ordered]@{
+            cpuBasisPoints = [long]$Repetition.b.cpuBasisPoints
+            workingSetMaximumBytes = [long]$Repetition.b.workingSetMaximumBytes
+            latencyMicroseconds = @($Repetition.b.latencyMicroseconds | ForEach-Object { [long]$_ })
+            uiStallMicroseconds = @($Repetition.b.uiStallMicroseconds | ForEach-Object { [long]$_ })
+        }
+    }
+}
+
+function Read-CanonicalRawSource {
+    param([Parameter(Mandatory=$true)][string]$Path,[Parameter(Mandatory=$true)][string]$Root,[Parameter(Mandatory=$true)][string]$RepositoryRoot)
+    $identity = Get-RendererStableFileIdentity $Root $Path 'Raw performance observations source' -IncludeBytes
+    $json = (New-Object Text.UTF8Encoding($false, $true)).GetString($identity.Content)
+    $value = ConvertFrom-StrictHumanDesignReviewJson -Json $json -Description 'Raw performance observations source'
+    if ($PSVersionTable.PSVersion.Major -ge 7 -and (Get-Command ConvertFrom-Json).Parameters.ContainsKey('DateKind')) {
+        $value = $json | ConvertFrom-Json -DateKind String
+    }
+    $canonical = ConvertTo-RendererCanonicalJson $value $RepositoryRoot
+    if ($json -cne ($canonical + "`n")) {
+        throw 'Raw performance observations source must be exact canonical JSON plus one LF.'
+    }
+    [pscustomobject][ordered]@{
+        Value = $value
+        Binding = [pscustomobject][ordered]@{
+            relativePath = $null
+            bytes = [long]$identity.Bytes
+            fileSha256 = [string]$identity.Sha256
+            canonicalSha256 = [string](Get-HumanDesignReviewSha256ForText $canonical)
+        }
+        CanonicalJson = $canonical
+    }
 }
 
 # Resolve repository root
@@ -163,32 +214,62 @@ if ($null -eq $rawObj -or $rawObj -isnot [psobject]) {
     throw 'Raw performance observations must be a non-null JSON object.'
 }
 
-# Validate Destination Path and Evidence Root
+# Validate destination directory and evidence root
 if ([string]::IsNullOrWhiteSpace($EvidenceRoot)) {
-    if ([IO.Path]::IsPathRooted($DestinationPath)) {
-        $EvidenceRoot = Split-Path -Parent ([IO.Path]::GetFullPath($DestinationPath))
+    if ([IO.Path]::IsPathRooted($DestinationDirectory)) {
+        $EvidenceRoot = Split-Path -Parent ([IO.Path]::GetFullPath($DestinationDirectory))
     } else {
         $EvidenceRoot = $RepositoryRoot
     }
 }
 $EvidenceRoot = [IO.Path]::GetFullPath($EvidenceRoot).TrimEnd('\','/')
 
-$fullDestination = if ([IO.Path]::IsPathRooted($DestinationPath)) {
-    [IO.Path]::GetFullPath($DestinationPath)
+$fullDestinationDirectory = if ([IO.Path]::IsPathRooted($DestinationDirectory)) {
+    [IO.Path]::GetFullPath($DestinationDirectory)
 } else {
-    [IO.Path]::GetFullPath((Join-Path $EvidenceRoot $DestinationPath))
+    [IO.Path]::GetFullPath((Join-Path $EvidenceRoot $DestinationDirectory))
 }
 
-Assert-RendererNonReparsePath -Root $EvidenceRoot -Path $fullDestination -Context 'Performance evidence receipt destination'
-if ($fullDestination -cne $EvidenceRoot -and -not $fullDestination.StartsWith($EvidenceRoot + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
-    throw "Performance evidence receipt destination '$fullDestination' escaped the evidence root '$EvidenceRoot'."
+Assert-RendererNonReparsePath -Root $EvidenceRoot -Path $fullDestinationDirectory -Context 'Performance evidence receipt destination directory'
+if ($fullDestinationDirectory -cne $EvidenceRoot -and -not $fullDestinationDirectory.StartsWith($EvidenceRoot + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
+    throw "Performance evidence receipt destination directory '$fullDestinationDirectory' escaped the evidence root '$EvidenceRoot'."
+}
+if (Test-Path -LiteralPath $fullDestinationDirectory) {
+    throw "Performance evidence receipt destination directory already exists; refusing to clobber '$fullDestinationDirectory'."
 }
 
-$relativePath = $fullDestination.Substring($EvidenceRoot.Length).TrimStart('\','/').Replace('\','/')
+$destinationDirectoryRelative = $fullDestinationDirectory.Substring($EvidenceRoot.Length).TrimStart('\','/').Replace('\','/')
+Assert-RendererRelativePath $destinationDirectoryRelative 'Performance evidence receipt destination directory relativePath'
+$receiptFileName = 'performance-receipt.json'
+$relativePath = ($destinationDirectoryRelative.TrimEnd('/') + '/' + $receiptFileName).TrimStart('/')
 Assert-RendererRelativePath $relativePath 'Performance evidence receipt relativePath'
+
+# The raw source is a separate, canonical, held evidence file. The supplied
+# object is compared to it so pipeline/object callers cannot silently diverge.
+$fullRawSource = if ([IO.Path]::IsPathRooted($RawSourcePath)) {
+    [IO.Path]::GetFullPath($RawSourcePath)
+} else {
+    [IO.Path]::GetFullPath((Join-Path $EvidenceRoot $RawSourcePath))
+}
+Assert-RendererNonReparsePath -Root $EvidenceRoot -Path $fullRawSource -Context 'Raw performance observations source'
+if ($fullRawSource -cne $EvidenceRoot -and -not $fullRawSource.StartsWith($EvidenceRoot + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
+    throw "Raw performance observations source '$fullRawSource' escaped the evidence root '$EvidenceRoot'."
+}
+$rawSourceRelative = $fullRawSource.Substring($EvidenceRoot.Length).TrimStart('\','/').Replace('\','/')
+Assert-RendererRelativePath $rawSourceRelative 'Raw performance observations source relativePath'
+$rawSourceRead = Read-CanonicalRawSource -Path $fullRawSource -Root $EvidenceRoot -RepositoryRoot $RepositoryRoot
+Assert-PerfReceiptExactProperties $rawSourceRead.Value @('orders','soakBins') 'Raw performance observations source'
+$providedRawCanonical = ConvertTo-RendererCanonicalJson $rawObj $RepositoryRoot
+if ($providedRawCanonical -cne $rawSourceRead.CanonicalJson) {
+    throw 'RawObservations does not exactly match the held raw-source provenance file.'
+}
+$rawObj = $rawSourceRead.Value
+$rawSourceRead.Binding.relativePath = $rawSourceRelative
 
 # Validate top-level properties of raw observations
 Assert-PerfReceiptExactProperties $rawObj @('orders','soakBins') 'Raw performance observations'
+
+Assert-RendererPerformanceProvenance $CandidateProvenance 'Candidate performance provenance'
 
 $limits = Get-ApprovedLimits $OwnerNumericLimits
 
@@ -207,43 +288,18 @@ for ($oi = 0; $oi -lt 2; $oi++) {
     $orderItem = $rawOrders[$oi]
     $expectedOrder = $expectedOrders[$oi]
 
-    $orderProps = @($orderItem.PSObject.Properties | ForEach-Object { $_.Name })
-    if (-not ($orderProps -ccontains 'order') -or -not ($orderProps -ccontains 'repetitions')) {
-        throw "Order $oi missing 'order' or 'repetitions' property."
-    }
+    Assert-PerfReceiptExactProperties $orderItem @('order','warmup','repetitions') "Order $oi"
 
     if ([string]$orderItem.order -cne $expectedOrder) {
         throw "Order $oi must be '$expectedOrder'; found '$($orderItem.order)'."
     }
 
-    $warmupFound = $null
-    $measuredReps = $null
-    if ($orderProps -ccontains 'warmup' -and $null -ne $orderItem.warmup) {
-        $wArray = @($orderItem.warmup)
-        if ($wArray.Count -ne 1) {
-            throw "Order $expectedOrder warmup must contain exactly 1 warmup repetition; found $($wArray.Count)."
-        }
-        $warmupFound = $wArray[0]
-        $measuredReps = @($orderItem.repetitions)
-    } elseif ($orderProps -ccontains 'warmupRepetition' -and $null -ne $orderItem.warmupRepetition) {
-        $warmupFound = $orderItem.warmupRepetition
-        $measuredReps = @($orderItem.repetitions)
-    } elseif ($orderProps -ccontains 'warmupRepetitions' -and $null -ne $orderItem.warmupRepetitions) {
-        $wArray = @($orderItem.warmupRepetitions)
-        if ($wArray.Count -ne 1) {
-            throw "Order $expectedOrder warmupRepetitions must contain exactly 1 warmup repetition; found $($wArray.Count)."
-        }
-        $warmupFound = $wArray[0]
-        $measuredReps = @($orderItem.repetitions)
-    } else {
-        $allReps = @($orderItem.repetitions)
-        if ($allReps.Count -eq 6) {
-            $warmupFound = $allReps[0]
-            $measuredReps = @($allReps | Select-Object -Skip 1)
-        } else {
-            throw "Order $expectedOrder must supply exactly 1 warmup repetition before the 5 measured repetitions."
-        }
+    $wArray = @($orderItem.warmup)
+    if ($wArray.Count -ne 1) {
+        throw "Order $expectedOrder warmup must contain exactly 1 warmup repetition; found $($wArray.Count)."
     }
+    $warmupFound = $wArray[0]
+    $measuredReps = @($orderItem.repetitions)
 
     if ($null -eq $warmupFound) {
         throw "Order $expectedOrder is missing required 1 warmup repetition."
@@ -283,9 +339,11 @@ for ($oi = 0; $oi -lt 2; $oi++) {
         $cpuPercent = if ($a.Cpu -gt 0) { 100 * $cpuDelta / $a.Cpu } else { [double]::PositiveInfinity }
         $latencyPercent = if ($a.LatencyP95 -gt 0) { 100 * ($b.LatencyP95 - $a.LatencyP95) / $a.LatencyP95 } else { [double]::PositiveInfinity }
 
-        if ($b.Cpu -gt [double]$limits.cpuMaximumPercent) {
-            $passed = $false
-            $breaches += "Order $expectedOrder rep $ri mode B CPU ($($b.Cpu)%) > maximum ($($limits.cpuMaximumPercent)%)"
+        foreach ($modeName in @('a','b')) {
+            if ($derived[$modeName].Cpu -gt [double]$limits.cpuMaximumPercent) {
+                $passed = $false
+                $breaches += "Order $expectedOrder rep $ri mode $($modeName.ToUpperInvariant()) CPU ($($derived[$modeName].Cpu)%) > maximum ($($limits.cpuMaximumPercent)%)"
+            }
         }
         if ($cpuDelta -gt [double]$limits.cpuRegressionMaximumPercentagePoints) {
             $passed = $false
@@ -320,26 +378,12 @@ for ($oi = 0; $oi -lt 2; $oi++) {
             $breaches += "Order $expectedOrder rep $ri mode A Working Set ($($a.WorkingSet) bytes) > maximum ($($limits.workingSetMaximumBytes) bytes)"
         }
 
-        $canonicalReps += [pscustomobject][ordered]@{
-            ordinal = [int]$ri
-            observedUtc = [string]$rep.observedUtc
-            a = [pscustomobject][ordered]@{
-                cpuBasisPoints = [long]$rep.a.cpuBasisPoints
-                workingSetMaximumBytes = [long]$rep.a.workingSetMaximumBytes
-                latencyMicroseconds = @($rep.a.latencyMicroseconds | ForEach-Object { [long]$_ })
-                uiStallMicroseconds = @($rep.a.uiStallMicroseconds | ForEach-Object { [long]$_ })
-            }
-            b = [pscustomobject][ordered]@{
-                cpuBasisPoints = [long]$rep.b.cpuBasisPoints
-                workingSetMaximumBytes = [long]$rep.b.workingSetMaximumBytes
-                latencyMicroseconds = @($rep.b.latencyMicroseconds | ForEach-Object { [long]$_ })
-                uiStallMicroseconds = @($rep.b.uiStallMicroseconds | ForEach-Object { [long]$_ })
-            }
-        }
+        $canonicalReps += ConvertTo-CanonicalPerformanceRepetition $rep
     }
 
     $canonicalOrders += [pscustomobject][ordered]@{
         order = $expectedOrder
+        warmup = @(ConvertTo-CanonicalPerformanceRepetition $warmupFound)
         repetitions = $canonicalReps
     }
 }
@@ -404,15 +448,13 @@ for ($bi = 0; $bi -lt 24; $bi++) {
 }
 
 if (-not $passed) {
-    if (-not $AllowThresholdBreach) {
-        throw "Performance threshold breached: $($breaches -join '; ')"
-    }
-    $aggregateStatus = 'FAIL'
-} else {
-    $aggregateStatus = 'PASS'
+    throw "Performance threshold breached: $($breaches -join '; ')"
 }
+$aggregateStatus = 'PASS'
 
 $receiptObject = [pscustomobject][ordered]@{
+    provenance = $CandidateProvenance
+    rawSource = $rawSourceRead.Binding
     orders = $canonicalOrders
     soakBins = $canonicalBins
     aggregateStatus = $aggregateStatus
@@ -421,12 +463,14 @@ $receiptObject = [pscustomobject][ordered]@{
 $canonicalJson = ConvertTo-RendererCanonicalJson $receiptObject $RepositoryRoot
 $canonicalSha = Get-HumanDesignReviewSha256ForText $canonicalJson
 
-$destinationDir = Split-Path -Parent $fullDestination
-if (-not (Test-Path -LiteralPath $destinationDir -PathType Container)) {
-    New-Item -ItemType Directory -Path $destinationDir -Force | Out-Null
+$destinationParent = Split-Path -Parent $fullDestinationDirectory
+if (-not (Test-Path -LiteralPath $destinationParent -PathType Container)) {
+    New-Item -ItemType Directory -Path $destinationParent -Force | Out-Null
 }
 
-$stagingPath = Join-Path $destinationDir ('.performance-receipt-staging-' + [Guid]::NewGuid().ToString('N') + '.json')
+$stagingDirectory = Join-Path $destinationParent ('.performance-receipt-stage-' + [Guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Path $stagingDirectory | Out-Null
+$stagingPath = Join-Path $stagingDirectory $receiptFileName
 $fileBytes = (New-Object Text.UTF8Encoding($false, $true)).GetBytes($canonicalJson + "`n")
 
 $stream = [IO.File]::Open($stagingPath, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
@@ -437,14 +481,42 @@ try {
     $stream.Dispose()
 }
 
-if (Test-Path -LiteralPath $fullDestination) {
-    [IO.File]::Delete($fullDestination)
+Assert-RendererNonReparsePath -Root $EvidenceRoot -Path $stagingPath -Context 'Staged performance evidence receipt'
+$stagedIdentity = Get-RendererStableFileIdentity $EvidenceRoot $stagingPath 'Staged performance evidence receipt' -IncludeBytes
+if ($stagedIdentity.Bytes -ne [long]$fileBytes.Length -or $stagedIdentity.Sha256 -ne (Get-HumanDesignReviewSha256ForBytes $fileBytes)) {
+    throw 'Staged performance evidence receipt does not equal the intended canonical bytes.'
 }
-[IO.File]::Move($stagingPath, $fullDestination)
+
+if (-not [string]::IsNullOrWhiteSpace($TestBeforeAtomicMoveSignalPath)) {
+    if (Test-Path -LiteralPath $TestBeforeAtomicMoveSignalPath) {
+        throw 'Test synchronization signal path already exists.'
+    }
+    New-Item -ItemType File -Path $TestBeforeAtomicMoveSignalPath | Out-Null
+    while (Test-Path -LiteralPath $TestBeforeAtomicMoveSignalPath) {
+        Start-Sleep -Milliseconds 10
+    }
+}
+
+# A directory rename on one volume is atomic and refuses an existing target.
+# The final destination is therefore either absent or a complete receipt
+# directory; no delete-then-move replacement is permitted.
+if (Test-Path -LiteralPath $fullDestinationDirectory) {
+    throw "Performance evidence receipt destination directory appeared during publish; refusing to clobber '$fullDestinationDirectory'."
+}
+[IO.Directory]::Move($stagingDirectory, $fullDestinationDirectory)
+$fullDestination = Join-Path $fullDestinationDirectory $receiptFileName
 
 $stableIdentity = Get-RendererStableFileIdentity $EvidenceRoot $fullDestination 'Performance evidence receipt' -IncludeBytes
-if ($stableIdentity.Sha256 -ne (Get-FileHash -LiteralPath $fullDestination -Algorithm SHA256).Hash) {
-    throw 'Performance evidence receipt file hash changed during stable verification.'
+if ($stableIdentity.Bytes -ne [long]$fileBytes.Length -or $stableIdentity.Sha256 -ne $stagedIdentity.Sha256) {
+    throw 'Performance evidence receipt file identity changed during atomic publish.'
+}
+if ($stableIdentity.Content.Length -ne $fileBytes.Length) {
+    throw 'Performance evidence receipt byte count changed during atomic publish.'
+}
+for ($i = 0; $i -lt $fileBytes.Length; $i++) {
+    if ($stableIdentity.Content[$i] -ne $fileBytes[$i]) {
+        throw 'Performance evidence receipt bytes changed during atomic publish.'
+    }
 }
 
 [pscustomobject][ordered]@{

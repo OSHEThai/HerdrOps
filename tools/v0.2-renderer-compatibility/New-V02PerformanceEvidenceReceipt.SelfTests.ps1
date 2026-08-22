@@ -10,6 +10,7 @@ $ErrorActionPreference = 'Stop'
 
 $script:PositiveCases = 0
 $script:NegativeCases = 0
+$script:DestinationIndex = 0
 
 function Pass([string]$Name) {
     $script:PositiveCases++
@@ -30,14 +31,6 @@ function Copy-TestValue($Value) {
     }
 }
 
-function Write-TestJsonFile($Value, [string]$Path) {
-    $parent = Split-Path -Parent $Path
-    if (-not (Test-Path -LiteralPath $parent -PathType Container)) {
-        New-Item -ItemType Directory -Path $parent -Force | Out-Null
-    }
-    [IO.File]::WriteAllText($Path, ($Value | ConvertTo-Json -Depth 80), (New-Object Text.UTF8Encoding($false)))
-}
-
 function New-SampleObject([long]$CpuBasisPoints = 50, [long]$WorkingSetBytes = 104857600, [long]$LatencyUs = 100000, [long]$StallUs = 10000) {
     [pscustomobject][ordered]@{
         cpuBasisPoints = $CpuBasisPoints
@@ -47,7 +40,7 @@ function New-SampleObject([long]$CpuBasisPoints = 50, [long]$WorkingSetBytes = 1
     }
 }
 
-function New-RepetitionObject([int]$Ordinal, [string]$Timestamp, $SampleA, $SampleB) {
+function New-RepetitionObject([int]$Ordinal, [string]$Timestamp, $SampleA = $null, $SampleB = $null) {
     if ($null -eq $SampleA) { $SampleA = New-SampleObject }
     if ($null -eq $SampleB) { $SampleB = New-SampleObject }
     [pscustomobject][ordered]@{
@@ -58,20 +51,19 @@ function New-RepetitionObject([int]$Ordinal, [string]$Timestamp, $SampleA, $Samp
     }
 }
 
-function New-ValidRawObservations() {
+function New-ValidRawObservations {
     $orders = @()
     foreach ($orderName in @('AB', 'BA')) {
-        $warmupRep = New-RepetitionObject 0 "2026-08-22T12:00:00.0000000+00:00"
-        $reps = @()
+        $warmup = New-RepetitionObject 0 '2026-08-22T12:00:00.0000000Z'
+        $repetitions = @()
         for ($i = 0; $i -lt 5; $i++) {
             $offset = if ($orderName -ceq 'BA') { 10 } else { 0 }
-            $ts = ('2026-08-22T12:01:{0:00}.0000000+00:00' -f ($i + $offset))
-            $reps += New-RepetitionObject $i $ts
+            $repetitions += New-RepetitionObject $i (('2026-08-22T12:01:{0:00}.0000000Z' -f ($i + $offset)))
         }
         $orders += [pscustomobject][ordered]@{
             order = $orderName
-            warmup = @($warmupRep)
-            repetitions = $reps
+            warmup = @($warmup)
+            repetitions = $repetitions
         }
     }
 
@@ -79,12 +71,11 @@ function New-ValidRawObservations() {
     foreach ($power in @('AC', 'Battery')) {
         for ($i = 0; $i -lt 12; $i++) {
             $offset = if ($power -ceq 'Battery') { 12 } else { 0 }
-            $ts = ('2026-08-22T12:{0:00}:00.0000000+00:00' -f ($i + 1 + $offset))
             $bins += [pscustomobject][ordered]@{
                 powerSource = $power
                 ordinal = $i
                 durationMinutes = 5
-                observedUtc = $ts
+                observedUtc = ('2026-08-22T12:{0:00}:00.0000000Z' -f ($i + 1 + $offset))
                 workingSetStartBytes = 104857600
                 workingSetEndBytes = 104857600
                 rendererStable = $true
@@ -98,55 +89,63 @@ function New-ValidRawObservations() {
     }
 }
 
-function Expect-BuilderFailure([string]$Name, [scriptblock]$Action) {
-    $failed = $false
-    try {
-        & $Action | Out-Null
-    } catch {
-        $failed = $true
+function New-ProvenanceFixture {
+    [pscustomobject][ordered]@{
+        candidate = [pscustomobject][ordered]@{
+            commitSha = ('a' * 40)
+            treeSha = ('b' * 40)
+        }
+        package = [pscustomobject][ordered]@{
+            profileId = $script:RendererPackageProfileId
+            receipt = [pscustomobject][ordered]@{
+                relativePath = 'package/package-identity-receipt.json'
+                bytes = [long]123
+                fileSha256 = ('C' * 64)
+                canonicalSha256 = ('D' * 64)
+            }
+            archive = [pscustomobject][ordered]@{
+                relativePath = 'package/HerdrOps-0.2.0-win-x64.zip'
+                fileName = 'HerdrOps-0.2.0-win-x64.zip'
+                bytes = [long]456
+                sha256 = ('E' * 64)
+            }
+            packageRootRelativePath = 'package'
+            components = [pscustomobject][ordered]@{
+                app = [pscustomobject][ordered]@{ relativePath = 'package/HerdrOps.App.exe'; bytes = [long]10; sha256 = ('F' * 64) }
+                core = [pscustomobject][ordered]@{ relativePath = 'package/HerdrOps.Core.exe'; bytes = [long]11; sha256 = ('1' * 64) }
+            }
+        }
+        profile = [pscustomobject][ordered]@{
+            id = $script:RendererPackageProfileId
+            relativePath = 'tools/packaging/v0.2/package-identity-profile.json'
+            bytes = [long]12
+            fileSha256 = ('2' * 64)
+            canonicalSha256 = ('3' * 64)
+        }
+        referenceHost = [pscustomobject][ordered]@{
+            profileId = $script:RendererProfileId
+            profileSha256 = $script:RendererProfileSha256
+        }
+        renderer = [pscustomobject][ordered]@{
+            policy = 'software-only-process-wide'
+            wpfProcessRenderMode = 'SoftwareOnly'
+            policySha256 = $script:RendererPolicySha256
+        }
+        session = [pscustomobject][ordered]@{
+            kind = 'LocalConsole'
+            name = 'FixtureConsole'
+            sessionId = [long]1
+            transport = 'SyntheticFixture'
+            powerSource = 'AC'
+            thermalState = 'Nominal'
+            elevated = $false
+            userScope = 'SingleUser'
+        }
     }
-    if (-not $failed) {
-        throw "Negative case '$Name' did not fail closed."
-    }
-    Pass-Negative $Name
 }
 
-$tempRoot = Join-Path ([IO.Path]::GetTempPath()) ('herdrops-perf-receipt-test-' + [Guid]::NewGuid().ToString('N'))
-try {
-    New-Item -ItemType Directory -Path $tempRoot -Force | Out-Null
-    $evidenceRoot = Join-Path $tempRoot 'evidence'
-    $repoRoot = Join-Path $tempRoot 'repo'
-    New-Item -ItemType Directory -Path $evidenceRoot, $repoRoot -Force | Out-Null
-
-    # Copy required schema/governance files into mock repo
-    $worktree = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
-    $packageDir = Join-Path $repoRoot 'tools\packaging\v0.2'
-    $libDir = Join-Path $repoRoot 'tools\lib'
-    $planDir = Join-Path $repoRoot 'Plan\reference-hosts'
-    $refDir = Join-Path $repoRoot 'docs\design\reference'
-    New-Item -ItemType Directory -Path $packageDir, $libDir, $planDir, $refDir -Force | Out-Null
-    
-    $sourcePkg = Join-Path $PSScriptRoot '..\packaging\v0.2'
-    Copy-Item (Join-Path $sourcePkg 'package-identity-profile.json') $packageDir
-    Copy-Item (Join-Path $sourcePkg 'package-identity-receipt.schema.json') $packageDir
-    Copy-Item (Join-Path $worktree 'tools\lib\V02ReferenceHostProfile.ps1') $libDir
-    Copy-Item (Join-Path $worktree 'Plan\reference-hosts\v0.2.json') $planDir
-    Copy-Item (Join-Path $worktree 'Plan\reference-hosts\reference-host-profile.schema.json') $planDir
-    Copy-Item (Join-Path $worktree 'docs\design\reference\*.png') $refDir
-
-    $builderScript = Join-Path $PSScriptRoot 'New-V02PerformanceEvidenceReceipt.ps1'
-
-    # 1. Positive: Full valid raw observations object generates canonical receipt
-    $raw1 = New-ValidRawObservations
-    $dest1 = 'performance/receipt.json'
-    $out1 = & $builderScript -RawObservations $raw1 -DestinationPath $dest1 -EvidenceRoot $evidenceRoot -RepositoryRoot $repoRoot
-    if ($out1.AggregateStatus -cne 'PASS' -or $out1.EvidenceClassification -cne 'PackagedCompatibilityCandidate' -or $out1.Bytes -le 0 -or $out1.CanonicalSha256 -cnotmatch '^[0-9A-F]{64}$') {
-        throw 'Positive case 1 returned invalid summary properties.'
-    }
-    Pass 'valid raw observations produce atomic canonical proof receipt'
-
-    # 2. Positive: Output binding verified by Assert-RendererPerformanceReceipt
-    $limits = [ordered]@{
+function New-Limits {
+    [pscustomobject][ordered]@{
         status = 'APPROVED'
         approvalReference = $script:RendererAuthorizedApprovalReference
         cpuMaximumPercent = 1
@@ -162,375 +161,255 @@ try {
         workingSetMaximumBytes = 267386880
         resourceSlopeMaximumBytesPerTenMinutes = 1048576
     }
-    $verified = Assert-RendererPerformanceReceipt $out1.Binding $evidenceRoot $repoRoot $limits
-    if ($verified -cne 'PASS') {
-        throw 'Assert-RendererPerformanceReceipt did not return PASS for positive receipt.'
+}
+
+function Expect-BuilderFailure([string]$Name, [scriptblock]$Action) {
+    $failed = $false
+    try { & $Action | Out-Null } catch { $failed = $true }
+    if (-not $failed) { throw "Negative case '$Name' did not fail closed." }
+    Pass-Negative $Name
+}
+
+function Expect-ReceiptFailure([string]$Name, [scriptblock]$Action) {
+    $failed = $false
+    try { & $Action | Out-Null } catch { $failed = $true }
+    if (-not $failed) { throw "Receipt negative case '$Name' did not fail closed." }
+    Pass-Negative $Name
+}
+
+function Next-Destination([string]$Stem) {
+    $script:DestinationIndex++
+    return "performance/$Stem-$($script:DestinationIndex)"
+}
+
+function Write-RawSource($Value) {
+    $parent = Split-Path -Parent $script:RawSourceFullPath
+    if (-not (Test-Path -LiteralPath $parent -PathType Container)) { New-Item -ItemType Directory -Path $parent -Force | Out-Null }
+    Write-RendererPackageCanonicalJson $Value $script:RawSourceFullPath $script:RepoRoot
+}
+
+function Invoke-Builder($Raw, [string]$Destination, [bool]$WriteSource = $true, $Provenance = $null, $Limits = $null) {
+    if ($WriteSource) { Write-RawSource $Raw }
+    if ($null -eq $Provenance) { $Provenance = $script:Provenance }
+    $parameters = @{
+        RawObservations = $Raw
+        DestinationDirectory = $Destination
+        RawSourcePath = $script:RawSourceRelative
+        CandidateProvenance = $Provenance
+        EvidenceRoot = $script:EvidenceRoot
+        RepositoryRoot = $script:RepoRoot
     }
-    Pass 'assert-renderer-performance-receipt verifies generated receipt binding'
+    if ($null -ne $Limits) { $parameters.OwnerNumericLimits = $Limits }
+    & $script:BuilderScript @parameters
+}
 
-    # 3. Positive: Accepts raw observations via Pipeline
-    $destPipe = 'performance/pipeline-receipt.json'
-    $outPipe = $raw1 | & $builderScript -DestinationPath $destPipe -EvidenceRoot $evidenceRoot -RepositoryRoot $repoRoot
-    if ($outPipe.AggregateStatus -cne 'PASS' -or $outPipe.Bytes -ne $out1.Bytes -or $outPipe.CanonicalSha256 -cne $out1.CanonicalSha256) {
-        throw 'Pipeline input did not produce identical deterministic receipt.'
+function Expect-RawMutationFailure([string]$Name, [scriptblock]$Mutate) {
+    $bad = Copy-TestValue $script:Raw1
+    & $Mutate $bad
+    Expect-BuilderFailure $Name { Invoke-Builder $bad (Next-Destination 'negative') }
+}
+
+function Expect-ThresholdFailure([string]$Name, [scriptblock]$Mutate) {
+    Expect-RawMutationFailure $Name $Mutate
+}
+
+function Wait-AtomicSignal($Job, [string]$SignalPath) {
+    for ($i = 0; $i -lt 240; $i++) {
+        if (Test-Path -LiteralPath $SignalPath -PathType Leaf) { return $true }
+        if ($Job.State -in @('Completed','Failed','Stopped')) { return $false }
+        Start-Sleep -Milliseconds 25
     }
-    Pass 'pipeline raw observations ingestion'
+    return $false
+}
 
-    # 4. Positive: Accepts file path as RawObservations
-    $rawFilePath = Join-Path $evidenceRoot 'raw-input.json'
-    Write-TestJsonFile $raw1 $rawFilePath
-    $destFile = 'performance/file-receipt.json'
-    $outFile = & $builderScript -RawObservations $rawFilePath -DestinationPath $destFile -EvidenceRoot $evidenceRoot -RepositoryRoot $repoRoot
-    if ($outFile.AggregateStatus -cne 'PASS' -or $outFile.CanonicalSha256 -cne $out1.CanonicalSha256) {
-        throw 'File input did not produce identical deterministic receipt.'
+$tempRoot = Join-Path ([IO.Path]::GetTempPath()) ('herdrops-perf-receipt-test-' + [Guid]::NewGuid().ToString('N'))
+$crashJob = $null
+$concurrentJob = $null
+try {
+    New-Item -ItemType Directory -Path $tempRoot -Force | Out-Null
+    $script:EvidenceRoot = Join-Path $tempRoot 'evidence'
+    $script:RepoRoot = Join-Path $tempRoot 'repo'
+    New-Item -ItemType Directory -Path $script:EvidenceRoot, $script:RepoRoot -Force | Out-Null
+
+    $worktree = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
+    $packageDir = Join-Path $script:RepoRoot 'tools\packaging\v0.2'
+    $libDir = Join-Path $script:RepoRoot 'tools\lib'
+    $planDir = Join-Path $script:RepoRoot 'Plan\reference-hosts'
+    $referenceDir = Join-Path $script:RepoRoot 'docs\design\reference'
+    New-Item -ItemType Directory -Path $packageDir, $libDir, $planDir, $referenceDir -Force | Out-Null
+    $sourcePackageDir = Join-Path $PSScriptRoot '..\packaging\v0.2'
+    Copy-Item (Join-Path $sourcePackageDir 'package-identity-profile.json') $packageDir
+    Copy-Item (Join-Path $sourcePackageDir 'package-identity-receipt.schema.json') $packageDir
+    Copy-Item (Join-Path $worktree 'tools\lib\V02ReferenceHostProfile.ps1') $libDir
+    Copy-Item (Join-Path $worktree 'Plan\reference-hosts\v0.2.json') $planDir
+    Copy-Item (Join-Path $worktree 'Plan\reference-hosts\reference-host-profile.schema.json') $planDir
+    Copy-Item (Join-Path $worktree 'docs\design\reference\*.png') $referenceDir
+
+    $script:BuilderScript = Join-Path $PSScriptRoot 'New-V02PerformanceEvidenceReceipt.ps1'
+    $script:RawSourceRelative = 'performance/raw-observations.json'
+    $script:RawSourceFullPath = Join-Path $script:EvidenceRoot $script:RawSourceRelative
+    $script:Raw1 = New-ValidRawObservations
+    $script:Provenance = New-ProvenanceFixture
+    $limits = New-Limits
+
+    # A successful receipt is a directory containing one canonical file. Warmups
+    # and measured observations are both retained in the canonical receipt.
+    $out1 = Invoke-Builder $script:Raw1 'performance/receipt-1'
+    if ($out1.AggregateStatus -cne 'PASS' -or $out1.EvidenceClassification -cne 'PackagedCompatibilityCandidate' -or $out1.Bytes -le 0) {
+        throw 'Valid receipt returned invalid summary properties.'
     }
-    Pass 'file path raw observations ingestion'
-
-    # 5. Positive: Accepts JSON text string as RawObservations
-    $rawJsonStr = $raw1 | ConvertTo-Json -Depth 80
-    $destStr = 'performance/str-receipt.json'
-    $outStr = & $builderScript -RawObservations $rawJsonStr -DestinationPath $destStr -EvidenceRoot $evidenceRoot -RepositoryRoot $repoRoot
-    if ($outStr.AggregateStatus -cne 'PASS' -or $outStr.CanonicalSha256 -cne $out1.CanonicalSha256) {
-        throw 'JSON string input did not produce identical deterministic receipt.'
+    if ($out1.Receipt.orders[0].warmup.Count -ne 1 -or $out1.Receipt.orders[1].warmup.Count -ne 1) {
+        throw 'Canonical receipt did not preserve both warmup repetitions.'
     }
-    Pass 'json string raw observations ingestion'
-
-    # 6. Positive: Warmup variants - warmupRepetition property and 6-repetition array
-    $rawWarmupSingle = Copy-TestValue $raw1
-    $rawWarmupSingle.orders[0].warmup = $null
-    $rawWarmupSingle.orders[0] | Add-Member warmupRepetition (New-RepetitionObject 0 "2026-08-22T12:00:00.0000000+00:00")
-    $outSingle = & $builderScript -RawObservations $rawWarmupSingle -DestinationPath 'performance/warmup-single.json' -EvidenceRoot $evidenceRoot -RepositoryRoot $repoRoot
-    if ($outSingle.AggregateStatus -cne 'PASS') { throw 'warmupRepetition property failed.' }
-    Pass 'warmupRepetition single object support'
-
-    $raw6Reps = Copy-TestValue $raw1
-    $raw6Reps.orders[0].warmup = $null
-    $raw6Reps.orders[0].repetitions = @(New-RepetitionObject 0 "2026-08-22T12:00:00.0000000+00:00") + @($raw6Reps.orders[0].repetitions)
-    $out6Reps = & $builderScript -RawObservations $raw6Reps -DestinationPath 'performance/warmup-6reps.json' -EvidenceRoot $evidenceRoot -RepositoryRoot $repoRoot
-    if ($out6Reps.AggregateStatus -cne 'PASS') { throw '6 repetitions array with index 0 warmup failed.' }
-    Pass '6 repetitions array with index 0 warmup support'
-
-    # 7. Positive: Explicit AllowThresholdBreach emits canonical FAIL receipt
-    $rawBreach = Copy-TestValue $raw1
-    $rawBreach.orders[0].repetitions[0].b.cpuBasisPoints = 150 # 1.5% > 1.0%
-    $destFail = 'performance/breach-fail.json'
-    $outFail = & $builderScript -RawObservations $rawBreach -DestinationPath $destFail -EvidenceRoot $evidenceRoot -RepositoryRoot $repoRoot -AllowThresholdBreach
-    if ($outFail.AggregateStatus -cne 'FAIL') {
-        throw 'AllowThresholdBreach did not produce aggregateStatus FAIL.'
+    if ($out1.Receipt.rawSource.relativePath -cne $script:RawSourceRelative.Replace('\','/')) {
+        throw 'Canonical receipt did not preserve raw-source provenance binding.'
     }
-    $verifiedFail = Assert-RendererPerformanceReceipt $outFail.Binding $evidenceRoot $repoRoot $limits
-    if ($verifiedFail -cne 'FAIL') {
-        throw 'Assert-RendererPerformanceReceipt did not verify FAIL receipt.'
-    }
-    Pass 'allow-threshold-breach generates canonical FAIL receipt verified by assert-renderer-performance-receipt'
+    Pass 'valid canonical receipt preserves warmups and raw-source binding'
 
-    # 8. Positive: Overwrites existing file safely
-    $outOverwrite = & $builderScript -RawObservations $raw1 -DestinationPath $dest1 -EvidenceRoot $evidenceRoot -RepositoryRoot $repoRoot
-    if ($outOverwrite.CanonicalSha256 -cne $out1.CanonicalSha256) {
-        throw 'Overwriting existing destination altered receipt hash.'
-    }
-    Pass 'safe atomic overwrite of existing destination'
+    $verified = Assert-RendererPerformanceReceipt $out1.Binding $script:EvidenceRoot $script:RepoRoot $limits $script:Provenance
+    if ($verified -cne 'PASS') { throw 'Generated receipt failed independent consumer validation.' }
+    Pass 'consumer recomputes receipt with exact provenance and all AB/BA evidence'
 
-    # Hostile Negative Cases
-    Expect-BuilderFailure 'missing raw observations' {
-        & $builderScript -RawObservations $null -DestinationPath 'performance/neg.json' -EvidenceRoot $evidenceRoot -RepositoryRoot $repoRoot
-    }
+    # Every input form must bind to the same held raw-source bytes.
+    $outPipeline = $script:Raw1 | & $script:BuilderScript -DestinationDirectory 'performance/receipt-pipeline' -RawSourcePath $script:RawSourceRelative -CandidateProvenance $script:Provenance -EvidenceRoot $script:EvidenceRoot -RepositoryRoot $script:RepoRoot
+    if ($outPipeline.CanonicalSha256 -cne $out1.CanonicalSha256) { throw 'Pipeline receipt was not deterministic.' }
+    Pass 'pipeline input uses exact held raw-source provenance'
 
-    Expect-BuilderFailure 'empty object missing orders and soakBins' {
-        & $builderScript -RawObservations ([pscustomobject]@{}) -DestinationPath 'performance/neg.json' -EvidenceRoot $evidenceRoot -RepositoryRoot $repoRoot
-    }
+    $rawFilePath = Join-Path $script:EvidenceRoot 'performance/raw-input.json'
+    Write-RendererPackageCanonicalJson $script:Raw1 $rawFilePath $script:RepoRoot
+    $outFile = & $script:BuilderScript -RawObservations $rawFilePath -DestinationDirectory 'performance/receipt-file' -RawSourcePath $script:RawSourceRelative -CandidateProvenance $script:Provenance -EvidenceRoot $script:EvidenceRoot -RepositoryRoot $script:RepoRoot
+    if ($outFile.CanonicalSha256 -cne $out1.CanonicalSha256) { throw 'File receipt was not deterministic.' }
+    Pass 'file input uses exact held raw-source provenance'
 
-    Expect-BuilderFailure 'extra top-level property' {
-        $bad = Copy-TestValue $raw1
-        $bad | Add-Member extra 'unauthorized'
-        & $builderScript -RawObservations $bad -DestinationPath 'performance/neg.json' -EvidenceRoot $evidenceRoot -RepositoryRoot $repoRoot
-    }
+    $rawJson = ConvertTo-RendererCanonicalJson $script:Raw1 $script:RepoRoot
+    $outString = & $script:BuilderScript -RawObservations $rawJson -DestinationDirectory 'performance/receipt-string' -RawSourcePath $script:RawSourceRelative -CandidateProvenance $script:Provenance -EvidenceRoot $script:EvidenceRoot -RepositoryRoot $script:RepoRoot
+    if ($outString.CanonicalSha256 -cne $out1.CanonicalSha256) { throw 'String receipt was not deterministic.' }
+    Pass 'JSON string input uses exact held raw-source provenance'
 
-    Expect-BuilderFailure 'only 1 order' {
-        $bad = Copy-TestValue $raw1
-        $bad.orders = @($bad.orders[0])
-        & $builderScript -RawObservations $bad -DestinationPath 'performance/neg.json' -EvidenceRoot $evidenceRoot -RepositoryRoot $repoRoot
-    }
+    # A final directory is no-clobber. The original bytes remain unchanged.
+    $beforeBytes = [IO.File]::ReadAllBytes($out1.ReceiptPath)
+    Expect-BuilderFailure 'existing destination directory no-clobber' { Invoke-Builder $script:Raw1 'performance/receipt-1' }
+    $afterBytes = [IO.File]::ReadAllBytes($out1.ReceiptPath)
+    if ($beforeBytes.Length -ne $afterBytes.Length) { throw 'No-clobber failure changed the existing receipt length.' }
+    for ($i = 0; $i -lt $beforeBytes.Length; $i++) { if ($beforeBytes[$i] -ne $afterBytes[$i]) { throw 'No-clobber failure changed existing receipt bytes.' } }
 
-    Expect-BuilderFailure 'wrong order sequence BA then AB' {
-        $bad = Copy-TestValue $raw1
-        $bad.orders = @($bad.orders[1], $bad.orders[0])
-        & $builderScript -RawObservations $bad -DestinationPath 'performance/neg.json' -EvidenceRoot $evidenceRoot -RepositoryRoot $repoRoot
-    }
+    $waiverParameters = @((Get-Command -Name $script:BuilderScript).Parameters.Keys | Where-Object { $_ -match 'Waiver|Breach' })
+    if ($waiverParameters.Count -ne 0) { throw "Receipt builder exposes forbidden waiver parameters: $($waiverParameters -join ', ')" }
+    Pass 'threshold waiver parameters absent'
 
-    Expect-BuilderFailure 'duplicate AB orders' {
-        $bad = Copy-TestValue $raw1
-        $bad.orders = @($bad.orders[0], $bad.orders[0])
-        & $builderScript -RawObservations $bad -DestinationPath 'performance/neg.json' -EvidenceRoot $evidenceRoot -RepositoryRoot $repoRoot
-    }
+    # Provenance and raw-source transplant/mismatch cases fail before publish.
+    $transplantedProvenance = Copy-TestValue $script:Provenance
+    $transplantedProvenance.candidate.commitSha = ('c' * 40)
+    Expect-ReceiptFailure 'candidate provenance transplant' { Assert-RendererPerformanceReceipt $out1.Binding $script:EvidenceRoot $script:RepoRoot $limits $transplantedProvenance }
 
-    Expect-BuilderFailure 'missing warmup in order AB' {
-        $bad = Copy-TestValue $raw1
-        $bad.orders[0].warmup = $null
-        & $builderScript -RawObservations $bad -DestinationPath 'performance/neg.json' -EvidenceRoot $evidenceRoot -RepositoryRoot $repoRoot
-    }
+    $mismatchedRaw = Copy-TestValue $script:Raw1
+    $mismatchedRaw.orders[0].repetitions[0].a.cpuBasisPoints = 51
+    Write-RawSource $script:Raw1
+    Expect-BuilderFailure 'raw-source measurement mismatch' { Invoke-Builder $mismatchedRaw (Next-Destination 'raw-mismatch') $false }
 
-    Expect-BuilderFailure 'missing warmup in order BA' {
-        $bad = Copy-TestValue $raw1
-        $bad.orders[1].warmup = $null
-        & $builderScript -RawObservations $bad -DestinationPath 'performance/neg.json' -EvidenceRoot $evidenceRoot -RepositoryRoot $repoRoot
-    }
+    Expect-RawMutationFailure 'missing warmup' { param($v) $v.orders[0].warmup = $null }
+    Expect-RawMutationFailure 'tampered warmup value' { param($v) $v.orders[0].warmup[0].a.cpuBasisPoints = -1 }
+    Expect-RawMutationFailure 'warmup unknown field' { param($v) $v.orders[0].warmup[0] | Add-Member unauthorized $true }
+    Expect-RawMutationFailure 'measured unknown field' { param($v) $v.orders[0].repetitions[0].a | Add-Member unauthorized $true }
+    Expect-RawMutationFailure 'order unknown field' { param($v) $v.orders[0] | Add-Member unauthorized $true }
+    Expect-RawMutationFailure 'soak-bin unknown field' { param($v) $v.soakBins[0] | Add-Member unauthorized $true }
+    Expect-RawMutationFailure 'raw top-level unknown field' { param($v) $v | Add-Member unauthorized $true }
+    Expect-RawMutationFailure 'missing measured sample' { param($v) $v.orders[1].repetitions[0].PSObject.Properties.Remove('b') }
+    Expect-RawMutationFailure 'missing raw latency sample' { param($v) $v.orders[0].repetitions[0].a.latencyMicroseconds = @($v.orders[0].repetitions[0].a.latencyMicroseconds | Select-Object -First 19) }
+    Expect-RawMutationFailure 'missing raw stall sample' { param($v) $v.orders[0].repetitions[0].b.uiStallMicroseconds = @($v.orders[0].repetitions[0].b.uiStallMicroseconds | Select-Object -First 19) }
 
-    Expect-BuilderFailure 'more than 1 warmup repetition' {
-        $bad = Copy-TestValue $raw1
-        $bad.orders[0].warmup = @(New-RepetitionObject 0 "2026-08-22T12:00:00.0000000+00:00", New-RepetitionObject 0 "2026-08-22T12:00:00.0000000+00:00")
-        & $builderScript -RawObservations $bad -DestinationPath 'performance/neg.json' -EvidenceRoot $evidenceRoot -RepositoryRoot $repoRoot
-    }
+    # Every approved threshold is exercised independently. No FAIL receipt is
+    # publishable and no waiver switch can turn any case into a positive result.
+    Expect-ThresholdFailure 'mode A CPU absolute maximum' { param($v) $v.orders[0].repetitions[0].a.cpuBasisPoints = 150 }
+    Expect-ThresholdFailure 'mode B CPU absolute maximum' { param($v) $v.orders[0].repetitions[0].b.cpuBasisPoints = 150 }
+    Expect-ThresholdFailure 'CPU percentage-point regression' { param($v) $v.orders[0].repetitions[0].a.cpuBasisPoints = 40; $v.orders[0].repetitions[0].b.cpuBasisPoints = 95 }
+    Expect-ThresholdFailure 'CPU relative-percent regression' { param($v) $v.orders[0].repetitions[0].a.cpuBasisPoints = 50; $v.orders[0].repetitions[0].b.cpuBasisPoints = 56 }
+    Expect-ThresholdFailure 'event-to-WPF latency absolute maximum' { param($v) $v.orders[0].repetitions[0].b.latencyMicroseconds[18] = 300000; $v.orders[0].repetitions[0].b.latencyMicroseconds[19] = 300000 }
+    Expect-ThresholdFailure 'latency relative regression' { param($v) $v.orders[0].repetitions[0].b.latencyMicroseconds = @(1..20 | ForEach-Object { 111000 }) }
+    Expect-ThresholdFailure 'UI stall p95 absolute maximum' { param($v) $v.orders[0].repetitions[0].b.uiStallMicroseconds[18] = 51000; $v.orders[0].repetitions[0].b.uiStallMicroseconds[19] = 51000 }
+    Expect-ThresholdFailure 'UI stall maximum absolute maximum' { param($v) $v.orders[0].repetitions[0].b.uiStallMicroseconds[19] = 101000 }
+    Expect-ThresholdFailure 'mode A working-set absolute maximum' { param($v) $v.orders[0].repetitions[0].a.workingSetMaximumBytes = 267386881 }
+    Expect-ThresholdFailure 'mode B working-set absolute maximum' { param($v) $v.orders[0].repetitions[0].b.workingSetMaximumBytes = 267386881 }
+    Expect-ThresholdFailure 'soak start working-set maximum' { param($v) $v.soakBins[0].workingSetStartBytes = 267386881 }
+    Expect-ThresholdFailure 'soak end working-set maximum' { param($v) $v.soakBins[0].workingSetEndBytes = 267386881 }
+    Expect-ThresholdFailure 'soak working-set slope maximum' { param($v) $v.soakBins[0].workingSetEndBytes = 106000000 }
+    Expect-ThresholdFailure 'soak renderer stability requirement' { param($v) $v.soakBins[0].rendererStable = $false }
 
-    Expect-BuilderFailure 'warmup missing mode A' {
-        $bad = Copy-TestValue $raw1
-        $bad.orders[0].warmup[0].PSObject.Properties.Remove('a')
-        & $builderScript -RawObservations $bad -DestinationPath 'performance/neg.json' -EvidenceRoot $evidenceRoot -RepositoryRoot $repoRoot
-    }
+    $unapproved = Copy-TestValue $limits
+    $unapproved.status = 'NOT_OBSERVED'
+    Expect-BuilderFailure 'unapproved owner limits' { Invoke-Builder $script:Raw1 (Next-Destination 'unapproved') $true $script:Provenance $unapproved }
+    $drifted = Copy-TestValue $limits
+    $drifted.cpuMaximumPercent = 2
+    Expect-BuilderFailure 'owner limit drift' { Invoke-Builder $script:Raw1 (Next-Destination 'limit-drift') $true $script:Provenance $drifted }
 
-    Expect-BuilderFailure 'warmup latency count less than 20' {
-        $bad = Copy-TestValue $raw1
-        $bad.orders[0].warmup[0].a.latencyMicroseconds = @($bad.orders[0].warmup[0].a.latencyMicroseconds | Select-Object -First 19)
-        & $builderScript -RawObservations $bad -DestinationPath 'performance/neg.json' -EvidenceRoot $evidenceRoot -RepositoryRoot $repoRoot
-    }
+    # Consumer rejects a receipt whose warmup or provenance is altered even if
+    # its new binding is internally canonical: the raw-source and expected
+    # candidate bindings remain authoritative.
+    $tamperedReceipt = Copy-TestValue $out1.Receipt
+    $tamperedReceipt.orders[0].warmup[0].a.cpuBasisPoints = 51
+    $tamperedReceiptPath = Join-Path $script:EvidenceRoot 'performance/tampered-receipt.json'
+    Write-RendererPackageCanonicalJson $tamperedReceipt $tamperedReceiptPath $script:RepoRoot
+    $tamperedStable = Get-RendererStableFileIdentity $script:EvidenceRoot $tamperedReceiptPath 'tampered receipt'
+    $tamperedCanonical = ConvertTo-RendererCanonicalJson $tamperedReceipt $script:RepoRoot
+    $tamperedBinding = [pscustomobject][ordered]@{ relativePath = 'performance/tampered-receipt.json'; bytes = $tamperedStable.Bytes; fileSha256 = $tamperedStable.Sha256; canonicalSha256 = Get-HumanDesignReviewSha256ForText $tamperedCanonical }
+    Expect-ReceiptFailure 'tampered warmup does not validate against held raw source' { Assert-RendererPerformanceReceipt $tamperedBinding $script:EvidenceRoot $script:RepoRoot $limits $script:Provenance }
 
-    Expect-BuilderFailure 'warmup latency count greater than 20' {
-        $bad = Copy-TestValue $raw1
-        $bad.orders[0].warmup[0].a.latencyMicroseconds = @($bad.orders[0].warmup[0].a.latencyMicroseconds) + @(100000)
-        & $builderScript -RawObservations $bad -DestinationPath 'performance/neg.json' -EvidenceRoot $evidenceRoot -RepositoryRoot $repoRoot
-    }
+    $wrongExpected = Copy-TestValue $script:Provenance
+    $wrongExpected.package.receipt.fileSha256 = ('6' * 64)
+    Expect-ReceiptFailure 'consumer provenance mismatch' { Assert-RendererPerformanceReceipt $out1.Binding $script:EvidenceRoot $script:RepoRoot $limits $wrongExpected }
 
-    Expect-BuilderFailure 'warmup stall count less than 20' {
-        $bad = Copy-TestValue $raw1
-        $bad.orders[0].warmup[0].a.uiStallMicroseconds = @($bad.orders[0].warmup[0].a.uiStallMicroseconds | Select-Object -First 19)
-        & $builderScript -RawObservations $bad -DestinationPath 'performance/neg.json' -EvidenceRoot $evidenceRoot -RepositoryRoot $repoRoot
-    }
-
-    Expect-BuilderFailure 'warmup stall count greater than 20' {
-        $bad = Copy-TestValue $raw1
-        $bad.orders[0].warmup[0].a.uiStallMicroseconds = @($bad.orders[0].warmup[0].a.uiStallMicroseconds) + @(10000)
-        & $builderScript -RawObservations $bad -DestinationPath 'performance/neg.json' -EvidenceRoot $evidenceRoot -RepositoryRoot $repoRoot
-    }
-
-    Expect-BuilderFailure 'warmup negative CPU' {
-        $bad = Copy-TestValue $raw1
-        $bad.orders[0].warmup[0].a.cpuBasisPoints = -1
-        & $builderScript -RawObservations $bad -DestinationPath 'performance/neg.json' -EvidenceRoot $evidenceRoot -RepositoryRoot $repoRoot
-    }
-
-    Expect-BuilderFailure 'warmup negative working set' {
-        $bad = Copy-TestValue $raw1
-        $bad.orders[0].warmup[0].a.workingSetMaximumBytes = -100
-        & $builderScript -RawObservations $bad -DestinationPath 'performance/neg.json' -EvidenceRoot $evidenceRoot -RepositoryRoot $repoRoot
-    }
-
-    Expect-BuilderFailure 'warmup non-UTC timestamp' {
-        $bad = Copy-TestValue $raw1
-        $bad.orders[0].warmup[0].observedUtc = '2026-08-22T19:00:00.0000000+07:00'
-        & $builderScript -RawObservations $bad -DestinationPath 'performance/neg.json' -EvidenceRoot $evidenceRoot -RepositoryRoot $repoRoot
-    }
-
-    Expect-BuilderFailure 'measured repetitions count less than 5' {
-        $bad = Copy-TestValue $raw1
-        $bad.orders[0].repetitions = @($bad.orders[0].repetitions | Select-Object -First 4)
-        & $builderScript -RawObservations $bad -DestinationPath 'performance/neg.json' -EvidenceRoot $evidenceRoot -RepositoryRoot $repoRoot
-    }
-
-    Expect-BuilderFailure 'repetition ordinal mismatch' {
-        $bad = Copy-TestValue $raw1
-        $bad.orders[0].repetitions[0].ordinal = 1
-        & $builderScript -RawObservations $bad -DestinationPath 'performance/neg.json' -EvidenceRoot $evidenceRoot -RepositoryRoot $repoRoot
-    }
-
-    Expect-BuilderFailure 'repetition missing mode B' {
-        $bad = Copy-TestValue $raw1
-        $bad.orders[0].repetitions[0].PSObject.Properties.Remove('b')
-        & $builderScript -RawObservations $bad -DestinationPath 'performance/neg.json' -EvidenceRoot $evidenceRoot -RepositoryRoot $repoRoot
-    }
-
-    Expect-BuilderFailure 'repetition latency count less than 20' {
-        $bad = Copy-TestValue $raw1
-        $bad.orders[0].repetitions[0].b.latencyMicroseconds = @($bad.orders[0].repetitions[0].b.latencyMicroseconds | Select-Object -First 19)
-        & $builderScript -RawObservations $bad -DestinationPath 'performance/neg.json' -EvidenceRoot $evidenceRoot -RepositoryRoot $repoRoot
-    }
-
-    Expect-BuilderFailure 'repetition latency count greater than 20' {
-        $bad = Copy-TestValue $raw1
-        $bad.orders[0].repetitions[0].b.latencyMicroseconds = @($bad.orders[0].repetitions[0].b.latencyMicroseconds) + @(100000)
-        & $builderScript -RawObservations $bad -DestinationPath 'performance/neg.json' -EvidenceRoot $evidenceRoot -RepositoryRoot $repoRoot
-    }
-
-    Expect-BuilderFailure 'repetition stall count less than 20' {
-        $bad = Copy-TestValue $raw1
-        $bad.orders[0].repetitions[0].b.uiStallMicroseconds = @($bad.orders[0].repetitions[0].b.uiStallMicroseconds | Select-Object -First 19)
-        & $builderScript -RawObservations $bad -DestinationPath 'performance/neg.json' -EvidenceRoot $evidenceRoot -RepositoryRoot $repoRoot
-    }
-
-    Expect-BuilderFailure 'repetition stall count greater than 20' {
-        $bad = Copy-TestValue $raw1
-        $bad.orders[0].repetitions[0].b.uiStallMicroseconds = @($bad.orders[0].repetitions[0].b.uiStallMicroseconds) + @(10000)
-        & $builderScript -RawObservations $bad -DestinationPath 'performance/neg.json' -EvidenceRoot $evidenceRoot -RepositoryRoot $repoRoot
-    }
-
-    Expect-BuilderFailure 'repetition negative latency value' {
-        $bad = Copy-TestValue $raw1
-        $bad.orders[0].repetitions[0].a.latencyMicroseconds[0] = -50
-        & $builderScript -RawObservations $bad -DestinationPath 'performance/neg.json' -EvidenceRoot $evidenceRoot -RepositoryRoot $repoRoot
-    }
-
-    Expect-BuilderFailure 'repetition negative stall value' {
-        $bad = Copy-TestValue $raw1
-        $bad.orders[0].repetitions[0].a.uiStallMicroseconds[0] = -10
-        & $builderScript -RawObservations $bad -DestinationPath 'performance/neg.json' -EvidenceRoot $evidenceRoot -RepositoryRoot $repoRoot
-    }
-
-    Expect-BuilderFailure 'repetition string numeric' {
-        $bad = Copy-TestValue $raw1
-        $bad.orders[0].repetitions[0].a.cpuBasisPoints = '50'
-        & $builderScript -RawObservations $bad -DestinationPath 'performance/neg.json' -EvidenceRoot $evidenceRoot -RepositoryRoot $repoRoot
-    }
-
-    Expect-BuilderFailure 'repetition extra property on sample' {
-        $bad = Copy-TestValue $raw1
-        $bad.orders[0].repetitions[0].a | Add-Member extra 'bad'
-        & $builderScript -RawObservations $bad -DestinationPath 'performance/neg.json' -EvidenceRoot $evidenceRoot -RepositoryRoot $repoRoot
-    }
-
-    Expect-BuilderFailure 'repetition non-UTC timestamp' {
-        $bad = Copy-TestValue $raw1
-        $bad.orders[0].repetitions[0].observedUtc = '2026-08-22T19:00:00.0000000+07:00'
-        & $builderScript -RawObservations $bad -DestinationPath 'performance/neg.json' -EvidenceRoot $evidenceRoot -RepositoryRoot $repoRoot
-    }
-
-    Expect-BuilderFailure 'soak bins count less than 24' {
-        $bad = Copy-TestValue $raw1
-        $bad.soakBins = @($bad.soakBins | Select-Object -First 23)
-        & $builderScript -RawObservations $bad -DestinationPath 'performance/neg.json' -EvidenceRoot $evidenceRoot -RepositoryRoot $repoRoot
-    }
-
-    Expect-BuilderFailure 'soak bins count greater than 24' {
-        $bad = Copy-TestValue $raw1
-        $bad.soakBins = @($bad.soakBins) + @($bad.soakBins[0])
-        & $builderScript -RawObservations $bad -DestinationPath 'performance/neg.json' -EvidenceRoot $evidenceRoot -RepositoryRoot $repoRoot
-    }
-
-    Expect-BuilderFailure 'soak bin power source mismatch' {
-        $bad = Copy-TestValue $raw1
-        $bad.soakBins[0].powerSource = 'Battery'
-        & $builderScript -RawObservations $bad -DestinationPath 'performance/neg.json' -EvidenceRoot $evidenceRoot -RepositoryRoot $repoRoot
-    }
-
-    Expect-BuilderFailure 'soak bin ordinal mismatch' {
-        $bad = Copy-TestValue $raw1
-        $bad.soakBins[0].ordinal = 5
-        & $builderScript -RawObservations $bad -DestinationPath 'performance/neg.json' -EvidenceRoot $evidenceRoot -RepositoryRoot $repoRoot
-    }
-
-    Expect-BuilderFailure 'soak bin duration mismatch' {
-        $bad = Copy-TestValue $raw1
-        $bad.soakBins[0].durationMinutes = 10
-        & $builderScript -RawObservations $bad -DestinationPath 'performance/neg.json' -EvidenceRoot $evidenceRoot -RepositoryRoot $repoRoot
-    }
-
-    Expect-BuilderFailure 'soak bin renderer unstable' {
-        $bad = Copy-TestValue $raw1
-        $bad.soakBins[0].rendererStable = $false
-        & $builderScript -RawObservations $bad -DestinationPath 'performance/neg.json' -EvidenceRoot $evidenceRoot -RepositoryRoot $repoRoot
-    }
-
-    Expect-BuilderFailure 'soak bin non-UTC timestamp' {
-        $bad = Copy-TestValue $raw1
-        $bad.soakBins[0].observedUtc = '2026-08-22T19:00:00.0000000+07:00'
-        & $builderScript -RawObservations $bad -DestinationPath 'performance/neg.json' -EvidenceRoot $evidenceRoot -RepositoryRoot $repoRoot
-    }
-
-    Expect-BuilderFailure 'soak bin negative working set' {
-        $bad = Copy-TestValue $raw1
-        $bad.soakBins[0].workingSetStartBytes = -1
-        & $builderScript -RawObservations $bad -DestinationPath 'performance/neg.json' -EvidenceRoot $evidenceRoot -RepositoryRoot $repoRoot
-    }
-
-    Expect-BuilderFailure 'threshold breach mode B CPU maximum' {
-        $bad = Copy-TestValue $raw1
-        $bad.orders[0].repetitions[0].b.cpuBasisPoints = 150 # 1.5% > 1.0%
-        & $builderScript -RawObservations $bad -DestinationPath 'performance/neg.json' -EvidenceRoot $evidenceRoot -RepositoryRoot $repoRoot
-    }
-
-    Expect-BuilderFailure 'threshold breach CPU percentage-point delta' {
-        $bad = Copy-TestValue $raw1
-        $bad.orders[0].repetitions[0].a.cpuBasisPoints = 40 # 0.4%
-        $bad.orders[0].repetitions[0].b.cpuBasisPoints = 95 # 0.95% (delta 0.55 pp > 0.5 pp)
-        & $builderScript -RawObservations $bad -DestinationPath 'performance/neg.json' -EvidenceRoot $evidenceRoot -RepositoryRoot $repoRoot
-    }
-
-    Expect-BuilderFailure 'threshold breach CPU relative regression percent' {
-        $bad = Copy-TestValue $raw1
-        $bad.orders[0].repetitions[0].a.cpuBasisPoints = 50 # 0.5%
-        $bad.orders[0].repetitions[0].b.cpuBasisPoints = 56 # 0.56% (delta 0.06 / 0.5 = 12% > 10%)
-        & $builderScript -RawObservations $bad -DestinationPath 'performance/neg.json' -EvidenceRoot $evidenceRoot -RepositoryRoot $repoRoot
-    }
-
-    Expect-BuilderFailure 'threshold breach Latency P95' {
-        $bad = Copy-TestValue $raw1
-        $bad.orders[0].repetitions[0].b.latencyMicroseconds[18] = 300000
-        $bad.orders[0].repetitions[0].b.latencyMicroseconds[19] = 300000 # P95 = 300 ms > 250 ms
-        & $builderScript -RawObservations $bad -DestinationPath 'performance/neg.json' -EvidenceRoot $evidenceRoot -RepositoryRoot $repoRoot
-    }
-
-    Expect-BuilderFailure 'threshold breach UI stall maximum' {
-        $bad = Copy-TestValue $raw1
-        $bad.orders[0].repetitions[0].b.uiStallMicroseconds[19] = 105000 # 105 ms > 100 ms
-        & $builderScript -RawObservations $bad -DestinationPath 'performance/neg.json' -EvidenceRoot $evidenceRoot -RepositoryRoot $repoRoot
-    }
-
-    Expect-BuilderFailure 'threshold breach working set budget' {
-        $bad = Copy-TestValue $raw1
-        $bad.orders[0].repetitions[0].b.workingSetMaximumBytes = 267386881 # > 255 MiB
-        & $builderScript -RawObservations $bad -DestinationPath 'performance/neg.json' -EvidenceRoot $evidenceRoot -RepositoryRoot $repoRoot
-    }
-
-    Expect-BuilderFailure 'threshold breach soak bin working set slope' {
-        $bad = Copy-TestValue $raw1
-        $bad.soakBins[0].workingSetStartBytes = 104857600
-        $bad.soakBins[0].workingSetEndBytes = 106000000 # delta 1,142,400 * 2 = 2.28 MB/10m > 1 MB/10m
-        & $builderScript -RawObservations $bad -DestinationPath 'performance/neg.json' -EvidenceRoot $evidenceRoot -RepositoryRoot $repoRoot
-    }
-
-    Expect-BuilderFailure 'unapproved limits status' {
-        $unapprovedLimits = Copy-TestValue $limits
-        $unapprovedLimits.status = 'NOT_OBSERVED'
-        & $builderScript -RawObservations $raw1 -DestinationPath 'performance/neg.json' -EvidenceRoot $evidenceRoot -RepositoryRoot $repoRoot -OwnerNumericLimits $unapprovedLimits
-    }
-
-    Expect-BuilderFailure 'limits approval reference mismatch' {
-        $badLimits = Copy-TestValue $limits
-        $badLimits.approvalReference = 'https://example.invalid/fake'
-        & $builderScript -RawObservations $raw1 -DestinationPath 'performance/neg.json' -EvidenceRoot $evidenceRoot -RepositoryRoot $repoRoot -OwnerNumericLimits $badLimits
-    }
-
-    Expect-BuilderFailure 'limits cpuMaximumPercent drift' {
-        $badLimits = Copy-TestValue $limits
-        $badLimits.cpuMaximumPercent = 2
-        & $builderScript -RawObservations $raw1 -DestinationPath 'performance/neg.json' -EvidenceRoot $evidenceRoot -RepositoryRoot $repoRoot -OwnerNumericLimits $badLimits
-    }
-
-    Expect-BuilderFailure 'destination path escaping evidence root' {
-        & $builderScript -RawObservations $raw1 -DestinationPath '..\escaped.json' -EvidenceRoot $evidenceRoot -RepositoryRoot $repoRoot
-    }
-
-    $junctionDir = Join-Path $evidenceRoot 'junction-test'
-    $externalTarget = Join-Path $tempRoot 'external-target'
-    New-Item -ItemType Directory -Path $externalTarget -Force | Out-Null
-    New-Item -ItemType Junction -Path $junctionDir -Target $externalTarget | Out-Null
+    $rawOriginal = [IO.File]::ReadAllBytes($script:RawSourceFullPath)
     try {
-        Expect-BuilderFailure 'reparse junction destination path' {
-            & $builderScript -RawObservations $raw1 -DestinationPath 'junction-test/receipt.json' -EvidenceRoot $evidenceRoot -RepositoryRoot $repoRoot
-        }
+        $tamperedRaw = Copy-TestValue $script:Raw1
+        $tamperedRaw.orders[0].warmup[0].a.cpuBasisPoints = 51
+        Write-RawSource $tamperedRaw
+        Expect-ReceiptFailure 'tampered held raw-source file' { Assert-RendererPerformanceReceipt $out1.Binding $script:EvidenceRoot $script:RepoRoot $limits $script:Provenance }
     } finally {
-        if (Test-Path -LiteralPath $junctionDir) {
-            [IO.Directory]::Delete($junctionDir, $false)
-        }
+        [IO.File]::WriteAllBytes($script:RawSourceFullPath, $rawOriginal)
     }
+
+    # Crash boundary: stop only the fixture job we created while it is paused
+    # before the directory rename. A final receipt must not be visible.
+    $crashSignal = Join-Path $tempRoot 'crash.signal'
+    $crashDestination = 'performance/crash-boundary'
+    $crashJob = Start-Job -ScriptBlock {
+        param($Builder,$Raw,$Destination,$RawSource,$Provenance,$Evidence,$Repository,$Signal)
+        & $Builder -RawObservations $Raw -DestinationDirectory $Destination -RawSourcePath $RawSource -CandidateProvenance $Provenance -EvidenceRoot $Evidence -RepositoryRoot $Repository -TestBeforeAtomicMoveSignalPath $Signal
+    } -ArgumentList @($script:BuilderScript,$rawJson,$crashDestination,$script:RawSourceRelative,$script:Provenance,$script:EvidenceRoot,$script:RepoRoot,$crashSignal)
+    if (-not (Wait-AtomicSignal $crashJob $crashSignal)) {
+        $state = $crashJob.State
+        $reason = $crashJob.ChildJobs[0].JobStateInfo.Reason
+        $jobOutput = @(Receive-Job $crashJob -Keep -ErrorAction SilentlyContinue | Out-String)
+        throw "Crash-boundary fixture did not reach the pre-rename signal; state=$state reason=$reason output=$($jobOutput -join '')"
+    }
+    Stop-Job -Job $crashJob -ErrorAction SilentlyContinue
+    $null = Receive-Job $crashJob -ErrorAction SilentlyContinue
+    Remove-Job -Job $crashJob -Force -ErrorAction SilentlyContinue
+    $crashJob = $null
+    if (Test-Path -LiteralPath (Join-Path $script:EvidenceRoot $crashDestination) -PathType Container) {
+        throw 'Crash-boundary fixture exposed a final receipt directory.'
+    }
+    Pass 'crash boundary leaves no partially visible final receipt'
+
+    # Concurrent reader boundary: while the writer is paused, the final path
+    # is absent; after one directory move it is a complete valid receipt.
+    $concurrentSignal = Join-Path $tempRoot 'concurrent.signal'
+    $concurrentDestination = 'performance/concurrent-boundary'
+    $concurrentJob = Start-Job -ScriptBlock {
+        param($Builder,$Raw,$Destination,$RawSource,$Provenance,$Evidence,$Repository,$Signal)
+        & $Builder -RawObservations $Raw -DestinationDirectory $Destination -RawSourcePath $RawSource -CandidateProvenance $Provenance -EvidenceRoot $Evidence -RepositoryRoot $Repository -TestBeforeAtomicMoveSignalPath $Signal
+    } -ArgumentList @($script:BuilderScript,$rawJson,$concurrentDestination,$script:RawSourceRelative,$script:Provenance,$script:EvidenceRoot,$script:RepoRoot,$concurrentSignal)
+    if (-not (Wait-AtomicSignal $concurrentJob $concurrentSignal)) { throw 'Concurrent-boundary fixture did not reach the pre-rename signal.' }
+    if (Test-Path -LiteralPath (Join-Path $script:EvidenceRoot $concurrentDestination)) { throw 'Final receipt became visible before atomic directory rename.' }
+    Remove-Item -LiteralPath $concurrentSignal -Force
+    Wait-Job -Job $concurrentJob | Out-Null
+    $concurrentOutput = @(Receive-Job $concurrentJob)
+    Remove-Job -Job $concurrentJob -Force -ErrorAction SilentlyContinue
+    $concurrentJob = $null
+    if ($concurrentOutput.Count -lt 1 -or $concurrentOutput[-1].AggregateStatus -cne 'PASS') { throw 'Concurrent-boundary fixture did not publish a PASS receipt.' }
+    $concurrentBinding = $concurrentOutput[-1].Binding
+    if ((Assert-RendererPerformanceReceipt $concurrentBinding $script:EvidenceRoot $script:RepoRoot $limits $script:Provenance) -cne 'PASS') { throw 'Concurrent receipt failed post-rename validation.' }
+    Pass 'concurrent reader sees absent-or-complete directory receipt only'
 
     [pscustomobject]@{
         EvidenceClassification = 'SyntheticVerifierSelftest'
@@ -539,7 +418,7 @@ try {
         Status = 'PASS'
     }
 } finally {
-    if (Test-Path -LiteralPath $tempRoot) {
-        Remove-Item -LiteralPath $tempRoot -Recurse -Force
-    }
+    if ($null -ne $crashJob) { Stop-Job -Job $crashJob -ErrorAction SilentlyContinue; Remove-Job -Job $crashJob -Force -ErrorAction SilentlyContinue }
+    if ($null -ne $concurrentJob) { Remove-Job -Job $concurrentJob -Force -ErrorAction SilentlyContinue }
+    if (Test-Path -LiteralPath $tempRoot) { Remove-Item -LiteralPath $tempRoot -Recurse -Force }
 }
