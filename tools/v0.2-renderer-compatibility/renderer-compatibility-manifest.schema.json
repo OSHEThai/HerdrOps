@@ -1,0 +1,135 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://herdrops.local/schema/v0.2/renderer-compatibility-manifest.schema.json",
+  "title": "HerdrOps v0.2 Issue 149 packaged renderer compatibility candidate",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$id", "manifestVersion", "evidenceClassification", "issue", "governance", "candidate", "environment", "rendererEvidence", "captures", "references", "comparison", "matrices", "performanceProtocol", "review", "evidenceBoundary"],
+  "properties": {
+    "$id": { "const": "https://herdrops.local/schema/v0.2/renderer-compatibility-manifest.schema.json" },
+    "manifestVersion": { "const": 1 },
+    "evidenceClassification": { "const": "PackagedCompatibilityCandidate" },
+    "issue": { "const": 149 },
+    "governance": { "$ref": "#/$defs/governance" },
+    "candidate": { "$ref": "#/$defs/candidate" },
+    "environment": { "$ref": "#/$defs/environment" },
+    "rendererEvidence": { "$ref": "#/$defs/rendererEvidence" },
+    "captures": { "type": "array", "minItems": 20, "maxItems": 20, "items": { "$ref": "#/$defs/capture" } },
+    "references": { "type": "array", "minItems": 11, "maxItems": 11, "items": { "$ref": "#/$defs/reference" } },
+    "comparison": { "$ref": "#/$defs/comparison" },
+    "matrices": { "$ref": "#/$defs/matrices" },
+    "performanceProtocol": { "$ref": "#/$defs/performance" },
+    "review": { "$ref": "#/$defs/review" },
+    "evidenceBoundary": { "$ref": "#/$defs/boundary" }
+  },
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^[0-9A-F]{64}$" },
+    "nullableSha256": { "type": ["string", "null"], "pattern": "^[0-9A-F]{64}$" },
+    "utc": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{7}[+]00:00$" },
+    "governance": { "type": "object", "additionalProperties": false, "required": ["decisionId", "approvalReference", "originalApprovedUtc", "correctedUtc", "decisionPayloadSha256", "supersedesDecisionId", "supersedesPayloadSha256"], "properties": { "decisionId": { "const": "herdrops-rec-all-v2" }, "approvalReference": { "const": "https://github.com/OSHEThai/HerdrOps/issues/149#issuecomment-5380637664" }, "originalApprovedUtc": { "const": "2026-08-22T13:18:21.2468994Z" }, "correctedUtc": { "const": "2026-08-22T13:23:04.5923226Z" }, "decisionPayloadSha256": { "const": "48474610D2A20EE2F7CA2DAC0A3CCF45F919440C9C5D81EF5BA93AD7E524F62D" }, "supersedesDecisionId": { "const": "herdrops-rec-all-v1" }, "supersedesPayloadSha256": { "const": "DD8EB4D4BC896BE6A4765D409C5E34A16C4DBFB3D70F437EC915A50DF2FC1B1E" } } },
+    "relativePath": { "type": "string", "minLength": 1, "pattern": "^(?![A-Za-z]:)(?![/\\\\]).+$" },
+    "candidate": {
+      "type": "object", "additionalProperties": false,
+      "required": ["source", "profile", "receipt", "archive", "packageRootRelativePath", "components", "referenceHost", "renderer"],
+      "properties": {
+        "source": { "$ref": "#/$defs/source" },
+        "profile": {
+          "type": "object", "additionalProperties": false,
+          "required": ["id", "relativePath", "bytes", "fileSha256", "canonicalSha256"],
+          "properties": { "id": { "const": "herdrops-v0.2-package-software-only-issue-149" }, "relativePath": { "$ref": "#/$defs/relativePath" }, "bytes": { "type": "integer", "minimum": 1 }, "fileSha256": { "$ref": "#/$defs/sha256" }, "canonicalSha256": { "$ref": "#/$defs/sha256" } }
+        },
+        "receipt": { "$ref": "#/$defs/jsonBinding" },
+        "archive": { "$ref": "#/$defs/archiveBinding" },
+        "packageRootRelativePath": { "const": "package" },
+        "components": { "type": "object", "additionalProperties": false, "required": ["app", "core"], "properties": { "app": { "$ref": "#/$defs/fileBinding" }, "core": { "$ref": "#/$defs/fileBinding" } } },
+        "referenceHost": { "type": "object", "additionalProperties": false, "required": ["profileId", "profileSha256"], "properties": { "profileId": { "const": "herdrops-v0.2-submark-nb-software-only-20260822" }, "profileSha256": { "const": "96D01ED15A536F2DF50B59B43CFDEB3683DCE8667AE2E7BF6A96124182FE13A3" } } },
+        "renderer": { "type": "object", "additionalProperties": false, "required": ["policy", "wpfProcessRenderMode"], "properties": { "policy": { "const": "software-only-process-wide" }, "wpfProcessRenderMode": { "const": "SoftwareOnly" } } }
+      }
+    },
+    "source": { "type": "object", "additionalProperties": false, "required": ["commitSha", "treeSha"], "properties": { "commitSha": { "type": "string", "pattern": "^[0-9a-f]{40}$" }, "treeSha": { "type": "string", "pattern": "^[0-9a-f]{40}$" } } },
+    "fileBinding": {
+      "type": "object", "additionalProperties": false,
+      "required": ["relativePath", "bytes", "sha256"],
+      "properties": { "relativePath": { "$ref": "#/$defs/relativePath" }, "bytes": { "type": "integer", "minimum": 1 }, "sha256": { "$ref": "#/$defs/sha256" } }
+    },
+    "jsonBinding": { "type": "object", "additionalProperties": false, "required": ["relativePath", "bytes", "fileSha256", "canonicalSha256"], "properties": { "relativePath": { "$ref": "#/$defs/relativePath" }, "bytes": { "type": "integer", "minimum": 1 }, "fileSha256": { "$ref": "#/$defs/sha256" }, "canonicalSha256": { "$ref": "#/$defs/sha256" } } },
+    "archiveBinding": { "type": "object", "additionalProperties": false, "required": ["relativePath", "fileName", "bytes", "sha256"], "properties": { "relativePath": { "$ref": "#/$defs/relativePath" }, "fileName": { "const": "HerdrOps-0.2.0-win-x64.zip" }, "bytes": { "type": "integer", "minimum": 1 }, "sha256": { "$ref": "#/$defs/sha256" } } },
+    "environment": {
+      "type": "object", "additionalProperties": false,
+      "required": ["os", "graphicsAdapters", "display", "session", "supportScope"],
+      "properties": {
+        "os": { "type": "object", "additionalProperties": false, "required": ["caption", "version", "build", "architecture"], "properties": { "caption": { "const": "Microsoft Windows 11 Pro Insider Preview" }, "version": { "const": "10.0.26220" }, "build": { "const": 26220 }, "architecture": { "const": "x64" } } },
+        "graphicsAdapters": { "type": "array", "minItems": 2, "maxItems": 2, "prefixItems": [{ "type": "object", "additionalProperties": false, "required": ["displayName", "pnpDeviceId", "driverVersion"], "properties": { "displayName": { "const": "Intel(R) UHD Graphics" }, "pnpDeviceId": { "const": "PCI\\VEN_8086&DEV_4688&SUBSYS_170F1025&REV_0C\\3&11583659&0&10" }, "driverVersion": { "const": "31.0.101.4146" } } }, { "type": "object", "additionalProperties": false, "required": ["displayName", "pnpDeviceId", "driverVersion"], "properties": { "displayName": { "const": "NVIDIA GeForce RTX 4050 Laptop GPU" }, "pnpDeviceId": { "const": "PCI\\VEN_10DE&DEV_28E1&SUBSYS_170F1025&REV_A1\\4&2CAD08CE&0&0008" }, "driverVersion": { "const": "32.0.16.1088" } } }] },
+        "display": { "type": "object", "additionalProperties": false, "required": ["deviceName", "physicalWidthPixels", "physicalHeightPixels", "logicalWidthPixels", "logicalHeightPixels", "desktopAppliedDpi", "scalePercent", "refreshRateHz", "monitorCount"], "properties": { "deviceName": { "const": "\\\\.\\DISPLAY1" }, "physicalWidthPixels": { "const": 2560 }, "physicalHeightPixels": { "const": 1600 }, "logicalWidthPixels": { "const": 2048 }, "logicalHeightPixels": { "const": 1280 }, "desktopAppliedDpi": { "const": 120 }, "scalePercent": { "const": 125 }, "refreshRateHz": { "const": 60 }, "monitorCount": { "const": 1 } } },
+        "session": { "type": "object", "additionalProperties": false, "required": ["kind", "name", "sessionId", "transport", "powerSource", "thermalState", "elevated", "userScope"], "properties": { "kind": { "const": "LocalConsole" }, "name": { "type": "string", "minLength": 1 }, "sessionId": { "type": "integer", "minimum": 0 }, "transport": { "const": "Physical" }, "powerSource": { "enum": ["AC", "Battery"] }, "thermalState": { "enum": ["Nominal", "Warm", "Throttled"] }, "elevated": { "const": false }, "userScope": { "const": "SingleUser" } } },
+        "supportScope": { "type": "object", "additionalProperties": false, "required": ["supported", "excluded", "vmCleanInstallOnly", "vmRuntimeCredit"], "properties": { "supported": { "type": "array", "minItems": 7, "maxItems": 7, "prefixItems": [{"const":"windows11-x64-build26220"},{"const":"local-console"},{"const":"non-elevated"},{"const":"single-user"},{"const":"physical-display-matrix"},{"const":"ac-power"},{"const":"battery-power"}] }, "excluded": { "type": "array", "minItems": 5, "maxItems": 5, "prefixItems": [{"const":"rdp-runtime"},{"const":"vm-runtime"},{"const":"arm64"},{"const":"remote-cloud"},{"const":"multi-user"}] }, "vmCleanInstallOnly": { "const": true }, "vmRuntimeCredit": { "const": false } } }
+      }
+    },
+    "rendererObservation": {
+      "type": "object", "additionalProperties": false,
+      "required": ["stage", "effectiveMode", "softwareOnlyConfirmed", "observedUtc", "proofReceipt"],
+      "properties": { "stage": { "type": "string", "minLength": 1 }, "effectiveMode": { "const": "SoftwareOnly" }, "softwareOnlyConfirmed": { "const": true }, "observedUtc": { "$ref": "#/$defs/utc" }, "proofReceipt": { "$ref": "#/$defs/jsonBinding" } }
+    },
+    "rendererEvidence": {
+      "type": "object", "additionalProperties": false,
+      "required": ["policyId", "trigger", "fallback", "producerReport", "preFirstHwnd", "throughoutObservations"],
+      "properties": {
+        "policyId": { "const": "software-only-process-wide" }, "trigger": { "const": "ApprovedV02CandidatePolicy" }, "fallback": { "const": "None" }, "producerReport": { "$ref": "#/$defs/jsonBinding" },
+        "preFirstHwnd": { "type": "object", "additionalProperties": false, "required": ["hasAnyHwnd", "observation", "firstHwndCreatedUtc"], "properties": { "hasAnyHwnd": { "const": false }, "observation": { "$ref": "#/$defs/rendererObservation" }, "firstHwndCreatedUtc": { "$ref": "#/$defs/utc" } } },
+        "throughoutObservations": { "type": "array", "minItems": 8, "maxItems": 8, "items": { "$ref": "#/$defs/rendererObservation" } }
+      }
+    },
+    "capture": {
+      "type": "object", "additionalProperties": false,
+      "required": ["language", "name", "category", "semanticPhase", "relativePath", "widthPixels", "heightPixels", "bytes", "sha256", "observedUtc"],
+      "properties": { "language": { "enum": ["Thai", "English"] }, "name": { "type": "string", "minLength": 1 }, "category": { "enum": ["BudgetProvenance", "RendererCompatibility"] }, "semanticPhase": { "enum": ["InitialLive", "EventA", "DashboardClosedPostEventB", "Offline", "Reconnected"] }, "relativePath": { "$ref": "#/$defs/relativePath" }, "widthPixels": { "type": "integer", "minimum": 1 }, "heightPixels": { "type": "integer", "minimum": 1 }, "bytes": { "type": "integer", "minimum": 1 }, "sha256": { "$ref": "#/$defs/sha256" }, "observedUtc": { "$ref": "#/$defs/utc" } }
+    },
+    "reference": {
+      "type": "object", "additionalProperties": false,
+      "required": ["relativePath", "widthPixels", "heightPixels", "bytes", "sha256"],
+      "properties": { "relativePath": { "$ref": "#/$defs/relativePath" }, "widthPixels": { "type": "integer", "minimum": 1 }, "heightPixels": { "type": "integer", "minimum": 1 }, "bytes": { "type": "integer", "minimum": 1 }, "sha256": { "$ref": "#/$defs/sha256" } }
+    },
+    "comparisonResult": {
+      "type": "object", "additionalProperties": false,
+      "required": ["language", "captureName", "referenceRelativePath", "status", "differentPixels", "differentPixelPercent", "maximumChannelDelta", "nonmaskedDifferenceCount", "disposition"],
+      "properties": { "language": { "enum": ["Thai", "English"] }, "captureName": { "type": "string", "minLength": 1 }, "referenceRelativePath": { "$ref": "#/$defs/relativePath" }, "status": { "enum": ["PASS", "FAIL", "NOT_OBSERVED"] }, "differentPixels": { "type": ["integer", "null"], "minimum": 0 }, "differentPixelPercent": { "type": ["number", "null"], "minimum": 0, "maximum": 100 }, "maximumChannelDelta": { "type": ["number", "null"], "minimum": 0, "maximum": 255 }, "nonmaskedDifferenceCount": { "type": ["integer", "null"], "minimum": 0 }, "disposition": { "type": ["string", "null"] } }
+    },
+    "comparison": {
+      "type": "object", "additionalProperties": false,
+      "required": ["algorithm", "tolerance", "maskSetReceipt", "masks", "results"],
+      "properties": {
+        "algorithm": { "type": "object", "additionalProperties": false, "required": ["name", "version", "colorSpace", "alphaMode"], "properties": { "name": { "type": "string", "minLength": 1 }, "version": { "type": "string", "minLength": 1 }, "colorSpace": { "const": "sRGB" }, "alphaMode": { "const": "Straight" } } },
+        "tolerance": { "type": "object", "additionalProperties": false, "required": ["approvalStatus", "approvalReference", "perChannelDelta", "maximumDifferentPixelPercent", "maximumNonmaskedDifferences"], "properties": { "approvalStatus": { "enum": ["NOT_OBSERVED", "APPROVED"] }, "approvalReference": { "type": ["string", "null"] }, "perChannelDelta": { "type": ["number", "null"], "minimum": 0, "maximum": 255 }, "maximumDifferentPixelPercent": { "type": ["number", "null"], "minimum": 0, "maximum": 100 }, "maximumNonmaskedDifferences": { "type": ["integer", "null"], "minimum": 0 } } },
+        "maskSetReceipt": { "anyOf": [{"$ref":"#/$defs/jsonBinding"},{"type":"null"}] },
+        "masks": { "type": "array", "items": { "type": "object", "additionalProperties": false, "required": ["id", "relativePath", "sha256", "maximumRadiusPixels", "rationale", "approvalReference", "captureKeys"], "properties": { "id": { "type": "string", "minLength": 1 }, "relativePath": { "$ref": "#/$defs/relativePath" }, "sha256": { "$ref": "#/$defs/sha256" }, "maximumRadiusPixels": { "const": 1 }, "rationale": { "type": "string", "minLength": 1 }, "approvalReference": { "const": "https://github.com/OSHEThai/HerdrOps/issues/149#issuecomment-5380637664" }, "captureKeys": { "type":"array", "minItems":1, "items":{"type":"string"} } } } },
+        "results": { "type": "array", "minItems": 20, "maxItems": 20, "items": { "$ref": "#/$defs/comparisonResult" } }
+      }
+    },
+    "matrixCase": { "type": "object", "additionalProperties": false, "required": ["id", "status", "evidenceReceipt", "notes"], "properties": { "id": { "type": "string", "minLength": 1 }, "status": { "enum": ["PASS", "FAIL", "NOT_OBSERVED"] }, "evidenceReceipt": { "anyOf": [{"$ref":"#/$defs/jsonBinding"},{"type":"null"}] }, "notes": { "type": ["string", "null"] } } },
+    "matrices": {
+      "type": "object", "additionalProperties": false,
+      "required": ["displayCases", "mixedDpiTransitions", "accessibilityCases", "supportedEnvironmentCases"],
+      "properties": { "displayCases": { "type": "array", "minItems": 6, "maxItems": 6, "items": { "$ref": "#/$defs/matrixCase" } }, "mixedDpiTransitions": { "type": "array", "minItems": 4, "maxItems": 4, "items": { "$ref": "#/$defs/matrixCase" } }, "accessibilityCases": { "type": "array", "minItems": 8, "maxItems": 8, "items": { "$ref": "#/$defs/matrixCase" } }, "supportedEnvironmentCases": { "type": "array", "minItems": 7, "maxItems": 7, "items": { "$ref": "#/$defs/matrixCase" } } }
+    },
+    "performance": {
+      "type": "object", "additionalProperties": false,
+      "required": ["sameCandidateContentWorkloadHostSession", "onlyRendererPolicyVaries", "modeA", "modeB", "orders", "warmupIterations", "repetitionsPerOrder", "statistic", "ownerNumericLimits", "samplesStatus", "evidenceReceipt"],
+      "properties": {
+        "sameCandidateContentWorkloadHostSession": { "const": true }, "onlyRendererPolicyVaries": { "const": true }, "modeA": { "const": "Hardware" }, "modeB": { "const": "SoftwareOnly" }, "orders": { "type": "array", "prefixItems": [{"const":"AB"},{"const":"BA"}], "items": false }, "warmupIterations": { "type": "integer", "minimum": 1 }, "repetitionsPerOrder": { "type": "integer", "minimum": 1 }, "statistic": { "type": "string", "minLength": 1 },
+        "ownerNumericLimits": { "type": "object", "additionalProperties": false, "required": ["status", "approvalReference", "cpuMaximumPercent", "eventToWpfP95Milliseconds", "cpuRegressionMaximumPercent", "cpuRegressionMaximumPercentagePoints", "latencyRegressionMaximumPercent", "uiStallP95Milliseconds", "uiStallMaximumMilliseconds", "soakAcDurationMinutes", "soakBatteryDurationMinutes", "soakBinMinutes", "workingSetMaximumBytes", "resourceSlopeMaximumBytesPerTenMinutes"], "properties": { "status": { "enum": ["NOT_OBSERVED", "APPROVED"] }, "approvalReference": { "type": ["string", "null"] }, "cpuMaximumPercent": { "type": ["number", "null"] }, "eventToWpfP95Milliseconds": { "type": ["number", "null"] }, "cpuRegressionMaximumPercent": { "type": ["number", "null"] }, "cpuRegressionMaximumPercentagePoints": { "type": ["number", "null"] }, "latencyRegressionMaximumPercent": { "type": ["number", "null"] }, "uiStallP95Milliseconds": { "type": ["number", "null"] }, "uiStallMaximumMilliseconds": { "type": ["number", "null"] }, "soakAcDurationMinutes": { "type": ["number", "null"] }, "soakBatteryDurationMinutes": { "type": ["number", "null"] }, "soakBinMinutes": { "type": ["number", "null"] }, "workingSetMaximumBytes": { "type": ["integer", "null"] }, "resourceSlopeMaximumBytesPerTenMinutes": { "type": ["integer", "null"] } } },
+        "samplesStatus": { "enum": ["PASS", "FAIL", "NOT_OBSERVED"] }, "evidenceReceipt": { "anyOf": [{"$ref":"#/$defs/jsonBinding"},{"type":"null"}] }
+      }
+    },
+    "defect": { "type": "object", "additionalProperties": false, "required": ["id", "severity", "summary", "status", "disposition"], "properties": { "id": { "type": "string", "minLength": 1 }, "severity": { "enum": ["P0", "P1", "P2", "P3"] }, "summary": { "type": "string", "minLength": 1 }, "status": { "enum": ["Open", "Resolved", "Accepted"] }, "disposition": { "type": "string", "minLength": 1 } } },
+    "review": {
+      "type": "object", "additionalProperties": false,
+      "required": ["decision", "approvalReference", "reviewerIdentity", "reviewerRole", "reviewedUtc", "visualChecks", "defects"],
+      "properties": { "decision": { "enum": ["GO", "NO_GO", "NOT_OBSERVED"] }, "approvalReference": { "type": ["string", "null"] }, "reviewerIdentity": { "type": ["string", "null"] }, "reviewerRole": { "type": ["string", "null"] }, "reviewedUtc": { "anyOf": [{"$ref":"#/$defs/utc"},{"type":"null"}] }, "visualChecks": { "type": "array", "minItems": 7, "maxItems": 7, "items": { "$ref": "#/$defs/matrixCase" } }, "defects": { "type": "array", "items": { "$ref": "#/$defs/defect" } } }
+    },
+    "boundary": {
+      "type": "object", "additionalProperties": false,
+      "required": ["packagedCompatibility", "humanReview", "actualHerdrRuntime", "release", "creditGranted"],
+      "properties": { "packagedCompatibility": { "const": "CANDIDATE" }, "humanReview": { "enum": ["GO", "NO_GO", "NOT_OBSERVED"] }, "actualHerdrRuntime": { "const": "NOT_OBSERVED" }, "release": { "const": "NOT_OBSERVED" }, "creditGranted": { "const": false } }
+    }
+  }
+}
