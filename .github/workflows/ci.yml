@@ -9,23 +9,24 @@ on:
 permissions:
   contents: read
 
+env:
+  HERDOPS_V02_LIVE_WIDGET_RUN_TOKEN: ${{ github.run_id }}-${{ github.run_attempt }}
+  ISSUE43_EVENT_NAME: ${{ github.event_name }}
+  ISSUE43_CANDIDATE_SHA: ${{ github.sha }}
+  ISSUE43_PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+  ISSUE43_PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+  ISSUE43_REVIEW_BRANCH: ${{ github.head_ref || github.ref_name }}
+
 jobs:
-  build-test:
+  build-and-v01:
+    name: Build & v0.1 Release Gate
     runs-on: windows-latest
     timeout-minutes: 30
-    env:
-      HERDOPS_V02_LIVE_WIDGET_RUN_TOKEN: ${{ github.run_id }}-${{ github.run_attempt }}
-      ISSUE43_EVENT_NAME: ${{ github.event_name }}
-      ISSUE43_CANDIDATE_SHA: ${{ github.sha }}
-      ISSUE43_PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-      ISSUE43_PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
-      ISSUE43_REVIEW_BRANCH: ${{ github.head_ref || github.ref_name }}
-
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          fetch-depth: 0  # Test-V07Issue37ManifestIntegrity.ps1 reads blob bytes from the pinned candidate commit 4d36e288 (an origin/main ancestor); no branch-local commits are referenced
+          fetch-depth: 0
 
       - name: Run v0.7 Issue #37 manifest integrity self-test (deterministic, no blobs required)
         shell: pwsh
@@ -36,9 +37,21 @@ jobs:
         with:
           dotnet-version: 10.0.x
 
-      - name: Run solution test scheduling regression (Issue #135)
+      - name: Run solution test scheduling regression (PowerShell 7)
         shell: pwsh
         run: ./tools/Test-BuildTestScheduling.ps1
+
+      - name: Run solution test scheduling regression (Windows PowerShell 5.1)
+        shell: powershell
+        run: ./tools/Test-BuildTestScheduling.ps1
+
+      - name: Run solution test scheduling hostile tests (PowerShell 7)
+        shell: pwsh
+        run: ./tools/Test-BuildTestScheduling.Tests.ps1
+
+      - name: Run solution test scheduling hostile tests (Windows PowerShell 5.1)
+        shell: powershell
+        run: ./tools/Test-BuildTestScheduling.Tests.ps1
 
       # Static/Synthetic only; Actual Herdr Runtime NOT OBSERVED.
       - name: 'Run v0.7 packaging gate (Issue #38) - Static/Synthetic - PowerShell 7 (pwsh)'
@@ -135,6 +148,57 @@ jobs:
       - name: Run v0.1 release gate
         shell: pwsh
         run: ./tools/Test-V01ReleaseGate.ps1
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          retention-days: 7
+          name: test-results
+          path: artifacts/test-results
+          if-no-files-found: ignore
+
+      - name: Upload design evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          retention-days: 7
+          name: design-evidence
+          path: artifacts/design-evidence
+          if-no-files-found: warn
+
+      - name: Upload performance evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          retention-days: 7
+          name: performance-evidence
+          path: artifacts/performance-evidence
+          if-no-files-found: warn
+
+      - name: Upload v0.1 gate report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          retention-days: 7
+          name: v0.1-gate-report
+          path: artifacts/release-gates/v0.1.0
+          if-no-files-found: warn
+
+  v02-gates:
+    name: v0.2 Milestone Gates
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          dotnet-version: 10.0.x
 
       - name: Run v0.2 state store and IPC gate
         shell: pwsh
@@ -244,6 +308,67 @@ jobs:
         shell: pwsh
         run: ./tools/Test-V02LanguageModes.ps1 -Configuration Release -SkipBuild
 
+      # Issue #149 controlled-child soak guard coverage is Static/Synthetic only;
+      # it never starts HerdrOps/Herdr and cannot grant Runtime or Release credit.
+      - name: Run v0.2 soak hostile selftests (PowerShell 7)
+        shell: pwsh
+        run: ./tools/v0.2-renderer-compatibility/Invoke-V02SoakMeasurement.SelfTests.ps1
+
+      - name: Run v0.2 soak hostile selftests (Windows PowerShell 5.1)
+        shell: powershell
+        run: ./tools/v0.2-renderer-compatibility/Invoke-V02SoakMeasurement.SelfTests.ps1
+
+      - name: Upload v0.2 state store and IPC gate report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          retention-days: 7
+          name: v0.2-state-store-ipc-gate-report
+          path: artifacts/release-gates/v0.2.0/issue-8
+          if-no-files-found: warn
+
+      - name: Upload v0.2 live Dashboard pages gate report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          retention-days: 7
+          name: v0.2-live-dashboard-pages-gate-report
+          path: artifacts/release-gates/v0.2.0/issue-9
+          if-no-files-found: warn
+
+      - name: Upload v0.2 live Widgets gate report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          retention-days: 7
+          name: v0.2-live-widgets-gate-report
+          path: artifacts/release-gates/v0.2.0/issue-10
+          if-no-files-found: warn
+
+      - name: Upload v0.2 language-mode gate report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          retention-days: 7
+          name: v0.2-language-mode-gate-report
+          path: artifacts/release-gates/v0.2.0/issue-63
+          if-no-files-found: warn
+
+  v03-v04-gates:
+    name: v0.3 & v0.4 Milestone Gates
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          dotnet-version: 10.0.x
+
       - name: Run v0.3 implementation aggregation tests
         shell: pwsh
         run: ./tools/Test-V03ImplementationGateTests.ps1
@@ -281,6 +406,75 @@ jobs:
         shell: pwsh
         run: ./tools/Test-V04ExpandedWidget.ps1 -Configuration Release -SkipBuild
 
+      - name: Upload v0.3 implementation gate report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          retention-days: 7
+          name: v0.3-implementation-gate-report
+          path: artifacts/release-gates/v0.3.0/issue-17
+          if-no-files-found: warn
+
+      - name: Upload v0.4 Delegation Graph gate report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          retention-days: 7
+          name: v0.4-delegation-graph-gate-report
+          path: artifacts/release-gates/v0.4.0/issue-20
+          if-no-files-found: warn
+
+      - name: Upload v0.4 CLI self-report gate report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          retention-days: 7
+          name: v0.4-cli-self-report-gate-report
+          path: artifacts/release-gates/v0.4.0/issue-18
+          if-no-files-found: warn
+
+      - name: Upload v0.4 assignment lifecycle gate report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          retention-days: 7
+          name: v0.4-assignment-lifecycle-gate-report
+          path: artifacts/release-gates/v0.4.0/issue-19
+          if-no-files-found: warn
+
+      - name: Upload v0.4 Task Alignment gate report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          retention-days: 7
+          name: v0.4-task-alignment-gate-report
+          path: artifacts/release-gates/v0.4.0/issue-21
+          if-no-files-found: warn
+
+      - name: Upload v0.4 Expanded Widget gate report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          retention-days: 7
+          name: v0.4-expanded-widget-gate-report
+          path: artifacts/release-gates/v0.4.0/issue-22
+          if-no-files-found: warn
+
+  v05-v06-gates:
+    name: v0.5 & v0.6 Milestone Gates
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          dotnet-version: 10.0.x
+
       - name: Run v0.5 compliance rule engine implementation gate
         shell: pwsh
         run: ./tools/Test-V05ComplianceRuleEngine.ps1 -Configuration Release -SkipBuild
@@ -296,6 +490,78 @@ jobs:
       - name: Run v0.5 evidence/audit forward-extension hostile self-tests (Windows PowerShell 5.1)
         shell: powershell
         run: ./tools/Test-V05EvidenceAuditStorage.ps1 -SelfTest
+
+      - name: Run v0.5 Compliance Queue implementation gate
+        shell: pwsh
+        run: ./tools/Test-V05ComplianceQueue.ps1 -Configuration Release -SkipBuild
+
+      - name: Run v0.6 explainable scoring engine gate
+        shell: pwsh
+        run: ./tools/Test-V06ScoringEngine.ps1 -Configuration Release -SkipBuild
+
+      - name: Run v0.5 role-distinct review implementation gate
+        shell: pwsh
+        run: ./tools/Test-V05RoleDistinctReview.ps1 -Configuration Release -SkipBuild
+
+      - name: Upload v0.5 compliance rule engine gate report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          retention-days: 7
+          name: v0.5-compliance-rule-engine-gate-report
+          path: artifacts/release-gates/v0.5.0/issue-24
+          if-no-files-found: warn
+
+      - name: Upload v0.5 evidence and audit storage gate report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          retention-days: 7
+          name: v0.5-evidence-audit-storage-gate-report
+          path: artifacts/release-gates/v0.5.0/issue-25
+          if-no-files-found: warn
+
+      - name: Upload v0.5 Compliance Queue gate report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          retention-days: 7
+          name: v0.5-compliance-queue-gate-report
+          path: artifacts/release-gates/v0.5.0/issue-26
+          if-no-files-found: warn
+
+      - name: Upload v0.6 explainable scoring engine gate report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          retention-days: 7
+          name: v0.6-explainable-scoring-engine-gate-report
+          path: artifacts/release-gates/v0.6.0/issue-30
+          if-no-files-found: warn
+
+      - name: Upload v0.5 role-distinct review gate report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          retention-days: 7
+          name: v0.5-role-distinct-review-gate-report
+          path: artifacts/release-gates/v0.5.0/issue-27
+          if-no-files-found: warn
+
+  v07-v10-gates:
+    name: v0.7 - v1.0 Milestone Gates
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          dotnet-version: 10.0.x
 
       # Static/Synthetic/Contract/local SQLite integration only; Actual Herdr Runtime and Release NOT OBSERVED.
       - name: Prepare v1.0 Issue #43 CI candidate binding
@@ -529,18 +795,6 @@ jobs:
           path: artifacts/release-gates/v1.0.0/issue-43
           if-no-files-found: error
 
-      - name: Run v0.5 Compliance Queue implementation gate
-        shell: pwsh
-        run: ./tools/Test-V05ComplianceQueue.ps1 -Configuration Release -SkipBuild
-
-      - name: Run v0.6 explainable scoring engine gate
-        shell: pwsh
-        run: ./tools/Test-V06ScoringEngine.ps1 -Configuration Release -SkipBuild
-
-      - name: Run v0.5 role-distinct review implementation gate
-        shell: pwsh
-        run: ./tools/Test-V05RoleDistinctReview.ps1 -Configuration Release -SkipBuild
-
       - name: Run v0.7 lifecycle implementation gate deterministic self-test (pwsh)
         shell: pwsh
         run: ./tools/Test-V07Lifecycle.ps1 -SelfTest
@@ -566,16 +820,6 @@ jobs:
       - name: Run v0.7 performance measurement producer tests (Windows PowerShell 5.1)
         shell: powershell
         run: ./tools/Test-V07PerformanceMeasurement.Tests.ps1
-
-      # Issue #149 controlled-child soak guard coverage is Static/Synthetic only;
-      # it never starts HerdrOps/Herdr and cannot grant Runtime or Release credit.
-      - name: Run v0.2 soak hostile selftests (PowerShell 7)
-        shell: pwsh
-        run: ./tools/v0.2-renderer-compatibility/Invoke-V02SoakMeasurement.SelfTests.ps1
-
-      - name: Run v0.2 soak hostile selftests (Windows PowerShell 5.1)
-        shell: powershell
-        run: ./tools/v0.2-renderer-compatibility/Invoke-V02SoakMeasurement.SelfTests.ps1
 
       # Issue #44 install-acceptance preparation. Static/Synthetic only; no live
       # filesystem mutation, no HerdrOps/Herdr process start, no release action.
@@ -695,176 +939,6 @@ jobs:
         shell: pwsh
         run: ./tools/Test-V07Issue37ManifestIntegrity.ps1
 
-      - name: Upload test results
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          retention-days: 7
-          name: test-results
-          path: artifacts/test-results
-          if-no-files-found: ignore
-
-      - name: Upload design evidence
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          retention-days: 7
-          name: design-evidence
-          path: artifacts/design-evidence
-          if-no-files-found: warn
-
-      - name: Upload performance evidence
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          retention-days: 7
-          name: performance-evidence
-          path: artifacts/performance-evidence
-          if-no-files-found: warn
-
-      - name: Upload v0.1 gate report
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          retention-days: 7
-          name: v0.1-gate-report
-          path: artifacts/release-gates/v0.1.0
-          if-no-files-found: warn
-
-      - name: Upload v0.2 state store and IPC gate report
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          retention-days: 7
-          name: v0.2-state-store-ipc-gate-report
-          path: artifacts/release-gates/v0.2.0/issue-8
-          if-no-files-found: warn
-
-      - name: Upload v0.2 live Dashboard pages gate report
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          retention-days: 7
-          name: v0.2-live-dashboard-pages-gate-report
-          path: artifacts/release-gates/v0.2.0/issue-9
-          if-no-files-found: warn
-
-      - name: Upload v0.2 live Widgets gate report
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          retention-days: 7
-          name: v0.2-live-widgets-gate-report
-          path: artifacts/release-gates/v0.2.0/issue-10
-          if-no-files-found: warn
-
-      - name: Upload v0.2 language-mode gate report
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          retention-days: 7
-          name: v0.2-language-mode-gate-report
-          path: artifacts/release-gates/v0.2.0/issue-63
-          if-no-files-found: warn
-
-      - name: Upload v0.3 implementation gate report
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          retention-days: 7
-          name: v0.3-implementation-gate-report
-          path: artifacts/release-gates/v0.3.0/issue-17
-          if-no-files-found: warn
-
-      - name: Upload v0.4 Delegation Graph gate report
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          retention-days: 7
-          name: v0.4-delegation-graph-gate-report
-          path: artifacts/release-gates/v0.4.0/issue-20
-          if-no-files-found: warn
-
-      - name: Upload v0.4 CLI self-report gate report
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          retention-days: 7
-          name: v0.4-cli-self-report-gate-report
-          path: artifacts/release-gates/v0.4.0/issue-18
-          if-no-files-found: warn
-
-      - name: Upload v0.4 assignment lifecycle gate report
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          retention-days: 7
-          name: v0.4-assignment-lifecycle-gate-report
-          path: artifacts/release-gates/v0.4.0/issue-19
-          if-no-files-found: warn
-
-      - name: Upload v0.4 Task Alignment gate report
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          retention-days: 7
-          name: v0.4-task-alignment-gate-report
-          path: artifacts/release-gates/v0.4.0/issue-21
-          if-no-files-found: warn
-
-      - name: Upload v0.4 Expanded Widget gate report
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          retention-days: 7
-          name: v0.4-expanded-widget-gate-report
-          path: artifacts/release-gates/v0.4.0/issue-22
-          if-no-files-found: warn
-
-      - name: Upload v0.5 compliance rule engine gate report
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          retention-days: 7
-          name: v0.5-compliance-rule-engine-gate-report
-          path: artifacts/release-gates/v0.5.0/issue-24
-          if-no-files-found: warn
-
-      - name: Upload v0.5 evidence and audit storage gate report
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          retention-days: 7
-          name: v0.5-evidence-audit-storage-gate-report
-          path: artifacts/release-gates/v0.5.0/issue-25
-          if-no-files-found: warn
-
-      - name: Upload v0.5 Compliance Queue gate report
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          retention-days: 7
-          name: v0.5-compliance-queue-gate-report
-          path: artifacts/release-gates/v0.5.0/issue-26
-          if-no-files-found: warn
-
-      - name: Upload v0.6 explainable scoring engine gate report
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          retention-days: 7
-          name: v0.6-explainable-scoring-engine-gate-report
-          path: artifacts/release-gates/v0.6.0/issue-30
-
-      - name: Upload v0.5 role-distinct review gate report
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          retention-days: 7
-          name: v0.5-role-distinct-review-gate-report
-          path: artifacts/release-gates/v0.5.0/issue-27
-          if-no-files-found: warn
-
       - name: Upload v0.7 Issue #37 manifest integrity verifier report
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -873,3 +947,17 @@ jobs:
           name: v0.7-issue-37-manifest-integrity-report
           path: artifacts/release-gates/v0.7.0/issue-37
           if-no-files-found: warn
+
+  ci-success:
+    name: CI Workflow Completion Status
+    runs-on: windows-latest
+    needs:
+      - build-and-v01
+      - v02-gates
+      - v03-v04-gates
+      - v05-v06-gates
+      - v07-v10-gates
+    steps:
+      - name: Confirm all partitioned jobs succeeded
+        shell: pwsh
+        run: Write-Host "All 5 partitioned HerdrOps CI jobs completed successfully."
