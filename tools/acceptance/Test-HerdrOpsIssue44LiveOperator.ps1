@@ -122,6 +122,20 @@ function Assert-TestExactBoundaries {
     }
 }
 
+function Assert-TestFailureEvidenceBoundaries {
+    param(
+        [Parameter(Mandatory = $true)]$Report,
+        [Parameter(Mandatory = $true)][string]$Context
+    )
+
+    Assert-TestCondition -Condition ([string]$Report.status -ceq 'FAIL') -Message "$Context did not persist FAIL status."
+    Assert-TestCondition -Condition ([string]$Report.boundaries.contract -like 'NOT OBSERVED*') -Message "$Context incorrectly granted Contract evidence."
+    Assert-TestCondition -Condition ([string]$Report.boundaries.cleanMachine -ceq 'NOT OBSERVED') -Message "$Context incorrectly granted CleanMachine evidence."
+    Assert-TestCondition -Condition ([string]$Report.boundaries.runtime -like 'NOT OBSERVED*') -Message "$Context incorrectly granted Runtime evidence."
+    Assert-TestCondition -Condition ([string]$Report.boundaries.independentReview -like 'NOT OBSERVED*') -Message "$Context incorrectly granted independent-review evidence."
+    Assert-TestCondition -Condition ([string]$Report.boundaries.release -like 'NOT OBSERVED*') -Message "$Context incorrectly granted Release evidence."
+}
+
 function New-TestVersionProfile {
     param(
         [Parameter(Mandatory = $true)]$BaseProfile,
@@ -234,7 +248,7 @@ function Test-OperatorFailClosed {
     if ($ExpectReportFile -and -not [string]::IsNullOrWhiteSpace($reportPath) -and (Test-Path -LiteralPath $reportPath -PathType Leaf)) {
         $report = Read-AcceptanceJsonFile -Path $reportPath -Context "$CaseName fail report"
         Assert-AcceptanceReportMatchesSchema -Report $report -SchemaPath $reportSchemaPath
-        Assert-TestCondition -Condition ([string]$report.status -ceq 'FAIL') -Message "$CaseName fail report status was not FAIL."
+        Assert-TestFailureEvidenceBoundaries -Report $report -Context "$CaseName fail report"
         return $report
     }
     return $null
@@ -347,7 +361,14 @@ try {
         if (-not (Test-Path -LiteralPath $InstallRoot -PathType Container)) {
             return [pscustomobject]@{ Status = 'FAIL'; Details = 'Synthetic first-run: install root missing.' }
         }
-        return [pscustomobject]@{ Status = 'PASS'; Details = 'Synthetic first-run quiescence.' }
+        return [pscustomobject]@{
+            Status = 'PASS'
+            Details = 'Synthetic first-run quiescence.'
+            CoreHealthReady = $true
+            CoreHealthDetails = 'Synthetic Core semantic readiness fixture.'
+            CoreSha256 = Get-AcceptanceSha256ForFile -Path (Join-Path $InstallRoot 'HerdrOps.Core.exe')
+            AppSha256 = Get-AcceptanceSha256ForFile -Path (Join-Path $InstallRoot 'HerdrOps.App.exe')
+        }
     }
 
     $greenArgs = [ordered]@{
@@ -435,8 +456,9 @@ try {
     $duplicateManifestArgs['CandidateArchivePath'] = $duplicateManifestZip
     $duplicateManifestArgs.Remove('CandidateArchiveSha256')
     $duplicateManifestArgs.Remove('CandidateArchiveBytes')
+    $duplicateManifestArgs['CandidateManifestSha256'] = Get-Sha256ForText -Text $duplicateManifestJson
     $duplicateManifestArgs['ReportDestination'] = (Join-Path $reportsDir 'duplicate-manifest.json')
-    Test-OperatorFailClosed -CaseName 'duplicate-manifest-key' -Arguments $duplicateManifestArgs
+    Test-OperatorFailClosed -CaseName 'duplicate-manifest-key' -Arguments $duplicateManifestArgs -ExpectedMessageFragment 'duplicate JSON object property'
 
     # Hostile case: installer runner reports failure -> fail closed in lifecycle.
     $failInstallerRunner = {
@@ -447,7 +469,7 @@ try {
     $failInstallerArgs['InstallerRunner'] = $failInstallerRunner
     $failInstallerArgs['FirstRunRunner'] = $syntheticFirstRunRunner
     $failInstallerArgs['ReportDestination'] = (Join-Path $reportsDir 'installer-runner-fail.json')
-    $failInstallerReport = Test-OperatorFailClosed -CaseName 'installer-runner-fail' -Arguments $failInstallerArgs -ExpectedMessageFragment 'Installer runner reported failure' -ExpectReportFile $true
+    $failInstallerReport = Test-OperatorFailClosed -CaseName 'installer-runner-fail' -Arguments $failInstallerArgs -ExpectedMessageFragment 'Installer runner returned non-PASS status' -ExpectReportFile $true
     if ($null -ne $failInstallerReport) {
         Assert-TestCondition -Condition ([string]$failInstallerReport.lifecycle.cleanInstall.status -ceq 'NOT_RUN') -Message 'Failed installer run was mislabeled as clean-install PASS.'
     }
@@ -461,7 +483,7 @@ try {
     $failFirstRunArgs['InstallerRunner'] = $syntheticInstallerRunner
     $failFirstRunArgs['FirstRunRunner'] = $failFirstRunRunner
     $failFirstRunArgs['ReportDestination'] = (Join-Path $reportsDir 'first-runner-fail.json')
-    $failFirstRunReport = Test-OperatorFailClosed -CaseName 'first-runner-fail' -Arguments $failFirstRunArgs -ExpectedMessageFragment 'First-run runner reported failure' -ExpectReportFile $true
+    $failFirstRunReport = Test-OperatorFailClosed -CaseName 'first-runner-fail' -Arguments $failFirstRunArgs -ExpectedMessageFragment 'First-run runner returned non-PASS status' -ExpectReportFile $true
     if ($null -ne $failFirstRunReport) {
         Assert-TestCondition -Condition ([string]$failFirstRunReport.lifecycle.cleanInstall.status -ceq 'PASS') -Message 'Completed clean install lost PASS after first-run failure.'
         Assert-TestCondition -Condition ([string]$failFirstRunReport.lifecycle.upgrade.status -ceq 'NOT_RUN') -Message 'Later phases ran after first-run failure.'
@@ -472,7 +494,14 @@ try {
         param($InstallRoot, $UserDataRoot, [int]$TimeoutMilliseconds = 5000)
         $marker = Join-Path $UserDataRoot 'state\issue-44-harness.marker'
         [IO.File]::AppendAllText($marker, 'corrupted', (New-Object System.Text.UTF8Encoding($false)))
-        return [pscustomobject]@{ Status = 'PASS'; Details = 'Injected retained-data corruption.' }
+        return [pscustomobject]@{
+            Status = 'PASS'
+            Details = 'Injected retained-data corruption.'
+            CoreHealthReady = $true
+            CoreHealthDetails = 'Synthetic semantic readiness reached before retained-marker integrity check.'
+            CoreSha256 = Get-AcceptanceSha256ForFile -Path (Join-Path $InstallRoot 'HerdrOps.Core.exe')
+            AppSha256 = Get-AcceptanceSha256ForFile -Path (Join-Path $InstallRoot 'HerdrOps.App.exe')
+        }
     }
     $corruptFirstRunArgs = $greenArgs.Clone()
     $corruptFirstRunArgs['InstallerRunner'] = $syntheticInstallerRunner
@@ -491,8 +520,12 @@ try {
 
     # Hostile case: report destination nested inside retained-data root must fail closed.
     $nestedReportArgs = $greenArgs.Clone()
-    $nestedReportArgs['ReportDestination'] = (Get-AcceptanceFullPath -Path (Join-Path $simRoot 'HerdrOps\invalid-report.json'))
+    $nestedReportPath = Get-AcceptanceFullPath -Path (Join-Path $simRoot 'HerdrOps\invalid-report.json')
+    $nestedReportArgs['ReportDestination'] = $nestedReportPath
     Test-OperatorFailClosed -CaseName 'nested-report-destination' -Arguments $nestedReportArgs -ExpectedMessageFragment 'must not be inside'
+    Assert-TestCondition -Condition (-not (Test-Path -LiteralPath $nestedReportPath)) -Message 'Rejected nested report destination created a file side effect.'
+    Assert-TestCondition -Condition (-not (Test-Path -LiteralPath $canonicalInstall)) -Message 'Rejected nested report destination touched the real AppData install root.'
+    Assert-TestCondition -Condition (-not (Test-Path -LiteralPath $canonicalMarker -PathType Leaf)) -Message 'Rejected nested report destination touched the real AppData retained marker.'
 
     # Hostile case: pre-existing InstallRoot must fail closed at clean-machine precondition.
     $simPrograms = Join-Path $simRoot 'Programs'
@@ -506,13 +539,81 @@ try {
     Remove-Item -LiteralPath $preExistingInstallRoot -Recurse -Force
 
     # Hostile case: leftover staging/backup residuals next to a missing InstallRoot must fail closed.
-    foreach ($residualName in @('HerdrOps.staging-abandoned', 'HerdrOps.backup-abandoned')) {
+    foreach ($residualName in @(
+            'HerdrOps.stage-abandoned',
+            'HerdrOps.staging-abandoned',
+            'HerdrOps.backup-abandoned')) {
         $residualDir = Join-Path $simPrograms $residualName
         New-Item -ItemType Directory -Path $residualDir -Force | Out-Null
         $residualArgs = $greenArgs.Clone()
         $residualArgs['ReportDestination'] = (Join-Path $reportsDir ('residual-' + $residualName.Replace('.', '-') + '.json'))
         Test-OperatorFailClosed -CaseName "residual-$residualName" -Arguments $residualArgs -ExpectedMessageFragment 'leftover residuals detected'
         Remove-Item -LiteralPath $residualDir -Recurse -Force
+    }
+
+    # Hostile case: a runner-created production-style residual must make final cleanup fail closed.
+    $cleanupResidualPath = Join-Path $simPrograms 'HerdrOps.staging-injected'
+    $cleanupResidualRunner = {
+        param($Action, $ArchivePath, $InstallRoot, $UserDataRoot, [switch]$RemoveUserData, [int]$TimeoutSeconds = 60)
+        $delegated = & $syntheticInstallerRunner -Action $Action -ArchivePath $ArchivePath -InstallRoot $InstallRoot -UserDataRoot $UserDataRoot -RemoveUserData:$RemoveUserData -TimeoutSeconds $TimeoutSeconds
+        if ($Action -eq 'Uninstall') {
+            New-Item -ItemType Directory -Path $cleanupResidualPath -Force | Out-Null
+        }
+        return $delegated
+    }.GetNewClosure()
+    $cleanupResidualArgs = $greenArgs.Clone()
+    $cleanupResidualArgs['InstallerRunner'] = $cleanupResidualRunner
+    $cleanupResidualArgs['ReportDestination'] = (Join-Path $reportsDir 'cleanup-residual.json')
+    try {
+        Test-OperatorFailClosed -CaseName 'cleanup-residual' -Arguments $cleanupResidualArgs -ExpectedMessageFragment 'Cleanup residual check failed' -ExpectReportFile $true | Out-Null
+    } finally {
+        if (Test-Path -LiteralPath $cleanupResidualPath) {
+            Remove-Item -LiteralPath $cleanupResidualPath -Recurse -Force
+        }
+    }
+
+    # Hostile case: marker removal after semantic readiness must reach and fail the integrity guard.
+    $removeMarkerFirstRunRunner = {
+        param($InstallRoot, $UserDataRoot, [int]$TimeoutMilliseconds = 5000)
+        Remove-Item -LiteralPath (Join-Path $UserDataRoot 'state\issue-44-harness.marker') -Force
+        return [pscustomobject]@{
+            Status = 'PASS'
+            Details = 'Injected retained-marker removal.'
+            CoreHealthReady = $true
+            CoreHealthDetails = 'Synthetic semantic readiness reached before retained-marker integrity check.'
+            CoreSha256 = Get-AcceptanceSha256ForFile -Path (Join-Path $InstallRoot 'HerdrOps.Core.exe')
+            AppSha256 = Get-AcceptanceSha256ForFile -Path (Join-Path $InstallRoot 'HerdrOps.App.exe')
+        }
+    }
+    $removeMarkerArgs = $greenArgs.Clone()
+    $removeMarkerArgs['FirstRunRunner'] = $removeMarkerFirstRunRunner
+    $removeMarkerArgs['ReportDestination'] = (Join-Path $reportsDir 'first-runner-removes-marker.json')
+    Test-OperatorFailClosed -CaseName 'first-runner-removes-marker' -Arguments $removeMarkerArgs -ExpectedMessageFragment 'File not found'
+
+    # Hostile case: a bounded first-run timeout is evidence of failure, never Runtime credit.
+    $timeoutFirstRunRunner = {
+        param($InstallRoot, $UserDataRoot, [int]$TimeoutMilliseconds = 5000)
+        throw (New-Object System.TimeoutException 'Injected bounded first-run timeout.')
+    }
+    $timeoutArgs = $greenArgs.Clone()
+    $timeoutArgs['FirstRunRunner'] = $timeoutFirstRunRunner
+    $timeoutArgs['ReportDestination'] = (Join-Path $reportsDir 'first-runner-timeout.json')
+    Test-OperatorFailClosed -CaseName 'first-runner-timeout' -Arguments $timeoutArgs -ExpectedMessageFragment 'Injected bounded first-run timeout' -ExpectReportFile $true | Out-Null
+
+    # Hostile case: a reparse point in a target ancestor is rejected before lifecycle mutation.
+    $reparseTarget = Join-Path $simRoot 'reparse-target'
+    $reparseParent = Join-Path $simRoot 'reparse-parent'
+    New-Item -ItemType Directory -Path $reparseTarget -Force | Out-Null
+    $mklinkOutput = @(& cmd.exe /d /c mklink /J $reparseParent $reparseTarget 2>&1 | ForEach-Object { [string]$_ })
+    Assert-TestCondition -Condition ($LASTEXITCODE -eq 0 -and (Test-Path -LiteralPath $reparseParent)) -Message "Could not create fixture junction for reparse rejection: $($mklinkOutput -join '; ')"
+    try {
+        $reparseArgs = $greenArgs.Clone()
+        $reparseArgs['InstallRoot'] = (Get-AcceptanceFullPath -Path (Join-Path $reparseParent 'HerdrOps'))
+        $reparseArgs['ReportDestination'] = (Join-Path $reportsDir 'target-reparse.json')
+        Test-OperatorFailClosed -CaseName 'target-reparse' -Arguments $reparseArgs -ExpectedMessageFragment 'reparse'
+    } finally {
+        [IO.Directory]::Delete($reparseParent, $false)
+        Remove-Item -LiteralPath $reparseTarget -Recurse -Force
     }
 
     # Hostile case: Live mode with injected runners must fail closed at the live safeguard.
@@ -585,7 +686,7 @@ try {
         FirstRunRunner = $syntheticFirstRunRunner
         ReportDestination = (Join-Path $reportsDir 'live-injected-runners.json')
     }
-    Test-OperatorFailClosed -CaseName 'live-injected-runners' -Arguments $liveInjectedArgs -ExpectedMessageFragment 'MUST NOT use injected'
+    Test-OperatorFailClosed -CaseName 'live-injected-runners' -Arguments $liveInjectedArgs -ExpectedMessageFragment 'MUST NOT use injected -InstallerRunner or -FirstRunRunner'
 
     $resultSummary = [pscustomobject][ordered]@{
         EvidenceClass = 'Synthetic'

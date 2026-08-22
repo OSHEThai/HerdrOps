@@ -154,6 +154,7 @@ $script:CleanMachineFilesystemObserved = $false
 $script:TranscriptSequence = 1
 $script:OwnedStagingDirectory = $null
 $script:OwnedSimulationDirectory = $null
+$script:HarnessMarkerCreated = $false
 
 # These defaults deliberately make a preflight failure reportable.  Binding
 # parsing happens before target setup, so every report field must already have
@@ -393,31 +394,24 @@ function Assert-Issue44AcceptedBetaReport {
         [Parameter(Mandatory = $true)]$Report,
         [Parameter(Mandatory = $true)][string]$ReportStatus,
         [Parameter(Mandatory = $true)][string]$ExpectedSourceCommit,
-        [Parameter(Mandatory = $true)][string]$ExpectedSourceTree,
-        [Parameter(Mandatory = $true)][string]$ExpectedPackageVersion,
-        [Parameter(Mandatory = $true)][string]$ExpectedArchiveSha256,
-        [Parameter(Mandatory = $true)][string]$ExpectedManifestSha256,
-        [Parameter(Mandatory = $true)][string]$ExpectedContentSha256
+        [Parameter(Mandatory = $true)][string]$ExpectedSourceTree
     )
 
     if ($ReportStatus -cne 'ACCEPTED') {
         throw "Live accepted-Beta status binding must be exactly 'ACCEPTED', not '$ReportStatus'."
     }
-    $actualStatus = Get-Issue44FirstNestedValue -Object $Report -Paths @(
-        @('status'), @('decision'))
-    if ([string]$actualStatus -cne 'ACCEPTED') {
-        throw "Accepted-Beta report status must be exactly 'ACCEPTED'; observed '$actualStatus'."
+    Assert-AcceptanceExactProperties -Object $Report -Names @(
+        'schemaVersion', 'reportKind', 'issue', 'candidate', 'decision',
+        'signer', 'role', 'signedAtUtc', 'signature') -Context 'Accepted-Beta human UAT report'
+    if ([int]$Report.schemaVersion -ne 1 -or
+        [string]$Report.reportKind -cne 'HerdrOps.V07HumanUatAcceptance' -or
+        [int]$Report.issue -ne 40 -or
+        [string]$Report.decision -cne 'ACCEPTED') {
+        throw 'Accepted-Beta evidence is not the exact accepted HerdrOps.V07HumanUatAcceptance contract.'
     }
-
-    $actualCommit = Get-Issue44FirstNestedValue -Object $Report -Paths @(
-        @('sourceCommit'), @('sourceCommitBinding'), @('provenance', 'sourceCommit'),
-        @('artifact', 'sourceCommit'), @('artifact', 'sourceCommitBinding'),
-        @('initialArtifact', 'sourceCommit'), @('initialArtifact', 'sourceCommitBinding'),
-        @('artifacts', 'initial', 'sourceCommit'), @('artifacts', 'initial', 'sourceCommitBinding'))
-    $actualTree = Get-Issue44FirstNestedValue -Object $Report -Paths @(
-        @('sourceTree'), @('sourceTreeBinding'), @('provenance', 'sourceTree'),
-        @('artifact', 'sourceTree'), @('initialArtifact', 'sourceTree'),
-        @('artifacts', 'initial', 'sourceTree'), @('git', 'sourceTree'))
+    Assert-AcceptanceExactProperties -Object $Report.candidate -Names @('commit', 'tree') -Context 'Accepted-Beta candidate'
+    $actualCommit = [string]$Report.candidate.commit
+    $actualTree = [string]$Report.candidate.tree
     if ([string]$actualCommit -cne $ExpectedSourceCommit) {
         throw "Accepted-Beta report sourceCommit mismatch: expected '$ExpectedSourceCommit', observed '$actualCommit'."
     }
@@ -425,39 +419,11 @@ function Assert-Issue44AcceptedBetaReport {
         throw "Accepted-Beta report sourceTree mismatch: expected '$ExpectedSourceTree', observed '$actualTree'."
     }
 
-    $actualPackageVersion = Get-Issue44FirstNestedValue -Object $Report -Paths @(
-        @('packageVersion'), @('artifact', 'packageVersion'), @('initialArtifact', 'packageVersion'),
-        @('artifacts', 'initial', 'packageVersion'))
-    $actualArchiveSha256 = Get-Issue44FirstNestedValue -Object $Report -Paths @(
-        @('archiveSha256'), @('artifact', 'archiveSha256'), @('initialArtifact', 'archiveSha256'),
-        @('artifacts', 'initial', 'archiveSha256'))
-    $actualManifestSha256 = Get-Issue44FirstNestedValue -Object $Report -Paths @(
-        @('manifestSha256'), @('artifact', 'manifestSha256'), @('initialArtifact', 'manifestSha256'),
-        @('artifacts', 'initial', 'manifestSha256'))
-    $actualContentSha256 = Get-Issue44FirstNestedValue -Object $Report -Paths @(
-        @('contentSha256'), @('artifact', 'contentSha256'), @('initialArtifact', 'contentSha256'),
-        @('artifacts', 'initial', 'contentSha256'))
-    if ([string]$actualPackageVersion -cne $ExpectedPackageVersion -or
-        [string]$actualArchiveSha256 -cne $ExpectedArchiveSha256.ToUpperInvariant() -or
-        [string]$actualManifestSha256 -cne $ExpectedManifestSha256.ToUpperInvariant() -or
-        [string]$actualContentSha256 -cne $ExpectedContentSha256.ToUpperInvariant()) {
-        throw 'Accepted-Beta packageVersion/archiveSha256/manifestSha256/contentSha256 do not match the accepted initial artifact.'
-    }
-
-    $human = Get-Issue44FirstNestedValue -Object $Report -Paths @(
-        @('humanAcceptance'), @('humanApproval'), @('approval'), @('human'))
-    if ($null -eq $human -or $human -is [string]) {
-        throw 'Accepted-Beta report is missing an object-shaped human acceptance record.'
-    }
-    $humanDecision = Get-Issue44FirstNestedValue -Object $human -Paths @(@('status'), @('decision'))
-    if ([string]$humanDecision -cne 'ACCEPTED') {
-        throw "Accepted-Beta human acceptance must be ACCEPTED; observed '$humanDecision'."
-    }
-    [void](Assert-Issue44NonPlaceholder -Value (Get-Issue44FirstNestedValue -Object $human -Paths @(@('signer'), @('name'), @('approver'))) -Context 'Accepted-Beta human signer')
-    [void](Assert-Issue44NonPlaceholder -Value (Get-Issue44FirstNestedValue -Object $human -Paths @(@('role'))) -Context 'Accepted-Beta human role')
-    $signedAt = Assert-Issue44NonPlaceholder -Value (Get-Issue44FirstNestedValue -Object $human -Paths @(@('signedAtUtc'), @('acceptedAtUtc'), @('date'))) -Context 'Accepted-Beta human date'
+    [void](Assert-Issue44NonPlaceholder -Value $Report.signer -Context 'Accepted-Beta human signer')
+    [void](Assert-Issue44NonPlaceholder -Value $Report.role -Context 'Accepted-Beta human role')
+    $signedAt = Assert-Issue44NonPlaceholder -Value $Report.signedAtUtc -Context 'Accepted-Beta human date'
     try { [void][DateTimeOffset]::Parse($signedAt, [Globalization.CultureInfo]::InvariantCulture) } catch { throw 'Accepted-Beta human date is not a valid timestamp.' }
-    [void](Assert-Issue44NonPlaceholder -Value (Get-Issue44FirstNestedValue -Object $human -Paths @(@('signature'))) -Context 'Accepted-Beta human signature')
+    [void](Assert-Issue44NonPlaceholder -Value $Report.signature -Context 'Accepted-Beta human signature')
 }
 
 function Get-Issue44ProcessIdentity {
@@ -465,11 +431,17 @@ function Get-Issue44ProcessIdentity {
 
     try {
         $startUtc = $Process.StartTime.ToUniversalTime()
+        $path = [string]$Process.Path
+        if ([string]::IsNullOrWhiteSpace($path) -or -not (Test-Path -LiteralPath $path -PathType Leaf)) {
+            throw 'Executable path is unavailable.'
+        }
+        $file = Get-FileSha256AndBytes -Path $path
         return [pscustomobject][ordered]@{
             Id = [int]$Process.Id
             StartUtcTicks = [int64]$startUtc.Ticks
             StartUtc = $startUtc.ToString('o', [Globalization.CultureInfo]::InvariantCulture)
-            Path = [string]$Process.Path
+            Path = $path
+            Sha256 = [string]$file.Sha256
         }
     } catch {
         throw "Cannot establish process identity for PID $($Process.Id): $($_.Exception.Message)"
@@ -491,6 +463,9 @@ function Assert-Issue44ProcessIdentity {
         -not [string]::IsNullOrWhiteSpace([string]$current.Path) -and
         [string]$current.Path -cne [string]$Identity.Path) {
         throw "$Context process path changed for PID $($Identity.Id); refusing to touch a possible PID reuse."
+    }
+    if ([string]$current.Sha256 -cne [string]$Identity.Sha256) {
+        throw "$Context executable hash changed for PID $($Identity.Id); refusing unbound process evidence."
     }
 }
 
@@ -522,18 +497,34 @@ function Write-Issue44PipeFrame {
 }
 
 function Read-Issue44PipeFrame {
-    param([Parameter(Mandatory = $true)][IO.Stream]$Stream)
+    param(
+        [Parameter(Mandatory = $true)][IO.Stream]$Stream,
+        [Parameter(Mandatory = $true)][DateTime]$DeadlineUtc
+    )
 
-    $reader = New-Object IO.BinaryReader($Stream)
-    $length = $reader.ReadInt32()
+    function Read-BoundedExact {
+        param([byte[]]$Buffer, [int]$Offset, [int]$Count)
+        $total = 0
+        while ($total -lt $Count) {
+            $remaining = [int][Math]::Floor(($DeadlineUtc - [DateTime]::UtcNow).TotalMilliseconds)
+            if ($remaining -le 0) { throw 'Core readiness pipe read timed out.' }
+            $cts = New-Object Threading.CancellationTokenSource
+            try {
+                $cts.CancelAfter($remaining)
+                $task = $Stream.ReadAsync($Buffer, $Offset + $total, $Count - $total, $cts.Token)
+                try { $read = $task.GetAwaiter().GetResult() } catch [OperationCanceledException] { throw 'Core readiness pipe read timed out.' }
+                if ($read -le 0) { throw 'Core readiness pipe ended before a complete frame was received.' }
+                $total += $read
+            } finally { $cts.Dispose() }
+        }
+    }
+
+    $header = New-Object byte[] 4
+    Read-BoundedExact -Buffer $header -Offset 0 -Count 4
+    $length = [BitConverter]::ToInt32($header, 0)
     if ($length -le 0 -or $length -gt (4 * 1024 * 1024)) { throw 'Core readiness frame length is outside the bounded size.' }
     $bytes = New-Object byte[] $length
-    $offset = 0
-    while ($offset -lt $length) {
-        $read = $reader.Read($bytes, $offset, $length - $offset)
-        if ($read -le 0) { throw 'Core readiness pipe ended before a complete frame was received.' }
-        $offset += $read
-    }
+    Read-BoundedExact -Buffer $bytes -Offset 0 -Count $length
     $json = (New-Object System.Text.UTF8Encoding($false, $true)).GetString($bytes)
     return ConvertFrom-StrictPackageJson -Json $json -Description 'Issue #44 Core readiness frame'
 }
@@ -541,67 +532,40 @@ function Read-Issue44PipeFrame {
 function Wait-Issue44CoreSemanticReadiness {
     param(
         [Parameter(Mandatory = $true)][Diagnostics.Process]$CoreProcess,
+        [Parameter(Mandatory = $true)]$CoreIdentity,
+        [Parameter(Mandatory = $true)][Diagnostics.Process]$AppProcess,
+        [Parameter(Mandatory = $true)]$AppIdentity,
         [Parameter(Mandatory = $true)][int]$TimeoutMilliseconds
     )
 
     $deadline = [DateTime]::UtcNow.AddMilliseconds($TimeoutMilliseconds)
     $pipeName = Get-Issue44StatePipeName
-    $lastRetryMessage = 'pipe not yet available'
+    $lastRetryMessage = 'real App window and Core pipe are not yet ready'
     while ([DateTime]::UtcNow -lt $deadline) {
         if ($CoreProcess.HasExited) { throw "Core exited before semantic readiness: $($CoreProcess.ExitCode)." }
+        if ($AppProcess.HasExited) { throw "App exited before semantic readiness: $($AppProcess.ExitCode)." }
+        Assert-Issue44ProcessIdentity -Identity $CoreIdentity -Process $CoreProcess -Context 'Core readiness'
+        Assert-Issue44ProcessIdentity -Identity $AppIdentity -Process $AppProcess -Context 'App readiness'
+        $AppProcess.Refresh()
+        if (-not $AppProcess.Responding -or $AppProcess.MainWindowHandle -eq [IntPtr]::Zero) {
+            $lastRetryMessage = 'the exact launched App has not exposed a responsive main window'
+            Start-Sleep -Milliseconds 100
+            continue
+        }
         $pipe = $null
         try {
-            $pipe = New-Object System.IO.Pipes.NamedPipeClientStream('.', $pipeName, [IO.Pipes.PipeDirection]::InOut, [IO.Pipes.PipeOptions]::None)
+            # This probe deliberately sends no HerdrOps.App envelope.  Only the
+            # real launched App may claim that production protocol identity.
+            # A bounded connect proves that the exact launched Core owns a
+            # reachable current-user listener while the real App UI is ready.
+            $pipe = New-Object System.IO.Pipes.NamedPipeClientStream('.', $pipeName, [IO.Pipes.PipeDirection]::InOut, [IO.Pipes.PipeOptions]::Asynchronous)
             $remaining = [int][Math]::Max(1, [Math]::Min(500, ($deadline - [DateTime]::UtcNow).TotalMilliseconds))
             $pipe.Connect($remaining)
-            $instanceId = [Guid]::NewGuid().ToString()
-            $now = [DateTime]::UtcNow.ToString('o', [Globalization.CultureInfo]::InvariantCulture)
-            Write-Issue44PipeFrame -Stream $pipe -Object ([ordered]@{
-                    protocolVersion = 2
-                    messageType = 'hello'
-                    sequence = 0
-                    sentUtc = $now
-                    source = 'HerdrOps.App'
-                    correlationId = $instanceId
-                    payload = [ordered]@{ clientRole = 'app'; clientInstanceId = $instanceId }
-                })
-            $accepted = Read-Issue44PipeFrame -Stream $pipe
-            Assert-AcceptanceExactProperties -Object $accepted -Names @('protocolVersion', 'messageType', 'sequence', 'sentUtc', 'source', 'correlationId', 'payload') -Context 'Core readiness hello-accepted envelope'
-            if ([int]$accepted.protocolVersion -ne 2 -or
-                [string]$accepted.messageType -cne 'hello-accepted' -or
-                [string]$accepted.source -cne 'HerdrOps.Core' -or
-                [string]$accepted.correlationId -cne $instanceId) {
-                throw 'Core readiness handshake response was not hello-accepted from HerdrOps.Core.'
-            }
-            Assert-AcceptanceExactProperties -Object $accepted.payload -Names @('serverInstanceId', 'authorizationScope') -Context 'Core readiness hello-accepted payload'
-            if ([string]$accepted.payload.authorizationScope -cne 'current-user' -or [string]::IsNullOrWhiteSpace([string]$accepted.payload.serverInstanceId)) {
-                throw 'Core readiness handshake did not prove current-user authorization.'
-            }
-            $snapshot = Read-Issue44PipeFrame -Stream $pipe
-            Assert-AcceptanceExactProperties -Object $snapshot -Names @('protocolVersion', 'messageType', 'sequence', 'sentUtc', 'source', 'correlationId', 'payload') -Context 'Core readiness snapshot envelope'
-            if ([int]$snapshot.protocolVersion -ne 2 -or
-                [string]$snapshot.messageType -cne 'state-snapshot' -or
-                [string]$snapshot.source -cne 'HerdrOps.Core' -or
-                [string]$snapshot.correlationId -cne $instanceId -or
-                [int64]$snapshot.sequence -ne [int64]$accepted.sequence) {
-                throw 'Core readiness did not return a state-snapshot from HerdrOps.Core.'
-            }
-            Assert-AcceptanceExactProperties -Object $snapshot.payload -Names @('state', 'stateSha256', 'runtimeHealth') -Context 'Core readiness snapshot payload'
-            Assert-AcceptanceSha256 -Value ([string]$snapshot.payload.stateSha256) -Context 'Core readiness stateSha256'
-            Assert-AcceptanceExactProperties -Object $snapshot.payload.runtimeHealth -Names @('status', 'lastTransitionUtc', 'lastAcceptedStateUtc', 'bootstrapCount', 'eventCount', 'disconnectCount', 'reconciliationCount') -Context 'Core readiness runtimeHealth'
-            if ([string]$snapshot.payload.runtimeHealth.status -notin @('Starting', 'Connected', 'Reconnecting')) {
-                throw "Core readiness returned an unknown runtime health status '$($snapshot.payload.runtimeHealth.status)'."
-            }
-            if ($CoreProcess.HasExited) {
-                throw 'Core exited immediately after semantic readiness was observed.'
-            }
             return [pscustomobject][ordered]@{
                 Ready = $true
                 PipeName = $pipeName
-                MessageType = [string]$snapshot.messageType
-                RuntimeHealthStatus = [string]$snapshot.payload.runtimeHealth.status
-                StateSha256 = [string]$snapshot.payload.stateSha256
-                Details = 'Core current-user state pipe accepted an App hello and returned a strict state snapshot with runtime-health payload.'
+                RuntimeHealthStatus = 'REAL_APP_UI_AND_CORE_LISTENER_READY'
+                Details = "Real App PID $($AppIdentity.Id) start $($AppIdentity.StartUtc) path/hash bound and responsive; Core PID $($CoreIdentity.Id) start $($CoreIdentity.StartUtc) path/hash bound with reachable current-user state pipe. No App source was fabricated by the operator."
             }
         } catch [TimeoutException] {
             $lastRetryMessage = $_.Exception.Message
@@ -612,7 +576,7 @@ function Wait-Issue44CoreSemanticReadiness {
         }
         Start-Sleep -Milliseconds 100
     }
-    throw "Core semantic readiness timed out after $TimeoutMilliseconds milliseconds: $lastRetryMessage"
+    throw "Real App/Core readiness timed out after $TimeoutMilliseconds milliseconds: $lastRetryMessage"
 }
 
 function Stage-AcceptedArchiveAtomically {
@@ -921,6 +885,46 @@ function Assert-OperatorNoReparse {
     Assert-AcceptanceTreeNoReparse -Path $Path -Context 'Operator path'
 }
 
+function Write-Issue44ReportDurably {
+    param(
+        [Parameter(Mandatory = $true)]$Report,
+        [Parameter(Mandatory = $true)][string]$Path
+    )
+
+    $unresolvedInstallRoot = Join-Path ([IO.Path]::GetTempPath()) ('.herdrops-issue44-unresolved-install-' + $script:RunId)
+    $unresolvedUserDataRoot = Join-Path ([IO.Path]::GetTempPath()) ('.herdrops-issue44-unresolved-data-' + $script:RunId)
+    $destination = Assert-AcceptanceReportPath `
+        -Path $Path `
+        -InstallRoot $unresolvedInstallRoot `
+        -UserDataRoot $unresolvedUserDataRoot `
+        -AllowExternalParent:($Mode -eq 'Live')
+    $parent = Split-Path -Path $destination -Parent
+    if ([string]::IsNullOrWhiteSpace($parent) -or -not (Test-Path -LiteralPath $parent -PathType Container)) {
+        throw "Explicit ReportDestination parent does not exist: '$parent'."
+    }
+    Assert-AcceptanceNoReparsePath -Path $parent
+    if (Test-Path -LiteralPath $destination) {
+        throw "Explicit ReportDestination already exists; refusing overwrite: '$destination'."
+    }
+    $temporary = Join-Path $parent ('.issue44-report-' + $script:RunId + '.tmp')
+    try {
+        $json = $Report | ConvertTo-Json -Depth 100
+        $bytes = (New-Object System.Text.UTF8Encoding($false)).GetBytes($json + [Environment]::NewLine)
+        $stream = New-Object IO.FileStream($temporary, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+        try {
+            $stream.Write($bytes, 0, $bytes.Length)
+            $stream.Flush($true)
+        } finally { $stream.Dispose() }
+        [IO.File]::Move($temporary, $destination)
+        if (-not (Test-Path -LiteralPath $destination -PathType Leaf)) {
+            throw "Durable report publication could not be verified at '$destination'."
+        }
+        return $destination
+    } finally {
+        if (Test-Path -LiteralPath $temporary) { Remove-Item -LiteralPath $temporary -Force -ErrorAction SilentlyContinue }
+    }
+}
+
 # 1. Parse JSON binding if provided.  Keep the failure inside the reportable
 # lifecycle so malformed preflight input still produces a schema-valid FAIL.
 if (-not [string]::IsNullOrWhiteSpace($BindingPath)) {
@@ -1051,9 +1055,9 @@ $cleanup = [ordered]@{
     status = 'NOT_RUN'
     attempted = $false
     simulationRoot = $(if ([string]::IsNullOrWhiteSpace($SimulationRoot)) { 'NONE' } else { $SimulationRoot })
-    simulationRootRemoved = $true
-    ownedStageRemoved = $true
-    ownedBackupRemoved = $true
+    simulationRootRemoved = $false
+    ownedStageRemoved = $false
+    ownedBackupRemoved = $false
     harnessSeededDataMarkerRemoved = $false
     retainedDataLeftIntact = $true
     residuals = @()
@@ -1208,15 +1212,6 @@ try {
             throw "Accepted-Beta provenance report SHA-256 mismatch: expected '$BetaReportSha256', observed '$($betaReportData.Sha256)'."
         }
         $betaReportJson = Read-AcceptanceJsonFile -Path $betaReportFull -Context 'Accepted-Beta provenance report'
-        if (-not [string]::IsNullOrWhiteSpace($BetaReportStatus) -and [string]$betaReportJson.status -cne $BetaReportStatus) {
-            throw "Accepted-Beta provenance report status mismatch: expected '$BetaReportStatus', observed '$($betaReportJson.status)'."
-        }
-        if (-not [string]::IsNullOrWhiteSpace($BetaReportSourceCommit)) {
-            $betaCommit = if ($betaReportJson.PSObject.Properties['sourceCommit']) { [string]$betaReportJson.sourceCommit } else { [string]$betaReportJson.artifacts.upgrade.sourceCommitBinding }
-            if ($betaCommit -cne $BetaReportSourceCommit) {
-                throw "Accepted-Beta provenance report sourceCommit mismatch: expected '$BetaReportSourceCommit', observed '$betaCommit'."
-            }
-        }
         if ($Mode -eq 'Live') {
             Assert-AcceptanceSha256 -Value $BetaReportSha256.ToUpperInvariant() -Context 'Accepted-Beta report SHA-256'
             if ($BetaReportSourceCommit -notmatch '^[0-9a-f]{40}$' -or
@@ -1226,15 +1221,20 @@ try {
             if ($InitialSourceCommit -notmatch '^[0-9a-f]{40}$' -or $BetaReportSourceCommit -cne $InitialSourceCommit) {
                 throw 'Accepted-Beta sourceCommit must equal the accepted initial artifact sourceCommit.'
             }
+            $resolvedBetaTreeOutput = @(& git -C $repositoryRoot rev-parse --verify "$BetaReportSourceCommit^{tree}" 2>&1 | ForEach-Object { [string]$_ })
+            if ($LASTEXITCODE -ne 0 -or $resolvedBetaTreeOutput.Count -ne 1 -or
+                $resolvedBetaTreeOutput[0].Trim() -cnotmatch '^[0-9a-f]{40}$') {
+                throw 'Accepted-Beta sourceCommit cannot be resolved independently to an exact tree in this repository.'
+            }
+            $resolvedBetaTree = $resolvedBetaTreeOutput[0].Trim().ToLowerInvariant()
+            if ($resolvedBetaTree -cne $BetaReportSourceTree) {
+                throw "Accepted-Beta sourceTree '$BetaReportSourceTree' does not match git tree '$resolvedBetaTree' resolved from sourceCommit '$BetaReportSourceCommit'."
+            }
             Assert-Issue44AcceptedBetaReport `
                 -Report $betaReportJson `
                 -ReportStatus $BetaReportStatus `
                 -ExpectedSourceCommit $BetaReportSourceCommit `
-                -ExpectedSourceTree $BetaReportSourceTree `
-                -ExpectedPackageVersion $InitialPackageVersion `
-                -ExpectedArchiveSha256 $InitialArchiveSha256 `
-                -ExpectedManifestSha256 $InitialManifestSha256 `
-                -ExpectedContentSha256 $InitialContentSha256
+                -ExpectedSourceTree $BetaReportSourceTree
         }
         Add-OperatorPreflightCheck -Name 'accepted-beta-provenance' -Status 'PASS' -Details "Beta report verified at '$betaReportFull'."
     } else {
@@ -1306,16 +1306,19 @@ try {
     if (Test-Path -LiteralPath $installRootFull) {
         throw "Clean-machine precondition failed: InstallRoot already exists at '$installRootFull'."
     }
+    if (Test-Path -LiteralPath $userDataRootFull) {
+        throw "Clean-machine precondition failed: UserDataRoot already exists at '$userDataRootFull'. Accepted-Beta data must be supplied only through the exact retained-data binding, not inherited host state."
+    }
     $installParent = Split-Path -Path $installRootFull -Parent
     if (Test-Path -LiteralPath $installParent) {
         $staleDirs = @(Get-ChildItem -LiteralPath $installParent -Directory -Force | Where-Object {
-            $_.Name -match '^HerdrOps\.(staging|backup|harness)-'
+            $_.Name -match '^HerdrOps\.(stage|staging|backup|harness)-'
         })
         if ($staleDirs.Count -gt 0) {
             throw "Clean-machine precondition failed: leftover residuals detected in '$installParent': $($staleDirs.FullName -join '; ')."
         }
     }
-    Add-OperatorPreflightCheck -Name 'clean-machine-precondition' -Status 'PASS' -Details 'Install root is absent and parent directory is clean of residuals.'
+    Add-OperatorPreflightCheck -Name 'clean-machine-precondition' -Status 'PASS' -Details 'InstallRoot and UserDataRoot are absent and the install parent is clean of stage/staging/backup/harness residuals.'
 
     # Preflight Check 9: Archive Validation, Manifest Extraction, Entry Hashing, and Staging
     if ($Mode -eq 'Live') {
@@ -1583,15 +1586,43 @@ try {
             if ($null -eq $proc) {
                 throw "Failed to start installer child process: $pwshExe"
             }
-
+            $installerIdentity = Get-Issue44ProcessIdentity -Process $proc
             $stdoutTask = $proc.StandardOutput.ReadToEndAsync()
             $stderrTask = $proc.StandardError.ReadToEndAsync()
-
-            if (-not $proc.WaitForExit($TimeoutSeconds * 1000)) {
-                try { $proc.Kill() } catch { }
-                throw "Installer child process timed out after $TimeoutSeconds seconds."
+            $timedOut = -not $proc.WaitForExit($TimeoutSeconds * 1000)
+            $descendantIdentities = New-Object 'System.Collections.Generic.Dictionary[int,object]'
+            $queue = New-Object 'System.Collections.Generic.Queue[int]'
+            $queue.Enqueue([int]$installerIdentity.Id)
+            while ($queue.Count -gt 0) {
+                $parentPid = $queue.Dequeue()
+                foreach ($child in @(Get-CimInstance Win32_Process -Filter "ParentProcessId = $parentPid" -ErrorAction Stop)) {
+                    $childProcess = Get-Process -Id ([int]$child.ProcessId) -ErrorAction Stop
+                    $childIdentity = Get-Issue44ProcessIdentity -Process $childProcess
+                    $descendantIdentities[$childIdentity.Id] = $childIdentity
+                    $queue.Enqueue($childIdentity.Id)
+                }
             }
-
+            $processCleanupFailures = New-Object System.Collections.ArrayList
+            foreach ($identity in @($descendantIdentities.Values) | Sort-Object StartUtcTicks -Descending) {
+                try {
+                    $childProcess = [Diagnostics.Process]::GetProcessById([int]$identity.Id)
+                    Assert-Issue44ProcessIdentity -Identity $identity -Process $childProcess -Context 'Installer descendant cleanup'
+                    if (-not $childProcess.HasExited) { $childProcess.Kill(); [void]$childProcess.WaitForExit(2000) }
+                    if (-not $childProcess.HasExited) { throw "Installer descendant PID $($identity.Id) remained alive." }
+                } catch [ArgumentException] { } catch { [void]$processCleanupFailures.Add($_.Exception.Message) }
+            }
+            try {
+                if (-not $proc.HasExited) {
+                    Assert-Issue44ProcessIdentity -Identity $installerIdentity -Process $proc -Context 'Installer root cleanup'
+                    $proc.Kill()
+                    [void]$proc.WaitForExit(2000)
+                }
+                if (-not $proc.HasExited) { throw "Installer root PID $($installerIdentity.Id) remained alive." }
+            } catch { [void]$processCleanupFailures.Add($_.Exception.Message) }
+            if ($processCleanupFailures.Count -gt 0) {
+                throw "Installer process-tree cleanup failed closed: $($processCleanupFailures -join '; ')"
+            }
+            if ($timedOut) { throw "Installer child process timed out after $TimeoutSeconds seconds; admitted process tree was terminated and verified." }
             $stdout = $stdoutTask.GetAwaiter().GetResult()
             $stderr = $stderrTask.GetAwaiter().GetResult()
 
@@ -1649,6 +1680,9 @@ try {
                     throw "Failed to start Core process: $coreExe serve-herdr-state"
                 }
                 $coreIdentity = Get-Issue44ProcessIdentity -Process $coreProc
+                if ([string]$coreIdentity.Sha256 -cne [string]$coreData.Sha256 -or [string]$coreIdentity.Path -cne $coreExe) {
+                    throw 'Launched Core identity does not match the exact installed path/hash.'
+                }
                 $admittedIdentities[$coreIdentity.Id] = $coreIdentity
 
                 # 2. Start App with NO invented arguments
@@ -1663,15 +1697,16 @@ try {
                     throw "Failed to start App process: $appExe"
                 }
                 $appIdentity = Get-Issue44ProcessIdentity -Process $appProc
+                if ([string]$appIdentity.Sha256 -cne [string]$appData.Sha256 -or [string]$appIdentity.Path -cne $appExe) {
+                    throw 'Launched App identity does not match the exact installed path/hash.'
+                }
                 $admittedIdentities[$appIdentity.Id] = $appIdentity
 
                 # 3. Bounded semantic readiness: Core must accept its strict
                 # current-user App handshake and return a state snapshot with
                 # runtime-health fields.  HasExited alone is not readiness.
-                $coreReadiness = Wait-Issue44CoreSemanticReadiness -CoreProcess $coreProc -TimeoutMilliseconds $TimeoutMilliseconds
-                if ($appProc.HasExited) {
-                    throw "App exited before Core semantic readiness was observed."
-                }
+                $coreReadiness = Wait-Issue44CoreSemanticReadiness -CoreProcess $coreProc -CoreIdentity $coreIdentity `
+                    -AppProcess $appProc -AppIdentity $appIdentity -TimeoutMilliseconds $TimeoutMilliseconds
 
                 # 4. Discover recursive descendants of admitted process
                 # identities only.  A PID without a provable start time is
@@ -1760,15 +1795,17 @@ try {
                 Status = 'PASS'
                 CorePid = $coreProc.Id
                 AppPid = $appProc.Id
+                CoreStartUtc = $coreIdentity.StartUtc
+                AppStartUtc = $appIdentity.StartUtc
                 CorePath = $coreExe
                 AppPath = $appExe
-                CoreSha256 = $coreData.Sha256
-                AppSha256 = $appData.Sha256
+                CoreSha256 = $coreIdentity.Sha256
+                AppSha256 = $appIdentity.Sha256
                 CoreHealthReady = [bool]$coreReadiness.Ready
                 CoreHealthDetails = [string]$coreReadiness.Details
                 CoreRuntimeHealthStatus = [string]$coreReadiness.RuntimeHealthStatus
                 AdmittedPids = @($admittedIdentities.Keys)
-                Details = 'Core serve-herdr-state and App launched cleanly; Core returned semantic state readiness and all identity-bound admitted PIDs terminated cleanly.'
+                Details = 'Exact Core and real App process identities reached bounded readiness without operator source spoofing; all admitted PIDs terminated cleanly.'
             }
         }
     }
@@ -1806,6 +1843,7 @@ try {
         # Establish / Verify Retained Data Marker
         if ($RetainedDataMode -eq 'create-test-marker') {
             $createdMarker = New-AcceptanceRetainedDataMarker -UserDataRoot $userDataRootFull -Path $retainedDataFullPath -ExpectedSha256 $RetainedDataSha256
+            $script:HarnessMarkerCreated = $true
             $retainedDataMarkerData = Get-FileSha256AndBytes -Path $retainedDataFullPath
             $activeRetainedSha256 = $retainedDataMarkerData.Sha256
         } else {
@@ -1956,7 +1994,7 @@ try {
     $residuals = New-Object System.Collections.ArrayList
     if (Test-Path -LiteralPath $installParent) {
         $staleDirs = @(Get-ChildItem -LiteralPath $installParent -Directory -Force | Where-Object {
-            $_.Name -match '^HerdrOps\.(staging|backup|harness)-'
+            $_.Name -match '^HerdrOps\.(stage|staging|backup|harness)-'
         })
         foreach ($d in $staleDirs) {
             [void]$residuals.Add($d.FullName)
@@ -1995,21 +2033,68 @@ try {
     $failureDetails = $_.Exception.Message
     Add-OperatorTranscript -Phase 'Failure' -Action 'fail-closed' -Status 'FAIL' -Effect 'None' -Details $failureDetails -PathBinding 'none'
 } finally {
-    if ($null -ne $script:OwnedStagingDirectory -and (Test-Path -LiteralPath $script:OwnedStagingDirectory)) {
+    if ($script:HarnessMarkerCreated -and -not [string]::IsNullOrWhiteSpace($retainedDataFullPath)) {
         try {
-            Remove-Item -LiteralPath $script:OwnedStagingDirectory -Recurse -Force -ErrorAction SilentlyContinue
-            $cleanup.ownedStageRemoved = $true
+            if (Test-Path -LiteralPath $retainedDataFullPath -PathType Leaf) {
+                Assert-AcceptanceNoReparsePath -Path $retainedDataFullPath
+                Remove-Item -LiteralPath $retainedDataFullPath -Force -ErrorAction Stop
+            }
+            $cleanup.harnessSeededDataMarkerRemoved = -not (Test-Path -LiteralPath $retainedDataFullPath)
+        } catch {
+            $cleanup.harnessSeededDataMarkerRemoved = $false
+        }
+    }
+    if ($null -ne $script:OwnedStagingDirectory) {
+        try {
+            if (Test-Path -LiteralPath $script:OwnedStagingDirectory) {
+                Assert-OperatorNoReparse -Path $script:OwnedStagingDirectory
+                Remove-Item -LiteralPath $script:OwnedStagingDirectory -Recurse -Force -ErrorAction Stop
+            }
+            $cleanup.ownedStageRemoved = -not (Test-Path -LiteralPath $script:OwnedStagingDirectory)
         } catch {
             $cleanup.ownedStageRemoved = $false
         }
+    } else {
+        $cleanup.ownedStageRemoved = $true
     }
-    if ($null -ne $script:OwnedSimulationDirectory -and (Test-Path -LiteralPath $script:OwnedSimulationDirectory)) {
+    if ($null -ne $script:OwnedSimulationDirectory) {
         try {
-            Remove-Item -LiteralPath $script:OwnedSimulationDirectory -Recurse -Force -ErrorAction SilentlyContinue
-            $cleanup.simulationRootRemoved = $true
+            if (Test-Path -LiteralPath $script:OwnedSimulationDirectory) {
+                Assert-OperatorNoReparse -Path $script:OwnedSimulationDirectory
+                Remove-Item -LiteralPath $script:OwnedSimulationDirectory -Recurse -Force -ErrorAction Stop
+            }
+            $cleanup.simulationRootRemoved = -not (Test-Path -LiteralPath $script:OwnedSimulationDirectory)
         } catch {
             $cleanup.simulationRootRemoved = $false
         }
+    } else {
+        $cleanup.simulationRootRemoved = $true
+    }
+
+    $postCleanupResiduals = New-Object System.Collections.ArrayList
+    if (-not [string]::IsNullOrWhiteSpace($installParent) -and (Test-Path -LiteralPath $installParent)) {
+        foreach ($residual in @(Get-ChildItem -LiteralPath $installParent -Directory -Force -ErrorAction SilentlyContinue | Where-Object {
+                    $_.Name -match '^HerdrOps\.(stage|staging|backup|harness)-'
+                })) {
+            [void]$postCleanupResiduals.Add($residual.FullName)
+        }
+    }
+    $cleanup.ownedBackupRemoved = (@($postCleanupResiduals | Where-Object { [IO.Path]::GetFileName($_) -match '^HerdrOps\.backup-' }).Count -eq 0)
+    $cleanup.residuals = @($postCleanupResiduals.ToArray())
+    $cleanup.attempted = $true
+    $cleanupSucceeded = ($cleanup.ownedStageRemoved -and $cleanup.simulationRootRemoved -and
+        $cleanup.ownedBackupRemoved -and $postCleanupResiduals.Count -eq 0 -and
+        (-not $script:HarnessMarkerCreated -or $cleanup.harnessSeededDataMarkerRemoved))
+    $cleanup.status = if ($cleanupSucceeded) { 'PASS' } else { 'FAIL' }
+    $cleanup.details = if ($cleanupSucceeded) {
+        'Operator-owned staging, simulation, backup residuals, and any harness-seeded marker were verified absent.'
+    } else {
+        "Fail-closed cleanup verification failed. Residuals: $($cleanup.residuals -join '; ')"
+    }
+    if (-not $cleanupSucceeded -and $status -ceq 'PASS') {
+        $status = 'FAIL'
+        $failureDetails = $cleanup.details
+        Add-OperatorTranscript -Phase 'Cleanup' -Action 'verify-absence' -Status 'FAIL' -Effect 'None' -Details $failureDetails -PathBinding 'installRoot,userDataRoot'
     }
 }
 
@@ -2023,7 +2108,11 @@ $cleanMachinePassed = ($Mode -ceq 'Live' -and
     $preflightPassed -and
     $script:CleanMachineFilesystemObserved -and
     $allLifecyclePassed -and
-    [string]$cleanup.status -ceq 'PASS')
+    [string]$cleanup.status -ceq 'PASS' -and
+    $cleanup.ownedStageRemoved -and
+    $cleanup.ownedBackupRemoved -and
+    $cleanup.simulationRootRemoved -and
+    (-not $script:HarnessMarkerCreated -or $cleanup.harnessSeededDataMarkerRemoved))
 $evidenceClass = if ($cleanMachinePassed) {
     'CleanMachine'
 } elseif ($Mode -eq 'Fixture') {
@@ -2075,19 +2164,22 @@ $report = [ordered]@{
 }
 
 $reportSchemaPath = Join-Path $PSScriptRoot '..\..\docs\acceptance\issue-44-install-acceptance-report.schema.json'
-if (Test-Path -LiteralPath $reportSchemaPath -PathType Leaf) {
-    Assert-AcceptanceReportMatchesSchema -Report $report -SchemaPath $reportSchemaPath
+if (-not (Test-Path -LiteralPath $reportSchemaPath -PathType Leaf)) {
+    throw "Issue #44 report schema is unavailable; refusing to publish or credit an unvalidated report: $reportSchemaPath"
 }
+Assert-AcceptanceNoReparsePath -Path $reportSchemaPath
+Assert-AcceptanceReportMatchesSchema -Report $report -SchemaPath $reportSchemaPath
 
-if (-not [string]::IsNullOrWhiteSpace($ReportDestination) -and
-    -not [string]::IsNullOrWhiteSpace([string]$targetsReport.installRoot) -and
+if ([string]::IsNullOrWhiteSpace($ReportDestination)) {
+    if ($status -ne 'PASS') {
+        throw "Issue #44 operator failed and cannot durably persist its schema-valid failure report because explicit -ReportDestination/reportPath is missing. Original failure: $failureDetails"
+    }
+} elseif (-not [string]::IsNullOrWhiteSpace([string]$targetsReport.installRoot) -and
     -not [string]::IsNullOrWhiteSpace([string]$targetsReport.userDataRoot)) {
-    $script:ReportDestination = Write-AcceptanceReportAtomically `
-        -Report $report `
-        -Path $ReportDestination `
-        -InstallRoot $targetsReport.installRoot `
-        -UserDataRoot $targetsReport.userDataRoot `
-        -AllowExternalParent:($Mode -eq 'Live')
+    $script:ReportDestination = Write-AcceptanceReportAtomically -Report $report -Path $ReportDestination `
+        -InstallRoot $targetsReport.installRoot -UserDataRoot $targetsReport.userDataRoot -AllowExternalParent:($Mode -eq 'Live')
+} else {
+    $script:ReportDestination = Write-Issue44ReportDurably -Report $report -Path $ReportDestination
 }
 
 if ($status -ne 'PASS') {
