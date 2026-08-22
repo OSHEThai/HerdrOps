@@ -4,6 +4,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 . (Join-Path $PSScriptRoot 'RendererCompatibility.Common.ps1')
+. (Join-Path $PSScriptRoot 'lib\V02SoakTestHarness.ps1')
 $script:InvokeSoakPath = Join-Path $PSScriptRoot 'Invoke-V02SoakMeasurement.ps1'
 
 $positiveCases = 0
@@ -115,207 +116,6 @@ function Get-TestSampleProvider([double]$WsStartMb = 100, [double]$WsEndMb = 100
     return $sb.GetNewClosure()
 }
 
-function Get-OwnedProcessStartTimeUtc([System.Diagnostics.Process]$Process) {
-    for ($attempt = 0; $attempt -lt 100; $attempt++) {
-        try {
-            $Process.Refresh()
-            if (-not $Process.HasExited) {
-                return $Process.StartTime.ToUniversalTime()
-            }
-        } catch {
-            # The child may not have completed initialization yet.
-        }
-        Start-Sleep -Milliseconds 25
-    }
-    throw "Controlled child process $($Process.Id) did not expose a live start time."
-}
-
-function Stop-OwnedProcessSafely([System.Diagnostics.Process]$Process, [DateTime]$ExpectedStartTimeUtc) {
-    if ($null -eq $Process) {
-        return
-    }
-    try {
-        $Process.Refresh()
-        if (-not $Process.HasExited -and $Process.StartTime.ToUniversalTime() -eq $ExpectedStartTimeUtc) {
-            $Process.Kill()
-            $null = $Process.WaitForExit(5000)
-        }
-    } catch {
-        # Cleanup must not mask the guard assertion; only the owned identity is eligible.
-    }
-}
-
-function Invoke-ControlledLiveGuardProbe([ValidateSet('UnexpectedExit', 'PidStartContinuity')][string]$GuardMode, [string]$ExpectedPattern, [string]$CaseName) {
-    $probeRoot = Join-Path $tempRoot ('live-' + $GuardMode.ToLowerInvariant() + '-' + [Guid]::NewGuid().ToString('N'))
-    New-Item -ItemType Directory -Path $probeRoot -Force | Out-Null
-    $destination = Join-Path $probeRoot 'live-probe.json'
-    $markerPath = Join-Path $probeRoot 'authenticated-telemetry.marker'
-    $stdoutPath = Join-Path $probeRoot 'runner.stdout.txt'
-    $stderrPath = Join-Path $probeRoot 'runner.stderr.txt'
-    $runnerPath = Join-Path $probeRoot 'runner.ps1'
-    $enginePath = (Get-Process -Id $PID).Path
-    if ([string]::IsNullOrWhiteSpace($enginePath)) {
-        throw 'Unable to locate the current PowerShell executable for the controlled live child probe.'
-    }
-    $childEnginePath = Join-Path ([Environment]::GetEnvironmentVariable('SystemRoot')) 'System32\ping.exe'
-    if (-not (Test-Path -LiteralPath $childEnginePath -PathType Leaf)) {
-        throw "Unable to locate the controlled child executable: $childEnginePath"
-    }
-
-    $runnerSource = @'
-#requires -Version 5.1
-[CmdletBinding()]
-param(
-    [Parameter(Mandatory = $true)][string]$InvokePath,
-    [Parameter(Mandatory = $true)][int]$AppProcessId,
-    [Parameter(Mandatory = $true)][int]$CoreProcessId,
-    [Parameter(Mandatory = $true)][string]$DestinationPath,
-    [Parameter(Mandatory = $true)][string]$EvidenceRoot,
-    [Parameter(Mandatory = $true)][string]$RepositoryRoot,
-    [Parameter(Mandatory = $true)][string]$MarkerPath,
-    [Parameter(Mandatory = $true)][ValidateSet('UnexpectedExit', 'PidStartContinuity')][string]$GuardMode
-)
-
-Set-StrictMode -Version Latest
-$ErrorActionPreference = 'Stop'
-$telemetryState = [pscustomobject]@{ Entered = $false }
-$liveTelemetry = {
-    param($binIndex, $sampleIndex, $elapsedMilliseconds)
-    if (-not $telemetryState.Entered) {
-        [IO.File]::WriteAllText($MarkerPath, 'AUTHENTICATED-LIVE-TELEMETRY', (New-Object Text.UTF8Encoding($false)))
-        $telemetryState.Entered = $true
-    }
-    [pscustomobject][ordered]@{
-        Authenticated = $true
-        Source = 'ControlledChildProcessTelemetry'
-        AppProcessId = [int]$AppProcessId
-        CoreProcessId = [int]$CoreProcessId
-        LatencyMicroseconds = @(1..20 | ForEach-Object { 100000L })
-        UiStallMicroseconds = @(1..19 | ForEach-Object { 10000L }) + @(20000L)
-        RendererStable = $true
-    }
-}.GetNewClosure()
-
-$arguments = [ordered]@{
-    PowerSource = 'AC'
-    DestinationPath = $DestinationPath
-    EvidenceRoot = $EvidenceRoot
-    RepositoryRoot = $RepositoryRoot
-    AppProcessId = [int]$AppProcessId
-    CoreProcessId = [int]$CoreProcessId
-    LiveTelemetryProvider = $liveTelemetry
-    TestOnlyLiveAcceleration = $true
-}
-
-if ($GuardMode -eq 'PidStartContinuity') {
-    $identityOverride = {
-        param($role, $binIndex, $sampleIndex, $observed)
-        $startTimeUtc = $observed.StartTimeUtc
-        if ($role -eq 'App' -and $sampleIndex -ge 1 -and $null -ne $startTimeUtc) {
-            $startTimeUtc = $startTimeUtc.AddSeconds(1)
-        }
-        [pscustomobject][ordered]@{
-            ProcessId = [int]$observed.ProcessId
-            HasExited = [bool]$observed.HasExited
-            StartTimeUtc = $startTimeUtc
-        }
-    }.GetNewClosure()
-    $arguments.TestOnlyProcessIdentityProvider = $identityOverride
-}
-
-& $InvokePath @arguments
-'@
-    [IO.File]::WriteAllText($runnerPath, $runnerSource, (New-Object Text.UTF8Encoding($false)))
-
-    $app = $null
-    $core = $null
-    $runner = $null
-    $appStartTimeUtc = $null
-    $coreStartTimeUtc = $null
-    $runnerStartTimeUtc = $null
-    try {
-        $childArguments = @('127.0.0.1', '-n', '120')
-        $app = Start-Process -FilePath $childEnginePath -ArgumentList $childArguments -PassThru -WindowStyle Hidden
-        $core = Start-Process -FilePath $childEnginePath -ArgumentList $childArguments -PassThru -WindowStyle Hidden
-        $appStartTimeUtc = Get-OwnedProcessStartTimeUtc $app
-        $coreStartTimeUtc = Get-OwnedProcessStartTimeUtc $core
-        # Let the owned PowerShell children leave startup before the first real
-        # process-telemetry interval; this does not alter production timing.
-        Start-Sleep -Milliseconds 1000
-
-        $runnerArguments = @(
-            '-NoLogo', '-NoProfile', '-NonInteractive', '-File', $runnerPath,
-            '-InvokePath', $script:InvokeSoakPath,
-            '-AppProcessId', [string]$app.Id,
-            '-CoreProcessId', [string]$core.Id,
-            '-DestinationPath', $destination,
-            '-EvidenceRoot', $probeRoot,
-            '-RepositoryRoot', $repoRoot,
-            '-MarkerPath', $markerPath,
-            '-GuardMode', $GuardMode
-        )
-        $runner = Start-Process -FilePath $enginePath `
-            -ArgumentList $runnerArguments `
-            -RedirectStandardOutput $stdoutPath `
-            -RedirectStandardError $stderrPath `
-            -PassThru
-        $runnerStartTimeUtc = Get-OwnedProcessStartTimeUtc $runner
-
-        $entered = $false
-        for ($attempt = 0; $attempt -lt 100; $attempt++) {
-            if (Test-Path -LiteralPath $markerPath -PathType Leaf) {
-                $marker = Get-Content -LiteralPath $markerPath -Raw
-                if ($marker -cne 'AUTHENTICATED-LIVE-TELEMETRY') {
-                    throw "Controlled live probe wrote an unexpected telemetry marker: '$marker'."
-                }
-                $entered = $true
-                break
-            }
-            $runner.Refresh()
-            if ($runner.HasExited) {
-                break
-            }
-            Start-Sleep -Milliseconds 50
-        }
-        if (-not $entered) {
-            throw "Controlled live probe did not enter the authenticated telemetry loop for $GuardMode."
-        }
-
-        if ($GuardMode -eq 'UnexpectedExit') {
-            Stop-OwnedProcessSafely $app $appStartTimeUtc
-            $app.Refresh()
-            if (-not $app.HasExited) {
-                throw 'Controlled live probe could not terminate its owned App child.'
-            }
-        }
-
-        if (-not $runner.WaitForExit(15000)) {
-            Stop-OwnedProcessSafely $runner $runnerStartTimeUtc
-            throw "Controlled live probe runner timed out for $GuardMode."
-        }
-        $runner.Refresh()
-        $stdout = if (Test-Path -LiteralPath $stdoutPath) { Get-Content -LiteralPath $stdoutPath -Raw } else { '' }
-        $stderr = if (Test-Path -LiteralPath $stderrPath) { Get-Content -LiteralPath $stderrPath -Raw } else { '' }
-        $combined = "$stdout`n$stderr"
-        if ($runner.ExitCode -eq 0) {
-            throw "Controlled live probe unexpectedly succeeded for $GuardMode."
-        }
-        if ($combined -notmatch $ExpectedPattern) {
-            throw "Controlled live probe did not reach the exact '$ExpectedPattern' guard for $GuardMode. Output: $combined"
-        }
-        if (Test-Path -LiteralPath $destination) {
-            throw "Controlled live probe leaked a published receipt for $GuardMode."
-        }
-        Pass-NegativeCase $CaseName
-    } finally {
-        Stop-OwnedProcessSafely $runner $runnerStartTimeUtc
-        Stop-OwnedProcessSafely $app $appStartTimeUtc
-        Stop-OwnedProcessSafely $core $coreStartTimeUtc
-    }
-}
-
-$previousSoakSelfTestMode = [Environment]::GetEnvironmentVariable('HERDROPS_V02_SOAK_SELFTEST', 'Process')
-[Environment]::SetEnvironmentVariable('HERDROPS_V02_SOAK_SELFTEST', '1', 'Process')
 $tempRoot = Join-Path ([IO.Path]::GetTempPath()) ("herdrops-soak-selftest-" + [Guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $tempRoot -Force | Out-Null
 
@@ -494,23 +294,69 @@ try {
     $negAllowDest = Join-Path $tempRoot 'matrix\neg-allow.json'
     Assert-ThrowsMatchAndZeroOutput {
         & $script:InvokeSoakPath -Synthetic `
-        -PowerSource 'AC' `
-        -DestinationPath $negAllowDest `
-        -EvidenceRoot $tempRoot `
-        -RepositoryRoot $repoRoot `
-        -AllowThresholdBreach `
-        -SyntheticPowerStateProvider { 'AC' } `
-        -SyntheticProcessTelemetryProvider (Get-TestSampleProvider)
+            -PowerSource 'AC' `
+            -DestinationPath $negAllowDest `
+            -EvidenceRoot $tempRoot `
+            -RepositoryRoot $repoRoot `
+            -AllowThresholdBreach `
+            -SyntheticPowerStateProvider { 'AC' } `
+            -SyntheticProcessTelemetryProvider (Get-TestSampleProvider)
     } 'A parameter cannot be found that matches parameter name ''AllowThresholdBreach''' 'removed switch -AllowThresholdBreach is rejected by parameter binding' $negAllowDest
 
-    # 3. Parameter dictionary check for removed switches
-    $commandParams = (Get-Command $script:InvokeSoakPath).Parameters
-    if ($commandParams.ContainsKey('ForceOverwrite') -or $commandParams.ContainsKey('AllowThresholdBreach')) {
-        throw 'Public API parameter dictionary still contains removed switches.'
-    }
-    Pass-NegativeCase 'public API parameter dictionary omits ForceOverwrite and AllowThresholdBreach'
+    # 3. Removed switch: -TestOnlyLiveAcceleration is rejected
+    $negAccelDest = Join-Path $tempRoot 'matrix\neg-accel.json'
+    Assert-ThrowsMatchAndZeroOutput {
+        & $script:InvokeSoakPath `
+            -PowerSource 'AC' `
+            -DestinationPath $negAccelDest `
+            -EvidenceRoot $tempRoot `
+            -RepositoryRoot $repoRoot `
+            -AppProcessId 123 `
+            -CoreProcessId 456 `
+            -TestOnlyLiveAcceleration
+    } 'A parameter cannot be found that matches parameter name ''TestOnlyLiveAcceleration''' 'removed switch -TestOnlyLiveAcceleration is rejected by parameter binding' $negAccelDest
 
-    # 4. No-clobber protection refuses to overwrite preexisting destination file
+    # 4. Removed switch: -TestOnlyProcessIdentityProvider is rejected
+    $negIdentProvDest = Join-Path $tempRoot 'matrix\neg-ident-prov.json'
+    Assert-ThrowsMatchAndZeroOutput {
+        & $script:InvokeSoakPath `
+            -PowerSource 'AC' `
+            -DestinationPath $negIdentProvDest `
+            -EvidenceRoot $tempRoot `
+            -RepositoryRoot $repoRoot `
+            -AppProcessId 123 `
+            -CoreProcessId 456 `
+            -TestOnlyProcessIdentityProvider { $null }
+    } 'A parameter cannot be found that matches parameter name ''TestOnlyProcessIdentityProvider''' 'removed switch -TestOnlyProcessIdentityProvider is rejected by parameter binding' $negIdentProvDest
+
+    # 5. Parameter dictionary check for removed switches
+    $commandParams = (Get-Command $script:InvokeSoakPath).Parameters
+    if ($commandParams.ContainsKey('ForceOverwrite') -or
+        $commandParams.ContainsKey('AllowThresholdBreach') -or
+        $commandParams.ContainsKey('TestOnlyLiveAcceleration') -or
+        $commandParams.ContainsKey('TestOnlyProcessIdentityProvider')) {
+        throw 'Public API parameter dictionary still contains removed test or bypass switches.'
+    }
+    Pass-NegativeCase 'public API parameter dictionary omits all test acceleration and bypass switches'
+
+    # 6. Environment variable HERDROPS_V02_SOAK_SELFTEST=1 cannot unlock acceleration or bypass live duration
+    $negEnvBypassDest = Join-Path $tempRoot 'matrix\neg-env-bypass.json'
+    [Environment]::SetEnvironmentVariable('HERDROPS_V02_SOAK_SELFTEST', '1', 'Process')
+    try {
+        Assert-ThrowsMatchAndZeroOutput {
+            & $script:InvokeSoakPath `
+                -PowerSource 'AC' `
+                -DestinationPath $negEnvBypassDest `
+                -EvidenceRoot $tempRoot `
+                -RepositoryRoot $repoRoot `
+                -AppProcessId 123 `
+                -CoreProcessId 456
+        } 'exact candidate source bindings|exact candidate package bindings' 'HERDROPS_V02_SOAK_SELFTEST=1 cannot bypass live package binding requirements' $negEnvBypassDest
+    } finally {
+        [Environment]::SetEnvironmentVariable('HERDROPS_V02_SOAK_SELFTEST', $null, 'Process')
+    }
+
+    # 7. No-clobber protection refuses to overwrite preexisting destination file
     $preexistingDest = Join-Path $tempRoot 'matrix\preexisting.json'
     [IO.File]::WriteAllText($preexistingDest, 'preexisting-content', (New-Object Text.UTF8Encoding($false)))
     Assert-ThrowsMatch {
@@ -528,7 +374,7 @@ try {
         throw "Preexisting destination file was mutated during no-clobber rejection."
     }
 
-    # 5. Mid-publish crash during staging write rolls back cleanly
+    # 8. Mid-publish crash during staging write rolls back cleanly
     $midWriteDest = Join-Path $tempRoot 'matrix\midwrite-dest.json'
     Assert-ThrowsMatchAndZeroOutput {
         & $script:InvokeSoakPath -Synthetic `
@@ -543,7 +389,7 @@ try {
             -SyntheticProcessTelemetryProvider (Get-TestSampleProvider)
     } 'Injected soak publication crash during staging write' 'mid-publish crash during staging write rolls back cleanly with zero published output' $midWriteDest
 
-    # 6. Mid-publish crash before commit rolls back cleanly
+    # 9. Mid-publish crash before commit rolls back cleanly
     $beforeCommitDest = Join-Path $tempRoot 'matrix\beforecommit-dest.json'
     Assert-ThrowsMatchAndZeroOutput {
         & $script:InvokeSoakPath -Synthetic `
@@ -558,7 +404,7 @@ try {
             -SyntheticProcessTelemetryProvider (Get-TestSampleProvider)
     } 'Injected soak publication crash before atomic commit' 'mid-publish crash before commit rolls back cleanly with zero published output' $beforeCommitDest
 
-    # 7. Initial power mismatch: AC requested, Battery observed
+    # 10. Initial power mismatch: AC requested, Battery observed
     $negPwr1Dest = Join-Path $tempRoot 'matrix\neg-pwr1.json'
     Assert-ThrowsMatchAndZeroOutput {
         & $script:InvokeSoakPath -Synthetic `
@@ -571,7 +417,7 @@ try {
             -SyntheticProcessTelemetryProvider (Get-TestSampleProvider)
     } 'Initial power source mismatch' 'initial power source mismatch (AC requested, Battery observed) produces zero output' $negPwr1Dest
 
-    # 8. Initial power mismatch: Battery requested, AC observed
+    # 11. Initial power mismatch: Battery requested, AC observed
     $negPwr2Dest = Join-Path $tempRoot 'matrix\neg-pwr2.json'
     Assert-ThrowsMatchAndZeroOutput {
         & $script:InvokeSoakPath -Synthetic `
@@ -584,7 +430,7 @@ try {
             -SyntheticProcessTelemetryProvider (Get-TestSampleProvider)
     } 'Initial power source mismatch' 'initial power source mismatch (Battery requested, AC observed) produces zero output' $negPwr2Dest
 
-    # 9. Mid-soak power interruption
+    # 12. Mid-soak power interruption
     $pwrState = [pscustomobject]@{ count = 0 }
     $interruptProvider = {
         $pwrState.count++
@@ -605,7 +451,7 @@ try {
             -SyntheticProcessTelemetryProvider (Get-TestSampleProvider)
     } 'Power source changed' 'mid-soak power interruption from AC to Battery produces zero output' $negPwrIntDest
 
-    # 10. Live mode invalid process IDs (zero or negative)
+    # 13. Live mode invalid process IDs (zero or negative)
     $negProc1Dest = Join-Path $tempRoot 'matrix\neg-proc1.json'
     Assert-ThrowsMatchAndZeroOutput {
         & $script:InvokeSoakPath `
@@ -613,11 +459,17 @@ try {
             -DestinationPath $negProc1Dest `
             -EvidenceRoot $tempRoot `
             -RepositoryRoot $repoRoot `
+            -PackageIdentityPath $receiptPath `
+            -PackageArchivePath $archivePath `
+            -ExtractedPackageRoot $packageRoot `
+            -ExpectedSourceCommit $repo.Commit `
+            -ExpectedSourceTree $repo.Tree `
+            -LiveTelemetryProvider { $null } `
             -AppProcessId 0 `
             -CoreProcessId 0
     } 'Live soak measurement requires positive AppProcessId and CoreProcessId' 'live mode invalid process IDs (zero or negative) produces zero output' $negProc1Dest
 
-    # 11. Live mode identical process IDs
+    # 14. Live mode identical process IDs
     $negProcIdentDest = Join-Path $tempRoot 'matrix\neg-proc-ident.json'
     Assert-ThrowsMatchAndZeroOutput {
         & $script:InvokeSoakPath `
@@ -625,11 +477,17 @@ try {
             -DestinationPath $negProcIdentDest `
             -EvidenceRoot $tempRoot `
             -RepositoryRoot $repoRoot `
+            -PackageIdentityPath $receiptPath `
+            -PackageArchivePath $archivePath `
+            -ExtractedPackageRoot $packageRoot `
+            -ExpectedSourceCommit $repo.Commit `
+            -ExpectedSourceTree $repo.Tree `
+            -LiveTelemetryProvider { $null } `
             -AppProcessId 1234 `
             -CoreProcessId 1234
     } 'AppProcessId and CoreProcessId must be distinct processes' 'live mode identical process IDs for App and Core produces zero output' $negProcIdentDest
 
-    # 12. Live mode non-existent process ID
+    # 15. Live mode non-existent process ID
     $negProc2Dest = Join-Path $tempRoot 'matrix\neg-proc2.json'
     Assert-ThrowsMatchAndZeroOutput {
         & $script:InvokeSoakPath `
@@ -637,11 +495,17 @@ try {
             -DestinationPath $negProc2Dest `
             -EvidenceRoot $tempRoot `
             -RepositoryRoot $repoRoot `
+            -PackageIdentityPath $receiptPath `
+            -PackageArchivePath $archivePath `
+            -ExtractedPackageRoot $packageRoot `
+            -ExpectedSourceCommit $repo.Commit `
+            -ExpectedSourceTree $repo.Tree `
+            -LiveTelemetryProvider { $null } `
             -AppProcessId 999999 `
             -CoreProcessId 999998
     } 'Unable to connect to target App' 'live mode non-existent process ID produces zero output' $negProc2Dest
 
-    # 13. Live mode process session ID mismatch
+    # 16. Live mode process session ID mismatch
     $negSessDest = Join-Path $tempRoot 'matrix\neg-sess.json'
     $currentPid = [System.Diagnostics.Process]::GetCurrentProcess().Id
     Assert-ThrowsMatchAndZeroOutput {
@@ -650,11 +514,17 @@ try {
             -DestinationPath $negSessDest `
             -EvidenceRoot $tempRoot `
             -RepositoryRoot $repoRoot `
+            -PackageIdentityPath $receiptPath `
+            -PackageArchivePath $archivePath `
+            -ExtractedPackageRoot $packageRoot `
+            -ExpectedSourceCommit $repo.Commit `
+            -ExpectedSourceTree $repo.Tree `
+            -LiveTelemetryProvider { $null } `
             -AppProcessId $currentPid `
             -CoreProcessId 4
     } 'Process session ID mismatch' 'live mode process session ID mismatch produces zero output' $negSessDest
 
-    # 14. Live mode missing live telemetry provider fails closed without fake defaults
+    # 17. Live mode missing live telemetry provider fails closed
     $negLiveTelDest = Join-Path $tempRoot 'matrix\neg-live-tel.json'
     $dummy1 = Start-Process -FilePath 'powershell.exe' -ArgumentList '-NoProfile -Command Start-Sleep -Seconds 30' -PassThru
     $dummy2 = Start-Process -FilePath 'powershell.exe' -ArgumentList '-NoProfile -Command Start-Sleep -Seconds 30' -PassThru
@@ -665,47 +535,375 @@ try {
                 -DestinationPath $negLiveTelDest `
                 -EvidenceRoot $tempRoot `
                 -RepositoryRoot $repoRoot `
+                -PackageIdentityPath $receiptPath `
+                -PackageArchivePath $archivePath `
+                -ExtractedPackageRoot $packageRoot `
+                -ExpectedSourceCommit $repo.Commit `
+                -ExpectedSourceTree $repo.Tree `
                 -AppProcessId $dummy1.Id `
                 -CoreProcessId $dummy2.Id
-        } 'Live soak measurement requires an authenticated telemetry source' 'live mode missing live telemetry provider fails closed without fake defaults' $negLiveTelDest
+        } 'Live soak measurement requires an authenticated telemetry source' 'live mode missing live telemetry provider fails closed' $negLiveTelDest
     } finally {
         if ($null -ne $dummy1 -and -not $dummy1.HasExited) { Stop-Process -Id $dummy1.Id -Force -ErrorAction SilentlyContinue }
         if ($null -ne $dummy2 -and -not $dummy2.HasExited) { Stop-Process -Id $dummy2.Id -Force -ErrorAction SilentlyContinue }
     }
 
-    # 15. Test-only live acceleration is not a production bypass.
-    $negUnguardedLiveControlDest = Join-Path $tempRoot 'matrix\neg-unguarded-live-control.json'
-    [Environment]::SetEnvironmentVariable('HERDROPS_V02_SOAK_SELFTEST', $null, 'Process')
+    # 18. Live mode mandatory package binding parameters
+    $negMissingPkgDest = Join-Path $tempRoot 'matrix\neg-missing-pkg.json'
+    Assert-ThrowsMatchAndZeroOutput {
+        & $script:InvokeSoakPath `
+            -PowerSource 'AC' `
+            -DestinationPath $negMissingPkgDest `
+            -EvidenceRoot $tempRoot `
+            -RepositoryRoot $repoRoot `
+            -ExpectedSourceCommit $repo.Commit `
+            -ExpectedSourceTree $repo.Tree `
+            -AppProcessId 123 `
+            -CoreProcessId 456
+    } 'PackageIdentityPath|exact candidate package bindings' 'live mode missing package parameters fails closed' $negMissingPkgDest
+
+    # -------------------------------------------------------------------------
+    # LIVE TELEMETRY FORGERY & PROCESS CONTINUITY TESTS WITH REAL BOUND CHILDREN
+    # -------------------------------------------------------------------------
+    $livePkgRoot = Join-Path $tempRoot 'live-bound-pkg'
+    $liveArchiveDir = Join-Path $tempRoot 'live-archive'
+    New-Item -ItemType Directory -Path $livePkgRoot, $liveArchiveDir -Force | Out-Null
+    $childExe = Join-Path ([Environment]::GetEnvironmentVariable('SystemRoot')) 'System32\ping.exe'
+    $liveAppPath = Join-Path $livePkgRoot 'HerdrOps.App.exe'
+    $liveCorePath = Join-Path $livePkgRoot 'HerdrOps.Core.exe'
+    Copy-Item -LiteralPath $childExe -Destination $liveAppPath -Force
+    Copy-Item -LiteralPath $childExe -Destination $liveCorePath -Force
+
+    $liveManifestObj = New-RendererPackageManifest $profileValue $repoRoot $livePkgRoot
+    $liveManifestPath = Join-Path $livePkgRoot 'package-manifest.json'
+    Write-RendererPackageCanonicalJson $liveManifestObj $liveManifestPath $repoRoot
+    $liveManifestStable = Get-RendererPackageStableIdentity $liveManifestPath
+
+    $liveArchivePath = Join-Path $liveArchiveDir 'HerdrOps-0.2.0-win-x64.zip'
+    $null = New-RendererDeterministicPackageArchive $livePkgRoot $liveArchivePath
+    $liveArchiveStable = Get-RendererPackageStableIdentity $liveArchivePath
+    $liveAppStable = Get-RendererPackageStableIdentity $liveAppPath
+    $liveCoreStable = Get-RendererPackageStableIdentity $liveCorePath
+
+    $liveReceiptValue = [pscustomobject][ordered]@{
+        schemaVersion = 1
+        profileId = $script:RendererPackageProfileId
+        issue = 149
+        packageVersion = '0.2.0'
+        runtimeIdentifier = 'win-x64'
+        source = [pscustomobject][ordered]@{ commitSha = $repo.Commit; treeSha = $repo.Tree }
+        profile = [pscustomobject][ordered]@{ id = $profileIdentity.Id; relativePath = $profileIdentity.RelativePath; bytes = $profileIdentity.Bytes; fileSha256 = $profileIdentity.FileSha256; canonicalSha256 = $profileIdentity.CanonicalSha256 }
+        archive = [pscustomobject][ordered]@{ relativePath = 'HerdrOps-0.2.0-win-x64.zip'; fileName = 'HerdrOps-0.2.0-win-x64.zip'; bytes = $liveArchiveStable.Length; sha256 = $liveArchiveStable.Sha256 }
+        packageManifest = [pscustomobject][ordered]@{ fileName = 'package-manifest.json'; bytes = $liveManifestStable.Length; sha256 = $liveManifestStable.Sha256; contentSha256 = $liveManifestObj.contentSha256; fileCount = [int]$liveManifestObj.fileCount; totalBytes = [long]$liveManifestObj.totalBytes }
+        components = [pscustomobject][ordered]@{
+            app = [pscustomobject][ordered]@{ relativePath = 'HerdrOps.App.exe'; bytes = $liveAppStable.Length; sha256 = $liveAppStable.Sha256 }
+            core = [pscustomobject][ordered]@{ relativePath = 'HerdrOps.Core.exe'; bytes = $liveCoreStable.Length; sha256 = $liveCoreStable.Sha256 }
+        }
+        referenceHost = [pscustomobject][ordered]@{ profileId = $script:RendererProfileId; profileSha256 = $script:RendererProfileSha256 }
+        renderer = [pscustomobject][ordered]@{ policy = 'software-only-process-wide'; wpfProcessRenderMode = 'SoftwareOnly' }
+        evidenceBoundary = [pscustomobject][ordered]@{ evidenceClass = 'PackagedCompatibilityPreparation'; runtimeUse = 'not-used'; actualHerdrUsed = $false; runtimeCredit = 'NOT CLAIMED'; releaseCredit = 'NOT CLAIMED' }
+    }
+    $liveReceiptPath = Join-Path $tempRoot 'package-identity-receipt-live.json'
+    Write-RendererPackageCanonicalJson $liveReceiptValue $liveReceiptPath $repoRoot
+
+    $boundAppProc = $null
+    $boundCoreProc = $null
+    $boundAppStart = $null
+    $boundCoreStart = $null
+
     try {
+        $boundAppProc = Start-Process -FilePath $liveAppPath -ArgumentList @('127.0.0.1', '-n', '120') -PassThru -WindowStyle Hidden
+        $boundCoreProc = Start-Process -FilePath $liveCorePath -ArgumentList @('127.0.0.1', '-n', '120') -PassThru -WindowStyle Hidden
+        $boundAppStart = Get-OwnedProcessStartTimeUtc $boundAppProc
+        $boundCoreStart = Get-OwnedProcessStartTimeUtc $boundCoreProc
+        Start-Sleep -Milliseconds 500
+
+        # Unauthenticated live telemetry rejected fail-closed
+        $negUnauthDest = Join-Path $tempRoot 'matrix\neg-unauth.json'
         Assert-ThrowsMatchAndZeroOutput {
             & $script:InvokeSoakPath `
                 -PowerSource 'AC' `
-                -DestinationPath $negUnguardedLiveControlDest `
+                -DestinationPath $negUnauthDest `
                 -EvidenceRoot $tempRoot `
                 -RepositoryRoot $repoRoot `
-                -AppProcessId 1 `
-                -CoreProcessId 2 `
-                -TestOnlyLiveAcceleration
-        } 'Test-only live soak controls require HERDROPS_V02_SOAK_SELFTEST=1' 'test-only live acceleration is guarded outside selftest mode'
+                -PackageIdentityPath $liveReceiptPath `
+                -PackageArchivePath $liveArchivePath `
+                -ExtractedPackageRoot $livePkgRoot `
+                -ExpectedSourceCommit $repo.Commit `
+                -ExpectedSourceTree $repo.Tree `
+                -AppProcessId $boundAppProc.Id `
+                -CoreProcessId $boundCoreProc.Id `
+                -LiveTelemetryProvider {
+                    param($b, $s, $e)
+                    [pscustomobject][ordered]@{
+                        Authenticated = $false
+                        Source = 'FakeSource'
+                        AppProcessId = $boundAppProc.Id
+                        CoreProcessId = $boundCoreProc.Id
+                        AppStartTimeUtc = $boundAppStart
+                        CoreStartTimeUtc = $boundCoreStart
+                        ObservedUtc = (Get-Date).ToUniversalTime()
+                        LatencyMicroseconds = @(100000L)
+                        UiStallMicroseconds = @(10000L)
+                        RendererStable = $true
+                    }
+                }
+        } 'is not authenticated' 'unauthenticated live telemetry sample is rejected fail-closed' $negUnauthDest
+
+        # Missing source in live telemetry rejected fail-closed
+        $negNoSourceDest = Join-Path $tempRoot 'matrix\neg-nosource.json'
+        Assert-ThrowsMatchAndZeroOutput {
+            & $script:InvokeSoakPath `
+                -PowerSource 'AC' `
+                -DestinationPath $negNoSourceDest `
+                -EvidenceRoot $tempRoot `
+                -RepositoryRoot $repoRoot `
+                -PackageIdentityPath $liveReceiptPath `
+                -PackageArchivePath $liveArchivePath `
+                -ExtractedPackageRoot $livePkgRoot `
+                -ExpectedSourceCommit $repo.Commit `
+                -ExpectedSourceTree $repo.Tree `
+                -AppProcessId $boundAppProc.Id `
+                -CoreProcessId $boundCoreProc.Id `
+                -LiveTelemetryProvider {
+                    param($b, $s, $e)
+                    [pscustomobject][ordered]@{
+                        Authenticated = $true
+                        Source = ''
+                        AppProcessId = $boundAppProc.Id
+                        CoreProcessId = $boundCoreProc.Id
+                        AppStartTimeUtc = $boundAppStart
+                        CoreStartTimeUtc = $boundCoreStart
+                        ObservedUtc = (Get-Date).ToUniversalTime()
+                        LatencyMicroseconds = @(100000L)
+                        UiStallMicroseconds = @(10000L)
+                        RendererStable = $true
+                    }
+                }
+        } 'has no authenticated source' 'live telemetry sample missing source is rejected fail-closed' $negNoSourceDest
+
+        # Mismatched AppProcessId in live telemetry rejected fail-closed
+        $negWrongAppPidDest = Join-Path $tempRoot 'matrix\neg-wrong-app-pid.json'
+        Assert-ThrowsMatchAndZeroOutput {
+            & $script:InvokeSoakPath `
+                -PowerSource 'AC' `
+                -DestinationPath $negWrongAppPidDest `
+                -EvidenceRoot $tempRoot `
+                -RepositoryRoot $repoRoot `
+                -PackageIdentityPath $liveReceiptPath `
+                -PackageArchivePath $liveArchivePath `
+                -ExtractedPackageRoot $livePkgRoot `
+                -ExpectedSourceCommit $repo.Commit `
+                -ExpectedSourceTree $repo.Tree `
+                -AppProcessId $boundAppProc.Id `
+                -CoreProcessId $boundCoreProc.Id `
+                -LiveTelemetryProvider {
+                    param($b, $s, $e)
+                    [pscustomobject][ordered]@{
+                        Authenticated = $true
+                        Source = 'ValidSource'
+                        AppProcessId = ($boundAppProc.Id + 1)
+                        CoreProcessId = $boundCoreProc.Id
+                        AppStartTimeUtc = $boundAppStart
+                        CoreStartTimeUtc = $boundCoreStart
+                        ObservedUtc = (Get-Date).ToUniversalTime()
+                        LatencyMicroseconds = @(100000L)
+                        UiStallMicroseconds = @(10000L)
+                        RendererStable = $true
+                    }
+                }
+        } 'is not bound to App PID' 'live telemetry sample bound to wrong App PID is rejected fail-closed' $negWrongAppPidDest
+
+        # Mismatched CoreProcessId in live telemetry rejected fail-closed
+        $negWrongCorePidDest = Join-Path $tempRoot 'matrix\neg-wrong-core-pid.json'
+        Assert-ThrowsMatchAndZeroOutput {
+            & $script:InvokeSoakPath `
+                -PowerSource 'AC' `
+                -DestinationPath $negWrongCorePidDest `
+                -EvidenceRoot $tempRoot `
+                -RepositoryRoot $repoRoot `
+                -PackageIdentityPath $liveReceiptPath `
+                -PackageArchivePath $liveArchivePath `
+                -ExtractedPackageRoot $livePkgRoot `
+                -ExpectedSourceCommit $repo.Commit `
+                -ExpectedSourceTree $repo.Tree `
+                -AppProcessId $boundAppProc.Id `
+                -CoreProcessId $boundCoreProc.Id `
+                -LiveTelemetryProvider {
+                    param($b, $s, $e)
+                    [pscustomobject][ordered]@{
+                        Authenticated = $true
+                        Source = 'ValidSource'
+                        AppProcessId = $boundAppProc.Id
+                        CoreProcessId = ($boundCoreProc.Id + 1)
+                        AppStartTimeUtc = $boundAppStart
+                        CoreStartTimeUtc = $boundCoreStart
+                        ObservedUtc = (Get-Date).ToUniversalTime()
+                        LatencyMicroseconds = @(100000L)
+                        UiStallMicroseconds = @(10000L)
+                        RendererStable = $true
+                    }
+                }
+        } 'is not bound to Core PID' 'live telemetry sample bound to wrong Core PID is rejected fail-closed' $negWrongCorePidDest
+
+        # Drifted AppStartTimeUtc in live telemetry rejected fail-closed
+        $negDriftAppStartDest = Join-Path $tempRoot 'matrix\neg-drift-app-start.json'
+        Assert-ThrowsMatchAndZeroOutput {
+            & $script:InvokeSoakPath `
+                -PowerSource 'AC' `
+                -DestinationPath $negDriftAppStartDest `
+                -EvidenceRoot $tempRoot `
+                -RepositoryRoot $repoRoot `
+                -PackageIdentityPath $liveReceiptPath `
+                -PackageArchivePath $liveArchivePath `
+                -ExtractedPackageRoot $livePkgRoot `
+                -ExpectedSourceCommit $repo.Commit `
+                -ExpectedSourceTree $repo.Tree `
+                -AppProcessId $boundAppProc.Id `
+                -CoreProcessId $boundCoreProc.Id `
+                -LiveTelemetryProvider {
+                    param($b, $s, $e)
+                    [pscustomobject][ordered]@{
+                        Authenticated = $true
+                        Source = 'ValidSource'
+                        AppProcessId = $boundAppProc.Id
+                        CoreProcessId = $boundCoreProc.Id
+                        AppStartTimeUtc = $boundAppStart.AddSeconds(2)
+                        CoreStartTimeUtc = $boundCoreStart
+                        ObservedUtc = (Get-Date).ToUniversalTime()
+                        LatencyMicroseconds = @(100000L)
+                        UiStallMicroseconds = @(10000L)
+                        RendererStable = $true
+                    }
+                }
+        } 'App start time does not match authenticated process creation time' 'live telemetry sample with drifted App start time is rejected fail-closed' $negDriftAppStartDest
+
+        # Drifted CoreStartTimeUtc in live telemetry rejected fail-closed
+        $negDriftCoreStartDest = Join-Path $tempRoot 'matrix\neg-drift-core-start.json'
+        Assert-ThrowsMatchAndZeroOutput {
+            & $script:InvokeSoakPath `
+                -PowerSource 'AC' `
+                -DestinationPath $negDriftCoreStartDest `
+                -EvidenceRoot $tempRoot `
+                -RepositoryRoot $repoRoot `
+                -PackageIdentityPath $liveReceiptPath `
+                -PackageArchivePath $liveArchivePath `
+                -ExtractedPackageRoot $livePkgRoot `
+                -ExpectedSourceCommit $repo.Commit `
+                -ExpectedSourceTree $repo.Tree `
+                -AppProcessId $boundAppProc.Id `
+                -CoreProcessId $boundCoreProc.Id `
+                -LiveTelemetryProvider {
+                    param($b, $s, $e)
+                    [pscustomobject][ordered]@{
+                        Authenticated = $true
+                        Source = 'ValidSource'
+                        AppProcessId = $boundAppProc.Id
+                        CoreProcessId = $boundCoreProc.Id
+                        AppStartTimeUtc = $boundAppStart
+                        CoreStartTimeUtc = $boundCoreStart.AddSeconds(2)
+                        ObservedUtc = (Get-Date).ToUniversalTime()
+                        LatencyMicroseconds = @(100000L)
+                        UiStallMicroseconds = @(10000L)
+                        RendererStable = $true
+                    }
+                }
+        } 'Core start time does not match authenticated process creation time' 'live telemetry sample with drifted Core start time is rejected fail-closed' $negDriftCoreStartDest
+
+        # Empty LatencyMicroseconds in live telemetry rejected fail-closed
+        $negEmptyLatDest = Join-Path $tempRoot 'matrix\neg-empty-lat.json'
+        Assert-ThrowsMatchAndZeroOutput {
+            & $script:InvokeSoakPath `
+                -PowerSource 'AC' `
+                -DestinationPath $negEmptyLatDest `
+                -EvidenceRoot $tempRoot `
+                -RepositoryRoot $repoRoot `
+                -PackageIdentityPath $liveReceiptPath `
+                -PackageArchivePath $liveArchivePath `
+                -ExtractedPackageRoot $livePkgRoot `
+                -ExpectedSourceCommit $repo.Commit `
+                -ExpectedSourceTree $repo.Tree `
+                -AppProcessId $boundAppProc.Id `
+                -CoreProcessId $boundCoreProc.Id `
+                -LiveTelemetryProvider {
+                    param($b, $s, $e)
+                    [pscustomobject][ordered]@{
+                        Authenticated = $true
+                        Source = 'ValidSource'
+                        AppProcessId = $boundAppProc.Id
+                        CoreProcessId = $boundCoreProc.Id
+                        AppStartTimeUtc = $boundAppStart
+                        CoreStartTimeUtc = $boundCoreStart
+                        ObservedUtc = (Get-Date).ToUniversalTime()
+                        LatencyMicroseconds = @()
+                        UiStallMicroseconds = @(10000L)
+                        RendererStable = $true
+                    }
+                }
+        } 'contains empty latency measurements' 'live telemetry sample with empty latency array is rejected fail-closed' $negEmptyLatDest
+
+        # Empty UiStallMicroseconds in live telemetry rejected fail-closed
+        $negEmptyStlDest = Join-Path $tempRoot 'matrix\neg-empty-stl.json'
+        Assert-ThrowsMatchAndZeroOutput {
+            & $script:InvokeSoakPath `
+                -PowerSource 'AC' `
+                -DestinationPath $negEmptyStlDest `
+                -EvidenceRoot $tempRoot `
+                -RepositoryRoot $repoRoot `
+                -PackageIdentityPath $liveReceiptPath `
+                -PackageArchivePath $liveArchivePath `
+                -ExtractedPackageRoot $livePkgRoot `
+                -ExpectedSourceCommit $repo.Commit `
+                -ExpectedSourceTree $repo.Tree `
+                -AppProcessId $boundAppProc.Id `
+                -CoreProcessId $boundCoreProc.Id `
+                -LiveTelemetryProvider {
+                    param($b, $s, $e)
+                    [pscustomobject][ordered]@{
+                        Authenticated = $true
+                        Source = 'ValidSource'
+                        AppProcessId = $boundAppProc.Id
+                        CoreProcessId = $boundCoreProc.Id
+                        AppStartTimeUtc = $boundAppStart
+                        CoreStartTimeUtc = $boundCoreStart
+                        ObservedUtc = (Get-Date).ToUniversalTime()
+                        LatencyMicroseconds = @(100000L)
+                        UiStallMicroseconds = @()
+                        RendererStable = $true
+                    }
+                }
+        } 'contains empty UI stall measurements' 'live telemetry sample with empty UI stall array is rejected fail-closed' $negEmptyStlDest
+
     } finally {
-        [Environment]::SetEnvironmentVariable('HERDROPS_V02_SOAK_SELFTEST', '1', 'Process')
+        Stop-OwnedProcessSafely $boundAppProc $boundAppStart
+        Stop-OwnedProcessSafely $boundCoreProc $boundCoreStart
     }
 
-    # 16. Enter the authenticated live loop with owned real child processes, then
-    # terminate only the owned App child to reach the exact unexpected-exit guard.
-    Invoke-ControlledLiveGuardProbe `
-        -GuardMode 'UnexpectedExit' `
-        -ExpectedPattern 'App process \(\d+\) terminated unexpectedly during soak bin \d+ sample \d+\.' `
-        -CaseName 'controlled authenticated live loop reaches unexpected App exit guard without publishing'
+    # 19. Controlled live probe: unexpected child exit triggers exit guard fail-closed
+    try {
+        Invoke-V02LiveGuardProbe -GuardMode 'UnexpectedExit' -TempRoot $tempRoot
+        throw 'Expected unexpected exit probe to throw, but it succeeded.'
+    } catch {
+        if ($_.Exception.Message -match 'terminated unexpectedly during soak bin 0 sample 1') {
+            Pass-NegativeCase 'controlled live probe reaches unexpected App exit guard without publishing'
+        } else {
+            throw "Expected unexpected exit error, got: $($_.Exception.Message)"
+        }
+    }
 
-    # 17. Keep both real child processes alive while the guarded identity provider
-    # changes only the observed App creation time, proving PID/start continuity.
-    Invoke-ControlledLiveGuardProbe `
-        -GuardMode 'PidStartContinuity' `
-        -ExpectedPattern 'App process PID \(\d+\) was recycled during soak bin \d+ sample \d+\.' `
-        -CaseName 'controlled live loop rejects PID/start-time reuse continuity drift without publishing'
+    # 20. Controlled live probe: PID/start-time drift triggers recycle guard fail-closed
+    try {
+        Invoke-V02LiveGuardProbe -GuardMode 'PidStartContinuity' -TempRoot $tempRoot
+        throw 'Expected PID/start-time continuity probe to throw, but it succeeded.'
+    } catch {
+        if ($_.Exception.Message -match 'was recycled during soak bin 0 sample 1') {
+            Pass-NegativeCase 'controlled live probe rejects PID/start-time reuse continuity drift without publishing'
+        } else {
+            throw "Expected PID recycle error, got: $($_.Exception.Message)"
+        }
+    }
 
-    # 18. Synthetic telemetry provider exception fails closed
+    # 21. Synthetic telemetry provider exception fails closed
     $negTelExDest = Join-Path $tempRoot 'matrix\neg-tel-ex.json'
     Assert-ThrowsMatchAndZeroOutput {
         & $script:InvokeSoakPath -Synthetic `
@@ -719,7 +917,7 @@ try {
             -SyntheticProcessTelemetryProvider { throw 'Simulated telemetry failure' }
     } 'Synthetic telemetry provider threw an exception' 'synthetic telemetry provider exception fails closed with zero published output' $negTelExDest
 
-    # 15. Null telemetry sample fails closed
+    # 22. Null telemetry sample fails closed
     $negNullTelDest = Join-Path $tempRoot 'matrix\neg-null-tel.json'
     Assert-ThrowsMatchAndZeroOutput {
         & $script:InvokeSoakPath -Synthetic `
@@ -733,7 +931,7 @@ try {
             -SyntheticProcessTelemetryProvider { return $null }
     } 'returned null or invalid object' 'null telemetry sample fails closed with zero published output' $negNullTelDest
 
-    # 16. Working set budget breach (> 255 MiB)
+    # 23. Working set budget breach (> 255 MiB)
     $negWsDest = Join-Path $tempRoot 'matrix\neg-ws.json'
     Assert-ThrowsMatchAndZeroOutput {
         & $script:InvokeSoakPath -Synthetic `
@@ -748,7 +946,7 @@ try {
             -SyntheticProcessTelemetryProvider (Get-TestSampleProvider -WsStartMb 260 -WsEndMb 260)
     } 'combined WS .* > limit' 'working set budget breach > 255 MiB produces zero published output' $negWsDest
 
-    # 17. Working set slope breach (> 1 MiB / 10 min)
+    # 24. Working set slope breach (> 1 MiB / 10 min)
     $negSlopeDest = Join-Path $tempRoot 'matrix\neg-slope.json'
     Assert-ThrowsMatchAndZeroOutput {
         & $script:InvokeSoakPath -Synthetic `
@@ -763,7 +961,7 @@ try {
             -SyntheticProcessTelemetryProvider (Get-TestSampleProvider -WsStartMb 100 -WsEndMb 102)
     } 'WS slope .* > limit' 'working set slope breach > 1 MiB / 10 min produces zero published output' $negSlopeDest
 
-    # 18. CPU usage breach (> 1%)
+    # 25. CPU usage breach (> 1%)
     $negCpuDest = Join-Path $tempRoot 'matrix\neg-cpu.json'
     Assert-ThrowsMatchAndZeroOutput {
         & $script:InvokeSoakPath -Synthetic `
@@ -778,7 +976,7 @@ try {
             -SyntheticProcessTelemetryProvider (Get-TestSampleProvider -CpuBp 150)
     } 'combined CPU .* > limit' 'CPU usage breach > 1% produces zero published output' $negCpuDest
 
-    # 19. Latency P95 breach (> 250 ms)
+    # 26. Latency P95 breach (> 250 ms)
     $negLatDest = Join-Path $tempRoot 'matrix\neg-lat.json'
     Assert-ThrowsMatchAndZeroOutput {
         & $script:InvokeSoakPath -Synthetic `
@@ -793,7 +991,7 @@ try {
             -SyntheticProcessTelemetryProvider (Get-TestSampleProvider -LatMs 300)
     } 'latency P95 .* > limit' 'latency P95 breach > 250 ms produces zero published output' $negLatDest
 
-    # 20. UI Stall P95 breach (> 50 ms)
+    # 27. UI Stall P95 breach (> 50 ms)
     $negStlDest = Join-Path $tempRoot 'matrix\neg-stl.json'
     Assert-ThrowsMatchAndZeroOutput {
         & $script:InvokeSoakPath -Synthetic `
@@ -808,7 +1006,7 @@ try {
             -SyntheticProcessTelemetryProvider (Get-TestSampleProvider -StlMs 60)
     } 'UI stall P95 .* > limit' 'UI stall P95 breach > 50 ms produces zero published output' $negStlDest
 
-    # 21. UI Stall Maximum breach (> 100 ms)
+    # 28. UI Stall Maximum breach (> 100 ms)
     $negStlMaxDest = Join-Path $tempRoot 'matrix\neg-stlmax.json'
     Assert-ThrowsMatchAndZeroOutput {
         & $script:InvokeSoakPath -Synthetic `
@@ -823,7 +1021,7 @@ try {
             -SyntheticProcessTelemetryProvider (Get-TestSampleProvider -StlMs 10 -StlMaxMs 120)
     } 'UI stall max .* > limit' 'UI stall maximum breach > 100 ms produces zero published output' $negStlMaxDest
 
-    # 22. Renderer instability failure
+    # 29. Renderer instability failure
     $negUnstableDest = Join-Path $tempRoot 'matrix\neg-unstable.json'
     Assert-ThrowsMatchAndZeroOutput {
         & $script:InvokeSoakPath -Synthetic `
@@ -838,7 +1036,7 @@ try {
             -SyntheticProcessTelemetryProvider (Get-TestSampleProvider -RendererStable $false)
     } 'renderer stability failure' 'renderer instability failure produces zero published output' $negUnstableDest
 
-    # 23. Destination escaping evidence root
+    # 30. Destination escaping evidence root
     $negEscapeDest = [IO.Path]::GetFullPath((Join-Path $tempRoot '..\escaped.json'))
     Assert-ThrowsMatchAndZeroOutput {
         & $script:InvokeSoakPath -Synthetic `
@@ -851,7 +1049,7 @@ try {
             -SyntheticProcessTelemetryProvider (Get-TestSampleProvider)
     } 'escaped the evidence root' 'destination path escaping evidence root produces zero output' $negEscapeDest
 
-    # 24. Reparse point junction destination path
+    # 31. Reparse point junction destination path
     $reparseDir = Join-Path $tempRoot 'junction-dest'
     $reparseTarget = Join-Path $tempRoot 'junction-target'
     New-Item -ItemType Directory -Path $reparseTarget -Force | Out-Null
@@ -870,7 +1068,7 @@ try {
         } 'contains a reparse point|must not contain a reparse point' 'reparse junction destination path produces zero output' $negReparseDest
     }
 
-    # 25. Source commit mismatch
+    # 32. Source commit mismatch
     $negCommitDest = Join-Path $tempRoot 'matrix\neg-commit.json'
     Assert-ThrowsMatchAndZeroOutput {
         & $script:InvokeSoakPath -Synthetic `
@@ -884,7 +1082,7 @@ try {
             -SyntheticProcessTelemetryProvider (Get-TestSampleProvider)
     } 'Source commit mismatch' 'source commit mismatch produces zero output' $negCommitDest
 
-    # 26. Source tree mismatch
+    # 33. Source tree mismatch
     $negTreeDest = Join-Path $tempRoot 'matrix\neg-tree.json'
     Assert-ThrowsMatchAndZeroOutput {
         & $script:InvokeSoakPath -Synthetic `
@@ -898,7 +1096,7 @@ try {
             -SyntheticProcessTelemetryProvider (Get-TestSampleProvider)
     } 'Source tree mismatch' 'source tree mismatch produces zero output' $negTreeDest
 
-    # 27. Package component hash mismatch fails closed with zero output
+    # 34. Package component hash mismatch fails closed with zero output
     $negPkgTamperDest = Join-Path $tempRoot 'matrix\neg-pkg-tamper.json'
     $tamperedAppPath = Join-Path $packageRoot 'HerdrOps.App.exe'
     [IO.File]::WriteAllBytes($tamperedAppPath, [Text.Encoding]::UTF8.GetBytes('tampered-binary'))
@@ -919,7 +1117,7 @@ try {
     # Restore app binary
     [IO.File]::WriteAllBytes($tamperedAppPath, [Text.Encoding]::UTF8.GetBytes('app-binary'))
 
-    # 28. Incomplete package binding arguments
+    # 35. Incomplete package binding arguments in synthetic mode
     $negIncompletePkgDest = Join-Path $tempRoot 'matrix\neg-pkg-incomplete.json'
     Assert-ThrowsMatchAndZeroOutput {
         & $script:InvokeSoakPath -Synthetic `
@@ -934,6 +1132,26 @@ try {
             -SyntheticProcessTelemetryProvider (Get-TestSampleProvider)
     } 'PackageIdentityPath, PackageArchivePath, and ExtractedPackageRoot must all be provided' 'missing one of package binding parameters fails closed' $negIncompletePkgDest
 
+    # 36. Evidence classification invariant: synthetic mode cannot grant PackagedCompatibilitySoak
+    $negEvClassDest = Join-Path $tempRoot 'matrix\neg-ev-class.json'
+    $synRes = & $script:InvokeSoakPath -Synthetic `
+        -PowerSource 'AC' `
+        -DestinationPath $negEvClassDest `
+        -EvidenceRoot $tempRoot `
+        -RepositoryRoot $repoRoot `
+        -SyntheticTotalBins 1 `
+        -SyntheticBinDurationMinutes 1 `
+        -SyntheticSamplesPerBin 1 `
+        -SyntheticPowerStateProvider { 'AC' } `
+        -SyntheticProcessTelemetryProvider (Get-TestSampleProvider)
+
+    if ($synRes.EvidenceClassification -ne 'SyntheticVerifierSelftest' -or
+        $synRes.ReceiptDocument.evidenceClassification -ne 'SyntheticVerifierSelftest' -or
+        $synRes.ReceiptDocument.evidenceBoundary.evidenceClass -ne 'SyntheticVerifierSelftest') {
+        throw 'Synthetic soak execution leaked PackagedCompatibilitySoak or invalid evidence classification.'
+    }
+    Pass-NegativeCase 'synthetic soak execution strictly emits SyntheticVerifierSelftest and cannot grant PackagedCompatibilitySoak'
+
     Write-Host ""
     [pscustomobject][ordered]@{
         EvidenceClassification = 'SyntheticVerifierSelftest'
@@ -942,7 +1160,6 @@ try {
         Status = 'PASS'
     } | Format-Table
 } finally {
-    [Environment]::SetEnvironmentVariable('HERDROPS_V02_SOAK_SELFTEST', $previousSoakSelfTestMode, 'Process')
     if (Test-Path -LiteralPath $tempRoot) {
         Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue
     }
