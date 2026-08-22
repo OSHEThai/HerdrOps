@@ -1,8 +1,5 @@
 #requires -Version 5.1
 
-[CmdletBinding()]
-param()
-
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
@@ -10,427 +7,11 @@ $ErrorActionPreference = 'Stop'
 
 $script:Failures = New-Object System.Collections.Generic.List[string]
 
-function Write-V02ReleaseGateFixtureJson {
-    param([Parameter(Mandatory = $true)][string]$Path, [Parameter(Mandatory = $true)]$Value)
-
-    $parent = [IO.Path]::GetDirectoryName([IO.Path]::GetFullPath($Path))
-    if (-not [IO.Directory]::Exists($parent)) { [IO.Directory]::CreateDirectory($parent) | Out-Null }
-    $utf8 = New-Object Text.UTF8Encoding($false)
-    [IO.File]::WriteAllText($Path, (($Value | ConvertTo-Json -Depth 100) + "`n"), $utf8)
-}
-
-function New-V02ReleaseGateFixtureObject {
-    param([Parameter(Mandatory = $true)]$Value)
-
-    return (($Value | ConvertTo-Json -Depth 100) | ConvertFrom-Json)
-}
-
-function Get-V02ReleaseGateFixtureSha256 {
-    param([Parameter(Mandatory = $true)][string]$Path)
-
-    return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToUpperInvariant()
-}
-
-function New-V02ReleaseGateFixtureFile {
-    param([Parameter(Mandatory = $true)][string]$Path, [Parameter(Mandatory = $true)][string]$Content)
-
-    $parent = [IO.Path]::GetDirectoryName([IO.Path]::GetFullPath($Path))
-    if (-not [IO.Directory]::Exists($parent)) { [IO.Directory]::CreateDirectory($parent) | Out-Null }
-    [IO.File]::WriteAllText($Path, $Content, (New-Object Text.UTF8Encoding($false)))
-    return Get-V02ReleaseGateFixtureSha256 $Path
-}
-
-function Initialize-V02ReleaseGateFixtureRepository {
-    param([Parameter(Mandatory = $true)][string]$Root)
-
-    $profilePath = Join-Path $Root 'tools\packaging\v0.2\package-identity-profile.json'
-    New-V02ReleaseGateFixtureFile -Path $profilePath -Content '{"fixture":true}' | Out-Null
-    & git -C $Root init --quiet
-    if ($LASTEXITCODE -ne 0) { throw 'Fixture git init failed.' }
-    & git -C $Root -c user.name=HerdrOps-ReleaseGateTest -c user.email=release-gate-test@example.invalid add --all
-    if ($LASTEXITCODE -ne 0) { throw 'Fixture git add failed.' }
-    & git -C $Root -c user.name=HerdrOps-ReleaseGateTest -c user.email=release-gate-test@example.invalid commit --quiet -m 'fixture'
-    if ($LASTEXITCODE -ne 0) { throw 'Fixture git commit failed.' }
-    $commit = (& git -C $Root rev-parse HEAD).Trim()
-    $tree = (& git -C $Root show -s --format=%T HEAD).Trim()
-    return [pscustomobject][ordered]@{
-        Root = [IO.Path]::GetFullPath($Root)
-        ProfilePath = $profilePath
-        Commit = $commit
-        Tree = $tree
-    }
-}
-
-function New-V02ReleaseGateMatrixFixture {
-    param(
-        [Parameter(Mandatory = $true)][string]$Path,
-        [Parameter(Mandatory = $true)]$Package,
-        [Parameter(Mandatory = $true)][string]$SourceCommit,
-        [Parameter(Mandatory = $true)][string]$SourceTree,
-        [Parameter(Mandatory = $true)][string]$ThaiDirectory,
-        [Parameter(Mandatory = $true)][string]$EnglishDirectory
-    )
-
-    $allRuns = @()
-    foreach ($language in @('Thai', 'English')) {
-        $root = if ($language -ceq 'Thai') { $ThaiDirectory } else { $EnglishDirectory }
-        $captureRoot = Join-Path $root 'captures'
-        New-Item -ItemType Directory -Path $captureRoot -Force | Out-Null
-        $captures = @(1..8 | ForEach-Object { [pscustomobject][ordered]@{ Name = "capture-$($_)" } })
-        $allRuns += [pscustomobject][ordered]@{
-            Language = $language
-            Culture = if ($language -ceq 'Thai') { 'th-TH' } else { 'en-US' }
-            EvidenceDirectory = [IO.Path]::GetFullPath($root)
-            CaptureRoot = [IO.Path]::GetFullPath($captureRoot)
-            GateReportSha256 = ('1' * 64)
-            AppRuntimeReportSha256 = ('2' * 64)
-            CoreRuntimeReportSha256 = ('3' * 64)
-            ProgressHistorySha256 = ('4' * 64)
-            ProgressHistoryLastEntrySha256 = ('5' * 64)
-            PackageIdentityReceiptSha256 = $Package.ReceiptSha256
-            SourceCommit = $SourceCommit
-            SourceTree = $SourceTree
-            ProfileId = $script:V02ReleaseGateReferenceHostProfileId
-            ProfileSha256 = $script:V02ReleaseGateReferenceHostProfileSha256
-            ReferenceHostSchemaSha256 = $script:V02ReleaseGateReferenceHostSchemaSha256
-            HerdrReleaseId = $script:V02ReleaseGateHerdrReleaseId
-            HerdrExecutableSha256 = $script:V02ReleaseGateHerdrExecutableSha256
-            AppExecutableSha256 = $Package.AppSha256
-            CoreExecutableSha256 = $Package.CoreSha256
-            BundledSchemaSha256 = ('6' * 64)
-            HerdrProtocol = 19
-            RendererPolicyId = $script:V02ReleaseGateRendererPolicy
-            WpfProcessRenderMode = $script:V02ReleaseGateRendererMode
-            CaptureCount = 8
-            Captures = $captures
-        }
-    }
-    $payload = New-V02ReleaseGateFixtureObject ([pscustomobject][ordered]@{
-            GeneratedUnixTimeMilliseconds = [int64]1
-            IndependentHumanReview = 'NOT_OBSERVED'
-            ReleaseCredit = $false
-            Binding = [pscustomobject][ordered]@{
-                SourceCommit = $SourceCommit
-                SourceTree = $SourceTree
-                ProfileId = $script:V02ReleaseGateReferenceHostProfileId
-                ProfileSha256 = $script:V02ReleaseGateReferenceHostProfileSha256
-                ReferenceHostSchemaSha256 = $script:V02ReleaseGateReferenceHostSchemaSha256
-                PackageIdentityReceiptSha256 = $Package.ReceiptSha256
-                HerdrReleaseId = $script:V02ReleaseGateHerdrReleaseId
-                HerdrExecutableSha256 = $script:V02ReleaseGateHerdrExecutableSha256
-                AppExecutableSha256 = $Package.AppSha256
-                CoreExecutableSha256 = $Package.CoreSha256
-                BundledSchemaSha256 = ('6' * 64)
-                HerdrProtocol = 19
-            }
-            Runs = $allRuns
-        })
-    $payloadJcs = ConvertTo-V02Jcs $payload
-    $payloadSha = Get-V02Sha256Hex -Bytes ([Text.UTF8Encoding]::new($false).GetBytes($payloadJcs))
-    $manifest = New-V02ReleaseGateFixtureObject ([pscustomobject][ordered]@{
-            EvidenceClassification = 'RuntimeMatrixCandidate'
-            IndependentHumanReview = 'NOT_OBSERVED'
-            ReleaseCredit = $false
-            ManifestFormatVersion = 1
-            ManifestHashScope = $script:V02ReleaseGateMatrixHashScope
-            ManifestPayloadSha256 = $payloadSha
-            Payload = $payload
-        })
-    Write-V02ReleaseGateFixtureJson -Path $Path -Value $manifest
-    return $manifest
-}
-
-function New-V02ReleaseGateEvidenceReceipt {
-    param(
-        [Parameter(Mandatory = $true)][string]$Path,
-        [Parameter(Mandatory = $true)][ValidateSet('Contract', 'Synthetic')][string]$Class,
-        [Parameter(Mandatory = $true)][string]$SourceCommit,
-        [Parameter(Mandatory = $true)][string]$SourceTree,
-        [Parameter(Mandatory = $true)][string]$ArtifactDirectory
-    )
-
-    $artifact = Join-Path $ArtifactDirectory "$($Class.ToLowerInvariant())-proof.txt"
-    $hash = New-V02ReleaseGateFixtureFile -Path $artifact -Content "$Class fixture proof`n"
-    $receipt = [pscustomobject][ordered]@{
-        SchemaVersion = 1
-        EvidenceClass = $Class
-        Result = 'PASS'
-        SourceCommit = $SourceCommit
-        SourceTree = $SourceTree
-        RuntimeObserved = $false
-        ActualHerdrUsed = $false
-        ReleaseCredit = $false
-        Checks = @([pscustomobject][ordered]@{ Name = "$Class-fixture"; Result = 'PASS'; Path = [IO.Path]::GetFileName($artifact); Sha256 = $hash })
-    }
-    Write-V02ReleaseGateFixtureJson -Path $Path -Value $receipt
-}
-
-function New-V02ReleaseGateGitHubSnapshot {
-    param([Parameter(Mandatory = $true)][string]$Path)
-
-    $snapshot = [pscustomobject][ordered]@{
-        schemaVersion = 1
-        repository = 'OSHEThai/HerdrOps'
-        milestones = @([pscustomobject][ordered]@{ number = 2; title = 'v0.2.0'; state = 'closed' })
-        issues = @(
-            [pscustomobject][ordered]@{ number = 6; title = '[v0.2.0] Discover and validate the installed Herdr protocol schema'; state = 'closed'; milestone = [pscustomobject][ordered]@{ number = 2; title = 'v0.2.0' } },
-            [pscustomobject][ordered]@{ number = 7; title = '[v0.2.0] Implement Herdr Named Pipe snapshot, subscription, and reconciliation'; state = 'closed'; milestone = [pscustomobject][ordered]@{ number = 2; title = 'v0.2.0' } },
-            [pscustomobject][ordered]@{ number = 8; title = '[v0.2.0] Add SQLite WAL state storage and Core-to-App IPC'; state = 'closed'; milestone = [pscustomobject][ordered]@{ number = 2; title = 'v0.2.0' } },
-            [pscustomobject][ordered]@{ number = 9; title = '[v0.2.0] Connect Overview, Live Organization, and Agent Detail to live state'; state = 'closed'; milestone = [pscustomobject][ordered]@{ number = 2; title = 'v0.2.0' } },
-            [pscustomobject][ordered]@{ number = 10; title = '[v0.2.0] Connect live widgets and complete runtime acceptance'; state = 'closed'; milestone = [pscustomobject][ordered]@{ number = 2; title = 'v0.2.0' } },
-            [pscustomobject][ordered]@{ number = 11; title = '[v0.2.0] Release readiness tracker'; state = 'closed'; milestone = [pscustomobject][ordered]@{ number = 2; title = 'v0.2.0' } },
-            [pscustomobject][ordered]@{ number = 54; title = '[v0.2.0] Extract and validate bundled Herdr JSON Schema successor'; state = 'closed'; milestone = [pscustomobject][ordered]@{ number = 2; title = 'v0.2.0' } },
-            [pscustomobject][ordered]@{ number = 63; title = '[v0.2.0] Complete Thai and English separation for live surfaces'; state = 'closed'; milestone = [pscustomobject][ordered]@{ number = 2; title = 'v0.2.0' } },
-            [pscustomobject][ordered]@{ number = 149; title = 'REC-ALL v2 package and renderer authority'; state = 'closed'; milestone = $null }
-        )
-    }
-    Write-V02ReleaseGateFixtureJson -Path $Path -Value $snapshot
-}
-
-function New-V02ReleaseGateHumanReview {
-    param(
-        [Parameter(Mandatory = $true)][string]$Path,
-        [Parameter(Mandatory = $true)]$Package,
-        [Parameter(Mandatory = $true)]$Renderer,
-        [Parameter(Mandatory = $true)]$Matrix,
-        [Parameter(Mandatory = $true)][string]$GitHubSnapshotSha256,
-        [Parameter(Mandatory = $true)][string]$SourceCommit,
-        [Parameter(Mandatory = $true)][string]$SourceTree,
-        [Parameter(Mandatory = $true)][string]$ArtifactDirectory
-    )
-
-    $reviewArtifact = Join-Path $ArtifactDirectory 'human-review-evidence.txt'
-    $reviewArtifactSha = New-V02ReleaseGateFixtureFile -Path $reviewArtifact -Content 'Independent role-distinct review fixture evidence.'
-    $checks = @($script:V02ReleaseGateHumanCheckIds | ForEach-Object {
-            [pscustomobject][ordered]@{ Id = $_; Status = 'PASS'; Path = [IO.Path]::GetFileName($reviewArtifact); Sha256 = $reviewArtifactSha }
-        })
-    $review = [pscustomobject][ordered]@{
-        SchemaVersion = 1
-        EvidenceClass = 'Human'
-        Result = 'PASS'
-        Decision = 'GO'
-        Reviewer = [pscustomobject][ordered]@{
-            Identity = 'reviewer@example.invalid'
-            Role = 'IndependentReleaseReviewer'
-            BuilderIdentity = 'builder@example.invalid'
-            RuntimeOperatorIdentity = 'operator@example.invalid'
-            RoleDistinct = $true
-            ReviewedUtc = '2026-08-22T14:00:00.0000000+00:00'
-        }
-        Candidate = [pscustomobject][ordered]@{
-            SourceCommit = $SourceCommit
-            SourceTree = $SourceTree
-            PackageReceiptSha256 = $Package.ReceiptSha256
-            PackageReceiptFileSha256 = $Package.ReceiptFileSha256
-            PackageArchiveSha256 = $Package.ArchiveSha256
-            PackageAppSha256 = $Package.AppSha256
-            PackageCoreSha256 = $Package.CoreSha256
-            RendererManifestSha256 = $Renderer.ManifestSha256
-            RuntimeMatrixManifestSha256 = $Matrix.ManifestFileSha256
-            GitHubSnapshotSha256 = $GitHubSnapshotSha256
-        }
-        Checks = $checks
-        OpenFindings = @()
-        ActualHerdrRuntime = 'NOT_OBSERVED'
-        ReleaseCredit = $false
-    }
-    Write-V02ReleaseGateFixtureJson -Path $Path -Value $review
-}
-
-function Invoke-V02ReleaseGateFixture {
-    param(
-        [Parameter(Mandatory = $true)]$Fixture,
-        [string]$OutputPath
-    )
-
-    $packageValidator = {
-        param($Context)
-        return $Fixture.PackageResult
-    }
-    $rendererValidator = {
-        param($Context)
-        return $Fixture.RendererResult
-    }
-    $matrixValidator = {
-        param($Context)
-        return $Fixture.MatrixManifest
-    }
-    $arguments = @{
-        ExpectedSourceCommit = $Fixture.Repository.Commit
-        ExpectedSourceTree = $Fixture.Repository.Tree
-        PackageIdentityPath = $Fixture.Package.IdentityPath
-        PackageArchivePath = $Fixture.Package.ArchivePath
-        ExtractedPackageRoot = $Fixture.Package.PackageRoot
-        PackageProfilePath = $Fixture.Repository.ProfilePath
-        RendererManifestPath = $Fixture.RendererManifestPath
-        ThaiEvidenceDirectory = $Fixture.ThaiDirectory
-        EnglishEvidenceDirectory = $Fixture.EnglishDirectory
-        RuntimeMatrixManifestPath = $Fixture.MatrixPath
-        ContractEvidencePath = $Fixture.ContractPath
-        SyntheticEvidencePath = $Fixture.SyntheticPath
-        HumanReviewPath = $Fixture.HumanReviewPath
-        GitHubSnapshotPath = $Fixture.GitHubPath
-        RepositoryRoot = $Fixture.Repository.Root
-        OutputPath = $OutputPath
-        PackageValidator = $packageValidator
-        RendererValidator = $rendererValidator
-        RuntimeMatrixValidator = $matrixValidator
-    }
-    return Invoke-V02ReleaseGate @arguments
-}
-
-function New-V02ReleaseGateFixture {
-    $root = Join-Path ([IO.Path]::GetTempPath()) ('herdrops-v02-release-gate-' + [Guid]::NewGuid().ToString('N'))
-    New-Item -ItemType Directory -Path $root -Force | Out-Null
-    $repo = Initialize-V02ReleaseGateFixtureRepository -Root (Join-Path $root 'repo')
-    $artifactDirectory = Join-Path $root 'evidence'
-    New-Item -ItemType Directory -Path $artifactDirectory -Force | Out-Null
-    $packageRoot = Join-Path $artifactDirectory 'package'
-    New-Item -ItemType Directory -Path $packageRoot -Force | Out-Null
-    $identityPath = Join-Path $artifactDirectory 'package-identity.json'
-    $archivePath = Join-Path $artifactDirectory 'HerdrOps-0.2.0-win-x64.zip'
-    $manifestPath = Join-Path $packageRoot 'package-manifest.json'
-    $appPath = Join-Path $packageRoot 'HerdrOps.App.exe'
-    $corePath = Join-Path $packageRoot 'HerdrOps.Core.exe'
-    New-V02ReleaseGateFixtureFile -Path $identityPath -Content '{"fixture":"identity"}' | Out-Null
-    New-V02ReleaseGateFixtureFile -Path $archivePath -Content 'fixture archive bytes' | Out-Null
-    New-V02ReleaseGateFixtureFile -Path $manifestPath -Content '{"fixture":"manifest"}' | Out-Null
-    New-V02ReleaseGateFixtureFile -Path $appPath -Content 'fixture app bytes' | Out-Null
-    New-V02ReleaseGateFixtureFile -Path $corePath -Content 'fixture core bytes' | Out-Null
-    $packageReceiptSha = 'D' * 64
-    $packageResult = [pscustomobject][ordered]@{
-        EvidenceClass = 'Static/PackagedCompatibilityPreparation'
-        Issue = 149
-        ProfileId = $script:V02ReleaseGatePackageProfileId
-        ReceiptSha256 = $packageReceiptSha
-        SourceCommit = $repo.Commit
-        SourceTree = $repo.Tree
-        PreparationProfileFileSha256 = Get-V02ReleaseGateFixtureSha256 $repo.ProfilePath
-        PreparationProfileCanonicalSha256 = ('C' * 64)
-        ArchiveSha256 = Get-V02ReleaseGateFixtureSha256 $archivePath
-        AppSha256 = Get-V02ReleaseGateFixtureSha256 $appPath
-        CoreSha256 = Get-V02ReleaseGateFixtureSha256 $corePath
-        ReferenceHostProfileSha256 = $script:V02ReleaseGateReferenceHostProfileSha256
-        RendererPolicySha256 = $script:V02ReleaseGateRendererPolicySha256
-        Runtime = 'NOT OBSERVED'
-        Release = 'NOT CLAIMED'
-    }
-    $rendererManifestPath = Join-Path $artifactDirectory 'renderer-compatibility-manifest.json'
-    $rendererResult = [pscustomobject][ordered]@{
-        EvidenceClassification = 'PackagedCompatibilityCandidate'
-        ManifestVersion = 1
-        StructuralValidation = 'PASS'
-        BindingValidation = 'PASS'
-        GovernanceProfileConsistency = 'PASS'
-        FinalHumanGoAuthority = 'NOT_OBSERVED'
-        OwnerNumericLimits = 'APPROVED'
-        HumanReview = 'NOT_OBSERVED'
-        ActualHerdrRuntime = 'NOT_OBSERVED'
-        Release = 'NOT_OBSERVED'
-        CreditGranted = $false
-        PackagedCompatibilityReadyForIssue149Closure = $false
-    }
-    $rendererManifest = New-V02ReleaseGateFixtureObject ([pscustomobject][ordered]@{
-            '$id' = 'https://herdrops.local/schema/v0.2/renderer-compatibility-manifest.schema.json'
-            manifestVersion = 1
-            evidenceClassification = 'PackagedCompatibilityCandidate'
-            issue = 149
-            governance = [pscustomobject][ordered]@{
-                decisionId = $script:V02ReleaseGateDecisionId
-                approvalReference = $script:V02ReleaseGateDecisionReference
-                originalApprovedUtc = '2026-08-22T13:18:21.2468994Z'
-                correctedUtc = '2026-08-22T13:23:04.5923226Z'
-                decisionPayloadSha256 = $script:V02ReleaseGateDecisionPayloadSha256
-                supersedesDecisionId = 'herdrops-rec-all-v1'
-                supersedesPayloadSha256 = 'DD8EB4D4BC896BE6A4765D409C5E34A16C4DBFB3D70F437EC915A50DF2FC1B1E'
-            }
-            candidate = [pscustomobject][ordered]@{
-                source = [pscustomobject][ordered]@{ commitSha = $repo.Commit; treeSha = $repo.Tree }
-                profile = [pscustomobject][ordered]@{ id = $packageResult.ProfileId; relativePath = 'tools/packaging/v0.2/package-identity-profile.json'; bytes = 1; fileSha256 = $packageResult.PreparationProfileFileSha256; canonicalSha256 = $packageResult.PreparationProfileCanonicalSha256 }
-                receipt = [pscustomobject][ordered]@{ relativePath = 'package-identity.json'; bytes = 1; fileSha256 = Get-V02ReleaseGateFixtureSha256 $identityPath; canonicalSha256 = $packageResult.ReceiptSha256 }
-                archive = [pscustomobject][ordered]@{ relativePath = 'HerdrOps-0.2.0-win-x64.zip'; fileName = 'HerdrOps-0.2.0-win-x64.zip'; bytes = 1; sha256 = $packageResult.ArchiveSha256 }
-                packageRootRelativePath = 'package'
-                components = [pscustomobject][ordered]@{
-                    app = [pscustomobject][ordered]@{ relativePath = 'HerdrOps.App.exe'; bytes = 1; sha256 = $packageResult.AppSha256 }
-                    core = [pscustomobject][ordered]@{ relativePath = 'HerdrOps.Core.exe'; bytes = 1; sha256 = $packageResult.CoreSha256 }
-                }
-                referenceHost = [pscustomobject][ordered]@{ profileId = $script:V02ReleaseGateReferenceHostProfileId; profileSha256 = $script:V02ReleaseGateReferenceHostProfileSha256 }
-                renderer = [pscustomobject][ordered]@{ policy = $script:V02ReleaseGateRendererPolicy; wpfProcessRenderMode = $script:V02ReleaseGateRendererMode }
-            }
-            environment = [pscustomobject]@{}
-            rendererEvidence = [pscustomobject]@{}
-            captures = @()
-            references = @()
-            comparison = [pscustomobject]@{}
-            matrices = [pscustomobject]@{}
-            performanceProtocol = [pscustomobject]@{}
-            review = [pscustomobject][ordered]@{ decision = 'NOT_OBSERVED' }
-            evidenceBoundary = [pscustomobject][ordered]@{ packagedCompatibility = 'CANDIDATE'; humanReview = 'NOT_OBSERVED'; actualHerdrRuntime = 'NOT_OBSERVED'; release = 'NOT_OBSERVED'; creditGranted = $false }
-        })
-    Write-V02ReleaseGateFixtureJson -Path $rendererManifestPath -Value $rendererManifest
-    $thaiDirectory = Join-Path $artifactDirectory 'Thai'
-    $englishDirectory = Join-Path $artifactDirectory 'English'
-    $matrixPath = Join-Path $artifactDirectory 'runtime-matrix-candidate.json'
-    $packageForMatrix = [pscustomobject][ordered]@{
-        ReceiptSha256 = $packageResult.ReceiptSha256
-        AppSha256 = $packageResult.AppSha256
-        CoreSha256 = $packageResult.CoreSha256
-    }
-    $matrixManifest = New-V02ReleaseGateMatrixFixture -Path $matrixPath -Package $packageForMatrix `
-        -SourceCommit $repo.Commit -SourceTree $repo.Tree -ThaiDirectory $thaiDirectory -EnglishDirectory $englishDirectory
-    $package = [pscustomobject][ordered]@{
-        IdentityPath = $identityPath
-        ReceiptFileSha256 = Get-V02ReleaseGateFixtureSha256 $identityPath
-        ReceiptSha256 = $packageResult.ReceiptSha256
-        ArchivePath = $archivePath
-        ArchiveSha256 = $packageResult.ArchiveSha256
-        PackageRoot = $packageRoot
-        ManifestPath = $manifestPath
-        ManifestSha256 = Get-V02ReleaseGateFixtureSha256 $manifestPath
-        AppPath = $appPath
-        AppSha256 = $packageResult.AppSha256
-        CorePath = $corePath
-        CoreSha256 = $packageResult.CoreSha256
-        ProfilePath = $repo.ProfilePath
-        ProfileFileSha256 = $packageResult.PreparationProfileFileSha256
-        ProfileCanonicalSha256 = $packageResult.PreparationProfileCanonicalSha256
-        ProfileId = $packageResult.ProfileId
-        ReferenceHostProfileSha256 = $packageResult.ReferenceHostProfileSha256
-        RendererPolicySha256 = $packageResult.RendererPolicySha256
-        SourceCommit = $repo.Commit
-        SourceTree = $repo.Tree
-        EvidenceClass = $packageResult.EvidenceClass
-    }
-    $renderer = [pscustomobject][ordered]@{ ManifestSha256 = Get-V02ReleaseGateFixtureSha256 $rendererManifestPath; ManifestPath = $rendererManifestPath; Result = $rendererResult }
-    New-V02ReleaseGateEvidenceReceipt -Path (Join-Path $artifactDirectory 'contract.json') -Class Contract -SourceCommit $repo.Commit -SourceTree $repo.Tree -ArtifactDirectory $artifactDirectory
-    New-V02ReleaseGateEvidenceReceipt -Path (Join-Path $artifactDirectory 'synthetic.json') -Class Synthetic -SourceCommit $repo.Commit -SourceTree $repo.Tree -ArtifactDirectory $artifactDirectory
-    $githubPath = Join-Path $artifactDirectory 'github-snapshot.json'
-    New-V02ReleaseGateGitHubSnapshot -Path $githubPath
-    $matrix = [pscustomobject][ordered]@{ ManifestPath = $matrixPath; ManifestFileSha256 = Get-V02ReleaseGateFixtureSha256 $matrixPath; ManifestPayloadSha256 = $matrixManifest.ManifestPayloadSha256; Candidate = $matrixManifest }
-    $humanReviewPath = Join-Path $artifactDirectory 'human-review.json'
-    New-V02ReleaseGateHumanReview -Path $humanReviewPath -Package $package -Renderer $renderer -Matrix $matrix `
-        -GitHubSnapshotSha256 (Get-V02ReleaseGateFixtureSha256 $githubPath) -SourceCommit $repo.Commit -SourceTree $repo.Tree -ArtifactDirectory $artifactDirectory
-    return [pscustomobject][ordered]@{
-        Root = $root
-        Repository = $repo
-        Package = $package
-        PackageResult = $packageResult
-        Renderer = $renderer
-        RendererResult = $rendererResult
-        RendererManifestPath = $rendererManifestPath
-        ThaiDirectory = $thaiDirectory
-        EnglishDirectory = $englishDirectory
-        MatrixPath = $matrixPath
-        MatrixManifest = $matrixManifest
-        ContractPath = Join-Path $artifactDirectory 'contract.json'
-        SyntheticPath = Join-Path $artifactDirectory 'synthetic.json'
-        GitHubPath = $githubPath
-        HumanReviewPath = $humanReviewPath
-    }
-}
-
 function Invoke-V02ReleaseGateTestCase {
-    param([Parameter(Mandatory = $true)][string]$Name, [Parameter(Mandatory = $true)][scriptblock]$Body)
+    param(
+        [Parameter(Mandatory = $true)][string]$Name,
+        [Parameter(Mandatory = $true)][scriptblock]$Body
+    )
 
     try {
         & $Body
@@ -442,89 +23,412 @@ function Invoke-V02ReleaseGateTestCase {
     }
 }
 
-$fixture = $null
+function Assert-V02ReleaseGateTestThrows {
+    param(
+        [Parameter(Mandatory = $true)][scriptblock]$Body,
+        [string]$Pattern
+    )
+
+    $threw = $false
+    try { & $Body }
+    catch {
+        $threw = $true
+        if (-not [string]::IsNullOrWhiteSpace($Pattern) -and $_.Exception.Message -notmatch $Pattern) {
+            throw "Expected error matching '$Pattern'; observed '$($_.Exception.Message)'."
+        }
+    }
+    if (-not $threw) { throw 'Expected a fail-closed rejection.' }
+}
+
+function New-V02ReleaseGateTestDirectory {
+    param([Parameter(Mandatory = $true)][string]$Path)
+    New-Item -ItemType Directory -Path $Path -Force | Out-Null
+}
+
+function Write-V02ReleaseGateTestBytes {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][byte[]]$Bytes
+    )
+    $parent = [IO.Path]::GetDirectoryName([IO.Path]::GetFullPath($Path))
+    if (-not [IO.Directory]::Exists($parent)) { [IO.Directory]::CreateDirectory($parent) | Out-Null }
+    [IO.File]::WriteAllBytes($Path, $Bytes)
+    return Get-V02ReleaseGateFileSha256 -Path $Path
+}
+
+function Write-V02ReleaseGateTestText {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$Text
+    )
+    return Write-V02ReleaseGateTestBytes -Path $Path -Bytes ([Text.UTF8Encoding]::new($false).GetBytes($Text))
+}
+
+function Write-V02ReleaseGateTestJson {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)]$Value
+    )
+    return Write-V02ReleaseGateTestText -Path $Path -Text ($Value | ConvertTo-Json -Depth 100)
+}
+
+function Get-V02ReleaseGateTestRepositoryIdentity {
+    param([Parameter(Mandatory = $true)][string]$RepositoryRoot)
+    return Get-V02ReleaseGateGitIdentity -RepositoryRoot $RepositoryRoot
+}
+
+function New-V02ReleaseGateTestCleanRepository {
+    $root = Join-Path ([IO.Path]::GetTempPath()) ('herdrops-v02-gate-clean-' + [Guid]::NewGuid().ToString('N'))
+    New-V02ReleaseGateTestDirectory -Path $root
+    New-V02ReleaseGateTestDirectory -Path (Join-Path $root 'Plan')
+    New-V02ReleaseGateTestDirectory -Path (Join-Path $root 'tools\packaging\v0.2')
+    Copy-Item -LiteralPath (Join-Path $script:GateRepositoryRoot 'Plan\DECISIONS.md') -Destination (Join-Path $root 'Plan\DECISIONS.md')
+    Copy-Item -LiteralPath (Join-Path $script:GateRepositoryRoot 'tools\packaging\v0.2\package-identity-profile.json') -Destination (Join-Path $root 'tools\packaging\v0.2\package-identity-profile.json')
+    & git -C $root init --quiet
+    & git -C $root -c user.name=HerdrOps-Gate-Test -c user.email=test@example.invalid add --all
+    & git -C $root -c user.name=HerdrOps-Gate-Test -c user.email=test@example.invalid commit --quiet -m fixture
+    if ($LASTEXITCODE -ne 0) { throw 'Clean authority fixture repository could not be committed.' }
+    return $root
+}
+
+function New-V02ReleaseGateTestCandidateLock {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)]$Identity,
+        [Parameter(Mandatory = $true)][string]$ProfileFileSha256,
+        [Parameter(Mandatory = $true)][string]$ProfileCanonicalSha256,
+        [Parameter(Mandatory = $true)]$Authority
+    )
+    $lock = [pscustomobject][ordered]@{
+        SchemaVersion = 1
+        EvidenceClass = 'ApprovedCandidateLock'
+        Result = 'APPROVED'
+        Immutable = $true
+        SourceCommit = $Identity.Commit
+        SourceTree = $Identity.Tree
+        ProfileId = $script:V02ReleaseGatePackageProfileId
+        ProfileFileSha256 = $ProfileFileSha256
+        ProfileCanonicalSha256 = $ProfileCanonicalSha256
+        Authority = [pscustomobject][ordered]@{
+            DecisionId = $Authority.DecisionId
+            ApprovalReference = $Authority.ApprovalReference
+            PayloadSha256 = $Authority.PayloadSha256
+            Reference = $Authority.RelativeReference
+            ReferenceSha256 = $Authority.FileSha256
+            OwnerIdentity = $Authority.OwnerIdentity
+            OwnerRole = $Authority.OwnerRole
+        }
+        Runtime = 'NOT_OBSERVED'
+        Human = 'NOT_OBSERVED'
+        Release = 'NOT_OBSERVED'
+    }
+    Write-V02ReleaseGateTestJson -Path $Path -Value $lock | Out-Null
+    return $lock
+}
+
+function New-V02ReleaseGateTestGitHubSnapshot {
+    param([Parameter(Mandatory = $true)][string]$Path)
+    $milestone = [pscustomobject][ordered]@{ number = 2; title = 'v0.2.0' }
+    $issues = @(
+        [pscustomobject][ordered]@{ number = 6; title = 'issue 6'; state = 'closed'; milestone = $milestone }
+        [pscustomobject][ordered]@{ number = 7; title = 'issue 7'; state = 'closed'; milestone = $milestone }
+        [pscustomobject][ordered]@{ number = 8; title = 'issue 8'; state = 'closed'; milestone = $milestone }
+        [pscustomobject][ordered]@{ number = 9; title = 'issue 9'; state = 'closed'; milestone = $milestone }
+        [pscustomobject][ordered]@{ number = 10; title = 'issue 10'; state = 'closed'; milestone = $milestone }
+        [pscustomobject][ordered]@{ number = 11; title = '[v0.2.0] Release readiness tracker'; state = 'closed'; milestone = $milestone }
+        [pscustomobject][ordered]@{ number = 54; title = 'issue 54'; state = 'closed'; milestone = $milestone }
+        [pscustomobject][ordered]@{ number = 63; title = 'issue 63'; state = 'closed'; milestone = $milestone }
+        [pscustomobject][ordered]@{ number = 149; title = 'issue 149'; state = 'closed'; milestone = $null }
+    )
+    $snapshot = [pscustomobject][ordered]@{
+        schemaVersion = 1
+        repository = 'OSHEThai/HerdrOps'
+        milestones = @([pscustomobject][ordered]@{ number = 2; title = 'v0.2.0'; state = 'closed' })
+        issues = $issues
+    }
+    Write-V02ReleaseGateTestJson -Path $Path -Value $snapshot | Out-Null
+    return $snapshot
+}
+
+function New-V02ReleaseGateTestHumanReview {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$EvidenceRoot,
+        [Parameter(Mandatory = $true)]$Package,
+        [Parameter(Mandatory = $true)]$Renderer,
+        [Parameter(Mandatory = $true)]$Matrix,
+        [Parameter(Mandatory = $true)][string]$GitHubPath,
+        [Parameter(Mandatory = $true)][string]$GitHubSha,
+        [Parameter(Mandatory = $true)]$Identity
+    )
+    $ids = @($script:V02ReleaseGateHumanCheckIds)
+    $artifactPaths = @{}
+    foreach ($id in $ids) {
+        $safe = $id -replace '[^A-Za-z0-9-]', '-'
+        $artifactPaths[$id] = Join-Path $EvidenceRoot "review-$safe.txt"
+        Write-V02ReleaseGateTestText -Path $artifactPaths[$id] -Text "independent review evidence for $id`n" | Out-Null
+    }
+    $artifactPaths['package-receipt'] = $Package.IdentityPath
+    $artifactPaths['renderer-compatibility'] = $Renderer.ManifestPath
+    $artifactPaths['runtime-matrix-thai'] = $Matrix.ManifestPath
+    $artifactPaths['runtime-matrix-english'] = $Matrix.ManifestPath
+    $artifactPaths['tracker-11-readiness'] = $GitHubPath
+    $checks = @($ids | ForEach-Object {
+            $checkArtifactPath = $artifactPaths[$_]
+            [pscustomobject][ordered]@{
+                Id = $_
+                Status = 'PASS'
+                Path = $checkArtifactPath
+                Sha256 = Get-V02ReleaseGateFileSha256 -Path $checkArtifactPath
+                Binding = "HumanCheck:$_"
+            }
+        })
+    $review = [pscustomobject][ordered]@{
+        SchemaVersion = 1
+        EvidenceClass = 'Human'
+        Result = 'PASS'
+        Decision = 'GO'
+        Reviewer = [pscustomobject][ordered]@{
+            Identity = '@independent-reviewer'
+            Role = 'IndependentReleaseReviewer'
+            BuilderIdentity = '@builder'
+            RuntimeOperatorIdentity = '@runtime-operator'
+            RoleDistinct = $true
+            ReviewedUtc = '2026-08-22T14:00:00.0000000+00:00'
+        }
+        Candidate = [pscustomobject][ordered]@{
+            SourceCommit = $Identity.Commit
+            SourceTree = $Identity.Tree
+            PackageReceiptSha256 = $Package.ReceiptSha256
+            PackageReceiptFileSha256 = $Package.ReceiptFileSha256
+            PackageArchiveSha256 = $Package.ArchiveSha256
+            PackageAppSha256 = $Package.AppSha256
+            PackageCoreSha256 = $Package.CoreSha256
+            RendererManifestSha256 = $Renderer.ManifestSha256
+            RuntimeMatrixManifestSha256 = $Matrix.ManifestFileSha256
+            GitHubSnapshotSha256 = $GitHubSha
+        }
+        Checks = $checks
+        OpenFindings = @()
+        ActualHerdrRuntime = 'NOT_OBSERVED'
+        ReleaseCredit = $false
+    }
+    Write-V02ReleaseGateTestJson -Path $Path -Value $review | Out-Null
+    return $review
+}
+
+$script:GateRepositoryRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
+$script:GateIdentity = Get-V02ReleaseGateTestRepositoryIdentity -RepositoryRoot $script:GateRepositoryRoot
+$script:GateProfilePath = Join-Path $script:GateRepositoryRoot 'tools\packaging\v0.2\package-identity-profile.json'
+$script:GateProfileSha = Get-V02ReleaseGateFileSha256 -Path $script:GateProfilePath
+$script:GateProfileDocument = Read-V02ReleaseGateJsonFile -Path $script:GateProfilePath -Context 'test package profile'
+$script:GateProfileCanonical = ConvertTo-V02Jcs $script:GateProfileDocument.Value
+$script:GateProfileCanonicalSha = (Get-V02Sha256Hex -Bytes ([Text.UTF8Encoding]::new($false).GetBytes($script:GateProfileCanonical))).ToUpperInvariant()
+$script:TestRoot = Join-Path ([IO.Path]::GetTempPath()) ('herdrops-v02-gate-tests-' + [Guid]::NewGuid().ToString('N'))
+New-V02ReleaseGateTestDirectory -Path $script:TestRoot
+
 try {
-    $fixture = New-V02ReleaseGateFixture
-    Invoke-V02ReleaseGateTestCase 'complete fixture passes with separate evidence classes' {
-        $outputDirectory = Join-Path $fixture.Root 'output-pass'
-        $result = Invoke-V02ReleaseGateFixture -Fixture $fixture -OutputPath $outputDirectory
-        if ($result.Result -cne 'PASS' -or -not [bool]$result.ReleaseReady) { throw 'Complete fixture did not report PASS/ReleaseReady.' }
-        foreach ($class in @('Static', 'Contract', 'Synthetic', 'Runtime', 'Human', 'Release')) {
-            $expectedStatus = if ($class -ceq 'Runtime') { 'CANDIDATE' } else { 'PASS' }
-            if ($result.EvidenceClasses.$class.Status -cne $expectedStatus) { throw "Evidence class $class did not report $expectedStatus." }
+    Invoke-V02ReleaseGateTestCase 'approved candidate lock binds exact source/profile/authority' {
+        $evidenceRoot = Join-Path $script:TestRoot 'lock'
+        New-V02ReleaseGateTestDirectory -Path $evidenceRoot
+        $authority = Read-V02ReleaseGateAuthorityReference -RepositoryRoot $script:GateRepositoryRoot `
+            -AuthorityReferencePath (Join-Path $script:GateRepositoryRoot 'Plan\DECISIONS.md')
+        $lockPath = Join-Path $evidenceRoot 'candidate-lock.json'
+        New-V02ReleaseGateTestCandidateLock -Path $lockPath -Identity $script:GateIdentity `
+            -ProfileFileSha256 $script:GateProfileSha -ProfileCanonicalSha256 $script:GateProfileCanonicalSha -Authority $authority | Out-Null
+        $lock = Read-V02ReleaseGateCandidateLock -Path $lockPath -EvidenceRoot $evidenceRoot `
+            -ExpectedSourceCommit $script:GateIdentity.Commit -ExpectedSourceTree $script:GateIdentity.Tree `
+            -PackageProfilePath $script:GateProfilePath -Authority $authority
+        if ($lock.Result -cne 'APPROVED_CANDIDATE_ONLY' -or $lock.Authentication -cne 'TRUSTED_COMMITTED_PLAN_HASH') {
+            throw 'Candidate lock did not remain candidate-only and authority-bound.'
         }
-        if ($result.EvidenceClasses.Runtime.Classification -cne 'RuntimeMatrixCandidate') { throw 'Runtime classification was inflated.' }
-        if (-not (Test-Path -LiteralPath (Join-Path $outputDirectory 'v0.2-release-gate.json') -PathType Leaf)) { throw 'JSON report was not written.' }
-        if (-not (Test-Path -LiteralPath (Join-Path $outputDirectory 'gate-report.txt') -PathType Leaf)) { throw 'Text report was not written.' }
     }
 
-    Invoke-V02ReleaseGateTestCase 'open required issue fails closed' {
-        $snapshot = Get-Content -LiteralPath $fixture.GitHubPath -Raw | ConvertFrom-Json
-        ($snapshot.issues | Where-Object number -eq 7).state = 'open'
-        Write-V02ReleaseGateFixtureJson -Path $fixture.GitHubPath -Value $snapshot
-        try {
-            $null = Invoke-V02ReleaseGateFixture -Fixture $fixture
-            throw 'Expected open issue rejection was not observed.'
-        }
-        catch {
-            if ($_.Exception.Message -notmatch 'issue #7 state|open v0\.2\.0') { throw }
-        }
-        ($snapshot.issues | Where-Object number -eq 7).state = 'closed'
-        New-V02ReleaseGateGitHubSnapshot -Path $fixture.GitHubPath
+    Invoke-V02ReleaseGateTestCase 'forged candidate provenance fails closed' {
+        $evidenceRoot = Join-Path $script:TestRoot 'forged-lock'
+        New-V02ReleaseGateTestDirectory -Path $evidenceRoot
+        $authority = Read-V02ReleaseGateAuthorityReference -RepositoryRoot $script:GateRepositoryRoot `
+            -AuthorityReferencePath (Join-Path $script:GateRepositoryRoot 'Plan\DECISIONS.md')
+        $lockPath = Join-Path $evidenceRoot 'candidate-lock.json'
+        New-V02ReleaseGateTestCandidateLock -Path $lockPath -Identity $script:GateIdentity `
+            -ProfileFileSha256 $script:GateProfileSha -ProfileCanonicalSha256 $script:GateProfileCanonicalSha -Authority $authority | Out-Null
+        $forged = Get-Content -LiteralPath $lockPath -Raw | ConvertFrom-Json
+        $forged.Authority.Reference = 'Plan/forged-authority.json'
+        Write-V02ReleaseGateTestJson -Path $lockPath -Value $forged | Out-Null
+        Assert-V02ReleaseGateTestThrows {
+            Read-V02ReleaseGateCandidateLock -Path $lockPath -EvidenceRoot $evidenceRoot `
+                -ExpectedSourceCommit $script:GateIdentity.Commit -ExpectedSourceTree $script:GateIdentity.Tree `
+                -PackageProfilePath $script:GateProfilePath -Authority $authority
+        } 'authority source'
     }
 
-    Invoke-V02ReleaseGateTestCase 'matrix candidate credit inflation fails closed' {
-        $candidate = Get-Content -LiteralPath $fixture.MatrixPath -Raw | ConvertFrom-Json
-        $candidate.ReleaseCredit = $true
-        Write-V02ReleaseGateFixtureJson -Path $fixture.MatrixPath -Value $candidate
-        try {
-            $null = Invoke-V02ReleaseGateFixture -Fixture $fixture
-            throw 'Expected matrix credit rejection was not observed.'
-        }
-        catch {
-            if ($_.Exception.Message -notmatch 'Release credit') { throw }
-        }
-        New-V02ReleaseGateMatrixFixture -Path $fixture.MatrixPath -Package ([pscustomobject]@{ ReceiptSha256 = $fixture.PackageResult.ReceiptSha256; AppSha256 = $fixture.PackageResult.AppSha256; CoreSha256 = $fixture.PackageResult.CoreSha256 }) `
-            -SourceCommit $fixture.Repository.Commit -SourceTree $fixture.Repository.Tree -ThaiDirectory $fixture.ThaiDirectory -EnglishDirectory $fixture.EnglishDirectory | Out-Null
+    Invoke-V02ReleaseGateTestCase 'candidate source/tree/profile drift fails closed' {
+        $evidenceRoot = Join-Path $script:TestRoot 'drift-lock'
+        New-V02ReleaseGateTestDirectory -Path $evidenceRoot
+        $authority = Read-V02ReleaseGateAuthorityReference -RepositoryRoot $script:GateRepositoryRoot `
+            -AuthorityReferencePath (Join-Path $script:GateRepositoryRoot 'Plan\DECISIONS.md')
+        $lockPath = Join-Path $evidenceRoot 'candidate-lock.json'
+        New-V02ReleaseGateTestCandidateLock -Path $lockPath -Identity $script:GateIdentity `
+            -ProfileFileSha256 $script:GateProfileSha -ProfileCanonicalSha256 $script:GateProfileCanonicalSha -Authority $authority | Out-Null
+        $drifted = Get-Content -LiteralPath $lockPath -Raw | ConvertFrom-Json
+        $drifted.SourceTree = ('a' * 40)
+        Write-V02ReleaseGateTestJson -Path $lockPath -Value $drifted | Out-Null
+        Assert-V02ReleaseGateTestThrows {
+            Read-V02ReleaseGateCandidateLock -Path $lockPath -EvidenceRoot $evidenceRoot `
+                -ExpectedSourceCommit $script:GateIdentity.Commit -ExpectedSourceTree $script:GateIdentity.Tree `
+                -PackageProfilePath $script:GateProfilePath -Authority $authority
+        } 'source tree'
+        New-V02ReleaseGateTestCandidateLock -Path $lockPath -Identity $script:GateIdentity `
+            -ProfileFileSha256 $script:GateProfileSha -ProfileCanonicalSha256 $script:GateProfileCanonicalSha -Authority $authority | Out-Null
+        $drifted = Get-Content -LiteralPath $lockPath -Raw | ConvertFrom-Json
+        $drifted.ProfileFileSha256 = ('a' * 64)
+        Write-V02ReleaseGateTestJson -Path $lockPath -Value $drifted | Out-Null
+        Assert-V02ReleaseGateTestThrows {
+            Read-V02ReleaseGateCandidateLock -Path $lockPath -EvidenceRoot $evidenceRoot `
+                -ExpectedSourceCommit $script:GateIdentity.Commit -ExpectedSourceTree $script:GateIdentity.Tree `
+                -PackageProfilePath $script:GateProfilePath -Authority $authority
+        } 'profile bytes'
     }
 
-    Invoke-V02ReleaseGateTestCase 'role overlap fails closed' {
-        $review = Get-Content -LiteralPath $fixture.HumanReviewPath -Raw | ConvertFrom-Json
-        $review.Reviewer.RuntimeOperatorIdentity = $review.Reviewer.Identity
-        Write-V02ReleaseGateFixtureJson -Path $fixture.HumanReviewPath -Value $review
-        try {
-            $null = Invoke-V02ReleaseGateFixture -Fixture $fixture
-            throw 'Expected role-overlap rejection was not observed.'
+    Invoke-V02ReleaseGateTestCase 'local GitHub snapshot cannot authenticate release state' {
+        $path = Join-Path $script:TestRoot 'github.json'
+        $snapshot = New-V02ReleaseGateTestGitHubSnapshot -Path $path
+        $assessment = Assert-V02ReleaseGateGitHubSnapshot -Snapshot ((Read-V02ReleaseGateJsonFile -Path $path -Context 'test GitHub snapshot').Value)
+        if ($assessment.Authenticated -or $assessment.Status -cne 'UNAUTHENTICATED_LOCAL_SNAPSHOT') {
+            throw 'Local GitHub JSON was treated as authenticated authority.'
         }
-        catch {
-            if ($_.Exception.Message -notmatch 'identities') { throw }
-        }
-        New-V02ReleaseGateHumanReview -Path $fixture.HumanReviewPath -Package $fixture.Package -Renderer $fixture.Renderer -Matrix ([pscustomobject]@{ ManifestFileSha256 = Get-V02ReleaseGateFixtureSha256 $fixture.MatrixPath }) `
-            -GitHubSnapshotSha256 (Get-V02ReleaseGateFixtureSha256 $fixture.GitHubPath) -SourceCommit $fixture.Repository.Commit -SourceTree $fixture.Repository.Tree -ArtifactDirectory (Join-Path $fixture.Root 'evidence')
+        $forged = $snapshot | ConvertTo-Json -Depth 20 | ConvertFrom-Json
+        $forged | Add-Member -MemberType NoteProperty -Name Authenticated -Value $true
+        Assert-V02ReleaseGateTestThrows { Assert-V02ReleaseGateGitHubSnapshot -Snapshot $forged } 'exactly'
     }
 
-    Invoke-V02ReleaseGateTestCase 'package source drift fails closed' {
-        $original = $fixture.PackageResult.SourceCommit
-        $fixture.PackageResult.SourceCommit = ('e' * 40)
+    Invoke-V02ReleaseGateTestCase 'local Human GO is role/check-bound but remains NOT_OBSERVED' {
+        $evidenceRoot = Join-Path $script:TestRoot 'human'
+        New-V02ReleaseGateTestDirectory -Path $evidenceRoot
+        $package = [pscustomobject][ordered]@{
+            IdentityPath = Join-Path $evidenceRoot 'package-identity.json'
+            ReceiptSha256 = ('A' * 64)
+            ReceiptFileSha256 = ('B' * 64)
+            ArchivePath = Join-Path $evidenceRoot 'archive.zip'
+            ArchiveSha256 = ('C' * 64)
+            AppPath = Join-Path $evidenceRoot 'app.exe'
+            AppSha256 = ('D' * 64)
+            CorePath = Join-Path $evidenceRoot 'core.exe'
+            CoreSha256 = ('E' * 64)
+        }
+        Write-V02ReleaseGateTestText -Path $package.IdentityPath -Text 'receipt' | Out-Null
+        $package.ReceiptFileSha256 = Get-V02ReleaseGateFileSha256 -Path $package.IdentityPath
+        $package.ArchivePath = Join-Path $evidenceRoot 'archive.zip'; Write-V02ReleaseGateTestText -Path $package.ArchivePath -Text 'archive' | Out-Null
+        $package.AppPath = Join-Path $evidenceRoot 'app.exe'; Write-V02ReleaseGateTestText -Path $package.AppPath -Text 'app' | Out-Null
+        $package.CorePath = Join-Path $evidenceRoot 'core.exe'; Write-V02ReleaseGateTestText -Path $package.CorePath -Text 'core' | Out-Null
+        $rendererPath = Join-Path $evidenceRoot 'renderer.json'; Write-V02ReleaseGateTestText -Path $rendererPath -Text 'renderer' | Out-Null
+        $matrixPath = Join-Path $evidenceRoot 'matrix.json'; Write-V02ReleaseGateTestText -Path $matrixPath -Text 'matrix' | Out-Null
+        $githubPath = Join-Path $evidenceRoot 'github.json'; New-V02ReleaseGateTestGitHubSnapshot -Path $githubPath | Out-Null
+        $renderer = [pscustomobject][ordered]@{ ManifestPath = $rendererPath; ManifestSha256 = Get-V02ReleaseGateFileSha256 -Path $rendererPath }
+        $matrix = [pscustomobject][ordered]@{ ManifestPath = $matrixPath; ManifestFileSha256 = Get-V02ReleaseGateFileSha256 -Path $matrixPath }
+        $reviewPath = Join-Path $evidenceRoot 'human-review.json'
+        New-V02ReleaseGateTestHumanReview -Path $reviewPath -EvidenceRoot $evidenceRoot -Package $package `
+            -Renderer $renderer -Matrix $matrix -GitHubPath $githubPath -GitHubSha (Get-V02ReleaseGateFileSha256 -Path $githubPath) `
+            -Identity $script:GateIdentity | Out-Null
+        $review = Read-V02ReleaseGateJsonFile -Path $reviewPath -Context 'test Human review'
+        $disposition = Assert-V02ReleaseGateHumanReview -Review $review.Value -ReviewPath $review.Path `
+            -ExpectedSourceCommit $script:GateIdentity.Commit -ExpectedSourceTree $script:GateIdentity.Tree `
+            -Package $package -Renderer $renderer -Matrix $matrix -GitHubSnapshotPath $githubPath `
+            -GitHubSnapshotSha256 (Get-V02ReleaseGateFileSha256 -Path $githubPath) -EvidenceRoot $evidenceRoot
+        if ($disposition.Status -cne 'NOT_OBSERVED' -or $disposition.Authenticated) { throw 'Local Human GO was credited.' }
+        $tampered = $review.Value
+        $tampered.Checks[0].Binding = 'HumanCheck:renderer-compatibility'
+        Assert-V02ReleaseGateTestThrows {
+            Assert-V02ReleaseGateHumanReview -Review $tampered -ReviewPath $review.Path `
+                -ExpectedSourceCommit $script:GateIdentity.Commit -ExpectedSourceTree $script:GateIdentity.Tree `
+                -Package $package -Renderer $renderer -Matrix $matrix -GitHubSnapshotPath $githubPath `
+                -GitHubSnapshotSha256 (Get-V02ReleaseGateFileSha256 -Path $githubPath) -EvidenceRoot $evidenceRoot
+        } 'binding'
+    }
+
+    Invoke-V02ReleaseGateTestCase 'same-held-byte snapshot rejects post-validation drift' {
+        $path = Join-Path $script:TestRoot 'toctou.txt'
+        Write-V02ReleaseGateTestText -Path $path -Text 'before' | Out-Null
+        $snapshot = Get-V02ReleaseGateStableFileSnapshot -Path $path -Context 'TOCTOU fixture'
+        Write-V02ReleaseGateTestText -Path $path -Text 'after' | Out-Null
+        Assert-V02ReleaseGateTestThrows {
+            Assert-V02ReleaseGateSnapshotUnchanged -Snapshot $snapshot -Context 'TOCTOU post-validation'
+        } 'length|bytes'
+    }
+
+    Invoke-V02ReleaseGateTestCase 'path escape and reparse-style aliases fail closed' {
+        $root = Join-Path $script:TestRoot 'contained'
+        $outside = Join-Path $script:TestRoot 'outside.txt'
+        New-V02ReleaseGateTestDirectory -Path $root
+        Write-V02ReleaseGateTestText -Path $outside -Text 'outside' | Out-Null
+        Assert-V02ReleaseGateTestThrows {
+            Assert-V02ReleaseGatePathWithinRoot -Path $outside -Root $root -Context 'path escape'
+        } 'escapes'
+        $inside = Join-Path $root 'inside.txt'
+        Write-V02ReleaseGateTestText -Path $inside -Text 'inside' | Out-Null
+        Assert-V02ReleaseGatePathWithinRoot -Path $inside -Root $root -Context 'contained path' | Out-Null
+    }
+
+    Invoke-V02ReleaseGateTestCase 'production gate exposes no injectable validators' {
+        $parameters = @((Get-Command Invoke-V02ReleaseGate -CommandType Function).Parameters.Keys)
+        foreach ($name in @('PackageValidator', 'RendererValidator', 'RuntimeMatrixValidator')) {
+            if ($parameters -contains $name) { throw "Production gate still exposes $name." }
+        }
+        Assert-V02ReleaseGateTestThrows {
+            Invoke-V02ReleaseGate -PackageValidator ([scriptblock]::Create('return $null'))
+        } 'parameter'
+    }
+
+    Invoke-V02ReleaseGateTestCase 'missing authority returns NOT_READY and no Runtime/Human/Release observation' {
+        $fixtureRepo = New-V02ReleaseGateTestCleanRepository
         try {
-            $null = Invoke-V02ReleaseGateFixture -Fixture $fixture
-            throw 'Expected package source drift rejection was not observed.'
+            $identity = Get-V02ReleaseGateTestRepositoryIdentity -RepositoryRoot $fixtureRepo
+            $root = Join-Path $script:TestRoot 'not-ready-inputs'
+            $packageRoot = Join-Path $root 'package'
+            New-V02ReleaseGateTestDirectory -Path $packageRoot
+            New-V02ReleaseGateTestDirectory -Path (Join-Path $root 'Thai')
+            New-V02ReleaseGateTestDirectory -Path (Join-Path $root 'English')
+            foreach ($file in @('package-identity.json', 'archive.zip', 'renderer.json', 'matrix.json', 'contract.json', 'synthetic.json', 'human.json', 'github.json')) {
+                Write-V02ReleaseGateTestText -Path (Join-Path $root $file) -Text '{}' | Out-Null
+            }
+            foreach ($file in @('package-manifest.json', 'HerdrOps.App.exe', 'HerdrOps.Core.exe')) {
+                Write-V02ReleaseGateTestText -Path (Join-Path $packageRoot $file) -Text 'fixture' | Out-Null
+            }
+            $args = @{
+                ExpectedSourceCommit = $identity.Commit
+                ExpectedSourceTree = $identity.Tree
+                PackageIdentityPath = Join-Path $root 'package-identity.json'
+                PackageArchivePath = Join-Path $root 'archive.zip'
+                ExtractedPackageRoot = $packageRoot
+                PackageProfilePath = Join-Path $fixtureRepo 'tools\packaging\v0.2\package-identity-profile.json'
+                RendererManifestPath = Join-Path $root 'renderer.json'
+                ThaiEvidenceDirectory = Join-Path $root 'Thai'
+                EnglishEvidenceDirectory = Join-Path $root 'English'
+                RuntimeMatrixManifestPath = Join-Path $root 'matrix.json'
+                ContractEvidencePath = Join-Path $root 'contract.json'
+                SyntheticEvidencePath = Join-Path $root 'synthetic.json'
+                HumanReviewPath = Join-Path $root 'human.json'
+                GitHubSnapshotPath = Join-Path $root 'github.json'
+                EvidenceRoot = $root
+                RepositoryRoot = $fixtureRepo
+            }
+            $result = Invoke-V02ReleaseGate @args
+            if ($result.Result -cne 'NOT_READY' -or [bool]$result.ReleaseReady) { throw 'Missing authority did not fail closed.' }
+            foreach ($name in @('Runtime', 'Human', 'Release')) {
+                if ($result.EvidenceClasses.$name.Status -cne 'NOT_OBSERVED') { throw "$name was not NOT_OBSERVED." }
+            }
         }
-        catch {
-            if ($_.Exception.Message -notmatch 'source commit') { throw }
+        finally {
+            if (Test-Path -LiteralPath $fixtureRepo) { Remove-Item -LiteralPath $fixtureRepo -Recurse -Force }
         }
-        $fixture.PackageResult.SourceCommit = $original
     }
 }
 finally {
-    if ($null -ne $fixture -and (Test-Path -LiteralPath $fixture.Root)) {
-        Remove-Item -LiteralPath $fixture.Root -Recurse -Force
-    }
+    if (Test-Path -LiteralPath $script:TestRoot) { Remove-Item -LiteralPath $script:TestRoot -Recurse -Force }
 }
 
 if ($script:Failures.Count -ne 0) {
     $script:Failures | ForEach-Object { Write-Host $_ -ForegroundColor Red }
-    exit 1
+    throw "$($script:Failures.Count) v0.2 release-gate test(s) failed."
 }
-
-Write-Host 'All v0.2 release-gate fixture tests passed.' -ForegroundColor Green
+Write-Host 'All v0.2 release-gate hostile tests passed.' -ForegroundColor Green

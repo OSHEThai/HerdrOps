@@ -16,6 +16,9 @@ param(
     [string]$SyntheticEvidencePath,
     [string]$HumanReviewPath,
     [string]$GitHubSnapshotPath,
+    [string]$CandidateLockPath,
+    [string]$AuthorityReferencePath,
+    [string]$EvidenceRoot,
     [string]$RepositoryRoot,
     [string]$RendererEvidenceRoot,
     [string]$OutputPath
@@ -40,6 +43,10 @@ $script:V02ReleaseGatePackageReceiptSchemaSha256 = '8C7EF64ED06C94C6589D73C0AB47
 $script:V02ReleaseGateDecisionId = 'herdrops-rec-all-v2'
 $script:V02ReleaseGateDecisionPayloadSha256 = '48474610D2A20EE2F7CA2DAC0A3CCF45F919440C9C5D81EF5BA93AD7E524F62D'
 $script:V02ReleaseGateDecisionReference = 'https://github.com/OSHEThai/HerdrOps/issues/149#issuecomment-5380637664'
+$script:V02ReleaseGateAuthorityReferenceRelativePath = 'Plan/DECISIONS.md#D-024'
+$script:V02ReleaseGateAuthorityFileSha256 = 'BFADC29EA34BAA13FF5D3F43013795C0258CF691369E5E150774D3F646F4F730'
+$script:V02ReleaseGateAuthorityOwner = '@yutthaphon'
+$script:V02ReleaseGateAuthorityRole = 'ProductOwner'
 $script:V02ReleaseGateHerdrReleaseId = '0.8.2-preview.2026-08-19-b5c4a0176e91-x86_64-pc-windows-msvc'
 $script:V02ReleaseGateHerdrExecutableSha256 = 'AFE7BAD9B77946917B509C9B638BB2A47BC1D4F19254957D15B0FAAFBEDB3E93'
 $script:V02ReleaseGateMatrixHashScope = 'SHA256OfRFC8785JcsUtf8NoBomPayload'
@@ -187,7 +194,9 @@ function Resolve-V02ReleaseGateExistingPath {
     if (-not (Test-Path -LiteralPath $Path -PathType $Type)) {
         throw "$Context is missing: $Path"
     }
-    return [IO.Path]::GetFullPath((Resolve-Path -LiteralPath $Path).Path).TrimEnd([char[]]@('\', '/'))
+    $resolved = [IO.Path]::GetFullPath((Resolve-Path -LiteralPath $Path).Path).TrimEnd([char[]]@('\', '/'))
+    Assert-V02ReleaseGateNoReparsePath -Path $resolved -Context $Context
+    return $resolved
 }
 
 function Get-V02ReleaseGateFileSha256 {
@@ -196,31 +205,152 @@ function Get-V02ReleaseGateFileSha256 {
     return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToUpperInvariant()
 }
 
-function Read-V02ReleaseGateJsonFile {
+function Assert-V02ReleaseGateNoReparsePath {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$Context
+    )
+
+    $full = [IO.Path]::GetFullPath($Path)
+    $root = [IO.Path]::GetPathRoot($full)
+    if ([string]::IsNullOrWhiteSpace($root)) {
+        throw "$Context has no filesystem root: $Path"
+    }
+    $current = $root
+    $tail = $full.Substring($root.Length)
+    foreach ($part in ($tail -split '[\\/]')) {
+        if ([string]::IsNullOrWhiteSpace($part)) { continue }
+        $current = Join-Path $current $part
+        if (Test-Path -LiteralPath $current) {
+            $item = Get-Item -LiteralPath $current -Force
+            if (([IO.FileAttributes]$item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+                throw "$Context traverses a reparse point: $current"
+            }
+        }
+    }
+}
+
+function Assert-V02ReleaseGatePathWithinRoot {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$Root,
+        [Parameter(Mandatory = $true)][string]$Context
+    )
+
+    $full = [IO.Path]::GetFullPath($Path).TrimEnd([char[]]@('\', '/'))
+    $rootFull = [IO.Path]::GetFullPath($Root).TrimEnd([char[]]@('\', '/'))
+    Assert-V02ReleaseGateNoReparsePath -Path $full -Context $Context
+    Assert-V02ReleaseGateNoReparsePath -Path $rootFull -Context "$Context root"
+    $prefix = $rootFull + [IO.Path]::DirectorySeparatorChar
+    if (-not [StringComparer]::OrdinalIgnoreCase.Equals($full, $rootFull) -and
+        -not $full.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "$Context escapes its evidence root. Path='$full' Root='$rootFull'."
+    }
+    return $full
+}
+
+function Get-V02ReleaseGateStableFileSnapshot {
     param(
         [Parameter(Mandatory = $true)][string]$Path,
         [Parameter(Mandatory = $true)][string]$Context
     )
 
     $fullPath = Resolve-V02ReleaseGateExistingPath -Path $Path -Type Leaf -Context $Context
+    $stream = $null
     try {
-        $document = ConvertFrom-V02StrictUtf8JsonFile -Path $fullPath
+        $stream = [IO.File]::Open($fullPath, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+        if ($stream.Length -gt [int32]::MaxValue) {
+            throw "$Context is too large for bounded validation: $fullPath"
+        }
+        $bytes = New-Object byte[] ([int32]$stream.Length)
+        $offset = 0
+        while ($offset -lt $bytes.Length) {
+            $read = $stream.Read($bytes, $offset, $bytes.Length - $offset)
+            if ($read -le 0) { throw "$Context ended before the held-byte read completed: $fullPath" }
+            $offset += $read
+        }
+    }
+    finally {
+        if ($null -ne $stream) { $stream.Dispose() }
+    }
+    return [pscustomobject][ordered]@{
+        Path = $fullPath
+        Bytes = [byte[]]$bytes
+        Length = [int64]$bytes.Length
+        Sha256 = (Get-V02Sha256Hex -Bytes $bytes).ToUpperInvariant()
+    }
+}
+
+function ConvertFrom-V02ReleaseGateStrictJsonBytes {
+    param(
+        [Parameter(Mandatory = $true)][byte[]]$Bytes,
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$Context
+    )
+
+    if ($Bytes.Length -ge 3 -and $Bytes[0] -eq 0xEF -and $Bytes[1] -eq 0xBB -and $Bytes[2] -eq 0xBF) {
+        throw "$Context must be UTF-8 without a BOM: $Path"
+    }
+    try {
+        $json = [Text.UTF8Encoding]::new($false, $true).GetString($Bytes)
+    }
+    catch {
+        throw "$Context contains malformed UTF-8: $Path"
+    }
+    if ($json.IndexOf([char]0xFEFF) -ge 0) {
+        throw "$Context contains an unexpected BOM character: $Path"
+    }
+    Assert-V02NoDuplicateJsonProperties -Json $json -Source $Path
+    try {
+        $value = if ((Get-Command ConvertFrom-Json -CommandType Cmdlet).Parameters.ContainsKey('DateKind')) {
+            $json | ConvertFrom-Json -DateKind String
+        }
+        else {
+            $json | ConvertFrom-Json
+        }
+    }
+    catch {
+        throw "$Context is malformed, commented, or has a trailing comma: $Path"
+    }
+    if ($null -eq $value -or $value -isnot [pscustomobject]) {
+        throw "$Context root must be an object: $Path"
+    }
+    return [pscustomobject][ordered]@{ Value = $value; Json = $json }
+}
+
+function Read-V02ReleaseGateJsonFile {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$Context
+    )
+
+    $snapshot = Get-V02ReleaseGateStableFileSnapshot -Path $Path -Context $Context
+    try {
+        $document = ConvertFrom-V02ReleaseGateStrictJsonBytes -Bytes $snapshot.Bytes -Path $snapshot.Path -Context $Context
     }
     catch {
         throw "$Context is not strict UTF-8 JSON: $($_.Exception.Message)"
     }
-    $value = $document.Value
-    $convertFromJson = Get-Command ConvertFrom-Json -CommandType Cmdlet
-    if ($convertFromJson.Parameters.ContainsKey('DateKind')) {
-        $value = $document.Json | ConvertFrom-Json -DateKind String
-    }
     return [pscustomobject][ordered]@{
-        Path = $fullPath
-        Value = $value
-        Bytes = $document.Bytes
+        Path = $snapshot.Path
+        Value = $document.Value
+        Bytes = $snapshot.Bytes
         RawJson = $document.Json
-        FileSha256 = Get-V02ReleaseGateFileSha256 -Path $fullPath
+        Length = $snapshot.Length
+        FileSha256 = $snapshot.Sha256
     }
+}
+
+function Assert-V02ReleaseGateSnapshotUnchanged {
+    param(
+        [Parameter(Mandatory = $true)]$Snapshot,
+        [Parameter(Mandatory = $true)][string]$Context
+    )
+
+    $current = Get-V02ReleaseGateStableFileSnapshot -Path $Snapshot.Path -Context $Context
+    Assert-V02ReleaseGateEqual $current.Length $Snapshot.Length "$Context length"
+    Assert-V02ReleaseGateEqual $current.Sha256 $Snapshot.Sha256 "$Context bytes"
+    return $current
 }
 
 function Get-V02ReleaseGateGitIdentity {
@@ -278,14 +408,19 @@ function Get-V02ReleaseGateRelativeOrAbsolutePath {
     param(
         [Parameter(Mandatory = $true)][string]$Path,
         [Parameter(Mandatory = $true)][string]$BaseDirectory,
-        [Parameter(Mandatory = $true)][string]$Context
+        [Parameter(Mandatory = $true)][string]$Context,
+        [string]$AllowedRoot
     )
 
     $candidate = $Path
     if (-not [IO.Path]::IsPathRooted($candidate)) {
         $candidate = Join-Path $BaseDirectory $candidate
     }
-    return Resolve-V02ReleaseGateExistingPath -Path $candidate -Type Leaf -Context $Context
+    $resolved = Resolve-V02ReleaseGateExistingPath -Path $candidate -Type Leaf -Context $Context
+    if (-not [string]::IsNullOrWhiteSpace($AllowedRoot)) {
+        Assert-V02ReleaseGatePathWithinRoot -Path $resolved -Root $AllowedRoot -Context $Context | Out-Null
+    }
+    return $resolved
 }
 
 function Read-V02ReleaseGateEvidenceReceipt {
@@ -293,7 +428,8 @@ function Read-V02ReleaseGateEvidenceReceipt {
         [Parameter(Mandatory = $true)][string]$Path,
         [Parameter(Mandatory = $true)][ValidateSet('Contract', 'Synthetic')][string]$ExpectedClass,
         [Parameter(Mandatory = $true)][string]$ExpectedSourceCommit,
-        [Parameter(Mandatory = $true)][string]$ExpectedSourceTree
+        [Parameter(Mandatory = $true)][string]$ExpectedSourceTree,
+        [Parameter(Mandatory = $true)][string]$EvidenceRoot
     )
 
     $document = Read-V02ReleaseGateJsonFile -Path $Path -Context "$ExpectedClass evidence receipt"
@@ -335,9 +471,10 @@ function Read-V02ReleaseGateEvidenceReceipt {
         Assert-V02ReleaseGateExactString $check.Result 'PASS' "$ExpectedClass check '$name' Result"
         $checkPath = Get-V02ReleaseGateRelativeOrAbsolutePath -Path ([string]$check.Path) `
             -BaseDirectory ([IO.Path]::GetDirectoryName($document.Path)) `
-            -Context "$ExpectedClass check '$name' artifact"
+            -Context "$ExpectedClass check '$name' artifact" -AllowedRoot $EvidenceRoot
         $declaredSha = Assert-V02ReleaseGateSha256 $check.Sha256 "$ExpectedClass check '$name' Sha256"
-        Assert-V02ReleaseGateEqual (Get-V02ReleaseGateFileSha256 $checkPath) $declaredSha "$ExpectedClass check '$name' artifact hash"
+        $checkSnapshot = Get-V02ReleaseGateStableFileSnapshot -Path $checkPath -Context "$ExpectedClass check '$name' artifact"
+        Assert-V02ReleaseGateEqual $checkSnapshot.Sha256 $declaredSha "$ExpectedClass check '$name' artifact hash"
     }
 
     return [pscustomobject][ordered]@{
@@ -345,6 +482,155 @@ function Read-V02ReleaseGateEvidenceReceipt {
         FileSha256 = $document.FileSha256
         EvidenceClass = $ExpectedClass
         CheckCount = $checks.Count
+    }
+}
+
+function Read-V02ReleaseGateAuthorityReference {
+    param(
+        [Parameter(Mandatory = $true)][string]$RepositoryRoot,
+        [Parameter(Mandatory = $true)][string]$AuthorityReferencePath
+    )
+
+    $expectedPath = [IO.Path]::GetFullPath((Join-Path $RepositoryRoot 'Plan\DECISIONS.md')).TrimEnd([char[]]@('\', '/'))
+    $actualPath = Resolve-V02ReleaseGateExistingPath -Path $AuthorityReferencePath -Type Leaf -Context 'Authority reference'
+    if (-not [StringComparer]::OrdinalIgnoreCase.Equals($actualPath, $expectedPath)) {
+        throw "Authority reference must be the committed Plan/DECISIONS.md: $expectedPath"
+    }
+    $snapshot = Get-V02ReleaseGateStableFileSnapshot -Path $actualPath -Context 'Authority reference'
+    if ($snapshot.Sha256 -cne $script:V02ReleaseGateAuthorityFileSha256) {
+        throw "Authority reference hash is not the approved REC-ALL v2 record. Expected=$script:V02ReleaseGateAuthorityFileSha256 Observed=$($snapshot.Sha256)"
+    }
+    $text = [Text.UTF8Encoding]::new($false, $true).GetString($snapshot.Bytes)
+    foreach ($required in @(
+            'D-024',
+            'REC-ALL v2 is the authoritative cross-version owner decision',
+            'herdrops-rec-all-v2',
+            $script:V02ReleaseGateDecisionReference,
+            $script:V02ReleaseGateDecisionPayloadSha256,
+            $script:V02ReleaseGateAuthorityOwner,
+            'Agents cannot self-grant owner or final Human authority'
+        )) {
+        if ($text.IndexOf($required, [StringComparison]::Ordinal) -lt 0) {
+            throw "Authority reference is missing its trusted binding: $required"
+        }
+    }
+    return [pscustomobject][ordered]@{
+        Path = $snapshot.Path
+        FileSha256 = $snapshot.Sha256
+        RelativeReference = $script:V02ReleaseGateAuthorityReferenceRelativePath
+        DecisionId = $script:V02ReleaseGateDecisionId
+        ApprovalReference = $script:V02ReleaseGateDecisionReference
+        PayloadSha256 = $script:V02ReleaseGateDecisionPayloadSha256
+        OwnerIdentity = $script:V02ReleaseGateAuthorityOwner
+        OwnerRole = $script:V02ReleaseGateAuthorityRole
+        Authentication = 'TRUSTED_COMMITTED_PLAN_HASH'
+    }
+}
+
+function Read-V02ReleaseGateCandidateLock {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$EvidenceRoot,
+        [Parameter(Mandatory = $true)][string]$ExpectedSourceCommit,
+        [Parameter(Mandatory = $true)][string]$ExpectedSourceTree,
+        [Parameter(Mandatory = $true)][string]$PackageProfilePath,
+        [Parameter(Mandatory = $true)]$Authority
+    )
+
+    $lockPath = Resolve-V02ReleaseGateExistingPath -Path $Path -Type Leaf -Context 'Approved candidate lock'
+    Assert-V02ReleaseGatePathWithinRoot -Path $lockPath -Root $EvidenceRoot -Context 'Approved candidate lock' | Out-Null
+    $document = Read-V02ReleaseGateJsonFile -Path $lockPath -Context 'Approved candidate lock'
+    Assert-V02ReleaseGateExactProperties $document.Value @(
+        'SchemaVersion', 'EvidenceClass', 'Result', 'Immutable', 'SourceCommit', 'SourceTree',
+        'ProfileId', 'ProfileFileSha256', 'ProfileCanonicalSha256', 'Authority', 'Runtime', 'Human', 'Release'
+    ) 'Approved candidate lock'
+    Assert-V02ReleaseGateInteger $document.Value.SchemaVersion 'Approved candidate lock SchemaVersion' 1
+    Assert-V02ReleaseGateEqual $document.Value.SchemaVersion 1 'Approved candidate lock SchemaVersion'
+    Assert-V02ReleaseGateExactString $document.Value.EvidenceClass 'ApprovedCandidateLock' 'Approved candidate lock EvidenceClass'
+    Assert-V02ReleaseGateExactString $document.Value.Result 'APPROVED' 'Approved candidate lock Result'
+    if (-not (Assert-V02ReleaseGateBoolean $document.Value.Immutable 'Approved candidate lock Immutable')) {
+        throw 'Approved candidate lock must be immutable.'
+    }
+    Assert-V02ReleaseGateEqual $document.Value.SourceCommit $ExpectedSourceCommit 'Approved candidate lock source commit'
+    Assert-V02ReleaseGateEqual $document.Value.SourceTree $ExpectedSourceTree 'Approved candidate lock source tree'
+    Assert-V02ReleaseGateExactString $document.Value.ProfileId $script:V02ReleaseGatePackageProfileId 'Approved candidate lock ProfileId'
+    $profileSnapshot = Get-V02ReleaseGateStableFileSnapshot -Path $PackageProfilePath -Context 'Approved candidate lock package profile'
+    Assert-V02ReleaseGateEqual $document.Value.ProfileFileSha256 $profileSnapshot.Sha256 'Approved candidate lock profile bytes'
+    Assert-V02ReleaseGateSha256 $document.Value.ProfileCanonicalSha256 'Approved candidate lock profile canonical SHA-256' | Out-Null
+    $profileDocument = ConvertFrom-V02ReleaseGateStrictJsonBytes -Bytes $profileSnapshot.Bytes -Path $profileSnapshot.Path -Context 'Approved candidate lock package profile'
+    $profileCanonical = ConvertTo-V02Jcs $profileDocument.Value
+    $profileCanonicalSha = (Get-V02Sha256Hex -Bytes ([Text.UTF8Encoding]::new($false).GetBytes($profileCanonical))).ToUpperInvariant()
+    Assert-V02ReleaseGateEqual $document.Value.ProfileCanonicalSha256 $profileCanonicalSha 'Approved candidate lock profile canonical bytes'
+    Assert-V02ReleaseGateExactString $document.Value.Runtime 'NOT_OBSERVED' 'Approved candidate lock Runtime boundary'
+    Assert-V02ReleaseGateExactString $document.Value.Human 'NOT_OBSERVED' 'Approved candidate lock Human boundary'
+    Assert-V02ReleaseGateExactString $document.Value.Release 'NOT_OBSERVED' 'Approved candidate lock Release boundary'
+
+    Assert-V02ReleaseGateExactProperties $document.Value.Authority @(
+        'DecisionId', 'ApprovalReference', 'PayloadSha256', 'Reference', 'ReferenceSha256', 'OwnerIdentity', 'OwnerRole'
+    ) 'Approved candidate lock Authority'
+    Assert-V02ReleaseGateEqual $document.Value.Authority.DecisionId $Authority.DecisionId 'Approved candidate lock authority decision'
+    Assert-V02ReleaseGateEqual $document.Value.Authority.ApprovalReference $Authority.ApprovalReference 'Approved candidate lock authority reference'
+    Assert-V02ReleaseGateEqual $document.Value.Authority.PayloadSha256 $Authority.PayloadSha256 'Approved candidate lock authority payload'
+    Assert-V02ReleaseGateExactString $document.Value.Authority.Reference $Authority.RelativeReference 'Approved candidate lock authority source'
+    Assert-V02ReleaseGateEqual $document.Value.Authority.ReferenceSha256 $Authority.FileSha256 'Approved candidate lock authority bytes'
+    Assert-V02ReleaseGateExactString $document.Value.Authority.OwnerIdentity $Authority.OwnerIdentity 'Approved candidate lock authority owner'
+    Assert-V02ReleaseGateExactString $document.Value.Authority.OwnerRole $Authority.OwnerRole 'Approved candidate lock authority role'
+    return [pscustomobject][ordered]@{
+        Path = $document.Path
+        FileSha256 = $document.FileSha256
+        SourceCommit = [string]$document.Value.SourceCommit
+        SourceTree = [string]$document.Value.SourceTree
+        ProfileId = [string]$document.Value.ProfileId
+        ProfileFileSha256 = [string]$document.Value.ProfileFileSha256
+        ProfileCanonicalSha256 = [string]$document.Value.ProfileCanonicalSha256
+        Authority = $Authority
+        Authentication = $Authority.Authentication
+        Result = 'APPROVED_CANDIDATE_ONLY'
+    }
+}
+
+function New-V02ReleaseGateNotReadyReport {
+    param(
+        [Parameter(Mandatory = $true)]$Identity,
+        [Parameter(Mandatory = $true)][string]$Reason,
+        $CandidateLock,
+        $Authority
+    )
+
+    return [pscustomobject][ordered]@{
+        SchemaVersion = 2
+        Version = $script:V02ReleaseGateVersion
+        Result = 'NOT_READY'
+        ReleaseReady = $false
+        SourceCommit = $Identity.Commit
+        SourceTree = $Identity.Tree
+        SourceParents = @($Identity.Parents)
+        RepositoryRoot = $Identity.RepositoryRoot
+        CandidateLock = if ($null -ne $CandidateLock) { $CandidateLock } else { [pscustomobject][ordered]@{ Status = 'NOT_READY' } }
+        AuthorityReference = if ($null -ne $Authority) { $Authority } else { [pscustomobject][ordered]@{ Status = 'NOT_READY' } }
+        GateReason = $Reason
+        Package = [pscustomobject][ordered]@{ ReceiptSha256 = 'NOT_OBSERVED'; ReceiptFileSha256 = 'NOT_OBSERVED' }
+        Renderer = [pscustomobject][ordered]@{ ManifestSha256 = 'NOT_OBSERVED' }
+        RuntimeMatrix = [pscustomobject][ordered]@{ ManifestFileSha256 = 'NOT_OBSERVED' }
+        GitHub = [pscustomobject][ordered]@{ SnapshotSha256 = 'NOT_OBSERVED' }
+        HumanReview = [pscustomobject][ordered]@{ Status = 'NOT_OBSERVED'; Decision = 'NOT_OBSERVED'; Authenticated = $false }
+        EvidenceClasses = [pscustomobject][ordered]@{
+            Static = [pscustomobject][ordered]@{ Status = 'NOT_READY'; Classification = 'CandidateAuthority'; Credit = 'NONE' }
+            Contract = [pscustomobject][ordered]@{ Status = 'NOT_OBSERVED'; Classification = 'Contract'; Credit = 'NONE' }
+            Synthetic = [pscustomobject][ordered]@{ Status = 'NOT_OBSERVED'; Classification = 'Synthetic'; Credit = 'NONE' }
+            Runtime = [pscustomobject][ordered]@{ Status = 'NOT_OBSERVED'; Classification = 'RuntimeMatrixCandidate'; Credit = 'NONE' }
+            Human = [pscustomobject][ordered]@{ Status = 'NOT_OBSERVED'; Classification = 'Human'; Credit = 'NONE' }
+            Release = [pscustomobject][ordered]@{ Status = 'NOT_OBSERVED'; Classification = 'Release'; Credit = 'NONE' }
+        }
+        EvidenceBoundary = [pscustomobject][ordered]@{
+            ActualHerdrControlInvoked = $false
+            GitHubMutationInvoked = $false
+            PackagePublished = $false
+            ReleasePublished = $false
+            RuntimeObserved = $false
+            HumanAuthorityObserved = $false
+            ReleaseCredit = $false
+        }
     }
 }
 
@@ -386,39 +672,25 @@ function Invoke-V02ReleaseGatePackageValidation {
     param(
         [Parameter(Mandatory = $true)]$Context,
         [Parameter(Mandatory = $true)][string]$ExpectedSourceCommit,
-        [Parameter(Mandatory = $true)][string]$ExpectedSourceTree,
-        [scriptblock]$Validator
+        [Parameter(Mandatory = $true)][string]$ExpectedSourceTree
     )
 
     $validatorPath = Join-Path $Context.RepositoryRoot 'tools\packaging\v0.2\Test-V02PackageIdentity.ps1'
-    if ($null -eq $Validator -and -not (Test-Path -LiteralPath $validatorPath -PathType Leaf)) {
+    if (-not (Test-Path -LiteralPath $validatorPath -PathType Leaf)) {
         throw "Committed v0.2 package validator is missing: $validatorPath"
     }
-    $invoke = if ($null -ne $Validator) {
-        $Validator
-    }
-    else {
-        {
-            param($item)
-            $output = @(& $item.ValidatorPath -IdentityPath $item.IdentityPath -ArchivePath $item.ArchivePath `
-                -PackageRoot $item.PackageRoot -RepositoryRoot $item.RepositoryRoot -ProfilePath $item.ProfilePath)
-            if ($output.Count -ne 1) {
-                throw 'Committed package validator must return exactly one validation result.'
-            }
-            $output[0]
-        }
-    }
-
-    $firstOutput = @(& $invoke $Context)
+    $firstOutput = @(& $validatorPath -IdentityPath $Context.IdentityPath -ArchivePath $Context.ArchivePath `
+        -PackageRoot $Context.PackageRoot -RepositoryRoot $Context.RepositoryRoot -ProfilePath $Context.ProfilePath)
     if ($firstOutput.Count -ne 1) {
-        throw 'Package validation adapter must return exactly one result.'
+        throw 'Committed package validator must return exactly one result.'
     }
     $first = $firstOutput[0]
     Assert-V02ReleaseGatePackageResult $first $ExpectedSourceCommit $ExpectedSourceTree
 
-    $secondOutput = @(& $invoke $Context)
+    $secondOutput = @(& $validatorPath -IdentityPath $Context.IdentityPath -ArchivePath $Context.ArchivePath `
+        -PackageRoot $Context.PackageRoot -RepositoryRoot $Context.RepositoryRoot -ProfilePath $Context.ProfilePath)
     if ($secondOutput.Count -ne 1) {
-        throw 'Package validation adapter returned a different result count on its stability pass.'
+        throw 'Committed package validator returned a different result count on its stability pass.'
     }
     $second = $secondOutput[0]
     Assert-V02ReleaseGatePackageResult $second $ExpectedSourceCommit $ExpectedSourceTree
@@ -509,12 +781,11 @@ function Invoke-V02ReleaseGateRendererValidation {
         [Parameter(Mandatory = $true)]$Context,
         [Parameter(Mandatory = $true)]$Package,
         [Parameter(Mandatory = $true)][string]$ExpectedSourceCommit,
-        [Parameter(Mandatory = $true)][string]$ExpectedSourceTree,
-        [scriptblock]$Validator
+        [Parameter(Mandatory = $true)][string]$ExpectedSourceTree
     )
 
     $validatorPath = Join-Path $Context.RepositoryRoot 'tools\v0.2-renderer-compatibility\Test-V02RendererCompatibilityManifest.ps1'
-    if ($null -eq $Validator -and -not (Test-Path -LiteralPath $validatorPath -PathType Leaf)) {
+    if (-not (Test-Path -LiteralPath $validatorPath -PathType Leaf)) {
         throw "Committed v0.2 renderer validator is missing: $validatorPath"
     }
     $manifestPath = Resolve-V02ReleaseGateExistingPath -Path $Context.ManifestPath -Type Leaf -Context 'Renderer compatibility manifest'
@@ -524,29 +795,16 @@ function Invoke-V02ReleaseGateRendererValidation {
     else {
         Resolve-V02ReleaseGateExistingPath -Path $Context.EvidenceRoot -Type Container -Context 'Renderer evidence root'
     }
-    $invoke = if ($null -ne $Validator) {
-        $Validator
-    }
-    else {
-        {
-            param($item)
-            $output = @(& $item.ValidatorPath -ManifestPath $item.ManifestPath -EvidenceRoot $item.EvidenceRoot `
-                -RepositoryRoot $item.RepositoryRoot)
-            if ($output.Count -ne 1) {
-                throw 'Committed renderer validator must return exactly one validation result.'
-            }
-            $output[0]
-        }
-    }
-    $adapterContext = [pscustomobject][ordered]@{
+    $validatorContext = [pscustomobject][ordered]@{
         ValidatorPath = $validatorPath
         ManifestPath = $manifestPath
         EvidenceRoot = $evidenceRoot
         RepositoryRoot = $Context.RepositoryRoot
     }
-    $output = @(& $invoke $adapterContext)
+    $output = @(& $validatorPath -ManifestPath $validatorContext.ManifestPath -EvidenceRoot $validatorContext.EvidenceRoot `
+        -RepositoryRoot $validatorContext.RepositoryRoot)
     if ($output.Count -ne 1) {
-        throw 'Renderer validation adapter must return exactly one result.'
+        throw 'Committed renderer validator must return exactly one result.'
     }
     $result = $output[0]
     Assert-V02ReleaseGateRendererResult $result 'Renderer compatibility'
@@ -735,8 +993,7 @@ function Invoke-V02ReleaseGateMatrixValidation {
         [Parameter(Mandatory = $true)]$Package,
         [Parameter(Mandatory = $true)][string]$ExpectedSourceCommit,
         [Parameter(Mandatory = $true)][string]$ExpectedSourceTree,
-        [Parameter(Mandatory = $true)][string]$RuntimeMatrixManifestPath,
-        [scriptblock]$Validator
+        [Parameter(Mandatory = $true)][string]$RuntimeMatrixManifestPath
     )
 
     $manifestDocument = Read-V02ReleaseGateJsonFile -Path $RuntimeMatrixManifestPath -Context 'Runtime language matrix manifest'
@@ -744,7 +1001,7 @@ function Invoke-V02ReleaseGateMatrixValidation {
     Assert-V02ReleaseGateMatrixBinding $candidate $Package $ExpectedSourceCommit $ExpectedSourceTree 'Runtime language matrix' | Out-Null
 
     $validatorPath = Join-Path $Context.RepositoryRoot 'tools\Test-V02LanguageMatrixAcceptance.ps1'
-    if ($null -eq $Validator -and -not (Test-Path -LiteralPath $validatorPath -PathType Leaf)) {
+    if (-not (Test-Path -LiteralPath $validatorPath -PathType Leaf)) {
         throw "Committed v0.2 language-matrix validator is missing: $validatorPath"
     }
     $validatorContext = [pscustomobject][ordered]@{
@@ -758,35 +1015,25 @@ function Invoke-V02ReleaseGateMatrixValidation {
         PackageProfilePath = $Package.ProfilePath
     }
     $generated = $null
-    $temporary = $null
-    if ($null -ne $Validator) {
-        $generatedOutput = @(& $Validator $validatorContext)
-        if ($generatedOutput.Count -ne 1) {
-            throw 'Runtime matrix validation adapter must return exactly one candidate.'
+    $temporary = Join-Path ([IO.Path]::GetTempPath()) ('.herdrops-v02-matrix-' + [Guid]::NewGuid().ToString('N') + '.json')
+    try {
+        $output = @(& $validatorPath `
+            -ThaiEvidenceDirectory $Context.ThaiEvidenceDirectory `
+            -EnglishEvidenceDirectory $Context.EnglishEvidenceDirectory `
+            -PackageIdentityPath $Package.IdentityPath `
+            -PackageArchivePath $Package.ArchivePath `
+            -ExtractedPackageRoot $Package.PackageRoot `
+            -RepositoryRoot $Context.RepositoryRoot `
+            -PackageProfilePath $Package.ProfilePath `
+            -OutputPath $temporary)
+        if ($LASTEXITCODE -ne 0) {
+            throw "Committed language-matrix validator exited with $LASTEXITCODE."
         }
-        $generated = $generatedOutput[0]
+        $generated = (Read-V02ReleaseGateJsonFile -Path $temporary -Context 'Generated runtime language matrix candidate').Value
     }
-    else {
-        $temporary = Join-Path ([IO.Path]::GetTempPath()) ('.herdrops-v02-matrix-' + [Guid]::NewGuid().ToString('N') + '.json')
-        try {
-            $output = @(& $validatorPath `
-                -ThaiEvidenceDirectory $Context.ThaiEvidenceDirectory `
-                -EnglishEvidenceDirectory $Context.EnglishEvidenceDirectory `
-                -PackageIdentityPath $Package.IdentityPath `
-                -PackageArchivePath $Package.ArchivePath `
-                -ExtractedPackageRoot $Package.PackageRoot `
-                -RepositoryRoot $Context.RepositoryRoot `
-                -PackageProfilePath $Package.ProfilePath `
-                -OutputPath $temporary)
-            if ($LASTEXITCODE -ne 0) {
-                throw "Committed language-matrix validator exited with $LASTEXITCODE."
-            }
-            $generated = (Read-V02ReleaseGateJsonFile -Path $temporary -Context 'Generated runtime language matrix candidate').Value
-        }
-        finally {
-            if ($null -ne $temporary -and (Test-Path -LiteralPath $temporary)) {
-                Remove-Item -LiteralPath $temporary -Force
-            }
+    finally {
+        if ($null -ne $temporary -and (Test-Path -LiteralPath $temporary)) {
+            Remove-Item -LiteralPath $temporary -Force
         }
     }
     Assert-V02ReleaseGateMatrixBinding $generated $Package $ExpectedSourceCommit $ExpectedSourceTree 'Independently regenerated runtime language matrix' | Out-Null
@@ -853,6 +1100,8 @@ function Assert-V02ReleaseGateGitHubSnapshot {
         throw "$Context has open v0.2.0 issue(s): $(@($openV02Issues | ForEach-Object { $_.number }) -join ', ')."
     }
     return [pscustomobject][ordered]@{
+        Status = 'UNAUTHENTICATED_LOCAL_SNAPSHOT'
+        Authenticated = $false
         MilestoneNumber = $script:V02ReleaseGateMilestoneNumber
         MilestoneState = [string]$matchingMilestones[0].state
         TrackerIssue = $script:V02ReleaseGateTrackerIssue
@@ -871,7 +1120,9 @@ function Assert-V02ReleaseGateHumanReview {
         [Parameter(Mandatory = $true)]$Package,
         [Parameter(Mandatory = $true)]$Renderer,
         [Parameter(Mandatory = $true)]$Matrix,
-        [Parameter(Mandatory = $true)][string]$GitHubSnapshotSha256
+        [Parameter(Mandatory = $true)][string]$GitHubSnapshotPath,
+        [Parameter(Mandatory = $true)][string]$GitHubSnapshotSha256,
+        [Parameter(Mandatory = $true)][string]$EvidenceRoot
     )
 
     Assert-V02ReleaseGateExactProperties $Review @(
@@ -932,17 +1183,44 @@ function Assert-V02ReleaseGateHumanReview {
         throw "Human review must contain exactly $($script:V02ReleaseGateHumanCheckIds.Count) required checks."
     }
     $seen = New-Object System.Collections.Generic.List[string]
+    $seenPaths = @{}
     foreach ($check in $checks) {
-        Assert-V02ReleaseGateExactProperties $check @('Id', 'Status', 'Path', 'Sha256') 'Human review check'
+        Assert-V02ReleaseGateExactProperties $check @('Id', 'Status', 'Path', 'Sha256', 'Binding') 'Human review check'
         $id = Assert-V02ReleaseGateString $check.Id 'Human review check Id'
         if ($seen.Contains($id)) { throw "Human review contains duplicate check '$id'." }
         [void]$seen.Add($id)
         if ($script:V02ReleaseGateHumanCheckIds -notcontains $id) { throw "Human review contains unknown check '$id'." }
         Assert-V02ReleaseGateExactString $check.Status 'PASS' "Human review check '$id' status"
+        Assert-V02ReleaseGateExactString $check.Binding ("HumanCheck:$id") "Human review check '$id' binding"
         $checkPath = Get-V02ReleaseGateRelativeOrAbsolutePath -Path ([string]$check.Path) `
-            -BaseDirectory ([IO.Path]::GetDirectoryName($ReviewPath)) -Context "Human review check '$id' artifact"
+            -BaseDirectory ([IO.Path]::GetDirectoryName($ReviewPath)) -Context "Human review check '$id' artifact" `
+            -AllowedRoot $EvidenceRoot
         $declared = Assert-V02ReleaseGateSha256 $check.Sha256 "Human review check '$id' hash"
-        Assert-V02ReleaseGateEqual (Get-V02ReleaseGateFileSha256 $checkPath) $declared "Human review check '$id' artifact hash"
+        $checkSnapshot = Get-V02ReleaseGateStableFileSnapshot -Path $checkPath -Context "Human review check '$id' artifact"
+        Assert-V02ReleaseGateEqual $checkSnapshot.Sha256 $declared "Human review check '$id' artifact hash"
+        $pathKey = $checkPath.ToUpperInvariant()
+        if ($seenPaths.ContainsKey($pathKey) -and
+            -not (($seenPaths[$pathKey] -in @('runtime-matrix-thai', 'runtime-matrix-english')) -and
+                 ($id -in @('runtime-matrix-thai', 'runtime-matrix-english')))) {
+            throw "Human review check '$id' reuses the artifact path already bound to '$($seenPaths[$pathKey])'."
+        }
+        $seenPaths[$pathKey] = $id
+        if ($id -ceq 'package-receipt') {
+            Assert-V02ReleaseGateEqual $checkPath $Package.IdentityPath "Human review package receipt path"
+            Assert-V02ReleaseGateEqual $declared $Package.ReceiptFileSha256 "Human review package receipt file binding"
+        }
+        elseif ($id -ceq 'renderer-compatibility') {
+            Assert-V02ReleaseGateEqual $checkPath $Renderer.ManifestPath "Human review renderer manifest path"
+            Assert-V02ReleaseGateEqual $declared $Renderer.ManifestSha256 "Human review renderer manifest binding"
+        }
+        elseif ($id -ceq 'runtime-matrix-thai' -or $id -ceq 'runtime-matrix-english') {
+            Assert-V02ReleaseGateEqual $checkPath $Matrix.ManifestPath "Human review runtime matrix path"
+            Assert-V02ReleaseGateEqual $declared $Matrix.ManifestFileSha256 "Human review runtime matrix binding"
+        }
+        elseif ($id -ceq 'tracker-11-readiness') {
+            Assert-V02ReleaseGateEqual $checkPath $GitHubSnapshotPath "Human review tracker snapshot path"
+            Assert-V02ReleaseGateEqual $declared $GitHubSnapshotSha256 "Human review tracker snapshot binding"
+        }
     }
     foreach ($id in $script:V02ReleaseGateHumanCheckIds) {
         if (-not $seen.Contains($id)) { throw "Human review omitted required check '$id'." }
@@ -950,6 +1228,18 @@ function Assert-V02ReleaseGateHumanReview {
     $openFindings = @($Review.OpenFindings)
     if ($openFindings.Count -ne 0) {
         throw 'Human review cannot pass with open findings.'
+    }
+    return [pscustomobject][ordered]@{
+        Path = $ReviewPath
+        FileSha256 = Get-V02ReleaseGateFileSha256 -Path $ReviewPath
+        Status = 'NOT_OBSERVED'
+        Decision = 'NOT_OBSERVED'
+        Reason = 'LOCAL_REVIEW_RECORD_IS_NOT_AN_AUTHENTICATED_INDEPENDENT_RECEIPT'
+        ReviewerIdentity = [string]$Review.Reviewer.Identity
+        ReviewerRole = [string]$Review.Reviewer.Role
+        RoleDistinct = [bool]$Review.Reviewer.RoleDistinct
+        OpenFindingCount = @($Review.OpenFindings).Count
+        Authenticated = $false
     }
 }
 
@@ -1007,6 +1297,17 @@ function Write-V02ReleaseGateReport {
     return [pscustomobject][ordered]@{ JsonPath = $jsonPath; TextPath = $textPath }
 }
 
+function Assert-V02ReleaseGateBoundSnapshots {
+    param(
+        [Parameter(Mandatory = $true)]$Snapshots,
+        [Parameter(Mandatory = $true)][string]$Phase
+    )
+
+    foreach ($snapshot in @($Snapshots)) {
+        Assert-V02ReleaseGateSnapshotUnchanged -Snapshot $snapshot -Context "$Phase '$($snapshot.Path)'" | Out-Null
+    }
+}
+
 function Invoke-V02ReleaseGate {
     [CmdletBinding()]
     param(
@@ -1024,12 +1325,12 @@ function Invoke-V02ReleaseGate {
         [Parameter(Mandatory = $true)][string]$SyntheticEvidencePath,
         [Parameter(Mandatory = $true)][string]$HumanReviewPath,
         [Parameter(Mandatory = $true)][string]$GitHubSnapshotPath,
+        [string]$CandidateLockPath,
+        [string]$AuthorityReferencePath,
+        [string]$EvidenceRoot,
         [string]$RepositoryRoot,
         [string]$RendererEvidenceRoot,
-        [string]$OutputPath,
-        [scriptblock]$PackageValidator,
-        [scriptblock]$RendererValidator,
-        [scriptblock]$RuntimeMatrixValidator
+        [string]$OutputPath
     )
 
     Assert-V02ReleaseGateGitObjectId $ExpectedSourceCommit 'ExpectedSourceCommit' | Out-Null
@@ -1040,34 +1341,137 @@ function Invoke-V02ReleaseGate {
     $identityBefore = Get-V02ReleaseGateGitIdentity -RepositoryRoot $RepositoryRoot
     Assert-V02ReleaseGateGitIdentity $identityBefore $ExpectedSourceCommit $ExpectedSourceTree 'Preflight'
 
+    if ([string]::IsNullOrWhiteSpace($EvidenceRoot)) {
+        $report = New-V02ReleaseGateNotReadyReport -Identity $identityBefore `
+            -Reason 'EvidenceRoot is required for path containment and immutable evidence binding.'
+        if (-not [string]::IsNullOrWhiteSpace($OutputPath)) {
+            $written = Write-V02ReleaseGateReport -Report $report -OutputPath $OutputPath
+            $report | Add-Member -MemberType NoteProperty -Name ReportJsonPath -Value $written.JsonPath
+            $report | Add-Member -MemberType NoteProperty -Name ReportTextPath -Value $written.TextPath
+        }
+        return $report
+    }
+    $evidenceRootPath = Resolve-V02ReleaseGateExistingPath -Path $EvidenceRoot -Type Container -Context 'EvidenceRoot'
+
+    $profilePath = Resolve-V02ReleaseGateExistingPath -Path $PackageProfilePath -Type Leaf -Context 'Package identity profile'
+    $expectedProfilePath = [IO.Path]::GetFullPath((Join-Path $identityBefore.RepositoryRoot 'tools\packaging\v0.2\package-identity-profile.json')).TrimEnd([char[]]@('\', '/'))
+    if (-not [StringComparer]::OrdinalIgnoreCase.Equals($profilePath, $expectedProfilePath)) {
+        throw 'Package identity profile is not the committed v0.2 profile path.'
+    }
+
+    $evidenceInputs = @(
+        [pscustomobject]@{ Path = $PackageIdentityPath; Type = 'Leaf'; Name = 'Package identity receipt' }
+        [pscustomobject]@{ Path = $PackageArchivePath; Type = 'Leaf'; Name = 'Package archive' }
+        [pscustomobject]@{ Path = $ExtractedPackageRoot; Type = 'Container'; Name = 'Extracted package root' }
+        [pscustomobject]@{ Path = $RendererManifestPath; Type = 'Leaf'; Name = 'Renderer manifest' }
+        [pscustomobject]@{ Path = $ThaiEvidenceDirectory; Type = 'Container'; Name = 'Thai evidence directory' }
+        [pscustomobject]@{ Path = $EnglishEvidenceDirectory; Type = 'Container'; Name = 'English evidence directory' }
+        [pscustomobject]@{ Path = $RuntimeMatrixManifestPath; Type = 'Leaf'; Name = 'Runtime matrix manifest' }
+        [pscustomobject]@{ Path = $ContractEvidencePath; Type = 'Leaf'; Name = 'Contract evidence receipt' }
+        [pscustomobject]@{ Path = $SyntheticEvidencePath; Type = 'Leaf'; Name = 'Synthetic evidence receipt' }
+        [pscustomobject]@{ Path = $HumanReviewPath; Type = 'Leaf'; Name = 'Human review record' }
+        [pscustomobject]@{ Path = $GitHubSnapshotPath; Type = 'Leaf'; Name = 'GitHub snapshot' }
+    )
+    foreach ($input in $evidenceInputs) {
+        $resolvedInput = Resolve-V02ReleaseGateExistingPath -Path ([string]$input.Path) -Type $input.Type -Context $input.Name
+        Assert-V02ReleaseGatePathWithinRoot -Path $resolvedInput -Root $evidenceRootPath -Context $input.Name | Out-Null
+    }
+    if (-not [string]::IsNullOrWhiteSpace($RendererEvidenceRoot)) {
+        $rendererEvidenceRootPath = Resolve-V02ReleaseGateExistingPath -Path $RendererEvidenceRoot -Type Container -Context 'Renderer evidence root'
+        Assert-V02ReleaseGatePathWithinRoot -Path $rendererEvidenceRootPath -Root $evidenceRootPath -Context 'Renderer evidence root' | Out-Null
+    }
+    else {
+        $rendererEvidenceRootPath = $evidenceRootPath
+    }
+
+    $authority = $null
+    $candidateLock = $null
+    try {
+        if ([string]::IsNullOrWhiteSpace($AuthorityReferencePath)) {
+            throw 'AuthorityReferencePath is required and must identify the trusted committed owner decision.'
+        }
+        $authority = Read-V02ReleaseGateAuthorityReference -RepositoryRoot $identityBefore.RepositoryRoot `
+            -AuthorityReferencePath $AuthorityReferencePath
+        if ([string]::IsNullOrWhiteSpace($CandidateLockPath)) {
+            throw 'CandidateLockPath is required and must identify an immutable approved candidate lock.'
+        }
+        $candidateLock = Read-V02ReleaseGateCandidateLock -Path $CandidateLockPath -EvidenceRoot $evidenceRootPath `
+            -ExpectedSourceCommit $ExpectedSourceCommit -ExpectedSourceTree $ExpectedSourceTree `
+            -PackageProfilePath $profilePath -Authority $authority
+    }
+    catch {
+        $report = New-V02ReleaseGateNotReadyReport -Identity $identityBefore -Reason $_.Exception.Message `
+            -CandidateLock $candidateLock -Authority $authority
+        if (-not [string]::IsNullOrWhiteSpace($OutputPath)) {
+            $written = Write-V02ReleaseGateReport -Report $report -OutputPath $OutputPath
+            $report | Add-Member -MemberType NoteProperty -Name ReportJsonPath -Value $written.JsonPath
+            $report | Add-Member -MemberType NoteProperty -Name ReportTextPath -Value $written.TextPath
+        }
+        return $report
+    }
+
     $context = [pscustomobject][ordered]@{
         RepositoryRoot = $identityBefore.RepositoryRoot
-        IdentityPath = $PackageIdentityPath
-        ArchivePath = $PackageArchivePath
-        PackageRoot = $ExtractedPackageRoot
-        ProfilePath = $PackageProfilePath
-        ManifestPath = $RendererManifestPath
-        EvidenceRoot = $RendererEvidenceRoot
-        ThaiEvidenceDirectory = $ThaiEvidenceDirectory
-        EnglishEvidenceDirectory = $EnglishEvidenceDirectory
+        IdentityPath = Resolve-V02ReleaseGateExistingPath -Path $PackageIdentityPath -Type Leaf -Context 'Package identity receipt'
+        ArchivePath = Resolve-V02ReleaseGateExistingPath -Path $PackageArchivePath -Type Leaf -Context 'Package ZIP archive'
+        PackageRoot = Resolve-V02ReleaseGateExistingPath -Path $ExtractedPackageRoot -Type Container -Context 'Extracted package root'
+        ProfilePath = $profilePath
+        ManifestPath = Resolve-V02ReleaseGateExistingPath -Path $RendererManifestPath -Type Leaf -Context 'Renderer compatibility manifest'
+        EvidenceRoot = $rendererEvidenceRootPath
+        ThaiEvidenceDirectory = Resolve-V02ReleaseGateExistingPath -Path $ThaiEvidenceDirectory -Type Container -Context 'Thai evidence directory'
+        EnglishEvidenceDirectory = Resolve-V02ReleaseGateExistingPath -Path $EnglishEvidenceDirectory -Type Container -Context 'English evidence directory'
     }
+
+    $packageManifestPath = Resolve-V02ReleaseGateExistingPath -Path (Join-Path $context.PackageRoot 'package-manifest.json') -Type Leaf -Context 'Package manifest'
+    $appPath = Resolve-V02ReleaseGateExistingPath -Path (Join-Path $context.PackageRoot 'HerdrOps.App.exe') -Type Leaf -Context 'Package App executable'
+    $corePath = Resolve-V02ReleaseGateExistingPath -Path (Join-Path $context.PackageRoot 'HerdrOps.Core.exe') -Type Leaf -Context 'Package Core executable'
+    $boundFilePaths = @(
+        $context.IdentityPath, $context.ArchivePath, $packageManifestPath, $appPath, $corePath, $context.ProfilePath,
+        $context.ManifestPath, (Resolve-V02ReleaseGateExistingPath -Path $RuntimeMatrixManifestPath -Type Leaf -Context 'Runtime matrix manifest'),
+        (Resolve-V02ReleaseGateExistingPath -Path $ContractEvidencePath -Type Leaf -Context 'Contract evidence receipt'),
+        (Resolve-V02ReleaseGateExistingPath -Path $SyntheticEvidencePath -Type Leaf -Context 'Synthetic evidence receipt'),
+        (Resolve-V02ReleaseGateExistingPath -Path $HumanReviewPath -Type Leaf -Context 'Human review record'),
+        (Resolve-V02ReleaseGateExistingPath -Path $GitHubSnapshotPath -Type Leaf -Context 'GitHub snapshot'),
+        $candidateLock.Path, $authority.Path
+    )
+    $preValidationSnapshots = @($boundFilePaths | ForEach-Object {
+            Get-V02ReleaseGateStableFileSnapshot -Path $_ -Context 'Pre-validation bound artifact'
+        })
+
     $package = Invoke-V02ReleaseGatePackageValidation -Context $context `
-        -ExpectedSourceCommit $ExpectedSourceCommit -ExpectedSourceTree $ExpectedSourceTree -Validator $PackageValidator
+        -ExpectedSourceCommit $ExpectedSourceCommit -ExpectedSourceTree $ExpectedSourceTree
+    Assert-V02ReleaseGateBoundSnapshots -Snapshots $preValidationSnapshots -Phase 'Post-package validation'
     $renderer = Invoke-V02ReleaseGateRendererValidation -Context $context -Package $package `
-        -ExpectedSourceCommit $ExpectedSourceCommit -ExpectedSourceTree $ExpectedSourceTree -Validator $RendererValidator
+        -ExpectedSourceCommit $ExpectedSourceCommit -ExpectedSourceTree $ExpectedSourceTree
+    Assert-V02ReleaseGateBoundSnapshots -Snapshots $preValidationSnapshots -Phase 'Post-renderer validation'
     $contract = Read-V02ReleaseGateEvidenceReceipt -Path $ContractEvidencePath -ExpectedClass Contract `
-        -ExpectedSourceCommit $ExpectedSourceCommit -ExpectedSourceTree $ExpectedSourceTree
+        -ExpectedSourceCommit $ExpectedSourceCommit -ExpectedSourceTree $ExpectedSourceTree -EvidenceRoot $evidenceRootPath
     $synthetic = Read-V02ReleaseGateEvidenceReceipt -Path $SyntheticEvidencePath -ExpectedClass Synthetic `
-        -ExpectedSourceCommit $ExpectedSourceCommit -ExpectedSourceTree $ExpectedSourceTree
+        -ExpectedSourceCommit $ExpectedSourceCommit -ExpectedSourceTree $ExpectedSourceTree -EvidenceRoot $evidenceRootPath
     $matrix = Invoke-V02ReleaseGateMatrixValidation -Context $context -Package $package `
         -ExpectedSourceCommit $ExpectedSourceCommit -ExpectedSourceTree $ExpectedSourceTree `
-        -RuntimeMatrixManifestPath $RuntimeMatrixManifestPath -Validator $RuntimeMatrixValidator
-    $githubDocument = Read-V02ReleaseGateJsonFile -Path $GitHubSnapshotPath -Context 'GitHub read-only snapshot'
-    $githubAssessment = Assert-V02ReleaseGateGitHubSnapshot $githubDocument.Value
-    $reviewDocument = Read-V02ReleaseGateJsonFile -Path $HumanReviewPath -Context 'Human review record'
-    Assert-V02ReleaseGateHumanReview -Review $reviewDocument.Value -ReviewPath $reviewDocument.Path -ExpectedSourceCommit $ExpectedSourceCommit `
-        -ExpectedSourceTree $ExpectedSourceTree -Package $package -Renderer $renderer -Matrix $matrix `
-        -GitHubSnapshotSha256 $githubDocument.FileSha256
+        -RuntimeMatrixManifestPath $RuntimeMatrixManifestPath
+    Assert-V02ReleaseGateBoundSnapshots -Snapshots $preValidationSnapshots -Phase 'Post-matrix validation'
+    try {
+        $githubDocument = Read-V02ReleaseGateJsonFile -Path $GitHubSnapshotPath -Context 'GitHub read-only snapshot'
+        $githubAssessment = Assert-V02ReleaseGateGitHubSnapshot $githubDocument.Value
+        $reviewDocument = Read-V02ReleaseGateJsonFile -Path $HumanReviewPath -Context 'Human review record'
+        $humanDisposition = Assert-V02ReleaseGateHumanReview -Review $reviewDocument.Value -ReviewPath $reviewDocument.Path -ExpectedSourceCommit $ExpectedSourceCommit `
+            -ExpectedSourceTree $ExpectedSourceTree -Package $package -Renderer $renderer -Matrix $matrix `
+            -GitHubSnapshotPath $githubDocument.Path -GitHubSnapshotSha256 $githubDocument.FileSha256 -EvidenceRoot $evidenceRootPath
+    }
+    catch {
+        $report = New-V02ReleaseGateNotReadyReport -Identity $identityBefore `
+            -Reason "Unauthenticated Human/GitHub evidence was rejected: $($_.Exception.Message)" `
+            -CandidateLock $candidateLock -Authority $authority
+        if (-not [string]::IsNullOrWhiteSpace($OutputPath)) {
+            $written = Write-V02ReleaseGateReport -Report $report -OutputPath $OutputPath
+            $report | Add-Member -MemberType NoteProperty -Name ReportJsonPath -Value $written.JsonPath
+            $report | Add-Member -MemberType NoteProperty -Name ReportTextPath -Value $written.TextPath
+        }
+        return $report
+    }
+    Assert-V02ReleaseGateBoundSnapshots -Snapshots $preValidationSnapshots -Phase 'Post-evidence validation'
 
     $identityAfter = Get-V02ReleaseGateGitIdentity -RepositoryRoot $identityBefore.RepositoryRoot
     Assert-V02ReleaseGateGitIdentity $identityAfter $ExpectedSourceCommit $ExpectedSourceTree 'Postflight'
@@ -1075,31 +1479,20 @@ function Invoke-V02ReleaseGate {
         throw 'Source identity changed during v0.2 release-gate validation.'
     }
 
-    $boundFiles = @(
-        [pscustomobject]@{ Path = $package.IdentityPath; Sha256 = $package.ReceiptFileSha256 }
-        [pscustomobject]@{ Path = $package.ArchivePath; Sha256 = $package.ArchiveSha256 }
-        [pscustomobject]@{ Path = $package.ManifestPath; Sha256 = $package.ManifestSha256 }
-        [pscustomobject]@{ Path = $package.AppPath; Sha256 = $package.AppSha256 }
-        [pscustomobject]@{ Path = $package.CorePath; Sha256 = $package.CoreSha256 }
-        [pscustomobject]@{ Path = $package.ProfilePath; Sha256 = $package.ProfileFileSha256 }
-        [pscustomobject]@{ Path = $renderer.ManifestPath; Sha256 = $renderer.ManifestSha256 }
-        [pscustomobject]@{ Path = $matrix.ManifestPath; Sha256 = $matrix.ManifestFileSha256 }
-        [pscustomobject]@{ Path = $githubDocument.Path; Sha256 = $githubDocument.FileSha256 }
-        [pscustomobject]@{ Path = $reviewDocument.Path; Sha256 = $reviewDocument.FileSha256 }
-    )
-    foreach ($boundFile in $boundFiles) {
-        Assert-V02ReleaseGateEqual (Get-V02ReleaseGateFileSha256 $boundFile.Path) $boundFile.Sha256 "Final held-byte stability '$($boundFile.Path)'"
-    }
+    Assert-V02ReleaseGateBoundSnapshots -Snapshots $preValidationSnapshots -Phase 'Final post-validation'
 
     $report = [pscustomobject][ordered]@{
-        SchemaVersion = 1
+        SchemaVersion = 2
         Version = $script:V02ReleaseGateVersion
-        Result = 'PASS'
-        ReleaseReady = $true
+        Result = 'NOT_READY'
+        ReleaseReady = $false
         SourceCommit = $ExpectedSourceCommit
         SourceTree = $ExpectedSourceTree
         SourceParents = @($identityAfter.Parents)
         RepositoryRoot = $identityAfter.RepositoryRoot
+        CandidateLock = $candidateLock
+        AuthorityReference = $authority
+        GateReason = 'NO_INDEPENDENT_RUNTIME_HUMAN_RELEASE_RECEIPTS'
         Package = [pscustomobject][ordered]@{
             EvidenceClass = $package.EvidenceClass
             ProfileId = $package.ProfileId
@@ -1144,6 +1537,8 @@ function Invoke-V02ReleaseGate {
             CheckCount = $synthetic.CheckCount
         }
         GitHub = [pscustomobject][ordered]@{
+            Status = [string]$githubAssessment.Status
+            Authenticated = [bool]$githubAssessment.Authenticated
             SnapshotPath = $githubDocument.Path
             SnapshotSha256 = $githubDocument.FileSha256
             MilestoneNumber = $githubAssessment.MilestoneNumber
@@ -1152,11 +1547,13 @@ function Invoke-V02ReleaseGate {
             OpenV02IssueCount = $githubAssessment.OpenV02IssueCount
         }
         HumanReview = [pscustomobject][ordered]@{
+            Status = [string]$humanDisposition.Status
+            Authenticated = [bool]$humanDisposition.Authenticated
             EvidenceClass = 'Human'
             ReviewerIdentity = [string]$reviewDocument.Value.Reviewer.Identity
             ReviewerRole = [string]$reviewDocument.Value.Reviewer.Role
             ReviewFileSha256 = $reviewDocument.FileSha256
-            Decision = [string]$reviewDocument.Value.Decision
+            Decision = [string]$humanDisposition.Decision
             RoleDistinct = [bool]$reviewDocument.Value.Reviewer.RoleDistinct
             OpenFindingCount = @($reviewDocument.Value.OpenFindings).Count
         }
@@ -1164,9 +1561,9 @@ function Invoke-V02ReleaseGate {
             Static = [pscustomobject][ordered]@{ Status = 'PASS'; Classification = 'Static/PackagedCompatibilityPreparation'; Credit = 'PREPARATION_ONLY' }
             Contract = [pscustomobject][ordered]@{ Status = 'PASS'; Classification = 'Contract'; Credit = 'CONTRACT_ONLY' }
             Synthetic = [pscustomobject][ordered]@{ Status = 'PASS'; Classification = 'Synthetic'; Credit = 'SYNTHETIC_ONLY' }
-            Runtime = [pscustomobject][ordered]@{ Status = 'CANDIDATE'; Classification = 'RuntimeMatrixCandidate'; Credit = 'BOUND_RUNTIME_CANDIDATE' }
-            Human = [pscustomobject][ordered]@{ Status = 'PASS'; Classification = 'Human'; Credit = 'ROLE_DISTINCT_REVIEW' }
-            Release = [pscustomobject][ordered]@{ Status = 'PASS'; Classification = 'Release'; Credit = 'EXACT_CANDIDATE_ONLY' }
+            Runtime = [pscustomobject][ordered]@{ Status = 'NOT_OBSERVED'; Classification = 'RuntimeMatrixCandidate'; Credit = 'CANDIDATE_ONLY' }
+            Human = [pscustomobject][ordered]@{ Status = 'NOT_OBSERVED'; Classification = 'Human'; Credit = 'UNAUTHENTICATED_LOCAL_RECORD' }
+            Release = [pscustomobject][ordered]@{ Status = 'NOT_OBSERVED'; Classification = 'Release'; Credit = 'NONE' }
         }
         EvidenceBoundary = [pscustomobject][ordered]@{
             ActualHerdrControlInvoked = $false
@@ -1174,7 +1571,9 @@ function Invoke-V02ReleaseGate {
             PackagePublished = $false
             ReleasePublished = $false
             RuntimeMatrixRemainsCandidate = $true
-            ReleaseCreditBoundToExactCandidate = $true
+            RuntimeObserved = $false
+            HumanAuthorityObserved = $false
+            ReleaseCreditBoundToExactCandidate = $false
         }
     }
     if (-not [string]::IsNullOrWhiteSpace($OutputPath)) {
@@ -1185,7 +1584,7 @@ function Invoke-V02ReleaseGate {
     return $report
 }
 
-# Dot-sourcing imports the functions for fixture/mocked selftests without invoking
+# Dot-sourcing imports the functions for read-only selftests without invoking
 # the production gate. Direct execution is the only path that runs the gate.
 if ($MyInvocation.InvocationName -ne '.') {
     Invoke-V02ReleaseGate `
@@ -1203,6 +1602,9 @@ if ($MyInvocation.InvocationName -ne '.') {
         -SyntheticEvidencePath $SyntheticEvidencePath `
         -HumanReviewPath $HumanReviewPath `
         -GitHubSnapshotPath $GitHubSnapshotPath `
+        -CandidateLockPath $CandidateLockPath `
+        -AuthorityReferencePath $AuthorityReferencePath `
+        -EvidenceRoot $EvidenceRoot `
         -RepositoryRoot $RepositoryRoot `
         -RendererEvidenceRoot $RendererEvidenceRoot `
         -OutputPath $OutputPath | Out-Host
