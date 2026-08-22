@@ -241,8 +241,28 @@ function Test-OperatorFailClosed {
         [Parameter(Mandatory = $true)][string]$CaseName,
         [Parameter(Mandatory = $true)][hashtable]$Arguments,
         [string]$ExpectedMessageFragment,
-        [bool]$ExpectReportFile = $false
+        [bool]$ExpectReportFile = $false,
+        [switch]$PreserveInstallRoot,
+        [switch]$PreserveUserDataRoot
     )
+
+    if ([string]$Arguments['Mode'] -ceq 'Fixture') {
+        $simulationRoot = Get-AcceptanceFullPath -Path ([string]$Arguments['SimulationRoot'])
+        foreach ($target in @(
+                [pscustomobject]@{ Name = 'InstallRoot'; Preserve = [bool]$PreserveInstallRoot },
+                [pscustomobject]@{ Name = 'UserDataRoot'; Preserve = [bool]$PreserveUserDataRoot })) {
+            if ($target.Preserve) { continue }
+            $targetPath = Get-AcceptanceFullPath -Path ([string]$Arguments[$target.Name])
+            if ($targetPath.Equals($simulationRoot, [StringComparison]::OrdinalIgnoreCase) -or
+                -not (Test-PathWithin -ChildPath $targetPath -RootPath $simulationRoot)) {
+                throw "$CaseName refused to reset $($target.Name) outside its strict SimulationRoot."
+            }
+            Assert-AcceptanceNoReparsePath -Path $targetPath
+            if (Test-Path -LiteralPath $targetPath) {
+                Remove-Item -LiteralPath $targetPath -Recurse -Force
+            }
+        }
+    }
 
     $caught = $null
     $output = $null
@@ -553,7 +573,7 @@ try {
     $preExistingArgs = Copy-TestArguments -Arguments $greenArgs
     $preExistingArgs['InstallRoot'] = (Get-AcceptanceFullPath -Path $preExistingInstallRoot)
     $preExistingArgs['ReportDestination'] = (Join-Path $reportsDir 'pre-existing-install-root.json')
-    Test-OperatorFailClosed -CaseName 'pre-existing-install-root' -Arguments $preExistingArgs -ExpectedMessageFragment 'InstallRoot already exists'
+    Test-OperatorFailClosed -CaseName 'pre-existing-install-root' -Arguments $preExistingArgs -ExpectedMessageFragment 'InstallRoot already exists' -PreserveInstallRoot
     Remove-Item -LiteralPath $preExistingInstallRoot -Recurse -Force
 
     # Hostile case: leftover staging/backup residuals next to a missing InstallRoot must fail closed.
