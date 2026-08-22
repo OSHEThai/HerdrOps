@@ -1,4 +1,6 @@
 using System.Windows;
+using System.Windows.Interop;
+using System.Windows.Media;
 using HerdrOps.App.Lifecycle;
 using HerdrOps.App.Live;
 using HerdrOps.App.Localization;
@@ -56,6 +58,11 @@ public partial class App : Application
 
     protected override async void OnStartup(StartupEventArgs e)
     {
+        // Keep the long-lived Dashboard/Widget process within the reference-host
+        // memory budget without relying on a native working-set trim. WPF's
+        // hardware composition path retains a large driver-backed resident set
+        // on the approved Intel reference host even after the Dashboard closes.
+        RenderOptions.ProcessRenderMode = RenderMode.SoftwareOnly;
         base.OnStartup(e);
         ShutdownMode = ShutdownMode.OnExplicitShutdown;
         if (_suppressStartupForTestHost)
