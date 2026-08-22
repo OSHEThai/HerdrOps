@@ -55,7 +55,6 @@ powershell -File ./tools/v0.2-renderer-compatibility/Test-V02RendererCompatibili
 $expectedSourceCommit = '<approved-source-commit>'
 $expectedSourceTree = '<approved-source-tree>'
 $evidenceRunNonce = '<lowercase-32-hex-invocation-nonce>'
-$evidenceRunNonce = '<lowercase-32-hex-invocation-nonce>'
 $targetAgentLabSocket = Join-Path $env:APPDATA 'herdr\herdr.sock'
 $packageIdentityPath = '<identity.json>'
 $packageArchivePath = '<HerdrOps-0.2.0-win-x64.zip>'

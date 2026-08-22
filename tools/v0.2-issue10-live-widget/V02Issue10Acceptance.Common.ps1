@@ -957,23 +957,86 @@ function Invoke-I10Issue10Acceptance {
     finally { Close-I10AcceptanceTransaction -Transaction $transaction }
 }
 
+function ConvertTo-I10PublicationReceipt {
+    param([Parameter(Mandatory = $true)]$Held)
+    return [pscustomobject][ordered]@{
+        Path = [string]$Held.Path
+        Length = [long]$Held.Length
+        Sha256 = [string]$Held.Sha256
+        Identity = $Held.Identity
+        VolumeSerialNumber = [string]$Held.VolumeSerialNumber
+        FileId = [string]$Held.FileId
+        LinkCount = [uint32]$Held.LinkCount
+        FileAttributes = [uint32]$Held.FileAttributes
+        IsReparsePoint = [bool]$Held.IsReparsePoint
+    }
+}
+
+function Test-I10OwnedPublishedCandidate {
+    param(
+        [AllowNull()]$Held,
+        [AllowNull()]$Expected,
+        [Parameter(Mandatory = $true)][string]$Root,
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$Context
+    )
+    if ($null -eq $Held -or $null -eq $Expected -or $null -eq $Held.Stream -or -not $Held.Stream.CanRead) { return $false }
+    try {
+        Assert-I10NoReparsePath -Root $Root -Path $Path -Context "$Context path"
+        $heldIdentity = [I10.NativeFileIdentity]::Read($Held.Stream.SafeFileHandle)
+        Assert-I10IdentityEqual -Expected $Expected.Identity -Observed $heldIdentity -Context "$Context held identity"
+        if ([long]$Held.Length -ne [long]$Expected.Length -or [string]$Held.Sha256 -cne [string]$Expected.Sha256) { return $false }
+        $probe = Get-I10PathIdentityProbe -Path $Path -Context "$Context path identity"
+        if ([long]$probe.Length -ne [long]$Expected.Length) { return $false }
+        Assert-I10IdentityEqual -Expected $Expected.Identity -Observed $probe.Identity -Context "$Context path identity"
+        return $true
+    }
+    catch { return $false }
+}
+
 function Publish-I10NoClobber {
     param([Parameter(Mandatory = $true)][string]$Root,[Parameter(Mandatory = $true)][string]$Path,[Parameter(Mandatory = $true)][string]$Text,[Parameter(Mandatory = $true)][string]$Context,[AllowNull()]$Transaction)
     $fullRoot = [IO.Path]::GetFullPath($Root); $fullPath = [IO.Path]::GetFullPath($Path); Assert-I10NoReparsePath -Root $fullRoot -Path $fullPath -Context "$Context destination"
     if ($null -ne $Transaction) { Assert-I10TransactionStable -Transaction $Transaction -Context "$Context transaction before destination reservation" }
     if (Test-Path -LiteralPath $fullPath) { throw "$Context refuses to clobber an existing destination." }
     $parent = Split-Path -Parent $fullPath; if (-not (Test-Path -LiteralPath $parent -PathType Container)) { New-Item -ItemType Directory -Path $parent -Force | Out-Null }; Assert-I10NoReparsePath -Root $fullRoot -Path $parent -Context "$Context parent"
-    $stage = Join-Path $parent ('.issue10-stage-' + [Guid]::NewGuid().ToString('N') + '.json'); $bytes = [Text.UTF8Encoding]::new($false, $true).GetBytes($Text); $stageHeld = $null
+    $stage = Join-Path $parent ('.issue10-stage-' + [Guid]::NewGuid().ToString('N') + '.json'); $bytes = [Text.UTF8Encoding]::new($false, $true).GetBytes($Text); $stageHeld = $null; $publishedHeld = $null; $publishedReceipt = $null; $moveCompleted = $false; $publicationSucceeded = $false; $removePublished = $false
     try {
-        $stream = New-Object IO.FileStream($stage, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::Read)
-        try { $stream.Write($bytes, 0, $bytes.Length); $stream.Flush($true) } finally { $stream.Dispose() }
-        $stageHeld = Read-I10HeldFile -Path $stage -MaximumBytes 67108864 -Context "$Context staging file"; if ($stageHeld.Sha256 -cne (Get-I10Sha256Bytes -Bytes $bytes)) { throw "$Context staging bytes changed before publication." }
+        $stream = $null
+        try {
+            $stream = New-Object IO.FileStream($stage, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::Read)
+            $stream.Write($bytes, 0, $bytes.Length); $stream.Flush($true)
+        }
+        finally { if ($null -ne $stream) { $stream.Dispose() } }
+
+        $stageHeld = Open-I10HeldFile -Path $stage -MaximumBytes 67108864 -Context "$Context staging file"
+        try {
+            if ($stageHeld.Sha256 -cne (Get-I10Sha256Bytes -Bytes $bytes)) { throw "$Context staging bytes changed before publication." }
+        }
+        finally { Close-I10HeldFile -Held $stageHeld }
+
         Invoke-I10TestHook -Name 'AfterDestinationCheck' -Transaction $Transaction -Data $fullPath
         if ($null -ne $Transaction) { Assert-I10TransactionStable -Transaction $Transaction -Context "$Context transaction before no-clobber move" }
         [IO.File]::Move($stage, $fullPath)
-        $published = Read-I10HeldFile -Path $fullPath -MaximumBytes 67108864 -Context "$Context published file"
-        if ($published.Sha256 -cne $stageHeld.Sha256 -or $published.Length -ne $stageHeld.Length -or $published.FileId -cne $stageHeld.FileId -or $published.LinkCount -ne $stageHeld.LinkCount) { throw "$Context changed file identity/bytes during no-clobber publication." }
-        return $published
+        $moveCompleted = $true
+
+        $publishedHeld = Open-I10HeldFile -Path $fullPath -MaximumBytes 67108864 -Context "$Context published file"
+        Assert-I10IdentityEqual -Expected $stageHeld.Identity -Observed $publishedHeld.Identity -Context "$Context published file identity"
+        if ($publishedHeld.Sha256 -cne $stageHeld.Sha256 -or $publishedHeld.Length -ne $stageHeld.Length) { throw "$Context changed file identity/bytes during no-clobber publication." }
+        $publishedProbe = Get-I10PathIdentityProbe -Path $fullPath -Context "$Context published file path"
+        Assert-I10IdentityEqual -Expected $publishedHeld.Identity -Observed $publishedProbe.Identity -Context "$Context published file path identity"
+        if ([long]$publishedProbe.Length -ne [long]$publishedHeld.Length) { throw "$Context published file length changed during no-clobber publication." }
+
+        $publishedReceipt = ConvertTo-I10PublicationReceipt -Held $publishedHeld
+        Invoke-I10TestHook -Name 'AfterPublishedCandidateVerification' -Transaction $Transaction -Data $publishedReceipt
+        if ($null -ne $Transaction) { Assert-I10TransactionStable -Transaction $Transaction -Context "$Context transaction after published candidate verification" }
+        $publicationSucceeded = $true
+        return $publishedReceipt
     }
-    finally { if (Test-Path -LiteralPath $stage -PathType Leaf) { Remove-Item -LiteralPath $stage -Force -ErrorAction SilentlyContinue } }
+    finally {
+        if (-not $publicationSucceeded -and $moveCompleted -and (Test-I10OwnedPublishedCandidate -Held $publishedHeld -Expected $stageHeld -Root $fullRoot -Path $fullPath -Context "$Context rollback")) { $removePublished = $true }
+        Close-I10HeldFile -Held $publishedHeld
+        if ($removePublished -and (Test-Path -LiteralPath $fullPath -PathType Leaf)) { [IO.File]::Delete($fullPath) }
+        if (Test-Path -LiteralPath $stage -PathType Leaf) { Remove-Item -LiteralPath $stage -Force -ErrorAction SilentlyContinue }
+    }
 }
