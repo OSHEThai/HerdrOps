@@ -2,8 +2,17 @@
 
 Set-StrictMode -Version Latest
 New-Variable -Scope Script -Name V02GovernedPassingTestCount -Value 888 -Option Constant
+New-Variable -Scope Script -Name V02GovernedTestAssemblyFileNames -Value ([string[]]@(
+    'HerdrOps.UnitTests.dll',
+    'HerdrOps.ContractTests.dll',
+    'HerdrOps.IntegrationTests.dll',
+    'HerdrOps.RuntimeTests.dll'
+)) -Option Constant
 if (-not (Get-Variable -Scope Script -Name V02RuntimePackageBindingAfterValidatorForTest -ErrorAction SilentlyContinue)) { $script:V02RuntimePackageBindingAfterValidatorForTest = $null }
 if (-not (Get-Variable -Scope Script -Name V02TrxAfterSelectionForTest -ErrorAction SilentlyContinue)) { $script:V02TrxAfterSelectionForTest = $null }
+if (-not (Get-Variable -Scope Script -Name V02TrxAfterFinalCopyForTest -ErrorAction SilentlyContinue)) { $script:V02TrxAfterFinalCopyForTest = $null }
+if (-not (Get-Variable -Scope Script -Name V02TrxAfterReceiptWriteForTest -ErrorAction SilentlyContinue)) { $script:V02TrxAfterReceiptWriteForTest = $null }
+if (-not (Get-Variable -Scope Script -Name V02TrxBeforePublishForTest -ErrorAction SilentlyContinue)) { $script:V02TrxBeforePublishForTest = $null }
 
 function Assert-V02RuntimeBindingSha256 {
     param([Parameter(Mandatory = $true)][string]$Value, [Parameter(Mandatory = $true)][string]$Name)
@@ -187,67 +196,218 @@ function Save-V02FreshTrxEvidence {
         [Parameter(Mandatory = $true)][string]$EvidenceDirectory
     )
 
-    $selected = @(Get-ChildItem -LiteralPath $ResultsDirectory -Filter '*.trx' -File |
-        Where-Object { $_.LastWriteTimeUtc -ge $StartedUtc.AddSeconds(-2) } | Sort-Object Name |
-        ForEach-Object { [pscustomobject]@{ Name=$_.Name; Path=$_.FullName; Length=[int64]$_.Length; LastWriteUtc=[IO.File]::GetLastWriteTimeUtc($_.FullName) } })
-    if ($selected.Count -ne 4) { throw "Expected exactly four fresh TRX files, found $($selected.Count)." }
-    if ($null -ne $script:V02TrxAfterSelectionForTest) { & $script:V02TrxAfterSelectionForTest }
+    $invocationStartedUtc = $StartedUtc.ToUniversalTime()
+    $selectionUpperBoundUtc = [DateTime]::UtcNow
     $target = Join-Path $EvidenceDirectory 'test-results'
     if (Test-Path -LiteralPath $target) { throw "TRX evidence directory already exists: $target" }
-    New-Item -ItemType Directory -Path $target | Out-Null
-    $entries = @()
-    $total = 0; $passed = 0; $failed = 0
-    foreach ($file in $selected) {
-        $source = [IO.File]::Open($file.Path,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read)
+    $staging = Join-Path $EvidenceDirectory ('.test-results.' + [guid]::NewGuid().ToString('N') + '.staging')
+    $publishedByTransaction = $false
+
+    function Get-TrxSha256([byte[]]$Bytes) {
+        $sha = [Security.Cryptography.SHA256]::Create()
+        try { return ([BitConverter]::ToString($sha.ComputeHash($Bytes))).Replace('-','') }
+        finally { $sha.Dispose() }
+    }
+
+    function Read-HeldTrxBytes([IO.FileStream]$Stream) {
+        $Stream.Position = 0
+        $bytes = New-Object byte[] $Stream.Length
+        $offset = 0
+        while ($offset -lt $bytes.Length) {
+            $read = $Stream.Read($bytes,$offset,$bytes.Length-$offset)
+            if ($read -le 0) { throw 'Unexpected end of held TRX evidence stream.' }
+            $offset += $read
+        }
+        return $bytes
+    }
+
+    function Read-TrxSnapshot([string]$Path) {
+        $info = Get-Item -LiteralPath $Path -Force
+        $lastWriteUtc = [IO.File]::GetLastWriteTimeUtc($info.FullName)
+        if ($lastWriteUtc -lt $invocationStartedUtc -or $lastWriteUtc -gt $selectionUpperBoundUtc) {
+            throw "TRX file timestamp is outside the exact invocation window: $($info.Name)"
+        }
+        $stream = [IO.File]::Open($info.FullName,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read)
         try {
-            if ([int64]$source.Length -ne $file.Length -or [IO.File]::GetLastWriteTimeUtc($file.Path).Ticks -ne $file.LastWriteUtc.Ticks) {
-                throw "TRX changed after fresh-file selection: $($file.Name)"
-            }
-            $sourceBytes = New-Object byte[] $source.Length
+            $length = [int64]$stream.Length
+            $bytes = New-Object byte[] $length
             $offset = 0
-            while ($offset -lt $sourceBytes.Length) {
-                $read = $source.Read($sourceBytes,$offset,$sourceBytes.Length-$offset)
-                if ($read -le 0) { throw "Unexpected end of TRX stream: $($file.Name)" }
+            while ($offset -lt $bytes.Length) {
+                $read = $stream.Read($bytes,$offset,$bytes.Length-$offset)
+                if ($read -le 0) { throw "Unexpected end of TRX stream: $($info.Name)" }
                 $offset += $read
             }
-            if ([int64]$source.Length -ne $file.Length -or [IO.File]::GetLastWriteTimeUtc($file.Path).Ticks -ne $file.LastWriteUtc.Ticks) {
-                throw "TRX changed during held-byte snapshot: $($file.Name)"
+            if ([int64]$stream.Length -ne $length -or [IO.File]::GetLastWriteTimeUtc($info.FullName).Ticks -ne $lastWriteUtc.Ticks) {
+                throw "TRX changed during held-byte snapshot: $($info.Name)"
             }
-        } finally { $source.Dispose() }
-        $destination = Join-Path $target $file.Name
-        $temporary = $destination + '.' + [guid]::NewGuid().ToString('N') + '.tmp'
-        try {
-            $output = [IO.File]::Open($temporary,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::None)
-            try { $output.Write($sourceBytes,0,$sourceBytes.Length); $output.Flush($true) } finally { $output.Dispose() }
-            Move-Item -LiteralPath $temporary -Destination $destination
-        } finally { if (Test-Path -LiteralPath $temporary) { Remove-Item -LiteralPath $temporary -Force } }
-        $copyBytes = [IO.File]::ReadAllBytes($destination)
-        if ($copyBytes.Length -ne $sourceBytes.Length) { throw "TRX preserved-copy length mismatch: $($file.Name)" }
-        $sha = [Security.Cryptography.SHA256]::Create()
-        try {
-            $sourceHash = ([BitConverter]::ToString($sha.ComputeHash($sourceBytes))).Replace('-','')
-            $copyHash = ([BitConverter]::ToString($sha.ComputeHash($copyBytes))).Replace('-','')
-        } finally { $sha.Dispose() }
-        if ($sourceHash -cne $copyHash) { throw "TRX preserved-copy hash mismatch: $($file.Name)" }
-        $memory = New-Object IO.MemoryStream(,$copyBytes)
-        try { $trx = New-Object Xml.XmlDocument; $trx.Load($memory) } finally { $memory.Dispose() }
-        $counters = $trx.TestRun.ResultSummary.Counters
-        $total += [int]$counters.total; $passed += [int]$counters.passed; $failed += [int]$counters.failed
-        $entries += [pscustomobject][ordered]@{ Name=$file.Name; Bytes=[int64]$copyBytes.Length; Sha256=$copyHash; LastWriteUtc=$file.LastWriteUtc.ToString('O') }
+        } finally { $stream.Dispose() }
+
+        $memory = New-Object IO.MemoryStream(,$bytes)
+        try { $trx = New-Object Xml.XmlDocument; $trx.Load($memory) }
+        finally { $memory.Dispose() }
+        $root = $trx.DocumentElement
+        if ($null -eq $root -or $root.LocalName -cne 'TestRun') { throw "TRX root is not TestRun: $($info.Name)" }
+        $runIdText = $root.GetAttribute('id'); $runId = [guid]::Empty
+        if (-not [guid]::TryParse($runIdText,[ref]$runId) -or $runId -eq [guid]::Empty) { throw "TRX TestRun id is invalid: $($info.Name)" }
+        $times = $root.SelectSingleNode("./*[local-name()='Times']")
+        $runStart = [DateTimeOffset]::MinValue; $runFinish = [DateTimeOffset]::MinValue
+        if ($null -eq $times -or
+            -not [DateTimeOffset]::TryParse($times.GetAttribute('start'),[Globalization.CultureInfo]::InvariantCulture,[Globalization.DateTimeStyles]::RoundtripKind,[ref]$runStart) -or
+            -not [DateTimeOffset]::TryParse($times.GetAttribute('finish'),[Globalization.CultureInfo]::InvariantCulture,[Globalization.DateTimeStyles]::RoundtripKind,[ref]$runFinish)) {
+            throw "TRX TestRun start/finish is invalid: $($info.Name)"
+        }
+        if ($runStart.UtcDateTime -lt $invocationStartedUtc -or $runFinish.UtcDateTime -gt $selectionUpperBoundUtc -or $runFinish -lt $runStart) {
+            throw "TRX TestRun is outside the exact invocation window: $($info.Name)"
+        }
+        $assemblies = @($root.SelectNodes(".//*[local-name()='UnitTest']") |
+            ForEach-Object { [IO.Path]::GetFileName($_.GetAttribute('storage')) } |
+            Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Sort-Object -Unique)
+        if ($assemblies.Count -ne 1) { throw "TRX must bind exactly one test assembly filename: $($info.Name)" }
+        $canonicalAssembly = @($script:V02GovernedTestAssemblyFileNames | Where-Object {
+            [StringComparer]::OrdinalIgnoreCase.Equals($_,$assemblies[0])
+        })
+        if ($canonicalAssembly.Count -ne 1) { throw "TRX test assembly filename is not governed: $($assemblies[0])" }
+        $counters = $root.SelectSingleNode("./*[local-name()='ResultSummary']/*[local-name()='Counters']")
+        if ($null -eq $counters) { throw "TRX counters are missing: $($info.Name)" }
+        $values = @{}
+        foreach ($counterName in @('total','passed','failed','notExecuted','skipped')) {
+            $text = $counters.GetAttribute($counterName); $value = 0
+            if ([string]::IsNullOrEmpty($text)) {
+                if ($counterName -in @('total','passed','failed')) { throw "TRX counter $counterName is missing: $($info.Name)" }
+            } elseif (-not [int]::TryParse($text,[Globalization.NumberStyles]::None,[Globalization.CultureInfo]::InvariantCulture,[ref]$value) -or $value -lt 0) {
+                throw "TRX counter $counterName is invalid: $($info.Name)"
+            }
+            $values[$counterName] = $value
+        }
+        return [pscustomobject]@{
+            Name=$info.Name;Path=$info.FullName;Length=$length;LastWriteUtc=$lastWriteUtc;Bytes=$bytes;Sha256=(Get-TrxSha256 $bytes)
+            TestRunId=$runId.ToString('D');RunStartedUtc=$runStart.ToUniversalTime();RunFinishedUtc=$runFinish.ToUniversalTime()
+            TestAssemblyFileName=$canonicalAssembly[0];EvidenceFileName=([IO.Path]::ChangeExtension($canonicalAssembly[0],'.trx'))
+            Total=$values.total;Passed=$values.passed;Failed=$values.failed
+            NotExecuted=$values.notExecuted;Skipped=$values.skipped
+        }
     }
-    if ($total -ne $script:V02GovernedPassingTestCount -or $failed -ne 0 -or
-        $passed -ne $script:V02GovernedPassingTestCount) {
-        throw "Fresh test counters are not all passing: total=$total passed=$passed failed=$failed"
-    }
-    $receipt = [pscustomobject][ordered]@{ SchemaVersion=1; SelectionStartedUtc=$StartedUtc.ToUniversalTime().ToString('O'); FileCount=4; Total=$total; Passed=$passed; Failed=$failed; Files=$entries }
-    $receiptPath = Join-Path $target 'selection-receipt.json'
-    $temporary = $receiptPath + '.' + [guid]::NewGuid().ToString('N') + '.tmp'
+
     try {
-        $json = $receipt | ConvertTo-Json -Depth 8
-        [IO.File]::WriteAllText($temporary, $json + "`n", (New-Object Text.UTF8Encoding($false)))
+        New-Item -ItemType Directory -Path $staging | Out-Null
+        $candidates = @(Get-ChildItem -LiteralPath $ResultsDirectory -Filter '*.trx' -File |
+            Where-Object { $_.LastWriteTimeUtc -ge $invocationStartedUtc } | Sort-Object Name)
+        if ($candidates.Count -ne 4) { throw "Expected exactly four fresh TRX files, found $($candidates.Count)." }
+        $selected = @($candidates | ForEach-Object { Read-TrxSnapshot $_.FullName })
+        if (@($selected.TestRunId | Sort-Object -Unique).Count -ne 4) { throw 'TRX TestRun ids must be unique across the exact four projects.' }
+        foreach ($expectedAssembly in $script:V02GovernedTestAssemblyFileNames) {
+            if (@($selected | Where-Object { $_.TestAssemblyFileName -ceq $expectedAssembly }).Count -ne 1) {
+                throw "Expected exactly one TRX for governed test assembly: $expectedAssembly"
+            }
+        }
+        if ($null -ne $script:V02TrxAfterSelectionForTest) { & $script:V02TrxAfterSelectionForTest }
+
+        $entries = @(); $total = 0; $passed = 0; $failed = 0; $notExecuted = 0; $skipped = 0
+        foreach ($preselected in $selected) {
+            $current = Read-TrxSnapshot $preselected.Path
+            if ($current.Length -ne $preselected.Length -or $current.LastWriteUtc.Ticks -ne $preselected.LastWriteUtc.Ticks -or
+                $current.Sha256 -cne $preselected.Sha256 -or $current.TestRunId -cne $preselected.TestRunId -or
+                $current.RunStartedUtc -ne $preselected.RunStartedUtc -or $current.RunFinishedUtc -ne $preselected.RunFinishedUtc -or
+                $current.TestAssemblyFileName -cne $preselected.TestAssemblyFileName -or
+                $current.EvidenceFileName -cne $preselected.EvidenceFileName) {
+                throw "TRX preselection identity/hash/run binding changed: $($preselected.Name)"
+            }
+            $destination = Join-Path $staging $preselected.EvidenceFileName
+            $output = [IO.File]::Open($destination,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::None)
+            try { $output.Write($current.Bytes,0,$current.Bytes.Length); $output.Flush($true) }
+            finally { $output.Dispose() }
+            $total += $current.Total; $passed += $current.Passed; $failed += $current.Failed
+            $notExecuted += $current.NotExecuted; $skipped += $current.Skipped
+            $entries += [pscustomobject][ordered]@{
+                Name=$current.EvidenceFileName;SourceName=$current.Name;Bytes=[int64]$current.Bytes.Length;Sha256=$current.Sha256
+                LastWriteUtc=$current.LastWriteUtc.ToString('O');TestRunId=$current.TestRunId
+                RunStartedUtc=$current.RunStartedUtc.ToString('O');RunFinishedUtc=$current.RunFinishedUtc.ToString('O')
+                TestAssemblyFileName=$current.TestAssemblyFileName;Total=$current.Total;Passed=$current.Passed
+                Failed=$current.Failed;NotExecuted=$current.NotExecuted;Skipped=$current.Skipped
+            }
+        }
+        if ($failed -ne 0) { throw "Fresh test counters contain failures: failed=$failed" }
+        if ($notExecuted -ne 0 -or $skipped -ne 0) {
+            throw "Fresh test counters contain skipped/notExecuted tests: skipped=$skipped notExecuted=$notExecuted"
+        }
+        if ($total -ne $script:V02GovernedPassingTestCount -or $passed -ne $script:V02GovernedPassingTestCount) {
+            throw "Fresh test counters are not the governed all-passing aggregate: total=$total passed=$passed"
+        }
+
+        if ($null -ne $script:V02TrxAfterFinalCopyForTest) { & $script:V02TrxAfterFinalCopyForTest $staging }
+        foreach ($entry in $entries) {
+            $finalBytes = [IO.File]::ReadAllBytes((Join-Path $staging $entry.Name))
+            if ($finalBytes.Length -ne $entry.Bytes -or (Get-TrxSha256 $finalBytes) -cne $entry.Sha256) {
+                throw "Final staged TRX copy changed after validation: $($entry.Name)"
+            }
+        }
+
+        $receipt = [pscustomobject][ordered]@{
+            SchemaVersion=2;InvocationStartedUtc=$invocationStartedUtc.ToString('O')
+            SelectionUpperBoundUtc=$selectionUpperBoundUtc.ToString('O');FileCount=4
+            Total=$total;Passed=$passed;Failed=$failed;NotExecuted=$notExecuted;Skipped=$skipped;Files=$entries
+        }
+        $receiptPath = Join-Path $staging 'selection-receipt.json'
+        $receiptBytes = (New-Object Text.UTF8Encoding($false)).GetBytes(($receipt | ConvertTo-Json -Depth 8) + "`n")
+        $temporary = $receiptPath + '.' + [guid]::NewGuid().ToString('N') + '.tmp'
+        $output = [IO.File]::Open($temporary,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::None)
+        try { $output.Write($receiptBytes,0,$receiptBytes.Length); $output.Flush($true) }
+        finally { $output.Dispose() }
         Move-Item -LiteralPath $temporary -Destination $receiptPath
-    } finally { if (Test-Path -LiteralPath $temporary) { Remove-Item -LiteralPath $temporary -Force } }
-    return [pscustomobject]@{ Total=$total; Passed=$passed; Failed=$failed; Directory=$target; ReceiptPath=$receiptPath; ReceiptSha256=((Get-FileHash -LiteralPath $receiptPath -Algorithm SHA256).Hash).ToUpperInvariant(); Files=$entries }
+        if ($null -ne $script:V02TrxAfterReceiptWriteForTest) { & $script:V02TrxAfterReceiptWriteForTest $receiptPath }
+        $finalReceiptBytes = [IO.File]::ReadAllBytes($receiptPath)
+        $receiptSha256 = Get-TrxSha256 $receiptBytes
+        if ($finalReceiptBytes.Length -ne $receiptBytes.Length -or (Get-TrxSha256 $finalReceiptBytes) -cne $receiptSha256) {
+            throw 'TRX selection receipt changed after atomic write.'
+        }
+        $heldEvidence = @()
+        try {
+            foreach ($entry in $entries) {
+                $heldEvidence += [pscustomobject]@{
+                    Name=$entry.Name;ExpectedLength=[int64]$entry.Bytes;ExpectedSha256=$entry.Sha256
+                    Stream=[IO.File]::Open((Join-Path $staging $entry.Name),[IO.FileMode]::Open,[IO.FileAccess]::Read,([IO.FileShare]::Read -bor [IO.FileShare]::Delete))
+                }
+            }
+            $heldEvidence += [pscustomobject]@{
+                Name='selection-receipt.json';ExpectedLength=[int64]$receiptBytes.Length;ExpectedSha256=$receiptSha256
+                Stream=[IO.File]::Open($receiptPath,[IO.FileMode]::Open,[IO.FileAccess]::Read,([IO.FileShare]::Read -bor [IO.FileShare]::Delete))
+            }
+            foreach ($held in $heldEvidence) {
+                $heldBytes = Read-HeldTrxBytes $held.Stream
+                if ($heldBytes.Length -ne $held.ExpectedLength -or (Get-TrxSha256 $heldBytes) -cne $held.ExpectedSha256) {
+                    throw "Held TRX evidence changed before atomic publication: $($held.Name)"
+                }
+            }
+            if ($null -ne $script:V02TrxBeforePublishForTest) { & $script:V02TrxBeforePublishForTest $staging $target }
+            New-Item -ItemType Directory -Path $target -ErrorAction Stop | Out-Null
+            $publishedByTransaction = $true
+            foreach ($held in $heldEvidence) {
+                $sourcePath = Join-Path $staging $held.Name
+                $publishedPath = Join-Path $target $held.Name
+                [IO.File]::Move($sourcePath,$publishedPath)
+                $publishedLock = [IO.File]::Open($publishedPath,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read)
+                $held.Stream.Dispose(); $held.Stream = $publishedLock
+                $heldBytes = Read-HeldTrxBytes $publishedLock
+                $publishedBytes = [IO.File]::ReadAllBytes((Join-Path $target $held.Name))
+                if ($heldBytes.Length -ne $held.ExpectedLength -or (Get-TrxSha256 $heldBytes) -cne $held.ExpectedSha256 -or
+                    $publishedBytes.Length -ne $held.ExpectedLength -or (Get-TrxSha256 $publishedBytes) -cne $held.ExpectedSha256) {
+                    throw "Held TRX evidence changed across atomic publication: $($held.Name)"
+                }
+            }
+            Remove-Item -LiteralPath $staging -Force
+        } finally {
+            foreach ($held in $heldEvidence) { if ($null -ne $held.Stream) { $held.Stream.Dispose() } }
+        }
+        $finalReceiptPath = Join-Path $target 'selection-receipt.json'
+        return [pscustomobject]@{
+            Total=$total;Passed=$passed;Failed=$failed;NotExecuted=$notExecuted;Skipped=$skipped
+            Directory=$target;ReceiptPath=$finalReceiptPath;ReceiptSha256=$receiptSha256;Files=$entries
+        }
+    } catch {
+        if (Test-Path -LiteralPath $staging) { Remove-Item -LiteralPath $staging -Recurse -Force }
+        if ($publishedByTransaction -and (Test-Path -LiteralPath $target)) { Remove-Item -LiteralPath $target -Recurse -Force }
+        throw
+    }
 }
 
 function New-V02TargetAgentSessionAttestation {
