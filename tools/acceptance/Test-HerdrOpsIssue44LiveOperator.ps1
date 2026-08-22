@@ -59,6 +59,16 @@ function Assert-TestExactProperties {
     Assert-AcceptanceExactProperties -Object $Object -Names $Names -Context $Context
 }
 
+function Copy-TestArguments {
+    param([Parameter(Mandatory = $true)][Collections.IDictionary]$Arguments)
+
+    $copy = [ordered]@{}
+    foreach ($key in $Arguments.Keys) {
+        $copy[$key] = $Arguments[$key]
+    }
+    return $copy
+}
+
 function Assert-TestReportShape {
     param(
         [Parameter(Mandatory = $true)]$Report,
@@ -441,7 +451,7 @@ try {
     Assert-TestCondition -Condition ([string]$greenReportOnDisk.status -ceq 'PASS') -Message 'Green report persisted with non-PASS status.'
 
     # Hostile case: wrong initial archive SHA must fail closed at preflight staging.
-    $wrongShaArgs = $greenArgs.Clone()
+    $wrongShaArgs = Copy-TestArguments -Arguments $greenArgs
     $wrongShaArgs['InitialArchiveSha256'] = '0' * 64
     $wrongShaArgs['ReportDestination'] = (Join-Path $reportsDir 'wrong-sha.json')
     Test-OperatorFailClosed -CaseName 'wrong-initial-sha' -Arguments $wrongShaArgs -ExpectedMessageFragment 'SHA-256 mismatch'
@@ -449,7 +459,7 @@ try {
     # Hostile case: missing candidate manifest entry must fail closed during staging.
     $missingManifestZip = Join-Path $testRoot 'missing-manifest.zip'
     Write-TestZipFromContents -Path $missingManifestZip -EntryContents @{ 'stray.txt' = 'stray' }
-    $missingManifestArgs = $greenArgs.Clone()
+    $missingManifestArgs = Copy-TestArguments -Arguments $greenArgs
     $missingManifestArgs['CandidateArchivePath'] = $missingManifestZip
     $missingManifestArgs.Remove('CandidateArchiveSha256')
     $missingManifestArgs.Remove('CandidateArchiveBytes')
@@ -460,7 +470,7 @@ try {
     $duplicateManifestJson = '{"schemaVersion":1,"schemaVersion":1,"packageVersion":"1.0.0"}'
     $duplicateManifestZip = Join-Path $testRoot 'duplicate-manifest.zip'
     Write-TestZipFromContents -Path $duplicateManifestZip -EntryContents @{ 'package-manifest.json' = $duplicateManifestJson }
-    $duplicateManifestArgs = $greenArgs.Clone()
+    $duplicateManifestArgs = Copy-TestArguments -Arguments $greenArgs
     $duplicateManifestArgs['CandidateArchivePath'] = $duplicateManifestZip
     $duplicateManifestArgs.Remove('CandidateArchiveSha256')
     $duplicateManifestArgs.Remove('CandidateArchiveBytes')
@@ -473,7 +483,7 @@ try {
         param($Action, $ArchivePath, $InstallRoot, $UserDataRoot, [switch]$RemoveUserData, [int]$TimeoutSeconds = 60)
         return [pscustomobject]@{ Status = 'FAIL'; Action = $Action; Details = 'Injected installer runner failure.' }
     }
-    $failInstallerArgs = $greenArgs.Clone()
+    $failInstallerArgs = Copy-TestArguments -Arguments $greenArgs
     $failInstallerArgs['InstallerRunner'] = $failInstallerRunner
     $failInstallerArgs['FirstRunRunner'] = $syntheticFirstRunRunner
     $failInstallerArgs['ReportDestination'] = (Join-Path $reportsDir 'installer-runner-fail.json')
@@ -487,7 +497,7 @@ try {
         param($InstallRoot, $UserDataRoot, [int]$TimeoutMilliseconds = 5000)
         return [pscustomobject]@{ Status = 'FAIL'; Details = 'Injected first-run runner failure.' }
     }
-    $failFirstRunArgs = $greenArgs.Clone()
+    $failFirstRunArgs = Copy-TestArguments -Arguments $greenArgs
     $failFirstRunArgs['InstallerRunner'] = $syntheticInstallerRunner
     $failFirstRunArgs['FirstRunRunner'] = $failFirstRunRunner
     $failFirstRunArgs['ReportDestination'] = (Join-Path $reportsDir 'first-runner-fail.json')
@@ -511,7 +521,7 @@ try {
             AppSha256 = Get-AcceptanceSha256ForFile -Path (Join-Path $InstallRoot 'HerdrOps.App.exe')
         }
     }
-    $corruptFirstRunArgs = $greenArgs.Clone()
+    $corruptFirstRunArgs = Copy-TestArguments -Arguments $greenArgs
     $corruptFirstRunArgs['InstallerRunner'] = $syntheticInstallerRunner
     $corruptFirstRunArgs['FirstRunRunner'] = $corruptFirstRunRunner
     $corruptFirstRunArgs['ReportDestination'] = (Join-Path $reportsDir 'first-runner-corrupt.json')
@@ -520,14 +530,14 @@ try {
     # Hostile case: accepted-Beta provenance SHA mismatch -> preflight fail.
     $betaReportPath = Join-Path $testRoot 'beta-report.json'
     [IO.File]::WriteAllText($betaReportPath, '{"status":"Accepted","sourceCommit":"' + ('a' * 40) + '"}', $utf8)
-    $betaMismatchArgs = $greenArgs.Clone()
+    $betaMismatchArgs = Copy-TestArguments -Arguments $greenArgs
     $betaMismatchArgs['BetaReportPath'] = $betaReportPath
     $betaMismatchArgs['BetaReportSha256'] = '0' * 64
     $betaMismatchArgs['ReportDestination'] = (Join-Path $reportsDir 'beta-provenance-mismatch.json')
     Test-OperatorFailClosed -CaseName 'accepted-beta-provenance-mismatch' -Arguments $betaMismatchArgs -ExpectedMessageFragment 'SHA-256 mismatch'
 
     # Hostile case: report destination nested inside retained-data root must fail closed.
-    $nestedReportArgs = $greenArgs.Clone()
+    $nestedReportArgs = Copy-TestArguments -Arguments $greenArgs
     $nestedReportPath = Get-AcceptanceFullPath -Path (Join-Path $simRoot 'HerdrOps\invalid-report.json')
     $nestedReportArgs['ReportDestination'] = $nestedReportPath
     Test-OperatorFailClosed -CaseName 'nested-report-destination' -Arguments $nestedReportArgs -ExpectedMessageFragment 'must not be inside'
@@ -540,7 +550,7 @@ try {
     New-Item -ItemType Directory -Path $simPrograms -Force | Out-Null
     $preExistingInstallRoot = Join-Path $simPrograms 'HerdrOps'
     New-Item -ItemType Directory -Path $preExistingInstallRoot -Force | Out-Null
-    $preExistingArgs = $greenArgs.Clone()
+    $preExistingArgs = Copy-TestArguments -Arguments $greenArgs
     $preExistingArgs['InstallRoot'] = (Get-AcceptanceFullPath -Path $preExistingInstallRoot)
     $preExistingArgs['ReportDestination'] = (Join-Path $reportsDir 'pre-existing-install-root.json')
     Test-OperatorFailClosed -CaseName 'pre-existing-install-root' -Arguments $preExistingArgs -ExpectedMessageFragment 'InstallRoot already exists'
@@ -553,7 +563,7 @@ try {
             'HerdrOps.backup-abandoned')) {
         $residualDir = Join-Path $simPrograms $residualName
         New-Item -ItemType Directory -Path $residualDir -Force | Out-Null
-        $residualArgs = $greenArgs.Clone()
+        $residualArgs = Copy-TestArguments -Arguments $greenArgs
         $residualArgs['ReportDestination'] = (Join-Path $reportsDir ('residual-' + $residualName.Replace('.', '-') + '.json'))
         Test-OperatorFailClosed -CaseName "residual-$residualName" -Arguments $residualArgs -ExpectedMessageFragment 'leftover residuals detected'
         Remove-Item -LiteralPath $residualDir -Recurse -Force
@@ -569,7 +579,7 @@ try {
         }
         return $delegated
     }.GetNewClosure()
-    $cleanupResidualArgs = $greenArgs.Clone()
+    $cleanupResidualArgs = Copy-TestArguments -Arguments $greenArgs
     $cleanupResidualArgs['InstallerRunner'] = $cleanupResidualRunner
     $cleanupResidualArgs['ReportDestination'] = (Join-Path $reportsDir 'cleanup-residual.json')
     try {
@@ -593,7 +603,7 @@ try {
             AppSha256 = Get-AcceptanceSha256ForFile -Path (Join-Path $InstallRoot 'HerdrOps.App.exe')
         }
     }
-    $removeMarkerArgs = $greenArgs.Clone()
+    $removeMarkerArgs = Copy-TestArguments -Arguments $greenArgs
     $removeMarkerArgs['FirstRunRunner'] = $removeMarkerFirstRunRunner
     $removeMarkerArgs['ReportDestination'] = (Join-Path $reportsDir 'first-runner-removes-marker.json')
     Test-OperatorFailClosed -CaseName 'first-runner-removes-marker' -Arguments $removeMarkerArgs -ExpectedMessageFragment 'File not found'
@@ -603,7 +613,7 @@ try {
         param($InstallRoot, $UserDataRoot, [int]$TimeoutMilliseconds = 5000)
         throw (New-Object System.TimeoutException 'Injected bounded first-run timeout.')
     }
-    $timeoutArgs = $greenArgs.Clone()
+    $timeoutArgs = Copy-TestArguments -Arguments $greenArgs
     $timeoutArgs['FirstRunRunner'] = $timeoutFirstRunRunner
     $timeoutArgs['ReportDestination'] = (Join-Path $reportsDir 'first-runner-timeout.json')
     Test-OperatorFailClosed -CaseName 'first-runner-timeout' -Arguments $timeoutArgs -ExpectedMessageFragment 'Injected bounded first-run timeout' -ExpectReportFile $true | Out-Null
@@ -615,7 +625,7 @@ try {
     $mklinkOutput = @(& cmd.exe /d /c mklink /J $reparseParent $reparseTarget 2>&1 | ForEach-Object { [string]$_ })
     Assert-TestCondition -Condition ($LASTEXITCODE -eq 0 -and (Test-Path -LiteralPath $reparseParent)) -Message "Could not create fixture junction for reparse rejection: $($mklinkOutput -join '; ')"
     try {
-        $reparseArgs = $greenArgs.Clone()
+        $reparseArgs = Copy-TestArguments -Arguments $greenArgs
         $reparseArgs['InstallRoot'] = (Get-AcceptanceFullPath -Path (Join-Path $reparseParent 'HerdrOps'))
         $reparseArgs['ReportDestination'] = (Join-Path $reportsDir 'target-reparse.json')
         Test-OperatorFailClosed -CaseName 'target-reparse' -Arguments $reparseArgs -ExpectedMessageFragment 'reparse'
