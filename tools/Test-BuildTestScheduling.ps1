@@ -421,6 +421,11 @@ function Test-CiAggregatorContract {
     }
 
     $aggregator = $Jobs['ci-success']
+    $aggregatorName = [string]$aggregator.Name
+    if ($aggregatorName -cne 'build-test') {
+        throw "CI aggregator job 'ci-success' must expose compatibility display name 'build-test'; observed '$aggregatorName'."
+    }
+
     if ([string]$aggregator.If -cne 'always()') {
         throw "CI aggregator job 'ci-success' must use if: always() so failed, skipped, and cancelled dependencies are inspected."
     }

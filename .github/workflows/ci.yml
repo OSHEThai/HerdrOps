@@ -975,7 +975,7 @@ jobs:
           if-no-files-found: warn
 
   ci-success:
-    name: CI Workflow Completion Status
+    name: build-test
     if: always()
     runs-on: windows-latest
     needs:
