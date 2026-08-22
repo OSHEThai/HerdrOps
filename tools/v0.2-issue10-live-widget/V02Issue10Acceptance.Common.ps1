@@ -366,14 +366,42 @@ function Get-I10GateReport {
 
 function Assert-I10ReceiptProvenance {
     param([Parameter(Mandatory = $true)]$Provenance,[Parameter(Mandatory = $true)][string]$ExpectedSourceCommit,[Parameter(Mandatory = $true)][string]$ExpectedSourceTree,[Parameter(Mandatory = $true)]$Package,[Parameter(Mandatory = $true)][string]$Context)
-    $commit = $null; $tree = $null; $receipt = $null; $archive = $null; $app = $null; $core = $null
+    if ($null -eq $Provenance -or $Provenance -isnot [psobject]) { throw "$Context must be a JSON object." }
+    $commit = $null; $tree = $null; $archive = $null; $app = $null; $core = $null
     if ($Provenance.PSObject.Properties.Name -contains 'sourceCommit') {
         $commit = [string]$Provenance.sourceCommit; $tree = [string]$Provenance.sourceTree; $receipt = [string]$Provenance.packageIdentityReceiptSha256; $archive = [string]$Provenance.packageArchiveSha256; $app = [string]$Provenance.appSha256; $core = [string]$Provenance.coreSha256
+        if ($commit -cne $ExpectedSourceCommit -or $tree -cne $ExpectedSourceTree) { throw "$Context source commit/tree is not bound to the requested candidate." }
+        Assert-I10Sha256 $receipt "$Context package identity receipt"
+        if ($receipt.ToUpperInvariant() -cne [string]$Package.ReceiptSha256.ToUpperInvariant() -and
+            $receipt.ToUpperInvariant() -cne [string]$Package.IdentityFileSha256.ToUpperInvariant()) {
+            throw "$Context package identity receipt hash is not bound to the package."
+        }
+        foreach ($pair in @(@('package archive',$archive,[string]$Package.ArchiveSha256),@('App',$app,[string]$Package.AppSha256),@('Core',$core,[string]$Package.CoreSha256))) { Assert-I10Sha256 $pair[1] "$Context $($pair[0])"; if ($pair[1].ToUpperInvariant() -cne $pair[2].ToUpperInvariant()) { throw "$Context $($pair[0]) hash is not bound to the package." } }
     } elseif ($Provenance.PSObject.Properties.Name -contains 'candidate' -and $Provenance.PSObject.Properties.Name -contains 'package') {
-        $commit = [string]$Provenance.candidate.commitSha; $tree = [string]$Provenance.candidate.treeSha; $receipt = [string]$Provenance.package.receipt.fileSha256; $archive = [string]$Provenance.package.archive.sha256; $app = [string]$Provenance.package.components.app.sha256; $core = [string]$Provenance.package.components.core.sha256
+        $commit = [string]$Provenance.candidate.commitSha; $tree = [string]$Provenance.candidate.treeSha
+        if ($commit -cne $ExpectedSourceCommit -or $tree -cne $ExpectedSourceTree) { throw "$Context source commit/tree is not bound to the requested candidate." }
+        $archive = [string]$Provenance.package.archive.sha256; $app = [string]$Provenance.package.components.app.sha256; $core = [string]$Provenance.package.components.core.sha256
+        foreach ($pair in @(@('package archive',$archive,[string]$Package.ArchiveSha256),@('App',$app,[string]$Package.AppSha256),@('Core',$core,[string]$Package.CoreSha256))) { Assert-I10Sha256 $pair[1] "$Context $($pair[0])"; if ($pair[1].ToUpperInvariant() -cne $pair[2].ToUpperInvariant()) { throw "$Context $($pair[0]) hash is not bound to the package." } }
+        $pkgReceipt = $Provenance.package.receipt
+        if ($null -eq $pkgReceipt -or $pkgReceipt -isnot [psobject]) { throw "$Context package receipt binding is missing." }
+        $hasFileSha = ($null -ne $pkgReceipt.PSObject.Properties['fileSha256'] -and -not [string]::IsNullOrWhiteSpace([string]$pkgReceipt.fileSha256))
+        $hasCanonicalSha = ($null -ne $pkgReceipt.PSObject.Properties['canonicalSha256'] -and -not [string]::IsNullOrWhiteSpace([string]$pkgReceipt.canonicalSha256))
+        if (-not $hasFileSha -and -not $hasCanonicalSha) { throw "$Context package receipt must specify fileSha256 or canonicalSha256." }
+        if ($hasFileSha) {
+            Assert-I10Sha256 $pkgReceipt.fileSha256 "$Context package identity receipt fileSha256"
+            if ($pkgReceipt.fileSha256.ToUpperInvariant() -cne [string]$Package.IdentityFileSha256.ToUpperInvariant() -and
+                $pkgReceipt.fileSha256.ToUpperInvariant() -cne [string]$Package.ReceiptSha256.ToUpperInvariant()) {
+                throw "$Context package identity receipt fileSha256 is not bound to the package."
+            }
+        }
+        if ($hasCanonicalSha) {
+            Assert-I10Sha256 $pkgReceipt.canonicalSha256 "$Context package identity receipt canonicalSha256"
+            if ($pkgReceipt.canonicalSha256.ToUpperInvariant() -cne [string]$Package.ReceiptSha256.ToUpperInvariant() -and
+                $pkgReceipt.canonicalSha256.ToUpperInvariant() -cne [string]$Package.IdentityCanonicalSha256.ToUpperInvariant()) {
+                throw "$Context package identity receipt canonicalSha256 is not bound to the package."
+            }
+        }
     } else { throw "$Context has no supported governed provenance shape." }
-    if ($commit -cne $ExpectedSourceCommit -or $tree -cne $ExpectedSourceTree) { throw "$Context source commit/tree is not bound to the requested candidate." }
-    foreach ($pair in @(@('package identity receipt',$receipt,[string]$Package.ReceiptSha256),@('package archive',$archive,[string]$Package.ArchiveSha256),@('App',$app,[string]$Package.AppSha256),@('Core',$core,[string]$Package.CoreSha256))) { Assert-I10Sha256 $pair[1] "$Context $($pair[0])"; if ($pair[1].ToUpperInvariant() -cne $pair[2].ToUpperInvariant()) { throw "$Context $($pair[0]) hash is not bound to the package." } }
 }
 
 function Assert-I10PerformanceReceipt {
@@ -495,9 +523,104 @@ function Assert-I10PackageBinding {
     if ($null -ne $Package.SourceCommit -and [string]$Package.SourceCommit -cne $ExpectedSourceCommit) { throw 'Package source commit is not exact.' }; if ($null -ne $Package.SourceTree -and [string]$Package.SourceTree -cne $ExpectedSourceTree) { throw 'Package source tree is not exact.' }
     $root = [IO.Path]::GetFullPath([string]$Package.PackageRoot); Assert-I10NoReparsePath -Root $root -Path $root -Context 'Package root'
     foreach ($pair in @(@('manifest',$Package.ManifestPath),@('App',$Package.AppPath),@('Core',$Package.CorePath))) { Assert-I10NoReparsePath -Root $root -Path ([string]$pair[1]) -Context "Package $($pair[0]) path" }
-    $identity = Read-I10HeldFile -Path ([string]$Package.IdentityPath) -MaximumBytes 16777216 -Context 'Package identity receipt'; $archive = Read-I10HeldFile -Path ([string]$Package.ArchivePath) -MaximumBytes 1073741824 -Context 'Package archive'; $manifest = Read-I10HeldFile -Path ([string]$Package.ManifestPath) -MaximumBytes 67108864 -Context 'Package manifest'; $app = Read-I10HeldFile -Path ([string]$Package.AppPath) -MaximumBytes 1073741824 -Context 'Package App'; $core = Read-I10HeldFile -Path ([string]$Package.CorePath) -MaximumBytes 1073741824 -Context 'Package Core'
-    if ($archive.Sha256 -cne [string]$Package.ArchiveSha256.ToUpperInvariant() -or $manifest.Sha256 -cne [string]$Package.ManifestSha256.ToUpperInvariant() -or $app.Sha256 -cne [string]$Package.AppSha256.ToUpperInvariant() -or $core.Sha256 -cne [string]$Package.CoreSha256.ToUpperInvariant()) { throw 'Package bytes changed or do not match the bound hashes.' }
-    [pscustomobject][ordered]@{ Identity = $identity; Archive = $archive; Manifest = $manifest; App = $app; Core = $core; ReceiptSha256 = [string]$Package.ReceiptSha256.ToUpperInvariant(); ArchiveSha256 = $archive.Sha256; ManifestSha256 = $manifest.Sha256; AppSha256 = $app.Sha256; CoreSha256 = $core.Sha256 }
+
+    $identity = Read-I10HeldFile -Path ([string]$Package.IdentityPath) -MaximumBytes 16777216 -Context 'Package identity receipt'
+    $archive = Read-I10HeldFile -Path ([string]$Package.ArchivePath) -MaximumBytes 1073741824 -Context 'Package archive'
+    $manifest = Read-I10HeldFile -Path ([string]$Package.ManifestPath) -MaximumBytes 67108864 -Context 'Package manifest'
+    $app = Read-I10HeldFile -Path ([string]$Package.AppPath) -MaximumBytes 1073741824 -Context 'Package App'
+    $core = Read-I10HeldFile -Path ([string]$Package.CorePath) -MaximumBytes 1073741824 -Context 'Package Core'
+
+    if ($identity.Bytes.Length -ge 3 -and $identity.Bytes[0] -eq 0xEF -and $identity.Bytes[1] -eq 0xBB -and $identity.Bytes[2] -eq 0xBF) { throw 'Package identity receipt must be UTF-8 without a BOM.' }
+    try { $identityJson = [Text.UTF8Encoding]::new($false, $true).GetString($identity.Bytes) }
+    catch { throw 'Package identity receipt contains malformed UTF-8.' }
+    if ($identityJson.IndexOf([char]0xFEFF) -ge 0) { throw 'Package identity receipt contains an unexpected BOM.' }
+    if (Get-Command Assert-V02NoDuplicateJsonProperties -ErrorAction SilentlyContinue) { Assert-V02NoDuplicateJsonProperties -Json $identityJson -Source ([string]$Package.IdentityPath) }
+    try {
+        if ($PSVersionTable.PSVersion.Major -ge 7 -and (Get-Command ConvertFrom-Json).Parameters.ContainsKey('DateKind')) {
+            $identityValue = $identityJson | ConvertFrom-Json -DateKind String
+        } else {
+            $identityValue = $identityJson | ConvertFrom-Json
+        }
+    } catch { throw "Package identity receipt is malformed JSON: $($_.Exception.Message)" }
+    if ($null -eq $identityValue -or $identityValue -isnot [pscustomobject]) { throw 'Package identity receipt root must be an object.' }
+
+    $identityCanonicalSha256 = Get-I10CanonicalSha256 -Value $identityValue
+    $identityFileSha256 = $identity.Sha256
+
+    if ($null -ne $identityValue.PSObject.Properties['source'] -and $null -ne $identityValue.source) {
+        if ($null -ne $identityValue.source.PSObject.Properties['commitSha'] -and [string]$identityValue.source.commitSha -cne $ExpectedSourceCommit) { throw 'Package identity receipt source commit is not exact.' }
+        if ($null -ne $identityValue.source.PSObject.Properties['treeSha'] -and [string]$identityValue.source.treeSha -cne $ExpectedSourceTree) { throw 'Package identity receipt source tree is not exact.' }
+    }
+    if ($null -ne $identityValue.PSObject.Properties['evidenceBoundary'] -and $null -ne $identityValue.evidenceBoundary) {
+        if ($identityValue.evidenceBoundary.PSObject.Properties.Name -contains 'runtimeCredit' -and [string]$identityValue.evidenceBoundary.runtimeCredit -cne 'NOT CLAIMED') { throw 'Package identity receipt evidence boundary claims runtime credit.' }
+        if ($identityValue.evidenceBoundary.PSObject.Properties.Name -contains 'releaseCredit' -and [string]$identityValue.evidenceBoundary.releaseCredit -cne 'NOT CLAIMED') { throw 'Package identity receipt evidence boundary claims release credit.' }
+        if ($identityValue.evidenceBoundary.PSObject.Properties.Name -contains 'actualHerdrUsed' -and [bool]$identityValue.evidenceBoundary.actualHerdrUsed) { throw 'Package identity receipt evidence boundary claims actual Herdr use.' }
+    }
+    if ($null -ne $identityValue.PSObject.Properties['archive'] -and $null -ne $identityValue.archive -and $identityValue.archive.PSObject.Properties.Name -contains 'sha256') {
+        if ([string]$identityValue.archive.sha256.ToUpperInvariant() -cne $archive.Sha256) { throw 'Package identity receipt archive SHA-256 does not match held archive.' }
+    }
+    if ($null -ne $identityValue.PSObject.Properties['components'] -and $null -ne $identityValue.components) {
+        if ($identityValue.components.PSObject.Properties.Name -contains 'app' -and $identityValue.components.app.PSObject.Properties.Name -contains 'sha256') {
+            if ([string]$identityValue.components.app.sha256.ToUpperInvariant() -cne $app.Sha256) { throw 'Package identity receipt App SHA-256 does not match held App.' }
+        }
+        if ($identityValue.components.PSObject.Properties.Name -contains 'core' -and $identityValue.components.core.PSObject.Properties.Name -contains 'sha256') {
+            if ([string]$identityValue.components.core.sha256.ToUpperInvariant() -cne $core.Sha256) { throw 'Package identity receipt Core SHA-256 does not match held Core.' }
+        }
+    }
+
+    $hasExplicitFileHash = ($null -ne $Package.PSObject.Properties['IdentityFileSha256'] -and -not [string]::IsNullOrWhiteSpace([string]$Package.IdentityFileSha256))
+    $boundReceiptSha256 = $null
+    $boundIdentityFileSha256 = $null
+
+    if ($hasExplicitFileHash) {
+        Assert-I10Sha256 $Package.IdentityFileSha256 'Package IdentityFileSha256'
+        if ($identityFileSha256 -cne [string]$Package.IdentityFileSha256.ToUpperInvariant()) { throw 'Package identity receipt held file bytes hash does not match IdentityFileSha256.' }
+        $boundIdentityFileSha256 = $identityFileSha256
+        if ($identityCanonicalSha256 -cne [string]$Package.ReceiptSha256.ToUpperInvariant()) { throw 'Package identity receipt held canonical hash does not match ReceiptSha256.' }
+        $boundReceiptSha256 = $identityCanonicalSha256
+    } else {
+        $callerReceipt = [string]$Package.ReceiptSha256.ToUpperInvariant()
+        if ($callerReceipt -ceq $identityCanonicalSha256) {
+            $boundReceiptSha256 = $identityCanonicalSha256
+            $boundIdentityFileSha256 = $identityFileSha256
+        } elseif ($callerReceipt -ceq $identityFileSha256) {
+            $boundReceiptSha256 = $identityFileSha256
+            $boundIdentityFileSha256 = $identityFileSha256
+        } else {
+            throw 'Package identity receipt held bytes/canonical hash do not match ReceiptSha256.'
+        }
+    }
+
+    if ($null -ne $Package.PSObject.Properties['IdentityReceiptSha256'] -and -not [string]::IsNullOrWhiteSpace([string]$Package.IdentityReceiptSha256)) {
+        Assert-I10Sha256 $Package.IdentityReceiptSha256 'Package IdentityReceiptSha256'
+        if ([string]$Package.IdentityReceiptSha256.ToUpperInvariant() -cne $boundReceiptSha256 -and
+            [string]$Package.IdentityReceiptSha256.ToUpperInvariant() -cne $boundIdentityFileSha256) {
+            throw 'Package IdentityReceiptSha256 does not match the bound receipt hash.'
+        }
+    }
+
+    if ($archive.Sha256 -cne [string]$Package.ArchiveSha256.ToUpperInvariant() -or
+        $manifest.Sha256 -cne [string]$Package.ManifestSha256.ToUpperInvariant() -or
+        $app.Sha256 -cne [string]$Package.AppSha256.ToUpperInvariant() -or
+        $core.Sha256 -cne [string]$Package.CoreSha256.ToUpperInvariant()) {
+        throw 'Package bytes changed or do not match the bound hashes.'
+    }
+
+    return [pscustomobject][ordered]@{
+        Identity = $identity
+        Archive = $archive
+        Manifest = $manifest
+        App = $app
+        Core = $core
+        ReceiptSha256 = $boundReceiptSha256
+        IdentityFileSha256 = $boundIdentityFileSha256
+        IdentityCanonicalSha256 = $identityCanonicalSha256
+        ArchiveSha256 = $archive.Sha256
+        ManifestSha256 = $manifest.Sha256
+        AppSha256 = $app.Sha256
+        CoreSha256 = $core.Sha256
+        IdentityValue = $identityValue
+    }
 }
 
 function Invoke-I10Issue10Acceptance {

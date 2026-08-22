@@ -74,7 +74,10 @@ function New-Provenance {
     [pscustomobject][ordered]@{
         candidate = [pscustomobject][ordered]@{ commitSha = $Commit; treeSha = $Tree }
         package = [pscustomobject][ordered]@{
-            receipt = [pscustomobject][ordered]@{ fileSha256 = [string]$Package.ReceiptSha256 }
+            receipt = [pscustomobject][ordered]@{
+                fileSha256 = [string]$Package.IdentityFileSha256
+                canonicalSha256 = [string]$Package.ReceiptSha256
+            }
             archive = [pscustomobject][ordered]@{ sha256 = [string]$Package.ArchiveSha256 }
             components = [pscustomobject][ordered]@{
                 app = [pscustomobject][ordered]@{ sha256 = [string]$Package.AppSha256 }
@@ -97,9 +100,40 @@ function New-I10Fixture {
     [IO.File]::WriteAllBytes($corePath, [Text.Encoding]::UTF8.GetBytes('issue10-core-bytes'))
     [IO.File]::WriteAllText($manifestPath, '{"files":[]}' + "`n", [Text.UTF8Encoding]::new($false, $true))
     $archivePath = Join-Path $root 'HerdrOps-0.2.0-win-x64.zip'; [IO.File]::WriteAllBytes($archivePath, [Text.Encoding]::UTF8.GetBytes('issue10-archive-bytes'))
-    $identityPath = Join-Path $root 'package-identity-receipt.json'; [IO.File]::WriteAllText($identityPath, '{"receipt":"fixture"}' + "`n", [Text.UTF8Encoding]::new($false, $true))
-    $identity = Read-I10HeldFile -Path $identityPath -MaximumBytes 100000 -Context 'fixture identity'; $archive = Read-I10HeldFile -Path $archivePath -MaximumBytes 100000 -Context 'fixture archive'; $manifest = Read-I10HeldFile -Path $manifestPath -MaximumBytes 100000 -Context 'fixture manifest'; $app = Read-I10HeldFile -Path $appPath -MaximumBytes 100000 -Context 'fixture app'; $core = Read-I10HeldFile -Path $corePath -MaximumBytes 100000 -Context 'fixture core'
-    $package = [pscustomobject][ordered]@{ IdentityPath = $identityPath; ArchivePath = $archivePath; PackageRoot = $packageRoot; ManifestPath = $manifestPath; AppPath = $appPath; CorePath = $corePath; ReceiptSha256 = $identity.Sha256; ArchiveSha256 = $archive.Sha256; ManifestSha256 = $manifest.Sha256; AppSha256 = $app.Sha256; CoreSha256 = $core.Sha256; SourceCommit = $commit; SourceTree = $tree }
+    $identityObject = [pscustomobject][ordered]@{
+        schemaVersion = 1
+        profileId = 'herdrops-v0.2-package-software-only-issue-149'
+        issue = 149
+        packageVersion = '0.2.0'
+        runtimeIdentifier = 'win-x64'
+        source = [pscustomobject][ordered]@{ commitSha = $commit; treeSha = $tree }
+        evidenceBoundary = [pscustomobject][ordered]@{ runtimeCredit = 'NOT CLAIMED'; releaseCredit = 'NOT CLAIMED'; actualHerdrUsed = $false }
+    }
+    $identityPath = Join-Path $root 'package-identity-receipt.json'
+    Write-FixtureJson $identityPath $identityObject
+    $identityHeld = Read-I10HeldFile -Path $identityPath -MaximumBytes 100000 -Context 'fixture identity'
+    $identityCanonicalSha256 = Get-I10CanonicalSha256 -Value $identityObject
+    $archiveHeld = Read-I10HeldFile -Path $archivePath -MaximumBytes 100000 -Context 'fixture archive'
+    $manifestHeld = Read-I10HeldFile -Path $manifestPath -MaximumBytes 100000 -Context 'fixture manifest'
+    $appHeld = Read-I10HeldFile -Path $appPath -MaximumBytes 100000 -Context 'fixture app'
+    $coreHeld = Read-I10HeldFile -Path $corePath -MaximumBytes 100000 -Context 'fixture core'
+    $package = [pscustomobject][ordered]@{
+        IdentityPath = $identityPath
+        IdentityFileSha256 = $identityHeld.Sha256
+        ReceiptSha256 = $identityCanonicalSha256
+        IdentityReceiptSha256 = $identityCanonicalSha256
+        ArchivePath = $archivePath
+        ArchiveSha256 = $archiveHeld.Sha256
+        PackageRoot = $packageRoot
+        ManifestPath = $manifestPath
+        ManifestSha256 = $manifestHeld.Sha256
+        AppPath = $appPath
+        AppSha256 = $appHeld.Sha256
+        CorePath = $corePath
+        CoreSha256 = $coreHeld.Sha256
+        SourceCommit = $commit
+        SourceTree = $tree
+    }
     $rawOrders = @((New-PerformanceOrder 'AB'),(New-PerformanceOrder 'BA')); $rawBins = New-SoakBins
     $rawValue = [pscustomobject][ordered]@{ orders = @($rawOrders); soakBins = @($rawBins) }
     $rawPath = Join-Path $root 'performance\raw-observations.json'; Write-FixtureJson $rawPath $rawValue; $rawHeld = Read-I10HeldFile -Path $rawPath -MaximumBytes 10000000 -Context 'fixture raw performance'
@@ -167,8 +201,63 @@ try {
     $soak = New-I10Fixture; $soak | Add-Member -NotePropertyName PackageBinding -NotePropertyValue $soak.Package; $soakValue = (Read-I10StrictJson -Path $soak.SoakPath -Context 'soak').Value; $soakValue.soakBins = @($soakValue.soakBins | Select-Object -First 23); Write-FixtureJson $soak.SoakPath $soakValue; Assert-Throws { Invoke-Fixture -Fixture $soak } 'missing Battery soak bin'
     $stale = New-I10Fixture; $stale | Add-Member -NotePropertyName PackageBinding -NotePropertyValue $stale.Package; $staleValue = (Read-I10StrictJson -Path $stale.EnglishWidget -Context 'stale').Value; $staleValue.Chronology.DashboardObservedUtc = '2026-08-22T11:59:59.0000000Z'; Write-FixtureJson $stale.EnglishWidget $staleValue; Assert-Throws { Invoke-Fixture -Fixture $stale } 'chronology freshness/order'
     $duplicate = New-I10Fixture; $duplicate | Add-Member -NotePropertyName PackageBinding -NotePropertyValue $duplicate.Package; [IO.File]::WriteAllText($duplicate.ThaiWidget, '{"SchemaVersion":1,"SchemaVersion":1}', [Text.UTF8Encoding]::new($false, $true)); Assert-Throws { Invoke-Fixture -Fixture $duplicate } 'duplicate JSON property'
+
+    # Hostile package identity receipt tests reaching exact production guards
+    $corruptFile = New-I10Fixture; $corruptFile | Add-Member -NotePropertyName PackageBinding -NotePropertyValue $corruptFile.Package; [IO.File]::AppendAllText($corruptFile.Package.IdentityPath, ' '); Assert-Throws { Invoke-Fixture -Fixture $corruptFile } 'corrupted package identity receipt file bytes'
+    $corruptCanon = New-I10Fixture; $corruptCanon | Add-Member -NotePropertyName PackageBinding -NotePropertyValue $corruptCanon.Package; Write-FixtureJson $corruptCanon.Package.IdentityPath ([pscustomobject]@{ receipt = 'mutated'; source = [pscustomobject]@{ commitSha = $corruptCanon.Commit; treeSha = $corruptCanon.Tree } }); $corruptCanon.Package.IdentityFileSha256 = (Read-I10HeldFile -Path $corruptCanon.Package.IdentityPath -MaximumBytes 100000 -Context 'mutated identity').Sha256; Assert-Throws { Invoke-Fixture -Fixture $corruptCanon } 'corrupted package identity receipt canonical hash'
+    $forgedReceipt = New-I10Fixture; $forgedReceipt | Add-Member -NotePropertyName PackageBinding -NotePropertyValue $forgedReceipt.Package; $forgedReceipt.Package.ReceiptSha256 = ('F' * 64); Assert-Throws { Invoke-Fixture -Fixture $forgedReceipt } 'caller forged ReceiptSha256 rejected by held bytes verification'
+    $foreign = New-I10Fixture; $transplant = New-I10Fixture; $transplant | Add-Member -NotePropertyName PackageBinding -NotePropertyValue $transplant.Package; $transplant.Package.IdentityPath = $foreign.Package.IdentityPath; Assert-Throws { Invoke-Fixture -Fixture $transplant } 'transplanted package identity receipt rejected by held file hash mismatch'
+    $staleCommit = New-I10Fixture; $staleCommit | Add-Member -NotePropertyName PackageBinding -NotePropertyValue $staleCommit.Package; $staleCommitObj = (Read-I10StrictJson -Path $staleCommit.Package.IdentityPath -Context 'stale commit').Value; $staleCommitObj.source.commitSha = ('0' * 40); Write-FixtureJson $staleCommit.Package.IdentityPath $staleCommitObj; $staleCommit.Package.IdentityFileSha256 = (Read-I10HeldFile -Path $staleCommit.Package.IdentityPath -MaximumBytes 100000 -Context 'stale commit file').Sha256; $staleCommit.Package.ReceiptSha256 = Get-I10CanonicalSha256 -Value $staleCommitObj; Assert-Throws { Invoke-Fixture -Fixture $staleCommit } 'stale package identity receipt source commit rejected'
+    $staleTree = New-I10Fixture; $staleTree | Add-Member -NotePropertyName PackageBinding -NotePropertyValue $staleTree.Package; $staleTreeObj = (Read-I10StrictJson -Path $staleTree.Package.IdentityPath -Context 'stale tree').Value; $staleTreeObj.source.treeSha = ('0' * 40); Write-FixtureJson $staleTree.Package.IdentityPath $staleTreeObj; $staleTree.Package.IdentityFileSha256 = (Read-I10HeldFile -Path $staleTree.Package.IdentityPath -MaximumBytes 100000 -Context 'stale tree file').Sha256; $staleTree.Package.ReceiptSha256 = Get-I10CanonicalSha256 -Value $staleTreeObj; Assert-Throws { Invoke-Fixture -Fixture $staleTree } 'stale package identity receipt source tree rejected'
+    $bomIdentity = New-I10Fixture; $bomIdentity | Add-Member -NotePropertyName PackageBinding -NotePropertyValue $bomIdentity.Package; [IO.File]::WriteAllBytes($bomIdentity.Package.IdentityPath, [byte[]]@(0xEF, 0xBB, 0xBF, 0x7B, 0x7D)); Assert-Throws { Invoke-Fixture -Fixture $bomIdentity } 'package identity receipt UTF-8 BOM rejected'
+    $dupIdentity = New-I10Fixture; $dupIdentity | Add-Member -NotePropertyName PackageBinding -NotePropertyValue $dupIdentity.Package; [IO.File]::WriteAllText($dupIdentity.Package.IdentityPath, '{"receipt":"a","receipt":"b"}' + "`n", [Text.UTF8Encoding]::new($false, $true)); $dupIdentity.Package.IdentityFileSha256 = (Read-I10HeldFile -Path $dupIdentity.Package.IdentityPath -MaximumBytes 100000 -Context 'dup identity file').Sha256; Assert-Throws { Invoke-Fixture -Fixture $dupIdentity } 'package identity receipt duplicate JSON property rejected'
+    $overclaimIdentity = New-I10Fixture; $overclaimIdentity | Add-Member -NotePropertyName PackageBinding -NotePropertyValue $overclaimIdentity.Package; $overclaimObj = (Read-I10StrictJson -Path $overclaimIdentity.Package.IdentityPath -Context 'overclaim').Value; $overclaimObj.evidenceBoundary.runtimeCredit = 'CLAIMED'; Write-FixtureJson $overclaimIdentity.Package.IdentityPath $overclaimObj; $overclaimIdentity.Package.IdentityFileSha256 = (Read-I10HeldFile -Path $overclaimIdentity.Package.IdentityPath -MaximumBytes 100000 -Context 'overclaim file').Sha256; $overclaimIdentity.Package.ReceiptSha256 = Get-I10CanonicalSha256 -Value $overclaimObj; Assert-Throws { Invoke-Fixture -Fixture $overclaimIdentity } 'package identity receipt overclaiming runtime credit rejected'
+    $conflictBinding = New-I10Fixture; $conflictBinding | Add-Member -NotePropertyName PackageBinding -NotePropertyValue $conflictBinding.Package; $conflictBinding.Package.IdentityReceiptSha256 = ('A' * 64); Assert-Throws { Invoke-Fixture -Fixture $conflictBinding } 'conflicting IdentityReceiptSha256 rejected'
+
+    # Flat provenance shape tests
+    $flatFixture = New-I10Fixture; $flatFixture | Add-Member -NotePropertyName PackageBinding -NotePropertyValue $flatFixture.Package
+    $flatProvenance = [pscustomobject][ordered]@{
+        sourceCommit = $flatFixture.Commit
+        sourceTree = $flatFixture.Tree
+        packageIdentityReceiptSha256 = $flatFixture.Package.ReceiptSha256
+        packageArchiveSha256 = $flatFixture.Package.ArchiveSha256
+        appSha256 = $flatFixture.Package.AppSha256
+        coreSha256 = $flatFixture.Package.CoreSha256
+    }
+    $flatPerfValue = (Read-I10StrictJson -Path $flatFixture.PerformancePath -Context 'perf').Value
+    $flatPerfValue.provenance = $flatProvenance
+    Write-FixtureJson $flatFixture.PerformancePath $flatPerfValue
+    $flatSoakValue = (Read-I10StrictJson -Path $flatFixture.SoakPath -Context 'soak').Value
+    $flatSoakValue.provenance = $flatProvenance
+    Write-FixtureJson $flatFixture.SoakPath $flatSoakValue
+    $newPerfHash = (Read-I10HeldFile -Path $flatFixture.PerformancePath -MaximumBytes 10000000 -Context 'new perf').Sha256
+    $newSoakHash = (Read-I10HeldFile -Path $flatFixture.SoakPath -MaximumBytes 10000000 -Context 'new soak').Sha256
+    foreach ($widgetPath in @($flatFixture.ThaiWidget, $flatFixture.EnglishWidget)) {
+        $w = (Read-I10StrictJson -Path $widgetPath -Context 'widget').Value
+        $w.Bindings.PerformanceReceiptSha256 = $newPerfHash
+        $w.Bindings.SoakReceiptSha256 = $newSoakHash
+        Write-FixtureJson $widgetPath $w
+    }
+    $flatResult = Invoke-Fixture -Fixture $flatFixture -OutputPath (Join-Path $flatFixture.Root 'candidate\flat-candidate.json')
+    if ([string]$flatResult.Candidate.Result -cne 'PASS') { throw 'Flat provenance shape candidate failed.' }
+    Pass-Test 'flat provenance shape validated against held package identity receipt hash'
+
+    $tamperedFlat = New-I10Fixture; $tamperedFlat | Add-Member -NotePropertyName PackageBinding -NotePropertyValue $tamperedFlat.Package
+    $tamperedFlatProvenance = [pscustomobject][ordered]@{
+        sourceCommit = $tamperedFlat.Commit
+        sourceTree = $tamperedFlat.Tree
+        packageIdentityReceiptSha256 = ('E' * 64)
+        packageArchiveSha256 = $tamperedFlat.Package.ArchiveSha256
+        appSha256 = $tamperedFlat.Package.AppSha256
+        coreSha256 = $tamperedFlat.Package.CoreSha256
+    }
+    $tamperedFlatPerfValue = (Read-I10StrictJson -Path $tamperedFlat.PerformancePath -Context 'tampered perf').Value
+    $tamperedFlatPerfValue.provenance = $tamperedFlatProvenance
+    Write-FixtureJson $tamperedFlat.PerformancePath $tamperedFlatPerfValue
+    Assert-Throws { Invoke-Fixture -Fixture $tamperedFlat } 'flat provenance shape with tampered packageIdentityReceiptSha256 rejected'
+
     Pass-Test 'fixture path never invokes Herdr or an application process'
-    [pscustomobject][ordered]@{ EvidenceClassification = 'SyntheticVerifierSelftest'; PositiveCases = $script:Passed; NegativeCases = 9; Runtime = 'NOT_OBSERVED'; Human = 'NOT_OBSERVED'; Release = 'NOT_OBSERVED'; CreditGranted = $false }
+    [pscustomobject][ordered]@{ EvidenceClassification = 'SyntheticVerifierSelftest'; PositiveCases = $script:Passed; NegativeCases = 21; Runtime = 'NOT_OBSERVED'; Human = 'NOT_OBSERVED'; Release = 'NOT_OBSERVED'; CreditGranted = $false }
 }
 catch {
     $script:Failed++
