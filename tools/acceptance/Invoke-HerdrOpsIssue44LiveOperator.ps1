@@ -882,7 +882,9 @@ function Assert-OperatorNoReparse {
     param([Parameter(Mandatory = $true)][string]$Path)
 
     Assert-AcceptanceNoReparsePath -Path $Path
-    Assert-AcceptanceTreeNoReparse -Path $Path -Context 'Operator path'
+    if (Test-Path -LiteralPath $Path) {
+        Assert-AcceptanceTreeNoReparse -Path $Path -Context 'Operator path'
+    }
 }
 
 function Write-Issue44ReportDurably {
