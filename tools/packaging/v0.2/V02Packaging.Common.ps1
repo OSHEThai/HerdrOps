@@ -56,6 +56,15 @@ function Assert-V02NotSystemDirectory {
             throw "Refusing to operate on broad or protected system/profile root directory: $normalized"
         }
     }
+
+    foreach ($protectedTree in @($env:windir,$env:SystemRoot,$env:ProgramFiles,${env:ProgramFiles(x86)},$env:ProgramData) |
+        Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+        ForEach-Object { [IO.Path]::GetFullPath($_).TrimEnd('\','/') } |
+        Select-Object -Unique) {
+        if ($normalized.StartsWith($protectedTree + '\', [StringComparison]::OrdinalIgnoreCase)) {
+            throw "Refusing to operate inside a protected system directory tree: $normalized"
+        }
+    }
 }
 
 function Assert-V02PackagingPathsDoNotOverlap {
@@ -428,4 +437,121 @@ function Assert-V02UserDataRetained {
             throw "User data file was modified or corrupted: $key (expected $($ExpectedHashes[$key]), got $($actualHashes[$key]))"
         }
     }
+}
+
+function Copy-V02StableFile {
+    param(
+        [Parameter(Mandatory = $true)][string]$Source,
+        [Parameter(Mandatory = $true)][string]$Destination
+    )
+
+    $sourceIdentity = Get-V02StableFileIdentity -Path $Source -IncludeBytes
+    $destinationFullPath = [IO.Path]::GetFullPath($Destination)
+    $parent = Split-Path -Path $destinationFullPath -Parent
+    if (-not (Test-Path -LiteralPath $parent -PathType Container)) {
+        New-Item -ItemType Directory -Path $parent -Force | Out-Null
+    }
+    Assert-V02PathNoReparse -Path $parent
+    if (Test-Path -LiteralPath $destinationFullPath) {
+        throw "Refusing to overwrite stable-copy destination: $destinationFullPath"
+    }
+    [IO.File]::WriteAllBytes($destinationFullPath, $sourceIdentity.Bytes)
+    $destinationIdentity = Get-V02StableFileIdentity -Path $destinationFullPath
+    if ($destinationIdentity.Length -ne $sourceIdentity.Length -or
+        $destinationIdentity.Sha256 -cne $sourceIdentity.Sha256) {
+        throw "Stable copy did not preserve source bytes: $Source"
+    }
+    return $destinationIdentity
+}
+
+function Merge-V02PublishedTrees {
+    param(
+        [Parameter(Mandatory = $true)][string[]]$SourceRoots,
+        [Parameter(Mandatory = $true)][string]$DestinationRoot
+    )
+
+    New-Item -ItemType Directory -Path $DestinationRoot -Force | Out-Null
+    foreach ($sourceRoot in $SourceRoots) {
+        Assert-V02TreeNoReparse -Path $sourceRoot
+        foreach ($item in @(Get-ChildItem -LiteralPath $sourceRoot -Recurse -Force -File | Sort-Object FullName)) {
+            $relative = Get-SafeRelativePath -RootPath $sourceRoot -Path $item.FullName
+            $destination = Join-Path $DestinationRoot $relative
+            $parent = Split-Path -Path $destination -Parent
+            if (-not (Test-Path -LiteralPath $parent -PathType Container)) {
+                New-Item -ItemType Directory -Path $parent -Force | Out-Null
+            }
+            if (Test-Path -LiteralPath $destination -PathType Leaf) {
+                $sourceId = Get-V02StableFileIdentity -Path $item.FullName
+                $destinationId = Get-V02StableFileIdentity -Path $destination
+                if ($sourceId.Length -ne $destinationId.Length -or $sourceId.Sha256 -cne $destinationId.Sha256) {
+                    throw "App/Core publish outputs collide with different bytes at '$relative'."
+                }
+                continue
+            }
+            $null = Copy-V02StableFile -Source $item.FullName -Destination $destination
+        }
+    }
+    Assert-V02TreeNoReparse -Path $DestinationRoot
+}
+
+function Assert-V02CompleteInstalledBinding {
+    param(
+        [Parameter(Mandatory = $true)][string]$InstallRoot,
+        [Parameter(Mandatory = $true)]$Profile,
+        [Parameter(Mandatory = $true)][string]$ProfilePath,
+        [Parameter(Mandatory = $true)][string]$RepositoryRoot,
+        [Parameter(Mandatory = $true)][string]$WorkRoot
+    )
+
+    $root = [IO.Path]::GetFullPath($InstallRoot)
+    Assert-V02TreeNoReparse -Path $root
+    $receiptPath = Join-Path $root 'identity.json'
+    $statePath = Join-Path $root 'install-state.json'
+    foreach ($required in @($receiptPath, $statePath, (Join-Path $root $Profile.packageManifestFileName))) {
+        if (-not (Test-Path -LiteralPath $required -PathType Leaf)) {
+            throw "Existing installation is not completely identity-bound; missing: $required"
+        }
+    }
+    $parsed = Read-V02CanonicalIdentityReceipt -Path $receiptPath -RepositoryRoot $RepositoryRoot
+    $stateStable = Get-V02StableFileIdentity -Path $statePath -IncludeBytes
+    $stateDoc = ConvertFrom-V02StrictBytes -Bytes $stateStable.Bytes -Description 'v0.2 install state'
+    $state = $stateDoc.Value
+    foreach ($name in @('productId','packageVersion','runtimeIdentifier','receiptSha256','installRoot','userDataRoot','startupRegistered','autoUpdate')) {
+        if (-not ($state.PSObject.Properties.Name -ccontains $name)) { throw "Install state is missing '$name'." }
+    }
+    if ([string]$state.productId -cne 'HerdrOps' -or [string]$state.packageVersion -cne '0.2.0' -or
+        [string]$state.runtimeIdentifier -cne 'win-x64' -or [string]$state.receiptSha256 -cne $parsed.ReceiptSha256 -or
+        -not [StringComparer]::OrdinalIgnoreCase.Equals([IO.Path]::GetFullPath([string]$state.installRoot), $root)) {
+        throw 'Existing installation state does not exactly bind this HerdrOps install root and receipt.'
+    }
+
+    $payload = Join-Path $WorkRoot ('bound-payload-' + [Guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path $payload -Force | Out-Null
+    foreach ($item in @(Get-ChildItem -LiteralPath $root -Recurse -Force -File | Sort-Object FullName)) {
+        $relative = Get-SafeRelativePath -RootPath $root -Path $item.FullName
+        if ($relative -ceq 'identity.json' -or $relative -ceq 'install-state.json') { continue }
+        $null = Copy-V02StableFile -Source $item.FullName -Destination (Join-Path $payload $relative)
+    }
+    $archive = Join-Path $WorkRoot ([string]$Profile.archiveFileName)
+    if (Test-Path -LiteralPath $archive) { throw "Binding archive destination already exists: $archive" }
+    $null = New-DeterministicPackageArchive -PackageRoot $payload -ArchivePath $archive
+    return Assert-V02PackageIdentity -Identity $parsed.Identity -Profile $Profile -RepositoryRoot $RepositoryRoot `
+        -ArchivePath $archive -PackageRoot $payload -ProfilePath $ProfilePath `
+        -ReceiptSha256 $parsed.ReceiptSha256 -CanonicalReceiptJson $parsed.CanonicalJson
+}
+
+function Remove-V02TransactionDirectory {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$ExpectedParent
+    )
+    $target = [IO.Path]::GetFullPath($Path).TrimEnd('\','/')
+    $parent = [IO.Path]::GetFullPath($ExpectedParent).TrimEnd('\','/')
+    if (-not [StringComparer]::OrdinalIgnoreCase.Equals((Split-Path -Path $target -Parent).TrimEnd('\','/'), $parent)) {
+        throw "Transaction directory is outside its exact expected parent: $target"
+    }
+    if (-not (Test-Path -LiteralPath $target)) { return }
+    if (-not (Test-Path -LiteralPath $target -PathType Container)) { throw "Transaction path is not a directory: $target" }
+    Assert-V02TreeNoReparse -Path $target
+    [IO.Directory]::Delete($target, $true)
 }

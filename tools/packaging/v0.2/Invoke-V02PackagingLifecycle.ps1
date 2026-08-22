@@ -115,6 +115,8 @@ try {
     $uninstallResult = & (Join-Path $PSScriptRoot 'Uninstall-HerdrOpsV02Package.ps1') `
         -InstallRoot $mockInstallRoot `
         -UserDataRoot $mockUserDataRoot `
+        -RepositoryRoot $repo `
+        -ProfilePath $profilePath `
         -MockRegistryHive $mockRegistry `
         -AllowElevatedForTesting
 

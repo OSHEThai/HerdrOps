@@ -270,7 +270,7 @@ try {
                     -RepositoryRoot $repo `
                     -ProfilePath $profilePath `
                     -AllowElevatedForTesting
-            } 'Payload and manifest|tamper|not found'
+            } 'Manifest/package-root|Payload and manifest|tamper|not found'
         } finally {
             Put-Bytes $coreExe $coreOriginal
         }
@@ -290,7 +290,7 @@ try {
                     -RepositoryRoot $repo `
                     -ProfilePath $profilePath `
                     -AllowElevatedForTesting
-            } 'Payload and manifest|tamper'
+            } 'Manifest/package-root|Payload and manifest|tamper'
         } finally {
             if (Test-Path -LiteralPath $extraFile) {
                 Remove-Item -LiteralPath $extraFile -Force
@@ -311,7 +311,7 @@ try {
                     -RepositoryRoot $repo `
                     -ProfilePath $profilePath `
                     -AllowElevatedForTesting
-            } 'archive SHA-256|tamper'
+            } 'archive SHA-256|tamper|Central Directory|corrupt'
         } finally {
             Put-Bytes $archivePath $archiveOriginal
         }
@@ -358,6 +358,24 @@ try {
         } 'overlap|nested'
     }
 
+    Invoke-Case 'protected system-directory descendants fail closed' {
+        $protectedChild = Join-Path $env:ProgramFiles 'HerdrOps-Hostile-Test'
+        Assert-Throws { Assert-V02NotSystemDirectory -Path $protectedChild } 'protected system directory tree'
+    }
+
+    Invoke-Case 'package source with reparse descendant fails closed and preserves target' {
+        $target = Join-Path $testRoot 'descendant-target'; New-Item -ItemType Directory $target -Force | Out-Null
+        $targetFile = Join-Path $target 'sentinel.keep'; Put-Bytes $targetFile ([byte[]](31,32,33))
+        $childJunction = Join-Path $packageSource 'hostile-link'; New-Item -ItemType Junction -Path $childJunction -Target $target | Out-Null
+        try {
+            Assert-Throws { & (Join-Path $PSScriptRoot 'Install-HerdrOpsV02Package.ps1') -IdentityReceiptPath $receiptPath -PackageRoot $packageSource -InstallRoot $installRoot -UserDataRoot $userDataRoot -RepositoryRoot $repo -ProfilePath $profilePath -AllowElevatedForTesting } 'reparse'
+            if (-not (Test-Path -LiteralPath $targetFile)) { throw 'Reparse target sentinel was removed.' }
+        } finally {
+            if (Test-Path -LiteralPath $childJunction) { [IO.Directory]::Delete($childJunction,$false) }
+            if (Test-Path -LiteralPath $target) { Remove-Item -LiteralPath $target -Recurse -Force }
+        }
+    }
+
     # 11. Uninstaller: User data retention guarantee
     Invoke-Case 'uninstall removes install root and strictly retains %LOCALAPPDATA%\HerdrOps user data' {
         # Setup simulated user data
@@ -379,6 +397,8 @@ try {
         $uninstallResult = & (Join-Path $PSScriptRoot 'Uninstall-HerdrOpsV02Package.ps1') `
             -InstallRoot $installRoot `
             -UserDataRoot $userDataRoot `
+            -RepositoryRoot $repo `
+            -ProfilePath $profilePath `
             -MockRegistryHive $mockRegistry `
             -AllowElevatedForTesting
 
@@ -419,8 +439,10 @@ try {
                 & (Join-Path $PSScriptRoot 'Uninstall-HerdrOpsV02Package.ps1') `
                     -InstallRoot $arbitraryDir `
                     -UserDataRoot $userDataRoot `
+                    -RepositoryRoot $repo `
+                    -ProfilePath $profilePath `
                     -AllowElevatedForTesting
-            } 'does not contain HerdrOps installation artifacts'
+            } 'identity-bound|missing'
         } finally {
             if (Test-Path -LiteralPath $arbitraryDir) {
                 Remove-Item -LiteralPath $arbitraryDir -Recurse -Force
@@ -489,6 +511,70 @@ try {
         if ($markerBefore -ne $markerAfter) {
             throw 'Original installation was not restored on rollback.'
         }
+    }
+
+    Invoke-Case 'all five production lock files bind win-x64' {
+        foreach ($relative in @('src\HerdrOps.App\packages.lock.json','src\HerdrOps.Core\packages.lock.json','src\HerdrOps.Infrastructure\packages.lock.json','src\HerdrOps.Contracts\packages.lock.json','src\HerdrOps.Domain\packages.lock.json')) {
+            $lock = Get-Content -LiteralPath (Join-Path $worktree $relative) -Raw | ConvertFrom-Json
+            if (@($lock.dependencies.PSObject.Properties.Name | Where-Object { $_ -cmatch '/win-x64$' }).Count -ne 1) {
+                throw "Lock file lacks exact win-x64 target: $relative"
+            }
+        }
+    }
+
+    Invoke-Case 'existing arbitrary nonempty install root is never clobbered' {
+        $arbitrary = Join-Path $testRoot 'arbitrary-existing-install'
+        New-Item -ItemType Directory $arbitrary -Force | Out-Null
+        $sentinel = Join-Path $arbitrary 'do-not-delete.txt'; Put-Bytes $sentinel ([byte[]](71,72,73))
+        Assert-Throws {
+            & (Join-Path $PSScriptRoot 'Install-HerdrOpsV02Package.ps1') -IdentityReceiptPath $receiptPath -ArchivePath $archivePath -InstallRoot $arbitrary -UserDataRoot $userDataRoot -RepositoryRoot $repo -ProfilePath $profilePath -AllowElevatedForTesting
+        } 'identity-bound|missing'
+        if (-not (Test-Path -LiteralPath $sentinel -PathType Leaf) -or (Get-FileHash $sentinel -Algorithm SHA256).Hash -cne (Get-Sha256ForBytes ([byte[]](71,72,73)))) { throw 'Arbitrary install sentinel was changed.' }
+    }
+
+    Invoke-Case 'held package snapshot is immune to post-snapshot source mutation' {
+        try {
+            $result = & (Join-Path $PSScriptRoot 'Install-HerdrOpsV02Package.ps1') -IdentityReceiptPath $receiptPath -PackageRoot $packageSource -InstallRoot $installRoot -UserDataRoot $userDataRoot -RepositoryRoot $repo -ProfilePath $profilePath -TestFaultInjectionStage AfterSourceSnapshot -TestMutationPath $appExe -AllowElevatedForTesting
+            if ($result.Status -cne 'Installed') { throw 'Held-snapshot install did not complete.' }
+        } finally { Put-Bytes $appExe $appOriginal }
+    }
+
+    Invoke-Case 'staging mutation fails closed and restores exact prior install' {
+        $before = (Get-FileHash -LiteralPath (Join-Path $installRoot 'install-state.json') -Algorithm SHA256).Hash
+        Assert-Throws {
+            & (Join-Path $PSScriptRoot 'Install-HerdrOpsV02Package.ps1') -IdentityReceiptPath $receiptPath -ArchivePath $archivePath -InstallRoot $installRoot -UserDataRoot $userDataRoot -RepositoryRoot $repo -ProfilePath $profilePath -TestFaultInjectionStage StageMutation -AllowElevatedForTesting
+        } 'Manifest/package-root|receipt|inventory'
+        $after = (Get-FileHash -LiteralPath (Join-Path $installRoot 'install-state.json') -Algorithm SHA256).Hash
+        if ($before -cne $after) { throw 'Existing installation changed after staged mutation rejection.' }
+    }
+
+    Invoke-Case 'startup mutation rolls back with directory transaction' {
+        $registry = @{HerdrOps='old-startup-command'}
+        $before = (Get-FileHash -LiteralPath (Join-Path $installRoot 'install-state.json') -Algorithm SHA256).Hash
+        Assert-Throws {
+            & (Join-Path $PSScriptRoot 'Install-HerdrOpsV02Package.ps1') -IdentityReceiptPath $receiptPath -ArchivePath $archivePath -InstallRoot $installRoot -UserDataRoot $userDataRoot -RepositoryRoot $repo -ProfilePath $profilePath -RegisterStartup -MockRegistryHive $registry -TestFaultInjectionStage AfterStartup -AllowElevatedForTesting
+        } 'after startup mutation'
+        if ($registry.HerdrOps -cne 'old-startup-command' -or (Get-FileHash -LiteralPath (Join-Path $installRoot 'install-state.json') -Algorithm SHA256).Hash -cne $before) { throw 'Startup or install directory rollback was incomplete.' }
+    }
+
+    Invoke-Case 'uninstaller rejects partial lookalike installation and preserves sentinel' {
+        $lookalike = Join-Path $testRoot 'lookalike'; New-Item -ItemType Directory $lookalike -Force | Out-Null
+        foreach ($name in @('HerdrOps.App.exe','package-manifest.json','identity.json','install-state.json','sentinel.keep')) { Put-Bytes (Join-Path $lookalike $name) ([byte[]](1,2,3)) }
+        Assert-Throws { & (Join-Path $PSScriptRoot 'Uninstall-HerdrOpsV02Package.ps1') -InstallRoot $lookalike -UserDataRoot $userDataRoot -RepositoryRoot $repo -ProfilePath $profilePath -AllowElevatedForTesting } 'JSON|identity|receipt|UTF-8'
+        if (-not (Test-Path -LiteralPath (Join-Path $lookalike 'sentinel.keep'))) { throw 'Lookalike sentinel was removed.' }
+    }
+
+    Invoke-Case 'publisher rejects nonempty output and preserves sentinel' {
+        $nonempty = Join-Path $testRoot 'nonempty-output'; New-Item -ItemType Directory $nonempty -Force | Out-Null
+        $sentinel = Join-Path $nonempty 'sentinel.keep'; Put-Bytes $sentinel ([byte[]](4,5,6))
+        Assert-Throws { & (Join-Path $PSScriptRoot 'Publish-HerdrOpsV02Package.ps1') -OutputRoot $nonempty -RepositoryRoot $repo -ProfilePath $profilePath -TestInjectPrimaryFailure } 'missing or empty|overwrite'
+        if (-not (Test-Path -LiteralPath $sentinel)) { throw 'Nonempty output sentinel was removed.' }
+    }
+
+    Invoke-Case 'uninstall after-move fault restores install and startup' {
+        $registry = @{HerdrOps='bound-startup'}
+        Assert-Throws { & (Join-Path $PSScriptRoot 'Uninstall-HerdrOpsV02Package.ps1') -InstallRoot $installRoot -UserDataRoot $userDataRoot -RepositoryRoot $repo -ProfilePath $profilePath -MockRegistryHive $registry -TestFaultInjectionStage AfterUninstallMove -AllowElevatedForTesting } 'after directory move'
+        if (-not (Test-Path -LiteralPath (Join-Path $installRoot 'identity.json')) -or $registry.HerdrOps -cne 'bound-startup') { throw 'Uninstall transaction rollback was incomplete.' }
     }
 } finally {
     if (Test-Path -LiteralPath $testRoot) {

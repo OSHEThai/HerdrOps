@@ -1,5 +1,4 @@
 #requires -Version 5.1
-
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)][string]$OutputRoot,
@@ -11,246 +10,89 @@ param(
     [switch]$TestInjectPrimaryFailure,
     [switch]$TestInjectCleanupFailure
 )
-
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'V02Packaging.Common.ps1')
 
-if ([string]::IsNullOrWhiteSpace($ProfilePath)) {
-    $ProfilePath = Join-Path $PSScriptRoot 'package-identity-profile.json'
-}
-$profile = Read-V02PackageIdentityProfile -Path $ProfilePath
-
-if ([string]::IsNullOrWhiteSpace($RepositoryRoot)) {
-    $RepositoryRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..\..'))
-}
+if ([string]::IsNullOrWhiteSpace($ProfilePath)) { $ProfilePath = Join-Path $PSScriptRoot 'package-identity-profile.json' }
+if ([string]::IsNullOrWhiteSpace($RepositoryRoot)) { $RepositoryRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..\..')) }
 $repositoryRoot = [IO.Path]::GetFullPath($RepositoryRoot)
-Assert-V02PathNoReparse -Path $repositoryRoot
-
-if (-not [string]::IsNullOrWhiteSpace($PackageVersion) -and $PackageVersion -cne '0.2.0') {
-    throw "v0.2 packaging wrapper is pinned to version 0.2.0: $PackageVersion"
-}
-
+$profilePath = [IO.Path]::GetFullPath($ProfilePath)
+$profile = Read-V02PackageIdentityProfile -Path $profilePath
+Assert-V02TreeNoReparse -Path $repositoryRoot
+if (-not [string]::IsNullOrWhiteSpace($PackageVersion) -and $PackageVersion -cne '0.2.0') { throw "v0.2 packaging wrapper is pinned to version 0.2.0: $PackageVersion" }
 $safeOutputRoot = Assert-SafeDestination -Path $OutputRoot -AllowRepositoryChild -AllowTempChild
-Assert-V02PackagingPathsDoNotOverlap -Paths @(
-    [pscustomobject]@{ Name = 'repository root'; Path = $repositoryRoot },
-    [pscustomobject]@{ Name = 'output root'; Path = $safeOutputRoot }
-)
-
+Assert-V02PackagingPathsDoNotOverlap -Paths @([pscustomobject]@{Name='repository root';Path=$repositoryRoot},[pscustomobject]@{Name='output root';Path=$safeOutputRoot})
 if (Test-Path -LiteralPath $safeOutputRoot) {
-    $existingItem = Get-Item -LiteralPath $safeOutputRoot -Force
-    if (($existingItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
-        throw "Output root must not be a reparse point: $safeOutputRoot"
-    }
-    if (@(Get-ChildItem -LiteralPath $safeOutputRoot -Force).Count -ne 0) {
-        throw "Output root must be missing or empty; refusing to overwrite: $safeOutputRoot"
-    }
+    Assert-V02TreeNoReparse -Path $safeOutputRoot
+    if (@(Get-ChildItem -LiteralPath $safeOutputRoot -Force).Count -ne 0) { throw "Output root must be missing or empty; refusing to overwrite: $safeOutputRoot" }
 }
-
+$sourceBefore = Get-V02GitIdentity -RepositoryRoot $repositoryRoot -RequireClean
 $publishWorkRoot = New-PackagingTempDirectory -Prefix 'HerdrOps-V02Publish-'
+$stagingOutput = $null
+$committedOutput = $false
 $operationOutput = Invoke-PackagingOperationWithCleanup -Operation {
-    if ($TestInjectPrimaryFailure) {
-        throw 'Injected packaging primary operation failure.'
+    if ($TestInjectPrimaryFailure) { throw 'Injected packaging primary operation failure.' }
+    $appProject = Join-Path $repositoryRoot 'src\HerdrOps.App\HerdrOps.App.csproj'
+    $coreProject = Join-Path $repositoryRoot 'src\HerdrOps.Core\HerdrOps.Core.csproj'
+    foreach ($project in @($appProject,$coreProject)) { if (-not (Test-Path -LiteralPath $project -PathType Leaf)) { throw "Required publish project is missing: $project" } }
+    $lockPaths = @('src\HerdrOps.App\packages.lock.json','src\HerdrOps.Core\packages.lock.json','src\HerdrOps.Infrastructure\packages.lock.json','src\HerdrOps.Contracts\packages.lock.json','src\HerdrOps.Domain\packages.lock.json') | ForEach-Object { Join-Path $repositoryRoot $_ }
+    $lockHashes = @{}
+    foreach ($lockPath in $lockPaths) { if (-not (Test-Path -LiteralPath $lockPath -PathType Leaf)) { throw "Required source package lock file is missing: $lockPath" }; $lockHashes[$lockPath]=(Get-V02StableFileIdentity $lockPath).Sha256 }
+    $dotnetCommand='dotnet'
+    if (-not [string]::IsNullOrWhiteSpace($TestDotnetCommandPath)) { $dotnetCommand=[IO.Path]::GetFullPath($TestDotnetCommandPath); if (-not(Test-Path -LiteralPath $dotnetCommand -PathType Leaf)){throw "Test dotnet command was not found: $dotnetCommand"} }
+    foreach ($project in @($appProject,$coreProject)) {
+        $restoreOutput=@(& $dotnetCommand restore $project --runtime win-x64 --locked-mode --nologo 2>&1); $restoreExit=$LASTEXITCODE; $global:LASTEXITCODE=0
+        if($restoreExit -ne 0){throw "Locked win-x64 restore failed for '$project' ($restoreExit).`n$(($restoreOutput|Select-Object -Last 20)-join "`n")"}
     }
-
-    $publishRoot = Join-Path $publishWorkRoot 'publish'
-    $restoreRoot = Join-Path $publishWorkRoot 'restore'
-    $isolatedLockPath = Join-Path $restoreRoot 'packages.lock.json'
-    New-Item -ItemType Directory -Path $publishRoot -Force | Out-Null
-    New-Item -ItemType Directory -Path $restoreRoot -Force | Out-Null
-
-    $lockPaths = @(
-        (Join-Path $repositoryRoot 'src\HerdrOps.App\packages.lock.json'),
-        (Join-Path $repositoryRoot 'src\HerdrOps.Contracts\packages.lock.json'),
-        (Join-Path $repositoryRoot 'src\HerdrOps.Domain\packages.lock.json')
-    )
-    $lockHashesBefore = @{}
-    foreach ($lockPath in $lockPaths) {
-        if (-not (Test-Path -LiteralPath $lockPath -PathType Leaf)) {
-            throw "Required source package lock file is missing: $lockPath"
+    foreach($lockPath in $lockPaths){if((Get-V02StableFileIdentity $lockPath).Sha256 -cne $lockHashes[$lockPath]){throw "Locked restore changed source lock file: $lockPath"}}
+    $common=@('--configuration','Release','--runtime','win-x64','--self-contained','true','--no-restore','--nologo','-p:VersionPrefix=0.2.0','-p:VersionSuffix=','-p:Version=0.2.0','-p:AssemblyVersion=0.2.0.0','-p:FileVersion=0.2.0.0','-p:InformationalVersion=0.2.0','-p:ContinuousIntegrationBuild=true','-p:Deterministic=true','-p:DebugType=None')
+    $mergedRoots=@()
+    foreach($pass in 1..2){
+        $appOut=Join-Path $publishWorkRoot "app-$pass"; $coreOut=Join-Path $publishWorkRoot "core-$pass"
+        foreach($spec in @([pscustomobject]@{Project=$appProject;Out=$appOut},[pscustomobject]@{Project=$coreProject;Out=$coreOut})){
+            $publishOutput=@(& $dotnetCommand publish $spec.Project @common --output $spec.Out 2>&1); $publishExit=$LASTEXITCODE; $global:LASTEXITCODE=0
+            if($publishExit -ne 0){throw "Deterministic publish failed for '$($spec.Project)' ($publishExit).`n$(($publishOutput|Select-Object -Last 20)-join "`n")"}
         }
-        $lockHashesBefore[$lockPath] = ((Get-FileHash -LiteralPath $lockPath -Algorithm SHA256).Hash).ToUpperInvariant()
-    }
-
-    $appProjectPath = Join-Path $repositoryRoot 'src\HerdrOps.App\HerdrOps.App.csproj'
-    if (-not (Test-Path -LiteralPath $appProjectPath -PathType Leaf)) {
-        throw "App source project was not found: $appProjectPath"
-    }
-
-    $publishArguments = @(
-        'publish',
-        $appProjectPath,
-        '--configuration', 'Release',
-        '--runtime', [string]$profile.runtimeIdentifier,
-        '--self-contained', 'true',
-        '--output', $publishRoot,
-        '--nologo',
-        '-p:VersionPrefix=0.2.0',
-        '-p:VersionSuffix=',
-        '-p:Version=0.2.0',
-        '-p:AssemblyVersion=0.2.0.0',
-        '-p:FileVersion=0.2.0.0',
-        '-p:InformationalVersion=0.2.0',
-        '-p:ContinuousIntegrationBuild=true',
-        '-p:Deterministic=true',
-        '-p:DebugType=None',
-        '-p:RestorePackagesWithLockFile=false',
-        ('-p:NuGetLockFilePath=' + $isolatedLockPath)
-    )
-
-    $dotnetCommand = 'dotnet'
-    if (-not [string]::IsNullOrWhiteSpace($TestDotnetCommandPath)) {
-        $dotnetCommand = [IO.Path]::GetFullPath($TestDotnetCommandPath)
-        if (-not (Test-Path -LiteralPath $dotnetCommand -PathType Leaf)) {
-            throw "Test dotnet command was not found: $dotnetCommand"
+        $merged=Join-Path $publishWorkRoot "merged-$pass"; Merge-V02PublishedTrees -SourceRoots @($appOut) -DestinationRoot $merged
+        foreach($coreLeaf in @('HerdrOps.Core.exe','HerdrOps.Core.dll','HerdrOps.Core.deps.json','HerdrOps.Core.runtimeconfig.json')){
+            $coreSource=Join-Path $coreOut $coreLeaf
+            if(-not(Test-Path -LiteralPath $coreSource -PathType Leaf)){throw "Real Core publish is missing required output: $coreLeaf"}
+            $null=Copy-V02StableFile $coreSource (Join-Path $merged $coreLeaf)
         }
+        foreach($component in @($profile.components.appRelativePath,$profile.components.coreRelativePath)){if(-not(Test-Path -LiteralPath (Join-Path $merged ([string]$component)) -PathType Leaf)){throw "Merged real publish is missing exact component: $component"}}
+        $mergedRoots += $merged
     }
+    $firstInventory=Get-V02PackageRootInventory $mergedRoots[0]; $secondInventory=Get-V02PackageRootInventory $mergedRoots[1]
+    Assert-V02InventoryEqual $firstInventory.Entries $secondInventory.Entries 'repeated deterministic App/Core publishes'
+    foreach($lockPath in $lockPaths){if((Get-V02StableFileIdentity $lockPath).Sha256 -cne $lockHashes[$lockPath]){throw "Publish changed source lock file: $lockPath"}}
+    $sourceAfter=Get-V02GitIdentity -RepositoryRoot $repositoryRoot -RequireClean
+    if($sourceAfter.CommitSha -cne $sourceBefore.CommitSha -or $sourceAfter.TreeSha -cne $sourceBefore.TreeSha){throw 'Source changed during deterministic publish.'}
 
-    $publishOutput = @(& $dotnetCommand @publishArguments 2>&1)
-    $publishExitCode = $LASTEXITCODE
-    $global:LASTEXITCODE = 0
+    $packageRoot=Join-Path $publishWorkRoot 'package'; Copy-SafeDirectoryContents $mergedRoots[0] $packageRoot
+    $manifest=New-V02PackageManifestObject -Profile $profile -RepositoryRoot $repositoryRoot -PackageRoot $packageRoot
+    Write-V02CanonicalJsonFile $manifest (Join-Path $packageRoot ([string]$profile.packageManifestFileName)) $repositoryRoot
+    $archivePath=Join-Path $publishWorkRoot ([string]$profile.archiveFileName); $null=New-DeterministicPackageArchive $packageRoot $archivePath
+    $receipt=Build-V02PackageIdentityReceiptObject $profile $repositoryRoot $profilePath $archivePath $packageRoot
+    $receiptPath=Join-Path $publishWorkRoot 'identity.json'; Write-V02CanonicalJsonFile $receipt $receiptPath $repositoryRoot
+    $receiptParsed=Read-V02CanonicalIdentityReceipt $receiptPath $repositoryRoot
+    $null=Assert-V02PackageIdentity $receiptParsed.Identity $profile $repositoryRoot $archivePath $packageRoot $profilePath $receiptParsed.ReceiptSha256 $receiptParsed.CanonicalJson
 
-    $lockDrift = @()
-    foreach ($lockPath in $lockPaths) {
-        $lockHashAfter = ((Get-FileHash -LiteralPath $lockPath -Algorithm SHA256).Hash).ToUpperInvariant()
-        if ($lockHashAfter -cne [string]$lockHashesBefore[$lockPath]) {
-            $lockDrift += $lockPath
-        }
-    }
-    if ($lockDrift.Count -gt 0) {
-        throw "dotnet publish changed source package lock files; refusing to continue: $($lockDrift -join ', ')"
-    }
-
-    if ($publishExitCode -ne 0) {
-        $publishDetails = ($publishOutput | Select-Object -Last 20) -join "`n"
-        throw "dotnet publish failed with exit code $publishExitCode.`n$publishDetails"
-    }
-
-    Assert-V02TreeNoReparse -Path $publishRoot
-
-    $appExe = Join-Path $publishRoot ([string]$profile.components.appRelativePath)
-    $coreExe = Join-Path $publishRoot ([string]$profile.components.coreRelativePath)
-    if (-not (Test-Path -LiteralPath $appExe -PathType Leaf)) {
-        throw "Published package is missing required App executable: $appExe"
-    }
-    if (-not (Test-Path -LiteralPath $coreExe -PathType Leaf)) {
-        throw "Published package is missing required Core executable: $coreExe"
-    }
-
-    $packageRoot = Join-Path $publishWorkRoot 'package'
-    New-Item -ItemType Directory -Path $packageRoot -Force | Out-Null
-    Copy-SafeDirectoryContents -Source $publishRoot -Destination $packageRoot
-
-    $manifest = New-V02PackageManifestObject -Profile $profile -RepositoryRoot $repositoryRoot -PackageRoot $packageRoot
-    $manifestPath = Join-Path $packageRoot ([string]$profile.packageManifestFileName)
-    Write-V02CanonicalJsonFile -Value $manifest -Path $manifestPath -RepositoryRoot $repositoryRoot
-
-    $archivePath = Join-Path $publishWorkRoot ([string]$profile.archiveFileName)
-    $null = New-DeterministicPackageArchive -PackageRoot $packageRoot -ArchivePath $archivePath
-
-    $receipt = Build-V02PackageIdentityReceiptObject `
-        -Profile $profile `
-        -RepositoryRoot $repositoryRoot `
-        -ProfilePath $ProfilePath `
-        -ArchivePath $archivePath `
-        -PackageRoot $packageRoot
-
-    $receiptPath = Join-Path $publishWorkRoot 'identity.json'
-    Write-V02CanonicalJsonFile -Value $receipt -Path $receiptPath -RepositoryRoot $repositoryRoot
-
-    $receiptParsed = Read-V02CanonicalIdentityReceipt -Path $receiptPath -RepositoryRoot $repositoryRoot
-    $validatedIdentity = Assert-V02PackageIdentity `
-        -Identity $receiptParsed.Identity `
-        -Profile $profile `
-        -RepositoryRoot $repositoryRoot `
-        -ArchivePath $archivePath `
-        -PackageRoot $packageRoot `
-        -ProfilePath $ProfilePath `
-        -ReceiptSha256 $receiptParsed.ReceiptSha256 `
-        -CanonicalReceiptJson $receiptParsed.CanonicalJson
-
-    # Atomically stage into output
-    $parent = Split-Path -Path $safeOutputRoot -Parent
-    if (-not (Test-Path -LiteralPath $parent -PathType Container)) {
-        New-Item -ItemType Directory -Path $parent -Force | Out-Null
-    }
-    Assert-V02PathNoReparse -Path $parent
-
-    $stagingOutput = Join-Path $parent ('.' + [IO.Path]::GetFileName($safeOutputRoot) + '.staging-' + [Guid]::NewGuid().ToString('N'))
-    New-Item -ItemType Directory -Path $stagingOutput -Force | Out-Null
-
-    $stagedPackageRoot = Join-Path $stagingOutput 'package'
-    New-Item -ItemType Directory -Path $stagedPackageRoot -Force | Out-Null
-    Copy-SafeDirectoryContents -Source $packageRoot -Destination $stagedPackageRoot
-
-    $stagedArchive = Join-Path $stagingOutput ([string]$profile.archiveFileName)
-    Copy-Item -LiteralPath $archivePath -Destination $stagedArchive -Force
-
-    $stagedReceipt = Join-Path $stagingOutput 'identity.json'
-    Copy-Item -LiteralPath $receiptPath -Destination $stagedReceipt -Force
-
-    $stagedReceiptInPackage = Join-Path $stagedPackageRoot 'identity.json'
-    Copy-Item -LiteralPath $receiptPath -Destination $stagedReceiptInPackage -Force
-
-    $metadataPath = Join-Path $stagingOutput 'generation.metadata'
-    $metadataContent = @"
-HerdrOps v0.2 package generation metadata
-SchemaVersion: 1
-ProfileId: $($profile.profileId)
-PackageVersion: 0.2.0
-RuntimeIdentifier: win-x64
-ReceiptSha256: $($receiptParsed.ReceiptSha256)
-ArchiveSha256: $($validatedIdentity.ArchiveSha256)
-AppSha256: $($validatedIdentity.AppSha256)
-CoreSha256: $($validatedIdentity.CoreSha256)
-EvidenceClass: Static/PackagedCompatibilityPreparation
-"@
-    [IO.File]::WriteAllText($metadataPath, $metadataContent.Replace("`r`n", "`n") + "`n", (New-Object Text.UTF8Encoding($false)))
-
-    $markerPath = Join-Path $stagingOutput 'commit.marker'
-    $markerContent = @"
-HerdrOps v0.2 package generation commit marker
-SchemaVersion: 1
-ReceiptSha256: $($receiptParsed.ReceiptSha256)
-CommittedUtc: $([DateTime]::UtcNow.ToString('o'))
-"@
-    [IO.File]::WriteAllText($markerPath, $markerContent.Replace("`r`n", "`n") + "`n", (New-Object Text.UTF8Encoding($false)))
-
-    if ($TestFaultInjectionStage -eq 'BeforeCommit') {
-        throw 'Injected v0.2 packaging failure before commit.'
-    }
-
-    [IO.Directory]::Move($stagingOutput, $safeOutputRoot)
-
-    [pscustomobject][ordered]@{
-        EvidenceClass = 'Static/PackagedCompatibilityPreparation'
-        Issue = 149
-        PackageVersion = '0.2.0'
-        RuntimeIdentifier = 'win-x64'
-        OutputRoot = $safeOutputRoot
-        PackageRoot = (Join-Path $safeOutputRoot 'package')
-        ArchivePath = (Join-Path $safeOutputRoot ([string]$profile.archiveFileName))
-        IdentityPath = (Join-Path $safeOutputRoot 'identity.json')
-        ReceiptSha256 = $receiptParsed.ReceiptSha256
-        ArchiveSha256 = [string]$validatedIdentity.ArchiveSha256
-        AppSha256 = [string]$validatedIdentity.AppSha256
-        CoreSha256 = [string]$validatedIdentity.CoreSha256
-        SourceCommit = [string]$validatedIdentity.SourceCommit
-        SourceTree = [string]$validatedIdentity.SourceTree
-        RuntimeUse = 'not-used'
-        RuntimeCredit = 'NOT CLAIMED'
-        ReleaseCredit = 'NOT CLAIMED'
-    }
+    $parent=Split-Path $safeOutputRoot -Parent; if(-not(Test-Path -LiteralPath $parent -PathType Container)){New-Item -ItemType Directory $parent -Force|Out-Null}; Assert-V02PathNoReparse $parent
+    $stagingOutput=Join-Path $parent ('.'+[IO.Path]::GetFileName($safeOutputRoot)+'.staging-'+[Guid]::NewGuid().ToString('N')); New-Item -ItemType Directory $stagingOutput|Out-Null
+    Copy-SafeDirectoryContents $packageRoot (Join-Path $stagingOutput 'package')
+    $null=Copy-V02StableFile $archivePath (Join-Path $stagingOutput ([string]$profile.archiveFileName)); $null=Copy-V02StableFile $receiptPath (Join-Path $stagingOutput 'identity.json')
+    $staged=Read-V02CanonicalIdentityReceipt (Join-Path $stagingOutput 'identity.json') $repositoryRoot
+    $null=Assert-V02PackageIdentity $staged.Identity $profile $repositoryRoot (Join-Path $stagingOutput ([string]$profile.archiveFileName)) (Join-Path $stagingOutput 'package') $profilePath $staged.ReceiptSha256 $staged.CanonicalJson
+    if($TestFaultInjectionStage -eq 'BeforeCommit'){throw 'Injected v0.2 packaging failure before commit.'}
+    [IO.Directory]::Move($stagingOutput,$safeOutputRoot); $stagingOutput=$null; $committedOutput=$true
+    $finalParsed=Read-V02CanonicalIdentityReceipt (Join-Path $safeOutputRoot 'identity.json') $repositoryRoot
+    $final=Assert-V02PackageIdentity $finalParsed.Identity $profile $repositoryRoot (Join-Path $safeOutputRoot ([string]$profile.archiveFileName)) (Join-Path $safeOutputRoot 'package') $profilePath $finalParsed.ReceiptSha256 $finalParsed.CanonicalJson
+    [pscustomobject][ordered]@{EvidenceClass='Static/PackagedCompatibilityPreparation';Issue=149;PackageVersion='0.2.0';RuntimeIdentifier='win-x64';OutputRoot=$safeOutputRoot;PackageRoot=(Join-Path $safeOutputRoot 'package');ArchivePath=(Join-Path $safeOutputRoot ([string]$profile.archiveFileName));IdentityPath=(Join-Path $safeOutputRoot 'identity.json');ReceiptSha256=$finalParsed.ReceiptSha256;ArchiveSha256=$final.ArchiveSha256;AppSha256=$final.AppSha256;CoreSha256=$final.CoreSha256;SourceCommit=$final.SourceCommit;SourceTree=$final.SourceTree;RepeatedPublishFileCount=$firstInventory.FileCount;RuntimeUse='not-used';RuntimeCredit='NOT CLAIMED';ReleaseCredit='NOT CLAIMED'}
 } -Cleanup {
-    if ($TestInjectCleanupFailure) {
-        if (Test-Path -LiteralPath $publishWorkRoot) {
-            Remove-PackagingTempDirectory -Path $publishWorkRoot
-        }
-        throw 'Injected packaging cleanup failure.'
-    }
-    if (Test-Path -LiteralPath $publishWorkRoot) {
-        Remove-PackagingTempDirectory -Path $publishWorkRoot
-    }
+    if($null -ne $stagingOutput -and (Test-Path -LiteralPath $stagingOutput)){Remove-V02TransactionDirectory $stagingOutput (Split-Path $safeOutputRoot -Parent)}
+    if($TestInjectCleanupFailure){if(Test-Path -LiteralPath $publishWorkRoot){Remove-PackagingTempDirectory $publishWorkRoot};throw 'Injected packaging cleanup failure.'}
+    if(Test-Path -LiteralPath $publishWorkRoot){Remove-PackagingTempDirectory $publishWorkRoot}
+    if(-not $committedOutput -and (Test-Path -LiteralPath $safeOutputRoot) -and @(Get-ChildItem -LiteralPath $safeOutputRoot -Force).Count -eq 0){Remove-V02TransactionDirectory $safeOutputRoot (Split-Path $safeOutputRoot -Parent)}
 }
-
 $operationOutput
