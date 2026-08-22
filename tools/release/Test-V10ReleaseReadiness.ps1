@@ -726,6 +726,7 @@ $profile = Read-V10ReleaseProfile -Path $profilePath
 $ownedParent = Normalize-ComparablePath -Path (Join-Path $repositoryRoot 'artifacts\release-readiness-tests')
 $runId = [Guid]::NewGuid().ToString('N')
 $testRoot = Join-Path $ownedParent $runId
+$outsideEvidenceRoot = Join-Path ([IO.Path]::GetTempPath()) ('HerdrOps-Issue41-' + $runId)
 New-Item -ItemType Directory -Path $testRoot -Force | Out-Null
 
 $assertions = New-Object System.Collections.ArrayList
@@ -1102,14 +1103,15 @@ try {
     }
     [void]$assertions.Add('Issue41InventoryWrongClrRejected')
 
-    $outsideManifestPath = Join-Path $testRoot 'outside-manifest.json'
+    New-Item -ItemType Directory -Path $outsideEvidenceRoot -Force | Out-Null
+    $outsideManifestPath = Join-Path $outsideEvidenceRoot 'outside-manifest.json'
     Write-V10NewJsonFile -Path $outsideManifestPath -Value ([ordered]@{
             schemaVersion = 1
             sourceCommit = $sourceCommit
             entries = @($issue41Versions | ForEach-Object { [ordered]@{ version = $_; gateId = 'outside' } })
         }) | Out-Null
     $outsideManifestHash = ((Get-FileHash -LiteralPath $outsideManifestPath -Algorithm SHA256).Hash).ToUpperInvariant()
-    $outsideFixturePath = Join-Path $testRoot 'outside-fixture.json'
+    $outsideFixturePath = Join-Path $outsideEvidenceRoot 'outside-fixture.json'
     Write-V10NewJsonFile -Path $outsideFixturePath -Value ([ordered]@{
             milestones = @([ordered]@{ number = 1; title = 'outside' })
             issues = @([ordered]@{ number = 41; title = 'outside' })
@@ -1850,6 +1852,9 @@ try {
         Assert-NoReparsePath -Path $fullTestRoot
         Assert-NoReparseDescendants -Path $fullTestRoot
         Remove-Item -LiteralPath $fullTestRoot -Recurse -Force
+    }
+    if (Test-Path -LiteralPath $outsideEvidenceRoot) {
+        Remove-Item -LiteralPath $outsideEvidenceRoot -Recurse -Force
     }
 }
 
