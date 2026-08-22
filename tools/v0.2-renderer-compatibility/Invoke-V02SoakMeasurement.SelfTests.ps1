@@ -32,19 +32,54 @@ function Assert-ThrowsMatch([scriptblock]$ScriptBlock, [string]$Pattern, [string
     }
 }
 
+function Assert-ThrowsMatchAndZeroOutput([scriptblock]$ScriptBlock, [string]$Pattern, [string]$CaseName, [string]$TargetDest = $null) {
+    $caught = $false
+    $caughtMsg = $null
+    try {
+        & $ScriptBlock | Out-Null
+    } catch {
+        $caught = $true
+        $caughtMsg = $_.Exception.Message
+    }
+    if (-not $caught) {
+        throw "Expected failure matching pattern '$Pattern', but no exception was thrown: $CaseName"
+    }
+    if ($caughtMsg -notmatch $Pattern) {
+        throw "Expected failure matching pattern '$Pattern', but got: '$caughtMsg': $CaseName"
+    }
+    if (-not [string]::IsNullOrWhiteSpace($TargetDest)) {
+        if (Test-Path -LiteralPath $TargetDest) {
+            throw "Hostile negative test leaked published receipt at target destination '$TargetDest': $CaseName"
+        }
+        $parent = Split-Path -Parent $TargetDest
+        if (Test-Path -LiteralPath $parent) {
+            $orphans = @(Get-ChildItem -LiteralPath $parent -Filter '*.staging*' -Force)
+            if ($orphans.Count -gt 0) {
+                throw "Hostile negative test leaked staging file(s) in parent directory: $CaseName"
+            }
+        }
+    }
+    Pass-NegativeCase $CaseName
+}
+
 function New-TestRepository([string]$Root) {
     New-Item -ItemType Directory -Path $Root -Force | Out-Null
     [IO.File]::WriteAllText((Join-Path $Root 'source.txt'), 'bound source', (New-Object Text.UTF8Encoding($false)))
     $worktree = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
+    $basePackageDir = Join-Path $Root 'tools\packaging'
     $packageDir = Join-Path $Root 'tools\packaging\v0.2'
     $libDir = Join-Path $Root 'tools\lib'
     $planDir = Join-Path $Root 'Plan\reference-hosts'
     $referenceDir = Join-Path $Root 'docs\design\reference'
-    New-Item -ItemType Directory -Path $packageDir, $libDir, $planDir, $referenceDir -Force | Out-Null
+    New-Item -ItemType Directory -Path $basePackageDir, $packageDir, $libDir, $planDir, $referenceDir -Force | Out-Null
+    Copy-Item (Join-Path $worktree 'tools\packaging\*.*') $basePackageDir -Force -ErrorAction SilentlyContinue
     $sourcePackageDir = Join-Path $PSScriptRoot '..\packaging\v0.2'
     Copy-Item (Join-Path $sourcePackageDir 'package-identity-profile.json') $packageDir
     Copy-Item (Join-Path $sourcePackageDir 'package-identity-receipt.schema.json') $packageDir
+    Copy-Item (Join-Path $sourcePackageDir 'Test-V02PackageIdentity.ps1') $packageDir
+    Copy-Item (Join-Path $sourcePackageDir 'V02PackageIdentity.Common.ps1') $packageDir
     Copy-Item (Join-Path $worktree 'tools\lib\V02ReferenceHostProfile.ps1') $libDir
+    Copy-Item (Join-Path $worktree 'tools\lib\V02RuntimePackageBinding.ps1') $libDir
     Copy-Item (Join-Path $worktree 'Plan\reference-hosts\v0.2.json') $planDir
     Copy-Item (Join-Path $worktree 'Plan\reference-hosts\reference-host-profile.schema.json') $planDir
     Copy-Item (Join-Path $worktree 'docs\design\reference\*.png') $referenceDir
@@ -59,10 +94,11 @@ function New-TestRepository([string]$Root) {
     }
 }
 
-function Get-TestSampleProvider([double]$WsStartMb = 100, [double]$WsEndMb = 100.5, [double]$CpuBp = 30, [double]$LatMs = 100, [double]$StlMs = 10, [double]$StlMaxMs = 20, [bool]$RendererStable = $true) {
+function Get-TestSampleProvider([double]$WsStartMb = 100, [double]$WsEndMb = 100.0, [double]$CpuBp = 30, [double]$LatMs = 100, [double]$StlMs = 10, [double]$StlMaxMs = 20, [bool]$RendererStable = $true) {
     $sb = {
         param($binIndex, $sampleIndex, $elapsedMs)
-        $ws = [long](($WsStartMb + (($WsEndMb - $WsStartMb) * ($sampleIndex / 10.0))) * 1048576)
+        $wsMb = if ($sampleIndex -eq 0) { $WsStartMb } else { $WsEndMb }
+        $ws = [long]($wsMb * 1048576)
         $stalls = @(1..19 | ForEach-Object { [long]($StlMs * 1000) }) + @([long]($StlMaxMs * 1000))
         [pscustomobject][ordered]@{
             AppWorkingSetBytes = [long]($ws * 0.7)
@@ -97,9 +133,9 @@ try {
         -DestinationPath $acDest `
         -EvidenceRoot $tempRoot `
         -RepositoryRoot $repoRoot `
-        -TotalBins 12 `
-        -BinDurationMinutes 5 `
-        -SamplesPerBin 2 `
+        -SyntheticTotalBins 12 `
+        -SyntheticBinDurationMinutes 5 `
+        -SyntheticSamplesPerBin 2 `
         -SyntheticPowerStateProvider { 'AC' } `
         -SyntheticProcessTelemetryProvider (Get-TestSampleProvider -WsStartMb 100 -WsEndMb 100.2)
 
@@ -115,9 +151,9 @@ try {
         -DestinationPath $batDest `
         -EvidenceRoot $tempRoot `
         -RepositoryRoot $repoRoot `
-        -TotalBins 12 `
-        -BinDurationMinutes 5 `
-        -SamplesPerBin 2 `
+        -SyntheticTotalBins 12 `
+        -SyntheticBinDurationMinutes 5 `
+        -SyntheticSamplesPerBin 2 `
         -SyntheticPowerStateProvider { 'Battery' } `
         -SyntheticProcessTelemetryProvider (Get-TestSampleProvider -WsStartMb 110 -WsEndMb 110.3)
 
@@ -151,44 +187,7 @@ try {
     }
     Pass-PositiveCase 'soak bins meet 19b performance receipt contract'
 
-    # 6. Safe Atomic Overwrite with -ForceOverwrite
-    $acRes2 = & $script:InvokeSoakPath -Synthetic `
-        -PowerSource 'AC' `
-        -DestinationPath $acDest `
-        -EvidenceRoot $tempRoot `
-        -RepositoryRoot $repoRoot `
-        -ForceOverwrite `
-        -TotalBins 1 `
-        -BinDurationMinutes 1 `
-        -SamplesPerBin 2 `
-        -SyntheticPowerStateProvider { 'AC' } `
-        -SyntheticProcessTelemetryProvider (Get-TestSampleProvider)
-
-    if ($acRes2.TotalBins -ne 1) {
-        throw "ForceOverwrite failed to overwrite existing destination."
-    }
-    Pass-PositiveCase 'safe atomic overwrite with -ForceOverwrite'
-
-    # 7. -AllowThresholdBreach records FAIL aggregate status without throwing unhandled exception
-    $failDest = Join-Path $tempRoot 'matrix\soak-fail.json'
-    $failRes = & $script:InvokeSoakPath -Synthetic `
-        -PowerSource 'AC' `
-        -DestinationPath $failDest `
-        -EvidenceRoot $tempRoot `
-        -RepositoryRoot $repoRoot `
-        -TotalBins 2 `
-        -BinDurationMinutes 5 `
-        -SamplesPerBin 2 `
-        -AllowThresholdBreach `
-        -SyntheticPowerStateProvider { 'AC' } `
-        -SyntheticProcessTelemetryProvider (Get-TestSampleProvider -WsStartMb 250 -WsEndMb 260)
-
-    if ($failRes.AggregateStatus -ne 'FAIL') {
-        throw "Expected FAIL aggregate status under threshold breach."
-    }
-    Pass-PositiveCase 'allow-threshold-breach generates canonical FAIL receipt'
-
-    # 8. Boundary Flags Verification
+    # 6. Boundary Flags Verification
     $doc = $acRes.ReceiptDocument
     if ($doc.evidenceBoundary.creditGranted -ne $false -or
         $doc.evidenceBoundary.actualHerdrRuntime -ne 'NOT_OBSERVED' -or
@@ -198,241 +197,509 @@ try {
     }
     Pass-PositiveCase 'evidence boundary explicitly denies runtime, release, and credit'
 
+    # 7. Governance, Session, Source, and Candidate Bindings Preserved
+    if ($doc.governance.profileId -ne $script:RendererProfileId -or
+        $doc.governance.profileSha256 -ne $script:RendererProfileSha256 -or
+        $doc.governance.packageProfileId -ne $script:RendererPackageProfileId -or
+        $doc.source.commitSha -ne $repo.Commit -or
+        $doc.source.treeSha -ne $repo.Tree -or
+        $doc.session.kind -ne 'LocalConsole' -or
+        $doc.session.transport -ne 'Physical' -or
+        $doc.session.elevated -ne $false) {
+        throw "Candidate governance, session, or source binding mismatch."
+    }
+    Pass-PositiveCase 'governance, session, source, and candidate bindings preserved'
+
+    # 8. Valid Package Identity Binding
+    $packageRoot = Join-Path $tempRoot 'package'
+    New-Item -ItemType Directory -Path $packageRoot -Force | Out-Null
+    $appPath = Join-Path $packageRoot 'HerdrOps.App.exe'
+    $corePath = Join-Path $packageRoot 'HerdrOps.Core.exe'
+    [IO.File]::WriteAllBytes($appPath, [Text.Encoding]::UTF8.GetBytes('app-binary'))
+    [IO.File]::WriteAllBytes($corePath, [Text.Encoding]::UTF8.GetBytes('core-binary'))
+    $profilePath = Join-Path $repoRoot 'tools\packaging\v0.2\package-identity-profile.json'
+    $profileValue = Read-RendererPackageProfile $profilePath
+    $manifestObj = New-RendererPackageManifest $profileValue $repoRoot $packageRoot
+    $manifestPath = Join-Path $packageRoot 'package-manifest.json'
+    Write-RendererPackageCanonicalJson $manifestObj $manifestPath $repoRoot
+    $manifestStable = Get-RendererPackageStableIdentity $manifestPath
+    $archivePath = Join-Path $tempRoot 'HerdrOps-0.2.0-win-x64.zip'
+    $null = New-RendererDeterministicPackageArchive $packageRoot $archivePath
+    $archiveStable = Get-RendererPackageStableIdentity $archivePath
+    $appStable = Get-RendererPackageStableIdentity $appPath
+    $coreStable = Get-RendererPackageStableIdentity $corePath
+    $profileIdentity = Get-RendererPackageProfileIdentity $profilePath $profileValue $repoRoot
+    $receiptValue = [pscustomobject][ordered]@{
+        schemaVersion = 1
+        profileId = $script:RendererPackageProfileId
+        issue = 149
+        packageVersion = '0.2.0'
+        runtimeIdentifier = 'win-x64'
+        source = [pscustomobject][ordered]@{ commitSha = $repo.Commit; treeSha = $repo.Tree }
+        profile = [pscustomobject][ordered]@{ id = $profileIdentity.Id; relativePath = $profileIdentity.RelativePath; bytes = $profileIdentity.Bytes; fileSha256 = $profileIdentity.FileSha256; canonicalSha256 = $profileIdentity.CanonicalSha256 }
+        archive = [pscustomobject][ordered]@{ relativePath = 'HerdrOps-0.2.0-win-x64.zip'; fileName = 'HerdrOps-0.2.0-win-x64.zip'; bytes = $archiveStable.Length; sha256 = $archiveStable.Sha256 }
+        packageManifest = [pscustomobject][ordered]@{ fileName = 'package-manifest.json'; bytes = $manifestStable.Length; sha256 = $manifestStable.Sha256; contentSha256 = $manifestObj.contentSha256; fileCount = [int]$manifestObj.fileCount; totalBytes = [long]$manifestObj.totalBytes }
+        components = [pscustomobject][ordered]@{
+            app = [pscustomobject][ordered]@{ relativePath = 'HerdrOps.App.exe'; bytes = $appStable.Length; sha256 = $appStable.Sha256 }
+            core = [pscustomobject][ordered]@{ relativePath = 'HerdrOps.Core.exe'; bytes = $coreStable.Length; sha256 = $coreStable.Sha256 }
+        }
+        referenceHost = [pscustomobject][ordered]@{ profileId = $script:RendererProfileId; profileSha256 = $script:RendererProfileSha256 }
+        renderer = [pscustomobject][ordered]@{ policy = 'software-only-process-wide'; wpfProcessRenderMode = 'SoftwareOnly' }
+        evidenceBoundary = [pscustomobject][ordered]@{ evidenceClass = 'PackagedCompatibilityPreparation'; runtimeUse = 'not-used'; actualHerdrUsed = $false; runtimeCredit = 'NOT CLAIMED'; releaseCredit = 'NOT CLAIMED' }
+    }
+    $receiptPath = Join-Path $tempRoot 'package-identity-receipt.json'
+    Write-RendererPackageCanonicalJson $receiptValue $receiptPath $repoRoot
+
+    $pkgDest = Join-Path $tempRoot 'matrix\soak-with-pkg.json'
+    $pkgRes = & $script:InvokeSoakPath -Synthetic `
+        -PowerSource 'AC' `
+        -DestinationPath $pkgDest `
+        -EvidenceRoot $tempRoot `
+        -RepositoryRoot $repoRoot `
+        -PackageIdentityPath $receiptPath `
+        -PackageArchivePath $archivePath `
+        -ExtractedPackageRoot $packageRoot `
+        -SyntheticTotalBins 2 `
+        -SyntheticBinDurationMinutes 5 `
+        -SyntheticSamplesPerBin 2 `
+        -SyntheticPowerStateProvider { 'AC' } `
+        -SyntheticProcessTelemetryProvider (Get-TestSampleProvider)
+
+    if ($null -eq $pkgRes.ReceiptDocument.package -or
+        $pkgRes.ReceiptDocument.package.archiveSha256 -ne $archiveStable.Sha256 -or
+        $pkgRes.ReceiptDocument.package.appSha256 -ne $appStable.Sha256) {
+        throw "Package binding was not recorded in the receipt document."
+    }
+    Pass-PositiveCase 'valid package identity binding when package parameters are supplied'
+
     # -------------------------------------------------------------------------
-    # HOSTILE NEGATIVE TESTS
+    # HOSTILE NEGATIVE TESTS (ALL MUST FAIL CLOSED WITH ZERO PUBLISHED OUTPUT)
     # -------------------------------------------------------------------------
 
-    # Negative: Initial power mismatch
+    # 1. Removed switch: -ForceOverwrite is rejected
+    $negForceDest = Join-Path $tempRoot 'matrix\neg-force.json'
+    Assert-ThrowsMatchAndZeroOutput {
+        & $script:InvokeSoakPath -Synthetic `
+            -PowerSource 'AC' `
+            -DestinationPath $negForceDest `
+            -EvidenceRoot $tempRoot `
+            -RepositoryRoot $repoRoot `
+            -ForceOverwrite `
+            -SyntheticPowerStateProvider { 'AC' } `
+            -SyntheticProcessTelemetryProvider (Get-TestSampleProvider)
+    } 'A parameter cannot be found that matches parameter name ''ForceOverwrite''' 'removed switch -ForceOverwrite is rejected by parameter binding' $negForceDest
+
+    # 2. Removed switch: -AllowThresholdBreach is rejected
+    $negAllowDest = Join-Path $tempRoot 'matrix\neg-allow.json'
+    Assert-ThrowsMatchAndZeroOutput {
+        & $script:InvokeSoakPath -Synthetic `
+        -PowerSource 'AC' `
+        -DestinationPath $negAllowDest `
+        -EvidenceRoot $tempRoot `
+        -RepositoryRoot $repoRoot `
+        -AllowThresholdBreach `
+        -SyntheticPowerStateProvider { 'AC' } `
+        -SyntheticProcessTelemetryProvider (Get-TestSampleProvider)
+    } 'A parameter cannot be found that matches parameter name ''AllowThresholdBreach''' 'removed switch -AllowThresholdBreach is rejected by parameter binding' $negAllowDest
+
+    # 3. Parameter dictionary check for removed switches
+    $commandParams = (Get-Command $script:InvokeSoakPath).Parameters
+    if ($commandParams.ContainsKey('ForceOverwrite') -or $commandParams.ContainsKey('AllowThresholdBreach')) {
+        throw 'Public API parameter dictionary still contains removed switches.'
+    }
+    Pass-NegativeCase 'public API parameter dictionary omits ForceOverwrite and AllowThresholdBreach'
+
+    # 4. No-clobber protection refuses to overwrite preexisting destination file
+    $preexistingDest = Join-Path $tempRoot 'matrix\preexisting.json'
+    [IO.File]::WriteAllText($preexistingDest, 'preexisting-content', (New-Object Text.UTF8Encoding($false)))
     Assert-ThrowsMatch {
         & $script:InvokeSoakPath -Synthetic `
             -PowerSource 'AC' `
-            -DestinationPath (Join-Path $tempRoot 'test-neg.json') `
+            -DestinationPath $preexistingDest `
             -EvidenceRoot $tempRoot `
             -RepositoryRoot $repoRoot `
-            -SamplesPerBin 1 `
+            -SyntheticTotalBins 1 `
+            -SyntheticSamplesPerBin 1 `
+            -SyntheticPowerStateProvider { 'AC' } `
+            -SyntheticProcessTelemetryProvider (Get-TestSampleProvider)
+    } 'already exists; refusing to clobber' 'no-clobber protection refuses to overwrite preexisting destination file'
+    if ([IO.File]::ReadAllText($preexistingDest) -cne 'preexisting-content') {
+        throw "Preexisting destination file was mutated during no-clobber rejection."
+    }
+
+    # 5. Mid-publish crash during staging write rolls back cleanly
+    $midWriteDest = Join-Path $tempRoot 'matrix\midwrite-dest.json'
+    Assert-ThrowsMatchAndZeroOutput {
+        & $script:InvokeSoakPath -Synthetic `
+            -PowerSource 'AC' `
+            -DestinationPath $midWriteDest `
+            -EvidenceRoot $tempRoot `
+            -RepositoryRoot $repoRoot `
+            -TestFaultInjectionStage 'MidWrite' `
+            -SyntheticTotalBins 1 `
+            -SyntheticSamplesPerBin 1 `
+            -SyntheticPowerStateProvider { 'AC' } `
+            -SyntheticProcessTelemetryProvider (Get-TestSampleProvider)
+    } 'Injected soak publication crash during staging write' 'mid-publish crash during staging write rolls back cleanly with zero published output' $midWriteDest
+
+    # 6. Mid-publish crash before commit rolls back cleanly
+    $beforeCommitDest = Join-Path $tempRoot 'matrix\beforecommit-dest.json'
+    Assert-ThrowsMatchAndZeroOutput {
+        & $script:InvokeSoakPath -Synthetic `
+            -PowerSource 'AC' `
+            -DestinationPath $beforeCommitDest `
+            -EvidenceRoot $tempRoot `
+            -RepositoryRoot $repoRoot `
+            -TestFaultInjectionStage 'BeforeCommit' `
+            -SyntheticTotalBins 1 `
+            -SyntheticSamplesPerBin 1 `
+            -SyntheticPowerStateProvider { 'AC' } `
+            -SyntheticProcessTelemetryProvider (Get-TestSampleProvider)
+    } 'Injected soak publication crash before atomic commit' 'mid-publish crash before commit rolls back cleanly with zero published output' $beforeCommitDest
+
+    # 7. Initial power mismatch: AC requested, Battery observed
+    $negPwr1Dest = Join-Path $tempRoot 'matrix\neg-pwr1.json'
+    Assert-ThrowsMatchAndZeroOutput {
+        & $script:InvokeSoakPath -Synthetic `
+            -PowerSource 'AC' `
+            -DestinationPath $negPwr1Dest `
+            -EvidenceRoot $tempRoot `
+            -RepositoryRoot $repoRoot `
+            -SyntheticSamplesPerBin 1 `
             -SyntheticPowerStateProvider { 'Battery' } `
             -SyntheticProcessTelemetryProvider (Get-TestSampleProvider)
-    } 'Initial power source mismatch' 'initial power source mismatch (AC requested, Battery observed)'
+    } 'Initial power source mismatch' 'initial power source mismatch (AC requested, Battery observed) produces zero output' $negPwr1Dest
 
-    Assert-ThrowsMatch {
+    # 8. Initial power mismatch: Battery requested, AC observed
+    $negPwr2Dest = Join-Path $tempRoot 'matrix\neg-pwr2.json'
+    Assert-ThrowsMatchAndZeroOutput {
         & $script:InvokeSoakPath -Synthetic `
             -PowerSource 'Battery' `
-            -DestinationPath (Join-Path $tempRoot 'test-neg.json') `
+            -DestinationPath $negPwr2Dest `
             -EvidenceRoot $tempRoot `
             -RepositoryRoot $repoRoot `
-            -SamplesPerBin 1 `
+            -SyntheticSamplesPerBin 1 `
             -SyntheticPowerStateProvider { 'AC' } `
             -SyntheticProcessTelemetryProvider (Get-TestSampleProvider)
-    } 'Initial power source mismatch' 'initial power source mismatch (Battery requested, AC observed)'
+    } 'Initial power source mismatch' 'initial power source mismatch (Battery requested, AC observed) produces zero output' $negPwr2Dest
 
-    # Negative: Mid-soak power interruption
-    $powerCount = 0
+    # 9. Mid-soak power interruption
+    $pwrState = [pscustomobject]@{ count = 0 }
     $interruptProvider = {
-        $powerCount++
-        if ($powerCount -gt 2) { 'Battery' } else { 'AC' }
+        $pwrState.count++
+        if ($pwrState.count -gt 2) { 'Battery' } else { 'AC' }
     }.GetNewClosure()
 
-    Assert-ThrowsMatch {
+    $negPwrIntDest = Join-Path $tempRoot 'matrix\neg-pwr-int.json'
+    Assert-ThrowsMatchAndZeroOutput {
         & $script:InvokeSoakPath -Synthetic `
             -PowerSource 'AC' `
-            -DestinationPath (Join-Path $tempRoot 'test-neg.json') `
+            -DestinationPath $negPwrIntDest `
             -EvidenceRoot $tempRoot `
             -RepositoryRoot $repoRoot `
-            -TotalBins 2 `
-            -BinDurationMinutes 1 `
-            -SamplesPerBin 2 `
+            -SyntheticTotalBins 2 `
+            -SyntheticBinDurationMinutes 1 `
+            -SyntheticSamplesPerBin 2 `
             -SyntheticPowerStateProvider $interruptProvider `
             -SyntheticProcessTelemetryProvider (Get-TestSampleProvider)
-    } 'Power source changed' 'mid-soak power interruption from AC to Battery'
+    } 'Power source changed' 'mid-soak power interruption from AC to Battery produces zero output' $negPwrIntDest
 
-    # Negative: No-clobber protection
-    Assert-ThrowsMatch {
-        & $script:InvokeSoakPath -Synthetic `
+    # 10. Live mode invalid process IDs (zero or negative)
+    $negProc1Dest = Join-Path $tempRoot 'matrix\neg-proc1.json'
+    Assert-ThrowsMatchAndZeroOutput {
+        & $script:InvokeSoakPath `
             -PowerSource 'AC' `
-            -DestinationPath $acDest `
+            -DestinationPath $negProc1Dest `
             -EvidenceRoot $tempRoot `
             -RepositoryRoot $repoRoot `
-            -TotalBins 1 `
-            -SamplesPerBin 1 `
-            -SyntheticPowerStateProvider { 'AC' } `
-            -SyntheticProcessTelemetryProvider (Get-TestSampleProvider)
-    } 'already exists; refusing to clobber' 'no-clobber protection refuses to overwrite existing file without -ForceOverwrite'
+            -AppProcessId 0 `
+            -CoreProcessId 0
+    } 'Live soak measurement requires positive AppProcessId and CoreProcessId' 'live mode invalid process IDs (zero or negative) produces zero output' $negProc1Dest
 
-    # Negative: Destination escaping evidence root
-    Assert-ThrowsMatch {
-        & $script:InvokeSoakPath -Synthetic `
+    # 11. Live mode identical process IDs
+    $negProcIdentDest = Join-Path $tempRoot 'matrix\neg-proc-ident.json'
+    Assert-ThrowsMatchAndZeroOutput {
+        & $script:InvokeSoakPath `
             -PowerSource 'AC' `
-            -DestinationPath ([IO.Path]::GetFullPath((Join-Path $tempRoot '..\escaped.json'))) `
+            -DestinationPath $negProcIdentDest `
             -EvidenceRoot $tempRoot `
             -RepositoryRoot $repoRoot `
-            -SamplesPerBin 1 `
+            -AppProcessId 1234 `
+            -CoreProcessId 1234
+    } 'AppProcessId and CoreProcessId must be distinct processes' 'live mode identical process IDs for App and Core produces zero output' $negProcIdentDest
+
+    # 12. Live mode non-existent process ID
+    $negProc2Dest = Join-Path $tempRoot 'matrix\neg-proc2.json'
+    Assert-ThrowsMatchAndZeroOutput {
+        & $script:InvokeSoakPath `
+            -PowerSource 'AC' `
+            -DestinationPath $negProc2Dest `
+            -EvidenceRoot $tempRoot `
+            -RepositoryRoot $repoRoot `
+            -AppProcessId 999999 `
+            -CoreProcessId 999998
+    } 'Unable to connect to target App' 'live mode non-existent process ID produces zero output' $negProc2Dest
+
+    # 13. Live mode process session ID mismatch
+    $negSessDest = Join-Path $tempRoot 'matrix\neg-sess.json'
+    $currentPid = [System.Diagnostics.Process]::GetCurrentProcess().Id
+    Assert-ThrowsMatchAndZeroOutput {
+        & $script:InvokeSoakPath `
+            -PowerSource 'AC' `
+            -DestinationPath $negSessDest `
+            -EvidenceRoot $tempRoot `
+            -RepositoryRoot $repoRoot `
+            -AppProcessId $currentPid `
+            -CoreProcessId 4
+    } 'Process session ID mismatch' 'live mode process session ID mismatch produces zero output' $negSessDest
+
+    # 14. Live mode missing live telemetry provider fails closed without fake defaults
+    $negLiveTelDest = Join-Path $tempRoot 'matrix\neg-live-tel.json'
+    $dummy1 = Start-Process -FilePath 'powershell.exe' -ArgumentList '-NoProfile -Command Start-Sleep -Seconds 30' -PassThru
+    $dummy2 = Start-Process -FilePath 'powershell.exe' -ArgumentList '-NoProfile -Command Start-Sleep -Seconds 30' -PassThru
+    try {
+        Assert-ThrowsMatchAndZeroOutput {
+            & $script:InvokeSoakPath `
+                -PowerSource 'AC' `
+                -DestinationPath $negLiveTelDest `
+                -EvidenceRoot $tempRoot `
+                -RepositoryRoot $repoRoot `
+                -AppProcessId $dummy1.Id `
+                -CoreProcessId $dummy2.Id
+        } 'Live soak measurement requires an authenticated telemetry source' 'live mode missing live telemetry provider fails closed without fake defaults' $negLiveTelDest
+    } finally {
+        if ($null -ne $dummy1 -and -not $dummy1.HasExited) { Stop-Process -Id $dummy1.Id -Force -ErrorAction SilentlyContinue }
+        if ($null -ne $dummy2 -and -not $dummy2.HasExited) { Stop-Process -Id $dummy2.Id -Force -ErrorAction SilentlyContinue }
+    }
+
+    # 14. Synthetic telemetry provider exception fails closed
+    $negTelExDest = Join-Path $tempRoot 'matrix\neg-tel-ex.json'
+    Assert-ThrowsMatchAndZeroOutput {
+        & $script:InvokeSoakPath -Synthetic `
+            -PowerSource 'AC' `
+            -DestinationPath $negTelExDest `
+            -EvidenceRoot $tempRoot `
+            -RepositoryRoot $repoRoot `
+            -SyntheticTotalBins 1 `
+            -SyntheticSamplesPerBin 1 `
+            -SyntheticPowerStateProvider { 'AC' } `
+            -SyntheticProcessTelemetryProvider { throw 'Simulated telemetry failure' }
+    } 'Synthetic telemetry provider threw an exception' 'synthetic telemetry provider exception fails closed with zero published output' $negTelExDest
+
+    # 15. Null telemetry sample fails closed
+    $negNullTelDest = Join-Path $tempRoot 'matrix\neg-null-tel.json'
+    Assert-ThrowsMatchAndZeroOutput {
+        & $script:InvokeSoakPath -Synthetic `
+            -PowerSource 'AC' `
+            -DestinationPath $negNullTelDest `
+            -EvidenceRoot $tempRoot `
+            -RepositoryRoot $repoRoot `
+            -SyntheticTotalBins 1 `
+            -SyntheticSamplesPerBin 1 `
+            -SyntheticPowerStateProvider { 'AC' } `
+            -SyntheticProcessTelemetryProvider { return $null }
+    } 'returned null or invalid object' 'null telemetry sample fails closed with zero published output' $negNullTelDest
+
+    # 16. Working set budget breach (> 255 MiB)
+    $negWsDest = Join-Path $tempRoot 'matrix\neg-ws.json'
+    Assert-ThrowsMatchAndZeroOutput {
+        & $script:InvokeSoakPath -Synthetic `
+            -PowerSource 'AC' `
+            -DestinationPath $negWsDest `
+            -EvidenceRoot $tempRoot `
+            -RepositoryRoot $repoRoot `
+            -SyntheticTotalBins 1 `
+            -SyntheticBinDurationMinutes 1 `
+            -SyntheticSamplesPerBin 2 `
+            -SyntheticPowerStateProvider { 'AC' } `
+            -SyntheticProcessTelemetryProvider (Get-TestSampleProvider -WsStartMb 260 -WsEndMb 260)
+    } 'combined WS .* > limit' 'working set budget breach > 255 MiB produces zero published output' $negWsDest
+
+    # 17. Working set slope breach (> 1 MiB / 10 min)
+    $negSlopeDest = Join-Path $tempRoot 'matrix\neg-slope.json'
+    Assert-ThrowsMatchAndZeroOutput {
+        & $script:InvokeSoakPath -Synthetic `
+            -PowerSource 'AC' `
+            -DestinationPath $negSlopeDest `
+            -EvidenceRoot $tempRoot `
+            -RepositoryRoot $repoRoot `
+            -SyntheticTotalBins 1 `
+            -SyntheticBinDurationMinutes 5 `
+            -SyntheticSamplesPerBin 2 `
+            -SyntheticPowerStateProvider { 'AC' } `
+            -SyntheticProcessTelemetryProvider (Get-TestSampleProvider -WsStartMb 100 -WsEndMb 102)
+    } 'WS slope .* > limit' 'working set slope breach > 1 MiB / 10 min produces zero published output' $negSlopeDest
+
+    # 18. CPU usage breach (> 1%)
+    $negCpuDest = Join-Path $tempRoot 'matrix\neg-cpu.json'
+    Assert-ThrowsMatchAndZeroOutput {
+        & $script:InvokeSoakPath -Synthetic `
+            -PowerSource 'AC' `
+            -DestinationPath $negCpuDest `
+            -EvidenceRoot $tempRoot `
+            -RepositoryRoot $repoRoot `
+            -SyntheticTotalBins 1 `
+            -SyntheticBinDurationMinutes 1 `
+            -SyntheticSamplesPerBin 2 `
+            -SyntheticPowerStateProvider { 'AC' } `
+            -SyntheticProcessTelemetryProvider (Get-TestSampleProvider -CpuBp 150)
+    } 'combined CPU .* > limit' 'CPU usage breach > 1% produces zero published output' $negCpuDest
+
+    # 19. Latency P95 breach (> 250 ms)
+    $negLatDest = Join-Path $tempRoot 'matrix\neg-lat.json'
+    Assert-ThrowsMatchAndZeroOutput {
+        & $script:InvokeSoakPath -Synthetic `
+            -PowerSource 'AC' `
+            -DestinationPath $negLatDest `
+            -EvidenceRoot $tempRoot `
+            -RepositoryRoot $repoRoot `
+            -SyntheticTotalBins 1 `
+            -SyntheticBinDurationMinutes 1 `
+            -SyntheticSamplesPerBin 2 `
+            -SyntheticPowerStateProvider { 'AC' } `
+            -SyntheticProcessTelemetryProvider (Get-TestSampleProvider -LatMs 300)
+    } 'latency P95 .* > limit' 'latency P95 breach > 250 ms produces zero published output' $negLatDest
+
+    # 20. UI Stall P95 breach (> 50 ms)
+    $negStlDest = Join-Path $tempRoot 'matrix\neg-stl.json'
+    Assert-ThrowsMatchAndZeroOutput {
+        & $script:InvokeSoakPath -Synthetic `
+            -PowerSource 'AC' `
+            -DestinationPath $negStlDest `
+            -EvidenceRoot $tempRoot `
+            -RepositoryRoot $repoRoot `
+            -SyntheticTotalBins 1 `
+            -SyntheticBinDurationMinutes 1 `
+            -SyntheticSamplesPerBin 2 `
+            -SyntheticPowerStateProvider { 'AC' } `
+            -SyntheticProcessTelemetryProvider (Get-TestSampleProvider -StlMs 60)
+    } 'UI stall P95 .* > limit' 'UI stall P95 breach > 50 ms produces zero published output' $negStlDest
+
+    # 21. UI Stall Maximum breach (> 100 ms)
+    $negStlMaxDest = Join-Path $tempRoot 'matrix\neg-stlmax.json'
+    Assert-ThrowsMatchAndZeroOutput {
+        & $script:InvokeSoakPath -Synthetic `
+            -PowerSource 'AC' `
+            -DestinationPath $negStlMaxDest `
+            -EvidenceRoot $tempRoot `
+            -RepositoryRoot $repoRoot `
+            -SyntheticTotalBins 1 `
+            -SyntheticBinDurationMinutes 1 `
+            -SyntheticSamplesPerBin 2 `
+            -SyntheticPowerStateProvider { 'AC' } `
+            -SyntheticProcessTelemetryProvider (Get-TestSampleProvider -StlMs 10 -StlMaxMs 120)
+    } 'UI stall max .* > limit' 'UI stall maximum breach > 100 ms produces zero published output' $negStlMaxDest
+
+    # 22. Renderer instability failure
+    $negUnstableDest = Join-Path $tempRoot 'matrix\neg-unstable.json'
+    Assert-ThrowsMatchAndZeroOutput {
+        & $script:InvokeSoakPath -Synthetic `
+            -PowerSource 'AC' `
+            -DestinationPath $negUnstableDest `
+            -EvidenceRoot $tempRoot `
+            -RepositoryRoot $repoRoot `
+            -SyntheticTotalBins 1 `
+            -SyntheticBinDurationMinutes 1 `
+            -SyntheticSamplesPerBin 2 `
+            -SyntheticPowerStateProvider { 'AC' } `
+            -SyntheticProcessTelemetryProvider (Get-TestSampleProvider -RendererStable $false)
+    } 'renderer stability failure' 'renderer instability failure produces zero published output' $negUnstableDest
+
+    # 23. Destination escaping evidence root
+    $negEscapeDest = [IO.Path]::GetFullPath((Join-Path $tempRoot '..\escaped.json'))
+    Assert-ThrowsMatchAndZeroOutput {
+        & $script:InvokeSoakPath -Synthetic `
+            -PowerSource 'AC' `
+            -DestinationPath $negEscapeDest `
+            -EvidenceRoot $tempRoot `
+            -RepositoryRoot $repoRoot `
+            -SyntheticSamplesPerBin 1 `
             -SyntheticPowerStateProvider { 'AC' } `
             -SyntheticProcessTelemetryProvider (Get-TestSampleProvider)
-    } 'escaped the evidence root' 'destination path escaping evidence root'
+    } 'escaped the evidence root' 'destination path escaping evidence root produces zero output' $negEscapeDest
 
-    # Negative: Reparse point junction destination path
+    # 24. Reparse point junction destination path
     $reparseDir = Join-Path $tempRoot 'junction-dest'
     $reparseTarget = Join-Path $tempRoot 'junction-target'
     New-Item -ItemType Directory -Path $reparseTarget -Force | Out-Null
     & cmd /c "mklink /J `"$reparseDir`" `"$reparseTarget`"" 2>&1 | Out-Null
     if (Test-Path -LiteralPath $reparseDir) {
-        Assert-ThrowsMatch {
+        $negReparseDest = Join-Path $reparseDir 'receipt.json'
+        Assert-ThrowsMatchAndZeroOutput {
             & $script:InvokeSoakPath -Synthetic `
                 -PowerSource 'AC' `
-                -DestinationPath (Join-Path $reparseDir 'receipt.json') `
+                -DestinationPath $negReparseDest `
                 -EvidenceRoot $tempRoot `
                 -RepositoryRoot $repoRoot `
-                -SamplesPerBin 1 `
+                -SyntheticSamplesPerBin 1 `
                 -SyntheticPowerStateProvider { 'AC' } `
                 -SyntheticProcessTelemetryProvider (Get-TestSampleProvider)
-        } 'contains a reparse point|must not contain a reparse point' 'reparse junction destination path'
+        } 'contains a reparse point|must not contain a reparse point' 'reparse junction destination path produces zero output' $negReparseDest
     }
 
-    # Negative: Working set budget breach (> 255 MiB)
-    Assert-ThrowsMatch {
+    # 25. Source commit mismatch
+    $negCommitDest = Join-Path $tempRoot 'matrix\neg-commit.json'
+    Assert-ThrowsMatchAndZeroOutput {
         & $script:InvokeSoakPath -Synthetic `
             -PowerSource 'AC' `
-            -DestinationPath (Join-Path $tempRoot 'neg-ws.json') `
-            -EvidenceRoot $tempRoot `
-            -RepositoryRoot $repoRoot `
-            -TotalBins 1 `
-            -BinDurationMinutes 1 `
-            -SamplesPerBin 2 `
-            -SyntheticPowerStateProvider { 'AC' } `
-            -SyntheticProcessTelemetryProvider (Get-TestSampleProvider -WsStartMb 260 -WsEndMb 260)
-    } 'combined WS .* > limit' 'working set budget breach > 255 MiB'
-
-    # Negative: Working set slope breach (> 1 MiB / 10 min)
-    Assert-ThrowsMatch {
-        & $script:InvokeSoakPath -Synthetic `
-            -PowerSource 'AC' `
-            -DestinationPath (Join-Path $tempRoot 'neg-slope.json') `
-            -EvidenceRoot $tempRoot `
-            -RepositoryRoot $repoRoot `
-            -TotalBins 1 `
-            -BinDurationMinutes 5 `
-            -SamplesPerBin 2 `
-            -SyntheticPowerStateProvider { 'AC' } `
-            -SyntheticProcessTelemetryProvider (Get-TestSampleProvider -WsStartMb 100 -WsEndMb 102)
-    } 'WS slope .* > limit' 'working set slope breach > 1 MiB / 10 min'
-
-    # Negative: CPU percentage breach (> 1%)
-    Assert-ThrowsMatch {
-        & $script:InvokeSoakPath -Synthetic `
-            -PowerSource 'AC' `
-            -DestinationPath (Join-Path $tempRoot 'neg-cpu.json') `
-            -EvidenceRoot $tempRoot `
-            -RepositoryRoot $repoRoot `
-            -TotalBins 1 `
-            -BinDurationMinutes 1 `
-            -SamplesPerBin 2 `
-            -SyntheticPowerStateProvider { 'AC' } `
-            -SyntheticProcessTelemetryProvider (Get-TestSampleProvider -CpuBp 150)
-    } 'combined CPU .* > limit' 'CPU usage breach > 1%'
-
-    # Negative: Latency P95 breach (> 250 ms)
-    Assert-ThrowsMatch {
-        & $script:InvokeSoakPath -Synthetic `
-            -PowerSource 'AC' `
-            -DestinationPath (Join-Path $tempRoot 'neg-lat.json') `
-            -EvidenceRoot $tempRoot `
-            -RepositoryRoot $repoRoot `
-            -TotalBins 1 `
-            -BinDurationMinutes 1 `
-            -SamplesPerBin 2 `
-            -SyntheticPowerStateProvider { 'AC' } `
-            -SyntheticProcessTelemetryProvider (Get-TestSampleProvider -LatMs 300)
-    } 'latency P95 .* > limit' 'latency P95 breach > 250 ms'
-
-    # Negative: UI Stall P95 breach (> 50 ms)
-    Assert-ThrowsMatch {
-        & $script:InvokeSoakPath -Synthetic `
-            -PowerSource 'AC' `
-            -DestinationPath (Join-Path $tempRoot 'neg-stl.json') `
-            -EvidenceRoot $tempRoot `
-            -RepositoryRoot $repoRoot `
-            -TotalBins 1 `
-            -BinDurationMinutes 1 `
-            -SamplesPerBin 2 `
-            -SyntheticPowerStateProvider { 'AC' } `
-            -SyntheticProcessTelemetryProvider (Get-TestSampleProvider -StlMs 60)
-    } 'UI stall P95 .* > limit' 'UI stall P95 breach > 50 ms'
-
-    # Negative: UI Stall Maximum breach (> 100 ms)
-    Assert-ThrowsMatch {
-        & $script:InvokeSoakPath -Synthetic `
-            -PowerSource 'AC' `
-            -DestinationPath (Join-Path $tempRoot 'neg-stlmax.json') `
-            -EvidenceRoot $tempRoot `
-            -RepositoryRoot $repoRoot `
-            -TotalBins 1 `
-            -BinDurationMinutes 1 `
-            -SamplesPerBin 2 `
-            -SyntheticPowerStateProvider { 'AC' } `
-            -SyntheticProcessTelemetryProvider (Get-TestSampleProvider -StlMs 10 -StlMaxMs 120)
-    } 'UI stall max .* > limit' 'UI stall maximum breach > 100 ms'
-
-    # Negative: Renderer instability failure
-    Assert-ThrowsMatch {
-        & $script:InvokeSoakPath -Synthetic `
-            -PowerSource 'AC' `
-            -DestinationPath (Join-Path $tempRoot 'neg-unstable.json') `
-            -EvidenceRoot $tempRoot `
-            -RepositoryRoot $repoRoot `
-            -TotalBins 1 `
-            -BinDurationMinutes 1 `
-            -SamplesPerBin 2 `
-            -SyntheticPowerStateProvider { 'AC' } `
-            -SyntheticProcessTelemetryProvider (Get-TestSampleProvider -RendererStable $false)
-    } 'renderer stability failure' 'renderer instability failure'
-
-    # Negative: Live mode invalid process IDs
-    Assert-ThrowsMatch {
-        & $script:InvokeSoakPath `
-            -PowerSource 'AC' `
-            -DestinationPath (Join-Path $tempRoot 'neg-proc.json') `
-            -EvidenceRoot $tempRoot `
-            -RepositoryRoot $repoRoot `
-            -AppProcessId 0 `
-            -CoreProcessId 0
-    } 'Live soak measurement requires positive AppProcessId and CoreProcessId' 'live mode invalid process IDs'
-
-    # Negative: Live mode non-existent process ID
-    Assert-ThrowsMatch {
-        & $script:InvokeSoakPath `
-            -PowerSource 'AC' `
-            -DestinationPath (Join-Path $tempRoot 'neg-proc.json') `
-            -EvidenceRoot $tempRoot `
-            -RepositoryRoot $repoRoot `
-            -AppProcessId 999999 `
-            -CoreProcessId 999998
-    } 'Unable to connect to target App' 'live mode non-existent process ID'
-
-    # Negative: Source commit mismatch
-    Assert-ThrowsMatch {
-        & $script:InvokeSoakPath -Synthetic `
-            -PowerSource 'AC' `
-            -DestinationPath (Join-Path $tempRoot 'neg-commit.json') `
+            -DestinationPath $negCommitDest `
             -EvidenceRoot $tempRoot `
             -RepositoryRoot $repoRoot `
             -ExpectedSourceCommit '0000000000000000000000000000000000000000' `
-            -SamplesPerBin 1 `
+            -SyntheticSamplesPerBin 1 `
             -SyntheticPowerStateProvider { 'AC' } `
             -SyntheticProcessTelemetryProvider (Get-TestSampleProvider)
-    } 'Source commit mismatch' 'source commit mismatch'
+    } 'Source commit mismatch' 'source commit mismatch produces zero output' $negCommitDest
 
-    # Negative: Source tree mismatch
-    Assert-ThrowsMatch {
+    # 26. Source tree mismatch
+    $negTreeDest = Join-Path $tempRoot 'matrix\neg-tree.json'
+    Assert-ThrowsMatchAndZeroOutput {
         & $script:InvokeSoakPath -Synthetic `
             -PowerSource 'AC' `
-            -DestinationPath (Join-Path $tempRoot 'neg-tree.json') `
+            -DestinationPath $negTreeDest `
             -EvidenceRoot $tempRoot `
             -RepositoryRoot $repoRoot `
             -ExpectedSourceTree '0000000000000000000000000000000000000000' `
-            -SamplesPerBin 1 `
+            -SyntheticSamplesPerBin 1 `
             -SyntheticPowerStateProvider { 'AC' } `
             -SyntheticProcessTelemetryProvider (Get-TestSampleProvider)
-    } 'Source tree mismatch' 'source tree mismatch'
+    } 'Source tree mismatch' 'source tree mismatch produces zero output' $negTreeDest
+
+    # 27. Package component hash mismatch fails closed with zero output
+    $negPkgTamperDest = Join-Path $tempRoot 'matrix\neg-pkg-tamper.json'
+    $tamperedAppPath = Join-Path $packageRoot 'HerdrOps.App.exe'
+    [IO.File]::WriteAllBytes($tamperedAppPath, [Text.Encoding]::UTF8.GetBytes('tampered-binary'))
+    Assert-ThrowsMatchAndZeroOutput {
+        & $script:InvokeSoakPath -Synthetic `
+            -PowerSource 'AC' `
+            -DestinationPath $negPkgTamperDest `
+            -EvidenceRoot $tempRoot `
+            -RepositoryRoot $repoRoot `
+            -PackageIdentityPath $receiptPath `
+            -PackageArchivePath $archivePath `
+            -ExtractedPackageRoot $packageRoot `
+            -SyntheticTotalBins 1 `
+            -SyntheticSamplesPerBin 1 `
+            -SyntheticPowerStateProvider { 'AC' } `
+            -SyntheticProcessTelemetryProvider (Get-TestSampleProvider)
+    } 'Manifest/package-root inventories are not exact and coherent|Package App/Core bytes changed after package validation|hash.*mismatch' 'package component hash mismatch fails closed with zero output' $negPkgTamperDest
+    # Restore app binary
+    [IO.File]::WriteAllBytes($tamperedAppPath, [Text.Encoding]::UTF8.GetBytes('app-binary'))
+
+    # 28. Incomplete package binding arguments
+    $negIncompletePkgDest = Join-Path $tempRoot 'matrix\neg-pkg-incomplete.json'
+    Assert-ThrowsMatchAndZeroOutput {
+        & $script:InvokeSoakPath -Synthetic `
+            -PowerSource 'AC' `
+            -DestinationPath $negIncompletePkgDest `
+            -EvidenceRoot $tempRoot `
+            -RepositoryRoot $repoRoot `
+            -PackageIdentityPath $receiptPath `
+            -SyntheticTotalBins 1 `
+            -SyntheticSamplesPerBin 1 `
+            -SyntheticPowerStateProvider { 'AC' } `
+            -SyntheticProcessTelemetryProvider (Get-TestSampleProvider)
+    } 'PackageIdentityPath, PackageArchivePath, and ExtractedPackageRoot must all be provided' 'missing one of package binding parameters fails closed' $negIncompletePkgDest
 
     Write-Host ""
     [pscustomobject][ordered]@{
