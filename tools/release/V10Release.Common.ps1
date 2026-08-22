@@ -1845,7 +1845,7 @@ function Assert-V10Issue40Handoff {
         if (-not $seenDependencyIssues.Add([int]$issue)) {
             throw "Issue #40 report contains a duplicate dependency-evidence issue: #$issue"
         }
-        Assert-V07ReleaseGateString -Value (Get-V07ReleaseGateProperty -Object $dependency -Name 'status' -Description 'Issue #40 report dependencyEvidence') -Description 'Issue #40 report dependencyEvidence.status'
+        Assert-V07ReleaseGateString -Value (Get-V07ReleaseGateProperty -Object $dependency -Name 'status' -Description 'Issue #40 report dependencyEvidence') -Description 'Issue #40 report dependencyEvidence.status' -AllowPending
         Assert-V07ReleaseGateString -Value (Get-V07ReleaseGateProperty -Object $dependency -Name 'evidenceClass' -Description 'Issue #40 report dependencyEvidence') -Description 'Issue #40 report dependencyEvidence.evidenceClass'
         Assert-V07ReleaseGateString -Value (Get-V07ReleaseGateProperty -Object $dependency -Name 'manifestPath' -Description 'Issue #40 report dependencyEvidence') -Description 'Issue #40 report dependencyEvidence.manifestPath'
         Assert-V07ReleaseGateHex -Value (Get-V07ReleaseGateProperty -Object $dependency -Name 'manifestSha256' -Description 'Issue #40 report dependencyEvidence') -Length 64 -Description 'Issue #40 report dependencyEvidence.manifestSha256' -Case Upper
@@ -1889,7 +1889,12 @@ function Assert-V10Issue40Handoff {
     $boundary = Get-V07ReleaseGateProperty -Object $issue40Report -Name 'evidenceBoundary' -Description 'Issue #40 release-gate report'
     Assert-V07ReleaseGateExactProperties -Object $boundary -Names @('static', 'synthetic', 'contract', 'runtime', 'human', 'release') -Description 'Issue #40 report.evidenceBoundary'
     foreach ($name in @('static', 'synthetic', 'contract', 'runtime', 'human', 'release')) {
-        Assert-V07ReleaseGateString -Value (Get-V07ReleaseGateProperty -Object $boundary -Name $name -Description 'Issue #40 report.evidenceBoundary') -Description "Issue #40 report.evidenceBoundary.$name"
+        $boundaryValue = Get-V07ReleaseGateProperty -Object $boundary -Name $name -Description 'Issue #40 report.evidenceBoundary'
+        if ($name -ceq 'human') {
+            Assert-V07ReleaseGateString -Value $boundaryValue -Description "Issue #40 report.evidenceBoundary.$name" -AllowPending
+        } else {
+            Assert-V07ReleaseGateString -Value $boundaryValue -Description "Issue #40 report.evidenceBoundary.$name"
+        }
     }
     if ([string]$boundary.runtime -notlike 'NOT OBSERVED*' -or [string]$boundary.release -notlike 'NOT OBSERVED*' -or
         [string]$boundary.human -notlike 'PENDING*') {
