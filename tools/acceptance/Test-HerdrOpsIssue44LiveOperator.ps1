@@ -163,6 +163,11 @@ function New-TestAcceptanceArtifact {
     $packageRoot = Join-Path $workRoot 'package'
     New-Item -ItemType Directory -Path $workRoot -Force | Out-Null
     Copy-SafeDirectoryContents -Source $FixtureSource -Destination $packageRoot | Out-Null
+    foreach ($binaryName in @('HerdrOps.App', 'HerdrOps.Core')) {
+        $payloadPath = Join-Path $packageRoot ($binaryName + '.payload')
+        $executablePath = Join-Path $packageRoot ($binaryName + '.exe')
+        Move-Item -LiteralPath $payloadPath -Destination $executablePath
+    }
     $manifest = New-PackageManifestObject -Profile $Profile -PackageRoot $packageRoot
     Write-PackageManifest -Manifest $manifest -PackageRoot $packageRoot | Out-Null
     $archivePath = Join-Path $workRoot ("HerdrOps-$($Profile.packageVersion)-win-x64.zip")
