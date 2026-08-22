@@ -274,6 +274,14 @@ jobs:
         shell: powershell
         run: ./tools/v0.2-renderer-compatibility/Test-V02RendererCompatibilityManifest.SelfTests.ps1
 
+      - name: Run v0.2 matrix evidence receipt tests (PowerShell 7)
+        shell: pwsh
+        run: ./tools/v0.2-renderer-compatibility/New-V02MatrixEvidenceReceipt.Tests.ps1
+
+      - name: Run v0.2 matrix evidence receipt tests (Windows PowerShell 5.1)
+        shell: powershell
+        run: ./tools/v0.2-renderer-compatibility/New-V02MatrixEvidenceReceipt.Tests.ps1
+
       - name: Run v0.2 exact binding static tests (PowerShell 7)
         shell: pwsh
         run: ./tools/Test-V02ExactBinding.Tests.ps1

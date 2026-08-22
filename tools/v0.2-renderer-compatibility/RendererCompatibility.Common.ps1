@@ -26,9 +26,28 @@ using System.Runtime.InteropServices;
 using System.Text;
 using Microsoft.Win32.SafeHandles;
 namespace RendererCompatibility {
+    [StructLayout(LayoutKind.Sequential)]
+    public struct ByHandleFileInformation {
+        public uint FileAttributes;
+        public System.Runtime.InteropServices.ComTypes.FILETIME CreationTime;
+        public System.Runtime.InteropServices.ComTypes.FILETIME LastAccessTime;
+        public System.Runtime.InteropServices.ComTypes.FILETIME LastWriteTime;
+        public uint VolumeSerialNumber;
+        public uint FileSizeHigh;
+        public uint FileSizeLow;
+        public uint NumberOfLinks;
+        public uint FileIndexHigh;
+        public uint FileIndexLow;
+    }
     public static class NativePath {
         [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
         private static extern uint GetFinalPathNameByHandle(SafeFileHandle handle, StringBuilder path, uint length, uint flags);
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool GetFileInformationByHandle(SafeFileHandle handle, out ByHandleFileInformation information);
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern SafeFileHandle CreateFile(string path, uint access, uint share, IntPtr security, uint creation, uint flags, IntPtr template);
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool SetFileInformationByHandle(SafeFileHandle handle, int informationClass, IntPtr information, uint size);
         public static string GetFinalPath(SafeFileHandle handle) {
             var buffer = new StringBuilder(32768);
             uint written = GetFinalPathNameByHandle(handle, buffer, (uint)buffer.Capacity, 0);
@@ -37,6 +56,45 @@ namespace RendererCompatibility {
             if (value.StartsWith(@"\\?\UNC\", StringComparison.OrdinalIgnoreCase)) return @"\\" + value.Substring(8);
             if (value.StartsWith(@"\\?\", StringComparison.OrdinalIgnoreCase)) return value.Substring(4);
             return value;
+        }
+        public static string GetIdentity(SafeFileHandle handle) {
+            ByHandleFileInformation value;
+            if (!GetFileInformationByHandle(handle, out value)) throw new Win32Exception(Marshal.GetLastWin32Error(), "GetFileInformationByHandle failed");
+            return value.VolumeSerialNumber.ToString("X8") + ":" + value.FileIndexHigh.ToString("X8") + value.FileIndexLow.ToString("X8");
+        }
+        public static uint GetLinkCount(SafeFileHandle handle) {
+            ByHandleFileInformation value;
+            if (!GetFileInformationByHandle(handle, out value)) throw new Win32Exception(Marshal.GetLastWin32Error(), "GetFileInformationByHandle failed");
+            return value.NumberOfLinks;
+        }
+        public static SafeFileHandle OpenDirectory(string path, bool allowDelete) {
+            const uint DeleteAccess = 0x00010000, ShareRead = 1, ShareWrite = 2, OpenExisting = 3;
+            const uint BackupSemantics = 0x02000000, OpenReparsePoint = 0x00200000;
+            SafeFileHandle result = CreateFile(path, allowDelete ? DeleteAccess : 0, ShareRead | ShareWrite, IntPtr.Zero, OpenExisting, BackupSemantics | OpenReparsePoint, IntPtr.Zero);
+            if (result.IsInvalid) { int error = Marshal.GetLastWin32Error(); result.Dispose(); throw new Win32Exception(error, "CreateFile directory lease failed for " + path); }
+            return result;
+        }
+        public static void RenameDirectory(SafeFileHandle handle, string destinationPath) {
+            byte[] name = Encoding.Unicode.GetBytes(destinationPath);
+            int rootOffset = IntPtr.Size == 8 ? 8 : 4;
+            int lengthOffset = IntPtr.Size == 8 ? 16 : 8;
+            int nameOffset = IntPtr.Size == 8 ? 20 : 12;
+            int size = nameOffset + name.Length + 2;
+            IntPtr buffer = Marshal.AllocHGlobal(size);
+            try {
+                for (int i = 0; i < size; i++) Marshal.WriteByte(buffer, i, 0);
+                Marshal.WriteIntPtr(buffer, rootOffset, IntPtr.Zero);
+                Marshal.WriteInt32(buffer, lengthOffset, name.Length);
+                Marshal.Copy(name, 0, IntPtr.Add(buffer, nameOffset), name.Length);
+                if (!SetFileInformationByHandle(handle, 3, buffer, (uint)size)) throw new Win32Exception(Marshal.GetLastWin32Error(), "Held-handle directory rename failed");
+            } finally { Marshal.FreeHGlobal(buffer); }
+        }
+        public static void DeleteDirectory(SafeFileHandle handle) {
+            IntPtr buffer = Marshal.AllocHGlobal(4);
+            try {
+                Marshal.WriteInt32(buffer, 1);
+                if (!SetFileInformationByHandle(handle, 4, buffer, 4)) throw new Win32Exception(Marshal.GetLastWin32Error(), "Held-handle directory deletion failed");
+            } finally { Marshal.FreeHGlobal(buffer); }
         }
     }
 }
@@ -69,6 +127,16 @@ $script:RendererEnvironmentCases = @(
     'windows11-x64-build26220-local-console-non-elevated-single-user',
     'physical-mixed-dpi-primary-switch-unplug', 'ac-power', 'battery-power',
     'soak-ac-60-minutes', 'soak-battery-60-minutes', 'thermal-observation')
+
+function Get-RendererGovernedMatrixCases {
+    return @(
+        $script:RendererDisplayCases +
+        $script:RendererMixedDpiCases +
+        $script:RendererAccessibilityCases +
+        $script:RendererEnvironmentCases
+    )
+}
+$script:RendererGovernedMatrixCases = @(Get-RendererGovernedMatrixCases)
 $script:RendererVisualChecks = @(
     'no-blank-black-transparent-surface', 'no-missing-glyph', 'no-clipping-overlap',
     'status-meaning-preserved', 'brand-hierarchy-preserved',
@@ -175,15 +243,75 @@ function Assert-RendererNonReparsePath { param([string]$Root,[string]$Path,[stri
     $relative=$pathFull.Substring($rootFull.Length).TrimStart('\','/');$probe=$rootFull
     foreach($part in @($relative-split'[\\/]'|Where-Object{$_-ne''})){$probe=Join-Path $probe $part;if(Test-Path -LiteralPath $probe){$item=Get-Item -LiteralPath $probe -Force -ErrorAction Stop;if(($item.Attributes-band[IO.FileAttributes]::ReparsePoint)-ne0){throw "$Context contains a reparse point: $probe"}}}
 }
-function Get-RendererStableFileIdentity { param([string]$Root,[string]$Path,[string]$Context,[switch]$IncludeBytes)
+function Open-RendererDirectoryLease {
+    param([string]$Root,[string]$Path,[string]$Context,[switch]$AllowDelete)
+    $rootFull=[IO.Path]::GetFullPath($Root).TrimEnd('\','/')
+    $pathFull=[IO.Path]::GetFullPath($Path).TrimEnd('\','/')
+    Assert-RendererNonReparsePath $rootFull $pathFull $Context
+    $handle=[RendererCompatibility.NativePath]::OpenDirectory($pathFull,[bool]$AllowDelete)
+    try {
+        $final=[IO.Path]::GetFullPath([RendererCompatibility.NativePath]::GetFinalPath($handle)).TrimEnd('\','/')
+        if($final-cne$pathFull){throw "$Context final opened path '$final' does not equal '$pathFull'."}
+        if($final-cne$rootFull-and-not$final.StartsWith($rootFull+[IO.Path]::DirectorySeparatorChar,[StringComparison]::OrdinalIgnoreCase)){throw "$Context final opened path escaped the evidence root."}
+        return [pscustomobject]@{Handle=$handle;Path=$pathFull;FinalPath=$final;Identity=[RendererCompatibility.NativePath]::GetIdentity($handle);DeleteAccess=[bool]$AllowDelete;DeletePending=$false}
+    } catch {
+        $handle.Dispose()
+        throw
+    }
+}
+function Assert-RendererDirectoryLease {
+    param($Lease,[string]$Root,[string]$Path,[string]$Context)
+    if($null-eq$Lease-or$null-eq$Lease.Handle-or$Lease.Handle.IsClosed-or$Lease.Handle.IsInvalid){throw "$Context directory lease is not held."}
+    $expected=[IO.Path]::GetFullPath($Path).TrimEnd('\','/')
+    $heldFinal=[IO.Path]::GetFullPath([RendererCompatibility.NativePath]::GetFinalPath($Lease.Handle)).TrimEnd('\','/')
+    $heldIdentity=[RendererCompatibility.NativePath]::GetIdentity($Lease.Handle)
+    if($heldFinal-cne$Lease.FinalPath-or$heldIdentity-cne$Lease.Identity){throw "$Context held directory identity changed."}
+    $probe=Open-RendererDirectoryLease $Root $expected "$Context current path"
+    try {
+        if($probe.Identity-cne$Lease.Identity-or$probe.FinalPath-cne$Lease.FinalPath){throw "$Context path no longer resolves to the held directory identity."}
+    } finally {$probe.Handle.Dispose()}
+}
+function Move-RendererLeasedDirectory {
+    param($Lease,[string]$Root,[string]$Path,[string]$Destination,[string]$Context)
+    if(-not$Lease.DeleteAccess){throw "$Context directory lease lacks held-handle rename access."}
+    Assert-RendererDirectoryLease $Lease $Root $Path "$Context before held-handle rename"
+    [RendererCompatibility.NativePath]::RenameDirectory($Lease.Handle,[IO.Path]::GetFullPath($Destination))
+    $movedFinal=[IO.Path]::GetFullPath([RendererCompatibility.NativePath]::GetFinalPath($Lease.Handle)).TrimEnd('\','/')
+    $destinationFull=[IO.Path]::GetFullPath($Destination).TrimEnd('\','/')
+    $movedIdentity=[RendererCompatibility.NativePath]::GetIdentity($Lease.Handle)
+    if($movedFinal-cne$destinationFull-or$movedIdentity-cne$Lease.Identity){throw "$Context held-handle rename did not retain the exact destination/FileId identity. Expected path '$destinationFull' identity '$($Lease.Identity)'; observed path '$movedFinal' identity '$movedIdentity'."}
+    $Lease.FinalPath=$movedFinal
+    $Lease.Path=$movedFinal
+}
+function Remove-RendererLeasedDirectory {
+    param($Lease,[string]$Root,[string]$Path,[string]$Context)
+    if(-not$Lease.DeleteAccess){throw "$Context directory lease lacks held-handle deletion access."}
+    Assert-RendererDirectoryLease $Lease $Root $Path "$Context before content deletion"
+    foreach($child in @(Get-ChildItem -LiteralPath $Lease.FinalPath -Force -ErrorAction Stop)){
+        if($child.PSIsContainer-and($child.Attributes-band[IO.FileAttributes]::ReparsePoint)-eq0){throw "$Context contains an unexpected child directory; refusing recursive traversal."}
+        if($child.PSIsContainer){[IO.Directory]::Delete($child.FullName,$false)}else{[IO.File]::Delete($child.FullName)}
+    }
+    if(@(Get-ChildItem -LiteralPath $Lease.FinalPath -Force -ErrorAction Stop).Count-ne0){throw "$Context acquired new children during deletion; refusing to delete the directory."}
+    Assert-RendererDirectoryLease $Lease $Root $Path "$Context before held-handle delete"
+    [RendererCompatibility.NativePath]::DeleteDirectory($Lease.Handle)
+    $Lease.DeletePending=$true
+}
+function Get-RendererStableFileIdentity { param([string]$Root,[string]$Path,[string]$Context,[switch]$IncludeBytes,[switch]$KeepOpen)
     $rootFull=[IO.Path]::GetFullPath($Root).TrimEnd('\','/');$pathFull=[IO.Path]::GetFullPath($Path);Assert-RendererNonReparsePath $rootFull $pathFull $Context
     $stream=New-Object IO.FileStream($pathFull,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read)
     try{
         $final=[IO.Path]::GetFullPath([RendererCompatibility.NativePath]::GetFinalPath($stream.SafeFileHandle));if($final-cne$rootFull-and-not$final.StartsWith($rootFull+[IO.Path]::DirectorySeparatorChar,[StringComparison]::OrdinalIgnoreCase)){throw "$Context final opened path escaped the evidence root."}
         $before=$stream.Length;$algorithm=[Security.Cryptography.SHA256]::Create();try{$hash=([BitConverter]::ToString($algorithm.ComputeHash($stream))).Replace('-','').ToUpperInvariant()}finally{$algorithm.Dispose()};$after=$stream.Length;if($before-ne$after-or$stream.Position-ne$after){throw "$Context changed during the same-handle read."}
         $bytes=$null;if($IncludeBytes){if($after-gt$script:RendererMaximumManifestBytes){throw "$Context exceeds the bounded read."};$stream.Position=0;$bytes=New-Object byte[] ([int]$after);$offset=0;while($offset-lt$bytes.Length){$read=$stream.Read($bytes,$offset,$bytes.Length-$offset);if($read-le0){throw "$Context ended during the same-handle read."};$offset+=$read}}
-        return [pscustomobject]@{Bytes=[long]$after;Sha256=$hash;Content=$bytes;FinalPath=$final}
-    }finally{$stream.Dispose()}
+        return [pscustomobject]@{Bytes=[long]$after;Sha256=$hash;Content=$bytes;FinalPath=$final;FileIdentity=[RendererCompatibility.NativePath]::GetIdentity($stream.SafeFileHandle);LinkCount=[long][RendererCompatibility.NativePath]::GetLinkCount($stream.SafeFileHandle);Stream=if($KeepOpen){$stream}else{$null}}
+    }finally{if(-not$KeepOpen){$stream.Dispose()}}
+}
+function Assert-RendererStableFileLease { param($Lease,[string]$Root,[string]$Path,[string]$Context)
+    if($null-eq$Lease.Stream-or$Lease.Stream.SafeFileHandle.IsClosed-or$Lease.Stream.SafeFileHandle.IsInvalid){throw "$Context raw evidence lease is not held."}
+    $heldFinal=[IO.Path]::GetFullPath([RendererCompatibility.NativePath]::GetFinalPath($Lease.Stream.SafeFileHandle));$heldId=[RendererCompatibility.NativePath]::GetIdentity($Lease.Stream.SafeFileHandle);$heldLinks=[long][RendererCompatibility.NativePath]::GetLinkCount($Lease.Stream.SafeFileHandle)
+    if($heldFinal-cne$Lease.FinalPath-or$heldId-cne$Lease.FileIdentity-or$heldLinks-ne1){throw "$Context held raw evidence FinalPath/FileId/link-count changed."}
+    $probe=Get-RendererStableFileIdentity $Root $Path "$Context current path"
+    if($probe.FinalPath-cne$Lease.FinalPath-or$probe.FileIdentity-cne$Lease.FileIdentity-or$probe.LinkCount-ne1-or$probe.Bytes-ne$Lease.Bytes-or$probe.Sha256-cne$Lease.Sha256){throw "$Context path no longer resolves to the held raw evidence identity."}
 }
 function Get-RendererPngIdentity { param([string]$Root,[string]$Path,[string]$Context)
     $identity=Get-RendererStableFileIdentity $Root $Path $Context -IncludeBytes;$stream=New-Object IO.MemoryStream(,$identity.Content);try{$decoder=New-Object Windows.Media.Imaging.PngBitmapDecoder($stream,[Windows.Media.Imaging.BitmapCreateOptions]::PreservePixelFormat,[Windows.Media.Imaging.BitmapCacheOption]::OnLoad);if($decoder.Frames.Count-ne1){throw "$Context must decode as exactly one PNG frame."};$frame=$decoder.Frames[0];if($frame.PixelWidth-le0-or$frame.PixelHeight-le0){throw "$Context decoded PNG dimensions are invalid."};return [pscustomobject]@{Width=[int]$frame.PixelWidth;Height=[int]$frame.PixelHeight;Bytes=$identity.Bytes;Sha256=$identity.Sha256;Content=$identity.Content;Frame=$frame}}catch{throw "$Context is not a complete decodable PNG: $($_.Exception.Message)"}finally{$stream.Dispose()}
@@ -222,10 +350,256 @@ function Assert-RendererPackageReceipt { param($Receipt,$Candidate)
     Assert-RendererExactProperties $Receipt.renderer @('policy','wpfProcessRenderMode') 'Package receipt renderer';if($Receipt.renderer.policy-cne$Candidate.renderer.policy-or$Receipt.renderer.wpfProcessRenderMode-cne$Candidate.renderer.wpfProcessRenderMode){throw 'Package receipt renderer does not equal the renderer candidate.'}
     Assert-RendererExactProperties $Receipt.evidenceBoundary @('evidenceClass','runtimeUse','actualHerdrUsed','runtimeCredit','releaseCredit') 'Package receipt evidenceBoundary';Assert-RendererBoolean $Receipt.evidenceBoundary.actualHerdrUsed 'Package receipt actualHerdrUsed';if($Receipt.evidenceBoundary.evidenceClass-cne'PackagedCompatibilityPreparation'-or$Receipt.evidenceBoundary.runtimeUse-cne'not-used'-or$Receipt.evidenceBoundary.actualHerdrUsed-or$Receipt.evidenceBoundary.runtimeCredit-cne'NOT CLAIMED'-or$Receipt.evidenceBoundary.releaseCredit-cne'NOT CLAIMED'){throw 'Package receipt inflates evidence.'}
 }
-function Assert-RendererMatrixCases { param([object[]]$Cases,[string[]]$Expected,[string]$Context,[string]$Root,[string]$RepositoryRoot,[switch]$ValidateBindings)
-    if([string]::IsNullOrWhiteSpace($Root)){$Root=$script:RendererCurrentEvidenceRoot};if([string]::IsNullOrWhiteSpace($RepositoryRoot)){$RepositoryRoot=$script:RendererCurrentRepositoryRoot};if($script:RendererCurrentValidateBindings){$ValidateBindings=$true}
+function Assert-RendererLegacyMatrixRawPayload {
+    param(
+        [Parameter(Mandatory=$true)]$Payload,
+        [Parameter(Mandatory=$true)][string]$ExpectedCaseId,
+        [Parameter(Mandatory=$true)][string]$Context
+    )
+    throw "$Context legacy caller-authored outcome/evidenceClass matrix payloads are prohibited; schemaVersion 2 typed observations are required."
+    if ($null -eq $Payload -or $Payload -isnot [pscustomobject]) { throw "$Context must be a JSON object." }
+
+    $propNames = @($Payload.PSObject.Properties.Name)
+    $requiredBase = @('schemaVersion','caseId','observedUtc','evidenceClass','outcome','details')
+    foreach ($req in $requiredBase) {
+        if (-not ($propNames -ccontains $req)) { throw "$Context omitted '$req'." }
+    }
+
+    Assert-RendererNonnegativeInteger $Payload.schemaVersion "$Context schemaVersion"
+    if ([long]$Payload.schemaVersion -ne 1) { throw "$Context schemaVersion must be 1." }
+
+    Assert-RendererString $Payload.caseId "$Context caseId"
+    if ($Payload.caseId -cne $ExpectedCaseId) { throw "$Context caseId '$($Payload.caseId)' does not match expected caseId '$ExpectedCaseId'." }
+
+    Assert-RendererUtc $Payload.observedUtc "$Context observedUtc"
+
+    Assert-RendererString $Payload.evidenceClass "$Context evidenceClass"
+    if ($Payload.evidenceClass -cnotin @('Static','Synthetic','Contract','Runtime')) {
+        throw "$Context evidenceClass '$($Payload.evidenceClass)' is invalid or inflates release authority."
+    }
+
+    Assert-RendererString $Payload.outcome "$Context outcome"
+    if ($Payload.outcome -cnotin @('PASS','FAIL')) {
+        throw "$Context outcome '$($Payload.outcome)' must be exact PASS or FAIL."
+    }
+
+    Assert-RendererString $Payload.details "$Context details"
+
+    $allowedProps = [System.Collections.Generic.List[string]]::new([string[]]$requiredBase)
+    $allowedProps.Add('checksPassed')
+    $allowedProps.Add('errorCount')
+
+    if ($Payload.evidenceClass -ceq 'Runtime') {
+        $allowedProps.Add('actualHerdrObserved')
+        $allowedProps.Add('sessionKind')
+        $allowedProps.Add('elevated')
+        $allowedProps.Add('userScope')
+        $allowedProps.Add('isSynthetic')
+
+        foreach ($runtimeReq in @('actualHerdrObserved','sessionKind','elevated','userScope')) {
+            if (-not ($propNames -ccontains $runtimeReq)) {
+                throw "$Context claims unearned Runtime: omitted '$runtimeReq'."
+            }
+        }
+
+        Assert-RendererBoolean $Payload.actualHerdrObserved "$Context actualHerdrObserved"
+        if (-not [bool]$Payload.actualHerdrObserved) {
+            throw "$Context claims unearned Runtime: actualHerdrObserved is false."
+        }
+
+        Assert-RendererString $Payload.sessionKind "$Context sessionKind"
+        if ($Payload.sessionKind -cne 'LocalConsole') {
+            throw "$Context claims unearned Runtime: sessionKind '$($Payload.sessionKind)' is not LocalConsole."
+        }
+
+        Assert-RendererBoolean $Payload.elevated "$Context elevated"
+        if ([bool]$Payload.elevated) {
+            throw "$Context claims unearned Runtime: session is elevated."
+        }
+
+        Assert-RendererString $Payload.userScope "$Context userScope"
+        if ($Payload.userScope -cne 'SingleUser') {
+            throw "$Context claims unearned Runtime: userScope '$($Payload.userScope)' is not SingleUser."
+        }
+
+        if ($propNames -ccontains 'isSynthetic') {
+            Assert-RendererBoolean $Payload.isSynthetic "$Context isSynthetic"
+            if ([bool]$Payload.isSynthetic) {
+                throw "$Context claims unearned Runtime: isSynthetic is true."
+            }
+        }
+    } else {
+        if ($propNames -ccontains 'actualHerdrObserved') {
+            Assert-RendererBoolean $Payload.actualHerdrObserved "$Context actualHerdrObserved"
+            if ([bool]$Payload.actualHerdrObserved) {
+                throw "$Context non-Runtime evidenceClass '$($Payload.evidenceClass)' contradicts actualHerdrObserved=true."
+            }
+            $allowedProps.Add('actualHerdrObserved')
+        }
+        if ($propNames -ccontains 'sessionKind') {
+            Assert-RendererString $Payload.sessionKind "$Context sessionKind"
+            $allowedProps.Add('sessionKind')
+        }
+        if ($propNames -ccontains 'elevated') {
+            Assert-RendererBoolean $Payload.elevated "$Context elevated"
+            $allowedProps.Add('elevated')
+        }
+        if ($propNames -ccontains 'userScope') {
+            Assert-RendererString $Payload.userScope "$Context userScope"
+            $allowedProps.Add('userScope')
+        }
+        if ($propNames -ccontains 'isSynthetic') {
+            Assert-RendererBoolean $Payload.isSynthetic "$Context isSynthetic"
+            $allowedProps.Add('isSynthetic')
+        }
+    }
+
+    foreach ($name in $propNames) {
+        if (-not $allowedProps.Contains($name)) {
+            throw "$Context contains unexpected property '$name'."
+        }
+    }
+
+    if ($propNames -ccontains 'checksPassed') {
+        Assert-RendererBoolean $Payload.checksPassed "$Context checksPassed"
+        if ($Payload.outcome -ceq 'PASS' -and -not [bool]$Payload.checksPassed) {
+            throw "$Context forged PASS: outcome is PASS but checksPassed is false."
+        }
+    }
+
+    if ($propNames -ccontains 'errorCount') {
+        Assert-RendererNonnegativeInteger $Payload.errorCount "$Context errorCount"
+        if ($Payload.outcome -ceq 'PASS' -and [long]$Payload.errorCount -gt 0) {
+            throw "$Context forged PASS: outcome is PASS but errorCount is nonzero."
+        }
+    }
+
+    return [pscustomobject][ordered]@{
+        CaseId = [string]$Payload.caseId
+        ObservedUtc = [string]$Payload.observedUtc
+        EvidenceClass = [string]$Payload.evidenceClass
+        Outcome = [string]$Payload.outcome
+        Details = [string]$Payload.details
+    }
+}
+
+function Get-RendererMatrixCaseContract {
+    param([string]$CaseId)
+    if($script:RendererDisplayCases-ccontains$CaseId){return [pscustomobject]@{Kind='Display';Checks=@('target-configured','visual-integrity','single-language')}}
+    if($script:RendererMixedDpiCases-ccontains$CaseId){return [pscustomobject]@{Kind='MixedDpi';Checks=@('initial-dpi-confirmed','primary-switch-observed','monitor-unplug-observed','final-dpi-confirmed')}}
+    if($script:RendererAccessibilityCases-ccontains$CaseId){
+        $checks=switch -CaseSensitive($CaseId){
+            'keyboard-uia'{@('keyboard-navigation','uia-tree')};'narrator'{@('narrator-announcements','uia-names')};'high-contrast'{@('high-contrast-visible')}
+            {$_-in@('text-scale-100','text-scale-150','text-scale-200')}{@('text-scale-applied','no-clipping-overlap')}
+            {$_-in@('reduced-motion-on','reduced-motion-off')}{@('motion-policy-applied')}
+        }
+        return [pscustomobject]@{Kind='Accessibility';Checks=@($checks)}
+    }
+    if($script:RendererEnvironmentCases-ccontains$CaseId){
+        $checks=switch -CaseSensitive($CaseId){
+            'windows11-x64-build26220-local-console-non-elevated-single-user'{@('os-build-matched','local-console','non-elevated','single-user')}
+            'physical-mixed-dpi-primary-switch-unplug'{@('physical-monitors','primary-switch-observed','monitor-unplug-observed')}
+            'ac-power'{@('ac-power-confirmed')};'battery-power'{@('battery-power-confirmed')}
+            'soak-ac-60-minutes'{@('ac-power-confirmed','duration-60-minutes','no-renderer-regression')}
+            'soak-battery-60-minutes'{@('battery-power-confirmed','duration-60-minutes','no-renderer-regression')}
+            'thermal-observation'{@('thermal-telemetry-captured')}
+        }
+        return [pscustomobject]@{Kind='Environment';Checks=@($checks)}
+    }
+    throw "Unknown governed renderer matrix case '$CaseId'."
+}
+function Get-RendererMatrixExpectedCheckValue {
+    param([string]$Name)
+    switch -CaseSensitive($Name){
+        'os-build-matched'{return '26220'};'local-console'{return 'LocalConsole'};'non-elevated'{return 'false'};'single-user'{return 'SingleUser'}
+        'ac-power-confirmed'{return 'AC'};'battery-power-confirmed'{return 'Battery'};'duration-60-minutes'{return '60'}
+        default{return 'PASS'}
+    }
+}
+
+function Assert-RendererMatrixRawPayload {
+    param($Payload,[string]$ExpectedCaseId,[string]$Context,[string]$RepositoryRoot,[string]$EvidenceRoot)
+    Assert-RendererExactProperties $Payload @('schemaVersion','caseId','observedUtc','run','observation','provenance','details') $Context
+    Assert-RendererNonnegativeInteger $Payload.schemaVersion "$Context schemaVersion";if([long]$Payload.schemaVersion-ne3){throw "$Context schemaVersion must be 3."}
+    Assert-RendererString $Payload.caseId "$Context caseId";if($Payload.caseId-cne$ExpectedCaseId){throw "$Context caseId '$($Payload.caseId)' does not match expected caseId '$ExpectedCaseId'."}
+    Assert-RendererUtc $Payload.observedUtc "$Context observedUtc";Assert-RendererString $Payload.details "$Context details"
+    $run=$Payload.run;Assert-RendererExactProperties $run @('runId','startedUtc','endedUtc','sessionId','candidateCommitSha','candidateTreeSha','packageReceiptCanonicalSha256') "$Context run"
+    foreach($name in @('runId','sessionId')){Assert-RendererString $run.$name "$Context run $name"};if($run.runId-cnotmatch'^[0-9A-Za-z][0-9A-Za-z._-]{7,127}$'-or$run.sessionId-cnotmatch'^[0-9A-Za-z][0-9A-Za-z._-]{7,127}$'){throw "$Context run/session identity is invalid."}
+    Assert-RendererUtc $run.startedUtc "$Context run startedUtc";Assert-RendererUtc $run.endedUtc "$Context run endedUtc";foreach($name in @('candidateCommitSha','candidateTreeSha')){if([string]$run.$name-cnotmatch'^[0-9a-f]{40}$'-or[string]$run.$name-ceq('0'*40)){throw "$Context run $name must be a nonzero lowercase Git SHA."}};Assert-RendererSha $run.packageReceiptCanonicalSha256 "$Context run packageReceiptCanonicalSha256"
+    $started=[DateTimeOffset]::Parse($run.startedUtc);$ended=[DateTimeOffset]::Parse($run.endedUtc);$observed=[DateTimeOffset]::Parse($Payload.observedUtc);if($ended-le$started-or($ended-$started).TotalHours-gt4-or$observed-lt$started-or$observed-gt$ended){throw "$Context observedUtc is outside the bounded common run window."}
+    $contract=Get-RendererMatrixCaseContract $ExpectedCaseId
+    Assert-RendererExactProperties $Payload.observation @('kind','target','checks') "$Context observation"
+    if($Payload.observation.kind-cne$contract.Kind-or$Payload.observation.target-cne$ExpectedCaseId){throw "$Context observation type/target does not match the governed case contract."}
+    $allPassed=$true;$checks=@($Payload.observation.checks)
+    if($checks.Count-ne$contract.Checks.Count){throw "$Context observation checks do not match the governed case contract."}
+    for($i=0;$i-lt$contract.Checks.Count;$i++){$check=$checks[$i];Assert-RendererExactProperties $check @('name','observedValue') "$Context observation check $i";if($check.name-cne$contract.Checks[$i]){throw "$Context observation check $i must be '$($contract.Checks[$i])'."};Assert-RendererString $check.observedValue "$Context observation check '$($check.name)' observedValue";if($check.observedValue-cne(Get-RendererMatrixExpectedCheckValue $check.name)){$allPassed=$false}}
+    $p=$Payload.provenance;Assert-RendererString $p.kind "$Context provenance kind";$evidenceClass=$null
+    if($p.kind-cin@('StaticInspection','SyntheticFixture','ContractHarness')){
+        Assert-RendererExactProperties $p @('kind','collector','actualHerdrObserved') "$Context provenance";Assert-RendererBoolean $p.actualHerdrObserved "$Context provenance actualHerdrObserved";if([bool]$p.actualHerdrObserved){throw "$Context non-Runtime provenance contradicts actualHerdrObserved=true."}
+        $collector=switch -CaseSensitive($p.kind){'StaticInspection'{'RendererMatrixStaticInspector'};'SyntheticFixture'{'RendererMatrixSyntheticFixture'};'ContractHarness'{'RendererMatrixContractHarness'}};if($p.collector-cne$collector){throw "$Context provenance collector does not match kind '$($p.kind)'."}
+        $evidenceClass=switch -CaseSensitive($p.kind){'StaticInspection'{'Static'};'SyntheticFixture'{'Synthetic'};'ContractHarness'{'Contract'}}
+    }elseif($p.kind-ceq'ActualHerdrRuntime'){
+        throw "$Context claims unearned Runtime: caller-authored matrix payloads cannot establish independently observed Herdr/App/Core/session/semantic provenance; a trusted production runtime collector receipt is required."
+    }else{throw "$Context provenance kind '$($p.kind)' is not governed."}
+    $runFingerprint=@($run.runId,$run.startedUtc,$run.endedUtc,$run.sessionId,$run.candidateCommitSha,$run.candidateTreeSha,$run.packageReceiptCanonicalSha256)-join'|'
+    return [pscustomobject][ordered]@{CaseId=[string]$Payload.caseId;ObservedUtc=[string]$Payload.observedUtc;EvidenceClass=$evidenceClass;Outcome=if($allPassed){'PASS'}else{'FAIL'};Details=[string]$Payload.details;RunFingerprint=$runFingerprint;RunStartedUtc=[string]$run.startedUtc;RunEndedUtc=[string]$run.endedUtc}
+}
+
+function Assert-RendererMatrixCases { param([object[]]$Cases,[string[]]$Expected,[string]$Context,[string]$Root,[string]$RepositoryRoot,[switch]$ValidateBindings,[ref]$CommonRunFingerprint)
+    if([string]::IsNullOrWhiteSpace($Root)){$Root=$script:RendererCurrentEvidenceRoot}
+    if([string]::IsNullOrWhiteSpace($RepositoryRoot)){$RepositoryRoot=$script:RendererCurrentRepositoryRoot}
+    if($script:RendererCurrentValidateBindings){$ValidateBindings=$true}
     Assert-RendererSet @($Cases|ForEach-Object{$_.id}) $Expected "$Context IDs"
-    foreach($case in $Cases){Assert-RendererExactProperties $case @('id','status','evidenceReceipt','notes') "$Context '$($case.id)'";Assert-RendererString $case.id "$Context id";if([string]$case.status -cnotin @('PASS','FAIL','NOT_OBSERVED')){throw "$Context '$($case.id)' status is invalid."};if($case.status-ceq'NOT_OBSERVED'){if($null-ne$case.evidenceReceipt-or$null-ne$case.notes){throw "$Context '$($case.id)' NOT_OBSERVED must not claim evidence."}}else{Assert-RendererString $case.notes "$Context '$($case.id)' notes";if(-not$ValidateBindings){throw "$Context '$($case.id)' observed status requires production binding validation."};$receipt=(Read-RendererEvidenceReceipt $case.evidenceReceipt "$Context '$($case.id)' receipt" $Root $RepositoryRoot).Value;Assert-RendererExactProperties $receipt @('caseId','observations','aggregateStatus') "$Context receipt";if($receipt.caseId-cne$case.id-or$receipt.aggregateStatus-cnotin@('PASS','FAIL')){throw "$Context '$($case.id)' receipt identity/status is invalid."};$observations=@($receipt.observations);if($observations.Count-lt1){throw "$Context '$($case.id)' receipt omitted raw observations."};$allPass=$true;for($i=0;$i-lt$observations.Count;$i++){$o=$observations[$i];Assert-RendererExactProperties $o @('ordinal','observedUtc','outcome','notes') "$Context '$($case.id)' observation $i";Assert-RendererNonnegativeInteger $o.ordinal 'Matrix observation ordinal';if([long]$o.ordinal-ne$i){throw "$Context '$($case.id)' observation ordering is invalid."};Assert-RendererUtc $o.observedUtc 'Matrix observation UTC';if($o.outcome-cnotin@('PASS','FAIL')){throw "$Context '$($case.id)' observation outcome is invalid."};Assert-RendererString $o.notes 'Matrix observation notes';if($o.outcome-cne'PASS'){$allPass=$false}};$computed=if($allPass){'PASS'}else{'FAIL'};if($receipt.aggregateStatus-cne$computed-or$case.status-cne$computed){throw "$Context '$($case.id)' status is not recomputed from raw observations."}}}
+    $matrixRunFingerprint=$null
+    foreach($case in $Cases){
+        Assert-RendererExactProperties $case @('id','status','evidenceReceipt','notes') "$Context '$($case.id)'"
+        Assert-RendererString $case.id "$Context id"
+        if([string]$case.status-cnotin@('PASS','FAIL','NOT_OBSERVED')){throw "$Context '$($case.id)' status is invalid."}
+        if($case.status-ceq'NOT_OBSERVED'){
+            if($null-ne$case.evidenceReceipt-or$null-ne$case.notes){throw "$Context '$($case.id)' NOT_OBSERVED must not claim evidence."}
+            continue
+        }
+        Assert-RendererString $case.notes "$Context '$($case.id)' notes"
+        if(-not$ValidateBindings){throw "$Context '$($case.id)' observed status requires production binding validation."}
+        $receipt=(Read-RendererEvidenceReceipt $case.evidenceReceipt "$Context '$($case.id)' receipt" $Root $RepositoryRoot).Value
+        Assert-RendererExactProperties $receipt @('schemaVersion','caseId','observedUtc','outcome','operator','observer','evidenceBoundary','rawEvidence') "$Context receipt"
+        Assert-RendererNonnegativeInteger $receipt.schemaVersion "$Context receipt schemaVersion"
+        if([long]$receipt.schemaVersion-ne1-or$receipt.caseId-cne$case.id){throw "$Context '$($case.id)' receipt identity is invalid."}
+        Assert-RendererUtc $receipt.observedUtc "$Context '$($case.id)' observedUtc"
+        if($receipt.outcome-cnotin@('PASS','FAIL')){throw "$Context '$($case.id)' receipt outcome is invalid."}
+        foreach($role in @(@{Value=$receipt.operator;Name='operator';Expected='EvidenceOperator'},@{Value=$receipt.observer;Name='observer';Expected='IndependentObserver'})){
+            Assert-RendererExactProperties $role.Value @('identity','role') "$Context '$($case.id)' $($role.Name)"
+            Assert-RendererString $role.Value.identity "$Context '$($case.id)' $($role.Name) identity"
+            if($role.Value.role-cne$role.Expected){throw "$Context '$($case.id)' $($role.Name) role is invalid."}
+        }
+        if($receipt.operator.identity.Trim().Equals($receipt.observer.identity.Trim(),[StringComparison]::OrdinalIgnoreCase)){throw "$Context '$($case.id)' operator and observer identities must be distinct."}
+        Assert-RendererExactProperties $receipt.evidenceBoundary @('evidenceClass','finalHumanGo','release','creditGranted') "$Context '$($case.id)' evidenceBoundary"
+        if($receipt.evidenceBoundary.evidenceClass-cnotin@('Static','Synthetic','Contract','Runtime')-or$receipt.evidenceBoundary.finalHumanGo-cne'NOT_OBSERVED'-or$receipt.evidenceBoundary.release-cne'NOT_OBSERVED'){throw "$Context '$($case.id)' receipt inflated its evidence boundary."}
+        Assert-RendererBoolean $receipt.evidenceBoundary.creditGranted "$Context '$($case.id)' creditGranted"
+        if($receipt.evidenceBoundary.creditGranted){throw "$Context '$($case.id)' receipt cannot grant final credit."}
+        Assert-RendererFileBinding $receipt.rawEvidence "$Context '$($case.id)' rawEvidence" $Root -ValidateBindings
+        $rawPath=Resolve-RendererBoundPath $Root $receipt.rawEvidence.relativePath "$Context '$($case.id)' rawEvidence"
+        $rawStable=Get-RendererStableFileIdentity $Root $rawPath "$Context '$($case.id)' rawEvidence" -IncludeBytes
+        $rawJson=(New-Object Text.UTF8Encoding($false,$true)).GetString($rawStable.Content)
+        $rawPayload=ConvertFrom-StrictHumanDesignReviewJson -Json $rawJson -Description "$Context '$($case.id)' raw evidence payload"
+        if ($PSVersionTable.PSVersion.Major -ge 7 -and (Get-Command ConvertFrom-Json).Parameters.ContainsKey('DateKind')) {
+            $rawPayload = $rawJson | ConvertFrom-Json -DateKind String
+        }
+        $validatedRaw = Assert-RendererMatrixRawPayload -Payload $rawPayload -ExpectedCaseId $case.id -Context "$Context '$($case.id)' raw evidence payload" -RepositoryRoot $RepositoryRoot -EvidenceRoot $Root
+        if($null-ne$CommonRunFingerprint){
+            if($null-eq$CommonRunFingerprint.Value){$CommonRunFingerprint.Value=$validatedRaw.RunFingerprint}elseif([string]$CommonRunFingerprint.Value-cne$validatedRaw.RunFingerprint){throw "$Context '$($case.id)' does not share the exact global 25-case run/session/candidate/package identity."}
+        }elseif($null-eq$matrixRunFingerprint){$matrixRunFingerprint=$validatedRaw.RunFingerprint}elseif($matrixRunFingerprint-cne$validatedRaw.RunFingerprint){throw "$Context '$($case.id)' does not share the exact run/session/candidate/package identity."}
+        if ($receipt.observedUtc -cne $validatedRaw.ObservedUtc) {
+            throw "$Context '$($case.id)' receipt observedUtc '$($receipt.observedUtc)' does not match raw evidence observedUtc '$($validatedRaw.ObservedUtc)'."
+        }
+        if ($receipt.outcome -cne $validatedRaw.Outcome) {
+            throw "$Context '$($case.id)' receipt outcome '$($receipt.outcome)' contradicts raw evidence outcome '$($validatedRaw.Outcome)'."
+        }
+        if ($receipt.evidenceBoundary.evidenceClass -cne $validatedRaw.EvidenceClass) {
+            throw "$Context '$($case.id)' receipt evidenceClass '$($receipt.evidenceBoundary.evidenceClass)' contradicts raw evidence evidenceClass '$($validatedRaw.EvidenceClass)'."
+        }
+        if($case.status-cne$receipt.outcome){throw "$Context '$($case.id)' status is not recomputed from the bound receipt outcome."}
+    }
 }
 function Get-RendererP95Microseconds { param($Values,[string]$Context)
     $items=@($Values);if($items.Count-ne20){throw "$Context must contain exactly 20 raw observations; missing or extra samples fail closed."};foreach($value in $items){Assert-RendererNonnegativeInteger $value "$Context observation"};$sorted=@($items|Sort-Object {[long]$_});return [long]$sorted[[Math]::Ceiling(0.95*$sorted.Count)-1]
@@ -538,7 +912,8 @@ function Test-RendererCompatibilityManifest {
     $resultKeys=@();$visualComplete=$tol.approvalStatus-ceq'APPROVED';foreach($result in @($comparison.results)){Assert-RendererExactProperties $result @('language','captureName','referenceRelativePath','status','differentPixels','differentPixelPercent','maximumChannelDelta','nonmaskedDifferenceCount','disposition') 'Comparison result';$key="$($result.language)|$($result.captureName)";$resultKeys+=$key;if([string]$result.referenceRelativePath-cne(Get-RendererReferencePath $result.captureName)){throw "Comparison '$key' is not bound to the exact immutable reference."};if($result.status-cnotin@('PASS','FAIL','NOT_OBSERVED')){throw "Comparison '$key' status is invalid."};if($result.status-ceq'NOT_OBSERVED'){foreach($n in @('differentPixels','differentPixelPercent','maximumChannelDelta','nonmaskedDifferenceCount','disposition')){if($null-ne$result.$n){throw "Comparison '$key' NOT_OBSERVED must keep metrics/disposition null."}};$visualComplete=$false}else{if($tol.approvalStatus-cne'APPROVED'){throw "Comparison '$key' cannot claim observed results before tolerance approval."};Assert-RendererNonnegativeInteger $result.differentPixels "Comparison '$key' differentPixels";Assert-RendererFiniteNumber $result.differentPixelPercent "Comparison '$key' differentPixelPercent" 0 100;Assert-RendererFiniteNumber $result.maximumChannelDelta "Comparison '$key' maximumChannelDelta" 0 255;Assert-RendererNonnegativeInteger $result.nonmaskedDifferenceCount "Comparison '$key' nonmaskedDifferenceCount";if([long]$result.nonmaskedDifferenceCount-gt[long]$result.differentPixels){throw "Comparison '$key' nonmasked differences exceed total differences."};Assert-RendererString $result.disposition "Comparison '$key' disposition";$within=([double]$result.differentPixelPercent-le[double]$tol.maximumDifferentPixelPercent-and[double]$result.maximumChannelDelta-le[double]$tol.perChannelDelta-and[long]$result.nonmaskedDifferenceCount-le[long]$tol.maximumNonmaskedDifferences);if(($result.status-ceq'PASS')-ne$within){throw "Comparison '$key' status contradicts the approved fail rule."};if($result.status-cne'PASS'){$visualComplete=$false}}};Assert-RendererSet $resultKeys $expectedCaptureKeys 'Comparison result catalog';for($i=0;$i-lt$expectedCaptureKeys.Count;$i++){if($resultKeys[$i]-cne$expectedCaptureKeys[$i]){throw "Comparison result index $i must be '$($expectedCaptureKeys[$i])'."}}
     if($ValidateBindings){foreach($result in @($comparison.results|Where-Object{$_.status-cne'NOT_OBSERVED'})){$key="$($result.language)|$($result.captureName)";$capture=@($manifest.captures|Where-Object{"$($_.language)|$($_.name)"-ceq$key})[0];$capturePng=Get-RendererPngIdentity $root (Resolve-RendererBoundPath $root $capture.relativePath 'Observed comparison capture') "Comparison '$key' capture";$referencePng=Get-RendererPngIdentity $RepositoryRoot (Join-Path $RepositoryRoot $result.referenceRelativePath) "Comparison '$key' reference";$actual=Compare-RendererPixels $capturePng $referencePng $decodedMasks $key;if([long]$result.differentPixels-ne$actual.DifferentPixels-or[Math]::Abs([double]$result.differentPixelPercent-$actual.DifferentPixelPercent)-gt0.000000001-or[double]$result.maximumChannelDelta-ne$actual.MaximumChannelDelta-or[long]$result.nonmaskedDifferenceCount-ne$actual.NonmaskedDifferenceCount){throw "Comparison '$key' metrics are not independently recomputed from held decoded pixels/masks."};$actualPass=$actual.DifferentPixelPercent-le[double]$tol.maximumDifferentPixelPercent-and$actual.MaximumChannelDelta-le[double]$tol.perChannelDelta-and$actual.NonmaskedDifferenceCount-le[long]$tol.maximumNonmaskedDifferences;if(($result.status-ceq'PASS')-ne$actualPass){throw "Comparison '$key' status is not recomputed from held decoded pixels/masks."}}}elseif(@($comparison.results|Where-Object{$_.status-cne'NOT_OBSERVED'}).Count){throw 'Observed comparisons require production binding validation.'}
 
-    $matrices=$manifest.matrices;Assert-RendererExactProperties $matrices @('displayCases','mixedDpiTransitions','accessibilityCases','supportedEnvironmentCases') 'Matrices';Assert-RendererMatrixCases @($matrices.displayCases) $script:RendererDisplayCases 'Display matrix' $root $RepositoryRoot -ValidateBindings:$ValidateBindings;Assert-RendererMatrixCases @($matrices.mixedDpiTransitions) $script:RendererMixedDpiCases 'Mixed-DPI matrix' $root $RepositoryRoot -ValidateBindings:$ValidateBindings;Assert-RendererMatrixCases @($matrices.accessibilityCases) $script:RendererAccessibilityCases 'Accessibility matrix' $root $RepositoryRoot -ValidateBindings:$ValidateBindings;Assert-RendererMatrixCases @($matrices.supportedEnvironmentCases) $script:RendererEnvironmentCases 'Supported-environment matrix' $root $RepositoryRoot -ValidateBindings:$ValidateBindings
+    $matrices=$manifest.matrices;Assert-RendererExactProperties $matrices @('displayCases','mixedDpiTransitions','accessibilityCases','supportedEnvironmentCases') 'Matrices';$globalMatrixRunFingerprint=$null;Assert-RendererMatrixCases @($matrices.displayCases) $script:RendererDisplayCases 'Display matrix' $root $RepositoryRoot -ValidateBindings:$ValidateBindings -CommonRunFingerprint ([ref]$globalMatrixRunFingerprint);Assert-RendererMatrixCases @($matrices.mixedDpiTransitions) $script:RendererMixedDpiCases 'Mixed-DPI matrix' $root $RepositoryRoot -ValidateBindings:$ValidateBindings -CommonRunFingerprint ([ref]$globalMatrixRunFingerprint);Assert-RendererMatrixCases @($matrices.accessibilityCases) $script:RendererAccessibilityCases 'Accessibility matrix' $root $RepositoryRoot -ValidateBindings:$ValidateBindings -CommonRunFingerprint ([ref]$globalMatrixRunFingerprint);Assert-RendererMatrixCases @($matrices.supportedEnvironmentCases) $script:RendererEnvironmentCases 'Supported-environment matrix' $root $RepositoryRoot -ValidateBindings:$ValidateBindings -CommonRunFingerprint ([ref]$globalMatrixRunFingerprint)
+    if($ValidateBindings){$previousMatrixUtc=$null;foreach($matrixCase in @($matrices.displayCases+$matrices.mixedDpiTransitions+$matrices.accessibilityCases+$matrices.supportedEnvironmentCases)){if($matrixCase.status-cne'NOT_OBSERVED'){$chronologyReceipt=(Read-RendererEvidenceReceipt $matrixCase.evidenceReceipt "Matrix chronology '$($matrixCase.id)'" $root $RepositoryRoot).Value;$currentMatrixUtc=[DateTimeOffset]::Parse($chronologyReceipt.observedUtc);if($null-ne$previousMatrixUtc-and$currentMatrixUtc-le$previousMatrixUtc){throw "Observed matrix receipt chronology must be strictly increasing and unique in governed case order at '$($matrixCase.id)'."};$previousMatrixUtc=$currentMatrixUtc}}}
     $matrixComplete=@($matrices.displayCases+$matrices.mixedDpiTransitions+$matrices.accessibilityCases+$matrices.supportedEnvironmentCases|Where-Object{$_.status-cne'PASS'}).Count-eq0
 
     $performance=$manifest.performanceProtocol;Assert-RendererExactProperties $performance @('sameCandidateContentWorkloadHostSession','onlyRendererPolicyVaries','modeA','modeB','orders','warmupIterations','repetitionsPerOrder','statistic','ownerNumericLimits','samplesStatus','evidenceReceipt') 'Performance protocol';Assert-RendererBoolean $performance.sameCandidateContentWorkloadHostSession 'Performance same binding';Assert-RendererBoolean $performance.onlyRendererPolicyVaries 'Performance only renderer varies';if(-not[bool]$performance.sameCandidateContentWorkloadHostSession-or-not[bool]$performance.onlyRendererPolicyVaries-or$performance.modeA-cne'Hardware'-or$performance.modeB-cne'SoftwareOnly'){throw 'Performance protocol must compare Hardware A with SoftwareOnly B on the same binding.'};Assert-RendererSet @($performance.orders) @('AB','BA') 'Performance order';for($i=0;$i-lt2;$i++){if($performance.orders[$i]-cne@('AB','BA')[$i]){throw 'Performance order must be exact AB, BA.'}};Assert-RendererPositiveInteger $performance.warmupIterations 'Warm-up iterations';Assert-RendererPositiveInteger $performance.repetitionsPerOrder 'Repetitions';Assert-RendererString $performance.statistic 'Performance statistic'
