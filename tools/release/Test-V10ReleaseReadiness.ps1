@@ -1270,7 +1270,7 @@ try {
         [void]$assertions.Add('Issue41OfflineFixtureReparseRejected')
     } finally {
         if (Test-Path -LiteralPath $repositoryReparseRoot) {
-            Remove-Item -LiteralPath $repositoryReparseRoot -Force -ErrorAction Stop
+            [IO.Directory]::Delete($repositoryReparseRoot, $false)
         }
     }
 
