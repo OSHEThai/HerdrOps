@@ -240,6 +240,16 @@ jobs:
         shell: pwsh
         run: ./tools/Test-V02LiveWidgets.ps1 -Configuration Release -SkipBuild -RunToken $env:HERDOPS_V02_LIVE_WIDGET_RUN_TOKEN
 
+      # Issue #10 composition selftests are Static/Synthetic only. They do not
+      # start HerdrOps/Herdr, mutate a default session, or grant Runtime/Release.
+      - name: Run v0.2 Issue #10 live-widget acceptance selftests (PowerShell 7)
+        shell: pwsh
+        run: ./tools/v0.2-issue10-live-widget/Test-V02Issue10Acceptance.Tests.ps1
+
+      - name: Run v0.2 Issue #10 live-widget acceptance selftests (Windows PowerShell 5.1)
+        shell: powershell
+        run: ./tools/v0.2-issue10-live-widget/Test-V02Issue10Acceptance.Tests.ps1
+
       - name: Run v0.2 Thai and English language-mode gate
         shell: pwsh
         run: ./tools/Test-V02LanguageModes.ps1 -Configuration Release -SkipBuild
