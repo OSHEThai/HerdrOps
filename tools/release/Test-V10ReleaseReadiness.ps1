@@ -107,7 +107,7 @@ function New-TestIssue40Handoff {
             status = 'PENDING'
             evidenceClass = 'Static'
             evidenceFiles = @([ordered]@{
-                    path = 'evidence.txt'
+                    path = "issue-$issue/evidence.txt"
                     sha256 = $evidenceHash
                 })
             humanAcceptance = [ordered]@{
