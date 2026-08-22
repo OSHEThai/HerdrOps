@@ -1068,8 +1068,12 @@ try {
     [void]$assertions.Add('Issue41NotObservedInventoryPartitionRejected')
 
     $issue41BlockedSingleInventory = Copy-TestJsonObject -Value $issue41Report.Value
-    $issue41BlockedSingleInventory.EvidenceStatus.Runtime.Status = 'BLOCKED'
-    $issue41BlockedSingleInventory.EvidenceStatus.Runtime.ObservedVersions = @()
+    $issue41BlockedSingleInventory.EvidenceStatus.Runtime = [pscustomobject][ordered]@{
+        Status = 'BLOCKED'
+        RequiredByVersions = @('v0.2.0', 'v0.3.0', 'v0.4.0', 'v0.5.0', 'v0.7.0')
+        ObservedVersions = @()
+        NotObservedVersions = @('v0.2.0', 'v0.3.0', 'v0.4.0', 'v0.5.0', 'v0.7.0')
+    }
     Assert-ExpectedFailure -Description 'Issue #41 BLOCKED inventory lacks observed partition' -RequiredFragments @('BLOCKED must contain both') -Action {
         Assert-V10Issue41ReportSemantics -Report $issue41BlockedSingleInventory -SourceCommit $sourceCommit -ExpectedSourceTree $sourceTree | Out-Null
     }
