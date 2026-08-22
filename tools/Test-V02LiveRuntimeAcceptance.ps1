@@ -53,6 +53,7 @@ $PSNativeCommandUseErrorActionPreference = $false
 . (Join-Path $PSScriptRoot 'lib/V02ReferenceHostProfile.ps1')
 . (Join-Path $PSScriptRoot 'lib/V02RendererEvidence.ps1')
 . (Join-Path $PSScriptRoot 'lib/V02RuntimePackageBinding.ps1')
+. (Join-Path $PSScriptRoot 'lib/V02RuntimeSemanticBinding.ps1')
 
 function Get-ExpectedCleanSourceIdentity {
     param(
@@ -216,6 +217,7 @@ function Write-FailureGateReport {
         [AllowEmptyString()][string]$AppExitCode = 'NOT_OBSERVED',
         [AllowEmptyString()][string]$CoreExitCode = 'NOT_OBSERVED',
         [AllowEmptyString()][string]$CoreAcceptedEventKindCheck = 'NOT_EVALUATED',
+        [AllowEmptyString()][string]$SemanticCaptureBindingCheck = 'NOT_EVALUATED',
         [AllowEmptyString()][string]$ObservedLanguage = 'NOT_OBSERVED',
         [AllowEmptyString()][string]$CaptureDirectory = '',
         [AllowEmptyString()][string]$ReferenceHostSchemaSha256 = 'NOT_OBSERVED',
@@ -257,6 +259,7 @@ function Write-FailureGateReport {
             "OriginalAppExitCode: $AppExitCode",
             "OriginalCoreExitCode: $CoreExitCode",
             "CoreAcceptedEventKindCheck: $CoreAcceptedEventKindCheck",
+            "SemanticCaptureBindingCheck: $SemanticCaptureBindingCheck",
             "Language: $ObservedLanguage",
             "ReferenceHostSchemaSha256: $ReferenceHostSchemaSha256",
             "PackageIdentityReceiptSha256: $PackageIdentityReceiptSha256",
@@ -1498,6 +1501,15 @@ foreach ($capture in $captures) {
     Assert-True ($actualHash -eq $capture.Sha256) "Runtime capture hash mismatch: $($capture.Name)"
 }
 
+# Static/Contract/Synthetic preparation with no Runtime/Release credit. Independently
+# re-derives and cross-checks SemanticStateCaptures/SemanticProjectionSha256/CaptureStateSha256
+# (Issue #9, #10) against the phase sequences/hashes already Core-trace-bound above and the
+# already hash-verified top-level captures; never accepts the App report's own claims as proof.
+Assert-V02RuntimeSemanticStateCaptures -AppReport $appReport -RuntimeCaptures $captures `
+    -ExpectedLanguage $Language -ExpectedLanguageCultureName $expectedLanguageCultureName `
+    -ValidationUtc ([DateTimeOffset]::UtcNow)
+$semanticCaptureBindingCheck = 'SemanticStateCaptures independently cross-checked (sequence/hash/identity/bilingual-parity/timestamp-order); Static/Contract/Synthetic, no Runtime/Release credit.'
+
 $finalSourceIdentity = Get-ExpectedCleanSourceIdentity `
     -Root $repositoryRoot `
     -ExpectedCommit $ExpectedSourceCommit `
@@ -1542,6 +1554,7 @@ $reportLines = @(
     "EventBIncrementTransition: index=$eventBIncrementTransitionIndex utc=$($eventBIncrementTransition.ObservedUtc) eventCount=$($eventBIncrementTransition.EventCount)",
     "EventBTransition: index=$eventBTransitionIndex utc=$($eventBTransition.ObservedUtc) eventCount=$($eventBTransition.EventCount)",
     "CoreAcceptedEventKindCheck: $coreAcceptedEventKindCheck",
+    "SemanticCaptureBindingCheck: $semanticCaptureBindingCheck",
     "EventAIntegrity: admissionPath=$($eventACorrelation.AdmissionPath) sequenceDelta=$($appReport.EventA.CurrentSequence - $appReport.EventA.BaselineSequence) eventCountDelta=$($appReport.EventA.CurrentEventCount - $appReport.EventA.BaselineEventCount) connectionEpoch=$($appReport.EventA.ConnectionEpoch) bootstrapDelta=$($appReport.EventA.CurrentBootstrapCount - $appReport.EventA.BaselineBootstrapCount) disconnectDelta=$($appReport.EventA.CurrentDisconnectCount - $appReport.EventA.BaselineDisconnectCount) reconciliationDelta=$($eventACorrelation.ReconciliationDelta)",
     "EventBIntegrity: admissionPath=$($eventBCorrelation.AdmissionPath) sequenceDelta=$($appReport.EventB.CurrentSequence - $appReport.EventB.BaselineSequence) eventCountDelta=$($appReport.EventB.CurrentEventCount - $appReport.EventB.BaselineEventCount) connectionEpoch=$($appReport.EventB.ConnectionEpoch) bootstrapDelta=$($appReport.EventB.CurrentBootstrapCount - $appReport.EventB.BaselineBootstrapCount) disconnectDelta=$($appReport.EventB.CurrentDisconnectCount - $appReport.EventB.BaselineDisconnectCount) reconciliationDelta=$($eventBCorrelation.ReconciliationDelta)",
     "EventAAgentStatusTransition: terminal=$($eventAChange.TerminalId) workspace=$($eventAChange.WorkspaceId) tab=$($eventAChange.TabId) pane=$($eventAChange.PaneId) previous=$($eventAChange.PreviousStatus) current=$($eventAChange.CurrentStatus) stateChangeSequence=$($eventAChange.PreviousStateChangeSequence)->$($eventAChange.CurrentStateChangeSequence)",

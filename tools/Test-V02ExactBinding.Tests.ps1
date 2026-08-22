@@ -60,6 +60,8 @@ $compositeRuntime = Join-Path $repositoryRoot 'tools\Test-V02LiveRuntimeAcceptan
 $runtimeMonitorContract = Join-Path $repositoryRoot 'docs\protocol\v0.2-runtime-monitor-contract.md'
 $runtimePackageBinding = Join-Path $repositoryRoot 'tools\lib\V02RuntimePackageBinding.ps1'
 $runtimePackageBindingTests = Join-Path $repositoryRoot 'tools\lib\V02RuntimePackageBinding.Tests.ps1'
+$runtimeSemanticBinding = Join-Path $repositoryRoot 'tools\lib\V02RuntimeSemanticBinding.ps1'
+$runtimeSemanticBindingTests = Join-Path $repositoryRoot 'tools\lib\V02RuntimeSemanticBinding.Tests.ps1'
 
 foreach ($path in @($herdrRuntime, $compositeRuntime)) {
     Assert-ParserClean -Path $path
@@ -73,7 +75,7 @@ foreach ($path in @($herdrRuntime, $compositeRuntime)) {
     Assert-SourceContains -Path $path -Text 'PostRunSourceTree' -Description "$(Split-Path -Leaf $path) reports post-run source tree"
 }
 
-foreach ($path in @($runtimePackageBinding,$runtimePackageBindingTests)) {
+foreach ($path in @($runtimePackageBinding,$runtimePackageBindingTests,$runtimeSemanticBinding,$runtimeSemanticBindingTests)) {
     Assert-ParserClean -Path $path
 }
 Assert-SourceContains -Path $compositeRuntime -Text '[string]$PackageIdentityPath' -Description 'Composite gate requires the package identity receipt'
@@ -92,6 +94,7 @@ Assert-SourceContains -Path $runtimePackageBinding -Text "EvidenceSource = 'Oper
 Assert-SourceContains -Path $runtimePackageBinding -Text 'Invoke-V02CommittedPackageValidator -ValidatorPath $Binding.ValidatorPath' -Description 'Finalization re-runs the entire committed package validator'
 Assert-SourceContains -Path $runtimePackageBinding -Text '$total -ne 885' -Description 'TRX preservation requires the exact current 885-test aggregate'
 Assert-SourceContains -Path $runtimePackageBinding -Text '[IO.FileShare]::Read' -Description 'TRX selection uses a held source stream that denies write/delete sharing'
+Assert-SourceContains -Path $compositeRuntime -Text 'Assert-V02RuntimeSemanticStateCaptures' -Description 'Composite gate independently cross-checks SemanticStateCaptures before source-identity finalization'
 
 Assert-SourceContains `
     -Path $herdrRuntime `
