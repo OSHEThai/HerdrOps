@@ -17,7 +17,7 @@ function New-RunFixture {
     $lines+=@($captures|ForEach-Object{"SHA256 $($_.Sha256) $($_.Name)"});Write-TestText (Join-Path $Root 'gate-report.txt') ($lines-join [Environment]::NewLine)
     return [pscustomobject]@{Root=$Root;AppPath=$appPath;CorePath=$corePath;CaptureRoot=$captureRoot}
 }
-function Invoke-Matrix([string]$Thai,[string]$English,[string]$Output){$all=@('-NoProfile','-File',$tool,'-ThaiEvidenceDirectory',$Thai,'-EnglishEvidenceDirectory',$English,'-OutputPath',$Output);$previous=$ErrorActionPreference;$ErrorActionPreference='Continue';try{$text=@(& $engine @all 2>&1);$code=$LASTEXITCODE}finally{$ErrorActionPreference=$previous};[pscustomobject]@{ExitCode=$code;Text=($text-join [Environment]::NewLine)}}
+function Invoke-Matrix([string]$Thai,[string]$English,[string]$Output){$all=@('-NoProfile','-File',$tool,'-ThaiEvidenceDirectory',$Thai,'-EnglishEvidenceDirectory',$English,'-OutputPath',$Output);$previous=$ErrorActionPreference;$ErrorActionPreference='Continue';try{$text=@(& $engine @all 2>&1);$code=$LASTEXITCODE}finally{$ErrorActionPreference=$previous;$global:LASTEXITCODE=0};[pscustomobject]@{ExitCode=$code;Text=($text-join [Environment]::NewLine)}}
 function Pass([string]$Name,[scriptblock]$Body){&$Body;Write-Output "PASS Synthetic: $Name"}
 function Expect-Failure([string]$Name,[scriptblock]$Arrange){$case=Join-Path $testRoot ([Guid]::NewGuid().ToString('N'));$thai=New-RunFixture (Join-Path $case 'thai') 'Thai';$english=New-RunFixture (Join-Path $case 'english') 'English';&$Arrange $thai $english;$out=Join-Path $case 'matrix.json';$result=Invoke-Matrix $thai.Root $english.Root $out;if($result.ExitCode-eq 0-or(Test-Path $out)){throw "$Name did not fail closed. $($result.Text)"};Write-Output "PASS Synthetic: $Name"}
 
