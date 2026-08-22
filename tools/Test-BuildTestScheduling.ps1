@@ -49,7 +49,17 @@ function Test-BuildScriptScheduling {
         throw "Invoke-Build.ps1 must contain exactly one canonical dotnet test command; found $($testCommands.Count)."
     }
 
-    $arguments = @($testCommands[0].CommandElements |
+    $commandElements = @($testCommands[0].CommandElements)
+    if ($commandElements.Count -lt 3) {
+        throw 'The canonical dotnet test command must specify a target solution argument.'
+    }
+
+    $targetArgument = $commandElements[2].Extent.Text
+    if ($targetArgument -cne '$solutionPath' -and $targetArgument -notmatch 'HerdrOps\.sln') {
+        throw "The canonical dotnet test command must target `$solutionPath or HerdrOps.sln; found: $targetArgument"
+    }
+
+    $arguments = @($commandElements |
         Select-Object -Skip 2 |
         ForEach-Object { $_.Extent.Text })
     $boundedSchedulers = @($arguments | Where-Object { $_ -cmatch '^(?:-m|--maxcpucount):1$' })
@@ -78,10 +88,50 @@ function Test-CiWorkflowScheduling {
         throw 'CI workflow must contain the canonical Invoke-Build.ps1 -Configuration Release step.'
     }
 
-    # 2. Ensure NO step runs `dotnet test` directly in CI workflow
-    $directDotnetTestMatches = [Regex]::Matches($content, '(?m)^\s*run:\s*.*?dotnet\s+test.*$')
-    if ($directDotnetTestMatches.Count -gt 0) {
-        $offending = @($directDotnetTestMatches | ForEach-Object { $_.Value.Trim() })
+    # 2. Ensure NO step runs `dotnet test` directly in CI workflow (including multiline run: | or run: > blocks)
+    $lines = $content -split "`r?`n"
+    $inRunBlock = $false
+    $runBlockIndent = 0
+    $offending = New-Object System.Collections.ArrayList
+
+    for ($i = 0; $i -lt $lines.Count; $i++) {
+        $line = $lines[$i]
+        $trimmed = $line.Trim()
+
+        if ($trimmed.StartsWith('#')) {
+            continue
+        }
+
+        if ($line -match '^\s*run:\s*(?:\||>|>-|\|-|\+\||>+)') {
+            $inRunBlock = $true
+            $runBlockIndent = $line.Length - $line.TrimStart().Length
+            continue
+        }
+
+        if ($line -match '^\s*run:\s*(.*)$') {
+            $cmd = $Matches[1]
+            if ($cmd -match '^(.*?)(?<!\$)(?:#.*)$') { $cmd = $Matches[1] }
+            if ($cmd -match '\bdotnet\s+test\b') {
+                [void]$offending.Add("line $($i+1): $($line.Trim())")
+            }
+            continue
+        }
+
+        if ($inRunBlock) {
+            $lineIndent = $line.Length - $line.TrimStart().Length
+            if ($trimmed.Length -gt 0 -and $lineIndent -le $runBlockIndent) {
+                $inRunBlock = $false
+            } else {
+                $strippedLine = $line
+                if ($strippedLine -match '^(.*?)(?<!\$)(?:#.*)$') { $strippedLine = $Matches[1] }
+                if ($strippedLine -match '\bdotnet\s+test\b') {
+                    [void]$offending.Add("line $($i+1): $($line.Trim())")
+                }
+            }
+        }
+    }
+
+    if ($offending.Count -gt 0) {
         throw "CI workflow must not execute 'dotnet test' directly in workflow steps. Offending lines: $($offending -join '; ')"
     }
 
@@ -152,12 +202,18 @@ function Test-GateScriptSkipTestsSupport {
         'Test-V04DelegationGraph.ps1',
         'Test-V04TaskAlignment.ps1',
         'Test-V04ExpandedWidget.ps1',
+        'Test-V04ReleaseGate.ps1',
         'Test-V05ComplianceRuleEngine.ps1',
         'Test-V05EvidenceAuditStorage.ps1',
         'Test-V05ComplianceQueue.ps1',
-        'Test-V06ScoringEngine.ps1',
-        'Test-V05RoleDistinctReview.ps1'
+        'Test-V05RoleDistinctReview.ps1',
+        'Test-V05ReleaseGate.ps1',
+        'Test-V06ScoringEngine.ps1'
     )
+
+    if ($gateScripts.Count -ne 23) {
+        throw "Expected exactly 23 gate scripts; found $($gateScripts.Count)."
+    }
 
     foreach ($scriptName in $gateScripts) {
         $path = Join-Path $ToolsDirectory $scriptName
@@ -194,6 +250,6 @@ Test-BuildScriptScheduling -ScriptPath $buildScript
 Test-CiWorkflowScheduling -WorkflowPath $ciWorkflowPath
 Test-GateScriptSkipTestsSupport -ToolsDirectory $PSScriptRoot
 
-Write-Output 'Canonical solution test-project scheduling: PASS (max concurrency 1)'
-Write-Output 'CI workflow test scheduling and -SkipTests gate configuration: PASS'
-Write-Output 'Gate script -SkipTests parameter interface compliance: PASS'
+Write-Output 'Canonical solution test-project scheduling: PASS (max concurrency 1, AST solution target pinned)'
+Write-Output 'CI workflow test scheduling and -SkipTests gate configuration: PASS (single-line and multiline scan)'
+Write-Output 'Gate script -SkipTests parameter interface compliance: PASS (all 23 gates)'

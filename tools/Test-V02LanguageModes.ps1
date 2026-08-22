@@ -21,11 +21,17 @@ if (-not $SkipBuild -and -not $SkipTests) {
     }
 }
 
-$testResults = @(Get-ChildItem -LiteralPath $testResultRoot -Filter '*.trx' -File |
-    Sort-Object LastWriteTimeUtc -Descending |
-    Select-Object -First 4)
-if ($testResults.Count -lt 4) {
-    throw "Expected TRX output from four test projects, found $($testResults.Count)."
+if ($SkipBuild -or $SkipTests) {
+    . (Join-Path $PSScriptRoot 'lib\CanonicalTestManifest.ps1')
+    $canonicalManifest = Assert-CanonicalTestResultsManifest -TestResultsDirectory $testResultRoot -RepositoryRoot $repositoryRoot
+    $testResults = @($canonicalManifest.Projects | ForEach-Object { Get-Item -LiteralPath (Join-Path $testResultRoot $_.FileName) })
+} else {
+    $testResults = @(Get-ChildItem -LiteralPath $testResultRoot -Filter '*.trx' -File |
+        Sort-Object LastWriteTimeUtc -Descending |
+        Select-Object -First 4)
+    if ($testResults.Count -lt 4) {
+        throw "Expected TRX output from four test projects, found $($testResults.Count)."
+    }
 }
 
 $combinedTestLog = ($testResults | ForEach-Object {

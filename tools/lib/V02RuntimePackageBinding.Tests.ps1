@@ -32,8 +32,8 @@ try {
     $results=Join-Path $temp 'results';$evidence=Join-Path $temp 'evidence';New-Item -ItemType Directory $results,$evidence|Out-Null
     $started=[DateTime]::UtcNow.AddSeconds(-1)
     $template='<?xml version="1.0"?><TestRun><ResultSummary><Counters total="{0}" passed="{0}" failed="0" /></ResultSummary></TestRun>'
-    $counts=@(222,221,221,221);1..4|ForEach-Object{[IO.File]::WriteAllText((Join-Path $results "test$_.trx"),($template -f $counts[$_-1]))}
-    Test-Case 'four fresh passing TRX files are preserved with receipt' { $x=Save-V02FreshTrxEvidence $results $started $evidence;if($x.Passed-ne 885-or-not(Test-Path -LiteralPath $x.ReceiptPath)){throw 'TRX receipt missing.'};foreach($f in $x.Files){Assert-V02RuntimeBindingSha256 $f.Sha256 'TRX hash'} }
+    $counts=@(222,222,222,222);1..4|ForEach-Object{[IO.File]::WriteAllText((Join-Path $results "test$_.trx"),($template -f $counts[$_-1]))}
+    Test-Case 'four fresh passing TRX files are preserved with receipt' { $x=Save-V02FreshTrxEvidence $results $started $evidence;if($x.Passed-ne 888-or-not(Test-Path -LiteralPath $x.ReceiptPath)){throw 'TRX receipt missing.'};foreach($f in $x.Files){Assert-V02RuntimeBindingSha256 $f.Sha256 'TRX hash'} }
     Test-Case 'existing TRX evidence directory fails closed' { Save-V02FreshTrxEvidence $results $started $evidence } $true
     Remove-Item -LiteralPath (Join-Path $evidence 'test-results') -Recurse -Force
     Remove-Item -LiteralPath (Join-Path $results 'test4.trx')

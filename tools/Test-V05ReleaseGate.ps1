@@ -718,7 +718,8 @@ $implementationGates = @(
 foreach ($implementationGate in $implementationGates) {
     & (Join-Path $PSScriptRoot $implementationGate) `
         -Configuration $Configuration `
-        -SkipBuild | Out-Host
+        -SkipBuild `
+        -SkipTests:$SkipTests | Out-Host
     if ($LASTEXITCODE -ne 0) {
         throw "The v0.5 implementation gate failed: $implementationGate"
     }

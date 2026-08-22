@@ -41,8 +41,14 @@ if (-not $SkipTests) {
         $env:HERDOPS_V02_LIVE_WIDGET_RUN_TOKEN = "$([DateTime]::UtcNow.ToString('yyyyMMddTHHmmssfffffffZ', [Globalization.CultureInfo]::InvariantCulture))-$([Guid]::NewGuid().ToString('N').Substring(0, 8))"
     }
     $resultsDirectory = Join-Path $artifactRoot 'test-results'
+    if (Test-Path -LiteralPath $resultsDirectory) {
+        Remove-Item -LiteralPath $resultsDirectory -Recurse -Force -ErrorAction Stop
+    }
+    New-Item -ItemType Directory -Path $resultsDirectory -Force | Out-Null
     & dotnet test $solutionPath -m:1 --configuration $Configuration --no-restore --no-build --artifacts-path $artifactRoot --results-directory $resultsDirectory --logger trx
     if ($LASTEXITCODE -ne 0) { throw 'Tests failed.' }
+    . (Join-Path $PSScriptRoot 'lib\CanonicalTestManifest.ps1')
+    [void](New-CanonicalTestResultsManifest -TestResultsDirectory $resultsDirectory -Configuration $Configuration -RepositoryRoot $repositoryRoot)
 }
 
 Write-Host "HerdrOps $Configuration build completed. Artifacts: $artifactRoot"

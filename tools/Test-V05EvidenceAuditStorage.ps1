@@ -357,13 +357,12 @@ if (-not $SkipTests) {
 }
 else {
     $canonicalTestResultRoot = Join-Path $artifactRoot 'test-results'
-    $canonicalTrxFiles = @(Get-ChildItem -LiteralPath $canonicalTestResultRoot -Filter '*.trx' -File)
-    if ($canonicalTrxFiles.Count -lt 4) {
-        throw "Expected fresh canonical TRX output from four test projects in $canonicalTestResultRoot, found $($canonicalTrxFiles.Count)."
+    . (Join-Path $PSScriptRoot 'lib\CanonicalTestManifest.ps1')
+    $canonicalManifest = Assert-CanonicalTestResultsManifest -TestResultsDirectory $canonicalTestResultRoot -RepositoryRoot $repositoryRoot
+    foreach ($project in $canonicalManifest.Projects) {
+        Copy-Item -LiteralPath (Join-Path $canonicalTestResultRoot $project.FileName) -Destination $testResultDirectory -Force
     }
-    foreach ($trxFile in $canonicalTrxFiles) {
-        Copy-Item -LiteralPath $trxFile.FullName -Destination $testResultDirectory -Force
-    }
+    Copy-Item -LiteralPath (Join-Path $canonicalTestResultRoot 'test-results-manifest.json') -Destination $testResultDirectory -Force
 }
 
 $testResults = @(Get-ChildItem -LiteralPath $testResultDirectory -Filter '*.trx' -File)

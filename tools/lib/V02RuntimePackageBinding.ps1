@@ -234,7 +234,7 @@ function Save-V02FreshTrxEvidence {
         $total += [int]$counters.total; $passed += [int]$counters.passed; $failed += [int]$counters.failed
         $entries += [pscustomobject][ordered]@{ Name=$file.Name; Bytes=[int64]$copyBytes.Length; Sha256=$copyHash; LastWriteUtc=$file.LastWriteUtc.ToString('O') }
     }
-    if ($total -ne 885 -or $failed -ne 0 -or $passed -ne 885) {
+    if ($total -ne 888 -or $failed -ne 0 -or $passed -ne 888) {
         throw "Fresh test counters are not all passing: total=$total passed=$passed failed=$failed"
     }
     $receipt = [pscustomobject][ordered]@{ SchemaVersion=1; SelectionStartedUtc=$StartedUtc.ToUniversalTime().ToString('O'); FileCount=4; Total=$total; Passed=$passed; Failed=$failed; Files=$entries }
