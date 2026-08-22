@@ -27,6 +27,36 @@ using System.Text;
 using Microsoft.Win32.SafeHandles;
 namespace RendererCompatibility {
     public static class NativePath {
+        [StructLayout(LayoutKind.Sequential)]
+        private struct ByHandleFileInformation {
+            public uint FileAttributes;
+            public System.Runtime.InteropServices.ComTypes.FILETIME CreationTime;
+            public System.Runtime.InteropServices.ComTypes.FILETIME LastAccessTime;
+            public System.Runtime.InteropServices.ComTypes.FILETIME LastWriteTime;
+            public uint VolumeSerialNumber;
+            public uint FileSizeHigh;
+            public uint FileSizeLow;
+            public uint NumberOfLinks;
+            public uint FileIndexHigh;
+            public uint FileIndexLow;
+        }
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool GetFileInformationByHandle(SafeFileHandle hFile, out ByHandleFileInformation lpFileInformation);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool SetFileInformationByHandle(SafeFileHandle hFile, int FileInformationClass, IntPtr lpFileInformation, uint dwBufferSize);
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern SafeFileHandle CreateFile(
+            string lpFileName,
+            uint dwDesiredAccess,
+            uint dwShareMode,
+            IntPtr lpSecurityAttributes,
+            uint dwCreationDisposition,
+            uint dwFlagsAndAttributes,
+            IntPtr hTemplateFile);
+
         [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
         private static extern uint GetFinalPathNameByHandle(SafeFileHandle handle, StringBuilder path, uint length, uint flags);
         public static string GetFinalPath(SafeFileHandle handle) {
@@ -37,6 +67,50 @@ namespace RendererCompatibility {
             if (value.StartsWith(@"\\?\UNC\", StringComparison.OrdinalIgnoreCase)) return @"\\" + value.Substring(8);
             if (value.StartsWith(@"\\?\", StringComparison.OrdinalIgnoreCase)) return value.Substring(4);
             return value;
+        }
+
+        public static string GetIdentity(SafeFileHandle handle) {
+            ByHandleFileInformation value;
+            if (!GetFileInformationByHandle(handle, out value)) throw new Win32Exception(Marshal.GetLastWin32Error(), "GetFileInformationByHandle failed");
+            return value.VolumeSerialNumber.ToString("X8") + ":" + value.FileIndexHigh.ToString("X8") + value.FileIndexLow.ToString("X8");
+        }
+
+        public static uint GetLinkCount(SafeFileHandle handle) {
+            ByHandleFileInformation value;
+            if (!GetFileInformationByHandle(handle, out value)) throw new Win32Exception(Marshal.GetLastWin32Error(), "GetFileInformationByHandle failed");
+            return value.NumberOfLinks;
+        }
+
+        public static SafeFileHandle OpenDirectory(string path, bool allowDelete) {
+            const uint DeleteAccess = 0x00010000, ShareRead = 1, ShareWrite = 2, OpenExisting = 3;
+            const uint BackupSemantics = 0x02000000, OpenReparsePoint = 0x00200000;
+            SafeFileHandle result = CreateFile(path, allowDelete ? DeleteAccess : 0, ShareRead | ShareWrite, IntPtr.Zero, OpenExisting, BackupSemantics | OpenReparsePoint, IntPtr.Zero);
+            if (result.IsInvalid) { int error = Marshal.GetLastWin32Error(); result.Dispose(); throw new Win32Exception(error, "CreateFile directory lease failed for " + path); }
+            return result;
+        }
+
+        public static void RenameDirectory(SafeFileHandle handle, string destinationPath) {
+            byte[] name = Encoding.Unicode.GetBytes(destinationPath);
+            int rootOffset = IntPtr.Size == 8 ? 8 : 4;
+            int lengthOffset = IntPtr.Size == 8 ? 16 : 8;
+            int nameOffset = IntPtr.Size == 8 ? 20 : 12;
+            int size = nameOffset + name.Length + 2;
+            IntPtr buffer = Marshal.AllocHGlobal(size);
+            try {
+                for (int i = 0; i < size; i++) Marshal.WriteByte(buffer, i, 0);
+                Marshal.WriteIntPtr(buffer, rootOffset, IntPtr.Zero);
+                Marshal.WriteInt32(buffer, lengthOffset, name.Length);
+                Marshal.Copy(name, 0, IntPtr.Add(buffer, nameOffset), name.Length);
+                if (!SetFileInformationByHandle(handle, 3, buffer, (uint)size)) throw new Win32Exception(Marshal.GetLastWin32Error(), "Held-handle directory rename failed");
+            } finally { Marshal.FreeHGlobal(buffer); }
+        }
+
+        public static void DeleteDirectory(SafeFileHandle handle) {
+            IntPtr buffer = Marshal.AllocHGlobal(4);
+            try {
+                Marshal.WriteInt32(buffer, 1);
+                if (!SetFileInformationByHandle(handle, 4, buffer, 4)) throw new Win32Exception(Marshal.GetLastWin32Error(), "Held-handle directory deletion failed");
+            } finally { Marshal.FreeHGlobal(buffer); }
         }
 
         [DllImport("user32.dll", SetLastError = true)]
@@ -68,6 +142,27 @@ namespace RendererCompatibility {
         [DllImport("user32.dll")]
         private static extern int GetWindowLong(IntPtr hWnd, int nIndex);
 
+        [StructLayout(LayoutKind.Sequential)]
+        private struct RECT {
+            public int Left;
+            public int Top;
+            public int Right;
+            public int Bottom;
+        }
+
+        [DllImport("user32.dll", SetLastError = true)]
+        private static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);
+
+        [DllImport("user32.dll", SetLastError = true)]
+        private static extern IntPtr SendMessageTimeout(
+            IntPtr hWnd,
+            uint Msg,
+            IntPtr wParam,
+            IntPtr lParam,
+            uint fuFlags,
+            uint uTimeout,
+            out IntPtr lpdwResult);
+
         private const uint GW_OWNER = 4;
         private const int GWL_STYLE = -16;
         private const int GWL_EXSTYLE = -20;
@@ -75,9 +170,19 @@ namespace RendererCompatibility {
         private const int WS_CHILD = 0x40000000;
         private const int WS_CAPTION = 0x00C00000;
         private const int WS_EX_TOOLWINDOW = 0x00000080;
+        private const uint WM_NULL = 0x0000;
+        private const uint SMTO_ABORTIFHUNG = 0x0002;
+        private const uint SMTO_BLOCK = 0x0001;
 
         public static bool IsLiveWindow(IntPtr hWnd) {
             return hWnd != IntPtr.Zero && IsWindow(hWnd);
+        }
+
+        public static bool IsWindowResponsive(IntPtr hWnd, uint timeoutMs = 2000) {
+            if (!IsLiveWindow(hWnd)) return false;
+            IntPtr result;
+            IntPtr res = SendMessageTimeout(hWnd, WM_NULL, IntPtr.Zero, IntPtr.Zero, SMTO_ABORTIFHUNG | SMTO_BLOCK, timeoutMs, out result);
+            return res != IntPtr.Zero;
         }
 
         public static int GetWindowOwnerProcessId(IntPtr hWnd) {
@@ -106,15 +211,19 @@ namespace RendererCompatibility {
                         int style = GetWindowLong(hWnd, GWL_STYLE);
                         int exStyle = GetWindowLong(hWnd, GWL_EXSTYLE);
                         if ((style & WS_CHILD) == 0 && (exStyle & WS_EX_TOOLWINDOW) == 0) {
-                            var sbClass = new StringBuilder(256);
-                            GetClassName(hWnd, sbClass, 256);
-                            string cls = sbClass.ToString();
-                            if (cls != "MSCTFIME UI" && cls != "IME" && cls != "UAC_InputIndicatorOverlayWnd" && cls != "Default IME") {
-                                var sbText = new StringBuilder(256);
-                                GetWindowText(hWnd, sbText, 256);
-                                if ((style & WS_CAPTION) == WS_CAPTION || sbText.Length > 0) {
-                                    candidate = hWnd;
-                                    return false;
+                            RECT rect;
+                            if (GetWindowRect(hWnd, out rect)) {
+                                int width = rect.Right - rect.Left;
+                                int height = rect.Bottom - rect.Top;
+                                if (width > 0 && height > 0) {
+                                    var sbText = new StringBuilder(256);
+                                    GetWindowText(hWnd, sbText, 256);
+                                    bool hasCaption = (style & WS_CAPTION) == WS_CAPTION;
+                                    bool hasTitle = sbText.Length > 0;
+                                    if (hasCaption || hasTitle) {
+                                        candidate = hWnd;
+                                        return false;
+                                    }
                                 }
                             }
                         }
@@ -264,6 +373,87 @@ function Assert-RendererNonReparsePath { param([string]$Root,[string]$Path,[stri
     $rootItem=Get-Item -LiteralPath $rootFull -Force -ErrorAction Stop;if(($rootItem.Attributes-band[IO.FileAttributes]::ReparsePoint)-ne0){throw "$Context evidence root is a reparse point."}
     $relative=$pathFull.Substring($rootFull.Length).TrimStart('\','/');$probe=$rootFull
     foreach($part in @($relative-split'[\\/]'|Where-Object{$_-ne''})){$probe=Join-Path $probe $part;if(Test-Path -LiteralPath $probe){$item=Get-Item -LiteralPath $probe -Force -ErrorAction Stop;if(($item.Attributes-band[IO.FileAttributes]::ReparsePoint)-ne0){throw "$Context contains a reparse point: $probe"}}}
+}
+function Open-RendererDirectoryLease {
+    param([string]$Root,[string]$Path,[string]$Context,[switch]$AllowDelete)
+    $rootFull=[IO.Path]::GetFullPath($Root).TrimEnd('\','/')
+    $pathFull=[IO.Path]::GetFullPath($Path).TrimEnd('\','/')
+    Assert-RendererNonReparsePath $rootFull $pathFull $Context
+    $handle=[RendererCompatibility.NativePath]::OpenDirectory($pathFull,[bool]$AllowDelete)
+    try {
+        $final=[IO.Path]::GetFullPath([RendererCompatibility.NativePath]::GetFinalPath($handle)).TrimEnd('\','/')
+        if($final-cne$pathFull){throw "$Context final opened path '$final' does not equal '$pathFull'."}
+        if($final-cne$rootFull-and-not$final.StartsWith($rootFull+[IO.Path]::DirectorySeparatorChar,[StringComparison]::OrdinalIgnoreCase)){throw "$Context final opened path escaped the evidence root."}
+        return [pscustomobject]@{Handle=$handle;Path=$pathFull;FinalPath=$final;Identity=[RendererCompatibility.NativePath]::GetIdentity($handle);DeleteAccess=[bool]$AllowDelete;DeletePending=$false}
+    } catch {
+        $handle.Dispose()
+        throw
+    }
+}
+function Assert-RendererDirectoryLease {
+    param($Lease,[string]$Root,[string]$Path,[string]$Context)
+    if($null-eq$Lease-or$null-eq$Lease.Handle-or$Lease.Handle.IsClosed-or$Lease.Handle.IsInvalid){throw "$Context directory lease is not held."}
+    $expected=[IO.Path]::GetFullPath($Path).TrimEnd('\','/')
+    $heldFinal=[IO.Path]::GetFullPath([RendererCompatibility.NativePath]::GetFinalPath($Lease.Handle)).TrimEnd('\','/')
+    $heldIdentity=[RendererCompatibility.NativePath]::GetIdentity($Lease.Handle)
+    if($heldFinal-cne$Lease.FinalPath-or$heldIdentity-cne$Lease.Identity){throw "$Context held directory identity changed."}
+    $probe=Open-RendererDirectoryLease $Root $expected "$Context current path"
+    try {
+        if($probe.Identity-cne$Lease.Identity-or$probe.FinalPath-cne$Lease.FinalPath){throw "$Context path no longer resolves to the held directory identity."}
+    } finally {$probe.Handle.Dispose()}
+}
+function Move-RendererLeasedDirectory {
+    param($Lease,[string]$Root,[string]$Path,[string]$Destination,[string]$Context)
+    if(-not$Lease.DeleteAccess){throw "$Context directory lease lacks held-handle rename access."}
+    Assert-RendererDirectoryLease $Lease $Root $Path "$Context before held-handle rename"
+    [RendererCompatibility.NativePath]::RenameDirectory($Lease.Handle,[IO.Path]::GetFullPath($Destination))
+    $movedFinal=[IO.Path]::GetFullPath([RendererCompatibility.NativePath]::GetFinalPath($Lease.Handle)).TrimEnd('\','/')
+    $destinationFull=[IO.Path]::GetFullPath($Destination).TrimEnd('\','/')
+    $movedIdentity=[RendererCompatibility.NativePath]::GetIdentity($Lease.Handle)
+    if($movedFinal-cne$destinationFull-or$movedIdentity-cne$Lease.Identity){throw "$Context held-handle rename did not retain the exact destination/FileId identity. Expected path '$destinationFull' identity '$($Lease.Identity)'; observed path '$movedFinal' identity '$movedIdentity'."}
+    $Lease.FinalPath=$movedFinal
+    $Lease.Path=$movedFinal
+}
+function Remove-RendererLeasedDirectory {
+    param($Lease,[string]$Root,[string]$Path,[string]$Context)
+    if(-not$Lease.DeleteAccess){throw "$Context directory lease lacks held-handle deletion access."}
+    Assert-RendererDirectoryLease $Lease $Root $Path "$Context before content deletion"
+    foreach($child in @(Get-ChildItem -LiteralPath $Lease.FinalPath -Force -ErrorAction Stop)){
+        if($child.PSIsContainer-and($child.Attributes-band[IO.FileAttributes]::ReparsePoint)-eq0){throw "$Context contains an unexpected child directory; refusing recursive traversal."}
+        if($child.PSIsContainer){[IO.Directory]::Delete($child.FullName,$false)}else{[IO.File]::Delete($child.FullName)}
+    }
+    if(@(Get-ChildItem -LiteralPath $Lease.FinalPath -Force -ErrorAction Stop).Count-ne0){throw "$Context acquired new children during deletion; refusing to delete the directory."}
+    Assert-RendererDirectoryLease $Lease $Root $Path "$Context before held-handle delete"
+    [RendererCompatibility.NativePath]::DeleteDirectory($Lease.Handle)
+    $Lease.DeletePending=$true
+    $Lease.Handle.Dispose()
+}
+function Remove-RendererOwnedStagingTree {
+    param($Lease,[string]$Root,[string]$Path,[string]$Context)
+    if(-not$Lease.DeleteAccess){throw "$Context directory lease lacks held-handle deletion access."}
+    Assert-RendererDirectoryLease $Lease $Root $Path "$Context before staging tree deletion"
+    $targetDir = $Lease.FinalPath
+    # Non-recursive owned cleanup: collect subdirectories depth-first and delete leaf files
+    $allDirs = @(Get-ChildItem -LiteralPath $targetDir -Directory -Recurse -Force -ErrorAction Stop | Sort-Object { $_.FullName.Length } -Descending)
+    foreach ($sub in $allDirs) {
+        Assert-RendererNonReparsePath $targetDir $sub.FullName "$Context child directory"
+        foreach ($file in @(Get-ChildItem -LiteralPath $sub.FullName -File -Force -ErrorAction Stop)) {
+            Assert-RendererNonReparsePath $targetDir $file.FullName "$Context child file"
+            [IO.File]::Delete($file.FullName)
+        }
+        [IO.Directory]::Delete($sub.FullName, $false)
+    }
+    foreach ($file in @(Get-ChildItem -LiteralPath $targetDir -File -Force -ErrorAction Stop)) {
+        Assert-RendererNonReparsePath $targetDir $file.FullName "$Context root child file"
+        [IO.File]::Delete($file.FullName)
+    }
+    if(@(Get-ChildItem -LiteralPath $targetDir -Force -ErrorAction Stop).Count -ne 0) {
+        throw "$Context acquired new items during cleanup; refusing deletion."
+    }
+    Assert-RendererDirectoryLease $Lease $Root $Path "$Context before held-handle delete"
+    [RendererCompatibility.NativePath]::DeleteDirectory($Lease.Handle)
+    $Lease.DeletePending = $true
+    $Lease.Handle.Dispose()
 }
 function Get-RendererEnvironmentSnapshot {
     [CmdletBinding()]
@@ -502,6 +692,7 @@ function Get-RendererWindowObservation { param([int]$TargetAppPid,[string]$Targe
     }
     if ($hwnd -eq 0) { return [pscustomobject][ordered]@{hasAnyHwnd=$false;hwnd=[long]0;ownerPid=[int]0;ownerStartTimeUtc=$null} }
     if (-not [RendererCompatibility.NativePath]::IsLiveWindow([IntPtr]$hwnd)) { throw "$Context reported an HWND that is no longer live." }
+    if (-not [RendererCompatibility.NativePath]::IsWindowResponsive([IntPtr]$hwnd, 2000)) { throw "$Context target App window HWND is unresponsive or hung (SendMessageTimeout timed out)." }
     $ownerPid = [RendererCompatibility.NativePath]::GetWindowOwnerProcessId([IntPtr]$hwnd)
     if ($ownerPid -ne $TargetAppPid) { throw "$Context HWND owner PID does not equal the target App PID." }
     $owner = Get-RendererProcessIdentity $ownerPid $process.MainModule.FileName "$Context HWND owner"
@@ -540,9 +731,12 @@ function Assert-RendererTargetBindingReceipt { param($Receipt,$Manifest)
     if ([int]$Receipt.pipeClientPid -ne [int]$Receipt.appProcess.pid) { throw 'Target observation pipe client is not the bound App PID.' }
     $observations=@($Receipt.observations);if($observations.Count-ne$script:RendererObservationStages.Count){throw 'Target binding receipt must contain exactly 8 observations.'}
     $manifestObservations=@($Manifest.rendererEvidence.throughoutObservations);$previous=$null
+    $firstPostFirstHwnd=$null
     for($i=0;$i-lt$script:RendererObservationStages.Count;$i++){
         $observation=$observations[$i];Assert-RendererExactProperties $observation @('stage','ordinal','observedUtc','appProcess','coreProcess','window','render','captures') "Target observation $i";if($observation.stage-cne$script:RendererObservationStages[$i]-or[int]$observation.ordinal-ne$i){throw "Target observation $i stage/ordinal is invalid."};Assert-RendererUtc $observation.observedUtc "Target observation $i UTC";if($null-ne$previous-and[DateTimeOffset]$observation.observedUtc-lt$previous){throw 'Target observations are not ordered by UTC.'};$previous=[DateTimeOffset]$observation.observedUtc;Assert-RendererProcessIdentityEqual $observation.appProcess $Receipt.appProcess "Target observation $i App";Assert-RendererProcessIdentityEqual $observation.coreProcess $Receipt.coreProcess "Target observation $i Core"
         $window=$observation.window;Assert-RendererExactProperties $window @('hasAnyHwnd','hwnd','ownerPid','ownerStartTimeUtc') "Target observation $i window";Assert-RendererBoolean $window.hasAnyHwnd "Target observation $i HWND state";Assert-RendererNonnegativeInteger $window.hwnd "Target observation $i HWND";Assert-RendererNonnegativeInteger $window.ownerPid "Target observation $i HWND owner PID";Assert-RendererNullableUtc $window.ownerStartTimeUtc "Target observation $i HWND owner start";if($i-lt2-and[bool]$window.hasAnyHwnd){throw 'Target observation reported an HWND before PreFirstWindow.'};if($i-ge2-and-not[bool]$window.hasAnyHwnd){throw 'Target observation omitted the HWND after first-window boundary.'};if(-not[bool]$window.hasAnyHwnd-and([long]$window.hwnd-ne0-or[int]$window.ownerPid-ne0-or$null-ne$window.ownerStartTimeUtc)){throw 'Target no-HWND observation contains ownership data.'};if([bool]$window.hasAnyHwnd-and([long]$window.hwnd-le0-or[int]$window.ownerPid-ne[int]$Receipt.appProcess.pid-or[string]$window.ownerStartTimeUtc-cne[string]$Receipt.appProcess.startTimeUtc)){throw 'Target HWND ownership is not bound to the App PID/start identity.'}
+        if($i-eq2){if(-not[bool]$window.hasAnyHwnd-or[long]$window.hwnd-le0){throw 'Target observation 2 did not expose a non-zero live HWND.'};$firstPostFirstHwnd=[long]$window.hwnd}
+        if($i-ge2){if([long]$window.hwnd-ne$firstPostFirstHwnd){throw "Target observation $i HWND ($($window.hwnd)) changed from initial post-first-window HWND ($firstPostFirstHwnd); HWND continuity violated."}}
         $render=$observation.render;Assert-RendererExactProperties $render @('source','processId','processStartUtc','effectiveMode','softwareOnlyConfirmed','nativeProcessRenderMode','nativeRenderCapabilityTier') "Target observation $i render";if($render.source-cne'TargetProcessNativeObservation'-or[int]$render.processId-ne[int]$Receipt.appProcess.pid-or[string]$render.processStartUtc-cne[string]$Receipt.appProcess.startTimeUtc-or$render.effectiveMode-cne'SoftwareOnly'-or-not[bool]$render.softwareOnlyConfirmed-or$render.nativeProcessRenderMode-cne'SoftwareOnly'){throw "Target observation $i render-mode provenance is invalid."};Assert-RendererUtc $render.processStartUtc "Target observation $i render process start";Assert-RendererNonnegativeInteger $render.nativeRenderCapabilityTier "Target observation $i render tier"
         $manifestObservation=$manifestObservations[$i];if($observation.stage-cne$manifestObservation.stage-or$observation.observedUtc-cne$manifestObservation.observedUtc-or$observation.render.effectiveMode-cne$manifestObservation.effectiveMode-or$observation.render.softwareOnlyConfirmed-cne$manifestObservation.softwareOnlyConfirmed){throw "Target observation $i does not equal the manifest renderer observation."}
     }

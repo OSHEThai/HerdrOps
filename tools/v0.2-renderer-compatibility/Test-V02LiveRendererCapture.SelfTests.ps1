@@ -308,6 +308,10 @@ namespace HerdrOps.Testing {
         private static readonly object _lock = new object();
 
         private static IntPtr CustomWndProc(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam) {
+            if (msg == 0x8001) {
+                Thread.Sleep(30000);
+                return IntPtr.Zero;
+            }
             if (msg == WM_CLOSE) {
                 DestroyWindow(hWnd);
                 return IntPtr.Zero;
@@ -371,13 +375,33 @@ namespace HerdrOps.Testing {
             }
         }
 
+        public static void HangWindow() {
+            lock (_lock) {
+                if (_hwnd != IntPtr.Zero) {
+                    PostMessage(_hwnd, 0x8001, IntPtr.Zero, IntPtr.Zero);
+                }
+            }
+        }
+
+        public static IntPtr RecreateWindow(string title, int width, int height) {
+            StopWindow();
+            return StartWindow(title, width, height);
+        }
+
         public static void StopWindow() {
+            Thread threadToJoin = null;
             lock (_lock) {
                 if (_hwnd != IntPtr.Zero) {
                     PostMessage(_hwnd, WM_CLOSE, IntPtr.Zero, IntPtr.Zero);
                 }
+                threadToJoin = _uiThread;
                 _hwnd = IntPtr.Zero;
                 _uiThread = null;
+            }
+            if (threadToJoin != null && threadToJoin.IsAlive) {
+                if (!threadToJoin.Join(5000)) {
+                    throw new TimeoutException("Live fixture STA UI thread did not terminate within 5 seconds.");
+                }
             }
         }
 
@@ -395,7 +419,8 @@ param(
     [string]$CaptureRoot,
     [string]$TemplateRoot,
     [int]$CorePid,
-    [string]$CorePath)
+    [string]$CorePath,
+    [string]$FaultStage = '')
 $ErrorActionPreference = 'Stop'
 if ($Role -eq 'Core') {
     while ($true) { Start-Sleep -Seconds 1 }
@@ -441,8 +466,15 @@ try {
         if ($stage -eq 'PostFirstWindowShown') {
             $null = [HerdrOps.Testing.NativeWindowFixture]::StartWindow('HerdrOps renderer fixture', 320, 200)
             $process.Refresh()
+            if ($FaultStage -eq 'HungWindow') {
+                [HerdrOps.Testing.NativeWindowFixture]::HangWindow()
+            }
         }
         if ($stage -eq 'AfterThaiCaptures') {
+            if ($FaultStage -eq 'ChangingHwnd') {
+                $null = [HerdrOps.Testing.NativeWindowFixture]::RecreateWindow('HerdrOps alternate fixture', 320, 200)
+                $process.Refresh()
+            }
             $captureLanguageRoot = Join-Path $CaptureRoot 'captures\Thai'
             New-Item -ItemType Directory -Path $captureLanguageRoot -Force | Out-Null
             foreach ($template in Get-ChildItem -LiteralPath (Join-Path $TemplateRoot 'Thai') -Filter '*.png' -File) {
@@ -511,10 +543,10 @@ function New-LiveReferenceEnvironmentSnapshot([string]$Path, [string]$Repository
     return $Path
 }
 
-function Start-LiveFixtureProcess([string]$Executable,[string]$ScriptPath,[string]$Role,[string]$PipeName,[string]$CaptureRoot,[string]$TemplateRoot,[int]$CorePid=0,[string]$CorePath='') {
+function Start-LiveFixtureProcess([string]$Executable,[string]$ScriptPath,[string]$Role,[string]$PipeName,[string]$CaptureRoot,[string]$TemplateRoot,[int]$CorePid=0,[string]$CorePath='',[string]$FaultStage='') {
     $psi = New-Object Diagnostics.ProcessStartInfo
     $psi.FileName = $Executable
-    $psi.Arguments = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$ScriptPath`" -Role $Role -PipeName $PipeName -CaptureRoot `"$CaptureRoot`" -TemplateRoot `"$TemplateRoot`" -CorePid $CorePid -CorePath `"$CorePath`""
+    $psi.Arguments = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$ScriptPath`" -Role $Role -PipeName $PipeName -CaptureRoot `"$CaptureRoot`" -TemplateRoot `"$TemplateRoot`" -CorePid $CorePid -CorePath `"$CorePath`" -FaultStage `"$FaultStage`""
     $psi.UseShellExecute = $false
     $psi.CreateNoWindow = $true
     $psi.WorkingDirectory = Split-Path -Parent $Executable
@@ -543,7 +575,7 @@ function Invoke-LiveTargetFixtureCase([string]$Root,[string]$RepositoryRoot,[str
     $app = $null
     try {
         $core = Start-LiveFixtureProcess $pkg.CorePath $targetScript 'Core' $pipeName $runtimeRoot $templates
-        $app = Start-LiveFixtureProcess $pkg.AppPath $targetScript 'App' $pipeName $runtimeRoot $templates $core.Id $pkg.CorePath
+        $app = Start-LiveFixtureProcess $pkg.AppPath $targetScript 'App' $pipeName $runtimeRoot $templates $core.Id $pkg.CorePath $FaultStage
         Start-Sleep -Milliseconds 250
         $invoke = Join-Path $PSScriptRoot 'Invoke-V02LiveRendererCapture.ps1'
         $output = Join-Path $fixtureRoot 'output'
@@ -584,6 +616,8 @@ function Invoke-LiveTargetFixtureCase([string]$Root,[string]$RepositoryRoot,[str
             WrongWindow = 'HWND ownership|window.*independently observed'
             ArbitraryPng = 'target-process PNG binding|PNG|changed between stable reads'
             TransientCaptureReplacement = 'changed between stable reads|target-process PNG binding'
+            HungWindow = 'unresponsive or hung|SendMessageTimeout'
+            ChangingHwnd = 'changed from initial post-first-window HWND|HWND continuity violated'
         }
         Assert-Throws {
             & $invoke `
@@ -701,10 +735,30 @@ try {
     }
     Pass 'LiveOperator positive target-process binding reaches exact guards without Runtime/Release credit'
 
-    foreach ($liveFault in @('PidReuse','WrongProcess','WrongWindow','ArbitraryPng','TransientCaptureReplacement')) {
+    foreach ($liveFault in @('PidReuse','WrongProcess','WrongWindow','ArbitraryPng','TransientCaptureReplacement','HungWindow','ChangingHwnd')) {
         Invoke-LiveTargetFixtureCase $temp $repo.Root $repo.Commit $repo.Tree $liveFault | Out-Null
     }
     Pass-Negative 'LiveOperator hostile target/process/window/capture replacement cases fail closed'
+
+    # Hostile: Receipt verifier rejects changing HWND across post-first stages
+    $livePositiveOutput = Join-Path $temp 'live-positive/output'
+    $bindingRaw = [IO.File]::ReadAllText((Join-Path $livePositiveOutput 'proofs/target-binding.json'), [Text.Encoding]::UTF8)
+    $manifestRaw = [IO.File]::ReadAllText((Join-Path $livePositiveOutput 'v0.2-renderer-compatibility-manifest.json'), [Text.Encoding]::UTF8)
+    $receiptObjTampered = if ($PSVersionTable.PSVersion.Major -ge 7 -and (Get-Command ConvertFrom-Json).Parameters.ContainsKey('DateKind')) {
+        $bindingRaw | ConvertFrom-Json -DateKind String
+    } else {
+        ConvertFrom-StrictHumanDesignReviewJson -Json $bindingRaw -Description 'Target binding'
+    }
+    $manifestObj = if ($PSVersionTable.PSVersion.Major -ge 7 -and (Get-Command ConvertFrom-Json).Parameters.ContainsKey('DateKind')) {
+        $manifestRaw | ConvertFrom-Json -DateKind String
+    } else {
+        ConvertFrom-StrictHumanDesignReviewJson -Json $manifestRaw -Description 'Manifest'
+    }
+    $receiptObjTampered.observations[3].window.hwnd = [long]($receiptObjTampered.observations[3].window.hwnd + 1)
+    Assert-Throws {
+        Assert-RendererTargetBindingReceipt $receiptObjTampered $manifestObj
+    } 'changed from initial post-first-window HWND|HWND continuity violated' 'receipt verifier rejects changing HWND across post-first stages'
+    Pass-Negative 'receipt verifier rejects changing HWND across post-first stages'
 
     # Production invocation must not silently fall back to synthetic lifecycle
     # values or a hardcoded renderer mode.
@@ -750,6 +804,51 @@ try {
     } 'appeared before atomic no-clobber publish' 'publish race fails closed without clobber'
     if (-not (Test-Path -LiteralPath $outRace -PathType Container)) { throw 'Publish race did not preserve the competing destination.' }
     Pass-Negative 'publish race preserves destination'
+
+    # Hostile: Leased directory rename fails if destination already exists
+    $leaseDir = Join-Path $temp 'lease-test-src'
+    $destDir = Join-Path $temp 'lease-test-dst'
+    New-Item -ItemType Directory -Path $leaseDir -Force | Out-Null
+    New-Item -ItemType Directory -Path $destDir -Force | Out-Null
+    $testLease = Open-RendererDirectoryLease $temp $leaseDir 'Lease test source' -AllowDelete
+    try {
+        Assert-Throws {
+            Move-RendererLeasedDirectory -Lease $testLease -Root $temp -Path $leaseDir -Destination $destDir -Context 'Lease test rename'
+        } 'Held-handle directory rename failed|already exists|failed' 'leased directory rename to existing destination fails closed'
+    } finally {
+        $testLease.Handle.Dispose()
+    }
+    Pass-Negative 'leased directory rename to existing destination fails closed'
+
+    # Hostile: Leased directory identity swap fails lease assertion
+    $swapDir1 = Join-Path $temp 'lease-swap-1'
+    $swapDir2 = Join-Path $temp 'lease-swap-2'
+    New-Item -ItemType Directory -Path $swapDir1 -Force | Out-Null
+    $swapLease = Open-RendererDirectoryLease $temp $swapDir1 'Lease swap test' -AllowDelete
+    try {
+        New-Item -ItemType Directory -Path $swapDir2 -Force | Out-Null
+        Assert-Throws {
+            Assert-RendererDirectoryLease -Lease $swapLease -Root $temp -Path $swapDir2 -Context 'Lease swap test'
+        } 'identity changed|path no longer resolves' 'swapped directory fails lease verification'
+    } finally {
+        $swapLease.Handle.Dispose()
+    }
+    Pass-Negative 'swapped directory fails lease verification'
+
+    # Hostile: Staging tree non-recursive owned cleanup removes tree safely
+    $cleanDir = Join-Path $temp 'clean-test-dir'
+    $subDir = Join-Path $cleanDir 'subdir'
+    New-Item -ItemType Directory -Path $subDir -Force | Out-Null
+    [IO.File]::WriteAllText((Join-Path $cleanDir 'rootfile.txt'), 'content')
+    [IO.File]::WriteAllText((Join-Path $subDir 'subfile.txt'), 'subcontent')
+    $cleanLease = Open-RendererDirectoryLease $temp $cleanDir 'Clean test lease' -AllowDelete
+    try {
+        Remove-RendererOwnedStagingTree -Lease $cleanLease -Root $temp -Path $cleanDir -Context 'Clean test tree'
+        if (Test-Path -LiteralPath $cleanDir) { throw 'Remove-RendererOwnedStagingTree did not remove staging directory.' }
+    } finally {
+        if ($null -ne $cleanLease -and -not $cleanLease.Handle.IsClosed) { $cleanLease.Handle.Dispose() }
+    }
+    Pass-Negative 'staging tree owned nonrecursive cleanup removes tree safely'
 
     # 4. Hostile: Missing capture file (9 Thai instead of 10)
     $outMissing = Join-Path $temp 'evidence-out-missing-capture'

@@ -237,7 +237,8 @@ if (-not [string]::IsNullOrWhiteSpace($parentOut)) {
 $stagingParent = if ([string]::IsNullOrWhiteSpace($parentOut)) { [IO.Path]::GetTempPath() } else { $parentOut }
 $stagingDir = Join-Path $stagingParent ('.' + (Split-Path $outFull -Leaf) + '.staging-' + [Guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $stagingDir -ErrorAction Stop | Out-Null
-Assert-RendererNonReparsePath $parentOut $stagingDir 'Renderer staging directory'
+Assert-RendererNonReparsePath $stagingParent $stagingDir 'Renderer staging directory'
+$stagingLease = Open-RendererDirectoryLease $stagingParent $stagingDir 'Renderer staging directory' -AllowDelete
 
 $commitSuccessful = $false
 $targetPipe = $null
@@ -296,6 +297,7 @@ try {
     $syntheticLastUtc = [DateTimeOffset]::UtcNow
     $firstHwndCreatedUtc = $null
     $preFirstHasAnyHwnd = $null
+    $firstPostFirstLiveHwnd = $null
     for ($i = 0; $i -lt $script:RendererObservationStages.Count; $i++) {
         $stage = $script:RendererObservationStages[$i]
         if ($TestFaultStage -eq 'MissingStage' -and $stage -eq 'AfterEnglishCaptures') {
@@ -317,6 +319,17 @@ try {
                 -TargetCoreStartTimeUtc $targetCoreIdentity.startTimeUtc `
                 -TestFaultStage $TestFaultStage
             $raw = $targetStage.raw
+            if ($i -eq 2) {
+                if (-not [bool]$raw.window.hasAnyHwnd -or [long]$raw.window.hwnd -le 0) {
+                    throw "Target observation '$stage' did not expose a non-zero live HWND."
+                }
+                $firstPostFirstLiveHwnd = [long]$raw.window.hwnd
+            }
+            if ($i -ge 2) {
+                if (-not [bool]$raw.window.hasAnyHwnd -or [long]$raw.window.hwnd -ne $firstPostFirstLiveHwnd) {
+                    throw "Target observation '$stage' HWND ($($raw.window.hwnd)) changed from initial post-first-window HWND ($firstPostFirstLiveHwnd); HWND continuity violated."
+                }
+            }
             $targetObservations += ,([pscustomobject][ordered]@{
                 stage = [string]$raw.stage
                 ordinal = [int]$raw.ordinal
@@ -786,20 +799,24 @@ try {
         throw 'Injected failure before commit.'
     }
 
-    # 8. Commit atomic staging directory to destination. Directory.Move is
-    # deliberately no-clobber; all containment/reparse checks are repeated
-    # immediately before the race-sensitive rename.
+    # 8. Commit atomic staging directory to destination. Held-handle rename is
+    # atomic and no-replace; parent and staging leases verify identity retention.
     if ($TestFaultStage -eq 'OutputRace') {
         New-Item -ItemType Directory -Path $outFull -ErrorAction Stop | Out-Null
     }
-    Assert-RendererNonReparsePath $parentOut $parentOut 'Output parent directory before publish'
-    Assert-RendererNonReparsePath $parentOut $stagingDir 'Staging directory before publish'
-    if (Test-Path -LiteralPath $outFull) {
-        throw "Output directory appeared before atomic no-clobber publish: $outFull"
+    $parentLease = Open-RendererDirectoryLease $stagingParent $parentOut 'Output parent directory before publish'
+    try {
+        Assert-RendererDirectoryLease $stagingLease $stagingParent $stagingDir 'Staging directory before publish'
+        Assert-RendererDirectoryLease $parentLease $stagingParent $parentOut 'Output parent directory before publish'
+        if (Test-Path -LiteralPath $outFull) {
+            throw "Output directory appeared before atomic no-clobber publish: $outFull"
+        }
+        Move-RendererLeasedDirectory -Lease $stagingLease -Root $stagingParent -Path $stagingDir -Destination $outFull -Context 'Renderer evidence publication'
+        Assert-RendererNonReparsePath $parentOut $outFull 'Published renderer evidence directory'
+        [void]($commitSuccessful = $true)
+    } finally {
+        $parentLease.Handle.Dispose()
     }
-    [IO.Directory]::Move($stagingDir, $outFull)
-    Assert-RendererNonReparsePath $parentOut $outFull 'Published renderer evidence directory'
-    [void]($commitSuccessful = $true)
 
     $finalManifestPath = Join-Path $outFull 'v0.2-renderer-compatibility-manifest.json'
     $finalManifestSha = (Get-RendererStableFileIdentity $outFull $finalManifestPath 'Published renderer manifest').Sha256
@@ -834,7 +851,12 @@ try {
     if ($null -ne $targetPipeWriter) { $targetPipeWriter.Dispose() }
     if ($null -ne $targetPipeReader) { $targetPipeReader.Dispose() }
     if ($null -ne $targetPipe) { $targetPipe.Dispose() }
-    if (-not $commitSuccessful -and (Test-Path -LiteralPath $stagingDir)) {
-        Remove-Item -LiteralPath $stagingDir -Recurse -Force -ErrorAction SilentlyContinue
+    if (-not $commitSuccessful -and $null -ne $stagingLease -and (Test-Path -LiteralPath $stagingDir)) {
+        try {
+            Remove-RendererOwnedStagingTree -Lease $stagingLease -Root $stagingParent -Path $stagingDir -Context 'Failed renderer capture staging'
+        } catch {
+            # Clean up errors fail safe
+        }
     }
+    if ($null -ne $stagingLease -and -not $stagingLease.Handle.IsClosed) { $stagingLease.Handle.Dispose() }
 }
