@@ -236,6 +236,16 @@ jobs:
         shell: powershell
         run: ./tools/Test-V02LanguageMatrixAcceptance.Tests.ps1
 
+      # Static/Synthetic only; Issue #9 fixtures never start or stop Herdr and
+      # the generated candidate keeps Runtime/Human/Release NOT_OBSERVED.
+      - name: Run v0.2 Issue #9 live UI acceptance hostile tests (PowerShell 7)
+        shell: pwsh
+        run: ./tools/v0.2-issue9-live-ui/Test-V02Issue9LiveUiAcceptance.Tests.ps1
+
+      - name: Run v0.2 Issue #9 live UI acceptance hostile tests (Windows PowerShell 5.1)
+        shell: powershell
+        run: ./tools/v0.2-issue9-live-ui/Test-V02Issue9LiveUiAcceptance.Tests.ps1
+
       - name: Run v0.2 live Widgets implementation gate
         shell: pwsh
         run: ./tools/Test-V02LiveWidgets.ps1 -Configuration Release -SkipBuild -RunToken $env:HERDOPS_V02_LIVE_WIDGET_RUN_TOKEN
