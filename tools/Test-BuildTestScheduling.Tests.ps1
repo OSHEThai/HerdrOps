@@ -444,6 +444,32 @@ try {
             Test-BuildScriptScheduling -ScriptPath $tamperedBuildPath
         }
 
+    # 28. Hostile CI Test: Aggregator renamed away from the required branch-protection context is rejected
+    Assert-Throws -TestName 'Hostile CI: Aggregator renamed compatibility display name is rejected' `
+        -ExpectedMessagePattern "must expose compatibility display name 'build-test'" `
+        -ScriptBlock {
+            $ciContent = Get-Content -LiteralPath (Join-Path $repositoryRoot '.github\workflows\ci.yml') -Raw
+            $tamperedCi = $ciContent.Replace('    name: build-test', '    name: renamed-build-test')
+            $tamperedCiPath = Join-Path $tempRoot 'tampered-ci-aggregator-renamed-display-name.yml'
+            Set-Content -LiteralPath $tamperedCiPath -Value $tamperedCi -Encoding utf8
+
+            . $schedulerScript
+            Test-CiWorkflowScheduling -WorkflowPath $tamperedCiPath
+        }
+
+    # 29. Hostile CI Test: Aggregator without the required compatibility display name is rejected
+    Assert-Throws -TestName 'Hostile CI: Aggregator missing compatibility display name is rejected' `
+        -ExpectedMessagePattern "must expose compatibility display name 'build-test'" `
+        -ScriptBlock {
+            $ciContent = Get-Content -LiteralPath (Join-Path $repositoryRoot '.github\workflows\ci.yml') -Raw
+            $tamperedCi = [Regex]::Replace($ciContent, '(?m)^    name: build-test\r?\n', '')
+            $tamperedCiPath = Join-Path $tempRoot 'tampered-ci-aggregator-missing-display-name.yml'
+            Set-Content -LiteralPath $tamperedCiPath -Value $tamperedCi -Encoding utf8
+
+            . $schedulerScript
+            Test-CiWorkflowScheduling -WorkflowPath $tamperedCiPath
+        }
+
     Write-Host "`nAll $passCount/$testCount solution test scheduling and partitioned workflow regression tests PASSED.`n"
 }
 finally {
