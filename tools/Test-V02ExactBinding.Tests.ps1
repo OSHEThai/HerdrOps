@@ -226,6 +226,43 @@ Assert-SourceContains `
     -Text '-ExpectedSourceTree $expectedSourceTree' `
     -Description 'Runtime contract command supplies the exact expected source tree'
 
+Assert-SourceContains `
+    -Path $compositeRuntime `
+    -Text 'Assert-V02AllAgentStatusesInDomain -Transitions $coreTransitions -FinalMonitorState $coreReport.FinalMonitorState' `
+    -Description 'Composite gate validates the exact five-value AgentStatus domain for accepted events and every final Workspaces/Tabs/Panes/Agents snapshot'
+Assert-SourceContains `
+    -Path $compositeRuntime `
+    -Text 'Assert-V02TcpListenerInspectionCapability' `
+    -Description 'Composite gate fails closed on a missing or broken TCP-listener inspection capability instead of a shallow existence check'
+Assert-SourceContains `
+    -Path $compositeRuntime `
+    -Text 'New-V02AtomicNoClobberEmptyFile -Path $completionSignalPath' `
+    -Description 'Composite gate creates the completion signal via an atomic no-clobber file create'
+Assert-SourceContains `
+    -Path $gateProvenance `
+    -Text 'function Assert-V02TcpListenerInspectionCapability' `
+    -Description 'Gate provenance library declares the fail-closed TCP-listener inspection capability probe'
+Assert-SourceContains `
+    -Path $gateProvenance `
+    -Text 'function New-V02AtomicNoClobberEmptyFile' `
+    -Description 'Gate provenance library declares the atomic no-clobber empty-file creator'
+Assert-SourceContains `
+    -Path $gateProvenance `
+    -Text 'TcpListenerInspectionCapabilityMissing' `
+    -Description 'Gate provenance library fails closed rather than silently succeeding when TCP-listener inspection is unavailable'
+Assert-SourceContains `
+    -Path $gateProvenanceTests `
+    -Text 'Assert-V02NoOwnedTcpListeners fails closed when the inspection command does not exist' `
+    -Description 'Gate provenance tests cover the missing listener-inspection capability negative case'
+Assert-SourceContains `
+    -Path $gateProvenanceTests `
+    -Text 'Assert-V02NoOwnedTcpListeners detects a real TCP listener actually opened by the current process' `
+    -Description 'Gate provenance tests retain real target-PID listener detection coverage'
+Assert-SourceContains `
+    -Path $gateProvenanceTests `
+    -Text 'New-V02AtomicNoClobberEmptyFile fails closed instead of clobbering a concurrently-created file' `
+    -Description 'Gate provenance tests retain concurrent atomic no-clobber coverage for the completion signal'
+
 $requiredCompositeDocumentationArguments = @(
     '-PackageIdentityPath $packageIdentityPath',
     '-PackageArchivePath $packageArchivePath',

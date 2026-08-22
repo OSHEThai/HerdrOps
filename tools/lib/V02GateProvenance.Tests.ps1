@@ -250,6 +250,100 @@ try {
     else {
         Assert-TestTrue $true 'Get-NetTCPConnection unavailable on this host; hostile real-listener detection defensively skipped'
     }
+
+    # --- Fails closed (never silently succeeds) when the TCP-listener
+    #     inspection capability is missing or broken, regardless of whether
+    #     the real Get-NetTCPConnection happens to be present on this host. ---
+    Assert-TestThrows `
+        -ScriptBlock { Assert-V02TcpListenerInspectionCapability -CommandName 'Get-V02NonexistentCommandForCapabilityTest' } `
+        -Message 'Assert-V02TcpListenerInspectionCapability fails closed when the inspection command does not exist'
+
+    Assert-TestThrows `
+        -ScriptBlock { Assert-V02NoOwnedTcpListeners -ProcessIds @([int]$PID) -CommandName 'Get-V02NonexistentCommandForCapabilityTest' } `
+        -Message 'Assert-V02NoOwnedTcpListeners fails closed when the inspection command does not exist'
+
+    function Test-V02BrokenTcpListenerProbe {
+        param([string]$State, [string]$ErrorAction)
+        throw 'Simulated TCP-listener inspection capability failure.'
+    }
+    Assert-TestThrows `
+        -ScriptBlock { Assert-V02TcpListenerInspectionCapability -CommandName 'Test-V02BrokenTcpListenerProbe' } `
+        -Message 'Assert-V02TcpListenerInspectionCapability fails closed when the inspection command exists but throws when invoked'
+    Assert-TestThrows `
+        -ScriptBlock { Assert-V02NoOwnedTcpListeners -ProcessIds @([int]$PID) -CommandName 'Test-V02BrokenTcpListenerProbe' } `
+        -Message 'Assert-V02NoOwnedTcpListeners fails closed when the inspection command exists but throws when invoked'
+
+    # --- Assert-V02AllAgentStatusesInDomain: exact five-value domain, wired
+    #     against the same accepted-event and final Workspaces/Tabs/Panes/Agents
+    #     snapshot shape the composite production gate reads from Core. ---
+    function New-CompositeShapeCoreReportFixture {
+        param([string]$EventAgentStatus = 'Working', [string]$FinalWorkspaceAgentStatus = 'Idle')
+
+        return [pscustomobject]@{
+            Transitions = @(
+                [pscustomobject]@{
+                    AcceptedAgentStatusEvent = [pscustomobject]@{
+                        WorkspaceId = 'ws1'
+                        PaneId      = 'p1'
+                        AgentStatus = $EventAgentStatus
+                    }
+                }
+            )
+            FinalMonitorState = [pscustomobject]@{
+                State = [pscustomobject]@{
+                    Workspaces = [pscustomobject]@{ ws1 = [pscustomobject]@{ AgentStatus = $FinalWorkspaceAgentStatus } }
+                    Tabs       = [pscustomobject]@{ tab1 = [pscustomobject]@{ AgentStatus = 'Working' } }
+                    Panes      = [pscustomobject]@{ p1 = [pscustomobject]@{ AgentStatus = 'Working' } }
+                    Agents     = [pscustomobject]@{ agent1 = [pscustomobject]@{ AgentStatus = 'Done' } }
+                }
+            }
+        }
+    }
+
+    $validCompositeFixture = New-CompositeShapeCoreReportFixture
+    Assert-TestTrue `
+        -Condition ((& { Assert-V02AllAgentStatusesInDomain -Transitions $validCompositeFixture.Transitions -FinalMonitorState $validCompositeFixture.FinalMonitorState -Context 'Core report'; $true })) `
+        -Message 'Assert-V02AllAgentStatusesInDomain accepts a valid composite-shaped Core report'
+
+    $badEventFixture = New-CompositeShapeCoreReportFixture -EventAgentStatus 'Bogus'
+    Assert-TestThrows `
+        -ScriptBlock { Assert-V02AllAgentStatusesInDomain -Transitions $badEventFixture.Transitions -FinalMonitorState $badEventFixture.FinalMonitorState -Context 'Core report' } `
+        -Message 'Assert-V02AllAgentStatusesInDomain rejects an invalid AgentStatus on an accepted composite Event'
+
+    $badFinalFixture = New-CompositeShapeCoreReportFixture -FinalWorkspaceAgentStatus 'Bogus'
+    Assert-TestThrows `
+        -ScriptBlock { Assert-V02AllAgentStatusesInDomain -Transitions $badFinalFixture.Transitions -FinalMonitorState $badFinalFixture.FinalMonitorState -Context 'Core report' } `
+        -Message 'Assert-V02AllAgentStatusesInDomain rejects an invalid AgentStatus in the final composite Workspaces snapshot'
+
+    $missingStateFixture = New-CompositeShapeCoreReportFixture
+    $missingStateFixture.FinalMonitorState.State = $null
+    Assert-TestThrows `
+        -ScriptBlock { Assert-V02AllAgentStatusesInDomain -Transitions $missingStateFixture.Transitions -FinalMonitorState $missingStateFixture.FinalMonitorState -Context 'Core report' } `
+        -Message 'Assert-V02AllAgentStatusesInDomain rejects a composite Core report missing its final State snapshot'
+
+    # --- New-V02AtomicNoClobberEmptyFile: concurrent atomic no-clobber coverage
+    #     for the composite gate's completion-signal creation. ---
+    $signalDir = Join-Path ([System.IO.Path]::GetTempPath()) ('v02-gate-signal-test-' + [Guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path $signalDir -Force | Out-Null
+    try {
+        $freshSignalPath = Join-Path $signalDir 'fresh.signal'
+        New-V02AtomicNoClobberEmptyFile -Path $freshSignalPath
+        Assert-TestTrue (Test-Path -LiteralPath $freshSignalPath -PathType Leaf) 'New-V02AtomicNoClobberEmptyFile creates the signal file'
+        Assert-TestTrue (((Get-Item -LiteralPath $freshSignalPath).Length) -eq 0) 'New-V02AtomicNoClobberEmptyFile creates a genuinely empty (zero-byte) file'
+
+        $concurrentSignalPath = Join-Path $signalDir 'concurrent.signal'
+        [System.IO.File]::WriteAllText($concurrentSignalPath, 'concurrent-writer-content')
+        Assert-TestThrows `
+            -ScriptBlock { New-V02AtomicNoClobberEmptyFile -Path $concurrentSignalPath } `
+            -Message 'New-V02AtomicNoClobberEmptyFile fails closed instead of clobbering a concurrently-created file'
+        $preservedContent = [System.IO.File]::ReadAllText($concurrentSignalPath)
+        Assert-TestTrue ($preservedContent -ceq 'concurrent-writer-content') 'New-V02AtomicNoClobberEmptyFile left the concurrently-created file untouched'
+    }
+    finally {
+        if (Test-Path -LiteralPath $signalDir) {
+            Remove-Item -LiteralPath $signalDir -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
 }
 finally {
 }

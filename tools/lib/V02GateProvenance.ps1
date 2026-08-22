@@ -214,21 +214,51 @@ function Assert-V02FileIdentityContinuity {
     }
 }
 
-function Assert-V02NoOwnedTcpListeners {
+function Assert-V02TcpListenerInspectionCapability {
     param(
-        [Parameter(Mandatory = $false)][int[]]$ProcessIds = @([int]$PID)
+        [Parameter(Mandatory = $false)][string]$CommandName = 'Get-NetTCPConnection'
     )
 
-    if (-not (Get-Command Get-NetTCPConnection -ErrorAction SilentlyContinue)) {
-        return
+    $command = Get-Command -Name $CommandName -ErrorAction SilentlyContinue
+    if ($null -eq $command) {
+        throw "TcpListenerInspectionCapabilityMissing: $CommandName is required to verify that no HerdrOps process opened a TCP listener, and it is not available on this host."
     }
+    try {
+        $null = & $command -State Listen -ErrorAction Stop
+    }
+    catch {
+        throw "TcpListenerInspectionCapabilityMissing: $CommandName is present but failed when invoked, so TCP-listener inspection cannot be trusted. $($_.Exception.Message)"
+    }
+    return $command
+}
 
-    $listeners = @(Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue |
-        Where-Object { $ProcessIds -contains $_.OwningProcess })
+function Assert-V02NoOwnedTcpListeners {
+    param(
+        [Parameter(Mandatory = $false)][int[]]$ProcessIds = @([int]$PID),
+        [Parameter(Mandatory = $false)][string]$CommandName = 'Get-NetTCPConnection'
+    )
+
+    $command = Assert-V02TcpListenerInspectionCapability -CommandName $CommandName
+    try {
+        $listeners = @(& $command -State Listen -ErrorAction Stop |
+            Where-Object { $ProcessIds -contains $_.OwningProcess })
+    }
+    catch {
+        throw "TcpListenerInspectionCapabilityMissing: $CommandName is present but failed when invoked, so TCP-listener inspection cannot be trusted. $($_.Exception.Message)"
+    }
     if ($listeners.Count -gt 0) {
         $offenders = @($listeners | ForEach-Object { "$($_.OwningProcess):$($_.LocalAddress):$($_.LocalPort)" }) -join ', '
         throw "UnauthorizedTcpListenerDetected: unauthorized TCP listener opened by HerdrOps process: $offenders"
     }
+}
+
+function New-V02AtomicNoClobberEmptyFile {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path
+    )
+
+    $stream = [System.IO.File]::Open($Path, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::Write)
+    $stream.Dispose()
 }
 
 function Set-V02AtomicTextFile {
