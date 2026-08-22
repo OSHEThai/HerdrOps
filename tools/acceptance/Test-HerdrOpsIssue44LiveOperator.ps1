@@ -409,8 +409,11 @@ try {
     foreach ($stepName in @('cleanInstall', 'upgrade', 'rollback', 'uninstall')) {
         Assert-TestCondition -Condition ([string]$greenReport.lifecycle.$stepName.status -ceq 'PASS') -Message "Green lifecycle step did not pass: $stepName"
         Assert-TestCondition -Condition ([string]$greenReport.lifecycle.$stepName.retainedDataStatus -ceq 'PASS') -Message "Green retained data did not pass: $stepName"
+    }
+    foreach ($stepName in @('cleanInstall', 'upgrade', 'rollback')) {
         Assert-TestCondition -Condition (@($greenReport.lifecycle.$stepName.installedFileHashes).Count -gt 0) -Message "Green installed hashes missing: $stepName"
     }
+    Assert-TestCondition -Condition (@($greenReport.lifecycle.uninstall.installedFileHashes).Count -eq 0) -Message 'Uninstall report incorrectly retained installed-file hashes.'
     Assert-TestCondition -Condition ([string]$greenReport.cleanup.status -ceq 'PASS') -Message 'Green cleanup did not pass.'
     Assert-TestCondition -Condition (@($greenReport.cleanup.residuals).Count -eq 0) -Message 'Green run left residuals.'
     Assert-TestCondition -Condition ([string]$greenReport.targets.installPathPolicy -ceq '%LOCALAPPDATA%\Programs\HerdrOps') -Message 'Install path policy drifted.'
