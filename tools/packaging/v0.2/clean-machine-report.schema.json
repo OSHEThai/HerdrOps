@@ -204,22 +204,32 @@
         "sameVersionCandidateReplacement": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["status", "replacementObserved", "backupCreatedAndRetired", "userDataPreserved"],
+          "required": ["status", "replacementObserved", "backupCreatedAndRetired", "backupVolumeSerialNumber", "backupFileId", "backupLinkCount", "userDataPreserved"],
           "properties": {
             "status": { "type": "string", "enum": ["PASS", "FAIL", "SKIPPED", "NOT_RUN"] },
             "replacementObserved": { "type": "boolean" },
             "backupCreatedAndRetired": { "type": "boolean" },
+            "backupVolumeSerialNumber": { "type": "string", "pattern": "^$|^[0-9A-F]{8}$" },
+            "backupFileId": { "type": "string", "pattern": "^$|^[0-9A-F]{16}$" },
+            "backupLinkCount": { "type": "integer", "minimum": 0 },
             "userDataPreserved": { "type": "boolean" }
           }
         },
         "rollback": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["status", "rollbackObserved", "installRestoredOnFault", "details"],
+          "required": ["status", "rollbackObserved", "installRestoredOnFault", "restoredSourceCommit", "restoredSourceTree", "restoredReceiptSha256", "restoredArchiveSha256", "restoredPackageManifestSha256", "restoredAppSha256", "restoredCoreSha256", "details"],
           "properties": {
             "status": { "type": "string", "enum": ["PASS", "FAIL", "SKIPPED", "NOT_RUN"] },
             "rollbackObserved": { "type": "boolean" },
             "installRestoredOnFault": { "type": "boolean" },
+            "restoredSourceCommit": { "type": "string", "pattern": "^$|^[0-9a-f]{40}$" },
+            "restoredSourceTree": { "type": "string", "pattern": "^$|^[0-9a-f]{40}$" },
+            "restoredReceiptSha256": { "type": "string", "pattern": "^$|^[0-9A-F]{64}$" },
+            "restoredArchiveSha256": { "type": "string", "pattern": "^$|^[0-9A-F]{64}$" },
+            "restoredPackageManifestSha256": { "type": "string", "pattern": "^$|^[0-9A-F]{64}$" },
+            "restoredAppSha256": { "type": "string", "pattern": "^$|^[0-9A-F]{64}$" },
+            "restoredCoreSha256": { "type": "string", "pattern": "^$|^[0-9A-F]{64}$" },
             "details": { "type": "string" }
           }
         },

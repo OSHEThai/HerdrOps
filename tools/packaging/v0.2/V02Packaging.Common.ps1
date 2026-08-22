@@ -7,42 +7,193 @@ Set-StrictMode -Version Latest
 if ($null -eq ('HerdrOps.V02DirectoryLeaseNative' -as [type])) {
     Add-Type -TypeDefinition @'
 using System;
+using System.Text;
 using System.Runtime.InteropServices;
 using Microsoft.Win32.SafeHandles;
 namespace HerdrOps {
+    [StructLayout(LayoutKind.Sequential)]
+    public struct V02FileInformation {
+        public uint FileAttributes;
+        public System.Runtime.InteropServices.ComTypes.FILETIME CreationTime;
+        public System.Runtime.InteropServices.ComTypes.FILETIME LastAccessTime;
+        public System.Runtime.InteropServices.ComTypes.FILETIME LastWriteTime;
+        public uint VolumeSerialNumber;
+        public uint FileSizeHigh;
+        public uint FileSizeLow;
+        public uint NumberOfLinks;
+        public uint FileIndexHigh;
+        public uint FileIndexLow;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct V02FileDispositionInfo {
+        [MarshalAs(UnmanagedType.Bool)] public bool DeleteFile;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct V02FileBasicInfo {
+        public long CreationTime;
+        public long LastAccessTime;
+        public long LastWriteTime;
+        public long ChangeTime;
+        public uint FileAttributes;
+    }
+
     public static class V02DirectoryLeaseNative {
         [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
         public static extern SafeFileHandle CreateFile(
             string name, uint access, uint share, IntPtr security,
             uint disposition, uint flags, IntPtr template);
+
+        [DllImport("kernel32.dll", SetLastError=true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        public static extern bool GetFileInformationByHandle(
+            SafeFileHandle handle, out V02FileInformation information);
+
+        [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
+        public static extern uint GetFinalPathNameByHandle(
+            SafeFileHandle handle, StringBuilder path, uint pathLength, uint flags);
+
+        [DllImport("kernel32.dll", SetLastError=true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        public static extern bool SetFileInformationByHandle(
+            SafeFileHandle handle, int informationClass,
+            ref V02FileDispositionInfo information, uint bufferSize);
+
+        [DllImport("kernel32.dll", EntryPoint="SetFileInformationByHandle", SetLastError=true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        public static extern bool SetFileBasicInformationByHandle(
+            SafeFileHandle handle, int informationClass,
+            ref V02FileBasicInfo information, uint bufferSize);
+
+        [DllImport("shell32.dll", SetLastError=true)]
+        public static extern int SHGetKnownFolderPath(
+            [MarshalAs(UnmanagedType.LPStruct)] Guid folderId, uint flags,
+            IntPtr token, out IntPtr path);
     }
 }
 '@
 }
 
-function Open-V02DirectoryMutationLease {
+function ConvertFrom-V02FinalHandlePath {
     param([Parameter(Mandatory = $true)][string]$Path)
+    if ($Path.StartsWith('\\?\UNC\',[StringComparison]::OrdinalIgnoreCase)) { return '\\' + $Path.Substring(8) }
+    if ($Path.StartsWith('\\?\',[StringComparison]::OrdinalIgnoreCase)) { return $Path.Substring(4) }
+    return $Path
+}
+
+function Get-V02HandleIdentity {
+    param(
+        [Parameter(Mandatory = $true)]$Handle,
+        [Parameter(Mandatory = $true)][string]$Context
+    )
+    $information = New-Object HerdrOps.V02FileInformation
+    if (-not [HerdrOps.V02DirectoryLeaseNative]::GetFileInformationByHandle($Handle,[ref]$information)) {
+        throw "$Context identity query failed (Win32 $([Runtime.InteropServices.Marshal]::GetLastWin32Error()))."
+    }
+    $builder = New-Object Text.StringBuilder 32768
+    $length = [HerdrOps.V02DirectoryLeaseNative]::GetFinalPathNameByHandle($Handle,$builder,[uint32]$builder.Capacity,0)
+    if ($length -eq 0 -or $length -ge $builder.Capacity) {
+        throw "$Context final-path query failed (Win32 $([Runtime.InteropServices.Marshal]::GetLastWin32Error()))."
+    }
+    $fileId = ('{0:X8}{1:X8}' -f $information.FileIndexHigh,$information.FileIndexLow)
+    return [pscustomobject][ordered]@{
+        FinalPath = [IO.Path]::GetFullPath((ConvertFrom-V02FinalHandlePath $builder.ToString())).TrimEnd('\','/')
+        VolumeSerialNumber = ('{0:X8}' -f $information.VolumeSerialNumber)
+        FileId = $fileId
+        LinkCount = [uint32]$information.NumberOfLinks
+        Attributes = [uint32]$information.FileAttributes
+    }
+}
+
+function Assert-V02SameHandleIdentity {
+    param(
+        [Parameter(Mandatory = $true)]$Handle,
+        [Parameter(Mandatory = $true)]$Expected,
+        [Parameter(Mandatory = $true)][string]$ExpectedPath,
+        [Parameter(Mandatory = $true)][string]$Context,
+        [switch]$RequireSingleLink
+    )
+    $current = Get-V02HandleIdentity -Handle $Handle -Context $Context
+    $fullExpected = [IO.Path]::GetFullPath($ExpectedPath).TrimEnd('\','/')
+    if (-not [StringComparer]::OrdinalIgnoreCase.Equals($current.FinalPath,$fullExpected)) { throw "$Context final path changed or resolved outside its exact path: $($current.FinalPath)" }
+    foreach ($name in @('VolumeSerialNumber','FileId')) {
+        if ([string]$current.$name -cne [string]$Expected.$name) { throw "$Context $name changed while held." }
+    }
+    if (($current.Attributes -band 0x400) -ne 0) { throw "$Context is a reparse point." }
+    if ($RequireSingleLink -and $current.LinkCount -ne 1) { throw "$Context must have exactly one link; observed $($current.LinkCount)." }
+    return $current
+}
+
+function Get-V02KnownLocalAppDataRoot {
+    $folderId = [Guid]'F1B32785-6FBA-4FCF-9D55-7B8E7F157091'
+    $pointer = [IntPtr]::Zero
+    $result = [HerdrOps.V02DirectoryLeaseNative]::SHGetKnownFolderPath($folderId,0,[IntPtr]::Zero,[ref]$pointer)
+    if ($result -ne 0 -or $pointer -eq [IntPtr]::Zero) { throw "Windows Known Folder LocalAppData lookup failed (HRESULT 0x$('{0:X8}' -f ([uint32]$result)))." }
+    try { return [IO.Path]::GetFullPath([Runtime.InteropServices.Marshal]::PtrToStringUni($pointer)).TrimEnd('\','/') }
+    finally { [Runtime.InteropServices.Marshal]::FreeCoTaskMem($pointer) }
+}
+
+function Open-V02DirectoryMutationLease {
+    param([Parameter(Mandatory = $true)][string]$Path,[switch]$ForDelete)
     $full = [IO.Path]::GetFullPath($Path)
     if (-not (Test-Path -LiteralPath $full -PathType Container)) { throw "Mutation parent directory does not exist: $full" }
     Assert-V02PathNoReparse -Path $full
     # FILE_READ_ATTRIBUTES, FILE_SHARE_READ|FILE_SHARE_WRITE (intentionally no
     # FILE_SHARE_DELETE), OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS.  Holding
     # this handle prevents rename/delete of the resolved parent during commit.
-    $handle = [HerdrOps.V02DirectoryLeaseNative]::CreateFile($full,0x80,0x3,[IntPtr]::Zero,3,0x02000000,[IntPtr]::Zero)
+    $access = [uint32]0x80
+    if ($ForDelete) { $access = $access -bor [uint32]0x10000 }
+    $handle = [HerdrOps.V02DirectoryLeaseNative]::CreateFile($full,$access,0x3,[IntPtr]::Zero,3,0x02200000,[IntPtr]::Zero)
     if ($null -eq $handle -or $handle.IsInvalid) {
         $errorCode = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
         if ($null -ne $handle) { $handle.Dispose() }
         throw "Could not hold mutation parent directory '$full' (Win32 $errorCode)."
     }
+    $identity = Get-V02HandleIdentity -Handle $handle -Context "directory lease '$full'"
+    if (-not [StringComparer]::OrdinalIgnoreCase.Equals($identity.FinalPath,$full.TrimEnd('\','/')) -or ($identity.Attributes -band 0x400) -ne 0 -or $identity.LinkCount -ne 1) {
+        $handle.Dispose()
+        throw "Directory lease did not resolve to the exact single-link non-reparse directory: $full"
+    }
+    Add-Member -InputObject $handle -MemberType NoteProperty -Name V02Identity -Value $identity
+    Add-Member -InputObject $handle -MemberType NoteProperty -Name V02Path -Value $full.TrimEnd('\','/')
     return $handle
 }
 
+function Open-V02FileDeletionLease {
+    param([Parameter(Mandatory = $true)][string]$Path)
+    $full = [IO.Path]::GetFullPath($Path)
+    if (-not (Test-Path -LiteralPath $full -PathType Leaf)) { throw "Deletion file does not exist: $full" }
+    Assert-V02PathNoReparse -Path $full
+    $handle = [HerdrOps.V02DirectoryLeaseNative]::CreateFile($full,0x10180,0x3,[IntPtr]::Zero,3,0x00200000,[IntPtr]::Zero)
+    if ($null -eq $handle -or $handle.IsInvalid) {
+        $errorCode = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
+        if ($null -ne $handle) { $handle.Dispose() }
+        throw "Could not hold deletion file '$full' (Win32 $errorCode)."
+    }
+    $identity = Get-V02HandleIdentity -Handle $handle -Context "deletion file '$full'"
+    if (-not [StringComparer]::OrdinalIgnoreCase.Equals($identity.FinalPath,$full.TrimEnd('\','/')) -or ($identity.Attributes -band 0x400) -ne 0 -or $identity.LinkCount -ne 1) {
+        $handle.Dispose()
+        throw "Deletion file did not resolve to the exact single-link non-reparse object: $full"
+    }
+    Add-Member -InputObject $handle -MemberType NoteProperty -Name V02Identity -Value $identity
+    Add-Member -InputObject $handle -MemberType NoteProperty -Name V02Path -Value $full.TrimEnd('\','/')
+    return $handle
+}
+
+function Get-V02DirectoryPathIdentity {
+    param([Parameter(Mandatory = $true)][string]$Path,[string]$Context='directory')
+    $lease = Open-V02DirectoryMutationLease -Path $Path
+    try { return $lease.V02Identity }
+    finally { $lease.Dispose() }
+}
+
 function Get-V02DefaultInstallRoot {
-    return (Join-Path $env:LOCALAPPDATA 'Programs\HerdrOps')
+    return (Join-Path (Get-V02KnownLocalAppDataRoot) 'Programs\HerdrOps')
 }
 
 function Get-V02DefaultUserDataRoot {
-    return (Join-Path $env:LOCALAPPDATA 'HerdrOps')
+    return (Join-Path (Get-V02KnownLocalAppDataRoot) 'HerdrOps')
 }
 
 function Test-V02IsElevated {
@@ -538,7 +689,9 @@ function Copy-V02StableFile {
         [Parameter(Mandatory = $true)][string]$Destination
     )
 
-    $sourceIdentity = Get-V02StableFileIdentity -Path $Source -IncludeBytes
+    $sourceFullPath = [IO.Path]::GetFullPath($Source)
+    if (-not (Test-Path -LiteralPath $sourceFullPath -PathType Leaf)) { throw "Stable-copy source was not found: $sourceFullPath" }
+    Assert-V02PathNoReparse -Path $sourceFullPath
     $destinationFullPath = [IO.Path]::GetFullPath($Destination)
     $parent = Split-Path -Path $destinationFullPath -Parent
     if (-not (Test-Path -LiteralPath $parent -PathType Container)) {
@@ -546,35 +699,42 @@ function Copy-V02StableFile {
     }
     Assert-V02PathNoReparse -Path $parent
     $parentLease = Open-V02DirectoryMutationLease -Path $parent
+    $sourceStream = $null
+    $destinationStream = $null
     try {
+        $sourceStream = [IO.File]::Open($sourceFullPath,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read)
+        $sourceHandleIdentity = Get-V02HandleIdentity -Handle $sourceStream.SafeFileHandle -Context 'stable-copy source'
+        $null = Assert-V02SameHandleIdentity -Handle $sourceStream.SafeFileHandle -Expected $sourceHandleIdentity -ExpectedPath $sourceFullPath -Context 'stable-copy source' -RequireSingleLink
         if (Test-Path -LiteralPath $destinationFullPath) {
             throw "Refusing to overwrite stable-copy destination: $destinationFullPath"
         }
     # FileMode.CreateNew is the no-clobber boundary.  A hostile file or hardlink
     # appearing after the Test-Path preflight must make the atomic create fail;
     # WriteAllBytes/Create would otherwise truncate that unowned object.
-        $destinationStream = $null
-        try {
-            $destinationStream = [IO.File]::Open(
-                $destinationFullPath,
-                [IO.FileMode]::CreateNew,
-                [IO.FileAccess]::Write,
-                [IO.FileShare]::None)
-            $destinationStream.Write($sourceIdentity.Bytes, 0, $sourceIdentity.Bytes.Length)
-            $destinationStream.Flush($true)
+        $destinationStream = [IO.File]::Open($destinationFullPath,[IO.FileMode]::CreateNew,[IO.FileAccess]::ReadWrite,[IO.FileShare]::None)
+        $destinationHandleIdentity = Get-V02HandleIdentity -Handle $destinationStream.SafeFileHandle -Context 'stable-copy destination'
+        $null = Assert-V02SameHandleIdentity -Handle $destinationStream.SafeFileHandle -Expected $destinationHandleIdentity -ExpectedPath $destinationFullPath -Context 'stable-copy destination' -RequireSingleLink
+        $buffer = New-Object byte[] 131072
+        while (($read = $sourceStream.Read($buffer,0,$buffer.Length)) -gt 0) {
+            $destinationStream.Write($buffer,0,$read)
         }
-        finally {
-            if ($null -ne $destinationStream) { $destinationStream.Dispose() }
-        }
-        Assert-V02PathNoReparse -Path $destinationFullPath
-        $destinationIdentity = Get-V02StableFileIdentity -Path $destinationFullPath
-        if ($destinationIdentity.Length -ne $sourceIdentity.Length -or
-            $destinationIdentity.Sha256 -cne $sourceIdentity.Sha256) {
+        $destinationStream.Flush($true)
+        $null = Assert-V02SameHandleIdentity -Handle $sourceStream.SafeFileHandle -Expected $sourceHandleIdentity -ExpectedPath $sourceFullPath -Context 'stable-copy source' -RequireSingleLink
+        $null = Assert-V02SameHandleIdentity -Handle $destinationStream.SafeFileHandle -Expected $destinationHandleIdentity -ExpectedPath $destinationFullPath -Context 'stable-copy destination' -RequireSingleLink
+        $sourceStream.Position = 0; $destinationStream.Position = 0
+        $sha = [Security.Cryptography.SHA256]::Create()
+        try { $sourceSha = ([BitConverter]::ToString($sha.ComputeHash($sourceStream))).Replace('-','') } finally { $sha.Dispose() }
+        $sha = [Security.Cryptography.SHA256]::Create()
+        try { $destinationSha = ([BitConverter]::ToString($sha.ComputeHash($destinationStream))).Replace('-','') } finally { $sha.Dispose() }
+        if ($sourceStream.Length -ne $destinationStream.Length -or $sourceSha -cne $destinationSha) {
             throw "Stable copy did not preserve source bytes: $Source"
         }
-        return $destinationIdentity
+        return [pscustomobject][ordered]@{Path=$destinationFullPath;Length=[int64]$destinationStream.Length;Sha256=$destinationSha;VolumeSerialNumber=$destinationHandleIdentity.VolumeSerialNumber;FileId=$destinationHandleIdentity.FileId;LinkCount=$destinationHandleIdentity.LinkCount}
     }
     finally {
+        if ($null -ne $destinationStream) { $destinationStream.Dispose() }
+        if ($null -ne $sourceStream) { $sourceStream.Dispose() }
+        $null = Assert-V02SameHandleIdentity -Handle $parentLease -Expected $parentLease.V02Identity -ExpectedPath $parentLease.V02Path -Context 'stable-copy parent' -RequireSingleLink
         $parentLease.Dispose()
     }
 }
@@ -685,7 +845,8 @@ function Assert-V02CompleteInstalledBinding {
 function Remove-V02TransactionDirectory {
     param(
         [Parameter(Mandatory = $true)][string]$Path,
-        [Parameter(Mandatory = $true)][string]$ExpectedParent
+        [Parameter(Mandatory = $true)][string]$ExpectedParent,
+        $ExpectedIdentity = $null
     )
     $target = [IO.Path]::GetFullPath($Path).TrimEnd('\','/')
     $parent = [IO.Path]::GetFullPath($ExpectedParent).TrimEnd('\','/')
@@ -694,6 +855,78 @@ function Remove-V02TransactionDirectory {
     }
     if (-not (Test-Path -LiteralPath $target)) { return }
     if (-not (Test-Path -LiteralPath $target -PathType Container)) { throw "Transaction path is not a directory: $target" }
-    Assert-V02TreeNoReparse -Path $target
-    [IO.Directory]::Delete($target, $true)
+    $parentLease = Open-V02DirectoryMutationLease -Path $parent
+    $targetLease = $null
+    try {
+        $targetLease = Open-V02DirectoryMutationLease -Path $target -ForDelete
+        if ($null -ne $ExpectedIdentity -and ($targetLease.V02Identity.VolumeSerialNumber -cne $ExpectedIdentity.VolumeSerialNumber -or $targetLease.V02Identity.FileId -cne $ExpectedIdentity.FileId -or $targetLease.V02Identity.LinkCount -ne $ExpectedIdentity.LinkCount)) {
+            throw 'Transaction cleanup target no longer equals the exact owned directory identity.'
+        }
+        $null = Assert-V02SameHandleIdentity -Handle $parentLease -Expected $parentLease.V02Identity -ExpectedPath $parent -Context 'cleanup parent' -RequireSingleLink
+        $null = Assert-V02SameHandleIdentity -Handle $targetLease -Expected $targetLease.V02Identity -ExpectedPath $target -Context 'cleanup target' -RequireSingleLink
+        Assert-V02TreeNoReparse -Path $target
+        foreach ($child in @(Get-ChildItem -LiteralPath $target -Force)) {
+            if (($child.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw "Cleanup refuses reparse descendant: $($child.FullName)" }
+            if ($child.PSIsContainer) {
+                Remove-V02TransactionDirectory -Path $child.FullName -ExpectedParent $target
+            } else {
+                $childLease = $null
+                try {
+                    $childLease = Open-V02FileDeletionLease -Path $child.FullName
+                    $null = Assert-V02SameHandleIdentity -Handle $childLease -Expected $childLease.V02Identity -ExpectedPath $childLease.V02Path -Context 'cleanup file' -RequireSingleLink
+                    if (($childLease.V02Identity.Attributes -band [uint32][IO.FileAttributes]::ReadOnly) -ne 0) {
+                        $basic = New-Object HerdrOps.V02FileBasicInfo; $basic.FileAttributes = [uint32][IO.FileAttributes]::Normal
+                        $basicSize = [Runtime.InteropServices.Marshal]::SizeOf([type][HerdrOps.V02FileBasicInfo])
+                        if (-not [HerdrOps.V02DirectoryLeaseNative]::SetFileBasicInformationByHandle($childLease,0,[ref]$basic,[uint32]$basicSize)) { throw "Cleanup file read-only normalization failed (Win32 $([Runtime.InteropServices.Marshal]::GetLastWin32Error()))." }
+                    }
+                    $disposition = New-Object HerdrOps.V02FileDispositionInfo
+                    $disposition.DeleteFile = $true
+                    if (-not [HerdrOps.V02DirectoryLeaseNative]::SetFileInformationByHandle($childLease,4,[ref]$disposition,4)) { throw "Cleanup file delete-by-handle failed (Win32 $([Runtime.InteropServices.Marshal]::GetLastWin32Error()))." }
+                } finally { if ($null -ne $childLease) { $childLease.Dispose() } }
+            }
+        }
+        $null = Assert-V02SameHandleIdentity -Handle $targetLease -Expected $targetLease.V02Identity -ExpectedPath $target -Context 'cleanup target' -RequireSingleLink
+        if (@(Get-ChildItem -LiteralPath $target -Force).Count -ne 0) { throw "Cleanup target changed or is not empty: $target" }
+        $disposition = New-Object HerdrOps.V02FileDispositionInfo
+        $disposition.DeleteFile = $true
+        if (-not [HerdrOps.V02DirectoryLeaseNative]::SetFileInformationByHandle($targetLease,4,[ref]$disposition,4)) { throw "Cleanup directory delete-by-handle failed (Win32 $([Runtime.InteropServices.Marshal]::GetLastWin32Error()))." }
+    }
+    finally {
+        if ($null -ne $targetLease) { $targetLease.Dispose() }
+        $null = Assert-V02SameHandleIdentity -Handle $parentLease -Expected $parentLease.V02Identity -ExpectedPath $parent -Context 'cleanup parent' -RequireSingleLink
+        $parentLease.Dispose()
+    }
+    if (Test-Path -LiteralPath $target) { throw "Cleanup target remained after delete-by-handle: $target" }
+}
+
+# Override the shared packaging temp helpers for the v0.2 production path so
+# every recursive cleanup is bound to the exact directory object created by
+# this process, not merely to a reusable pathname.
+$script:V02OwnedTempIdentities = @{}
+function New-PackagingTempDirectory {
+    param([Parameter(Mandatory = $true)][string]$Prefix)
+    if ($Prefix -notmatch '^HerdrOps-[A-Za-z0-9-]+-$') { throw "Invalid temporary directory prefix: $Prefix" }
+    $tempRoot = Normalize-ComparablePath -Path ([IO.Path]::GetTempPath())
+    for ($attempt=0;$attempt -lt 10;$attempt++) {
+        $candidate = Join-Path $tempRoot ($Prefix + [Guid]::NewGuid().ToString('N'))
+        Assert-SafeDestination -Path $candidate -AllowTempChild | Out-Null
+        if (-not (Test-Path -LiteralPath $candidate)) {
+            [IO.Directory]::CreateDirectory($candidate) | Out-Null
+            $full = Normalize-ComparablePath -Path $candidate
+            $script:V02OwnedTempIdentities[$full] = Get-V02DirectoryPathIdentity $full 'created v0.2 temp directory'
+            return $full
+        }
+    }
+    throw 'Could not create a unique packaging temp directory.'
+}
+
+function Remove-PackagingTempDirectory {
+    param([Parameter(Mandatory = $true)][string]$Path)
+    $full = Normalize-ComparablePath -Path $Path
+    $tempRoot = Normalize-ComparablePath -Path ([IO.Path]::GetTempPath())
+    if (-not (Test-PathWithin -ChildPath $full -RootPath $tempRoot) -or $full.Equals($tempRoot,[StringComparison]::OrdinalIgnoreCase) -or ([IO.Path]::GetFileName($full) -notmatch '^HerdrOps-[A-Za-z0-9-]+-[0-9a-f]{32}$')) { throw "Refusing to remove a non-owned packaging temp directory: $full" }
+    if (-not $script:V02OwnedTempIdentities.ContainsKey($full)) { throw "Refusing to remove a temp directory without its creation identity: $full" }
+    $identity = $script:V02OwnedTempIdentities[$full]
+    if (Test-Path -LiteralPath $full) { Remove-V02TransactionDirectory -Path $full -ExpectedParent (Split-Path $full -Parent) -ExpectedIdentity $identity }
+    $script:V02OwnedTempIdentities.Remove($full)
 }

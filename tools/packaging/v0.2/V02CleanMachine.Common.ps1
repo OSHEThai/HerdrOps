@@ -75,6 +75,8 @@ function Read-V02CleanHostAuthorization {
         [Parameter(Mandatory = $true)][string]$MachineName,
         [Parameter(Mandatory = $true)][string]$MachineFingerprint,
         [Parameter(Mandatory = $true)][string]$PrincipalSid,
+        [Parameter(Mandatory = $true)][string]$InstallRoot,
+        [Parameter(Mandatory = $true)][string]$UserDataRoot,
         [Parameter(Mandatory = $true)]$InitialBinding,
         [Parameter(Mandatory = $true)]$FinalBinding
     )
@@ -100,13 +102,16 @@ function Read-V02CleanHostAuthorization {
     }
     $document = ConvertFrom-V02StrictBytes -Bytes $authorizationBytes -Description 'external clean-host authorization'
     $value = $document.Value
-    $required = @('schemaVersion','authorizationKind','machineName','machineFingerprint','principalSid','operatorSid','observerIdentity','initial','final','issuedAtUtc','expiresAtUtc','nonce')
+    $required = @('schemaVersion','authorizationKind','machineName','machineFingerprint','principalSid','operatorSid','observerIdentity','installRoot','userDataRoot','initial','final','issuedAtUtc','expiresAtUtc','nonce')
     $names = @($value.PSObject.Properties.Name)
     if ($names.Count -ne $required.Count -or @($required | Where-Object { -not ($names -ccontains $_) }).Count -ne 0) { throw 'External clean-host authorization has an unexpected schema.' }
     if ([int]$value.schemaVersion -ne 1 -or [string]$value.authorizationKind -cne 'HerdrOps.V02CleanHostAuthorization') { throw 'External clean-host authorization kind/version is invalid.' }
     foreach ($binding in @(
         @('machineName',$MachineName),@('machineFingerprint',$MachineFingerprint),@('principalSid',$PrincipalSid),@('operatorSid',$PrincipalSid))) {
         if ([string]$value.($binding[0]) -cne [string]$binding[1]) { throw "External clean-host authorization $($binding[0]) binding mismatch." }
+    }
+    foreach ($binding in @(@('installRoot',$InstallRoot),@('userDataRoot',$UserDataRoot))) {
+        if (-not [StringComparer]::OrdinalIgnoreCase.Equals([IO.Path]::GetFullPath([string]$value.($binding[0])).TrimEnd('\','/'),[IO.Path]::GetFullPath([string]$binding[1]).TrimEnd('\','/'))) { throw "External clean-host authorization $($binding[0]) binding mismatch." }
     }
     $bindingNames = @('sourceCommit','sourceTree','receiptSha256','archiveSha256','packageManifestSha256','appSha256','coreSha256')
     foreach ($phase in @('initial','final')) {
@@ -118,7 +123,7 @@ function Read-V02CleanHostAuthorization {
             if ([string]$authorized.$name -cne [string]$expected.$name) { throw "External clean-host authorization $phase.$name binding mismatch." }
         }
     }
-    if ([string]::IsNullOrWhiteSpace([string]$value.observerIdentity) -or [string]$value.observerIdentity -ceq $PrincipalSid) { throw 'External observer identity is missing or not role-distinct.' }
+    if ([string]::IsNullOrWhiteSpace([string]$value.observerIdentity) -or [string]$value.observerIdentity -ieq $PrincipalSid) { throw 'External observer identity is missing or not role-distinct.' }
     if ([string]$value.nonce -cnotmatch '^[0-9a-f]{32}$') { throw 'External clean-host authorization nonce is invalid.' }
     $now = [DateTimeOffset]::UtcNow
     $issued = [DateTimeOffset]::Parse([string]$value.issuedAtUtc,[Globalization.CultureInfo]::InvariantCulture)
@@ -311,27 +316,38 @@ function Write-V02CleanMachineReportFile {
     if (-not (Test-Path -LiteralPath $parent -PathType Container)) { throw "Report parent must pre-exist: $parent" }
     Assert-V02PathNoReparse $parent
     $parentLease = Open-V02DirectoryMutationLease -Path $parent
+    $stream = $null
+    $created = $false
+    $published = $false
     try {
         if (Test-Path -LiteralPath $full) { throw "Refusing to overwrite existing report: $full" }
-        $stage = Join-Path $parent ('.'+[IO.Path]::GetFileName($full)+'.staging-'+[Guid]::NewGuid().ToString('N'))
         $bytes = (New-Object Text.UTF8Encoding($false)).GetBytes($json + "`n")
-        $stream = $null
-        try {
-            $stream = [IO.File]::Open($stage,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::None)
-            $stream.Write($bytes,0,$bytes.Length);$stream.Flush($true);$stream.Dispose();$stream=$null
-            Assert-V02PathNoReparse $stage
-            [IO.File]::Move($stage,$full)
-            Assert-V02PathNoReparse $full
-            $written = Get-V02StableFileIdentity $full
-            $sha = [Security.Cryptography.SHA256]::Create()
-            try { $expectedSha = ([BitConverter]::ToString($sha.ComputeHash($bytes))).Replace('-','') } finally { $sha.Dispose() }
-            if ($written.Length -ne $bytes.Length -or $written.Sha256 -cne $expectedSha) { throw 'Published clean-machine report bytes changed.' }
-        }
-        finally {
-            if ($null -ne $stream) { $stream.Dispose() }
-            if (Test-Path -LiteralPath $stage) { Remove-Item -LiteralPath $stage -Force }
-        }
+        # Direct CreateNew plus an exclusive read/write handle is the atomic
+        # no-clobber publication boundary.  The same final-path handle remains
+        # held through write, flush, byte verification, FileId and link checks.
+        $stream = [IO.File]::Open($full,[IO.FileMode]::CreateNew,[IO.FileAccess]::ReadWrite,[IO.FileShare]::None)
+        $created = $true
+        $reportIdentity = Get-V02HandleIdentity -Handle $stream.SafeFileHandle -Context 'clean-machine report'
+        $null = Assert-V02SameHandleIdentity -Handle $stream.SafeFileHandle -Expected $reportIdentity -ExpectedPath $full -Context 'clean-machine report' -RequireSingleLink
+        $stream.Write($bytes,0,$bytes.Length);$stream.Flush($true)
+        $stream.Position = 0
+        $sha = [Security.Cryptography.SHA256]::Create()
+        try { $writtenSha = ([BitConverter]::ToString($sha.ComputeHash($stream))).Replace('-','') } finally { $sha.Dispose() }
+        $sha = [Security.Cryptography.SHA256]::Create()
+        try { $expectedSha = ([BitConverter]::ToString($sha.ComputeHash($bytes))).Replace('-','') } finally { $sha.Dispose() }
+        $null = Assert-V02SameHandleIdentity -Handle $stream.SafeFileHandle -Expected $reportIdentity -ExpectedPath $full -Context 'clean-machine report' -RequireSingleLink
+        if ($stream.Length -ne $bytes.Length -or $writtenSha -cne $expectedSha) { throw 'Published clean-machine report bytes changed.' }
+        $published = $true
     } finally {
+        if ($null -ne $stream) { $stream.Dispose() }
+        if ($created -and -not $published -and (Test-Path -LiteralPath $full -PathType Leaf)) {
+            $failedReportLease = Open-V02FileDeletionLease -Path $full
+            try {
+                $disposition = New-Object HerdrOps.V02FileDispositionInfo; $disposition.DeleteFile = $true
+                if (-not [HerdrOps.V02DirectoryLeaseNative]::SetFileInformationByHandle($failedReportLease,4,[ref]$disposition,4)) { throw "Failed report cleanup failed (Win32 $([Runtime.InteropServices.Marshal]::GetLastWin32Error()))." }
+            } finally { $failedReportLease.Dispose() }
+        }
+        $null = Assert-V02SameHandleIdentity -Handle $parentLease -Expected $parentLease.V02Identity -ExpectedPath $parentLease.V02Path -Context 'clean-machine report parent' -RequireSingleLink
         $parentLease.Dispose()
     }
 }
@@ -482,7 +498,10 @@ function Assert-V02CleanMachineReportSchema {
         if ([string]$Report.mode -ne 'DryRun') {
             if (-not [bool]$Report.lifecycle.cleanInstall.identityReceiptBound -or -not [bool]$Report.lifecycle.cleanInstall.installStateBound -or -not [bool]$Report.lifecycle.cleanInstall.startupRegistered) { throw 'Passing lifecycle did not observe a complete clean install.' }
             if (-not [bool]$Report.lifecycle.sameVersionCandidateReplacement.replacementObserved -or -not [bool]$Report.lifecycle.sameVersionCandidateReplacement.backupCreatedAndRetired -or -not [bool]$Report.lifecycle.sameVersionCandidateReplacement.userDataPreserved) { throw 'Passing lifecycle did not observe exact candidate replacement.' }
+            if ([string]$Report.lifecycle.sameVersionCandidateReplacement.backupVolumeSerialNumber -cnotmatch '^[0-9A-F]{8}$' -or [string]$Report.lifecycle.sameVersionCandidateReplacement.backupFileId -cnotmatch '^[0-9A-F]{16}$' -or [int]$Report.lifecycle.sameVersionCandidateReplacement.backupLinkCount -ne 1) { throw 'Passing replacement did not bind the exact single-link backup identity.' }
             if (-not [bool]$Report.lifecycle.rollback.rollbackObserved -or -not [bool]$Report.lifecycle.rollback.installRestoredOnFault) { throw 'Passing lifecycle did not observe rollback restoration.' }
+            $rollbackMap=@{restoredSourceCommit='sourceCommit';restoredSourceTree='sourceTree';restoredReceiptSha256='receiptSha256';restoredArchiveSha256='archiveSha256';restoredPackageManifestSha256='packageManifestSha256';restoredAppSha256='appSha256';restoredCoreSha256='coreSha256'}
+            foreach($name in $rollbackMap.Keys){$expectedName=$rollbackMap[$name];if([string]$Report.lifecycle.rollback.$name -cne [string]$Report.bindings.final.$expectedName){throw "Passing rollback $name does not equal the exact final candidate binding."}}
             if (-not [bool]$Report.lifecycle.uninstall.installRootAbsent -or -not [bool]$Report.lifecycle.uninstall.startupRemoved -or -not [bool]$Report.lifecycle.uninstall.userDataPreserved) { throw 'Passing lifecycle did not observe complete uninstall.' }
         }
     }

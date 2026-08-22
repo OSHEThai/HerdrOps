@@ -121,11 +121,15 @@ try {
     $receiptPath = Join-Path $testRoot 'identity.json'
     Write-V02CanonicalJsonFile -Value $receiptObj -Path $receiptPath -RepositoryRoot $repo
 
-    # Prepare secondary candidate payload for same-version replacement
+    # A byte-identical same-version replacement must still create and retire
+    # an exact backup; byte equality is never evidence that replacement ran.
+    $replacementCommit = $fixtureCommit
+    $replacementTree = $fixtureTree
+
+    # Prepare secondary candidate payload for same-version replacement.
     $replacementPayload = Join-Path $testRoot 'replacement-payload'
     New-Item -ItemType Directory -Path $replacementPayload -Force | Out-Null
     Copy-Item -Path "$fixturePayload\*" -Destination $replacementPayload -Recurse
-    [IO.File]::WriteAllBytes((Join-Path $replacementPayload 'HerdrOps.App.dll'), [byte[]](100, 101, 102, 103))
 
     $replacementManifest = New-V02PackageManifestObject -Profile $profile -RepositoryRoot $repo -PackageRoot $replacementPayload
     Write-V02CanonicalJsonFile -Value $replacementManifest -Path (Join-Path $replacementPayload 'package-manifest.json') -RepositoryRoot $repo
@@ -185,8 +189,8 @@ try {
             -ReportPath $reportPath `
             -ExpectedSourceCommit $fixtureCommit `
             -ExpectedSourceTree $fixtureTree `
-            -ExpectedReplacementSourceCommit $fixtureCommit `
-            -ExpectedReplacementSourceTree $fixtureTree `
+            -ExpectedReplacementSourceCommit $replacementCommit `
+            -ExpectedReplacementSourceTree $replacementTree `
             -FixtureRoot $testRoot `
             -MockRegistryHive $mockRegistry `
             -AllowElevatedForTesting
@@ -195,6 +199,8 @@ try {
         if ($report.scope -ne 'InstallLifecycleOnly') { throw 'Scope was not InstallLifecycleOnly.' }
         if ($report.lifecycle.cleanInstall.status -ne 'PASS' -or $report.lifecycle.cleanInstall.installedFileCount -lt 5) { throw 'Clean install step failed.' }
         if ($report.lifecycle.sameVersionCandidateReplacement.status -ne 'PASS') { throw 'Candidate replacement step failed.' }
+        if (-not $report.lifecycle.sameVersionCandidateReplacement.backupCreatedAndRetired) { throw 'Byte-identical replacement did not prove exact backup creation and retirement.' }
+        if ($report.bindings.initial.appSha256 -cne $report.bindings.final.appSha256 -or $report.bindings.initial.coreSha256 -cne $report.bindings.final.coreSha256 -or $report.bindings.initial.receiptSha256 -cne $report.bindings.final.receiptSha256) { throw 'Replacement fixture was not byte-identical to the initial candidate.' }
         if ($report.lifecycle.rollback.status -ne 'PASS') { throw 'Rollback step failed.' }
         if ($report.lifecycle.uninstall.status -ne 'PASS') { throw 'Uninstall step failed.' }
         if ($report.retainedData.markerStatus -ne 'PRESERVED') { throw 'Retained data marker was not preserved.' }
@@ -229,6 +235,28 @@ try {
             -MockRegistryHive $liveRegistry `
             -AllowElevatedForTesting } 'rejects mock registry|test-only controls'
         if ((Test-Path -LiteralPath $liveInstall) -or (Test-Path -LiteralPath $liveReportPath)) { throw 'Rejected Live simulation mutated its target or report path.' }
+    }
+
+    Invoke-Case 'Live mode rejects temp roots after caller-controlled LOCALAPPDATA redirection' {
+        $oldLocalAppData = $env:LOCALAPPDATA
+        $redirected = Join-Path $testRoot 'redirected-live-localappdata'
+        $env:LOCALAPPDATA = $redirected
+        try {
+            Assert-Throws { & $scriptPath `
+                -Mode 'Live' `
+                -IdentityReceiptPath $receiptPath `
+                -ArchivePath $archivePath `
+                -InstallRoot (Join-Path $redirected 'Programs\HerdrOps') `
+                -UserDataRoot (Join-Path $redirected 'HerdrOps') `
+                -RepositoryRoot $repo `
+                -ProfilePath $profilePath `
+                -ExpectedMachineName ([Environment]::MachineName) `
+                -ExpectedMachineFingerprint (Get-V02MachineFingerprint) `
+                -LiveConfirmationToken 'HERDROPS-V02-CLEAN-MACHINE' `
+                -IUnderstandLiveMutation
+            } 'exact per-user HerdrOps install and user-data roots'
+            if (Test-Path -LiteralPath $redirected) { throw 'Rejected LOCALAPPDATA redirection created a Live target.' }
+        } finally { $env:LOCALAPPDATA = $oldLocalAppData }
     }
 
     # Hostile Matrix
@@ -320,8 +348,8 @@ try {
                 -ProfilePath $profilePath `
                 -ExpectedSourceCommit $fixtureCommit `
                 -ExpectedSourceTree $fixtureTree `
-                -ExpectedReplacementSourceCommit $fixtureCommit `
-                -ExpectedReplacementSourceTree $fixtureTree `
+                -ExpectedReplacementSourceCommit $replacementCommit `
+                -ExpectedReplacementSourceTree $replacementTree `
                 -FixtureRoot $testRoot `
                 -MockRegistryHive (@{}) `
                 -AllowElevatedForTesting
@@ -415,8 +443,8 @@ try {
                 -ProfilePath $profilePath `
                 -ExpectedSourceCommit $fixtureCommit `
                 -ExpectedSourceTree $fixtureTree `
-                -ExpectedReplacementSourceCommit $fixtureCommit `
-                -ExpectedReplacementSourceTree $fixtureTree `
+                -ExpectedReplacementSourceCommit $replacementCommit `
+                -ExpectedReplacementSourceTree $replacementTree `
                 -FixtureRoot $testRoot `
                 -MockRegistryHive (@{}) `
                 -AllowElevatedForTesting
@@ -438,8 +466,8 @@ try {
                 -ProfilePath $profilePath `
                 -ExpectedSourceCommit $fixtureCommit `
                 -ExpectedSourceTree $fixtureTree `
-                -ExpectedReplacementSourceCommit $fixtureCommit `
-                -ExpectedReplacementSourceTree $fixtureTree `
+                -ExpectedReplacementSourceCommit $replacementCommit `
+                -ExpectedReplacementSourceTree $replacementTree `
                 -FixtureRoot $testRoot `
                 -MockRegistryHive (@{}) `
                 -TestInjectResidueFailure `
@@ -523,6 +551,8 @@ try {
                 -MachineName ([Environment]::MachineName) `
                 -MachineFingerprint (Get-V02MachineFingerprint) `
                 -PrincipalSid (Get-V02ExecutingPrincipalSid) `
+                -InstallRoot $mockInstallRoot `
+                -UserDataRoot $mockUserDataRoot `
                 -InitialBinding ([pscustomobject]@{}) `
                 -FinalBinding ([pscustomobject]@{})
         } 'signature is invalid or untrusted'

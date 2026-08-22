@@ -191,6 +191,9 @@ try {
         if ($mockRegistry.Count -ne 0) {
             throw 'Default install must NOT register startup.'
         }
+        if ($result.BackupCreated -or $result.BackupRetired -or -not [string]::IsNullOrEmpty([string]$result.BackupFileId)) {
+            throw 'Clean install falsely reported a backup lifecycle.'
+        }
     }
 
     # 3. Installer: Startup opt-in policy
@@ -235,6 +238,9 @@ try {
 
         if ($result.Status -ne 'Installed') {
             throw "Upgrade failed: $($result.Status)"
+        }
+        if (-not $result.BackupCreated -or -not $result.BackupRetired -or [string]$result.BackupFileId -notmatch '^[0-9A-F]{16}$' -or [int]$result.BackupLinkCount -ne 1) {
+            throw 'Upgrade did not prove creation and retirement of the exact backup identity.'
         }
     }
 
@@ -577,17 +583,16 @@ try {
         if (-not (Test-Path -LiteralPath (Join-Path $installRoot 'identity.json')) -or $registry.HerdrOps -cne 'bound-startup') { throw 'Uninstall transaction rollback was incomplete.' }
     }
 
-    Invoke-Case 'default per-user production paths work under isolated LOCALAPPDATA and cleanly uninstall' {
+    Invoke-Case 'default per-user production paths ignore caller-controlled LOCALAPPDATA' {
         $oldLocalAppData = $env:LOCALAPPDATA
         $isolatedLocalAppData = Join-Path $testRoot 'isolated-localappdata'
-        $isolatedRegistry = @{}
+        $knownLocalAppData = Get-V02KnownLocalAppDataRoot
         $env:LOCALAPPDATA = $isolatedLocalAppData
         try {
-            $result = & (Join-Path $PSScriptRoot 'Install-HerdrOpsV02Package.ps1') -IdentityReceiptPath $receiptPath -ArchivePath $archivePath -RepositoryRoot $repo -ProfilePath $profilePath -MockRegistryHive $isolatedRegistry -AllowElevatedForTesting
-            $expectedInstall = Join-Path $isolatedLocalAppData 'Programs\HerdrOps'
-            if (-not [StringComparer]::OrdinalIgnoreCase.Equals([string]$result.InstallRoot,[IO.Path]::GetFullPath($expectedInstall))) { throw 'Default install root was not the canonical per-user path.' }
-            $uninstall = & (Join-Path $PSScriptRoot 'Uninstall-HerdrOpsV02Package.ps1') -RepositoryRoot $repo -ProfilePath $profilePath -MockRegistryHive $isolatedRegistry -AllowElevatedForTesting
-            if ($uninstall.Status -cne 'Uninstalled' -or (Test-Path -LiteralPath $expectedInstall)) { throw 'Default per-user install did not cleanly uninstall.' }
+            $defaultInstall = Get-V02DefaultInstallRoot
+            $defaultUserData = Get-V02DefaultUserDataRoot
+            if (-not [StringComparer]::OrdinalIgnoreCase.Equals($defaultInstall,(Join-Path $knownLocalAppData 'Programs\HerdrOps')) -or -not [StringComparer]::OrdinalIgnoreCase.Equals($defaultUserData,(Join-Path $knownLocalAppData 'HerdrOps'))) { throw 'Known Folder defaults drifted after LOCALAPPDATA redirection.' }
+            if ($defaultInstall.StartsWith([IO.Path]::GetFullPath($isolatedLocalAppData),[StringComparison]::OrdinalIgnoreCase)) { throw 'Caller-controlled LOCALAPPDATA redirected a production default.' }
         } finally {
             $env:LOCALAPPDATA = $oldLocalAppData
         }
@@ -646,6 +651,37 @@ try {
         if ($registry.ContainsKey('HerdrOps')) { throw 'Startup was restored after irreversible retirement began.' }
         $retired = @(Get-ChildItem -LiteralPath (Split-Path $partialRoot -Parent) -Directory -Force | Where-Object Name -Like '.partial-retirement-install.uninstall-*')
         if ($retired.Count -ne 0) { throw 'Partial retirement transaction directory was not cleaned.' }
+    }
+
+    Invoke-Case 'stable copy rejects a hardlinked source object' {
+        $source = Join-Path $testRoot 'copy-source.bin'; $alias = Join-Path $testRoot 'copy-source-alias.bin'; $destination = Join-Path $testRoot 'copy-destination.bin'
+        Put-Bytes $source ([byte[]](7,7,7,7))
+        New-Item -ItemType HardLink -Path $alias -Target $source | Out-Null
+        try { Assert-Throws { Copy-V02StableFile -Source $alias -Destination $destination } 'exactly one link' }
+        finally { if (Test-Path -LiteralPath $alias) { [IO.File]::Delete($alias) } }
+        if (Test-Path -LiteralPath $destination) { throw 'Rejected hardlinked source created a destination.' }
+    }
+
+    Invoke-Case 'recursive cleanup rejects hardlinked descendants and preserves the outside victim' {
+        $cleanupParent = Join-Path $testRoot 'cleanup-hardlink-parent'; $cleanupTarget = Join-Path $cleanupParent 'owned-target'; New-Item -ItemType Directory -Path $cleanupTarget -Force | Out-Null
+        $victim = Join-Path $cleanupParent 'outside-victim.bin'; $linked = Join-Path $cleanupTarget 'linked-victim.bin'; Put-Bytes $victim ([byte[]](9,9,8,8)); New-Item -ItemType HardLink -Path $linked -Target $victim | Out-Null
+        try {
+            Assert-Throws { Remove-V02TransactionDirectory -Path $cleanupTarget -ExpectedParent $cleanupParent } 'single-link|exactly one link'
+            if ((Get-V02StableFileIdentity $victim).Sha256 -cne (Get-V02StableFileIdentity $linked).Sha256) { throw 'Cleanup changed the outside hardlink victim.' }
+        } finally { if (Test-Path -LiteralPath $linked) { [IO.File]::Delete($linked) } }
+        Remove-V02TransactionDirectory -Path $cleanupTarget -ExpectedParent $cleanupParent
+    }
+
+    Invoke-Case 'recursive cleanup rejects a reparse-swapped parent path and preserves target bytes' {
+        $realParent = Join-Path $testRoot 'cleanup-real-parent'; $realTarget = Join-Path $realParent 'owned-target'; New-Item -ItemType Directory -Path $realTarget -Force | Out-Null; $sentinel = Join-Path $realTarget 'sentinel.keep'; Put-Bytes $sentinel ([byte[]](4,3,2,1))
+        $aliasParent = Join-Path $testRoot 'cleanup-swapped-parent'; $junctionCreated=$false
+        try { New-Item -ItemType Junction -Path $aliasParent -Target $realParent -ErrorAction Stop | Out-Null; $junctionCreated=$true } catch { }
+        if ($junctionCreated) {
+            try { Assert-Throws { Remove-V02TransactionDirectory -Path (Join-Path $aliasParent 'owned-target') -ExpectedParent $aliasParent } 'reparse|final path|exact single-link' }
+            finally { [IO.Directory]::Delete($aliasParent,$false) }
+            if (-not (Test-Path -LiteralPath $sentinel -PathType Leaf)) { throw 'Parent-swap rejection deleted the protected target.' }
+        }
+        Remove-V02TransactionDirectory -Path $realTarget -ExpectedParent $realParent
     }
 } finally {
     if (Test-Path -LiteralPath $testRoot) {

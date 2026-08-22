@@ -202,7 +202,6 @@ if ($Mode -ne 'DryRun') {
     if ([string]$replacementIdentity.source.commitSha -cne $ExpectedReplacementSourceCommit.ToLowerInvariant() -or [string]$replacementIdentity.source.treeSha -cne $ExpectedReplacementSourceTree.ToLowerInvariant()) {
         throw 'Replacement source commit/tree does not equal the exact expected final candidate.'
     }
-    if ($replacementParsed.ReceiptSha256 -ceq $receiptSha256) { throw 'SameVersionCandidateReplacement requires a distinct final candidate receipt.' }
 }
 
 # Bindings object
@@ -239,7 +238,7 @@ $actorObj = [pscustomobject][ordered]@{
 
 if ($Mode -eq 'Live') {
     if ([string]::IsNullOrWhiteSpace($CleanHostAuthorizationPath) -or [string]::IsNullOrWhiteSpace($CleanHostAuthorizationSignaturePath)) { throw 'Live mode requires detached externally signed clean-host authorization.' }
-    $authorization = Read-V02CleanHostAuthorization -AuthorizationPath $CleanHostAuthorizationPath -SignaturePath $CleanHostAuthorizationSignaturePath -MachineName $currentMachine -MachineFingerprint $currentFingerprint -PrincipalSid $principalSid -InitialBinding $initialBinding -FinalBinding $finalBinding
+    $authorization = Read-V02CleanHostAuthorization -AuthorizationPath $CleanHostAuthorizationPath -SignaturePath $CleanHostAuthorizationSignaturePath -MachineName $currentMachine -MachineFingerprint $currentFingerprint -PrincipalSid $principalSid -InstallRoot $safeInstallRoot -UserDataRoot $safeUserDataRoot -InitialBinding $initialBinding -FinalBinding $finalBinding
     $actorObj.operator.identity = $principalSid
     $actorObj.observer.identity = [string]$authorization.Value.observerIdentity
     $actorObj.authorization.status = 'VERIFIED'
@@ -262,8 +261,8 @@ if ($Mode -eq 'DryRun') {
     $completedAtUtc = [DateTime]::UtcNow.ToString('o', [Globalization.CultureInfo]::InvariantCulture)
     $dryLifecycle = [pscustomobject][ordered]@{
         cleanInstall = [pscustomobject][ordered]@{ status = 'SKIPPED'; installedFileCount = 0; identityReceiptBound = $false; installStateBound = $false; startupRegistered = $false }
-        sameVersionCandidateReplacement = [pscustomobject][ordered]@{ status = 'SKIPPED'; replacementObserved = $false; backupCreatedAndRetired = $false; userDataPreserved = $false }
-        rollback = [pscustomobject][ordered]@{ status = 'SKIPPED'; rollbackObserved = $false; installRestoredOnFault = $false; details = 'DryRun mode: rollback skipped.' }
+        sameVersionCandidateReplacement = [pscustomobject][ordered]@{ status = 'SKIPPED'; replacementObserved = $false; backupCreatedAndRetired = $false; backupVolumeSerialNumber = ''; backupFileId = ''; backupLinkCount = 0; userDataPreserved = $false }
+        rollback = [pscustomobject][ordered]@{ status = 'SKIPPED'; rollbackObserved = $false; installRestoredOnFault = $false; restoredSourceCommit=''; restoredSourceTree=''; restoredReceiptSha256=''; restoredArchiveSha256=''; restoredPackageManifestSha256=''; restoredAppSha256=''; restoredCoreSha256=''; details = 'DryRun mode: rollback skipped.' }
         uninstall = [pscustomobject][ordered]@{ status = 'SKIPPED'; installRootAbsent = $false; startupRemoved = $false; userDataPreserved = $false }
     }
     $dryRetained = [pscustomobject][ordered]@{ markerStatus = 'SKIPPED'; preservedFileCount = 0; details = 'DryRun mode: no user data modified.' }
@@ -328,14 +327,18 @@ try {
     $installedFiles = @(Get-ChildItem -LiteralPath $safeInstallRoot -Recurse -Force -File)
     $initialBindingWork = New-PackagingTempDirectory -Prefix 'HerdrOps-V02InitialBinding-'
     try { $observedInitial = Assert-V02CompleteInstalledBinding $safeInstallRoot $profile $profileFull $repositoryFull $initialBindingWork } finally { if (Test-Path -LiteralPath $initialBindingWork) { Remove-PackagingTempDirectory $initialBindingWork } }
-    if ($installResult.ReceiptSha256 -cne $initialBinding.receiptSha256 -or $observedInitial.AppSha256 -cne $initialBinding.appSha256 -or $observedInitial.CoreSha256 -cne $initialBinding.coreSha256) { throw 'Clean install did not observe the exact initial candidate binding.' }
+    if ($observedInitial.SourceCommit -cne $initialBinding.sourceCommit -or $observedInitial.SourceTree -cne $initialBinding.sourceTree -or $observedInitial.ReceiptSha256 -cne $initialBinding.receiptSha256 -or $observedInitial.ArchiveSha256 -cne $initialBinding.archiveSha256 -or $observedInitial.PackageManifestSha256 -cne $initialBinding.packageManifestSha256 -or $observedInitial.AppSha256 -cne $initialBinding.appSha256 -or $observedInitial.CoreSha256 -cne $initialBinding.coreSha256 -or $installResult.ReceiptSha256 -cne $initialBinding.receiptSha256) { throw 'Clean install did not observe the exact initial source/tree/candidate/package/archive/manifest/App/Core binding.' }
+    $observedStartup = Get-V02UserStartupState -MockRegistryHive $MockRegistryHive
+    $expectedStartupValue = '"' + (Join-Path $safeInstallRoot ([string]$profile.components.appRelativePath)) + '"'
+    $startupRegistered = ($observedStartup.Exists -and [string]$observedStartup.Value -ceq $expectedStartupValue)
+    if (-not $startupRegistered) { throw 'Clean install startup registration was not independently observed at the exact installed App path.' }
 
     $installStep = [pscustomobject][ordered]@{
         status = 'PASS'
         installedFileCount = [int]$installedFiles.Count
         identityReceiptBound = (Test-Path -LiteralPath (Join-Path $safeInstallRoot 'identity.json') -PathType Leaf)
         installStateBound = (Test-Path -LiteralPath (Join-Path $safeInstallRoot 'install-state.json') -PathType Leaf)
-        startupRegistered = [bool]$installResult.StartupRegistered
+        startupRegistered = $startupRegistered
     }
 
     # 2. Seed Retained User Data Marker
@@ -363,35 +366,45 @@ try {
     $finalBindingWork = New-PackagingTempDirectory -Prefix 'HerdrOps-V02FinalBinding-'
     try { $observedFinal = Assert-V02CompleteInstalledBinding $safeInstallRoot $profile $profileFull $repositoryFull $finalBindingWork } finally { if (Test-Path -LiteralPath $finalBindingWork) { Remove-PackagingTempDirectory $finalBindingWork } }
 
-    $replacementObserved = ($replacementResult.Status -eq 'Installed' -and $replacementResult.ReceiptSha256 -ceq $finalBinding.receiptSha256 -and $observedFinal.AppSha256 -ceq $finalBinding.appSha256 -and $observedFinal.CoreSha256 -ceq $finalBinding.coreSha256)
-    $backupRetired = (@(Get-ChildItem -LiteralPath (Split-Path $safeInstallRoot -Parent) -Directory -Force | Where-Object { $_.Name -match ('^\.'+[regex]::Escape([IO.Path]::GetFileName($safeInstallRoot))+'\.backup-[0-9a-f]{32}$') }).Count -eq 0)
-    if (-not $replacementObserved -or -not $backupRetired) { throw 'SameVersionCandidateReplacement was not exactly observed and retired.' }
+    $replacementObserved = ($replacementResult.Status -eq 'Installed' -and $observedFinal.SourceCommit -ceq $finalBinding.sourceCommit -and $observedFinal.SourceTree -ceq $finalBinding.sourceTree -and $observedFinal.ReceiptSha256 -ceq $finalBinding.receiptSha256 -and $observedFinal.ArchiveSha256 -ceq $finalBinding.archiveSha256 -and $observedFinal.PackageManifestSha256 -ceq $finalBinding.packageManifestSha256 -and $observedFinal.AppSha256 -ceq $finalBinding.appSha256 -and $observedFinal.CoreSha256 -ceq $finalBinding.coreSha256 -and $replacementResult.ReceiptSha256 -ceq $finalBinding.receiptSha256)
+    $backupRetired = ([bool]$replacementResult.BackupCreated -and [bool]$replacementResult.BackupRetired -and [string]$replacementResult.BackupVolumeSerialNumber -match '^[0-9A-F]{8}$' -and [string]$replacementResult.BackupFileId -match '^[0-9A-F]{16}$' -and [int]$replacementResult.BackupLinkCount -eq 1 -and @(Get-ChildItem -LiteralPath (Split-Path $safeInstallRoot -Parent) -Directory -Force | Where-Object { $_.Name -match ('^\.'+[regex]::Escape([IO.Path]::GetFileName($safeInstallRoot))+'\.backup-[0-9a-f]{32}$') }).Count -eq 0)
+    if (-not $replacementObserved -or -not $backupRetired) { throw 'SameVersionCandidateReplacement did not observe creation and retirement of the exact owned backup identity.' }
     $replacementStep = [pscustomobject][ordered]@{
         status = 'PASS'
         replacementObserved = $replacementObserved
         backupCreatedAndRetired = $backupRetired
+        backupVolumeSerialNumber = [string]$replacementResult.BackupVolumeSerialNumber
+        backupFileId = [string]$replacementResult.BackupFileId
+        backupLinkCount = [int]$replacementResult.BackupLinkCount
         userDataPreserved = $true
     }
 
     # 4. Rollback Test (simulated fault restoration)
     $rollbackObserved = $false
     try {
-        & (Join-Path $PSScriptRoot 'Install-HerdrOpsV02Package.ps1') @replacementParams -TestFaultInjectionStage 'BeforeCommit'
+        & (Join-Path $PSScriptRoot 'Install-HerdrOpsV02Package.ps1') @replacementParams -TestFaultInjectionStage 'AfterReplace'
     } catch {
-        if ($_.Exception.Message -ceq 'Injected install failure before atomic directory commit.') {
+        if ($_.Exception.Message -ceq 'Injected install failure after directory replace.') {
             $rollbackObserved = $true
         }
     }
-    if (-not $rollbackObserved) { throw 'Rollback fault did not reach the production BeforeCommit guard.' }
+    if (-not $rollbackObserved) { throw 'Rollback fault did not reach the production post-replacement restoration path.' }
     $rollbackBindingWork = New-PackagingTempDirectory -Prefix 'HerdrOps-V02RollbackBinding-'
     try { $observedRollback = Assert-V02CompleteInstalledBinding $safeInstallRoot $profile $profileFull $repositoryFull $rollbackBindingWork } finally { if (Test-Path -LiteralPath $rollbackBindingWork) { Remove-PackagingTempDirectory $rollbackBindingWork } }
-    $installRestoredOnFault = ($observedRollback.AppSha256 -ceq $finalBinding.appSha256 -and $observedRollback.CoreSha256 -ceq $finalBinding.coreSha256)
+    $installRestoredOnFault = ($observedRollback.SourceCommit -ceq $finalBinding.sourceCommit -and $observedRollback.SourceTree -ceq $finalBinding.sourceTree -and $observedRollback.ReceiptSha256 -ceq $finalBinding.receiptSha256 -and $observedRollback.ArchiveSha256 -ceq $finalBinding.archiveSha256 -and $observedRollback.PackageManifestSha256 -ceq $finalBinding.packageManifestSha256 -and $observedRollback.AppSha256 -ceq $finalBinding.appSha256 -and $observedRollback.CoreSha256 -ceq $finalBinding.coreSha256)
     if (-not $installRestoredOnFault) { throw 'Rollback did not preserve the exact final installed candidate.' }
     $rollbackStep = [pscustomobject][ordered]@{
         status = 'PASS'
         rollbackObserved = $rollbackObserved
         installRestoredOnFault = $installRestoredOnFault
-        details = 'Injected fault before commit verified rollback and install state restoration.'
+        restoredSourceCommit = [string]$observedRollback.SourceCommit
+        restoredSourceTree = [string]$observedRollback.SourceTree
+        restoredReceiptSha256 = [string]$observedRollback.ReceiptSha256
+        restoredArchiveSha256 = [string]$observedRollback.ArchiveSha256
+        restoredPackageManifestSha256 = [string]$observedRollback.PackageManifestSha256
+        restoredAppSha256 = [string]$observedRollback.AppSha256
+        restoredCoreSha256 = [string]$observedRollback.CoreSha256
+        details = 'Injected post-replacement fault verified rollback of the exact installed candidate identity.'
     }
 
     # 5. Uninstall
@@ -406,11 +419,12 @@ try {
 
     $uninstallResult = & (Join-Path $PSScriptRoot 'Uninstall-HerdrOpsV02Package.ps1') @uninstallParams
     Assert-V02UserDataRetained -UserDataRoot $safeUserDataRoot -ExpectedHashes $userDataBefore
+    $observedStartupAfterUninstall = Get-V02UserStartupState -MockRegistryHive $MockRegistryHive
 
     $uninstallStep = [pscustomobject][ordered]@{
         status = 'PASS'
         installRootAbsent = (-not (Test-Path -LiteralPath $safeInstallRoot))
-        startupRemoved = [bool]$uninstallResult.StartupRemoved
+        startupRemoved = (-not $observedStartupAfterUninstall.Exists)
         userDataPreserved = [bool]$uninstallResult.UserDataRetained
     }
     if (-not $uninstallStep.installRootAbsent -or -not $uninstallStep.startupRemoved -or -not $uninstallStep.userDataPreserved) { throw 'Uninstall did not satisfy all observed retirement conditions.' }
@@ -473,8 +487,8 @@ try {
         $failureDetails += " | Failure cleanup did not complete: $($_.Exception.Message)"
     }
     if ($null -eq $installStep) { $installStep = [pscustomobject][ordered]@{ status = 'FAIL'; installedFileCount = 0; identityReceiptBound = $false; installStateBound = $false; startupRegistered = $false } }
-    if ($null -eq $replacementStep) { $replacementStep = [pscustomobject][ordered]@{ status = 'NOT_RUN'; replacementObserved = $false; backupCreatedAndRetired = $false; userDataPreserved = $false } }
-    if ($null -eq $rollbackStep) { $rollbackStep = [pscustomobject][ordered]@{ status = 'NOT_RUN'; rollbackObserved = $false; installRestoredOnFault = $false; details = 'Not run due to earlier failure.' } }
+    if ($null -eq $replacementStep) { $replacementStep = [pscustomobject][ordered]@{ status = 'NOT_RUN'; replacementObserved = $false; backupCreatedAndRetired = $false; backupVolumeSerialNumber = ''; backupFileId = ''; backupLinkCount = 0; userDataPreserved = $false } }
+    if ($null -eq $rollbackStep) { $rollbackStep = [pscustomobject][ordered]@{ status = 'NOT_RUN'; rollbackObserved = $false; installRestoredOnFault = $false; restoredSourceCommit=''; restoredSourceTree=''; restoredReceiptSha256=''; restoredArchiveSha256=''; restoredPackageManifestSha256=''; restoredAppSha256=''; restoredCoreSha256=''; details = 'Not run due to earlier failure.' } }
     if ($null -eq $uninstallStep) { $uninstallStep = [pscustomobject][ordered]@{ status = 'NOT_RUN'; installRootAbsent = $false; startupRemoved = $false; userDataPreserved = $false } }
     if ($null -eq $retainedStep) { $retainedStep = [pscustomobject][ordered]@{ markerStatus = 'NOT_RUN'; preservedFileCount = 0; details = 'Not run due to earlier failure.' } }
     if ($null -eq $residueStep) {
