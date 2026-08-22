@@ -790,9 +790,7 @@ if (Test-IsAdministrator) {
 if (-not (Test-Path -LiteralPath $HerdrExecutable -PathType Leaf)) {
     throw "Installed Herdr executable not found: $HerdrExecutable"
 }
-if (-not (Get-Command Get-NetTCPConnection -ErrorAction SilentlyContinue)) {
-    throw 'Get-NetTCPConnection is required to verify that Core and App open no TCP listener.'
-}
+$null = Assert-V02TcpListenerInspectionCapability
 if (-not (Get-Command Get-CimInstance -ErrorAction SilentlyContinue)) {
     throw 'Get-CimInstance is required to bind the gate process to its Acceptance control Herdr server.'
 }
@@ -994,9 +992,11 @@ try {
 
     $appExitCode = $appProcess.ExitCode
     try {
-        # The signal is created only after the App process has exited. Core observes
-        # appearance only, then performs its normal graceful report-writing path.
-        [System.IO.File]::WriteAllBytes($completionSignalPath, [byte[]]@())
+        # The signal is created only after the App process has exited, via an
+        # atomic no-clobber create so a concurrently-existing path can never be
+        # silently overwritten. Core observes appearance only, then performs its
+        # normal graceful report-writing path.
+        New-V02AtomicNoClobberEmptyFile -Path $completionSignalPath
     } catch {
         $completionSignalWriteFailure = $_.Exception.Message
     }
@@ -1334,6 +1334,7 @@ Assert-True ($tcpListeners.Count -eq 0) 'Core or App opened a TCP listener durin
 Assert-True ($controlServerIdentity.ExecutableSha256 -eq $coreReport.Admission.ExecutableSha256) 'Acceptance control server executable hash does not match the admitted Herdr executable.'
 $coreTransitions = @($coreReport.Transitions)
 Assert-True ($coreTransitions.Count -gt 0) 'Core runtime report contains no transitions.'
+Assert-V02AllAgentStatusesInDomain -Transitions $coreTransitions -FinalMonitorState $coreReport.FinalMonitorState -Context 'Core report'
 $eventABaselineProgressCandidates = @($progressHistoryEntries | Where-Object { $_.Phase -eq 'waiting-for-pre-close-update' })
 Assert-True ($eventABaselineProgressCandidates.Count -eq 1) 'The App progress history does not contain exactly one Event A baseline phase.'
 $eventABaselineProgress = $eventABaselineProgressCandidates[0]
