@@ -115,6 +115,207 @@ function Get-TestSampleProvider([double]$WsStartMb = 100, [double]$WsEndMb = 100
     return $sb.GetNewClosure()
 }
 
+function Get-OwnedProcessStartTimeUtc([System.Diagnostics.Process]$Process) {
+    for ($attempt = 0; $attempt -lt 100; $attempt++) {
+        try {
+            $Process.Refresh()
+            if (-not $Process.HasExited) {
+                return $Process.StartTime.ToUniversalTime()
+            }
+        } catch {
+            # The child may not have completed initialization yet.
+        }
+        Start-Sleep -Milliseconds 25
+    }
+    throw "Controlled child process $($Process.Id) did not expose a live start time."
+}
+
+function Stop-OwnedProcessSafely([System.Diagnostics.Process]$Process, [DateTime]$ExpectedStartTimeUtc) {
+    if ($null -eq $Process) {
+        return
+    }
+    try {
+        $Process.Refresh()
+        if (-not $Process.HasExited -and $Process.StartTime.ToUniversalTime() -eq $ExpectedStartTimeUtc) {
+            $Process.Kill()
+            $null = $Process.WaitForExit(5000)
+        }
+    } catch {
+        # Cleanup must not mask the guard assertion; only the owned identity is eligible.
+    }
+}
+
+function Invoke-ControlledLiveGuardProbe([ValidateSet('UnexpectedExit', 'PidStartContinuity')][string]$GuardMode, [string]$ExpectedPattern, [string]$CaseName) {
+    $probeRoot = Join-Path $tempRoot ('live-' + $GuardMode.ToLowerInvariant() + '-' + [Guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path $probeRoot -Force | Out-Null
+    $destination = Join-Path $probeRoot 'live-probe.json'
+    $markerPath = Join-Path $probeRoot 'authenticated-telemetry.marker'
+    $stdoutPath = Join-Path $probeRoot 'runner.stdout.txt'
+    $stderrPath = Join-Path $probeRoot 'runner.stderr.txt'
+    $runnerPath = Join-Path $probeRoot 'runner.ps1'
+    $enginePath = (Get-Process -Id $PID).Path
+    if ([string]::IsNullOrWhiteSpace($enginePath)) {
+        throw 'Unable to locate the current PowerShell executable for the controlled live child probe.'
+    }
+    $childEnginePath = Join-Path ([Environment]::GetEnvironmentVariable('SystemRoot')) 'System32\ping.exe'
+    if (-not (Test-Path -LiteralPath $childEnginePath -PathType Leaf)) {
+        throw "Unable to locate the controlled child executable: $childEnginePath"
+    }
+
+    $runnerSource = @'
+#requires -Version 5.1
+[CmdletBinding()]
+param(
+    [Parameter(Mandatory = $true)][string]$InvokePath,
+    [Parameter(Mandatory = $true)][int]$AppProcessId,
+    [Parameter(Mandatory = $true)][int]$CoreProcessId,
+    [Parameter(Mandatory = $true)][string]$DestinationPath,
+    [Parameter(Mandatory = $true)][string]$EvidenceRoot,
+    [Parameter(Mandatory = $true)][string]$RepositoryRoot,
+    [Parameter(Mandatory = $true)][string]$MarkerPath,
+    [Parameter(Mandatory = $true)][ValidateSet('UnexpectedExit', 'PidStartContinuity')][string]$GuardMode
+)
+
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
+$telemetryState = [pscustomobject]@{ Entered = $false }
+$liveTelemetry = {
+    param($binIndex, $sampleIndex, $elapsedMilliseconds)
+    if (-not $telemetryState.Entered) {
+        [IO.File]::WriteAllText($MarkerPath, 'AUTHENTICATED-LIVE-TELEMETRY', (New-Object Text.UTF8Encoding($false)))
+        $telemetryState.Entered = $true
+    }
+    [pscustomobject][ordered]@{
+        Authenticated = $true
+        Source = 'ControlledChildProcessTelemetry'
+        AppProcessId = [int]$AppProcessId
+        CoreProcessId = [int]$CoreProcessId
+        LatencyMicroseconds = @(1..20 | ForEach-Object { 100000L })
+        UiStallMicroseconds = @(1..19 | ForEach-Object { 10000L }) + @(20000L)
+        RendererStable = $true
+    }
+}.GetNewClosure()
+
+$arguments = [ordered]@{
+    PowerSource = 'AC'
+    DestinationPath = $DestinationPath
+    EvidenceRoot = $EvidenceRoot
+    RepositoryRoot = $RepositoryRoot
+    AppProcessId = [int]$AppProcessId
+    CoreProcessId = [int]$CoreProcessId
+    LiveTelemetryProvider = $liveTelemetry
+    TestOnlyLiveAcceleration = $true
+}
+
+if ($GuardMode -eq 'PidStartContinuity') {
+    $identityOverride = {
+        param($role, $binIndex, $sampleIndex, $observed)
+        $startTimeUtc = $observed.StartTimeUtc
+        if ($role -eq 'App' -and $sampleIndex -ge 1 -and $null -ne $startTimeUtc) {
+            $startTimeUtc = $startTimeUtc.AddSeconds(1)
+        }
+        [pscustomobject][ordered]@{
+            ProcessId = [int]$observed.ProcessId
+            HasExited = [bool]$observed.HasExited
+            StartTimeUtc = $startTimeUtc
+        }
+    }.GetNewClosure()
+    $arguments.TestOnlyProcessIdentityProvider = $identityOverride
+}
+
+& $InvokePath @arguments
+'@
+    [IO.File]::WriteAllText($runnerPath, $runnerSource, (New-Object Text.UTF8Encoding($false)))
+
+    $app = $null
+    $core = $null
+    $runner = $null
+    $appStartTimeUtc = $null
+    $coreStartTimeUtc = $null
+    $runnerStartTimeUtc = $null
+    try {
+        $childArguments = @('127.0.0.1', '-n', '120')
+        $app = Start-Process -FilePath $childEnginePath -ArgumentList $childArguments -PassThru -WindowStyle Hidden
+        $core = Start-Process -FilePath $childEnginePath -ArgumentList $childArguments -PassThru -WindowStyle Hidden
+        $appStartTimeUtc = Get-OwnedProcessStartTimeUtc $app
+        $coreStartTimeUtc = Get-OwnedProcessStartTimeUtc $core
+        # Let the owned PowerShell children leave startup before the first real
+        # process-telemetry interval; this does not alter production timing.
+        Start-Sleep -Milliseconds 1000
+
+        $runnerArguments = @(
+            '-NoLogo', '-NoProfile', '-NonInteractive', '-File', $runnerPath,
+            '-InvokePath', $script:InvokeSoakPath,
+            '-AppProcessId', [string]$app.Id,
+            '-CoreProcessId', [string]$core.Id,
+            '-DestinationPath', $destination,
+            '-EvidenceRoot', $probeRoot,
+            '-RepositoryRoot', $repoRoot,
+            '-MarkerPath', $markerPath,
+            '-GuardMode', $GuardMode
+        )
+        $runner = Start-Process -FilePath $enginePath `
+            -ArgumentList $runnerArguments `
+            -RedirectStandardOutput $stdoutPath `
+            -RedirectStandardError $stderrPath `
+            -PassThru
+        $runnerStartTimeUtc = Get-OwnedProcessStartTimeUtc $runner
+
+        $entered = $false
+        for ($attempt = 0; $attempt -lt 100; $attempt++) {
+            if (Test-Path -LiteralPath $markerPath -PathType Leaf) {
+                $marker = Get-Content -LiteralPath $markerPath -Raw
+                if ($marker -cne 'AUTHENTICATED-LIVE-TELEMETRY') {
+                    throw "Controlled live probe wrote an unexpected telemetry marker: '$marker'."
+                }
+                $entered = $true
+                break
+            }
+            $runner.Refresh()
+            if ($runner.HasExited) {
+                break
+            }
+            Start-Sleep -Milliseconds 50
+        }
+        if (-not $entered) {
+            throw "Controlled live probe did not enter the authenticated telemetry loop for $GuardMode."
+        }
+
+        if ($GuardMode -eq 'UnexpectedExit') {
+            Stop-OwnedProcessSafely $app $appStartTimeUtc
+            $app.Refresh()
+            if (-not $app.HasExited) {
+                throw 'Controlled live probe could not terminate its owned App child.'
+            }
+        }
+
+        if (-not $runner.WaitForExit(15000)) {
+            Stop-OwnedProcessSafely $runner $runnerStartTimeUtc
+            throw "Controlled live probe runner timed out for $GuardMode."
+        }
+        $runner.Refresh()
+        $stdout = if (Test-Path -LiteralPath $stdoutPath) { Get-Content -LiteralPath $stdoutPath -Raw } else { '' }
+        $stderr = if (Test-Path -LiteralPath $stderrPath) { Get-Content -LiteralPath $stderrPath -Raw } else { '' }
+        $combined = "$stdout`n$stderr"
+        if ($runner.ExitCode -eq 0) {
+            throw "Controlled live probe unexpectedly succeeded for $GuardMode."
+        }
+        if ($combined -notmatch $ExpectedPattern) {
+            throw "Controlled live probe did not reach the exact '$ExpectedPattern' guard for $GuardMode. Output: $combined"
+        }
+        if (Test-Path -LiteralPath $destination) {
+            throw "Controlled live probe leaked a published receipt for $GuardMode."
+        }
+        Pass-NegativeCase $CaseName
+    } finally {
+        Stop-OwnedProcessSafely $runner $runnerStartTimeUtc
+        Stop-OwnedProcessSafely $app $appStartTimeUtc
+        Stop-OwnedProcessSafely $core $coreStartTimeUtc
+    }
+}
+
+$previousSoakSelfTestMode = [Environment]::GetEnvironmentVariable('HERDROPS_V02_SOAK_SELFTEST', 'Process')
+[Environment]::SetEnvironmentVariable('HERDROPS_V02_SOAK_SELFTEST', '1', 'Process')
 $tempRoot = Join-Path ([IO.Path]::GetTempPath()) ("herdrops-soak-selftest-" + [Guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $tempRoot -Force | Out-Null
 
@@ -472,7 +673,39 @@ try {
         if ($null -ne $dummy2 -and -not $dummy2.HasExited) { Stop-Process -Id $dummy2.Id -Force -ErrorAction SilentlyContinue }
     }
 
-    # 14. Synthetic telemetry provider exception fails closed
+    # 15. Test-only live acceleration is not a production bypass.
+    $negUnguardedLiveControlDest = Join-Path $tempRoot 'matrix\neg-unguarded-live-control.json'
+    [Environment]::SetEnvironmentVariable('HERDROPS_V02_SOAK_SELFTEST', $null, 'Process')
+    try {
+        Assert-ThrowsMatchAndZeroOutput {
+            & $script:InvokeSoakPath `
+                -PowerSource 'AC' `
+                -DestinationPath $negUnguardedLiveControlDest `
+                -EvidenceRoot $tempRoot `
+                -RepositoryRoot $repoRoot `
+                -AppProcessId 1 `
+                -CoreProcessId 2 `
+                -TestOnlyLiveAcceleration
+        } 'Test-only live soak controls require HERDROPS_V02_SOAK_SELFTEST=1' 'test-only live acceleration is guarded outside selftest mode'
+    } finally {
+        [Environment]::SetEnvironmentVariable('HERDROPS_V02_SOAK_SELFTEST', '1', 'Process')
+    }
+
+    # 16. Enter the authenticated live loop with owned real child processes, then
+    # terminate only the owned App child to reach the exact unexpected-exit guard.
+    Invoke-ControlledLiveGuardProbe `
+        -GuardMode 'UnexpectedExit' `
+        -ExpectedPattern 'App process \(\d+\) terminated unexpectedly during soak bin \d+ sample \d+\.' `
+        -CaseName 'controlled authenticated live loop reaches unexpected App exit guard without publishing'
+
+    # 17. Keep both real child processes alive while the guarded identity provider
+    # changes only the observed App creation time, proving PID/start continuity.
+    Invoke-ControlledLiveGuardProbe `
+        -GuardMode 'PidStartContinuity' `
+        -ExpectedPattern 'App process PID \(\d+\) was recycled during soak bin \d+ sample \d+\.' `
+        -CaseName 'controlled live loop rejects PID/start-time reuse continuity drift without publishing'
+
+    # 18. Synthetic telemetry provider exception fails closed
     $negTelExDest = Join-Path $tempRoot 'matrix\neg-tel-ex.json'
     Assert-ThrowsMatchAndZeroOutput {
         & $script:InvokeSoakPath -Synthetic `
@@ -709,6 +942,7 @@ try {
         Status = 'PASS'
     } | Format-Table
 } finally {
+    [Environment]::SetEnvironmentVariable('HERDROPS_V02_SOAK_SELFTEST', $previousSoakSelfTestMode, 'Process')
     if (Test-Path -LiteralPath $tempRoot) {
         Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue
     }

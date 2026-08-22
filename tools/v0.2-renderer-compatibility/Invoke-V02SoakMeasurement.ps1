@@ -26,6 +26,12 @@ param(
     [Parameter(ParameterSetName = 'Live')]
     [scriptblock]$LiveTelemetryProvider,
 
+    [Parameter(ParameterSetName = 'Live')]
+    [switch]$TestOnlyLiveAcceleration,
+
+    [Parameter(ParameterSetName = 'Live')]
+    [scriptblock]$TestOnlyProcessIdentityProvider,
+
     [Parameter(ParameterSetName = 'Synthetic', Mandatory = $true)]
     [switch]$Synthetic,
 
@@ -56,6 +62,14 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+
+$selfTestMode = [string]::Equals([string]$env:HERDROPS_V02_SOAK_SELFTEST, '1', [StringComparison]::Ordinal)
+if (($TestOnlyLiveAcceleration -or $null -ne $TestOnlyProcessIdentityProvider) -and -not $selfTestMode) {
+    throw 'Test-only live soak controls require HERDROPS_V02_SOAK_SELFTEST=1.'
+}
+if ($null -ne $TestOnlyProcessIdentityProvider -and -not $TestOnlyLiveAcceleration) {
+    throw 'Test-only process identity overrides require -TestOnlyLiveAcceleration.'
+}
 
 . (Join-Path $PSScriptRoot 'RendererCompatibility.Common.ps1')
 
@@ -112,6 +126,76 @@ function Assert-SoakExactProperties {
         $matches = @($Value.PSObject.Properties | Where-Object { [StringComparer]::Ordinal.Equals([string]$_.Name, $name) })
         if ($matches.Count -ne 1) { throw "$Context must contain exactly one case-sensitive '$name' property." }
     }
+}
+
+function Get-LiveProcessIdentity {
+    param(
+        [Parameter(Mandatory = $true)]
+        [System.Diagnostics.Process]$Process,
+
+        [Parameter(Mandatory = $true)]
+        [int]$ExpectedProcessId,
+
+        [Parameter(Mandatory = $true)]
+        [ValidateSet('App', 'Core')]
+        [string]$Role,
+
+        [Parameter(Mandatory = $true)]
+        [int]$BinIndex,
+
+        [Parameter(Mandatory = $true)]
+        [int]$SampleIndex
+    )
+
+    $hasExited = $false
+    $observedProcessId = $ExpectedProcessId
+    $observedStartTimeUtc = $null
+    try {
+        $Process.Refresh()
+        $hasExited = [bool]$Process.HasExited
+        if (-not $hasExited) {
+            $observedProcessId = [int]$Process.Id
+            $observedStartTimeUtc = $Process.StartTime.ToUniversalTime()
+        }
+    } catch {
+        throw "$Role process identity observation failed during soak bin $BinIndex sample ${SampleIndex}: $($_.Exception.Message)"
+    }
+
+    $identity = [pscustomobject][ordered]@{
+        ProcessId = [int]$observedProcessId
+        HasExited = [bool]$hasExited
+        StartTimeUtc = $observedStartTimeUtc
+    }
+
+    if ($null -ne $TestOnlyProcessIdentityProvider) {
+        try {
+            $overrides = @(& $TestOnlyProcessIdentityProvider $Role $BinIndex $SampleIndex $identity)
+        } catch {
+            throw "Test-only process identity provider threw during soak bin $BinIndex sample ${SampleIndex}: $($_.Exception.Message)"
+        }
+        if ($overrides.Count -ne 1) {
+            throw "Test-only process identity provider must return exactly one identity during soak bin $BinIndex sample $SampleIndex."
+        }
+        $override = $overrides[0]
+        Assert-SoakExactProperties $override @('ProcessId', 'HasExited', 'StartTimeUtc') "Test-only $Role process identity"
+        if ($override.ProcessId -isnot [int] -or $override.HasExited -isnot [bool]) {
+            throw "Test-only $Role process identity has invalid native types."
+        }
+        if (-not $override.HasExited -and $override.StartTimeUtc -isnot [DateTime]) {
+            throw "Test-only $Role process identity must contain a DateTime StartTimeUtc while running."
+        }
+        $identity = [pscustomobject][ordered]@{
+            ProcessId = [int]$override.ProcessId
+            HasExited = [bool]$override.HasExited
+            StartTimeUtc = $override.StartTimeUtc
+        }
+    }
+
+    if ([int]$identity.ProcessId -ne $ExpectedProcessId) {
+        throw "$Role process PID continuity failed: expected PID $ExpectedProcessId, observed PID $($identity.ProcessId) during soak bin $BinIndex sample $SampleIndex."
+    }
+
+    return $identity
 }
 
 # Resolve repository root
@@ -285,10 +369,22 @@ $approvedLimits = [ordered]@{
 
 $caseId = if ($PowerSource -ceq 'AC') { 'soak-ac-60-minutes' } else { 'soak-battery-60-minutes' }
 
-$totalBins = if ($Synthetic) { $SyntheticTotalBins } else { 12 }
-$binDurationMinutes = if ($Synthetic) { $SyntheticBinDurationMinutes } else { 5 }
+$totalBins = if ($Synthetic) {
+    $SyntheticTotalBins
+} elseif ($TestOnlyLiveAcceleration) {
+    1
+} else {
+    12
+}
+$binDurationMinutes = if ($Synthetic) {
+    $SyntheticBinDurationMinutes
+} elseif ($TestOnlyLiveAcceleration) {
+    1
+} else {
+    5
+}
 $totalDurationMinutes = $totalBins * $binDurationMinutes
-$sampleIntervalMs = 1000
+$sampleIntervalMs = if ($TestOnlyLiveAcceleration) { 500 } else { 1000 }
 
 $samplesPerBin = if ($Synthetic) {
     if ($SyntheticSamplesPerBin -gt 0) { $SyntheticSamplesPerBin } else { 300 }
@@ -376,23 +472,32 @@ for ($binIndex = 0; $binIndex -lt $totalBins; $binIndex++) {
             }
         } else {
             # LIVE PROCESS VERIFICATION AND TELEMETRY
-            if ($appProcess.HasExited) {
+            $appIdentity = Get-LiveProcessIdentity `
+                -Process $appProcess `
+                -ExpectedProcessId $AppProcessId `
+                -Role 'App' `
+                -BinIndex $binIndex `
+                -SampleIndex $sampleIdx
+            $coreIdentity = Get-LiveProcessIdentity `
+                -Process $coreProcess `
+                -ExpectedProcessId $CoreProcessId `
+                -Role 'Core' `
+                -BinIndex $binIndex `
+                -SampleIndex $sampleIdx
+
+            if ($appIdentity.HasExited) {
                 throw "App process ($AppProcessId) terminated unexpectedly during soak bin $binIndex sample $sampleIdx."
             }
-            if ($coreProcess.HasExited) {
+            if ($coreIdentity.HasExited) {
                 throw "Core process ($CoreProcessId) terminated unexpectedly during soak bin $binIndex sample $sampleIdx."
             }
 
-            # Anti-PID-reuse verification
-            try {
-                if ($appProcess.StartTime.ToUniversalTime() -ne $appStartTimeUtc) {
-                    throw "App process PID ($AppProcessId) was recycled during soak bin $binIndex sample $sampleIdx."
-                }
-                if ($coreProcess.StartTime.ToUniversalTime() -ne $coreStartTimeUtc) {
-                    throw "Core process PID ($CoreProcessId) was recycled during soak bin $binIndex sample $sampleIdx."
-                }
-            } catch {
-                throw "Process start time verification failed: $($_.Exception.Message)"
+            # PID plus OS creation-time continuity rejects reuse even when the PID remains equal.
+            if ($appIdentity.StartTimeUtc -ne $appStartTimeUtc) {
+                throw "App process PID ($AppProcessId) was recycled during soak bin $binIndex sample $sampleIdx."
+            }
+            if ($coreIdentity.StartTimeUtc -ne $coreStartTimeUtc) {
+                throw "Core process PID ($CoreProcessId) was recycled during soak bin $binIndex sample $sampleIdx."
             }
 
             $appProcess.Refresh()
@@ -430,19 +535,40 @@ for ($binIndex = 0; $binIndex -lt $totalBins; $binIndex++) {
             $liveStall = $null
             $liveStable = $true
 
+            if ($null -eq $LiveTelemetryProvider) {
+                throw 'Live soak measurement requires an authenticated telemetry source for latency and UI stall observations; hardcoded defaults are forbidden.'
+            }
+
             if ($null -ne $LiveTelemetryProvider) {
                 try {
-                    $liveSample = & $LiveTelemetryProvider $binIndex $sampleIdx $elapsedMs
-                    if ($null -ne $liveSample) {
-                        $liveLatency = $liveSample.LatencyMicroseconds
-                        $liveStall = $liveSample.UiStallMicroseconds
-                        if ($null -ne $liveSample.RendererStable) {
-                            $liveStable = [bool]$liveSample.RendererStable
-                        }
+                    $liveResults = @(& $LiveTelemetryProvider $binIndex $sampleIdx $elapsedMs)
+                    if ($liveResults.Count -ne 1) {
+                        throw 'Live telemetry provider must return exactly one authenticated sample.'
                     }
+                    $liveSample = $liveResults[0]
                 } catch {
                     throw "Live telemetry provider threw an exception during bin $binIndex sample $($sampleIdx): $($_.Exception.Message)"
                 }
+
+                Assert-SoakExactProperties $liveSample @(
+                    'Authenticated', 'Source', 'AppProcessId', 'CoreProcessId',
+                    'LatencyMicroseconds', 'UiStallMicroseconds', 'RendererStable'
+                ) "Live telemetry sample bin $binIndex sample $sampleIdx"
+                if ($liveSample.Authenticated -isnot [bool] -or -not $liveSample.Authenticated) {
+                    throw "Live telemetry sample bin $binIndex sample $sampleIdx is not authenticated."
+                }
+                if ([string]::IsNullOrWhiteSpace([string]$liveSample.Source)) {
+                    throw "Live telemetry sample bin $binIndex sample $sampleIdx has no authenticated source."
+                }
+                if ($liveSample.AppProcessId -isnot [int] -or [int]$liveSample.AppProcessId -ne $AppProcessId) {
+                    throw "Live telemetry sample bin $binIndex sample $sampleIdx is not bound to App PID $AppProcessId."
+                }
+                if ($liveSample.CoreProcessId -isnot [int] -or [int]$liveSample.CoreProcessId -ne $CoreProcessId) {
+                    throw "Live telemetry sample bin $binIndex sample $sampleIdx is not bound to Core PID $CoreProcessId."
+                }
+                $liveLatency = $liveSample.LatencyMicroseconds
+                $liveStall = $liveSample.UiStallMicroseconds
+                $liveStable = [bool]$liveSample.RendererStable
             }
 
             if ($null -eq $liveLatency -or $null -eq $liveStall) {
@@ -555,14 +681,14 @@ for ($binIndex = 0; $binIndex -lt $totalBins; $binIndex++) {
 $soakStopwatch.Stop()
 
 # In live mode: Enforce that total Stopwatch elapsed time is >= 60 minutes (3600 seconds)
-if (-not $Synthetic) {
+if (-not $Synthetic -and -not $TestOnlyLiveAcceleration) {
     if ($soakStopwatch.Elapsed.TotalMinutes -lt [double]$totalDurationMinutes) {
         throw "Live soak measurement completed in $($soakStopwatch.Elapsed.TotalMinutes) minutes; required minimum duration is $totalDurationMinutes minutes."
     }
 }
 
 # Construct canonical matrix observation receipt document
-$evidenceClass = if ($Synthetic) { 'SyntheticVerifierSelftest' } else { 'PackagedCompatibilitySoak' }
+$evidenceClass = if ($Synthetic -or $TestOnlyLiveAcceleration) { 'SyntheticVerifierSelftest' } else { 'PackagedCompatibilitySoak' }
 $receiptDocument = [pscustomobject][ordered]@{
     caseId = [string]$caseId
     evidenceClassification = [string]$evidenceClass
