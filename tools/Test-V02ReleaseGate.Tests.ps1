@@ -83,6 +83,7 @@ function New-V02ReleaseGateTestCleanRepository {
     New-V02ReleaseGateTestDirectory -Path (Join-Path $root 'Plan')
     New-V02ReleaseGateTestDirectory -Path (Join-Path $root 'tools\packaging\v0.2')
     Copy-Item -LiteralPath (Join-Path $script:GateRepositoryRoot 'Plan\DECISIONS.md') -Destination (Join-Path $root 'Plan\DECISIONS.md')
+    Copy-Item -LiteralPath (Join-Path $script:GateRepositoryRoot 'Plan\v0.2-release-gate-independent-receipt.json') -Destination (Join-Path $root 'Plan\v0.2-release-gate-independent-receipt.json')
     Copy-Item -LiteralPath (Join-Path $script:GateRepositoryRoot 'tools\packaging\v0.2\package-identity-profile.json') -Destination (Join-Path $root 'tools\packaging\v0.2\package-identity-profile.json')
     & git -C $root init --quiet
     & git -C $root -c user.name=HerdrOps-Gate-Test -c user.email=test@example.invalid add --all
@@ -97,7 +98,15 @@ function New-V02ReleaseGateTestCandidateLock {
         [Parameter(Mandatory = $true)]$Identity,
         [Parameter(Mandatory = $true)][string]$ProfileFileSha256,
         [Parameter(Mandatory = $true)][string]$ProfileCanonicalSha256,
-        [Parameter(Mandatory = $true)]$Authority
+        [Parameter(Mandatory = $true)]$Authority,
+        [string]$PackageReceiptSha256 = ('1' * 64),
+        [string]$PackageReceiptFileSha256 = ('2' * 64),
+        [string]$PackageArchiveSha256 = ('3' * 64),
+        [string]$PackageManifestSha256 = ('4' * 64),
+        [string]$PackageAppSha256 = ('5' * 64),
+        [string]$PackageCoreSha256 = ('6' * 64),
+        [string]$RendererManifestSha256 = ('7' * 64),
+        [string]$RuntimeMatrixManifestSha256 = ('8' * 64)
     )
     $lock = [pscustomobject][ordered]@{
         SchemaVersion = 1
@@ -109,6 +118,14 @@ function New-V02ReleaseGateTestCandidateLock {
         ProfileId = $script:V02ReleaseGatePackageProfileId
         ProfileFileSha256 = $ProfileFileSha256
         ProfileCanonicalSha256 = $ProfileCanonicalSha256
+        PackageReceiptSha256 = $PackageReceiptSha256
+        PackageReceiptFileSha256 = $PackageReceiptFileSha256
+        PackageArchiveSha256 = $PackageArchiveSha256
+        PackageManifestSha256 = $PackageManifestSha256
+        PackageAppSha256 = $PackageAppSha256
+        PackageCoreSha256 = $PackageCoreSha256
+        RendererManifestSha256 = $RendererManifestSha256
+        RuntimeMatrixManifestSha256 = $RuntimeMatrixManifestSha256
         Authority = [pscustomobject][ordered]@{
             DecisionId = $Authority.DecisionId
             ApprovalReference = $Authority.ApprovalReference
@@ -117,6 +134,12 @@ function New-V02ReleaseGateTestCandidateLock {
             ReferenceSha256 = $Authority.FileSha256
             OwnerIdentity = $Authority.OwnerIdentity
             OwnerRole = $Authority.OwnerRole
+            Authentication = $Authority.Authentication
+            IndependentReceiptPath = $Authority.IndependentReceipt.RelativePath
+            IndependentReceiptSha256 = $Authority.IndependentReceipt.FileSha256
+            IndependentReceiptIdentity = $Authority.IndependentReceipt.ReviewerIdentity
+            IndependentReceiptRole = $Authority.IndependentReceipt.ReviewerRole
+            IndependentReceiptAuthentication = $Authority.IndependentReceipt.Authentication
         }
         Runtime = 'NOT_OBSERVED'
         Human = 'NOT_OBSERVED'
@@ -238,10 +261,32 @@ try {
             -ProfileFileSha256 $script:GateProfileSha -ProfileCanonicalSha256 $script:GateProfileCanonicalSha -Authority $authority | Out-Null
         $lock = Read-V02ReleaseGateCandidateLock -Path $lockPath -EvidenceRoot $evidenceRoot `
             -ExpectedSourceCommit $script:GateIdentity.Commit -ExpectedSourceTree $script:GateIdentity.Tree `
-            -PackageProfilePath $script:GateProfilePath -Authority $authority
-        if ($lock.Result -cne 'APPROVED_CANDIDATE_ONLY' -or $lock.Authentication -cne 'TRUSTED_COMMITTED_PLAN_HASH') {
-            throw 'Candidate lock did not remain candidate-only and authority-bound.'
+            -PackageProfilePath $script:GateProfilePath -RepositoryRoot $script:GateRepositoryRoot `
+            -AuthorityReferencePath (Join-Path $script:GateRepositoryRoot 'Plan\DECISIONS.md')
+        if ($lock.Result -cne 'APPROVED_CANDIDATE_ONLY' -or $lock.Authentication -cne 'TRUSTED_COMMITTED_PLAN_AND_INDEPENDENT_RECEIPT') {
+            throw 'Candidate lock did not remain candidate-only and owner/independent-receipt bound.'
         }
+    }
+
+    Invoke-V02ReleaseGateTestCase 'copied Plan JSON cannot self-authorize a candidate lock' {
+        $evidenceRoot = Join-Path $script:TestRoot 'copied-plan-authority'
+        New-V02ReleaseGateTestDirectory -Path $evidenceRoot
+        $authority = Read-V02ReleaseGateAuthorityReference -RepositoryRoot $script:GateRepositoryRoot `
+            -AuthorityReferencePath (Join-Path $script:GateRepositoryRoot 'Plan\DECISIONS.md')
+        $lockPath = Join-Path $evidenceRoot 'candidate-lock.json'
+        New-V02ReleaseGateTestCandidateLock -Path $lockPath -Identity $script:GateIdentity `
+            -ProfileFileSha256 $script:GateProfileSha -ProfileCanonicalSha256 $script:GateProfileCanonicalSha -Authority $authority | Out-Null
+        $copiedPlanOnly = Get-Content -LiteralPath $lockPath -Raw | ConvertFrom-Json
+        foreach ($name in @('IndependentReceiptPath', 'IndependentReceiptSha256', 'IndependentReceiptIdentity', 'IndependentReceiptRole', 'IndependentReceiptAuthentication')) {
+            $copiedPlanOnly.Authority.PSObject.Properties.Remove($name)
+        }
+        Write-V02ReleaseGateTestJson -Path $lockPath -Value $copiedPlanOnly | Out-Null
+        Assert-V02ReleaseGateTestThrows {
+            Read-V02ReleaseGateCandidateLock -Path $lockPath -EvidenceRoot $evidenceRoot `
+                -ExpectedSourceCommit $script:GateIdentity.Commit -ExpectedSourceTree $script:GateIdentity.Tree `
+                -PackageProfilePath $script:GateProfilePath -RepositoryRoot $script:GateRepositoryRoot `
+                -AuthorityReferencePath (Join-Path $script:GateRepositoryRoot 'Plan\DECISIONS.md')
+        } 'exactly'
     }
 
     Invoke-V02ReleaseGateTestCase 'forged candidate provenance fails closed' {
@@ -258,7 +303,8 @@ try {
         Assert-V02ReleaseGateTestThrows {
             Read-V02ReleaseGateCandidateLock -Path $lockPath -EvidenceRoot $evidenceRoot `
                 -ExpectedSourceCommit $script:GateIdentity.Commit -ExpectedSourceTree $script:GateIdentity.Tree `
-                -PackageProfilePath $script:GateProfilePath -Authority $authority
+                -PackageProfilePath $script:GateProfilePath -RepositoryRoot $script:GateRepositoryRoot `
+                -AuthorityReferencePath (Join-Path $script:GateRepositoryRoot 'Plan\DECISIONS.md')
         } 'authority source'
     }
 
@@ -276,7 +322,8 @@ try {
         Assert-V02ReleaseGateTestThrows {
             Read-V02ReleaseGateCandidateLock -Path $lockPath -EvidenceRoot $evidenceRoot `
                 -ExpectedSourceCommit $script:GateIdentity.Commit -ExpectedSourceTree $script:GateIdentity.Tree `
-                -PackageProfilePath $script:GateProfilePath -Authority $authority
+                -PackageProfilePath $script:GateProfilePath -RepositoryRoot $script:GateRepositoryRoot `
+                -AuthorityReferencePath (Join-Path $script:GateRepositoryRoot 'Plan\DECISIONS.md')
         } 'source tree'
         New-V02ReleaseGateTestCandidateLock -Path $lockPath -Identity $script:GateIdentity `
             -ProfileFileSha256 $script:GateProfileSha -ProfileCanonicalSha256 $script:GateProfileCanonicalSha -Authority $authority | Out-Null
@@ -286,7 +333,8 @@ try {
         Assert-V02ReleaseGateTestThrows {
             Read-V02ReleaseGateCandidateLock -Path $lockPath -EvidenceRoot $evidenceRoot `
                 -ExpectedSourceCommit $script:GateIdentity.Commit -ExpectedSourceTree $script:GateIdentity.Tree `
-                -PackageProfilePath $script:GateProfilePath -Authority $authority
+                -PackageProfilePath $script:GateProfilePath -RepositoryRoot $script:GateRepositoryRoot `
+                -AuthorityReferencePath (Join-Path $script:GateRepositoryRoot 'Plan\DECISIONS.md')
         } 'profile bytes'
     }
 
@@ -344,6 +392,18 @@ try {
                 -Package $package -Renderer $renderer -Matrix $matrix -GitHubSnapshotPath $githubPath `
                 -GitHubSnapshotSha256 (Get-V02ReleaseGateFileSha256 -Path $githubPath) -EvidenceRoot $evidenceRoot
         } 'binding'
+        $pathTampered = $review.Value | ConvertTo-Json -Depth 100 | ConvertFrom-Json
+        $pathTampered.Reviewer.ReviewedUtc = [string]$review.Value.Reviewer.ReviewedUtc
+        $pathTamperedCheck = $pathTampered.Checks | Where-Object { $_.Id -ceq 'package-receipt' }
+        $pathTamperedCheck.Binding = 'HumanCheck:package-receipt'
+        $pathTamperedCheck.Path = $renderer.ManifestPath
+        $pathTamperedCheck.Sha256 = $renderer.ManifestSha256
+        Assert-V02ReleaseGateTestThrows {
+            Assert-V02ReleaseGateHumanReview -Review $pathTampered -ReviewPath $review.Path `
+                -ExpectedSourceCommit $script:GateIdentity.Commit -ExpectedSourceTree $script:GateIdentity.Tree `
+                -Package $package -Renderer $renderer -Matrix $matrix -GitHubSnapshotPath $githubPath `
+                -GitHubSnapshotSha256 (Get-V02ReleaseGateFileSha256 -Path $githubPath) -EvidenceRoot $evidenceRoot
+        } 'semantic path'
     }
 
     Invoke-V02ReleaseGateTestCase 'same-held-byte snapshot rejects post-validation drift' {
@@ -354,6 +414,34 @@ try {
         Assert-V02ReleaseGateTestThrows {
             Assert-V02ReleaseGateSnapshotUnchanged -Snapshot $snapshot -Context 'TOCTOU post-validation'
         } 'length|bytes'
+    }
+
+    Invoke-V02ReleaseGateTestCase 'candidate lock binds receipt archive App Core renderer and matrix bytes' {
+        $lock = [pscustomobject][ordered]@{
+            PackageReceiptSha256 = ('A' * 64)
+            PackageReceiptFileSha256 = ('B' * 64)
+            PackageArchiveSha256 = ('C' * 64)
+            PackageManifestSha256 = ('D' * 64)
+            PackageAppSha256 = ('E' * 64)
+            PackageCoreSha256 = ('F' * 64)
+            RendererManifestSha256 = ('1' * 64)
+            RuntimeMatrixManifestSha256 = ('2' * 64)
+        }
+        $package = [pscustomobject][ordered]@{
+            ReceiptSha256 = $lock.PackageReceiptSha256
+            ReceiptFileSha256 = $lock.PackageReceiptFileSha256
+            ArchiveSha256 = $lock.PackageArchiveSha256
+            ManifestSha256 = $lock.PackageManifestSha256
+            AppSha256 = $lock.PackageAppSha256
+            CoreSha256 = $lock.PackageCoreSha256
+        }
+        $renderer = [pscustomobject][ordered]@{ ManifestSha256 = $lock.RendererManifestSha256 }
+        $matrix = [pscustomobject][ordered]@{ ManifestFileSha256 = $lock.RuntimeMatrixManifestSha256 }
+        Assert-V02ReleaseGateCandidateByteBinding -CandidateLock $lock -Package $package -Renderer $renderer -Matrix $matrix
+        $package.ArchiveSha256 = ('9' * 64)
+        Assert-V02ReleaseGateTestThrows {
+            Assert-V02ReleaseGateCandidateByteBinding -CandidateLock $lock -Package $package -Renderer $renderer -Matrix $matrix
+        } 'PackageArchiveSha256'
     }
 
     Invoke-V02ReleaseGateTestCase 'path escape and reparse-style aliases fail closed' {
@@ -367,6 +455,69 @@ try {
         $inside = Join-Path $root 'inside.txt'
         Write-V02ReleaseGateTestText -Path $inside -Text 'inside' | Out-Null
         Assert-V02ReleaseGatePathWithinRoot -Path $inside -Root $root -Context 'contained path' | Out-Null
+
+        $outsideDirectory = Join-Path $script:TestRoot 'outside-directory'
+        New-V02ReleaseGateTestDirectory -Path $outsideDirectory
+        $outsideDirectoryFile = Join-Path $outsideDirectory 'parent-target.txt'
+        Write-V02ReleaseGateTestText -Path $outsideDirectoryFile -Text 'parent target' | Out-Null
+        $leafAlias = Join-Path $root 'leaf-reparse-alias'
+        # A directory junction is usable in both PS7 and Windows PowerShell
+        # 5.1 without the Developer-Mode privilege required by file symlinks.
+        # The junction itself is the final (leaf) reparse component here.
+        New-Item -ItemType Junction -Path $leafAlias -Target $outsideDirectory | Out-Null
+        Assert-V02ReleaseGateTestThrows {
+            Resolve-V02ReleaseGateExistingPath -Path $leafAlias -Type Container -Context 'leaf reparse swap fixture' | Out-Null
+        } 'reparse|final path'
+        $parentAlias = Join-Path $root 'parent-reparse-alias'
+        New-Item -ItemType Junction -Path $parentAlias -Target $outsideDirectory | Out-Null
+        Assert-V02ReleaseGateTestThrows {
+            Get-V02ReleaseGateStableFileSnapshot -Path (Join-Path $parentAlias 'parent-target.txt') -Context 'parent reparse swap fixture' | Out-Null
+        } 'reparse|final path'
+    }
+
+    Invoke-V02ReleaseGateTestCase 'snapshot size bound rejects oversized evidence' {
+        $path = Join-Path $script:TestRoot 'oversized-evidence.bin'
+        $bytes = New-Object byte[] ([int32]($script:V02ReleaseGateMaximumSnapshotBytes + 1))
+        [IO.File]::WriteAllBytes($path, $bytes)
+        Assert-V02ReleaseGateTestThrows {
+            Get-V02ReleaseGateStableFileSnapshot -Path $path -Context 'oversized snapshot fixture' | Out-Null
+        } 'bounded snapshot size'
+    }
+
+    Invoke-V02ReleaseGateTestCase 'NTFS hardlink file identity aliases are rejected' {
+        $original = Join-Path $script:TestRoot 'identity-original.txt'
+        $alias = Join-Path $script:TestRoot 'identity-hardlink.txt'
+        Write-V02ReleaseGateTestText -Path $original -Text 'same held bytes' | Out-Null
+        New-Item -ItemType HardLink -Path $alias -Target $original | Out-Null
+        Assert-V02ReleaseGateTestThrows {
+            $first = Get-V02ReleaseGateStableFileSnapshot -Path $original -Context 'hardlink original fixture'
+            $second = Get-V02ReleaseGateStableFileSnapshot -Path $alias -Context 'hardlink alias fixture'
+            Assert-V02ReleaseGateDistinctFileIdentities -Snapshots @($first, $second) -Context 'hardlink alias fixture'
+        } 'hardlink|identity|alias|final path'
+    }
+
+    Invoke-V02ReleaseGateTestCase 'validator and helper snapshots stay bound for the entire run' {
+        $snapshots = @(Get-V02ReleaseGateValidatorSnapshots -RepositoryRoot $script:GateRepositoryRoot)
+        if ($snapshots.Count -ne $script:V02ReleaseGateValidatorRelativePaths.Count) {
+            throw "Expected $($script:V02ReleaseGateValidatorRelativePaths.Count) validator/helper snapshots; observed $($snapshots.Count)."
+        }
+        Assert-V02ReleaseGateBoundSnapshots -Snapshots $snapshots -Phase 'validator/helper stability fixture'
+        $copy = Join-Path $script:TestRoot 'validator-copy.ps1'
+        Copy-Item -LiteralPath $snapshots[1].Path -Destination $copy
+        try {
+            $copySnapshot = Get-V02ReleaseGateStableFileSnapshot -Path $copy -Context 'validator copy fixture'
+            $original = [IO.File]::ReadAllBytes($copy)
+            $mutated = [byte[]]::new([int]($original.Length + 1))
+            [Array]::Copy($original, 0, $mutated, 0, $original.Length)
+            $mutated[$original.Length] = 0x0A
+            [IO.File]::WriteAllBytes($copy, $mutated)
+            Assert-V02ReleaseGateTestThrows {
+                Assert-V02ReleaseGateSnapshotUnchanged -Snapshot $copySnapshot -Context 'validator/helper drift fixture' | Out-Null
+            } 'length|bytes'
+        }
+        finally {
+            if (Test-Path -LiteralPath $copy) { Remove-Item -LiteralPath $copy -Force }
+        }
     }
 
     Invoke-V02ReleaseGateTestCase 'production gate exposes no injectable validators' {
