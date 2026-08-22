@@ -223,9 +223,39 @@ function Assert-RendererPackageReceipt { param($Receipt,$Candidate)
     Assert-RendererExactProperties $Receipt.evidenceBoundary @('evidenceClass','runtimeUse','actualHerdrUsed','runtimeCredit','releaseCredit') 'Package receipt evidenceBoundary';Assert-RendererBoolean $Receipt.evidenceBoundary.actualHerdrUsed 'Package receipt actualHerdrUsed';if($Receipt.evidenceBoundary.evidenceClass-cne'PackagedCompatibilityPreparation'-or$Receipt.evidenceBoundary.runtimeUse-cne'not-used'-or$Receipt.evidenceBoundary.actualHerdrUsed-or$Receipt.evidenceBoundary.runtimeCredit-cne'NOT CLAIMED'-or$Receipt.evidenceBoundary.releaseCredit-cne'NOT CLAIMED'){throw 'Package receipt inflates evidence.'}
 }
 function Assert-RendererMatrixCases { param([object[]]$Cases,[string[]]$Expected,[string]$Context,[string]$Root,[string]$RepositoryRoot,[switch]$ValidateBindings)
-    if([string]::IsNullOrWhiteSpace($Root)){$Root=$script:RendererCurrentEvidenceRoot};if([string]::IsNullOrWhiteSpace($RepositoryRoot)){$RepositoryRoot=$script:RendererCurrentRepositoryRoot};if($script:RendererCurrentValidateBindings){$ValidateBindings=$true}
+    if([string]::IsNullOrWhiteSpace($Root)){$Root=$script:RendererCurrentEvidenceRoot}
+    if([string]::IsNullOrWhiteSpace($RepositoryRoot)){$RepositoryRoot=$script:RendererCurrentRepositoryRoot}
+    if($script:RendererCurrentValidateBindings){$ValidateBindings=$true}
     Assert-RendererSet @($Cases|ForEach-Object{$_.id}) $Expected "$Context IDs"
-    foreach($case in $Cases){Assert-RendererExactProperties $case @('id','status','evidenceReceipt','notes') "$Context '$($case.id)'";Assert-RendererString $case.id "$Context id";if([string]$case.status -cnotin @('PASS','FAIL','NOT_OBSERVED')){throw "$Context '$($case.id)' status is invalid."};if($case.status-ceq'NOT_OBSERVED'){if($null-ne$case.evidenceReceipt-or$null-ne$case.notes){throw "$Context '$($case.id)' NOT_OBSERVED must not claim evidence."}}else{Assert-RendererString $case.notes "$Context '$($case.id)' notes";if(-not$ValidateBindings){throw "$Context '$($case.id)' observed status requires production binding validation."};$receipt=(Read-RendererEvidenceReceipt $case.evidenceReceipt "$Context '$($case.id)' receipt" $Root $RepositoryRoot).Value;Assert-RendererExactProperties $receipt @('caseId','observations','aggregateStatus') "$Context receipt";if($receipt.caseId-cne$case.id-or$receipt.aggregateStatus-cnotin@('PASS','FAIL')){throw "$Context '$($case.id)' receipt identity/status is invalid."};$observations=@($receipt.observations);if($observations.Count-lt1){throw "$Context '$($case.id)' receipt omitted raw observations."};$allPass=$true;for($i=0;$i-lt$observations.Count;$i++){$o=$observations[$i];Assert-RendererExactProperties $o @('ordinal','observedUtc','outcome','notes') "$Context '$($case.id)' observation $i";Assert-RendererNonnegativeInteger $o.ordinal 'Matrix observation ordinal';if([long]$o.ordinal-ne$i){throw "$Context '$($case.id)' observation ordering is invalid."};Assert-RendererUtc $o.observedUtc 'Matrix observation UTC';if($o.outcome-cnotin@('PASS','FAIL')){throw "$Context '$($case.id)' observation outcome is invalid."};Assert-RendererString $o.notes 'Matrix observation notes';if($o.outcome-cne'PASS'){$allPass=$false}};$computed=if($allPass){'PASS'}else{'FAIL'};if($receipt.aggregateStatus-cne$computed-or$case.status-cne$computed){throw "$Context '$($case.id)' status is not recomputed from raw observations."}}}
+    foreach($case in $Cases){
+        Assert-RendererExactProperties $case @('id','status','evidenceReceipt','notes') "$Context '$($case.id)'"
+        Assert-RendererString $case.id "$Context id"
+        if([string]$case.status-cnotin@('PASS','FAIL','NOT_OBSERVED')){throw "$Context '$($case.id)' status is invalid."}
+        if($case.status-ceq'NOT_OBSERVED'){
+            if($null-ne$case.evidenceReceipt-or$null-ne$case.notes){throw "$Context '$($case.id)' NOT_OBSERVED must not claim evidence."}
+            continue
+        }
+        Assert-RendererString $case.notes "$Context '$($case.id)' notes"
+        if(-not$ValidateBindings){throw "$Context '$($case.id)' observed status requires production binding validation."}
+        $receipt=(Read-RendererEvidenceReceipt $case.evidenceReceipt "$Context '$($case.id)' receipt" $Root $RepositoryRoot).Value
+        Assert-RendererExactProperties $receipt @('schemaVersion','caseId','observedUtc','outcome','operator','observer','evidenceBoundary','rawEvidence') "$Context receipt"
+        Assert-RendererNonnegativeInteger $receipt.schemaVersion "$Context receipt schemaVersion"
+        if([long]$receipt.schemaVersion-ne1-or$receipt.caseId-cne$case.id){throw "$Context '$($case.id)' receipt identity is invalid."}
+        Assert-RendererUtc $receipt.observedUtc "$Context '$($case.id)' observedUtc"
+        if($receipt.outcome-cnotin@('PASS','FAIL')){throw "$Context '$($case.id)' receipt outcome is invalid."}
+        foreach($role in @(@{Value=$receipt.operator;Name='operator';Expected='EvidenceOperator'},@{Value=$receipt.observer;Name='observer';Expected='IndependentObserver'})){
+            Assert-RendererExactProperties $role.Value @('identity','role') "$Context '$($case.id)' $($role.Name)"
+            Assert-RendererString $role.Value.identity "$Context '$($case.id)' $($role.Name) identity"
+            if($role.Value.role-cne$role.Expected){throw "$Context '$($case.id)' $($role.Name) role is invalid."}
+        }
+        if($receipt.operator.identity-ceq$receipt.observer.identity){throw "$Context '$($case.id)' operator and observer identities must be distinct."}
+        Assert-RendererExactProperties $receipt.evidenceBoundary @('evidenceClass','finalHumanGo','release','creditGranted') "$Context '$($case.id)' evidenceBoundary"
+        if($receipt.evidenceBoundary.evidenceClass-cnotin@('Static','Synthetic','Contract','Runtime')-or$receipt.evidenceBoundary.finalHumanGo-cne'NOT_OBSERVED'-or$receipt.evidenceBoundary.release-cne'NOT_OBSERVED'){throw "$Context '$($case.id)' receipt inflated its evidence boundary."}
+        Assert-RendererBoolean $receipt.evidenceBoundary.creditGranted "$Context '$($case.id)' creditGranted"
+        if($receipt.evidenceBoundary.creditGranted){throw "$Context '$($case.id)' receipt cannot grant final credit."}
+        Assert-RendererFileBinding $receipt.rawEvidence "$Context '$($case.id)' rawEvidence" $Root -ValidateBindings
+        if($case.status-cne$receipt.outcome){throw "$Context '$($case.id)' status is not recomputed from the bound receipt outcome."}
+    }
 }
 function Get-RendererP95Microseconds { param($Values,[string]$Context)
     $items=@($Values);if($items.Count-ne20){throw "$Context must contain exactly 20 raw observations; missing or extra samples fail closed."};foreach($value in $items){Assert-RendererNonnegativeInteger $value "$Context observation"};$sorted=@($items|Sort-Object {[long]$_});return [long]$sorted[[Math]::Ceiling(0.95*$sorted.Count)-1]
