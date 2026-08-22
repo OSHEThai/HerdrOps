@@ -255,11 +255,22 @@ try {
     $fixture=New-RRFixture;$fixtures+=$fixture;$selection=Join-Path $fixture.Thai 'test-results\selection-receipt.json';$receipt=(Read-V02RuntimeReviewStrictJsonFile $selection 'forged source').Value;$receipt.Files[0].SourceName='forged-source.trx';Write-RRFixtureJson $selection $receipt;$gatePath=Join-Path $fixture.Thai 'gate-report.txt';Set-RRGateField $gatePath 'TrxSelectionReceiptSha256' (Get-RRFixtureSha $selection);Sync-RRFixtureLeg $fixture Thai
     Assert-RRFailure 'unobservable TRX source name' {Invoke-RRFixture $fixture|Out-Null} 'source/assembly identities'
 
+    foreach($governedTrxName in @('HerdrOps.UnitTests.trx','HerdrOps.ContractTests.trx','HerdrOps.IntegrationTests.trx','HerdrOps.RuntimeTests.trx')){
+        $fixture=New-RRFixture;$fixtures+=$fixture;$selection=Join-Path $fixture.Thai 'test-results\selection-receipt.json';$receipt=(Read-V02RuntimeReviewStrictJsonFile $selection 'case-shifted TRX name').Value;$entry=@($receipt.Files|Where-Object Name -CEQ $governedTrxName)[0];$shiftedName=$governedTrxName.ToUpperInvariant();$entry.Name=$shiftedName;$entry.SourceName=$shiftedName;$entry.TestAssemblyFileName=[IO.Path]::ChangeExtension($shiftedName,'.dll');Write-RRFixtureJson $selection $receipt;$gatePath=Join-Path $fixture.Thai 'gate-report.txt';Set-RRGateField $gatePath 'TrxSelectionReceiptSha256' (Get-RRFixtureSha $selection);Sync-RRFixtureLeg $fixture Thai
+        Assert-RRFailure "case-shifted governed TRX filename $governedTrxName" {Invoke-RRFixture $fixture|Out-Null} 'selection names/source/assembly identities are not exact and derivable'
+
+        $fixture=New-RRFixture;$fixtures+=$fixture;$selection=Join-Path $fixture.Thai 'test-results\selection-receipt.json';$receipt=(Read-V02RuntimeReviewStrictJsonFile $selection 'case-shifted TRX source name').Value;$entry=@($receipt.Files|Where-Object Name -CEQ $governedTrxName)[0];$entry.SourceName=$governedTrxName.ToUpperInvariant();Write-RRFixtureJson $selection $receipt;$gatePath=Join-Path $fixture.Thai 'gate-report.txt';Set-RRGateField $gatePath 'TrxSelectionReceiptSha256' (Get-RRFixtureSha $selection);Sync-RRFixtureLeg $fixture Thai
+        Assert-RRFailure "case-shifted governed TRX SourceName $governedTrxName" {Invoke-RRFixture $fixture|Out-Null} 'selection names/source/assembly identities are not exact and derivable'
+    }
+
     $fixture=New-RRFixture;$fixtures+=$fixture;$selection=Join-Path $fixture.Thai 'test-results\selection-receipt.json';$receipt=(Read-V02RuntimeReviewStrictJsonFile $selection 'forged counter').Value;$receipt.Files[0].Total=223;$receipt.Files[0].Passed=223;$receipt.Files[1].Total=221;$receipt.Files[1].Passed=221;Write-RRFixtureJson $selection $receipt;$gatePath=Join-Path $fixture.Thai 'gate-report.txt';Set-RRGateField $gatePath 'TrxSelectionReceiptSha256' (Get-RRFixtureSha $selection);Sync-RRFixtureLeg $fixture Thai
     Assert-RRFailure 'receipt-only redistributed 888 counters' {Invoke-RRFixture $fixture|Out-Null} 'not independently derived'
 
     $fixture=New-RRFixture;$fixtures+=$fixture;$gatePath=Join-Path $fixture.Thai 'gate-report.txt';[IO.File]::AppendAllText($gatePath,"IndependentReview: PASS`n");Sync-RRFixtureLeg $fixture Thai
     Assert-RRFailure 'unknown gate authority field' {Invoke-RRFixture $fixture|Out-Null} "unknown field 'IndependentReview'"
+
+    $fixture=New-RRFixture;$fixtures+=$fixture;$gatePath=Join-Path $fixture.Thai 'gate-report.txt';$gateText=[IO.File]::ReadAllText($gatePath).Replace('Result: PASS','result: PASS');Write-RRFixtureText $gatePath $gateText;Sync-RRFixtureLeg $fixture Thai
+    Assert-RRFailure 'case-shifted governed gate field Result' {Invoke-RRFixture $fixture|Out-Null} "unknown field 'result'"
 
     $fixture=New-RRFixture;$fixtures+=$fixture;$gatePath=Join-Path $fixture.Thai 'gate-report.txt';[IO.File]::AppendAllText($gatePath,"IndependentReview PASS`n");Sync-RRFixtureLeg $fixture Thai
     Assert-RRFailure 'authority-shaped non-field gate line' {Invoke-RRFixture $fixture|Out-Null} 'noncanonical line'
