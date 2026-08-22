@@ -91,7 +91,7 @@ try {
     Write-Utf8Text -Path $manifestPath -Text $manifestText
 
     # 5. Non-ancestor commit fails closed
-    $orphanCommit = (& git -C $fixtureRoot commit-tree $tree -m 'orphan commit').Trim()
+    $orphanCommit = (& git -C $fixtureRoot -c user.name=SelfTest -c user.email=selftest@example.invalid commit-tree $tree -m 'orphan commit').Trim()
     $nonAncestorReviewPath = Join-Path $fixtureRoot 'reviews/non-ancestor-review.md'
     $nonAncestorReviewText = $reviewText.Replace($head, $orphanCommit)
     Write-Utf8Text -Path $nonAncestorReviewPath -Text $nonAncestorReviewText
