@@ -887,6 +887,18 @@ function Assert-OperatorNoReparse {
     }
 }
 
+function Convert-Issue44InstalledHashesForReport {
+    param([Parameter(Mandatory = $true)][object[]]$Hashes)
+
+    return @($Hashes | ForEach-Object {
+            [pscustomobject][ordered]@{
+                path = [string]$_.Path
+                length = [int64]$_.Length
+                sha256 = [string]$_.Sha256
+            }
+        })
+}
+
 function Write-Issue44ReportDurably {
     param(
         [Parameter(Mandatory = $true)]$Report,
@@ -1838,7 +1850,7 @@ try {
         }
 
         # Assert installed payload matches artifact shape exactly
-        $initialInstalledHashes = Assert-AcceptanceInstalledPayload -InstallRoot $installRootFull -Artifact $initialArtifactHelper -Context 'Clean install'
+        $initialInstalledHashes = Convert-Issue44InstalledHashesForReport -Hashes @(Assert-AcceptanceInstalledPayload -InstallRoot $installRootFull -Artifact $initialArtifactHelper -Context 'Clean install')
         $initialArtifactReport.installedFileHashes = $initialInstalledHashes
         $script:CleanMachineFilesystemObserved = ($Mode -eq 'Live')
 
@@ -1910,7 +1922,7 @@ try {
         }
 
         # Assert upgrade payload matches artifact shape exactly
-        $upgradeInstalledHashes = Assert-AcceptanceInstalledPayload -InstallRoot $installRootFull -Artifact $upgradeArtifactHelper -Context 'Candidate upgrade'
+        $upgradeInstalledHashes = Convert-Issue44InstalledHashesForReport -Hashes @(Assert-AcceptanceInstalledPayload -InstallRoot $installRootFull -Artifact $upgradeArtifactHelper -Context 'Candidate upgrade')
         $upgradeArtifactReport.installedFileHashes = $upgradeInstalledHashes
 
         # Verify Retained Data Persistence Across Upgrade
@@ -1941,7 +1953,7 @@ try {
         }
 
         # Assert rollback payload matches initial artifact shape
-        $rollbackInstalledHashes = Assert-AcceptanceInstalledPayload -InstallRoot $installRootFull -Artifact $initialArtifactHelper -Context 'Rollback'
+        $rollbackInstalledHashes = Convert-Issue44InstalledHashesForReport -Hashes @(Assert-AcceptanceInstalledPayload -InstallRoot $installRootFull -Artifact $initialArtifactHelper -Context 'Rollback')
         if ($rollbackInstalledHashes.Count -ne $initialInstalledHashes.Count) {
             throw "Rollback installed file count ($($rollbackInstalledHashes.Count)) differs from initial install ($($initialInstalledHashes.Count))."
         }
