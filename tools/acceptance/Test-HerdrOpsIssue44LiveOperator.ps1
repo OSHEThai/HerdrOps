@@ -507,7 +507,7 @@ try {
     $failInstallerArgs['InstallerRunner'] = $failInstallerRunner
     $failInstallerArgs['FirstRunRunner'] = $syntheticFirstRunRunner
     $failInstallerArgs['ReportDestination'] = (Join-Path $reportsDir 'installer-runner-fail.json')
-    $failInstallerReport = Test-OperatorFailClosed -CaseName 'installer-runner-fail' -Arguments $failInstallerArgs -ExpectedMessageFragment 'Installer runner returned non-PASS status' -ExpectReportFile $true
+    $failInstallerReport = Test-OperatorFailClosed -CaseName 'installer-runner-fail' -Arguments $failInstallerArgs -ExpectedMessageFragment 'Clean install runner returned non-PASS status' -ExpectReportFile $true
     if ($null -ne $failInstallerReport) {
         Assert-TestCondition -Condition ([string]$failInstallerReport.lifecycle.cleanInstall.status -ceq 'NOT_RUN') -Message 'Failed installer run was mislabeled as clean-install PASS.'
     }
