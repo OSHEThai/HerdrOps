@@ -940,7 +940,7 @@ try {
     $issue41Offline.ReleaseCandidate.Status = 'NOT_RECORDED'
     $issue41Offline.ReleaseCandidate.Commit = ''
     $issue41Offline.ReleaseCandidate.Reason = 'Synthetic offline fixture remains validation-only.'
-    $issue41Offline.Blockers = @([ordered]@{
+    $issue41Offline.Blockers = @([pscustomobject][ordered]@{
             Code = 'OFFLINE_FIXTURE_NO_RELEASE_CREDIT'
             Version = 'v1.0.0'
             IssueNumber = 41
