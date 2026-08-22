@@ -402,7 +402,7 @@ try {
     }
 
     $greenOutput = @(& $operatorPath @greenArgs)
-    Assert-TestCondition -Condition ($greenOutput.Count -eq 1) -Message 'Fixture operator returned an unexpected number of objects.'
+    Assert-TestCondition -Condition ($greenOutput.Count -eq 1) -Message ("Fixture operator returned $($greenOutput.Count) objects: " + (($greenOutput | ForEach-Object { if ($null -eq $_) { '<null>' } else { $_.GetType().FullName } }) -join ', '))
     $greenReport = $greenOutput[0]
     Assert-TestReportShape -Report $greenReport -EvidenceClass 'Synthetic' -Mode 'Fixture'
     Assert-TestCondition -Condition ([string]$greenReport.mode -ceq 'Fixture') -Message 'Green report mode drifted.'
