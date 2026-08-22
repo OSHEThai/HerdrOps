@@ -7,6 +7,48 @@ Set-StrictMode -Version Latest
 $script:V02PackageIdentityProfileFileName = 'package-identity-profile.json'
 $script:V02PackageIdentityReceiptSchemaSha256 = '8C7EF64ED06C94C6589D73C0AB47EB60B7EEF7BFE337F126D8D9D3F0CC0F4C4B'
 $script:V02PackageIdentityAfterSourcePreflightForTest = $null
+$script:V02PackageVerifierMaximumArchiveBytes = [int64]536870912
+$script:V02PackageVerifierMaximumEntryCount = [int64]4096
+$script:V02PackageVerifierMaximumExpandedBytes = [int64]1073741824
+$script:V02PackageVerifierMaximumCompressionRatio = [decimal]1000
+
+function Get-V02PackageVerifierSecurityBounds {
+    return [pscustomobject][ordered]@{
+        MaximumArchiveBytes = [int64]$script:V02PackageVerifierMaximumArchiveBytes
+        MaximumEntryCount = [int64]$script:V02PackageVerifierMaximumEntryCount
+        MaximumExpandedBytes = [int64]$script:V02PackageVerifierMaximumExpandedBytes
+        MaximumCompressionRatio = [decimal]$script:V02PackageVerifierMaximumCompressionRatio
+    }
+}
+
+function Resolve-V02ArchiveSecurityBounds {
+    param(
+        [Parameter(Mandatory = $true)][int64]$MaximumArchiveBytes,
+        [Parameter(Mandatory = $true)][int64]$MaximumEntryCount,
+        [Parameter(Mandatory = $true)][int64]$MaximumExpandedBytes,
+        [Parameter(Mandatory = $true)][decimal]$MaximumCompressionRatio
+    )
+
+    $defaults = Get-V02PackageVerifierSecurityBounds
+    if ($MaximumArchiveBytes -lt 1 -or $MaximumArchiveBytes -gt $defaults.MaximumArchiveBytes) {
+        throw "MaximumArchiveBytes must be between 1 and $($defaults.MaximumArchiveBytes); weaker bounds are rejected."
+    }
+    if ($MaximumEntryCount -lt 1 -or $MaximumEntryCount -gt $defaults.MaximumEntryCount) {
+        throw "MaximumEntryCount must be between 1 and $($defaults.MaximumEntryCount); weaker bounds are rejected."
+    }
+    if ($MaximumExpandedBytes -lt 1 -or $MaximumExpandedBytes -gt $defaults.MaximumExpandedBytes) {
+        throw "MaximumExpandedBytes must be between 1 and $($defaults.MaximumExpandedBytes); weaker bounds are rejected."
+    }
+    if ($MaximumCompressionRatio -lt 1 -or $MaximumCompressionRatio -gt $defaults.MaximumCompressionRatio) {
+        throw "MaximumCompressionRatio must be between 1 and $($defaults.MaximumCompressionRatio); weaker bounds are rejected."
+    }
+    return [pscustomobject][ordered]@{
+        MaximumArchiveBytes = [int64]$MaximumArchiveBytes
+        MaximumEntryCount = [int64]$MaximumEntryCount
+        MaximumExpandedBytes = [int64]$MaximumExpandedBytes
+        MaximumCompressionRatio = [decimal]$MaximumCompressionRatio
+    }
+}
 
 function Assert-V02ExactProperties {
     param(
@@ -404,30 +446,83 @@ function Read-V02PackageManifest {
 }
 
 function Get-V02ArchiveInventory {
-    param([Parameter(Mandatory = $true)][string]$Path)
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [int64]$MaximumArchiveBytes = [int64]$script:V02PackageVerifierMaximumArchiveBytes,
+        [int64]$MaximumEntryCount = [int64]$script:V02PackageVerifierMaximumEntryCount,
+        [int64]$MaximumExpandedBytes = [int64]$script:V02PackageVerifierMaximumExpandedBytes,
+        [decimal]$MaximumCompressionRatio = [decimal]$script:V02PackageVerifierMaximumCompressionRatio
+    )
 
     Add-Type -AssemblyName System.IO.Compression
+    $bounds = Resolve-V02ArchiveSecurityBounds `
+        -MaximumArchiveBytes $MaximumArchiveBytes `
+        -MaximumEntryCount $MaximumEntryCount `
+        -MaximumExpandedBytes $MaximumExpandedBytes `
+        -MaximumCompressionRatio $MaximumCompressionRatio
     $fullPath = [IO.Path]::GetFullPath($Path); Assert-NoReparsePath $fullPath
     $before = Get-Item -LiteralPath $fullPath -Force
+    if ($before.PSIsContainer) { throw 'Archive path must be a regular file.' }
+    if ([int64]$before.Length -gt $bounds.MaximumArchiveBytes) {
+        throw "Archive exceeds the maximum allowed byte size of $($bounds.MaximumArchiveBytes)."
+    }
     $stream = $null; $zip = $null; $sha = $null
     try {
         $stream = [IO.File]::Open($fullPath,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::None)
+        if ([int64]$stream.Length -ne [int64]$before.Length) { throw 'Archive changed before stable inspection.' }
+        if ([int64]$stream.Length -gt $bounds.MaximumArchiveBytes) { throw "Archive exceeds the maximum allowed byte size of $($bounds.MaximumArchiveBytes)." }
         $sha = [Security.Cryptography.SHA256]::Create(); $archiveHash = ([BitConverter]::ToString($sha.ComputeHash($stream))).Replace('-',''); $stream.Position = 0
         $zip = New-Object IO.Compression.ZipArchive($stream,[IO.Compression.ZipArchiveMode]::Read,$true)
-        $entries = @(); $seen = @()
-        foreach ($entry in @($zip.Entries)) {
+        if ([int64]$zip.Entries.Count -gt $bounds.MaximumEntryCount) {
+            throw "Archive contains more than the maximum allowed entry count of $($bounds.MaximumEntryCount)."
+        }
+        $entries = @(); $seen = @(); $entryCount = [int64]0; $expandedBytes = [int64]0; $compressedBytes = [int64]0
+        foreach ($entry in $zip.Entries) {
+            $entryCount++
+            if ($entryCount -gt $bounds.MaximumEntryCount) { throw "Archive contains more than the maximum allowed entry count of $($bounds.MaximumEntryCount)." }
             $name = [string]$entry.FullName
             if ([string]::IsNullOrWhiteSpace($name) -or $name -match '(^/|\\|(^|/)\.\.(/|$)|/$)') { throw 'Archive contains an unsafe or directory entry.' }
             if (@($seen | Where-Object { [StringComparer]::OrdinalIgnoreCase.Equals($_,$name) }).Count) { throw 'Archive contains a duplicate entry path.' }
-            $seen += $name; $entryStream = $null; $entrySha = $null
-            try { $entryStream=$entry.Open(); $entrySha=[Security.Cryptography.SHA256]::Create(); $entryHash=([BitConverter]::ToString($entrySha.ComputeHash($entryStream))).Replace('-','') } finally { if($entrySha){$entrySha.Dispose()}; if($entryStream){$entryStream.Dispose()} }
-            $entries += [pscustomobject][ordered]@{ Path=$name; Length=[int64]$entry.Length; Sha256=$entryHash }
+            $seen += $name
+            $entryLength = [int64]$entry.Length
+            $compressedLength = [int64]$entry.CompressedLength
+            if ($entryLength -lt 0 -or $compressedLength -lt 0) { throw "Archive entry has invalid size metadata: $name" }
+            if ($entryLength -gt $bounds.MaximumExpandedBytes) { throw "Archive entry exceeds the maximum expanded byte size of $($bounds.MaximumExpandedBytes): $name" }
+            if ([decimal]$expandedBytes + [decimal]$entryLength -gt [decimal]$bounds.MaximumExpandedBytes) { throw "Archive expanded size exceeds the maximum allowed byte size of $($bounds.MaximumExpandedBytes)." }
+            if ($entryLength -gt 0 -and ($compressedLength -le 0 -or [decimal]$entryLength -gt ([decimal]$compressedLength * $bounds.MaximumCompressionRatio))) {
+                throw "Archive entry exceeds the maximum compression ratio of $($bounds.MaximumCompressionRatio): $name"
+            }
+            if ([decimal]$compressedBytes + [decimal]$compressedLength -gt [decimal]::MaxValue) { throw "Archive compressed size overflowed: $name" }
+            $entryStream = $null; $entrySha = $null; $actualEntryLength = [int64]0
+            try {
+                $entryStream = $entry.Open()
+                $entrySha = [Security.Cryptography.SHA256]::Create()
+                $buffer = New-Object byte[] 65536
+                while (($read = $entryStream.Read($buffer, 0, $buffer.Length)) -gt 0) {
+                    if ([decimal]$actualEntryLength + [decimal]$read -gt [decimal]$bounds.MaximumExpandedBytes) { throw "Archive entry exceeded the maximum expanded byte size of $($bounds.MaximumExpandedBytes): $name" }
+                    if ([decimal]$expandedBytes + [decimal]$actualEntryLength + [decimal]$read -gt [decimal]$bounds.MaximumExpandedBytes) { throw "Archive expanded size exceeded the maximum allowed byte size of $($bounds.MaximumExpandedBytes)." }
+                    $entrySha.TransformBlock($buffer, 0, $read, $buffer, 0) | Out-Null
+                    $actualEntryLength += [int64]$read
+                }
+                $entrySha.TransformFinalBlock((New-Object byte[] 0), 0, 0) | Out-Null
+                if ($actualEntryLength -ne $entryLength) { throw "Archive entry expanded length did not match its ZIP metadata: $name" }
+                if ($actualEntryLength -gt 0 -and ($compressedLength -le 0 -or [decimal]$actualEntryLength -gt ([decimal]$compressedLength * $bounds.MaximumCompressionRatio))) {
+                    throw "Archive entry exceeds the maximum compression ratio of $($bounds.MaximumCompressionRatio): $name"
+                }
+                $entryHash = ([BitConverter]::ToString($entrySha.Hash)).Replace('-','')
+            } finally { if($entrySha){$entrySha.Dispose()}; if($entryStream){$entryStream.Dispose()} }
+            $expandedBytes += $actualEntryLength
+            $compressedBytes += $compressedLength
+            $entries += [pscustomobject][ordered]@{ Path=$name; Length=$actualEntryLength; Sha256=$entryHash }
+        }
+        if ($expandedBytes -gt 0 -and ($compressedBytes -le 0 -or [decimal]$expandedBytes -gt ([decimal]$compressedBytes * $bounds.MaximumCompressionRatio))) {
+            throw "Archive exceeds the maximum compression ratio of $($bounds.MaximumCompressionRatio)."
         }
     } finally { if($zip){$zip.Dispose()}; if($sha){$sha.Dispose()}; if($stream){$stream.Dispose()} }
     $after = Get-Item -LiteralPath $fullPath -Force
     if ([int64]$before.Length -ne [int64]$after.Length -or $before.LastWriteTimeUtc.Ticks -ne $after.LastWriteTimeUtc.Ticks) { throw 'Archive changed during stable inspection.' }
     $entries = @(Sort-PackageEntriesOrdinal $entries)
-    return [pscustomobject][ordered]@{ Length=[int64]$before.Length; Sha256=$archiveHash; Entries=$entries }
+    return [pscustomobject][ordered]@{ Length=[int64]$before.Length; Sha256=$archiveHash; EntryCount=$entryCount; ExpandedBytes=$expandedBytes; CompressedBytes=$compressedBytes; Entries=$entries }
 }
 
 function Read-V02CanonicalIdentityReceipt {
