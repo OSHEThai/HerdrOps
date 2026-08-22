@@ -67,8 +67,8 @@
     },
     "rendererObservation": {
       "type": "object", "additionalProperties": false,
-      "required": ["stage", "effectiveMode", "softwareOnlyConfirmed", "observedUtc", "proofSha256"],
-      "properties": { "stage": { "type": "string", "minLength": 1 }, "effectiveMode": { "const": "SoftwareOnly" }, "softwareOnlyConfirmed": { "const": true }, "observedUtc": { "$ref": "#/$defs/utc" }, "proofSha256": { "$ref": "#/$defs/sha256" } }
+      "required": ["stage", "effectiveMode", "softwareOnlyConfirmed", "observedUtc", "proofReceipt"],
+      "properties": { "stage": { "type": "string", "minLength": 1 }, "effectiveMode": { "const": "SoftwareOnly" }, "softwareOnlyConfirmed": { "const": true }, "observedUtc": { "$ref": "#/$defs/utc" }, "proofReceipt": { "$ref": "#/$defs/jsonBinding" } }
     },
     "rendererEvidence": {
       "type": "object", "additionalProperties": false,
