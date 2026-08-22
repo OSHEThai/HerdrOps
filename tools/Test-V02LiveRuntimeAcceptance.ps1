@@ -222,6 +222,8 @@ function Write-FailureGateReport {
         [AllowEmptyString()][string]$PackageIdentityReceiptSha256 = 'NOT_OBSERVED',
         [AllowEmptyString()][string]$PackageArchiveSha256 = 'NOT_OBSERVED',
         [AllowEmptyString()][string]$PackageManifestSha256 = 'NOT_OBSERVED',
+        [AllowEmptyString()][string]$PackageProfileFileSha256 = 'NOT_OBSERVED',
+        [AllowEmptyString()][string]$PackageProfileCanonicalSha256 = 'NOT_OBSERVED',
         [AllowEmptyString()][string]$AppSha256 = 'NOT_OBSERVED',
         [AllowEmptyString()][string]$CoreSha256 = 'NOT_OBSERVED',
         [AllowEmptyString()][string]$TrxSelectionReceiptSha256 = 'NOT_OBSERVED',
@@ -260,6 +262,8 @@ function Write-FailureGateReport {
             "PackageIdentityReceiptSha256: $PackageIdentityReceiptSha256",
             "PackageArchiveSha256: $PackageArchiveSha256",
             "PackageManifestSha256: $PackageManifestSha256",
+            "PackageProfileFileSha256: $PackageProfileFileSha256",
+            "PackageProfileCanonicalSha256: $PackageProfileCanonicalSha256",
             "AppSha256: $AppSha256",
             "CoreSha256: $CoreSha256",
             "TrxSelectionReceiptSha256: $TrxSelectionReceiptSha256",
@@ -1558,6 +1562,8 @@ $reportLines = @(
     "AppSha256: $($packageBinding.AppSha256)",
     "CoreSha256: $($packageBinding.CoreSha256)",
     "PackageProfileId: $($packageBinding.ProfileId)",
+    "PackageProfileFileSha256: $($packageBinding.ProfileFileSha256)",
+    "PackageProfileCanonicalSha256: $($packageBinding.ProfileCanonicalSha256)",
     "PackageValidationEvidenceClass: $($packageBinding.ValidationEvidenceClass)",
     "TargetAgentSessionReference: $($targetAgentSessionAttestation.Reference)",
     "TargetAgentSessionReferenceEvidenceSource: $($targetAgentSessionAttestation.EvidenceSource)",
@@ -1730,6 +1736,8 @@ Write-Output "AppRuntimeReport: $appReportPath"
         -PackageIdentityReceiptSha256 $(if($null -eq $packageBinding){'NOT_OBSERVED'}else{$packageBinding.ReceiptSha256}) `
         -PackageArchiveSha256 $(if($null -eq $packageBinding){'NOT_OBSERVED'}else{$packageBinding.ArchiveSha256}) `
         -PackageManifestSha256 $(if($null -eq $packageBinding){'NOT_OBSERVED'}else{$packageBinding.ManifestSha256}) `
+        -PackageProfileFileSha256 $(if($null -eq $packageBinding){'NOT_OBSERVED'}else{$packageBinding.ProfileFileSha256}) `
+        -PackageProfileCanonicalSha256 $(if($null -eq $packageBinding){'NOT_OBSERVED'}else{$packageBinding.ProfileCanonicalSha256}) `
         -AppSha256 $(if($null -eq $packageBinding){'NOT_OBSERVED'}else{$packageBinding.AppSha256}) `
         -CoreSha256 $(if($null -eq $packageBinding){'NOT_OBSERVED'}else{$packageBinding.CoreSha256}) `
         -TrxSelectionReceiptSha256 $(if($null -eq $trxEvidence){'NOT_OBSERVED'}else{$trxEvidence.ReceiptSha256}) `

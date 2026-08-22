@@ -89,6 +89,9 @@ Assert-SourceContains -Path $compositeRuntime -Text 'AppSha256:' -Description 'C
 Assert-SourceContains -Path $compositeRuntime -Text 'CoreSha256:' -Description 'Composite gate exposes the validated package Core hash for cross-run binding'
 Assert-SourceContains -Path $runtimePackageBinding -Text "'tools\packaging\v0.2\Test-V02PackageIdentity.ps1'" -Description 'Runtime binding calls the committed v0.2 package validator'
 Assert-SourceContains -Path $runtimePackageBinding -Text "EvidenceSource = 'OperatorAttestation'" -Description 'Unobservable native Agent/session identity has an explicit attestation boundary'
+Assert-SourceContains -Path $runtimePackageBinding -Text 'Invoke-V02CommittedPackageValidator -ValidatorPath $Binding.ValidatorPath' -Description 'Finalization re-runs the entire committed package validator'
+Assert-SourceContains -Path $runtimePackageBinding -Text '$total -ne 885' -Description 'TRX preservation requires the exact current 885-test aggregate'
+Assert-SourceContains -Path $runtimePackageBinding -Text '[IO.FileShare]::Read' -Description 'TRX selection uses a held source stream that denies write/delete sharing'
 
 Assert-SourceContains `
     -Path $herdrRuntime `
