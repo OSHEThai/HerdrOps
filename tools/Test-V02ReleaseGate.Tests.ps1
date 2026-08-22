@@ -112,6 +112,7 @@ function New-V02ReleaseGateTestCandidateLock {
         [string]$PackageCoreSha256 = ('6' * 64),
         [string]$RendererManifestSha256 = ('7' * 64),
         [string]$RuntimeMatrixManifestSha256 = ('8' * 64),
+        [string]$IndependentReviewCandidateSha256 = ('A' * 64),
         [string]$Issue9CandidateSha256 = ('9' * 64)
     )
     $lock = [pscustomobject][ordered]@{
@@ -132,6 +133,7 @@ function New-V02ReleaseGateTestCandidateLock {
         PackageCoreSha256 = $PackageCoreSha256
         RendererManifestSha256 = $RendererManifestSha256
         RuntimeMatrixManifestSha256 = $RuntimeMatrixManifestSha256
+        IndependentReviewCandidateSha256 = $IndependentReviewCandidateSha256
         Issue9CandidateSha256 = $Issue9CandidateSha256
         Authority = [pscustomobject][ordered]@{
             DecisionId = $Authority.DecisionId
@@ -172,6 +174,7 @@ function New-V02ReleaseGateTestExternalIndependentReceipt {
         [string]$PackageCoreSha256 = ('6' * 64),
         [string]$RendererManifestSha256 = ('7' * 64),
         [string]$RuntimeMatrixManifestSha256 = ('8' * 64),
+        [string]$IndependentReviewCandidateSha256 = ('A' * 64),
         [string]$Issue9CandidateSha256 = ('9' * 64),
         [string]$ReviewerIdentity = '@independent-reviewer',
         [System.Security.Cryptography.RSA]$RsaKey = $null
@@ -205,6 +208,7 @@ function New-V02ReleaseGateTestExternalIndependentReceipt {
             PackageCoreSha256 = $PackageCoreSha256
             RendererManifestSha256 = $RendererManifestSha256
             RuntimeMatrixManifestSha256 = $RuntimeMatrixManifestSha256
+            IndependentReviewCandidateSha256 = $IndependentReviewCandidateSha256
             Issue9CandidateSha256 = $Issue9CandidateSha256
         }
         Owner = [pscustomobject][ordered]@{ Identity = '@yutthaphon'; Role = 'ProductOwner' }
@@ -377,7 +381,10 @@ function New-V02ReleaseGateTestIssue9Candidate {
         ManifestPath = $matrixPath
         ManifestFileSha256 = Get-V02ReleaseGateFileSha256 $matrixPath
         ManifestPayloadSha256 = ('7' * 64)
-        Candidate = [pscustomobject][ordered]@{ Payload = [pscustomobject][ordered]@{ Binding = [pscustomobject][ordered]@{
+        Candidate = [pscustomobject][ordered]@{ Payload = [pscustomobject][ordered]@{ RunNonce = ('a' * 32); Runs = @(
+            [pscustomobject][ordered]@{ Language = 'Thai'; EvidenceRunNonce = ('1' * 32); GateReportSha256 = ('B' * 64) },
+            [pscustomobject][ordered]@{ Language = 'English'; EvidenceRunNonce = ('2' * 32); GateReportSha256 = ('C' * 64) }
+        ); Binding = [pscustomobject][ordered]@{
             HerdrReleaseId = $script:V02ReleaseGateHerdrReleaseId
             HerdrExecutableSha256 = $script:V02ReleaseGateHerdrExecutableSha256
             BundledSchemaSha256 = ('8' * 64)
@@ -395,7 +402,7 @@ function New-V02ReleaseGateTestIssue9Candidate {
             $pages += [pscustomobject][ordered]@{ Name = $pageName; Language = $language; UiCapturePath = $capturePath; UiCaptureSha256 = Get-V02ReleaseGateFileSha256 $capturePath; StateSha256 = ('B' * 64); WorkspaceId = 'workspace'; ProjectId = 'project'; AgentId = 'agent'; TaskId = 'task'; AgentStatus = 'Working'; PaneId = 'pane' }
         }
         $legs += [pscustomobject][ordered]@{
-            Language = $language; RuntimeEvidenceDirectory = $runtimeRoot; UiEvidenceDirectory = $uiRoot; UiReceiptPath = $receiptPath
+            Language = $language; EvidenceRunNonce = $(if ($language -ceq 'Thai') { '1' * 32 } else { '2' * 32 }); RuntimeEvidenceDirectory = $runtimeRoot; UiEvidenceDirectory = $uiRoot; UiReceiptPath = $receiptPath
             UiReceiptSha256 = Get-V02ReleaseGateFileSha256 $receiptPath; SideBySideCaptureSha256 = ('C' * 64); Pages = $pages
             Selection = [pscustomobject][ordered]@{ WorkspaceId = 'workspace'; ProjectId = 'project'; AgentId = 'agent'; TaskId = 'task'; AgentStatus = 'Working'; PaneId = 'pane'; StateSha256 = ('B' * 64); Source = 'CoreSnapshot' }
             Lifecycle = [pscustomobject][ordered]@{ DashboardClosed = $true; CoreConnectedAfterDashboardClose = $true; DisconnectObserved = $true; ReconnectObserved = $true; ReconciliationObserved = $true; EventAStateSha256 = ('D' * 64); EventBStateSha256 = ('E' * 64); ReconciledStateSha256 = ('F' * 64); ControlServerSurvivedTargetRestart = $true }
@@ -407,7 +414,7 @@ function New-V02ReleaseGateTestIssue9Candidate {
         Package = [pscustomobject][ordered]@{ IdentityPath = $package.IdentityPath; IdentityFileSha256 = $package.ReceiptFileSha256; ReceiptSha256 = $package.ReceiptSha256; ArchivePath = $package.ArchivePath; ArchiveSha256 = $package.ArchiveSha256; ManifestPath = $package.ManifestPath; ManifestSha256 = $package.ManifestSha256; AppPath = $package.AppPath; AppSha256 = $package.AppSha256; CorePath = $package.CorePath; CoreSha256 = $package.CoreSha256 }
         Herdr = [pscustomobject][ordered]@{ ReleaseId = $script:V02ReleaseGateHerdrReleaseId; ExecutableSha256 = $script:V02ReleaseGateHerdrExecutableSha256; BundledSchemaSha256 = ('8' * 64); Protocol = '20' }
         Sessions = [pscustomobject][ordered]@{ Control = [pscustomobject][ordered]@{ Name = 'acceptance'; SocketPath = 'C:\fixture\control.sock'; ServerIdentity = 'control-server' }; Target = [pscustomobject][ordered]@{ Name = 'agent-lab'; SocketPath = 'C:\fixture\target.sock'; Reference = 'target-agent' } }
-        MatrixCandidate = [pscustomobject][ordered]@{ Path = $matrixPath; FileSha256 = $matrix.ManifestFileSha256; PayloadSha256 = $matrix.ManifestPayloadSha256; EvidenceClassification = 'RuntimeMatrixCandidate'; IndependentHumanReview = 'NOT_OBSERVED'; ReleaseCredit = $false }
+        MatrixCandidate = [pscustomobject][ordered]@{ Path = $matrixPath; FileSha256 = $matrix.ManifestFileSha256; PayloadSha256 = $matrix.ManifestPayloadSha256; ProducerRunNonce = ('a' * 32); EvidenceClassification = 'RuntimeMatrixCandidate'; IndependentHumanReview = 'NOT_OBSERVED'; ReleaseCredit = $false }
         Languages = $legs
         EvidenceBoundary = [pscustomobject][ordered]@{ Runtime = 'NOT_OBSERVED'; HumanVisual = 'NOT_OBSERVED'; ReleaseCredit = $false; OutputAuthority = 'RuntimeCandidate'; FixtureMode = $false }
     }
@@ -415,6 +422,25 @@ function New-V02ReleaseGateTestIssue9Candidate {
         Candidate = $candidate; Package = $package; Matrix = $matrix
         Context = [pscustomobject][ordered]@{ ThaiEvidenceDirectory = $runtimeRoots[0]; EnglishEvidenceDirectory = $runtimeRoots[1]; ReleaseEvidenceRoot = $Root }
     }
+}
+
+function New-V02ReleaseGateTestRuntimeReviewCandidate {
+    param([Parameter(Mandatory)][string]$Path,[Parameter(Mandatory)]$Fixture,[string]$ReviewerIdentity='@independent-reviewer')
+    $matrix=$Fixture.Matrix;$package=$Fixture.Package
+    $languages=@();for($index=0;$index-lt2;$index++){$run=$matrix.Candidate.Payload.Runs[$index];$languages+=[pscustomobject][ordered]@{Language=$run.Language;EvidenceRunNonce=$run.EvidenceRunNonce;EvidenceDirectory=(Join-Path ([IO.Path]::GetDirectoryName($Path)) ("runtime-"+$run.Language));CaptureRoot=(Join-Path ([IO.Path]::GetDirectoryName($Path)) ("captures-"+$run.Language));GateReportSha256=$run.GateReportSha256;AppRuntimeReportSha256=('D'*64);CoreRuntimeReportSha256=('E'*64);Files=@([pscustomobject][ordered]@{Path=(Join-Path ([IO.Path]::GetDirectoryName($Path)) ("file-"+$run.Language));Sha256=('F'*64);Bytes=1})}}
+    $candidate=[pscustomobject][ordered]@{
+        SchemaVersion=1;EvidenceClassification='IndependentReviewCandidate';Result='PASS';Issues=@(7,9,10,11,149)
+        RunNonces=[pscustomobject][ordered]@{MatrixProducer=$matrix.Candidate.Payload.RunNonce;IndependentReviewer=('b'*32)}
+        Source=[pscustomobject][ordered]@{CommitSha=$script:GateIdentity.Commit;TreeSha=$script:GateIdentity.Tree;GitTreeClean=$true}
+        Package=[pscustomobject][ordered]@{IdentityPath=$package.IdentityPath;IdentityFileSha256=$package.ReceiptFileSha256;ReceiptSha256=$package.ReceiptSha256;ArchivePath=$package.ArchivePath;ArchiveSha256=$package.ArchiveSha256;ManifestPath=$package.ManifestPath;ManifestSha256=$package.ManifestSha256;AppPath=$package.AppPath;AppSha256=$package.AppSha256;CorePath=$package.CorePath;CoreSha256=$package.CoreSha256}
+        Roles=[pscustomobject][ordered]@{BuilderIdentity='builder';RuntimeOperatorIdentity='runtime-operator';MatrixProducerIdentity='matrix-producer';RuntimeReviewerIdentity=$ReviewerIdentity;ReviewerDistinctCaseInsensitive=$true}
+        Herdr=[pscustomobject][ordered]@{};Sessions=[pscustomobject][ordered]@{}
+        MatrixCandidate=[pscustomobject][ordered]@{Path=$matrix.ManifestPath;FileSha256=$matrix.ManifestFileSha256;PayloadSha256=$matrix.ManifestPayloadSha256;ProducerRunNonce=$matrix.Candidate.Payload.RunNonce;EvidenceClassification='RuntimeMatrixCandidate';IndependentHumanReview='NOT_OBSERVED';ReleaseCredit=$false}
+        Languages=$languages
+        EvidenceBoundary=[pscustomobject][ordered]@{IndependentReview='NOT_OBSERVED';ExternalReviewerAttestation='NOT_PROVIDED';HumanVisualGo='NOT_OBSERVED';RuntimeCredit=$false;ReleaseCredit=$false;OutputAuthority='IndependentReviewCandidate';NoCallerAuthoredAuthority=$true}
+    }
+    Write-V02ReleaseGateTestJson -Path $Path -Value $candidate|Out-Null
+    return $candidate
 }
 
 $script:GateRepositoryRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
@@ -560,6 +586,21 @@ try {
                 -PackageProfilePath $script:GateProfilePath -RepositoryRoot $script:GateRepositoryRoot `
                 -AuthorityReferencePath (Join-Path $script:GateRepositoryRoot 'Plan\DECISIONS.md') -IndependentCandidateReceiptPath $receipt.Path
         } 'Issue9CandidateSha256'
+    }
+
+    Invoke-V02ReleaseGateTestCase 'independent-review candidate hash is mandatory closed signed and lock-bound' {
+        $receiptPath=Join-Path $script:TestRoot 'external-runtime-review-schema\receipt.json';$receipt=New-V02ReleaseGateTestExternalIndependentReceipt -Path $receiptPath -Identity $script:GateIdentity -ProfileFileSha256 $script:GateProfileSha -ProfileCanonicalSha256 $script:GateProfileCanonicalSha
+        $missing=$receipt.Value|ConvertTo-Json -Depth 100|ConvertFrom-Json;$missing.Candidate.PSObject.Properties.Remove('IndependentReviewCandidateSha256');Write-V02ReleaseGateTestJson $receiptPath $missing|Out-Null
+        Assert-V02ReleaseGateTestThrows {Read-V02ReleaseGateExternalIndependentCandidateReceipt -Path $receiptPath -RepositoryRoot $script:GateRepositoryRoot -EvidenceRoot (Join-Path $script:TestRoot 'external-runtime-review-missing') -ExpectedSourceCommit $script:GateIdentity.Commit -ExpectedSourceTree $script:GateIdentity.Tree} 'exactly'
+        $receipt=New-V02ReleaseGateTestExternalIndependentReceipt -Path $receiptPath -Identity $script:GateIdentity -ProfileFileSha256 $script:GateProfileSha -ProfileCanonicalSha256 $script:GateProfileCanonicalSha;$extra=$receipt.Value|ConvertTo-Json -Depth 100|ConvertFrom-Json;$extra.Candidate|Add-Member IndependentReviewCandidateSha256Extra ('f'*64);Write-V02ReleaseGateTestJson $receiptPath $extra|Out-Null
+        Assert-V02ReleaseGateTestThrows {Read-V02ReleaseGateExternalIndependentCandidateReceipt -Path $receiptPath -RepositoryRoot $script:GateRepositoryRoot -EvidenceRoot (Join-Path $script:TestRoot 'external-runtime-review-extra') -ExpectedSourceCommit $script:GateIdentity.Commit -ExpectedSourceTree $script:GateIdentity.Tree} 'exactly'
+        $evidenceRoot=Join-Path $script:TestRoot 'runtime-review-lock-schema';New-V02ReleaseGateTestDirectory $evidenceRoot;$authority=Read-V02ReleaseGateAuthorityReference -RepositoryRoot $script:GateRepositoryRoot -AuthorityReferencePath (Join-Path $script:GateRepositoryRoot 'Plan\DECISIONS.md');$receipt=New-V02ReleaseGateTestExternalIndependentReceipt -Path $receiptPath -Identity $script:GateIdentity -ProfileFileSha256 $script:GateProfileSha -ProfileCanonicalSha256 $script:GateProfileCanonicalSha;$lockPath=Join-Path $evidenceRoot 'lock.json';New-V02ReleaseGateTestCandidateLock -Path $lockPath -Identity $script:GateIdentity -ProfileFileSha256 $script:GateProfileSha -ProfileCanonicalSha256 $script:GateProfileCanonicalSha -Authority $authority -IndependentReceipt $receipt|Out-Null
+        $lock=Get-Content -Raw $lockPath|ConvertFrom-Json;$lock.PSObject.Properties.Remove('IndependentReviewCandidateSha256');Write-V02ReleaseGateTestJson $lockPath $lock|Out-Null
+        Assert-V02ReleaseGateTestThrows {Read-V02ReleaseGateCandidateLock -Path $lockPath -EvidenceRoot $evidenceRoot -ExpectedSourceCommit $script:GateIdentity.Commit -ExpectedSourceTree $script:GateIdentity.Tree -PackageProfilePath $script:GateProfilePath -RepositoryRoot $script:GateRepositoryRoot -AuthorityReferencePath (Join-Path $script:GateRepositoryRoot 'Plan\DECISIONS.md') -IndependentCandidateReceiptPath $receipt.Path} 'exactly'
+        New-V02ReleaseGateTestCandidateLock -Path $lockPath -Identity $script:GateIdentity -ProfileFileSha256 $script:GateProfileSha -ProfileCanonicalSha256 $script:GateProfileCanonicalSha -Authority $authority -IndependentReceipt $receipt|Out-Null;$lock=Get-Content -Raw $lockPath|ConvertFrom-Json;$lock|Add-Member IndependentReviewCandidateSha256Extra ('f'*64);Write-V02ReleaseGateTestJson $lockPath $lock|Out-Null
+        Assert-V02ReleaseGateTestThrows {Read-V02ReleaseGateCandidateLock -Path $lockPath -EvidenceRoot $evidenceRoot -ExpectedSourceCommit $script:GateIdentity.Commit -ExpectedSourceTree $script:GateIdentity.Tree -PackageProfilePath $script:GateProfilePath -RepositoryRoot $script:GateRepositoryRoot -AuthorityReferencePath (Join-Path $script:GateRepositoryRoot 'Plan\DECISIONS.md') -IndependentCandidateReceiptPath $receipt.Path} 'exactly'
+        New-V02ReleaseGateTestCandidateLock -Path $lockPath -Identity $script:GateIdentity -ProfileFileSha256 $script:GateProfileSha -ProfileCanonicalSha256 $script:GateProfileCanonicalSha -Authority $authority -IndependentReceipt $receipt -IndependentReviewCandidateSha256 ('0'*64)|Out-Null
+        Assert-V02ReleaseGateTestThrows {Read-V02ReleaseGateCandidateLock -Path $lockPath -EvidenceRoot $evidenceRoot -ExpectedSourceCommit $script:GateIdentity.Commit -ExpectedSourceTree $script:GateIdentity.Tree -PackageProfilePath $script:GateProfilePath -RepositoryRoot $script:GateRepositoryRoot -AuthorityReferencePath (Join-Path $script:GateRepositoryRoot 'Plan\DECISIONS.md') -IndependentCandidateReceiptPath $receipt.Path} 'IndependentReviewCandidateSha256'
     }
 
     Invoke-V02ReleaseGateTestCase 'weak RSA key (<2048 bits) in external receipt fails closed' {
@@ -788,6 +829,50 @@ try {
         } 'length|bytes'
     }
 
+    Invoke-V02ReleaseGateTestCase 'release matrix nonce guards reject missing extra malformed collision and cross-leg replay' {
+        $fixture=New-V02ReleaseGateTestIssue9Candidate -Root (Join-Path $script:TestRoot 'matrix-nonce-guards') -Identity $script:GateIdentity
+        $base=$fixture.Matrix.Candidate.Payload
+        $null=Assert-V02ReleaseGateMatrixNonceBindings $base 'matrix nonce fixture'
+        $cases=@(
+            [pscustomobject]@{Name='missing';Pattern='exactly RunNonce';Apply={param($v)$v.PSObject.Properties.Remove('RunNonce')}},
+            [pscustomobject]@{Name='extra';Pattern='no missing/extra';Apply={param($v)$v|Add-Member RunNonceExtra ('f'*32)}},
+            [pscustomobject]@{Name='nonlowercase';Pattern='lowercase 32-hex';Apply={param($v)$v.RunNonce='A'*32}},
+            [pscustomobject]@{Name='producer nonhex';Pattern='lowercase 32-hex';Apply={param($v)$v.RunNonce='g'*32}},
+            [pscustomobject]@{Name='non32';Pattern='lowercase 32-hex';Apply={param($v)$v.RunNonce='abcd'}},
+            [pscustomobject]@{Name='evidence nonlowercase';Pattern='lowercase 32-hex';Apply={param($v)$v.Runs[0].EvidenceRunNonce='A'*32}},
+            [pscustomobject]@{Name='evidence nonhex';Pattern='lowercase 32-hex';Apply={param($v)$v.Runs[0].EvidenceRunNonce='g'*32}},
+            [pscustomobject]@{Name='evidence non32';Pattern='lowercase 32-hex';Apply={param($v)$v.Runs[0].EvidenceRunNonce='abcd'}},
+            [pscustomobject]@{Name='producer collision';Pattern='distinct from both';Apply={param($v)$v.RunNonce=$v.Runs[0].EvidenceRunNonce}},
+            [pscustomobject]@{Name='cross-leg replay';Pattern='duplicate values';Apply={param($v)$v.Runs[1].EvidenceRunNonce=$v.Runs[0].EvidenceRunNonce}}
+        )
+        foreach($case in $cases){$value=$base|ConvertTo-Json -Depth 20|ConvertFrom-Json;&$case.Apply $value;Assert-V02ReleaseGateTestThrows {Assert-V02ReleaseGateMatrixNonceBindings $value 'matrix nonce fixture'|Out-Null} $case.Pattern}
+    }
+
+    Invoke-V02ReleaseGateTestCase 'typed runtime-review trust-chain rejects schema nonce replay collision mismatch path and hash drift' {
+        $root=Join-Path $script:TestRoot 'runtime-review-typed';$fixture=New-V02ReleaseGateTestIssue9Candidate -Root $root -Identity $script:GateIdentity;$path=Join-Path $root 'runtime-review.json'
+        $base=New-V02ReleaseGateTestRuntimeReviewCandidate -Path $path -Fixture $fixture;$independent=[pscustomobject]@{ReviewerIdentity='@independent-reviewer'}
+        $result=Read-V02ReleaseGateRuntimeReviewReceipt -Path $path -Package $fixture.Package -Matrix $fixture.Matrix -IndependentReceipt $independent -ExpectedSourceCommit $script:GateIdentity.Commit -ExpectedSourceTree $script:GateIdentity.Tree
+        if($result.RunNonces.IndependentReviewer-cne('b'*32)){throw 'ReviewRunNonce was not extracted.'}
+        $cases=@(
+            [pscustomobject]@{Name='missing reviewer nonce';Pattern='exactly';Apply={param($v)$v.RunNonces.PSObject.Properties.Remove('IndependentReviewer')}},
+            [pscustomobject]@{Name='extra reviewer nonce';Pattern='exactly';Apply={param($v)$v.RunNonces|Add-Member ReviewRunNonceExtra ('c'*32)}},
+            [pscustomobject]@{Name='uppercase reviewer nonce';Pattern='lowercase 32-hex';Apply={param($v)$v.RunNonces.IndependentReviewer='B'*32}},
+            [pscustomobject]@{Name='nonhex reviewer nonce';Pattern='lowercase 32-hex';Apply={param($v)$v.RunNonces.IndependentReviewer='g'*32}},
+            [pscustomobject]@{Name='short reviewer nonce';Pattern='lowercase 32-hex';Apply={param($v)$v.RunNonces.IndependentReviewer='abcd'}},
+            [pscustomobject]@{Name='reviewer producer collision';Pattern='producer/reviewer/evidence';Apply={param($v)$v.RunNonces.IndependentReviewer=$v.RunNonces.MatrixProducer}},
+            [pscustomobject]@{Name='reviewer evidence collision';Pattern='producer/reviewer/evidence';Apply={param($v)$v.RunNonces.IndependentReviewer=$v.Languages[0].EvidenceRunNonce}},
+            [pscustomobject]@{Name='cross-leg replay';Pattern='duplicate values';Apply={param($v)$v.Languages[1].EvidenceRunNonce=$v.Languages[0].EvidenceRunNonce}},
+            [pscustomobject]@{Name='matrix producer mismatch';Pattern='carried producer RunNonce';Apply={param($v)$v.MatrixCandidate.ProducerRunNonce='c'*32}},
+            [pscustomobject]@{Name='classification mismatch';Pattern='classification';Apply={param($v)$v.EvidenceClassification='Runtime'}},
+            [pscustomobject]@{Name='payload hash mismatch';Pattern='matrix payload hash';Apply={param($v)$v.MatrixCandidate.PayloadSha256='0'*64}},
+            [pscustomobject]@{Name='schema extra';Pattern='exactly';Apply={param($v)$v|Add-Member CallerReviewRunNonce ('c'*32)}}
+        )
+        $index=0;foreach($case in $cases){$value=$base|ConvertTo-Json -Depth 100|ConvertFrom-Json;$value.Source.CommitSha=$script:GateIdentity.Commit;$value.Source.TreeSha=$script:GateIdentity.Tree;&$case.Apply $value;$casePath=Join-Path $root ("hostile-$index.json");Write-V02ReleaseGateTestJson $casePath $value|Out-Null;Assert-V02ReleaseGateTestThrows {Read-V02ReleaseGateRuntimeReviewReceipt -Path $casePath -Package $fixture.Package -Matrix $fixture.Matrix -IndependentReceipt $independent -ExpectedSourceCommit $script:GateIdentity.Commit -ExpectedSourceTree $script:GateIdentity.Tree|Out-Null} $case.Pattern;$index++}
+        Assert-V02ReleaseGateTestThrows {Read-V02ReleaseGateRuntimeReviewReceipt -Path (Join-Path $root 'missing.json') -Package $fixture.Package -Matrix $fixture.Matrix -IndependentReceipt $independent -ExpectedSourceCommit $script:GateIdentity.Commit -ExpectedSourceTree $script:GateIdentity.Tree|Out-Null} 'is missing'
+        $lock=[pscustomobject]@{IndependentReviewCandidateSha256=('0'*64);PackageReceiptSha256=$fixture.Package.ReceiptSha256;PackageReceiptFileSha256=$fixture.Package.ReceiptFileSha256;PackageArchiveSha256=$fixture.Package.ArchiveSha256;PackageManifestSha256=$fixture.Package.ManifestSha256;PackageAppSha256=$fixture.Package.AppSha256;PackageCoreSha256=$fixture.Package.CoreSha256;RendererManifestSha256=('1'*64);RuntimeMatrixManifestSha256=$fixture.Matrix.ManifestFileSha256;Issue9CandidateSha256=('2'*64)}
+        Assert-V02ReleaseGateTestThrows {Assert-V02ReleaseGateCandidateByteBinding -CandidateLock $lock -Package $fixture.Package -Renderer ([pscustomobject]@{ManifestSha256=('1'*64)}) -Matrix $fixture.Matrix -RuntimeReview $result -Issue9 ([pscustomobject]@{CandidateSha256=('2'*64)})} 'IndependentReviewCandidateSha256'
+    }
+
     Invoke-V02ReleaseGateTestCase 'candidate lock binds receipt archive App Core renderer and matrix bytes' {
         $lock = [pscustomobject][ordered]@{
             PackageReceiptSha256 = ('A' * 64)
@@ -798,6 +883,7 @@ try {
             PackageCoreSha256 = ('F' * 64)
             RendererManifestSha256 = ('1' * 64)
             RuntimeMatrixManifestSha256 = ('2' * 64)
+            IndependentReviewCandidateSha256 = ('A' * 64)
             Issue9CandidateSha256 = ('3' * 64)
         }
         $package = [pscustomobject][ordered]@{
@@ -810,16 +896,17 @@ try {
         }
         $renderer = [pscustomobject][ordered]@{ ManifestSha256 = $lock.RendererManifestSha256 }
         $matrix = [pscustomobject][ordered]@{ ManifestFileSha256 = $lock.RuntimeMatrixManifestSha256 }
+        $runtimeReview = [pscustomobject][ordered]@{ ReceiptSha256 = $lock.IndependentReviewCandidateSha256 }
         $issue9 = [pscustomobject][ordered]@{ CandidateSha256 = $lock.Issue9CandidateSha256 }
-        Assert-V02ReleaseGateCandidateByteBinding -CandidateLock $lock -Package $package -Renderer $renderer -Matrix $matrix -Issue9 $issue9
+        Assert-V02ReleaseGateCandidateByteBinding -CandidateLock $lock -Package $package -Renderer $renderer -Matrix $matrix -RuntimeReview $runtimeReview -Issue9 $issue9
         $package.ArchiveSha256 = ('9' * 64)
         Assert-V02ReleaseGateTestThrows {
-            Assert-V02ReleaseGateCandidateByteBinding -CandidateLock $lock -Package $package -Renderer $renderer -Matrix $matrix -Issue9 $issue9
+            Assert-V02ReleaseGateCandidateByteBinding -CandidateLock $lock -Package $package -Renderer $renderer -Matrix $matrix -RuntimeReview $runtimeReview -Issue9 $issue9
         } 'PackageArchiveSha256'
         $package.ArchiveSha256 = $lock.PackageArchiveSha256
         $issue9.CandidateSha256 = ('4' * 64)
         Assert-V02ReleaseGateTestThrows {
-            Assert-V02ReleaseGateCandidateByteBinding -CandidateLock $lock -Package $package -Renderer $renderer -Matrix $matrix -Issue9 $issue9
+            Assert-V02ReleaseGateCandidateByteBinding -CandidateLock $lock -Package $package -Renderer $renderer -Matrix $matrix -RuntimeReview $runtimeReview -Issue9 $issue9
         } 'Issue9CandidateSha256'
     }
 
@@ -827,6 +914,11 @@ try {
         $fixture = New-V02ReleaseGateTestIssue9Candidate -Root (Join-Path $script:TestRoot 'issue9-typed') -Identity $script:GateIdentity
         Assert-V02ReleaseGateIssue9CandidateBinding -Candidate $fixture.Candidate -Context $fixture.Context -Package $fixture.Package -Matrix $fixture.Matrix `
             -ExpectedSourceCommit $script:GateIdentity.Commit -ExpectedSourceTree $script:GateIdentity.Tree
+
+        $nonceMismatch=$fixture.Candidate|ConvertTo-Json -Depth 100|ConvertFrom-Json;$nonceMismatch.MatrixCandidate.ProducerRunNonce='c'*32
+        Assert-V02ReleaseGateTestThrows {Assert-V02ReleaseGateIssue9CandidateBinding -Candidate $nonceMismatch -Context $fixture.Context -Package $fixture.Package -Matrix $fixture.Matrix -ExpectedSourceCommit $script:GateIdentity.Commit -ExpectedSourceTree $script:GateIdentity.Tree} 'matrix producer RunNonce binding'
+        $evidenceMismatch=$fixture.Candidate|ConvertTo-Json -Depth 100|ConvertFrom-Json;$evidenceMismatch.Languages[0].EvidenceRunNonce='c'*32
+        Assert-V02ReleaseGateTestThrows {Assert-V02ReleaseGateIssue9CandidateBinding -Candidate $evidenceMismatch -Context $fixture.Context -Package $fixture.Package -Matrix $fixture.Matrix -ExpectedSourceCommit $script:GateIdentity.Commit -ExpectedSourceTree $script:GateIdentity.Tree} 'EvidenceRunNonce binding'
 
         $extra = $fixture.Candidate | ConvertTo-Json -Depth 100 | ConvertFrom-Json
         $extra | Add-Member -MemberType NoteProperty -Name HumanAuthority -Value 'caller-authored'
@@ -1138,7 +1230,7 @@ try {
             New-V02ReleaseGateTestDirectory -Path $packageRoot
             New-V02ReleaseGateTestDirectory -Path (Join-Path $root 'Thai')
             New-V02ReleaseGateTestDirectory -Path (Join-Path $root 'English')
-            foreach ($file in @('package-identity.json', 'archive.zip', 'renderer.json', 'matrix.json', 'issue9.json', 'contract.json', 'synthetic.json', 'human.json', 'github.json')) {
+            foreach ($file in @('package-identity.json', 'archive.zip', 'renderer.json', 'matrix.json', 'runtime-review.json', 'issue9.json', 'contract.json', 'synthetic.json', 'human.json', 'github.json')) {
                 Write-V02ReleaseGateTestText -Path (Join-Path $root $file) -Text '{}' | Out-Null
             }
             foreach ($file in @('package-manifest.json', 'HerdrOps.App.exe', 'HerdrOps.Core.exe')) {
@@ -1155,6 +1247,7 @@ try {
                 ThaiEvidenceDirectory = Join-Path $root 'Thai'
                 EnglishEvidenceDirectory = Join-Path $root 'English'
                 RuntimeMatrixManifestPath = Join-Path $root 'matrix.json'
+                RuntimeReviewCandidatePath = Join-Path $root 'runtime-review.json'
                 Issue9CandidatePath = Join-Path $root 'issue9.json'
                 ContractEvidencePath = Join-Path $root 'contract.json'
                 SyntheticEvidencePath = Join-Path $root 'synthetic.json'
