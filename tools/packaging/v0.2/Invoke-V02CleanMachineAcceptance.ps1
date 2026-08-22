@@ -138,11 +138,7 @@ if ($Mode -eq 'Live') {
     if ($null -ne $MockRegistryHive -or $AllowElevatedForTesting -or $TestFaultInjectionStage -cne 'None' -or $TestInjectResidueFailure) {
         throw 'Live mode rejects mock registry and all test-only controls.'
     }
-    $defaultInstall = [IO.Path]::GetFullPath((Get-V02DefaultInstallRoot))
-    $defaultUserData = [IO.Path]::GetFullPath((Get-V02DefaultUserDataRoot))
-    if (-not [StringComparer]::OrdinalIgnoreCase.Equals($safeInstallRoot,$defaultInstall) -or -not [StringComparer]::OrdinalIgnoreCase.Equals($safeUserDataRoot,$defaultUserData)) {
-        throw 'Live mode requires the exact per-user HerdrOps install and user-data roots; test/custom roots are forbidden.'
-    }
+    Assert-V02LiveRootsAreDefault -InstallRoot $safeInstallRoot -UserDataRoot $safeUserDataRoot
     foreach ($externalPath in @($CleanHostAuthorizationPath,$CleanHostAuthorizationSignaturePath)) {
         if (-not [string]::IsNullOrWhiteSpace($externalPath)) {
             Assert-V02PathOutsideRoot $externalPath $repositoryFull 'Clean-host authorization'

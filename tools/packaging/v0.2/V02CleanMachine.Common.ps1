@@ -68,6 +68,20 @@ function Assert-V02PathOutsideRoot {
     }
 }
 
+function Assert-V02LiveRootsAreDefault {
+    param([Parameter(Mandatory = $true)][string]$InstallRoot,[Parameter(Mandatory = $true)][string]$UserDataRoot)
+    # Trusted Known Folder defaults (SHGetKnownFolderPath), never the
+    # caller-controlled LOCALAPPDATA environment variable, so a redirected
+    # env var cannot make a spoofed root appear to be the exact default.
+    $safeInstallRoot = [IO.Path]::GetFullPath($InstallRoot)
+    $safeUserDataRoot = [IO.Path]::GetFullPath($UserDataRoot)
+    $defaultInstall = [IO.Path]::GetFullPath((Get-V02DefaultInstallRoot))
+    $defaultUserData = [IO.Path]::GetFullPath((Get-V02DefaultUserDataRoot))
+    if (-not [StringComparer]::OrdinalIgnoreCase.Equals($safeInstallRoot,$defaultInstall) -or -not [StringComparer]::OrdinalIgnoreCase.Equals($safeUserDataRoot,$defaultUserData)) {
+        throw 'Live mode requires the exact per-user HerdrOps install and user-data roots; test/custom roots are forbidden.'
+    }
+}
+
 function Read-V02CleanHostAuthorization {
     param(
         [Parameter(Mandatory = $true)][string]$AuthorizationPath,

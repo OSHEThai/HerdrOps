@@ -237,11 +237,18 @@ try {
         if ((Test-Path -LiteralPath $liveInstall) -or (Test-Path -LiteralPath $liveReportPath)) { throw 'Rejected Live simulation mutated its target or report path.' }
     }
 
+    # The full entrypoint enforces elevation before the exact-root guard (by
+    # design: Live mode must never proceed while elevated, regardless of any
+    # other misconfiguration). On an elevated host it therefore surfaces the
+    # elevation rejection first; on a non-elevated host it reaches the exact
+    # per-user root guard. Both are the intended, correct rejection for this
+    # exact process's ambient elevation state.
     Invoke-Case 'Live mode rejects temp roots after caller-controlled LOCALAPPDATA redirection' {
         $oldLocalAppData = $env:LOCALAPPDATA
         $redirected = Join-Path $testRoot 'redirected-live-localappdata'
         $env:LOCALAPPDATA = $redirected
         try {
+            $expectedPattern = if (Test-V02IsElevated) { 'non-elevated without Administrator rights' } else { 'exact per-user HerdrOps install and user-data roots' }
             Assert-Throws { & $scriptPath `
                 -Mode 'Live' `
                 -IdentityReceiptPath $receiptPath `
@@ -254,9 +261,113 @@ try {
                 -ExpectedMachineFingerprint (Get-V02MachineFingerprint) `
                 -LiveConfirmationToken 'HERDROPS-V02-CLEAN-MACHINE' `
                 -IUnderstandLiveMutation
-            } 'exact per-user HerdrOps install and user-data roots'
+            } $expectedPattern
             if (Test-Path -LiteralPath $redirected) { throw 'Rejected LOCALAPPDATA redirection created a Live target.' }
         } finally { $env:LOCALAPPDATA = $oldLocalAppData }
+    }
+
+    # Direct hostile coverage for the exact per-user root guard itself,
+    # independent of ambient elevation state on the host running the tests.
+    Invoke-Case 'Assert-V02LiveRootsAreDefault accepts the exact trusted defaults' {
+        Assert-V02LiveRootsAreDefault -InstallRoot (Get-V02DefaultInstallRoot) -UserDataRoot (Get-V02DefaultUserDataRoot)
+    }
+
+    Invoke-Case 'Assert-V02LiveRootsAreDefault rejects a redirected install root' {
+        Assert-Throws {
+            Assert-V02LiveRootsAreDefault -InstallRoot (Join-Path $testRoot 'redirected-install\Programs\HerdrOps') -UserDataRoot (Get-V02DefaultUserDataRoot)
+        } 'exact per-user HerdrOps install and user-data roots'
+    }
+
+    Invoke-Case 'Assert-V02LiveRootsAreDefault rejects a redirected user-data root' {
+        Assert-Throws {
+            Assert-V02LiveRootsAreDefault -InstallRoot (Get-V02DefaultInstallRoot) -UserDataRoot (Join-Path $testRoot 'redirected-userdata\HerdrOps')
+        } 'exact per-user HerdrOps install and user-data roots'
+    }
+
+    Invoke-Case 'Assert-V02LiveRootsAreDefault rejects both roots redirected via caller-controlled LOCALAPPDATA' {
+        $oldLocalAppData = $env:LOCALAPPDATA
+        $redirected = Join-Path $testRoot 'redirected-both-localappdata'
+        $env:LOCALAPPDATA = $redirected
+        try {
+            Assert-Throws {
+                Assert-V02LiveRootsAreDefault -InstallRoot (Join-Path $redirected 'Programs\HerdrOps') -UserDataRoot (Join-Path $redirected 'HerdrOps')
+            } 'exact per-user HerdrOps install and user-data roots'
+            if (Test-Path -LiteralPath $redirected) { throw 'Direct root-guard rejection created a filesystem target.' }
+        } finally { $env:LOCALAPPDATA = $oldLocalAppData }
+    }
+
+    # Static-bind: prove an actual Assert-V02LiveRootsAreDefault *command
+    # invocation* (via the PowerShell AST, not a raw text/substring search)
+    # exists inside the Mode-eq-Live block, bound to the exact $safeInstallRoot
+    # / $safeUserDataRoot variables. A raw-text search can be satisfied by a
+    # comment, a string literal, or a call that was actually moved outside the
+    # Live block; the AST walk below cannot.
+    Invoke-Case 'Production Live-mode block invokes Assert-V02LiveRootsAreDefault with the exact safe root variables' {
+        $entrypointParseErrors = $null
+        $entrypointAst = [System.Management.Automation.Language.Parser]::ParseFile($scriptPath, [ref]$null, [ref]$entrypointParseErrors)
+        if (@($entrypointParseErrors).Count -gt 0) {
+            throw "Invoke-V02CleanMachineAcceptance.ps1 failed to parse: $($entrypointParseErrors -join '; ')"
+        }
+
+        function Test-BoundToVariable {
+            param($CommandAst, [string]$ParameterName, [string]$ExpectedVariableName)
+            $elements = $CommandAst.CommandElements
+            for ($i = 0; $i -lt $elements.Count; $i++) {
+                $element = $elements[$i]
+                if ($element -is [System.Management.Automation.Language.CommandParameterAst] -and $element.ParameterName -eq $ParameterName) {
+                    $argument = $element.Argument
+                    if ($null -eq $argument -and ($i + 1) -lt $elements.Count) {
+                        $argument = $elements[$i + 1]
+                    }
+                    return ($argument -is [System.Management.Automation.Language.VariableExpressionAst]) -and
+                        ($argument.VariablePath.UserPath -ceq $ExpectedVariableName)
+                }
+            }
+            return $false
+        }
+
+        function Test-InsideLiveModeIfClause {
+            param($Node)
+            $current = $Node.Parent
+            while ($null -ne $current) {
+                if ($current -is [System.Management.Automation.Language.IfStatementAst]) {
+                    foreach ($clause in $current.Clauses) {
+                        if ($clause.Item1.Extent.Text -match '\$Mode\s*-eq\s*''Live''') {
+                            $body = $clause.Item2.Extent
+                            $target = $Node.Extent
+                            if ($target.StartOffset -ge $body.StartOffset -and $target.EndOffset -le $body.EndOffset) {
+                                return $true
+                            }
+                        }
+                    }
+                }
+                $current = $current.Parent
+            }
+            return $false
+        }
+
+        $candidateCalls = @($entrypointAst.FindAll({
+            param($node)
+            $node -is [System.Management.Automation.Language.CommandAst] -and $node.GetCommandName() -eq 'Assert-V02LiveRootsAreDefault'
+        }, $true))
+
+        if ($candidateCalls.Count -eq 0) {
+            throw 'No actual Assert-V02LiveRootsAreDefault command invocation found (commented out, stringified, or removed).'
+        }
+
+        $validCallFound = $false
+        foreach ($call in $candidateCalls) {
+            if ((Test-InsideLiveModeIfClause -Node $call) -and
+                (Test-BoundToVariable -CommandAst $call -ParameterName 'InstallRoot' -ExpectedVariableName 'safeInstallRoot') -and
+                (Test-BoundToVariable -CommandAst $call -ParameterName 'UserDataRoot' -ExpectedVariableName 'safeUserDataRoot')) {
+                $validCallFound = $true
+                break
+            }
+        }
+
+        if (-not $validCallFound) {
+            throw 'Assert-V02LiveRootsAreDefault is not invoked inside the Mode-eq-Live block with the exact $safeInstallRoot/$safeUserDataRoot arguments.'
+        }
     }
 
     # Hostile Matrix
