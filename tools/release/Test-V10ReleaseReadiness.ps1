@@ -71,6 +71,231 @@ function New-TestHex64 {
     return (($Character * 64) -join '')
 }
 
+function New-TestIssue40Handoff {
+    param(
+        [Parameter(Mandatory = $true)][string]$RepositoryRoot,
+        [Parameter(Mandatory = $true)][string]$EvidenceRoot,
+        [Parameter(Mandatory = $true)][string]$SourceCommit,
+        [Parameter(Mandatory = $true)][string]$SourceTree
+    )
+
+    $issue40Root = Join-Path $EvidenceRoot 'issue-40'
+    New-Item -ItemType Directory -Path $issue40Root -Force | Out-Null
+    $currentCandidate = [pscustomobject][ordered]@{
+        Commit = $SourceCommit
+        Tree = $SourceTree
+        WorkingTree = 'CLEAN'
+        Status = @()
+    }
+    $dependencies = New-Object System.Collections.ArrayList
+    foreach ($issue in @(35, 36, 37, 38, 39)) {
+        $issueRoot = Join-Path $issue40Root "issue-$issue"
+        New-Item -ItemType Directory -Path $issueRoot -Force | Out-Null
+        $evidencePath = Join-Path $issueRoot 'evidence.txt'
+        Write-TestText -Path $evidencePath -Text "synthetic-issue-$issue-evidence`n"
+        $evidenceHash = ((Get-FileHash -LiteralPath $evidencePath -Algorithm SHA256).Hash).ToUpperInvariant()
+        $manifestPath = Join-Path $issueRoot 'manifest.json'
+        $manifest = [ordered]@{
+            schemaVersion = 1
+            reportKind = 'HerdrOps.V07DependencyManifest'
+            issue = $issue
+            candidate = [ordered]@{
+                commit = $SourceCommit
+                tree = $SourceTree
+                workingTree = 'CLEAN'
+            }
+            status = 'PENDING'
+            evidenceClass = 'Static'
+            evidenceFiles = @([ordered]@{
+                    path = "issue-$issue/evidence.txt"
+                    sha256 = $evidenceHash
+                })
+            humanAcceptance = [ordered]@{
+                status = 'PENDING'
+                signer = 'PENDING'
+                role = 'PENDING'
+                signedAtUtc = 'PENDING'
+                signature = 'PENDING'
+            }
+        }
+        Write-V10NewJsonFile -Path $manifestPath -Value $manifest | Out-Null
+        $manifestHash = ((Get-FileHash -LiteralPath $manifestPath -Algorithm SHA256).Hash).ToUpperInvariant()
+        [void]$dependencies.Add([ordered]@{
+                issue = $issue
+                manifestPath = "issue-$issue/manifest.json"
+                manifestSha256 = $manifestHash
+                status = 'PENDING'
+            })
+    }
+
+    $inputPath = Join-Path $issue40Root 'dependency-evidence.json'
+    $input = [ordered]@{
+        schemaVersion = 1
+        reportKind = 'HerdrOps.V07ReleaseGateInput'
+        issue = 40
+        candidate = [ordered]@{
+            commit = $SourceCommit
+            tree = $SourceTree
+            workingTree = 'CLEAN'
+        }
+        dependencies = @($dependencies.ToArray())
+        historyPolicy = [ordered]@{
+            rebaseAllowed = $false
+            requiredFollowUp = 'HISTORY_PRESERVING_MERGE_FINAL_ISSUE_39_SUCCESSOR_REGENERATE_REVIEW'
+        }
+    }
+    Write-V10NewJsonFile -Path $inputPath -Value $input | Out-Null
+    $validatedInput = Test-V07ReleaseGateInput -InputPath $inputPath -EvidenceRoot $issue40Root -CurrentCandidate $currentCandidate
+
+    $humanPath = Join-Path $issue40Root 'human-uat.json'
+    $human = [ordered]@{
+        schemaVersion = 1
+        reportKind = 'HerdrOps.V07HumanUatAcceptance'
+        issue = 40
+        candidate = [ordered]@{
+            commit = $SourceCommit
+            tree = $SourceTree
+        }
+        decision = 'ACCEPTED'
+        signer = 'Synthetic Human Reviewer'
+        role = 'Product Owner'
+        signedAtUtc = '2026-08-17T00:00:00.0000000Z'
+        signature = 'synthetic-human-signature'
+    }
+    Write-V10NewJsonFile -Path $humanPath -Value $human | Out-Null
+    [void](Read-V07ReleaseGateHumanUat -Path $humanPath -EvidenceRoot $issue40Root -CurrentCandidate $currentCandidate)
+
+    $report = New-V07ReleaseGatePendingReport -ValidatedInput $validatedInput -CurrentCandidate $currentCandidate -HumanUatValidated $true
+    $reportPath = Join-Path $issue40Root 'issue-40-report.json'
+    Write-V10NewJsonFile -Path $reportPath -Value $report | Out-Null
+    $reportItem = Get-Item -LiteralPath $reportPath -Force
+    $humanItem = Get-Item -LiteralPath $humanPath -Force
+    return [ordered]@{
+        ReportPath = Get-TestRelativePath -Path $reportPath -Root $RepositoryRoot
+        ReportBytes = [int64]$reportItem.Length
+        ReportSha256 = ((Get-FileHash -LiteralPath $reportPath -Algorithm SHA256).Hash).ToUpperInvariant()
+        HumanUatPath = Get-TestRelativePath -Path $humanPath -Root $RepositoryRoot
+        HumanUatBytes = [int64]$humanItem.Length
+        HumanUatSha256 = ((Get-FileHash -LiteralPath $humanPath -Algorithm SHA256).Hash).ToUpperInvariant()
+    }
+}
+
+function New-TestIssue41Report {
+    param(
+        [Parameter(Mandatory = $true)][string]$SourceCommit,
+        [Parameter(Mandatory = $true)][string]$SourceTree,
+        [Parameter(Mandatory = $true)]$Issue40Handoff
+    )
+
+    $planFiles = [ordered]@{
+        Roadmap = 'Plan/github-roadmap.json'
+        Tracking = 'Plan/GITHUB-TRACKING.md'
+        ReleaseGates = 'Plan/RELEASE-GATES.md'
+    }
+    $planHashes = [ordered]@{}
+    foreach ($path in @($planFiles.Values)) {
+        $planHashes[$path] = Get-V10RelativeFileSha256 -RelativePath $path -Description "Issue #41 synthetic Plan truth $path"
+    }
+    $releaseGatesText = [IO.File]::ReadAllText((Resolve-V10RepositoryFile -RelativePath 'Plan/RELEASE-GATES.md' -RepositoryRoot (Get-V10RepositoryRoot) -Description 'Issue #41 synthetic RELEASE-GATES truth'))
+
+    $versions = @('v0.1.0', 'v0.2.0', 'v0.3.0', 'v0.4.0', 'v0.5.0', 'v0.6.0', 'v0.7.0')
+    $evidenceStatus = [ordered]@{
+        Static = [ordered]@{ Status = 'PASS'; RequiredByVersions = @('v0.1.0'); ObservedVersions = @('v0.1.0'); NotObservedVersions = @() }
+        Synthetic = [ordered]@{ Status = 'PASS'; RequiredByVersions = @('v0.1.0'); ObservedVersions = @('v0.1.0'); NotObservedVersions = @() }
+        Contract = [ordered]@{ Status = 'NOT_OBSERVED'; RequiredByVersions = @('v0.2.0'); ObservedVersions = @(); NotObservedVersions = @('v0.2.0') }
+        Integration = [ordered]@{ Status = 'NOT_OBSERVED'; RequiredByVersions = @('v0.3.0'); ObservedVersions = @(); NotObservedVersions = @('v0.3.0') }
+        Runtime = [ordered]@{ Status = 'NOT_OBSERVED'; RequiredByVersions = @('v0.2.0', 'v0.3.0', 'v0.4.0', 'v0.5.0', 'v0.7.0'); ObservedVersions = @(); NotObservedVersions = @('v0.2.0', 'v0.3.0', 'v0.4.0', 'v0.5.0', 'v0.7.0') }
+        Independent = [ordered]@{ Status = 'NOT_OBSERVED'; RequiredByVersions = @('v0.4.0', 'v0.5.0', 'v0.7.0'); ObservedVersions = @(); NotObservedVersions = @('v0.4.0', 'v0.5.0', 'v0.7.0') }
+        Human = [ordered]@{ Status = 'PASS'; RequiredByVersions = @('v0.1.0', 'v0.7.0'); ObservedVersions = @('v0.1.0', 'v0.7.0'); NotObservedVersions = @() }
+        Release = [ordered]@{ Status = 'NOT_OBSERVED'; RequiredByVersions = @('v0.7.0'); ObservedVersions = @(); NotObservedVersions = @('v0.7.0') }
+    }
+
+    $dependencyMap = New-Object System.Collections.ArrayList
+    for ($index = 0; $index -lt $versions.Count; $index++) {
+        $version = $versions[$index]
+        $issue = if ($version -ceq 'v0.7.0') { 40 } else { $index + 1 }
+        [void]$dependencyMap.Add([ordered]@{
+                Version = $version
+                MilestoneNumber = $index + 1
+                MilestoneTitle = $version
+                IssueNumber = $issue
+                Title = "Synthetic dependency $version #$issue"
+                State = 'CLOSED'
+                IsReleaseTracker = $true
+                RoadmapKey = "synthetic-$($version.Replace('.', '-'))"
+                RoadmapMapping = 'Plan/github-roadmap.json'
+                ReleaseTrackerIssue = $issue
+                ReleaseTrackerUrl = "https://github.com/OSHEThai/HerdrOps/issues/$issue"
+                LocalReleaseTracker = 'Plan/GITHUB-TRACKING.md'
+                LocalGatePlan = 'Plan/RELEASE-GATES.md'
+                LocalGateVerifier = 'tools/Test-VersionMilestone.ps1'
+                LocalGateScripts = @('tools/Test-VersionMilestone.ps1')
+                GitHubUrl = "https://github.com/OSHEThai/HerdrOps/issues/$issue"
+            })
+    }
+
+    return [ordered]@{
+        SchemaVersion = 1
+        AuditId = 'V100-01'
+        TargetIssue = [ordered]@{
+            Number = 41
+            Title = '[v1.0.0] Close release blockers and audit all dependency evidence'
+            Version = 'v1.0.0'
+            MilestoneNumber = 8
+            State = 'OPEN'
+            Url = 'https://github.com/OSHEThai/HerdrOps/issues/41'
+        }
+        GeneratedUtc = '2026-08-17T00:10:00.0000000Z'
+        SourceCommit = $SourceCommit
+        SourceTree = $SourceTree
+        WorkingTree = 'CLEAN'
+        Query = [ordered]@{
+            Source = 'GitHub gh api (read-only)'
+            FixturePath = ''
+            FixtureSha256 = ''
+            Endpoint = @(
+                'repos/OSHEThai/HerdrOps/milestones?state=all&sort=due_on&direction=asc&per_page=100&page=1',
+                'repos/OSHEThai/HerdrOps/issues?state=all&sort=created&direction=asc&per_page=100&page=1')
+            ResponseSha256 = @((New-TestHex64 -Character 'A'), (New-TestHex64 -Character 'B'))
+        }
+        PlanTruth = [ordered]@{
+            Files = $planFiles
+            Hashes = $planHashes
+            ReleaseGatesTextSha256 = Get-V10Sha256TextUpper -Text $releaseGatesText
+        }
+        Decision = 'NOT_READY'
+        ReleaseCandidate = [ordered]@{
+            Status = 'NOT_RECORDED'
+            Commit = ''
+            Reason = 'Synthetic fixture deliberately retains Runtime and Release blockers.'
+        }
+        EvidenceStatus = $evidenceStatus
+        EvidenceManifest = [ordered]@{
+            Source = 'No manifest; no evidence admitted'
+            Path = ''
+            Sha256 = ''
+            EntryCount = 0
+        }
+        DependencyMap = @($dependencyMap.ToArray())
+        Blockers = @([ordered]@{
+                Code = 'EVIDENCE_NOT_OBSERVED'
+                Version = 'v0.2.0'
+                IssueNumber = 8
+                Detail = 'Synthetic fixture preserves the no-runtime boundary.'
+            })
+        EvidenceBoundary = [ordered]@{
+            RuntimeTestsProject = 'tests/HerdrOps.RuntimeTests = Synthetic WPF; never actual Herdr Runtime'
+            ActualHerdrRuntime = 'NOT OBSERVED'
+            RegistryAppDataLiveDatabase = 'NOT OBSERVED'
+            ReleaseCandidateFreeze = 'NOT RECORDED'
+            PackagePublication = 'NOT PERFORMED'
+            ReleasePublication = 'NOT PERFORMED'
+            HumanAcceptance = 'OBSERVED_IN_INPUT'
+        }
+        Issue40Handoff = $Issue40Handoff
+    }
+}
+
 function New-TestIssue42Report {
     param(
         [Parameter(Mandatory = $true)][string]$RepositoryRoot,
@@ -501,6 +726,7 @@ $profile = Read-V10ReleaseProfile -Path $profilePath
 $ownedParent = Normalize-ComparablePath -Path (Join-Path $repositoryRoot 'artifacts\release-readiness-tests')
 $runId = [Guid]::NewGuid().ToString('N')
 $testRoot = Join-Path $ownedParent $runId
+$outsideEvidenceRoot = Join-Path ([IO.Path]::GetTempPath()) ('HerdrOps-Issue41-' + $runId)
 New-Item -ItemType Directory -Path $testRoot -Force | Out-Null
 
 $assertions = New-Object System.Collections.ArrayList
@@ -650,7 +876,86 @@ try {
     $issue43Path = Join-Path $evidenceRoot 'issue-43.json'
     $issue44Path = Join-Path $evidenceRoot 'issue-44.json'
     $issue44LiveShapePath = Join-Path $evidenceRoot 'issue-44-live-shape.json'
-    Write-V10NewJsonFile -Path $issue41Path -Value ([ordered]@{
+    $issue40Handoff = New-TestIssue40Handoff `
+        -RepositoryRoot $repositoryRoot `
+        -EvidenceRoot $evidenceRoot `
+        -SourceCommit $sourceCommit `
+        -SourceTree $sourceTree
+    $issue41Value = New-TestIssue41Report -SourceCommit $sourceCommit -SourceTree $sourceTree -Issue40Handoff $issue40Handoff
+    $issue41Versions = @('v0.1.0', 'v0.2.0', 'v0.3.0', 'v0.4.0', 'v0.5.0', 'v0.6.0', 'v0.7.0')
+    $issue41ManifestPath = Join-Path $evidenceRoot 'issue-41-evidence-manifest.json'
+    Write-V10NewJsonFile -Path $issue41ManifestPath -Value ([ordered]@{
+            schemaVersion = 1
+            sourceCommit = $sourceCommit
+            entries = @($issue41Versions | ForEach-Object { [ordered]@{ version = $_; gateId = 'version-local' } })
+        }) | Out-Null
+    $issue41Value.EvidenceManifest = [ordered]@{
+        Source = 'EvidenceManifest'
+        Path = Get-TestRelativePath -Path $issue41ManifestPath -Root $repositoryRoot
+        Sha256 = ((Get-FileHash -LiteralPath $issue41ManifestPath -Algorithm SHA256).Hash).ToUpperInvariant()
+        EntryCount = 7
+    }
+    $issue41Value.Decision = 'READY'
+    $issue41Value.ReleaseCandidate.Status = 'RECORDED'
+    $issue41Value.ReleaseCandidate.Commit = $sourceCommit
+    $issue41Value.ReleaseCandidate.Reason = 'Synthetic complete dependency audit shape; no publication performed.'
+    $issue41Value.Blockers = @()
+    $issue41Value.EvidenceBoundary.ReleaseCandidateFreeze = 'RECORDED'
+    foreach ($className in @('Static', 'Synthetic', 'Contract', 'Integration', 'Runtime', 'Independent', 'Human', 'Release')) {
+        $classStatus = $issue41Value.EvidenceStatus.$className
+        $requiredVersions = @($classStatus.RequiredByVersions)
+        if ($requiredVersions.Count -eq 0) {
+            $classStatus.Status = 'NOT_APPLICABLE'
+            $classStatus.ObservedVersions = @()
+            $classStatus.NotObservedVersions = @()
+        } else {
+            $classStatus.Status = 'PASS'
+            $classStatus.ObservedVersions = @($requiredVersions)
+            $classStatus.NotObservedVersions = @()
+        }
+    }
+    Write-V10NewJsonFile -Path $issue41Path -Value $issue41Value | Out-Null
+    $issue41Report = Read-V10StrictJsonFile -Path $issue41Path -Description 'Issue #41 canonical synthetic report'
+    Assert-V10Issue41ReportSemantics `
+        -Report $issue41Report.Value `
+        -SourceCommit $sourceCommit `
+        -ExpectedSourceTree $sourceTree `
+        -RequireReady | Out-Null
+    [void]$assertions.Add('Issue41CanonicalProducerShapeAcceptedSynthetically')
+
+    $offlineFixturePath = Join-Path $evidenceRoot 'offline-query.json'
+    Write-V10NewJsonFile -Path $offlineFixturePath -Value ([ordered]@{
+            milestones = @([ordered]@{ number = 1; title = 'v1.0.0' })
+            issues = @([ordered]@{ number = 41; title = 'synthetic offline issue' })
+        }) | Out-Null
+    $offlineFixtureHash = ((Get-FileHash -LiteralPath $offlineFixturePath -Algorithm SHA256).Hash).ToUpperInvariant()
+    $issue41Offline = Copy-TestJsonObject -Value $issue41Report.Value
+    $issue41Offline.Query = [pscustomobject][ordered]@{
+        Source = 'OfflineFixture'
+        FixturePath = $offlineFixturePath
+        FixtureSha256 = $offlineFixtureHash
+        Endpoint = ''
+        ResponseSha256 = $offlineFixtureHash
+    }
+    $issue41Offline.Decision = 'NOT_READY'
+    $issue41Offline.ReleaseCandidate.Status = 'NOT_RECORDED'
+    $issue41Offline.ReleaseCandidate.Commit = ''
+    $issue41Offline.ReleaseCandidate.Reason = 'Synthetic offline fixture remains validation-only.'
+    $issue41Offline.Blockers = @([pscustomobject][ordered]@{
+            Code = 'OFFLINE_FIXTURE_NO_RELEASE_CREDIT'
+            Version = 'v1.0.0'
+            IssueNumber = 41
+            Detail = 'Offline fixture input is not release evidence.'
+        })
+    $issue41Offline.EvidenceBoundary.ReleaseCandidateFreeze = 'NOT RECORDED'
+    Assert-V10Issue41ReportSemantics `
+        -Report $issue41Offline `
+        -SourceCommit $sourceCommit `
+        -ExpectedSourceTree $sourceTree | Out-Null
+    [void]$assertions.Add('Issue41OfflineFixtureActualBindingAccepted')
+
+    $minimalIssue41Report = [pscustomobject]@{
+        Value = [pscustomobject][ordered]@{
             SchemaVersion = 1
             AuditId = 'V100-01'
             SourceCommit = $sourceCommit
@@ -659,7 +964,316 @@ try {
             ReleaseCandidate = [ordered]@{ Status = 'RECORDED'; Commit = $sourceCommit }
             Query = [ordered]@{ Source = 'GitHub gh api (read-only)' }
             Blockers = @()
+        }
+    }
+    Assert-ExpectedFailure -Description 'minimal forged Issue #41 report' -RequiredFragments @('unknown, missing') -Action {
+        Assert-V10Issue41ReportSemantics -Report $minimalIssue41Report.Value -SourceCommit $sourceCommit -ExpectedSourceTree $sourceTree | Out-Null
+    }
+    [void]$assertions.Add('Issue41MinimalForgedReportRejected')
+
+    $issue41Unknown = Copy-TestJsonObject -Value $issue41Report.Value
+    $issue41Unknown | Add-Member -MemberType NoteProperty -Name ForgedField -Value 'forged' -Force
+    Assert-ExpectedFailure -Description 'Issue #41 unknown root property' -RequiredFragments @('unknown, missing') -Action {
+        Assert-V10Issue41ReportSemantics -Report $issue41Unknown -SourceCommit $sourceCommit -ExpectedSourceTree $sourceTree | Out-Null
+    }
+    [void]$assertions.Add('Issue41UnknownPropertyRejected')
+
+    $issue41MissingTree = Copy-TestJsonObject -Value $issue41Report.Value
+    $issue41MissingTree.PSObject.Properties.Remove('SourceTree')
+    Assert-ExpectedFailure -Description 'Issue #41 missing SourceTree' -RequiredFragments @('unknown, missing') -Action {
+        Assert-V10Issue41ReportSemantics -Report $issue41MissingTree -SourceCommit $sourceCommit -ExpectedSourceTree $sourceTree | Out-Null
+    }
+    [void]$assertions.Add('Issue41MissingSourceTreeRejected')
+
+    $issue41WrongTree = Copy-TestJsonObject -Value $issue41Report.Value
+    $issue41WrongTree.SourceTree = (('b' * 40) -join '')
+    Assert-ExpectedFailure -Description 'Issue #41 wrong SourceTree' -RequiredFragments @('SourceTree') -Action {
+        Assert-V10Issue41ReportSemantics -Report $issue41WrongTree -SourceCommit $sourceCommit -ExpectedSourceTree $sourceTree | Out-Null
+    }
+    [void]$assertions.Add('Issue41WrongSourceTreeRejected')
+
+    $issue41WrongSource = Copy-TestJsonObject -Value $issue41Report.Value
+    $issue41WrongSource.SourceCommit = (('c' * 40) -join '')
+    Assert-ExpectedFailure -Description 'Issue #41 wrong source commit' -RequiredFragments @('source commit') -Action {
+        Assert-V10Issue41ReportSemantics -Report $issue41WrongSource -SourceCommit $sourceCommit -ExpectedSourceTree $sourceTree | Out-Null
+    }
+    [void]$assertions.Add('Issue41WrongSourceCommitRejected')
+
+    $issue41WrongHash = Copy-TestJsonObject -Value $issue41Report.Value
+    $issue41WrongHash.Issue40Handoff.ReportSha256 = New-TestHex64 -Character 'D'
+    Assert-ExpectedFailure -Description 'Issue #41 wrong Issue #40 report hash' -RequiredFragments @('SHA-256') -Action {
+        Assert-V10Issue41ReportSemantics -Report $issue41WrongHash -SourceCommit $sourceCommit -ExpectedSourceTree $sourceTree | Out-Null
+    }
+    [void]$assertions.Add('Issue41WrongHandoffHashRejected')
+
+    $issue41DuplicateDependency = Copy-TestJsonObject -Value $issue41Report.Value
+    $issue41DuplicateDependency.DependencyMap = @($issue41DuplicateDependency.DependencyMap) + @($issue41DuplicateDependency.DependencyMap[0])
+    Assert-ExpectedFailure -Description 'Issue #41 duplicate dependency' -RequiredFragments @('duplicate') -Action {
+        Assert-V10Issue41ReportSemantics -Report $issue41DuplicateDependency -SourceCommit $sourceCommit -ExpectedSourceTree $sourceTree | Out-Null
+    }
+    [void]$assertions.Add('Issue41DuplicateDependencyRejected')
+
+    $issue41IncompleteDependency = Copy-TestJsonObject -Value $issue41Report.Value
+    $issue41IncompleteDependency.DependencyMap = @($issue41IncompleteDependency.DependencyMap | Where-Object { [int]$_.IssueNumber -ne 40 })
+    Assert-ExpectedFailure -Description 'Issue #41 incomplete dependency inventory' -RequiredFragments @('at least 7 item') -Action {
+        Assert-V10Issue41ReportSemantics -Report $issue41IncompleteDependency -SourceCommit $sourceCommit -ExpectedSourceTree $sourceTree | Out-Null
+    }
+    [void]$assertions.Add('Issue41IncompleteDependencyRejected')
+
+    $pendingHumanPath = Join-Path $evidenceRoot 'issue-40\pending-human-uat.json'
+    Write-V10NewJsonFile -Path $pendingHumanPath -Value ([ordered]@{
+            schemaVersion = 1
+            reportKind = 'HerdrOps.V07HumanUatAcceptance'
+            issue = 40
+            candidate = [ordered]@{ commit = $sourceCommit; tree = $sourceTree }
+            decision = 'PENDING'
+            signer = 'PENDING'
+            role = 'PENDING'
+            signedAtUtc = 'PENDING'
+            signature = 'PENDING'
         }) | Out-Null
+    $pendingHumanItem = Get-Item -LiteralPath $pendingHumanPath -Force
+    $issue41PendingHuman = Copy-TestJsonObject -Value $issue41Report.Value
+    $issue41PendingHuman.Issue40Handoff.HumanUatPath = Get-TestRelativePath -Path $pendingHumanPath -Root $repositoryRoot
+    $issue41PendingHuman.Issue40Handoff.HumanUatBytes = [int64]$pendingHumanItem.Length
+    $issue41PendingHuman.Issue40Handoff.HumanUatSha256 = ((Get-FileHash -LiteralPath $pendingHumanPath -Algorithm SHA256).Hash).ToUpperInvariant()
+    Assert-ExpectedFailure -Description 'Issue #41 pending human UAT' -RequiredFragments @('decision must be ACCEPTED') -Action {
+        Assert-V10Issue41ReportSemantics -Report $issue41PendingHuman -SourceCommit $sourceCommit -ExpectedSourceTree $sourceTree | Out-Null
+    }
+    [void]$assertions.Add('Issue41PendingHumanRejected')
+
+    $issue41ForgedBoundary = Copy-TestJsonObject -Value $issue41Report.Value
+    $issue41ForgedBoundary.EvidenceBoundary.ActualHerdrRuntime = 'PASS'
+    Assert-ExpectedFailure -Description 'Issue #41 forged Runtime boundary' -RequiredFragments @('forged Runtime') -Action {
+        Assert-V10Issue41ReportSemantics -Report $issue41ForgedBoundary -SourceCommit $sourceCommit -ExpectedSourceTree $sourceTree | Out-Null
+    }
+    [void]$assertions.Add('Issue41ForgedRuntimeBoundaryRejected')
+
+    $issue41PassMissingInventory = Copy-TestJsonObject -Value $issue41Report.Value
+    $issue41PassMissingInventory.EvidenceStatus.Static.ObservedVersions = @()
+    Assert-ExpectedFailure -Description 'Issue #41 PASS inventory missing required version' -RequiredFragments @('exactly partition') -Action {
+        Assert-V10Issue41ReportSemantics -Report $issue41PassMissingInventory -SourceCommit $sourceCommit -ExpectedSourceTree $sourceTree | Out-Null
+    }
+    [void]$assertions.Add('Issue41PassInventoryPartitionRejected')
+
+    $issue41NotObservedMixedInventory = Copy-TestJsonObject -Value $issue41Report.Value
+    $issue41NotObservedMixedInventory.EvidenceStatus.Contract = [pscustomobject][ordered]@{
+        Status = 'NOT_OBSERVED'
+        RequiredByVersions = @('v0.2.0')
+        ObservedVersions = @('v0.2.0')
+        NotObservedVersions = @('v0.2.0')
+    }
+    Assert-ExpectedFailure -Description 'Issue #41 NOT_OBSERVED inventory mixed' -RequiredFragments @('overlaps') -Action {
+        Assert-V10Issue41ReportSemantics -Report $issue41NotObservedMixedInventory -SourceCommit $sourceCommit -ExpectedSourceTree $sourceTree | Out-Null
+    }
+    [void]$assertions.Add('Issue41NotObservedInventoryPartitionRejected')
+
+    $issue41BlockedSingleInventory = Copy-TestJsonObject -Value $issue41Report.Value
+    $issue41BlockedSingleInventory.EvidenceStatus.Runtime = [pscustomobject][ordered]@{
+        Status = 'BLOCKED'
+        RequiredByVersions = @('v0.2.0', 'v0.3.0', 'v0.4.0', 'v0.5.0', 'v0.7.0')
+        ObservedVersions = @()
+        NotObservedVersions = @('v0.2.0', 'v0.3.0', 'v0.4.0', 'v0.5.0', 'v0.7.0')
+    }
+    Assert-ExpectedFailure -Description 'Issue #41 BLOCKED inventory lacks observed partition' -RequiredFragments @('BLOCKED must contain both') -Action {
+        Assert-V10Issue41ReportSemantics -Report $issue41BlockedSingleInventory -SourceCommit $sourceCommit -ExpectedSourceTree $sourceTree | Out-Null
+    }
+    [void]$assertions.Add('Issue41BlockedInventoryPartitionRejected')
+
+    $issue41FailIncompleteInventory = Copy-TestJsonObject -Value $issue41Report.Value
+    $issue41FailIncompleteInventory.EvidenceStatus.Independent.Status = 'FAIL'
+    $issue41FailIncompleteInventory.EvidenceStatus.Independent.ObservedVersions = @('v0.4.0')
+    $issue41FailIncompleteInventory.EvidenceStatus.Independent.NotObservedVersions = @('v0.5.0')
+    Assert-ExpectedFailure -Description 'Issue #41 FAIL inventory incomplete' -RequiredFragments @('exactly partition') -Action {
+        Assert-V10Issue41ReportSemantics -Report $issue41FailIncompleteInventory -SourceCommit $sourceCommit -ExpectedSourceTree $sourceTree | Out-Null
+    }
+    [void]$assertions.Add('Issue41FailInventoryPartitionRejected')
+
+    $issue41NotApplicableInventory = Copy-TestJsonObject -Value $issue41Report.Value
+    $issue41NotApplicableInventory.EvidenceStatus.Release.Status = 'NOT_APPLICABLE'
+    Assert-ExpectedFailure -Description 'Issue #41 NOT_APPLICABLE inventory nonempty' -RequiredFragments @('NOT_APPLICABLE must have empty') -Action {
+        Assert-V10Issue41ReportSemantics -Report $issue41NotApplicableInventory -SourceCommit $sourceCommit -ExpectedSourceTree $sourceTree | Out-Null
+    }
+    [void]$assertions.Add('Issue41NotApplicableInventoryPartitionRejected')
+
+    $issue41InventoryWrongClr = Copy-TestJsonObject -Value $issue41Report.Value
+    $issue41InventoryWrongClr.EvidenceStatus.Static.ObservedVersions = 'v0.1.0'
+    Assert-ExpectedFailure -Description 'Issue #41 inventory wrong CLR type' -RequiredFragments @('CLR array') -Action {
+        Assert-V10Issue41ReportSemantics -Report $issue41InventoryWrongClr -SourceCommit $sourceCommit -ExpectedSourceTree $sourceTree | Out-Null
+    }
+    [void]$assertions.Add('Issue41InventoryWrongClrRejected')
+
+    New-Item -ItemType Directory -Path $outsideEvidenceRoot -Force | Out-Null
+    $outsideManifestPath = Join-Path $outsideEvidenceRoot 'outside-manifest.json'
+    Write-V10NewJsonFile -Path $outsideManifestPath -Value ([ordered]@{
+            schemaVersion = 1
+            sourceCommit = $sourceCommit
+            entries = @($issue41Versions | ForEach-Object { [ordered]@{ version = $_; gateId = 'outside' } })
+        }) | Out-Null
+    $outsideManifestHash = ((Get-FileHash -LiteralPath $outsideManifestPath -Algorithm SHA256).Hash).ToUpperInvariant()
+    $outsideFixturePath = Join-Path $outsideEvidenceRoot 'outside-fixture.json'
+    Write-V10NewJsonFile -Path $outsideFixturePath -Value ([ordered]@{
+            milestones = @([ordered]@{ number = 1; title = 'outside' })
+            issues = @([ordered]@{ number = 41; title = 'outside' })
+        }) | Out-Null
+    $outsideFixtureHash = ((Get-FileHash -LiteralPath $outsideFixturePath -Algorithm SHA256).Hash).ToUpperInvariant()
+
+    $issue41ManifestTraversal = Copy-TestJsonObject -Value $issue41Report.Value
+    $issue41ManifestTraversal.EvidenceManifest.Path = '..\outside-manifest.json'
+    Assert-ExpectedFailure -Description 'Issue #41 manifest traversal' -RequiredFragments @('traversal') -Action {
+        Assert-V10Issue41ReportSemantics -Report $issue41ManifestTraversal -SourceCommit $sourceCommit -ExpectedSourceTree $sourceTree | Out-Null
+    }
+    [void]$assertions.Add('Issue41ManifestTraversalRejected')
+
+    $issue41ManifestOutside = Copy-TestJsonObject -Value $issue41Report.Value
+    $issue41ManifestOutside.EvidenceManifest.Path = $outsideManifestPath
+    $issue41ManifestOutside.EvidenceManifest.Sha256 = $outsideManifestHash
+    Assert-ExpectedFailure -Description 'Issue #41 manifest outside repository' -RequiredFragments @('escaped the repository root') -Action {
+        Assert-V10Issue41ReportSemantics -Report $issue41ManifestOutside -SourceCommit $sourceCommit -ExpectedSourceTree $sourceTree | Out-Null
+    }
+    [void]$assertions.Add('Issue41ManifestOutsideRejected')
+
+    $issue41ManifestWrongHash = Copy-TestJsonObject -Value $issue41Report.Value
+    $issue41ManifestWrongHash.EvidenceManifest.Sha256 = New-TestHex64 -Character 'D'
+    Assert-ExpectedFailure -Description 'Issue #41 manifest hash mismatch' -RequiredFragments @('bytes do not match') -Action {
+        Assert-V10Issue41ReportSemantics -Report $issue41ManifestWrongHash -SourceCommit $sourceCommit -ExpectedSourceTree $sourceTree | Out-Null
+    }
+    [void]$assertions.Add('Issue41ManifestHashRejected')
+
+    $originalManifestBytes = [IO.File]::ReadAllBytes($issue41ManifestPath)
+    try {
+        $tamperedManifestText = [IO.File]::ReadAllText($issue41ManifestPath) + "`n"
+        [IO.File]::WriteAllText($issue41ManifestPath, $tamperedManifestText, (New-Object System.Text.UTF8Encoding($false)))
+        Assert-ExpectedFailure -Description 'Issue #41 manifest byte tamper' -RequiredFragments @('bytes do not match') -Action {
+            Assert-V10Issue41ReportSemantics -Report $issue41Report.Value -SourceCommit $sourceCommit -ExpectedSourceTree $sourceTree | Out-Null
+        }
+    } finally {
+        [IO.File]::WriteAllBytes($issue41ManifestPath, $originalManifestBytes)
+    }
+    [void]$assertions.Add('Issue41ManifestBytesRejected')
+
+    $wrongManifestContentPath = Join-Path $evidenceRoot 'issue-41-wrong-manifest-content.json'
+    Write-V10NewJsonFile -Path $wrongManifestContentPath -Value ([ordered]@{
+            schemaVersion = 1
+            sourceCommit = (('f' * 40) -join '')
+            entries = @($issue41Versions | ForEach-Object { [ordered]@{ version = $_; gateId = 'wrong-content' } })
+        }) | Out-Null
+    $wrongManifestContentHash = ((Get-FileHash -LiteralPath $wrongManifestContentPath -Algorithm SHA256).Hash).ToUpperInvariant()
+    $issue41ManifestWrongContent = Copy-TestJsonObject -Value $issue41Report.Value
+    $issue41ManifestWrongContent.EvidenceManifest.Path = Get-TestRelativePath -Path $wrongManifestContentPath -Root $repositoryRoot
+    $issue41ManifestWrongContent.EvidenceManifest.Sha256 = $wrongManifestContentHash
+    Assert-ExpectedFailure -Description 'Issue #41 manifest content source mismatch' -RequiredFragments @('sourceCommit does not match') -Action {
+        Assert-V10Issue41ReportSemantics -Report $issue41ManifestWrongContent -SourceCommit $sourceCommit -ExpectedSourceTree $sourceTree | Out-Null
+    }
+    [void]$assertions.Add('Issue41ManifestContentRejected')
+
+    $issue41ManifestWrongCount = Copy-TestJsonObject -Value $issue41Report.Value
+    $issue41ManifestWrongCount.EvidenceManifest.EntryCount = 8
+    Assert-ExpectedFailure -Description 'Issue #41 manifest count mismatch' -RequiredFragments @('EntryCount does not match') -Action {
+        Assert-V10Issue41ReportSemantics -Report $issue41ManifestWrongCount -SourceCommit $sourceCommit -ExpectedSourceTree $sourceTree | Out-Null
+    }
+    [void]$assertions.Add('Issue41ManifestCountRejected')
+
+    $issue41ManifestWrongClr = Copy-TestJsonObject -Value $issue41Report.Value
+    $issue41ManifestWrongClr.EvidenceManifest.EntryCount = '7'
+    Assert-ExpectedFailure -Description 'Issue #41 manifest wrong CLR type' -RequiredFragments @('strict CLR integer') -Action {
+        Assert-V10Issue41ReportSemantics -Report $issue41ManifestWrongClr -SourceCommit $sourceCommit -ExpectedSourceTree $sourceTree | Out-Null
+    }
+    [void]$assertions.Add('Issue41ManifestWrongClrRejected')
+
+    $wrongManifestEntriesPath = Join-Path $evidenceRoot 'issue-41-wrong-manifest-entries.json'
+    Write-V10NewJsonFile -Path $wrongManifestEntriesPath -Value ([ordered]@{
+            schemaVersion = 1
+            sourceCommit = $sourceCommit
+            entries = [ordered]@{ version = 'v0.1.0'; gateId = 'wrong-clr' }
+        }) | Out-Null
+    $wrongManifestEntriesHash = ((Get-FileHash -LiteralPath $wrongManifestEntriesPath -Algorithm SHA256).Hash).ToUpperInvariant()
+    $issue41ManifestWrongEntries = Copy-TestJsonObject -Value $issue41Report.Value
+    $issue41ManifestWrongEntries.EvidenceManifest.Path = Get-TestRelativePath -Path $wrongManifestEntriesPath -Root $repositoryRoot
+    $issue41ManifestWrongEntries.EvidenceManifest.Sha256 = $wrongManifestEntriesHash
+    Assert-ExpectedFailure -Description 'Issue #41 manifest entries wrong CLR type' -RequiredFragments @('entries must be a CLR array') -Action {
+        Assert-V10Issue41ReportSemantics -Report $issue41ManifestWrongEntries -SourceCommit $sourceCommit -ExpectedSourceTree $sourceTree | Out-Null
+    }
+    [void]$assertions.Add('Issue41ManifestEntriesWrongClrRejected')
+
+    $issue41OfflineTraversal = Copy-TestJsonObject -Value $issue41Offline
+    $issue41OfflineTraversal.Query.FixturePath = '..\outside-fixture.json'
+    Assert-ExpectedFailure -Description 'Issue #41 offline fixture traversal' -RequiredFragments @('traversal') -Action {
+        Assert-V10Issue41ReportSemantics -Report $issue41OfflineTraversal -SourceCommit $sourceCommit -ExpectedSourceTree $sourceTree | Out-Null
+    }
+    [void]$assertions.Add('Issue41OfflineFixtureTraversalRejected')
+
+    $issue41OfflineOutside = Copy-TestJsonObject -Value $issue41Offline
+    $issue41OfflineOutside.Query.FixturePath = $outsideFixturePath
+    $issue41OfflineOutside.Query.FixtureSha256 = $outsideFixtureHash
+    $issue41OfflineOutside.Query.ResponseSha256 = $outsideFixtureHash
+    Assert-ExpectedFailure -Description 'Issue #41 offline fixture outside repository' -RequiredFragments @('escaped the repository root') -Action {
+        Assert-V10Issue41ReportSemantics -Report $issue41OfflineOutside -SourceCommit $sourceCommit -ExpectedSourceTree $sourceTree | Out-Null
+    }
+    [void]$assertions.Add('Issue41OfflineFixtureOutsideRejected')
+
+    $issue41OfflineHashMismatch = Copy-TestJsonObject -Value $issue41Offline
+    $issue41OfflineHashMismatch.Query.ResponseSha256 = New-TestHex64 -Character 'D'
+    Assert-ExpectedFailure -Description 'Issue #41 offline fixture response hash mismatch' -RequiredFragments @('FixtureSha256 and ResponseSha256') -Action {
+        Assert-V10Issue41ReportSemantics -Report $issue41OfflineHashMismatch -SourceCommit $sourceCommit -ExpectedSourceTree $sourceTree | Out-Null
+    }
+    [void]$assertions.Add('Issue41OfflineFixtureResponseHashRejected')
+
+    $issue41OfflineStaleHash = Copy-TestJsonObject -Value $issue41Offline
+    $issue41OfflineStaleHash.Query.FixtureSha256 = New-TestHex64 -Character 'E'
+    $issue41OfflineStaleHash.Query.ResponseSha256 = $issue41OfflineStaleHash.Query.FixtureSha256
+    Assert-ExpectedFailure -Description 'Issue #41 offline fixture stale hash' -RequiredFragments @('bytes do not match') -Action {
+        Assert-V10Issue41ReportSemantics -Report $issue41OfflineStaleHash -SourceCommit $sourceCommit -ExpectedSourceTree $sourceTree | Out-Null
+    }
+    [void]$assertions.Add('Issue41OfflineFixtureHashRejected')
+
+    $issue41OfflineWrongClr = Copy-TestJsonObject -Value $issue41Offline
+    $issue41OfflineWrongClr.Query.ResponseSha256 = @($offlineFixtureHash)
+    Assert-ExpectedFailure -Description 'Issue #41 offline fixture wrong CLR type' -RequiredFragments @('strict CLR string') -Action {
+        Assert-V10Issue41ReportSemantics -Report $issue41OfflineWrongClr -SourceCommit $sourceCommit -ExpectedSourceTree $sourceTree | Out-Null
+    }
+    [void]$assertions.Add('Issue41OfflineFixtureWrongClrRejected')
+
+    $repositoryReparseRoot = Join-Path $repositoryRoot ('.issue41-reparse-' + [Guid]::NewGuid().ToString('N'))
+    $reparseTarget = Join-Path $testRoot 'reparse-target'
+    New-Item -ItemType Directory -Path $reparseTarget -Force | Out-Null
+    $reparseManifestTarget = Join-Path $reparseTarget 'manifest.json'
+    Write-V10NewJsonFile -Path $reparseManifestTarget -Value ([ordered]@{
+            schemaVersion = 1
+            sourceCommit = $sourceCommit
+            entries = @($issue41Versions | ForEach-Object { [ordered]@{ version = $_; gateId = 'reparse' } })
+        }) | Out-Null
+    $reparseManifestHash = ((Get-FileHash -LiteralPath $reparseManifestTarget -Algorithm SHA256).Hash).ToUpperInvariant()
+    $reparseFixtureTarget = Join-Path $reparseTarget 'fixture.json'
+    Write-V10NewJsonFile -Path $reparseFixtureTarget -Value ([ordered]@{
+            milestones = @([ordered]@{ number = 1; title = 'reparse' })
+            issues = @([ordered]@{ number = 41; title = 'reparse' })
+        }) | Out-Null
+    $reparseFixtureHash = ((Get-FileHash -LiteralPath $reparseFixtureTarget -Algorithm SHA256).Hash).ToUpperInvariant()
+    try {
+        New-Item -ItemType Junction -Path $repositoryReparseRoot -Target $reparseTarget -ErrorAction Stop | Out-Null
+        $issue41ManifestReparse = Copy-TestJsonObject -Value $issue41Report.Value
+        $issue41ManifestReparse.EvidenceManifest.Path = Join-Path $repositoryReparseRoot 'manifest.json'
+        $issue41ManifestReparse.EvidenceManifest.Sha256 = $reparseManifestHash
+        Assert-ExpectedFailure -Description 'Issue #41 manifest reparse path' -RequiredFragments @('Reparse points') -Action {
+            Assert-V10Issue41ReportSemantics -Report $issue41ManifestReparse -SourceCommit $sourceCommit -ExpectedSourceTree $sourceTree | Out-Null
+        }
+        [void]$assertions.Add('Issue41ManifestReparseRejected')
+
+        $issue41OfflineReparse = Copy-TestJsonObject -Value $issue41Offline
+        $issue41OfflineReparse.Query.FixturePath = Join-Path $repositoryReparseRoot 'fixture.json'
+        $issue41OfflineReparse.Query.FixtureSha256 = $reparseFixtureHash
+        $issue41OfflineReparse.Query.ResponseSha256 = $reparseFixtureHash
+        Assert-ExpectedFailure -Description 'Issue #41 offline fixture reparse path' -RequiredFragments @('Reparse points') -Action {
+            Assert-V10Issue41ReportSemantics -Report $issue41OfflineReparse -SourceCommit $sourceCommit -ExpectedSourceTree $sourceTree | Out-Null
+        }
+        [void]$assertions.Add('Issue41OfflineFixtureReparseRejected')
+    } finally {
+        if (Test-Path -LiteralPath $repositoryReparseRoot) {
+            [IO.Directory]::Delete($repositoryReparseRoot, $false)
+        }
+    }
+
     $issue42Value = New-TestIssue42Report `
         -RepositoryRoot $repositoryRoot `
         -SourceCommit $sourceCommit `
@@ -1238,6 +1852,9 @@ try {
         Assert-NoReparsePath -Path $fullTestRoot
         Assert-NoReparseDescendants -Path $fullTestRoot
         Remove-Item -LiteralPath $fullTestRoot -Recurse -Force
+    }
+    if (Test-Path -LiteralPath $outsideEvidenceRoot) {
+        Remove-Item -LiteralPath $outsideEvidenceRoot -Recurse -Force
     }
 }
 
