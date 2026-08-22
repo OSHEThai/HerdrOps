@@ -304,6 +304,19 @@ function ConvertTo-V02CleanMachineJcs {
     throw "Unsupported JCS value type: $($Value.GetType().FullName)"
 }
 
+function Assert-V02DeletePendingReportIdentity {
+    param(
+        [Parameter(Mandatory = $true)]$Handle,
+        [Parameter(Mandatory = $true)]$Expected,
+        [Parameter(Mandatory = $true)][string]$ExpectedPath
+    )
+    $current = Assert-V02SameHandleIdentity -Handle $Handle -Expected $Expected -ExpectedPath $ExpectedPath -Context 'clean-machine report'
+    # Windows removes the pending pathname from NumberOfLinks while the handle
+    # remains open.  Zero therefore proves that no hostile hardlink survives.
+    if ($current.LinkCount -ne 0) { throw "clean-machine report must have no surviving links after delete-pending; observed $($current.LinkCount)." }
+    return $current
+}
+
 function Write-V02CleanMachineReportFile {
     param(
         [Parameter(Mandatory = $true)]$Value,
@@ -355,9 +368,21 @@ function Write-V02CleanMachineReportFile {
                 # The exclusive CreateNew handle is the only cleanup authority.
                 # Never close it and reopen this reusable pathname: a hostile leaf
                 # could replace the failed report between those operations.
-                $null = Assert-V02SameHandleIdentity -Handle $stream.SafeFileHandle -Expected $reportIdentity -ExpectedPath $full -Context 'clean-machine report' -RequireSingleLink
                 $disposition = New-Object HerdrOps.V02FileDispositionInfo; $disposition.DeleteFile = $true
                 if (-not [HerdrOps.V02DirectoryLeaseNative]::SetFileInformationByHandle($stream.SafeFileHandle,4,[ref]$disposition,4)) { throw "Failed report cleanup failed (Win32 $([Runtime.InteropServices.Marshal]::GetLastWin32Error()))." }
+                # Delete-pending closes the hardlink race before the final exact
+                # identity/link check.  If a hostile link already appeared, cancel
+                # deletion while the original handle is still held and fail closed.
+                try {
+                    $null = Assert-V02DeletePendingReportIdentity -Handle $stream.SafeFileHandle -Expected $reportIdentity -ExpectedPath $full
+                } catch {
+                    $guardFailure = $_
+                    $cancelDisposition = New-Object HerdrOps.V02FileDispositionInfo; $cancelDisposition.DeleteFile = $false
+                    if (-not [HerdrOps.V02DirectoryLeaseNative]::SetFileInformationByHandle($stream.SafeFileHandle,4,[ref]$cancelDisposition,4)) {
+                        throw "Failed report cleanup identity guard failed and delete cancellation failed (Win32 $([Runtime.InteropServices.Marshal]::GetLastWin32Error())): $($guardFailure.Exception.Message)"
+                    }
+                    throw $guardFailure
+                }
             }
         } finally {
             if ($null -ne $stream) { $stream.Dispose() }

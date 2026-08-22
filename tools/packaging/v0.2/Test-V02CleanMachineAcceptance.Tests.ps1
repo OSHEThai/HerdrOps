@@ -561,23 +561,29 @@ try {
     Invoke-Case 'Hostile 10c: Failed report cleanup keeps its original handle and never deletes a leaf-swap victim' {
         $failedReport = Join-Path $testRoot 'failed-report.json'
         $quarantinedOriginal = Join-Path $testRoot 'failed-report-original.json'
+        $hostileHardlink = Join-Path $testRoot 'failed-report-hostile-link.json'
         $victim = Join-Path $testRoot 'failed-report-victim.bin'
         $victimBytes = [byte[]](91,82,73,64,55,46)
         [IO.File]::WriteAllBytes($victim,$victimBytes)
         $victimSha256 = (Get-V02StableFileIdentity $victim).Sha256
 
         $originalAssert = ${function:script:Assert-V02SameHandleIdentity}
+        $originalDeletePendingAssert = ${function:script:Assert-V02DeletePendingReportIdentity}
         $originalOpenDeletionLease = ${function:script:Open-V02FileDeletionLease}
         $script:V02FailedReportCleanupProbe = @{
             FailureInjected = $false
             CleanupReached = $false
             MoveBlocked = $false
             SwapBlocked = $false
+            HardlinkAttempted = $false
+            HardlinkBlocked = $false
             LegacyPathReopenReached = $false
             FailedReport = $failedReport
             QuarantinedOriginal = $quarantinedOriginal
+            HostileHardlink = $hostileHardlink
             Victim = $victim
             OriginalAssert = $originalAssert
+            OriginalDeletePendingAssert = $originalDeletePendingAssert
             OriginalOpenDeletionLease = $originalOpenDeletionLease
         }
         try {
@@ -596,6 +602,16 @@ try {
                 }
                 & $script:V02FailedReportCleanupProbe.OriginalAssert @PSBoundParameters
             }
+            Set-Item -LiteralPath Function:\script:Assert-V02DeletePendingReportIdentity -Value {
+                param($Handle,$Expected,[string]$ExpectedPath)
+                $result = & $script:V02FailedReportCleanupProbe.OriginalDeletePendingAssert @PSBoundParameters
+                # This hook is the exact former final-guard-to-delete window.
+                # Delete-pending must make the hostile hardlink impossible.
+                $script:V02FailedReportCleanupProbe.HardlinkAttempted = $true
+                try { New-Item -ItemType HardLink -Path $script:V02FailedReportCleanupProbe.HostileHardlink -Target $script:V02FailedReportCleanupProbe.FailedReport -ErrorAction Stop | Out-Null }
+                catch { $script:V02FailedReportCleanupProbe.HardlinkBlocked = $true }
+                return $result
+            }
             Set-Item -LiteralPath Function:\script:Open-V02FileDeletionLease -Value {
                 param([string]$Path)
                 if ([StringComparer]::OrdinalIgnoreCase.Equals([IO.Path]::GetFullPath($Path),[IO.Path]::GetFullPath($script:V02FailedReportCleanupProbe.FailedReport))) {
@@ -611,14 +627,47 @@ try {
             } '^INJECTED_POST_CREATE_REPORT_FAILURE$'
         } finally {
             Set-Item -LiteralPath Function:\script:Assert-V02SameHandleIdentity -Value $originalAssert
+            Set-Item -LiteralPath Function:\script:Assert-V02DeletePendingReportIdentity -Value $originalDeletePendingAssert
             Set-Item -LiteralPath Function:\script:Open-V02FileDeletionLease -Value $originalOpenDeletionLease
         }
 
         if (-not $script:V02FailedReportCleanupProbe.CleanupReached -or -not $script:V02FailedReportCleanupProbe.MoveBlocked -or -not $script:V02FailedReportCleanupProbe.SwapBlocked) { throw 'Hostile move/swap fixture did not reach the held-handle failed-report cleanup boundary.' }
+        if (-not $script:V02FailedReportCleanupProbe.HardlinkAttempted -or -not $script:V02FailedReportCleanupProbe.HardlinkBlocked) { throw 'A hardlink was not blocked in the former final-guard-to-delete cleanup window.' }
         if ($script:V02FailedReportCleanupProbe.LegacyPathReopenReached) { throw 'Failed report cleanup reopened a reusable pathname after releasing the original handle.' }
-        if ((Test-Path -LiteralPath $failedReport) -or (Test-Path -LiteralPath $quarantinedOriginal)) { throw 'Failed report original object was not retired through its held handle.' }
+        if ((Test-Path -LiteralPath $failedReport) -or (Test-Path -LiteralPath $quarantinedOriginal) -or (Test-Path -LiteralPath $hostileHardlink)) { throw 'Failed report bytes survived held-handle cleanup.' }
         if (-not (Test-Path -LiteralPath $victim -PathType Leaf) -or (Get-V02StableFileIdentity $victim).Sha256 -cne $victimSha256) { throw 'Failed report cleanup deleted or changed the leaf-swap victim canary.' }
         $script:V02FailedReportCleanupProbe = $null
+    }
+
+    Invoke-Case 'Hostile 10d: Pre-delete hardlink fails the post-pending guard and safely cancels deletion' {
+        $failedReport = Join-Path $testRoot 'failed-report-cancel.json'
+        $hostileHardlink = Join-Path $testRoot 'failed-report-cancel-link.json'
+        $originalAssert = ${function:script:Assert-V02SameHandleIdentity}
+        $script:V02FailedReportCancellationProbe = @{ Calls = 0; OriginalAssert = $originalAssert; FailedReport = $failedReport; HostileHardlink = $hostileHardlink }
+        try {
+            Set-Item -LiteralPath Function:\script:Assert-V02SameHandleIdentity -Value {
+                param($Handle,$Expected,[string]$ExpectedPath,[string]$Context,[switch]$RequireSingleLink)
+                if ($Context -ceq 'clean-machine report') {
+                    $script:V02FailedReportCancellationProbe.Calls++
+                    if ($script:V02FailedReportCancellationProbe.Calls -eq 1) {
+                        New-Item -ItemType HardLink -Path $script:V02FailedReportCancellationProbe.HostileHardlink -Target $script:V02FailedReportCancellationProbe.FailedReport -ErrorAction Stop | Out-Null
+                        throw 'INJECTED_FAILURE_WITH_PRE_DELETE_HARDLINK'
+                    }
+                }
+                & $script:V02FailedReportCancellationProbe.OriginalAssert @PSBoundParameters
+            }
+            Assert-Throws {
+                Write-V02CleanMachineReportFile -Value ([pscustomobject][ordered]@{ probe = 'failed-report-delete-cancellation' }) -Path $failedReport -RepositoryRoot $repo
+            } 'must have no surviving links after delete-pending'
+        } finally {
+            Set-Item -LiteralPath Function:\script:Assert-V02SameHandleIdentity -Value $originalAssert
+        }
+        if ($script:V02FailedReportCancellationProbe.Calls -ne 2) { throw 'Post-delete-pending identity guard was not reached.' }
+        if (-not (Test-Path -LiteralPath $failedReport -PathType Leaf) -or -not (Test-Path -LiteralPath $hostileHardlink -PathType Leaf)) { throw 'Delete cancellation did not preserve the guarded object after hardlink detection.' }
+        if ((Get-V02StableFileIdentity $failedReport).Sha256 -cne (Get-V02StableFileIdentity $hostileHardlink).Sha256) { throw 'Delete cancellation paths no longer reference identical failed-report bytes.' }
+        Remove-Item -LiteralPath $hostileHardlink -Force
+        Remove-Item -LiteralPath $failedReport -Force
+        $script:V02FailedReportCancellationProbe = $null
     }
 
     Invoke-Case 'Hostile 11: Stable copy refuses a pre-existing hardlink without clobbering it' {
