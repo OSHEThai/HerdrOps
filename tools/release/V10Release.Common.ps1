@@ -307,6 +307,14 @@ function Assert-V10Issue44ReportSemantics {
     if (-not $RequireLiveCleanMachine -and -not $isSynthetic) {
         throw 'Synthetic Issue #44 acceptance must remain Fixture/Synthetic evidence.'
     }
+    $semanticReadiness = Get-V10RequiredProperty -Object $Report -Name 'semanticReadiness' -Description 'Issue #44 report'
+    if ($RequireLiveCleanMachine) {
+        if ([string]$semanticReadiness.status -cne 'PASS' -or $null -eq $semanticReadiness.binding) {
+            throw 'Issue #44 Live CleanMachine report lacks nonce-bound semantic App/Core readiness evidence.'
+        }
+    } elseif ([string]$semanticReadiness.status -cne 'SYNTHETIC' -or $null -ne $semanticReadiness.binding) {
+        throw 'Synthetic Issue #44 acceptance must not fabricate live semantic readiness evidence.'
+    }
 
     $machine = Get-V10RequiredProperty -Object $Report -Name 'machine' -Description 'Issue #44 report'
     foreach ($machineName in @('name', 'expectedName', 'fingerprint', 'expectedFingerprint')) {
@@ -392,10 +400,14 @@ function Assert-V10Issue44ReportSemantics {
             throw "Issue #44 $boundaryName boundary must remain NOT OBSERVED."
         }
     }
-    foreach ($boundaryName in @('contract', 'independentReview')) {
-        if ([string]$boundaries.$boundaryName -notlike 'NOT OBSERVED*') {
-            throw "Issue #44 $boundaryName boundary must remain NOT OBSERVED."
-        }
+    if ($RequireLiveCleanMachine -and [string]$boundaries.contract -notlike 'PASS*') {
+        throw 'Issue #44 Live CleanMachine report must bind a passing semantic IPC contract.'
+    }
+    if (-not $RequireLiveCleanMachine -and [string]$boundaries.contract -notlike 'NOT OBSERVED*') {
+        throw 'Synthetic Issue #44 contract boundary must remain NOT OBSERVED.'
+    }
+    if ([string]$boundaries.independentReview -notlike 'NOT OBSERVED*') {
+        throw 'Issue #44 independentReview boundary must remain NOT OBSERVED.'
     }
     if ($isSynthetic -and [string]$boundaries.cleanMachine -notlike 'NOT OBSERVED*') {
         throw 'Synthetic Issue #44 fixture must not claim CleanMachine evidence.'

@@ -418,11 +418,41 @@ function New-TestIssue44Report {
             retainedDataSha256 = $retainedDataSha256; details = 'Synthetic uninstall retained user data.'
         }
     }
+    $semanticReadiness = if ($LiveShape) {
+        [ordered]@{
+            status = 'PASS'
+            details = 'Synthetic live-shape fixture for release-gate contract validation only.'
+            binding = [ordered]@{
+                schemaVersion = 1
+                acceptanceNonceSha256 = (New-TestHex64 -Character '2')
+                clientInstanceId = ('c' * 32)
+                correlationId = '11111111-2222-4333-8444-555555555555'
+                serverInstanceId = ('d' * 32)
+                coreProcessId = 101
+                coreProcessStartUtcTicks = [int64]638594208000000000
+                coreExecutablePath = 'C:\synthetic\issue-44\targets\install\HerdrOps\HerdrOps.Core.exe'
+                coreExecutableSha256 = (New-TestHex64 -Character '3')
+                appProcessId = 202
+                appProcessStartUtcTicks = [int64]638594208010000000
+                appExecutablePath = 'C:\synthetic\issue-44\targets\install\HerdrOps\HerdrOps.App.exe'
+                appExecutableSha256 = (New-TestHex64 -Character '4')
+                snapshotSequence = [int64]7
+                rawEvidenceBytes = [int64]512
+                rawEvidenceSha256 = (New-TestHex64 -Character '5')
+            }
+        }
+    } else {
+        [ordered]@{
+            status = 'SYNTHETIC'
+            details = 'Synthetic fixture does not start Core or App and cannot produce live semantic evidence.'
+            binding = $null
+        }
+    }
     $boundaries = if ($LiveShape) {
         [ordered]@{
             static = 'PASS: exact acceptance report shape and bindings checked.'
             synthetic = 'NOT OBSERVED: no fixture lifecycle credit.'
-            contract = 'NOT OBSERVED: no named-pipe or installed-Herdr compatibility work.'
+            contract = 'PASS: synthetic live-shape fixture validates the nonce-bound semantic IPC report contract only.'
             cleanMachine = 'PASS: bound clean-machine filesystem lifecycle.'
             runtime = 'NOT OBSERVED: no Herdr runtime or application process was started.'
             independentReview = 'NOT OBSERVED.'
@@ -469,6 +499,7 @@ function New-TestIssue44Report {
                 [ordered]@{ name = 'v1-target-version'; status = 'PASS'; details = 'Upgrade artifact is v1.0.0.' })
         }
         lifecycle = $lifecycle
+        semanticReadiness = $semanticReadiness
         cleanup = [ordered]@{
             status = 'PASS'
             attempted = $true
@@ -755,6 +786,31 @@ try {
         -ManifestSha256 ([string]$candidate.Record.generation.manifestSha256) `
         -ContentSha256 ([string]$candidate.Record.generation.contentSha256)
     [void]$assertions.Add('Issue44CompleteLiveShapeAcceptedSynthetically')
+
+    $missingSemanticBinding = Copy-TestJsonObject -Value $issue44LiveShapeValue
+    $missingSemanticBinding.semanticReadiness.binding = $null
+    Assert-ExpectedFailure -Description 'Issue #44 Live report missing semantic binding' -RequiredFragments @('binding') -Action {
+        Assert-V10Issue44ReportSemantics `
+            -Report $missingSemanticBinding `
+            -SourceCommit $sourceCommit `
+            -ArchiveSha256 ([string]$candidate.Record.generation.archiveSha256) `
+            -ManifestSha256 ([string]$candidate.Record.generation.manifestSha256) `
+            -ContentSha256 ([string]$candidate.Record.generation.contentSha256) `
+            -RequireLiveCleanMachine
+    }
+    [void]$assertions.Add('Issue44MissingSemanticBindingRejected')
+
+    $syntheticSemanticForgery = Copy-TestJsonObject -Value $issue44SyntheticValue
+    $syntheticSemanticForgery.semanticReadiness.binding = $issue44LiveShapeValue.semanticReadiness.binding
+    Assert-ExpectedFailure -Description 'synthetic Issue #44 forged semantic binding' -RequiredFragments @('binding') -Action {
+        Assert-V10Issue44ReportSemantics `
+            -Report $syntheticSemanticForgery `
+            -SourceCommit $sourceCommit `
+            -ArchiveSha256 ([string]$candidate.Record.generation.archiveSha256) `
+            -ManifestSha256 ([string]$candidate.Record.generation.manifestSha256) `
+            -ContentSha256 ([string]$candidate.Record.generation.contentSha256)
+    }
+    [void]$assertions.Add('SyntheticIssue44SemanticBindingForgeryRejected')
 
     $issue42Report = Read-V10StrictJsonFile -Path $issue42Path -Description 'Issue #42 complete live report shape'
     Assert-V10GateReport `
