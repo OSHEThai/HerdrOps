@@ -184,6 +184,24 @@ jobs:
         shell: powershell
         run: ./tools/lib/V02RendererEvidence.Tests.ps1
 
+      # Static/Contract/Synthetic verifier self-tests only. These fixtures do not build or
+      # validate a release package, observe actual Herdr Runtime, grant Human GO, or authorize publication.
+      - name: Run v0.2 package identity verifier self-tests (PowerShell 7)
+        shell: pwsh
+        run: ./tools/packaging/v0.2/Test-V02PackageIdentity.Tests.ps1
+
+      - name: Run v0.2 package identity verifier self-tests (Windows PowerShell 5.1)
+        shell: powershell
+        run: ./tools/packaging/v0.2/Test-V02PackageIdentity.Tests.ps1
+
+      - name: Run v0.2 renderer compatibility verifier self-tests (PowerShell 7)
+        shell: pwsh
+        run: ./tools/v0.2-renderer-compatibility/Test-V02RendererCompatibilityManifest.SelfTests.ps1
+
+      - name: Run v0.2 renderer compatibility verifier self-tests (Windows PowerShell 5.1)
+        shell: powershell
+        run: ./tools/v0.2-renderer-compatibility/Test-V02RendererCompatibilityManifest.SelfTests.ps1
+
       - name: Run v0.2 exact binding static tests (PowerShell 7)
         shell: pwsh
         run: ./tools/Test-V02ExactBinding.Tests.ps1

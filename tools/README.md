@@ -21,6 +21,33 @@ Build, verification, GitHub roadmap, evidence capture, and packaging helpers liv
 # Extract and validate the exact bundled Herdr JSON Schema successor contract
 ./tools/Test-V02BundledSchemaContract.ps1
 
+# Validate atomic v0.2 package identity preparation. This binds exact clean source,
+# ZIP, extracted manifest, App/Core, profile, and SoftwareOnly policy bytes; it does
+# not build, install, publish, or grant Runtime/Release credit.
+./tools/packaging/v0.2/Test-V02PackageIdentity.ps1 `
+    -IdentityPath '<identity.json>' `
+    -ArchivePath '<HerdrOps-0.2.0-win-x64.zip>' `
+    -PackageRoot '<exact-extracted-package-root>' `
+    -RepositoryRoot '<clean-exact-source-worktree>'
+
+# Run package-verifier fixtures in both supported shells. These are
+# Static/Contract/Synthetic verifier self-tests only.
+pwsh -File ./tools/packaging/v0.2/Test-V02PackageIdentity.Tests.ps1
+powershell -File ./tools/packaging/v0.2/Test-V02PackageIdentity.Tests.ps1
+
+# Validate one atomic packaged-renderer compatibility manifest and every bound
+# evidence file. Human review, actual Herdr Runtime, clean install, Release, tag,
+# and publication remain separate and unclaimed.
+./tools/v0.2-renderer-compatibility/Test-V02RendererCompatibilityManifest.ps1 `
+    -ManifestPath '<renderer-compatibility-manifest.json>' `
+    -EvidenceRoot '<held-evidence-root>' `
+    -RepositoryRoot '<clean-exact-source-worktree>'
+
+# Run renderer-verifier fixtures in both supported shells. Fixture PASS cannot
+# close Issues #10/#149 or substitute for candidate/human/runtime evidence.
+pwsh -File ./tools/v0.2-renderer-compatibility/Test-V02RendererCompatibilityManifest.SelfTests.ps1
+powershell -File ./tools/v0.2-renderer-compatibility/Test-V02RendererCompatibilityManifest.SelfTests.ps1
+
 # From a fresh, unmoved pane in the authorized Acceptance control session,
 # capture target Agent Lab
 # snapshot/Agent-status-event/reconnect evidence. The two sockets must differ.
