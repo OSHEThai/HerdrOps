@@ -220,6 +220,36 @@ try {
 
     # --- No owned TCP listeners check ---
     Assert-TestTrue ((& { Assert-V02NoOwnedTcpListeners -ProcessIds @([int]$PID); $true })) 'Assert-V02NoOwnedTcpListeners passes when no TCP listeners are owned'
+
+    # --- Hostile real-listener detection: prove the guard actually catches a live listener,
+    #     not merely that it stays quiet when none exists. ---
+    if (Get-Command Get-NetTCPConnection -ErrorAction SilentlyContinue) {
+        $hostileListener = $null
+        $hostileListenerDetected = $false
+        try {
+            $hostileListener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 0)
+            $hostileListener.Start()
+            for ($attempt = 0; $attempt -lt 20 -and -not $hostileListenerDetected; $attempt++) {
+                try {
+                    Assert-V02NoOwnedTcpListeners -ProcessIds @([int]$PID)
+                    Start-Sleep -Milliseconds 100
+                }
+                catch {
+                    $hostileListenerDetected = $true
+                }
+            }
+        }
+        finally {
+            if ($null -ne $hostileListener) {
+                $hostileListener.Stop()
+            }
+        }
+        Assert-TestTrue $hostileListenerDetected 'Assert-V02NoOwnedTcpListeners detects a real TCP listener actually opened by the current process'
+        Assert-TestTrue ((& { Assert-V02NoOwnedTcpListeners -ProcessIds @([int]$PID); $true })) 'Assert-V02NoOwnedTcpListeners passes again once the hostile listener is closed'
+    }
+    else {
+        Assert-TestTrue $true 'Get-NetTCPConnection unavailable on this host; hostile real-listener detection defensively skipped'
+    }
 }
 finally {
 }

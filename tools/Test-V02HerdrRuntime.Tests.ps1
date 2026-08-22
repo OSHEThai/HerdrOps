@@ -298,6 +298,21 @@ function New-V02TraceReportFixture {
             BootstrapCount = 2L
             DisconnectCount = 1L
             ReconciliationCount = 0L
+            State = [pscustomobject]@{
+                Workspaces = [pscustomobject]@{
+                    ws1 = [pscustomobject]@{ WorkspaceId = 'ws1'; AgentStatus = 'Working' }
+                }
+                Tabs = [pscustomobject]@{
+                    tab1 = [pscustomobject]@{ TabId = 'tab1'; AgentStatus = 'Working' }
+                }
+                Panes = [pscustomobject]@{
+                    p1 = [pscustomobject]@{ PaneId = 'p1'; AgentStatus = 'Working' }
+                }
+                Agents = [pscustomobject]@{
+                    agent1 = [pscustomobject]@{ TerminalId = 'agent1'; AgentStatus = 'Done' }
+                    agent2 = [pscustomobject]@{ TerminalId = 'agent2'; AgentStatus = 'Idle' }
+                }
+            }
         }
         Transitions = $transitions
         Message = 'Synthetic valid test fixture'
@@ -640,9 +655,16 @@ try {
     Set-V02AtomicTextFile -Path $atomicFile -Content "Hello Atomic World`r`nLine2"
     Assert-TestTrue ((Test-Path -LiteralPath $atomicFile -PathType Leaf) -and ((Get-Content -LiteralPath $atomicFile -Raw) -match 'Hello Atomic World')) 'Atomic text file writes and reads cleanly'
 
-    # Atomic replace
-    Set-V02AtomicTextFile -Path $atomicFile -Content 'Replaced Content'
-    Assert-TestTrue ((Get-Content -LiteralPath $atomicFile -Raw).Trim() -eq 'Replaced Content') 'Atomic text file replaces existing file atomically'
+    # No-clobber: a second write to the same path must be refused, not silently overwritten.
+    Assert-ThrowsMatching -ScriptBlock {
+        Set-V02AtomicTextFile -Path $atomicFile -Content 'Replaced Content'
+    } -ExpectedSubstring 'AtomicWriteRefusedExistingFile' -Message 'Atomic text file refuses to clobber an existing published report'
+
+    # Old-or-new: the refused clobber attempt must leave the original content fully intact.
+    Assert-TestTrue ((Get-Content -LiteralPath $atomicFile -Raw) -match 'Hello Atomic World') 'Original report content survives intact after a refused clobber attempt'
+
+    $leftoverTempFiles = @(Get-ChildItem -LiteralPath $tempScratch -Filter '.tmp.*.tmp' -File -ErrorAction SilentlyContinue)
+    Assert-TestTrue ($leftoverTempFiles.Count -eq 0) 'No leftover temp files remain after a refused clobber attempt'
 }
 finally {
     if (Test-Path -LiteralPath $tempScratch) {
@@ -664,6 +686,67 @@ Assert-ThrowsMatching -ScriptBlock {
 Assert-ThrowsMatching -ScriptBlock {
     Assert-V02AgentStatusDomain -Status 'RandomStatus' -Context 'Test'
 } -ExpectedSubstring 'invalid agent status' -Message 'Rejects arbitrary unadmitted agent status'
+
+# -----------------------------------------------------------------------------
+# Hostile Negative Tests: Agent Status Domain wired through the production entry
+# point (Assert-V02HerdrRuntimeTraceReport) -- both accepted events and every
+# relevant final-state snapshot collection.
+# -----------------------------------------------------------------------------
+Assert-ThrowsMatching -ScriptBlock {
+    $f = New-V02TraceReportFixture
+    $f.Transitions[1].AcceptedAgentStatusEvent.AgentStatus = 'Offline'
+    Assert-V02HerdrRuntimeTraceReport -Trace $f -ControlServerIdentity $controlServerIdentity
+} -ExpectedSubstring 'invalid agent status' -Message 'Rejects bogus AgentStatus on Event A AcceptedAgentStatusEvent'
+
+Assert-ThrowsMatching -ScriptBlock {
+    $f = New-V02TraceReportFixture
+    $f.Transitions[5].AcceptedAgentStatusEvent.AgentStatus = 'Zombie'
+    Assert-V02HerdrRuntimeTraceReport -Trace $f -ControlServerIdentity $controlServerIdentity
+} -ExpectedSubstring 'invalid agent status' -Message 'Rejects bogus AgentStatus on Event B AcceptedAgentStatusEvent'
+
+Assert-ThrowsMatching -ScriptBlock {
+    $f = New-V02TraceReportFixture
+    $f.FinalMonitorState.State.Workspaces.ws1.AgentStatus = 'Bogus'
+    Assert-V02HerdrRuntimeTraceReport -Trace $f -ControlServerIdentity $controlServerIdentity
+} -ExpectedSubstring 'invalid agent status' -Message 'Rejects bogus AgentStatus in final Workspaces snapshot'
+
+Assert-ThrowsMatching -ScriptBlock {
+    $f = New-V02TraceReportFixture
+    $f.FinalMonitorState.State.Tabs.tab1.AgentStatus = 'Bogus'
+    Assert-V02HerdrRuntimeTraceReport -Trace $f -ControlServerIdentity $controlServerIdentity
+} -ExpectedSubstring 'invalid agent status' -Message 'Rejects bogus AgentStatus in final Tabs snapshot'
+
+Assert-ThrowsMatching -ScriptBlock {
+    $f = New-V02TraceReportFixture
+    $f.FinalMonitorState.State.Panes.p1.AgentStatus = 'Bogus'
+    Assert-V02HerdrRuntimeTraceReport -Trace $f -ControlServerIdentity $controlServerIdentity
+} -ExpectedSubstring 'invalid agent status' -Message 'Rejects bogus AgentStatus in final Panes snapshot'
+
+Assert-ThrowsMatching -ScriptBlock {
+    $f = New-V02TraceReportFixture
+    $f.FinalMonitorState.State.Agents.agent1.AgentStatus = 'Bogus'
+    Assert-V02HerdrRuntimeTraceReport -Trace $f -ControlServerIdentity $controlServerIdentity
+} -ExpectedSubstring 'invalid agent status' -Message 'Rejects bogus AgentStatus in final Agents snapshot'
+
+Assert-ThrowsMatching -ScriptBlock {
+    $f = New-V02TraceReportFixture
+    $f.FinalMonitorState.State = $null
+    Assert-V02HerdrRuntimeTraceReport -Trace $f -ControlServerIdentity $controlServerIdentity
+} -ExpectedSubstring 'missing its final State snapshot' -Message 'Rejects a trace whose FinalMonitorState omits the State snapshot entirely'
+
+Assert-ThrowsMatching -ScriptBlock {
+    $f = New-V02TraceReportFixture
+    $f.FinalMonitorState.State.Agents = $null
+    Assert-V02HerdrRuntimeTraceReport -Trace $f -ControlServerIdentity $controlServerIdentity
+} -ExpectedSubstring 'final State snapshot is missing Agents' -Message 'Rejects a trace whose final State snapshot omits the Agents collection'
+
+Assert-TestTrue `
+    ((& {
+        $f = New-V02TraceReportFixture
+        $null = Assert-V02HerdrRuntimeTraceReport -Trace $f -ControlServerIdentity $controlServerIdentity
+        $true
+    })) `
+    'Accepts a trace whose accepted events and every final-state snapshot carry only valid Herdr AgentStatus domain values'
 
 # -----------------------------------------------------------------------------
 # Results Summary

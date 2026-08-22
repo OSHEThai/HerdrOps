@@ -237,6 +237,10 @@ function Set-V02AtomicTextFile {
         [Parameter(Mandatory = $true)][string]$Content
     )
 
+    if (Test-Path -LiteralPath $Path) {
+        throw "AtomicWriteRefusedExistingFile: refusing to clobber an existing file: $Path"
+    }
+
     $directory = [System.IO.Path]::GetDirectoryName($Path)
     if (-not [string]::IsNullOrWhiteSpace($directory) -and -not (Test-Path -LiteralPath $directory -PathType Container)) {
         New-Item -ItemType Directory -Path $directory -Force | Out-Null
@@ -244,9 +248,6 @@ function Set-V02AtomicTextFile {
     $tempPath = Join-Path $directory (".tmp." + [Guid]::NewGuid().ToString('N') + ".tmp")
     try {
         [System.IO.File]::WriteAllText($tempPath, $Content, [System.Text.Encoding]::UTF8)
-        if (Test-Path -LiteralPath $Path -PathType Leaf) {
-            Remove-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
-        }
         [System.IO.File]::Move($tempPath, $Path)
     }
     finally {
@@ -339,6 +340,40 @@ function Assert-V02SemanticStateHashes {
         $statusStr = [string](Get-V02JsonPropertyValue -Object $t -Name 'Status')
         if ($script:V02ValidMonitorStatuses -notcontains $statusStr) {
             throw "$Context transition $idx invalid monitor Status '$statusStr'."
+        }
+    }
+}
+
+function Assert-V02AllAgentStatusesInDomain {
+    param(
+        [Parameter(Mandatory = $true)][AllowNull()]$Transitions,
+        [Parameter(Mandatory = $true)][AllowNull()]$FinalMonitorState,
+        [Parameter(Mandatory = $false)][string]$Context = 'Trace'
+    )
+
+    $list = @($Transitions)
+    for ($i = 0; $i -lt $list.Count; $i++) {
+        $accepted = Get-V02JsonPropertyValue -Object $list[$i] -Name 'AcceptedAgentStatusEvent'
+        if ($null -ne $accepted) {
+            $status = [string](Get-V02JsonPropertyValue -Object $accepted -Name 'AgentStatus')
+            Assert-V02AgentStatusDomain -Status $status -Context "$Context transition $($i + 1) AcceptedAgentStatusEvent"
+        }
+    }
+
+    $finalState = Get-V02JsonPropertyValue -Object $FinalMonitorState -Name 'State'
+    if ($null -eq $finalState) {
+        throw "$Context FinalMonitorState is missing its final State snapshot."
+    }
+
+    foreach ($collectionName in @('Workspaces', 'Tabs', 'Panes', 'Agents')) {
+        $collection = Get-V02JsonPropertyValue -Object $finalState -Name $collectionName
+        if ($null -eq $collection) {
+            throw "$Context final State snapshot is missing $collectionName."
+        }
+        foreach ($property in @($collection.PSObject.Properties)) {
+            $entry = $property.Value
+            $status = [string](Get-V02JsonPropertyValue -Object $entry -Name 'AgentStatus')
+            Assert-V02AgentStatusDomain -Status $status -Context "$Context final $collectionName snapshot '$($property.Name)'"
         }
     }
 }
@@ -440,6 +475,7 @@ function Assert-V02HerdrRuntimeTraceReport {
     }
 
     Assert-V02SemanticStateHashes -Transitions $transitions -Context 'Trace transitions'
+    Assert-V02AllAgentStatusesInDomain -Transitions $transitions -FinalMonitorState $Trace.FinalMonitorState -Context 'Trace'
 
     $uniqueBootstrapCounts = @($transitions | Where-Object {
         $_.Status -eq 'Connected' -and [long]$_.BootstrapCount -gt 0
@@ -643,4 +679,3 @@ function Assert-V02HerdrRuntimeTraceReport {
         ConnectedBootstraps             = $connectedBootstraps
     }
 }
-

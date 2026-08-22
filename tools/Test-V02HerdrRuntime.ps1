@@ -225,12 +225,39 @@ try {
     Write-Host "Target Agent Lab socket: $targetHerdrSocketPath"
     Write-Host 'Runtime trace started. Trigger a genuine Agent-status transition, restart only the target Agent Lab session, wait for reconnect, and trigger another genuine Agent-status transition.'
     $coreDll = Join-Path $artifactRoot "bin\HerdrOps.Core\$($Configuration.ToLowerInvariant())\HerdrOps.Core.dll"
-    & dotnet $coreDll trace-herdr-runtime `
-        --herdr $HerdrExecutable `
-        --socket-path $targetHerdrSocketPath `
-        --seconds $DurationSeconds `
-        --report $tracePath
-    if ($LASTEXITCODE -ne 0) { throw 'Actual Herdr runtime trace command failed.' }
+    $coreArguments = @(
+        $coreDll,
+        'trace-herdr-runtime',
+        '--herdr', $HerdrExecutable,
+        '--socket-path', $targetHerdrSocketPath,
+        '--seconds', [string]$DurationSeconds,
+        '--report', $tracePath
+    )
+    $coreProcess = Start-Process -FilePath 'dotnet' -ArgumentList $coreArguments -PassThru -NoNewWindow
+    try {
+        $coreProcessId = [int]$coreProcess.Id
+
+        # Pre: the measured HerdrOps.Core process is alive and owns no unauthorized TCP listener at launch.
+        Assert-V02NoOwnedTcpListeners -ProcessIds @([int]$PID, $coreProcessId)
+
+        # During: sample the measured HerdrOps.Core process while it is confirmed alive.
+        for ($sample = 0; $sample -lt 3 -and -not $coreProcess.HasExited; $sample++) {
+            Start-Sleep -Milliseconds 500
+            if (-not $coreProcess.HasExited) {
+                Assert-V02NoOwnedTcpListeners -ProcessIds @([int]$PID, $coreProcessId)
+            }
+        }
+
+        $coreProcess.WaitForExit()
+
+        # Post: the measured HerdrOps.Core process owns no unauthorized TCP listener at exit.
+        Assert-V02NoOwnedTcpListeners -ProcessIds @([int]$PID, $coreProcessId)
+
+        if ($coreProcess.ExitCode -ne 0) { throw 'Actual Herdr runtime trace command failed.' }
+    }
+    finally {
+        $coreProcess.Dispose()
+    }
 
     $runtimeTraceSha256AtRead = ((Get-FileHash -LiteralPath $tracePath -Algorithm SHA256).Hash).ToUpperInvariant()
     Assert-V02NotReplayedTranscript -LedgerPath $ledgerPath -TranscriptSha256 $runtimeTraceSha256AtRead
@@ -271,7 +298,7 @@ try {
         throw 'Acceptance control Herdr server identity changed during the target restart.'
     }
 
-    Assert-V02NoOwnedTcpListeners -ProcessIds @([int]$PID)
+    Assert-V02NoOwnedTcpListeners -ProcessIds @([int]$PID, $coreProcessId)
 
     $trxFiles = @(Get-ChildItem -LiteralPath $testResultsDirectory -Filter '*.trx' -File)
     if ($trxFiles.Count -ne 3) { throw "Expected 3 fresh TRX files, found $($trxFiles.Count)." }
@@ -387,4 +414,3 @@ finally {
         $heldHerdrStream.Dispose()
     }
 }
-
