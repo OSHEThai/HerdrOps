@@ -32,6 +32,75 @@ public sealed record RuntimeEvidenceCapture(
     string Language,
     string LanguageCultureName);
 
+public sealed record RuntimeSemanticStatusCount(
+    string Status,
+    int Count);
+
+public sealed record RuntimeSemanticWorkspaceCount(
+    string WorkspaceIdentitySha256,
+    int AgentCount);
+
+public sealed record RuntimeSemanticAgentProjection(
+    string AgentIdentitySha256,
+    string WorkspaceIdentitySha256,
+    string TabIdentitySha256,
+    string PaneIdentitySha256,
+    string Status,
+    ulong Revision,
+    ulong StateChangeSequence,
+    bool? InteractiveReady,
+    bool? LaunchPending,
+    bool? ScreenDetectionSkipped);
+
+public sealed record RuntimeOverviewSemanticProjection(
+    int TotalAgents,
+    IReadOnlyList<RuntimeSemanticStatusCount> StatusCounts,
+    IReadOnlyList<RuntimeSemanticWorkspaceCount> WorkspaceAgentCounts,
+    IReadOnlyList<RuntimeSemanticAgentProjection> VisibleTopAgents);
+
+public sealed record RuntimeOrganizationSemanticProjection(
+    int WorkspaceCount,
+    int TabCount,
+    int PaneCount,
+    int AgentCount,
+    int UnassignedPaneCount,
+    int UnknownAgentCount,
+    int ProjectedNodeCount,
+    string? SelectedAgentIdentitySha256);
+
+public sealed record RuntimeAgentDetailSemanticProjection(
+    bool AgentSelected,
+    string? AgentIdentitySha256,
+    string? WorkspaceIdentitySha256,
+    string? TabIdentitySha256,
+    string? PaneIdentitySha256,
+    string Status,
+    ulong? Revision,
+    ulong? StateChangeSequence,
+    long SessionSequence,
+    long ConnectionEpoch,
+    bool? InteractiveReady,
+    bool? LaunchPending,
+    bool? ScreenDetectionSkipped,
+    string Assignment,
+    string Tasks,
+    string Evidence);
+
+public sealed record RuntimeSemanticStateCapture(
+    int Ordinal,
+    string Phase,
+    string EventBinding,
+    IReadOnlyList<string> BoundCaptureNames,
+    DateTimeOffset ObservedUtc,
+    long Sequence,
+    string NormalizedStateSha256,
+    bool IsCoreConnected,
+    bool IsLive,
+    RuntimeOverviewSemanticProjection Overview,
+    RuntimeOrganizationSemanticProjection LiveOrganization,
+    RuntimeAgentDetailSemanticProjection AgentDetail,
+    string CaptureStateSha256);
+
 public sealed record RuntimeEvidenceProgress(
     int Ordinal,
     string Phase,
@@ -619,6 +688,7 @@ public sealed record AppRuntimeEvidenceReport(
     IReadOnlyList<WidgetUpdateLatencySample> WidgetLatencyUnsupportedExcludedSamples,
     RuntimeIdleQuiescence IdleQuiescence,
     RuntimeResourceMeasurement ResourceMeasurement,
+    IReadOnlyList<RuntimeSemanticStateCapture> SemanticStateCaptures,
     IReadOnlyList<RuntimeEvidenceCapture> Captures,
     HerdrRuntimeHealthContract FinalRuntimeHealth,
     HerdrSessionStateContract FinalState,
@@ -655,6 +725,7 @@ public sealed class RuntimeEvidenceRunner(
         "CoreAcceptedStateUtcToWpfStateApplied";
     private const string AcceptedAgentStatusEventKind =
         "pane.agent_status_changed";
+    internal const string MissingSemanticSource = "UnknownMissingSource";
     public const string DirectEventAdmissionPath = "direct-event";
     public const string SnapshotBeforeEventAdmissionPath = "snapshot-before-event";
 
@@ -675,6 +746,7 @@ public sealed class RuntimeEvidenceRunner(
         producerBinding,
         options);
     private readonly List<RuntimeEvidenceCapture> _captures = [];
+    private readonly List<RuntimeSemanticStateCapture> _semanticStateCaptures = [];
     private readonly List<WeakReference<RenderTargetBitmap>> _captureBitmapReferences = [];
     private readonly List<RuntimeResourceStageCheckpoint> _resourceStageCheckpoints = [];
     private readonly List<RuntimeEvidenceProgress> _progressHistory = [];
@@ -785,6 +857,21 @@ public sealed class RuntimeEvidenceRunner(
             throw new InvalidOperationException(
                 "The live state changed while the initial Dashboard and Widget captures were being rendered; rerun for one coherent snapshot.");
         }
+        RecordSemanticStateCapture(
+            ordinal: 1,
+            phase: "initial",
+            eventBinding: "InitialLiveState",
+            boundCaptureNames:
+            [
+                "dashboard-overview.png",
+                "dashboard-live-organization.png",
+                "dashboard-agent-detail.png",
+                "widget-compact.png",
+                "widget-normal.png",
+                "widget-floating-vertical.png",
+            ],
+            expectedSequence: initialSequence,
+            expectedStateSha256: initialStateHash);
         RecordResourceStageCheckpoint("post-initial-captures");
 
         var latencyWarmup = _state.Widgets.ResetUpdateLatencyMeasurement();
@@ -806,6 +893,13 @@ public sealed class RuntimeEvidenceRunner(
             index: 0,
             "dashboard-overview-after-event.png",
             cancellationToken);
+        RecordSemanticStateCapture(
+            ordinal: 2,
+            phase: "event-a-pre-close",
+            eventBinding: "EventA",
+            boundCaptureNames: ["dashboard-overview-after-event.png"],
+            expectedSequence: preCloseSequence,
+            expectedStateSha256: preCloseStateHash);
 
         var verticalWidget = _widgetWindows.Single(window =>
             window.Descriptor.Variant == WidgetVariant.FloatingVertical);
@@ -865,6 +959,13 @@ public sealed class RuntimeEvidenceRunner(
             verticalWidget,
             "widget-floating-vertical-after-dashboard-close.png",
             cancellationToken);
+        RecordSemanticStateCapture(
+            ordinal: 3,
+            phase: "post-close-final",
+            eventBinding: "EventB",
+            boundCaptureNames: ["widget-floating-vertical-after-dashboard-close.png"],
+            expectedSequence: postCloseSequence,
+            expectedStateSha256: postCloseStateHash);
         RecordResourceStageCheckpoint("post-final-widget-capture");
 
         _ = WriteProgress("waiting-for-idle-stability");
@@ -976,6 +1077,17 @@ public sealed class RuntimeEvidenceRunner(
             ("DisconnectCountAdvanced", reconnectedDisconnectCount > preRestartDisconnectCount),
             ("WidgetLatencyTargetPassed", latencyPassed),
             ("RequiredCapturesPresent", _captures.Count >= 8),
+            ("SemanticCaptureStatesBound",
+                AreSemanticStateCapturesBound(
+                    _semanticStateCaptures,
+                    initialSequence,
+                    initialStateHash,
+                    eventA,
+                    preCloseSequence,
+                    preCloseStateHash,
+                    eventB,
+                    postCloseSequence,
+                    postCloseStateHash)),
         };
         var failedCandidateChecks = candidateChecks
             .Where(check => !check.Passed)
@@ -1046,6 +1158,7 @@ public sealed class RuntimeEvidenceRunner(
             unsupportedLatencySamples,
             idleQuiescence,
             resources,
+            _semanticStateCaptures.ToArray(),
             _captures.ToArray(),
             _state.CurrentRuntimeHealth,
             _state.CurrentState,
@@ -1070,6 +1183,349 @@ public sealed class RuntimeEvidenceRunner(
         }
 
         _widgetWindows.Clear();
+    }
+
+    private void RecordSemanticStateCapture(
+        int ordinal,
+        string phase,
+        string eventBinding,
+        IReadOnlyList<string> boundCaptureNames,
+        long expectedSequence,
+        string expectedStateSha256)
+    {
+        var currentStateSha256 = CurrentStateHash();
+        if (_state.CurrentState.LastIngestSequence != expectedSequence ||
+            !string.Equals(currentStateSha256, expectedStateSha256, StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException(
+                $"Semantic state capture '{phase}' no longer matches its bound event state.");
+        }
+
+        foreach (var captureName in boundCaptureNames)
+        {
+            var capture = _captures.SingleOrDefault(item =>
+                string.Equals(
+                    Path.GetFileName(item.Path),
+                    captureName,
+                    StringComparison.Ordinal));
+            if (capture is null ||
+                capture.StateSequence != expectedSequence ||
+                !string.Equals(capture.StateSha256, expectedStateSha256, StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException(
+                    $"Semantic state capture '{phase}' is not bound to '{captureName}'.");
+            }
+        }
+
+        _semanticStateCaptures.Add(BuildSemanticStateCapture(
+            ordinal,
+            phase,
+            eventBinding,
+            boundCaptureNames,
+            DateTimeOffset.UtcNow,
+            _state));
+    }
+
+    internal static RuntimeSemanticStateCapture BuildSemanticStateCapture(
+        int ordinal,
+        string phase,
+        string eventBinding,
+        IReadOnlyList<string> boundCaptureNames,
+        DateTimeOffset observedUtc,
+        LiveDashboardState dashboard)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThan(ordinal, 1);
+        ArgumentException.ThrowIfNullOrWhiteSpace(phase);
+        ArgumentException.ThrowIfNullOrWhiteSpace(eventBinding);
+        ArgumentNullException.ThrowIfNull(boundCaptureNames);
+        ArgumentNullException.ThrowIfNull(dashboard);
+        if (observedUtc == default || observedUtc.Offset != TimeSpan.Zero)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(observedUtc),
+                "Semantic capture observations must be non-default UTC timestamps.");
+        }
+
+        var captureNames = boundCaptureNames.ToArray();
+        if (captureNames.Length == 0 ||
+            captureNames.Any(string.IsNullOrWhiteSpace) ||
+            captureNames.Distinct(StringComparer.Ordinal).Count() != captureNames.Length)
+        {
+            throw new ArgumentException(
+                "Semantic capture bindings must contain unique non-empty capture names.",
+                nameof(boundCaptureNames));
+        }
+
+        var state = HerdrSessionStateContractReducer.NormalizeAndValidate(
+            dashboard.CurrentState);
+        RequireSemanticPresentationMatchesState(dashboard, state);
+        var selectedAgent = dashboard.SelectedTerminalId is null
+            ? null
+            : state.Agents.SingleOrDefault(agent => string.Equals(
+                agent.TerminalId,
+                dashboard.SelectedTerminalId,
+                StringComparison.Ordinal));
+        var overviewAgents = state.Agents
+            .OrderBy(agent => SemanticStatusOrder(agent.AgentStatus))
+            .ThenBy(AgentStatusPresentation.DisplayName, StringComparer.OrdinalIgnoreCase)
+            .Take(5)
+            .Select(CreateSemanticAgentProjection)
+            .ToArray();
+        var overview = new RuntimeOverviewSemanticProjection(
+            state.Agents.Count,
+            state.Agents
+                .GroupBy(agent => agent.AgentStatus, StringComparer.Ordinal)
+                .OrderBy(group => group.Key, StringComparer.Ordinal)
+                .Select(group => new RuntimeSemanticStatusCount(group.Key, group.Count()))
+                .ToArray(),
+            state.Agents
+                .GroupBy(agent => agent.WorkspaceId, StringComparer.Ordinal)
+                .OrderByDescending(group => group.Count())
+                .ThenBy(group => group.Key, StringComparer.Ordinal)
+                .Select(group => new RuntimeSemanticWorkspaceCount(
+                    RedactSemanticIdentity("workspace", group.Key),
+                    group.Count()))
+                .ToArray(),
+            overviewAgents);
+        var assignedTerminalIds = state.Agents
+            .Select(agent => agent.TerminalId)
+            .ToHashSet(StringComparer.Ordinal);
+        var unassignedPaneCount = state.Panes.Count(
+            pane => !assignedTerminalIds.Contains(pane.TerminalId));
+        var organization = new RuntimeOrganizationSemanticProjection(
+            state.Workspaces.Count,
+            state.Tabs.Count,
+            state.Panes.Count,
+            state.Agents.Count,
+            unassignedPaneCount,
+            state.Agents.Count(agent => string.Equals(
+                agent.AgentStatus,
+                "Unknown",
+                StringComparison.Ordinal)),
+            dashboard.Organization.Nodes.Count,
+            selectedAgent is null
+                ? null
+                : RedactSemanticIdentity("agent", selectedAgent.TerminalId));
+        var agentDetail = new RuntimeAgentDetailSemanticProjection(
+            selectedAgent is not null,
+            RedactNullableSemanticIdentity("agent", selectedAgent?.TerminalId),
+            RedactNullableSemanticIdentity("workspace", selectedAgent?.WorkspaceId),
+            RedactNullableSemanticIdentity("tab", selectedAgent?.TabId),
+            RedactNullableSemanticIdentity("pane", selectedAgent?.PaneId),
+            selectedAgent?.AgentStatus ?? MissingSemanticSource,
+            selectedAgent?.Revision,
+            selectedAgent?.StateChangeSequence,
+            state.LastIngestSequence,
+            state.ConnectionEpoch,
+            selectedAgent?.InteractiveReady,
+            selectedAgent?.LaunchPending,
+            selectedAgent?.ScreenDetectionSkipped,
+            MissingSemanticSource,
+            MissingSemanticSource,
+            MissingSemanticSource);
+        var capture = new RuntimeSemanticStateCapture(
+            ordinal,
+            phase,
+            eventBinding,
+            captureNames,
+            observedUtc,
+            state.LastIngestSequence,
+            HerdrOpsStateIpcJson.ComputeSha256(state),
+            dashboard.IsCoreConnected,
+            dashboard.IsLive,
+            overview,
+            organization,
+            agentDetail,
+            string.Empty);
+        return capture with
+        {
+            CaptureStateSha256 = ComputeSemanticCaptureSha256(capture),
+        };
+    }
+
+    internal static string ComputeSemanticCaptureSha256(RuntimeSemanticStateCapture capture)
+    {
+        ArgumentNullException.ThrowIfNull(capture);
+        var canonicalCapture = capture with { CaptureStateSha256 = string.Empty };
+        return Convert.ToHexString(SHA256.HashData(
+            JsonSerializer.SerializeToUtf8Bytes(
+                canonicalCapture,
+                CompactSerializerOptions)));
+    }
+
+    internal static bool AreSemanticStateCapturesBound(
+        IReadOnlyList<RuntimeSemanticStateCapture> captures,
+        long initialSequence,
+        string initialStateSha256,
+        RuntimeAgentStatusTransitionEvidence eventA,
+        long preCloseSequence,
+        string preCloseStateSha256,
+        RuntimeAgentStatusTransitionEvidence eventB,
+        long postCloseSequence,
+        string postCloseStateSha256)
+    {
+        ArgumentNullException.ThrowIfNull(captures);
+        ArgumentNullException.ThrowIfNull(eventA);
+        ArgumentNullException.ThrowIfNull(eventB);
+        if (captures.Count != 3)
+        {
+            return false;
+        }
+
+        var expected = new[]
+        {
+            (Ordinal: 1, Phase: "initial", Event: "InitialLiveState", Sequence: initialSequence, Hash: initialStateSha256, Names: new[]
+            {
+                "dashboard-overview.png",
+                "dashboard-live-organization.png",
+                "dashboard-agent-detail.png",
+                "widget-compact.png",
+                "widget-normal.png",
+                "widget-floating-vertical.png",
+            }),
+            (Ordinal: 2, Phase: "event-a-pre-close", Event: "EventA", Sequence: preCloseSequence, Hash: preCloseStateSha256, Names: new[]
+            {
+                "dashboard-overview-after-event.png",
+            }),
+            (Ordinal: 3, Phase: "post-close-final", Event: "EventB", Sequence: postCloseSequence, Hash: postCloseStateSha256, Names: new[]
+            {
+                "widget-floating-vertical-after-dashboard-close.png",
+            }),
+        };
+        if (eventA.CurrentSequence != preCloseSequence ||
+            !string.Equals(eventA.CurrentStateSha256, preCloseStateSha256, StringComparison.Ordinal) ||
+            eventB.CurrentSequence != postCloseSequence ||
+            !string.Equals(eventB.CurrentStateSha256, postCloseStateSha256, StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        return captures.Zip(expected).All(pair =>
+            pair.First.Ordinal == pair.Second.Ordinal &&
+            string.Equals(pair.First.Phase, pair.Second.Phase, StringComparison.Ordinal) &&
+            string.Equals(pair.First.EventBinding, pair.Second.Event, StringComparison.Ordinal) &&
+            pair.First.Sequence == pair.Second.Sequence &&
+            string.Equals(
+                pair.First.NormalizedStateSha256,
+                pair.Second.Hash,
+                StringComparison.Ordinal) &&
+            pair.First.BoundCaptureNames.SequenceEqual(
+                pair.Second.Names,
+                StringComparer.Ordinal) &&
+            pair.First.IsCoreConnected &&
+            pair.First.IsLive &&
+            string.Equals(
+                pair.First.CaptureStateSha256,
+                ComputeSemanticCaptureSha256(pair.First),
+                StringComparison.Ordinal));
+    }
+
+    private static RuntimeSemanticAgentProjection CreateSemanticAgentProjection(
+        HerdrAgentStateContract agent) =>
+        new(
+            RedactSemanticIdentity("agent", agent.TerminalId),
+            RedactSemanticIdentity("workspace", agent.WorkspaceId),
+            RedactSemanticIdentity("tab", agent.TabId),
+            RedactSemanticIdentity("pane", agent.PaneId),
+            agent.AgentStatus,
+            agent.Revision,
+            agent.StateChangeSequence,
+            agent.InteractiveReady,
+            agent.LaunchPending,
+            agent.ScreenDetectionSkipped);
+
+    private static string RedactSemanticIdentity(string kind, string value) =>
+        Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes($"{kind}\0{value}")));
+
+    private static string? RedactNullableSemanticIdentity(string kind, string? value) =>
+        string.IsNullOrWhiteSpace(value) ? null : RedactSemanticIdentity(kind, value);
+
+    private static int SemanticStatusOrder(string status) => status switch
+    {
+        "Blocked" => 0,
+        "Unknown" => 1,
+        "Working" => 2,
+        "Idle" => 3,
+        "Done" => 4,
+        _ => 5,
+    };
+
+    private static void RequireSemanticPresentationMatchesState(
+        LiveDashboardState dashboard,
+        HerdrSessionStateContract state)
+    {
+        static string CardValue(LiveDashboardState dashboardState, string id) =>
+            dashboardState.Overview.SummaryCards.Single(card =>
+                string.Equals(card.Id, id, StringComparison.Ordinal)).Value;
+
+        var invariant = CultureInfo.InvariantCulture;
+        var expectedNodeCount = state.Workspaces.Count +
+                                state.Tabs.Count +
+                                state.Agents.Count +
+                                state.Panes.Count(pane => state.Agents.All(agent =>
+                                    !string.Equals(
+                                        agent.PaneId,
+                                        pane.PaneId,
+                                        StringComparison.Ordinal)));
+        if (!string.Equals(
+                CardValue(dashboard, "total-agents"),
+                state.Agents.Count.ToString(invariant),
+                StringComparison.Ordinal) ||
+            !string.Equals(
+                CardValue(dashboard, "working"),
+                state.Agents.Count(agent => agent.AgentStatus == "Working").ToString(invariant),
+                StringComparison.Ordinal) ||
+            !string.Equals(
+                CardValue(dashboard, "blocked"),
+                state.Agents.Count(agent => agent.AgentStatus == "Blocked").ToString(invariant),
+                StringComparison.Ordinal) ||
+            !string.Equals(
+                CardValue(dashboard, "done"),
+                state.Agents.Count(agent => agent.AgentStatus == "Done").ToString(invariant),
+                StringComparison.Ordinal) ||
+            dashboard.Organization.Nodes.Count != expectedNodeCount)
+        {
+            throw new InvalidOperationException(
+                "The runtime semantic projection does not match the live Dashboard presentation.");
+        }
+
+        var selectedAgent = dashboard.SelectedTerminalId is null
+            ? null
+            : state.Agents.SingleOrDefault(agent => string.Equals(
+                agent.TerminalId,
+                dashboard.SelectedTerminalId,
+                StringComparison.Ordinal));
+        if (selectedAgent is null)
+        {
+            if (dashboard.Organization.SelectedNode is not null)
+            {
+                throw new InvalidOperationException(
+                    "Live Organization selected an Agent that is absent from normalized state.");
+            }
+
+            return;
+        }
+
+        if (!string.Equals(
+                dashboard.Organization.SelectedNode?.AgentTerminalId,
+                selectedAgent.TerminalId,
+                StringComparison.Ordinal) ||
+            !string.Equals(
+                dashboard.AgentDetail.Terminal,
+                selectedAgent.TerminalId,
+                StringComparison.Ordinal) ||
+            !string.Equals(
+                dashboard.AgentDetail.Revision,
+                selectedAgent.Revision.ToString(invariant),
+                StringComparison.Ordinal) ||
+            !string.Equals(
+                dashboard.AgentDetail.StateChangeSequence,
+                selectedAgent.StateChangeSequence.ToString(invariant),
+                StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException(
+                "Live Organization or Agent Detail is not projected from the selected normalized Agent.");
+        }
     }
 
     public static void WriteFailure(
