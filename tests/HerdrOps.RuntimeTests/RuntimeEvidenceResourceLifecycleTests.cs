@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Globalization;
+using System.IO;
 using System.Windows;
 using System.Windows.Interop;
 using System.Windows.Media;
@@ -355,6 +356,104 @@ public sealed class RuntimeEvidenceResourceLifecycleTests
     }
 
     [TestMethod]
+    public void ResourceSampleTargetRetainsCadenceAcrossLatenessCatchUpAndStall()
+    {
+        var previousObservedUtc = new DateTimeOffset(2026, 8, 22, 11, 13, 54, TimeSpan.Zero);
+        Assert.AreEqual(
+            250d,
+            RuntimeEvidenceRunner.CalculateNextResourceSampleTargetMilliseconds(1, 0d, previousObservedUtc));
+        Assert.AreEqual(
+            509d,
+            RuntimeEvidenceRunner.CalculateNextResourceSampleTargetMilliseconds(2, 260d, previousObservedUtc));
+        Assert.AreEqual(
+            759d,
+            RuntimeEvidenceRunner.CalculateNextResourceSampleTargetMilliseconds(3, 510d, previousObservedUtc));
+        Assert.AreEqual(
+            1_000d,
+            RuntimeEvidenceRunner.CalculateNextResourceSampleTargetMilliseconds(4, 751d, previousObservedUtc));
+        Assert.AreEqual(
+            1_449d,
+            RuntimeEvidenceRunner.CalculateNextResourceSampleTargetMilliseconds(3, 1_200d, previousObservedUtc));
+
+        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() =>
+            RuntimeEvidenceRunner.CalculateNextResourceSampleTargetMilliseconds(0, 0d, previousObservedUtc));
+        var negative = Assert.ThrowsExactly<ArgumentOutOfRangeException>(() =>
+            RuntimeEvidenceRunner.CalculateNextResourceSampleTargetMilliseconds(1, -1d, previousObservedUtc));
+        StringAssert.Contains(
+            negative.Message,
+            "Runtime resource scheduling for sample 1 failed predicate 'previous-elapsed-nonnegative'.");
+        StringAssert.Contains(
+            negative.Message,
+            "PreviousSampleIndex=0 PreviousElapsedMilliseconds=-1 PreviousObservedUtc=2026-08-22T11:13:54.0000000+00:00.");
+        var nonfinite = Assert.ThrowsExactly<ArgumentOutOfRangeException>(() =>
+            RuntimeEvidenceRunner.CalculateNextResourceSampleTargetMilliseconds(1, double.NaN, previousObservedUtc));
+        StringAssert.Contains(
+            nonfinite.Message,
+            "Runtime resource scheduling for sample 1 failed predicate 'previous-elapsed-finite'.");
+        StringAssert.Contains(
+            nonfinite.Message,
+            "PreviousSampleIndex=0 PreviousElapsedMilliseconds=NaN PreviousObservedUtc=2026-08-22T11:13:54.0000000+00:00.");
+        var aboveMaximum = Assert.ThrowsExactly<ArgumentOutOfRangeException>(() =>
+            RuntimeEvidenceRunner.CalculateNextResourceSampleTargetMilliseconds(17, 20_251d, previousObservedUtc));
+        StringAssert.Contains(
+            aboveMaximum.Message,
+            "Runtime resource scheduling for sample 17 failed predicate 'previous-elapsed-at-most-20250'.");
+        StringAssert.Contains(
+            aboveMaximum.Message,
+            "PreviousSampleIndex=16 PreviousObservedUtc=2026-08-22T11:13:54.0000000+00:00 PreviousElapsedMilliseconds=20251 MaximumElapsedMilliseconds=20250.");
+        var maximumFinite = Assert.ThrowsExactly<ArgumentOutOfRangeException>(() =>
+            RuntimeEvidenceRunner.CalculateNextResourceSampleTargetMilliseconds(1, double.MaxValue, previousObservedUtc));
+        StringAssert.Contains(
+            maximumFinite.Message,
+            "Runtime resource scheduling for sample 1 failed predicate 'previous-elapsed-at-most-20250'.");
+        StringAssert.Contains(
+            maximumFinite.Message,
+            $"PreviousSampleIndex=0 PreviousObservedUtc=2026-08-22T11:13:54.0000000+00:00 PreviousElapsedMilliseconds={double.MaxValue:R} MaximumElapsedMilliseconds=20250.");
+        var nonzeroOffset = Assert.ThrowsExactly<ArgumentOutOfRangeException>(() =>
+            RuntimeEvidenceRunner.CalculateNextResourceSampleTargetMilliseconds(
+                2,
+                250d,
+                previousObservedUtc.ToOffset(TimeSpan.FromHours(7))));
+        StringAssert.Contains(
+            nonzeroOffset.Message,
+            "Runtime resource scheduling for sample 2 failed predicate 'previous-observed-utc-zero-offset'.");
+        StringAssert.Contains(
+            nonzeroOffset.Message,
+            "PreviousSampleIndex=1 PreviousElapsedMilliseconds=250 PreviousObservedUtc=2026-08-22T18:13:54.0000000+07:00.");
+    }
+
+    [TestMethod]
+    public void RawResourceSampleSummaryAcceptsFullJitterRecoveryChain()
+    {
+        var observedUtc = DateTimeOffset.UtcNow;
+        var elapsed = Enumerable.Range(0, 81)
+            .Select(index => index switch
+            {
+                0 => 0d,
+                1 => 253d,
+                2 => 502d,
+                3 => 751d,
+                _ => index * 250d,
+            })
+            .ToArray();
+        var samples = Enumerable.Range(0, 81)
+            .Select(index => CreateResourceSample(
+                index,
+                observedUtc.AddMilliseconds(elapsed[index]),
+                10 + index,
+                20 + index,
+                100 + index,
+                200 + index,
+                elapsed[index]))
+            .ToArray();
+
+        var summary = RuntimeEvidenceRunner.SummarizeWorkingSetSamples(samples);
+
+        Assert.AreEqual(190L, summary.CombinedMaximumBytes);
+        Assert.AreEqual(20_000d, samples[^1].ElapsedMilliseconds);
+    }
+
+    [TestMethod]
     public void RawResourceSampleSummaryRejectsBrokenOrderingBindingAndRendererProof()
     {
         var observedUtc = DateTimeOffset.UtcNow;
@@ -372,10 +471,41 @@ public sealed class RuntimeEvidenceResourceLifecycleTests
             RuntimeEvidenceRunner.SummarizeWorkingSetSamples(
                 valid.Select((sample, index) =>
                     index == 1 ? sample with { Ordinal = 2 } : sample).ToArray()));
-        Assert.ThrowsExactly<ArgumentException>(() =>
+        var compressedCadence = Assert.ThrowsExactly<ArgumentException>(() =>
             RuntimeEvidenceRunner.SummarizeWorkingSetSamples(
                 valid.Select((sample, index) =>
-                    index == 1 ? sample with { ElapsedMilliseconds = 248 } : sample).ToArray()));
+                    index switch
+                    {
+                        1 => sample with { ElapsedMilliseconds = 500 },
+                        2 => sample with { ElapsedMilliseconds = 748 },
+                        _ => sample,
+                    }).ToArray()));
+        StringAssert.Contains(
+            compressedCadence.Message,
+            "failed predicate 'adjacent-elapsed-delta-at-least-249'");
+        StringAssert.Contains(
+            compressedCadence.Message,
+            "PreviousElapsedMilliseconds=500 CurrentElapsedMilliseconds=748");
+        StringAssert.Contains(
+            compressedCadence.Message,
+            $"PreviousObservedUtc={observedUtc.AddMilliseconds(250):O} CurrentObservedUtc={observedUtc.AddMilliseconds(500):O}");
+        var belowNominal = Assert.ThrowsExactly<ArgumentException>(() =>
+            RuntimeEvidenceRunner.SummarizeWorkingSetSamples(
+                valid.Select((sample, index) =>
+                    index == 2 ? sample with { ElapsedMilliseconds = 499 } : sample).ToArray()));
+        StringAssert.Contains(
+            belowNominal.Message,
+            "failed predicate 'elapsed-at-or-after-nominal-boundary'");
+        var oversizedGap = Assert.ThrowsExactly<ArgumentException>(() =>
+            RuntimeEvidenceRunner.SummarizeWorkingSetSamples(
+                valid.Select((sample, index) =>
+                    index == 2 ? sample with { ElapsedMilliseconds = 751 } : sample).ToArray()));
+        StringAssert.Contains(
+            oversizedGap.Message,
+            "failed predicate 'adjacent-elapsed-delta-at-most-500'");
+        StringAssert.Contains(
+            oversizedGap.Message,
+            "PreviousElapsedMilliseconds=250 CurrentElapsedMilliseconds=751");
         Assert.ThrowsExactly<ArgumentException>(() =>
             RuntimeEvidenceRunner.SummarizeWorkingSetSamples(
                 valid.Select((sample, index) =>
@@ -404,10 +534,80 @@ public sealed class RuntimeEvidenceResourceLifecycleTests
             RuntimeEvidenceRunner.SummarizeWorkingSetSamples(
                 valid.Select((sample, index) =>
                     sample with { ElapsedMilliseconds = index * (20_300d / 80d) }).ToArray()));
+        var finalTooLong = Assert.ThrowsExactly<ArgumentException>(() =>
+            RuntimeEvidenceRunner.SummarizeWorkingSetSamples(
+                valid.Select((sample, index) =>
+                    index switch
+                    {
+                        79 => sample with { ElapsedMilliseconds = 20_000 },
+                        80 => sample with { ElapsedMilliseconds = 20_251 },
+                        _ => sample,
+                    }).ToArray()));
+        StringAssert.Contains(
+            finalTooLong.Message,
+            "Runtime resource sample 80 failed predicate 'final-elapsed-within-20000-20250'.");
+        StringAssert.Contains(
+            finalTooLong.Message,
+            "PreviousElapsedMilliseconds=20000 CurrentElapsedMilliseconds=20251");
         Assert.ThrowsExactly<ArgumentException>(() =>
             RuntimeEvidenceRunner.SummarizeWorkingSetSamples(
                 valid.Select((sample, index) =>
                     index == 1 ? sample with { ElapsedMilliseconds = double.NaN } : sample).ToArray()));
+    }
+
+    [TestMethod]
+    public void FailedAppReportPreservesBoundedResourceSamplePredicateDiagnostic()
+    {
+        var observedUtc = DateTimeOffset.Parse(
+            "2026-08-22T11:20:55.0000000+00:00",
+            CultureInfo.InvariantCulture);
+        var samples = Enumerable.Range(0, 81)
+            .Select(index => CreateResourceSample(
+                index,
+                observedUtc.AddMilliseconds(250 * index),
+                10 + index,
+                20 + index,
+                100 + index,
+                200 + index))
+            .Select((sample, index) =>
+                index switch
+                {
+                    2 => sample with { ElapsedMilliseconds = 750 },
+                    3 => sample with { ElapsedMilliseconds = 998 },
+                    _ => sample,
+                })
+            .ToArray();
+        var exception = Assert.ThrowsExactly<ArgumentException>(() =>
+            RuntimeEvidenceRunner.SummarizeWorkingSetSamples(samples));
+        var root = Path.Combine(
+            Path.GetTempPath(),
+            $"HerdrOps-resource-sample-diagnostic-{Guid.NewGuid():N}");
+        var reportPath = Path.Combine(root, "app-runtime.json");
+        try
+        {
+            Directory.CreateDirectory(root);
+            RuntimeEvidenceRunner.WriteFailure(reportPath, observedUtc, exception);
+
+            using var report = System.Text.Json.JsonDocument.Parse(File.ReadAllText(reportPath));
+            var message = report.RootElement.GetProperty("Message").GetString();
+            Assert.IsNotNull(message);
+            Assert.AreEqual(exception.Message, message);
+            StringAssert.Contains(
+                message,
+                "Runtime resource sample 3 failed predicate 'adjacent-elapsed-delta-at-least-249'.");
+            StringAssert.Contains(
+                message,
+                "PreviousElapsedMilliseconds=750 CurrentElapsedMilliseconds=998");
+            Assert.IsFalse(message.Contains("StateSha256", StringComparison.Ordinal));
+            Assert.IsFalse(message.Contains("ExecutablePath", StringComparison.Ordinal));
+        }
+        finally
+        {
+            if (Directory.Exists(root))
+            {
+                Directory.Delete(root, recursive: true);
+            }
+        }
     }
 
     [TestMethod]
@@ -444,7 +644,8 @@ public sealed class RuntimeEvidenceResourceLifecycleTests
         long appWorkingSetBytes,
         long coreWorkingSetBytes,
         long appPrivateMemoryBytes,
-        long corePrivateMemoryBytes)
+        long corePrivateMemoryBytes,
+        double? elapsedMilliseconds = null)
     {
         var renderer = new RuntimeRenderPolicyObservation(
             $"idle-resource-sample:{ordinal}",
@@ -455,7 +656,7 @@ public sealed class RuntimeEvidenceResourceLifecycleTests
         return new RuntimeResourceSample(
             ordinal,
             observedUtc,
-            ordinal * 250d,
+            elapsedMilliseconds ?? ordinal * 250d,
             appWorkingSetBytes,
             coreWorkingSetBytes,
             checked(appWorkingSetBytes + coreWorkingSetBytes),

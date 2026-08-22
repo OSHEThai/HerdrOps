@@ -1238,11 +1238,13 @@ public sealed class RuntimeEvidenceRunner(
         RuntimeFingerprintChange? firstFingerprintChange = null;
         var connectedThroughout = true;
 
-        CaptureResourceSample();
+        var previousObservedElapsedMilliseconds = CaptureResourceSample();
         for (var sample = 1; sample <= timedSampleCount; sample++)
         {
-            var targetElapsedMilliseconds = checked(
-                sample * ResourceSampleIntervalMilliseconds);
+            var targetElapsedMilliseconds = CalculateNextResourceSampleTargetMilliseconds(
+                sample,
+                previousObservedElapsedMilliseconds,
+                resourceSamples[^1].ObservedUtc);
             while (stopwatch.Elapsed.TotalMilliseconds < targetElapsedMilliseconds)
             {
                 var remainingMilliseconds =
@@ -1252,6 +1254,7 @@ public sealed class RuntimeEvidenceRunner(
                     cancellationToken);
             }
 
+            cancellationToken.ThrowIfCancellationRequested();
             app.Refresh();
             core.Refresh();
             if (app.HasExited || core.HasExited)
@@ -1260,7 +1263,7 @@ public sealed class RuntimeEvidenceRunner(
                     "The App or Core process exited during the resource measurement.");
             }
 
-            CaptureResourceSample();
+            previousObservedElapsedMilliseconds = CaptureResourceSample();
         }
 
         stopwatch.Stop();
@@ -1342,10 +1345,11 @@ public sealed class RuntimeEvidenceRunner(
             averageCpu <= CpuTargetPercent,
             maximumWorkingSet <= WorkingSetTargetMegabytes);
 
-        void CaptureResourceSample()
+        double CaptureResourceSample()
         {
             var rendererObservation = RuntimeRenderPolicy.ObserveAndRequireSoftwareOnly(
                 $"idle-resource-sample:{resourceSampleOrdinal++}");
+            var observedElapsedMilliseconds = stopwatch.Elapsed.TotalMilliseconds;
             softwareOnlyThroughoutIdleSample &= rendererObservation.SoftwareOnlyConfirmed;
             var appWorkingSetBytes = app.WorkingSet64;
             var coreWorkingSetBytes = core.WorkingSet64;
@@ -1358,7 +1362,7 @@ public sealed class RuntimeEvidenceRunner(
             resourceSamples.Add(new RuntimeResourceSample(
                 resourceSamples.Count,
                 observedUtc,
-                stopwatch.Elapsed.TotalMilliseconds,
+                observedElapsedMilliseconds,
                 appWorkingSetBytes,
                 coreWorkingSetBytes,
                 combinedWorkingSetBytes,
@@ -1376,7 +1380,89 @@ public sealed class RuntimeEvidenceRunner(
                     sampledStartFingerprint,
                     fingerprint);
             }
+
+            return observedElapsedMilliseconds;
         }
+    }
+
+    internal static double CalculateNextResourceSampleTargetMilliseconds(
+        int sampleOrdinal,
+        double previousObservedElapsedMilliseconds,
+        DateTimeOffset previousSampleObservedUtc)
+    {
+        if (sampleOrdinal <= 0)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(sampleOrdinal),
+                "The next runtime resource sample ordinal must be positive.");
+        }
+
+        if (!double.IsFinite(previousObservedElapsedMilliseconds))
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(previousObservedElapsedMilliseconds),
+                previousObservedElapsedMilliseconds,
+                $"Runtime resource scheduling for sample {sampleOrdinal} failed predicate 'previous-elapsed-finite'. " +
+                $"PreviousSampleIndex={sampleOrdinal - 1} " +
+                $"PreviousElapsedMilliseconds={previousObservedElapsedMilliseconds.ToString("R", CultureInfo.InvariantCulture)} " +
+                $"PreviousObservedUtc={previousSampleObservedUtc.ToString("O", CultureInfo.InvariantCulture)}.");
+        }
+
+        if (previousObservedElapsedMilliseconds < 0)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(previousObservedElapsedMilliseconds),
+                previousObservedElapsedMilliseconds,
+                $"Runtime resource scheduling for sample {sampleOrdinal} failed predicate 'previous-elapsed-nonnegative'. " +
+                $"PreviousSampleIndex={sampleOrdinal - 1} " +
+                $"PreviousElapsedMilliseconds={previousObservedElapsedMilliseconds.ToString("R", CultureInfo.InvariantCulture)} " +
+                $"PreviousObservedUtc={previousSampleObservedUtc.ToString("O", CultureInfo.InvariantCulture)}.");
+        }
+
+        if (previousSampleObservedUtc.Offset != TimeSpan.Zero)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(previousSampleObservedUtc),
+                previousSampleObservedUtc,
+                $"Runtime resource scheduling for sample {sampleOrdinal} failed predicate 'previous-observed-utc-zero-offset'. " +
+                $"PreviousSampleIndex={sampleOrdinal - 1} " +
+                $"PreviousElapsedMilliseconds={previousObservedElapsedMilliseconds.ToString("R", CultureInfo.InvariantCulture)} " +
+                $"PreviousObservedUtc={previousSampleObservedUtc.ToString("O", CultureInfo.InvariantCulture)}.");
+        }
+
+        var maximumElapsedMilliseconds =
+            RuntimeEvidenceOptions.ApprovedIdleSeconds * 1000d +
+            ResourceSampleIntervalMilliseconds;
+        if (previousObservedElapsedMilliseconds > maximumElapsedMilliseconds)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(previousObservedElapsedMilliseconds),
+                previousObservedElapsedMilliseconds,
+                $"Runtime resource scheduling for sample {sampleOrdinal} failed predicate 'previous-elapsed-at-most-20250'. " +
+                $"PreviousSampleIndex={sampleOrdinal - 1} " +
+                $"PreviousObservedUtc={previousSampleObservedUtc.ToString("O", CultureInfo.InvariantCulture)} " +
+                $"PreviousElapsedMilliseconds={previousObservedElapsedMilliseconds.ToString("R", CultureInfo.InvariantCulture)} " +
+                $"MaximumElapsedMilliseconds={maximumElapsedMilliseconds.ToString("R", CultureInfo.InvariantCulture)}.");
+        }
+
+        var nominalTargetMilliseconds = checked(
+            sampleOrdinal * ResourceSampleIntervalMilliseconds);
+        var minimumAdjacentTargetMilliseconds =
+            previousObservedElapsedMilliseconds + ResourceSampleIntervalMilliseconds - 1d;
+        var targetElapsedMilliseconds =
+            Math.Max(nominalTargetMilliseconds, minimumAdjacentTargetMilliseconds);
+        if (!double.IsFinite(targetElapsedMilliseconds))
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(previousObservedElapsedMilliseconds),
+                previousObservedElapsedMilliseconds,
+                $"Runtime resource scheduling for sample {sampleOrdinal} failed predicate 'computed-target-finite'. " +
+                $"PreviousSampleIndex={sampleOrdinal - 1} " +
+                $"PreviousElapsedMilliseconds={previousObservedElapsedMilliseconds.ToString("R", CultureInfo.InvariantCulture)} " +
+                $"PreviousObservedUtc={previousSampleObservedUtc.ToString("O", CultureInfo.InvariantCulture)}.");
+        }
+
+        return targetElapsedMilliseconds;
     }
 
     internal static bool AreIdleSampleRendererObservationsValid(
@@ -1702,39 +1788,78 @@ public sealed class RuntimeEvidenceRunner(
             var sample = samples[index] ?? throw new ArgumentException(
                 $"Runtime resource sample {index} is null.",
                 nameof(samples));
-            if (sample.Ordinal != index ||
-                sample.ObservedUtc.Offset != TimeSpan.Zero ||
-                previousObservedUtc is not null && sample.ObservedUtc < previousObservedUtc.Value ||
-                !double.IsFinite(sample.ElapsedMilliseconds) ||
-                sample.ElapsedMilliseconds < 0 ||
-                index == 0 && sample.ElapsedMilliseconds > ResourceSampleIntervalMilliseconds ||
-                previousElapsedMilliseconds is not null &&
-                    (sample.ElapsedMilliseconds - previousElapsedMilliseconds.Value <
-                         ResourceSampleIntervalMilliseconds - 1 ||
-                     sample.ElapsedMilliseconds - previousElapsedMilliseconds.Value >
-                         ResourceSampleIntervalMilliseconds * 2) ||
-                sample.AppWorkingSetBytes < 0 ||
-                sample.CoreWorkingSetBytes < 0 ||
-                sample.AppPrivateMemoryBytes < 0 ||
-                sample.CorePrivateMemoryBytes < 0 ||
-                sample.CombinedWorkingSetBytes != checked(
-                    sample.AppWorkingSetBytes + sample.CoreWorkingSetBytes) ||
-                sample.RuntimeFingerprint is null ||
-                sample.RendererObservation is null ||
-                sample.RendererObservation.ObservedUtc != sample.ObservedUtc ||
-                !sample.RendererObservation.SoftwareOnlyConfirmed ||
-                !string.Equals(
-                    sample.RendererObservation.WpfProcessRenderMode,
+            void Fail(string predicate)
+            {
+                throw new ArgumentException(
+                    $"Runtime resource sample {index} failed predicate '{predicate}'. " +
+                        $"PreviousElapsedMilliseconds={FormatElapsed(previousElapsedMilliseconds)} " +
+                        $"CurrentElapsedMilliseconds={FormatElapsed(sample.ElapsedMilliseconds)} " +
+                        $"PreviousObservedUtc={FormatUtc(previousObservedUtc)} " +
+                        $"CurrentObservedUtc={FormatUtc(sample.ObservedUtc)}.",
+                    nameof(samples));
+            }
+
+            if (sample.Ordinal != index) { Fail("ordinal-equals-index"); }
+            if (sample.ObservedUtc.Offset != TimeSpan.Zero) { Fail("observed-utc-zero-offset"); }
+            if (previousObservedUtc is not null && sample.ObservedUtc < previousObservedUtc.Value)
+            {
+                Fail("observed-utc-nondecreasing");
+            }
+            if (!double.IsFinite(sample.ElapsedMilliseconds)) { Fail("elapsed-finite"); }
+            if (sample.ElapsedMilliseconds < 0) { Fail("elapsed-nonnegative"); }
+            if (index == 0 && sample.ElapsedMilliseconds > ResourceSampleIntervalMilliseconds)
+            {
+                Fail("baseline-elapsed-at-most-250");
+            }
+            if (sample.ElapsedMilliseconds < index * ResourceSampleIntervalMilliseconds)
+            {
+                Fail("elapsed-at-or-after-nominal-boundary");
+            }
+            if (previousElapsedMilliseconds is not null)
+            {
+                var elapsedDelta = sample.ElapsedMilliseconds - previousElapsedMilliseconds.Value;
+                if (elapsedDelta < ResourceSampleIntervalMilliseconds - 1)
+                {
+                    Fail("adjacent-elapsed-delta-at-least-249");
+                }
+                if (elapsedDelta > ResourceSampleIntervalMilliseconds * 2)
+                {
+                    Fail("adjacent-elapsed-delta-at-most-500");
+                }
+            }
+            if (sample.AppWorkingSetBytes < 0) { Fail("app-working-set-nonnegative"); }
+            if (sample.CoreWorkingSetBytes < 0) { Fail("core-working-set-nonnegative"); }
+            if (sample.AppPrivateMemoryBytes < 0) { Fail("app-private-memory-nonnegative"); }
+            if (sample.CorePrivateMemoryBytes < 0) { Fail("core-private-memory-nonnegative"); }
+            if (sample.CombinedWorkingSetBytes != checked(
+                    sample.AppWorkingSetBytes + sample.CoreWorkingSetBytes))
+            {
+                Fail("combined-working-set-exact-sum");
+            }
+            if (sample.RuntimeFingerprint is null) { Fail("runtime-fingerprint-present"); }
+            if (sample.RendererObservation is null) { Fail("renderer-observation-present"); }
+            var rendererObservation = sample.RendererObservation!;
+            if (rendererObservation.ObservedUtc != sample.ObservedUtc)
+            {
+                Fail("renderer-observed-utc-equals-sample");
+            }
+            if (!rendererObservation.SoftwareOnlyConfirmed)
+            {
+                Fail("renderer-software-only-confirmed");
+            }
+            if (!string.Equals(
+                    rendererObservation.WpfProcessRenderMode,
                     RuntimeRenderPolicy.ExpectedProcessRenderMode,
-                    StringComparison.Ordinal) ||
-                !string.Equals(
-                    sample.RendererObservation.Phase,
+                    StringComparison.Ordinal))
+            {
+                Fail("renderer-process-mode-exact");
+            }
+            if (!string.Equals(
+                    rendererObservation.Phase,
                     $"idle-resource-sample:{index}",
                     StringComparison.Ordinal))
             {
-                throw new ArgumentException(
-                    $"Runtime resource sample {index} is not exact, ordered, finite, or internally bound.",
-                    nameof(samples));
+                Fail("renderer-phase-exact");
             }
 
             previousObservedUtc = sample.ObservedUtc;
@@ -1748,7 +1873,11 @@ public sealed class RuntimeEvidenceRunner(
                 approvedDurationMilliseconds + ResourceSampleIntervalMilliseconds)
         {
             throw new ArgumentException(
-                "Runtime resource samples do not span the complete approved measurement duration.",
+                $"Runtime resource sample {samples.Count - 1} failed predicate 'final-elapsed-within-20000-20250'. " +
+                    $"PreviousElapsedMilliseconds={FormatElapsed(samples[^2].ElapsedMilliseconds)} " +
+                    $"CurrentElapsedMilliseconds={FormatElapsed(samples[^1].ElapsedMilliseconds)} " +
+                    $"PreviousObservedUtc={FormatUtc(samples[^2].ObservedUtc)} " +
+                    $"CurrentObservedUtc={FormatUtc(samples[^1].ObservedUtc)}.",
                 nameof(samples));
         }
 
@@ -1763,6 +1892,12 @@ public sealed class RuntimeEvidenceRunner(
             samples.Max(sample => sample.AppPrivateMemoryBytes),
             samples.Average(sample => (double)sample.CorePrivateMemoryBytes),
             samples.Max(sample => sample.CorePrivateMemoryBytes));
+
+        static string FormatElapsed(double? value) =>
+            value is null ? "NONE" : value.Value.ToString("R", CultureInfo.InvariantCulture);
+
+        static string FormatUtc(DateTimeOffset? value) =>
+            value is null ? "NONE" : value.Value.ToString("O", CultureInfo.InvariantCulture);
     }
 
     private static double ToMegabytes(double bytes) => bytes / (1024d * 1024d);
