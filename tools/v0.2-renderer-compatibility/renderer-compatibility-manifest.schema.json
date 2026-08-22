@@ -58,24 +58,24 @@
       "type": "object", "additionalProperties": false,
       "required": ["os", "graphicsAdapters", "display", "session", "supportScope"],
       "properties": {
-        "os": { "type": "object", "additionalProperties": false, "required": ["caption", "version", "build", "architecture"], "properties": { "caption": { "const": "Microsoft Windows 11 Pro Insider Preview" }, "version": { "const": "10.0.26220" }, "build": { "const": 26220 }, "architecture": { "const": "x64" } } },
-        "graphicsAdapters": { "type": "array", "minItems": 2, "maxItems": 2, "prefixItems": [{ "type": "object", "additionalProperties": false, "required": ["displayName", "pnpDeviceId", "driverVersion"], "properties": { "displayName": { "const": "Intel(R) UHD Graphics" }, "pnpDeviceId": { "const": "PCI\\VEN_8086&DEV_4688&SUBSYS_170F1025&REV_0C\\3&11583659&0&10" }, "driverVersion": { "const": "31.0.101.4146" } } }, { "type": "object", "additionalProperties": false, "required": ["displayName", "pnpDeviceId", "driverVersion"], "properties": { "displayName": { "const": "NVIDIA GeForce RTX 4050 Laptop GPU" }, "pnpDeviceId": { "const": "PCI\\VEN_10DE&DEV_28E1&SUBSYS_170F1025&REV_A1\\4&2CAD08CE&0&0008" }, "driverVersion": { "const": "32.0.16.1088" } } }] },
-        "display": { "type": "object", "additionalProperties": false, "required": ["deviceName", "physicalWidthPixels", "physicalHeightPixels", "logicalWidthPixels", "logicalHeightPixels", "desktopAppliedDpi", "scalePercent", "refreshRateHz", "monitorCount"], "properties": { "deviceName": { "const": "\\\\.\\DISPLAY1" }, "physicalWidthPixels": { "const": 2560 }, "physicalHeightPixels": { "const": 1600 }, "logicalWidthPixels": { "const": 2048 }, "logicalHeightPixels": { "const": 1280 }, "desktopAppliedDpi": { "const": 120 }, "scalePercent": { "const": 125 }, "refreshRateHz": { "const": 60 }, "monitorCount": { "const": 1 } } },
-        "session": { "type": "object", "additionalProperties": false, "required": ["kind", "name", "sessionId", "transport", "powerSource", "thermalState", "elevated", "userScope"], "properties": { "kind": { "const": "LocalConsole" }, "name": { "type": "string", "minLength": 1 }, "sessionId": { "type": "integer", "minimum": 0 }, "transport": { "const": "Physical" }, "powerSource": { "enum": ["AC", "Battery"] }, "thermalState": { "enum": ["Nominal", "Warm", "Throttled"] }, "elevated": { "const": false }, "userScope": { "const": "SingleUser" } } },
+        "os": { "type": "object", "additionalProperties": false, "required": ["caption", "version", "build", "architecture"], "properties": { "caption": { "type": "string", "minLength": 1 }, "version": { "type": "string", "minLength": 1 }, "build": { "type": "integer", "minimum": 1 }, "architecture": { "enum": ["x64", "x86", "arm64"] } } },
+        "graphicsAdapters": { "type": "array", "minItems": 1, "maxItems": 16, "items": { "type": "object", "additionalProperties": false, "required": ["displayName", "pnpDeviceId", "driverVersion"], "properties": { "displayName": { "type": "string", "minLength": 1 }, "pnpDeviceId": { "type": "string", "minLength": 1 }, "driverVersion": { "type": "string", "minLength": 1 } } } },
+        "display": { "type": "object", "additionalProperties": false, "required": ["deviceName", "physicalWidthPixels", "physicalHeightPixels", "logicalWidthPixels", "logicalHeightPixels", "desktopAppliedDpi", "scalePercent", "refreshRateHz", "monitorCount"], "properties": { "deviceName": { "type": "string", "minLength": 1 }, "physicalWidthPixels": { "type": "integer", "minimum": 1 }, "physicalHeightPixels": { "type": "integer", "minimum": 1 }, "logicalWidthPixels": { "type": "integer", "minimum": 1 }, "logicalHeightPixels": { "type": "integer", "minimum": 1 }, "desktopAppliedDpi": { "type": "integer", "minimum": 1 }, "scalePercent": { "type": "integer", "minimum": 1 }, "refreshRateHz": { "type": "integer", "minimum": 1 }, "monitorCount": { "type": "integer", "minimum": 1 } } },
+        "session": { "type": "object", "additionalProperties": false, "required": ["kind", "name", "sessionId", "transport", "powerSource", "thermalState", "elevated", "userScope"], "properties": { "kind": { "enum": ["LocalConsole", "Rdp", "Unknown"] }, "name": { "type": "string", "minLength": 1 }, "sessionId": { "type": "integer", "minimum": 0 }, "transport": { "enum": ["Physical", "Rdp", "Unknown"] }, "powerSource": { "enum": ["AC", "Battery", "Unknown"] }, "thermalState": { "enum": ["Nominal", "Warm", "Throttled", "Unknown"] }, "elevated": { "type": "boolean" }, "userScope": { "enum": ["SingleUser", "Unknown"] } } },
         "supportScope": { "type": "object", "additionalProperties": false, "required": ["supported", "excluded", "vmCleanInstallOnly", "vmRuntimeCredit"], "properties": { "supported": { "type": "array", "minItems": 7, "maxItems": 7, "prefixItems": [{"const":"windows11-x64-build26220"},{"const":"local-console"},{"const":"non-elevated"},{"const":"single-user"},{"const":"physical-display-matrix"},{"const":"ac-power"},{"const":"battery-power"}] }, "excluded": { "type": "array", "minItems": 5, "maxItems": 5, "prefixItems": [{"const":"rdp-runtime"},{"const":"vm-runtime"},{"const":"arm64"},{"const":"remote-cloud"},{"const":"multi-user"}] }, "vmCleanInstallOnly": { "const": true }, "vmRuntimeCredit": { "const": false } } }
       }
     },
     "rendererObservation": {
       "type": "object", "additionalProperties": false,
       "required": ["stage", "effectiveMode", "softwareOnlyConfirmed", "observedUtc", "proofReceipt"],
-      "properties": { "stage": { "type": "string", "minLength": 1 }, "effectiveMode": { "const": "SoftwareOnly" }, "softwareOnlyConfirmed": { "const": true }, "observedUtc": { "$ref": "#/$defs/utc" }, "proofReceipt": { "$ref": "#/$defs/jsonBinding" } }
+      "properties": { "stage": { "type": "string", "minLength": 1 }, "effectiveMode": { "enum": ["SoftwareOnly", "Hardware", "Unknown"] }, "softwareOnlyConfirmed": { "type": "boolean" }, "observedUtc": { "$ref": "#/$defs/utc" }, "proofReceipt": { "$ref": "#/$defs/jsonBinding" } }
     },
     "rendererEvidence": {
       "type": "object", "additionalProperties": false,
-      "required": ["policyId", "trigger", "fallback", "producerReport", "preFirstHwnd", "throughoutObservations"],
+      "required": ["policyId", "trigger", "fallback", "producerReport", "targetBindingReceipt", "preFirstHwnd", "throughoutObservations"],
       "properties": {
-        "policyId": { "const": "software-only-process-wide" }, "trigger": { "const": "ApprovedV02CandidatePolicy" }, "fallback": { "const": "None" }, "producerReport": { "$ref": "#/$defs/jsonBinding" },
-        "preFirstHwnd": { "type": "object", "additionalProperties": false, "required": ["hasAnyHwnd", "observation", "firstHwndCreatedUtc"], "properties": { "hasAnyHwnd": { "const": false }, "observation": { "$ref": "#/$defs/rendererObservation" }, "firstHwndCreatedUtc": { "$ref": "#/$defs/utc" } } },
+        "policyId": { "const": "software-only-process-wide" }, "trigger": { "const": "ApprovedV02CandidatePolicy" }, "fallback": { "const": "None" }, "producerReport": { "$ref": "#/$defs/jsonBinding" }, "targetBindingReceipt": { "anyOf": [{ "$ref": "#/$defs/jsonBinding" }, { "type": "null" }] },
+        "preFirstHwnd": { "type": "object", "additionalProperties": false, "required": ["hasAnyHwnd", "observation", "firstHwndCreatedUtc"], "properties": { "hasAnyHwnd": { "type": "boolean" }, "observation": { "$ref": "#/$defs/rendererObservation" }, "firstHwndCreatedUtc": { "$ref": "#/$defs/utc" } } },
         "throughoutObservations": { "type": "array", "minItems": 8, "maxItems": 8, "items": { "$ref": "#/$defs/rendererObservation" } }
       }
     },
@@ -128,8 +128,8 @@
     },
     "boundary": {
       "type": "object", "additionalProperties": false,
-      "required": ["packagedCompatibility", "humanReview", "actualHerdrRuntime", "release", "creditGranted"],
-      "properties": { "packagedCompatibility": { "const": "CANDIDATE" }, "humanReview": { "enum": ["GO", "NO_GO", "NOT_OBSERVED"] }, "actualHerdrRuntime": { "const": "NOT_OBSERVED" }, "release": { "const": "NOT_OBSERVED" }, "creditGranted": { "const": false } }
+      "required": ["packagedCompatibility", "captureMode", "humanReview", "actualHerdrRuntime", "release", "creditGranted"],
+      "properties": { "packagedCompatibility": { "const": "CANDIDATE" }, "captureMode": { "enum": ["LiveOperator", "SyntheticSelfTest"] }, "humanReview": { "enum": ["GO", "NO_GO", "NOT_OBSERVED"] }, "actualHerdrRuntime": { "const": "NOT_OBSERVED" }, "release": { "const": "NOT_OBSERVED" }, "creditGranted": { "const": false } }
     }
   }
 }
