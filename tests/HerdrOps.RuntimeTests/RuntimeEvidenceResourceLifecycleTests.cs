@@ -118,31 +118,52 @@ public sealed class RuntimeEvidenceResourceLifecycleTests
         {
             using var state = new LiveDashboardState();
             var window = new MainWindow(state);
-            window.Show();
-            window.UpdateLayout();
+            try
+            {
+                window.Show();
+                window.UpdateLayout();
 
-            var observed = RuntimeEvidenceRunner.ObserveHostAfterMainWindowShown(window);
-            var wpfDpi = VisualTreeHelper.GetDpi(window);
-            var windowHandle = new WindowInteropHelper(window).Handle;
-            Assert.AreNotEqual(IntPtr.Zero, windowHandle);
-            var windowDisplay = System.Windows.Forms.Screen.FromHandle(windowHandle);
-            TestContext.WriteLine(
-                $"DesktopAppliedDpi={observed.DesktopAppliedDpi}; MainWindowDpi={observed.MainWindowDpiX}x{observed.MainWindowDpiY}; WindowDisplay={observed.WindowDisplayDeviceName}; LogicalBounds={observed.WindowDisplayLogicalWidthPixels}x{observed.WindowDisplayLogicalHeightPixels}");
+                var observed = RuntimeEvidenceRunner.ObserveHostAfterMainWindowShown(window);
+                var wpfDpi = VisualTreeHelper.GetDpi(window);
+                var windowHandle = new WindowInteropHelper(window).Handle;
+                Assert.IsTrue(window.IsVisible);
+                Assert.AreNotEqual(IntPtr.Zero, windowHandle);
+                var windowDisplay = System.Windows.Forms.Screen.FromHandle(windowHandle);
+                var expectedLogicalWidth =
+                    (int)Math.Round(
+                        windowDisplay.Bounds.Width * 96d / wpfDpi.PixelsPerInchX,
+                        MidpointRounding.AwayFromZero);
+                var expectedLogicalHeight =
+                    (int)Math.Round(
+                        windowDisplay.Bounds.Height * 96d / wpfDpi.PixelsPerInchY,
+                        MidpointRounding.AwayFromZero);
+                using var windowMetrics = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(
+                    @"Control Panel\Desktop\WindowMetrics",
+                    writable: false);
+                var expectedDesktopAppliedDpi = Convert.ToInt32(
+                    windowMetrics?.GetValue("AppliedDPI") ??
+                        throw new AssertFailedException("HKCU WindowMetrics AppliedDPI is unavailable."),
+                    CultureInfo.InvariantCulture);
+                TestContext.WriteLine(
+                    $"DesktopAppliedDpi={observed.DesktopAppliedDpi}; MainWindowDpi={observed.MainWindowDpiX}x{observed.MainWindowDpiY}; WindowDisplay={observed.WindowDisplayDeviceName}; PhysicalBounds={windowDisplay.Bounds.Width}x{windowDisplay.Bounds.Height}; ExpectedLogicalBounds={expectedLogicalWidth}x{expectedLogicalHeight}; LogicalBounds={observed.WindowDisplayLogicalWidthPixels}x{observed.WindowDisplayLogicalHeightPixels}");
 
-            Assert.AreEqual(wpfDpi.PixelsPerInchX, observed.MainWindowDpiX, 0.001);
-            Assert.AreEqual(wpfDpi.PixelsPerInchY, observed.MainWindowDpiY, 0.001);
-            Assert.AreEqual(windowDisplay.DeviceName, observed.WindowDisplayDeviceName);
-            Assert.AreEqual(
-                (int)Math.Round(windowDisplay.Bounds.Width * 96d / wpfDpi.PixelsPerInchX),
-                observed.WindowDisplayLogicalWidthPixels);
-            Assert.AreEqual(
-                (int)Math.Round(windowDisplay.Bounds.Height * 96d / wpfDpi.PixelsPerInchY),
-                observed.WindowDisplayLogicalHeightPixels);
-            Assert.AreEqual(2048, observed.WindowDisplayLogicalWidthPixels);
-            Assert.AreEqual(1280, observed.WindowDisplayLogicalHeightPixels);
-            Assert.IsGreaterThan(0, observed.DesktopAppliedDpi);
-
-            window.Close();
+                Assert.IsTrue(double.IsFinite(wpfDpi.PixelsPerInchX));
+                Assert.IsTrue(double.IsFinite(wpfDpi.PixelsPerInchY));
+                Assert.IsGreaterThan(0d, wpfDpi.PixelsPerInchX);
+                Assert.IsGreaterThan(0d, wpfDpi.PixelsPerInchY);
+                Assert.AreEqual(Math.Round(wpfDpi.PixelsPerInchX, 3), observed.MainWindowDpiX);
+                Assert.AreEqual(Math.Round(wpfDpi.PixelsPerInchY, 3), observed.MainWindowDpiY);
+                Assert.AreEqual(windowDisplay.DeviceName, observed.WindowDisplayDeviceName);
+                Assert.AreEqual(expectedLogicalWidth, observed.WindowDisplayLogicalWidthPixels);
+                Assert.AreEqual(expectedLogicalHeight, observed.WindowDisplayLogicalHeightPixels);
+                Assert.IsGreaterThan(0, observed.WindowDisplayLogicalWidthPixels);
+                Assert.IsGreaterThan(0, observed.WindowDisplayLogicalHeightPixels);
+                Assert.AreEqual(expectedDesktopAppliedDpi, observed.DesktopAppliedDpi);
+            }
+            finally
+            {
+                window.Close();
+            }
         }, TimeSpan.FromSeconds(30));
     }
 
@@ -237,10 +258,11 @@ public sealed class RuntimeEvidenceResourceLifecycleTests
                 RuntimeEvidenceOptions.ApprovedProfileId,
                 RuntimeEvidenceOptions.ApprovedProfileSha256);
             var validBinding = RuntimeEvidenceProducerBinding.ObserveBeforeFirstWindow(options);
+            using var state = new LiveDashboardState();
+            MainWindow? window = null;
             try
             {
-                using var state = new LiveDashboardState();
-                var window = new MainWindow(state);
+                window = new MainWindow(state);
                 window.Show();
                 _ = new RuntimeEvidenceRunner(state, window, options, validBinding);
 
@@ -323,10 +345,10 @@ public sealed class RuntimeEvidenceResourceLifecycleTests
                                 ObservedUtc = validBinding.Startup.ObservedUtc.AddTicks(-1),
                             },
                         }));
-                window.Close();
             }
             finally
             {
+                window?.Close();
                 validBinding.LanguageChangeTracker!.Dispose();
             }
         }, TimeSpan.FromSeconds(30));
