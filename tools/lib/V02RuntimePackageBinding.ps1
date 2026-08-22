@@ -1,6 +1,7 @@
 #requires -Version 5.1
 
 Set-StrictMode -Version Latest
+New-Variable -Scope Script -Name V02GovernedPassingTestCount -Value 888 -Option Constant
 if (-not (Get-Variable -Scope Script -Name V02RuntimePackageBindingAfterValidatorForTest -ErrorAction SilentlyContinue)) { $script:V02RuntimePackageBindingAfterValidatorForTest = $null }
 if (-not (Get-Variable -Scope Script -Name V02TrxAfterSelectionForTest -ErrorAction SilentlyContinue)) { $script:V02TrxAfterSelectionForTest = $null }
 
@@ -234,7 +235,8 @@ function Save-V02FreshTrxEvidence {
         $total += [int]$counters.total; $passed += [int]$counters.passed; $failed += [int]$counters.failed
         $entries += [pscustomobject][ordered]@{ Name=$file.Name; Bytes=[int64]$copyBytes.Length; Sha256=$copyHash; LastWriteUtc=$file.LastWriteUtc.ToString('O') }
     }
-    if ($total -ne 885 -or $failed -ne 0 -or $passed -ne 885) {
+    if ($total -ne $script:V02GovernedPassingTestCount -or $failed -ne 0 -or
+        $passed -ne $script:V02GovernedPassingTestCount) {
         throw "Fresh test counters are not all passing: total=$total passed=$passed failed=$failed"
     }
     $receipt = [pscustomobject][ordered]@{ SchemaVersion=1; SelectionStartedUtc=$StartedUtc.ToUniversalTime().ToString('O'); FileCount=4; Total=$total; Passed=$passed; Failed=$failed; Files=$entries }

@@ -26,22 +26,30 @@ Test-Case 'blank target Agent session attestation fails closed' { New-V02TargetA
 Test-Case 'multiline target Agent session attestation fails closed' { New-V02TargetAgentSessionAttestation "a`nb" } $true
 Test-Case 'operator attestation boundary is explicit' { $a=New-V02TargetAgentSessionAttestation 'opencode:session-1';if($a.EvidenceSource -cne 'OperatorAttestation' -or $a.ObservableByGate -ne $false){throw 'Attestation boundary changed.'} }
 Test-Case 'missing package binding inputs fail closed before validation' { Resolve-V02RuntimePackageBinding -IdentityPath 'Z:\definitely-missing-v02-receipt.json' -ArchivePath 'Z:\definitely-missing-v02.zip' -PackageRoot 'Z:\definitely-missing-v02-root' -RepositoryRoot $PSScriptRoot -ProfilePath $PSCommandPath -ExpectedSourceCommit ('1'*40) -ExpectedSourceTree ('2'*40) } $true
+Test-Case 'governed passing-test count is exact current aggregate' { if($script:V02GovernedPassingTestCount-ne 888){throw "Governed passing-test count drifted: $script:V02GovernedPassingTestCount"} }
 
 $temp = Join-Path ([IO.Path]::GetTempPath()) ('v02-trx-binding-' + [guid]::NewGuid().ToString('N'))
 try {
     $results=Join-Path $temp 'results';$evidence=Join-Path $temp 'evidence';New-Item -ItemType Directory $results,$evidence|Out-Null
     $started=[DateTime]::UtcNow.AddSeconds(-1)
     $template='<?xml version="1.0"?><TestRun><ResultSummary><Counters total="{0}" passed="{0}" failed="0" /></ResultSummary></TestRun>'
-    $counts=@(222,221,221,221);1..4|ForEach-Object{[IO.File]::WriteAllText((Join-Path $results "test$_.trx"),($template -f $counts[$_-1]))}
-    Test-Case 'four fresh passing TRX files are preserved with receipt' { $x=Save-V02FreshTrxEvidence $results $started $evidence;if($x.Passed-ne 885-or-not(Test-Path -LiteralPath $x.ReceiptPath)){throw 'TRX receipt missing.'};foreach($f in $x.Files){Assert-V02RuntimeBindingSha256 $f.Sha256 'TRX hash'} }
+    $counts=@(222,222,222,222);1..4|ForEach-Object{[IO.File]::WriteAllText((Join-Path $results "test$_.trx"),($template -f $counts[$_-1]))}
+    Test-Case 'four fresh passing TRX files are preserved with receipt' { $x=Save-V02FreshTrxEvidence $results $started $evidence;if($x.Total-ne $script:V02GovernedPassingTestCount-or$x.Passed-ne $script:V02GovernedPassingTestCount-or$x.Failed-ne 0-or-not(Test-Path -LiteralPath $x.ReceiptPath)){throw 'TRX receipt missing or counters drifted.'};foreach($f in $x.Files){Assert-V02RuntimeBindingSha256 $f.Sha256 'TRX hash'} }
     Test-Case 'existing TRX evidence directory fails closed' { Save-V02FreshTrxEvidence $results $started $evidence } $true
     Remove-Item -LiteralPath (Join-Path $evidence 'test-results') -Recurse -Force
+    $staleCounts=@(222,221,221,221);1..4|ForEach-Object{[IO.File]::WriteAllText((Join-Path $results "test$_.trx"),($template -f $staleCounts[$_-1]))}
+    Test-Case 'stale 885-test aggregate fails closed' { Save-V02FreshTrxEvidence $results $started $evidence } $true
+    if(Test-Path -LiteralPath (Join-Path $evidence 'test-results')){Remove-Item -LiteralPath (Join-Path $evidence 'test-results') -Recurse -Force}
+    1..4|ForEach-Object{[IO.File]::WriteAllText((Join-Path $results "test$_.trx"),($template -f $counts[$_-1]))}
     Remove-Item -LiteralPath (Join-Path $results 'test4.trx')
     Test-Case 'three fresh TRX files fail closed' { Save-V02FreshTrxEvidence $results $started $evidence } $true
-    [IO.File]::WriteAllText((Join-Path $results 'test4.trx'),(($template -f 221).Replace('passed="221"','passed="220"').Replace('failed="0"','failed="1"')))
+    [IO.File]::WriteAllText((Join-Path $results 'test4.trx'),(($template -f 222).Replace('passed="222"','passed="221"').Replace('failed="0"','failed="1"')))
     Test-Case 'failed TRX counter fails closed' { Save-V02FreshTrxEvidence $results $started $evidence } $true
     if(Test-Path -LiteralPath (Join-Path $evidence 'test-results')){Remove-Item -LiteralPath (Join-Path $evidence 'test-results') -Recurse -Force}
-    [IO.File]::WriteAllText((Join-Path $results 'test4.trx'),($template -f 221))
+    [IO.File]::WriteAllText((Join-Path $results 'test4.trx'),(($template -f 222).Replace('passed="222"','passed="221"').Replace('failed="0"','failed="0" notExecuted="1"')))
+    Test-Case 'skipped TRX counter fails closed' { Save-V02FreshTrxEvidence $results $started $evidence } $true
+    if(Test-Path -LiteralPath (Join-Path $evidence 'test-results')){Remove-Item -LiteralPath (Join-Path $evidence 'test-results') -Recurse -Force}
+    [IO.File]::WriteAllText((Join-Path $results 'test4.trx'),($template -f 222))
     $script:V02TrxAfterSelectionForTest={ [IO.File]::AppendAllText((Join-Path $results 'test1.trx'),' ') }
     try { Test-Case 'TRX mutation after selection fails closed' { Save-V02FreshTrxEvidence $results $started $evidence } $true }
     finally { $script:V02TrxAfterSelectionForTest=$null;[IO.File]::WriteAllText((Join-Path $results 'test1.trx'),($template -f 222)) }

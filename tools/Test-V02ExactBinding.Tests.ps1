@@ -90,7 +90,12 @@ Assert-SourceContains -Path $compositeRuntime -Text 'CoreSha256:' -Description '
 Assert-SourceContains -Path $runtimePackageBinding -Text "'tools\packaging\v0.2\Test-V02PackageIdentity.ps1'" -Description 'Runtime binding calls the committed v0.2 package validator'
 Assert-SourceContains -Path $runtimePackageBinding -Text "EvidenceSource = 'OperatorAttestation'" -Description 'Unobservable native Agent/session identity has an explicit attestation boundary'
 Assert-SourceContains -Path $runtimePackageBinding -Text 'Invoke-V02CommittedPackageValidator -ValidatorPath $Binding.ValidatorPath' -Description 'Finalization re-runs the entire committed package validator'
-Assert-SourceContains -Path $runtimePackageBinding -Text '$total -ne 885' -Description 'TRX preservation requires the exact current 885-test aggregate'
+Assert-SourceContains -Path $runtimePackageBinding -Text 'New-Variable -Scope Script -Name V02GovernedPassingTestCount -Value 888 -Option Constant' -Description 'TRX preservation declares the governed exact current 888-test aggregate as a constant'
+Assert-SourceContains -Path $runtimePackageBinding -Text '$total -ne $script:V02GovernedPassingTestCount' -Description 'TRX preservation checks total against the governed test count'
+Assert-SourceContains -Path $runtimePackageBinding -Text '$passed -ne $script:V02GovernedPassingTestCount' -Description 'TRX preservation checks passing tests against the governed test count'
+Assert-SourceContains -Path $runtimePackageBindingTests -Text '$script:V02GovernedPassingTestCount-ne 888' -Description 'Runtime binding tests fail visibly when the governed count drifts'
+Assert-SourceContains -Path $runtimePackageBindingTests -Text "'stale 885-test aggregate fails closed'" -Description 'Runtime binding tests reject the superseded 885-test aggregate'
+Assert-SourceContains -Path $runtimePackageBindingTests -Text "'skipped TRX counter fails closed'" -Description 'Runtime binding tests preserve the skipped-test fail-closed invariant'
 Assert-SourceContains -Path $runtimePackageBinding -Text '[IO.FileShare]::Read' -Description 'TRX selection uses a held source stream that denies write/delete sharing'
 
 Assert-SourceContains `
