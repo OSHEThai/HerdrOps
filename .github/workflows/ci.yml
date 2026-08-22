@@ -508,7 +508,7 @@ jobs:
             $reports = @(./tools/release/Test-V10ReleaseReadiness.ps1)
             if ($reports.Count -ne 1) { throw "Release-readiness gate (PowerShell 7) returned $($reports.Count) objects; expected exactly 1." }
             $report = $reports[0]
-            if ([int]$report.AssertionCount -ne 47) { throw "Release-readiness gate (PowerShell 7) AssertionCount=$($report.AssertionCount); expected 47." }
+            if ([int]$report.AssertionCount -ne 49) { throw "Release-readiness gate (PowerShell 7) AssertionCount=$($report.AssertionCount); expected 49." }
             if ([string]$report.EvidenceClass -cne 'Static/Synthetic') { throw 'Release-readiness gate (PowerShell 7) did not return a Static/Synthetic PASS report.' }
             foreach ($boundary in @('CleanMachine', 'Runtime', 'Human', 'Release')) {
               if ([string]$report.$boundary -cne 'NOT OBSERVED') { throw "Release-readiness gate (PowerShell 7) boundary '$boundary' was not NOT OBSERVED." }
@@ -536,7 +536,7 @@ jobs:
             $reports = @(& .\tools\release\Test-V10ReleaseReadiness.ps1)
             if ($reports.Count -ne 1) { throw "Release-readiness gate (Windows PowerShell 5.1) returned $($reports.Count) objects; expected exactly 1." }
             $report = $reports[0]
-            if ([int]$report.AssertionCount -ne 47) { throw "Release-readiness gate (Windows PowerShell 5.1) AssertionCount=$($report.AssertionCount); expected 47." }
+            if ([int]$report.AssertionCount -ne 49) { throw "Release-readiness gate (Windows PowerShell 5.1) AssertionCount=$($report.AssertionCount); expected 49." }
             if ([string]$report.EvidenceClass -cne 'Static/Synthetic') { throw 'Release-readiness gate (Windows PowerShell 5.1) did not return a Static/Synthetic PASS report.' }
             foreach ($boundary in @('CleanMachine', 'Runtime', 'Human', 'Release')) {
               if ([string]$report.$boundary -cne 'NOT OBSERVED') { throw "Release-readiness gate (Windows PowerShell 5.1) boundary '$boundary' was not NOT OBSERVED." }
@@ -562,7 +562,7 @@ jobs:
             if ($packaging -notmatch ([regex]::Escape($stage))) { throw "Issue #38 packaging fault-injection stage '$stage' was removed from Packaging.Common.ps1." }
           }
           if ($packaging -notmatch '\$moveAttempts\s*=\s*5') { throw 'Issue #38 packaging destination-move retry loop (moveAttempts = 5) was removed from Packaging.Common.ps1.' }
-          if ($packaging -notmatch '\$TimeoutMilliseconds\s*=\s*60000') { throw 'Issue #38 bounded 60000 ms cold-start MSBuild timeout was removed from Packaging.Common.ps1.' }
+          if ($packaging -notmatch '\$TimeoutMilliseconds\s*=\s*120000') { throw 'Issue #38 bounded 120000 ms cold-start MSBuild timeout was removed from Packaging.Common.ps1.' }
 
       - name: Run v0.7 lifecycle implementation gate deterministic self-test (pwsh)
         shell: pwsh
