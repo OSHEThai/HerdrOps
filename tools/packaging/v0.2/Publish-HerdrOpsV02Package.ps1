@@ -1,4 +1,13 @@
 #requires -Version 5.1
+<#
+.SYNOPSIS
+Builds the fail-closed HerdrOps v0.2 package preparation output.
+
+.PARAMETER OutputRoot
+Exact destination directory for the atomic package generation. The path must not
+already exist, including as an empty directory; this preserves caller-owned paths
+and allows the validated staging directory to be committed with one directory move.
+#>
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)][string]$OutputRoot,
@@ -25,8 +34,7 @@ $safeOutputRoot = Assert-SafeDestination -Path $OutputRoot -AllowRepositoryChild
 Assert-V02PackagingPathsDoNotOverlap -Paths @([pscustomobject]@{Name='repository root';Path=$repositoryRoot},[pscustomobject]@{Name='output root';Path=$safeOutputRoot})
 $outputRootExistedBefore = Test-Path -LiteralPath $safeOutputRoot
 if ($outputRootExistedBefore) {
-    Assert-V02TreeNoReparse -Path $safeOutputRoot
-    if (@(Get-ChildItem -LiteralPath $safeOutputRoot -Force).Count -ne 0) { throw "Output root must be missing or empty; refusing to overwrite: $safeOutputRoot" }
+    throw "OutputRoot must not already exist, including as an empty directory; refusing to modify caller-owned path: $safeOutputRoot"
 }
 $sourceBefore = Get-V02GitIdentity -RepositoryRoot $repositoryRoot -RequireClean
 $publishWorkRoot = New-PackagingTempDirectory -Prefix 'HerdrOps-V02Publish-'

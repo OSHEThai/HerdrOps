@@ -567,7 +567,7 @@ try {
     Invoke-Case 'publisher rejects nonempty output and preserves sentinel' {
         $nonempty = Join-Path $testRoot 'nonempty-output'; New-Item -ItemType Directory $nonempty -Force | Out-Null
         $sentinel = Join-Path $nonempty 'sentinel.keep'; Put-Bytes $sentinel ([byte[]](4,5,6))
-        Assert-Throws { & (Join-Path $PSScriptRoot 'Publish-HerdrOpsV02Package.ps1') -OutputRoot $nonempty -RepositoryRoot $repo -ProfilePath $profilePath -TestInjectPrimaryFailure } 'missing or empty|overwrite'
+        Assert-Throws { & (Join-Path $PSScriptRoot 'Publish-HerdrOpsV02Package.ps1') -OutputRoot $nonempty -RepositoryRoot $repo -ProfilePath $profilePath -TestInjectPrimaryFailure } 'must not already exist|caller-owned'
         if (-not (Test-Path -LiteralPath $sentinel)) { throw 'Nonempty output sentinel was removed.' }
     }
 
@@ -603,9 +603,10 @@ try {
         Remove-Item -LiteralPath $raceRoot -Recurse -Force
     }
 
-    Invoke-Case 'caller-owned empty publish output survives failure' {
+    Invoke-Case 'pre-existing empty OutputRoot is rejected before fake publisher and remains unchanged' {
         $emptyOutput = Join-Path $testRoot 'caller-empty-output'; New-Item -ItemType Directory $emptyOutput -Force | Out-Null
-        Assert-Throws { & (Join-Path $PSScriptRoot 'Publish-HerdrOpsV02Package.ps1') -OutputRoot $emptyOutput -RepositoryRoot $repo -ProfilePath $profilePath -TestInjectPrimaryFailure } 'Injected packaging primary'
+        $unresolvableFakeDotnet = Join-Path $testRoot 'must-not-be-resolved-or-run.exe'
+        Assert-Throws { & (Join-Path $PSScriptRoot 'Publish-HerdrOpsV02Package.ps1') -OutputRoot $emptyOutput -RepositoryRoot $repo -ProfilePath $profilePath -TestDotnetCommandPath $unresolvableFakeDotnet -TestInjectPrimaryFailure } 'must not already exist|caller-owned'
         if (-not (Test-Path -LiteralPath $emptyOutput -PathType Container) -or @(Get-ChildItem -LiteralPath $emptyOutput -Force).Count -ne 0) { throw 'Caller-owned empty output was not preserved exactly.' }
     }
 
