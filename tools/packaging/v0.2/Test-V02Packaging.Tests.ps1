@@ -576,6 +576,76 @@ try {
         Assert-Throws { & (Join-Path $PSScriptRoot 'Uninstall-HerdrOpsV02Package.ps1') -InstallRoot $installRoot -UserDataRoot $userDataRoot -RepositoryRoot $repo -ProfilePath $profilePath -MockRegistryHive $registry -TestFaultInjectionStage AfterUninstallMove -AllowElevatedForTesting } 'after directory move'
         if (-not (Test-Path -LiteralPath (Join-Path $installRoot 'identity.json')) -or $registry.HerdrOps -cne 'bound-startup') { throw 'Uninstall transaction rollback was incomplete.' }
     }
+
+    Invoke-Case 'default per-user production paths work under isolated LOCALAPPDATA and cleanly uninstall' {
+        $oldLocalAppData = $env:LOCALAPPDATA
+        $isolatedLocalAppData = Join-Path $testRoot 'isolated-localappdata'
+        $isolatedRegistry = @{}
+        $env:LOCALAPPDATA = $isolatedLocalAppData
+        try {
+            $result = & (Join-Path $PSScriptRoot 'Install-HerdrOpsV02Package.ps1') -IdentityReceiptPath $receiptPath -ArchivePath $archivePath -RepositoryRoot $repo -ProfilePath $profilePath -MockRegistryHive $isolatedRegistry -AllowElevatedForTesting
+            $expectedInstall = Join-Path $isolatedLocalAppData 'Programs\HerdrOps'
+            if (-not [StringComparer]::OrdinalIgnoreCase.Equals([string]$result.InstallRoot,[IO.Path]::GetFullPath($expectedInstall))) { throw 'Default install root was not the canonical per-user path.' }
+            $uninstall = & (Join-Path $PSScriptRoot 'Uninstall-HerdrOpsV02Package.ps1') -RepositoryRoot $repo -ProfilePath $profilePath -MockRegistryHive $isolatedRegistry -AllowElevatedForTesting
+            if ($uninstall.Status -cne 'Uninstalled' -or (Test-Path -LiteralPath $expectedInstall)) { throw 'Default per-user install did not cleanly uninstall.' }
+        } finally {
+            $env:LOCALAPPDATA = $oldLocalAppData
+        }
+    }
+
+    Invoke-Case 'concurrent target appearance is never deleted as transaction-owned' {
+        $raceRoot = Join-Path $testRoot 'race-install'
+        Assert-Throws {
+            & (Join-Path $PSScriptRoot 'Install-HerdrOpsV02Package.ps1') -IdentityReceiptPath $receiptPath -ArchivePath $archivePath -InstallRoot $raceRoot -UserDataRoot $userDataRoot -RepositoryRoot $repo -ProfilePath $profilePath -TestConcurrentTargetAppearance -AllowElevatedForTesting
+        } 'already exists|Cannot create'
+        $raceSentinel = Join-Path $raceRoot 'unowned-race-sentinel.keep'
+        if (-not (Test-Path -LiteralPath $raceSentinel -PathType Leaf) -or [IO.File]::ReadAllText($raceSentinel) -cne 'UNOWNED') { throw 'Concurrent unowned target was deleted or modified.' }
+        Remove-Item -LiteralPath $raceRoot -Recurse -Force
+    }
+
+    Invoke-Case 'caller-owned empty publish output survives failure' {
+        $emptyOutput = Join-Path $testRoot 'caller-empty-output'; New-Item -ItemType Directory $emptyOutput -Force | Out-Null
+        Assert-Throws { & (Join-Path $PSScriptRoot 'Publish-HerdrOpsV02Package.ps1') -OutputRoot $emptyOutput -RepositoryRoot $repo -ProfilePath $profilePath -TestInjectPrimaryFailure } 'Injected packaging primary'
+        if (-not (Test-Path -LiteralPath $emptyOutput -PathType Container) -or @(Get-ChildItem -LiteralPath $emptyOutput -Force).Count -ne 0) { throw 'Caller-owned empty output was not preserved exactly.' }
+    }
+
+    Invoke-Case 'real HKCU Run value is restored on install and uninstall faults' {
+        $valueName = 'HerdrOps-Test-' + [Guid]::NewGuid().ToString('N')
+        $originalState = Get-V02UserStartupState -ValueName $valueName
+        $priorState = [pscustomobject][ordered]@{Exists=$true;Value='"C:\prior-herdrops-test.exe" --prior';Kind='String'}
+        $registryInstall = Join-Path $testRoot 'real-registry-install'
+        try {
+            Restore-V02UserStartupState -State $priorState -ValueName $valueName
+            Assert-Throws {
+                & (Join-Path $PSScriptRoot 'Install-HerdrOpsV02Package.ps1') -IdentityReceiptPath $receiptPath -ArchivePath $archivePath -InstallRoot $registryInstall -UserDataRoot $userDataRoot -RepositoryRoot $repo -ProfilePath $profilePath -RegisterStartup -StartupValueName $valueName -TestFaultInjectionStage AfterStartup -AllowElevatedForTesting
+            } 'after startup mutation'
+            $afterInstallFault = Get-V02UserStartupState -ValueName $valueName
+            if (-not $afterInstallFault.Exists -or [string]$afterInstallFault.Value -cne [string]$priorState.Value) { throw 'Real HKCU Run value was not restored after install fault.' }
+
+            $null = & (Join-Path $PSScriptRoot 'Install-HerdrOpsV02Package.ps1') -IdentityReceiptPath $receiptPath -ArchivePath $archivePath -InstallRoot $registryInstall -UserDataRoot $userDataRoot -RepositoryRoot $repo -ProfilePath $profilePath -RegisterStartup -StartupValueName $valueName -AllowElevatedForTesting
+            $installedStartup = Get-V02UserStartupState -ValueName $valueName
+            Assert-Throws {
+                & (Join-Path $PSScriptRoot 'Uninstall-HerdrOpsV02Package.ps1') -InstallRoot $registryInstall -UserDataRoot $userDataRoot -RepositoryRoot $repo -ProfilePath $profilePath -StartupValueName $valueName -TestFaultInjectionStage AfterUninstallMove -AllowElevatedForTesting
+            } 'after directory move'
+            $afterUninstallFault = Get-V02UserStartupState -ValueName $valueName
+            if (-not $afterUninstallFault.Exists -or [string]$afterUninstallFault.Value -cne [string]$installedStartup.Value) { throw 'Real HKCU Run value was not restored after uninstall fault.' }
+            $null = & (Join-Path $PSScriptRoot 'Uninstall-HerdrOpsV02Package.ps1') -InstallRoot $registryInstall -UserDataRoot $userDataRoot -RepositoryRoot $repo -ProfilePath $profilePath -StartupValueName $valueName -AllowElevatedForTesting
+        } finally {
+            Restore-V02UserStartupState -State $originalState -ValueName $valueName
+        }
+    }
+
+    Invoke-Case 'partial retirement never restores partially deleted installation bytes' {
+        $partialRoot = Join-Path $testRoot 'partial-retirement-install'; $registry=@{}
+        $null = & (Join-Path $PSScriptRoot 'Install-HerdrOpsV02Package.ps1') -IdentityReceiptPath $receiptPath -ArchivePath $archivePath -InstallRoot $partialRoot -UserDataRoot $userDataRoot -RepositoryRoot $repo -ProfilePath $profilePath -RegisterStartup -MockRegistryHive $registry -AllowElevatedForTesting
+        Assert-Throws {
+            & (Join-Path $PSScriptRoot 'Uninstall-HerdrOpsV02Package.ps1') -InstallRoot $partialRoot -UserDataRoot $userDataRoot -RepositoryRoot $repo -ProfilePath $profilePath -MockRegistryHive $registry -TestFaultInjectionStage DuringRetirement -AllowElevatedForTesting
+        } 'irreversible retirement'
+        if (Test-Path -LiteralPath $partialRoot) { throw 'Partially deleted retired bytes were restored to the canonical install root.' }
+        if ($registry.ContainsKey('HerdrOps')) { throw 'Startup was restored after irreversible retirement began.' }
+        $retired = @(Get-ChildItem -LiteralPath (Split-Path $partialRoot -Parent) -Directory -Force | Where-Object Name -Like '.partial-retirement-install.uninstall-*')
+        if ($retired.Count -ne 0) { throw 'Partial retirement transaction directory was not cleaned.' }
+    }
 } finally {
     if (Test-Path -LiteralPath $testRoot) {
         Remove-PackagingTempDirectory -Path $testRoot

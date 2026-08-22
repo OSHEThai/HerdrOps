@@ -28,8 +28,8 @@ if(-not(Test-Path -LiteralPath $safeInstallRoot)){
 }
 if(-not(Test-Path -LiteralPath $safeInstallRoot -PathType Container)){throw "Install target is not a directory: $safeInstallRoot"}
 $workRoot=New-PackagingTempDirectory -Prefix 'HerdrOps-V02Uninstall-'
-$staging=$null;$hadStartup=$false;$oldStartup=$null
-if($null -ne $MockRegistryHive){$hadStartup=$MockRegistryHive.ContainsKey($StartupValueName);if($hadStartup){$oldStartup=$MockRegistryHive[$StartupValueName]}}
+$staging=$null;$retirementStarted=$false
+$startupBefore=Get-V02UserStartupState -ValueName $StartupValueName -MockRegistryHive $MockRegistryHive
 $result=Invoke-PackagingOperationWithCleanup -Operation {
     $bindingRoot=Join-Path $workRoot 'binding';New-Item -ItemType Directory $bindingRoot|Out-Null
     $null=Assert-V02CompleteInstalledBinding $safeInstallRoot $profile $profilePath $repositoryRoot $bindingRoot
@@ -39,16 +39,26 @@ $result=Invoke-PackagingOperationWithCleanup -Operation {
     try {
         Unregister-V02UserStartup $StartupValueName $MockRegistryHive
         if($TestFaultInjectionStage -eq 'AfterUninstallMove'){throw 'Injected uninstall failure after directory move.'}
+        $retirementStarted=$true
+        if($TestFaultInjectionStage -eq 'DuringRetirement'){
+            $retiredApp=Join-Path $staging ([string]$profile.components.appRelativePath)
+            if(Test-Path -LiteralPath $retiredApp -PathType Leaf){[IO.File]::Delete($retiredApp)}
+            throw 'Injected uninstall failure during irreversible retirement.'
+        }
         Remove-V02TransactionDirectory $staging $parent;$staging=$null
     } catch {
-        if($null -ne $staging -and (Test-Path -LiteralPath $staging) -and -not(Test-Path -LiteralPath $safeInstallRoot)){[IO.Directory]::Move($staging,$safeInstallRoot);$staging=$null}
-        if($hadStartup -and $null -ne $MockRegistryHive){$MockRegistryHive[$StartupValueName]=$oldStartup}
+        if(-not $retirementStarted){
+            if($null -ne $staging -and (Test-Path -LiteralPath $staging) -and -not(Test-Path -LiteralPath $safeInstallRoot)){[IO.Directory]::Move($staging,$safeInstallRoot);$staging=$null}
+            Restore-V02UserStartupState -State $startupBefore -ValueName $StartupValueName -MockRegistryHive $MockRegistryHive
+        } elseif($null -ne $staging -and (Test-Path -LiteralPath $staging)) {
+            Remove-V02TransactionDirectory $staging $parent;$staging=$null
+        }
         throw
     }
     Assert-V02UserDataRetained $safeUserDataRoot $userDataBefore
     [pscustomobject][ordered]@{EvidenceClass='Static/PackagedCompatibilityPreparation';Status='Uninstalled';InstallRoot=$safeInstallRoot;UserDataRoot=$safeUserDataRoot;UserDataRetained=$true;StartupRemoved=$true}
 } -Cleanup {
-    if($null -ne $staging -and (Test-Path -LiteralPath $staging) -and -not(Test-Path -LiteralPath $safeInstallRoot)){[IO.Directory]::Move($staging,$safeInstallRoot);$staging=$null}
+    if(-not $retirementStarted -and $null -ne $staging -and (Test-Path -LiteralPath $staging) -and -not(Test-Path -LiteralPath $safeInstallRoot)){[IO.Directory]::Move($staging,$safeInstallRoot);$staging=$null}
     if($TestInjectCleanupFailure){if(Test-Path -LiteralPath $workRoot){Remove-PackagingTempDirectory $workRoot};throw 'Injected uninstall cleanup failure.'}
     if(Test-Path -LiteralPath $workRoot){Remove-PackagingTempDirectory $workRoot}
 }

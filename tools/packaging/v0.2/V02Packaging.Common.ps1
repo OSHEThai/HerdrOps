@@ -186,6 +186,66 @@ function Test-V02UserStartupRegistered {
     return $false
 }
 
+function Get-V02UserStartupState {
+    param(
+        [string]$ValueName = 'HerdrOps',
+        [hashtable]$MockRegistryHive = $null
+    )
+
+    if ($null -ne $MockRegistryHive) {
+        return [pscustomobject][ordered]@{
+            Exists = $MockRegistryHive.ContainsKey($ValueName)
+            Value = $(if ($MockRegistryHive.ContainsKey($ValueName)) { $MockRegistryHive[$ValueName] } else { $null })
+            Kind = 'String'
+        }
+    }
+
+    $keyPath = Get-V02StartupRegistryKeyPath
+    if (-not (Test-Path -LiteralPath $keyPath)) {
+        return [pscustomobject][ordered]@{ Exists = $false; Value = $null; Kind = 'String' }
+    }
+    $key = Get-Item -LiteralPath $keyPath
+    try {
+        if (-not ($key.GetValueNames() -contains $ValueName)) {
+            return [pscustomobject][ordered]@{ Exists = $false; Value = $null; Kind = 'String' }
+        }
+        return [pscustomobject][ordered]@{
+            Exists = $true
+            Value = $key.GetValue($ValueName, $null, [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+            Kind = [string]$key.GetValueKind($ValueName)
+        }
+    } finally {
+        $key.Dispose()
+    }
+}
+
+function Restore-V02UserStartupState {
+    param(
+        [Parameter(Mandatory = $true)]$State,
+        [string]$ValueName = 'HerdrOps',
+        [hashtable]$MockRegistryHive = $null
+    )
+
+    if (-not [bool]$State.Exists) {
+        Unregister-V02UserStartup -ValueName $ValueName -MockRegistryHive $MockRegistryHive
+        return
+    }
+    if ($null -ne $MockRegistryHive) {
+        $MockRegistryHive[$ValueName] = $State.Value
+        return
+    }
+    $keyPath = Get-V02StartupRegistryKeyPath
+    if (-not (Test-Path -LiteralPath $keyPath)) { New-Item -Path $keyPath -Force | Out-Null }
+    $key = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Software\Microsoft\Windows\CurrentVersion\Run', $true)
+    if ($null -eq $key) { throw 'Could not open the current-user Run registry key for exact state restoration.' }
+    try {
+        $kind = [Microsoft.Win32.RegistryValueKind]([Enum]::Parse([Microsoft.Win32.RegistryValueKind], [string]$State.Kind, $false))
+        $key.SetValue($ValueName, $State.Value, $kind)
+    } finally {
+        $key.Dispose()
+    }
+}
+
 function Build-V02PackageIdentityReceiptObject {
     param(
         [Parameter(Mandatory = $true)]$Profile,
@@ -462,6 +522,33 @@ function Copy-V02StableFile {
         throw "Stable copy did not preserve source bytes: $Source"
     }
     return $destinationIdentity
+}
+
+function Copy-V02StableTreeForInstall {
+    param(
+        [Parameter(Mandatory = $true)][string]$Source,
+        [Parameter(Mandatory = $true)][string]$Destination,
+        [Parameter(Mandatory = $true)][string]$InstallRoot
+    )
+
+    $sourceRoot = [IO.Path]::GetFullPath($Source)
+    $destinationRoot = [IO.Path]::GetFullPath($Destination)
+    $install = [IO.Path]::GetFullPath($InstallRoot).TrimEnd('\','/')
+    $installParent = (Split-Path -Path $install -Parent).TrimEnd('\','/')
+    $installName = [IO.Path]::GetFileName($install)
+    if (-not [StringComparer]::OrdinalIgnoreCase.Equals((Split-Path -Path $destinationRoot -Parent).TrimEnd('\','/'), $installParent) -or
+        [IO.Path]::GetFileName($destinationRoot) -notmatch ('^\.' + [regex]::Escape($installName) + '\.staging-[0-9a-f]{32}$')) {
+        throw "Install payload destination is not the exact canonical staging sibling for '$install': $destinationRoot"
+    }
+    if (-not (Test-Path -LiteralPath $sourceRoot -PathType Container)) { throw "Install payload source was not found: $sourceRoot" }
+    Assert-V02TreeNoReparse -Path $sourceRoot
+    Assert-V02PathNoReparse -Path $installParent
+    if (-not (Test-Path -LiteralPath $destinationRoot -PathType Container)) { throw "Install staging destination was not pre-created: $destinationRoot" }
+    Assert-V02TreeNoReparse -Path $destinationRoot
+    foreach ($item in @(Get-ChildItem -LiteralPath $sourceRoot -Recurse -Force -File | Sort-Object FullName)) {
+        $relative = Get-SafeRelativePath -RootPath $sourceRoot -Path $item.FullName
+        $null = Copy-V02StableFile -Source $item.FullName -Destination (Join-Path $destinationRoot $relative)
+    }
 }
 
 function Merge-V02PublishedTrees {

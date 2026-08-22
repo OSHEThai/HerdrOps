@@ -14,6 +14,7 @@ param(
     [switch]$AllowElevatedForTesting,
     [string]$TestFaultInjectionStage = 'None',
     [string]$TestMutationPath,
+    [switch]$TestConcurrentTargetAppearance,
     [switch]$TestInjectCleanupFailure
 )
 Set-StrictMode -Version Latest
@@ -29,9 +30,8 @@ if(([string]::IsNullOrWhiteSpace($ArchivePath) -and [string]::IsNullOrWhiteSpace
 Assert-V02PackagingPathsDoNotOverlap @([pscustomobject]@{Name='install root';Path=$safeInstallRoot},[pscustomobject]@{Name='user data root';Path=$safeUserDataRoot},[pscustomobject]@{Name='identity receipt';Path=$identityFullPath})
 
 $tempWorkRoot=New-PackagingTempDirectory -Prefix 'HerdrOps-V02Install-'
-$stagingInstallDir=$null; $backupDir=$null; $committed=$false
-$hadStartup=$false; $oldStartup=$null
-if($null -ne $MockRegistryHive){$hadStartup=$MockRegistryHive.ContainsKey($StartupValueName);if($hadStartup){$oldStartup=$MockRegistryHive[$StartupValueName]}}
+$stagingInstallDir=$null; $backupDir=$null; $committed=$false; $targetOwnedByTransaction=$false
+$startupBefore=Get-V02UserStartupState -ValueName $StartupValueName -MockRegistryHive $MockRegistryHive
 $installOutput=Invoke-PackagingOperationWithCleanup -Operation {
     $heldReceipt=Join-Path $tempWorkRoot 'identity.json'; $null=Copy-V02StableFile $identityFullPath $heldReceipt
     $receiptParsed=Read-V02CanonicalIdentityReceipt $heldReceipt $repositoryRoot; $identity=$receiptParsed.Identity
@@ -51,7 +51,7 @@ $installOutput=Invoke-PackagingOperationWithCleanup -Operation {
 
     $installParent=Split-Path $safeInstallRoot -Parent; if(-not(Test-Path -LiteralPath $installParent -PathType Container)){New-Item -ItemType Directory $installParent -Force|Out-Null}; Assert-V02PathNoReparse $installParent
     $installName=[IO.Path]::GetFileName($safeInstallRoot); $stagingInstallDir=Join-Path $installParent ('.'+$installName+'.staging-'+[Guid]::NewGuid().ToString('N')); New-Item -ItemType Directory $stagingInstallDir|Out-Null
-    Copy-SafeDirectoryContents $heldPayload $stagingInstallDir
+    Copy-V02StableTreeForInstall -Source $heldPayload -Destination $stagingInstallDir -InstallRoot $safeInstallRoot
     $stageArchiveRoot=Join-Path $tempWorkRoot 'stage-archive';New-Item -ItemType Directory $stageArchiveRoot|Out-Null
     $stageArchive=Join-Path $stageArchiveRoot ([string]$profile.archiveFileName); $null=New-DeterministicPackageArchive $stagingInstallDir $stageArchive
     if($TestFaultInjectionStage -eq 'StageMutation'){[IO.File]::AppendAllText((Join-Path $stagingInstallDir ([string]$profile.components.appRelativePath)),'MUTATED')}
@@ -68,8 +68,9 @@ $installOutput=Invoke-PackagingOperationWithCleanup -Operation {
     }
     if($TestFaultInjectionStage -eq 'BeforeCommit'){throw 'Injected install failure before atomic directory commit.'}
     if(Test-Path -LiteralPath $safeInstallRoot){$backupDir=Join-Path $installParent ('.'+$installName+'.backup-'+[Guid]::NewGuid().ToString('N'));[IO.Directory]::Move($safeInstallRoot,$backupDir)}
+    if($TestConcurrentTargetAppearance){New-Item -ItemType Directory -Path $safeInstallRoot|Out-Null;[IO.File]::WriteAllText((Join-Path $safeInstallRoot 'unowned-race-sentinel.keep'),'UNOWNED')}
     try {
-        [IO.Directory]::Move($stagingInstallDir,$safeInstallRoot); $stagingInstallDir=$null
+        [IO.Directory]::Move($stagingInstallDir,$safeInstallRoot); $stagingInstallDir=$null; $targetOwnedByTransaction=$true
         if($TestFaultInjectionStage -eq 'AfterReplace'){throw 'Injected install failure after directory replace.'}
         $finalBindingRoot=Join-Path $tempWorkRoot 'final-binding';New-Item -ItemType Directory $finalBindingRoot|Out-Null
         $null=Assert-V02CompleteInstalledBinding $safeInstallRoot $profile $profilePath $repositoryRoot $finalBindingRoot
@@ -77,10 +78,9 @@ $installOutput=Invoke-PackagingOperationWithCleanup -Operation {
         if($TestFaultInjectionStage -eq 'AfterStartup'){throw 'Injected install failure after startup mutation.'}
         $committed=$true
     } catch {
-        Unregister-V02UserStartup $StartupValueName $MockRegistryHive
-        if($hadStartup -and $null -ne $MockRegistryHive){$MockRegistryHive[$StartupValueName]=$oldStartup}
-        if(Test-Path -LiteralPath $safeInstallRoot){Remove-V02TransactionDirectory $safeInstallRoot $installParent}
-        if($null -ne $backupDir -and (Test-Path -LiteralPath $backupDir)){[IO.Directory]::Move($backupDir,$safeInstallRoot);$backupDir=$null}
+        Restore-V02UserStartupState -State $startupBefore -ValueName $StartupValueName -MockRegistryHive $MockRegistryHive
+        if($targetOwnedByTransaction -and (Test-Path -LiteralPath $safeInstallRoot)){Remove-V02TransactionDirectory $safeInstallRoot $installParent;$targetOwnedByTransaction=$false}
+        if($null -ne $backupDir -and (Test-Path -LiteralPath $backupDir) -and -not(Test-Path -LiteralPath $safeInstallRoot)){[IO.Directory]::Move($backupDir,$safeInstallRoot);$backupDir=$null}
         throw
     }
     if($null -ne $backupDir -and (Test-Path -LiteralPath $backupDir)){Remove-V02TransactionDirectory $backupDir $installParent;$backupDir=$null}

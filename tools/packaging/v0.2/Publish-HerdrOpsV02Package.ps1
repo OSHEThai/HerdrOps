@@ -23,7 +23,8 @@ Assert-V02TreeNoReparse -Path $repositoryRoot
 if (-not [string]::IsNullOrWhiteSpace($PackageVersion) -and $PackageVersion -cne '0.2.0') { throw "v0.2 packaging wrapper is pinned to version 0.2.0: $PackageVersion" }
 $safeOutputRoot = Assert-SafeDestination -Path $OutputRoot -AllowRepositoryChild -AllowTempChild
 Assert-V02PackagingPathsDoNotOverlap -Paths @([pscustomobject]@{Name='repository root';Path=$repositoryRoot},[pscustomobject]@{Name='output root';Path=$safeOutputRoot})
-if (Test-Path -LiteralPath $safeOutputRoot) {
+$outputRootExistedBefore = Test-Path -LiteralPath $safeOutputRoot
+if ($outputRootExistedBefore) {
     Assert-V02TreeNoReparse -Path $safeOutputRoot
     if (@(Get-ChildItem -LiteralPath $safeOutputRoot -Force).Count -ne 0) { throw "Output root must be missing or empty; refusing to overwrite: $safeOutputRoot" }
 }
@@ -93,6 +94,6 @@ $operationOutput = Invoke-PackagingOperationWithCleanup -Operation {
     if($null -ne $stagingOutput -and (Test-Path -LiteralPath $stagingOutput)){Remove-V02TransactionDirectory $stagingOutput (Split-Path $safeOutputRoot -Parent)}
     if($TestInjectCleanupFailure){if(Test-Path -LiteralPath $publishWorkRoot){Remove-PackagingTempDirectory $publishWorkRoot};throw 'Injected packaging cleanup failure.'}
     if(Test-Path -LiteralPath $publishWorkRoot){Remove-PackagingTempDirectory $publishWorkRoot}
-    if(-not $committedOutput -and (Test-Path -LiteralPath $safeOutputRoot) -and @(Get-ChildItem -LiteralPath $safeOutputRoot -Force).Count -eq 0){Remove-V02TransactionDirectory $safeOutputRoot (Split-Path $safeOutputRoot -Parent)}
+    if(-not $committedOutput -and -not $outputRootExistedBefore -and (Test-Path -LiteralPath $safeOutputRoot) -and @(Get-ChildItem -LiteralPath $safeOutputRoot -Force).Count -eq 0){Remove-V02TransactionDirectory $safeOutputRoot (Split-Path $safeOutputRoot -Parent)}
 }
 $operationOutput
