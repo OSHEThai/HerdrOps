@@ -648,7 +648,7 @@ try {
         $reparseArgs = Copy-TestArguments -Arguments $greenArgs
         $reparseArgs['InstallRoot'] = (Get-AcceptanceFullPath -Path (Join-Path $reparseParent 'HerdrOps'))
         $reparseArgs['ReportDestination'] = (Join-Path $reportsDir 'target-reparse.json')
-        Test-OperatorFailClosed -CaseName 'target-reparse' -Arguments $reparseArgs -ExpectedMessageFragment 'reparse'
+        Test-OperatorFailClosed -CaseName 'target-reparse' -Arguments $reparseArgs -ExpectedMessageFragment 'reparse' -PreserveInstallRoot
     } finally {
         [IO.Directory]::Delete($reparseParent, $false)
         Remove-Item -LiteralPath $reparseTarget -Recurse -Force
