@@ -164,6 +164,7 @@ function ConvertFrom-CiWorkflowYaml {
                 $currentJob = [pscustomobject]@{
                     Key = $currentJobKey
                     Name = ''
+                    If = ''
                     Needs = @()
                     Steps = New-Object System.Collections.ArrayList
                 }
@@ -178,6 +179,12 @@ function ConvertFrom-CiWorkflowYaml {
                 # Job properties (4 spaces indent)
                 if ($line -match '^    name:\s*(.*)$') {
                     $currentJob.Name = $Matches[1].Trim()
+                    $i++
+                    continue
+                }
+
+                if ($line -match '^    if:\s*(.*)$') {
+                    $currentJob.If = $Matches[1].Trim()
                     $i++
                     continue
                 }
@@ -292,6 +299,188 @@ function ConvertFrom-CiWorkflowYaml {
     return $jobs
 }
 
+function Get-CiRequiredPartitionJobKeys {
+    return @(
+        'build-and-v01'
+        'v02-gates'
+        'v03-v04-gates'
+        'v05-v06-gates'
+        'v07-v10-gates'
+    )
+}
+
+function Assert-CiAggregatorResults {
+    param(
+        [Parameter(Mandatory)]
+        [hashtable]$Results
+    )
+
+    $violations = @()
+    foreach ($requiredJob in (Get-CiRequiredPartitionJobKeys)) {
+        if (-not $Results.ContainsKey($requiredJob)) {
+            $violations += "$requiredJob=missing"
+            continue
+        }
+
+        $observedResult = [string]$Results[$requiredJob]
+        if ($observedResult -cne 'success') {
+            $violations += "$requiredJob=$observedResult"
+        }
+    }
+
+    if ($violations.Count -ne 0) {
+        throw "CI aggregator must fail closed; non-success dependency results: $($violations -join ', ')"
+    }
+
+    return $true
+}
+
+function Test-CiWorkflowCleanRunnerIndependence {
+    param(
+        [Parameter(Mandatory)]
+        [string]$WorkflowPath,
+
+        [Parameter(Mandatory)]
+        $Jobs
+    )
+
+    $content = Get-Content -LiteralPath $WorkflowPath -Raw
+
+    if ([Regex]::IsMatch($content, '(?im)^\s*-\s*uses:\s*actions/download-artifact@')) {
+        throw 'CI workflow must not download artifacts from another runner.'
+    }
+    if ([Regex]::IsMatch($content, '(?im)(?:^|\s)-SkipTests(?:\s|$)')) {
+        throw 'CI workflow must not use -SkipTests; the canonical full solution test must remain enabled.'
+    }
+    if ([Regex]::IsMatch($content, '(?im)\b(?:shared[- ]manifest|CI_SHARED_MANIFEST)\b')) {
+        throw 'CI workflow must not use a shared manifest between runners.'
+    }
+    if ([Regex]::IsMatch($content, '(?im)(?:^|[\\/])(?:bin|obj)[\\/]')) {
+        throw 'CI workflow must not consume cross-runner bin/obj paths.'
+    }
+
+    foreach ($requiredJob in (Get-CiRequiredPartitionJobKeys)) {
+        if (-not $Jobs.Contains($requiredJob)) {
+            throw "CI workflow is missing required partitioned job: $requiredJob"
+        }
+
+        $job = $Jobs[$requiredJob]
+        if (@($job.Needs).Count -ne 0) {
+            throw "Partitioned job '$requiredJob' must not depend on another runner through needs."
+        }
+
+        $checkoutSteps = @($job.Steps | Where-Object { $_.Name -ceq 'Checkout' })
+        if ($checkoutSteps.Count -ne 1) {
+            throw "Partitioned job '$requiredJob' must have exactly one Checkout step."
+        }
+
+        $dotnetSetupSteps = @($job.Steps | Where-Object { $_.Name -ceq 'Set up .NET' })
+        if ($dotnetSetupSteps.Count -ne 1) {
+            throw "Partitioned job '$requiredJob' must have exactly one Set up .NET step."
+        }
+
+        $skipBuildIndexes = @()
+        $buildPrerequisiteIndexes = @()
+        for ($index = 0; $index -lt $job.Steps.Count; $index++) {
+            $stepRun = ([string]$job.Steps[$index].Run).Trim()
+            if ($stepRun -match '(?i)(^|\s)-SkipBuild(\s|$)') {
+                $skipBuildIndexes += $index
+            }
+            if ($stepRun -ceq './tools/Invoke-Build.ps1 -Configuration Release -VerifyFormat') {
+                if ($job.Steps[$index].Shell -cne 'pwsh') {
+                    throw "Partitioned job '$requiredJob' clean-runner build prerequisite must use shell pwsh."
+                }
+                $buildPrerequisiteIndexes += $index
+            }
+        }
+
+        if ($skipBuildIndexes.Count -gt 0) {
+            if ($buildPrerequisiteIndexes.Count -ne 1) {
+                throw "Partitioned job '$requiredJob' must have exactly one canonical clean-runner build prerequisite before -SkipBuild gates."
+            }
+
+            foreach ($skipBuildIndex in $skipBuildIndexes) {
+                if ($buildPrerequisiteIndexes[0] -ge $skipBuildIndex) {
+                    throw "Partitioned job '$requiredJob' clean-runner build prerequisite must precede every -SkipBuild gate."
+                }
+            }
+        }
+    }
+
+    return
+}
+
+function Test-CiAggregatorContract {
+    param(
+        [Parameter(Mandatory)]
+        $Jobs
+    )
+
+    if (-not $Jobs.Contains('ci-success')) {
+        throw "CI workflow is missing aggregator job 'ci-success'."
+    }
+
+    $aggregator = $Jobs['ci-success']
+    if ([string]$aggregator.If -cne 'always()') {
+        throw "CI aggregator job 'ci-success' must use if: always() so failed, skipped, and cancelled dependencies are inspected."
+    }
+
+    foreach ($requiredJob in (Get-CiRequiredPartitionJobKeys)) {
+        if ($aggregator.Needs -notcontains $requiredJob) {
+            throw "CI aggregator job 'ci-success' must depend on required job: $requiredJob"
+        }
+    }
+
+    $confirmationSteps = @($aggregator.Steps | Where-Object { $_.Name -ceq 'Confirm all partitioned jobs succeeded' })
+    if ($confirmationSteps.Count -ne 1) {
+        throw "CI aggregator job 'ci-success' must have exactly one result assertion step."
+    }
+
+    $run = [string]$confirmationSteps[0].Run
+    foreach ($requiredJob in (Get-CiRequiredPartitionJobKeys)) {
+        $expression = '${{ needs.' + $requiredJob + '.result }}'
+        $expressionCount = ([Regex]::Matches($run, [Regex]::Escape($expression))).Count
+        if ($expressionCount -ne 1) {
+            throw "CI aggregator result assertion must bind exactly one result expression for '$requiredJob'; found $expressionCount."
+        }
+    }
+
+    if (-not $run.Contains('$nonSuccess') -or
+        -not $run.Contains("-cne 'success'") -or
+        -not $run.Contains('$nonSuccess.Count -ne 0')) {
+        throw "CI aggregator must fail closed by rejecting every dependency result that is not exactly 'success'."
+    }
+
+    Assert-CiAggregatorResults -Results @{
+        'build-and-v01' = 'success'
+        'v02-gates' = 'success'
+        'v03-v04-gates' = 'success'
+        'v05-v06-gates' = 'success'
+        'v07-v10-gates' = 'success'
+    } | Out-Null
+
+    return
+}
+
+function Test-CiWorkflowConcurrency {
+    param(
+        [Parameter(Mandatory)]
+        [string]$WorkflowContent
+    )
+
+    if (-not [Regex]::IsMatch($WorkflowContent, '(?m)^concurrency:\s*$')) {
+        throw 'CI workflow must declare a top-level concurrency policy.'
+    }
+    if (-not [Regex]::IsMatch($WorkflowContent, '(?m)^  group:\s*\$\{\{\s*github\.workflow\s*\}\}-\$\{\{\s*github\.ref\s*\}\}\s*$')) {
+        throw 'CI workflow concurrency group must be scoped to workflow and ref.'
+    }
+    if (-not [Regex]::IsMatch($WorkflowContent, '(?m)^  cancel-in-progress:\s*true\s*$')) {
+        throw 'CI workflow concurrency must cancel superseded runs.'
+    }
+
+    return
+}
+
 function Test-CiWorkflowScheduling {
     param(
         [Parameter(Mandatory)]
@@ -305,27 +494,11 @@ function Test-CiWorkflowScheduling {
     $content = Get-Content -LiteralPath $WorkflowPath -Raw
     $jobs = ConvertFrom-CiWorkflowYaml -YamlContent $content
 
-    $requiredJobs = @(
-        'build-and-v01',
-        'v02-gates',
-        'v03-v04-gates',
-        'v05-v06-gates',
-        'v07-v10-gates'
-    )
+    $requiredJobs = @(Get-CiRequiredPartitionJobKeys)
 
     foreach ($rj in $requiredJobs) {
         if (-not $jobs.Contains($rj)) {
             throw "CI workflow is missing required partitioned job: $rj"
-        }
-    }
-
-    # Verify aggregator job ci-success
-    if ($jobs.Contains('ci-success')) {
-        $aggregator = $jobs['ci-success']
-        foreach ($rj in $requiredJobs) {
-            if ($aggregator.Needs -notcontains $rj) {
-                throw "CI aggregator job 'ci-success' must depend on required job: $rj"
-            }
         }
     }
 
@@ -447,6 +620,10 @@ function Test-CiWorkflowScheduling {
             throw "Governed gate command '$pat' (shell: $expectedShell) found in job '$actualJob'; expected in job '$expectedJob'."
         }
     }
+
+    Test-CiWorkflowCleanRunnerIndependence -WorkflowPath $WorkflowPath -Jobs $jobs
+    Test-CiAggregatorContract -Jobs $jobs
+    Test-CiWorkflowConcurrency -WorkflowContent $content
 
     return
 }

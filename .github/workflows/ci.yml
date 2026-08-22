@@ -9,6 +9,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   HERDOPS_V02_LIVE_WIDGET_RUN_TOKEN: ${{ github.run_id }}-${{ github.run_attempt }}
   ISSUE43_EVENT_NAME: ${{ github.event_name }}
@@ -37,7 +41,7 @@ jobs:
         with:
           dotnet-version: 10.0.x
 
-      - name: Run solution test scheduling regression (PowerShell 7)
+      - name: Run solution test scheduling regression (Issue #135)
         shell: pwsh
         run: ./tools/Test-BuildTestScheduling.ps1
 
@@ -199,6 +203,10 @@ jobs:
         uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
         with:
           dotnet-version: 10.0.x
+
+      - name: Run v0.2 canonical Release build prerequisite (clean runner)
+        shell: pwsh
+        run: ./tools/Invoke-Build.ps1 -Configuration Release -VerifyFormat
 
       - name: Run v0.2 state store and IPC gate
         shell: pwsh
@@ -369,6 +377,10 @@ jobs:
         with:
           dotnet-version: 10.0.x
 
+      - name: Run v0.3-v0.4 canonical Release build prerequisite (clean runner)
+        shell: pwsh
+        run: ./tools/Invoke-Build.ps1 -Configuration Release -VerifyFormat
+
       - name: Run v0.3 implementation aggregation tests
         shell: pwsh
         run: ./tools/Test-V03ImplementationGateTests.ps1
@@ -474,6 +486,10 @@ jobs:
         uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
         with:
           dotnet-version: 10.0.x
+
+      - name: Run v0.5-v0.6 canonical Release build prerequisite (clean runner)
+        shell: pwsh
+        run: ./tools/Invoke-Build.ps1 -Configuration Release -VerifyFormat
 
       - name: Run v0.5 compliance rule engine implementation gate
         shell: pwsh
@@ -950,6 +966,7 @@ jobs:
 
   ci-success:
     name: CI Workflow Completion Status
+    if: always()
     runs-on: windows-latest
     needs:
       - build-and-v01
@@ -960,4 +977,18 @@ jobs:
     steps:
       - name: Confirm all partitioned jobs succeeded
         shell: pwsh
-        run: Write-Host "All 5 partitioned HerdrOps CI jobs completed successfully."
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $results = @(
+            [pscustomobject]@{ Job = 'build-and-v01'; Result = '${{ needs.build-and-v01.result }}' }
+            [pscustomobject]@{ Job = 'v02-gates'; Result = '${{ needs.v02-gates.result }}' }
+            [pscustomobject]@{ Job = 'v03-v04-gates'; Result = '${{ needs.v03-v04-gates.result }}' }
+            [pscustomobject]@{ Job = 'v05-v06-gates'; Result = '${{ needs.v05-v06-gates.result }}' }
+            [pscustomobject]@{ Job = 'v07-v10-gates'; Result = '${{ needs.v07-v10-gates.result }}' }
+          )
+          $nonSuccess = @($results | Where-Object { $_.Result -cne 'success' })
+          if ($nonSuccess.Count -ne 0) {
+            $summary = ($nonSuccess | ForEach-Object { "$($_.Job)=$($_.Result)" }) -join ', '
+            throw "CI partition failed closed; non-success dependencies: $summary"
+          }
+          Write-Host "All 5 partitioned HerdrOps CI jobs completed successfully."
