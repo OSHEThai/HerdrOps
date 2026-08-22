@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["SchemaVersion", "EvidenceClassification", "Result", "Issues", "Source", "Package", "Roles", "Herdr", "Sessions", "MatrixCandidate", "Languages", "EvidenceBoundary"],
+  "properties": {
+    "SchemaVersion": {"const": 1, "type": "integer"},
+    "EvidenceClassification": {"const": "IndependentReviewCandidate", "type": "string"},
+    "Result": {"const": "PASS", "type": "string"},
+    "Issues": {"type": "array", "const": [7, 9, 10, 11, 149], "items": {"type": "integer"}},
+    "Source": {"$ref": "#/$defs/source"},
+    "Package": {"type": "object", "additionalProperties": false, "required": ["IdentityPath", "IdentityFileSha256", "ReceiptSha256", "ArchivePath", "ArchiveSha256", "ManifestPath", "ManifestSha256", "AppPath", "AppSha256", "CorePath", "CoreSha256"], "properties": {"IdentityPath": {"type": "string", "minLength": 1}, "IdentityFileSha256": {"$ref": "#/$defs/sha"}, "ReceiptSha256": {"$ref": "#/$defs/sha"}, "ArchivePath": {"type": "string", "minLength": 1}, "ArchiveSha256": {"$ref": "#/$defs/sha"}, "ManifestPath": {"type": "string", "minLength": 1}, "ManifestSha256": {"$ref": "#/$defs/sha"}, "AppPath": {"type": "string", "minLength": 1}, "AppSha256": {"$ref": "#/$defs/sha"}, "CorePath": {"type": "string", "minLength": 1}, "CoreSha256": {"$ref": "#/$defs/sha"}}},
+    "Roles": {"type": "object", "additionalProperties": false, "required": ["BuilderIdentity", "RuntimeOperatorIdentity", "MatrixProducerIdentity", "RuntimeReviewerIdentity", "ReviewerDistinctCaseInsensitive"], "properties": {"BuilderIdentity": {"$ref": "#/$defs/identity"}, "RuntimeOperatorIdentity": {"$ref": "#/$defs/identity"}, "MatrixProducerIdentity": {"$ref": "#/$defs/identity"}, "RuntimeReviewerIdentity": {"$ref": "#/$defs/identity"}, "ReviewerDistinctCaseInsensitive": {"const": true, "type": "boolean"}}},
+    "Herdr": {"type": "object", "additionalProperties": false, "required": ["ReleaseId", "ExecutableSha256", "BundledSchemaSha256", "Protocol"], "properties": {"ReleaseId": {"type": "string", "minLength": 1}, "ExecutableSha256": {"$ref": "#/$defs/sha"}, "BundledSchemaSha256": {"$ref": "#/$defs/sha"}, "Protocol": {"type": "string", "minLength": 1}}},
+    "Sessions": {"type": "object", "additionalProperties": false, "required": ["Control", "Target"], "properties": {"Control": {"$ref": "#/$defs/sessionControl"}, "Target": {"$ref": "#/$defs/sessionTarget"}}},
+    "MatrixCandidate": {"type": "object", "additionalProperties": false, "required": ["Path", "FileSha256", "PayloadSha256", "EvidenceClassification", "IndependentHumanReview", "ReleaseCredit"], "properties": {"Path": {"type": "string", "minLength": 1}, "FileSha256": {"$ref": "#/$defs/sha"}, "PayloadSha256": {"$ref": "#/$defs/sha"}, "EvidenceClassification": {"const": "RuntimeMatrixCandidate", "type": "string"}, "IndependentHumanReview": {"const": "NOT_OBSERVED", "type": "string"}, "ReleaseCredit": {"const": false, "type": "boolean"}}},
+    "Languages": {"type": "array", "minItems": 2, "maxItems": 2, "items": {"$ref": "#/$defs/language"}},
+    "EvidenceBoundary": {"type": "object", "additionalProperties": false, "required": ["IndependentReview", "ExternalReviewerAttestation", "HumanVisualGo", "RuntimeCredit", "ReleaseCredit", "OutputAuthority", "NoCallerAuthoredAuthority"], "properties": {"IndependentReview": {"const": "NOT_OBSERVED", "type": "string"}, "ExternalReviewerAttestation": {"const": "NOT_PROVIDED", "type": "string"}, "HumanVisualGo": {"const": "NOT_OBSERVED", "type": "string"}, "RuntimeCredit": {"const": false, "type": "boolean"}, "ReleaseCredit": {"const": false, "type": "boolean"}, "OutputAuthority": {"const": "IndependentReviewCandidate", "type": "string"}, "NoCallerAuthoredAuthority": {"const": true, "type": "boolean"}}}
+  },
+  "$defs": {
+    "sha": {"type": "string", "pattern": "^[0-9A-F]{64}$"},
+    "identity": {"type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[^\\s\\p{Cc}]+$"},
+    "source": {"type": "object", "additionalProperties": false, "required": ["CommitSha", "TreeSha", "GitTreeClean"], "properties": {"CommitSha": {"type": "string", "pattern": "^[0-9a-f]{40}$"}, "TreeSha": {"type": "string", "pattern": "^[0-9a-f]{40}$"}, "GitTreeClean": {"const": true, "type": "boolean"}}},
+    "sessionControl": {"type": "object", "additionalProperties": false, "required": ["Name", "SocketPath", "ServerIdentity"], "properties": {"Name": {"type": "string", "minLength": 1}, "SocketPath": {"type": "string", "minLength": 1}, "ServerIdentity": {"type": "string", "minLength": 1}}},
+    "sessionTarget": {"type": "object", "additionalProperties": false, "required": ["Name", "SocketPath", "Reference"], "properties": {"Name": {"type": "string", "minLength": 1}, "SocketPath": {"type": "string", "minLength": 1}, "Reference": {"type": "string", "minLength": 1}}},
+    "file": {"type": "object", "additionalProperties": false, "required": ["Path", "Bytes", "Sha256"], "properties": {"Path": {"type": "string", "minLength": 1}, "Bytes": {"type": "integer", "minimum": 0}, "Sha256": {"$ref": "#/$defs/sha"}}},
+    "language": {"type": "object", "additionalProperties": false, "required": ["Language", "EvidenceDirectory", "CaptureRoot", "GateReportSha256", "AppRuntimeReportSha256", "CoreRuntimeReportSha256", "Files"], "properties": {"Language": {"enum": ["Thai", "English"], "type": "string"}, "EvidenceDirectory": {"type": "string", "minLength": 1}, "CaptureRoot": {"type": "string", "minLength": 1}, "GateReportSha256": {"$ref": "#/$defs/sha"}, "AppRuntimeReportSha256": {"$ref": "#/$defs/sha"}, "CoreRuntimeReportSha256": {"$ref": "#/$defs/sha"}, "Files": {"type": "array", "minItems": 5, "items": {"$ref": "#/$defs/file"}}}}
+  }
+}
