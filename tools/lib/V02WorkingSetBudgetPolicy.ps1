@@ -36,6 +36,26 @@ function Test-V02FiniteNonNegativeNumber {
         $number -ge 0
 }
 
+function Format-V02ElapsedMilliseconds {
+    param([AllowNull()][object]$Value)
+
+    if ($null -eq $Value) {
+        return 'NONE'
+    }
+
+    return ([double]$Value).ToString('R', [Globalization.CultureInfo]::InvariantCulture)
+}
+
+function Format-V02ObservedUtc {
+    param([AllowNull()][object]$Value)
+
+    if ($null -eq $Value) {
+        return 'NONE'
+    }
+
+    return ([datetimeoffset]$Value).ToString('o', [Globalization.CultureInfo]::InvariantCulture)
+}
+
 function Assert-V02WorkingSetBudgetEvidence {
     [CmdletBinding()]
     param(
@@ -132,6 +152,7 @@ function Assert-V02WorkingSetBudgetEvidence {
     [int64]$appPrivateMaximumBytes = 0
     [int64]$corePrivateMaximumBytes = 0
     $previousObservedUtc = $null
+    $parsedObservedUtc = New-Object 'System.DateTimeOffset[]' $samples.Count
     try {
         $idleStartUtc=[DateTimeOffset]::Parse([string]$ResourceMeasurement.IdleSampleStartRenderer.ObservedUtc,[Globalization.CultureInfo]::InvariantCulture,[Globalization.DateTimeStyles]::RoundtripKind).ToUniversalTime()
         $idleFinishUtc=[DateTimeOffset]::Parse([string]$ResourceMeasurement.IdleSampleFinishRenderer.ObservedUtc,[Globalization.CultureInfo]::InvariantCulture,[Globalization.DateTimeStyles]::RoundtripKind).ToUniversalTime()
@@ -153,14 +174,32 @@ function Assert-V02WorkingSetBudgetEvidence {
         if(($actualNames-join "`n")-cne($expectedNames-join "`n")){throw "Resource sample $index properties are not exact."}
         if ($integerTypes -notcontains [Type]::GetTypeCode($sample.Ordinal.GetType()) -or [int64]$sample.Ordinal -ne $index) { throw "Resource sample $index ordinal is not exact." }
         if (-not (Test-V02FiniteNonNegativeNumber $sample.ElapsedMilliseconds)) { throw "Resource sample $index ElapsedMilliseconds must be a finite nonnegative native JSON number." }
-        $elapsedDelta = if ($index -eq 0) { [double]$sample.ElapsedMilliseconds } else { [double]$sample.ElapsedMilliseconds - [double]$samples[$index-1].ElapsedMilliseconds }
-        if (($index -eq 0 -and $elapsedDelta -gt 250) -or
-            ($index -gt 0 -and ($elapsedDelta -lt 249 -or $elapsedDelta -gt 500))) {
-            throw "Resource sample $index elapsed interval is outside the approved cadence."
-        }
         if ($sample.ObservedUtc -isnot [string] -or [string]$sample.ObservedUtc -notmatch '(?:Z|\+00:00)$') { throw "Resource sample $index ObservedUtc must be a native UTC JSON string." }
         try { $observedUtc=[DateTimeOffset]::Parse([string]$sample.ObservedUtc,[Globalization.CultureInfo]::InvariantCulture,[Globalization.DateTimeStyles]::RoundtripKind).ToUniversalTime() }
         catch { throw "Resource sample $index ObservedUtc is invalid." }
+        $parsedObservedUtc[$index] = $observedUtc
+        $currentElapsed = [double]$sample.ElapsedMilliseconds
+        if ($index -eq 0) { $previousElapsed = $null } else { $previousElapsed = [double]$samples[$index-1].ElapsedMilliseconds }
+        if ($index -eq 0) { $previousParsedUtc = $null } else { $previousParsedUtc = $parsedObservedUtc[$index-1] }
+        $cadenceNeighbors = "PreviousElapsedMilliseconds=$(Format-V02ElapsedMilliseconds $previousElapsed) " +
+            "CurrentElapsedMilliseconds=$(Format-V02ElapsedMilliseconds $currentElapsed) " +
+            "PreviousObservedUtc=$(Format-V02ObservedUtc $previousParsedUtc) " +
+            "CurrentObservedUtc=$(Format-V02ObservedUtc $observedUtc)."
+        if ($index -eq 0 -and $currentElapsed -gt 250) {
+            throw "Resource sample $index failed predicate 'baseline-elapsed-at-most-250'. $cadenceNeighbors"
+        }
+        if ($currentElapsed -lt [double]($index * 250)) {
+            throw "Resource sample $index failed predicate 'elapsed-at-or-after-nominal-boundary'. $cadenceNeighbors"
+        }
+        if ($index -gt 0) {
+            $elapsedDelta = $currentElapsed - $previousElapsed
+            if ($elapsedDelta -lt 249) {
+                throw "Resource sample $index failed predicate 'adjacent-elapsed-delta-at-least-249'. $cadenceNeighbors"
+            }
+            if ($elapsedDelta -gt 500) {
+                throw "Resource sample $index failed predicate 'adjacent-elapsed-delta-at-most-500'. $cadenceNeighbors"
+            }
+        }
         if ($observedUtc -lt $idleStartUtc -or $observedUtc -gt $idleFinishUtc -or ($null -ne $previousObservedUtc -and $observedUtc -lt $previousObservedUtc)) { throw "Resource sample $index timestamp is outside the idle window or regressed." }
         $previousObservedUtc=$observedUtc
         foreach($name in @('AppWorkingSetBytes','CoreWorkingSetBytes','CombinedWorkingSetBytes','AppPrivateMemoryBytes','CorePrivateMemoryBytes')) {
@@ -180,7 +219,15 @@ function Assert-V02WorkingSetBudgetEvidence {
         if ([int64]$sample.AppPrivateMemoryBytes -gt $appPrivateMaximumBytes) { $appPrivateMaximumBytes=[int64]$sample.AppPrivateMemoryBytes }
         if ([int64]$sample.CorePrivateMemoryBytes -gt $corePrivateMaximumBytes) { $corePrivateMaximumBytes=[int64]$sample.CorePrivateMemoryBytes }
     }
-    if ([double]$samples[-1].ElapsedMilliseconds -lt 20000 -or [double]$samples[-1].ElapsedMilliseconds -gt 20250) { throw 'Final resource sample elapsed time must be within 20000..20250 milliseconds.' }
+    $finalIndex = $samples.Count - 1
+    $finalElapsed = [double]$samples[$finalIndex].ElapsedMilliseconds
+    if ($finalElapsed -lt 20000 -or $finalElapsed -gt 20250) {
+        $finalNeighbors = "PreviousElapsedMilliseconds=$(Format-V02ElapsedMilliseconds ([double]$samples[$finalIndex-1].ElapsedMilliseconds)) " +
+            "CurrentElapsedMilliseconds=$(Format-V02ElapsedMilliseconds $finalElapsed) " +
+            "PreviousObservedUtc=$(Format-V02ObservedUtc $parsedObservedUtc[$finalIndex-1]) " +
+            "CurrentObservedUtc=$(Format-V02ObservedUtc $parsedObservedUtc[$finalIndex])."
+        throw "Resource sample $finalIndex failed predicate 'final-elapsed-within-20000-20250'. $finalNeighbors"
+    }
     $recomputedAverage = [Math]::Round([double](($combinedSum / $samples.Count) / 1048576),3)
     $recomputedMaximum = [Math]::Round([double]$combinedMaximumBytes / 1048576,3)
     if ([double]$average -ne $recomputedAverage -or [double]$maximum -ne $recomputedMaximum) {

@@ -80,8 +80,35 @@ function Assert-Fail {
     throw "$Name unexpectedly passed."
 }
 
+function Assert-FailContains {
+    param(
+        [Parameter(Mandatory)][string]$Name,
+        [Parameter(Mandatory)][scriptblock]$Action,
+        [Parameter(Mandatory)][string[]]$ExpectedSubstrings
+    )
+    $script:caseCount++
+    try {
+        & $Action
+    }
+    catch {
+        $actualMessage = $_.Exception.Message
+        foreach ($expected in $ExpectedSubstrings) {
+            if (-not $actualMessage.Contains($expected)) {
+                throw "$Name rejected but message did not contain expected substring '$expected'. Actual message: $actualMessage"
+            }
+        }
+        Write-Host "PASS: $Name rejected: $actualMessage"
+        return
+    }
+    throw "$Name unexpectedly passed."
+}
+
 Assert-Pass '254 MiB is below the exact limit' (New-ValidMeasurement -Maximum 254.0)
 Assert-Pass '255 MiB is exactly the limit' (New-ValidMeasurement -Maximum 255.0)
+Assert-Pass 'exact 20000 ms final cadence boundary' (New-ValidMeasurement)
+$m=New-ValidMeasurement;$elapsed=200.0;for($index=0;$index-lt81;$index++){if($index-gt0){$elapsed=[Math]::Max([double](250*$index),$elapsed+249.0)};$m.Samples[$index].ElapsedMilliseconds=$elapsed;$m.Samples[$index].ObservedUtc=([datetimeoffset]'2026-08-22T00:00:00Z').AddMilliseconds($elapsed).ToString('O')};$m.IdleSampleFinishRenderer.ObservedUtc='2026-08-22T00:00:20.2500000Z';Assert-Pass 'lawful delayed cadence preserves nominal and prior boundaries' $m
+$m=New-ValidMeasurement;$elapsed=0.0;for($index=0;$index-lt81;$index++){if($index-eq1){$elapsed=500.0}elseif($index-gt1){$elapsed=[Math]::Max([double](250*$index),$elapsed+249.0)};$m.Samples[$index].ElapsedMilliseconds=$elapsed;$m.Samples[$index].ObservedUtc=([datetimeoffset]'2026-08-22T00:00:00Z').AddMilliseconds($elapsed).ToString('O')};$m.IdleSampleFinishRenderer.ObservedUtc='2026-08-22T00:00:20.2500000Z';Assert-Pass 'exact 500 ms delta boundary recovers lawfully' $m
+$m=New-ValidMeasurement;$m.Samples[80].ElapsedMilliseconds=20250.0;$m.Samples[80].ObservedUtc='2026-08-22T00:00:20.2500000Z';$m.IdleSampleFinishRenderer.ObservedUtc='2026-08-22T00:00:20.2500000Z';Assert-Pass 'exact 20250 ms final cadence boundary' $m
 Assert-Fail 'value above 255 MiB' { Assert-V02WorkingSetBudgetEvidence (New-ValidMeasurement -Maximum 255.0001 -Passed $false) }
 Assert-Fail 'wrong reported MiB target' { Assert-V02WorkingSetBudgetEvidence (New-ValidMeasurement -Target 256) }
 Assert-Fail 'wrong reported byte target' { Assert-V02WorkingSetBudgetEvidence (New-ValidMeasurement -TargetBytes 267386879L) }
@@ -114,12 +141,37 @@ Assert-Fail 'one raw byte above exact limit' { Assert-V02WorkingSetBudgetEvidenc
 $m=New-ValidMeasurement;$m.IdleSampleFinishRenderer.ObservedUtc='2026-08-22T00:00:19.9990000Z';Assert-Fail 'observed idle window shorter than 20 seconds' { Assert-V02WorkingSetBudgetEvidence $m }
 $m=New-ValidMeasurement;$m.RuntimeFingerprintStable='false';Assert-Fail 'string stable aggregate' { Assert-V02WorkingSetBudgetEvidence $m }
 $m=New-ValidMeasurement;$m.FirstFingerprintChange=[pscustomobject]@{};Assert-Fail 'non-null first fingerprint change' { Assert-V02WorkingSetBudgetEvidence $m }
-$m=New-ValidMeasurement;$m.Samples[2].ElapsedMilliseconds=498;Assert-Fail 'too-short elapsed sample interval' { Assert-V02WorkingSetBudgetEvidence $m }
+$m=New-ValidMeasurement;$m.Samples[0].ElapsedMilliseconds=251.0;Assert-FailContains 'baseline elapsed sample exceeds 250 ms boundary' { Assert-V02WorkingSetBudgetEvidence $m } @(
+    "Resource sample 0 failed predicate 'baseline-elapsed-at-most-250'.",
+    'PreviousElapsedMilliseconds=NONE CurrentElapsedMilliseconds=251',
+    'PreviousObservedUtc=NONE CurrentObservedUtc=2026-08-22T00:00:00.0000000+00:00')
+$m=New-ValidMeasurement;$m.Samples[2].ElapsedMilliseconds=498;Assert-FailContains 'elapsed sample precedes nominal 250 ms boundary' { Assert-V02WorkingSetBudgetEvidence $m } @(
+    "Resource sample 2 failed predicate 'elapsed-at-or-after-nominal-boundary'.",
+    'PreviousElapsedMilliseconds=250 CurrentElapsedMilliseconds=498',
+    'PreviousObservedUtc=2026-08-22T00:00:00.2500000+00:00 CurrentObservedUtc=2026-08-22T00:00:00.5000000+00:00')
+$m=New-ValidMeasurement;$m.Samples[1].ElapsedMilliseconds=500.0;$m.Samples[2].ElapsedMilliseconds=748.999;Assert-FailContains 'fractional elapsed delta below 249 ms' { Assert-V02WorkingSetBudgetEvidence $m } @(
+    "Resource sample 2 failed predicate 'adjacent-elapsed-delta-at-least-249'.",
+    'PreviousElapsedMilliseconds=500 CurrentElapsedMilliseconds=748.999',
+    'PreviousObservedUtc=2026-08-22T00:00:00.2500000+00:00 CurrentObservedUtc=2026-08-22T00:00:00.5000000+00:00')
 $m=New-ValidMeasurement;$m.Samples[2].ElapsedMilliseconds=[double]::NaN;Assert-Fail 'non-finite elapsed sample' { Assert-V02WorkingSetBudgetEvidence $m }
-$m=New-ValidMeasurement;$m.Samples[2].ElapsedMilliseconds=1001;Assert-Fail 'oversized elapsed sample gap' { Assert-V02WorkingSetBudgetEvidence $m }
-$m=New-ValidMeasurement;$m.Samples[79].ElapsedMilliseconds=20000;$m.Samples[80].ElapsedMilliseconds=20251;Assert-Fail 'final elapsed sample too long' { Assert-V02WorkingSetBudgetEvidence $m }
+$m=New-ValidMeasurement;$m.Samples[2].ElapsedMilliseconds=1001;Assert-FailContains 'oversized elapsed sample gap' { Assert-V02WorkingSetBudgetEvidence $m } @(
+    "Resource sample 2 failed predicate 'adjacent-elapsed-delta-at-most-500'.",
+    'PreviousElapsedMilliseconds=250 CurrentElapsedMilliseconds=1001',
+    'PreviousObservedUtc=2026-08-22T00:00:00.2500000+00:00 CurrentObservedUtc=2026-08-22T00:00:00.5000000+00:00')
+$m=New-ValidMeasurement;$m.Samples[2].ElapsedMilliseconds=750.001;Assert-FailContains 'fractional elapsed delta above 500 ms' { Assert-V02WorkingSetBudgetEvidence $m } @(
+    "Resource sample 2 failed predicate 'adjacent-elapsed-delta-at-most-500'.",
+    'PreviousElapsedMilliseconds=250 CurrentElapsedMilliseconds=750.001',
+    'PreviousObservedUtc=2026-08-22T00:00:00.2500000+00:00 CurrentObservedUtc=2026-08-22T00:00:00.5000000+00:00')
+$m=New-ValidMeasurement;for($index=1;$index-lt80;$index++){$m.Samples[$index].ElapsedMilliseconds=[double](249*$index);$m.Samples[$index].ObservedUtc=([datetimeoffset]'2026-08-22T00:00:00Z').AddMilliseconds(249*$index).ToString('O')};$m.Samples[80].ElapsedMilliseconds=20000.0;Assert-FailContains 'intermediate elapsed samples below nominal boundaries' { Assert-V02WorkingSetBudgetEvidence $m } @(
+    "Resource sample 1 failed predicate 'elapsed-at-or-after-nominal-boundary'.",
+    'PreviousElapsedMilliseconds=0 CurrentElapsedMilliseconds=249',
+    'PreviousObservedUtc=2026-08-22T00:00:00.0000000+00:00 CurrentObservedUtc=2026-08-22T00:00:00.2490000+00:00')
+$m=New-ValidMeasurement;$m.Samples[79].ElapsedMilliseconds=20000;$m.Samples[80].ElapsedMilliseconds=20251;Assert-FailContains 'final elapsed sample too long' { Assert-V02WorkingSetBudgetEvidence $m } @(
+    "Resource sample 80 failed predicate 'final-elapsed-within-20000-20250'.",
+    'PreviousElapsedMilliseconds=20000 CurrentElapsedMilliseconds=20251',
+    'PreviousObservedUtc=2026-08-22T00:00:19.7500000+00:00 CurrentObservedUtc=2026-08-22T00:00:20.0000000+00:00')
 
-if ($script:caseCount -ne 37) {
+if ($script:caseCount -ne 45) {
     throw "Unexpected working-set policy case count: $script:caseCount."
 }
 
