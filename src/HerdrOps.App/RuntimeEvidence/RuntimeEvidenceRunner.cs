@@ -30,7 +30,45 @@ public sealed record RuntimeEvidenceCapture(
     long StateSequence,
     string StateSha256,
     string Language,
-    string LanguageCultureName);
+    string LanguageCultureName,
+    DateTimeOffset ObservedUtc);
+
+public sealed record RuntimeSemanticVisualBinding(
+    string FileName,
+    string Sha256,
+    int PixelWidth,
+    int PixelHeight,
+    long StateSequence,
+    string StateSha256,
+    string Language,
+    string LanguageCultureName,
+    DateTimeOffset ObservedUtc);
+
+public sealed record RuntimeSemanticSourcePane(
+    string PaneIdentitySha256,
+    string TerminalIdentitySha256);
+
+public sealed record RuntimeSemanticSourceAgent(
+    string AgentIdentitySha256,
+    string WorkspaceIdentitySha256,
+    string TabIdentitySha256,
+    string PaneIdentitySha256,
+    int OverviewOrder,
+    string Status,
+    ulong Revision,
+    ulong StateChangeSequence,
+    bool? InteractiveReady,
+    bool? LaunchPending,
+    bool? ScreenDetectionSkipped);
+
+public sealed record RuntimeSemanticSourceState(
+    long ConnectionEpoch,
+    long Sequence,
+    IReadOnlyList<string> WorkspaceIdentitiesSha256,
+    IReadOnlyList<string> TabIdentitiesSha256,
+    IReadOnlyList<RuntimeSemanticSourcePane> Panes,
+    IReadOnlyList<RuntimeSemanticSourceAgent> Agents,
+    string? SelectedAgentIdentitySha256);
 
 public sealed record RuntimeSemanticStatusCount(
     string Status,
@@ -90,15 +128,18 @@ public sealed record RuntimeSemanticStateCapture(
     int Ordinal,
     string Phase,
     string EventBinding,
-    IReadOnlyList<string> BoundCaptureNames,
+    IReadOnlyList<RuntimeSemanticVisualBinding> BoundCaptures,
     DateTimeOffset ObservedUtc,
     long Sequence,
     string NormalizedStateSha256,
+    RuntimeSemanticSourceState SourceState,
+    string SourceStateSha256,
     bool IsCoreConnected,
     bool IsLive,
     RuntimeOverviewSemanticProjection Overview,
     RuntimeOrganizationSemanticProjection LiveOrganization,
     RuntimeAgentDetailSemanticProjection AgentDetail,
+    string SemanticProjectionSha256,
     string CaptureStateSha256);
 
 public sealed record RuntimeEvidenceProgress(
@@ -1080,6 +1121,7 @@ public sealed class RuntimeEvidenceRunner(
             ("SemanticCaptureStatesBound",
                 AreSemanticStateCapturesBound(
                     _semanticStateCaptures,
+                    _captures,
                     initialSequence,
                     initialStateHash,
                     eventA,
@@ -1087,7 +1129,8 @@ public sealed class RuntimeEvidenceRunner(
                     preCloseStateHash,
                     eventB,
                     postCloseSequence,
-                    postCloseStateHash)),
+                    postCloseStateHash,
+                    DateTimeOffset.UtcNow)),
         };
         var failedCandidateChecks = candidateChecks
             .Where(check => !check.Passed)
@@ -1201,19 +1244,21 @@ public sealed class RuntimeEvidenceRunner(
                 $"Semantic state capture '{phase}' no longer matches its bound event state.");
         }
 
-        foreach (var captureName in boundCaptureNames)
-        {
-            var capture = _captures.SingleOrDefault(item =>
+        var boundCaptures = boundCaptureNames
+            .Select(captureName => _captures.SingleOrDefault(item =>
                 string.Equals(
                     Path.GetFileName(item.Path),
                     captureName,
-                    StringComparison.Ordinal));
+                    StringComparison.Ordinal)))
+            .ToArray();
+        foreach (var capture in boundCaptures)
+        {
             if (capture is null ||
                 capture.StateSequence != expectedSequence ||
                 !string.Equals(capture.StateSha256, expectedStateSha256, StringComparison.Ordinal))
             {
                 throw new InvalidOperationException(
-                    $"Semantic state capture '{phase}' is not bound to '{captureName}'.");
+                    $"Semantic state capture '{phase}' has a missing or state-mismatched visual binding.");
             }
         }
 
@@ -1221,7 +1266,7 @@ public sealed class RuntimeEvidenceRunner(
             ordinal,
             phase,
             eventBinding,
-            boundCaptureNames,
+            boundCaptures.Select(capture => ToSemanticVisualBinding(capture!)).ToArray(),
             DateTimeOffset.UtcNow,
             _state));
     }
@@ -1230,14 +1275,14 @@ public sealed class RuntimeEvidenceRunner(
         int ordinal,
         string phase,
         string eventBinding,
-        IReadOnlyList<string> boundCaptureNames,
+        IReadOnlyList<RuntimeSemanticVisualBinding> boundCaptures,
         DateTimeOffset observedUtc,
         LiveDashboardState dashboard)
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(ordinal, 1);
         ArgumentException.ThrowIfNullOrWhiteSpace(phase);
         ArgumentException.ThrowIfNullOrWhiteSpace(eventBinding);
-        ArgumentNullException.ThrowIfNull(boundCaptureNames);
+        ArgumentNullException.ThrowIfNull(boundCaptures);
         ArgumentNullException.ThrowIfNull(dashboard);
         if (observedUtc == default || observedUtc.Offset != TimeSpan.Zero)
         {
@@ -1246,96 +1291,46 @@ public sealed class RuntimeEvidenceRunner(
                 "Semantic capture observations must be non-default UTC timestamps.");
         }
 
-        var captureNames = boundCaptureNames.ToArray();
-        if (captureNames.Length == 0 ||
-            captureNames.Any(string.IsNullOrWhiteSpace) ||
-            captureNames.Distinct(StringComparer.Ordinal).Count() != captureNames.Length)
+        var visualBindings = boundCaptures.ToArray();
+        if (visualBindings.Length == 0 ||
+            visualBindings.Any(binding =>
+                string.IsNullOrWhiteSpace(binding.FileName) ||
+                string.IsNullOrWhiteSpace(binding.Sha256) ||
+                binding.PixelWidth <= 0 ||
+                binding.PixelHeight <= 0 ||
+                string.IsNullOrWhiteSpace(binding.Language) ||
+                string.IsNullOrWhiteSpace(binding.LanguageCultureName) ||
+                !IsNativeUtc(binding.ObservedUtc) ||
+                binding.ObservedUtc > observedUtc) ||
+            visualBindings.Select(binding => binding.FileName)
+                .Distinct(StringComparer.Ordinal).Count() != visualBindings.Length)
         {
             throw new ArgumentException(
-                "Semantic capture bindings must contain unique non-empty capture names.",
-                nameof(boundCaptureNames));
+                "Semantic visual bindings must be unique, complete, positive-sized UTC observations.",
+                nameof(boundCaptures));
         }
 
         var state = HerdrSessionStateContractReducer.NormalizeAndValidate(
             dashboard.CurrentState);
         RequireSemanticPresentationMatchesState(dashboard, state);
-        var selectedAgent = dashboard.SelectedTerminalId is null
-            ? null
-            : state.Agents.SingleOrDefault(agent => string.Equals(
-                agent.TerminalId,
-                dashboard.SelectedTerminalId,
-                StringComparison.Ordinal));
-        var overviewAgents = state.Agents
-            .OrderBy(agent => SemanticStatusOrder(agent.AgentStatus))
-            .ThenBy(AgentStatusPresentation.DisplayName, StringComparer.OrdinalIgnoreCase)
-            .Take(5)
-            .Select(CreateSemanticAgentProjection)
-            .ToArray();
-        var overview = new RuntimeOverviewSemanticProjection(
-            state.Agents.Count,
-            state.Agents
-                .GroupBy(agent => agent.AgentStatus, StringComparer.Ordinal)
-                .OrderBy(group => group.Key, StringComparer.Ordinal)
-                .Select(group => new RuntimeSemanticStatusCount(group.Key, group.Count()))
-                .ToArray(),
-            state.Agents
-                .GroupBy(agent => agent.WorkspaceId, StringComparer.Ordinal)
-                .OrderByDescending(group => group.Count())
-                .ThenBy(group => group.Key, StringComparer.Ordinal)
-                .Select(group => new RuntimeSemanticWorkspaceCount(
-                    RedactSemanticIdentity("workspace", group.Key),
-                    group.Count()))
-                .ToArray(),
-            overviewAgents);
-        var assignedTerminalIds = state.Agents
-            .Select(agent => agent.TerminalId)
-            .ToHashSet(StringComparer.Ordinal);
-        var unassignedPaneCount = state.Panes.Count(
-            pane => !assignedTerminalIds.Contains(pane.TerminalId));
-        var organization = new RuntimeOrganizationSemanticProjection(
-            state.Workspaces.Count,
-            state.Tabs.Count,
-            state.Panes.Count,
-            state.Agents.Count,
-            unassignedPaneCount,
-            state.Agents.Count(agent => string.Equals(
-                agent.AgentStatus,
-                "Unknown",
-                StringComparison.Ordinal)),
-            dashboard.Organization.Nodes.Count,
-            selectedAgent is null
-                ? null
-                : RedactSemanticIdentity("agent", selectedAgent.TerminalId));
-        var agentDetail = new RuntimeAgentDetailSemanticProjection(
-            selectedAgent is not null,
-            RedactNullableSemanticIdentity("agent", selectedAgent?.TerminalId),
-            RedactNullableSemanticIdentity("workspace", selectedAgent?.WorkspaceId),
-            RedactNullableSemanticIdentity("tab", selectedAgent?.TabId),
-            RedactNullableSemanticIdentity("pane", selectedAgent?.PaneId),
-            selectedAgent?.AgentStatus ?? MissingSemanticSource,
-            selectedAgent?.Revision,
-            selectedAgent?.StateChangeSequence,
-            state.LastIngestSequence,
-            state.ConnectionEpoch,
-            selectedAgent?.InteractiveReady,
-            selectedAgent?.LaunchPending,
-            selectedAgent?.ScreenDetectionSkipped,
-            MissingSemanticSource,
-            MissingSemanticSource,
-            MissingSemanticSource);
+        var sourceState = CreateSemanticSourceState(state, dashboard.SelectedTerminalId);
+        var projections = ProjectSemanticSourceState(sourceState);
         var capture = new RuntimeSemanticStateCapture(
             ordinal,
             phase,
             eventBinding,
-            captureNames,
+            visualBindings,
             observedUtc,
             state.LastIngestSequence,
             HerdrOpsStateIpcJson.ComputeSha256(state),
+            sourceState,
+            ComputeSemanticSourceStateSha256(sourceState),
             dashboard.IsCoreConnected,
             dashboard.IsLive,
-            overview,
-            organization,
-            agentDetail,
+            projections.Overview,
+            projections.LiveOrganization,
+            projections.AgentDetail,
+            ComputeSemanticProjectionSha256(projections),
             string.Empty);
         return capture with
         {
@@ -1355,6 +1350,7 @@ public sealed class RuntimeEvidenceRunner(
 
     internal static bool AreSemanticStateCapturesBound(
         IReadOnlyList<RuntimeSemanticStateCapture> captures,
+        IReadOnlyList<RuntimeEvidenceCapture> runtimeCaptures,
         long initialSequence,
         string initialStateSha256,
         RuntimeAgentStatusTransitionEvidence eventA,
@@ -1362,12 +1358,14 @@ public sealed class RuntimeEvidenceRunner(
         string preCloseStateSha256,
         RuntimeAgentStatusTransitionEvidence eventB,
         long postCloseSequence,
-        string postCloseStateSha256)
+        string postCloseStateSha256,
+        DateTimeOffset validationUtc)
     {
         ArgumentNullException.ThrowIfNull(captures);
+        ArgumentNullException.ThrowIfNull(runtimeCaptures);
         ArgumentNullException.ThrowIfNull(eventA);
         ArgumentNullException.ThrowIfNull(eventB);
-        if (captures.Count != 3)
+        if (captures.Count != 3 || !IsNativeUtc(validationUtc))
         {
             return false;
         }
@@ -1395,12 +1393,24 @@ public sealed class RuntimeEvidenceRunner(
         if (eventA.CurrentSequence != preCloseSequence ||
             !string.Equals(eventA.CurrentStateSha256, preCloseStateSha256, StringComparison.Ordinal) ||
             eventB.CurrentSequence != postCloseSequence ||
-            !string.Equals(eventB.CurrentStateSha256, postCloseStateSha256, StringComparison.Ordinal))
+            !string.Equals(eventB.CurrentStateSha256, postCloseStateSha256, StringComparison.Ordinal) ||
+            !IsNativeUtc(eventA.PhaseEnteredUtc) ||
+            !IsNativeUtc(eventA.ObservedUtc) ||
+            !IsNativeUtc(eventB.PhaseEnteredUtc) ||
+            !IsNativeUtc(eventB.ObservedUtc) ||
+            !(captures[0].ObservedUtc < eventA.PhaseEnteredUtc &&
+              eventA.PhaseEnteredUtc <= eventA.ObservedUtc &&
+              eventA.ObservedUtc <= captures[1].ObservedUtc &&
+              captures[1].ObservedUtc < eventB.PhaseEnteredUtc &&
+              eventB.PhaseEnteredUtc <= eventB.ObservedUtc &&
+              eventB.ObservedUtc <= captures[2].ObservedUtc &&
+              captures[2].ObservedUtc <= validationUtc))
         {
             return false;
         }
 
         return captures.Zip(expected).All(pair =>
+            IsNativeUtc(pair.First.ObservedUtc) &&
             pair.First.Ordinal == pair.Second.Ordinal &&
             string.Equals(pair.First.Phase, pair.Second.Phase, StringComparison.Ordinal) &&
             string.Equals(pair.First.EventBinding, pair.Second.Event, StringComparison.Ordinal) &&
@@ -1409,9 +1419,26 @@ public sealed class RuntimeEvidenceRunner(
                 pair.First.NormalizedStateSha256,
                 pair.Second.Hash,
                 StringComparison.Ordinal) &&
-            pair.First.BoundCaptureNames.SequenceEqual(
-                pair.Second.Names,
-                StringComparer.Ordinal) &&
+            pair.First.BoundCaptures.Select(binding => binding.FileName)
+                .SequenceEqual(pair.Second.Names, StringComparer.Ordinal) &&
+            pair.First.BoundCaptures.All(binding =>
+                IsSemanticVisualBindingValid(
+                    binding,
+                    pair.First,
+                    runtimeCaptures,
+                    pair.First.Ordinal == 2
+                        ? eventA.ObservedUtc
+                        : pair.First.Ordinal == 3
+                            ? eventB.ObservedUtc
+                            : null,
+                    validationUtc)) &&
+            pair.First.SourceState.Sequence == pair.First.Sequence &&
+            string.Equals(
+                pair.First.SourceStateSha256,
+                ComputeSemanticSourceStateSha256(pair.First.SourceState),
+                StringComparison.Ordinal) &&
+            IsSemanticSourceStateValid(pair.First.SourceState) &&
+            SemanticProjectionsMatchSource(pair.First) &&
             pair.First.IsCoreConnected &&
             pair.First.IsLive &&
             string.Equals(
@@ -1420,19 +1447,303 @@ public sealed class RuntimeEvidenceRunner(
                 StringComparison.Ordinal));
     }
 
-    private static RuntimeSemanticAgentProjection CreateSemanticAgentProjection(
-        HerdrAgentStateContract agent) =>
+    private static RuntimeSemanticVisualBinding ToSemanticVisualBinding(
+        RuntimeEvidenceCapture capture) =>
         new(
-            RedactSemanticIdentity("agent", agent.TerminalId),
-            RedactSemanticIdentity("workspace", agent.WorkspaceId),
-            RedactSemanticIdentity("tab", agent.TabId),
-            RedactSemanticIdentity("pane", agent.PaneId),
-            agent.AgentStatus,
-            agent.Revision,
-            agent.StateChangeSequence,
-            agent.InteractiveReady,
-            agent.LaunchPending,
-            agent.ScreenDetectionSkipped);
+            Path.GetFileName(capture.Path),
+            capture.Sha256,
+            capture.PixelWidth,
+            capture.PixelHeight,
+            capture.StateSequence,
+            capture.StateSha256,
+            capture.Language,
+            capture.LanguageCultureName,
+            capture.ObservedUtc);
+
+    private static RuntimeSemanticSourceState CreateSemanticSourceState(
+        HerdrSessionStateContract state,
+        string? selectedTerminalId)
+    {
+        var overviewOrder = state.Agents
+            .OrderBy(agent => SemanticStatusOrder(agent.AgentStatus))
+            .ThenBy(AgentStatusPresentation.DisplayName, StringComparer.OrdinalIgnoreCase)
+            .Select((agent, index) => (agent.TerminalId, index))
+            .ToDictionary(item => item.TerminalId, item => item.index, StringComparer.Ordinal);
+        var selectedAgent = selectedTerminalId is null
+            ? null
+            : state.Agents.SingleOrDefault(agent => string.Equals(
+                agent.TerminalId,
+                selectedTerminalId,
+                StringComparison.Ordinal));
+        return new RuntimeSemanticSourceState(
+            state.ConnectionEpoch,
+            state.LastIngestSequence,
+            state.Workspaces
+                .Select(workspace => RedactSemanticIdentity("workspace", workspace.WorkspaceId))
+                .Order(StringComparer.Ordinal)
+                .ToArray(),
+            state.Tabs
+                .Select(tab => RedactSemanticIdentity("tab", tab.TabId))
+                .Order(StringComparer.Ordinal)
+                .ToArray(),
+            state.Panes
+                .Select(pane => new RuntimeSemanticSourcePane(
+                    RedactSemanticIdentity("pane", pane.PaneId),
+                    RedactSemanticIdentity("agent", pane.TerminalId)))
+                .OrderBy(pane => pane.PaneIdentitySha256, StringComparer.Ordinal)
+                .ToArray(),
+            state.Agents
+                .Select(agent => new RuntimeSemanticSourceAgent(
+                    RedactSemanticIdentity("agent", agent.TerminalId),
+                    RedactSemanticIdentity("workspace", agent.WorkspaceId),
+                    RedactSemanticIdentity("tab", agent.TabId),
+                    RedactSemanticIdentity("pane", agent.PaneId),
+                    overviewOrder[agent.TerminalId],
+                    agent.AgentStatus,
+                    agent.Revision,
+                    agent.StateChangeSequence,
+                    agent.InteractiveReady,
+                    agent.LaunchPending,
+                    agent.ScreenDetectionSkipped))
+                .OrderBy(agent => agent.AgentIdentitySha256, StringComparer.Ordinal)
+                .ToArray(),
+            selectedAgent is null
+                ? null
+                : RedactSemanticIdentity("agent", selectedAgent.TerminalId));
+    }
+
+    private static RuntimeSemanticProjectionSet ProjectSemanticSourceState(
+        RuntimeSemanticSourceState source)
+    {
+        var visibleAgents = source.Agents
+            .OrderBy(agent => agent.OverviewOrder)
+            .Take(5)
+            .Select(agent => new RuntimeSemanticAgentProjection(
+                agent.AgentIdentitySha256,
+                agent.WorkspaceIdentitySha256,
+                agent.TabIdentitySha256,
+                agent.PaneIdentitySha256,
+                agent.Status,
+                agent.Revision,
+                agent.StateChangeSequence,
+                agent.InteractiveReady,
+                agent.LaunchPending,
+                agent.ScreenDetectionSkipped))
+            .ToArray();
+        var overview = new RuntimeOverviewSemanticProjection(
+            source.Agents.Count,
+            source.Agents
+                .GroupBy(agent => agent.Status, StringComparer.Ordinal)
+                .OrderBy(group => group.Key, StringComparer.Ordinal)
+                .Select(group => new RuntimeSemanticStatusCount(group.Key, group.Count()))
+                .ToArray(),
+            source.Agents
+                .GroupBy(agent => agent.WorkspaceIdentitySha256, StringComparer.Ordinal)
+                .OrderByDescending(group => group.Count())
+                .ThenBy(group => group.Key, StringComparer.Ordinal)
+                .Select(group => new RuntimeSemanticWorkspaceCount(group.Key, group.Count()))
+                .ToArray(),
+            visibleAgents);
+        var assignedTerminalIdentities = source.Agents
+            .Select(agent => agent.AgentIdentitySha256)
+            .ToHashSet(StringComparer.Ordinal);
+        var unassignedPaneCount = source.Panes.Count(
+            pane => !assignedTerminalIdentities.Contains(pane.TerminalIdentitySha256));
+        var organization = new RuntimeOrganizationSemanticProjection(
+            source.WorkspaceIdentitiesSha256.Count,
+            source.TabIdentitiesSha256.Count,
+            source.Panes.Count,
+            source.Agents.Count,
+            unassignedPaneCount,
+            source.Agents.Count(agent => string.Equals(
+                agent.Status,
+                "Unknown",
+                StringComparison.Ordinal)),
+            source.WorkspaceIdentitiesSha256.Count +
+            source.TabIdentitiesSha256.Count +
+            source.Agents.Count +
+            unassignedPaneCount,
+            source.SelectedAgentIdentitySha256);
+        var selectedAgent = source.SelectedAgentIdentitySha256 is null
+            ? null
+            : source.Agents.Single(agent => string.Equals(
+                agent.AgentIdentitySha256,
+                source.SelectedAgentIdentitySha256,
+                StringComparison.Ordinal));
+        var agentDetail = new RuntimeAgentDetailSemanticProjection(
+            selectedAgent is not null,
+            selectedAgent?.AgentIdentitySha256,
+            selectedAgent?.WorkspaceIdentitySha256,
+            selectedAgent?.TabIdentitySha256,
+            selectedAgent?.PaneIdentitySha256,
+            selectedAgent?.Status ?? MissingSemanticSource,
+            selectedAgent?.Revision,
+            selectedAgent?.StateChangeSequence,
+            source.Sequence,
+            source.ConnectionEpoch,
+            selectedAgent?.InteractiveReady,
+            selectedAgent?.LaunchPending,
+            selectedAgent?.ScreenDetectionSkipped,
+            MissingSemanticSource,
+            MissingSemanticSource,
+            MissingSemanticSource);
+        return new RuntimeSemanticProjectionSet(overview, organization, agentDetail);
+    }
+
+    private static string ComputeSemanticSourceStateSha256(
+        RuntimeSemanticSourceState source) =>
+        Convert.ToHexString(SHA256.HashData(
+            JsonSerializer.SerializeToUtf8Bytes(source, CompactSerializerOptions)));
+
+    private static string ComputeSemanticProjectionSha256(
+        RuntimeSemanticProjectionSet projections) =>
+        Convert.ToHexString(SHA256.HashData(
+            JsonSerializer.SerializeToUtf8Bytes(projections, CompactSerializerOptions)));
+
+    private static bool SemanticProjectionsMatchSource(RuntimeSemanticStateCapture capture)
+    {
+        var expected = ProjectSemanticSourceState(capture.SourceState);
+        var actual = new RuntimeSemanticProjectionSet(
+            capture.Overview,
+            capture.LiveOrganization,
+            capture.AgentDetail);
+        var expectedSha256 = ComputeSemanticProjectionSha256(expected);
+        return string.Equals(
+                   expectedSha256,
+                   ComputeSemanticProjectionSha256(actual),
+                   StringComparison.Ordinal) &&
+               string.Equals(
+                   expectedSha256,
+                   capture.SemanticProjectionSha256,
+                   StringComparison.Ordinal);
+    }
+
+    private static bool IsSemanticSourceStateValid(RuntimeSemanticSourceState source)
+    {
+        if (source.Sequence <= 0 || source.ConnectionEpoch <= 0 ||
+            source.WorkspaceIdentitiesSha256.Any(value => !IsSha256(value)) ||
+            source.TabIdentitiesSha256.Any(value => !IsSha256(value)) ||
+            source.Panes.Any(pane =>
+                !IsSha256(pane.PaneIdentitySha256) ||
+                !IsSha256(pane.TerminalIdentitySha256)) ||
+            source.Agents.Any(agent =>
+                !IsSha256(agent.AgentIdentitySha256) ||
+                !IsSha256(agent.WorkspaceIdentitySha256) ||
+                !IsSha256(agent.TabIdentitySha256) ||
+                !IsSha256(agent.PaneIdentitySha256) ||
+                string.IsNullOrWhiteSpace(agent.Status)) ||
+            source.WorkspaceIdentitiesSha256.Distinct(StringComparer.Ordinal).Count() !=
+                source.WorkspaceIdentitiesSha256.Count ||
+            source.TabIdentitiesSha256.Distinct(StringComparer.Ordinal).Count() !=
+                source.TabIdentitiesSha256.Count ||
+            source.Panes.Select(pane => pane.PaneIdentitySha256)
+                .Distinct(StringComparer.Ordinal).Count() != source.Panes.Count ||
+            source.Agents.Select(agent => agent.AgentIdentitySha256)
+                .Distinct(StringComparer.Ordinal).Count() != source.Agents.Count ||
+            !source.Agents.Select(agent => agent.OverviewOrder)
+                .Order()
+                .SequenceEqual(Enumerable.Range(0, source.Agents.Count)) ||
+            source.Agents.Any(agent =>
+                !source.WorkspaceIdentitiesSha256.Contains(
+                    agent.WorkspaceIdentitySha256,
+                    StringComparer.Ordinal) ||
+                !source.TabIdentitiesSha256.Contains(
+                    agent.TabIdentitySha256,
+                    StringComparer.Ordinal) ||
+                !source.Panes.Any(pane => string.Equals(
+                    pane.PaneIdentitySha256,
+                    agent.PaneIdentitySha256,
+                    StringComparison.Ordinal))))
+        {
+            return false;
+        }
+
+        return source.SelectedAgentIdentitySha256 is null ||
+               source.Agents.Any(agent => string.Equals(
+                   agent.AgentIdentitySha256,
+                   source.SelectedAgentIdentitySha256,
+                   StringComparison.Ordinal));
+    }
+
+    private static bool IsSemanticVisualBindingValid(
+        RuntimeSemanticVisualBinding binding,
+        RuntimeSemanticStateCapture semanticCapture,
+        IReadOnlyList<RuntimeEvidenceCapture> runtimeCaptures,
+        DateTimeOffset? minimumObservedUtc,
+        DateTimeOffset validationUtc)
+    {
+        if (!IsNativeUtc(binding.ObservedUtc) ||
+            binding.ObservedUtc > semanticCapture.ObservedUtc ||
+            binding.ObservedUtc > validationUtc ||
+            (minimumObservedUtc is not null && binding.ObservedUtc < minimumObservedUtc) ||
+            binding.PixelWidth <= 0 ||
+            binding.PixelHeight <= 0 ||
+            binding.StateSequence != semanticCapture.Sequence ||
+            !string.Equals(
+                binding.StateSha256,
+                semanticCapture.NormalizedStateSha256,
+                StringComparison.Ordinal) ||
+            !IsSha256(binding.Sha256) ||
+            string.IsNullOrWhiteSpace(binding.Language) ||
+            string.IsNullOrWhiteSpace(binding.LanguageCultureName))
+        {
+            return false;
+        }
+
+        var runtimeCapture = runtimeCaptures.SingleOrDefault(capture => string.Equals(
+            Path.GetFileName(capture.Path),
+            binding.FileName,
+            StringComparison.Ordinal));
+        if (runtimeCapture is null ||
+            !string.Equals(
+                runtimeCapture.Name,
+                Path.GetFileNameWithoutExtension(binding.FileName),
+                StringComparison.Ordinal) ||
+            !string.Equals(runtimeCapture.Sha256, binding.Sha256, StringComparison.Ordinal) ||
+            runtimeCapture.PixelWidth != binding.PixelWidth ||
+            runtimeCapture.PixelHeight != binding.PixelHeight ||
+            runtimeCapture.StateSequence != binding.StateSequence ||
+            !string.Equals(runtimeCapture.StateSha256, binding.StateSha256, StringComparison.Ordinal) ||
+            !string.Equals(runtimeCapture.Language, binding.Language, StringComparison.Ordinal) ||
+            !string.Equals(
+                runtimeCapture.LanguageCultureName,
+                binding.LanguageCultureName,
+                StringComparison.Ordinal) ||
+            runtimeCapture.ObservedUtc != binding.ObservedUtc ||
+            !File.Exists(runtimeCapture.Path))
+        {
+            return false;
+        }
+
+        try
+        {
+            using var stream = new FileStream(
+                runtimeCapture.Path,
+                FileMode.Open,
+                FileAccess.Read,
+                FileShare.Read);
+            return string.Equals(
+                Convert.ToHexString(SHA256.HashData(stream)),
+                binding.Sha256,
+                StringComparison.Ordinal);
+        }
+        catch (IOException)
+        {
+            return false;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return false;
+        }
+    }
+
+    private static bool IsNativeUtc(DateTimeOffset value) =>
+        value != default && value.Offset == TimeSpan.Zero;
+
+    private sealed record RuntimeSemanticProjectionSet(
+        RuntimeOverviewSemanticProjection Overview,
+        RuntimeOrganizationSemanticProjection LiveOrganization,
+        RuntimeAgentDetailSemanticProjection AgentDetail);
 
     private static string RedactSemanticIdentity(string kind, string value) =>
         Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes($"{kind}\0{value}")));
@@ -1666,7 +1977,8 @@ public sealed class RuntimeEvidenceRunner(
             _state.CurrentState.LastIngestSequence,
             CurrentStateHash(),
             captureLanguage.Language,
-            captureLanguage.CurrentUiCultureName));
+            captureLanguage.CurrentUiCultureName,
+            DateTimeOffset.UtcNow));
     }
 
     private async Task<RuntimeResourceMeasurement> MeasureResourcesAsync(
