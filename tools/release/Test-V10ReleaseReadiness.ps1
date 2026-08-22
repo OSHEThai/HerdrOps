@@ -1050,7 +1050,7 @@ try {
 
     $issue41PassMissingInventory = Copy-TestJsonObject -Value $issue41Report.Value
     $issue41PassMissingInventory.EvidenceStatus.Static.ObservedVersions = @()
-    Assert-ExpectedFailure -Description 'Issue #41 PASS inventory missing required version' -RequiredFragments @('PASS must place every required') -Action {
+    Assert-ExpectedFailure -Description 'Issue #41 PASS inventory missing required version' -RequiredFragments @('exactly partition') -Action {
         Assert-V10Issue41ReportSemantics -Report $issue41PassMissingInventory -SourceCommit $sourceCommit -ExpectedSourceTree $sourceTree | Out-Null
     }
     [void]$assertions.Add('Issue41PassInventoryPartitionRejected')
@@ -1082,7 +1082,7 @@ try {
 
     $issue41NotApplicableInventory = Copy-TestJsonObject -Value $issue41Report.Value
     $issue41NotApplicableInventory.EvidenceStatus.Release.Status = 'NOT_APPLICABLE'
-    Assert-ExpectedFailure -Description 'Issue #41 NOT_APPLICABLE inventory nonempty' -RequiredFragments @('exactly partition') -Action {
+    Assert-ExpectedFailure -Description 'Issue #41 NOT_APPLICABLE inventory nonempty' -RequiredFragments @('NOT_APPLICABLE must have empty') -Action {
         Assert-V10Issue41ReportSemantics -Report $issue41NotApplicableInventory -SourceCommit $sourceCommit -ExpectedSourceTree $sourceTree | Out-Null
     }
     [void]$assertions.Add('Issue41NotApplicableInventoryPartitionRejected')
