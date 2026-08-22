@@ -543,6 +543,13 @@ function New-LiveReferenceEnvironmentSnapshot([string]$Path, [string]$Repository
     return $Path
 }
 
+function New-ElevatedEnvironmentSnapshot([string]$SourcePath, [string]$Path) {
+    $value = Get-Content -Raw -LiteralPath $SourcePath | ConvertFrom-Json
+    $value.session.elevated = $true
+    [IO.File]::WriteAllText($Path, ($value | ConvertTo-Json -Depth 20), (New-Object Text.UTF8Encoding($false)))
+    return $Path
+}
+
 function Start-LiveFixtureProcess([string]$Executable,[string]$ScriptPath,[string]$Role,[string]$PipeName,[string]$CaptureRoot,[string]$TemplateRoot,[int]$CorePid=0,[string]$CorePath='',[string]$FaultStage='') {
     $psi = New-Object Diagnostics.ProcessStartInfo
     $psi.FileName = $Executable
@@ -647,6 +654,8 @@ try {
     $repo = New-IsolatedTestRepository (Join-Path $temp 'repo')
     Write-Host 'INFO creating isolated package fixture...'
     $pkg = New-IsolatedTestPackage (Join-Path $temp 'pkg') $repo.Root $repo.Commit $repo.Tree
+    $fixtureEnvironmentPath = New-LiveReferenceEnvironmentSnapshot (Join-Path $temp 'fixture-environment.json') $repo.Root
+    $elevatedEnvironmentPath = New-ElevatedEnvironmentSnapshot $fixtureEnvironmentPath (Join-Path $temp 'elevated-environment.json')
     Write-Host 'INFO invoking harness for positive baseline...'
 
     # 1. Positive Baseline: Full Harness Execution
@@ -658,7 +667,8 @@ try {
         -IdentityReceiptPath $pkg.ReceiptPath `
         -RepositoryRoot $repo.Root `
         -ProfilePath $pkg.ProfilePath `
-        -SyntheticCapturesForTesting
+        -SyntheticCapturesForTesting `
+        -TestEnvironmentSnapshotPath $fixtureEnvironmentPath
     Write-Host 'INFO positive baseline execution complete.'
 
     if ($result1.EvidenceClassification -cne 'PackagedCompatibilityCandidate' -or
@@ -710,7 +720,8 @@ try {
         -ProfilePath $pkg.ProfilePath `
         -CaptureSourceDirectory $sourceCaptures `
         -OperatorObservationAction (New-MockObservationAction) `
-        -SyntheticCapturesForTesting
+        -SyntheticCapturesForTesting `
+        -TestEnvironmentSnapshotPath $fixtureEnvironmentPath
     $sourceManifest = Get-Content -Raw -LiteralPath $sourceResult.ManifestPath | ConvertFrom-Json
     $sourceProofPath = Join-Path $outSource $sourceManifest.rendererEvidence.throughoutObservations[0].proofReceipt.relativePath
     $sourceProof = Get-Content -Raw -LiteralPath $sourceProofPath | ConvertFrom-Json
@@ -720,6 +731,36 @@ try {
         throw 'Contained real-capture input path or injected observation was not preserved as synthetic/no-credit.'
     }
     Pass 'contained real-capture input path and injected native observation are preserved as synthetic/no-credit'
+
+    # Synthetic CI fixtures must declare the approved non-elevated host
+    # explicitly; they must never inherit the runner token's elevation state.
+    $baselineManifest = Get-Content -Raw -LiteralPath $result1.ManifestPath | ConvertFrom-Json
+    if ([bool]$baselineManifest.environment.session.elevated) {
+        throw 'Synthetic fixture manifest inherited elevated host state.'
+    }
+    Pass 'synthetic fixture injects a deterministic non-elevated host observation'
+
+    # The production manifest verifier must still reject elevated evidence.
+    $elevatedOutput = Join-Path $temp 'elevated-environment-output'
+    Assert-Throws {
+        & (Join-Path $PSScriptRoot 'Invoke-V02LiveRendererCapture.ps1') `
+            -OutputDirectory $elevatedOutput `
+            -PackageRoot $pkg.PackageRoot `
+            -ArchivePath $pkg.ArchivePath `
+            -IdentityReceiptPath $pkg.ReceiptPath `
+            -RepositoryRoot $repo.Root `
+            -ProfilePath $pkg.ProfilePath `
+            -SyntheticCapturesForTesting `
+            -TestEnvironmentSnapshotPath $elevatedEnvironmentPath
+    } 'Elevated renderer evidence is outside the approved v0.2 scope' 'production manifest verifier rejects elevated evidence'
+    if (Test-Path -LiteralPath $elevatedOutput) {
+        throw 'Elevated evidence rejection left a published output directory.'
+    }
+
+    $elevatedEnvironment = Get-Content -Raw -LiteralPath $elevatedEnvironmentPath | ConvertFrom-Json
+    Assert-Throws {
+        Assert-RendererLiveEnvironment $elevatedEnvironment $repo.Root
+    } 'local, physical, non-elevated single-user session' 'production live admission rejects elevated environment'
 
     # 3. Positive LiveOperator fixture: copied PowerShell processes implement
     # the target-process protocol. This reaches the same PID/start/executable,
@@ -785,7 +826,8 @@ try {
             -IdentityReceiptPath $pkg.ReceiptPath `
             -RepositoryRoot $repo.Root `
             -ProfilePath $pkg.ProfilePath `
-            -SyntheticCapturesForTesting
+            -SyntheticCapturesForTesting `
+            -TestEnvironmentSnapshotPath $fixtureEnvironmentPath
     } 'already exists.*no-clobber' 'no-clobber existing directory protection'
 
     # 3b. Hostile: destination appears after validation; atomic rename must
@@ -800,6 +842,7 @@ try {
             -RepositoryRoot $repo.Root `
             -ProfilePath $pkg.ProfilePath `
             -SyntheticCapturesForTesting `
+            -TestEnvironmentSnapshotPath $fixtureEnvironmentPath `
             -TestFaultStage 'OutputRace'
     } 'appeared before atomic no-clobber publish' 'publish race fails closed without clobber'
     if (-not (Test-Path -LiteralPath $outRace -PathType Container)) { throw 'Publish race did not preserve the competing destination.' }
@@ -861,6 +904,7 @@ try {
             -RepositoryRoot $repo.Root `
             -ProfilePath $pkg.ProfilePath `
             -SyntheticCapturesForTesting `
+            -TestEnvironmentSnapshotPath $fixtureEnvironmentPath `
             -TestFaultStage 'MissingCapture'
     } 'requires exactly 20 captures' 'missing capture fails closed'
 
@@ -880,6 +924,7 @@ try {
             -RepositoryRoot $repo.Root `
             -ProfilePath $pkg.ProfilePath `
             -SyntheticCapturesForTesting `
+            -TestEnvironmentSnapshotPath $fixtureEnvironmentPath `
             -TestFaultStage 'CorruptPng'
     } 'not a complete decodable PNG' 'corrupt PNG capture fails closed'
 
@@ -894,6 +939,7 @@ try {
             -RepositoryRoot $repo.Root `
             -ProfilePath $pkg.ProfilePath `
             -SyntheticCapturesForTesting `
+            -TestEnvironmentSnapshotPath $fixtureEnvironmentPath `
             -TestFaultStage 'LatePreFirstHwnd'
     } 'The JSON is not valid with the schema|HWND ordering is invalid|outside exact order' 'late pre-first-HWND proof fails closed'
 
@@ -908,6 +954,7 @@ try {
             -RepositoryRoot $repo.Root `
             -ProfilePath $pkg.ProfilePath `
             -SyntheticCapturesForTesting `
+            -TestEnvironmentSnapshotPath $fixtureEnvironmentPath `
             -TestFaultStage 'HardwareModeDrift'
     } 'The JSON is not valid with the schema|not native SoftwareOnly true|SoftwareOnly' 'hardware mode drift fails closed'
 
@@ -922,6 +969,7 @@ try {
             -RepositoryRoot $repo.Root `
             -ProfilePath $pkg.ProfilePath `
             -SyntheticCapturesForTesting `
+            -TestEnvironmentSnapshotPath $fixtureEnvironmentPath `
             -TestFaultStage 'OutOfOrderStages'
     } 'The JSON is not valid with the schema|ordered by nondecreasing UTC|window.*reversed' 'out-of-order stages fail closed'
 
@@ -936,6 +984,7 @@ try {
             -RepositoryRoot $repo.Root `
             -ProfilePath $pkg.ProfilePath `
             -SyntheticCapturesForTesting `
+            -TestEnvironmentSnapshotPath $fixtureEnvironmentPath `
             -TestFaultStage 'MissingStage'
     } 'The JSON is not valid with the schema|requires exactly 8 lifecycle stage observations' 'missing lifecycle stage fails closed'
 
@@ -950,6 +999,7 @@ try {
             -RepositoryRoot $repo.Root `
             -ProfilePath $pkg.ProfilePath `
             -SyntheticCapturesForTesting `
+            -TestEnvironmentSnapshotPath $fixtureEnvironmentPath `
             -TestFaultStage 'CaptureOutsideWindow'
     } 'The JSON is not valid with the schema|falls outside its renderer-observation language window' 'capture timestamp outside window fails closed'
 
@@ -965,7 +1015,8 @@ try {
             -IdentityReceiptPath $pkgTampered.ReceiptPath `
             -RepositoryRoot $repo.Root `
             -ProfilePath $pkgTampered.ProfilePath `
-            -SyntheticCapturesForTesting
+            -SyntheticCapturesForTesting `
+            -TestEnvironmentSnapshotPath $fixtureEnvironmentPath
     } 'Manifest/package-root inventories are not exact and coherent|App/Core receipt bytes/hashes do not match|App executable in payload does not match|tamper detected' 'tampered packaged App binary fails closed'
 
     # 11. Hostile: Reparse point in output parent directory
@@ -983,7 +1034,8 @@ try {
                 -IdentityReceiptPath $pkg.ReceiptPath `
                 -RepositoryRoot $repo.Root `
                 -ProfilePath $pkg.ProfilePath `
-                -SyntheticCapturesForTesting
+                -SyntheticCapturesForTesting `
+                -TestEnvironmentSnapshotPath $fixtureEnvironmentPath
         } 'reparse' 'reparse junction output path fails closed'
     } finally {
         if (Test-Path -LiteralPath $junctionDir) {
@@ -1002,6 +1054,7 @@ try {
             -RepositoryRoot $repo.Root `
             -ProfilePath $pkg.ProfilePath `
             -SyntheticCapturesForTesting `
+            -TestEnvironmentSnapshotPath $fixtureEnvironmentPath `
             -TestFaultStage 'PreCommit'
     } 'Injected failure before commit' 'pre-commit failure cleans up staging'
 
