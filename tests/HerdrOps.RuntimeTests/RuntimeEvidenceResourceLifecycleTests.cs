@@ -1,6 +1,8 @@
+using System.Diagnostics;
 using System.Windows;
 using HerdrOps.App;
 using HerdrOps.App.Live;
+using HerdrOps.App.RuntimeEvidence;
 using HerdrOps.App.Views;
 using HerdrOps.App.Widgets;
 
@@ -10,6 +12,54 @@ namespace HerdrOps.RuntimeTests;
 [DoNotParallelize]
 public sealed class RuntimeEvidenceResourceLifecycleTests
 {
+    [TestMethod]
+    public void ResourceStageDiagnosticsRemainExactAndOrdered()
+    {
+        CollectionAssert.AreEqual(
+            new[]
+            {
+                "pre-capture",
+                "post-initial-captures",
+                "post-dashboard-close",
+                "post-final-widget-capture",
+                "post-cleanup",
+            },
+            RuntimeEvidenceRunner.RequiredResourceStageNames.ToArray());
+    }
+
+    [TestMethod]
+    public void ResourceStageCheckpointBindsCurrentProcessAndMemoryCounters()
+    {
+        using var app = Process.GetCurrentProcess();
+        var observedBeforeUtc = DateTimeOffset.UtcNow;
+
+        var checkpoint = RuntimeEvidenceRunner.ObserveResourceStageCheckpoint(
+            "pre-capture",
+            app);
+
+        var observedAfterUtc = DateTimeOffset.UtcNow;
+        Assert.AreEqual("pre-capture", checkpoint.Stage);
+        Assert.IsTrue(checkpoint.ObservedUtc >= observedBeforeUtc);
+        Assert.IsTrue(checkpoint.ObservedUtc <= observedAfterUtc);
+        Assert.AreEqual(app.Id, checkpoint.AppProcessId);
+        Assert.AreEqual(
+            new DateTimeOffset(app.StartTime.ToUniversalTime()),
+            checkpoint.AppProcessStartUtc);
+        Assert.IsGreaterThan(0d, checkpoint.AppWorkingSetMegabytes);
+        Assert.IsGreaterThan(0d, checkpoint.AppPrivateMemoryMegabytes);
+        Assert.IsGreaterThanOrEqualTo(0d, checkpoint.AppPagedMemoryMegabytes);
+        Assert.IsGreaterThan(0d, checkpoint.ManagedHeapMegabytes);
+    }
+
+    [TestMethod]
+    public void ResourceStageCheckpointRejectsBlankStage()
+    {
+        using var app = Process.GetCurrentProcess();
+
+        Assert.ThrowsExactly<ArgumentException>(() =>
+            RuntimeEvidenceRunner.ObserveResourceStageCheckpoint(" ", app));
+    }
+
     [TestMethod]
     public void ClosingDashboardReleasesItsVisualTreeWithoutOwningLiveState()
     {
