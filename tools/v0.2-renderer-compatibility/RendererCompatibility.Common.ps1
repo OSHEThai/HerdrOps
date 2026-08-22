@@ -544,4 +544,3 @@ function Assert-V02TrustedTelemetryPacket {
         throw "Telemetry packet SHA-256 hash mismatch: expected '$expectedHash', found '$($Packet.packetSha256)'."
     }
 }
-
