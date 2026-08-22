@@ -1,0 +1,892 @@
+#requires -Version 5.1
+
+[CmdletBinding()]
+param([switch]$SemanticEvidenceOnly)
+
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
+
+. (Join-Path $PSScriptRoot 'HerdrOps.InstallAcceptance.Common.ps1')
+. (Join-Path $PSScriptRoot 'Issue44.SemanticEvidence.ps1')
+
+function Get-DefaultHerdrOpsInstallRoot {
+    if ([string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) {
+        $env:LOCALAPPDATA = Join-Path $env:USERPROFILE 'AppData\Local'
+    }
+    return (Join-Path $env:LOCALAPPDATA 'Programs\HerdrOps')
+}
+
+function Get-DefaultHerdrOpsUserDataRoot {
+    if ([string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) {
+        $env:LOCALAPPDATA = Join-Path $env:USERPROFILE 'AppData\Local'
+    }
+    return (Join-Path $env:LOCALAPPDATA 'HerdrOps')
+}
+
+$operatorPath = Join-Path $PSScriptRoot 'Invoke-HerdrOpsIssue44LiveOperator.ps1'
+$implementationPaths = @(
+    (Join-Path $PSScriptRoot 'Invoke-HerdrOpsIssue44LiveOperator.ps1'),
+    (Join-Path $PSScriptRoot 'Issue44.SemanticEvidence.ps1'),
+    (Join-Path $PSScriptRoot 'HerdrOps.InstallAcceptance.Common.ps1'))
+$reportSchemaPath = Join-Path $PSScriptRoot '..\..\docs\acceptance\issue-44-install-acceptance-report.schema.json'
+$repositoryRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..\..')).Path
+$fixtureRoot = Join-Path $PSScriptRoot '..\..\tests\fixtures\v1.0\packaging'
+$baseProfilePath = Join-Path $PSScriptRoot 'issue-44-package-profile.json'
+
+# Shared global fixture state used to observe injected runner callbacks across
+# the operator's script scope boundaries. Cleaned up in the test finally block.
+$global:HerdrOpsIssue44FixtureState = [ordered]@{
+    InstallerActions = New-Object System.Collections.ArrayList
+    FirstRunInvocations = [int]0
+}
+
+function Assert-TestCondition {
+    param(
+        [Parameter(Mandatory = $true)][bool]$Condition,
+        [Parameter(Mandatory = $true)][string]$Message
+    )
+
+    if (-not $Condition) {
+        throw $Message
+    }
+}
+
+function Assert-TestExactProperties {
+    param(
+        [Parameter(Mandatory = $true)]$Object,
+        [Parameter(Mandatory = $true)][string[]]$Names,
+        [Parameter(Mandatory = $true)][string]$Context
+    )
+
+    Assert-AcceptanceExactProperties -Object $Object -Names $Names -Context $Context
+}
+
+function Copy-TestArguments {
+    param([Parameter(Mandatory = $true)][Collections.IDictionary]$Arguments)
+
+    $copy = [ordered]@{}
+    foreach ($key in $Arguments.Keys) {
+        $copy[$key] = $Arguments[$key]
+    }
+    return $copy
+}
+
+function Assert-TestThrows {
+    param(
+        [Parameter(Mandatory = $true)][scriptblock]$Action,
+        [Parameter(Mandatory = $true)][string]$MessageFragment,
+        [Parameter(Mandatory = $true)][string]$Context
+    )
+    try { & $Action; throw "$Context unexpectedly succeeded." }
+    catch {
+        if ($_.Exception.Message -notlike "*$MessageFragment*") {
+            throw "$Context failed for the wrong reason: $($_.Exception.Message)"
+        }
+    }
+}
+
+function Test-Issue44SemanticEvidenceHostileCases {
+    $utf8 = New-Object Text.UTF8Encoding($false, $true)
+    $nonce = 'A' * 64
+    $core = [pscustomobject]@{ Id = 101; StartUtcTicks = [long]111; Path = 'C:\Program Files\HerdrOps\HerdrOps.Core.exe'; Sha256 = 'B' * 64 }
+    $app = [pscustomobject]@{ Id = 202; StartUtcTicks = [long]222; Path = 'C:\Program Files\HerdrOps\HerdrOps.App.exe'; Sha256 = 'C' * 64 }
+    $baseline = [ordered]@{
+        SchemaVersion = 1; AcceptanceNonce = $nonce; ClientInstanceId = 'a' * 32
+        CorrelationId = '11111111-2222-3333-4444-555555555555'; ServerInstanceId = 'b' * 32
+        CoreProcessId = 101; CoreProcessStartUtcTicks = [long]111
+        CoreExecutablePath = 'c:\program files\herdrops\HerdrOps.Core.exe'; CoreExecutableSha256 = 'B' * 64
+        AppProcessId = 202; AppProcessStartUtcTicks = [long]222
+        AppExecutablePath = 'c:\program files\herdrops\HerdrOps.App.exe'; AppExecutableSha256 = 'C' * 64
+        SnapshotSequence = [long]7
+    }
+    $bytes = $utf8.GetBytes(($baseline | ConvertTo-Json -Compress))
+    $validated = ConvertFrom-Issue44SemanticEvidenceBytes -Bytes $bytes -ExpectedNonce $nonce -CoreIdentity $core -AppIdentity $app
+    Assert-TestExactProperties -Object $validated -Names @(
+        'schemaVersion', 'acceptanceNonceSha256', 'clientInstanceId', 'correlationId',
+        'serverInstanceId', 'coreProcessId', 'coreProcessStartUtcTicks', 'coreExecutablePath',
+        'coreExecutableSha256', 'appProcessId', 'appProcessStartUtcTicks', 'appExecutablePath',
+        'appExecutableSha256', 'snapshotSequence', 'rawEvidenceBytes', 'rawEvidenceSha256') -Context 'semantic validator output'
+    Assert-TestCondition -Condition ([string]$validated.coreExecutablePath -ceq [IO.Path]::GetFullPath([string]$baseline.CoreExecutablePath)) -Message 'Canonical Core path was not persisted.'
+
+    foreach ($case in @(
+            @{ Name = 'nonce'; Property = 'AcceptanceNonce'; Value = ('D' * 64); Fragment = 'nonce' },
+            @{ Name = 'core-pid'; Property = 'CoreProcessId'; Value = 999; Fragment = 'Core PID/start/path/hash' },
+            @{ Name = 'core-start'; Property = 'CoreProcessStartUtcTicks'; Value = [long]999; Fragment = 'Core PID/start/path/hash' },
+            @{ Name = 'core-path'; Property = 'CoreExecutablePath'; Value = 'C:\Elsewhere\Core.exe'; Fragment = 'Core PID/start/path/hash' },
+            @{ Name = 'core-hash'; Property = 'CoreExecutableSha256'; Value = ('D' * 64); Fragment = 'Core PID/start/path/hash' },
+            @{ Name = 'app-pid'; Property = 'AppProcessId'; Value = 999; Fragment = 'App PID/start/path/hash' },
+            @{ Name = 'app-start'; Property = 'AppProcessStartUtcTicks'; Value = [long]999; Fragment = 'App PID/start/path/hash' },
+            @{ Name = 'app-path'; Property = 'AppExecutablePath'; Value = 'C:\Elsewhere\App.exe'; Fragment = 'App PID/start/path/hash' },
+            @{ Name = 'app-hash'; Property = 'AppExecutableSha256'; Value = ('D' * 64); Fragment = 'App PID/start/path/hash' })) {
+        $mutated = $baseline | ConvertTo-Json -Depth 10 | ConvertFrom-Json
+        $mutated.($case.Property) = $case.Value
+        $mutatedBytes = $utf8.GetBytes(($mutated | ConvertTo-Json -Compress))
+        Assert-TestThrows -Context "semantic-$($case.Name)" -MessageFragment $case.Fragment -Action {
+            ConvertFrom-Issue44SemanticEvidenceBytes -Bytes $mutatedBytes -ExpectedNonce $nonce -CoreIdentity $core -AppIdentity $app | Out-Null
+        }
+    }
+    Assert-TestThrows -Context 'semantic-malformed' -MessageFragment 'quoted property name' -Action {
+        ConvertFrom-Issue44SemanticEvidenceBytes -Bytes $utf8.GetBytes('{') -ExpectedNonce $nonce -CoreIdentity $core -AppIdentity $app | Out-Null
+    }
+    Assert-TestThrows -Context 'semantic-oversize' -MessageFragment 'bounded' -Action {
+        ConvertFrom-Issue44SemanticEvidenceBytes -Bytes (New-Object byte[] 32769) -ExpectedNonce $nonce -CoreIdentity $core -AppIdentity $app | Out-Null
+    }
+
+    $owned = Join-Path ([IO.Path]::GetTempPath()) ('HerdrOps-Issue44-validator-' + [Guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path $owned -ErrorAction Stop | Out-Null
+    $path = Join-Path $owned 'binding.json'
+    [IO.File]::WriteAllBytes($path, $bytes)
+    try {
+        $script:OverwriteBlocked = $false
+        $script:SwapBlocked = $false
+        $read = Read-Issue44SemanticEvidence -Path $path -OwnedDirectory $owned -ExpectedNonce $nonce -CoreIdentity $core -AppIdentity $app -AfterOpenTestHook {
+            param($lockedPath)
+            try { [IO.File]::WriteAllBytes($lockedPath, [byte[]](1,2,3)) } catch [IO.IOException] { $script:OverwriteBlocked = $true }
+            try { [IO.File]::Move($lockedPath, ($lockedPath + '.swap')) } catch [IO.IOException] { $script:SwapBlocked = $true }
+        }
+        Assert-TestCondition -Condition $script:OverwriteBlocked -Message 'Single-read lock did not block overwrite.'
+        Assert-TestCondition -Condition $script:SwapBlocked -Message 'Single-read lock did not block swap/rename.'
+        Assert-TestCondition -Condition ([string]$read.rawEvidenceSha256 -ceq (Get-Issue44BytesSha256 -Bytes $bytes)) -Message 'Single-read raw evidence hash drifted.'
+        $outside = Join-Path ([IO.Path]::GetTempPath()) ('HerdrOps-Issue44-outside-' + [Guid]::NewGuid().ToString('N') + '.json')
+        [IO.File]::WriteAllBytes($outside, $bytes)
+        try {
+            Assert-TestThrows -Context 'semantic-containment' -MessageFragment 'directly contained' -Action {
+                Read-Issue44SemanticEvidence -Path $outside -OwnedDirectory $owned -ExpectedNonce $nonce -CoreIdentity $core -AppIdentity $app | Out-Null
+            }
+        } finally { Remove-Item -LiteralPath $outside -Force }
+
+        $reparseTarget = Join-Path $owned 'reparse-target'
+        $reparseLink = Join-Path $owned 'reparse-link'
+        New-Item -ItemType Directory -Path $reparseTarget -ErrorAction Stop | Out-Null
+        [IO.File]::WriteAllBytes((Join-Path $reparseTarget 'binding.json'), $bytes)
+        $mklinkCommand = 'mklink /J "' + $reparseLink + '" "' + $reparseTarget + '"'
+        & $env:ComSpec /d /c $mklinkCommand | Out-Null
+        if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $reparseLink)) {
+            throw 'Could not create the isolated semantic evidence reparse hostile fixture.'
+        }
+        try {
+            Assert-TestThrows -Context 'semantic-reparse' -MessageFragment 'Reparse points are not allowed' -Action {
+                Read-Issue44SemanticEvidence -Path (Join-Path $reparseLink 'binding.json') -OwnedDirectory $reparseLink -ExpectedNonce $nonce -CoreIdentity $core -AppIdentity $app | Out-Null
+            }
+        } finally {
+            [IO.Directory]::Delete($reparseLink)
+            Remove-Item -LiteralPath $reparseTarget -Recurse -Force
+        }
+    } finally {
+        if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Force }
+        if (Test-Path -LiteralPath ($path + '.swap')) { Remove-Item -LiteralPath ($path + '.swap') -Force }
+        Remove-Item -LiteralPath $owned -Force
+    }
+    Assert-TestCondition -Condition (-not (Test-Path -LiteralPath $owned)) -Message 'Semantic validator owned directory cleanup failed.'
+}
+
+function Assert-TestReportShape {
+    param(
+        [Parameter(Mandatory = $true)]$Report,
+        [Parameter(Mandatory = $true)][ValidateSet('Static', 'Synthetic')][string]$EvidenceClass,
+        [Parameter(Mandatory = $true)][ValidateSet('DryRun', 'Fixture', 'Live')][string]$Mode
+    )
+
+    Assert-TestExactProperties -Object $Report -Names @(
+        'schemaVersion', 'reportKind', 'issue', 'acceptanceVersion', 'status',
+        'mode', 'evidenceClass', 'startedAtUtc', 'completedAtUtc', 'runId',
+        'machine', 'artifacts', 'targets', 'preflight', 'lifecycle', 'semanticReadiness', 'cleanup',
+        'failureDetails', 'transcript', 'boundaries') -Context 'acceptance report'
+    Assert-TestCondition -Condition ([int]$Report.schemaVersion -eq 1) -Message 'Report schemaVersion drifted.'
+    Assert-TestCondition -Condition ([string]$Report.reportKind -ceq 'HerdrOps.InstallAcceptanceReport') -Message 'Report kind drifted.'
+    Assert-TestCondition -Condition ([int]$Report.issue -eq 44) -Message 'Report issue binding drifted.'
+    Assert-TestCondition -Condition ([string]$Report.acceptanceVersion -ceq 'v1.0.0') -Message 'Report acceptance target drifted.'
+    Assert-TestCondition -Condition ([string]$Report.status -ceq 'PASS') -Message "Expected PASS report, got $($Report.status)."
+    Assert-TestCondition -Condition ([string]$Report.mode -ceq $Mode) -Message 'Report mode drifted.'
+    Assert-TestCondition -Condition ([string]$Report.evidenceClass -ceq $EvidenceClass) -Message 'Report evidence class drifted.'
+    Assert-TestCondition -Condition ([string]$Report.preflight.status -ceq 'PASS') -Message 'Preflight did not pass.'
+    Assert-TestCondition -Condition (-not [string]::IsNullOrWhiteSpace([string]$Report.targets.simulationRoot)) -Message 'Fixture targets report lacks a simulation root.'
+
+    foreach ($stepName in @('cleanInstall', 'upgrade', 'rollback', 'uninstall')) {
+        Assert-TestExactProperties -Object $Report.lifecycle.$stepName -Names @(
+            'status', 'expectedVersion', 'installedFileHashes', 'installRootPresent',
+            'packageVersionObserved', 'retainedDataStatus', 'retainedDataSha256',
+            'details') -Context "report lifecycle $stepName"
+    }
+    Assert-TestExactProperties -Object $Report.semanticReadiness -Names @(
+        'status', 'details', 'binding') -Context 'report semanticReadiness'
+    $expectedSemanticStatus = if ($Mode -ceq 'Fixture') { 'SYNTHETIC' } else { 'NOT_OBSERVED' }
+    Assert-TestCondition -Condition ([string]$Report.semanticReadiness.status -ceq $expectedSemanticStatus) -Message 'Semantic readiness status drifted.'
+    Assert-TestCondition -Condition (-not [string]::IsNullOrWhiteSpace([string]$Report.semanticReadiness.details)) -Message 'CoreHealthDetails were not durably persisted.'
+    Assert-TestCondition -Condition ($null -eq $Report.semanticReadiness.binding) -Message 'Synthetic/static report fabricated live semantic binding.'
+
+    Assert-TestExactProperties -Object $Report.cleanup -Names @(
+        'status', 'attempted', 'simulationRoot', 'simulationRootRemoved',
+        'ownedStageRemoved', 'ownedBackupRemoved', 'harnessSeededDataMarkerRemoved',
+        'retainedDataLeftIntact', 'residuals', 'details') -Context 'report cleanup'
+    Assert-TestCondition -Condition ([string]$Report.cleanup.status -ceq 'PASS') -Message 'Synthetic cleanup did not pass.'
+    Assert-TestCondition -Condition (@($Report.cleanup.residuals).Count -eq 0) -Message 'Synthetic run left residuals.'
+}
+
+function Assert-TestExactBoundaries {
+    param(
+        [Parameter(Mandatory = $true)]$Report
+    )
+
+    $boundaries = $Report.boundaries
+    Assert-TestExactProperties -Object $boundaries -Names @(
+        'static', 'synthetic', 'contract', 'cleanMachine',
+        'runtime', 'independentReview', 'release') -Context 'report boundaries'
+    $expectedBoundaries = [ordered]@{
+        static = 'PASS: acceptance operator source, paths, archive hashes, and contracts verified.'
+        synthetic = 'PASS: fixture lifecycle execution.'
+        contract = 'NOT OBSERVED: no named-pipe or installed-Herdr IPC compatibility assertions.'
+        cleanMachine = 'NOT OBSERVED'
+        runtime = 'NOT OBSERVED: no live Herdr runtime connection was evaluated.'
+        independentReview = 'NOT OBSERVED.'
+        release = 'NOT OBSERVED: no package publication or GitHub Release action performed.'
+    }
+    foreach ($boundaryName in $expectedBoundaries.Keys) {
+        $actual = [string]$boundaries.$boundaryName
+        if ($actual -cne $expectedBoundaries[$boundaryName]) {
+            throw "Report boundary '$boundaryName' drifted: expected '$($expectedBoundaries[$boundaryName])', observed '$actual'."
+        }
+    }
+}
+
+function Assert-TestFailureEvidenceBoundaries {
+    param(
+        [Parameter(Mandatory = $true)]$Report,
+        [Parameter(Mandatory = $true)][string]$Context
+    )
+
+    Assert-TestCondition -Condition ([string]$Report.status -ceq 'FAIL') -Message "$Context did not persist FAIL status."
+    Assert-TestCondition -Condition ([string]$Report.boundaries.contract -like 'NOT OBSERVED*') -Message "$Context incorrectly granted Contract evidence."
+    Assert-TestCondition -Condition ([string]$Report.boundaries.cleanMachine -ceq 'NOT OBSERVED') -Message "$Context incorrectly granted CleanMachine evidence."
+    Assert-TestCondition -Condition ([string]$Report.boundaries.runtime -like 'NOT OBSERVED*') -Message "$Context incorrectly granted Runtime evidence."
+    Assert-TestCondition -Condition ([string]$Report.boundaries.independentReview -like 'NOT OBSERVED*') -Message "$Context incorrectly granted independent-review evidence."
+    Assert-TestCondition -Condition ([string]$Report.boundaries.release -like 'NOT OBSERVED*') -Message "$Context incorrectly granted Release evidence."
+}
+
+function New-TestVersionProfile {
+    param(
+        [Parameter(Mandatory = $true)]$BaseProfile,
+        [Parameter(Mandatory = $true)][string]$Version
+    )
+
+    $clone = ($BaseProfile | ConvertTo-Json -Depth 20 | ConvertFrom-Json)
+    if (@($clone.PSObject.Properties | Where-Object { $_.Name -ceq 'syntheticUpgradeVersion' }).Count -eq 1) {
+        $clone.PSObject.Properties.Remove('syntheticUpgradeVersion')
+    }
+    $clone.packageVersion = $Version
+    Assert-PackageProfile -Profile $clone
+    return $clone
+}
+
+function New-TestAcceptanceArtifact {
+    param(
+        [Parameter(Mandatory = $true)][string]$Root,
+        [Parameter(Mandatory = $true)][string]$Name,
+        [Parameter(Mandatory = $true)][string]$FixtureSource,
+        [Parameter(Mandatory = $true)]$Profile
+    )
+
+    $workRoot = Join-Path $Root $Name
+    $packageRoot = Join-Path $workRoot 'package'
+    New-Item -ItemType Directory -Path $workRoot -Force | Out-Null
+    Copy-SafeDirectoryContents -Source $FixtureSource -Destination $packageRoot | Out-Null
+    foreach ($binaryName in @('HerdrOps.App', 'HerdrOps.Core')) {
+        $payloadPath = Join-Path $packageRoot ($binaryName + '.payload')
+        $executablePath = Join-Path $packageRoot ($binaryName + '.exe')
+        Move-Item -LiteralPath $payloadPath -Destination $executablePath
+    }
+    $manifest = New-PackageManifestObject -Profile $Profile -PackageRoot $packageRoot
+    Write-PackageManifest -Manifest $manifest -PackageRoot $packageRoot | Out-Null
+    $archivePath = Join-Path $workRoot ("HerdrOps-$($Profile.packageVersion)-win-x64.zip")
+    $hashRecordPath = Join-Path $workRoot 'package-hashes.txt'
+    New-DeterministicPackageArchive -PackageRoot $packageRoot -ArchivePath $archivePath | Out-Null
+    Write-PackageHashRecord -Profile $Profile -PackageRoot $packageRoot -ArchivePath $archivePath -Path $hashRecordPath | Out-Null
+    $expected = [pscustomobject][ordered]@{
+        packageRoot = (Get-AcceptanceFullPath -Path $packageRoot)
+        archivePath = (Get-AcceptanceFullPath -Path $archivePath)
+        hashRecordPath = (Get-AcceptanceFullPath -Path $hashRecordPath)
+        productId = 'HerdrOps'
+        displayName = 'HerdrOps'
+        packagingIssue = [int]$Profile.issue
+        packageVersion = [string]$Profile.packageVersion
+        targetFramework = [string]$Profile.targetFramework
+        runtimeIdentifier = [string]$Profile.runtimeIdentifier
+        deploymentModel = [string]$Profile.deploymentModel
+        userDataPolicy = [string]$Profile.userDataPolicy
+        sourceCommit = 'NOT_BOUND_IN_SYNTHETIC_FIXTURE'
+        manifestSha256 = Get-AcceptanceSha256ForFile -Path (Join-Path $packageRoot 'package-manifest.json')
+        archiveSha256 = Get-AcceptanceSha256ForFile -Path $archivePath
+        contentSha256 = [string]$manifest.contentSha256
+    }
+    $artifact = Assert-AcceptanceArtifact -Expected $expected -Name "test $Name artifact"
+    return [pscustomobject][ordered]@{
+        Expected = $expected
+        Artifact = $artifact
+        Profile = $Profile
+    }
+}
+
+function Write-TestZipFromContents {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][hashtable]$EntryContents
+    )
+
+    Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction Stop
+    $fileStream = [IO.File]::Open($Path, [IO.FileMode]::CreateNew, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+    $archive = $null
+    try {
+        $archive = New-Object -TypeName IO.Compression.ZipArchive -ArgumentList @($fileStream, [IO.Compression.ZipArchiveMode]::Create, $true)
+        foreach ($entry in $EntryContents.GetEnumerator()) {
+            $zipEntry = $archive.CreateEntry([string]$entry.Key)
+            $stream = $zipEntry.Open()
+            try {
+                $bytes = (New-Object System.Text.UTF8Encoding($false)).GetBytes([string]$entry.Value)
+                $stream.Write($bytes, 0, $bytes.Length)
+            } finally {
+                $stream.Dispose()
+            }
+        }
+    } finally {
+        if ($null -ne $archive) { $archive.Dispose() }
+        $fileStream.Dispose()
+    }
+}
+
+function Test-OperatorFailClosed {
+    param(
+        [Parameter(Mandatory = $true)][string]$CaseName,
+        [Parameter(Mandatory = $true)][hashtable]$Arguments,
+        [string]$ExpectedMessageFragment,
+        [bool]$ExpectReportFile = $false,
+        [switch]$PreserveInstallRoot,
+        [switch]$PreserveUserDataRoot
+    )
+
+    if ([string]$Arguments['Mode'] -ceq 'Fixture') {
+        $simulationRoot = Get-AcceptanceFullPath -Path ([string]$Arguments['SimulationRoot'])
+        foreach ($target in @(
+                [pscustomobject]@{ Name = 'InstallRoot'; Preserve = [bool]$PreserveInstallRoot },
+                [pscustomobject]@{ Name = 'UserDataRoot'; Preserve = [bool]$PreserveUserDataRoot })) {
+            if ($target.Preserve) { continue }
+            $targetPath = Get-AcceptanceFullPath -Path ([string]$Arguments[$target.Name])
+            if ($targetPath.Equals($simulationRoot, [StringComparison]::OrdinalIgnoreCase) -or
+                -not (Test-PathWithin -ChildPath $targetPath -RootPath $simulationRoot)) {
+                throw "$CaseName refused to reset $($target.Name) outside its strict SimulationRoot."
+            }
+            Assert-AcceptanceNoReparsePath -Path $targetPath
+            if (Test-Path -LiteralPath $targetPath) {
+                Remove-Item -LiteralPath $targetPath -Recurse -Force
+            }
+        }
+    }
+
+    $caught = $null
+    $output = $null
+    try {
+        $output = @(& $operatorPath @Arguments)
+    } catch {
+        $caught = $_
+    }
+    if ($null -eq $caught) {
+        throw "$CaseName unexpectedly completed with $($output.Count) output object(s)."
+    }
+    if (-not [string]::IsNullOrWhiteSpace($ExpectedMessageFragment)) {
+        Assert-TestCondition `
+            -Condition ($caught.Exception.Message -like "*$ExpectedMessageFragment*") `
+            -Message "$CaseName did not fail closed with the expected cause. Message: $($caught.Exception.Message)"
+    }
+    $reportPath = [string]$Arguments['ReportDestination']
+    if ($ExpectReportFile -and -not [string]::IsNullOrWhiteSpace($reportPath) -and (Test-Path -LiteralPath $reportPath -PathType Leaf)) {
+        $report = Read-AcceptanceJsonFile -Path $reportPath -Context "$CaseName fail report"
+        Assert-AcceptanceReportMatchesSchema -Report $report -SchemaPath $reportSchemaPath
+        Assert-TestFailureEvidenceBoundaries -Report $report -Context "$CaseName fail report"
+        return $report
+    }
+    return $null
+}
+
+foreach ($implementationPath in $implementationPaths) {
+    $text = Get-Content -LiteralPath $implementationPath -Raw
+    foreach ($forbiddenMarker in @(
+            'New-ItemProperty', 'Set-ItemProperty', 'Remove-ItemProperty',
+            'Registry::', 'reg.exe', 'sc.exe', 'Start-Process',
+            'HERDR_SOCKET_PATH', 'herdr.exe', 'Invoke-WebRequest',
+            'Invoke-RestMethod', 'dotnet', '$env:USERPROFILE')) {
+        Assert-TestCondition `
+            -Condition ($text.IndexOf($forbiddenMarker, [StringComparison]::OrdinalIgnoreCase) -lt 0) `
+            -Message "Issue #44 live operator implementation '$(Split-Path $implementationPath -Leaf)' contains a forbidden runtime/publish marker: $forbiddenMarker"
+    }
+}
+
+$reportSchema = Read-AcceptanceJsonFile -Path $reportSchemaPath -Context 'Issue #44 report schema test input'
+Assert-TestCondition -Condition ([string]$reportSchema.'$schema' -like '*draft-07*') -Message 'Report JSON schema is not draft-07.'
+Assert-TestCondition -Condition ([string]$reportSchema.title -like '*Issue 44*') -Message 'Report JSON schema title drifted.'
+$semanticBindingFields = @(
+    'schemaVersion', 'acceptanceNonceSha256', 'clientInstanceId', 'correlationId',
+    'serverInstanceId', 'coreProcessId', 'coreProcessStartUtcTicks', 'coreExecutablePath',
+    'coreExecutableSha256', 'appProcessId', 'appProcessStartUtcTicks', 'appExecutablePath',
+    'appExecutableSha256', 'snapshotSequence', 'rawEvidenceBytes', 'rawEvidenceSha256')
+Assert-TestCondition -Condition ((@($reportSchema.definitions.semanticReadinessBinding.required) -join '|') -ceq ($semanticBindingFields -join '|')) -Message 'Semantic readiness schema required fields drifted.'
+Assert-TestExactProperties -Object $reportSchema.definitions.semanticReadinessBinding.properties -Names $semanticBindingFields -Context 'semantic readiness schema properties'
+Test-Issue44SemanticEvidenceHostileCases
+if ($SemanticEvidenceOnly) {
+    Write-Output ([pscustomobject][ordered]@{
+        EvidenceClass = 'Synthetic'
+        SemanticEvidenceValidator = 'PASS'
+        HostileCases = 'PASS'
+        LiveExecution = 'NOT RUN'
+        RuntimeCredit = 'NOT GRANTED'
+        ReleaseCredit = 'NOT GRANTED'
+    })
+    return
+}
+
+$testRoot = New-PackagingTempDirectory -Prefix 'HerdrOps-I44LiveOp-'
+$utf8 = New-Object System.Text.UTF8Encoding($false)
+$resultSummary = $null
+try {
+    $reportsDir = Join-Path $testRoot 'reports'
+    New-Item -ItemType Directory -Path $reportsDir -Force | Out-Null
+    $simRoot = Join-Path $testRoot 'sim'
+
+    $canonicalInstall = Get-DefaultHerdrOpsInstallRoot
+    $canonicalUserData = Get-DefaultHerdrOpsUserDataRoot
+    $canonicalMarker = Join-Path $canonicalUserData 'state\issue-44-harness.marker'
+    Assert-TestCondition -Condition (-not (Test-Path -LiteralPath $canonicalMarker -PathType Leaf)) -Message 'Real AppData already carries an Issue #44 harness marker.'
+    Assert-TestCondition -Condition (-not (Test-Path -LiteralPath $canonicalInstall)) -Message 'Real AppData already carries a HerdrOps install root.'
+
+    $markerText = "HerdrOps Issue #44 acceptance retained-data marker`n"
+    $markerExpectedHash = Get-Sha256ForText -Text $markerText
+
+    $baseProfile = Read-PackageProfile -Path $baseProfilePath
+    $upgradeProfile = New-TestVersionProfile -BaseProfile $baseProfile -Version ([string]$baseProfile.syntheticUpgradeVersion)
+    $artifactRoot = Join-Path $testRoot 'artifact-contracts'
+    $initialArtifact = New-TestAcceptanceArtifact `
+        -Root $artifactRoot `
+        -Name 'initial' `
+        -FixtureSource (Join-Path $fixtureRoot 'initial') `
+        -Profile $baseProfile
+    $upgradeArtifact = New-TestAcceptanceArtifact `
+        -Root $artifactRoot `
+        -Name 'upgrade' `
+        -FixtureSource (Join-Path $fixtureRoot 'upgrade') `
+        -Profile $upgradeProfile
+    Assert-TestCondition -Condition ([string]$initialArtifact.Artifact.PackageVersion -ceq '0.7.0') -Message 'Initial artifact package version drifted.'
+    Assert-TestCondition -Condition ([string]$upgradeArtifact.Artifact.PackageVersion -ceq '1.0.0') -Message 'Upgrade artifact package version drifted.'
+
+    $syntheticInstallerRunner = {
+        param(
+            [Parameter(Mandatory = $true)][ValidateSet('Install', 'Uninstall')][string]$Action,
+            [string]$ArchivePath,
+            [Parameter(Mandatory = $true)][string]$InstallRoot,
+            [Parameter(Mandatory = $true)][string]$UserDataRoot,
+            [switch]$RemoveUserData,
+            [int]$TimeoutSeconds = 60
+        )
+        Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction SilentlyContinue | Out-Null
+        [void]$global:HerdrOpsIssue44FixtureState.InstallerActions.Add([string]$Action)
+        if ($Action -eq 'Uninstall') {
+            if (Test-Path -LiteralPath $InstallRoot) {
+                Remove-Item -LiteralPath $InstallRoot -Recurse -Force
+            }
+            return [pscustomobject]@{ Status = 'PASS'; Action = $Action }
+        }
+        if ([string]::IsNullOrWhiteSpace($ArchivePath) -or -not (Test-Path -LiteralPath $ArchivePath -PathType Leaf)) {
+            throw "Synthetic installer runner archive was not found: $ArchivePath"
+        }
+        if (Test-Path -LiteralPath $InstallRoot) {
+            Remove-Item -LiteralPath $InstallRoot -Recurse -Force
+        }
+        New-Item -ItemType Directory -Path $InstallRoot -Force | Out-Null
+        $zip = [IO.Compression.ZipFile]::OpenRead($ArchivePath)
+        try {
+            foreach ($entry in @($zip.Entries)) {
+                if ($entry.FullName.EndsWith('/', [StringComparison]::Ordinal)) {
+                    continue
+                }
+                $entryName = ([string]$entry.FullName).TrimEnd('/')
+                if ([string]::IsNullOrWhiteSpace($entryName)) {
+                    continue
+                }
+                $dest = Join-Path $InstallRoot $entryName
+                $parent = Split-Path -Path $dest -Parent
+                if (-not (Test-Path -LiteralPath $parent)) {
+                    New-Item -ItemType Directory -Path $parent -Force | Out-Null
+                }
+                [IO.Compression.ZipFileExtensions]::ExtractToFile($entry, $dest)
+            }
+        } finally {
+            $zip.Dispose()
+        }
+        return [pscustomobject]@{ Status = 'PASS'; Action = $Action }
+    }
+
+    $syntheticFirstRunRunner = {
+        param(
+            [Parameter(Mandatory = $true)][string]$InstallRoot,
+            [Parameter(Mandatory = $true)][string]$UserDataRoot,
+            [int]$TimeoutMilliseconds = 5000
+        )
+        $global:HerdrOpsIssue44FixtureState.FirstRunInvocations = 1 + [int]$global:HerdrOpsIssue44FixtureState.FirstRunInvocations
+        if (-not (Test-Path -LiteralPath $InstallRoot -PathType Container)) {
+            return [pscustomobject]@{ Status = 'FAIL'; Details = 'Synthetic first-run: install root missing.' }
+        }
+        return [pscustomobject]@{
+            Status = 'PASS'
+            Details = 'Synthetic first-run quiescence.'
+            CoreHealthReady = $true
+            CoreHealthDetails = 'Synthetic Core semantic readiness fixture.'
+            CoreSha256 = Get-AcceptanceSha256ForFile -Path (Join-Path $InstallRoot 'HerdrOps.Core.exe')
+            AppSha256 = Get-AcceptanceSha256ForFile -Path (Join-Path $InstallRoot 'HerdrOps.App.exe')
+        }
+    }
+
+    $greenArgs = [ordered]@{
+        Mode = 'Fixture'
+        InstallerRunner = $syntheticInstallerRunner
+        FirstRunRunner = $syntheticFirstRunRunner
+        InitialArchivePath = [string]$initialArtifact.Artifact.ArchivePath
+        InitialArchiveBytes = [long]$initialArtifact.Artifact.ArchiveBytes
+        InitialArchiveSha256 = [string]$initialArtifact.Artifact.ArchiveSha256
+        InitialManifestSha256 = [string]$initialArtifact.Artifact.ManifestSha256
+        InitialContentSha256 = [string]$initialArtifact.Artifact.ContentSha256
+        InitialPackageVersion = '0.7.0'
+        CandidateArchivePath = [string]$upgradeArtifact.Artifact.ArchivePath
+        CandidateArchiveBytes = [long]$upgradeArtifact.Artifact.ArchiveBytes
+        CandidateArchiveSha256 = [string]$upgradeArtifact.Artifact.ArchiveSha256
+        CandidateManifestSha256 = [string]$upgradeArtifact.Artifact.ManifestSha256
+        CandidateContentSha256 = [string]$upgradeArtifact.Artifact.ContentSha256
+        CandidatePackageVersion = '1.0.0'
+        InstallRoot = (Get-AcceptanceFullPath -Path (Join-Path $simRoot 'Programs\HerdrOps'))
+        UserDataRoot = (Get-AcceptanceFullPath -Path (Join-Path $simRoot 'HerdrOps'))
+        SimulationRoot = (Get-AcceptanceFullPath -Path $simRoot)
+        ReportDestination = (Join-Path $reportsDir 'green.json')
+        RetainedDataRelativePath = 'state\issue-44-harness.marker'
+        RetainedDataSha256 = $markerExpectedHash
+        RetainedDataMode = 'create-test-marker'
+    }
+
+    $greenOutput = @(& $operatorPath @greenArgs)
+    Assert-TestCondition -Condition ($greenOutput.Count -eq 1) -Message ("Fixture operator returned $($greenOutput.Count) objects: " + (($greenOutput | ForEach-Object { if ($null -eq $_) { '<null>' } elseif ($_ -is [string]) { "System.String='$($_)'" } else { $_.GetType().FullName } }) -join ', '))
+    $greenReport = $greenOutput[0]
+    Assert-TestReportShape -Report $greenReport -EvidenceClass 'Synthetic' -Mode 'Fixture'
+    Assert-TestCondition -Condition ([string]$greenReport.mode -ceq 'Fixture') -Message 'Green report mode drifted.'
+    foreach ($stepName in @('cleanInstall', 'upgrade', 'rollback', 'uninstall')) {
+        Assert-TestCondition -Condition ([string]$greenReport.lifecycle.$stepName.status -ceq 'PASS') -Message "Green lifecycle step did not pass: $stepName"
+        Assert-TestCondition -Condition ([string]$greenReport.lifecycle.$stepName.retainedDataStatus -ceq 'PASS') -Message "Green retained data did not pass: $stepName"
+    }
+    foreach ($stepName in @('cleanInstall', 'upgrade', 'rollback')) {
+        Assert-TestCondition -Condition (@($greenReport.lifecycle.$stepName.installedFileHashes).Count -gt 0) -Message "Green installed hashes missing: $stepName"
+    }
+    Assert-TestCondition -Condition (@($greenReport.lifecycle.uninstall.installedFileHashes).Count -eq 0) -Message 'Uninstall report incorrectly retained installed-file hashes.'
+    Assert-TestCondition -Condition ([string]$greenReport.cleanup.status -ceq 'PASS') -Message 'Green cleanup did not pass.'
+    Assert-TestCondition -Condition (@($greenReport.cleanup.residuals).Count -eq 0) -Message 'Green run left residuals.'
+    Assert-TestCondition -Condition ([string]$greenReport.targets.installPathPolicy -ceq '%LOCALAPPDATA%\Programs\HerdrOps') -Message 'Install path policy drifted.'
+    Assert-TestCondition -Condition ([string]$greenReport.targets.userDataPathPolicy -ceq '%LOCALAPPDATA%\HerdrOps') -Message 'User-data path policy drifted.'
+    Assert-TestCondition -Condition ([string]$greenReport.boundaries.contract -like 'NOT OBSERVED*') -Message 'Contract boundary was not withheld.'
+    Assert-TestCondition -Condition ([string]$greenReport.boundaries.cleanMachine -like 'NOT OBSERVED*') -Message 'Clean-machine boundary was not withheld.'
+    Assert-TestCondition -Condition ([string]$greenReport.boundaries.runtime -like 'NOT OBSERVED*') -Message 'Runtime boundary was not withheld.'
+    Assert-TestCondition -Condition ([string]$greenReport.boundaries.release -like 'NOT OBSERVED*') -Message 'Release boundary was not withheld.'
+    Assert-TestCondition -Condition ([string]$greenReport.boundaries.synthetic -like 'PASS*') -Message 'Synthetic boundary did not pass.'
+    Assert-TestExactBoundaries -Report $greenReport
+    Assert-TestCondition -Condition (-not (Test-Path -LiteralPath $canonicalInstall)) -Message 'Green run touched the real AppData install root.'
+    Assert-TestCondition -Condition (-not (Test-Path -LiteralPath $canonicalMarker -PathType Leaf)) -Message 'Green run touched the real AppData retained marker.'
+
+    $expectedActionOrder = @('Install', 'Install', 'Install', 'Uninstall')
+    $observedActions = @($global:HerdrOpsIssue44FixtureState.InstallerActions.ToArray() | ForEach-Object { [string]$_ })
+    Assert-TestCondition -Condition ($observedActions.Count -eq $expectedActionOrder.Count) -Message "Green installer action count drifted: $($observedActions -join ', ')."
+    for ($i = 0; $i -lt $expectedActionOrder.Count; $i++) {
+        Assert-TestCondition -Condition ($observedActions[$i] -ceq $expectedActionOrder[$i]) -Message "Green installer action order drifted at index $i."
+    }
+    Assert-TestCondition -Condition ([int]$global:HerdrOpsIssue44FixtureState.FirstRunInvocations -eq 1) -Message "Green first-run invocation count drifted: $($global:HerdrOpsIssue44FixtureState.FirstRunInvocations)."
+    Assert-TestCondition -Condition ([string]$greenReport.evidenceClass -ceq 'Synthetic') -Message 'Green evidence class was not Synthetic.'
+
+    $greenReportOnDisk = Read-AcceptanceJsonFile -Path (Join-Path $reportsDir 'green.json') -Context 'green report on disk'
+    Assert-AcceptanceReportMatchesSchema -Report $greenReportOnDisk -SchemaPath $reportSchemaPath
+    Assert-TestCondition -Condition ([string]$greenReportOnDisk.status -ceq 'PASS') -Message 'Green report persisted with non-PASS status.'
+
+    # Hostile case: wrong initial archive SHA must fail closed at preflight staging.
+    $wrongShaArgs = Copy-TestArguments -Arguments $greenArgs
+    $wrongShaArgs['InitialArchiveSha256'] = '0' * 64
+    $wrongShaArgs['ReportDestination'] = (Join-Path $reportsDir 'wrong-sha.json')
+    Test-OperatorFailClosed -CaseName 'wrong-initial-sha' -Arguments $wrongShaArgs -ExpectedMessageFragment 'SHA-256 mismatch'
+
+    # Hostile case: missing candidate manifest entry must fail closed during staging.
+    $missingManifestZip = Join-Path $testRoot 'missing-manifest.zip'
+    Write-TestZipFromContents -Path $missingManifestZip -EntryContents @{ 'stray.txt' = 'stray' }
+    $missingManifestArgs = Copy-TestArguments -Arguments $greenArgs
+    $missingManifestArgs['CandidateArchivePath'] = $missingManifestZip
+    $missingManifestArgs.Remove('CandidateArchiveSha256')
+    $missingManifestArgs.Remove('CandidateArchiveBytes')
+    $missingManifestArgs['ReportDestination'] = (Join-Path $reportsDir 'missing-manifest.json')
+    Test-OperatorFailClosed -CaseName 'missing-candidate-manifest' -Arguments $missingManifestArgs -ExpectedMessageFragment 'missing package-manifest.json'
+
+    # Hostile case: duplicate JSON keys in a candidate manifest must fail closed.
+    $duplicateManifestJson = '{"schemaVersion":1,"schemaVersion":1,"packageVersion":"1.0.0"}'
+    $duplicateManifestZip = Join-Path $testRoot 'duplicate-manifest.zip'
+    Write-TestZipFromContents -Path $duplicateManifestZip -EntryContents @{ 'package-manifest.json' = $duplicateManifestJson }
+    $duplicateManifestArgs = Copy-TestArguments -Arguments $greenArgs
+    $duplicateManifestArgs['CandidateArchivePath'] = $duplicateManifestZip
+    $duplicateManifestArgs.Remove('CandidateArchiveSha256')
+    $duplicateManifestArgs.Remove('CandidateArchiveBytes')
+    $duplicateManifestArgs['CandidateManifestSha256'] = Get-Sha256ForText -Text $duplicateManifestJson
+    $duplicateManifestArgs['ReportDestination'] = (Join-Path $reportsDir 'duplicate-manifest.json')
+    Test-OperatorFailClosed -CaseName 'duplicate-manifest-key' -Arguments $duplicateManifestArgs -ExpectedMessageFragment 'duplicate JSON object property'
+
+    # Hostile case: installer runner reports failure -> fail closed in lifecycle.
+    $failInstallerRunner = {
+        param($Action, $ArchivePath, $InstallRoot, $UserDataRoot, [switch]$RemoveUserData, [int]$TimeoutSeconds = 60)
+        return [pscustomobject]@{ Status = 'FAIL'; Action = $Action; Details = 'Injected installer runner failure.' }
+    }
+    $failInstallerArgs = Copy-TestArguments -Arguments $greenArgs
+    $failInstallerArgs['InstallerRunner'] = $failInstallerRunner
+    $failInstallerArgs['FirstRunRunner'] = $syntheticFirstRunRunner
+    $failInstallerArgs['ReportDestination'] = (Join-Path $reportsDir 'installer-runner-fail.json')
+    $failInstallerReport = Test-OperatorFailClosed -CaseName 'installer-runner-fail' -Arguments $failInstallerArgs -ExpectedMessageFragment 'Clean install runner returned non-PASS status' -ExpectReportFile $true
+    if ($null -ne $failInstallerReport) {
+        Assert-TestCondition -Condition ([string]$failInstallerReport.lifecycle.cleanInstall.status -ceq 'NOT_RUN') -Message 'Failed installer run was mislabeled as clean-install PASS.'
+    }
+
+    # Hostile case: first-run runner reports failure -> fail closed after clean install PASS.
+    $failFirstRunRunner = {
+        param($InstallRoot, $UserDataRoot, [int]$TimeoutMilliseconds = 5000)
+        return [pscustomobject]@{ Status = 'FAIL'; Details = 'Injected first-run runner failure.' }
+    }
+    $failFirstRunArgs = Copy-TestArguments -Arguments $greenArgs
+    $failFirstRunArgs['InstallerRunner'] = $syntheticInstallerRunner
+    $failFirstRunArgs['FirstRunRunner'] = $failFirstRunRunner
+    $failFirstRunArgs['ReportDestination'] = (Join-Path $reportsDir 'first-runner-fail.json')
+    $failFirstRunReport = Test-OperatorFailClosed -CaseName 'first-runner-fail' -Arguments $failFirstRunArgs -ExpectedMessageFragment 'First-run runner returned non-PASS status' -ExpectReportFile $true
+    if ($null -ne $failFirstRunReport) {
+        Assert-TestCondition -Condition ([string]$failFirstRunReport.lifecycle.cleanInstall.status -ceq 'PASS') -Message 'Completed clean install lost PASS after first-run failure.'
+        Assert-TestCondition -Condition ([string]$failFirstRunReport.lifecycle.upgrade.status -ceq 'NOT_RUN') -Message 'Later phases ran after first-run failure.'
+    }
+
+    # Hostile case: first-run corrupts retained marker -> integrity fail after clean install.
+    $corruptFirstRunRunner = {
+        param($InstallRoot, $UserDataRoot, [int]$TimeoutMilliseconds = 5000)
+        $marker = Join-Path $UserDataRoot 'state\issue-44-harness.marker'
+        [IO.File]::AppendAllText($marker, 'corrupted', (New-Object System.Text.UTF8Encoding($false)))
+        return [pscustomobject]@{
+            Status = 'PASS'
+            Details = 'Injected retained-data corruption.'
+            CoreHealthReady = $true
+            CoreHealthDetails = 'Synthetic semantic readiness reached before retained-marker integrity check.'
+            CoreSha256 = Get-AcceptanceSha256ForFile -Path (Join-Path $InstallRoot 'HerdrOps.Core.exe')
+            AppSha256 = Get-AcceptanceSha256ForFile -Path (Join-Path $InstallRoot 'HerdrOps.App.exe')
+        }
+    }
+    $corruptFirstRunArgs = Copy-TestArguments -Arguments $greenArgs
+    $corruptFirstRunArgs['InstallerRunner'] = $syntheticInstallerRunner
+    $corruptFirstRunArgs['FirstRunRunner'] = $corruptFirstRunRunner
+    $corruptFirstRunArgs['ReportDestination'] = (Join-Path $reportsDir 'first-runner-corrupt.json')
+    Test-OperatorFailClosed -CaseName 'first-runner-corrupt-retained-data' -Arguments $corruptFirstRunArgs -ExpectedMessageFragment 'Retained data marker'
+
+    # Hostile case: accepted-Beta provenance SHA mismatch -> preflight fail.
+    $betaReportPath = Join-Path $testRoot 'beta-report.json'
+    [IO.File]::WriteAllText($betaReportPath, '{"status":"Accepted","sourceCommit":"' + ('a' * 40) + '"}', $utf8)
+    $betaMismatchArgs = Copy-TestArguments -Arguments $greenArgs
+    $betaMismatchArgs['BetaReportPath'] = $betaReportPath
+    $betaMismatchArgs['BetaReportSha256'] = '0' * 64
+    $betaMismatchArgs['ReportDestination'] = (Join-Path $reportsDir 'beta-provenance-mismatch.json')
+    Test-OperatorFailClosed -CaseName 'accepted-beta-provenance-mismatch' -Arguments $betaMismatchArgs -ExpectedMessageFragment 'SHA-256 mismatch'
+
+    # Hostile case: report destination nested inside retained-data root must fail closed.
+    $nestedReportArgs = Copy-TestArguments -Arguments $greenArgs
+    $nestedReportPath = Get-AcceptanceFullPath -Path (Join-Path $simRoot 'HerdrOps\invalid-report.json')
+    $nestedReportArgs['ReportDestination'] = $nestedReportPath
+    Test-OperatorFailClosed -CaseName 'nested-report-destination' -Arguments $nestedReportArgs -ExpectedMessageFragment 'must not be inside'
+    Assert-TestCondition -Condition (-not (Test-Path -LiteralPath $nestedReportPath)) -Message 'Rejected nested report destination created a file side effect.'
+    Assert-TestCondition -Condition (-not (Test-Path -LiteralPath $canonicalInstall)) -Message 'Rejected nested report destination touched the real AppData install root.'
+    Assert-TestCondition -Condition (-not (Test-Path -LiteralPath $canonicalMarker -PathType Leaf)) -Message 'Rejected nested report destination touched the real AppData retained marker.'
+
+    # Hostile case: pre-existing InstallRoot must fail closed at clean-machine precondition.
+    $simPrograms = Join-Path $simRoot 'Programs'
+    New-Item -ItemType Directory -Path $simPrograms -Force | Out-Null
+    $preExistingInstallRoot = Join-Path $simPrograms 'HerdrOps'
+    New-Item -ItemType Directory -Path $preExistingInstallRoot -Force | Out-Null
+    $preExistingArgs = Copy-TestArguments -Arguments $greenArgs
+    $preExistingArgs['InstallRoot'] = (Get-AcceptanceFullPath -Path $preExistingInstallRoot)
+    $preExistingArgs['ReportDestination'] = (Join-Path $reportsDir 'pre-existing-install-root.json')
+    Test-OperatorFailClosed -CaseName 'pre-existing-install-root' -Arguments $preExistingArgs -ExpectedMessageFragment 'InstallRoot already exists' -PreserveInstallRoot
+    Remove-Item -LiteralPath $preExistingInstallRoot -Recurse -Force
+
+    # Hostile case: leftover staging/backup residuals next to a missing InstallRoot must fail closed.
+    foreach ($residualName in @(
+            'HerdrOps.stage-abandoned',
+            'HerdrOps.staging-abandoned',
+            'HerdrOps.backup-abandoned')) {
+        $residualDir = Join-Path $simPrograms $residualName
+        New-Item -ItemType Directory -Path $residualDir -Force | Out-Null
+        $residualArgs = Copy-TestArguments -Arguments $greenArgs
+        $residualArgs['ReportDestination'] = (Join-Path $reportsDir ('residual-' + $residualName.Replace('.', '-') + '.json'))
+        Test-OperatorFailClosed -CaseName "residual-$residualName" -Arguments $residualArgs -ExpectedMessageFragment 'leftover residuals detected'
+        Remove-Item -LiteralPath $residualDir -Recurse -Force
+    }
+
+    # Hostile case: a runner-created production-style residual must make final cleanup fail closed.
+    $cleanupResidualPath = Join-Path $simPrograms 'HerdrOps.staging-injected'
+    $cleanupResidualRunner = {
+        param($Action, $ArchivePath, $InstallRoot, $UserDataRoot, [switch]$RemoveUserData, [int]$TimeoutSeconds = 60)
+        $delegated = & $syntheticInstallerRunner -Action $Action -ArchivePath $ArchivePath -InstallRoot $InstallRoot -UserDataRoot $UserDataRoot -RemoveUserData:$RemoveUserData -TimeoutSeconds $TimeoutSeconds
+        if ($Action -eq 'Uninstall') {
+            New-Item -ItemType Directory -Path $cleanupResidualPath -Force | Out-Null
+        }
+        return $delegated
+    }.GetNewClosure()
+    $cleanupResidualArgs = Copy-TestArguments -Arguments $greenArgs
+    $cleanupResidualArgs['InstallerRunner'] = $cleanupResidualRunner
+    $cleanupResidualArgs['ReportDestination'] = (Join-Path $reportsDir 'cleanup-residual.json')
+    try {
+        Test-OperatorFailClosed -CaseName 'cleanup-residual' -Arguments $cleanupResidualArgs -ExpectedMessageFragment 'Cleanup residual check failed' -ExpectReportFile $true | Out-Null
+    } finally {
+        if (Test-Path -LiteralPath $cleanupResidualPath) {
+            Remove-Item -LiteralPath $cleanupResidualPath -Recurse -Force
+        }
+    }
+
+    # Hostile case: marker removal after semantic readiness must reach and fail the integrity guard.
+    $removeMarkerFirstRunRunner = {
+        param($InstallRoot, $UserDataRoot, [int]$TimeoutMilliseconds = 5000)
+        Remove-Item -LiteralPath (Join-Path $UserDataRoot 'state\issue-44-harness.marker') -Force
+        return [pscustomobject]@{
+            Status = 'PASS'
+            Details = 'Injected retained-marker removal.'
+            CoreHealthReady = $true
+            CoreHealthDetails = 'Synthetic semantic readiness reached before retained-marker integrity check.'
+            CoreSha256 = Get-AcceptanceSha256ForFile -Path (Join-Path $InstallRoot 'HerdrOps.Core.exe')
+            AppSha256 = Get-AcceptanceSha256ForFile -Path (Join-Path $InstallRoot 'HerdrOps.App.exe')
+        }
+    }
+    $removeMarkerArgs = Copy-TestArguments -Arguments $greenArgs
+    $removeMarkerArgs['FirstRunRunner'] = $removeMarkerFirstRunRunner
+    $removeMarkerArgs['ReportDestination'] = (Join-Path $reportsDir 'first-runner-removes-marker.json')
+    Test-OperatorFailClosed -CaseName 'first-runner-removes-marker' -Arguments $removeMarkerArgs -ExpectedMessageFragment 'File not found'
+
+    # Hostile case: a bounded first-run timeout is evidence of failure, never Runtime credit.
+    $timeoutFirstRunRunner = {
+        param($InstallRoot, $UserDataRoot, [int]$TimeoutMilliseconds = 5000)
+        throw (New-Object System.TimeoutException 'Injected bounded first-run timeout.')
+    }
+    $timeoutArgs = Copy-TestArguments -Arguments $greenArgs
+    $timeoutArgs['FirstRunRunner'] = $timeoutFirstRunRunner
+    $timeoutArgs['ReportDestination'] = (Join-Path $reportsDir 'first-runner-timeout.json')
+    Test-OperatorFailClosed -CaseName 'first-runner-timeout' -Arguments $timeoutArgs -ExpectedMessageFragment 'Injected bounded first-run timeout' -ExpectReportFile $true | Out-Null
+
+    # Hostile case: a reparse point in a target ancestor is rejected before lifecycle mutation.
+    $reparseTarget = Join-Path $simRoot 'reparse-target'
+    $reparseParent = Join-Path $simRoot 'reparse-parent'
+    New-Item -ItemType Directory -Path $reparseTarget -Force | Out-Null
+    $mklinkOutput = @(& cmd.exe /d /c mklink /J $reparseParent $reparseTarget 2>&1 | ForEach-Object { [string]$_ })
+    Assert-TestCondition -Condition ($LASTEXITCODE -eq 0 -and (Test-Path -LiteralPath $reparseParent)) -Message "Could not create fixture junction for reparse rejection: $($mklinkOutput -join '; ')"
+    try {
+        $reparseArgs = Copy-TestArguments -Arguments $greenArgs
+        $reparseArgs['InstallRoot'] = (Get-AcceptanceFullPath -Path (Join-Path $reparseParent 'HerdrOps'))
+        $reparseArgs['ReportDestination'] = (Join-Path $reportsDir 'target-reparse.json')
+        Test-OperatorFailClosed -CaseName 'target-reparse' -Arguments $reparseArgs -ExpectedMessageFragment 'reparse' -PreserveInstallRoot
+    } finally {
+        [IO.Directory]::Delete($reparseParent, $false)
+        Remove-Item -LiteralPath $reparseTarget -Recurse -Force
+    }
+
+    # Hostile case: Live mode with injected runners must fail closed at the live safeguard.
+    $liveRunHead = @(& git -C $repositoryRoot rev-parse --verify 'HEAD^{commit}' 2>&1 | ForEach-Object { [string]$_ })
+    Assert-TestCondition -Condition ($liveRunHead.Count -eq 1 -and $liveRunHead[0].Trim() -cmatch '^[0-9a-f]{40}$') -Message 'Could not resolve exact repository HEAD commit for the Live injected-runner hostile case.'
+    $liveRunHead = $liveRunHead[0].Trim().ToLowerInvariant()
+    $liveRunTree = @(& git -C $repositoryRoot rev-parse --verify "$liveRunHead^{tree}" 2>&1 | ForEach-Object { [string]$_ })
+    Assert-TestCondition -Condition ($liveRunTree.Count -eq 1 -and $liveRunTree[0].Trim() -cmatch '^[0-9a-f]{40}$') -Message 'Could not resolve exact repository source tree for the Live injected-runner hostile case.'
+    $liveRunTree = $liveRunTree[0].Trim().ToLowerInvariant()
+    $liveMachineName = [Environment]::MachineName
+    if ([string]::IsNullOrWhiteSpace($liveMachineName)) { $liveMachineName = 'NOT_OBSERVED' }
+    $liveMachineFingerprint = Get-AcceptanceMachineFingerprint
+
+    $liveBinding = [ordered]@{
+        schemaVersion = 1
+        issue = 44
+        acceptanceVersion = 'v1.0.0'
+        mode = 'Live'
+        machineRole = 'clean-windows-test-machine'
+        machineName = $liveMachineName
+        machineFingerprint = $liveMachineFingerprint
+        sourceCommit = $liveRunHead
+        initialArtifact = [ordered]@{
+            packageRoot = [string]$initialArtifact.Expected.PackageRoot
+            archivePath = [string]$initialArtifact.Expected.ArchivePath
+            hashRecordPath = [string]$initialArtifact.Expected.HashRecordPath
+            productId = 'HerdrOps'
+            displayName = 'HerdrOps'
+            packagingIssue = 38
+            packageVersion = '0.7.0'
+            targetFramework = 'net10.0-windows'
+            runtimeIdentifier = 'win-x64'
+            deploymentModel = 'per-user-directory'
+            userDataPolicy = 'retain-on-uninstall'
+            sourceCommit = $liveRunHead
+            manifestSha256 = [string]$initialArtifact.Expected.ManifestSha256
+            archiveSha256 = [string]$initialArtifact.Expected.ArchiveSha256
+            contentSha256 = [string]$initialArtifact.Expected.ContentSha256
+        }
+        upgradeArtifact = [ordered]@{
+            packageRoot = [string]$upgradeArtifact.Expected.PackageRoot
+            archivePath = [string]$upgradeArtifact.Expected.ArchivePath
+            hashRecordPath = [string]$upgradeArtifact.Expected.HashRecordPath
+            productId = 'HerdrOps'
+            displayName = 'HerdrOps'
+            packagingIssue = 44
+            packageVersion = '1.0.0'
+            targetFramework = 'net10.0-windows'
+            runtimeIdentifier = 'win-x64'
+            deploymentModel = 'per-user-directory'
+            userDataPolicy = 'retain-on-uninstall'
+            sourceCommit = $liveRunHead
+            manifestSha256 = [string]$upgradeArtifact.Expected.ManifestSha256
+            archiveSha256 = [string]$upgradeArtifact.Expected.ArchiveSha256
+            contentSha256 = [string]$upgradeArtifact.Expected.ContentSha256
+        }
+        installRoot = (Get-AcceptanceFullPath -Path (Get-DefaultHerdrOpsInstallRoot))
+        userDataRoot = (Get-AcceptanceFullPath -Path (Get-DefaultHerdrOpsUserDataRoot))
+        reportPath = (Join-Path $reportsDir 'live-injected-runners.json')
+        retainedDataRelativePath = 'state\issue-44-harness.marker'
+        retainedDataSha256 = $markerExpectedHash
+        retainedDataMode = 'create-test-marker'
+    }
+    $liveBindingPath = Join-Path $testRoot 'live-injected-runners.binding.json'
+    [IO.File]::WriteAllText($liveBindingPath, ($liveBinding | ConvertTo-Json -Depth 30), $utf8)
+    $liveInjectedArgs = [ordered]@{
+        BindingPath = $liveBindingPath
+        ExpectedSourceTree = $liveRunTree
+        InstallerRunner = $syntheticInstallerRunner
+        FirstRunRunner = $syntheticFirstRunRunner
+        ReportDestination = (Join-Path $reportsDir 'live-injected-runners.json')
+    }
+    Test-OperatorFailClosed -CaseName 'live-injected-runners' -Arguments $liveInjectedArgs -ExpectedMessageFragment 'MUST NOT use injected -InstallerRunner or -FirstRunRunner'
+
+    $resultSummary = [pscustomobject][ordered]@{
+        EvidenceClass = 'Synthetic'
+        Issue = 44
+        InjectedRunners = 'PASS'
+        ExactOperatorContract = 'PASS'
+        FixtureLifecyclePass = 'PASS'
+        RetainedDataPersistence = 'PASS'
+        ExactProductionActionOrder = 'PASS'
+        FailClosedHostileCases = 'PASS'
+        SemanticEvidenceValidator = 'PASS'
+        DurableSemanticReportContract = 'PASS'
+        ReportSchemaPersisted = 'PASS'
+        CleanMachine = 'NOT OBSERVED'
+        Runtime = 'NOT OBSERVED'
+        Release = 'NOT OBSERVED'
+    }
+} finally {
+    if ($null -ne $global:HerdrOpsIssue44FixtureState) {
+        Remove-Variable -Scope Global -Name HerdrOpsIssue44FixtureState -ErrorAction SilentlyContinue
+    }
+    if (Test-Path -LiteralPath $testRoot) {
+        Remove-PackagingTempDirectory -Path $testRoot
+    }
+}
+
+if ($null -ne $resultSummary) {
+    $resultSummary
+}

@@ -1,14 +1,23 @@
+using System.ComponentModel;
+using System.Diagnostics;
+using System.IO;
 using System.IO.Pipes;
+using System.Runtime.InteropServices;
 using System.Runtime.CompilerServices;
+using System.Security.Cryptography;
 using System.Security.Principal;
+using System.Text.Json;
 using HerdrOps.Contracts.StateIpc;
+using Microsoft.Win32.SafeHandles;
 
 namespace HerdrOps.App.StateIpc;
 
 public sealed record HerdrOpsStatePipeClientOptions(
     string PipeName,
     int ConnectTimeoutMilliseconds = 5000,
-    int MaximumFrameBytes = HerdrOpsStateIpcProtocol.MaximumFrameBytes)
+    int MaximumFrameBytes = HerdrOpsStateIpcProtocol.MaximumFrameBytes,
+    string? AcceptanceNonce = null,
+    string? AcceptanceEvidencePath = null)
 {
     public static HerdrOpsStatePipeClientOptions ForCurrentUser()
     {
@@ -20,7 +29,11 @@ public sealed record HerdrOpsStatePipeClientOptions(
         }
 
         return new HerdrOpsStatePipeClientOptions(
-            HerdrOpsStatePipeName.FromUserScope(userSid));
+            HerdrOpsStatePipeName.FromUserScope(userSid),
+            AcceptanceNonce: Environment.GetEnvironmentVariable(
+                HerdrOpsStateIpcProtocol.Issue44AcceptanceNonceEnvironmentVariable),
+            AcceptanceEvidencePath: Environment.GetEnvironmentVariable(
+                HerdrOpsStateIpcProtocol.Issue44AcceptanceEvidencePathEnvironmentVariable));
     }
 }
 
@@ -70,6 +83,9 @@ public sealed class HerdrOpsStatePipeClient : IHerdrOpsStateUpdateSource
         await pipe
             .ConnectAsync(_options.ConnectTimeoutMilliseconds, cancellationToken)
             .ConfigureAwait(false);
+        var acceptanceServerIdentity = _options.AcceptanceNonce is null
+            ? null
+            : AcceptanceServerProcessIdentity.Read(pipe);
 
         var correlationId = Guid.NewGuid();
         var hello = HerdrOpsStateIpcJson.CreateEnvelope(
@@ -80,7 +96,8 @@ public sealed class HerdrOpsStatePipeClient : IHerdrOpsStateUpdateSource
             correlationId,
             new HerdrOpsStateIpcHello(
                 HerdrOpsStateIpcProtocol.AppClientRole,
-                _clientInstanceId));
+                _clientInstanceId,
+                _options.AcceptanceNonce));
         await HerdrOpsStateIpcJson
             .WriteFrameAsync(pipe, hello, cancellationToken, _options.MaximumFrameBytes)
             .ConfigureAwait(false);
@@ -105,6 +122,8 @@ public sealed class HerdrOpsStatePipeClient : IHerdrOpsStateUpdateSource
                 "The state IPC server did not confirm the current-user authorization scope.");
         }
 
+        ValidateAcceptanceBinding(accepted, acceptanceServerIdentity);
+
         var snapshotEnvelope = await HerdrOpsStateIpcJson
             .ReadFrameAsync(pipe, cancellationToken, _options.MaximumFrameBytes)
             .ConfigureAwait(false);
@@ -123,6 +142,8 @@ public sealed class HerdrOpsStatePipeClient : IHerdrOpsStateUpdateSource
             throw new HerdrOpsStateIpcProtocolException(
                 "The state IPC handshake and snapshot sequences disagree.");
         }
+
+        WriteAcceptanceEvidence(accepted, correlationId, snapshotEnvelope.Sequence);
 
         yield return new HerdrOpsStateUpdate(
             HerdrOpsStateUpdateKind.Snapshot,
@@ -252,6 +273,220 @@ public sealed class HerdrOpsStatePipeClient : IHerdrOpsStateUpdateSource
                 $"The maximum state IPC frame must be between 1024 and {HerdrOpsStateIpcProtocol.MaximumFrameBytes} bytes.");
         }
 
-        return options;
+        var nonce = NormalizeAcceptanceNonce(options.AcceptanceNonce);
+        var evidencePath = string.IsNullOrWhiteSpace(options.AcceptanceEvidencePath)
+            ? null
+            : Path.GetFullPath(options.AcceptanceEvidencePath);
+        if ((nonce is null) != (evidencePath is null))
+        {
+            throw new ArgumentException(
+                "Issue #44 acceptance nonce and evidence path must be supplied together.",
+                nameof(options));
+        }
+
+        return options with
+        {
+            AcceptanceNonce = nonce,
+            AcceptanceEvidencePath = evidencePath,
+        };
+    }
+
+    private void ValidateAcceptanceBinding(
+        HerdrOpsStateIpcHelloAccepted accepted,
+        AcceptanceServerProcessIdentity? serverIdentity)
+    {
+        if (_options.AcceptanceNonce is null)
+        {
+            if (accepted.AcceptanceNonce is not null ||
+                accepted.ServerProcessId is not null ||
+                accepted.ServerProcessStartUtcTicks is not null ||
+                accepted.ServerExecutablePath is not null ||
+                accepted.ServerExecutableSha256 is not null)
+            {
+                throw new HerdrOpsStateIpcProtocolException(
+                    "The state IPC server returned unsolicited Issue #44 acceptance identity fields.");
+            }
+
+            return;
+        }
+
+        if (!string.Equals(accepted.AcceptanceNonce, _options.AcceptanceNonce, StringComparison.Ordinal) ||
+            accepted.ServerProcessId is null or <= 0 ||
+            accepted.ServerProcessStartUtcTicks is null or <= 0 ||
+            string.IsNullOrWhiteSpace(accepted.ServerExecutablePath) ||
+            string.IsNullOrWhiteSpace(accepted.ServerExecutableSha256) ||
+            accepted.ServerExecutableSha256.Length != 64)
+        {
+            throw new HerdrOpsStateIpcProtocolException(
+                "The state IPC server did not return the exact Issue #44 acceptance binding.");
+        }
+
+        if (serverIdentity is null ||
+            accepted.ServerProcessId != serverIdentity.ProcessId ||
+            accepted.ServerProcessStartUtcTicks != serverIdentity.StartUtcTicks ||
+            !string.Equals(
+                accepted.ServerExecutablePath,
+                serverIdentity.ExecutablePath,
+                StringComparison.OrdinalIgnoreCase) ||
+            !string.Equals(
+                accepted.ServerExecutableSha256,
+                serverIdentity.ExecutableSha256,
+                StringComparison.Ordinal))
+        {
+            throw new HerdrOpsStateIpcProtocolException(
+                "The state IPC acceptance response is not owned by the connected named-pipe server process.");
+        }
+    }
+
+    private void WriteAcceptanceEvidence(
+        HerdrOpsStateIpcHelloAccepted accepted,
+        Guid correlationId,
+        long snapshotSequence)
+    {
+        if (_options.AcceptanceNonce is null || _options.AcceptanceEvidencePath is null)
+        {
+            return;
+        }
+
+        using var process = System.Diagnostics.Process.GetCurrentProcess();
+        var executablePath = Environment.ProcessPath;
+        if (string.IsNullOrWhiteSpace(executablePath) || !File.Exists(executablePath))
+        {
+            throw new HerdrOpsStateIpcProtocolException(
+                "The App executable path is unavailable for Issue #44 acceptance evidence.");
+        }
+
+        executablePath = Path.GetFullPath(executablePath);
+        var evidence = new Issue44AcceptanceEvidence(
+            SchemaVersion: 1,
+            AcceptanceNonce: _options.AcceptanceNonce,
+            ClientInstanceId: _clientInstanceId,
+            CorrelationId: correlationId,
+            ServerInstanceId: accepted.ServerInstanceId,
+            CoreProcessId: accepted.ServerProcessId!.Value,
+            CoreProcessStartUtcTicks: accepted.ServerProcessStartUtcTicks!.Value,
+            CoreExecutablePath: accepted.ServerExecutablePath!,
+            CoreExecutableSha256: accepted.ServerExecutableSha256!,
+            AppProcessId: process.Id,
+            AppProcessStartUtcTicks: process.StartTime.ToUniversalTime().Ticks,
+            AppExecutablePath: executablePath,
+            AppExecutableSha256: Convert.ToHexString(
+                SHA256.HashData(File.ReadAllBytes(executablePath))),
+            SnapshotSequence: snapshotSequence);
+        var destination = _options.AcceptanceEvidencePath;
+        var directory = Path.GetDirectoryName(destination);
+        if (string.IsNullOrWhiteSpace(directory) || !Directory.Exists(directory))
+        {
+            throw new HerdrOpsStateIpcProtocolException(
+                "The Issue #44 acceptance evidence directory does not exist.");
+        }
+
+        var temporary = destination + "." + Guid.NewGuid().ToString("N") + ".tmp";
+        try
+        {
+            var bytes = JsonSerializer.SerializeToUtf8Bytes(evidence);
+            using (var stream = new FileStream(
+                       temporary,
+                       FileMode.CreateNew,
+                       FileAccess.Write,
+                       FileShare.None))
+            {
+                stream.Write(bytes);
+                stream.Flush(flushToDisk: true);
+            }
+            File.Move(temporary, destination, overwrite: false);
+        }
+        finally
+        {
+            File.Delete(temporary);
+        }
+    }
+
+    private static string? NormalizeAcceptanceNonce(string? nonce)
+    {
+        if (string.IsNullOrWhiteSpace(nonce))
+        {
+            return null;
+        }
+
+        if (nonce.Length != 64 || nonce.Any(character =>
+                !char.IsAsciiHexDigit(character) || char.IsLower(character)))
+        {
+            throw new ArgumentException(
+                "The Issue #44 acceptance nonce must be exactly 64 uppercase hexadecimal characters.",
+                nameof(nonce));
+        }
+
+        return nonce;
+    }
+
+    private sealed record Issue44AcceptanceEvidence(
+        int SchemaVersion,
+        string AcceptanceNonce,
+        string ClientInstanceId,
+        Guid CorrelationId,
+        string ServerInstanceId,
+        int CoreProcessId,
+        long CoreProcessStartUtcTicks,
+        string CoreExecutablePath,
+        string CoreExecutableSha256,
+        int AppProcessId,
+        long AppProcessStartUtcTicks,
+        string AppExecutablePath,
+        string AppExecutableSha256,
+        long SnapshotSequence);
+
+    private sealed record AcceptanceServerProcessIdentity(
+        int ProcessId,
+        long StartUtcTicks,
+        string ExecutablePath,
+        string ExecutableSha256)
+    {
+        public static AcceptanceServerProcessIdentity Read(NamedPipeClientStream pipe)
+        {
+            if (!OperatingSystem.IsWindows() || !pipe.IsConnected ||
+                !GetNamedPipeServerProcessId(pipe.SafePipeHandle, out var processId) ||
+                processId == 0)
+            {
+                throw new HerdrOpsStateIpcProtocolException(
+                    $"The connected state IPC server process ID is unavailable (Win32 {Marshal.GetLastWin32Error()}).");
+            }
+
+            try
+            {
+                using var process = Process.GetProcessById(checked((int)processId));
+                var startBefore = process.StartTime.ToUniversalTime().Ticks;
+                var path = Path.GetFullPath(
+                    process.MainModule?.FileName ?? throw new InvalidOperationException(
+                        "The state IPC server executable path is unavailable."));
+                var sha256 = Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(path)));
+                var startAfter = process.StartTime.ToUniversalTime().Ticks;
+                if (process.HasExited || startBefore != startAfter)
+                {
+                    throw new InvalidOperationException(
+                        "The state IPC server process identity changed during verification.");
+                }
+
+                return new AcceptanceServerProcessIdentity(
+                    checked((int)processId),
+                    startBefore,
+                    path,
+                    sha256);
+            }
+            catch (Exception exception) when (
+                exception is ArgumentException or InvalidOperationException or IOException or
+                Win32Exception or OverflowException)
+            {
+                throw new HerdrOpsStateIpcProtocolException(
+                    "The connected state IPC server process identity could not be verified.",
+                    exception);
+            }
+        }
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool GetNamedPipeServerProcessId(
+            SafePipeHandle pipe,
+            out uint serverProcessId);
     }
 }

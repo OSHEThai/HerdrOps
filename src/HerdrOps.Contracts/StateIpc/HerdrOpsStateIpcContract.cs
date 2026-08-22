@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace HerdrOps.Contracts.StateIpc;
 
@@ -10,6 +11,10 @@ public static class HerdrOpsStateIpcProtocol
     public const string AuthorizationScope = "current-user";
     public const string CoreSource = "HerdrOps.Core";
     public const string AppSource = "HerdrOps.App";
+    public const string Issue44AcceptanceNonceEnvironmentVariable =
+        "HERDROPS_ISSUE44_ACCEPTANCE_NONCE";
+    public const string Issue44AcceptanceEvidencePathEnvironmentVariable =
+        "HERDROPS_ISSUE44_ACCEPTANCE_EVIDENCE_PATH";
 
     public static class MessageTypes
     {
@@ -41,11 +46,23 @@ public sealed record HerdrOpsStateIpcEnvelope(
 
 public sealed record HerdrOpsStateIpcHello(
     string ClientRole,
-    string ClientInstanceId);
+    string ClientInstanceId,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? AcceptanceNonce = null);
 
 public sealed record HerdrOpsStateIpcHelloAccepted(
     string ServerInstanceId,
-    string AuthorizationScope);
+    string AuthorizationScope,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? AcceptanceNonce = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    int? ServerProcessId = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    long? ServerProcessStartUtcTicks = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? ServerExecutablePath = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? ServerExecutableSha256 = null);
 
 public sealed record HerdrOpsStateIpcError(
     string Code,

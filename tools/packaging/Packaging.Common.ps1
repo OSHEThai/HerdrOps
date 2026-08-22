@@ -2201,13 +2201,35 @@ function ConvertFrom-StrictMSBuildPropertyJson {
     return $document.Properties
 }
 
+function Stop-PackagingOwnedProcessAfterTimeout {
+    param(
+        [Parameter(Mandatory = $true)][Diagnostics.Process]$Process,
+        [ValidateRange(100, 10000)][int]$ExitConfirmationTimeoutMilliseconds = 5000
+    )
+
+    $killFailure = $null
+    try {
+        if (-not $Process.HasExited) { $Process.Kill() }
+    } catch { $killFailure = $_.Exception.Message }
+
+    $exitConfirmed = $false
+    try { $exitConfirmed = $Process.WaitForExit($ExitConfirmationTimeoutMilliseconds) }
+    catch {
+        if ([string]::IsNullOrWhiteSpace($killFailure)) { $killFailure = $_.Exception.Message }
+    }
+    if (-not $exitConfirmed -or -not $Process.HasExited) {
+        $details = if ([string]::IsNullOrWhiteSpace($killFailure)) { 'no kill exception was reported' } else { $killFailure }
+        throw "Timed-out owned MSBuild evaluator termination was not confirmed within $ExitConfirmationTimeoutMilliseconds ms: $details"
+    }
+}
+
 function Invoke-PackagingMSBuildPropertyEvaluation {
     param(
         [Parameter(Mandatory = $true)][string]$ProjectPath,
         [Parameter(Mandatory = $true)]$Profile,
         [string]$TestDotnetCommandPath,
         [ValidateRange(1000, 120000)]
-        [int]$TimeoutMilliseconds = 60000
+        [int]$TimeoutMilliseconds = 120000
     )
 
     $propertyNames = @(
@@ -2283,7 +2305,7 @@ function Invoke-PackagingMSBuildPropertyEvaluation {
             $stdoutTask = $process.StandardOutput.ReadToEndAsync()
             $stderrTask = $process.StandardError.ReadToEndAsync()
             if (-not $process.WaitForExit($TimeoutMilliseconds)) {
-                try { $process.Kill() } catch { }
+                Stop-PackagingOwnedProcessAfterTimeout -Process $process
                 throw "MSBuild property evaluation exceeded the $TimeoutMilliseconds ms timeout."
             }
             $process.WaitForExit()
