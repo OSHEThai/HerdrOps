@@ -63,6 +63,29 @@ function Assert-ThrowsMatchAndZeroOutput([scriptblock]$ScriptBlock, [string]$Pat
     Pass-NegativeCase $CaseName
 }
 
+function Test-SelfTestProcessElevated {
+    $principal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
+    return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+}
+
+function Assert-LivePreflightGuardSourceContract {
+    $source = [IO.File]::ReadAllText($script:InvokeSoakPath)
+    $elevationCheck = $source.IndexOf('$principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)', [StringComparison]::Ordinal)
+    $elevationFailure = $source.IndexOf('Live soak measurement must execute in a non-elevated user context.', [StringComparison]::Ordinal)
+    $processLookup = $source.IndexOf('$appProcess = [System.Diagnostics.Process]::GetProcessById($AppProcessId)', [StringComparison]::Ordinal)
+    $processFailure = $source.IndexOf('Unable to connect to target App ($AppProcessId) or Core ($CoreProcessId) process:', [StringComparison]::Ordinal)
+    if ($elevationCheck -lt 0 -or $elevationFailure -le $elevationCheck -or $processLookup -le $elevationFailure -or $processFailure -le $processLookup) {
+        throw 'Production live soak preflight guard order or exact failure contract drifted.'
+    }
+}
+
+function Invoke-IsolatedLivePreflightGuardFixture {
+    param([bool]$Elevated,[Parameter(Mandatory = $true)][scriptblock]$ResolveTargetProcesses)
+    if ($Elevated) { throw 'Live soak measurement must execute in a non-elevated user context.' }
+    try { & $ResolveTargetProcesses | Out-Null }
+    catch { throw "Unable to connect to target App (999999) or Core (999998) process: $($_.Exception.Message)" }
+}
+
 function New-TestRepository([string]$Root) {
     New-Item -ItemType Directory -Path $Root -Force | Out-Null
     [IO.File]::WriteAllText((Join-Path $Root 'source.txt'), 'bound source', (New-Object Text.UTF8Encoding($false)))
@@ -489,8 +512,26 @@ try {
             -CoreProcessId 1234
     } 'AppProcessId and CoreProcessId must be distinct processes' 'live mode identical process IDs for App and Core produces zero output' $negProcIdentDest
 
-    # 15. Live mode non-existent process ID
+    # 15. Live preflight guard order and environment-independent reachability.
+    Assert-LivePreflightGuardSourceContract
+    Pass-PositiveCase 'production live preflight preserves elevation-before-process guard order'
+
+    $elevatedResolverProbe = @{ Calls = 0 }
+    Assert-ThrowsMatch {
+        Invoke-IsolatedLivePreflightGuardFixture -Elevated $true -ResolveTargetProcesses { $elevatedResolverProbe.Calls++; throw 'resolver must not run' }
+    } '^Live soak measurement must execute in a non-elevated user context\.$' 'isolated elevated fixture reaches elevation guard before process lookup'
+    if ($elevatedResolverProbe.Calls -ne 0) { throw 'Elevated preflight fixture reached process lookup after the elevation guard.' }
+
+    $nonElevatedResolverProbe = @{ Calls = 0 }
+    Assert-ThrowsMatch {
+        Invoke-IsolatedLivePreflightGuardFixture -Elevated $false -ResolveTargetProcesses { $nonElevatedResolverProbe.Calls++; throw 'synthetic missing PID' }
+    } '^Unable to connect to target App \(999999\) or Core \(999998\) process:' 'isolated non-elevated fixture reaches missing-process guard exactly once'
+    if ($nonElevatedResolverProbe.Calls -ne 1) { throw 'Non-elevated preflight fixture did not reach process lookup exactly once.' }
+
+    $selfTestElevated = Test-SelfTestProcessElevated
     $negProc2Dest = Join-Path $tempRoot 'matrix\neg-proc2.json'
+    $negProc2Pattern = if ($selfTestElevated) { '^Live soak measurement must execute in a non-elevated user context\.$' } else { '^Unable to connect to target App' }
+    $negProc2Case = if ($selfTestElevated) { 'elevated host reaches production non-elevated guard with zero output' } else { 'non-elevated host reaches production non-existent PID guard with zero output' }
     Assert-ThrowsMatchAndZeroOutput {
         & $script:InvokeSoakPath `
             -PowerSource 'AC' `
@@ -506,27 +547,31 @@ try {
             -ChannelNonce 'test-nonce' `
             -AppProcessId 999999 `
             -CoreProcessId 999998
-    } 'Unable to connect to target App' 'live mode non-existent process ID produces zero output' $negProc2Dest
+    } $negProc2Pattern $negProc2Case $negProc2Dest
 
     # 16. Live mode process session ID mismatch
-    $negSessDest = Join-Path $tempRoot 'matrix\neg-sess.json'
-    $currentPid = [System.Diagnostics.Process]::GetCurrentProcess().Id
-    Assert-ThrowsMatchAndZeroOutput {
-        & $script:InvokeSoakPath `
-            -PowerSource 'AC' `
-            -DestinationPath $negSessDest `
-            -EvidenceRoot $tempRoot `
-            -RepositoryRoot $repoRoot `
-            -PackageIdentityPath $receiptPath `
-            -PackageArchivePath $archivePath `
-            -ExtractedPackageRoot $packageRoot `
-            -ExpectedSourceCommit $repo.Commit `
-            -ExpectedSourceTree $repo.Tree `
-            -TelemetryChannel { $null } `
-            -ChannelNonce 'test-nonce' `
-            -AppProcessId $currentPid `
-            -CoreProcessId 4
-    } 'Process session ID mismatch' 'live mode process session ID mismatch produces zero output' $negSessDest
+    if ($selfTestElevated) {
+        Write-Host 'SKIP environment-bound live session guard: current process is elevated; production correctly fails earlier.'
+    } else {
+        $negSessDest = Join-Path $tempRoot 'matrix\neg-sess.json'
+        $currentPid = [System.Diagnostics.Process]::GetCurrentProcess().Id
+        Assert-ThrowsMatchAndZeroOutput {
+            & $script:InvokeSoakPath `
+                -PowerSource 'AC' `
+                -DestinationPath $negSessDest `
+                -EvidenceRoot $tempRoot `
+                -RepositoryRoot $repoRoot `
+                -PackageIdentityPath $receiptPath `
+                -PackageArchivePath $archivePath `
+                -ExtractedPackageRoot $packageRoot `
+                -ExpectedSourceCommit $repo.Commit `
+                -ExpectedSourceTree $repo.Tree `
+                -TelemetryChannel { $null } `
+                -ChannelNonce 'test-nonce' `
+                -AppProcessId $currentPid `
+                -CoreProcessId 4
+        } 'Process session ID mismatch' 'live mode process session ID mismatch produces zero output' $negSessDest
+    }
 
     # 17. Live mode missing live telemetry channel fails closed
     $negLiveTelDest = Join-Path $tempRoot 'matrix\neg-live-tel.json'
@@ -546,7 +591,7 @@ try {
                 -ExpectedSourceTree $repo.Tree `
                 -AppProcessId $dummy1.Id `
                 -CoreProcessId $dummy2.Id
-        } 'Live soak measurement requires an authenticated TelemetryChannel' 'live mode missing telemetry channel fails closed' $negLiveTelDest
+        } 'Live soak measurement requires an authenticated TelemetryChannel' 'live mode missing telemetry channel fails closed before environment-specific guards' $negLiveTelDest
     } finally {
         if ($null -ne $dummy1 -and -not $dummy1.HasExited) { Stop-Process -Id $dummy1.Id -Force -ErrorAction SilentlyContinue }
         if ($null -ne $dummy2 -and -not $dummy2.HasExited) { Stop-Process -Id $dummy2.Id -Force -ErrorAction SilentlyContinue }
@@ -571,6 +616,9 @@ try {
     # -------------------------------------------------------------------------
     # LIVE TELEMETRY FORGERY & PROCESS CONTINUITY TESTS WITH REAL BOUND CHILDREN
     # -------------------------------------------------------------------------
+    if ($selfTestElevated) {
+        Write-Host 'SKIP environment-bound live telemetry-forgery cases: current process is elevated; production correctly fails earlier.'
+    } else {
     $livePkgRoot = Join-Path $tempRoot 'live-bound-pkg'
     $liveArchiveDir = Join-Path $tempRoot 'live-archive'
     New-Item -ItemType Directory -Path $livePkgRoot, $liveArchiveDir -Force | Out-Null
@@ -857,6 +905,7 @@ try {
     } finally {
         Stop-OwnedProcessSafely $boundAppProc $boundAppStart
         Stop-OwnedProcessSafely $boundCoreProc $boundCoreStart
+    }
     }
 
     # 19. Controlled live probe: unexpected child exit triggers exit guard fail-closed
