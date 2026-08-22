@@ -55,8 +55,44 @@ function Assert-ParserClean {
         -Message "PowerShell parser accepts $([IO.Path]::GetFileName($Path))"
 }
 
+function Assert-DocumentedCompositeInvocationContains {
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [Parameter(Mandatory)][string[]]$RequiredArguments
+    )
+
+    $source = Get-Content -LiteralPath $Path -Raw
+    $command = './tools/Test-V02LiveRuntimeAcceptance.ps1'
+    $commandIndex = $source.IndexOf($command, [StringComparison]::Ordinal)
+    Assert-TestTrue `
+        -Condition ($commandIndex -ge 0) `
+        -Message "$([IO.Path]::GetFileName($Path)) documents the composite runtime command"
+    if ($commandIndex -lt 0) {
+        return
+    }
+
+    $invocationEnd = $source.IndexOf("`r`n`r`n", $commandIndex, [StringComparison]::Ordinal)
+    if ($invocationEnd -lt 0) {
+        $invocationEnd = $source.IndexOf("`n`n", $commandIndex, [StringComparison]::Ordinal)
+    }
+    Assert-TestTrue `
+        -Condition ($invocationEnd -gt $commandIndex) `
+        -Message "$([IO.Path]::GetFileName($Path)) delimits the composite runtime invocation"
+    if ($invocationEnd -le $commandIndex) {
+        return
+    }
+
+    $invocation = $source.Substring($commandIndex, $invocationEnd - $commandIndex)
+    foreach ($argument in $RequiredArguments) {
+        Assert-TestTrue `
+            -Condition $invocation.Contains($argument) `
+            -Message "$([IO.Path]::GetFileName($Path)) composite invocation supplies $argument"
+    }
+}
+
 $herdrRuntime = Join-Path $repositoryRoot 'tools\Test-V02HerdrRuntime.ps1'
 $compositeRuntime = Join-Path $repositoryRoot 'tools\Test-V02LiveRuntimeAcceptance.ps1'
+$toolsReadme = Join-Path $repositoryRoot 'tools\README.md'
 $runtimeMonitorContract = Join-Path $repositoryRoot 'docs\protocol\v0.2-runtime-monitor-contract.md'
 $runtimePackageBinding = Join-Path $repositoryRoot 'tools\lib\V02RuntimePackageBinding.ps1'
 $runtimePackageBindingTests = Join-Path $repositoryRoot 'tools\lib\V02RuntimePackageBinding.Tests.ps1'
@@ -177,6 +213,18 @@ Assert-SourceContains `
     -Path $runtimeMonitorContract `
     -Text '-ExpectedSourceTree $expectedSourceTree' `
     -Description 'Runtime contract command supplies the exact expected source tree'
+
+$requiredCompositeDocumentationArguments = @(
+    '-PackageIdentityPath $packageIdentityPath',
+    '-PackageArchivePath $packageArchivePath',
+    '-ExtractedPackageRoot $extractedPackageRoot',
+    '-TargetAgentSessionReference $targetAgentSessionReference'
+)
+foreach ($document in @($toolsReadme, $runtimeMonitorContract)) {
+    Assert-DocumentedCompositeInvocationContains `
+        -Path $document `
+        -RequiredArguments $requiredCompositeDocumentationArguments
+}
 
 if ($failures.Count -gt 0) {
     Write-Host ''
