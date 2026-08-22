@@ -567,6 +567,16 @@ jobs:
         shell: powershell
         run: ./tools/Test-V07PerformanceMeasurement.Tests.ps1
 
+      # Issue #149 controlled-child soak guard coverage is Static/Synthetic only;
+      # it never starts HerdrOps/Herdr and cannot grant Runtime or Release credit.
+      - name: Run v0.2 soak hostile selftests (PowerShell 7)
+        shell: pwsh
+        run: ./tools/v0.2-renderer-compatibility/Invoke-V02SoakMeasurement.SelfTests.ps1
+
+      - name: Run v0.2 soak hostile selftests (Windows PowerShell 5.1)
+        shell: powershell
+        run: ./tools/v0.2-renderer-compatibility/Invoke-V02SoakMeasurement.SelfTests.ps1
+
       # Issue #44 install-acceptance preparation. Static/Synthetic only; no live
       # filesystem mutation, no HerdrOps/Herdr process start, no release action.
       - name: 'Run v1 install-acceptance gate (Issue #44) - Static/Synthetic - PowerShell 7 (pwsh)'

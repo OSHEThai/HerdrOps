@@ -552,3 +552,222 @@ function Test-RendererCompatibilityManifest {
     $ready=[bool]$ValidateBindings-and$authorityProfileConsistent-and$finalHumanAuthorityConfigured-and$visualComplete-and$matrixComplete-and$limits.status-ceq'APPROVED'-and$performance.samplesStatus-ceq'PASS'-and$review.decision-ceq'GO'-and$visualReviewComplete-and$defectsComplete
     [pscustomobject][ordered]@{EvidenceClassification='PackagedCompatibilityCandidate';ManifestVersion=1;StructuralValidation='PASS';BindingValidation=if($ValidateBindings){'PASS'}else{'NOT_REQUESTED'};GovernanceProfileConsistency=if($authorityProfileConsistent){'PASS'}else{'FAIL'};FinalHumanGoAuthority=if($finalHumanAuthorityConfigured){'CONFIGURED'}else{'NOT_OBSERVED'};OwnerNumericLimits=$limits.status;HumanReview=$review.decision;ActualHerdrRuntime='NOT_OBSERVED';Release='NOT_OBSERVED';CreditGranted=$false;PackagedCompatibilityReadyForIssue149Closure=$ready}
 }
+
+function Get-V02LiveProcessIdentity {
+    param(
+        [Parameter(Mandatory = $true)]
+        [System.Diagnostics.Process]$Process,
+
+        [Parameter(Mandatory = $true)]
+        [int]$ExpectedProcessId,
+
+        [Parameter(Mandatory = $true)]
+        [DateTime]$ExpectedStartTimeUtc,
+
+        [Parameter(Mandatory = $true)]
+        [ValidateSet('App', 'Core')]
+        [string]$Role,
+
+        [Parameter(Mandatory = $false)]
+        [int]$BinIndex = 0,
+
+        [Parameter(Mandatory = $false)]
+        [int]$SampleIndex = 0
+    )
+
+    $hasExited = $false
+    $observedProcessId = $ExpectedProcessId
+    $observedStartTimeUtc = $null
+    try {
+        $Process.Refresh()
+        $hasExited = [bool]$Process.HasExited
+        if (-not $hasExited) {
+            $observedProcessId = [int]$Process.Id
+            $observedStartTimeUtc = $Process.StartTime.ToUniversalTime()
+        }
+    } catch {
+        throw "$Role process identity observation failed during soak bin $BinIndex sample ${SampleIndex}: $($_.Exception.Message)"
+    }
+
+    if ($hasExited) {
+        throw "$Role process ($ExpectedProcessId) terminated unexpectedly during soak bin $BinIndex sample $SampleIndex."
+    }
+
+    if ($observedProcessId -ne $ExpectedProcessId) {
+        throw "$Role process PID continuity failed: expected PID $ExpectedProcessId, observed PID $observedProcessId during soak bin $BinIndex sample $SampleIndex."
+    }
+
+    if ($null -eq $observedStartTimeUtc -or $observedStartTimeUtc -ne $ExpectedStartTimeUtc) {
+        throw "$Role process PID ($ExpectedProcessId) was recycled during soak bin $BinIndex sample $SampleIndex."
+    }
+
+    return [pscustomobject][ordered]@{
+        ProcessId = [int]$observedProcessId
+        HasExited = [bool]$hasExited
+        StartTimeUtc = $observedStartTimeUtc
+    }
+}
+
+function Assert-V02TrustedTelemetryPacket {
+    param(
+        [Parameter(Mandatory = $true)]
+        $Packet,
+
+        [Parameter(Mandatory = $true)]
+        [string]$ExpectedNonce,
+
+        [Parameter(Mandatory = $true)]
+        [int]$ExpectedSequenceNumber,
+
+        [Parameter(Mandatory = $true)]
+        [int]$ExpectedBinIndex,
+
+        [Parameter(Mandatory = $true)]
+        [int]$ExpectedSampleIndex,
+
+        [Parameter(Mandatory = $true)]
+        [int]$ExpectedAppProcessId,
+
+        [Parameter(Mandatory = $true)]
+        [int]$ExpectedCoreProcessId,
+
+        [Parameter(Mandatory = $true)]
+        [DateTime]$ExpectedAppStartTimeUtc,
+
+        [Parameter(Mandatory = $true)]
+        [DateTime]$ExpectedCoreStartTimeUtc,
+
+        [Parameter(Mandatory = $true)]
+        [string]$ExpectedAppExecutablePath,
+
+        [Parameter(Mandatory = $true)]
+        [string]$ExpectedCoreExecutablePath,
+
+        [Parameter(Mandatory = $true)]
+        [string]$ExpectedAppExecutableSha256,
+
+        [Parameter(Mandatory = $true)]
+        [string]$ExpectedCoreExecutableSha256,
+
+        [Parameter(Mandatory = $true)]
+        [ref]$PreviousTimestampRef,
+
+        [Parameter(Mandatory = $false)]
+        [string]$RepositoryRoot
+    )
+
+    Assert-RendererExactProperties $Packet @(
+        'schemaVersion', 'nonce', 'sequenceNumber', 'observedUtc',
+        'binIndex', 'sampleIndex', 'producer', 'metrics', 'packetSha256'
+    ) 'Telemetry packet'
+
+    if ($Packet.schemaVersion -ne 1) {
+        throw "Telemetry packet schemaVersion must be 1; found $($Packet.schemaVersion)."
+    }
+    if ([string]$Packet.nonce -cne $ExpectedNonce) {
+        throw "Telemetry packet nonce mismatch: expected '$ExpectedNonce', found '$($Packet.nonce)'."
+    }
+    if ([long]$Packet.sequenceNumber -ne [long]$ExpectedSequenceNumber) {
+        throw "Telemetry packet sequenceNumber mismatch: expected $ExpectedSequenceNumber, found $($Packet.sequenceNumber)."
+    }
+    if ([int]$Packet.binIndex -ne $ExpectedBinIndex) {
+        throw "Telemetry packet binIndex mismatch: expected $ExpectedBinIndex, found $($Packet.binIndex)."
+    }
+    if ([int]$Packet.sampleIndex -ne $ExpectedSampleIndex) {
+        throw "Telemetry packet sampleIndex mismatch: expected $ExpectedSampleIndex, found $($Packet.sampleIndex)."
+    }
+
+    # Verify Producer binding
+    $prod = $Packet.producer
+    Assert-RendererExactProperties $prod @(
+        'appProcessId', 'coreProcessId', 'appStartTimeUtc', 'coreStartTimeUtc',
+        'appExecutablePath', 'coreExecutablePath', 'appExecutableSha256', 'coreExecutableSha256'
+    ) 'Telemetry packet producer'
+
+    if ([int]$prod.appProcessId -ne $ExpectedAppProcessId) {
+        throw "Telemetry packet producer appProcessId mismatch: expected $ExpectedAppProcessId, found $($prod.appProcessId)."
+    }
+    if ([int]$prod.coreProcessId -ne $ExpectedCoreProcessId) {
+        throw "Telemetry packet producer coreProcessId mismatch: expected $ExpectedCoreProcessId, found $($prod.coreProcessId)."
+    }
+
+    $pAppStart = if ($prod.appStartTimeUtc -is [DateTime]) { $prod.appStartTimeUtc.ToUniversalTime() } else { [DateTimeOffset]::Parse([string]$prod.appStartTimeUtc, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::AssumeUniversal).UtcDateTime }
+    $pCoreStart = if ($prod.coreStartTimeUtc -is [DateTime]) { $prod.coreStartTimeUtc.ToUniversalTime() } else { [DateTimeOffset]::Parse([string]$prod.coreStartTimeUtc, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::AssumeUniversal).UtcDateTime }
+    if ($pAppStart -ne $ExpectedAppStartTimeUtc.ToUniversalTime()) {
+        throw "Telemetry packet producer appStartTimeUtc mismatch: expected '$($ExpectedAppStartTimeUtc.ToUniversalTime().ToString('o', [Globalization.CultureInfo]::InvariantCulture))', found '$($pAppStart.ToString('o', [Globalization.CultureInfo]::InvariantCulture))'."
+    }
+    if ($pCoreStart -ne $ExpectedCoreStartTimeUtc.ToUniversalTime()) {
+        throw "Telemetry packet producer coreStartTimeUtc mismatch: expected '$($ExpectedCoreStartTimeUtc.ToUniversalTime().ToString('o', [Globalization.CultureInfo]::InvariantCulture))', found '$($pCoreStart.ToString('o', [Globalization.CultureInfo]::InvariantCulture))'."
+    }
+
+    if ([string]$prod.appExecutablePath -cne $ExpectedAppExecutablePath) {
+        throw "Telemetry packet producer appExecutablePath mismatch."
+    }
+    if ([string]$prod.coreExecutablePath -cne $ExpectedCoreExecutablePath) {
+        throw "Telemetry packet producer coreExecutablePath mismatch."
+    }
+    if ([string]$prod.appExecutableSha256 -cne $ExpectedAppExecutableSha256) {
+        throw "Telemetry packet producer appExecutableSha256 mismatch."
+    }
+    if ([string]$prod.coreExecutableSha256 -cne $ExpectedCoreExecutableSha256) {
+        throw "Telemetry packet producer coreExecutableSha256 mismatch."
+    }
+
+    # Verify Timestamps & Monotonicity
+    Assert-RendererUtc $Packet.observedUtc 'Telemetry packet observedUtc'
+    $sampleTime = [DateTimeOffset]::Parse([string]$Packet.observedUtc, [Globalization.CultureInfo]::InvariantCulture).UtcDateTime
+    if ($PreviousTimestampRef.Value -ne [DateTime]::MinValue -and $sampleTime -le $PreviousTimestampRef.Value) {
+        throw "Telemetry packet observedUtc is not strictly monotonic increasing ($($Packet.observedUtc) <= $($PreviousTimestampRef.Value.ToString('o', [Globalization.CultureInfo]::InvariantCulture)))."
+    }
+    $PreviousTimestampRef.Value = $sampleTime
+
+    # Verify Metrics
+    $m = $Packet.metrics
+    Assert-RendererExactProperties $m @('latencyMicroseconds', 'uiStallMicroseconds', 'rendererStable') 'Telemetry packet metrics'
+    Assert-RendererBoolean $m.rendererStable 'Telemetry packet rendererStable'
+
+    $latencies = @($m.latencyMicroseconds)
+    $stalls = @($m.uiStallMicroseconds)
+    if ($latencies.Count -lt 20) {
+        throw "Telemetry packet requires at least 20 latency observations; found $($latencies.Count)."
+    }
+    if ($stalls.Count -lt 20) {
+        throw "Telemetry packet requires at least 20 UI-stall observations; found $($stalls.Count)."
+    }
+    foreach ($lat in $latencies) {
+        Assert-RendererNonnegativeInteger $lat 'Telemetry packet latency sample'
+    }
+    foreach ($stl in $stalls) {
+        Assert-RendererNonnegativeInteger $stl 'Telemetry packet UI-stall sample'
+    }
+
+    # Verify packetSha256 integrity
+    $rawPacketWithoutHash = [pscustomobject][ordered]@{
+        schemaVersion = [int]$Packet.schemaVersion
+        nonce = [string]$Packet.nonce
+        sequenceNumber = [long]$Packet.sequenceNumber
+        observedUtc = [string]$Packet.observedUtc
+        binIndex = [int]$Packet.binIndex
+        sampleIndex = [int]$Packet.sampleIndex
+        producer = [pscustomobject][ordered]@{
+            appProcessId = [int]$prod.appProcessId
+            coreProcessId = [int]$prod.coreProcessId
+            appStartTimeUtc = if ($prod.appStartTimeUtc -is [DateTime]) { $prod.appStartTimeUtc.ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ss.fffffffZ', [Globalization.CultureInfo]::InvariantCulture) } else { [string]$prod.appStartTimeUtc }
+            coreStartTimeUtc = if ($prod.coreStartTimeUtc -is [DateTime]) { $prod.coreStartTimeUtc.ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ss.fffffffZ', [Globalization.CultureInfo]::InvariantCulture) } else { [string]$prod.coreStartTimeUtc }
+            appExecutablePath = [string]$prod.appExecutablePath
+            coreExecutablePath = [string]$prod.coreExecutablePath
+            appExecutableSha256 = [string]$prod.appExecutableSha256
+            coreExecutableSha256 = [string]$prod.coreExecutableSha256
+        }
+        metrics = [pscustomobject][ordered]@{
+            latencyMicroseconds = @($latencies | ForEach-Object { [long]$_ })
+            uiStallMicroseconds = @($stalls | ForEach-Object { [long]$_ })
+            rendererStable = [bool]$m.rendererStable
+        }
+    }
+    $canonicalBody = ConvertTo-RendererCanonicalJson $rawPacketWithoutHash $RepositoryRoot
+    $expectedHash = Get-HumanDesignReviewSha256ForText $canonicalBody
+    if ([string]$Packet.packetSha256 -cne $expectedHash) {
+        throw "Telemetry packet SHA-256 hash mismatch: expected '$expectedHash', found '$($Packet.packetSha256)'."
+    }
+}
