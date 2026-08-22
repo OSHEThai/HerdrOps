@@ -922,6 +922,37 @@ try {
         -RequireReady | Out-Null
     [void]$assertions.Add('Issue41CanonicalProducerShapeAcceptedSynthetically')
 
+    $offlineFixturePath = Join-Path $evidenceRoot 'offline-query.json'
+    Write-V10NewJsonFile -Path $offlineFixturePath -Value ([ordered]@{
+            milestones = @([ordered]@{ number = 1; title = 'v1.0.0' })
+            issues = @([ordered]@{ number = 41; title = 'synthetic offline issue' })
+        }) | Out-Null
+    $offlineFixtureHash = ((Get-FileHash -LiteralPath $offlineFixturePath -Algorithm SHA256).Hash).ToUpperInvariant()
+    $issue41Offline = Copy-TestJsonObject -Value $issue41Report.Value
+    $issue41Offline.Query = [ordered]@{
+        Source = 'OfflineFixture'
+        FixturePath = $offlineFixturePath
+        FixtureSha256 = $offlineFixtureHash
+        Endpoint = ''
+        ResponseSha256 = $offlineFixtureHash
+    }
+    $issue41Offline.Decision = 'NOT_READY'
+    $issue41Offline.ReleaseCandidate.Status = 'NOT_RECORDED'
+    $issue41Offline.ReleaseCandidate.Commit = ''
+    $issue41Offline.ReleaseCandidate.Reason = 'Synthetic offline fixture remains validation-only.'
+    $issue41Offline.Blockers = @([ordered]@{
+            Code = 'OFFLINE_FIXTURE_NO_RELEASE_CREDIT'
+            Version = 'v1.0.0'
+            IssueNumber = 41
+            Detail = 'Offline fixture input is not release evidence.'
+        })
+    $issue41Offline.EvidenceBoundary.ReleaseCandidateFreeze = 'NOT RECORDED'
+    Assert-V10Issue41ReportSemantics `
+        -Report $issue41Offline `
+        -SourceCommit $sourceCommit `
+        -ExpectedSourceTree $sourceTree | Out-Null
+    [void]$assertions.Add('Issue41OfflineFixtureActualBindingAccepted')
+
     $minimalIssue41Report = [pscustomobject]@{
         Value = [pscustomobject][ordered]@{
             SchemaVersion = 1
@@ -1016,6 +1047,222 @@ try {
         Assert-V10Issue41ReportSemantics -Report $issue41ForgedBoundary -SourceCommit $sourceCommit -ExpectedSourceTree $sourceTree | Out-Null
     }
     [void]$assertions.Add('Issue41ForgedRuntimeBoundaryRejected')
+
+    $issue41PassMissingInventory = Copy-TestJsonObject -Value $issue41Report.Value
+    $issue41PassMissingInventory.EvidenceStatus.Static.ObservedVersions = @()
+    Assert-ExpectedFailure -Description 'Issue #41 PASS inventory missing required version' -RequiredFragments @('PASS must place every required') -Action {
+        Assert-V10Issue41ReportSemantics -Report $issue41PassMissingInventory -SourceCommit $sourceCommit -ExpectedSourceTree $sourceTree | Out-Null
+    }
+    [void]$assertions.Add('Issue41PassInventoryPartitionRejected')
+
+    $issue41NotObservedMixedInventory = Copy-TestJsonObject -Value $issue41Report.Value
+    $issue41NotObservedMixedInventory.EvidenceStatus.Contract.ObservedVersions = @('v0.2.0')
+    $issue41NotObservedMixedInventory.EvidenceStatus.Contract.NotObservedVersions = @()
+    Assert-ExpectedFailure -Description 'Issue #41 NOT_OBSERVED inventory mixed' -RequiredFragments @('NOT_OBSERVED must place') -Action {
+        Assert-V10Issue41ReportSemantics -Report $issue41NotObservedMixedInventory -SourceCommit $sourceCommit -ExpectedSourceTree $sourceTree | Out-Null
+    }
+    [void]$assertions.Add('Issue41NotObservedInventoryPartitionRejected')
+
+    $issue41BlockedSingleInventory = Copy-TestJsonObject -Value $issue41Report.Value
+    $issue41BlockedSingleInventory.EvidenceStatus.Runtime.Status = 'BLOCKED'
+    $issue41BlockedSingleInventory.EvidenceStatus.Runtime.ObservedVersions = @()
+    Assert-ExpectedFailure -Description 'Issue #41 BLOCKED inventory lacks observed partition' -RequiredFragments @('BLOCKED must contain both') -Action {
+        Assert-V10Issue41ReportSemantics -Report $issue41BlockedSingleInventory -SourceCommit $sourceCommit -ExpectedSourceTree $sourceTree | Out-Null
+    }
+    [void]$assertions.Add('Issue41BlockedInventoryPartitionRejected')
+
+    $issue41FailIncompleteInventory = Copy-TestJsonObject -Value $issue41Report.Value
+    $issue41FailIncompleteInventory.EvidenceStatus.Independent.Status = 'FAIL'
+    $issue41FailIncompleteInventory.EvidenceStatus.Independent.ObservedVersions = @('v0.4.0')
+    $issue41FailIncompleteInventory.EvidenceStatus.Independent.NotObservedVersions = @('v0.5.0')
+    Assert-ExpectedFailure -Description 'Issue #41 FAIL inventory incomplete' -RequiredFragments @('exactly partition') -Action {
+        Assert-V10Issue41ReportSemantics -Report $issue41FailIncompleteInventory -SourceCommit $sourceCommit -ExpectedSourceTree $sourceTree | Out-Null
+    }
+    [void]$assertions.Add('Issue41FailInventoryPartitionRejected')
+
+    $issue41NotApplicableInventory = Copy-TestJsonObject -Value $issue41Report.Value
+    $issue41NotApplicableInventory.EvidenceStatus.Release.Status = 'NOT_APPLICABLE'
+    Assert-ExpectedFailure -Description 'Issue #41 NOT_APPLICABLE inventory nonempty' -RequiredFragments @('exactly partition') -Action {
+        Assert-V10Issue41ReportSemantics -Report $issue41NotApplicableInventory -SourceCommit $sourceCommit -ExpectedSourceTree $sourceTree | Out-Null
+    }
+    [void]$assertions.Add('Issue41NotApplicableInventoryPartitionRejected')
+
+    $issue41InventoryWrongClr = Copy-TestJsonObject -Value $issue41Report.Value
+    $issue41InventoryWrongClr.EvidenceStatus.Static.ObservedVersions = 'v0.1.0'
+    Assert-ExpectedFailure -Description 'Issue #41 inventory wrong CLR type' -RequiredFragments @('CLR array') -Action {
+        Assert-V10Issue41ReportSemantics -Report $issue41InventoryWrongClr -SourceCommit $sourceCommit -ExpectedSourceTree $sourceTree | Out-Null
+    }
+    [void]$assertions.Add('Issue41InventoryWrongClrRejected')
+
+    $outsideManifestPath = Join-Path $testRoot 'outside-manifest.json'
+    Write-V10NewJsonFile -Path $outsideManifestPath -Value ([ordered]@{
+            schemaVersion = 1
+            sourceCommit = $sourceCommit
+            entries = @($issue41Versions | ForEach-Object { [ordered]@{ version = $_; gateId = 'outside' } })
+        }) | Out-Null
+    $outsideManifestHash = ((Get-FileHash -LiteralPath $outsideManifestPath -Algorithm SHA256).Hash).ToUpperInvariant()
+    $outsideFixturePath = Join-Path $testRoot 'outside-fixture.json'
+    Write-V10NewJsonFile -Path $outsideFixturePath -Value ([ordered]@{
+            milestones = @([ordered]@{ number = 1; title = 'outside' })
+            issues = @([ordered]@{ number = 41; title = 'outside' })
+        }) | Out-Null
+    $outsideFixtureHash = ((Get-FileHash -LiteralPath $outsideFixturePath -Algorithm SHA256).Hash).ToUpperInvariant()
+
+    $issue41ManifestTraversal = Copy-TestJsonObject -Value $issue41Report.Value
+    $issue41ManifestTraversal.EvidenceManifest.Path = '..\outside-manifest.json'
+    Assert-ExpectedFailure -Description 'Issue #41 manifest traversal' -RequiredFragments @('traversal') -Action {
+        Assert-V10Issue41ReportSemantics -Report $issue41ManifestTraversal -SourceCommit $sourceCommit -ExpectedSourceTree $sourceTree | Out-Null
+    }
+    [void]$assertions.Add('Issue41ManifestTraversalRejected')
+
+    $issue41ManifestOutside = Copy-TestJsonObject -Value $issue41Report.Value
+    $issue41ManifestOutside.EvidenceManifest.Path = $outsideManifestPath
+    $issue41ManifestOutside.EvidenceManifest.Sha256 = $outsideManifestHash
+    Assert-ExpectedFailure -Description 'Issue #41 manifest outside repository' -RequiredFragments @('escaped the repository root') -Action {
+        Assert-V10Issue41ReportSemantics -Report $issue41ManifestOutside -SourceCommit $sourceCommit -ExpectedSourceTree $sourceTree | Out-Null
+    }
+    [void]$assertions.Add('Issue41ManifestOutsideRejected')
+
+    $issue41ManifestWrongHash = Copy-TestJsonObject -Value $issue41Report.Value
+    $issue41ManifestWrongHash.EvidenceManifest.Sha256 = New-TestHex64 -Character 'D'
+    Assert-ExpectedFailure -Description 'Issue #41 manifest hash mismatch' -RequiredFragments @('bytes do not match') -Action {
+        Assert-V10Issue41ReportSemantics -Report $issue41ManifestWrongHash -SourceCommit $sourceCommit -ExpectedSourceTree $sourceTree | Out-Null
+    }
+    [void]$assertions.Add('Issue41ManifestHashRejected')
+
+    $originalManifestBytes = [IO.File]::ReadAllBytes($issue41ManifestPath)
+    try {
+        $tamperedManifestText = [IO.File]::ReadAllText($issue41ManifestPath) + "`n"
+        [IO.File]::WriteAllText($issue41ManifestPath, $tamperedManifestText, (New-Object System.Text.UTF8Encoding($false)))
+        Assert-ExpectedFailure -Description 'Issue #41 manifest byte tamper' -RequiredFragments @('bytes do not match') -Action {
+            Assert-V10Issue41ReportSemantics -Report $issue41Report.Value -SourceCommit $sourceCommit -ExpectedSourceTree $sourceTree | Out-Null
+        }
+    } finally {
+        [IO.File]::WriteAllBytes($issue41ManifestPath, $originalManifestBytes)
+    }
+    [void]$assertions.Add('Issue41ManifestBytesRejected')
+
+    $wrongManifestContentPath = Join-Path $evidenceRoot 'issue-41-wrong-manifest-content.json'
+    Write-V10NewJsonFile -Path $wrongManifestContentPath -Value ([ordered]@{
+            schemaVersion = 1
+            sourceCommit = (('f' * 40) -join '')
+            entries = @($issue41Versions | ForEach-Object { [ordered]@{ version = $_; gateId = 'wrong-content' } })
+        }) | Out-Null
+    $wrongManifestContentHash = ((Get-FileHash -LiteralPath $wrongManifestContentPath -Algorithm SHA256).Hash).ToUpperInvariant()
+    $issue41ManifestWrongContent = Copy-TestJsonObject -Value $issue41Report.Value
+    $issue41ManifestWrongContent.EvidenceManifest.Path = Get-TestRelativePath -Path $wrongManifestContentPath -Root $repositoryRoot
+    $issue41ManifestWrongContent.EvidenceManifest.Sha256 = $wrongManifestContentHash
+    Assert-ExpectedFailure -Description 'Issue #41 manifest content source mismatch' -RequiredFragments @('sourceCommit does not match') -Action {
+        Assert-V10Issue41ReportSemantics -Report $issue41ManifestWrongContent -SourceCommit $sourceCommit -ExpectedSourceTree $sourceTree | Out-Null
+    }
+    [void]$assertions.Add('Issue41ManifestContentRejected')
+
+    $issue41ManifestWrongCount = Copy-TestJsonObject -Value $issue41Report.Value
+    $issue41ManifestWrongCount.EvidenceManifest.EntryCount = 8
+    Assert-ExpectedFailure -Description 'Issue #41 manifest count mismatch' -RequiredFragments @('EntryCount does not match') -Action {
+        Assert-V10Issue41ReportSemantics -Report $issue41ManifestWrongCount -SourceCommit $sourceCommit -ExpectedSourceTree $sourceTree | Out-Null
+    }
+    [void]$assertions.Add('Issue41ManifestCountRejected')
+
+    $issue41ManifestWrongClr = Copy-TestJsonObject -Value $issue41Report.Value
+    $issue41ManifestWrongClr.EvidenceManifest.EntryCount = '7'
+    Assert-ExpectedFailure -Description 'Issue #41 manifest wrong CLR type' -RequiredFragments @('strict CLR integer') -Action {
+        Assert-V10Issue41ReportSemantics -Report $issue41ManifestWrongClr -SourceCommit $sourceCommit -ExpectedSourceTree $sourceTree | Out-Null
+    }
+    [void]$assertions.Add('Issue41ManifestWrongClrRejected')
+
+    $wrongManifestEntriesPath = Join-Path $evidenceRoot 'issue-41-wrong-manifest-entries.json'
+    Write-V10NewJsonFile -Path $wrongManifestEntriesPath -Value ([ordered]@{
+            schemaVersion = 1
+            sourceCommit = $sourceCommit
+            entries = [ordered]@{ version = 'v0.1.0'; gateId = 'wrong-clr' }
+        }) | Out-Null
+    $wrongManifestEntriesHash = ((Get-FileHash -LiteralPath $wrongManifestEntriesPath -Algorithm SHA256).Hash).ToUpperInvariant()
+    $issue41ManifestWrongEntries = Copy-TestJsonObject -Value $issue41Report.Value
+    $issue41ManifestWrongEntries.EvidenceManifest.Path = Get-TestRelativePath -Path $wrongManifestEntriesPath -Root $repositoryRoot
+    $issue41ManifestWrongEntries.EvidenceManifest.Sha256 = $wrongManifestEntriesHash
+    Assert-ExpectedFailure -Description 'Issue #41 manifest entries wrong CLR type' -RequiredFragments @('entries must be a CLR array') -Action {
+        Assert-V10Issue41ReportSemantics -Report $issue41ManifestWrongEntries -SourceCommit $sourceCommit -ExpectedSourceTree $sourceTree | Out-Null
+    }
+    [void]$assertions.Add('Issue41ManifestEntriesWrongClrRejected')
+
+    $issue41OfflineTraversal = Copy-TestJsonObject -Value $issue41Offline
+    $issue41OfflineTraversal.Query.FixturePath = '..\outside-fixture.json'
+    Assert-ExpectedFailure -Description 'Issue #41 offline fixture traversal' -RequiredFragments @('traversal') -Action {
+        Assert-V10Issue41ReportSemantics -Report $issue41OfflineTraversal -SourceCommit $sourceCommit -ExpectedSourceTree $sourceTree | Out-Null
+    }
+    [void]$assertions.Add('Issue41OfflineFixtureTraversalRejected')
+
+    $issue41OfflineOutside = Copy-TestJsonObject -Value $issue41Offline
+    $issue41OfflineOutside.Query.FixturePath = $outsideFixturePath
+    $issue41OfflineOutside.Query.FixtureSha256 = $outsideFixtureHash
+    $issue41OfflineOutside.Query.ResponseSha256 = $outsideFixtureHash
+    Assert-ExpectedFailure -Description 'Issue #41 offline fixture outside repository' -RequiredFragments @('escaped the repository root') -Action {
+        Assert-V10Issue41ReportSemantics -Report $issue41OfflineOutside -SourceCommit $sourceCommit -ExpectedSourceTree $sourceTree | Out-Null
+    }
+    [void]$assertions.Add('Issue41OfflineFixtureOutsideRejected')
+
+    $issue41OfflineHashMismatch = Copy-TestJsonObject -Value $issue41Offline
+    $issue41OfflineHashMismatch.Query.ResponseSha256 = New-TestHex64 -Character 'D'
+    Assert-ExpectedFailure -Description 'Issue #41 offline fixture response hash mismatch' -RequiredFragments @('FixtureSha256 and ResponseSha256') -Action {
+        Assert-V10Issue41ReportSemantics -Report $issue41OfflineHashMismatch -SourceCommit $sourceCommit -ExpectedSourceTree $sourceTree | Out-Null
+    }
+    [void]$assertions.Add('Issue41OfflineFixtureResponseHashRejected')
+
+    $issue41OfflineStaleHash = Copy-TestJsonObject -Value $issue41Offline
+    $issue41OfflineStaleHash.Query.FixtureSha256 = New-TestHex64 -Character 'E'
+    $issue41OfflineStaleHash.Query.ResponseSha256 = $issue41OfflineStaleHash.Query.FixtureSha256
+    Assert-ExpectedFailure -Description 'Issue #41 offline fixture stale hash' -RequiredFragments @('bytes do not match') -Action {
+        Assert-V10Issue41ReportSemantics -Report $issue41OfflineStaleHash -SourceCommit $sourceCommit -ExpectedSourceTree $sourceTree | Out-Null
+    }
+    [void]$assertions.Add('Issue41OfflineFixtureHashRejected')
+
+    $issue41OfflineWrongClr = Copy-TestJsonObject -Value $issue41Offline
+    $issue41OfflineWrongClr.Query.ResponseSha256 = @($offlineFixtureHash)
+    Assert-ExpectedFailure -Description 'Issue #41 offline fixture wrong CLR type' -RequiredFragments @('strict CLR string') -Action {
+        Assert-V10Issue41ReportSemantics -Report $issue41OfflineWrongClr -SourceCommit $sourceCommit -ExpectedSourceTree $sourceTree | Out-Null
+    }
+    [void]$assertions.Add('Issue41OfflineFixtureWrongClrRejected')
+
+    $repositoryReparseRoot = Join-Path $repositoryRoot ('.issue41-reparse-' + [Guid]::NewGuid().ToString('N'))
+    $reparseTarget = Join-Path $testRoot 'reparse-target'
+    New-Item -ItemType Directory -Path $reparseTarget -Force | Out-Null
+    $reparseManifestTarget = Join-Path $reparseTarget 'manifest.json'
+    Write-V10NewJsonFile -Path $reparseManifestTarget -Value ([ordered]@{
+            schemaVersion = 1
+            sourceCommit = $sourceCommit
+            entries = @($issue41Versions | ForEach-Object { [ordered]@{ version = $_; gateId = 'reparse' } })
+        }) | Out-Null
+    $reparseManifestHash = ((Get-FileHash -LiteralPath $reparseManifestTarget -Algorithm SHA256).Hash).ToUpperInvariant()
+    $reparseFixtureTarget = Join-Path $reparseTarget 'fixture.json'
+    Write-V10NewJsonFile -Path $reparseFixtureTarget -Value ([ordered]@{
+            milestones = @([ordered]@{ number = 1; title = 'reparse' })
+            issues = @([ordered]@{ number = 41; title = 'reparse' })
+        }) | Out-Null
+    $reparseFixtureHash = ((Get-FileHash -LiteralPath $reparseFixtureTarget -Algorithm SHA256).Hash).ToUpperInvariant()
+    try {
+        New-Item -ItemType Junction -Path $repositoryReparseRoot -Target $reparseTarget -ErrorAction Stop | Out-Null
+        $issue41ManifestReparse = Copy-TestJsonObject -Value $issue41Report.Value
+        $issue41ManifestReparse.EvidenceManifest.Path = Join-Path $repositoryReparseRoot 'manifest.json'
+        $issue41ManifestReparse.EvidenceManifest.Sha256 = $reparseManifestHash
+        Assert-ExpectedFailure -Description 'Issue #41 manifest reparse path' -RequiredFragments @('Reparse points') -Action {
+            Assert-V10Issue41ReportSemantics -Report $issue41ManifestReparse -SourceCommit $sourceCommit -ExpectedSourceTree $sourceTree | Out-Null
+        }
+        [void]$assertions.Add('Issue41ManifestReparseRejected')
+
+        $issue41OfflineReparse = Copy-TestJsonObject -Value $issue41Offline
+        $issue41OfflineReparse.Query.FixturePath = Join-Path $repositoryReparseRoot 'fixture.json'
+        $issue41OfflineReparse.Query.FixtureSha256 = $reparseFixtureHash
+        $issue41OfflineReparse.Query.ResponseSha256 = $reparseFixtureHash
+        Assert-ExpectedFailure -Description 'Issue #41 offline fixture reparse path' -RequiredFragments @('Reparse points') -Action {
+            Assert-V10Issue41ReportSemantics -Report $issue41OfflineReparse -SourceCommit $sourceCommit -ExpectedSourceTree $sourceTree | Out-Null
+        }
+        [void]$assertions.Add('Issue41OfflineFixtureReparseRejected')
+    } finally {
+        if (Test-Path -LiteralPath $repositoryReparseRoot) {
+            Remove-Item -LiteralPath $repositoryReparseRoot -Force -ErrorAction Stop
+        }
+    }
 
     $issue42Value = New-TestIssue42Report `
         -RepositoryRoot $repositoryRoot `

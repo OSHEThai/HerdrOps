@@ -477,6 +477,45 @@ function Resolve-V10RepositoryFile {
     return $full
 }
 
+function Resolve-V10BoundEvidenceFile {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$RepositoryRoot,
+        [Parameter(Mandatory = $true)][string]$Description
+    )
+
+    Assert-V10ClrStringValue -Value $Path -Description $Description
+    if ($Path -match '(^|[\\/])\.\.([\\/]|$)' -or $Path -match '(^|[\\/])\.([\\/]|$)') {
+        throw "$Description must not contain traversal segments: $Path"
+    }
+    $root = [IO.Path]::GetFullPath($RepositoryRoot).TrimEnd('\\')
+    $full = if ([IO.Path]::IsPathRooted($Path)) {
+        [IO.Path]::GetFullPath($Path)
+    } else {
+        [IO.Path]::GetFullPath((Join-Path $root $Path))
+    }
+    if (-not (Test-PathWithin -ChildPath $full -RootPath $root) -or
+        $full.Equals($root, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "$Description escaped the repository root: $Path"
+    }
+    Assert-V10NoReparseComponents -Path $full -Root $root
+    if (-not (Test-Path -LiteralPath $full -PathType Leaf)) {
+        throw "$Description was not found: $full"
+    }
+    return $full
+}
+
+function Read-V10BoundEvidenceJsonFile {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$RepositoryRoot,
+        [Parameter(Mandatory = $true)][string]$Description
+    )
+
+    $full = Resolve-V10BoundEvidenceFile -Path $Path -RepositoryRoot $RepositoryRoot -Description $Description
+    return (Read-V10StrictJsonFile -Path $full -Description $Description)
+}
+
 function Get-V10FileRecord {
     param(
         [Parameter(Mandatory = $true)][string]$Path,
@@ -2012,8 +2051,18 @@ function Assert-V10Issue41ReportSemantics {
     } elseif ([string]$query.Source -eq 'OfflineFixture') {
         Assert-V10Issue41Sha256 -Value $query.FixtureSha256 -Description 'Issue #41 Query.FixtureSha256'
         Assert-V10ClrStringValue -Value $query.FixturePath -Description 'Issue #41 Query.FixturePath'
-        Assert-V10ClrStringValue -Value $query.Endpoint -Description 'Issue #41 Query.Endpoint'
+        Assert-V10ClrStringValue -Value $query.Endpoint -Description 'Issue #41 Query.Endpoint' -AllowEmpty
         Assert-V10Issue41Sha256 -Value $query.ResponseSha256 -Description 'Issue #41 Query.ResponseSha256'
+        if ([string]$query.FixtureSha256 -cne [string]$query.ResponseSha256) {
+            throw 'Issue #41 OfflineFixture Query requires FixtureSha256 and ResponseSha256 to be identical.'
+        }
+        $fixtureFile = Read-V10BoundEvidenceJsonFile `
+            -Path ([string]$query.FixturePath) `
+            -RepositoryRoot $RepositoryRoot `
+            -Description 'Issue #41 OfflineFixture Query fixture'
+        if ([int64]$fixtureFile.Length -le 0 -or [string]$fixtureFile.Sha256 -cne [string]$query.FixtureSha256) {
+            throw 'Issue #41 OfflineFixture Query fixture bytes do not match FixtureSha256.'
+        }
     } else {
         throw "Issue #41 Query.Source is unsupported: $($query.Source)"
     }
@@ -2085,14 +2134,51 @@ function Assert-V10Issue41ReportSemantics {
         $required = @($status.RequiredByVersions)
         $observed = @($status.ObservedVersions)
         $notObserved = @($status.NotObservedVersions)
-        if (@($observed | Where-Object { $notObserved -contains $_ }).Count -ne 0) {
+        $requiredSet = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+        $observedSet = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+        $notObservedSet = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+        foreach ($version in $required) { [void]$requiredSet.Add([string]$version) }
+        foreach ($version in $observed) { [void]$observedSet.Add([string]$version) }
+        foreach ($version in $notObserved) { [void]$notObservedSet.Add([string]$version) }
+        if ($observedSet.Overlaps($notObservedSet)) {
             throw "Issue #41 EvidenceStatus.$className overlaps observed and not-observed versions."
         }
-        if ([string]$status.Status -eq 'PASS' -and ($notObserved.Count -ne 0 -or $observed.Count -ne $required.Count)) {
-            throw "Issue #41 EvidenceStatus.$className PASS is incomplete."
+        foreach ($version in $observed) {
+            if (-not $requiredSet.Contains([string]$version)) {
+                throw "Issue #41 EvidenceStatus.$className inventory contains a version not required by RequiredByVersions."
+            }
         }
-        if ([string]$status.Status -eq 'NOT_APPLICABLE' -and ($required.Count -ne 0 -or $observed.Count -ne 0 -or $notObserved.Count -ne 0)) {
-            throw "Issue #41 EvidenceStatus.$className NOT_APPLICABLE has an inventory."
+        foreach ($version in $notObserved) {
+            if (-not $requiredSet.Contains([string]$version)) {
+                throw "Issue #41 EvidenceStatus.$className inventory contains a version not required by RequiredByVersions."
+            }
+        }
+        if ($observedSet.Count + $notObservedSet.Count -ne $requiredSet.Count -or
+            @($requiredSet | Where-Object { -not $observedSet.Contains([string]$_) -and -not $notObservedSet.Contains([string]$_) }).Count -ne 0) {
+            throw "Issue #41 EvidenceStatus.$className inventories must exactly partition RequiredByVersions."
+        }
+        switch ([string]$status.Status) {
+            'PASS' {
+                if ($observedSet.Count -ne $requiredSet.Count -or $notObservedSet.Count -ne 0) {
+                    throw "Issue #41 EvidenceStatus.$className PASS must place every required version in ObservedVersions only."
+                }
+            }
+            'NOT_OBSERVED' {
+                if ($observedSet.Count -ne 0 -or $notObservedSet.Count -ne $requiredSet.Count) {
+                    throw "Issue #41 EvidenceStatus.$className NOT_OBSERVED must place every required version in NotObservedVersions only."
+                }
+            }
+            'BLOCKED' {
+                if ($observedSet.Count -eq 0 -or $notObservedSet.Count -eq 0) {
+                    throw "Issue #41 EvidenceStatus.$className BLOCKED must contain both observed and not-observed required versions."
+                }
+            }
+            'NOT_APPLICABLE' {
+                if ($requiredSet.Count -ne 0 -or $observedSet.Count -ne 0 -or $notObservedSet.Count -ne 0) {
+                    throw "Issue #41 EvidenceStatus.$className NOT_APPLICABLE must have empty inventories."
+                }
+            }
+            'FAIL' { }
         }
     }
 
@@ -2107,6 +2193,28 @@ function Assert-V10Issue41ReportSemantics {
             throw 'Issue #41 EvidenceManifest must identify the complete v0.1-v0.7 manifest.'
         }
         Assert-V10Issue41Sha256 -Value $manifest.Sha256 -Description 'Issue #41 EvidenceManifest.Sha256'
+        $manifestFile = Read-V10BoundEvidenceJsonFile `
+            -Path ([string]$manifest.Path) `
+            -RepositoryRoot $RepositoryRoot `
+            -Description 'Issue #41 EvidenceManifest file'
+        if ([int64]$manifestFile.Length -le 0 -or [string]$manifestFile.Sha256 -cne [string]$manifest.Sha256) {
+            throw 'Issue #41 EvidenceManifest bytes do not match its declared SHA-256.'
+        }
+        $manifestValue = $manifestFile.Value
+        Assert-V10ExactProperties -Object $manifestValue -Names @('schemaVersion', 'sourceCommit', 'entries') -Description 'Issue #41 EvidenceManifest file'
+        Assert-V10ClrIntegerValue -Value $manifestValue.schemaVersion -Description 'Issue #41 EvidenceManifest file.schemaVersion' -Minimum 1
+        if ([int64]$manifestValue.schemaVersion -ne 1) {
+            throw 'Issue #41 EvidenceManifest file.schemaVersion must be exactly 1.'
+        }
+        Assert-V10ClrStringValue -Value $manifestValue.sourceCommit -Description 'Issue #41 EvidenceManifest file.sourceCommit'
+        Assert-V10Hex -Value ([string]$manifestValue.sourceCommit) -Length 40 -Description 'Issue #41 EvidenceManifest file.sourceCommit' -Lowercase
+        if ([string]$manifestValue.sourceCommit -cne [string]$Report.SourceCommit) {
+            throw 'Issue #41 EvidenceManifest file.sourceCommit does not match the report SourceCommit.'
+        }
+        Assert-V10ClrArrayValue -Value $manifestValue.entries -Description 'Issue #41 EvidenceManifest file.entries' -MinimumCount 7
+        if ([int64]$manifest.EntryCount -ne [int64]@($manifestValue.entries).Count) {
+            throw 'Issue #41 EvidenceManifest EntryCount does not match the actual entries array count.'
+        }
     } elseif ([string]$manifest.Source -eq 'No manifest; no evidence admitted') {
         if ([int64]$manifest.EntryCount -ne 0 -or -not [string]::IsNullOrWhiteSpace([string]$manifest.Path) -or
             -not [string]::IsNullOrWhiteSpace([string]$manifest.Sha256)) {
