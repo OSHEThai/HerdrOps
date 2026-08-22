@@ -4,6 +4,14 @@ param(
     [ValidateNotNullOrEmpty()]
     [string]$TargetHerdrSocketPath,
 
+    [Parameter(Mandatory)]
+    [ValidatePattern('^[0-9a-fA-F]{40}$')]
+    [string]$ExpectedSourceCommit,
+
+    [Parameter(Mandatory)]
+    [ValidatePattern('^[0-9a-fA-F]{40}$')]
+    [string]$ExpectedSourceTree,
+
     [string]$HerdrExecutable = (Join-Path $env:LOCALAPPDATA 'Programs\Herdr\bin\herdr.exe'),
 
     [ValidateRange(90, 900)]
@@ -25,20 +33,47 @@ $PSNativeCommandUseErrorActionPreference = $false
 
 . (Join-Path $PSScriptRoot 'lib/V02GateProvenance.ps1')
 
-function Get-CleanSourceCommit {
-    param([Parameter(Mandatory)][string]$Root)
+function Get-ExpectedCleanSourceIdentity {
+    param(
+        [Parameter(Mandatory)][string]$Root,
+        [Parameter(Mandatory)][string]$ExpectedCommit,
+        [Parameter(Mandatory)][string]$ExpectedTree
+    )
 
-    $commit = (& git -C $Root rev-parse HEAD).Trim()
-    if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($commit)) {
+    $normalizedExpectedCommit = $ExpectedCommit.ToLowerInvariant()
+    $normalizedExpectedTree = $ExpectedTree.ToLowerInvariant()
+    if ($normalizedExpectedCommit -notmatch '^[0-9a-f]{40}$') {
+        throw 'ExpectedSourceCommit must be a 40-character hexadecimal Git commit.'
+    }
+    if ($normalizedExpectedTree -notmatch '^[0-9a-f]{40}$') {
+        throw 'ExpectedSourceTree must be a 40-character hexadecimal Git tree.'
+    }
+
+    $commit = (& git -C $Root rev-parse HEAD).Trim().ToLowerInvariant()
+    if ($LASTEXITCODE -ne 0 -or $commit -notmatch '^[0-9a-f]{40}$') {
         throw 'Could not resolve the source commit for the v0.2 live runtime gate.'
     }
-    $changes = @(& git -C $Root status --porcelain --untracked-files=all)
+    $tree = (& git -C $Root rev-parse 'HEAD^{tree}').Trim().ToLowerInvariant()
+    if ($LASTEXITCODE -ne 0 -or $tree -notmatch '^[0-9a-f]{40}$') {
+        throw 'Could not resolve the source tree for the v0.2 live runtime gate.'
+    }
+    $changes = @(& git -C $Root status --porcelain=v1 --untracked-files=all)
     if ($LASTEXITCODE -ne 0) { throw 'Could not inspect repository status.' }
     if ($changes.Count -ne 0) {
         throw "Runtime evidence requires a clean source checkout. Changes: $($changes -join '; ')"
     }
+    if ($commit -cne $normalizedExpectedCommit) {
+        throw "Source commit does not match ExpectedSourceCommit: expected=$normalizedExpectedCommit observed=$commit"
+    }
+    if ($tree -cne $normalizedExpectedTree) {
+        throw "Source tree does not match ExpectedSourceTree: expected=$normalizedExpectedTree observed=$tree"
+    }
 
-    return $commit
+    return [pscustomobject]@{
+        SourceCommit = $commit
+        SourceTree   = $tree
+        GitTreeClean = $true
+    }
 }
 
 function Test-IsAdministrator {
@@ -172,6 +207,13 @@ function Write-FailureGateReport {
         [Parameter(Mandatory)][string]$GateReportPath,
         [Parameter(Mandatory)][AllowEmptyString()][string]$FailureMessage,
         [AllowEmptyString()][string]$SourceCommit = 'UNRESOLVED',
+        [AllowEmptyString()][string]$SourceTree = 'UNRESOLVED',
+        [AllowEmptyString()][string]$ExpectedSourceCommit = 'UNRESOLVED',
+        [AllowEmptyString()][string]$ExpectedSourceTree = 'UNRESOLVED',
+        [AllowEmptyString()][string]$PostRunSourceCommit = 'NOT_OBSERVED',
+        [AllowEmptyString()][string]$PostRunSourceTree = 'NOT_OBSERVED',
+        [AllowEmptyString()][string]$PreRunGitTreeClean = 'NOT_OBSERVED',
+        [AllowEmptyString()][string]$PostRunGitTreeClean = 'NOT_OBSERVED',
         [AllowEmptyString()][string]$CoreReportPath = '',
         [AllowEmptyString()][string]$AppReportPath = '',
         [AllowEmptyString()][string]$ProgressHistoryPath = '',
@@ -194,7 +236,16 @@ function Write-FailureGateReport {
         $reportLines = @(
             'HerdrOps v0.2 Composite Actual Herdr Runtime Acceptance',
             "GeneratedUtc: $([DateTimeOffset]::UtcNow.ToString('O'))",
+            "ExpectedSourceCommit: $ExpectedSourceCommit",
+            "ExpectedSourceTree: $ExpectedSourceTree",
             "SourceCommit: $SourceCommit",
+            "SourceTree: $SourceTree",
+            "PreRunSourceCommit: $SourceCommit",
+            "PreRunSourceTree: $SourceTree",
+            "PreRunGitTreeClean: $PreRunGitTreeClean",
+            "PostRunSourceCommit: $PostRunSourceCommit",
+            "PostRunSourceTree: $PostRunSourceTree",
+            "PostRunGitTreeClean: $PostRunGitTreeClean",
             'Result: FAIL',
             'EvidenceClass: NoRuntimeCredit',
             'SessionControlInvoked: false',
@@ -669,6 +720,11 @@ $coreErrorPath = Join-Path $evidenceDirectory 'core.stderr.log'
 $gateReportPath = Join-Path $evidenceDirectory 'gate-report.txt'
 $completionSignalPath = Join-Path $evidenceDirectory "core-completion-$([guid]::NewGuid().ToString('N')).signal"
 $sourceCommit = 'UNRESOLVED'
+$sourceTree = 'UNRESOLVED'
+$postRunSourceCommit = 'NOT_OBSERVED'
+$postRunSourceTree = 'NOT_OBSERVED'
+$preRunGitTreeClean = 'NOT_OBSERVED'
+$postRunGitTreeClean = 'NOT_OBSERVED'
 $coreExecutableHashBeforeLaunch = 'NOT_OBSERVED'
 $appExecutableHashBeforeLaunch = 'NOT_OBSERVED'
 $coreExecutableHashAfterRun = 'NOT_OBSERVED'
@@ -750,7 +806,13 @@ if ($observedControlPaneId -ne $env:HERDR_PANE_ID) {
 }
 $controlServerIdentity = Get-ControlHerdrServerIdentity -ExpectedExecutablePath $HerdrExecutable
 
-$sourceCommit = Get-CleanSourceCommit -Root $repositoryRoot
+$sourceIdentity = Get-ExpectedCleanSourceIdentity `
+    -Root $repositoryRoot `
+    -ExpectedCommit $ExpectedSourceCommit `
+    -ExpectedTree $ExpectedSourceTree
+$sourceCommit = $sourceIdentity.SourceCommit
+$sourceTree = $sourceIdentity.SourceTree
+$preRunGitTreeClean = [string]$sourceIdentity.GitTreeClean
 $buildStartedUtc = [DateTime]::UtcNow
 & (Join-Path $PSScriptRoot 'Invoke-Build.ps1') -Configuration $Configuration -VerifyFormat
 if ($LASTEXITCODE -ne 0) { throw 'Build and automated tests failed before runtime acceptance.' }
@@ -1353,9 +1415,15 @@ foreach ($capture in $captures) {
     Assert-True ($actualHash -eq $capture.Sha256) "Runtime capture hash mismatch: $($capture.Name)"
 }
 
-$finalSourceCommit = Get-CleanSourceCommit -Root $repositoryRoot
-if ($finalSourceCommit -ne $sourceCommit) {
-    throw "Source commit changed during runtime acceptance: $sourceCommit -> $finalSourceCommit"
+$finalSourceIdentity = Get-ExpectedCleanSourceIdentity `
+    -Root $repositoryRoot `
+    -ExpectedCommit $ExpectedSourceCommit `
+    -ExpectedTree $ExpectedSourceTree
+$postRunSourceCommit = $finalSourceIdentity.SourceCommit
+$postRunSourceTree = $finalSourceIdentity.SourceTree
+$postRunGitTreeClean = [string]$finalSourceIdentity.GitTreeClean
+if ($postRunSourceCommit -ne $sourceCommit -or $postRunSourceTree -ne $sourceTree) {
+    throw "Source identity changed during runtime acceptance: $sourceCommit/$sourceTree -> $postRunSourceCommit/$postRunSourceTree"
 }
 $coreReportHash = (Get-FileHash -LiteralPath $coreReportPath -Algorithm SHA256).Hash
 $appReportHash = (Get-FileHash -LiteralPath $appReportPath -Algorithm SHA256).Hash
@@ -1363,7 +1431,16 @@ $appReportHash = (Get-FileHash -LiteralPath $appReportPath -Algorithm SHA256).Ha
 $reportLines = @(
     'HerdrOps v0.2 Composite Actual Herdr Runtime Acceptance',
     "GeneratedUtc: $([DateTimeOffset]::UtcNow.ToString('O'))",
+    "ExpectedSourceCommit: $($ExpectedSourceCommit.ToLowerInvariant())",
+    "ExpectedSourceTree: $($ExpectedSourceTree.ToLowerInvariant())",
     "SourceCommit: $sourceCommit",
+    "SourceTree: $sourceTree",
+    "PreRunSourceCommit: $($sourceIdentity.SourceCommit)",
+    "PreRunSourceTree: $($sourceIdentity.SourceTree)",
+    "PreRunGitTreeClean: $preRunGitTreeClean",
+    "PostRunSourceCommit: $postRunSourceCommit",
+    "PostRunSourceTree: $postRunSourceTree",
+    "PostRunGitTreeClean: $postRunGitTreeClean",
     'Result: PASS',
     'EvidenceClass: Runtime',
     'SessionControlInvoked: false',
@@ -1514,6 +1591,13 @@ Write-Output "AppRuntimeReport: $appReportPath"
         -GateReportPath $gateReportPath `
         -FailureMessage $failureMessage `
         -SourceCommit $sourceCommit `
+        -SourceTree $sourceTree `
+        -ExpectedSourceCommit $ExpectedSourceCommit `
+        -ExpectedSourceTree $ExpectedSourceTree `
+        -PostRunSourceCommit $postRunSourceCommit `
+        -PostRunSourceTree $postRunSourceTree `
+        -PreRunGitTreeClean $preRunGitTreeClean `
+        -PostRunGitTreeClean $postRunGitTreeClean `
         -CoreReportPath $coreReportPath `
         -AppReportPath $appReportPath `
         -ProgressHistoryPath $progressHistoryPath `
