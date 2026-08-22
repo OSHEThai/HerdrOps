@@ -12,6 +12,22 @@ param(
     [ValidatePattern('^[0-9a-fA-F]{40}$')]
     [string]$ExpectedSourceTree,
 
+    [Parameter(Mandatory)]
+    [ValidateNotNullOrEmpty()]
+    [string]$PackageIdentityPath,
+
+    [Parameter(Mandatory)]
+    [ValidateNotNullOrEmpty()]
+    [string]$PackageArchivePath,
+
+    [Parameter(Mandatory)]
+    [ValidateNotNullOrEmpty()]
+    [string]$ExtractedPackageRoot,
+
+    [Parameter(Mandatory)]
+    [ValidateNotNullOrEmpty()]
+    [string]$TargetAgentSessionReference,
+
     [string]$HerdrExecutable = (Join-Path $env:LOCALAPPDATA 'Programs\Herdr\bin\herdr.exe'),
 
     [ValidateRange(90, 900)]
@@ -36,6 +52,7 @@ $PSNativeCommandUseErrorActionPreference = $false
 . (Join-Path $PSScriptRoot 'lib/V02WorkingSetBudgetPolicy.ps1')
 . (Join-Path $PSScriptRoot 'lib/V02ReferenceHostProfile.ps1')
 . (Join-Path $PSScriptRoot 'lib/V02RendererEvidence.ps1')
+. (Join-Path $PSScriptRoot 'lib/V02RuntimePackageBinding.ps1')
 
 function Get-ExpectedCleanSourceIdentity {
     param(
@@ -135,35 +152,6 @@ function Test-SameHerdrServerProcess {
         $leftStart.UtcDateTime.Ticks -eq $rightStart.UtcDateTime.Ticks
 }
 
-function Get-FreshTestCounts {
-    param(
-        [Parameter(Mandatory)][string]$Directory,
-        [Parameter(Mandatory)][DateTime]$StartedUtc
-    )
-
-    $trxFiles = @(Get-ChildItem -LiteralPath $Directory -Filter '*.trx' -File |
-        Where-Object { $_.LastWriteTimeUtc -ge $StartedUtc.AddSeconds(-2) })
-    if ($trxFiles.Count -ne 4) {
-        throw "Expected four fresh TRX files, found $($trxFiles.Count)."
-    }
-
-    $total = 0
-    $passed = 0
-    $failed = 0
-    foreach ($trxFile in $trxFiles) {
-        [xml]$trx = Get-Content -LiteralPath $trxFile.FullName -Raw
-        $counters = $trx.TestRun.ResultSummary.Counters
-        $total += [int]$counters.total
-        $passed += [int]$counters.passed
-        $failed += [int]$counters.failed
-    }
-    if ($total -le 0 -or $failed -ne 0 -or $total -ne $passed) {
-        throw "Fresh test counters are not all passing: total=$total passed=$passed failed=$failed"
-    }
-
-    return [pscustomobject]@{ Total = $total; Passed = $passed; Failed = $failed }
-}
-
 function Assert-True {
     param(
         [Parameter(Mandatory)][bool]$Condition,
@@ -231,6 +219,15 @@ function Write-FailureGateReport {
         [AllowEmptyString()][string]$ObservedLanguage = 'NOT_OBSERVED',
         [AllowEmptyString()][string]$CaptureDirectory = '',
         [AllowEmptyString()][string]$ReferenceHostSchemaSha256 = 'NOT_OBSERVED',
+        [AllowEmptyString()][string]$PackageIdentityReceiptSha256 = 'NOT_OBSERVED',
+        [AllowEmptyString()][string]$PackageArchiveSha256 = 'NOT_OBSERVED',
+        [AllowEmptyString()][string]$PackageManifestSha256 = 'NOT_OBSERVED',
+        [AllowEmptyString()][string]$PackageProfileFileSha256 = 'NOT_OBSERVED',
+        [AllowEmptyString()][string]$PackageProfileCanonicalSha256 = 'NOT_OBSERVED',
+        [AllowEmptyString()][string]$AppSha256 = 'NOT_OBSERVED',
+        [AllowEmptyString()][string]$CoreSha256 = 'NOT_OBSERVED',
+        [AllowEmptyString()][string]$TrxSelectionReceiptSha256 = 'NOT_OBSERVED',
+        [AllowEmptyString()][string]$TargetAgentSessionReference = 'NOT_OBSERVED',
         [AllowEmptyString()][string]$FailureType = 'TerminatingFailure'
     )
 
@@ -262,6 +259,17 @@ function Write-FailureGateReport {
             "CoreAcceptedEventKindCheck: $CoreAcceptedEventKindCheck",
             "Language: $ObservedLanguage",
             "ReferenceHostSchemaSha256: $ReferenceHostSchemaSha256",
+            "PackageIdentityReceiptSha256: $PackageIdentityReceiptSha256",
+            "PackageArchiveSha256: $PackageArchiveSha256",
+            "PackageManifestSha256: $PackageManifestSha256",
+            "PackageProfileFileSha256: $PackageProfileFileSha256",
+            "PackageProfileCanonicalSha256: $PackageProfileCanonicalSha256",
+            "AppSha256: $AppSha256",
+            "CoreSha256: $CoreSha256",
+            "TrxSelectionReceiptSha256: $TrxSelectionReceiptSha256",
+            "TargetAgentSessionReference: $TargetAgentSessionReference",
+            'TargetAgentSessionReferenceEvidenceSource: OperatorAttestation',
+            'TargetAgentSessionReferenceObservableByGate: false',
             "CaptureDirectory: $CaptureDirectory",
             "CoreRuntimeReportPath: $CoreReportPath",
             "CoreRuntimeReportSha256: $(Get-OptionalFileSha256 -Path $CoreReportPath)",
@@ -715,8 +723,8 @@ function Assert-AgentStatusTransitionEvidence {
 $repositoryRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $artifactRoot = Join-Path $repositoryRoot 'artifacts'
 $configurationDirectory = $Configuration.ToLowerInvariant()
-$coreExecutable = Join-Path $artifactRoot "bin\HerdrOps.Core\$configurationDirectory\HerdrOps.Core.exe"
-$appExecutable = Join-Path $artifactRoot "bin\HerdrOps.App\$configurationDirectory\HerdrOps.App.exe"
+$coreExecutable = ''
+$appExecutable = ''
 $runId = [DateTimeOffset]::UtcNow.ToString('yyyyMMddTHHmmssZ')
 $evidenceDirectory = Join-Path $artifactRoot "runtime-evidence\v0.2\issues-7-9-10\$runId"
 $captureDirectory = Join-Path $evidenceDirectory 'captures'
@@ -753,6 +761,9 @@ $coreAcceptedEventKindCheck = 'NOT_EVALUATED'
 $referenceHostProfile = $null
 $trustedReferenceHost = $null
 $observedAppLanguage = 'NOT_OBSERVED'
+$packageBinding = $null
+$trxEvidence = $null
+$targetAgentSessionAttestation = $null
 
 try {
     New-Item -ItemType Directory -Path $captureDirectory -Force | Out-Null
@@ -848,10 +859,24 @@ $sourceIdentity = Get-ExpectedCleanSourceIdentity `
 $sourceCommit = $sourceIdentity.SourceCommit
 $sourceTree = $sourceIdentity.SourceTree
 $preRunGitTreeClean = [string]$sourceIdentity.GitTreeClean
+$targetAgentSessionAttestation = New-V02TargetAgentSessionAttestation -Reference $TargetAgentSessionReference
 $buildStartedUtc = [DateTime]::UtcNow
 & (Join-Path $PSScriptRoot 'Invoke-Build.ps1') -Configuration $Configuration -VerifyFormat
 if ($LASTEXITCODE -ne 0) { throw 'Build and automated tests failed before runtime acceptance.' }
-$testCounts = Get-FreshTestCounts -Directory (Join-Path $artifactRoot 'test-results') -StartedUtc $buildStartedUtc
+$trxEvidence = Save-V02FreshTrxEvidence -ResultsDirectory (Join-Path $artifactRoot 'test-results') `
+    -StartedUtc $buildStartedUtc -EvidenceDirectory $evidenceDirectory
+$testCounts = $trxEvidence
+$packageProfilePath = Join-Path $repositoryRoot 'tools\packaging\v0.2\package-identity-profile.json'
+$packageBinding = Resolve-V02RuntimePackageBinding `
+    -IdentityPath $PackageIdentityPath `
+    -ArchivePath $PackageArchivePath `
+    -PackageRoot $ExtractedPackageRoot `
+    -RepositoryRoot $repositoryRoot `
+    -ProfilePath $packageProfilePath `
+    -ExpectedSourceCommit $ExpectedSourceCommit `
+    -ExpectedSourceTree $ExpectedSourceTree
+$coreExecutable = $packageBinding.CorePath
+$appExecutable = $packageBinding.AppPath
 
 foreach ($executable in @($coreExecutable, $appExecutable)) {
     if (-not (Test-Path -LiteralPath $executable -PathType Leaf)) {
@@ -1045,6 +1070,7 @@ try {
 
 $coreExecutableHashAfterRun = Get-OptionalFileSha256 -Path $coreExecutable
 $appExecutableHashAfterRun = Get-OptionalFileSha256 -Path $appExecutable
+$null = Assert-V02RuntimePackageExecutablesUnchanged -Binding $packageBinding
 $executableHashMismatch = @()
 if ($coreExecutableHashAfterRun -ne $coreExecutableHashBeforeLaunch) {
     $executableHashMismatch += 'HerdrOps.Core executable bytes changed during runtime acceptance.'
@@ -1521,6 +1547,28 @@ $reportLines = @(
     "EventAAgentStatusTransition: terminal=$($eventAChange.TerminalId) workspace=$($eventAChange.WorkspaceId) tab=$($eventAChange.TabId) pane=$($eventAChange.PaneId) previous=$($eventAChange.PreviousStatus) current=$($eventAChange.CurrentStatus) stateChangeSequence=$($eventAChange.PreviousStateChangeSequence)->$($eventAChange.CurrentStateChangeSequence)",
     "EventBAgentStatusTransition: terminal=$($eventBChange.TerminalId) workspace=$($eventBChange.WorkspaceId) tab=$($eventBChange.TabId) pane=$($eventBChange.PaneId) previous=$($eventBChange.PreviousStatus) current=$($eventBChange.CurrentStatus) stateChangeSequence=$($eventBChange.PreviousStateChangeSequence)->$($eventBChange.CurrentStateChangeSequence)",
     "AutomatedTests: $($testCounts.Passed)/$($testCounts.Total) PASS",
+    "TrxEvidenceDirectory: $($trxEvidence.Directory)",
+    "TrxSelectionReceiptPath: $($trxEvidence.ReceiptPath)",
+    "TrxSelectionReceiptSha256: $($trxEvidence.ReceiptSha256)",
+    "PackageValidatorPath: $($packageBinding.ValidatorPath)",
+    "PackageIdentityPath: $($packageBinding.IdentityPath)",
+    "PackageIdentityFileSha256: $($packageBinding.IdentityFileSha256)",
+    "PackageIdentityReceiptSha256: $($packageBinding.ReceiptSha256)",
+    "PackageArchivePath: $($packageBinding.ArchivePath)",
+    "PackageArchiveSha256: $($packageBinding.ArchiveSha256)",
+    "ExtractedPackageRoot: $($packageBinding.PackageRoot)",
+    "PackageManifestPath: $($packageBinding.ManifestPath)",
+    "PackageManifestSha256: $($packageBinding.ManifestSha256)",
+    "AppSha256: $($packageBinding.AppSha256)",
+    "CoreSha256: $($packageBinding.CoreSha256)",
+    "PackageProfileId: $($packageBinding.ProfileId)",
+    "PackageProfileFileSha256: $($packageBinding.ProfileFileSha256)",
+    "PackageProfileCanonicalSha256: $($packageBinding.ProfileCanonicalSha256)",
+    "PackageValidationEvidenceClass: $($packageBinding.ValidationEvidenceClass)",
+    "TargetAgentSessionReference: $($targetAgentSessionAttestation.Reference)",
+    "TargetAgentSessionReferenceEvidenceSource: $($targetAgentSessionAttestation.EvidenceSource)",
+    "TargetAgentSessionReferenceObservableByGate: $($targetAgentSessionAttestation.ObservableByGate)",
+    "TargetAgentSessionReferenceBoundary: $($targetAgentSessionAttestation.Boundary)",
     "HerdrReleaseId: $($coreReport.Admission.ReleaseId)",
     "HerdrExecutableSha256: $($coreReport.Admission.ExecutableSha256)",
     "HerdrOpsCoreExecutableSha256BeforeLaunch: $coreExecutableHashBeforeLaunch",
@@ -1632,7 +1680,9 @@ $reportLines = @(
     '',
     'EvidenceBoundary:',
     'This gate proves exact-hash-bound actual Herdr snapshot/Agent-status-event/reconnect behavior, separate Acceptance-control and Agent-Lab target sessions, Core-to-App runtime-health propagation, live production WPF page and Widget rendering, Dashboard-close continuity, state-hash correspondence, measured latency/resources, no owned TCP listener, and non-elevated operation for this host and run.',
-    'It does not prove packaging, clean-machine installation, later-version features, independent human review, or future Herdr releases.'
+    'It launches the App and Core from the package root whose receipt, ZIP, manifest, source, and component bytes passed the committed package validator. This is runtime use of validated package bytes, not clean-machine installation or Release evidence.',
+    'The native target Agent/session reference is operator attestation because the gate cannot independently observe that client-owned session identity.',
+    'It does not prove clean-machine installation, later-version features, independent human review, or future Herdr releases.'
 )
 $reportLines | Set-Content -LiteralPath $gateReportPath -Encoding utf8
 $gateHash = (Get-FileHash -LiteralPath $gateReportPath -Algorithm SHA256).Hash
@@ -1683,6 +1733,15 @@ Write-Output "AppRuntimeReport: $appReportPath"
         -ObservedLanguage $observedAppLanguage `
         -CaptureDirectory $captureDirectory `
         -ReferenceHostSchemaSha256 $script:V02ReferenceHostSchemaSha256 `
+        -PackageIdentityReceiptSha256 $(if($null -eq $packageBinding){'NOT_OBSERVED'}else{$packageBinding.ReceiptSha256}) `
+        -PackageArchiveSha256 $(if($null -eq $packageBinding){'NOT_OBSERVED'}else{$packageBinding.ArchiveSha256}) `
+        -PackageManifestSha256 $(if($null -eq $packageBinding){'NOT_OBSERVED'}else{$packageBinding.ManifestSha256}) `
+        -PackageProfileFileSha256 $(if($null -eq $packageBinding){'NOT_OBSERVED'}else{$packageBinding.ProfileFileSha256}) `
+        -PackageProfileCanonicalSha256 $(if($null -eq $packageBinding){'NOT_OBSERVED'}else{$packageBinding.ProfileCanonicalSha256}) `
+        -AppSha256 $(if($null -eq $packageBinding){'NOT_OBSERVED'}else{$packageBinding.AppSha256}) `
+        -CoreSha256 $(if($null -eq $packageBinding){'NOT_OBSERVED'}else{$packageBinding.CoreSha256}) `
+        -TrxSelectionReceiptSha256 $(if($null -eq $trxEvidence){'NOT_OBSERVED'}else{$trxEvidence.ReceiptSha256}) `
+        -TargetAgentSessionReference $(if($null -eq $targetAgentSessionAttestation){'NOT_OBSERVED'}else{$targetAgentSessionAttestation.Reference}) `
         -FailureType $failureType
     throw $failureRecord
 }

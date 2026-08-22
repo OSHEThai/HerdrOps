@@ -58,6 +58,8 @@ function Assert-ParserClean {
 $herdrRuntime = Join-Path $repositoryRoot 'tools\Test-V02HerdrRuntime.ps1'
 $compositeRuntime = Join-Path $repositoryRoot 'tools\Test-V02LiveRuntimeAcceptance.ps1'
 $runtimeMonitorContract = Join-Path $repositoryRoot 'docs\protocol\v0.2-runtime-monitor-contract.md'
+$runtimePackageBinding = Join-Path $repositoryRoot 'tools\lib\V02RuntimePackageBinding.ps1'
+$runtimePackageBindingTests = Join-Path $repositoryRoot 'tools\lib\V02RuntimePackageBinding.Tests.ps1'
 
 foreach ($path in @($herdrRuntime, $compositeRuntime)) {
     Assert-ParserClean -Path $path
@@ -70,6 +72,26 @@ foreach ($path in @($herdrRuntime, $compositeRuntime)) {
     Assert-SourceContains -Path $path -Text 'PostRunSourceCommit' -Description "$(Split-Path -Leaf $path) reports post-run source commit"
     Assert-SourceContains -Path $path -Text 'PostRunSourceTree' -Description "$(Split-Path -Leaf $path) reports post-run source tree"
 }
+
+foreach ($path in @($runtimePackageBinding,$runtimePackageBindingTests)) {
+    Assert-ParserClean -Path $path
+}
+Assert-SourceContains -Path $compositeRuntime -Text '[string]$PackageIdentityPath' -Description 'Composite gate requires the package identity receipt'
+Assert-SourceContains -Path $compositeRuntime -Text '[string]$PackageArchivePath' -Description 'Composite gate requires the package ZIP archive'
+Assert-SourceContains -Path $compositeRuntime -Text '[string]$ExtractedPackageRoot' -Description 'Composite gate requires the exact extracted package root'
+Assert-SourceContains -Path $compositeRuntime -Text '[string]$TargetAgentSessionReference' -Description 'Composite gate records the operator-attested native Agent/session reference'
+Assert-SourceContains -Path $compositeRuntime -Text 'Resolve-V02RuntimePackageBinding' -Description 'Composite gate invokes the exact package binding validator before launch'
+Assert-SourceContains -Path $compositeRuntime -Text '$coreExecutable = $packageBinding.CorePath' -Description 'Composite gate launches Core from the validated package root'
+Assert-SourceContains -Path $compositeRuntime -Text '$appExecutable = $packageBinding.AppPath' -Description 'Composite gate launches App from the validated package root'
+Assert-SourceContains -Path $compositeRuntime -Text 'Save-V02FreshTrxEvidence' -Description 'Composite gate preserves four fresh TRX files in runtime evidence'
+Assert-SourceContains -Path $compositeRuntime -Text 'PackageIdentityReceiptSha256:' -Description 'Composite gate exposes the exact package receipt field required by the bilingual matrix'
+Assert-SourceContains -Path $compositeRuntime -Text 'AppSha256:' -Description 'Composite gate exposes the validated package App hash for cross-run binding'
+Assert-SourceContains -Path $compositeRuntime -Text 'CoreSha256:' -Description 'Composite gate exposes the validated package Core hash for cross-run binding'
+Assert-SourceContains -Path $runtimePackageBinding -Text "'tools\packaging\v0.2\Test-V02PackageIdentity.ps1'" -Description 'Runtime binding calls the committed v0.2 package validator'
+Assert-SourceContains -Path $runtimePackageBinding -Text "EvidenceSource = 'OperatorAttestation'" -Description 'Unobservable native Agent/session identity has an explicit attestation boundary'
+Assert-SourceContains -Path $runtimePackageBinding -Text 'Invoke-V02CommittedPackageValidator -ValidatorPath $Binding.ValidatorPath' -Description 'Finalization re-runs the entire committed package validator'
+Assert-SourceContains -Path $runtimePackageBinding -Text '$total -ne 885' -Description 'TRX preservation requires the exact current 885-test aggregate'
+Assert-SourceContains -Path $runtimePackageBinding -Text '[IO.FileShare]::Read' -Description 'TRX selection uses a held source stream that denies write/delete sharing'
 
 Assert-SourceContains `
     -Path $herdrRuntime `
