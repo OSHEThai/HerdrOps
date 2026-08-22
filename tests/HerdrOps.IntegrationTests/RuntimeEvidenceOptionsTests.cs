@@ -18,9 +18,11 @@ public sealed class RuntimeEvidenceOptionsTests
                 "--runtime-evidence-report", report,
                 "--capture-directory", captures,
                 "--core-pid", "1234",
+                "--reference-host-profile-id", RuntimeEvidenceOptions.ApprovedProfileId,
+                "--reference-host-profile-sha256", RuntimeEvidenceOptions.ApprovedProfileSha256,
                 "--language", "en",
                 "--timeout-seconds", "240",
-                "--idle-seconds", "15",
+                "--idle-seconds", RuntimeEvidenceOptions.ApprovedIdleSeconds.ToString(),
             ],
             out var options,
             out var error);
@@ -31,8 +33,10 @@ public sealed class RuntimeEvidenceOptionsTests
         Assert.AreEqual(Path.GetFullPath(captures), options.CaptureDirectory);
         Assert.AreEqual(1234, options.CoreProcessId);
         Assert.AreEqual(240, options.TimeoutSeconds);
-        Assert.AreEqual(15, options.IdleSeconds);
+        Assert.AreEqual(RuntimeEvidenceOptions.ApprovedIdleSeconds, options.IdleSeconds);
         Assert.AreEqual(UiLanguage.English, options.Language);
+        Assert.AreEqual(RuntimeEvidenceOptions.ApprovedProfileId, options.ProfileId);
+        Assert.AreEqual(RuntimeEvidenceOptions.ApprovedProfileSha256, options.ProfileSha256);
         Assert.IsTrue(RuntimeEvidenceOptions.IsRequested(
             ["--runtime-evidence-report", report]));
     }

@@ -33,7 +33,8 @@ Targets are gates to validate, not current achievements.
 | Metric | Initial target |
 |---|---:|
 | Core + App idle CPU | ≤ 1% average on reference host |
-| Core + App idle working set | ≤ 180 MB combined |
+| Core + App idle working set (default, including v0.7) | ≤ 180 MiB combined |
+| Core + App idle working set (v0.2 approved reference-host profile only) | ≤ 255 MiB (`267,386,880` bytes) combined maximum |
 | Widget state-delta latency | p95 ≤ 250 ms after Core receives event |
 | Dashboard cold launch | p95 ≤ 2.0 s on reference host |
 | Herdr reconnect and reconcile | ≤ 5 s after endpoint becomes available |
@@ -43,6 +44,33 @@ Targets are gates to validate, not current achievements.
 | Normal-mode Administrator requirement | None |
 
 If a target cannot be met, the release requires a recorded measurement, cause, impact and explicit waiver. Changing a target does not retroactively turn a failed run into a pass.
+
+### v0.2 reference-host working-set authority
+
+Product owner `@yutthaphon` approved Issue #149 options M-A and R-A in the dated
+[approval comment](https://github.com/OSHEThai/HerdrOps/issues/149#issuecomment-5379418145).
+The provisional 255 MiB ceiling applies only to a future exact v0.2 candidate that independently
+re-observes every `environmentBinding` leaf, pins/recomputes the applicable `candidatePolicy` leaves,
+and binds the canonical SHA-256 of `Plan/reference-hosts/v0.2.json`. It uses process-wide WPF
+`SoftwareOnly` before the first window and throughout the measurement, and passes the complete updated
+producer and independent-validator contract. The exact candidate commit, tree and binary hashes must be
+recorded before the run. Until the atomic producer/validator implementation lands, no candidate is
+effective under this policy.
+
+The approved profile's RFC 8785 canonical SHA-256 is
+`96D01ED15A536F2DF50B59B43CFDEB3683DCE8667AE2E7BF6A96124182FE13A3`; the canonical schema SHA-256 is
+`98AC6A2D823D88960A79299B7B20424FF60E9C5299D458A30AB9A42BE4FC0FB3`. Its Thai/English language matrix
+requires two separately bound complete runtime reports and disjoint capture roots. An atomic matrix
+manifest must prove the same commit/tree, profile/schema, Herdr release/binary, App/Core binaries and
+protocol identity, while each observed report language equals its CLI request, its final language/culture
+remains unchanged, and its event-backed native `LanguageChangeCount` is zero. Automated pairing remains
+a `RuntimeMatrixCandidate` pending role-distinct human review.
+
+The v0.2 profile is not a waiver and is not a cross-host target. A host, driver, sole active-monitor/primary-Screen identity, adapter mode,
+desktop `AppliedDPI` scaling,
+installed-Herdr, sampling, language or renderer mismatch fails closed rather than falling back to
+255 MiB. All earlier runs remain failed and receive no retroactive Runtime credit. The default target,
+including the independently enforced v0.7 budget, remains 180 MiB.
 
 ### v0.7 performance waiver authority
 

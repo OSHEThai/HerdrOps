@@ -1,4 +1,6 @@
 using System.Windows;
+using System.Windows.Interop;
+using System.Windows.Media;
 using HerdrOps.App.Lifecycle;
 using HerdrOps.App.Live;
 using HerdrOps.App.Localization;
@@ -48,6 +50,7 @@ public partial class App : Application
         Func<IApplicationInstanceGate> instanceGateFactory,
         bool suppressStartupForTestHost)
     {
+        RuntimeRenderPolicy.EnforceBeforeFirstWpfComposition();
         _instanceGateFactory = instanceGateFactory ?? throw new ArgumentNullException(nameof(instanceGateFactory));
         _suppressStartupForTestHost = suppressStartupForTestHost;
     }
@@ -56,6 +59,8 @@ public partial class App : Application
 
     protected override async void OnStartup(StartupEventArgs e)
     {
+        _ = RuntimeRenderPolicy.ObserveAndRequireSoftwareOnly(
+            "app-on-startup-before-base");
         base.OnStartup(e);
         ShutdownMode = ShutdownMode.OnExplicitShutdown;
         if (_suppressStartupForTestHost)
@@ -209,12 +214,15 @@ public partial class App : Application
         }
 
         RuntimeEvidenceRunner? runner = null;
+        RuntimeEvidenceProducerBinding? producerBinding = null;
         MainWindow? mainWindow = null;
         var exitCode = 2;
         Exception? primaryFailure = null;
         Exception? cleanupFailure = null;
         try
         {
+            producerBinding = RuntimeEvidenceProducerBinding.ObserveBeforeFirstWindow(
+                options);
             var state = new LiveDashboardState();
             _runtime = new LiveDashboardRuntime(
                 new HerdrOpsStatePipeClient(HerdrOpsStatePipeClientOptions.ForCurrentUser()),
@@ -224,7 +232,11 @@ public partial class App : Application
             mainWindow = new MainWindow(state);
             MainWindow = mainWindow;
             mainWindow.Show();
-            runner = new RuntimeEvidenceRunner(state, mainWindow, options);
+            runner = new RuntimeEvidenceRunner(
+                state,
+                mainWindow,
+                options,
+                producerBinding);
             var report = await runner.RunAsync();
             exitCode = report.CompositeCandidateChecksPassed ? 0 : 2;
         }
@@ -259,32 +271,39 @@ public partial class App : Application
             }
         }
 
-        if (primaryFailure is not null && cleanupFailure is ShutdownCleanupException cleanupException)
+        try
         {
-            RuntimeEvidenceRunner.WriteFailure(
-                options.ReportPath,
-                startedUtc,
-                new StartupTransactionException(primaryFailure, cleanupException),
-                options.ProgressPath);
-            exitCode = 2;
+            if (primaryFailure is not null && cleanupFailure is ShutdownCleanupException cleanupException)
+            {
+                RuntimeEvidenceRunner.WriteFailure(
+                    options.ReportPath,
+                    startedUtc,
+                    new StartupTransactionException(primaryFailure, cleanupException),
+                    options.ProgressPath);
+                exitCode = 2;
+            }
+            else if (primaryFailure is not null)
+            {
+                RuntimeEvidenceRunner.WriteFailure(
+                    options.ReportPath,
+                    startedUtc,
+                    primaryFailure,
+                    options.ProgressPath);
+                exitCode = 2;
+            }
+            else if (cleanupFailure is not null)
+            {
+                RuntimeEvidenceRunner.WriteFailure(
+                    options.ReportPath,
+                    startedUtc,
+                    cleanupFailure,
+                    options.ProgressPath);
+                exitCode = 2;
+            }
         }
-        else if (primaryFailure is not null)
+        finally
         {
-            RuntimeEvidenceRunner.WriteFailure(
-                options.ReportPath,
-                startedUtc,
-                primaryFailure,
-                options.ProgressPath);
-            exitCode = 2;
-        }
-        else if (cleanupFailure is not null)
-        {
-            RuntimeEvidenceRunner.WriteFailure(
-                options.ReportPath,
-                startedUtc,
-                cleanupFailure,
-                options.ProgressPath);
-            exitCode = 2;
+            producerBinding?.LanguageChangeTracker?.Dispose();
         }
 
         Shutdown(exitCode);
@@ -425,4 +444,79 @@ public partial class App : Application
     }
 
     private void OnLanguageChanged(object? sender, EventArgs e) => _tray?.Refresh();
+}
+
+internal static class RuntimeRenderPolicy
+{
+    internal const string PolicyId = "software-only-process-wide";
+    internal const string ExpectedProcessRenderMode = "SoftwareOnly";
+    internal const string StartupPhase = "app-constructor-before-initialize-component";
+    internal const string PreFirstWindowPhase = "runtime-evidence-pre-first-window";
+    private static readonly object Sync = new();
+    private static RuntimeRenderPolicyObservation? _startupObservation;
+
+    internal static RuntimeRenderPolicyObservation StartupObservation
+    {
+        get
+        {
+            lock (Sync)
+            {
+                return _startupObservation ?? throw new InvalidOperationException(
+                    "The process-wide WPF render policy was not enforced before application composition.");
+            }
+        }
+    }
+
+    internal static void EnforceBeforeFirstWpfComposition()
+    {
+        lock (Sync)
+        {
+            if (_startupObservation is not null)
+            {
+                _ = ObserveAndRequireSoftwareOnlyLocked(
+                    StartupPhase);
+                return;
+            }
+
+            RenderOptions.ProcessRenderMode = RenderMode.SoftwareOnly;
+            _startupObservation = ObserveAndRequireSoftwareOnlyLocked(
+                StartupPhase);
+        }
+    }
+
+    internal static RuntimeRenderPolicyObservation ObserveAndRequireSoftwareOnly(
+        string phase)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(phase);
+        lock (Sync)
+        {
+            if (_startupObservation is null)
+            {
+                throw new InvalidOperationException(
+                    "The process-wide WPF render policy was observed before its pre-composition enforcement.");
+            }
+
+            return ObserveAndRequireSoftwareOnlyLocked(phase);
+        }
+    }
+
+    private static RuntimeRenderPolicyObservation ObserveAndRequireSoftwareOnlyLocked(
+        string phase)
+    {
+        var observedMode = RenderOptions.ProcessRenderMode;
+        var confirmed = observedMode == RenderMode.SoftwareOnly;
+        var observation = new RuntimeRenderPolicyObservation(
+            phase,
+            DateTimeOffset.UtcNow,
+            observedMode.ToString(),
+            RenderCapability.Tier >> 16,
+            confirmed);
+        if (!confirmed)
+        {
+            throw new InvalidOperationException(
+                $"The process-wide WPF render policy changed during '{phase}': expected {ExpectedProcessRenderMode}, observed {observedMode}.");
+        }
+
+        return observation;
+    }
 }

@@ -84,6 +84,46 @@ Assert-SourceContains `
     -Text 'EvidenceClass: NoRuntimeCredit' `
     -Description 'Composite failure path preserves NoRuntimeCredit'
 Assert-SourceContains `
+    -Path $compositeRuntime `
+    -Text 'Assert-V02ReferenceHostProfile' `
+    -Description 'Composite gate independently validates the canonical reference-host profile'
+Assert-SourceContains `
+    -Path $compositeRuntime `
+    -Text 'Get-V02TrustedReferenceHostObservation' `
+    -Description 'Composite gate probes trusted host/OS/GPU/display/Herdr identity'
+Assert-SourceContains `
+    -Path (Join-Path $repositoryRoot 'tools\lib\V02ReferenceHostProfile.ps1') `
+    -Text '$primaryScreen.Bounds.Width' `
+    -Description 'Trusted display probe independently reads live logical Screen bounds'
+Assert-SourceContains `
+    -Path $compositeRuntime `
+    -Text '$appReport.Language -is [string]' `
+    -Description 'Composite gate binds one report to the exact requested language'
+Assert-SourceContains `
+    -Path $compositeRuntime `
+    -Text '$appReport.LanguageStableThroughFinish -is [bool]' `
+    -Description 'Composite gate requires native true language stability through finish'
+Assert-SourceContains `
+    -Path $compositeRuntime `
+    -Text '[int64]$appReport.LanguageChangeCount -eq 0' `
+    -Description 'Composite gate rejects any observed language change'
+Assert-SourceContains `
+    -Path $compositeRuntime `
+    -Text '$capture.LanguageCultureName -is [string]' `
+    -Description 'Composite gate binds every capture to the requested language culture'
+Assert-SourceContains `
+    -Path $compositeRuntime `
+    -Text 'Assert-V02RendererEvidence' `
+    -Description 'Composite gate independently validates SoftwareOnly lifetime evidence'
+Assert-SourceContains `
+    -Path $compositeRuntime `
+    -Text 'Assert-V02WorkingSetBudgetEvidence' `
+    -Description 'Composite gate independently recomputes the v0.2 working-set result'
+Assert-SourceContains `
+    -Path $compositeRuntime `
+    -Text "'--reference-host-profile-sha256', `$referenceHostProfile.Sha256" `
+    -Description 'Composite gate passes the independently computed profile hash to the producer'
+Assert-SourceContains `
     -Path $runtimeMonitorContract `
     -Text '-ExpectedSourceTree $expectedSourceTree' `
     -Description 'Runtime contract command supplies the exact expected source tree'

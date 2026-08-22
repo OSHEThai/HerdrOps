@@ -160,6 +160,46 @@ jobs:
         shell: powershell
         run: ./tools/lib/V02ResourceStageCheckpoints.Tests.ps1
 
+      - name: Run v0.2 reference-host profile tests (PowerShell 7)
+        shell: pwsh
+        run: ./tools/lib/V02ReferenceHostProfile.Tests.ps1
+
+      - name: Run v0.2 reference-host profile tests (Windows PowerShell 5.1)
+        shell: powershell
+        run: ./tools/lib/V02ReferenceHostProfile.Tests.ps1
+
+      - name: Run v0.2 working-set budget tests (PowerShell 7)
+        shell: pwsh
+        run: ./tools/Test-V02WorkingSetBudget.Tests.ps1
+
+      - name: Run v0.2 working-set budget tests (Windows PowerShell 5.1)
+        shell: powershell
+        run: ./tools/Test-V02WorkingSetBudget.Tests.ps1
+
+      - name: Run v0.2 renderer evidence tests (PowerShell 7)
+        shell: pwsh
+        run: ./tools/lib/V02RendererEvidence.Tests.ps1
+
+      - name: Run v0.2 renderer evidence tests (Windows PowerShell 5.1)
+        shell: powershell
+        run: ./tools/lib/V02RendererEvidence.Tests.ps1
+
+      - name: Run v0.2 exact binding static tests (PowerShell 7)
+        shell: pwsh
+        run: ./tools/Test-V02ExactBinding.Tests.ps1
+
+      - name: Run v0.2 exact binding static tests (Windows PowerShell 5.1)
+        shell: powershell
+        run: ./tools/Test-V02ExactBinding.Tests.ps1
+
+      - name: Run v0.2 language-matrix acceptance synthetic tests (PowerShell 7)
+        shell: pwsh
+        run: ./tools/Test-V02LanguageMatrixAcceptance.Tests.ps1
+
+      - name: Run v0.2 language-matrix acceptance synthetic tests (Windows PowerShell 5.1)
+        shell: powershell
+        run: ./tools/Test-V02LanguageMatrixAcceptance.Tests.ps1
+
       - name: Run v0.2 live Widgets implementation gate
         shell: pwsh
         run: ./tools/Test-V02LiveWidgets.ps1 -Configuration Release -SkipBuild -RunToken $env:HERDOPS_V02_LIVE_WIDGET_RUN_TOKEN
