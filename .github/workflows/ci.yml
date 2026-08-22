@@ -184,7 +184,10 @@ jobs:
 
       - name: Run v0.3 Implementation Contract Synthetic gate
         shell: pwsh
-        run: ./tools/Test-V03ImplementationGate.ps1 -Configuration Release -SkipBuild
+        run: |
+          $sourceCommit = (git rev-parse HEAD).Trim()
+          $sourceTree = (git rev-parse 'HEAD^{tree}').Trim()
+          ./tools/Test-V03ImplementationGate.ps1 -Configuration Release -SkipBuild -ExpectedSourceCommit $sourceCommit -ExpectedSourceTree $sourceTree
 
       # Static/Synthetic verifier selftests against temporary mock fixtures only; does NOT validate real committed review records in docs/reviews/. Real canonical review binding is enforced in tools/Test-V04ReleaseGate.ps1 only.
       - name: Run v0.4 review-binding verifier tests (PowerShell 7)
@@ -505,7 +508,7 @@ jobs:
             $reports = @(./tools/release/Test-V10ReleaseReadiness.ps1)
             if ($reports.Count -ne 1) { throw "Release-readiness gate (PowerShell 7) returned $($reports.Count) objects; expected exactly 1." }
             $report = $reports[0]
-            if ([int]$report.AssertionCount -ne 19) { throw "Release-readiness gate (PowerShell 7) AssertionCount=$($report.AssertionCount); expected 19." }
+            if ([int]$report.AssertionCount -ne 80) { throw "Release-readiness gate (PowerShell 7) AssertionCount=$($report.AssertionCount); expected 80." }
             if ([string]$report.EvidenceClass -cne 'Static/Synthetic') { throw 'Release-readiness gate (PowerShell 7) did not return a Static/Synthetic PASS report.' }
             foreach ($boundary in @('CleanMachine', 'Runtime', 'Human', 'Release')) {
               if ([string]$report.$boundary -cne 'NOT OBSERVED') { throw "Release-readiness gate (PowerShell 7) boundary '$boundary' was not NOT OBSERVED." }
@@ -533,7 +536,7 @@ jobs:
             $reports = @(& .\tools\release\Test-V10ReleaseReadiness.ps1)
             if ($reports.Count -ne 1) { throw "Release-readiness gate (Windows PowerShell 5.1) returned $($reports.Count) objects; expected exactly 1." }
             $report = $reports[0]
-            if ([int]$report.AssertionCount -ne 19) { throw "Release-readiness gate (Windows PowerShell 5.1) AssertionCount=$($report.AssertionCount); expected 19." }
+            if ([int]$report.AssertionCount -ne 80) { throw "Release-readiness gate (Windows PowerShell 5.1) AssertionCount=$($report.AssertionCount); expected 80." }
             if ([string]$report.EvidenceClass -cne 'Static/Synthetic') { throw 'Release-readiness gate (Windows PowerShell 5.1) did not return a Static/Synthetic PASS report.' }
             foreach ($boundary in @('CleanMachine', 'Runtime', 'Human', 'Release')) {
               if ([string]$report.$boundary -cne 'NOT OBSERVED') { throw "Release-readiness gate (Windows PowerShell 5.1) boundary '$boundary' was not NOT OBSERVED." }
