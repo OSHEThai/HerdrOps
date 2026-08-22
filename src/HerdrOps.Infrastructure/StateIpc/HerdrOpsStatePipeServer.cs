@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.IO.Pipes;
+using System.Security.Cryptography;
 using System.Security.Principal;
 using System.Threading.Channels;
 using HerdrOps.Contracts.StateIpc;
@@ -10,7 +11,8 @@ public sealed record HerdrOpsStatePipeServerOptions(
     string PipeName,
     int MaximumFrameBytes = HerdrOpsStateIpcProtocol.MaximumFrameBytes,
     int MaximumPendingDeltasPerClient = 256,
-    int MaximumClients = 16)
+    int MaximumClients = 16,
+    string? AcceptanceNonce = null)
 {
     public static HerdrOpsStatePipeServerOptions ForCurrentUser()
     {
@@ -22,7 +24,9 @@ public sealed record HerdrOpsStatePipeServerOptions(
         }
 
         return new HerdrOpsStatePipeServerOptions(
-            HerdrOpsStatePipeName.FromUserScope(userSid));
+            HerdrOpsStatePipeName.FromUserScope(userSid),
+            AcceptanceNonce: Environment.GetEnvironmentVariable(
+                HerdrOpsStateIpcProtocol.Issue44AcceptanceNonceEnvironmentVariable));
     }
 }
 
@@ -37,6 +41,7 @@ public sealed class HerdrOpsStatePipeServer
     private readonly HerdrOpsStatePipeServerOptions _options;
     private readonly TimeProvider _timeProvider;
     private readonly string _serverInstanceId = Guid.NewGuid().ToString("N");
+    private readonly AcceptanceProcessIdentity? _acceptanceProcessIdentity;
     private readonly ConcurrentDictionary<long, Task> _clientTasks = new();
     private readonly TaskCompletionSource _ready = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private readonly Dictionary<long, ClientSubscription> _subscriptions = [];
@@ -51,6 +56,9 @@ public sealed class HerdrOpsStatePipeServer
         TimeProvider? timeProvider = null)
     {
         _options = ValidateOptions(options);
+        _acceptanceProcessIdentity = string.IsNullOrWhiteSpace(_options.AcceptanceNonce)
+            ? null
+            : AcceptanceProcessIdentity.CaptureCurrent();
         _clientSlots = new SemaphoreSlim(_options.MaximumClients, _options.MaximumClients);
         _timeProvider = timeProvider ?? TimeProvider.System;
         ArgumentNullException.ThrowIfNull(initialSnapshot);
@@ -318,7 +326,12 @@ public sealed class HerdrOpsStatePipeServer
                     helloEnvelope.CorrelationId,
                     new HerdrOpsStateIpcHelloAccepted(
                         _serverInstanceId,
-                        HerdrOpsStateIpcProtocol.AuthorizationScope));
+                        HerdrOpsStateIpcProtocol.AuthorizationScope,
+                        _options.AcceptanceNonce,
+                        _acceptanceProcessIdentity?.ProcessId,
+                        _acceptanceProcessIdentity?.StartUtcTicks,
+                        _acceptanceProcessIdentity?.ExecutablePath,
+                        _acceptanceProcessIdentity?.ExecutableSha256));
                 await HerdrOpsStateIpcJson
                     .WriteFrameAsync(stream, accepted, cancellationToken, _options.MaximumFrameBytes)
                     .ConfigureAwait(false);
@@ -482,6 +495,20 @@ public sealed class HerdrOpsStatePipeServer
             return false;
         }
 
+        if (!string.Equals(
+                hello.AcceptanceNonce,
+                _options.AcceptanceNonce,
+                StringComparison.Ordinal))
+        {
+            await SendErrorAsync(
+                stream,
+                envelope.CorrelationId,
+                HerdrOpsStateIpcProtocol.ErrorCodes.UnauthorizedClient,
+                "The Issue #44 acceptance nonce did not match this Core instance.",
+                cancellationToken).ConfigureAwait(false);
+            return false;
+        }
+
         return true;
     }
 
@@ -636,7 +663,52 @@ public sealed class HerdrOpsStatePipeServer
                 "The state IPC client limit must be between 1 and 64.");
         }
 
-        return options;
+        return options with
+        {
+            AcceptanceNonce = NormalizeAcceptanceNonce(options.AcceptanceNonce),
+        };
+    }
+
+    private static string? NormalizeAcceptanceNonce(string? nonce)
+    {
+        if (string.IsNullOrWhiteSpace(nonce))
+        {
+            return null;
+        }
+
+        if (nonce.Length != 64 || nonce.Any(character =>
+                !char.IsAsciiHexDigit(character) || char.IsLower(character)))
+        {
+            throw new ArgumentException(
+                "The Issue #44 acceptance nonce must be exactly 64 uppercase hexadecimal characters.",
+                nameof(nonce));
+        }
+
+        return nonce;
+    }
+
+    private sealed record AcceptanceProcessIdentity(
+        int ProcessId,
+        long StartUtcTicks,
+        string ExecutablePath,
+        string ExecutableSha256)
+    {
+        public static AcceptanceProcessIdentity CaptureCurrent()
+        {
+            using var process = System.Diagnostics.Process.GetCurrentProcess();
+            var path = Environment.ProcessPath;
+            if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
+            {
+                throw new HerdrOpsStateIpcProtocolException(
+                    "The Core executable path is unavailable for Issue #44 acceptance binding.");
+            }
+
+            return new AcceptanceProcessIdentity(
+                process.Id,
+                process.StartTime.ToUniversalTime().Ticks,
+                Path.GetFullPath(path),
+                Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(path))));
+        }
     }
 
     private sealed record ClientSubscription(

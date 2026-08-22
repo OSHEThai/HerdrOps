@@ -132,6 +132,12 @@ if (-not (Test-Path -LiteralPath $acceptanceCommonPath -PathType Leaf)) {
 }
 . $acceptanceCommonPath
 
+$semanticEvidencePath = Join-Path $PSScriptRoot 'Issue44.SemanticEvidence.ps1'
+if (-not (Test-Path -LiteralPath $semanticEvidencePath -PathType Leaf)) {
+    throw "Issue #44 semantic evidence library is missing: $semanticEvidencePath"
+}
+. $semanticEvidencePath
+
 $installerCommonPath = Join-Path $PSScriptRoot '..\installer\Installer.Common.ps1'
 if (-not (Test-Path -LiteralPath $installerCommonPath -PathType Leaf)) {
     throw "Installer common library is missing: $installerCommonPath"
@@ -535,12 +541,13 @@ function Wait-Issue44CoreSemanticReadiness {
         [Parameter(Mandatory = $true)]$CoreIdentity,
         [Parameter(Mandatory = $true)][Diagnostics.Process]$AppProcess,
         [Parameter(Mandatory = $true)]$AppIdentity,
+        [Parameter(Mandatory = $true)][string]$AcceptanceNonce,
+        [Parameter(Mandatory = $true)][string]$EvidencePath,
         [Parameter(Mandatory = $true)][int]$TimeoutMilliseconds
     )
 
     $deadline = [DateTime]::UtcNow.AddMilliseconds($TimeoutMilliseconds)
-    $pipeName = Get-Issue44StatePipeName
-    $lastRetryMessage = 'real App window and Core pipe are not yet ready'
+    $lastRetryMessage = 'real App window and nonce-bound semantic evidence are not yet ready'
     while ([DateTime]::UtcNow -lt $deadline) {
         if ($CoreProcess.HasExited) { throw "Core exited before semantic readiness: $($CoreProcess.ExitCode)." }
         if ($AppProcess.HasExited) { throw "App exited before semantic readiness: $($AppProcess.ExitCode)." }
@@ -552,27 +559,24 @@ function Wait-Issue44CoreSemanticReadiness {
             Start-Sleep -Milliseconds 100
             continue
         }
-        $pipe = $null
         try {
-            # This probe deliberately sends no HerdrOps.App envelope.  Only the
-            # real launched App may claim that production protocol identity.
-            # A bounded connect proves that the exact launched Core owns a
-            # reachable current-user listener while the real App UI is ready.
-            $pipe = New-Object System.IO.Pipes.NamedPipeClientStream('.', $pipeName, [IO.Pipes.PipeDirection]::InOut, [IO.Pipes.PipeOptions]::Asynchronous)
-            $remaining = [int][Math]::Max(1, [Math]::Min(500, ($deadline - [DateTime]::UtcNow).TotalMilliseconds))
-            $pipe.Connect($remaining)
+            if (-not (Test-Path -LiteralPath $EvidencePath -PathType Leaf)) {
+                $lastRetryMessage = 'the exact launched App has not persisted nonce-bound semantic evidence'
+                Start-Sleep -Milliseconds 100
+                continue
+            }
+            $binding = Read-Issue44SemanticEvidence -Path $EvidencePath `
+                -OwnedDirectory (Split-Path -Path $EvidencePath -Parent) `
+                -ExpectedNonce $AcceptanceNonce -CoreIdentity $CoreIdentity -AppIdentity $AppIdentity
             return [pscustomobject][ordered]@{
                 Ready = $true
-                PipeName = $pipeName
-                RuntimeHealthStatus = 'REAL_APP_UI_AND_CORE_LISTENER_READY'
-                Details = "Real App PID $($AppIdentity.Id) start $($AppIdentity.StartUtc) path/hash bound and responsive; Core PID $($CoreIdentity.Id) start $($CoreIdentity.StartUtc) path/hash bound with reachable current-user state pipe. No App source was fabricated by the operator."
+                PipeName = Get-Issue44StatePipeName
+                RuntimeHealthStatus = 'REAL_APP_CORE_NONCE_BOUND_SNAPSHOT_READY'
+                Details = "Real App PID $($AppIdentity.Id) and Core PID $($CoreIdentity.Id) completed hello/hello-accepted/snapshot with a fresh one-run nonce and exact PID/start/path/hash ownership; the App UI is responsive."
+                Binding = $binding
             }
-        } catch [TimeoutException] {
-            $lastRetryMessage = $_.Exception.Message
         } catch [IO.IOException] {
             $lastRetryMessage = $_.Exception.Message
-        } finally {
-            if ($null -ne $pipe) { $pipe.Dispose() }
         }
         Start-Sleep -Milliseconds 100
     }
@@ -1066,6 +1070,11 @@ $lifecycle = [ordered]@{
         retainedDataSha256 = 'NOT_OBSERVED'
         details = 'Not yet executed.'
     }
+}
+$semanticReadiness = [ordered]@{
+    status = 'NOT_OBSERVED'
+    details = 'NOT_OBSERVED'
+    binding = $null
 }
 
 $cleanup = [ordered]@{
@@ -1691,9 +1700,31 @@ try {
             $appProc = $null
             $coreIdentity = $null
             $appIdentity = $null
+            $acceptanceNonce = $null
+            $acceptanceEvidenceDirectory = $null
+            $acceptanceEvidencePath = $null
             $cleanupFailures = New-Object System.Collections.ArrayList
 
             try {
+                $nonceBytes = New-Object byte[] 32
+                $random = [Security.Cryptography.RandomNumberGenerator]::Create()
+                try { $random.GetBytes($nonceBytes) } finally { $random.Dispose() }
+                $acceptanceNonce = ([BitConverter]::ToString($nonceBytes)).Replace('-', '')
+                if ([string]::IsNullOrWhiteSpace([string]$script:OwnedStagingDirectory)) {
+                    throw 'Issue #44 semantic evidence requires the operator-owned staging directory.'
+                }
+                $acceptanceEvidenceDirectory = Join-Path $script:OwnedStagingDirectory ('semantic-evidence-' + $script:RunId)
+                if (Test-Path -LiteralPath $acceptanceEvidenceDirectory) { throw 'Issue #44 semantic evidence directory already exists.' }
+                New-Item -ItemType Directory -Path $acceptanceEvidenceDirectory -ErrorAction Stop | Out-Null
+                if (-not (Test-PathWithin -ChildPath $acceptanceEvidenceDirectory -RootPath $script:OwnedStagingDirectory)) {
+                    throw 'Issue #44 semantic evidence directory escaped operator-owned staging.'
+                }
+                Assert-OperatorNoReparse -Path $acceptanceEvidenceDirectory
+                $acceptanceEvidencePath = Join-Path $acceptanceEvidenceDirectory 'app-core-binding.json'
+                if (Test-Path -LiteralPath $acceptanceEvidencePath) {
+                    throw "Fresh Issue #44 acceptance evidence path unexpectedly exists: $acceptanceEvidencePath"
+                }
+
                 # 1. Start Core with exact argument 'serve-herdr-state'
                 $corePsi = New-Object System.Diagnostics.ProcessStartInfo
                 $corePsi.FileName = $coreExe
@@ -1701,12 +1732,16 @@ try {
                 $corePsi.WorkingDirectory = $InstallRoot
                 $corePsi.UseShellExecute = $false
                 $corePsi.CreateNoWindow = $true
+                $corePsi.EnvironmentVariables['HERDROPS_ISSUE44_ACCEPTANCE_NONCE'] = $acceptanceNonce
                 $coreProc = [System.Diagnostics.Process]::Start($corePsi)
                 if ($null -eq $coreProc) {
                     throw "Failed to start Core process: $coreExe serve-herdr-state"
                 }
                 $coreIdentity = Get-Issue44ProcessIdentity -Process $coreProc
-                if ([string]$coreIdentity.Sha256 -cne [string]$coreData.Sha256 -or [string]$coreIdentity.Path -cne $coreExe) {
+                if ([string]$coreIdentity.Sha256 -cne [string]$coreData.Sha256 -or
+                    -not [StringComparer]::OrdinalIgnoreCase.Equals(
+                        [IO.Path]::GetFullPath([string]$coreIdentity.Path),
+                        [IO.Path]::GetFullPath($coreExe))) {
                     throw 'Launched Core identity does not match the exact installed path/hash.'
                 }
                 $admittedIdentities[$coreIdentity.Id] = $coreIdentity
@@ -1718,12 +1753,17 @@ try {
                 $appPsi.WorkingDirectory = $InstallRoot
                 $appPsi.UseShellExecute = $false
                 $appPsi.CreateNoWindow = $true
+                $appPsi.EnvironmentVariables['HERDROPS_ISSUE44_ACCEPTANCE_NONCE'] = $acceptanceNonce
+                $appPsi.EnvironmentVariables['HERDROPS_ISSUE44_ACCEPTANCE_EVIDENCE_PATH'] = $acceptanceEvidencePath
                 $appProc = [System.Diagnostics.Process]::Start($appPsi)
                 if ($null -eq $appProc) {
                     throw "Failed to start App process: $appExe"
                 }
                 $appIdentity = Get-Issue44ProcessIdentity -Process $appProc
-                if ([string]$appIdentity.Sha256 -cne [string]$appData.Sha256 -or [string]$appIdentity.Path -cne $appExe) {
+                if ([string]$appIdentity.Sha256 -cne [string]$appData.Sha256 -or
+                    -not [StringComparer]::OrdinalIgnoreCase.Equals(
+                        [IO.Path]::GetFullPath([string]$appIdentity.Path),
+                        [IO.Path]::GetFullPath($appExe))) {
                     throw 'Launched App identity does not match the exact installed path/hash.'
                 }
                 $admittedIdentities[$appIdentity.Id] = $appIdentity
@@ -1732,7 +1772,8 @@ try {
                 # current-user App handshake and return a state snapshot with
                 # runtime-health fields.  HasExited alone is not readiness.
                 $coreReadiness = Wait-Issue44CoreSemanticReadiness -CoreProcess $coreProc -CoreIdentity $coreIdentity `
-                    -AppProcess $appProc -AppIdentity $appIdentity -TimeoutMilliseconds $TimeoutMilliseconds
+                    -AppProcess $appProc -AppIdentity $appIdentity -AcceptanceNonce $acceptanceNonce `
+                    -EvidencePath $acceptanceEvidencePath -TimeoutMilliseconds $TimeoutMilliseconds
 
                 # 4. Discover recursive descendants of admitted process
                 # identities only.  A PID without a provable start time is
@@ -1800,6 +1841,18 @@ try {
                         # The admitted process exited before cleanup.
                     } catch { [void]$cleanupFailures.Add($_.Exception.Message) }
                 }
+                if (-not [string]::IsNullOrWhiteSpace($acceptanceEvidenceDirectory) -and
+                    (Test-Path -LiteralPath $acceptanceEvidenceDirectory)) {
+                    try {
+                        Assert-OperatorNoReparse -Path $acceptanceEvidenceDirectory
+                        if (Test-Path -LiteralPath $acceptanceEvidencePath) {
+                            Assert-AcceptanceNoReparsePath -Path $acceptanceEvidencePath
+                            Remove-Item -LiteralPath $acceptanceEvidencePath -Force -ErrorAction Stop
+                        }
+                        Remove-Item -LiteralPath $acceptanceEvidenceDirectory -Force -ErrorAction Stop
+                    }
+                    catch { [void]$cleanupFailures.Add("Acceptance evidence cleanup failed: $($_.Exception.Message)") }
+                }
             }
 
             if ($cleanupFailures.Count -gt 0) {
@@ -1830,8 +1883,9 @@ try {
                 CoreHealthReady = [bool]$coreReadiness.Ready
                 CoreHealthDetails = [string]$coreReadiness.Details
                 CoreRuntimeHealthStatus = [string]$coreReadiness.RuntimeHealthStatus
+                SemanticReadinessEvidence = $coreReadiness.Binding
                 AdmittedPids = @($admittedIdentities.Keys)
-                Details = 'Exact Core and real App process identities reached bounded readiness without operator source spoofing; all admitted PIDs terminated cleanly.'
+                Details = 'Exact Core and real App process identities completed nonce-bound semantic state IPC readiness; all admitted PIDs terminated cleanly.'
             }
         }
     }
@@ -1901,6 +1955,17 @@ try {
         }
         if (-not $firstRunResult.PSObject.Properties['CoreHealthDetails'] -or [string]::IsNullOrWhiteSpace([string]$firstRunResult.CoreHealthDetails)) {
             throw 'First-run runner did not provide bounded semantic readiness details.'
+        }
+        $semanticReadiness.details = [string]$firstRunResult.CoreHealthDetails
+        if ($Mode -eq 'Live') {
+            if (-not $firstRunResult.PSObject.Properties['SemanticReadinessEvidence'] -or
+                $null -eq $firstRunResult.SemanticReadinessEvidence) {
+                throw 'Live first-run runner did not return durable semantic readiness evidence.'
+            }
+            $semanticReadiness.status = 'PASS'
+            $semanticReadiness.binding = $firstRunResult.SemanticReadinessEvidence
+        } else {
+            $semanticReadiness.status = 'SYNTHETIC'
         }
         foreach ($binary in @(
                 [pscustomobject]@{ Name = 'HerdrOps.Core.exe'; ResultProperty = 'CoreSha256' },
@@ -2133,6 +2198,8 @@ $cleanMachinePassed = ($Mode -ceq 'Live' -and
     $status -ceq 'PASS' -and
     $preflightPassed -and
     $script:CleanMachineFilesystemObserved -and
+    [string]$semanticReadiness.status -ceq 'PASS' -and
+    $null -ne $semanticReadiness.binding -and
     $allLifecyclePassed -and
     [string]$cleanup.status -ceq 'PASS' -and
     $cleanup.ownedStageRemoved -and
@@ -2175,13 +2242,14 @@ $report = [ordered]@{
         checks = @($script:PreflightChecks.ToArray())
     }
     lifecycle = $lifecycle
+    semanticReadiness = $semanticReadiness
     cleanup = $cleanup
     failureDetails = $failureDetails
     transcript = @($script:Transcript.ToArray())
     boundaries = [ordered]@{
         static = if ($preflightPassed) { 'PASS: acceptance operator source, paths, archive hashes, and contracts verified.' } else { "OBSERVED $status`: static preflight failed." }
         synthetic = if ($Mode -eq 'Fixture') { 'PASS: fixture lifecycle execution.' } else { 'NOT OBSERVED BY THIS LIVE INVOCATION' }
-        contract = 'NOT OBSERVED: no named-pipe or installed-Herdr IPC compatibility assertions.'
+        contract = if ([string]$semanticReadiness.status -ceq 'PASS') { 'PASS: nonce-bound state IPC hello/hello-accepted/snapshot contract with exact Core/App process ownership.' } else { 'NOT OBSERVED: no named-pipe or installed-Herdr IPC compatibility assertions.' }
         cleanMachine = if ($cleanMachinePassed) { 'PASS: live clean-machine filesystem install, upgrade, rollback, uninstall, and settings retention lifecycle.' } else { 'NOT OBSERVED' }
         runtime = 'NOT OBSERVED: no live Herdr runtime connection was evaluated.'
         independentReview = 'NOT OBSERVED.'

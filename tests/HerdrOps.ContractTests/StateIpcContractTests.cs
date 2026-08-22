@@ -41,6 +41,33 @@ public sealed class StateIpcContractTests
     }
 
     [TestMethod]
+    public void DefaultHelloAcceptedWirePayloadOmitsEveryAcceptanceField()
+    {
+        var envelope = HerdrOpsStateIpcJson.CreateEnvelope(
+            HerdrOpsStateIpcProtocol.MessageTypes.HelloAccepted,
+            0,
+            new DateTimeOffset(2026, 8, 22, 0, 0, 0, TimeSpan.Zero),
+            HerdrOpsStateIpcProtocol.CoreSource,
+            Guid.NewGuid(),
+            new HerdrOpsStateIpcHelloAccepted(
+                "default-server",
+                HerdrOpsStateIpcProtocol.AuthorizationScope));
+        var raw = Encoding.UTF8.GetString(HerdrOpsStateIpcJson.SerializeEnvelope(envelope));
+
+        foreach (var acceptanceField in new[]
+                 {
+                     "acceptanceNonce",
+                     "serverProcessId",
+                     "serverProcessStartUtcTicks",
+                     "serverExecutablePath",
+                     "serverExecutableSha256",
+                 })
+        {
+            Assert.DoesNotContain(acceptanceField, raw, StringComparison.Ordinal);
+        }
+    }
+
+    [TestMethod]
     public void StrictJsonRejectsUnmappedEnvelopeAndPayloadMembers()
     {
         var envelope = HerdrOpsStateIpcJson.CreateEnvelope(
@@ -52,6 +79,7 @@ public sealed class StateIpcContractTests
             new HerdrOpsStateIpcHello("app", "contract-test"));
         var serializedEnvelope = Encoding.UTF8.GetString(
             HerdrOpsStateIpcJson.SerializeEnvelope(envelope));
+        Assert.DoesNotContain("acceptanceNonce", serializedEnvelope, StringComparison.Ordinal);
         var envelopeWithUnknownMember = serializedEnvelope.Insert(
             serializedEnvelope.Length - 1,
             ",\"unexpected\":true");

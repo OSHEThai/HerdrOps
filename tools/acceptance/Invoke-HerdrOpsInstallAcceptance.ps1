@@ -164,6 +164,11 @@ function New-AcceptanceReport {
             checks = @($script:PreflightChecks.ToArray())
         }
         lifecycle = $Lifecycle
+        semanticReadiness = [ordered]@{
+            status = 'NOT_OBSERVED'
+            details = 'NOT_OBSERVED: legacy install acceptance does not start Core or App.'
+            binding = $null
+        }
         cleanup = $Cleanup
         failureDetails = $FailureDetails
         transcript = @($script:Transcript.ToArray())

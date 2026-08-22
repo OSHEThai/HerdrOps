@@ -1,4 +1,5 @@
 using System.IO.Pipes;
+using System.Text.Json;
 using HerdrOps.App.StateIpc;
 using HerdrOps.Contracts.StateIpc;
 using HerdrOps.Infrastructure.StateIpc;
@@ -127,6 +128,140 @@ public sealed class StateIpcIntegrationTests
         var clientOptions = HerdrOpsStatePipeClientOptions.ForCurrentUser();
         Assert.AreEqual(serverOptions.PipeName, clientOptions.PipeName);
         Assert.StartsWith("herdrops-state-v2-", serverOptions.PipeName, StringComparison.Ordinal);
+    }
+
+    [TestMethod]
+    public async Task Issue44AcceptanceBindingPersistsExactSemanticHandshakeEvidence()
+    {
+        var pipeName = $"herdrops-state-issue44-{Guid.NewGuid():N}";
+        var nonce = Convert.ToHexString(Guid.NewGuid().ToByteArray()) +
+                    Convert.ToHexString(Guid.NewGuid().ToByteArray());
+        var evidenceRoot = Path.Combine(Path.GetTempPath(), $"herdrops-issue44-{Guid.NewGuid():N}");
+        var evidencePath = Path.Combine(evidenceRoot, "binding.json");
+        Directory.CreateDirectory(evidenceRoot);
+        var server = new HerdrOpsStatePipeServer(
+            new HerdrOpsStatePipeServerOptions(pipeName, AcceptanceNonce: nonce),
+            HerdrStateTestData.Snapshot(HerdrSessionStateContract.Empty));
+        using var serverCancellation = new CancellationTokenSource();
+        var serverTask = server.RunAsync(serverCancellation.Token);
+        await server.Ready.WaitAsync(TimeSpan.FromSeconds(5));
+        try
+        {
+            var client = new HerdrOpsStatePipeClient(
+                new HerdrOpsStatePipeClientOptions(
+                    pipeName,
+                    AcceptanceNonce: nonce,
+                    AcceptanceEvidencePath: evidencePath));
+            await using var updates = client.ReadUpdatesAsync().GetAsyncEnumerator();
+            Assert.IsTrue(await updates.MoveNextAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(5)));
+            Assert.AreEqual(HerdrOpsStateUpdateKind.Snapshot, updates.Current.Kind);
+            Assert.IsTrue(File.Exists(evidencePath));
+            using var evidence = JsonDocument.Parse(await File.ReadAllBytesAsync(evidencePath));
+            var root = evidence.RootElement;
+            Assert.AreEqual(1, root.GetProperty("SchemaVersion").GetInt32());
+            Assert.AreEqual(nonce, root.GetProperty("AcceptanceNonce").GetString());
+            Assert.AreEqual(Environment.ProcessId, root.GetProperty("CoreProcessId").GetInt32());
+            Assert.AreEqual(Environment.ProcessId, root.GetProperty("AppProcessId").GetInt32());
+            Assert.AreEqual(64, root.GetProperty("CoreExecutableSha256").GetString()!.Length);
+            Assert.AreEqual(64, root.GetProperty("AppExecutableSha256").GetString()!.Length);
+            Assert.IsGreaterThanOrEqualTo(
+                0L,
+                root.GetProperty("SnapshotSequence").GetInt64());
+        }
+        finally
+        {
+            serverCancellation.Cancel();
+            await serverTask.WaitAsync(TimeSpan.FromSeconds(5));
+            Directory.Delete(evidenceRoot, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    public async Task Issue44AcceptanceBindingRejectsStaleServerWithDifferentNonce()
+    {
+        var pipeName = $"herdrops-state-issue44-stale-{Guid.NewGuid():N}";
+        var serverNonce = new string('A', 64);
+        var clientNonce = new string('B', 64);
+        var evidenceRoot = Path.Combine(Path.GetTempPath(), $"herdrops-issue44-stale-{Guid.NewGuid():N}");
+        var evidencePath = Path.Combine(evidenceRoot, "binding.json");
+        Directory.CreateDirectory(evidenceRoot);
+        var server = new HerdrOpsStatePipeServer(
+            new HerdrOpsStatePipeServerOptions(pipeName, AcceptanceNonce: serverNonce),
+            HerdrStateTestData.Snapshot(HerdrSessionStateContract.Empty));
+        using var serverCancellation = new CancellationTokenSource();
+        var serverTask = server.RunAsync(serverCancellation.Token);
+        await server.Ready.WaitAsync(TimeSpan.FromSeconds(5));
+        try
+        {
+            var client = new HerdrOpsStatePipeClient(
+                new HerdrOpsStatePipeClientOptions(
+                    pipeName,
+                    AcceptanceNonce: clientNonce,
+                    AcceptanceEvidencePath: evidencePath));
+            await using var updates = client.ReadUpdatesAsync().GetAsyncEnumerator();
+            await Assert.ThrowsAsync<HerdrOpsStateIpcProtocolException>(async () =>
+                await updates.MoveNextAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(5)));
+            Assert.IsFalse(File.Exists(evidencePath));
+        }
+        finally
+        {
+            serverCancellation.Cancel();
+            await serverTask.WaitAsync(TimeSpan.FromSeconds(5));
+            Directory.Delete(evidenceRoot, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    public async Task Issue44AcceptanceBindingRejectsPipeResponseClaimingAnotherOwner()
+    {
+        var pipeName = $"herdrops-state-issue44-owner-{Guid.NewGuid():N}";
+        var nonce = new string('C', 64);
+        var evidenceRoot = Path.Combine(Path.GetTempPath(), $"herdrops-issue44-owner-{Guid.NewGuid():N}");
+        var evidencePath = Path.Combine(evidenceRoot, "binding.json");
+        Directory.CreateDirectory(evidenceRoot);
+        await using var server = new NamedPipeServerStream(
+            pipeName,
+            PipeDirection.InOut,
+            1,
+            PipeTransmissionMode.Byte,
+            PipeOptions.Asynchronous | PipeOptions.WriteThrough | PipeOptions.CurrentUserOnly);
+        var serverTask = Task.Run(async () =>
+        {
+            await server.WaitForConnectionAsync();
+            var hello = await HerdrOpsStateIpcJson.ReadFrameAsync(server, CancellationToken.None);
+            var accepted = HerdrOpsStateIpcJson.CreateEnvelope(
+                HerdrOpsStateIpcProtocol.MessageTypes.HelloAccepted,
+                0,
+                DateTimeOffset.UtcNow,
+                HerdrOpsStateIpcProtocol.CoreSource,
+                hello.CorrelationId,
+                new HerdrOpsStateIpcHelloAccepted(
+                    "hostile-server",
+                    HerdrOpsStateIpcProtocol.AuthorizationScope,
+                    nonce,
+                    Environment.ProcessId + 1,
+                    DateTime.UtcNow.Ticks,
+                    Environment.ProcessPath!,
+                    new string('D', 64)));
+            await HerdrOpsStateIpcJson.WriteFrameAsync(server, accepted, CancellationToken.None);
+        });
+        try
+        {
+            var client = new HerdrOpsStatePipeClient(
+                new HerdrOpsStatePipeClientOptions(
+                    pipeName,
+                    AcceptanceNonce: nonce,
+                    AcceptanceEvidencePath: evidencePath));
+            await using var updates = client.ReadUpdatesAsync().GetAsyncEnumerator();
+            await Assert.ThrowsAsync<HerdrOpsStateIpcProtocolException>(async () =>
+                await updates.MoveNextAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(5)));
+            await serverTask.WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.IsFalse(File.Exists(evidencePath));
+        }
+        finally
+        {
+            Directory.Delete(evidenceRoot, recursive: true);
+        }
     }
 
     [TestMethod]

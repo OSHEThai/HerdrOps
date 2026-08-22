@@ -45,7 +45,7 @@ function Assert-TestReportShape {
     Assert-TestExactProperties -Object $Report -Names @(
         'schemaVersion', 'reportKind', 'issue', 'acceptanceVersion', 'status',
         'mode', 'evidenceClass', 'startedAtUtc', 'completedAtUtc', 'runId',
-        'machine', 'artifacts', 'targets', 'preflight', 'lifecycle', 'cleanup',
+        'machine', 'artifacts', 'targets', 'preflight', 'lifecycle', 'semanticReadiness', 'cleanup',
         'failureDetails', 'transcript', 'boundaries') -Context 'acceptance report'
     Assert-TestCondition -Condition ([int]$Report.schemaVersion -eq 1) -Message 'Report schemaVersion drifted.'
     Assert-TestCondition -Condition ([string]$Report.reportKind -ceq 'HerdrOps.InstallAcceptanceReport') -Message 'Report kind drifted.'
@@ -66,6 +66,10 @@ function Assert-TestReportShape {
             'packageVersionObserved', 'retainedDataStatus', 'retainedDataSha256',
             'details') -Context "report lifecycle $stepName"
     }
+    Assert-TestExactProperties -Object $Report.semanticReadiness -Names @('status', 'details', 'binding') -Context 'report semanticReadiness'
+    Assert-TestCondition -Condition ([string]$Report.semanticReadiness.status -ceq 'NOT_OBSERVED') -Message 'Legacy acceptance fabricated semantic readiness.'
+    Assert-TestCondition -Condition ([string]$Report.semanticReadiness.details -like 'NOT_OBSERVED*') -Message 'Legacy semantic readiness details drifted.'
+    Assert-TestCondition -Condition ($null -eq $Report.semanticReadiness.binding) -Message 'Legacy acceptance fabricated a semantic binding.'
 
     Assert-TestExactProperties -Object $Report.cleanup -Names @(
         'status', 'attempted', 'simulationRoot', 'simulationRootRemoved',
@@ -220,7 +224,8 @@ $reportSchema = Read-AcceptanceJsonFile -Path $reportSchemaPath -Context 'Issue 
 Assert-TestCondition -Condition ([string]$reportSchema.'$schema' -like '*draft-07*') -Message 'Report JSON schema is not draft-07.'
 Assert-TestCondition -Condition ($null -ne $reportSchema.definitions) -Message 'Report JSON schema definitions are missing.'
 Assert-TestCondition -Condition ([string]$reportSchema.title -like '*Issue 44*') -Message 'Report JSON schema title drifted.'
-Assert-TestCondition -Condition (@($reportSchema.required).Count -eq 19) -Message 'Report JSON schema top-level required set drifted.'
+Assert-TestCondition -Condition (@($reportSchema.required).Count -eq 20) -Message 'Report JSON schema top-level required set drifted.'
+Assert-TestCondition -Condition (@($reportSchema.required | Where-Object { [string]$_ -ceq 'semanticReadiness' }).Count -eq 1) -Message 'Report JSON schema does not require semanticReadiness.'
 
 $testRoot = New-PackagingTempDirectory -Prefix 'HerdrOps-I44-Test-'
 try {
@@ -381,6 +386,52 @@ try {
     Assert-TestCondition -Condition ([string]$fixtureReport.targets.installPathPolicy -ceq '%LOCALAPPDATA%\Programs\HerdrOps') -Message 'Install path policy drifted.'
     Assert-TestCondition -Condition ([string]$fixtureReport.targets.userDataPathPolicy -ceq '%LOCALAPPDATA%\HerdrOps') -Message 'User-data path policy drifted.'
     Assert-TestCondition -Condition ([string]$fixtureReport.boundaries.synthetic -like 'PASS*') -Message 'Fixture synthetic boundary did not pass.'
+
+    $validSemanticBinding = [pscustomobject][ordered]@{
+        schemaVersion = 1
+        acceptanceNonceSha256 = 'A' * 64
+        clientInstanceId = 'a' * 32
+        correlationId = '11111111-2222-3333-4444-555555555555'
+        serverInstanceId = 'b' * 32
+        coreProcessId = 101
+        coreProcessStartUtcTicks = [long]111
+        coreExecutablePath = 'C:\Program Files\HerdrOps\HerdrOps.Core.exe'
+        coreExecutableSha256 = 'B' * 64
+        appProcessId = 202
+        appProcessStartUtcTicks = [long]222
+        appExecutablePath = 'C:\Program Files\HerdrOps\HerdrOps.App.exe'
+        appExecutableSha256 = 'C' * 64
+        snapshotSequence = [long]7
+        rawEvidenceBytes = [long]1024
+        rawEvidenceSha256 = 'D' * 64
+    }
+    $fixtureReport.semanticReadiness.status = 'PASS'
+    $fixtureReport.semanticReadiness.details = 'Nonce-bound semantic fixture for schema validation only.'
+    $fixtureReport.semanticReadiness.binding = $validSemanticBinding
+    Assert-AcceptanceReportMatchesSchema -Report $fixtureReport -SchemaPath $reportSchemaPath
+
+    foreach ($invalidSemanticCase in @(
+            [pscustomobject]@{ Name = 'pass-null'; Status = 'PASS'; Binding = $null; Mutate = $null },
+            [pscustomobject]@{ Name = 'nonpass-binding'; Status = 'SYNTHETIC'; Binding = $validSemanticBinding; Mutate = $null },
+            [pscustomobject]@{ Name = 'bad-client-id'; Status = 'PASS'; Binding = $validSemanticBinding; Mutate = { param($b) $b.clientInstanceId = 'BAD' } },
+            [pscustomobject]@{ Name = 'zero-core-pid'; Status = 'PASS'; Binding = $validSemanticBinding; Mutate = { param($b) $b.coreProcessId = 0 } },
+            [pscustomobject]@{ Name = 'oversize-raw'; Status = 'PASS'; Binding = $validSemanticBinding; Mutate = { param($b) $b.rawEvidenceBytes = [long]32769 } })) {
+        $fixtureReport.semanticReadiness.status = $invalidSemanticCase.Status
+        $fixtureReport.semanticReadiness.details = 'Invalid semantic binding test case.'
+        if ($null -eq $invalidSemanticCase.Binding) {
+            $fixtureReport.semanticReadiness.binding = $null
+        } else {
+            $fixtureReport.semanticReadiness.binding = $invalidSemanticCase.Binding | ConvertTo-Json -Depth 20 | ConvertFrom-Json
+            if ($null -ne $invalidSemanticCase.Mutate) { & $invalidSemanticCase.Mutate $fixtureReport.semanticReadiness.binding }
+        }
+        $invalidRejected = $false
+        try { Assert-AcceptanceReportMatchesSchema -Report $fixtureReport -SchemaPath $reportSchemaPath }
+        catch { $invalidRejected = $true }
+        Assert-TestCondition -Condition $invalidRejected -Message "Invalid semantic report case was accepted: $($invalidSemanticCase.Name)"
+    }
+    $fixtureReport.semanticReadiness.status = 'NOT_OBSERVED'
+    $fixtureReport.semanticReadiness.details = 'NOT_OBSERVED: legacy install acceptance does not start Core or App.'
+    $fixtureReport.semanticReadiness.binding = $null
 
     $dryRunOutput = @(& $harnessPath -Mode DryRun)
     Assert-TestCondition -Condition ($dryRunOutput.Count -eq 1) -Message 'Dry-run harness did not return exactly one report.'

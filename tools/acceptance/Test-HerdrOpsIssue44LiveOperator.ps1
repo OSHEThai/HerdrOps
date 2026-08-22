@@ -1,12 +1,13 @@
 #requires -Version 5.1
 
 [CmdletBinding()]
-param()
+param([switch]$SemanticEvidenceOnly)
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 . (Join-Path $PSScriptRoot 'HerdrOps.InstallAcceptance.Common.ps1')
+. (Join-Path $PSScriptRoot 'Issue44.SemanticEvidence.ps1')
 
 function Get-DefaultHerdrOpsInstallRoot {
     if ([string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) {
@@ -25,6 +26,7 @@ function Get-DefaultHerdrOpsUserDataRoot {
 $operatorPath = Join-Path $PSScriptRoot 'Invoke-HerdrOpsIssue44LiveOperator.ps1'
 $implementationPaths = @(
     (Join-Path $PSScriptRoot 'Invoke-HerdrOpsIssue44LiveOperator.ps1'),
+    (Join-Path $PSScriptRoot 'Issue44.SemanticEvidence.ps1'),
     (Join-Path $PSScriptRoot 'HerdrOps.InstallAcceptance.Common.ps1'))
 $reportSchemaPath = Join-Path $PSScriptRoot '..\..\docs\acceptance\issue-44-install-acceptance-report.schema.json'
 $repositoryRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..\..')).Path
@@ -69,6 +71,115 @@ function Copy-TestArguments {
     return $copy
 }
 
+function Assert-TestThrows {
+    param(
+        [Parameter(Mandatory = $true)][scriptblock]$Action,
+        [Parameter(Mandatory = $true)][string]$MessageFragment,
+        [Parameter(Mandatory = $true)][string]$Context
+    )
+    try { & $Action; throw "$Context unexpectedly succeeded." }
+    catch {
+        if ($_.Exception.Message -notlike "*$MessageFragment*") {
+            throw "$Context failed for the wrong reason: $($_.Exception.Message)"
+        }
+    }
+}
+
+function Test-Issue44SemanticEvidenceHostileCases {
+    $utf8 = New-Object Text.UTF8Encoding($false, $true)
+    $nonce = 'A' * 64
+    $core = [pscustomobject]@{ Id = 101; StartUtcTicks = [long]111; Path = 'C:\Program Files\HerdrOps\HerdrOps.Core.exe'; Sha256 = 'B' * 64 }
+    $app = [pscustomobject]@{ Id = 202; StartUtcTicks = [long]222; Path = 'C:\Program Files\HerdrOps\HerdrOps.App.exe'; Sha256 = 'C' * 64 }
+    $baseline = [ordered]@{
+        SchemaVersion = 1; AcceptanceNonce = $nonce; ClientInstanceId = 'a' * 32
+        CorrelationId = '11111111-2222-3333-4444-555555555555'; ServerInstanceId = 'b' * 32
+        CoreProcessId = 101; CoreProcessStartUtcTicks = [long]111
+        CoreExecutablePath = 'c:\program files\herdrops\HerdrOps.Core.exe'; CoreExecutableSha256 = 'B' * 64
+        AppProcessId = 202; AppProcessStartUtcTicks = [long]222
+        AppExecutablePath = 'c:\program files\herdrops\HerdrOps.App.exe'; AppExecutableSha256 = 'C' * 64
+        SnapshotSequence = [long]7
+    }
+    $bytes = $utf8.GetBytes(($baseline | ConvertTo-Json -Compress))
+    $validated = ConvertFrom-Issue44SemanticEvidenceBytes -Bytes $bytes -ExpectedNonce $nonce -CoreIdentity $core -AppIdentity $app
+    Assert-TestExactProperties -Object $validated -Names @(
+        'schemaVersion', 'acceptanceNonceSha256', 'clientInstanceId', 'correlationId',
+        'serverInstanceId', 'coreProcessId', 'coreProcessStartUtcTicks', 'coreExecutablePath',
+        'coreExecutableSha256', 'appProcessId', 'appProcessStartUtcTicks', 'appExecutablePath',
+        'appExecutableSha256', 'snapshotSequence', 'rawEvidenceBytes', 'rawEvidenceSha256') -Context 'semantic validator output'
+    Assert-TestCondition -Condition ([string]$validated.coreExecutablePath -ceq [IO.Path]::GetFullPath([string]$baseline.CoreExecutablePath)) -Message 'Canonical Core path was not persisted.'
+
+    foreach ($case in @(
+            @{ Name = 'nonce'; Property = 'AcceptanceNonce'; Value = ('D' * 64); Fragment = 'nonce' },
+            @{ Name = 'core-pid'; Property = 'CoreProcessId'; Value = 999; Fragment = 'Core PID/start/path/hash' },
+            @{ Name = 'core-start'; Property = 'CoreProcessStartUtcTicks'; Value = [long]999; Fragment = 'Core PID/start/path/hash' },
+            @{ Name = 'core-path'; Property = 'CoreExecutablePath'; Value = 'C:\Elsewhere\Core.exe'; Fragment = 'Core PID/start/path/hash' },
+            @{ Name = 'core-hash'; Property = 'CoreExecutableSha256'; Value = ('D' * 64); Fragment = 'Core PID/start/path/hash' },
+            @{ Name = 'app-pid'; Property = 'AppProcessId'; Value = 999; Fragment = 'App PID/start/path/hash' },
+            @{ Name = 'app-start'; Property = 'AppProcessStartUtcTicks'; Value = [long]999; Fragment = 'App PID/start/path/hash' },
+            @{ Name = 'app-path'; Property = 'AppExecutablePath'; Value = 'C:\Elsewhere\App.exe'; Fragment = 'App PID/start/path/hash' },
+            @{ Name = 'app-hash'; Property = 'AppExecutableSha256'; Value = ('D' * 64); Fragment = 'App PID/start/path/hash' })) {
+        $mutated = $baseline | ConvertTo-Json -Depth 10 | ConvertFrom-Json
+        $mutated.($case.Property) = $case.Value
+        $mutatedBytes = $utf8.GetBytes(($mutated | ConvertTo-Json -Compress))
+        Assert-TestThrows -Context "semantic-$($case.Name)" -MessageFragment $case.Fragment -Action {
+            ConvertFrom-Issue44SemanticEvidenceBytes -Bytes $mutatedBytes -ExpectedNonce $nonce -CoreIdentity $core -AppIdentity $app | Out-Null
+        }
+    }
+    Assert-TestThrows -Context 'semantic-malformed' -MessageFragment 'quoted property name' -Action {
+        ConvertFrom-Issue44SemanticEvidenceBytes -Bytes $utf8.GetBytes('{') -ExpectedNonce $nonce -CoreIdentity $core -AppIdentity $app | Out-Null
+    }
+    Assert-TestThrows -Context 'semantic-oversize' -MessageFragment 'bounded' -Action {
+        ConvertFrom-Issue44SemanticEvidenceBytes -Bytes (New-Object byte[] 32769) -ExpectedNonce $nonce -CoreIdentity $core -AppIdentity $app | Out-Null
+    }
+
+    $owned = Join-Path ([IO.Path]::GetTempPath()) ('HerdrOps-Issue44-validator-' + [Guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path $owned -ErrorAction Stop | Out-Null
+    $path = Join-Path $owned 'binding.json'
+    [IO.File]::WriteAllBytes($path, $bytes)
+    try {
+        $script:OverwriteBlocked = $false
+        $script:SwapBlocked = $false
+        $read = Read-Issue44SemanticEvidence -Path $path -OwnedDirectory $owned -ExpectedNonce $nonce -CoreIdentity $core -AppIdentity $app -AfterOpenTestHook {
+            param($lockedPath)
+            try { [IO.File]::WriteAllBytes($lockedPath, [byte[]](1,2,3)) } catch [IO.IOException] { $script:OverwriteBlocked = $true }
+            try { [IO.File]::Move($lockedPath, ($lockedPath + '.swap')) } catch [IO.IOException] { $script:SwapBlocked = $true }
+        }
+        Assert-TestCondition -Condition $script:OverwriteBlocked -Message 'Single-read lock did not block overwrite.'
+        Assert-TestCondition -Condition $script:SwapBlocked -Message 'Single-read lock did not block swap/rename.'
+        Assert-TestCondition -Condition ([string]$read.rawEvidenceSha256 -ceq (Get-Issue44BytesSha256 -Bytes $bytes)) -Message 'Single-read raw evidence hash drifted.'
+        $outside = Join-Path ([IO.Path]::GetTempPath()) ('HerdrOps-Issue44-outside-' + [Guid]::NewGuid().ToString('N') + '.json')
+        [IO.File]::WriteAllBytes($outside, $bytes)
+        try {
+            Assert-TestThrows -Context 'semantic-containment' -MessageFragment 'directly contained' -Action {
+                Read-Issue44SemanticEvidence -Path $outside -OwnedDirectory $owned -ExpectedNonce $nonce -CoreIdentity $core -AppIdentity $app | Out-Null
+            }
+        } finally { Remove-Item -LiteralPath $outside -Force }
+
+        $reparseTarget = Join-Path $owned 'reparse-target'
+        $reparseLink = Join-Path $owned 'reparse-link'
+        New-Item -ItemType Directory -Path $reparseTarget -ErrorAction Stop | Out-Null
+        [IO.File]::WriteAllBytes((Join-Path $reparseTarget 'binding.json'), $bytes)
+        $mklinkCommand = 'mklink /J "' + $reparseLink + '" "' + $reparseTarget + '"'
+        & $env:ComSpec /d /c $mklinkCommand | Out-Null
+        if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $reparseLink)) {
+            throw 'Could not create the isolated semantic evidence reparse hostile fixture.'
+        }
+        try {
+            Assert-TestThrows -Context 'semantic-reparse' -MessageFragment 'Reparse points are not allowed' -Action {
+                Read-Issue44SemanticEvidence -Path (Join-Path $reparseLink 'binding.json') -OwnedDirectory $reparseLink -ExpectedNonce $nonce -CoreIdentity $core -AppIdentity $app | Out-Null
+            }
+        } finally {
+            [IO.Directory]::Delete($reparseLink)
+            Remove-Item -LiteralPath $reparseTarget -Recurse -Force
+        }
+    } finally {
+        if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Force }
+        if (Test-Path -LiteralPath ($path + '.swap')) { Remove-Item -LiteralPath ($path + '.swap') -Force }
+        Remove-Item -LiteralPath $owned -Force
+    }
+    Assert-TestCondition -Condition (-not (Test-Path -LiteralPath $owned)) -Message 'Semantic validator owned directory cleanup failed.'
+}
+
 function Assert-TestReportShape {
     param(
         [Parameter(Mandatory = $true)]$Report,
@@ -79,7 +190,7 @@ function Assert-TestReportShape {
     Assert-TestExactProperties -Object $Report -Names @(
         'schemaVersion', 'reportKind', 'issue', 'acceptanceVersion', 'status',
         'mode', 'evidenceClass', 'startedAtUtc', 'completedAtUtc', 'runId',
-        'machine', 'artifacts', 'targets', 'preflight', 'lifecycle', 'cleanup',
+        'machine', 'artifacts', 'targets', 'preflight', 'lifecycle', 'semanticReadiness', 'cleanup',
         'failureDetails', 'transcript', 'boundaries') -Context 'acceptance report'
     Assert-TestCondition -Condition ([int]$Report.schemaVersion -eq 1) -Message 'Report schemaVersion drifted.'
     Assert-TestCondition -Condition ([string]$Report.reportKind -ceq 'HerdrOps.InstallAcceptanceReport') -Message 'Report kind drifted.'
@@ -97,6 +208,12 @@ function Assert-TestReportShape {
             'packageVersionObserved', 'retainedDataStatus', 'retainedDataSha256',
             'details') -Context "report lifecycle $stepName"
     }
+    Assert-TestExactProperties -Object $Report.semanticReadiness -Names @(
+        'status', 'details', 'binding') -Context 'report semanticReadiness'
+    $expectedSemanticStatus = if ($Mode -ceq 'Fixture') { 'SYNTHETIC' } else { 'NOT_OBSERVED' }
+    Assert-TestCondition -Condition ([string]$Report.semanticReadiness.status -ceq $expectedSemanticStatus) -Message 'Semantic readiness status drifted.'
+    Assert-TestCondition -Condition (-not [string]::IsNullOrWhiteSpace([string]$Report.semanticReadiness.details)) -Message 'CoreHealthDetails were not durably persisted.'
+    Assert-TestCondition -Condition ($null -eq $Report.semanticReadiness.binding) -Message 'Synthetic/static report fabricated live semantic binding.'
 
     Assert-TestExactProperties -Object $Report.cleanup -Names @(
         'status', 'attempted', 'simulationRoot', 'simulationRootRemoved',
@@ -305,6 +422,25 @@ foreach ($implementationPath in $implementationPaths) {
 $reportSchema = Read-AcceptanceJsonFile -Path $reportSchemaPath -Context 'Issue #44 report schema test input'
 Assert-TestCondition -Condition ([string]$reportSchema.'$schema' -like '*draft-07*') -Message 'Report JSON schema is not draft-07.'
 Assert-TestCondition -Condition ([string]$reportSchema.title -like '*Issue 44*') -Message 'Report JSON schema title drifted.'
+$semanticBindingFields = @(
+    'schemaVersion', 'acceptanceNonceSha256', 'clientInstanceId', 'correlationId',
+    'serverInstanceId', 'coreProcessId', 'coreProcessStartUtcTicks', 'coreExecutablePath',
+    'coreExecutableSha256', 'appProcessId', 'appProcessStartUtcTicks', 'appExecutablePath',
+    'appExecutableSha256', 'snapshotSequence', 'rawEvidenceBytes', 'rawEvidenceSha256')
+Assert-TestCondition -Condition ((@($reportSchema.definitions.semanticReadinessBinding.required) -join '|') -ceq ($semanticBindingFields -join '|')) -Message 'Semantic readiness schema required fields drifted.'
+Assert-TestExactProperties -Object $reportSchema.definitions.semanticReadinessBinding.properties -Names $semanticBindingFields -Context 'semantic readiness schema properties'
+Test-Issue44SemanticEvidenceHostileCases
+if ($SemanticEvidenceOnly) {
+    Write-Output ([pscustomobject][ordered]@{
+        EvidenceClass = 'Synthetic'
+        SemanticEvidenceValidator = 'PASS'
+        HostileCases = 'PASS'
+        LiveExecution = 'NOT RUN'
+        RuntimeCredit = 'NOT GRANTED'
+        ReleaseCredit = 'NOT GRANTED'
+    })
+    return
+}
 
 $testRoot = New-PackagingTempDirectory -Prefix 'HerdrOps-I44LiveOp-'
 $utf8 = New-Object System.Text.UTF8Encoding($false)
@@ -735,6 +871,8 @@ try {
         RetainedDataPersistence = 'PASS'
         ExactProductionActionOrder = 'PASS'
         FailClosedHostileCases = 'PASS'
+        SemanticEvidenceValidator = 'PASS'
+        DurableSemanticReportContract = 'PASS'
         ReportSchemaPersisted = 'PASS'
         CleanMachine = 'NOT OBSERVED'
         Runtime = 'NOT OBSERVED'

@@ -7,7 +7,7 @@
   "required": [
     "schemaVersion", "reportKind", "issue", "acceptanceVersion", "status",
     "mode", "evidenceClass", "startedAtUtc", "completedAtUtc", "runId",
-    "machine", "artifacts", "targets", "preflight", "lifecycle", "cleanup",
+    "machine", "artifacts", "targets", "preflight", "lifecycle", "semanticReadiness", "cleanup",
     "failureDetails", "transcript", "boundaries"
   ],
   "properties": {
@@ -71,6 +71,15 @@
         "uninstall": { "$ref": "#/definitions/lifecycleStep" }
       }
     },
+    "semanticReadiness": {
+      "type": "object", "additionalProperties": false,
+      "required": ["status", "details", "binding"],
+      "properties": {
+        "status": { "enum": ["PASS", "SYNTHETIC", "NOT_OBSERVED"] },
+        "details": { "type": "string" },
+        "binding": { "oneOf": [{ "$ref": "#/definitions/semanticReadinessBinding" }, { "type": "null" }] }
+      }
+    },
     "cleanup": {
       "type": "object", "additionalProperties": false,
       "required": ["status", "attempted", "simulationRoot", "simulationRootRemoved", "ownedStageRemoved", "ownedBackupRemoved", "harnessSeededDataMarkerRemoved", "retainedDataLeftIntact", "residuals", "details"],
@@ -103,6 +112,33 @@
       }
     }
   },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "semanticReadiness": {
+            "properties": { "status": { "const": "PASS" } },
+            "required": ["status"]
+          }
+        },
+        "required": ["semanticReadiness"]
+      },
+      "then": {
+        "properties": {
+          "semanticReadiness": {
+            "properties": { "binding": { "$ref": "#/definitions/semanticReadinessBinding" } }
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "semanticReadiness": {
+            "properties": { "binding": { "type": "null" } }
+          }
+        }
+      }
+    }
+  ],
   "definitions": {
     "hash": {
       "type": "object", "additionalProperties": false,
@@ -148,6 +184,33 @@
         "name": { "type": "string" },
         "status": { "enum": ["PASS", "FAIL", "NOT_APPLICABLE"] },
         "details": { "type": "string" }
+      }
+    },
+    "semanticReadinessBinding": {
+      "type": "object", "additionalProperties": false,
+      "required": [
+        "schemaVersion", "acceptanceNonceSha256", "clientInstanceId", "correlationId",
+        "serverInstanceId", "coreProcessId", "coreProcessStartUtcTicks", "coreExecutablePath",
+        "coreExecutableSha256", "appProcessId", "appProcessStartUtcTicks", "appExecutablePath",
+        "appExecutableSha256", "snapshotSequence", "rawEvidenceBytes", "rawEvidenceSha256"
+      ],
+      "properties": {
+        "schemaVersion": { "const": 1 },
+        "acceptanceNonceSha256": { "type": "string", "pattern": "^[0-9A-F]{64}$" },
+        "clientInstanceId": { "type": "string", "pattern": "^[0-9a-f]{32}$" },
+        "correlationId": { "type": "string", "format": "uuid" },
+        "serverInstanceId": { "type": "string", "pattern": "^[0-9a-f]{32}$" },
+        "coreProcessId": { "type": "integer", "minimum": 1 },
+        "coreProcessStartUtcTicks": { "type": "integer", "minimum": 1 },
+        "coreExecutablePath": { "type": "string", "minLength": 1 },
+        "coreExecutableSha256": { "type": "string", "pattern": "^[0-9A-F]{64}$" },
+        "appProcessId": { "type": "integer", "minimum": 1 },
+        "appProcessStartUtcTicks": { "type": "integer", "minimum": 1 },
+        "appExecutablePath": { "type": "string", "minLength": 1 },
+        "appExecutableSha256": { "type": "string", "pattern": "^[0-9A-F]{64}$" },
+        "snapshotSequence": { "type": "integer", "minimum": 0 },
+        "rawEvidenceBytes": { "type": "integer", "minimum": 1, "maximum": 32768 },
+        "rawEvidenceSha256": { "type": "string", "pattern": "^[0-9A-F]{64}$" }
       }
     },
     "lifecycleStep": {

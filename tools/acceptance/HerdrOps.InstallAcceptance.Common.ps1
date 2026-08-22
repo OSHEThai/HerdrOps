@@ -1277,7 +1277,7 @@ function Assert-AcceptanceReportMatchesSchema {
     Assert-AcceptanceExactProperties -Object $Report -Names @(
         'schemaVersion', 'reportKind', 'issue', 'acceptanceVersion', 'status',
         'mode', 'evidenceClass', 'startedAtUtc', 'completedAtUtc', 'runId',
-        'machine', 'artifacts', 'targets', 'preflight', 'lifecycle', 'cleanup',
+        'machine', 'artifacts', 'targets', 'preflight', 'lifecycle', 'semanticReadiness', 'cleanup',
         'failureDetails', 'transcript', 'boundaries') -Context 'Issue #44 acceptance report'
     Assert-JsonIntegerValue -Value $Report.schemaVersion -Name 'acceptance report schemaVersion'
     Assert-JsonIntegerValue -Value $Report.issue -Name 'acceptance report issue'
@@ -1360,6 +1360,59 @@ function Assert-AcceptanceReportMatchesSchema {
             throw "Acceptance report lifecycle $stepName state is invalid."
         }
         Assert-AcceptanceReportHashList -Hashes $step.installedFileHashes -Context "acceptance report lifecycle $stepName"
+    }
+
+    Assert-AcceptanceExactProperties -Object $Report.semanticReadiness -Names @(
+        'status', 'details', 'binding') -Context 'acceptance report semanticReadiness'
+    foreach ($semanticStringName in @('status', 'details')) {
+        Assert-AcceptanceReportStringValue -Value (Get-AcceptanceRequiredProperty -Object $Report.semanticReadiness -Name $semanticStringName -Context 'acceptance report semanticReadiness') -Context "acceptance report semanticReadiness $semanticStringName"
+    }
+    $semanticStatus = [string]$Report.semanticReadiness.status
+    if ($semanticStatus -notin @('PASS', 'SYNTHETIC', 'NOT_OBSERVED')) {
+        throw 'Acceptance report semanticReadiness status is invalid.'
+    }
+    $semanticBinding = $Report.semanticReadiness.binding
+    if ($semanticStatus -ceq 'PASS') {
+        if ($null -eq $semanticBinding) {
+            throw 'Acceptance report semanticReadiness PASS requires a non-null binding.'
+        }
+        $semanticBindingFields = @(
+            'schemaVersion', 'acceptanceNonceSha256', 'clientInstanceId', 'correlationId',
+            'serverInstanceId', 'coreProcessId', 'coreProcessStartUtcTicks', 'coreExecutablePath',
+            'coreExecutableSha256', 'appProcessId', 'appProcessStartUtcTicks', 'appExecutablePath',
+            'appExecutableSha256', 'snapshotSequence', 'rawEvidenceBytes', 'rawEvidenceSha256')
+        Assert-AcceptanceExactProperties -Object $semanticBinding -Names $semanticBindingFields -Context 'acceptance report semanticReadiness binding'
+        foreach ($integerName in @(
+                'schemaVersion', 'coreProcessId', 'coreProcessStartUtcTicks', 'appProcessId',
+                'appProcessStartUtcTicks', 'snapshotSequence', 'rawEvidenceBytes')) {
+            Assert-JsonIntegerValue -Value (Get-AcceptanceRequiredProperty -Object $semanticBinding -Name $integerName -Context 'acceptance report semanticReadiness binding') -Name "semanticReadiness binding $integerName"
+        }
+        foreach ($stringName in @(
+                'acceptanceNonceSha256', 'clientInstanceId', 'correlationId', 'serverInstanceId',
+                'coreExecutablePath', 'coreExecutableSha256', 'appExecutablePath',
+                'appExecutableSha256', 'rawEvidenceSha256')) {
+            Assert-AcceptanceReportStringValue -Value (Get-AcceptanceRequiredProperty -Object $semanticBinding -Name $stringName -Context 'acceptance report semanticReadiness binding') -Context "semanticReadiness binding $stringName"
+        }
+        foreach ($hashName in @('acceptanceNonceSha256', 'coreExecutableSha256', 'appExecutableSha256', 'rawEvidenceSha256')) {
+            Assert-AcceptanceSha256 -Value ([string]$semanticBinding.$hashName) -Context "semanticReadiness binding $hashName"
+        }
+        if ([int]$semanticBinding.schemaVersion -ne 1 -or
+            [string]$semanticBinding.clientInstanceId -notmatch '^[0-9a-f]{32}$' -or
+            [string]$semanticBinding.correlationId -notmatch '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$' -or
+            [string]$semanticBinding.serverInstanceId -notmatch '^[0-9a-f]{32}$' -or
+            [int]$semanticBinding.coreProcessId -lt 1 -or
+            [long]$semanticBinding.coreProcessStartUtcTicks -lt 1 -or
+            [string]::IsNullOrWhiteSpace([string]$semanticBinding.coreExecutablePath) -or
+            [int]$semanticBinding.appProcessId -lt 1 -or
+            [long]$semanticBinding.appProcessStartUtcTicks -lt 1 -or
+            [string]::IsNullOrWhiteSpace([string]$semanticBinding.appExecutablePath) -or
+            [long]$semanticBinding.snapshotSequence -lt 0 -or
+            [long]$semanticBinding.rawEvidenceBytes -lt 1 -or
+            [long]$semanticBinding.rawEvidenceBytes -gt 32768) {
+            throw 'Acceptance report semanticReadiness binding contains invalid values.'
+        }
+    } elseif ($null -ne $semanticBinding) {
+        throw 'Acceptance report non-PASS semanticReadiness requires a null binding.'
     }
 
     Assert-AcceptanceExactProperties -Object $Report.cleanup -Names @(
