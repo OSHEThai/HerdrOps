@@ -1291,8 +1291,8 @@ try {
     if ($installRootFull.Equals($userDataRootFull, [StringComparison]::OrdinalIgnoreCase)) {
         throw 'InstallRoot and UserDataRoot must be distinct non-overlapping paths.'
     }
-    if ((Test-PathWithin -ChildPath $installRootFull -RootPath $userDataRootFull -AllowEqual:$false) -or
-        (Test-PathWithin -ChildPath $userDataRootFull -RootPath $installRootFull -AllowEqual:$false)) {
+    if ((Test-PathWithin -ChildPath $installRootFull -RootPath $userDataRootFull) -or
+        (Test-PathWithin -ChildPath $userDataRootFull -RootPath $installRootFull)) {
         throw 'InstallRoot and UserDataRoot cannot nest within each other.'
     }
     Assert-OperatorNoReparse -Path $installRootFull
