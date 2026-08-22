@@ -49,7 +49,10 @@ $script:V02ReleaseGateAuthorityFileSha256 = 'BFADC29EA34BAA13FF5D3F43013795C0258
 $script:V02ReleaseGateAuthorityOwner = '@yutthaphon'
 $script:V02ReleaseGateAuthorityRole = 'ProductOwner'
 $script:V02ReleaseGateIndependentReceiptEvidenceClass = 'ExternalIndependentCandidateReceipt'
-$script:V02ReleaseGateIndependentReceiptAuthenticationMethod = 'EXTERNAL_AUTHENTICATED_INDEPENDENT_REVIEW'
+$script:V02ReleaseGateIndependentReceiptAuthenticationMethod = 'EXTERNAL_RSA_SHA256_AUTHENTICATED_REVIEW'
+$script:V02ReleaseGateIndependentReceiptSignatureAlgorithm = 'RSASSA-PKCS1-v1_5-SHA256'
+$script:V02ReleaseGateIndependentReceiptKeyType = 'RSA-2048'
+$script:V02ReleaseGateMinimumRsaModulusBytes = 256
 $script:V02ReleaseGateIndependentReceiptRole = 'IndependentGateReviewer'
 $script:V02ReleaseGateMaximumSnapshotBytes = [int64]16777216
 $script:V02ReleaseGateHerdrReleaseId = '0.8.2-preview.2026-08-19-b5c4a0176e91-x86_64-pc-windows-msvc'
@@ -74,7 +77,7 @@ $script:V02ReleaseGateHumanArtifactCheckIds = @(
     'runtime-matrix-english',
     'tracker-11-readiness'
 )
-$script:V02ReleaseGateValidatorRelativePaths = @(
+$script:V02ReleaseGateTransitiveGovernanceRelativePaths = @(
     'tools/Test-V02ReleaseGate.ps1',
     'tools/lib/V02ReferenceHostProfile.ps1',
     'tools/packaging/v0.2/Test-V02PackageIdentity.ps1',
@@ -83,8 +86,28 @@ $script:V02ReleaseGateValidatorRelativePaths = @(
     'tools/v0.2-renderer-compatibility/Test-V02RendererCompatibilityManifest.ps1',
     'tools/v0.2-renderer-compatibility/RendererCompatibility.Common.ps1',
     'tools/human-design-review/HumanDesignReview.Common.ps1',
-    'tools/Test-V02LanguageMatrixAcceptance.ps1'
+    'tools/Test-V02LanguageMatrixAcceptance.ps1',
+    'Plan/DECISIONS.md',
+    'Plan/reference-hosts/v0.2.json',
+    'Plan/reference-hosts/reference-host-profile.schema.json',
+    'tools/packaging/v0.2/package-identity-profile.json',
+    'tools/packaging/v0.2/package-identity-receipt.schema.json',
+    'tools/v0.2-renderer-compatibility/renderer-compatibility-manifest.schema.json',
+    'tools/human-design-review/human-design-review.schema.json',
+    'docs/design/reference/MANIFEST.md',
+    'docs/design/reference/01-overview.png',
+    'docs/design/reference/02-live-organization.png',
+    'docs/design/reference/03-realtime-activity.png',
+    'docs/design/reference/04-delegation-graph.png',
+    'docs/design/reference/05-agent-detail.png',
+    'docs/design/reference/06-task-alignment.png',
+    'docs/design/reference/07-file-activity.png',
+    'docs/design/reference/08-compliance-queue.png',
+    'docs/design/reference/09-evaluation.png',
+    'docs/design/reference/10-daily-summary.png',
+    'docs/design/reference/11-widget-concepts.png'
 )
+$script:V02ReleaseGateValidatorRelativePaths = $script:V02ReleaseGateTransitiveGovernanceRelativePaths
 $script:V02ReleaseGateHeldValidatorIndex = $null
 
 if (-not ('V02ReleaseGateNative' -as [type])) {
@@ -910,7 +933,8 @@ function Read-V02ReleaseGateExternalIndependentCandidateReceipt {
     Assert-V02ReleaseGateExactString $receipt.IndependentReviewer.Role $script:V02ReleaseGateIndependentReceiptRole 'External independent candidate receipt reviewer role'
     Assert-V02ReleaseGateDistinctSet -Values @($receipt.Owner.Identity, $receipt.IndependentReviewer.Identity) -Context 'External independent candidate receipt identities'
     Assert-V02ReleaseGateExactProperties $receipt.Authentication @(
-        'Method', 'Reference', 'VerifiedBy', 'VerifiedRole', 'ProofSha256', 'Authenticated'
+        'Method', 'Reference', 'VerifiedBy', 'VerifiedRole', 'TrustAnchor',
+        'Signature', 'SignatureAlgorithm', 'Authenticated'
     ) 'External independent candidate receipt Authentication'
     Assert-V02ReleaseGateExactString $receipt.Authentication.Method $script:V02ReleaseGateIndependentReceiptAuthenticationMethod 'External independent candidate receipt authentication method'
     Assert-V02ReleaseGateString $receipt.Authentication.Reference 'External independent candidate receipt authentication reference' | Out-Null
@@ -922,7 +946,66 @@ function Read-V02ReleaseGateExternalIndependentCandidateReceipt {
     }
     Assert-V02ReleaseGateExactString $receipt.Authentication.VerifiedBy $receipt.IndependentReviewer.Identity 'External independent candidate receipt verifier identity'
     Assert-V02ReleaseGateExactString $receipt.Authentication.VerifiedRole $receipt.IndependentReviewer.Role 'External independent candidate receipt verifier role'
-    Assert-V02ReleaseGateSha256 $receipt.Authentication.ProofSha256 'External independent candidate receipt authentication proof' | Out-Null
+    Assert-V02ReleaseGateExactString $receipt.Authentication.SignatureAlgorithm $script:V02ReleaseGateIndependentReceiptSignatureAlgorithm 'External independent candidate receipt signature algorithm'
+    Assert-V02ReleaseGateExactProperties $receipt.Authentication.TrustAnchor @(
+        'KeyType', 'Modulus', 'Exponent'
+    ) 'External independent candidate receipt TrustAnchor'
+    Assert-V02ReleaseGateExactString $receipt.Authentication.TrustAnchor.KeyType $script:V02ReleaseGateIndependentReceiptKeyType 'External independent candidate receipt trust anchor key type'
+    $modulusStr = Assert-V02ReleaseGateString $receipt.Authentication.TrustAnchor.Modulus 'External independent candidate receipt trust anchor Modulus'
+    $exponentStr = Assert-V02ReleaseGateString $receipt.Authentication.TrustAnchor.Exponent 'External independent candidate receipt trust anchor Exponent'
+    $signatureStr = Assert-V02ReleaseGateString $receipt.Authentication.Signature 'External independent candidate receipt Signature'
+
+    $modulusBytes = $null
+    $exponentBytes = $null
+    $signatureBytes = $null
+    try {
+        $modulusBytes = [Convert]::FromBase64String($modulusStr)
+        $exponentBytes = [Convert]::FromBase64String($exponentStr)
+        $signatureBytes = [Convert]::FromBase64String($signatureStr)
+    }
+    catch {
+        throw 'External independent candidate receipt trust anchor and signature must be valid Base64.'
+    }
+    if ($modulusBytes.Length -lt $script:V02ReleaseGateMinimumRsaModulusBytes) {
+        throw "Trust anchor RSA key size must be at least $($script:V02ReleaseGateMinimumRsaModulusBytes * 8) bits."
+    }
+    if ($signatureBytes.Length -lt $script:V02ReleaseGateMinimumRsaModulusBytes) {
+        throw "Signature byte length must match RSA modulus length ($($script:V02ReleaseGateMinimumRsaModulusBytes) bytes)."
+    }
+
+    $signedPayload = [pscustomobject][ordered]@{
+        DecisionId = [string]$receipt.DecisionId
+        ApprovalReference = [string]$receipt.ApprovalReference
+        AuthorityReference = [string]$receipt.AuthorityReference
+        AuthorityReferenceSha256 = [string]$receipt.AuthorityReferenceSha256
+        Candidate = $receipt.Candidate
+        Owner = $receipt.Owner
+        IndependentReviewer = $receipt.IndependentReviewer
+    }
+    $canonicalPayloadJson = ConvertTo-V02Jcs $signedPayload
+    $canonicalPayloadBytes = [Text.UTF8Encoding]::new($false, $true).GetBytes($canonicalPayloadJson)
+    $payloadSha256 = (Get-V02Sha256Hex -Bytes $canonicalPayloadBytes).ToUpperInvariant()
+
+    $rsa = $null
+    $signatureVerified = $false
+    try {
+        $rsa = [System.Security.Cryptography.RSA]::Create()
+        $rsaParams = New-Object System.Security.Cryptography.RSAParameters
+        $rsaParams.Modulus = $modulusBytes
+        $rsaParams.Exponent = $exponentBytes
+        $rsa.ImportParameters($rsaParams)
+        $signatureVerified = $rsa.VerifyData($canonicalPayloadBytes, $signatureBytes, [System.Security.Cryptography.HashAlgorithmName]::SHA256, [System.Security.Cryptography.RSASignaturePadding]::Pkcs1)
+    }
+    catch {
+        throw "External independent candidate receipt cryptographic trust anchor error: $($_.Exception.Message)"
+    }
+    finally {
+        if ($null -ne $rsa) { $rsa.Dispose() }
+    }
+    if (-not $signatureVerified) {
+        throw 'External independent candidate receipt cryptographic signature verification failed.'
+    }
+
     if (-not (Assert-V02ReleaseGateBoolean $receipt.Authentication.Authenticated 'External independent candidate receipt Authenticated')) {
         throw 'External independent candidate receipt must be externally authenticated.'
     }
@@ -944,8 +1027,11 @@ function Read-V02ReleaseGateExternalIndependentCandidateReceipt {
         ReviewerIdentity = [string]$receipt.IndependentReviewer.Identity
         ReviewerRole = [string]$receipt.IndependentReviewer.Role
         AuthenticationReference = [string]$receipt.Authentication.Reference
-        AuthenticationProofSha256 = [string]$receipt.Authentication.ProofSha256
-        Authentication = 'EXTERNAL_AUTHENTICATED_INDEPENDENT_REVIEW'
+        TrustAnchor = $receipt.Authentication.TrustAnchor
+        TrustAnchorFingerprint = (Get-V02Sha256Hex -Bytes $modulusBytes).ToUpperInvariant()
+        Signature = [string]$receipt.Authentication.Signature
+        SignedPayloadSha256 = $payloadSha256
+        Authentication = [string]$receipt.Authentication.Method
         Result = 'APPROVED_CANDIDATE_ONLY'
     }
 }
@@ -1021,7 +1107,8 @@ function Read-V02ReleaseGateCandidateLock {
         'DecisionId', 'ApprovalReference', 'PayloadSha256', 'Reference', 'ReferenceSha256',
         'OwnerIdentity', 'OwnerRole', 'Authentication', 'IndependentReceiptPath',
         'IndependentReceiptSha256', 'IndependentReceiptIdentity', 'IndependentReceiptRole',
-        'IndependentReceiptAuthentication'
+        'IndependentReceiptAuthentication', 'IndependentReceiptTrustAnchorFingerprint',
+        'IndependentReceiptSignedPayloadSha256'
     ) 'Approved candidate lock Authority'
     Assert-V02ReleaseGateEqual $document.Value.Authority.DecisionId $Authority.DecisionId 'Approved candidate lock authority decision'
     Assert-V02ReleaseGateEqual $document.Value.Authority.ApprovalReference $Authority.ApprovalReference 'Approved candidate lock authority reference'
@@ -1030,12 +1117,14 @@ function Read-V02ReleaseGateCandidateLock {
     Assert-V02ReleaseGateEqual $document.Value.Authority.ReferenceSha256 $Authority.FileSha256 'Approved candidate lock authority bytes'
     Assert-V02ReleaseGateExactString $document.Value.Authority.OwnerIdentity $Authority.OwnerIdentity 'Approved candidate lock authority owner'
     Assert-V02ReleaseGateExactString $document.Value.Authority.OwnerRole $Authority.OwnerRole 'Approved candidate lock authority role'
-    Assert-V02ReleaseGateExactString $document.Value.Authority.Authentication 'TRUSTED_OWNER_PLUS_EXTERNAL_INDEPENDENT_RECEIPT' 'Approved candidate lock authority authentication'
+    Assert-V02ReleaseGateExactString $document.Value.Authority.Authentication 'TRUSTED_OWNER_PLUS_EXTERNAL_RSA_AUTHENTICATED_RECEIPT' 'Approved candidate lock authority authentication'
     Assert-V02ReleaseGateExactString $document.Value.Authority.IndependentReceiptPath $IndependentReceipt.Path 'Approved candidate lock independent receipt path'
     Assert-V02ReleaseGateEqual $document.Value.Authority.IndependentReceiptSha256 $IndependentReceipt.FileSha256 'Approved candidate lock independent receipt bytes'
     Assert-V02ReleaseGateExactString $document.Value.Authority.IndependentReceiptIdentity $IndependentReceipt.ReviewerIdentity 'Approved candidate lock independent receipt identity'
     Assert-V02ReleaseGateExactString $document.Value.Authority.IndependentReceiptRole $IndependentReceipt.ReviewerRole 'Approved candidate lock independent receipt role'
     Assert-V02ReleaseGateExactString $document.Value.Authority.IndependentReceiptAuthentication $IndependentReceipt.Authentication 'Approved candidate lock independent receipt authentication'
+    Assert-V02ReleaseGateExactString $document.Value.Authority.IndependentReceiptTrustAnchorFingerprint $IndependentReceipt.TrustAnchorFingerprint 'Approved candidate lock independent receipt trust anchor fingerprint'
+    Assert-V02ReleaseGateExactString $document.Value.Authority.IndependentReceiptSignedPayloadSha256 $IndependentReceipt.SignedPayloadSha256 'Approved candidate lock independent receipt signed payload hash'
     return [pscustomobject][ordered]@{
         Path = $document.Path
         FileSha256 = $document.FileSha256
@@ -1054,7 +1143,7 @@ function Read-V02ReleaseGateCandidateLock {
         RuntimeMatrixManifestSha256 = [string]$document.Value.RuntimeMatrixManifestSha256
         Authority = $Authority
         IndependentReceipt = $IndependentReceipt
-        Authentication = 'TRUSTED_OWNER_PLUS_EXTERNAL_INDEPENDENT_RECEIPT'
+        Authentication = 'TRUSTED_OWNER_PLUS_EXTERNAL_RSA_AUTHENTICATED_RECEIPT'
         Result = 'APPROVED_CANDIDATE_ONLY'
     }
 }
@@ -1978,13 +2067,16 @@ function Invoke-V02ReleaseGate {
         $candidateLock.Path, $authority.Path, $candidateLock.IndependentReceipt.Path
     )
     $validatorSnapshots = Get-V02ReleaseGateValidatorSnapshots -RepositoryRoot $identityBefore.RepositoryRoot
-    $preValidationSnapshots = @(
-        $boundFilePaths | ForEach-Object {
-            Get-V02ReleaseGateStableFileSnapshot -Path $_ -Context 'Pre-validation bound artifact'
-        }
-        $validatorSnapshots
-    )
+    $boundSnapshots = New-Object System.Collections.Generic.List[object]
+    $preValidationSnapshots = $null
     try {
+        foreach ($filePath in $boundFilePaths) {
+            [void]$boundSnapshots.Add((Get-V02ReleaseGateStableFileSnapshot -Path $filePath -Context 'Pre-validation bound artifact' -KeepOpen))
+        }
+        $preValidationSnapshots = @(
+            $validatorSnapshots
+            $boundSnapshots.ToArray()
+        )
         Assert-V02ReleaseGateDistinctFileIdentities -Snapshots $preValidationSnapshots -Context 'Pre-validation bound artifacts and validators'
 
     $package = Invoke-V02ReleaseGatePackageValidation -Context $context `
@@ -2145,7 +2237,12 @@ function Invoke-V02ReleaseGate {
     return $report
     }
     finally {
-        Close-V02ReleaseGateHeldSnapshots -Snapshots $validatorSnapshots
+        if ($null -ne $preValidationSnapshots) {
+            Close-V02ReleaseGateHeldSnapshots -Snapshots $preValidationSnapshots
+        }
+        else {
+            Close-V02ReleaseGateHeldSnapshots -Snapshots @($validatorSnapshots; $boundSnapshots.ToArray())
+        }
     }
 }
 

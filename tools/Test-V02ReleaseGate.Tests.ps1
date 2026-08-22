@@ -80,10 +80,15 @@ function Get-V02ReleaseGateTestRepositoryIdentity {
 function New-V02ReleaseGateTestCleanRepository {
     $root = Join-Path ([IO.Path]::GetTempPath()) ('herdrops-v02-gate-clean-' + [Guid]::NewGuid().ToString('N'))
     New-V02ReleaseGateTestDirectory -Path $root
-    New-V02ReleaseGateTestDirectory -Path (Join-Path $root 'Plan')
-    New-V02ReleaseGateTestDirectory -Path (Join-Path $root 'tools\packaging\v0.2')
-    Copy-Item -LiteralPath (Join-Path $script:GateRepositoryRoot 'Plan\DECISIONS.md') -Destination (Join-Path $root 'Plan\DECISIONS.md')
-    Copy-Item -LiteralPath (Join-Path $script:GateRepositoryRoot 'tools\packaging\v0.2\package-identity-profile.json') -Destination (Join-Path $root 'tools\packaging\v0.2\package-identity-profile.json')
+    foreach ($rel in $script:V02ReleaseGateTransitiveGovernanceRelativePaths) {
+        $src = Join-Path $script:GateRepositoryRoot ($rel -replace '/', '\')
+        $dst = Join-Path $root ($rel -replace '/', '\')
+        $dstDir = [IO.Path]::GetDirectoryName($dst)
+        if (-not (Test-Path -LiteralPath $dstDir -PathType Container)) {
+            New-V02ReleaseGateTestDirectory -Path $dstDir
+        }
+        Copy-Item -LiteralPath $src -Destination $dst -Force
+    }
     & git -C $root init --quiet
     & git -C $root -c user.name=HerdrOps-Gate-Test -c user.email=test@example.invalid add --all
     & git -C $root -c user.name=HerdrOps-Gate-Test -c user.email=test@example.invalid commit --quiet -m fixture
@@ -134,12 +139,14 @@ function New-V02ReleaseGateTestCandidateLock {
             ReferenceSha256 = $Authority.FileSha256
             OwnerIdentity = $Authority.OwnerIdentity
             OwnerRole = $Authority.OwnerRole
-            Authentication = 'TRUSTED_OWNER_PLUS_EXTERNAL_INDEPENDENT_RECEIPT'
+            Authentication = 'TRUSTED_OWNER_PLUS_EXTERNAL_RSA_AUTHENTICATED_RECEIPT'
             IndependentReceiptPath = $IndependentReceipt.Path
             IndependentReceiptSha256 = $IndependentReceipt.FileSha256
             IndependentReceiptIdentity = $IndependentReceipt.ReviewerIdentity
             IndependentReceiptRole = $IndependentReceipt.ReviewerRole
             IndependentReceiptAuthentication = $IndependentReceipt.Authentication
+            IndependentReceiptTrustAnchorFingerprint = $IndependentReceipt.TrustAnchorFingerprint
+            IndependentReceiptSignedPayloadSha256 = $IndependentReceipt.SignedPayloadSha256
         }
         Runtime = 'NOT_OBSERVED'
         Human = 'NOT_OBSERVED'
@@ -163,12 +170,20 @@ function New-V02ReleaseGateTestExternalIndependentReceipt {
         [string]$PackageCoreSha256 = ('6' * 64),
         [string]$RendererManifestSha256 = ('7' * 64),
         [string]$RuntimeMatrixManifestSha256 = ('8' * 64),
-        [string]$ReviewerIdentity = '@independent-reviewer'
+        [string]$ReviewerIdentity = '@independent-reviewer',
+        [System.Security.Cryptography.RSA]$RsaKey = $null
     )
-    $receipt = [pscustomobject][ordered]@{
-        SchemaVersion = 2
-        EvidenceClass = 'ExternalIndependentCandidateReceipt'
-        Result = 'APPROVED_CANDIDATE_ONLY'
+    $rsa = $RsaKey
+    if ($null -eq $rsa) {
+        $rsa = [System.Security.Cryptography.RSA]::Create(2048)
+    }
+    $pubParams = $rsa.ExportParameters($false)
+    $trustAnchor = [pscustomobject][ordered]@{
+        KeyType = 'RSA-2048'
+        Modulus = [Convert]::ToBase64String($pubParams.Modulus)
+        Exponent = [Convert]::ToBase64String($pubParams.Exponent)
+    }
+    $signedPayload = [pscustomobject][ordered]@{
         DecisionId = 'herdrops-rec-all-v2'
         ApprovalReference = 'https://github.com/OSHEThai/HerdrOps/issues/149#issuecomment-5380637664'
         AuthorityReference = 'Plan/DECISIONS.md#D-024'
@@ -190,12 +205,33 @@ function New-V02ReleaseGateTestExternalIndependentReceipt {
         }
         Owner = [pscustomobject][ordered]@{ Identity = '@yutthaphon'; Role = 'ProductOwner' }
         IndependentReviewer = [pscustomobject][ordered]@{ Identity = $ReviewerIdentity; Role = 'IndependentGateReviewer' }
+    }
+    $canonicalJson = ConvertTo-V02Jcs $signedPayload
+    $canonicalBytes = [Text.UTF8Encoding]::new($false, $true).GetBytes($canonicalJson)
+    $sigBytes = $rsa.SignData($canonicalBytes, [System.Security.Cryptography.HashAlgorithmName]::SHA256, [System.Security.Cryptography.RSASignaturePadding]::Pkcs1)
+    $sigB64 = [Convert]::ToBase64String($sigBytes)
+    $payloadSha256 = (Get-V02Sha256Hex -Bytes $canonicalBytes).ToUpperInvariant()
+    $modulusFingerprint = (Get-V02Sha256Hex -Bytes $pubParams.Modulus).ToUpperInvariant()
+
+    $receipt = [pscustomobject][ordered]@{
+        SchemaVersion = 2
+        EvidenceClass = 'ExternalIndependentCandidateReceipt'
+        Result = 'APPROVED_CANDIDATE_ONLY'
+        DecisionId = 'herdrops-rec-all-v2'
+        ApprovalReference = 'https://github.com/OSHEThai/HerdrOps/issues/149#issuecomment-5380637664'
+        AuthorityReference = 'Plan/DECISIONS.md#D-024'
+        AuthorityReferenceSha256 = 'BFADC29EA34BAA13FF5D3F43013795C0258CF691369E5E150774D3F646F4F730'
+        Candidate = $signedPayload.Candidate
+        Owner = $signedPayload.Owner
+        IndependentReviewer = $signedPayload.IndependentReviewer
         Authentication = [pscustomobject][ordered]@{
-            Method = 'EXTERNAL_AUTHENTICATED_INDEPENDENT_REVIEW'
+            Method = 'EXTERNAL_RSA_SHA256_AUTHENTICATED_REVIEW'
             Reference = 'https://external-review.invalid/herdrops/v0.2/candidate'
             VerifiedBy = $ReviewerIdentity
             VerifiedRole = 'IndependentGateReviewer'
-            ProofSha256 = ('F' * 64)
+            TrustAnchor = $trustAnchor
+            Signature = $sigB64
+            SignatureAlgorithm = 'RSASSA-PKCS1-v1_5-SHA256'
             Authenticated = $true
         }
         RoleDistinct = $true
@@ -210,9 +246,14 @@ function New-V02ReleaseGateTestExternalIndependentReceipt {
         FileSha256 = $hash
         ReviewerIdentity = $ReviewerIdentity
         ReviewerRole = 'IndependentGateReviewer'
-        Authentication = 'EXTERNAL_AUTHENTICATED_INDEPENDENT_REVIEW'
+        Authentication = 'EXTERNAL_RSA_SHA256_AUTHENTICATED_REVIEW'
+        TrustAnchor = $trustAnchor
+        TrustAnchorFingerprint = $modulusFingerprint
+        Signature = $sigB64
+        SignedPayloadSha256 = $payloadSha256
         Candidate = $receipt.Candidate
         Value = $receipt
+        PrivateKey = $rsa
     }
 }
 
@@ -318,7 +359,7 @@ $script:TestRoot = Join-Path ([IO.Path]::GetTempPath()) ('herdrops-v02-gate-test
 New-V02ReleaseGateTestDirectory -Path $script:TestRoot
 
 try {
-    Invoke-V02ReleaseGateTestCase 'approved candidate lock binds exact source/profile/authority' {
+    Invoke-V02ReleaseGateTestCase 'approved candidate lock binds exact source/profile/authority and cryptographically verified external receipt' {
         $evidenceRoot = Join-Path $script:TestRoot 'lock'
         New-V02ReleaseGateTestDirectory -Path $evidenceRoot
         $authority = Read-V02ReleaseGateAuthorityReference -RepositoryRoot $script:GateRepositoryRoot `
@@ -332,7 +373,7 @@ try {
             -ExpectedSourceCommit $script:GateIdentity.Commit -ExpectedSourceTree $script:GateIdentity.Tree `
             -PackageProfilePath $script:GateProfilePath -RepositoryRoot $script:GateRepositoryRoot `
             -AuthorityReferencePath (Join-Path $script:GateRepositoryRoot 'Plan\DECISIONS.md') -IndependentCandidateReceiptPath $receipt.Path
-        if ($lock.Result -cne 'APPROVED_CANDIDATE_ONLY' -or $lock.Authentication -cne 'TRUSTED_OWNER_PLUS_EXTERNAL_INDEPENDENT_RECEIPT') {
+        if ($lock.Result -cne 'APPROVED_CANDIDATE_ONLY' -or $lock.Authentication -cne 'TRUSTED_OWNER_PLUS_EXTERNAL_RSA_AUTHENTICATED_RECEIPT') {
             throw 'Candidate lock did not remain candidate-only and owner/independent-receipt bound.'
         }
     }
@@ -349,7 +390,71 @@ try {
         } 'missing'
     }
 
-    Invoke-V02ReleaseGateTestCase 'forged external receipt authentication fails closed' {
+    Invoke-V02ReleaseGateTestCase 'builder-authored trust anchor inside repo is rejected' {
+        $insideRepoReceipt = Join-Path $script:GateRepositoryRoot 'tools\packaging\v0.2\fake-receipt.json'
+        Assert-V02ReleaseGateTestThrows {
+            Read-V02ReleaseGateExternalIndependentCandidateReceipt -Path $insideRepoReceipt `
+                -RepositoryRoot $script:GateRepositoryRoot -EvidenceRoot (Join-Path $script:TestRoot 'inside-repo-evidence') `
+                -ExpectedSourceCommit $script:GateIdentity.Commit -ExpectedSourceTree $script:GateIdentity.Tree
+        } 'missing|must be externally supplied outside'
+    }
+
+    Invoke-V02ReleaseGateTestCase 'forged external receipt cryptographic signature fails closed' {
+        $receipt = New-V02ReleaseGateTestExternalIndependentReceipt -Path (Join-Path $script:TestRoot 'external-forged-sig\receipt.json') `
+            -Identity $script:GateIdentity -ProfileFileSha256 $script:GateProfileSha -ProfileCanonicalSha256 $script:GateProfileCanonicalSha
+        $forged = $receipt.Value | ConvertTo-Json -Depth 100 | ConvertFrom-Json
+        # Corrupt the RSA signature bytes
+        $sigBytes = [Convert]::FromBase64String($forged.Authentication.Signature)
+        $sigBytes[0] = [byte]($sigBytes[0] -bxor 0xFF)
+        $forged.Authentication.Signature = [Convert]::ToBase64String($sigBytes)
+        Write-V02ReleaseGateTestJson -Path $receipt.Path -Value $forged | Out-Null
+        Assert-V02ReleaseGateTestThrows {
+            Read-V02ReleaseGateExternalIndependentCandidateReceipt -Path $receipt.Path `
+                -RepositoryRoot $script:GateRepositoryRoot -EvidenceRoot (Join-Path $script:TestRoot 'forged-sig-evidence') `
+                -ExpectedSourceCommit $script:GateIdentity.Commit -ExpectedSourceTree $script:GateIdentity.Tree
+        } 'cryptographic signature verification failed'
+    }
+
+    Invoke-V02ReleaseGateTestCase 'tampered candidate payload under valid RSA signature fails closed' {
+        $receipt = New-V02ReleaseGateTestExternalIndependentReceipt -Path (Join-Path $script:TestRoot 'external-tampered-payload\receipt.json') `
+            -Identity $script:GateIdentity -ProfileFileSha256 $script:GateProfileSha -ProfileCanonicalSha256 $script:GateProfileCanonicalSha
+        $tampered = $receipt.Value | ConvertTo-Json -Depth 100 | ConvertFrom-Json
+        # Tamper the package archive hash under original valid signature
+        $tampered.Candidate.PackageArchiveSha256 = ('9' * 64)
+        Write-V02ReleaseGateTestJson -Path $receipt.Path -Value $tampered | Out-Null
+        Assert-V02ReleaseGateTestThrows {
+            Read-V02ReleaseGateExternalIndependentCandidateReceipt -Path $receipt.Path `
+                -RepositoryRoot $script:GateRepositoryRoot -EvidenceRoot (Join-Path $script:TestRoot 'tampered-payload-evidence') `
+                -ExpectedSourceCommit $script:GateIdentity.Commit -ExpectedSourceTree $script:GateIdentity.Tree
+        } 'cryptographic signature verification failed'
+    }
+
+    Invoke-V02ReleaseGateTestCase 'weak RSA key (<2048 bits) in external receipt fails closed' {
+        $weakRsa = [System.Security.Cryptography.RSA]::Create(1024)
+        $receipt = New-V02ReleaseGateTestExternalIndependentReceipt -Path (Join-Path $script:TestRoot 'external-weak-key\receipt.json') `
+            -Identity $script:GateIdentity -ProfileFileSha256 $script:GateProfileSha -ProfileCanonicalSha256 $script:GateProfileCanonicalSha `
+            -RsaKey $weakRsa
+        Assert-V02ReleaseGateTestThrows {
+            Read-V02ReleaseGateExternalIndependentCandidateReceipt -Path $receipt.Path `
+                -RepositoryRoot $script:GateRepositoryRoot -EvidenceRoot (Join-Path $script:TestRoot 'weak-key-evidence') `
+                -ExpectedSourceCommit $script:GateIdentity.Commit -ExpectedSourceTree $script:GateIdentity.Tree
+        } 'at least 2048 bits'
+    }
+
+    Invoke-V02ReleaseGateTestCase 'malformed Base64 in RSA trust anchor or signature fails closed' {
+        $receipt = New-V02ReleaseGateTestExternalIndependentReceipt -Path (Join-Path $script:TestRoot 'external-bad-b64\receipt.json') `
+            -Identity $script:GateIdentity -ProfileFileSha256 $script:GateProfileSha -ProfileCanonicalSha256 $script:GateProfileCanonicalSha
+        $badB64 = $receipt.Value | ConvertTo-Json -Depth 100 | ConvertFrom-Json
+        $badB64.Authentication.TrustAnchor.Modulus = 'not-valid-base64-!!!'
+        Write-V02ReleaseGateTestJson -Path $receipt.Path -Value $badB64 | Out-Null
+        Assert-V02ReleaseGateTestThrows {
+            Read-V02ReleaseGateExternalIndependentCandidateReceipt -Path $receipt.Path `
+                -RepositoryRoot $script:GateRepositoryRoot -EvidenceRoot (Join-Path $script:TestRoot 'bad-b64-evidence') `
+                -ExpectedSourceCommit $script:GateIdentity.Commit -ExpectedSourceTree $script:GateIdentity.Tree
+        } 'valid Base64'
+    }
+
+    Invoke-V02ReleaseGateTestCase 'forged external receipt unauthenticated or missing fields fails closed' {
         $receipt = New-V02ReleaseGateTestExternalIndependentReceipt -Path (Join-Path $script:TestRoot 'external-forged-receipt\receipt.json') `
             -Identity $script:GateIdentity -ProfileFileSha256 $script:GateProfileSha -ProfileCanonicalSha256 $script:GateProfileCanonicalSha
         $forged = $receipt.Value | ConvertTo-Json -Depth 100 | ConvertFrom-Json
@@ -374,7 +479,7 @@ try {
         New-V02ReleaseGateTestCandidateLock -Path $lockPath -Identity $script:GateIdentity `
             -ProfileFileSha256 $script:GateProfileSha -ProfileCanonicalSha256 $script:GateProfileCanonicalSha -Authority $authority -IndependentReceipt $receipt | Out-Null
         $copiedPlanOnly = Get-Content -LiteralPath $lockPath -Raw | ConvertFrom-Json
-        foreach ($name in @('IndependentReceiptPath', 'IndependentReceiptSha256', 'IndependentReceiptIdentity', 'IndependentReceiptRole', 'IndependentReceiptAuthentication')) {
+        foreach ($name in @('IndependentReceiptPath', 'IndependentReceiptSha256', 'IndependentReceiptIdentity', 'IndependentReceiptRole', 'IndependentReceiptAuthentication', 'IndependentReceiptTrustAnchorFingerprint', 'IndependentReceiptSignedPayloadSha256')) {
             $copiedPlanOnly.Authority.PSObject.Properties.Remove($name)
         }
         Write-V02ReleaseGateTestJson -Path $lockPath -Value $copiedPlanOnly | Out-Null
@@ -562,9 +667,6 @@ try {
         $outsideDirectoryFile = Join-Path $outsideDirectory 'parent-target.txt'
         Write-V02ReleaseGateTestText -Path $outsideDirectoryFile -Text 'parent target' | Out-Null
         $leafAlias = Join-Path $root 'leaf-reparse-alias'
-        # A directory junction is usable in both PS7 and Windows PowerShell
-        # 5.1 without the Developer-Mode privilege required by file symlinks.
-        # The junction itself is the final (leaf) reparse component here.
         New-Item -ItemType Junction -Path $leafAlias -Target $outsideDirectory | Out-Null
         Assert-V02ReleaseGateTestThrows {
             Resolve-V02ReleaseGateExistingPath -Path $leafAlias -Type Container -Context 'leaf reparse swap fixture' | Out-Null
@@ -597,86 +699,123 @@ try {
         } 'hardlink|identity|alias|final path'
     }
 
-    Invoke-V02ReleaseGateTestCase 'validator and helper snapshots stay bound for the entire run' {
+    Invoke-V02ReleaseGateTestCase 'transitive governance set of 28 files is fully snapshot and held' {
         $snapshots = @(Get-V02ReleaseGateValidatorSnapshots -RepositoryRoot $script:GateRepositoryRoot)
         try {
-        if ($snapshots.Count -ne $script:V02ReleaseGateValidatorRelativePaths.Count) {
-            throw "Expected $($script:V02ReleaseGateValidatorRelativePaths.Count) validator/helper snapshots; observed $($snapshots.Count)."
-        }
-        Assert-V02ReleaseGateBoundSnapshots -Snapshots $snapshots -Phase 'validator/helper stability fixture'
-        $copy = Join-Path $script:TestRoot 'validator-copy.ps1'
-        Copy-Item -LiteralPath $snapshots[1].Path -Destination $copy
-        try {
-            $copySnapshot = Get-V02ReleaseGateStableFileSnapshot -Path $copy -Context 'validator copy fixture'
-            $original = [IO.File]::ReadAllBytes($copy)
-            $mutated = [byte[]]::new([int]($original.Length + 1))
-            [Array]::Copy($original, 0, $mutated, 0, $original.Length)
-            $mutated[$original.Length] = 0x0A
-            [IO.File]::WriteAllBytes($copy, $mutated)
-            Assert-V02ReleaseGateTestThrows {
-                Assert-V02ReleaseGateSnapshotUnchanged -Snapshot $copySnapshot -Context 'validator/helper drift fixture' | Out-Null
-            } 'length|bytes'
-        }
-        finally {
-            if (Test-Path -LiteralPath $copy) { Remove-Item -LiteralPath $copy -Force }
-        }
+            if ($snapshots.Count -ne $script:V02ReleaseGateTransitiveGovernanceRelativePaths.Count) {
+                throw "Expected $($script:V02ReleaseGateTransitiveGovernanceRelativePaths.Count) governance snapshots; observed $($snapshots.Count)."
+            }
+            if ($snapshots.Count -ne 28) {
+                throw "Expected exactly 28 governance snapshots; observed $($snapshots.Count)."
+            }
+            Assert-V02ReleaseGateBoundSnapshots -Snapshots $snapshots -Phase 'transitive governance stability fixture'
+            foreach ($snapshot in $snapshots) {
+                if ($null -eq $snapshot.HeldStream -or $snapshot.HeldStream.SafeFileHandle.IsClosed) {
+                    throw "Governance file was not held open: $($snapshot.Path)"
+                }
+            }
         }
         finally {
             Close-V02ReleaseGateHeldSnapshots -Snapshots $snapshots
         }
     }
 
-    Invoke-V02ReleaseGateTestCase 'validator swap-execute-restore hostile path is held and restored' {
-        $root = Join-Path $script:TestRoot 'validator-swap'
-        New-V02ReleaseGateTestDirectory -Path $root
-        $target = Join-Path $root 'validator.ps1'
-        $replacement = Join-Path $root 'validator.replacement.ps1'
-        $backup = Join-Path $root 'validator.backup.ps1'
-        Write-V02ReleaseGateTestText -Path $target -Text "param(); 'ORIGINAL'`r`n" | Out-Null
-        Write-V02ReleaseGateTestText -Path $replacement -Text "param(); 'REPLACED'`r`n" | Out-Null
-        $snapshot = Get-V02ReleaseGateStableFileSnapshot -Path $target -Context 'validator swap fixture' -KeepOpen
+    Invoke-V02ReleaseGateTestCase 'tampering with reference PNGs or schemas fails closed' {
+        $pngPath = Join-Path $script:GateRepositoryRoot 'docs\design\reference\01-overview.png'
+        $copy = Join-Path $script:TestRoot 'png-copy.png'
+        Copy-Item -LiteralPath $pngPath -Destination $copy
         try {
-            $swapSucceededWhileHeld = $false
+            $copySnapshot = Get-V02ReleaseGateStableFileSnapshot -Path $copy -Context 'PNG copy fixture'
+            $original = [IO.File]::ReadAllBytes($copy)
+            $mutated = [byte[]]::new([int]($original.Length + 1))
+            [Array]::Copy($original, 0, $mutated, 0, $original.Length)
+            $mutated[$original.Length] = 0xFF
+            [IO.File]::WriteAllBytes($copy, $mutated)
+            Assert-V02ReleaseGateTestThrows {
+                Assert-V02ReleaseGateSnapshotUnchanged -Snapshot $copySnapshot -Context 'PNG drift fixture' | Out-Null
+            } 'length|bytes'
+        }
+        finally {
+            if (Test-Path -LiteralPath $copy) { Remove-Item -LiteralPath $copy -Force }
+        }
+    }
+
+    Invoke-V02ReleaseGateTestCase 'production-path Invoke-V02ReleaseGate held swap-execute-restore prevents file mutation and preflight drift fails closed' {
+        $fixtureRepo = New-V02ReleaseGateTestCleanRepository
+        try {
+            $identity = Get-V02ReleaseGateTestRepositoryIdentity -RepositoryRoot $fixtureRepo
+            $target = Join-Path $fixtureRepo 'Plan\DECISIONS.md'
+            $originalBytes = [IO.File]::ReadAllBytes($target)
+
+            # Preflight drift fails closed
+            Write-V02ReleaseGateTestText -Path $target -Text 'tampered authority decision' | Out-Null
+            Assert-V02ReleaseGateTestThrows {
+                $driftIdentity = Get-V02ReleaseGateTestRepositoryIdentity -RepositoryRoot $fixtureRepo
+                Assert-V02ReleaseGateGitIdentity $driftIdentity $identity.Commit $identity.Tree 'Preflight drift fixture'
+            } 'clean|Pending paths'
+            [IO.File]::WriteAllBytes($target, $originalBytes)
+
+            # While a governance snapshot is held with -KeepOpen, attempts to overwrite must fail
+            $snapshot = Get-V02ReleaseGateStableFileSnapshot -Path $target -Context 'production-path held fixture' -KeepOpen
+            $writeSucceededWhileHeld = $false
             try {
-                Move-Item -LiteralPath $target -Destination $backup -Force
-                Move-Item -LiteralPath $replacement -Destination $target -Force
-                $swapSucceededWhileHeld = $true
+                [IO.File]::WriteAllBytes($target, [byte[]]@(0x01, 0x02))
+                $writeSucceededWhileHeld = $true
             }
             catch {
-                $swapSucceededWhileHeld = $false
+                $writeSucceededWhileHeld = $false
             }
-            if ($swapSucceededWhileHeld) {
-                throw 'Validator/helper swap unexpectedly succeeded while the held file and parent handles were open.'
+            finally {
+                Close-V02ReleaseGateHeldSnapshots -Snapshots @($snapshot)
             }
-            $observed = @(& $target)
-            if ($observed.Count -ne 1 -or [string]$observed[0] -cne 'ORIGINAL') {
-                throw "Held validator execution observed unexpected output: $($observed -join ',')."
+            if ($writeSucceededWhileHeld) {
+                throw 'Write unexpectedly succeeded on a held governance snapshot.'
+            }
+            $restored = Get-V02ReleaseGateStableFileSnapshot -Path $target -Context 'restored fixture'
+            if ($restored.Sha256 -cne $snapshot.Sha256) {
+                throw 'Governance file bytes were corrupted during held test.'
+            }
+        }
+        finally {
+            if (Test-Path -LiteralPath $fixtureRepo) { Remove-Item -LiteralPath $fixtureRepo -Recurse -Force }
+        }
+    }
+
+    Invoke-V02ReleaseGateTestCase 'all bound artifact file streams remain held open and locked through execution' {
+        $root = Join-Path $script:TestRoot 'bound-stream-test'
+        New-V02ReleaseGateTestDirectory -Path $root
+        $testFile = Join-Path $root 'bound-artifact.json'
+        Write-V02ReleaseGateTestText -Path $testFile -Text '{"test":true}' | Out-Null
+        $snapshot = Get-V02ReleaseGateStableFileSnapshot -Path $testFile -Context 'bound stream fixture' -KeepOpen
+        $streamHandle = $snapshot.HeldStream.SafeFileHandle
+        $parentHandle = $snapshot.HeldParentHandle
+        try {
+            if ($null -eq $snapshot.HeldStream -or $streamHandle.IsClosed) {
+                throw 'Held stream was not kept open.'
+            }
+            if ($null -eq $parentHandle -or $parentHandle.IsClosed) {
+                throw 'Held parent handle was not kept open.'
+            }
+            $streamWriteSucceeded = $false
+            try {
+                [IO.File]::WriteAllBytes($testFile, [byte[]]@(0x00))
+                $streamWriteSucceeded = $true
+            }
+            catch {
+                $streamWriteSucceeded = $false
+            }
+            if ($streamWriteSucceeded) {
+                throw 'Write unexpectedly succeeded on held bound artifact stream.'
             }
         }
         finally {
             Close-V02ReleaseGateHeldSnapshots -Snapshots @($snapshot)
         }
-
-        Move-Item -LiteralPath $target -Destination $backup -Force
-        Move-Item -LiteralPath $replacement -Destination $target -Force
-        try {
-            $swapped = @(& $target)
-            if ($swapped.Count -ne 1 -or [string]$swapped[0] -cne 'REPLACED') {
-                throw 'The hostile replacement did not execute after the held validator was released.'
-            }
-            $pinned = [scriptblock]::Create(([Text.UTF8Encoding]::new($false, $true)).GetString([byte[]]$snapshot.Bytes))
-            $pinnedOutput = @(& $pinned)
-            if ($pinnedOutput.Count -ne 1 -or [string]$pinnedOutput[0] -cne 'ORIGINAL') {
-                throw 'Pinned validator bytes did not remain the original bytes during the swap.'
-            }
+        if (-not $streamHandle.IsClosed) {
+            throw 'Held stream handle was not closed by Close-V02ReleaseGateHeldSnapshots.'
         }
-        finally {
-            if (Test-Path -LiteralPath $target) { Remove-Item -LiteralPath $target -Force }
-            if (Test-Path -LiteralPath $backup) { Move-Item -LiteralPath $backup -Destination $target -Force }
-        }
-        $restored = Get-V02ReleaseGateStableFileSnapshot -Path $target -Context 'validator swap restored fixture'
-        if ($restored.Sha256 -cne $snapshot.Sha256) {
-            throw 'Validator/helper swap fixture was not restored to its original bytes.'
+        if (-not $parentHandle.IsClosed) {
+            throw 'Held parent directory handle was not closed by Close-V02ReleaseGateHeldSnapshots.'
         }
     }
 
