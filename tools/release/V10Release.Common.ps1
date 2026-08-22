@@ -14,6 +14,12 @@ if (-not (Test-Path -LiteralPath $issue44ReportCommonPath -PathType Leaf)) {
 }
 . $issue44ReportCommonPath
 
+$issue40PolicyPath = Join-Path $PSScriptRoot '..\lib\V07ReleaseGatePolicy.ps1'
+if (-not (Test-Path -LiteralPath $issue40PolicyPath -PathType Leaf)) {
+    throw "Issue #40 release-gate policy is missing: $issue40PolicyPath"
+}
+. $issue40PolicyPath
+
 $script:V10ReleaseProfileRelativePath = 'tools/release/v1.0-package-profile.json'
 $script:V10GoNoGoStatement = 'I approve publishing the exact HerdrOps v1.0.0 candidate identified by this authorization.'
 
@@ -1728,6 +1734,494 @@ function Assert-V10Issue43ReportSemantics {
     Assert-V10UtcTimestamp -Value ([string]$Report.completedAtUtc) -Description 'Issue #43 completedAtUtc'
 }
 
+function Assert-V10Issue40Handoff {
+    param(
+        [Parameter(Mandatory = $true)]$Handoff,
+        [Parameter(Mandatory = $true)][string]$SourceCommit,
+        [Parameter(Mandatory = $true)][string]$SourceTree,
+        [Parameter(Mandatory = $true)][string]$RepositoryRoot
+    )
+
+    Assert-V10ExactProperties -Object $Handoff -Names @(
+        'ReportPath', 'ReportBytes', 'ReportSha256', 'HumanUatPath', 'HumanUatBytes', 'HumanUatSha256') -Description 'Issue #40 handoff'
+    foreach ($name in @('ReportPath', 'HumanUatPath')) {
+        Assert-V10ClrStringValue -Value $Handoff.$name -Description "Issue #40 handoff.$name"
+        Assert-V10SafeRelativePathText -Path ([string]$Handoff.$name) -Description "Issue #40 handoff.$name"
+    }
+    foreach ($name in @('ReportBytes', 'HumanUatBytes')) {
+        Assert-V10ClrIntegerValue -Value $Handoff.$name -Description "Issue #40 handoff.$name" -Minimum 1
+    }
+    Assert-V10Issue41Sha256 -Value $Handoff.ReportSha256 -Description 'Issue #40 handoff.ReportSha256'
+    Assert-V10Issue41Sha256 -Value $Handoff.HumanUatSha256 -Description 'Issue #40 handoff.HumanUatSha256'
+
+    $reportPath = Resolve-V10RepositoryFile -RelativePath ([string]$Handoff.ReportPath) -RepositoryRoot $RepositoryRoot -Description 'Issue #40 release-gate report'
+    $humanPath = Resolve-V10RepositoryFile -RelativePath ([string]$Handoff.HumanUatPath) -RepositoryRoot $RepositoryRoot -Description 'Issue #40 human UAT record'
+    if ([IO.Path]::GetFullPath($reportPath).Equals([IO.Path]::GetFullPath($humanPath), [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'Issue #40 release-gate report and human UAT record must be separate files.'
+    }
+    foreach ($item in @(
+            [pscustomobject]@{ Name = 'report'; Path = $reportPath; Bytes = $Handoff.ReportBytes; Sha256 = $Handoff.ReportSha256 },
+            [pscustomobject]@{ Name = 'human UAT'; Path = $humanPath; Bytes = $Handoff.HumanUatBytes; Sha256 = $Handoff.HumanUatSha256 })) {
+        $file = Get-Item -LiteralPath $item.Path -Force
+        if ([int64]$file.Length -ne [int64]$item.Bytes) {
+            throw "Issue #40 $($item.Name) byte count does not match the handoff: $($item.Path)"
+        }
+        $observedHash = ((Get-FileHash -LiteralPath $item.Path -Algorithm SHA256 -ErrorAction Stop).Hash).ToUpperInvariant()
+        if ($observedHash -cne [string]$item.Sha256) {
+            throw "Issue #40 $($item.Name) SHA-256 does not match the handoff: $($item.Path)"
+        }
+    }
+
+    $currentCandidate = [pscustomobject][ordered]@{
+        Commit = $SourceCommit
+        Tree = $SourceTree
+        WorkingTree = 'CLEAN'
+        Status = @()
+    }
+    $reportFile = Read-V10StrictJsonFile -Path $reportPath -Description 'Issue #40 release-gate report'
+    Assert-V07ReleaseGateExactProperties -Object $reportFile.Value -Names @(
+        'schemaVersion', 'reportKind', 'issue', 'status', 'generatedAtUtc', 'candidate', 'input',
+        'dependencyEvidence', 'checks', 'humanUat', 'historyPolicy', 'evidenceBoundary', 'publication') -Description 'Issue #40 release-gate report'
+    $issue40Report = $reportFile.Value
+    if ((Assert-V07ReleaseGateInteger -Value (Get-V07ReleaseGateProperty -Object $issue40Report -Name 'schemaVersion' -Description 'Issue #40 release-gate report') -Description 'Issue #40 report.schemaVersion' -Minimum 1 -Maximum 1) -ne 1 -or
+        (Get-V07ReleaseGateProperty -Object $issue40Report -Name 'reportKind' -Description 'Issue #40 release-gate report') -cne 'HerdrOps.V07ReleaseGateReport' -or
+        (Assert-V07ReleaseGateInteger -Value (Get-V07ReleaseGateProperty -Object $issue40Report -Name 'issue' -Description 'Issue #40 release-gate report') -Description 'Issue #40 report.issue' -Minimum 40 -Maximum 40) -ne 40 -or
+        (Get-V07ReleaseGateProperty -Object $issue40Report -Name 'status' -Description 'Issue #40 release-gate report') -cne 'PENDING') {
+        throw 'Issue #40 handoff requires the canonical automation-generated PENDING report.'
+    }
+    Assert-V07ReleaseGateUtcTimestamp -Value (Get-V07ReleaseGateProperty -Object $issue40Report -Name 'generatedAtUtc' -Description 'Issue #40 release-gate report') -Description 'Issue #40 report.generatedAtUtc'
+    Assert-V07ReleaseGateCandidateObject `
+        -Candidate (Get-V07ReleaseGateProperty -Object $issue40Report -Name 'candidate' -Description 'Issue #40 release-gate report') `
+        -Description 'Issue #40 report.candidate' `
+        -CurrentCandidate $currentCandidate
+
+    $reportInput = Get-V07ReleaseGateProperty -Object $issue40Report -Name 'input' -Description 'Issue #40 release-gate report'
+    Assert-V07ReleaseGateExactProperties -Object $reportInput -Names @('path', 'sha256') -Description 'Issue #40 report.input'
+    $inputPathText = Get-V07ReleaseGateProperty -Object $reportInput -Name 'path' -Description 'Issue #40 report.input'
+    Assert-V07ReleaseGateString -Value $inputPathText -Description 'Issue #40 report.input.path'
+    $inputSha = Get-V07ReleaseGateProperty -Object $reportInput -Name 'sha256' -Description 'Issue #40 report.input'
+    Assert-V07ReleaseGateHex -Value $inputSha -Length 64 -Description 'Issue #40 report.input.sha256' -Case Upper
+    $inputPath = if ([IO.Path]::IsPathRooted([string]$inputPathText)) {
+        [IO.Path]::GetFullPath([string]$inputPathText)
+    } else {
+        [IO.Path]::GetFullPath((Join-Path (Split-Path -Path $reportPath -Parent) ([string]$inputPathText)))
+    }
+    $evidenceRoot = [IO.Path]::GetFullPath((Split-Path -Path $reportPath -Parent))
+    if (-not (Test-PathWithin -ChildPath $inputPath -RootPath $evidenceRoot)) {
+        throw 'Issue #40 report.input.path escaped the report evidence root.'
+    }
+    Assert-V07ReleaseGateNoReparseComponents -Path $inputPath -Root $evidenceRoot
+    $inputFile = Get-Item -LiteralPath $inputPath -Force
+    $observedInputSha = ((Get-FileHash -LiteralPath $inputPath -Algorithm SHA256 -ErrorAction Stop).Hash).ToUpperInvariant()
+    if ($observedInputSha -cne [string]$inputSha) {
+        throw 'Issue #40 report.input.sha256 does not match the exact input bytes.'
+    }
+    $validatedInput = Test-V07ReleaseGateInput -InputPath $inputPath -EvidenceRoot $evidenceRoot -CurrentCandidate $currentCandidate
+    if ([string]$validatedInput.InputSha256 -cne [string]$inputSha -or [int64]$inputFile.Length -le 0) {
+        throw 'Issue #40 canonical input validation did not preserve the bound input identity.'
+    }
+
+    $dependencyEvidence = Get-V07ReleaseGateProperty -Object $issue40Report -Name 'dependencyEvidence' -Description 'Issue #40 release-gate report'
+    if ($dependencyEvidence -isnot [array] -or @($dependencyEvidence).Count -ne 5) {
+        throw 'Issue #40 report must contain exactly five dependency-evidence entries for #35-#39.'
+    }
+    $seenDependencyIssues = [Collections.Generic.HashSet[int]]::new()
+    foreach ($dependency in @($dependencyEvidence)) {
+        Assert-V07ReleaseGateExactProperties -Object $dependency -Names @('issue', 'status', 'evidenceClass', 'manifestPath', 'manifestSha256', 'evidenceCount') -Description 'Issue #40 report dependencyEvidence entry'
+        $issue = Assert-V07ReleaseGateInteger -Value (Get-V07ReleaseGateProperty -Object $dependency -Name 'issue' -Description 'Issue #40 report dependencyEvidence') -Description 'Issue #40 report dependencyEvidence.issue' -Minimum 35 -Maximum 39
+        if (-not $seenDependencyIssues.Add([int]$issue)) {
+            throw "Issue #40 report contains a duplicate dependency-evidence issue: #$issue"
+        }
+        Assert-V07ReleaseGateString -Value (Get-V07ReleaseGateProperty -Object $dependency -Name 'status' -Description 'Issue #40 report dependencyEvidence') -Description 'Issue #40 report dependencyEvidence.status'
+        Assert-V07ReleaseGateString -Value (Get-V07ReleaseGateProperty -Object $dependency -Name 'evidenceClass' -Description 'Issue #40 report dependencyEvidence') -Description 'Issue #40 report dependencyEvidence.evidenceClass'
+        Assert-V07ReleaseGateString -Value (Get-V07ReleaseGateProperty -Object $dependency -Name 'manifestPath' -Description 'Issue #40 report dependencyEvidence') -Description 'Issue #40 report dependencyEvidence.manifestPath'
+        Assert-V07ReleaseGateHex -Value (Get-V07ReleaseGateProperty -Object $dependency -Name 'manifestSha256' -Description 'Issue #40 report dependencyEvidence') -Length 64 -Description 'Issue #40 report dependencyEvidence.manifestSha256' -Case Upper
+        $validatedDependency = @($validatedInput.Dependencies | Where-Object { [int]$_.Issue -eq [int]$issue })
+        if ($validatedDependency.Count -ne 1 -or [string]$dependency.status -cne [string]$validatedDependency[0].Status -or
+            [string]$dependency.manifestPath -cne [string]$validatedDependency[0].ManifestPath -or
+            [string]$dependency.manifestSha256 -cne [string]$validatedDependency[0].ManifestSha256) {
+            throw "Issue #40 report dependencyEvidence is not bound to canonical #$issue validation."
+        }
+        Assert-V07ReleaseGateInteger -Value (Get-V07ReleaseGateProperty -Object $dependency -Name 'evidenceCount' -Description 'Issue #40 report dependencyEvidence') -Description 'Issue #40 report dependencyEvidence.evidenceCount' -Minimum 1 | Out-Null
+    }
+    foreach ($issue in @(35, 36, 37, 38, 39)) {
+        if (-not $seenDependencyIssues.Contains($issue)) {
+            throw "Issue #40 report is missing dependency-evidence issue #$issue."
+        }
+    }
+
+    $checks = Get-V07ReleaseGateProperty -Object $issue40Report -Name 'checks' -Description 'Issue #40 release-gate report'
+    Assert-V07ReleaseGateExactProperties -Object $checks -Names @(
+        'candidateCommitAndTree', 'cleanCheckout', 'dependencyManifests', 'dependencyHashes',
+        'strictJsonAndBounds', 'containmentAndReparse', 'duplicateAndUnknownFieldRejection', 'humanUat') -Description 'Issue #40 report.checks'
+    foreach ($name in @('candidateCommitAndTree', 'cleanCheckout', 'dependencyManifests', 'dependencyHashes', 'strictJsonAndBounds', 'containmentAndReparse', 'duplicateAndUnknownFieldRejection')) {
+        if ((Get-V07ReleaseGateProperty -Object $checks -Name $name -Description 'Issue #40 report.checks') -cne 'PASS') {
+            throw "Issue #40 report.checks.$name must be PASS."
+        }
+    }
+    $humanCheck = [string](Get-V07ReleaseGateProperty -Object $checks -Name 'humanUat' -Description 'Issue #40 report.checks')
+    if ($humanCheck -notin @('VALIDATED_INPUT / PENDING', 'PENDING / NOT PROVIDED')) {
+        throw 'Issue #40 report.checks.humanUat must preserve the automation PENDING boundary.'
+    }
+
+    $reportHuman = Get-V07ReleaseGateProperty -Object $issue40Report -Name 'humanUat' -Description 'Issue #40 release-gate report'
+    Assert-V07ReleaseGateExactProperties -Object $reportHuman -Names @('decision', 'signer', 'role', 'signedAtUtc', 'signature') -Description 'Issue #40 report.humanUat'
+    foreach ($name in @('decision', 'signer', 'role', 'signedAtUtc', 'signature')) {
+        if ((Get-V07ReleaseGateProperty -Object $reportHuman -Name $name -Description 'Issue #40 report.humanUat') -cne 'PENDING') {
+            throw 'Issue #40 report.humanUat must remain entirely PENDING; automation cannot forge approval.'
+        }
+    }
+    Assert-V07ReleaseGateHistoryPolicy -HistoryPolicy (Get-V07ReleaseGateProperty -Object $issue40Report -Name 'historyPolicy' -Description 'Issue #40 release-gate report')
+
+    $boundary = Get-V07ReleaseGateProperty -Object $issue40Report -Name 'evidenceBoundary' -Description 'Issue #40 release-gate report'
+    Assert-V07ReleaseGateExactProperties -Object $boundary -Names @('static', 'synthetic', 'contract', 'runtime', 'human', 'release') -Description 'Issue #40 report.evidenceBoundary'
+    foreach ($name in @('static', 'synthetic', 'contract', 'runtime', 'human', 'release')) {
+        Assert-V07ReleaseGateString -Value (Get-V07ReleaseGateProperty -Object $boundary -Name $name -Description 'Issue #40 report.evidenceBoundary') -Description "Issue #40 report.evidenceBoundary.$name"
+    }
+    if ([string]$boundary.runtime -notlike 'NOT OBSERVED*' -or [string]$boundary.release -notlike 'NOT OBSERVED*' -or
+        [string]$boundary.human -notlike 'PENDING*') {
+        throw 'Issue #40 report evidence boundaries contain a forged Runtime, Human, or Release claim.'
+    }
+
+    $publication = Get-V07ReleaseGateProperty -Object $issue40Report -Name 'publication' -Description 'Issue #40 release-gate report'
+    Assert-V07ReleaseGateExactProperties -Object $publication -Names @('status', 'tag', 'release') -Description 'Issue #40 report.publication'
+    if ([string]$publication.status -cne 'PENDING' -or [string]$publication.tag -cne 'NOT CREATED' -or [string]$publication.release -cne 'NOT PUBLISHED') {
+        throw 'Issue #40 report publication boundary is not fail-closed.'
+    }
+
+    $humanFile = Read-V10StrictJsonFile -Path $humanPath -Description 'Issue #40 human UAT record'
+    $humanValidation = Read-V07ReleaseGateHumanUat -Path $humanPath -EvidenceRoot $evidenceRoot -CurrentCandidate $currentCandidate
+    if ([string]$humanValidation.Data.Decision -cne 'ACCEPTED' -or
+        [string]$humanFile.Sha256 -cne [string]$Handoff.HumanUatSha256 -or
+        [int64]$humanFile.Length -ne [int64]$Handoff.HumanUatBytes) {
+        throw 'Issue #40 handoff requires a separately hashed, accepted human UAT record.'
+    }
+
+    return [pscustomobject][ordered]@{
+        ReportPath = $reportPath
+        ReportBytes = [int64]$reportFile.Length
+        ReportSha256 = [string]$reportFile.Sha256
+        HumanUatPath = $humanPath
+        HumanUatBytes = [int64]$humanFile.Length
+        HumanUatSha256 = [string]$humanFile.Sha256
+        InputPath = $inputPath
+        InputSha256 = [string]$validatedInput.InputSha256
+        HumanDecision = [string]$humanValidation.Data.Decision
+    }
+}
+
+function Assert-V10Issue41ReportSemantics {
+    param(
+        [Parameter(Mandatory = $true)]$Report,
+        [Parameter(Mandatory = $true)][string]$SourceCommit,
+        [Parameter(Mandatory = $true)][string]$ExpectedSourceTree,
+        [string]$RepositoryRoot = (Get-V10RepositoryRoot),
+        [switch]$RequireReady
+    )
+
+    Assert-V10ExactProperties -Object $Report -Names @(
+        'SchemaVersion', 'AuditId', 'TargetIssue', 'GeneratedUtc', 'SourceCommit', 'SourceTree', 'WorkingTree',
+        'Query', 'PlanTruth', 'Decision', 'ReleaseCandidate', 'EvidenceStatus', 'EvidenceManifest',
+        'DependencyMap', 'Blockers', 'EvidenceBoundary', 'Issue40Handoff') -Description 'Issue #41 canonical report'
+
+    Assert-V10ClrIntegerValue -Value $Report.SchemaVersion -Description 'Issue #41 SchemaVersion' -Minimum 1
+    if ([int64]$Report.SchemaVersion -ne 1) {
+        throw 'Issue #41 SchemaVersion must be exactly 1.'
+    }
+    Assert-V10ClrStringValue -Value $Report.AuditId -Description 'Issue #41 AuditId'
+    Assert-V10ClrStringValue -Value $Report.SourceCommit -Description 'Issue #41 SourceCommit'
+    Assert-V10Hex -Value ([string]$Report.SourceCommit) -Length 40 -Description 'Issue #41 SourceCommit' -Lowercase
+    if ([string]$Report.AuditId -cne 'V100-01' -or [string]$Report.SourceCommit -cne $SourceCommit) {
+        throw 'Issue #41 report identity is not bound to the accepted source commit.'
+    }
+    Assert-V10ClrStringValue -Value $Report.SourceTree -Description 'Issue #41 SourceTree'
+    Assert-V10Hex -Value ([string]$Report.SourceTree) -Length 40 -Description 'Issue #41 SourceTree' -Lowercase
+    Assert-V10Hex -Value $ExpectedSourceTree -Length 40 -Description 'Issue #41 expected SourceTree' -Lowercase
+    if ([string]$Report.SourceTree -cne $ExpectedSourceTree) {
+        throw 'Issue #41 SourceTree does not match the accepted candidate tree.'
+    }
+    Assert-V10ClrStringValue -Value $Report.GeneratedUtc -Description 'Issue #41 GeneratedUtc'
+    Assert-V10UtcTimestamp -Value ([string]$Report.GeneratedUtc) -Description 'Issue #41 GeneratedUtc'
+    Assert-V10ClrStringValue -Value $Report.WorkingTree -Description 'Issue #41 WorkingTree'
+    if ([string]$Report.WorkingTree -cne 'CLEAN') {
+        throw 'Issue #41 report must bind a CLEAN working tree.'
+    }
+
+    $target = $Report.TargetIssue
+    Assert-V10ExactProperties -Object $target -Names @('Number', 'Title', 'Version', 'MilestoneNumber', 'State', 'Url') -Description 'Issue #41 TargetIssue'
+    Assert-V10ClrIntegerValue -Value $target.Number -Description 'Issue #41 TargetIssue.Number' -Minimum 41
+    Assert-V10ClrStringValue -Value $target.Title -Description 'Issue #41 TargetIssue.Title'
+    Assert-V10ClrStringValue -Value $target.Version -Description 'Issue #41 TargetIssue.Version'
+    Assert-V10ClrIntegerValue -Value $target.MilestoneNumber -Description 'Issue #41 TargetIssue.MilestoneNumber' -Minimum 1
+    Assert-V10ClrStringValue -Value $target.State -Description 'Issue #41 TargetIssue.State'
+    Assert-V10ClrStringValue -Value $target.Url -Description 'Issue #41 TargetIssue.Url'
+    if ([int64]$target.Number -ne 41 -or
+        [string]$target.Title -cne '[v1.0.0] Close release blockers and audit all dependency evidence' -or
+        [string]$target.Version -cne 'v1.0.0' -or [int64]$target.MilestoneNumber -ne 8 -or
+        [string]::IsNullOrWhiteSpace([string]$target.Url)) {
+        throw 'Issue #41 TargetIssue is not the exact v1.0.0 issue #41 record.'
+    }
+    if ([string]$target.State -cnotin @('OPEN', 'CLOSED')) {
+        throw 'Issue #41 TargetIssue.State must be OPEN or CLOSED.'
+    }
+
+    $query = $Report.Query
+    Assert-V10ExactProperties -Object $query -Names @('Source', 'FixturePath', 'FixtureSha256', 'Endpoint', 'ResponseSha256') -Description 'Issue #41 Query'
+    foreach ($name in @('Source', 'FixturePath', 'FixtureSha256')) {
+        Assert-V10ClrStringValue -Value $query.$name -Description "Issue #41 Query.$name" -AllowEmpty
+    }
+    if ([string]$query.Source -eq 'GitHub gh api (read-only)') {
+        Assert-V10ClrArrayValue -Value $query.Endpoint -Description 'Issue #41 Query.Endpoint' -MinimumCount 2
+        Assert-V10ClrArrayValue -Value $query.ResponseSha256 -Description 'Issue #41 Query.ResponseSha256' -MinimumCount 2
+        if (@($query.Endpoint).Count -ne @($query.ResponseSha256).Count) {
+            throw 'Issue #41 Query endpoint and response-hash inventories must have equal counts.'
+        }
+        $seenEndpoints = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+        for ($index = 0; $index -lt @($query.Endpoint).Count; $index++) {
+            Assert-V10ClrStringValue -Value $query.Endpoint[$index] -Description "Issue #41 Query.Endpoint[$index]"
+            Assert-V10Issue41Sha256 -Value $query.ResponseSha256[$index] -Description "Issue #41 Query.ResponseSha256[$index]"
+            if (-not $seenEndpoints.Add([string]$query.Endpoint[$index])) {
+                throw "Issue #41 Query contains a duplicate page endpoint: $($query.Endpoint[$index])"
+            }
+            if ([string]$query.Endpoint[$index] -notlike 'repos/OSHEThai/HerdrOps/*') {
+                throw "Issue #41 Query endpoint is not bound to OSHEThai/HerdrOps: $($query.Endpoint[$index])"
+            }
+        }
+        if (-not [string]::IsNullOrWhiteSpace([string]$query.FixturePath) -or
+            -not [string]::IsNullOrWhiteSpace([string]$query.FixtureSha256)) {
+            throw 'GitHub-backed Issue #41 queries must not carry offline fixture identity.'
+        }
+    } elseif ([string]$query.Source -eq 'OfflineFixture') {
+        Assert-V10Issue41Sha256 -Value $query.FixtureSha256 -Description 'Issue #41 Query.FixtureSha256'
+        Assert-V10ClrStringValue -Value $query.FixturePath -Description 'Issue #41 Query.FixturePath'
+        Assert-V10ClrStringValue -Value $query.Endpoint -Description 'Issue #41 Query.Endpoint'
+        Assert-V10Issue41Sha256 -Value $query.ResponseSha256 -Description 'Issue #41 Query.ResponseSha256'
+    } else {
+        throw "Issue #41 Query.Source is unsupported: $($query.Source)"
+    }
+
+    $plan = $Report.PlanTruth
+    Assert-V10ExactProperties -Object $plan -Names @('Files', 'Hashes', 'ReleaseGatesTextSha256') -Description 'Issue #41 PlanTruth'
+    Assert-V10ExactProperties -Object $plan.Files -Names @('Roadmap', 'Tracking', 'ReleaseGates') -Description 'Issue #41 PlanTruth.Files'
+    Assert-V10ExactProperties -Object $plan.Hashes -Names @('Plan/github-roadmap.json', 'Plan/GITHUB-TRACKING.md', 'Plan/RELEASE-GATES.md') -Description 'Issue #41 PlanTruth.Hashes'
+    $planPaths = [ordered]@{
+        Roadmap = 'Plan/github-roadmap.json'
+        Tracking = 'Plan/GITHUB-TRACKING.md'
+        ReleaseGates = 'Plan/RELEASE-GATES.md'
+    }
+    foreach ($name in $planPaths.Keys) {
+        Assert-V10ClrStringValue -Value $plan.Files.$name -Description "Issue #41 PlanTruth.Files.$name"
+        if ([string]$plan.Files.$name -cne $planPaths[$name]) {
+            throw "Issue #41 PlanTruth.Files.$name is not canonical."
+        }
+        $hash = $plan.Hashes.($planPaths[$name])
+        Assert-V10Issue41Sha256 -Value $hash -Description "Issue #41 PlanTruth.Hashes.$($planPaths[$name])"
+        $observedHash = Get-V10RelativeFileSha256 -RelativePath $planPaths[$name] -Description "Issue #41 PlanTruth file $($planPaths[$name])"
+        if ([string]$hash -cne $observedHash) {
+            throw "Issue #41 PlanTruth hash does not match committed bytes: $($planPaths[$name])"
+        }
+    }
+    Assert-V10Issue41Sha256 -Value $plan.ReleaseGatesTextSha256 -Description 'Issue #41 PlanTruth.ReleaseGatesTextSha256'
+    $releaseGatesText = [IO.File]::ReadAllText((Resolve-V10RepositoryFile -RelativePath 'Plan/RELEASE-GATES.md' -RepositoryRoot $RepositoryRoot -Description 'Issue #41 release-gates Plan truth'))
+    if ([string]$plan.ReleaseGatesTextSha256 -cne (Get-V10Sha256TextUpper -Text $releaseGatesText)) {
+        throw 'Issue #41 PlanTruth.ReleaseGatesTextSha256 does not match the committed text.'
+    }
+
+    $candidate = $Report.ReleaseCandidate
+    Assert-V10ExactProperties -Object $candidate -Names @('Status', 'Commit', 'Reason') -Description 'Issue #41 ReleaseCandidate'
+    Assert-V10ClrStringValue -Value $candidate.Status -Description 'Issue #41 ReleaseCandidate.Status'
+    Assert-V10ClrStringValue -Value $candidate.Commit -Description 'Issue #41 ReleaseCandidate.Commit' -AllowEmpty
+    Assert-V10ClrStringValue -Value $candidate.Reason -Description 'Issue #41 ReleaseCandidate.Reason'
+    if ([string]$candidate.Status -notin @('RECORDED', 'NOT_RECORDED')) {
+        throw 'Issue #41 ReleaseCandidate.Status must be RECORDED or NOT_RECORDED.'
+    }
+    if ([string]$candidate.Status -eq 'RECORDED') {
+        Assert-V10Hex -Value ([string]$candidate.Commit) -Length 40 -Description 'Issue #41 ReleaseCandidate.Commit' -Lowercase
+        if ([string]$candidate.Commit -cne $SourceCommit) {
+            throw 'Issue #41 ReleaseCandidate.Commit does not match SourceCommit.'
+        }
+    } elseif (-not [string]::IsNullOrWhiteSpace([string]$candidate.Commit)) {
+        throw 'An unrecorded Issue #41 release candidate must not carry a commit identity.'
+    }
+
+    $classes = @('Static', 'Synthetic', 'Contract', 'Integration', 'Runtime', 'Independent', 'Human', 'Release')
+    $versions = @('v0.1.0', 'v0.2.0', 'v0.3.0', 'v0.4.0', 'v0.5.0', 'v0.6.0', 'v0.7.0')
+    Assert-V10ExactProperties -Object $Report.EvidenceStatus -Names $classes -Description 'Issue #41 EvidenceStatus'
+    foreach ($className in $classes) {
+        $status = $Report.EvidenceStatus.$className
+        Assert-V10ExactProperties -Object $status -Names @('Status', 'RequiredByVersions', 'ObservedVersions', 'NotObservedVersions') -Description "Issue #41 EvidenceStatus.$className"
+        Assert-V10ClrStringValue -Value $status.Status -Description "Issue #41 EvidenceStatus.$className.Status"
+        if ([string]$status.Status -notin @('PASS', 'NOT_OBSERVED', 'BLOCKED', 'FAIL', 'NOT_APPLICABLE')) {
+            throw "Issue #41 EvidenceStatus.$className.Status is invalid."
+        }
+        foreach ($arrayName in @('RequiredByVersions', 'ObservedVersions', 'NotObservedVersions')) {
+            Assert-V10ClrArrayValue -Value $status.$arrayName -Description "Issue #41 EvidenceStatus.$className.$arrayName"
+            $seenVersions = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+            foreach ($version in @($status.$arrayName)) {
+                Assert-V10ClrStringValue -Value $version -Description "Issue #41 EvidenceStatus.$className.$arrayName entry"
+                if ($versions -notcontains [string]$version -or -not $seenVersions.Add([string]$version)) {
+                    throw "Issue #41 EvidenceStatus.$className.$arrayName contains an invalid or duplicate version."
+                }
+            }
+        }
+        $required = @($status.RequiredByVersions)
+        $observed = @($status.ObservedVersions)
+        $notObserved = @($status.NotObservedVersions)
+        if (@($observed | Where-Object { $notObserved -contains $_ }).Count -ne 0) {
+            throw "Issue #41 EvidenceStatus.$className overlaps observed and not-observed versions."
+        }
+        if ([string]$status.Status -eq 'PASS' -and ($notObserved.Count -ne 0 -or $observed.Count -ne $required.Count)) {
+            throw "Issue #41 EvidenceStatus.$className PASS is incomplete."
+        }
+        if ([string]$status.Status -eq 'NOT_APPLICABLE' -and ($required.Count -ne 0 -or $observed.Count -ne 0 -or $notObserved.Count -ne 0)) {
+            throw "Issue #41 EvidenceStatus.$className NOT_APPLICABLE has an inventory."
+        }
+    }
+
+    $manifest = $Report.EvidenceManifest
+    Assert-V10ExactProperties -Object $manifest -Names @('Source', 'Path', 'Sha256', 'EntryCount') -Description 'Issue #41 EvidenceManifest'
+    foreach ($name in @('Source', 'Path', 'Sha256')) {
+        Assert-V10ClrStringValue -Value $manifest.$name -Description "Issue #41 EvidenceManifest.$name" -AllowEmpty
+    }
+    Assert-V10ClrIntegerValue -Value $manifest.EntryCount -Description 'Issue #41 EvidenceManifest.EntryCount' -Minimum 0
+    if ([string]$manifest.Source -eq 'EvidenceManifest') {
+        if ([int64]$manifest.EntryCount -lt 7 -or [string]::IsNullOrWhiteSpace([string]$manifest.Path)) {
+            throw 'Issue #41 EvidenceManifest must identify the complete v0.1-v0.7 manifest.'
+        }
+        Assert-V10Issue41Sha256 -Value $manifest.Sha256 -Description 'Issue #41 EvidenceManifest.Sha256'
+    } elseif ([string]$manifest.Source -eq 'No manifest; no evidence admitted') {
+        if ([int64]$manifest.EntryCount -ne 0 -or -not [string]::IsNullOrWhiteSpace([string]$manifest.Path) -or
+            -not [string]::IsNullOrWhiteSpace([string]$manifest.Sha256)) {
+            throw 'Issue #41 empty EvidenceManifest identity is inconsistent.'
+        }
+    } else {
+        throw "Issue #41 EvidenceManifest.Source is unsupported: $($manifest.Source)"
+    }
+
+    [void](Assert-V10Issue40Handoff `
+        -Handoff $Report.Issue40Handoff `
+        -SourceCommit $SourceCommit `
+        -SourceTree $ExpectedSourceTree `
+        -RepositoryRoot $RepositoryRoot)
+
+    $map = $Report.DependencyMap
+    Assert-V10ClrArrayValue -Value $map -Description 'Issue #41 DependencyMap' -MinimumCount 7
+    $seenMapKeys = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    $seenIssueNumbers = [Collections.Generic.HashSet[int]]::new()
+    $seenVersions = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    foreach ($entry in @($map)) {
+        Assert-V10ExactProperties -Object $entry -Names @(
+            'Version', 'MilestoneNumber', 'MilestoneTitle', 'IssueNumber', 'Title', 'State', 'IsReleaseTracker',
+            'RoadmapKey', 'RoadmapMapping', 'ReleaseTrackerIssue', 'ReleaseTrackerUrl', 'LocalReleaseTracker',
+            'LocalGatePlan', 'LocalGateVerifier', 'LocalGateScripts', 'GitHubUrl') -Description 'Issue #41 DependencyMap entry'
+        Assert-V10ClrStringValue -Value $entry.Version -Description 'Issue #41 DependencyMap.Version'
+        Assert-V10ClrIntegerValue -Value $entry.MilestoneNumber -Description 'Issue #41 DependencyMap.MilestoneNumber' -Minimum 1
+        Assert-V10ClrStringValue -Value $entry.MilestoneTitle -Description 'Issue #41 DependencyMap.MilestoneTitle'
+        Assert-V10ClrIntegerValue -Value $entry.IssueNumber -Description 'Issue #41 DependencyMap.IssueNumber' -Minimum 1
+        Assert-V10ClrStringValue -Value $entry.Title -Description 'Issue #41 DependencyMap.Title'
+        Assert-V10ClrStringValue -Value $entry.State -Description 'Issue #41 DependencyMap.State'
+        Assert-V10ClrBooleanValue -Value $entry.IsReleaseTracker -Description 'Issue #41 DependencyMap.IsReleaseTracker'
+        Assert-V10ClrStringValue -Value $entry.RoadmapKey -Description 'Issue #41 DependencyMap.RoadmapKey' -AllowEmpty
+        Assert-V10ClrStringValue -Value $entry.RoadmapMapping -Description 'Issue #41 DependencyMap.RoadmapMapping'
+        Assert-V10ClrIntegerValue -Value $entry.ReleaseTrackerIssue -Description 'Issue #41 DependencyMap.ReleaseTrackerIssue' -Minimum 1
+        foreach ($name in @('ReleaseTrackerUrl', 'LocalReleaseTracker', 'LocalGatePlan', 'LocalGateVerifier', 'GitHubUrl')) {
+            Assert-V10ClrStringValue -Value $entry.$name -Description "Issue #41 DependencyMap.$name"
+        }
+        Assert-V10ClrArrayValue -Value $entry.LocalGateScripts -Description 'Issue #41 DependencyMap.LocalGateScripts' -MinimumCount 1
+        foreach ($path in @($entry.LocalGateScripts)) {
+            Assert-V10ClrStringValue -Value $path -Description 'Issue #41 DependencyMap.LocalGateScripts entry'
+            Assert-V10SafeRelativePathText -Path ([string]$path) -Description 'Issue #41 DependencyMap.LocalGateScripts entry'
+            [void](Resolve-V10RepositoryFile -RelativePath ([string]$path) -RepositoryRoot $RepositoryRoot -Description 'Issue #41 local gate script')
+        }
+        if ($versions -notcontains [string]$entry.Version -or
+            -not $seenMapKeys.Add("$($entry.Version)|$($entry.IssueNumber)") -or
+            -not $seenIssueNumbers.Add([int]$entry.IssueNumber)) {
+            throw 'Issue #41 DependencyMap contains an invalid or duplicate dependency record.'
+        }
+        [void]$seenVersions.Add([string]$entry.Version)
+        if ([string]$entry.State -cnotin @('OPEN', 'CLOSED', 'UNKNOWN')) {
+            throw 'Issue #41 DependencyMap.State is invalid.'
+        }
+        if ([string]$entry.LocalReleaseTracker -cne 'Plan/GITHUB-TRACKING.md' -or
+            [string]$entry.LocalGatePlan -cne 'Plan/RELEASE-GATES.md' -or
+            [string]$entry.LocalGateVerifier -cne 'tools/Test-VersionMilestone.ps1') {
+            throw 'Issue #41 DependencyMap local gate bindings are not canonical.'
+        }
+    }
+    foreach ($version in $versions) {
+        if (-not $seenVersions.Contains($version)) {
+            throw "Issue #41 DependencyMap is missing complete version inventory: $version"
+        }
+    }
+    $issue40 = @($map | Where-Object { [int]$_.IssueNumber -eq 40 })
+    if ($issue40.Count -ne 1 -or [string]$issue40[0].Version -cne 'v0.7.0' -or -not [bool]$issue40[0].IsReleaseTracker -or
+        [int]$issue40[0].ReleaseTrackerIssue -ne 40) {
+        throw 'Issue #41 DependencyMap must contain exactly one v0.7.0 Issue #40 release-tracker record.'
+    }
+
+    $blockers = $Report.Blockers
+    Assert-V10ClrArrayValue -Value $blockers -Description 'Issue #41 Blockers'
+    $seenBlockers = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    foreach ($blocker in @($blockers)) {
+        Assert-V10ExactProperties -Object $blocker -Names @('Code', 'Version', 'IssueNumber', 'Detail') -Description 'Issue #41 blocker'
+        foreach ($name in @('Code', 'Version', 'Detail')) {
+            Assert-V10ClrStringValue -Value $blocker.$name -Description "Issue #41 blocker.$name" -AllowEmpty
+        }
+        Assert-V10ClrIntegerValue -Value $blocker.IssueNumber -Description 'Issue #41 blocker.IssueNumber' -Minimum 0
+        if (-not $seenBlockers.Add("$($blocker.Code)|$($blocker.Version)|$($blocker.IssueNumber)|$($blocker.Detail)")) {
+            throw 'Issue #41 Blockers contains a duplicate record.'
+        }
+    }
+
+    $boundaries = $Report.EvidenceBoundary
+    Assert-V10ExactProperties -Object $boundaries -Names @(
+        'RuntimeTestsProject', 'ActualHerdrRuntime', 'RegistryAppDataLiveDatabase', 'ReleaseCandidateFreeze',
+        'PackagePublication', 'ReleasePublication', 'HumanAcceptance') -Description 'Issue #41 EvidenceBoundary'
+    foreach ($name in @('RuntimeTestsProject', 'ActualHerdrRuntime', 'RegistryAppDataLiveDatabase', 'ReleaseCandidateFreeze', 'PackagePublication', 'ReleasePublication', 'HumanAcceptance')) {
+        Assert-V10ClrStringValue -Value $boundaries.$name -Description "Issue #41 EvidenceBoundary.$name"
+    }
+    if ([string]$boundaries.RuntimeTestsProject -notlike '*Synthetic*' -or
+        [string]$boundaries.ActualHerdrRuntime -notlike 'NOT OBSERVED*' -or
+        [string]$boundaries.RegistryAppDataLiveDatabase -notlike 'NOT OBSERVED*' -or
+        [string]$boundaries.PackagePublication -cne 'NOT PERFORMED' -or
+        [string]$boundaries.ReleasePublication -cne 'NOT PERFORMED') {
+        throw 'Issue #41 EvidenceBoundary contains a forged Runtime or Release claim.'
+    }
+
+    Assert-V10ClrStringValue -Value $Report.Decision -Description 'Issue #41 Decision'
+    if ([string]$Report.Decision -notin @('READY', 'NOT_READY')) {
+        throw 'Issue #41 Decision must be READY or NOT_READY.'
+    }
+    if ([string]$Report.Decision -eq 'READY') {
+        if (@($blockers).Count -ne 0 -or [string]$candidate.Status -cne 'RECORDED' -or
+            [string]$boundaries.ReleaseCandidateFreeze -cne 'RECORDED' -or
+            [string]$boundaries.HumanAcceptance -notlike 'OBSERVED_IN_INPUT*') {
+            throw 'Issue #41 READY decision has unresolved blockers or missing human-boundary evidence.'
+        }
+        if ([string]$query.Source -ne 'GitHub gh api (read-only)') {
+            throw 'An offline Issue #41 audit cannot be READY.'
+        }
+        foreach ($className in $classes) {
+            if ([string]$Report.EvidenceStatus.$className.Status -notin @('PASS', 'NOT_APPLICABLE')) {
+                throw "Issue #41 READY decision has non-passing $className evidence."
+            }
+        }
+    } elseif ([string]$candidate.Status -ne 'NOT_RECORDED' -or @($blockers).Count -eq 0 -or
+        [string]$boundaries.ReleaseCandidateFreeze -cne 'NOT RECORDED') {
+        throw 'Issue #41 NOT_READY decision must preserve blockers and an unfrozen candidate.'
+    }
+
+    return [pscustomobject][ordered]@{
+        Status = [string]$Report.Decision
+        SourceCommit = [string]$Report.SourceCommit
+        WorkingTree = [string]$Report.WorkingTree
+        DependencyCount = @($map).Count
+        BlockerCount = @($blockers).Count
+        Runtime = 'NOT OBSERVED'
+        Release = 'NOT OBSERVED'
+    }
+}
+
 function Assert-V10GateReport {
     param(
         [Parameter(Mandatory = $true)][int]$Issue,
@@ -1746,23 +2240,7 @@ function Assert-V10GateReport {
     $value = $Report.Value
     switch ($Issue) {
         41 {
-            if ([int](Get-V10RequiredProperty -Object $value -Name 'SchemaVersion' -Description 'Issue #41 report') -ne 1 -or
-                [string](Get-V10RequiredProperty -Object $value -Name 'AuditId' -Description 'Issue #41 report') -cne 'V100-01' -or
-                [string](Get-V10RequiredProperty -Object $value -Name 'SourceCommit' -Description 'Issue #41 report') -cne $SourceCommit -or
-                [string](Get-V10RequiredProperty -Object $value -Name 'WorkingTree' -Description 'Issue #41 report') -cne 'CLEAN' -or
-                [string](Get-V10RequiredProperty -Object $value -Name 'Decision' -Description 'Issue #41 report') -cne 'READY') {
-                throw 'Issue #41 dependency audit is not READY for the accepted commit.'
-            }
-            $candidate = Get-V10RequiredProperty -Object $value -Name 'ReleaseCandidate' -Description 'Issue #41 report'
-            if ([string](Get-V10RequiredProperty -Object $candidate -Name 'Status' -Description 'Issue #41 release candidate') -cne 'RECORDED' -or
-                [string](Get-V10RequiredProperty -Object $candidate -Name 'Commit' -Description 'Issue #41 release candidate') -cne $SourceCommit) {
-                throw 'Issue #41 did not record the exact accepted release-candidate commit.'
-            }
-            $query = Get-V10RequiredProperty -Object $value -Name 'Query' -Description 'Issue #41 report'
-            if ([string](Get-V10RequiredProperty -Object $query -Name 'Source' -Description 'Issue #41 query') -cne 'GitHub gh api (read-only)' -or
-                @(Get-V10RequiredProperty -Object $value -Name 'Blockers' -Description 'Issue #41 report').Count -ne 0) {
-                throw 'Issue #41 dependency audit must be GitHub-backed and contain zero blockers.'
-            }
+            Assert-V10Issue41ReportSemantics -Report $value -SourceCommit $SourceCommit -ExpectedSourceTree $ExpectedSourceTree -RequireReady | Out-Null
         }
         42 {
             Assert-V10Issue42ReportSemantics `
