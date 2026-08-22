@@ -162,6 +162,65 @@ public sealed class SolutionTopologyTests
         }
     }
 
+    [TestMethod]
+    public void PlanDocumentsPreserveSingleLanguageAndAuthorityInvariants()
+    {
+        var repositoryRoot = FindRepositoryRoot();
+        var designContract = File.ReadAllText(Path.Combine(repositoryRoot, "Plan", "DESIGN-CONTRACT.md"));
+        var roadmap = File.ReadAllText(Path.Combine(repositoryRoot, "Plan", "ROADMAP.md"));
+        var releaseGates = File.ReadAllText(Path.Combine(repositoryRoot, "Plan", "RELEASE-GATES.md"));
+        var architecture = File.ReadAllText(Path.Combine(repositoryRoot, "Plan", "ARCHITECTURE.md"));
+        var githubRoadmap = File.ReadAllText(Path.Combine(repositoryRoot, "Plan", "github-roadmap.json"));
+        var decisions = File.ReadAllText(Path.Combine(repositoryRoot, "Plan", "DECISIONS.md"));
+
+        foreach (var authorityDocument in new[]
+                 {
+                     designContract,
+                     roadmap,
+                     releaseGates,
+                     architecture,
+                     githubRoadmap,
+                     decisions,
+                 })
+        {
+            Assert.IsFalse(
+                authorityDocument.Contains("during v0.1 visual implementation", StringComparison.Ordinal),
+                "Plan authority documents must not describe the approved and released v0.1 baseline as future implementation work.");
+        }
+
+        Assert.IsFalse(
+            designContract.Contains("Thai primary labels with English supporting labels", StringComparison.Ordinal),
+            "DESIGN-CONTRACT must not permit stacked dual-language labels.");
+        StringAssert.Contains(designContract, "Render exactly one selected UI language at a time");
+
+        StringAssert.Contains(architecture, "Status: Approved baseline; v0.2 implementation active");
+
+        StringAssert.Contains(releaseGates, "atomic packaged compatibility, reference-host runtime matrix");
+        StringAssert.Contains(releaseGates, "UI-stall p95 <=50 ms and maximum <=100 ms");
+        StringAssert.Contains(releaseGates, "mixed-DPI 100<->150 and 125<->150 in both directions with primary switch and unplug");
+        StringAssert.Contains(releaseGates, "Narrator and every declared accessibility check are mandatory");
+        StringAssert.Contains(releaseGates, "60 minutes on AC and 60 minutes on battery");
+        Assert.IsFalse(
+            releaseGates.Contains("Until the atomic producer/validator implementation lands", StringComparison.Ordinal),
+            "RELEASE-GATES must not retain stale pre-implementation phrasing.");
+
+        StringAssert.Contains(roadmap, "Disconnect/reconnect แล้ว state กลับมาตรงกับ snapshot");
+        StringAssert.Contains(roadmap, "Atomic package identity validation");
+        StringAssert.Contains(roadmap, "Renderer compatibility และ visual parity");
+        StringAssert.Contains(roadmap, "Atomic Thai/English language matrix reports");
+        StringAssert.Contains(roadmap, "UI-stall p95 <=50 ms max <=100 ms");
+
+        StringAssert.Contains(githubRoadmap, "Disconnect and reconnect restore state matching snapshot.");
+        StringAssert.Contains(githubRoadmap, "Atomic package identity and process-wide SoftwareOnly renderer policy validation pass.");
+        StringAssert.Contains(githubRoadmap, "Renderer compatibility and visual parity pass");
+        StringAssert.Contains(githubRoadmap, "Atomic Thai/English language matrix reports");
+        StringAssert.Contains(githubRoadmap, "UI-stall p95 <=50 ms max <=100 ms");
+
+        StringAssert.Contains(decisions, "mixed-DPI 100<->150 and 125<->150 transitions in both directions including primary switch and unplug");
+        StringAssert.Contains(decisions, "Narrator and every accessibility check are required");
+        StringAssert.Contains(decisions, "Soak is 60 minutes AC plus 60 minutes battery");
+    }
+
     private static string FindRepositoryRoot()
     {
         var directory = new DirectoryInfo(AppContext.BaseDirectory);

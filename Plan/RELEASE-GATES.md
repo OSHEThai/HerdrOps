@@ -18,7 +18,7 @@ Status: Planned acceptance framework
 | Version | Required evidence |
 |---|---|
 | v0.1 | Build, unit tests, actual WPF screenshots, design review |
-| v0.2 | Contract tests plus actual Herdr snapshot/event/reconnect trace |
+| v0.2 | Contract tests, actual Herdr snapshot/event/reconnect trace, atomic packaged compatibility, reference-host runtime matrix, display/accessibility coverage, and soak acceptance |
 | v0.3 | Replay determinism, live activity trace, bounded-read and redaction tests |
 | v0.4 | Complete assignment/delegation lifecycle trace with provenance |
 | v0.5 | Rule corpus plus role-distinct runtime review workflow |
@@ -79,8 +79,7 @@ re-observes every `environmentBinding` leaf, pins/recomputes the applicable `can
 and binds the canonical SHA-256 of `Plan/reference-hosts/v0.2.json`. It uses process-wide WPF
 `SoftwareOnly` before the first window and throughout the measurement, and passes the complete updated
 producer and independent-validator contract. The exact candidate commit, tree and binary hashes must be
-recorded before the run. Until the atomic producer/validator implementation lands, no candidate is
-effective under this policy.
+recorded before the run. No candidate is effective under this policy without passing the complete atomic producer and independent-validator contract.
 
 The approved profile's RFC 8785 canonical SHA-256 is
 `96D01ED15A536F2DF50B59B43CFDEB3683DCE8667AE2E7BF6A96124182FE13A3`; the canonical schema SHA-256 is
