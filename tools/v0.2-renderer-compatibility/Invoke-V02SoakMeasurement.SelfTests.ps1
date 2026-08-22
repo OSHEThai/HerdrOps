@@ -574,14 +574,11 @@ try {
     }
 
     # 17. Live mode missing live telemetry channel fails closed
-    if ($selfTestElevated) {
-        Write-Host 'SKIP environment-bound live telemetry guard: current process is elevated; production correctly fails earlier.'
-    } else {
-        $negLiveTelDest = Join-Path $tempRoot 'matrix\neg-live-tel.json'
-        $dummy1 = Start-Process -FilePath 'powershell.exe' -ArgumentList '-NoProfile -Command Start-Sleep -Seconds 30' -PassThru
-        $dummy2 = Start-Process -FilePath 'powershell.exe' -ArgumentList '-NoProfile -Command Start-Sleep -Seconds 30' -PassThru
-        try {
-            Assert-ThrowsMatchAndZeroOutput {
+    $negLiveTelDest = Join-Path $tempRoot 'matrix\neg-live-tel.json'
+    $dummy1 = Start-Process -FilePath 'powershell.exe' -ArgumentList '-NoProfile -Command Start-Sleep -Seconds 30' -PassThru
+    $dummy2 = Start-Process -FilePath 'powershell.exe' -ArgumentList '-NoProfile -Command Start-Sleep -Seconds 30' -PassThru
+    try {
+        Assert-ThrowsMatchAndZeroOutput {
             & $script:InvokeSoakPath `
                 -PowerSource 'AC' `
                 -DestinationPath $negLiveTelDest `
@@ -594,11 +591,10 @@ try {
                 -ExpectedSourceTree $repo.Tree `
                 -AppProcessId $dummy1.Id `
                 -CoreProcessId $dummy2.Id
-            } 'Live soak measurement requires an authenticated TelemetryChannel' 'live mode missing telemetry channel fails closed' $negLiveTelDest
-        } finally {
-            if ($null -ne $dummy1 -and -not $dummy1.HasExited) { Stop-Process -Id $dummy1.Id -Force -ErrorAction SilentlyContinue }
-            if ($null -ne $dummy2 -and -not $dummy2.HasExited) { Stop-Process -Id $dummy2.Id -Force -ErrorAction SilentlyContinue }
-        }
+        } 'Live soak measurement requires an authenticated TelemetryChannel' 'live mode missing telemetry channel fails closed before environment-specific guards' $negLiveTelDest
+    } finally {
+        if ($null -ne $dummy1 -and -not $dummy1.HasExited) { Stop-Process -Id $dummy1.Id -Force -ErrorAction SilentlyContinue }
+        if ($null -ne $dummy2 -and -not $dummy2.HasExited) { Stop-Process -Id $dummy2.Id -Force -ErrorAction SilentlyContinue }
     }
 
     # 18. Live mode mandatory package binding parameters
