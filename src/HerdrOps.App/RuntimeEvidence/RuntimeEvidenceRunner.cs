@@ -150,6 +150,16 @@ public sealed record RuntimeResourcePreparation(
     double ManagedHeapBeforeMegabytes,
     double ManagedHeapAfterMegabytes);
 
+public sealed record RuntimeResourceStageCheckpoint(
+    string Stage,
+    DateTimeOffset ObservedUtc,
+    int AppProcessId,
+    DateTimeOffset AppProcessStartUtc,
+    double AppWorkingSetMegabytes,
+    double AppPrivateMemoryMegabytes,
+    double AppPagedMemoryMegabytes,
+    double ManagedHeapMegabytes);
+
 public sealed record RuntimeIdleQuiescence(
     DateTimeOffset StartedUtc,
     DateTimeOffset StableSinceUtc,
@@ -325,6 +335,7 @@ public sealed record RuntimeResourceMeasurement(
     RuntimeProcessResourceMeasurement App,
     RuntimeProcessResourceMeasurement Core,
     RuntimeResourcePreparation Preparation,
+    IReadOnlyList<RuntimeResourceStageCheckpoint> StageCheckpoints,
     bool StateSequenceStable,
     long StartSequence,
     long FinishSequence,
@@ -412,6 +423,14 @@ public sealed class RuntimeEvidenceRunner(
     private const int IdleQuiescenceSeconds = 5;
     private const int IdleQuiescencePollMilliseconds = 100;
     private const int ResourceSampleIntervalMilliseconds = 250;
+    internal static IReadOnlyList<string> RequiredResourceStageNames { get; } =
+    [
+        "pre-capture",
+        "post-initial-captures",
+        "post-dashboard-close",
+        "post-final-widget-capture",
+        "post-cleanup",
+    ];
     private const string EmptySha256 =
         "0000000000000000000000000000000000000000000000000000000000000000";
     private const string WidgetLatencyMeasurement =
@@ -436,6 +455,7 @@ public sealed class RuntimeEvidenceRunner(
     private readonly RuntimeEvidenceOptions _options = options ?? throw new ArgumentNullException(nameof(options));
     private readonly List<RuntimeEvidenceCapture> _captures = [];
     private readonly List<WeakReference<RenderTargetBitmap>> _captureBitmapReferences = [];
+    private readonly List<RuntimeResourceStageCheckpoint> _resourceStageCheckpoints = [];
     private readonly List<RuntimeEvidenceProgress> _progressHistory = [];
     private readonly List<WidgetWindow> _widgetWindows = [];
 
@@ -468,6 +488,7 @@ public sealed class RuntimeEvidenceRunner(
         var initialSequence = _state.CurrentState.LastIngestSequence;
         var initialEventCount = _state.CurrentRuntimeHealth.EventCount;
         var initialStateHash = CurrentStateHash();
+        RecordResourceStageCheckpoint("pre-capture");
         _ = WriteProgress("capturing-live-dashboard-and-widgets");
         await CaptureInitialSurfacesAsync(initialStateHash, cancellationToken);
         if (!string.Equals(initialStateHash, CurrentStateHash(), StringComparison.Ordinal))
@@ -475,6 +496,7 @@ public sealed class RuntimeEvidenceRunner(
             throw new InvalidOperationException(
                 "The live state changed while the initial Dashboard and Widget captures were being rendered; rerun for one coherent snapshot.");
         }
+        RecordResourceStageCheckpoint("post-initial-captures");
 
         var latencyWarmup = _state.Widgets.ResetUpdateLatencyMeasurement();
         var widgetLatencyBaselineSequence = _state.CurrentState.LastIngestSequence;
@@ -504,6 +526,7 @@ public sealed class RuntimeEvidenceRunner(
         _mainWindow.Close();
         var dashboardClosedUtc = DateTimeOffset.UtcNow;
         await Dispatcher.Yield(DispatcherPriority.ApplicationIdle);
+        RecordResourceStageCheckpoint("post-dashboard-close");
         _ = WriteProgress("dashboard-closed-waiting-for-herdr-disconnect");
         await WaitUntilAsync(
             () => _state.CurrentRuntimeHealth.LastTransitionUtc > dashboardClosedUtc &&
@@ -553,6 +576,7 @@ public sealed class RuntimeEvidenceRunner(
             verticalWidget,
             "widget-floating-vertical-after-dashboard-close.png",
             cancellationToken);
+        RecordResourceStageCheckpoint("post-final-widget-capture");
 
         _ = WriteProgress("waiting-for-idle-stability");
         var idleQuiescence = await WaitForIdleQuiescenceAsync(deadline, cancellationToken);
@@ -917,6 +941,7 @@ public sealed class RuntimeEvidenceRunner(
                 Math.Round(AverageMegabytes(corePrivateMemorySamples), 3),
                 Math.Round(MaximumMegabytes(corePrivateMemorySamples), 3)),
             preparation,
+            _resourceStageCheckpoints.ToArray(),
             startFingerprint.LastIngestSequence == finishFingerprint.LastIngestSequence,
             startFingerprint.LastIngestSequence,
             finishFingerprint.LastIngestSequence,
@@ -995,6 +1020,7 @@ public sealed class RuntimeEvidenceRunner(
         var retainedEvidenceWindows = _widgetWindows.Count;
         var visibleEvidenceWindows = _widgetWindows.Count(window => window.IsVisible);
         app.Refresh();
+        RecordResourceStageCheckpoint("post-cleanup");
         return new RuntimeResourcePreparation(
             DateTimeOffset.UtcNow,
             dashboardResourcesReleased,
@@ -1009,6 +1035,47 @@ public sealed class RuntimeEvidenceRunner(
             Math.Round(ToMegabytes(privateMemoryBefore), 3),
             Math.Round(ToMegabytes(app.PrivateMemorySize64), 3),
             Math.Round(ToMegabytes(managedHeapBefore), 3),
+            Math.Round(ToMegabytes(GC.GetTotalMemory(forceFullCollection: false)), 3));
+    }
+
+    private void RecordResourceStageCheckpoint(string stage)
+    {
+        var checkpointIndex = _resourceStageCheckpoints.Count;
+        if (checkpointIndex >= RequiredResourceStageNames.Count ||
+            !string.Equals(
+                RequiredResourceStageNames[checkpointIndex],
+                stage,
+                StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException(
+                $"Unexpected resource diagnostic stage '{stage}' at index {checkpointIndex}.");
+        }
+
+        using var app = Process.GetCurrentProcess();
+        _resourceStageCheckpoints.Add(ObserveResourceStageCheckpoint(stage, app));
+    }
+
+    internal static RuntimeResourceStageCheckpoint ObserveResourceStageCheckpoint(
+        string stage,
+        Process app)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(stage);
+        ArgumentNullException.ThrowIfNull(app);
+        app.Refresh();
+        if (app.HasExited)
+        {
+            throw new InvalidOperationException(
+                $"Process {app.Id} exited before resource stage '{stage}' was captured.");
+        }
+
+        return new RuntimeResourceStageCheckpoint(
+            stage,
+            DateTimeOffset.UtcNow,
+            app.Id,
+            new DateTimeOffset(app.StartTime.ToUniversalTime()),
+            Math.Round(ToMegabytes(app.WorkingSet64), 3),
+            Math.Round(ToMegabytes(app.PrivateMemorySize64), 3),
+            Math.Round(ToMegabytes(app.PagedMemorySize64), 3),
             Math.Round(ToMegabytes(GC.GetTotalMemory(forceFullCollection: false)), 3));
     }
 

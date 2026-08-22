@@ -32,6 +32,7 @@ $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $false
 
 . (Join-Path $PSScriptRoot 'lib/V02GateProvenance.ps1')
+. (Join-Path $PSScriptRoot 'lib/V02ResourceStageCheckpoints.ps1')
 
 function Get-ExpectedCleanSourceIdentity {
     param(
@@ -1031,7 +1032,8 @@ foreach ($requiredReport in @($coreReportPath, $appReportPath, $progressPath, $p
     }
 }
 $coreReport = Get-Content -LiteralPath $coreReportPath -Raw | ConvertFrom-Json
-$appReport = Get-Content -LiteralPath $appReportPath -Raw | ConvertFrom-Json
+$appReport = ConvertFrom-V02CheckpointJson (
+    Get-Content -LiteralPath $appReportPath -Raw)
 $progressReport = Get-Content -LiteralPath $progressPath -Raw | ConvertFrom-Json
 $coreExecutableHash = $coreExecutableHashBeforeLaunch
 $appExecutableHash = $appExecutableHashBeforeLaunch
@@ -1242,6 +1244,7 @@ $reportedAppStartUtc = ([DateTimeOffset]$appReport.ResourceMeasurement.App.Proce
 $reportedCoreStartUtc = ([DateTimeOffset]$appReport.ResourceMeasurement.Core.ProcessStartUtc).ToUniversalTime()
 Assert-True ($reportedAppStartUtc.UtcDateTime.Ticks -eq $appProcess.StartTime.ToUniversalTime().Ticks) 'App resource samples are bound to an unexpected process lifetime.'
 Assert-True ($reportedCoreStartUtc.UtcDateTime.Ticks -eq $coreProcess.StartTime.ToUniversalTime().Ticks) 'Core resource samples are bound to an unexpected process lifetime.'
+$resourceStageCheckpoints = @(Assert-V02ResourceStageCheckpoints -AppReport $appReport)
 Assert-True (@($appReport.FailedCandidateChecks).Count -eq 0) 'The App report contains failed candidate checks.'
 Assert-True ([bool]$appReport.CompositeCandidateChecksPassed) 'App runtime candidate checks did not all pass.'
 Assert-True ([long]$coreReport.FinalMonitorState.EventCount -ge 2) 'The Core trace requires at least two real Herdr events.'
@@ -1539,6 +1542,11 @@ $reportLines = @(
     "AppWorkingSetPreparationMB: before=$($appReport.ResourceMeasurement.Preparation.AppWorkingSetBeforeMegabytes) after=$($appReport.ResourceMeasurement.Preparation.AppWorkingSetAfterMegabytes)",
     "AppPrivateMemoryPreparationMB: before=$($appReport.ResourceMeasurement.Preparation.AppPrivateMemoryBeforeMegabytes) after=$($appReport.ResourceMeasurement.Preparation.AppPrivateMemoryAfterMegabytes)",
     "ManagedHeapPreparationMB: before=$($appReport.ResourceMeasurement.Preparation.ManagedHeapBeforeMegabytes) after=$($appReport.ResourceMeasurement.Preparation.ManagedHeapAfterMegabytes)",
+    "ResourceStagePreparationToleranceMB: $script:V02ResourceStagePreparationToleranceMegabytes",
+    'ResourceStageCheckpoints:'
+) + ($resourceStageCheckpoints | ForEach-Object {
+    "stage=$($_.Stage) observed=$($_.ObservedUtc) pid=$($_.AppProcessId) start=$($_.AppProcessStartUtc) workingSetMB=$($_.AppWorkingSetMegabytes) privateMB=$($_.AppPrivateMemoryMegabytes) pagedMB=$($_.AppPagedMemoryMegabytes) managedHeapMB=$($_.ManagedHeapMegabytes)"
+}) + @(
     "IdleStateSequence: $($appReport.ResourceMeasurement.StartSequence)",
     "IdleEventCount: $($appReport.ResourceMeasurement.StartEventCount)",
     "RuntimeWpfCaptures: $($captures.Count)",
