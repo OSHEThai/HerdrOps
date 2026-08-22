@@ -84,7 +84,7 @@ These are implementation starting points, not substitutes for visual review:
 - Spacing: dense 4/8/12/16/24 scale
 - Motion: brief status/update transitions; support reduced motion
 
-Exact colors and dimensions must be sampled and validated during v0.1 visual implementation.
+The approved v0.1 release established the initial sampled colors and dimensions. Every later implementation change must continue to validate exact colors and dimensions against the approved references.
 
 ## Visual acceptance
 
@@ -93,4 +93,3 @@ Exact colors and dimensions must be sampled and validated during v0.1 visual imp
 - Validate 1366×768 minimum layout without losing primary actions
 - Validate keyboard order, visible focus, contrast and Thai text clipping
 - Record screenshots from the actual WPF build; generated mockups are not implementation evidence
-

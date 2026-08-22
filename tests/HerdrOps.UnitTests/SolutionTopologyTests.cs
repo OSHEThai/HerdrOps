@@ -171,6 +171,22 @@ public sealed class SolutionTopologyTests
         var releaseGates = File.ReadAllText(Path.Combine(repositoryRoot, "Plan", "RELEASE-GATES.md"));
         var architecture = File.ReadAllText(Path.Combine(repositoryRoot, "Plan", "ARCHITECTURE.md"));
         var githubRoadmap = File.ReadAllText(Path.Combine(repositoryRoot, "Plan", "github-roadmap.json"));
+        var decisions = File.ReadAllText(Path.Combine(repositoryRoot, "Plan", "DECISIONS.md"));
+
+        foreach (var authorityDocument in new[]
+                 {
+                     designContract,
+                     roadmap,
+                     releaseGates,
+                     architecture,
+                     githubRoadmap,
+                     decisions,
+                 })
+        {
+            Assert.IsFalse(
+                authorityDocument.Contains("during v0.1 visual implementation", StringComparison.Ordinal),
+                "Plan authority documents must not describe the approved and released v0.1 baseline as future implementation work.");
+        }
 
         Assert.IsFalse(
             designContract.Contains("Thai primary labels with English supporting labels", StringComparison.Ordinal),
@@ -181,6 +197,9 @@ public sealed class SolutionTopologyTests
 
         StringAssert.Contains(releaseGates, "atomic packaged compatibility, reference-host runtime matrix");
         StringAssert.Contains(releaseGates, "UI-stall p95 <=50 ms and maximum <=100 ms");
+        StringAssert.Contains(releaseGates, "mixed-DPI 100<->150 and 125<->150 in both directions with primary switch and unplug");
+        StringAssert.Contains(releaseGates, "Narrator and every declared accessibility check are mandatory");
+        StringAssert.Contains(releaseGates, "60 minutes on AC and 60 minutes on battery");
         Assert.IsFalse(
             releaseGates.Contains("Until the atomic producer/validator implementation lands", StringComparison.Ordinal),
             "RELEASE-GATES must not retain stale pre-implementation phrasing.");
@@ -196,6 +215,10 @@ public sealed class SolutionTopologyTests
         StringAssert.Contains(githubRoadmap, "Renderer compatibility and visual parity pass");
         StringAssert.Contains(githubRoadmap, "Atomic Thai/English language matrix reports");
         StringAssert.Contains(githubRoadmap, "UI-stall p95 <=50 ms max <=100 ms");
+
+        StringAssert.Contains(decisions, "mixed-DPI 100<->150 and 125<->150 transitions in both directions including primary switch and unplug");
+        StringAssert.Contains(decisions, "Narrator and every accessibility check are required");
+        StringAssert.Contains(decisions, "Soak is 60 minutes AC plus 60 minutes battery");
     }
 
     private static string FindRepositoryRoot()
