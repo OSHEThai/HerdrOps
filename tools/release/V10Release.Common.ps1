@@ -1338,6 +1338,19 @@ function Get-V10RelativeFileSha256 {
     return ((Get-FileHash -LiteralPath $path -Algorithm SHA256 -ErrorAction Stop).Hash).ToUpperInvariant()
 }
 
+function Assert-V10Issue41Sha256 {
+    param(
+        [Parameter(Mandatory = $true)]$Value,
+        [Parameter(Mandatory = $true)][string]$Description
+    )
+
+    Assert-V10ClrStringValue -Value $Value -Description $Description
+    Assert-V10Hex -Value ([string]$Value) -Length 64 -Description $Description -Uppercase
+    if ([string]$Value -ceq (('0' * 64) -join '')) {
+        throw "$Description must not be an all-zero placeholder hash."
+    }
+}
+
 function Assert-V10Issue42Boundaries {
     param(
         [Parameter(Mandatory = $true)]$Boundaries,
