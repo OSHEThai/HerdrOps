@@ -124,11 +124,17 @@ function Resolve-V02RuntimePackageBinding {
     $appHash = ((Get-FileHash -LiteralPath $appPath -Algorithm SHA256).Hash).ToUpperInvariant()
     $coreHash = ((Get-FileHash -LiteralPath $corePath -Algorithm SHA256).Hash).ToUpperInvariant()
     $profileFileHash = ((Get-FileHash -LiteralPath $ProfilePath -Algorithm SHA256).Hash).ToUpperInvariant()
+    $manifestPath = Join-Path $root ([string]$profile.packageManifestFileName)
+    if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) { throw "Validated package manifest is missing: $manifestPath" }
+    $manifestHash = ((Get-FileHash -LiteralPath $manifestPath -Algorithm SHA256).Hash).ToUpperInvariant()
     if ($appHash -cne [string]$validated.AppSha256 -or $coreHash -cne [string]$validated.CoreSha256) {
         throw 'Package App/Core bytes changed after package validation.'
     }
     if ($profileFileHash -cne [string]$validated.PreparationProfileFileSha256) {
         throw 'Package preparation profile bytes changed after package validation.'
+    }
+    if ($manifestHash -cne [string]$validated.PackageManifestSha256) {
+        throw 'Package manifest bytes do not match the committed validator result.'
     }
 
     return [pscustomobject][ordered]@{
@@ -143,8 +149,8 @@ function Resolve-V02RuntimePackageBinding {
         ProfileId = [string]$validated.ProfileId
         ReceiptSha256 = [string]$validated.ReceiptSha256
         ArchiveSha256 = [string]$validated.ArchiveSha256
-        ManifestPath = Join-Path $root ([string]$profile.packageManifestFileName)
-        ManifestSha256 = ((Get-FileHash -LiteralPath (Join-Path $root ([string]$profile.packageManifestFileName)) -Algorithm SHA256).Hash).ToUpperInvariant()
+        ManifestPath = $manifestPath
+        ManifestSha256 = $manifestHash
         AppPath = $appPath
         AppSha256 = $appHash
         CorePath = $corePath

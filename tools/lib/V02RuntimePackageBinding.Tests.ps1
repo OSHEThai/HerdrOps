@@ -135,6 +135,29 @@ try {
     Write-V02CanonicalJsonFile $fixtureIdentity $fixtureReceipt $fixtureRepo
     $resolveArgs=@{IdentityPath=$fixtureReceipt;ArchivePath=$fixtureArchive;PackageRoot=$fixtureRoot;RepositoryRoot=$fixtureRepo;ProfilePath=$fixtureProfilePath;ExpectedSourceCommit=$gitId.CommitSha;ExpectedSourceTree=$gitId.TreeSha}
     Test-Case 'complete package validates twice and finalizes unchanged' { $b=Resolve-V02RuntimePackageBinding @resolveArgs;if([string]$b.ManifestSha256 -cne [string]$b.ValidationResult.PackageManifestSha256){throw 'Bound manifest hash does not match the committed validator result.'};$null=Assert-V02RuntimePackageExecutablesUnchanged $b }
+    $originalCommittedValidator=${function:script:Invoke-V02CommittedPackageValidator}
+    $contradictoryManifestHash=if($manifestStable.Sha256-cne('0'*64)){'0'*64}else{'F'*64}
+    $script:V02ContradictoryManifestValidatorProbe=@{Calls=0;Original=$originalCommittedValidator;Hash=$contradictoryManifestHash}
+    try {
+        Set-Item -LiteralPath Function:\script:Invoke-V02CommittedPackageValidator -Value {
+            param([string]$ValidatorPath,[string]$IdentityPath,[string]$ArchivePath,[string]$PackageRoot,[string]$RepositoryRoot,[string]$ProfilePath,[string]$ExpectedSourceCommit,[string]$ExpectedSourceTree)
+            $result=& $script:V02ContradictoryManifestValidatorProbe.Original @PSBoundParameters
+            $script:V02ContradictoryManifestValidatorProbe.Calls++
+            $result.PackageManifestSha256=$script:V02ContradictoryManifestValidatorProbe.Hash
+            Assert-V02RuntimePackageValidationResult -Result $result -ExpectedSourceCommit $ExpectedSourceCommit -ExpectedSourceTree $ExpectedSourceTree
+            return $result
+        }
+        Test-Case 'schema-valid contradictory validator manifest hash fails inside production resolver' {
+            $observed=$null
+            try{$null=Resolve-V02RuntimePackageBinding @resolveArgs}catch{$observed=$_.Exception.Message}
+            $expected='Package manifest bytes do not match the committed validator result.'
+            if($observed-cne$expected){throw "Wrong manifest contradiction failure. expected='$expected' observed='$observed'"}
+            if($script:V02ContradictoryManifestValidatorProbe.Calls-ne2){throw 'Hostile validator fixture did not reach both committed-validator passes.'}
+        }
+    } finally {
+        Set-Item -LiteralPath Function:\script:Invoke-V02CommittedPackageValidator -Value $originalCommittedValidator
+        $script:V02ContradictoryManifestValidatorProbe=$null
+    }
     foreach($case in @(@{Name='identity';Path=$fixtureReceipt},@{Name='manifest';Path=$fixtureManifestPath},@{Name='profile';Path=$fixtureProfilePath})){
         $original=[IO.File]::ReadAllBytes($case.Path);$mutationPath=$case.Path;$script:V02RuntimePackageBindingAfterValidatorForTest={ [IO.File]::AppendAllText($mutationPath,' ') }
         try { Test-Case "after-validator $($case.Name) swap fails closed" { Resolve-V02RuntimePackageBinding @resolveArgs } $true }
