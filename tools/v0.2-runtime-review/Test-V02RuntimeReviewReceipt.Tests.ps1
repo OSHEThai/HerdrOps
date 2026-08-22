@@ -53,37 +53,42 @@ function New-RRFixture {
     Write-RRFixtureText $identityPath ($identityCanonical + "`n")
     $identityFile = Get-RRFixtureFile $identityPath
     $receiptSha = Get-V02RuntimeReviewHash ([Text.UTF8Encoding]::new($false).GetBytes($identityCanonical))
-    $herdrSha = '1' * 64; $schemaSha = '2' * 64; $profileSha = '3' * 64; $hostSchemaSha = '4' * 64
+    $herdrPath=Join-Path $root 'herdr.exe';[IO.File]::WriteAllBytes($herdrPath,[Text.Encoding]::UTF8.GetBytes('HERDR-EXECUTABLE'));$herdrSha=Get-RRFixtureSha $herdrPath;$schemaSha = '2' * 64; $profileSha = '3' * 64; $hostSchemaSha = '4' * 64
+    $baseUtc = [DateTimeOffset]::UtcNow.AddMinutes(-5)
     $runs = @()
     foreach ($language in @('Thai', 'English')) {
         $evidence = if ($language -eq 'Thai') { $thai } else { $english }
         $captureDirectory = Join-Path $evidence 'captures'
         $captures = @()
-        for ($index = 1; $index -le 8; $index++) {
-            $capturePath = Join-Path $captureDirectory ("capture-$index.bin")
-            [IO.File]::WriteAllBytes($capturePath, [Text.Encoding]::UTF8.GetBytes("$language-capture-$index"))
+        foreach ($captureName in $script:V02RuntimeReviewRequiredCaptureNames) {
+            $capturePath = Join-Path $captureDirectory ($captureName + '.bin')
+            [IO.File]::WriteAllBytes($capturePath, [Text.Encoding]::UTF8.GetBytes("$language-$captureName"))
             $capture = Get-RRFixtureFile $capturePath
-            $captures += [ordered]@{ Name = "capture-$index"; Language = $language; Path = $capturePath; Sha256 = $capture.Sha256 }
+            $captures += [ordered]@{ Name = $captureName; Language = $language; Path = $capturePath; Sha256 = $capture.Sha256 }
         }
         $selectionPath = Join-Path (Join-Path $evidence 'test-results') 'selection-receipt.json'; Write-RRFixtureText $selectionPath "selection-$language`n"
         $progressPath = Join-Path $evidence 'app-progress.json'; $historyPath = Join-Path $evidence 'app-progress.json.history.jsonl'
         Write-RRFixtureText $progressPath "progress-$language`n"; Write-RRFixtureText $historyPath "history-$language`n"
-        $event = [ordered]@{ AdmissionPath = 'actual-herdr-event'; CurrentStateSha256 = ('5' * 64); BaselineSequence = 1; CurrentSequence = 2; BaselineEventCount = 1; CurrentEventCount = 2; Changes = @([ordered]@{ CurrentStatus = 'Working' }) }
-        $appReport = [ordered]@{ EvidenceClassification = 'RuntimeCandidate'; ProfileId = 'fixture-reference-host'; ProfileSha256 = $profileSha; Language = $language; FinalLanguage = $language; LanguageStableThroughFinish = $true; LanguageChangeCount = 0; CompositeCandidateChecksPassed = $true; CoreStateObserved = $true; UpdateObservedBeforeDashboardClose = $true; DashboardClosed = $true; UpdateObservedAfterDashboardClose = $true; CoreConnectedAfterDashboardClose = $true; DisconnectObservedAfterDashboardClose = $true; ReconnectObservedAfterDashboardClose = $true; SessionControlInvoked = $false; EventA = $event; EventB = $event; Captures = $captures }
-        $identityRecord = [ordered]@{ ProcessId = 10; ProcessStartUtc = '2026-08-23T00:00:00Z'; ExecutablePath = 'herdr.exe'; ExecutableSha256 = $herdrSha }
-        $transitions = @(); for ($index = 1; $index -le 4; $index++) { $transitions += [ordered]@{ ServerIdentity = $identityRecord; ContractStateSha256 = ('6' * 64); ObservedUtc = '2026-08-23T00:00:00Z' } }
+        $agentIdentity = [ordered]@{ TerminalId='terminal-1';WorkspaceId='workspace-1';TabId='tab-1';PaneId='pane-1' }
+        $eventA = [ordered]@{ AdmissionPath='direct-event';AcceptedEventKind='pane.agent_status_changed';PhaseEnteredUtc=$baseUtc.AddSeconds(2).ToString('o');ObservedUtc=$baseUtc.AddSeconds(3).ToString('o');CurrentStateSha256=('B'*64);BaselineSequence=1;CurrentSequence=2;BaselineEventCount=1;CurrentEventCount=2;Changes=@([ordered]@{TerminalId='terminal-1';WorkspaceId='workspace-1';TabId='tab-1';PaneId='pane-1';PreviousStatus='Working';CurrentStatus='Idle'}) }
+        $eventB = [ordered]@{ AdmissionPath='direct-event';AcceptedEventKind='pane.agent_status_changed';PhaseEnteredUtc=$baseUtc.AddSeconds(7).ToString('o');ObservedUtc=$baseUtc.AddSeconds(8).ToString('o');CurrentStateSha256=('F'*64);BaselineSequence=5;CurrentSequence=6;BaselineEventCount=2;CurrentEventCount=3;Changes=@([ordered]@{TerminalId='terminal-1';WorkspaceId='workspace-1';TabId='tab-1';PaneId='pane-1';PreviousStatus='Unknown';CurrentStatus='Blocked'}) }
+        $stateMappings=@('Working','Idle','Blocked','Done','Unknown','Offline')|ForEach-Object{[ordered]@{SourceState=$_;PresentationState=$_.ToLowerInvariant()}}
+        $appReport = [ordered]@{ EvidenceClassification='RuntimeCandidate';ProfileId='fixture-reference-host';ProfileSha256=$profileSha;Language=$language;FinalLanguage=$language;LanguageStableThroughFinish=$true;LanguageChangeCount=0;CompositeCandidateChecksPassed=$true;CoreStateObserved=$true;UpdateObservedBeforeDashboardClose=$true;DashboardClosed=$true;UpdateObservedAfterDashboardClose=$true;CoreConnectedAfterDashboardClose=$true;DisconnectObservedAfterDashboardClose=$true;ReconnectObservedAfterDashboardClose=$true;SessionControlInvoked=$false;InitialStateSha256=('A'*64);PreCloseStateSha256=('C'*64);PostCloseStateSha256=('F'*64);EventA=$eventA;EventB=$eventB;StateMappings=$stateMappings;Captures=$captures }
+        $identityRecord = [ordered]@{ ProcessId=10;ProcessStartUtc=$baseUtc.AddMinutes(-1).ToString('o');ExecutablePath=$herdrPath;ExecutableSha256=$herdrSha }
+        $kinds=@('Snapshot','EventA','DashboardClose','Disconnect','Reconnect','EventB');$hashes=@(('A'*64),('B'*64),('C'*64),('D'*64),('E'*64),('F'*64));$statuses=@('Connected','Connected','Connected','Stopped','Connected','Connected')
+        $transitionSeconds=@(1,3,4,5,6,8);$transitions=@();for($index=0;$index-lt$kinds.Count;$index++){$transitions+=[ordered]@{Kind=$kinds[$index];Status=$statuses[$index];ServerIdentity=$identityRecord;AgentIdentity=$agentIdentity;AgentStatus=@('Working','Idle','Idle','Offline','Unknown','Blocked')[$index];ContractStateSha256=$hashes[$index];ObservedUtc=$baseUtc.AddSeconds($transitionSeconds[$index]).ToString('o')}}
         $coreReport = [ordered]@{ EvidenceClassification = 'Runtime'; RuntimeObserved = $true; SnapshotObserved = $true; EventObserved = $true; ReconnectObserved = $true; CompletionSignalObserved = $true; SessionControlInvoked = $false; Admission = [ordered]@{ ReleaseId = 'herdr-fixture'; ExecutableSha256 = $herdrSha; BundledSchemaSha256 = $schemaSha; Protocol = 20 }; Transitions = $transitions }
         $appPathEvidence = Join-Path $evidence 'app-runtime.json'; $corePathEvidence = Join-Path $evidence 'core-runtime.json'; Write-RRFixtureJson $appPathEvidence $appReport; Write-RRFixtureJson $corePathEvidence $coreReport
         $appHash = Get-RRFixtureSha $appPathEvidence; $coreHash = Get-RRFixtureSha $corePathEvidence; $historyHash = Get-RRFixtureSha $historyPath; $selectionHash = Get-RRFixtureSha $selectionPath
         $gateLines = @(
-            "ExpectedSourceCommit: $commit", "ExpectedSourceTree: $tree", "SourceCommit: $commit", "SourceTree: $tree", "PreRunSourceCommit: $commit", "PreRunSourceTree: $tree", "PreRunGitTreeClean: True", "PostRunSourceCommit: $commit", "PostRunSourceTree: $tree", "PostRunGitTreeClean: True", 'Result: PASS', 'EvidenceClass: Runtime', 'SessionControlInvoked: false', 'AcceptanceControlSession: acceptance-control', 'TargetAgentLabSession: agent-lab', 'AcceptanceControlSocketPath: C:\fixture\control.sock', 'TargetAgentLabSocketPath: C:\fixture\target.sock', 'SeparateSessionSockets: true', "AcceptanceControlServerIdentity: pid=100 start=2026-08-23T00:00:00Z path=herdr.exe sha256=$herdrSha", 'TargetAgentSessionReference: agent-lab-session-1', 'HerdrReleaseId: herdr-fixture', "PackageIdentityPath: $identityPath", "PackageIdentityFileSha256: $($identityFile.Sha256)", "PackageIdentityReceiptSha256: $receiptSha", "PackageArchivePath: $archivePath", "PackageArchiveSha256: $($archive.Sha256)", "ExtractedPackageRoot: $package", "PackageManifestPath: $manifestPath", "PackageManifestSha256: $($manifest.Sha256)", 'PackageProfileId: herdrops-v0.2-package-software-only-issue-149', 'PackageValidationEvidenceClass: Static/PackagedCompatibilityPreparation', "AppSha256: $($app.Sha256)", "CoreSha256: $($core.Sha256)", "HerdrExecutableSha256: $herdrSha", "BundledSchemaSha256: $schemaSha", 'HerdrProtocol: 20', 'ReferenceHostProfileId: fixture-reference-host', "ReferenceHostProfileSha256: $profileSha", "ReferenceHostSchemaSha256: $hostSchemaSha", "Language: $language", 'RendererPolicyId: software-only-process-wide', 'WpfProcessRenderMode: SoftwareOnly', 'SoftwareOnlyThroughout: True', 'SnapshotObserved: True', 'EventObserved: True', 'ReconnectObserved: True', 'CoreAcceptedEventKindCheck: PASS', 'SemanticCaptureBindingCheck: PASS', "AppRuntimeReportSha256: $appHash", "CoreRuntimeReportSha256: $coreHash", "TrxSelectionReceiptPath: $selectionPath", "TrxSelectionReceiptSha256: $selectionHash", "ProgressHistoryPath: $historyPath", "ProgressHistorySha256: $historyHash", "ProgressHistoryLastEntrySha256: $historyHash", "CaptureDirectory: $captureDirectory"
+            "ExpectedSourceCommit: $commit", "ExpectedSourceTree: $tree", "SourceCommit: $commit", "SourceTree: $tree", "PreRunSourceCommit: $commit", "PreRunSourceTree: $tree", "PreRunGitTreeClean: True", "PostRunSourceCommit: $commit", "PostRunSourceTree: $tree", "PostRunGitTreeClean: True", 'Result: PASS', 'EvidenceClass: Runtime', 'SessionControlInvoked: false', 'AcceptanceControlSession: acceptance-control', 'TargetAgentLabSession: agent-lab', 'AcceptanceControlSocketPath: C:\fixture\control.sock', 'TargetAgentLabSocketPath: C:\fixture\target.sock', 'SeparateSessionSockets: true', "AcceptanceControlServerIdentity: pid=100 start=$($baseUtc.AddMinutes(-1).ToString('o')) path=$herdrPath sha256=$herdrSha", 'TargetAgentSessionReference: agent-lab-session-1', 'HerdrReleaseId: herdr-fixture', "PackageIdentityPath: $identityPath", "PackageIdentityFileSha256: $($identityFile.Sha256)", "PackageIdentityReceiptSha256: $receiptSha", "PackageArchivePath: $archivePath", "PackageArchiveSha256: $($archive.Sha256)", "ExtractedPackageRoot: $package", "PackageManifestPath: $manifestPath", "PackageManifestSha256: $($manifest.Sha256)", 'PackageProfileId: herdrops-v0.2-package-software-only-issue-149', 'PackageValidationEvidenceClass: Static/PackagedCompatibilityPreparation', "AppSha256: $($app.Sha256)", "CoreSha256: $($core.Sha256)", "HerdrExecutableSha256: $herdrSha", "BundledSchemaSha256: $schemaSha", 'HerdrProtocol: 20', 'ReferenceHostProfileId: fixture-reference-host', "ReferenceHostProfileSha256: $profileSha", "ReferenceHostSchemaSha256: $hostSchemaSha", "Language: $language", 'RendererPolicyId: software-only-process-wide', 'WpfProcessRenderMode: SoftwareOnly', 'SoftwareOnlyThroughout: True', 'SnapshotObserved: True', 'EventObserved: True', 'ReconnectObserved: True', 'CoreAcceptedEventKindCheck: PASS', 'SemanticCaptureBindingCheck: PASS', "AppRuntimeReportSha256: $appHash", "CoreRuntimeReportSha256: $coreHash", "TrxSelectionReceiptPath: $selectionPath", "TrxSelectionReceiptSha256: $selectionHash", "ProgressHistoryPath: $historyPath", "ProgressHistorySha256: $historyHash", "ProgressHistoryLastEntrySha256: $historyHash", "CaptureDirectory: $captureDirectory"
         )
         Write-RRFixtureText (Join-Path $evidence 'gate-report.txt') (($gateLines -join "`n") + "`n")
         $gateHash = Get-RRFixtureSha (Join-Path $evidence 'gate-report.txt')
-        $run = [ordered]@{ Language = $language; EvidenceDirectory = $evidence; CaptureRoot = $captureDirectory; GateReportSha256 = $gateHash; AppRuntimeReportSha256 = $appHash; CoreRuntimeReportSha256 = $coreHash; ProgressHistorySha256 = $historyHash; ProgressHistoryLastEntrySha256 = ('7' * 64); PackageIdentityReceiptSha256 = $receiptSha; SourceCommit = $commit; SourceTree = $tree; ProfileId = 'fixture-reference-host'; ProfileSha256 = $profileSha; ReferenceHostSchemaSha256 = $hostSchemaSha; HerdrReleaseId = 'herdr-fixture'; HerdrExecutableSha256 = $herdrSha; AppExecutableSha256 = $app.Sha256; CoreExecutableSha256 = $core.Sha256; BundledSchemaSha256 = $schemaSha; HerdrProtocol = '20'; RendererPolicyId = 'software-only-process-wide'; WpfProcessRenderMode = 'SoftwareOnly'; CaptureCount = 8; Captures = $captures }
+        $run = [ordered]@{ Language=$language;EvidenceDirectory=$evidence;CaptureRoot=$captureDirectory;GateReportSha256=$gateHash;AppRuntimeReportSha256=$appHash;CoreRuntimeReportSha256=$coreHash;ProgressHistorySha256=$historyHash;ProgressHistoryLastEntrySha256=$historyHash;PackageIdentityReceiptSha256=$receiptSha;SourceCommit=$commit;SourceTree=$tree;ProfileId='fixture-reference-host';ProfileSha256=$profileSha;ReferenceHostSchemaSha256=$hostSchemaSha;HerdrReleaseId='herdr-fixture';HerdrExecutableSha256=$herdrSha;AppExecutableSha256=$app.Sha256;CoreExecutableSha256=$core.Sha256;BundledSchemaSha256=$schemaSha;HerdrProtocol='20';RendererPolicyId='software-only-process-wide';WpfProcessRenderMode='SoftwareOnly';CaptureCount=8;Captures=$captures }
         $runs += $run
     }
-    $payload = [ordered]@{ GeneratedUnixTimeMilliseconds = 1; IndependentHumanReview = 'NOT_OBSERVED'; ReleaseCredit = $false; Binding = [ordered]@{ SourceCommit = $commit; SourceTree = $tree; ProfileId = 'fixture-reference-host'; ProfileSha256 = $profileSha; ReferenceHostSchemaSha256 = $hostSchemaSha; PackageIdentityReceiptSha256 = $receiptSha; HerdrReleaseId = 'herdr-fixture'; HerdrExecutableSha256 = $herdrSha; AppExecutableSha256 = $app.Sha256; CoreExecutableSha256 = $core.Sha256; BundledSchemaSha256 = $schemaSha; HerdrProtocol = '20' }; Runs = $runs }
+    $payload = [ordered]@{ GeneratedUnixTimeMilliseconds=$baseUtc.AddSeconds(10).ToUnixTimeMilliseconds();IndependentHumanReview='NOT_OBSERVED';ReleaseCredit=$false;Binding=[ordered]@{SourceCommit=$commit;SourceTree=$tree;ProfileId='fixture-reference-host';ProfileSha256=$profileSha;ReferenceHostSchemaSha256=$hostSchemaSha;PackageIdentityReceiptSha256=$receiptSha;HerdrReleaseId='herdr-fixture';HerdrExecutableSha256=$herdrSha;AppExecutableSha256=$app.Sha256;CoreExecutableSha256=$core.Sha256;BundledSchemaSha256=$schemaSha;HerdrProtocol='20'};Runs=$runs }
     $payloadValue = $payload | ConvertTo-Json -Depth 50 | ConvertFrom-Json; $payloadCanonical = ConvertTo-V02Jcs $payloadValue; $payloadHash = Get-V02RuntimeReviewHash ([Text.UTF8Encoding]::new($false).GetBytes($payloadCanonical))
     $candidate = [ordered]@{ EvidenceClassification = 'RuntimeMatrixCandidate'; IndependentHumanReview = 'NOT_OBSERVED'; ReleaseCredit = $false; ManifestFormatVersion = 1; ManifestHashScope = 'SHA256OfRFC8785JcsUtf8NoBomPayload'; ManifestPayloadSha256 = $payloadHash; Payload = $payloadValue }
     Write-RRFixtureJson $matrix $candidate
@@ -97,11 +102,23 @@ function Invoke-RRFixture {
 }
 
 function Assert-RRFailure {
-    param([Parameter(Mandatory)][string]$Name, [Parameter(Mandatory)][scriptblock]$Action)
+    param([Parameter(Mandatory)][string]$Name, [Parameter(Mandatory)][scriptblock]$Action,[string]$Pattern)
     $failed = $false
-    try { & $Action } catch { $failed = $true }
+    try { & $Action } catch { $failed = $true;if(-not[string]::IsNullOrWhiteSpace($Pattern)-and$_.Exception.Message-notmatch$Pattern){throw "Hostile '$Name' reached wrong guard: $($_.Exception.Message)"} }
     if (-not $failed) { throw "Hostile case did not fail closed: $Name" }
     Write-Output "PASS hostile: $Name"
+}
+
+function Save-RRFixtureMatrix {
+    param([Parameter(Mandatory)]$Fixture,[Parameter(Mandatory)]$Candidate)
+    $payloadValue=$Candidate.Payload|ConvertTo-Json -Depth 50|ConvertFrom-Json;$Candidate.Payload=$payloadValue;$canonical=ConvertTo-V02Jcs $payloadValue;$Candidate.ManifestPayloadSha256=Get-V02RuntimeReviewHash ([Text.UTF8Encoding]::new($false).GetBytes($canonical));Write-RRFixtureJson $Fixture.Matrix $Candidate
+}
+
+function Sync-RRFixtureLeg {
+    param([Parameter(Mandatory)]$Fixture,[Parameter(Mandatory)][ValidateSet('Thai','English')][string]$Language)
+    $root=if($Language-eq'Thai'){$Fixture.Thai}else{$Fixture.English};$appPath=Join-Path $root 'app-runtime.json';$corePath=Join-Path $root 'core-runtime.json';$gatePath=Join-Path $root 'gate-report.txt'
+    $appHash=Get-RRFixtureSha $appPath;$coreHash=Get-RRFixtureSha $corePath;$text=[IO.File]::ReadAllText($gatePath);$text=$text-replace '(?m)^AppRuntimeReportSha256: .+$',"AppRuntimeReportSha256: $appHash";$text=$text-replace '(?m)^CoreRuntimeReportSha256: .+$',"CoreRuntimeReportSha256: $coreHash";Write-RRFixtureText $gatePath $text;$gateHash=Get-RRFixtureSha $gatePath
+    $candidate=(Read-V02RuntimeReviewStrictJsonFile $Fixture.Matrix 'sync matrix').Value;$run=@($candidate.Payload.Runs|Where-Object Language -CEQ $Language)[0];$run.AppRuntimeReportSha256=$appHash;$run.CoreRuntimeReportSha256=$coreHash;$run.GateReportSha256=$gateHash;$run.Captures=(Read-V02RuntimeReviewStrictJsonFile $appPath 'sync app').Value.Captures;Save-RRFixtureMatrix $Fixture $candidate
 }
 
 function Set-RRJsonProperty {
@@ -162,6 +179,44 @@ try {
     $fixture = New-RRFixture; $fixtures += $fixture
     $oversized = Join-Path $fixture.English 'captures\oversized.bin'; $stream = [IO.File]::Open($oversized, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None); try { $chunk = New-Object byte[] 1048576; for ($i = 0; $i -lt 17; $i++) { $stream.Write($chunk, 0, $chunk.Length) } } finally { $stream.Dispose() }
     Assert-RRFailure 'evidence byte inflation' { Invoke-RRFixture $fixture | Out-Null }
+
+    $fixture=New-RRFixture;$fixtures+=$fixture;$candidate=(Read-V02RuntimeReviewStrictJsonFile $fixture.Matrix 'stale matrix').Value;$candidate.Payload.GeneratedUnixTimeMilliseconds=1;Save-RRFixtureMatrix $fixture $candidate
+    Assert-RRFailure 'stale review window' {Invoke-RRFixture $fixture|Out-Null} 'fresh review window'
+
+    $fixture=New-RRFixture;$fixtures+=$fixture;$corePath=Join-Path $fixture.Thai 'core-runtime.json';$core=(Read-V02RuntimeReviewStrictJsonFile $corePath 'repeated transition').Value;$core.Transitions[2].ObservedUtc=$core.Transitions[1].ObservedUtc;Write-RRFixtureJson $corePath $core;Sync-RRFixtureLeg $fixture Thai
+    Assert-RRFailure 'repeated transition timestamp' {Invoke-RRFixture $fixture|Out-Null} 'unique and strictly increasing'
+
+    $fixture=New-RRFixture;$fixtures+=$fixture;$corePath=Join-Path $fixture.Thai 'core-runtime.json';$core=(Read-V02RuntimeReviewStrictJsonFile $corePath 'wrong mapping').Value;$core.Transitions[4].AgentStatus='Working';Write-RRFixtureJson $corePath $core;Sync-RRFixtureLeg $fixture Thai
+    Assert-RRFailure 'wrong lifecycle state mapping' {Invoke-RRFixture $fixture|Out-Null} 'kind/status mapping'
+
+    $fixture=New-RRFixture;$fixtures+=$fixture;$corePath=Join-Path $fixture.Thai 'core-runtime.json';$core=(Read-V02RuntimeReviewStrictJsonFile $corePath 'wrong order').Value;$swap=$core.Transitions[2];$core.Transitions[2]=$core.Transitions[3];$core.Transitions[3]=$swap;Write-RRFixtureJson $corePath $core;Sync-RRFixtureLeg $fixture Thai
+    Assert-RRFailure 'wrong lifecycle transition order' {Invoke-RRFixture $fixture|Out-Null} 'kind/status mapping'
+
+    $fixture=New-RRFixture;$fixtures+=$fixture;$appPath=Join-Path $fixture.English 'app-runtime.json';$appDoc=(Read-V02RuntimeReviewStrictJsonFile $appPath 'arbitrary capture').Value;$appDoc.Captures[0].Name='arbitrary-capture';Write-RRFixtureJson $appPath $appDoc;Sync-RRFixtureLeg $fixture English
+    Assert-RRFailure 'arbitrary capture catalog' {Invoke-RRFixture $fixture|Out-Null} 'required named catalog'
+
+    $fixture=New-RRFixture;$fixtures+=$fixture;$corePath=Join-Path $fixture.Thai 'core-runtime.json';$core=(Read-V02RuntimeReviewStrictJsonFile $corePath 'unstable server identity').Value;$core.Transitions[3].ServerIdentity.ProcessId=11;Write-RRFixtureJson $corePath $core;Sync-RRFixtureLeg $fixture Thai
+    Assert-RRFailure 'unstable process/session identity' {Invoke-RRFixture $fixture|Out-Null} 'identity changed across transitions'
+
+    $fixture=New-RRFixture;$fixtures+=$fixture;$appPath=Join-Path $fixture.Thai 'app-runtime.json';$appDoc=(Read-V02RuntimeReviewStrictJsonFile $appPath 'event Agent mismatch').Value;$appDoc.EventB.Changes[0].PaneId='other-pane';Write-RRFixtureJson $appPath $appDoc;Sync-RRFixtureLeg $fixture Thai
+    Assert-RRFailure 'event Agent identity mismatch' {Invoke-RRFixture $fixture|Out-Null} 'Event Agent identities'
+
+    $fixture=New-RRFixture;$fixtures+=$fixture;$candidate=(Read-V02RuntimeReviewStrictJsonFile $fixture.Matrix 'matrix capture mismatch').Value;$run=@($candidate.Payload.Runs|Where-Object Language -CEQ 'Thai')[0];$run.Captures[0].Sha256='9'*64;Save-RRFixtureMatrix $fixture $candidate
+    Assert-RRFailure 'mismatched matrix capture inventory' {Invoke-RRFixture $fixture|Out-Null} 'capture inventory'
+
+    foreach($matrixField in @('ReferenceHostSchemaSha256','HerdrReleaseId','HerdrExecutableSha256','AppExecutableSha256','CoreExecutableSha256','BundledSchemaSha256','HerdrProtocol','RendererPolicyId','WpfProcessRenderMode','ProgressHistorySha256','ProgressHistoryLastEntrySha256')){
+        $fixture=New-RRFixture;$fixtures+=$fixture;$candidate=(Read-V02RuntimeReviewStrictJsonFile $fixture.Matrix "matrix $matrixField").Value;$run=@($candidate.Payload.Runs|Where-Object Language -CEQ 'Thai')[0];$run.$matrixField=if($matrixField-match'Sha256'){'9'*64}else{'forged'};Save-RRFixtureMatrix $fixture $candidate
+        Assert-RRFailure "mismatched matrix $matrixField" {Invoke-RRFixture $fixture|Out-Null} "Matrix Thai $matrixField"
+    }
+
+    $fixture=New-RRFixture;$fixtures+=$fixture;$heldCapture=(Read-V02RuntimeReviewStrictJsonFile (Join-Path $fixture.Thai 'app-runtime.json') 'hardlink capture').Value.Captures[0].Path;$alias=Join-Path $fixture.Root 'hardlink-alias.bin';New-Item -ItemType HardLink -Path $alias -Target $heldCapture|Out-Null
+    Assert-RRFailure 'hardlinked evidence leaf' {Invoke-RRFixture $fixture|Out-Null} 'link-count=1'
+
+    $fixture=New-RRFixture;$fixtures+=$fixture;$target=$fixture.PackageIdentity;$replacement=Join-Path $fixture.Root 'replacement.bin';[IO.File]::WriteAllBytes($replacement,[IO.File]::ReadAllBytes($target));$script:replacementBlocked=$false;$script:V02RuntimeReviewFixtureReadHook={param($path)if($path-ceq$target){try{Move-Item -LiteralPath $replacement -Destination $target -Force -ErrorAction Stop}catch{$script:replacementBlocked=$true}}}
+    try{$null=Invoke-RRFixture $fixture}finally{$script:V02RuntimeReviewFixtureReadHook=$null};if(-not$script:replacementBlocked){throw 'Byte-identical path replacement was not blocked by the production verifier hold.'};Write-Output 'PASS hostile: byte-identical path replacement blocked'
+
+    $fixture=New-RRFixture;$fixtures+=$fixture;$script:parentBlocked=$false;$script:stagingBlocked=$false;$script:V02RuntimeReviewFixturePublishHook={param($phase,$parent,$temporary,$full)if($phase-eq'ParentHeld'){try{Move-Item -LiteralPath $parent -Destination ($parent+'.moved') -ErrorAction Stop}catch{$script:parentBlocked=$true}}elseif($phase-eq'StagingHeld'){try{[IO.File]::WriteAllText($temporary,'forged')}catch{$script:stagingBlocked=$true}}}
+    try{$null=Invoke-RRFixture $fixture}finally{$script:V02RuntimeReviewFixturePublishHook=$null};if(-not$script:parentBlocked-or-not$script:stagingBlocked){throw 'Held parent/staging identity mutation was not blocked.'};Write-Output 'PASS hostile: parent and staging identities held through publication'
 
     $fixture = New-RRFixture; $fixtures += $fixture
     $first = Invoke-RRFixture $fixture; Assert-RRFailure 'concurrent/no-clobber candidate output' { Invoke-RRFixture $fixture | Out-Null }; if ((Get-RRFixtureSha $first.Path) -cne $first.Sha256) { throw 'No-clobber output was altered.' }
