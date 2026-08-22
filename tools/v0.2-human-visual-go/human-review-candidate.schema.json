@@ -1,0 +1,122 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://herdrops.local/schema/v0.2/human-review-candidate.schema.json",
+  "title": "HerdrOps v0.2 Human visual-GO candidate",
+  "description": "Builder output only. This document can never be Human authority, Runtime evidence, or Release authority.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$id", "schemaVersion", "evidenceClassification", "issue", "compatibilityIssue", "roles", "rendererManifest", "humanReviewEvidence", "source", "package", "herdr", "session", "renderer", "captures", "references", "masks", "matrix", "performance", "visualReview", "defects", "evidenceBindings", "evidenceSetSha256", "eligibility", "ineligibilityReasons", "evidenceBoundary"],
+  "properties": {
+    "$id": { "const": "https://herdrops.local/schema/v0.2/human-review-candidate.schema.json" },
+    "schemaVersion": { "const": 1 },
+    "evidenceClassification": { "const": "HumanReviewCandidate" },
+    "issue": { "const": 11 },
+    "compatibilityIssue": { "const": 149 },
+    "roles": { "$ref": "#/$defs/roles" },
+    "rendererManifest": { "$ref": "#/$defs/binding" },
+    "humanReviewEvidence": { "$ref": "#/$defs/binding" },
+    "source": { "$ref": "#/$defs/source" },
+    "package": { "$ref": "#/$defs/package" },
+    "herdr": { "$ref": "#/$defs/herdr" },
+    "session": { "$ref": "#/$defs/session" },
+    "renderer": { "$ref": "#/$defs/renderer" },
+    "captures": { "type": "array", "minItems": 20, "maxItems": 20, "items": { "$ref": "#/$defs/capture" } },
+    "references": { "type": "array", "minItems": 11, "maxItems": 11, "items": { "$ref": "#/$defs/reference" } },
+    "masks": { "type": "array", "items": { "$ref": "#/$defs/mask" } },
+    "matrix": { "$ref": "#/$defs/matrix" },
+    "performance": { "$ref": "#/$defs/performance" },
+    "visualReview": { "$ref": "#/$defs/visualReview" },
+    "defects": { "type": "array", "items": { "$ref": "#/$defs/defect" } },
+    "evidenceBindings": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/binding" } },
+    "evidenceSetSha256": { "$ref": "#/$defs/sha256" },
+    "eligibility": { "enum": ["ELIGIBLE_FOR_EXTERNAL_HUMAN_GO", "NOT_ELIGIBLE_FOR_HUMAN_GO"] },
+    "ineligibilityReasons": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+    "evidenceBoundary": { "$ref": "#/$defs/candidateBoundary" }
+  },
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^[0-9A-F]{64}$" },
+    "commit": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "relativePath": { "type": "string", "minLength": 1, "pattern": "^[^/\\\\].*$" },
+    "roles": {
+      "type": "object", "additionalProperties": false,
+      "required": ["builderIdentity", "runtimeOperatorIdentity", "independentValidatorIdentity"],
+      "properties": { "builderIdentity": { "type": "string", "minLength": 1 }, "runtimeOperatorIdentity": { "type": "string", "minLength": 1 }, "independentValidatorIdentity": { "type": "string", "minLength": 1 } }
+    },
+    "binding": {
+      "type": "object", "additionalProperties": false,
+      "required": ["kind", "root", "relativePath", "bytes", "sha256", "canonicalSha256"],
+      "properties": {
+        "kind": { "type": "string", "minLength": 1 },
+        "root": { "enum": ["EvidenceRoot", "RepositoryRoot"] },
+        "relativePath": { "$ref": "#/$defs/relativePath" },
+        "bytes": { "type": "integer", "minimum": 1 },
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "canonicalSha256": { "anyOf": [{ "$ref": "#/$defs/sha256" }, { "type": "null" }] }
+      }
+    },
+    "source": {
+      "type": "object", "additionalProperties": false, "required": ["commitSha", "treeSha"],
+      "properties": { "commitSha": { "$ref": "#/$defs/commit" }, "treeSha": { "$ref": "#/$defs/commit" } }
+    },
+    "package": {
+      "type": "object", "additionalProperties": false, "required": ["profile", "receipt", "archive", "packageManifest", "app", "core"],
+      "properties": { "profile": { "$ref": "#/$defs/binding" }, "receipt": { "$ref": "#/$defs/binding" }, "archive": { "$ref": "#/$defs/binding" }, "packageManifest": { "$ref": "#/$defs/binding" }, "app": { "$ref": "#/$defs/binding" }, "core": { "$ref": "#/$defs/binding" } }
+    },
+    "herdr": {
+      "type": "object", "additionalProperties": false, "required": ["profileId", "version", "releaseId", "installPathRelativeToLocalAppData", "executableSha256", "bindingSha256"],
+      "properties": { "profileId": { "type": "string", "minLength": 1 }, "version": { "type": "string", "minLength": 1 }, "releaseId": { "type": "string", "minLength": 1 }, "installPathRelativeToLocalAppData": { "type": "string", "minLength": 1 }, "executableSha256": { "$ref": "#/$defs/sha256" }, "bindingSha256": { "$ref": "#/$defs/sha256" } }
+    },
+    "session": {
+      "type": "object", "additionalProperties": false, "required": ["kind", "name", "sessionId", "transport", "powerSource", "thermalState", "elevated", "userScope", "bindingSha256"],
+      "properties": { "kind": { "type": "string", "minLength": 1 }, "name": { "type": "string", "minLength": 1 }, "sessionId": { "type": "integer", "minimum": 0 }, "transport": { "type": "string", "minLength": 1 }, "powerSource": { "type": "string", "minLength": 1 }, "thermalState": { "type": "string", "minLength": 1 }, "elevated": { "type": "boolean" }, "userScope": { "type": "string", "minLength": 1 }, "bindingSha256": { "$ref": "#/$defs/sha256" } }
+    },
+    "renderer": {
+      "type": "object", "additionalProperties": false, "required": ["policy", "wpfProcessRenderMode", "policySha256"],
+      "properties": { "policy": { "const": "software-only-process-wide" }, "wpfProcessRenderMode": { "const": "SoftwareOnly" }, "policySha256": { "$ref": "#/$defs/sha256" } }
+    },
+    "capture": {
+      "type": "object", "additionalProperties": false, "required": ["language", "name", "relativePath", "bytes", "sha256", "widthPixels", "heightPixels", "observedUtc"],
+      "properties": { "language": { "enum": ["Thai", "English"] }, "name": { "type": "string", "minLength": 1 }, "relativePath": { "$ref": "#/$defs/relativePath" }, "bytes": { "type": "integer", "minimum": 1 }, "sha256": { "$ref": "#/$defs/sha256" }, "widthPixels": { "type": "integer", "minimum": 1 }, "heightPixels": { "type": "integer", "minimum": 1 }, "observedUtc": { "type": "string", "minLength": 1 } }
+    },
+    "reference": {
+      "type": "object", "additionalProperties": false, "required": ["relativePath", "bytes", "sha256", "widthPixels", "heightPixels"],
+      "properties": { "relativePath": { "$ref": "#/$defs/relativePath" }, "bytes": { "type": "integer", "minimum": 1 }, "sha256": { "$ref": "#/$defs/sha256" }, "widthPixels": { "type": "integer", "minimum": 1 }, "heightPixels": { "type": "integer", "minimum": 1 } }
+    },
+    "mask": {
+      "type": "object", "additionalProperties": false, "required": ["id", "relativePath", "sha256", "maximumRadiusPixels", "captureKeys"],
+      "properties": { "id": { "type": "string", "minLength": 1 }, "relativePath": { "$ref": "#/$defs/relativePath" }, "sha256": { "$ref": "#/$defs/sha256" }, "maximumRadiusPixels": { "const": 1 }, "captureKeys": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 } } }
+    },
+    "matrixCase": {
+      "type": "object", "additionalProperties": false, "required": ["id", "status", "receipt", "notes"],
+      "properties": { "id": { "type": "string", "minLength": 1 }, "status": { "enum": ["PASS", "FAIL", "NOT_OBSERVED"] }, "receipt": { "anyOf": [{ "$ref": "#/$defs/binding" }, { "type": "null" }] }, "notes": { "anyOf": [{ "type": "string" }, { "type": "null" }] } }
+    },
+    "matrix": {
+      "type": "object", "additionalProperties": false, "required": ["displayCases", "mixedDpiTransitions", "accessibilityCases", "supportedEnvironmentCases"],
+      "properties": { "displayCases": { "type": "array", "minItems": 6, "maxItems": 6, "items": { "$ref": "#/$defs/matrixCase" } }, "mixedDpiTransitions": { "type": "array", "minItems": 4, "maxItems": 4, "items": { "$ref": "#/$defs/matrixCase" } }, "accessibilityCases": { "type": "array", "minItems": 8, "maxItems": 8, "items": { "$ref": "#/$defs/matrixCase" } }, "supportedEnvironmentCases": { "type": "array", "minItems": 7, "maxItems": 7, "items": { "$ref": "#/$defs/matrixCase" } } }
+    },
+    "performance": {
+      "type": "object", "additionalProperties": false, "required": ["samplesStatus", "receipt", "rawSource", "warmupIterations", "repetitionsPerOrder", "soakBins"],
+      "properties": { "samplesStatus": { "enum": ["PASS", "FAIL", "NOT_OBSERVED"] }, "receipt": { "anyOf": [{ "$ref": "#/$defs/binding" }, { "type": "null" }] }, "rawSource": { "anyOf": [{ "$ref": "#/$defs/binding" }, { "type": "null" }] }, "warmupIterations": { "type": "integer", "minimum": 1 }, "repetitionsPerOrder": { "type": "integer", "minimum": 1 }, "soakBins": { "const": 24 } }
+    },
+    "visualComparison": {
+      "type": "object", "additionalProperties": false, "required": ["key", "status", "referenceRelativePath", "disposition"],
+      "properties": { "key": { "type": "string", "minLength": 1 }, "status": { "enum": ["PASS", "FAIL", "NOT_OBSERVED"] }, "referenceRelativePath": { "$ref": "#/$defs/relativePath" }, "disposition": { "anyOf": [{ "type": "string" }, { "type": "null" }] } }
+    },
+    "visualCheck": {
+      "type": "object", "additionalProperties": false, "required": ["id", "status", "notes"],
+      "properties": { "id": { "type": "string", "minLength": 1 }, "status": { "enum": ["PASS", "FAIL", "NOT_OBSERVED"] }, "notes": { "anyOf": [{ "type": "string" }, { "type": "null" }] } }
+    },
+    "visualReview": {
+      "type": "object", "additionalProperties": false, "required": ["comparisons", "checks"],
+      "properties": { "comparisons": { "type": "array", "minItems": 20, "maxItems": 20, "items": { "$ref": "#/$defs/visualComparison" } }, "checks": { "type": "array", "minItems": 7, "maxItems": 7, "items": { "$ref": "#/$defs/visualCheck" } } }
+    },
+    "defect": {
+      "type": "object", "additionalProperties": false, "required": ["id", "severity", "summary", "status", "disposition"],
+      "properties": { "id": { "type": "string", "minLength": 1 }, "severity": { "enum": ["P0", "P1", "P2", "P3"] }, "summary": { "type": "string", "minLength": 1 }, "status": { "enum": ["Open", "Resolved", "Accepted"] }, "disposition": { "type": "string", "minLength": 1 } }
+    },
+    "candidateBoundary": {
+      "type": "object", "additionalProperties": false, "required": ["humanReview", "actualHerdrRuntime", "release", "creditGranted"],
+      "properties": { "humanReview": { "const": "NOT_OBSERVED" }, "actualHerdrRuntime": { "const": "NOT_OBSERVED" }, "release": { "const": "NOT_OBSERVED" }, "creditGranted": { "const": false } }
+    }
+  }
+}
