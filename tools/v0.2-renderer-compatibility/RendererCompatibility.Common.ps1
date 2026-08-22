@@ -46,6 +46,8 @@ namespace RendererCompatibility {
         private static extern bool GetFileInformationByHandle(SafeFileHandle handle, out ByHandleFileInformation information);
         [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
         private static extern SafeFileHandle CreateFile(string path, uint access, uint share, IntPtr security, uint creation, uint flags, IntPtr template);
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool SetFileInformationByHandle(SafeFileHandle handle, int informationClass, IntPtr information, uint size);
         public static string GetFinalPath(SafeFileHandle handle) {
             var buffer = new StringBuilder(32768);
             uint written = GetFinalPathNameByHandle(handle, buffer, (uint)buffer.Capacity, 0);
@@ -66,11 +68,33 @@ namespace RendererCompatibility {
             return value.NumberOfLinks;
         }
         public static SafeFileHandle OpenDirectory(string path, bool allowDelete) {
-            const uint ShareRead = 1, ShareWrite = 2, ShareDelete = 4, OpenExisting = 3;
+            const uint DeleteAccess = 0x00010000, ShareRead = 1, ShareWrite = 2, OpenExisting = 3;
             const uint BackupSemantics = 0x02000000, OpenReparsePoint = 0x00200000;
-            SafeFileHandle result = CreateFile(path, 0, ShareRead | ShareWrite | (allowDelete ? ShareDelete : 0), IntPtr.Zero, OpenExisting, BackupSemantics | OpenReparsePoint, IntPtr.Zero);
+            SafeFileHandle result = CreateFile(path, allowDelete ? DeleteAccess : 0, ShareRead | ShareWrite, IntPtr.Zero, OpenExisting, BackupSemantics | OpenReparsePoint, IntPtr.Zero);
             if (result.IsInvalid) { int error = Marshal.GetLastWin32Error(); result.Dispose(); throw new Win32Exception(error, "CreateFile directory lease failed for " + path); }
             return result;
+        }
+        public static void RenameDirectory(SafeFileHandle handle, string destinationPath) {
+            byte[] name = Encoding.Unicode.GetBytes(destinationPath);
+            int rootOffset = IntPtr.Size == 8 ? 8 : 4;
+            int lengthOffset = IntPtr.Size == 8 ? 16 : 8;
+            int nameOffset = IntPtr.Size == 8 ? 20 : 12;
+            int size = nameOffset + name.Length + 2;
+            IntPtr buffer = Marshal.AllocHGlobal(size);
+            try {
+                for (int i = 0; i < size; i++) Marshal.WriteByte(buffer, i, 0);
+                Marshal.WriteIntPtr(buffer, rootOffset, IntPtr.Zero);
+                Marshal.WriteInt32(buffer, lengthOffset, name.Length);
+                Marshal.Copy(name, 0, IntPtr.Add(buffer, nameOffset), name.Length);
+                if (!SetFileInformationByHandle(handle, 3, buffer, (uint)size)) throw new Win32Exception(Marshal.GetLastWin32Error(), "Held-handle directory rename failed");
+            } finally { Marshal.FreeHGlobal(buffer); }
+        }
+        public static void DeleteDirectory(SafeFileHandle handle) {
+            IntPtr buffer = Marshal.AllocHGlobal(4);
+            try {
+                Marshal.WriteInt32(buffer, 1);
+                if (!SetFileInformationByHandle(handle, 4, buffer, 4)) throw new Win32Exception(Marshal.GetLastWin32Error(), "Held-handle directory deletion failed");
+            } finally { Marshal.FreeHGlobal(buffer); }
         }
     }
 }
@@ -229,7 +253,7 @@ function Open-RendererDirectoryLease {
         $final=[IO.Path]::GetFullPath([RendererCompatibility.NativePath]::GetFinalPath($handle)).TrimEnd('\','/')
         if($final-cne$pathFull){throw "$Context final opened path '$final' does not equal '$pathFull'."}
         if($final-cne$rootFull-and-not$final.StartsWith($rootFull+[IO.Path]::DirectorySeparatorChar,[StringComparison]::OrdinalIgnoreCase)){throw "$Context final opened path escaped the evidence root."}
-        return [pscustomobject]@{Handle=$handle;Path=$pathFull;FinalPath=$final;Identity=[RendererCompatibility.NativePath]::GetIdentity($handle)}
+        return [pscustomobject]@{Handle=$handle;Path=$pathFull;FinalPath=$final;Identity=[RendererCompatibility.NativePath]::GetIdentity($handle);DeleteAccess=[bool]$AllowDelete;DeletePending=$false}
     } catch {
         $handle.Dispose()
         throw
@@ -242,10 +266,35 @@ function Assert-RendererDirectoryLease {
     $heldFinal=[IO.Path]::GetFullPath([RendererCompatibility.NativePath]::GetFinalPath($Lease.Handle)).TrimEnd('\','/')
     $heldIdentity=[RendererCompatibility.NativePath]::GetIdentity($Lease.Handle)
     if($heldFinal-cne$Lease.FinalPath-or$heldIdentity-cne$Lease.Identity){throw "$Context held directory identity changed."}
-    $probe=Open-RendererDirectoryLease $Root $expected "$Context current path" -AllowDelete
+    $probe=Open-RendererDirectoryLease $Root $expected "$Context current path"
     try {
         if($probe.Identity-cne$Lease.Identity-or$probe.FinalPath-cne$Lease.FinalPath){throw "$Context path no longer resolves to the held directory identity."}
     } finally {$probe.Handle.Dispose()}
+}
+function Move-RendererLeasedDirectory {
+    param($Lease,[string]$Root,[string]$Path,[string]$Destination,[string]$Context)
+    if(-not$Lease.DeleteAccess){throw "$Context directory lease lacks held-handle rename access."}
+    Assert-RendererDirectoryLease $Lease $Root $Path "$Context before held-handle rename"
+    [RendererCompatibility.NativePath]::RenameDirectory($Lease.Handle,[IO.Path]::GetFullPath($Destination))
+    $movedFinal=[IO.Path]::GetFullPath([RendererCompatibility.NativePath]::GetFinalPath($Lease.Handle)).TrimEnd('\','/')
+    $destinationFull=[IO.Path]::GetFullPath($Destination).TrimEnd('\','/')
+    $movedIdentity=[RendererCompatibility.NativePath]::GetIdentity($Lease.Handle)
+    if($movedFinal-cne$destinationFull-or$movedIdentity-cne$Lease.Identity){throw "$Context held-handle rename did not retain the exact destination/FileId identity. Expected path '$destinationFull' identity '$($Lease.Identity)'; observed path '$movedFinal' identity '$movedIdentity'."}
+    $Lease.FinalPath=$movedFinal
+    $Lease.Path=$movedFinal
+}
+function Remove-RendererLeasedDirectory {
+    param($Lease,[string]$Root,[string]$Path,[string]$Context)
+    if(-not$Lease.DeleteAccess){throw "$Context directory lease lacks held-handle deletion access."}
+    Assert-RendererDirectoryLease $Lease $Root $Path "$Context before content deletion"
+    foreach($child in @(Get-ChildItem -LiteralPath $Lease.FinalPath -Force -ErrorAction Stop)){
+        if($child.PSIsContainer-and($child.Attributes-band[IO.FileAttributes]::ReparsePoint)-eq0){throw "$Context contains an unexpected child directory; refusing recursive traversal."}
+        if($child.PSIsContainer){[IO.Directory]::Delete($child.FullName,$false)}else{[IO.File]::Delete($child.FullName)}
+    }
+    if(@(Get-ChildItem -LiteralPath $Lease.FinalPath -Force -ErrorAction Stop).Count-ne0){throw "$Context acquired new children during deletion; refusing to delete the directory."}
+    Assert-RendererDirectoryLease $Lease $Root $Path "$Context before held-handle delete"
+    [RendererCompatibility.NativePath]::DeleteDirectory($Lease.Handle)
+    $Lease.DeletePending=$true
 }
 function Get-RendererStableFileIdentity { param([string]$Root,[string]$Path,[string]$Context,[switch]$IncludeBytes,[switch]$KeepOpen)
     $rootFull=[IO.Path]::GetFullPath($Root).TrimEnd('\','/');$pathFull=[IO.Path]::GetFullPath($Path);Assert-RendererNonReparsePath $rootFull $pathFull $Context
@@ -496,7 +545,7 @@ function Assert-RendererMatrixRawPayload {
     return [pscustomobject][ordered]@{CaseId=[string]$Payload.caseId;ObservedUtc=[string]$Payload.observedUtc;EvidenceClass=$evidenceClass;Outcome=if($allPassed){'PASS'}else{'FAIL'};Details=[string]$Payload.details;RunFingerprint=$runFingerprint;RunStartedUtc=[string]$run.startedUtc;RunEndedUtc=[string]$run.endedUtc}
 }
 
-function Assert-RendererMatrixCases { param([object[]]$Cases,[string[]]$Expected,[string]$Context,[string]$Root,[string]$RepositoryRoot,[switch]$ValidateBindings)
+function Assert-RendererMatrixCases { param([object[]]$Cases,[string[]]$Expected,[string]$Context,[string]$Root,[string]$RepositoryRoot,[switch]$ValidateBindings,[ref]$CommonRunFingerprint)
     if([string]::IsNullOrWhiteSpace($Root)){$Root=$script:RendererCurrentEvidenceRoot}
     if([string]::IsNullOrWhiteSpace($RepositoryRoot)){$RepositoryRoot=$script:RendererCurrentRepositoryRoot}
     if($script:RendererCurrentValidateBindings){$ValidateBindings=$true}
@@ -537,7 +586,9 @@ function Assert-RendererMatrixCases { param([object[]]$Cases,[string[]]$Expected
             $rawPayload = $rawJson | ConvertFrom-Json -DateKind String
         }
         $validatedRaw = Assert-RendererMatrixRawPayload -Payload $rawPayload -ExpectedCaseId $case.id -Context "$Context '$($case.id)' raw evidence payload" -RepositoryRoot $RepositoryRoot -EvidenceRoot $Root
-        if($null-eq$matrixRunFingerprint){$matrixRunFingerprint=$validatedRaw.RunFingerprint}elseif($matrixRunFingerprint-cne$validatedRaw.RunFingerprint){throw "$Context '$($case.id)' does not share the exact run/session/candidate/package identity."}
+        if($null-ne$CommonRunFingerprint){
+            if($null-eq$CommonRunFingerprint.Value){$CommonRunFingerprint.Value=$validatedRaw.RunFingerprint}elseif([string]$CommonRunFingerprint.Value-cne$validatedRaw.RunFingerprint){throw "$Context '$($case.id)' does not share the exact global 25-case run/session/candidate/package identity."}
+        }elseif($null-eq$matrixRunFingerprint){$matrixRunFingerprint=$validatedRaw.RunFingerprint}elseif($matrixRunFingerprint-cne$validatedRaw.RunFingerprint){throw "$Context '$($case.id)' does not share the exact run/session/candidate/package identity."}
         if ($receipt.observedUtc -cne $validatedRaw.ObservedUtc) {
             throw "$Context '$($case.id)' receipt observedUtc '$($receipt.observedUtc)' does not match raw evidence observedUtc '$($validatedRaw.ObservedUtc)'."
         }
@@ -634,7 +685,7 @@ function Test-RendererCompatibilityManifest {
     $resultKeys=@();$visualComplete=$tol.approvalStatus-ceq'APPROVED';foreach($result in @($comparison.results)){Assert-RendererExactProperties $result @('language','captureName','referenceRelativePath','status','differentPixels','differentPixelPercent','maximumChannelDelta','nonmaskedDifferenceCount','disposition') 'Comparison result';$key="$($result.language)|$($result.captureName)";$resultKeys+=$key;if([string]$result.referenceRelativePath-cne(Get-RendererReferencePath $result.captureName)){throw "Comparison '$key' is not bound to the exact immutable reference."};if($result.status-cnotin@('PASS','FAIL','NOT_OBSERVED')){throw "Comparison '$key' status is invalid."};if($result.status-ceq'NOT_OBSERVED'){foreach($n in @('differentPixels','differentPixelPercent','maximumChannelDelta','nonmaskedDifferenceCount','disposition')){if($null-ne$result.$n){throw "Comparison '$key' NOT_OBSERVED must keep metrics/disposition null."}};$visualComplete=$false}else{if($tol.approvalStatus-cne'APPROVED'){throw "Comparison '$key' cannot claim observed results before tolerance approval."};Assert-RendererNonnegativeInteger $result.differentPixels "Comparison '$key' differentPixels";Assert-RendererFiniteNumber $result.differentPixelPercent "Comparison '$key' differentPixelPercent" 0 100;Assert-RendererFiniteNumber $result.maximumChannelDelta "Comparison '$key' maximumChannelDelta" 0 255;Assert-RendererNonnegativeInteger $result.nonmaskedDifferenceCount "Comparison '$key' nonmaskedDifferenceCount";if([long]$result.nonmaskedDifferenceCount-gt[long]$result.differentPixels){throw "Comparison '$key' nonmasked differences exceed total differences."};Assert-RendererString $result.disposition "Comparison '$key' disposition";$within=([double]$result.differentPixelPercent-le[double]$tol.maximumDifferentPixelPercent-and[double]$result.maximumChannelDelta-le[double]$tol.perChannelDelta-and[long]$result.nonmaskedDifferenceCount-le[long]$tol.maximumNonmaskedDifferences);if(($result.status-ceq'PASS')-ne$within){throw "Comparison '$key' status contradicts the approved fail rule."};if($result.status-cne'PASS'){$visualComplete=$false}}};Assert-RendererSet $resultKeys $expectedCaptureKeys 'Comparison result catalog';for($i=0;$i-lt$expectedCaptureKeys.Count;$i++){if($resultKeys[$i]-cne$expectedCaptureKeys[$i]){throw "Comparison result index $i must be '$($expectedCaptureKeys[$i])'."}}
     if($ValidateBindings){foreach($result in @($comparison.results|Where-Object{$_.status-cne'NOT_OBSERVED'})){$key="$($result.language)|$($result.captureName)";$capture=@($manifest.captures|Where-Object{"$($_.language)|$($_.name)"-ceq$key})[0];$capturePng=Get-RendererPngIdentity $root (Resolve-RendererBoundPath $root $capture.relativePath 'Observed comparison capture') "Comparison '$key' capture";$referencePng=Get-RendererPngIdentity $RepositoryRoot (Join-Path $RepositoryRoot $result.referenceRelativePath) "Comparison '$key' reference";$actual=Compare-RendererPixels $capturePng $referencePng $decodedMasks $key;if([long]$result.differentPixels-ne$actual.DifferentPixels-or[Math]::Abs([double]$result.differentPixelPercent-$actual.DifferentPixelPercent)-gt0.000000001-or[double]$result.maximumChannelDelta-ne$actual.MaximumChannelDelta-or[long]$result.nonmaskedDifferenceCount-ne$actual.NonmaskedDifferenceCount){throw "Comparison '$key' metrics are not independently recomputed from held decoded pixels/masks."};$actualPass=$actual.DifferentPixelPercent-le[double]$tol.maximumDifferentPixelPercent-and$actual.MaximumChannelDelta-le[double]$tol.perChannelDelta-and$actual.NonmaskedDifferenceCount-le[long]$tol.maximumNonmaskedDifferences;if(($result.status-ceq'PASS')-ne$actualPass){throw "Comparison '$key' status is not recomputed from held decoded pixels/masks."}}}elseif(@($comparison.results|Where-Object{$_.status-cne'NOT_OBSERVED'}).Count){throw 'Observed comparisons require production binding validation.'}
 
-    $matrices=$manifest.matrices;Assert-RendererExactProperties $matrices @('displayCases','mixedDpiTransitions','accessibilityCases','supportedEnvironmentCases') 'Matrices';Assert-RendererMatrixCases @($matrices.displayCases) $script:RendererDisplayCases 'Display matrix' $root $RepositoryRoot -ValidateBindings:$ValidateBindings;Assert-RendererMatrixCases @($matrices.mixedDpiTransitions) $script:RendererMixedDpiCases 'Mixed-DPI matrix' $root $RepositoryRoot -ValidateBindings:$ValidateBindings;Assert-RendererMatrixCases @($matrices.accessibilityCases) $script:RendererAccessibilityCases 'Accessibility matrix' $root $RepositoryRoot -ValidateBindings:$ValidateBindings;Assert-RendererMatrixCases @($matrices.supportedEnvironmentCases) $script:RendererEnvironmentCases 'Supported-environment matrix' $root $RepositoryRoot -ValidateBindings:$ValidateBindings
+    $matrices=$manifest.matrices;Assert-RendererExactProperties $matrices @('displayCases','mixedDpiTransitions','accessibilityCases','supportedEnvironmentCases') 'Matrices';$globalMatrixRunFingerprint=$null;Assert-RendererMatrixCases @($matrices.displayCases) $script:RendererDisplayCases 'Display matrix' $root $RepositoryRoot -ValidateBindings:$ValidateBindings -CommonRunFingerprint ([ref]$globalMatrixRunFingerprint);Assert-RendererMatrixCases @($matrices.mixedDpiTransitions) $script:RendererMixedDpiCases 'Mixed-DPI matrix' $root $RepositoryRoot -ValidateBindings:$ValidateBindings -CommonRunFingerprint ([ref]$globalMatrixRunFingerprint);Assert-RendererMatrixCases @($matrices.accessibilityCases) $script:RendererAccessibilityCases 'Accessibility matrix' $root $RepositoryRoot -ValidateBindings:$ValidateBindings -CommonRunFingerprint ([ref]$globalMatrixRunFingerprint);Assert-RendererMatrixCases @($matrices.supportedEnvironmentCases) $script:RendererEnvironmentCases 'Supported-environment matrix' $root $RepositoryRoot -ValidateBindings:$ValidateBindings -CommonRunFingerprint ([ref]$globalMatrixRunFingerprint)
     if($ValidateBindings){$previousMatrixUtc=$null;foreach($matrixCase in @($matrices.displayCases+$matrices.mixedDpiTransitions+$matrices.accessibilityCases+$matrices.supportedEnvironmentCases)){if($matrixCase.status-cne'NOT_OBSERVED'){$chronologyReceipt=(Read-RendererEvidenceReceipt $matrixCase.evidenceReceipt "Matrix chronology '$($matrixCase.id)'" $root $RepositoryRoot).Value;$currentMatrixUtc=[DateTimeOffset]::Parse($chronologyReceipt.observedUtc);if($null-ne$previousMatrixUtc-and$currentMatrixUtc-le$previousMatrixUtc){throw "Observed matrix receipt chronology must be strictly increasing and unique in governed case order at '$($matrixCase.id)'."};$previousMatrixUtc=$currentMatrixUtc}}}
     $matrixComplete=@($matrices.displayCases+$matrices.mixedDpiTransitions+$matrices.accessibilityCases+$matrices.supportedEnvironmentCases|Where-Object{$_.status-cne'PASS'}).Count-eq0
 
