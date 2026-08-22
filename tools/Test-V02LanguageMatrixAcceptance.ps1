@@ -13,17 +13,107 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'lib\V02ReferenceHostProfile.ps1')
+$script:V02LanguageMatrixMaximumEvidenceBytes = [int64]16777216
+$script:V02LanguageMatrixMaximumOutputBytes = [int64]16777216
+
+function Get-MatrixFullPath {
+    param([Parameter(Mandatory)][string]$Path,[Parameter(Mandatory)][string]$Context)
+    try { return [IO.Path]::GetFullPath($Path) } catch { throw "$Context is not a valid path: $Path" }
+}
+
+function Test-MatrixPathWithinOrEqual {
+    param([Parameter(Mandatory)][string]$Child,[Parameter(Mandatory)][string]$Parent)
+    $childFull=Get-MatrixFullPath $Child 'Matrix child path';$parentFull=Get-MatrixFullPath $Parent 'Matrix parent path'
+    if($childFull.Equals($parentFull,[StringComparison]::OrdinalIgnoreCase)){return $true}
+    $root=[IO.Path]::GetPathRoot($parentFull);if($parentFull-cne$root){$parentFull=$parentFull.TrimEnd('\','/')}
+    return $childFull.StartsWith($parentFull+[IO.Path]::DirectorySeparatorChar,[StringComparison]::OrdinalIgnoreCase)
+}
 
 function Get-MatrixFullDirectory {
     param([Parameter(Mandatory)][string]$Path,[Parameter(Mandatory)][string]$Name)
     if (-not (Test-Path -LiteralPath $Path -PathType Container)) { throw "$Name does not exist: $Path" }
-    return [IO.Path]::GetFullPath((Resolve-Path -LiteralPath $Path).Path).TrimEnd('\','/')
+    $item=Get-Item -LiteralPath $Path -Force -ErrorAction Stop;$full=Get-MatrixFullPath $item.FullName $Name
+    Assert-MatrixNoReparseComponents $full $Name
+    $root=[IO.Path]::GetPathRoot($full);if($full-cne$root){$full=$full.TrimEnd('\','/')};return $full
 }
 
 function Test-MatrixPathWithin {
     param([Parameter(Mandatory)][string]$Child,[Parameter(Mandatory)][string]$Parent)
-    $childFull=[IO.Path]::GetFullPath($Child);$parentFull=[IO.Path]::GetFullPath($Parent).TrimEnd('\','/')
-    return $childFull.StartsWith($parentFull+[IO.Path]::DirectorySeparatorChar,[StringComparison]::OrdinalIgnoreCase)
+    return (Test-MatrixPathWithinOrEqual $Child $Parent) -and
+        -not (Get-MatrixFullPath $Child 'Matrix child path').Equals((Get-MatrixFullPath $Parent 'Matrix parent path'),[StringComparison]::OrdinalIgnoreCase)
+}
+
+function Assert-MatrixNoReparseComponents {
+    param([Parameter(Mandatory)][string]$Path,[Parameter(Mandatory)][string]$Context)
+    $full=Get-MatrixFullPath $Path $Context;$item=Get-Item -LiteralPath $full -Force -ErrorAction Stop
+    while($null-ne$item){
+        if(($item.Attributes-band[IO.FileAttributes]::ReparsePoint)-ne0){throw "$Context contains a reparse-point component: $($item.FullName)"}
+        $item=if($item-is[IO.FileInfo]){$item.Directory}else{$item.Parent}
+    }
+}
+
+function Get-MatrixCommonDirectory {
+    param([Parameter(Mandatory)][string]$Left,[Parameter(Mandatory)][string]$Right,[Parameter(Mandatory)][string]$Context)
+    $candidate=(Get-Item -LiteralPath $Left -Force -ErrorAction Stop).Parent
+    $rightFull=Get-MatrixFullPath $Right "$Context right path"
+    while($null-ne$candidate){
+        $candidateFull=Get-MatrixFullPath $candidate.FullName "$Context common path"
+        if(Test-MatrixPathWithinOrEqual $rightFull $candidateFull){Assert-MatrixNoReparseComponents $candidateFull $Context;return $candidateFull.TrimEnd('\','/')}
+        $candidate=$candidate.Parent
+    }
+    throw "$Context do not share a safe common parent."
+}
+
+function Resolve-MatrixEvidencePath {
+    param([Parameter(Mandatory)][string]$EvidenceRoot,[Parameter(Mandatory)][string]$Path,[Parameter(Mandatory)][string]$Context,[ValidateSet('Leaf','Container')][string]$PathType='Leaf')
+    if(-not[IO.Path]::IsPathRooted($Path)){throw "$Context must be an absolute path."}
+    $full=Get-MatrixFullPath $Path $Context
+    if(-not(Test-MatrixPathWithinOrEqual $full $EvidenceRoot)){throw "$Context escaped its evidence root."}
+    if(-not(Test-Path -LiteralPath $full -PathType $PathType)){throw "$Context is missing or has the wrong type: $full"}
+    Assert-MatrixNoReparseComponents $full $Context
+    return $full
+}
+
+function Get-MatrixStableFileIdentity {
+    param([Parameter(Mandatory)][string]$EvidenceRoot,[Parameter(Mandatory)][string]$Path,[Parameter(Mandatory)][string]$Context,[int64]$MaximumBytes=[int64]$script:V02LanguageMatrixMaximumEvidenceBytes)
+    if($MaximumBytes-lt1-or$MaximumBytes-gt$script:V02LanguageMatrixMaximumEvidenceBytes){throw "$Context requested an invalid or weaker byte bound."}
+    $full=Resolve-MatrixEvidencePath $EvidenceRoot $Path $Context 'Leaf';$before=Get-Item -LiteralPath $full -Force
+    if([int64]$before.Length-gt$MaximumBytes){throw "$Context exceeds the maximum allowed byte size of $MaximumBytes."}
+    $stream=$null;$bytes=$null;$sha=$null
+    try{
+        $stream=[IO.File]::Open($full,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read)
+        if([int64]$stream.Length-ne[int64]$before.Length){throw "$Context changed before the held read."}
+        if([int64]$stream.Length-gt$MaximumBytes){throw "$Context exceeds the maximum allowed byte size of $MaximumBytes."}
+        $bytes=New-Object byte[] ([int]$stream.Length);$offset=0
+        while($offset-lt$bytes.Length){$read=$stream.Read($bytes,$offset,$bytes.Length-$offset);if($read-le0){throw "$Context ended during the held read."};$offset+=$read}
+        if($offset-ne[long]$stream.Length){throw "$Context length changed during the held read."}
+        $sha=[Security.Cryptography.SHA256]::Create();$hash=([BitConverter]::ToString($sha.ComputeHash($bytes))).Replace('-','').ToUpperInvariant()
+    }finally{if($null-ne$sha){$sha.Dispose()};if($null-ne$stream){$stream.Dispose()}}
+    $after=Get-Item -LiteralPath $full -Force
+    if([int64]$after.Length-ne[int64]$before.Length-or$after.LastWriteTimeUtc.Ticks-ne$before.LastWriteTimeUtc.Ticks){throw "$Context changed during the held read."}
+    return [pscustomobject]@{Path=$full;Length=[int64]$bytes.Length;Sha256=$hash;Bytes=$bytes}
+}
+
+function ConvertFrom-MatrixUtf8Bytes {
+    param([Parameter(Mandatory)][byte[]]$Bytes,[Parameter(Mandatory)][string]$Context)
+    if($Bytes.Length-ge3-and$Bytes[0]-eq0xEF-and$Bytes[1]-eq0xBB-and$Bytes[2]-eq0xBF){throw "$Context must be UTF-8 without a BOM."}
+    try{return (New-Object Text.UTF8Encoding($false,$true)).GetString($Bytes)}catch{throw "$Context is not strict UTF-8: $($_.Exception.Message)"}
+}
+
+function Read-MatrixTextLines {
+    param([Parameter(Mandatory)][string]$Text)
+    $reader=New-Object IO.StringReader($Text);$lines=New-Object System.Collections.Generic.List[string]
+    try{while($null-ne($line=$reader.ReadLine())){[void]$lines.Add($line)}}finally{$reader.Dispose()}
+    return $lines.ToArray()
+}
+
+function Read-MatrixStrictJsonObject {
+    param([Parameter(Mandatory)][string]$EvidenceRoot,[Parameter(Mandatory)][string]$Path,[Parameter(Mandatory)][string]$Context)
+    $identity=Get-MatrixStableFileIdentity $EvidenceRoot $Path $Context;$json=ConvertFrom-MatrixUtf8Bytes $identity.Bytes $Context
+    Assert-V02NoDuplicateJsonProperties -Json $json -Source $Context
+    try{$command=Get-Command ConvertFrom-Json -CommandType Cmdlet;if($command.Parameters.ContainsKey('DateKind')){$value=$json|ConvertFrom-Json -DateKind String}else{$value=$json|ConvertFrom-Json}}catch{throw "$Context is malformed JSON: $($_.Exception.Message)"}
+    if($null-eq$value-or$value-isnot[pscustomobject]){throw "$Context JSON root must be an object."}
+    return [pscustomobject]@{Value=$value;Json=$json;Identity=$identity}
 }
 
 function Assert-MatrixDistinctTrees {
@@ -47,9 +137,10 @@ function Assert-MatrixSha256 {
 }
 
 function Read-MatrixGateReport {
-    param([Parameter(Mandatory)][string]$Path)
+    param([Parameter(Mandatory)][string]$EvidenceRoot,[Parameter(Mandatory)][string]$Path)
+    $identity=Get-MatrixStableFileIdentity $EvidenceRoot $Path 'gate report';$text=ConvertFrom-MatrixUtf8Bytes $identity.Bytes 'gate report'
     $values=@{};$captureDeclarations=New-Object System.Collections.Generic.List[object]
-    foreach($line in [IO.File]::ReadAllLines($Path)) {
+    foreach($line in @(Read-MatrixTextLines $text)) {
         if ($line -match '^SHA256 (?<Hash>[0-9A-F]{64}) (?<Name>.+)$') {
             $captureDeclarations.Add([pscustomobject]@{Sha256=$Matches.Hash;Name=$Matches.Name})
             continue
@@ -60,7 +151,7 @@ function Read-MatrixGateReport {
             $values[$key]=$Matches.Value
         }
     }
-    return [pscustomobject]@{Values=$values;CaptureDeclarations=$captureDeclarations.ToArray()}
+    return [pscustomobject]@{Values=$values;CaptureDeclarations=$captureDeclarations.ToArray();FileIdentity=$identity}
 }
 
 function Get-MatrixGateValue {
@@ -155,17 +246,17 @@ function Get-MatrixValidatedPackage {
 }
 
 function Assert-MatrixPng {
-    param([string]$Path,$Capture,[string]$Context)
+    param([Parameter(Mandatory)][string]$EvidenceRoot,[Parameter(Mandatory)][string]$Path,$Capture,[Parameter(Mandatory)][string]$Context)
     $width=Get-MatrixProperty $Capture 'PixelWidth' $Context;$height=Get-MatrixProperty $Capture 'PixelHeight' $Context;if(-not(Test-MatrixNativeInteger $width)-or-not(Test-MatrixNativeInteger $height)-or[long]$width-le0-or[long]$height-le0){throw "$Context dimensions must be positive native JSON integers."}
-    $bytes=[IO.File]::ReadAllBytes($Path);$signature=[byte[]](137,80,78,71,13,10,26,10);if($bytes.Length-lt24){throw "$Context is not a complete PNG."};for($i=0;$i-lt8;$i++){if($bytes[$i]-ne$signature[$i]){throw "$Context PNG signature is invalid."}}
+    $identity=Get-MatrixStableFileIdentity $EvidenceRoot $Path $Context;$bytes=$identity.Bytes;$signature=[byte[]](137,80,78,71,13,10,26,10);if($bytes.Length-lt24){throw "$Context is not a complete PNG."};for($i=0;$i-lt8;$i++){if($bytes[$i]-ne$signature[$i]){throw "$Context PNG signature is invalid."}}
     Add-Type -AssemblyName System.Drawing;$stream=New-Object IO.MemoryStream(,$bytes);try{$image=[Drawing.Image]::FromStream($stream,$true,$true);try{$bitmap=New-Object Drawing.Bitmap($image);try{$null=$bitmap.GetPixel([int]$bitmap.Width-1,[int]$bitmap.Height-1);if($bitmap.Width-ne[long]$width-or$bitmap.Height-ne[long]$height){throw "$Context decoded dimensions differ from the report."}}finally{$bitmap.Dispose()}}finally{$image.Dispose()}}finally{$stream.Dispose()}
+    $after=Get-MatrixStableFileIdentity $EvidenceRoot $Path $Context;if($after.Length-ne$identity.Length-or$after.Sha256-cne$identity.Sha256){throw "$Context changed after the held PNG read."};return $identity
 }
 
 function Read-MatrixRun {
     param([Parameter(Mandatory)][string]$EvidenceDirectory,[Parameter(Mandatory)][ValidateSet('Thai','English')][string]$ExpectedLanguage,[Parameter(Mandatory)]$Package)
-    $gatePath=Join-Path $EvidenceDirectory 'gate-report.txt';$appPath=Join-Path $EvidenceDirectory 'app-runtime.json';$corePath=Join-Path $EvidenceDirectory 'core-runtime.json'
-    foreach($required in @($gatePath,$appPath,$corePath)) { if (-not (Test-Path -LiteralPath $required -PathType Leaf)) { throw "$ExpectedLanguage evidence omitted required file: $required" } }
-    $gate=Read-MatrixGateReport $gatePath
+    $gatePath=Resolve-MatrixEvidencePath $EvidenceDirectory (Join-Path $EvidenceDirectory 'gate-report.txt') "$ExpectedLanguage gate report" 'Leaf';$appPath=Resolve-MatrixEvidencePath $EvidenceDirectory (Join-Path $EvidenceDirectory 'app-runtime.json') "$ExpectedLanguage App report" 'Leaf';$corePath=Resolve-MatrixEvidencePath $EvidenceDirectory (Join-Path $EvidenceDirectory 'core-runtime.json') "$ExpectedLanguage Core report" 'Leaf'
+    $gate=Read-MatrixGateReport -EvidenceRoot $EvidenceDirectory -Path $gatePath
     Assert-MatrixEqual (Get-MatrixGateValue $gate 'Result' $ExpectedLanguage) 'PASS' "$ExpectedLanguage gate result"
     Assert-MatrixEqual (Get-MatrixGateValue $gate 'EvidenceClass' $ExpectedLanguage) 'Runtime' "$ExpectedLanguage gate evidence class"
     Assert-MatrixEqual (Get-MatrixGateValue $gate 'PreRunGitTreeClean' $ExpectedLanguage) 'True' "$ExpectedLanguage pre-run clean tree"
@@ -174,7 +265,7 @@ function Read-MatrixRun {
     Assert-MatrixEqual (Get-MatrixGateValue $gate 'Language' $ExpectedLanguage) $ExpectedLanguage "$ExpectedLanguage gate language"
     $rendererPolicy=Get-MatrixGateValue $gate 'RendererPolicyId' $ExpectedLanguage;$renderMode=Get-MatrixGateValue $gate 'WpfProcessRenderMode' $ExpectedLanguage
     Assert-MatrixEqual $rendererPolicy 'software-only-process-wide' "$ExpectedLanguage renderer policy";Assert-MatrixEqual $renderMode 'SoftwareOnly' "$ExpectedLanguage WPF render mode";Assert-MatrixEqual (Get-MatrixGateValue $gate 'SoftwareOnlyThroughout' $ExpectedLanguage) 'True' "$ExpectedLanguage renderer lifecycle"
-    $app=(ConvertFrom-V02StrictUtf8JsonFile $appPath).Value;$core=(ConvertFrom-V02StrictUtf8JsonFile $corePath).Value
+    $appDocument=Read-MatrixStrictJsonObject -EvidenceRoot $EvidenceDirectory -Path $appPath -Context "$ExpectedLanguage App report";$coreDocument=Read-MatrixStrictJsonObject -EvidenceRoot $EvidenceDirectory -Path $corePath -Context "$ExpectedLanguage Core report";$app=$appDocument.Value;$core=$coreDocument.Value
     Assert-MatrixEqual (Get-MatrixProperty $app 'EvidenceClassification' "$ExpectedLanguage app report") 'RuntimeCandidate' "$ExpectedLanguage app classification"
     if ((Get-MatrixProperty $app 'CompositeCandidateChecksPassed' "$ExpectedLanguage app report") -isnot [bool] -or -not [bool]$app.CompositeCandidateChecksPassed) { throw "$ExpectedLanguage App candidate checks did not pass." }
     Assert-MatrixEqual (Get-MatrixProperty $app 'Language' "$ExpectedLanguage app report") $ExpectedLanguage "$ExpectedLanguage app language"
@@ -187,7 +278,9 @@ function Read-MatrixRun {
     Assert-MatrixRuntimeSemantics $app $core $ExpectedLanguage
     foreach($name in @('DashboardClosedUtc','DisconnectObservedUtc','ReconnectObservedUtc')){$gateUtc=[DateTimeOffset](Get-MatrixGateValue $gate $name $ExpectedLanguage);$appUtc=[DateTimeOffset](Get-MatrixProperty $app $name "$ExpectedLanguage app report");if($gateUtc.ToUniversalTime().Ticks-ne$appUtc.ToUniversalTime().Ticks){throw "$ExpectedLanguage gate/App '$name' binding is not exact."}}
 
-    $actualAppReportHash=(Get-FileHash -LiteralPath $appPath -Algorithm SHA256).Hash.ToUpperInvariant();$actualCoreReportHash=(Get-FileHash -LiteralPath $corePath -Algorithm SHA256).Hash.ToUpperInvariant()
+    $gateFinalIdentity=Get-MatrixStableFileIdentity $EvidenceDirectory $gatePath "$ExpectedLanguage gate report";$appFinalIdentity=Get-MatrixStableFileIdentity $EvidenceDirectory $appPath "$ExpectedLanguage App report";$coreFinalIdentity=Get-MatrixStableFileIdentity $EvidenceDirectory $corePath "$ExpectedLanguage Core report"
+    if($gateFinalIdentity.Sha256-cne$gate.FileIdentity.Sha256-or$appFinalIdentity.Sha256-cne$appDocument.Identity.Sha256-or$coreFinalIdentity.Sha256-cne$coreDocument.Identity.Sha256){throw "$ExpectedLanguage evidence changed during validation."}
+    $actualAppReportHash=$appFinalIdentity.Sha256;$actualCoreReportHash=$coreFinalIdentity.Sha256
     Assert-MatrixEqual (Assert-MatrixSha256 (Get-MatrixGateValue $gate 'AppRuntimeReportSha256' $ExpectedLanguage) "$ExpectedLanguage declared App report hash") $actualAppReportHash "$ExpectedLanguage App report hash"
     Assert-MatrixEqual (Assert-MatrixSha256 (Get-MatrixGateValue $gate 'CoreRuntimeReportSha256' $ExpectedLanguage) "$ExpectedLanguage declared Core report hash") $actualCoreReportHash "$ExpectedLanguage Core report hash"
 
@@ -226,16 +319,15 @@ function Read-MatrixRun {
     foreach($pair in @(@('PackageIdentityPath','IdentityPath'),@('PackageArchivePath','ArchivePath'),@('ExtractedPackageRoot','PackageRoot'))){Assert-MatrixEqual ([IO.Path]::GetFullPath((Get-MatrixGateValue $gate $pair[0] $ExpectedLanguage))) $Package.($pair[1]) "$ExpectedLanguage $($pair[0])"}
     Assert-MatrixEqual (Get-MatrixGateValue $gate 'PackageProfileId' $ExpectedLanguage) $Package.ProfileId "$ExpectedLanguage package profile ID";Assert-MatrixEqual (Get-MatrixGateValue $gate 'PackageValidationEvidenceClass' $ExpectedLanguage) 'Static/PackagedCompatibilityPreparation' "$ExpectedLanguage package validation boundary"
     Assert-MatrixEqual $identity.ExpectedSourceCommit $Package.SourceCommit "$ExpectedLanguage package source commit";Assert-MatrixEqual $identity.ExpectedSourceTree $Package.SourceTree "$ExpectedLanguage package source tree"
-    $progressPath=Join-Path $EvidenceDirectory 'app-progress.json';$progressHistoryPath=Join-Path $EvidenceDirectory 'app-progress.json.history.jsonl'
-    foreach($required in @($progressPath,$progressHistoryPath)){if(-not(Test-Path -LiteralPath $required -PathType Leaf)){throw "$ExpectedLanguage evidence omitted progress artifact: $required"}}
-    $declaredHistoryPath=[IO.Path]::GetFullPath((Get-MatrixGateValue $gate 'ProgressHistoryPath' $ExpectedLanguage));Assert-MatrixEqual $declaredHistoryPath ([IO.Path]::GetFullPath($progressHistoryPath)) "$ExpectedLanguage progress history path"
-    $historyFileSha=(Get-FileHash -LiteralPath $progressHistoryPath -Algorithm SHA256).Hash.ToUpperInvariant();Assert-MatrixEqual (Assert-MatrixSha256 (Get-MatrixGateValue $gate 'ProgressHistorySha256' $ExpectedLanguage) "$ExpectedLanguage progress history file hash") $historyFileSha "$ExpectedLanguage progress history file hash"
-    $historyLines=@([IO.File]::ReadAllLines($progressHistoryPath));$expectedPhases=@('waiting-for-live-state','capturing-live-dashboard-and-widgets','waiting-for-pre-close-update','dashboard-closed-waiting-for-herdr-disconnect','herdr-disconnected-waiting-for-reconnect','herdr-reconnected-waiting-for-post-reconnect-update','waiting-for-idle-stability','measuring-idle-resources','complete')
+    $progressPath=Resolve-MatrixEvidencePath $EvidenceDirectory (Join-Path $EvidenceDirectory 'app-progress.json') "$ExpectedLanguage progress report" 'Leaf';$progressHistoryPath=Resolve-MatrixEvidencePath $EvidenceDirectory (Join-Path $EvidenceDirectory 'app-progress.json.history.jsonl') "$ExpectedLanguage progress history" 'Leaf'
+    $declaredHistoryPath=Resolve-MatrixEvidencePath $EvidenceDirectory (Get-MatrixGateValue $gate 'ProgressHistoryPath' $ExpectedLanguage) "$ExpectedLanguage declared progress history path" 'Leaf';Assert-MatrixEqual $declaredHistoryPath $progressHistoryPath "$ExpectedLanguage progress history path"
+    $historyIdentity=Get-MatrixStableFileIdentity $EvidenceDirectory $progressHistoryPath "$ExpectedLanguage progress history";$historyFileSha=$historyIdentity.Sha256;Assert-MatrixEqual (Assert-MatrixSha256 (Get-MatrixGateValue $gate 'ProgressHistorySha256' $ExpectedLanguage) "$ExpectedLanguage progress history file hash") $historyFileSha "$ExpectedLanguage progress history file hash"
+    $historyLines=@(Read-MatrixTextLines (ConvertFrom-MatrixUtf8Bytes $historyIdentity.Bytes "$ExpectedLanguage progress history"));$expectedPhases=@('waiting-for-live-state','capturing-live-dashboard-and-widgets','waiting-for-pre-close-update','dashboard-closed-waiting-for-herdr-disconnect','herdr-disconnected-waiting-for-reconnect','herdr-reconnected-waiting-for-post-reconnect-update','waiting-for-idle-stability','measuring-idle-resources','complete')
     if($historyLines.Count-ne$expectedPhases.Count){throw "$ExpectedLanguage progress history must contain exactly nine records."};$history=@();$previous='0'*64;$previousEntry=$null
     for($i=0;$i-lt$historyLines.Count;$i++){if([string]::IsNullOrWhiteSpace($historyLines[$i])){throw "$ExpectedLanguage progress history contains a blank record."};$entry=ConvertFrom-MatrixJsonText $historyLines[$i];Assert-MatrixProgressEntry $entry ($i+1) $previous "$ExpectedLanguage progress entry $($i+1)";Assert-MatrixEqual $entry.Phase $expectedPhases[$i] "$ExpectedLanguage progress phase $($i+1)";if($null-ne$previousEntry){if([DateTimeOffset]$entry.ObservedUtc-lt[DateTimeOffset]$previousEntry.ObservedUtc){throw "$ExpectedLanguage progress timestamps moved backward."};foreach($name in @('Sequence','ConnectionEpoch','BootstrapCount','EventCount','DisconnectCount','ReconciliationCount')){if([long]$entry.$name-lt[long]$previousEntry.$name){throw "$ExpectedLanguage progress counter '$name' moved backward."}}};$previousEntry=$entry;$previous=[string]$entry.EntrySha256;$history+=$entry}
     if([bool]$history[3].IsCoreConnected-ne$true-or[string]$history[3].RuntimeStatus-cne'Connected'-or[bool]$history[4].IsCoreConnected-ne$false-or[string]$history[4].RuntimeStatus-cne'Reconnecting'-or[bool]$history[5].IsCoreConnected-ne$true-or[string]$history[5].RuntimeStatus-cne'Connected'){throw "$ExpectedLanguage progress disconnect/reconnect phase semantics are invalid."};Assert-MatrixEqual $history[8].Sequence $app.PostCloseSequence "$ExpectedLanguage final progress sequence";Assert-MatrixEqual $history[8].StateSha256 $app.PostCloseStateSha256 "$ExpectedLanguage final progress state"
     if([int](Get-MatrixGateValue $gate 'ProgressHistoryEntries' $ExpectedLanguage)-ne9){throw "$ExpectedLanguage gate progress count is not nine."};Assert-MatrixEqual (Assert-MatrixSha256 (Get-MatrixGateValue $gate 'ProgressHistoryLastEntrySha256' $ExpectedLanguage) "$ExpectedLanguage final progress hash") $previous "$ExpectedLanguage final progress hash"
-    $progress=(ConvertFrom-V02StrictUtf8JsonFile $progressPath).Value;$progressItems=@(Get-MatrixProperty $progress 'History' "$ExpectedLanguage progress report");if($progressItems.Count-ne9){throw "$ExpectedLanguage progress report history count differs."};Assert-MatrixEqual ([IO.Path]::GetFullPath([string](Get-MatrixProperty $progress 'ProgressHistoryPath' "$ExpectedLanguage progress report"))) ([IO.Path]::GetFullPath($progressHistoryPath)) "$ExpectedLanguage progress pointer path"
+    $progressDocument=Read-MatrixStrictJsonObject -EvidenceRoot $EvidenceDirectory -Path $progressPath -Context "$ExpectedLanguage progress report";$progress=$progressDocument.Value;$progressItems=@(Get-MatrixProperty $progress 'History' "$ExpectedLanguage progress report");if($progressItems.Count-ne9){throw "$ExpectedLanguage progress report history count differs."};$declaredProgressPath=Resolve-MatrixEvidencePath $EvidenceDirectory ([string](Get-MatrixProperty $progress 'ProgressHistoryPath' "$ExpectedLanguage progress report")) "$ExpectedLanguage progress report pointer" 'Leaf';Assert-MatrixEqual $declaredProgressPath $progressHistoryPath "$ExpectedLanguage progress pointer path"
     for($i=0;$i-lt9;$i++){Assert-MatrixProgressEntry $progressItems[$i] ($i+1) $(if($i-eq0){'0'*64}else{[string]$progressItems[$i-1].EntrySha256}) "$ExpectedLanguage progress mirror $($i+1)";Assert-MatrixEqual $progressItems[$i].CanonicalPayload $history[$i].CanonicalPayload "$ExpectedLanguage progress report/history record $($i+1)"}
     Assert-MatrixProgressEntry $progress 9 ([string]$history[7].EntrySha256) "$ExpectedLanguage final progress pointer";Assert-MatrixEqual $progress.CanonicalPayload $history[8].CanonicalPayload "$ExpectedLanguage final progress pointer"
 
@@ -248,34 +340,52 @@ function Read-MatrixRun {
         if(-not$captureCatalog.Contains($name)){throw "$ExpectedLanguage capture '$name' is not in the approved catalog."};Assert-MatrixEqual (Get-MatrixProperty $capture 'Language' "$ExpectedLanguage capture '$name'") $ExpectedLanguage "$ExpectedLanguage capture '$name' language";Assert-MatrixEqual (Get-MatrixProperty $capture 'LanguageCultureName' "$ExpectedLanguage capture '$name'") $expectedCulture "$ExpectedLanguage capture '$name' culture"
         $binding=$captureCatalog[$name];$captureSequence=Get-MatrixProperty $capture 'StateSequence' "$ExpectedLanguage capture '$name'";if(-not(Test-MatrixNativeInteger $captureSequence)){throw "$ExpectedLanguage capture '$name' StateSequence is not a native integer."};Assert-MatrixEqual $captureSequence $app.($binding[0]) "$ExpectedLanguage capture '$name' sequence";Assert-MatrixEqual (Assert-MatrixSha256 (Get-MatrixProperty $capture 'StateSha256' "$ExpectedLanguage capture '$name'") "$ExpectedLanguage capture '$name' state hash") $app.($binding[1]) "$ExpectedLanguage capture '$name' state binding"
         $declared=Assert-MatrixSha256 (Get-MatrixProperty $capture 'Sha256' "$ExpectedLanguage capture '$name'") "$ExpectedLanguage capture '$name' hash";$path=[string](Get-MatrixProperty $capture 'Path' "$ExpectedLanguage capture '$name'")
-        if(-not [IO.Path]::IsPathRooted($path)-or-not(Test-Path -LiteralPath $path -PathType Leaf)){throw "$ExpectedLanguage capture '$name' path is missing or not absolute."}
-        $resolved=[IO.Path]::GetFullPath((Resolve-Path -LiteralPath $path).Path);if(-not(Test-MatrixPathWithin $resolved $EvidenceDirectory)){throw "$ExpectedLanguage capture '$name' is outside its evidence directory."}
-        Assert-MatrixEqual (Get-FileHash -LiteralPath $resolved -Algorithm SHA256).Hash.ToUpperInvariant() $declared "$ExpectedLanguage capture '$name' hash"
-        Assert-MatrixPng $resolved $capture "$ExpectedLanguage capture '$name'"
+        $resolved=Resolve-MatrixEvidencePath $EvidenceDirectory $path "$ExpectedLanguage capture '$name'" 'Leaf';$pngIdentity=Assert-MatrixPng -EvidenceRoot $EvidenceDirectory -Path $resolved -Capture $capture -Context "$ExpectedLanguage capture '$name'"
+        Assert-MatrixEqual $pngIdentity.Sha256 $declared "$ExpectedLanguage capture '$name' hash"
         $captureByName[$name]=[pscustomobject]@{Name=$name;Path=$resolved;Sha256=$declared};$captureRoots[[IO.Path]::GetDirectoryName($resolved)]=$true
     }
     if($captureRoots.Count -ne 1){throw "$ExpectedLanguage captures must have one exact capture root."}
     $gateCaptures=@($gate.CaptureDeclarations);if($gateCaptures.Count -ne $captures.Count){throw "$ExpectedLanguage gate capture declaration count differs from App report."}
     $seen=@{};foreach($decl in $gateCaptures){if($seen.ContainsKey($decl.Name)-or-not$captureByName.ContainsKey($decl.Name)){throw "$ExpectedLanguage gate capture names are duplicated or unknown."};Assert-MatrixEqual $decl.Sha256 $captureByName[$decl.Name].Sha256 "$ExpectedLanguage gate capture '$($decl.Name)'";$seen[$decl.Name]=$true}
 
-    return [pscustomobject]@{Language=$ExpectedLanguage;Culture=$expectedCulture;EvidenceDirectory=$EvidenceDirectory;CaptureRoot=[string]@($captureRoots.Keys)[0];GateReportSha256=(Get-FileHash $gatePath -Algorithm SHA256).Hash.ToUpperInvariant();AppRuntimeReportSha256=$actualAppReportHash;CoreRuntimeReportSha256=$actualCoreReportHash;ProgressHistorySha256=$historyFileSha;ProgressHistoryLastEntrySha256=$previous;PackageIdentityReceiptSha256=$packageReceiptSha;SourceCommit=$identity.ExpectedSourceCommit;SourceTree=$identity.ExpectedSourceTree;ProfileId=$profileId;ProfileSha256=$profileSha;ReferenceHostSchemaSha256=$referenceHostSchemaSha;HerdrReleaseId=$herdrRelease;HerdrExecutableSha256=$herdrSha;AppExecutableSha256=$appBinary;CoreExecutableSha256=$coreBinary;BundledSchemaSha256=$schemaSha;HerdrProtocol=$protocol;RendererPolicyId=$rendererPolicy;WpfProcessRenderMode=$renderMode;CaptureCount=$captures.Count;Captures=@($captureByName.Values|Sort-Object Name)}
+    $historyFinalIdentity=Get-MatrixStableFileIdentity $EvidenceDirectory $progressHistoryPath "$ExpectedLanguage progress history";$progressFinalIdentity=Get-MatrixStableFileIdentity $EvidenceDirectory $progressPath "$ExpectedLanguage progress report";if($historyFinalIdentity.Sha256-cne$historyIdentity.Sha256-or$progressFinalIdentity.Sha256-cne$progressDocument.Identity.Sha256){throw "$ExpectedLanguage progress evidence changed during validation."}
+    return [pscustomobject]@{Language=$ExpectedLanguage;Culture=$expectedCulture;EvidenceDirectory=$EvidenceDirectory;CaptureRoot=[string]@($captureRoots.Keys)[0];GateReportSha256=$gateFinalIdentity.Sha256;AppRuntimeReportSha256=$actualAppReportHash;CoreRuntimeReportSha256=$actualCoreReportHash;ProgressHistorySha256=$historyFileSha;ProgressHistoryLastEntrySha256=$previous;PackageIdentityReceiptSha256=$packageReceiptSha;SourceCommit=$identity.ExpectedSourceCommit;SourceTree=$identity.ExpectedSourceTree;ProfileId=$profileId;ProfileSha256=$profileSha;ReferenceHostSchemaSha256=$referenceHostSchemaSha;HerdrReleaseId=$herdrRelease;HerdrExecutableSha256=$herdrSha;AppExecutableSha256=$appBinary;CoreExecutableSha256=$coreBinary;BundledSchemaSha256=$schemaSha;HerdrProtocol=$protocol;RendererPolicyId=$rendererPolicy;WpfProcessRenderMode=$renderMode;CaptureCount=$captures.Count;Captures=@($captureByName.Values|Sort-Object Name)}
+}
+
+function Publish-MatrixCandidateNoClobber {
+    param([Parameter(Mandatory)][string]$AllowedRoot,[Parameter(Mandatory)][string]$OutputPath,[Parameter(Mandatory)][string]$Json)
+    $outputFull=Get-MatrixFullPath $OutputPath 'OutputPath';if(-not[IO.Path]::IsPathRooted($OutputPath)){throw 'OutputPath must be absolute.'}
+    $parent=[IO.Path]::GetDirectoryName($outputFull);if([string]::IsNullOrWhiteSpace($parent)){throw 'OutputPath must have a parent directory.'}
+    if(-not(Test-MatrixPathWithinOrEqual $parent $AllowedRoot)){throw 'OutputPath parent escaped the common evidence root.'}
+    if(-not(Test-Path -LiteralPath $parent -PathType Container)){throw "OutputPath parent does not exist: $parent"}
+    Assert-MatrixNoReparseComponents $parent 'OutputPath parent'
+    $existing=Get-Item -LiteralPath $outputFull -Force -ErrorAction SilentlyContinue;if($null-ne$existing){throw "OutputPath already exists: $outputFull"}
+    $utf8=New-Object Text.UTF8Encoding($false);$bytes=$utf8.GetBytes($Json);if($bytes.Length-gt$script:V02LanguageMatrixMaximumOutputBytes){throw "Output JSON exceeds the maximum allowed byte size of $($script:V02LanguageMatrixMaximumOutputBytes)."}
+    $temporary=Join-Path $parent ('.'+[IO.Path]::GetFileName($outputFull)+'.'+[Guid]::NewGuid().ToString('N')+'.tmp');$stream=$null
+    try{
+        $stream=[IO.File]::Open($temporary,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::None);try{$stream.Write($bytes,0,$bytes.Length);$stream.Flush($true)}finally{$stream.Dispose();$stream=$null}
+    }catch{if([IO.File]::Exists($temporary)){[IO.File]::Delete($temporary)};throw}
+    try{
+        Assert-MatrixNoReparseComponents $parent 'OutputPath parent';if(-not(Test-MatrixPathWithinOrEqual $parent $AllowedRoot)){throw 'OutputPath parent escaped the common evidence root.'}
+        $existing=Get-Item -LiteralPath $outputFull -Force -ErrorAction SilentlyContinue;if($null-ne$existing){throw "OutputPath already exists: $outputFull"}
+        [IO.File]::Move($temporary,$outputFull)
+    }catch{if([IO.File]::Exists($temporary)){[IO.File]::Delete($temporary)};throw}
+    return Get-MatrixStableFileIdentity $AllowedRoot $outputFull 'published matrix candidate'
 }
 
 $package=Get-MatrixValidatedPackage
 $thaiDirectory=Get-MatrixFullDirectory $ThaiEvidenceDirectory 'ThaiEvidenceDirectory';$englishDirectory=Get-MatrixFullDirectory $EnglishEvidenceDirectory 'EnglishEvidenceDirectory'
 Assert-MatrixDistinctTrees $thaiDirectory $englishDirectory 'Thai and English evidence directories'
+$matrixEvidenceRoot=Get-MatrixCommonDirectory $thaiDirectory $englishDirectory 'Thai and English evidence directories'
 $thai=Read-MatrixRun $thaiDirectory 'Thai' $package;$english=Read-MatrixRun $englishDirectory 'English' $package
 Assert-MatrixDistinctTrees $thai.CaptureRoot $english.CaptureRoot 'Thai and English capture roots'
 foreach($name in @('SourceCommit','SourceTree','ProfileId','ProfileSha256','ReferenceHostSchemaSha256','HerdrReleaseId','HerdrExecutableSha256','AppExecutableSha256','CoreExecutableSha256','BundledSchemaSha256','HerdrProtocol','RendererPolicyId','WpfProcessRenderMode','PackageIdentityReceiptSha256')) { Assert-MatrixEqual $thai.$name $english.$name "Thai/English $name" }
 Assert-MatrixEqual (Get-FileHash $package.IdentityPath -Algorithm SHA256).Hash $package.IdentityFileSha256 'package receipt stability';Assert-MatrixEqual (Get-FileHash $package.AppPath -Algorithm SHA256).Hash $package.AppSha256 'package App post-matrix stability';Assert-MatrixEqual (Get-FileHash $package.CorePath -Algorithm SHA256).Hash $package.CoreSha256 'package Core post-matrix stability';Assert-MatrixEqual (Get-FileHash $package.ManifestPath -Algorithm SHA256).Hash $package.ManifestSha256 'package manifest post-matrix stability';Assert-MatrixEqual (Get-FileHash $package.ArchivePath -Algorithm SHA256).Hash $package.ArchiveSha256 'package archive post-matrix stability'
 
-if([string]::IsNullOrWhiteSpace($OutputPath)){ $OutputPath=Join-Path ([IO.Path]::GetDirectoryName($thaiDirectory)) 'v0.2-language-matrix-candidate.json' }
-$outputFull=[IO.Path]::GetFullPath($OutputPath);if((Test-MatrixPathWithin $outputFull $thaiDirectory)-or(Test-MatrixPathWithin $outputFull $englishDirectory)){throw 'OutputPath must be outside both accepted evidence directory trees.'};if(Test-Path -LiteralPath $outputFull){throw "OutputPath already exists: $outputFull"}
+if([string]::IsNullOrWhiteSpace($OutputPath)){ $OutputPath=Join-Path $matrixEvidenceRoot 'v0.2-language-matrix-candidate.json' }
+$outputFull=Get-MatrixFullPath $OutputPath 'OutputPath';if((Test-MatrixPathWithinOrEqual $outputFull $thaiDirectory)-or(Test-MatrixPathWithinOrEqual $outputFull $englishDirectory)){throw 'OutputPath must be outside both accepted evidence directory trees.'}
 $payload=[ordered]@{GeneratedUnixTimeMilliseconds=[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds();IndependentHumanReview='NOT_OBSERVED';ReleaseCredit=$false;Binding=[ordered]@{SourceCommit=$thai.SourceCommit;SourceTree=$thai.SourceTree;ProfileId=$thai.ProfileId;ProfileSha256=$thai.ProfileSha256;ReferenceHostSchemaSha256=$thai.ReferenceHostSchemaSha256;PackageIdentityReceiptSha256=$thai.PackageIdentityReceiptSha256;HerdrReleaseId=$thai.HerdrReleaseId;HerdrExecutableSha256=$thai.HerdrExecutableSha256;AppExecutableSha256=$thai.AppExecutableSha256;CoreExecutableSha256=$thai.CoreExecutableSha256;BundledSchemaSha256=$thai.BundledSchemaSha256;HerdrProtocol=$thai.HerdrProtocol};Runs=@($thai,$english)}
 $payloadValue=(($payload|ConvertTo-Json -Depth 20)|ConvertFrom-Json);$payloadJson=ConvertTo-V02Jcs $payloadValue;$utf8=New-Object Text.UTF8Encoding($false);$payloadSha=([BitConverter]::ToString([Security.Cryptography.SHA256]::Create().ComputeHash($utf8.GetBytes($payloadJson)))).Replace('-','')
 $manifest=[ordered]@{EvidenceClassification='RuntimeMatrixCandidate';IndependentHumanReview='NOT_OBSERVED';ReleaseCredit=$false;ManifestFormatVersion=1;ManifestHashScope='SHA256OfRFC8785JcsUtf8NoBomPayload';ManifestPayloadSha256=$payloadSha;Payload=$payloadValue}
-$json=$manifest|ConvertTo-Json -Depth 20;$parent=[IO.Path]::GetDirectoryName($outputFull);if(-not[IO.Directory]::Exists($parent)){[IO.Directory]::CreateDirectory($parent)|Out-Null}
-$temporary=Join-Path $parent ('.'+[IO.Path]::GetFileName($outputFull)+'.'+[Guid]::NewGuid().ToString('N')+'.tmp')
-try{[IO.File]::WriteAllText($temporary,$json,$utf8);Move-Item -LiteralPath $temporary -Destination $outputFull}catch{if(Test-Path -LiteralPath $temporary){Remove-Item -LiteralPath $temporary -Force};throw}
-$fileSha=(Get-FileHash -LiteralPath $outputFull -Algorithm SHA256).Hash.ToUpperInvariant()
+$json=$manifest|ConvertTo-Json -Depth 20;$published=Publish-MatrixCandidateNoClobber -AllowedRoot $matrixEvidenceRoot -OutputPath $outputFull -Json $json;$fileSha=$published.Sha256
 Write-Output 'EvidenceClass: RuntimeMatrixCandidate';Write-Output "Manifest: $outputFull";Write-Output "ManifestPayloadSha256: $payloadSha";Write-Output "ManifestFileSha256: $fileSha";Write-Output 'IndependentHumanReview: NOT_OBSERVED';Write-Output 'ReleaseCredit: false'
