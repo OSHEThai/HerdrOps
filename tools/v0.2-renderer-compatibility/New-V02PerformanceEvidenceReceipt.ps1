@@ -106,7 +106,7 @@ function Assert-SampleProperties {
     Assert-PerfReceiptExactProperties $Sample @('cpuBasisPoints','workingSetMaximumBytes','latencyMicroseconds','uiStallMicroseconds') $Context
     Assert-RendererNonnegativeInteger $Sample.cpuBasisPoints "$Context cpuBasisPoints"
     Assert-RendererNonnegativeInteger $Sample.workingSetMaximumBytes "$Context workingSetMaximumBytes"
-    
+
     $latencies = @($Sample.latencyMicroseconds)
     if ($latencies.Count -ne 20) {
         throw "$Context latencyMicroseconds must contain exactly 20 raw observations; found $($latencies.Count)."
