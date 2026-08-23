@@ -232,6 +232,7 @@ public partial class App : Application
 
         RuntimeEvidenceRunner? runner = null;
         RuntimeEvidenceProducerBinding? producerBinding = null;
+        RendererTargetObservationProducer? rendererObservation = null;
         MainWindow? mainWindow = null;
         var exitCode = 2;
         Exception? primaryFailure = null;
@@ -240,6 +241,15 @@ public partial class App : Application
         {
             producerBinding = RuntimeEvidenceProducerBinding.ObserveBeforeFirstWindow(
                 options);
+            if (options.RendererObservation is not null)
+            {
+                rendererObservation = new RendererTargetObservationProducer(
+                    options.RendererObservation);
+                rendererObservation.Start();
+                await rendererObservation.WaitForFirstWindowPermissionAsync(
+                    CancellationToken.None);
+            }
+
             var state = new LiveDashboardState();
             _runtime = new LiveDashboardRuntime(
                 new HerdrOpsStatePipeClient(HerdrOpsStatePipeClientOptions.ForCurrentUser()),
@@ -249,12 +259,28 @@ public partial class App : Application
             mainWindow = new MainWindow(state);
             MainWindow = mainWindow;
             mainWindow.Show();
+            rendererObservation?.AttachFirstWindow(mainWindow);
             runner = new RuntimeEvidenceRunner(
                 state,
                 mainWindow,
                 options,
-                producerBinding);
+                producerBinding,
+                rendererObservation);
             var report = await runner.RunAsync();
+            if (rendererObservation is not null)
+            {
+                await rendererObservation.WaitForThaiCapturePermissionAsync(CancellationToken.None);
+                await runner.CaptureRendererCompatibilitySetAsync(
+                    rendererObservation,
+                    UiLanguage.Thai,
+                    CancellationToken.None);
+                await rendererObservation.WaitForEnglishCapturePermissionAsync(CancellationToken.None);
+                await runner.CaptureRendererCompatibilitySetAsync(
+                    rendererObservation,
+                    UiLanguage.English,
+                    CancellationToken.None);
+                await rendererObservation.Completion;
+            }
             exitCode = report.CompositeCandidateChecksPassed ? 0 : 2;
         }
         catch (Exception exception)
@@ -321,6 +347,22 @@ public partial class App : Application
         finally
         {
             producerBinding?.LanguageChangeTracker?.Dispose();
+            if (rendererObservation is not null)
+            {
+                try
+                {
+                    await rendererObservation.DisposeAsync();
+                }
+                catch (Exception exception)
+                {
+                    RuntimeEvidenceRunner.WriteFailure(
+                        options.ReportPath,
+                        startedUtc,
+                        exception,
+                        options.ProgressPath);
+                    exitCode = 2;
+                }
+            }
         }
 
         Shutdown(exitCode);

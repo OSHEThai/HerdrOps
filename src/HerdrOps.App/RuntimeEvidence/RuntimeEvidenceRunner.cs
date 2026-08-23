@@ -741,7 +741,8 @@ public sealed class RuntimeEvidenceRunner(
     LiveDashboardState state,
     MainWindow mainWindow,
     RuntimeEvidenceOptions options,
-    RuntimeEvidenceProducerBinding producerBinding)
+    RuntimeEvidenceProducerBinding producerBinding,
+    RendererTargetObservationProducer? rendererProducer = null)
 {
     private const double CpuTargetPercent = 1;
     internal static readonly double WorkingSetTargetMegabytes = 255;
@@ -786,6 +787,7 @@ public sealed class RuntimeEvidenceRunner(
     private readonly RuntimeEvidenceProducerBinding _producerBinding = ValidateProducerBinding(
         producerBinding,
         options);
+    private readonly RendererTargetObservationProducer? _rendererProducer = rendererProducer;
     private readonly List<RuntimeEvidenceCapture> _captures = [];
     private readonly List<RuntimeSemanticStateCapture> _semanticStateCaptures = [];
     private readonly List<WeakReference<RenderTargetBitmap>> _captureBitmapReferences = [];
@@ -890,6 +892,10 @@ public sealed class RuntimeEvidenceRunner(
         var initialSequence = _state.CurrentState.LastIngestSequence;
         var initialEventCount = _state.CurrentRuntimeHealth.EventCount;
         var initialStateHash = CurrentStateHash();
+        if (_rendererProducer is not null)
+        {
+            await _rendererProducer.WaitForThaiCapturePermissionAsync(cancellationToken);
+        }
         RecordResourceStageCheckpoint("pre-capture");
         _ = WriteProgress("capturing-live-dashboard-and-widgets");
         await CaptureInitialSurfacesAsync(initialStateHash, cancellationToken);
@@ -947,7 +953,17 @@ public sealed class RuntimeEvidenceRunner(
         var preRestartConnectionEpoch = _state.CurrentState.ConnectionEpoch;
         var preRestartBootstrapCount = _state.CurrentRuntimeHealth.BootstrapCount;
         var preRestartDisconnectCount = _state.CurrentRuntimeHealth.DisconnectCount;
-        _mainWindow.Close();
+        if (_options.RendererObservation is null)
+        {
+            _mainWindow.Close();
+        }
+        else
+        {
+            // Renderer compatibility is a separate no-credit capture pass. Keep
+            // the governed first HWND alive for exact continuity while hiding
+            // the Dashboard surface from the operator.
+            _mainWindow.Hide();
+        }
         var dashboardClosedUtc = DateTimeOffset.UtcNow;
         await Dispatcher.Yield(DispatcherPriority.ApplicationIdle);
         RecordResourceStageCheckpoint("post-dashboard-close");
@@ -1131,6 +1147,8 @@ public sealed class RuntimeEvidenceRunner(
                     postCloseSequence,
                     postCloseStateHash,
                     DateTimeOffset.UtcNow)),
+            ("RendererCompatibilityPassIsNotRuntimeAcceptance",
+                _options.RendererObservation is null),
         };
         var failedCandidateChecks = candidateChecks
             .Where(check => !check.Passed)
@@ -1138,7 +1156,7 @@ public sealed class RuntimeEvidenceRunner(
             .ToArray();
         var checksPassed = failedCandidateChecks.Length == 0;
         var report = new AppRuntimeEvidenceReport(
-            "RuntimeCandidate",
+            _options.RendererObservation is null ? "RuntimeCandidate" : "NoRuntimeCredit",
             CoreStateObserved: true,
             SessionControlInvoked: false,
             startedUtc,
@@ -1213,6 +1231,102 @@ public sealed class RuntimeEvidenceRunner(
         WriteJsonAtomically(_options.ReportPath, report);
         _ = WriteProgress("complete");
         return report;
+    }
+
+    internal async Task CaptureRendererCompatibilitySetAsync(
+        RendererTargetObservationProducer producer,
+        UiLanguage language,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(producer);
+        cancellationToken.ThrowIfCancellationRequested();
+        RuntimeEvidenceProducerBinding.ApplyAndObserveLanguage(language);
+        _state.RefreshLanguage();
+        var languageName = language == UiLanguage.Thai ? "Thai" : "English";
+        var directory = Path.Combine(producer.RuntimeEvidenceRoot, "captures", languageName);
+        Directory.CreateDirectory(directory);
+
+        var dashboard = new MainWindow(_state) { ShowActivated = false };
+        var widgets = new Dictionary<WidgetVariant, WidgetWindow>();
+        try
+        {
+            dashboard.Show();
+            await Dispatcher.Yield(DispatcherPriority.ApplicationIdle);
+            foreach (var pair in new[]
+                     {
+                         (0, "dashboard-overview"),
+                         (1, "dashboard-live-organization"),
+                         (4, "dashboard-agent-detail"),
+                         (0, "dashboard-overview-after-event"),
+                     })
+            {
+                dashboard.Shell.Navigation.SelectedIndex = pair.Item1;
+                dashboard.UpdateLayout();
+                await Dispatcher.Yield(DispatcherPriority.ApplicationIdle);
+                SaveRendererCompatibilityVisual(dashboard.Shell, pair.Item2);
+            }
+
+            foreach (var variant in new[] { WidgetVariant.Compact, WidgetVariant.Normal, WidgetVariant.FloatingVertical })
+            {
+                var widget = new WidgetWindow(WidgetCatalog.Get(variant), _state.Widgets) { ShowActivated = false };
+                widgets.Add(variant, widget);
+                widget.Show();
+                await Dispatcher.Yield(DispatcherPriority.ApplicationIdle);
+                var name = variant switch
+                {
+                    WidgetVariant.Compact => "widget-compact",
+                    WidgetVariant.Normal => "widget-normal",
+                    _ => "widget-floating-vertical",
+                };
+                SaveRendererCompatibilityVisual(widget.Content as FrameworkElement ?? widget, name);
+            }
+
+            var vertical = widgets[WidgetVariant.FloatingVertical];
+            foreach (var name in new[]
+                     {
+                         "widget-floating-vertical-after-dashboard-close",
+                         "widget-floating-vertical-offline",
+                         "widget-floating-vertical-reconnected",
+                     })
+            {
+                SaveRendererCompatibilityVisual(vertical.Content as FrameworkElement ?? vertical, name);
+            }
+        }
+        finally
+        {
+            foreach (var widget in widgets.Values) widget.Close();
+            if (!dashboard.IsClosed) dashboard.CloseForShutdown();
+        }
+
+        void SaveRendererCompatibilityVisual(FrameworkElement visual, string name)
+        {
+            var path = Path.Combine(directory, name + ".png");
+            if (language == UiLanguage.Thai && File.Exists(path))
+            {
+                if (producer.IsRunnerCaptureRegistered(languageName, name)) return;
+                producer.RegisterRunnerCapture(
+                    languageName,
+                    name,
+                    path,
+                    Convert.ToHexString(RandomNumberGenerator.GetBytes(32)));
+                return;
+            }
+            visual.UpdateLayout();
+            var width = checked((int)Math.Ceiling(visual.ActualWidth));
+            var height = checked((int)Math.Ceiling(visual.ActualHeight));
+            if (width <= 0 || height <= 0) throw new InvalidOperationException("Renderer compatibility visual has no layout.");
+            var bitmap = new RenderTargetBitmap(width, height, 96, 96, PixelFormats.Pbgra32);
+            bitmap.Render(visual);
+            var encoder = new PngBitmapEncoder();
+            encoder.Frames.Add(BitmapFrame.Create(bitmap));
+            using (var output = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+                encoder.Save(output);
+            producer.RegisterRunnerCapture(
+                languageName,
+                name,
+                path,
+                Convert.ToHexString(RandomNumberGenerator.GetBytes(32)));
+        }
     }
 
     public void CloseEvidenceWindows()
@@ -1979,6 +2093,11 @@ public sealed class RuntimeEvidenceRunner(
             captureLanguage.Language,
             captureLanguage.CurrentUiCultureName,
             DateTimeOffset.UtcNow));
+        _rendererProducer?.RegisterRunnerCapture(
+            captureLanguage.Language,
+            Path.GetFileNameWithoutExtension(fileName),
+            path,
+            Convert.ToHexString(RandomNumberGenerator.GetBytes(32)));
     }
 
     private async Task<RuntimeResourceMeasurement> MeasureResourcesAsync(

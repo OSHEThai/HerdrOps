@@ -18,7 +18,8 @@ public sealed record RuntimeEvidenceOptions(
     string? Issue10BindingManifestPath = null,
     string? Issue10RunNonce = null,
     string? Issue10SourceCommit = null,
-    string? Issue10SourceTree = null)
+    string? Issue10SourceTree = null,
+    RendererTargetObservationOptions? RendererObservation = null)
 {
     public const string ApprovedProfileId = "herdrops-v0.2-submark-nb-software-only-20260822";
     public const string ApprovedProfileSha256 = "96D01ED15A536F2DF50B59B43CFDEB3683DCE8667AE2E7BF6A96124182FE13A3";
@@ -60,6 +61,17 @@ public sealed record RuntimeEvidenceOptions(
         string? issue10RunNonce = null;
         string? issue10SourceCommit = null;
         string? issue10SourceTree = null;
+        string? rendererObservationPipe = null;
+        string? rendererRuntimeEvidenceRoot = null;
+        string? rendererRunNonce = null;
+        string? rendererPackageIdentityPath = null;
+        string? rendererPackageReceiptSha256 = null;
+        string? rendererSourceCommit = null;
+        string? rendererSourceTree = null;
+        string? rendererChallenge = null;
+        string? rendererServerPath = null;
+        string? rendererServerSha256 = null;
+        var rendererServerProcessId = 0;
 
         for (var index = 0; index < args.Count; index++)
         {
@@ -147,6 +159,43 @@ public sealed record RuntimeEvidenceOptions(
                 case "--issue10-source-tree":
                     issue10SourceTree = value;
                     break;
+                case "--renderer-observation-pipe":
+                    rendererObservationPipe = value;
+                    break;
+                case "--renderer-runtime-evidence-root":
+                    rendererRuntimeEvidenceRoot = value;
+                    break;
+                case "--renderer-run-nonce":
+                    rendererRunNonce = value;
+                    break;
+                case "--renderer-package-receipt-sha256":
+                    rendererPackageReceiptSha256 = value;
+                    break;
+                case "--renderer-package-identity-path":
+                    rendererPackageIdentityPath = value;
+                    break;
+                case "--renderer-source-commit":
+                    rendererSourceCommit = value;
+                    break;
+                case "--renderer-source-tree":
+                    rendererSourceTree = value;
+                    break;
+                case "--renderer-challenge":
+                    rendererChallenge = value;
+                    break;
+                case "--renderer-server-pid":
+                    if (!int.TryParse(value, out rendererServerProcessId) || rendererServerProcessId <= 0)
+                    {
+                        error = "Option --renderer-server-pid requires a positive process identifier.";
+                        return false;
+                    }
+                    break;
+                case "--renderer-server-path":
+                    rendererServerPath = value;
+                    break;
+                case "--renderer-server-sha256":
+                    rendererServerSha256 = value;
+                    break;
                 default:
                     error = $"Unknown runtime evidence option '{argument}'.";
                     return false;
@@ -189,6 +238,57 @@ public sealed record RuntimeEvidenceOptions(
              string.IsNullOrWhiteSpace(issue10SourceTree)))
         {
             error = "Issue #10 production widget evidence requires --issue10-widget-report, --issue10-binding-manifest, --issue10-run-nonce, --issue10-source-commit, and --issue10-source-tree together.";
+            return false;
+        }
+
+        var rendererProducerRequested =
+            !string.IsNullOrWhiteSpace(rendererObservationPipe) ||
+            !string.IsNullOrWhiteSpace(rendererRuntimeEvidenceRoot) ||
+            !string.IsNullOrWhiteSpace(rendererRunNonce) ||
+            !string.IsNullOrWhiteSpace(rendererPackageIdentityPath) ||
+            !string.IsNullOrWhiteSpace(rendererPackageReceiptSha256) ||
+            !string.IsNullOrWhiteSpace(rendererSourceCommit) ||
+            !string.IsNullOrWhiteSpace(rendererSourceTree) ||
+            !string.IsNullOrWhiteSpace(rendererChallenge) ||
+            rendererServerProcessId > 0 ||
+            !string.IsNullOrWhiteSpace(rendererServerPath) ||
+            !string.IsNullOrWhiteSpace(rendererServerSha256);
+        if (rendererProducerRequested &&
+            (string.IsNullOrWhiteSpace(rendererObservationPipe) ||
+             string.IsNullOrWhiteSpace(rendererRuntimeEvidenceRoot) ||
+             string.IsNullOrWhiteSpace(rendererRunNonce) ||
+             string.IsNullOrWhiteSpace(rendererPackageIdentityPath) ||
+              string.IsNullOrWhiteSpace(rendererPackageReceiptSha256) ||
+              string.IsNullOrWhiteSpace(rendererSourceCommit) ||
+              string.IsNullOrWhiteSpace(rendererSourceTree) ||
+              string.IsNullOrWhiteSpace(rendererChallenge) ||
+              rendererServerProcessId <= 0 ||
+              string.IsNullOrWhiteSpace(rendererServerPath) ||
+              string.IsNullOrWhiteSpace(rendererServerSha256)))
+        {
+            error = "Renderer target observation requires all pipe, root, nonce, package/source, challenge, and expected server process bindings together.";
+            return false;
+        }
+
+        RendererTargetObservationOptions? rendererObservation = null;
+        if (rendererProducerRequested && !RendererTargetObservationOptions.TryCreate(
+                rendererObservationPipe!,
+                rendererRuntimeEvidenceRoot!,
+                captureDirectory,
+                rendererRunNonce!,
+                rendererPackageIdentityPath!,
+                rendererPackageReceiptSha256!,
+                rendererSourceCommit!,
+                rendererSourceTree!,
+                coreProcessId,
+                language,
+                rendererChallenge!,
+                rendererServerProcessId,
+                rendererServerPath!,
+                rendererServerSha256!,
+                out rendererObservation,
+                out error))
+        {
             return false;
         }
 
@@ -247,7 +347,8 @@ public sealed record RuntimeEvidenceOptions(
             issue10BindingManifestPath,
             issue10RunNonce,
             issue10SourceCommit,
-            issue10SourceTree);
+            issue10SourceTree,
+            rendererObservation);
         return true;
     }
 }
