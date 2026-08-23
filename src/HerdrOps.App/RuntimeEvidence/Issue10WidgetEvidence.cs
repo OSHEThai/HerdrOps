@@ -162,17 +162,17 @@ public static class Issue10WidgetEvidenceProducer
         try
         {
             var values = ParseFinalizationArguments(args);
-            using var reportStream = File.Open(
+            using var heldAppReport = HeldArtifact.Open(
                 values.AppReportPath,
-                FileMode.Open,
-                FileAccess.Read,
-                FileShare.Read);
-            if (reportStream.Length <= 0 || reportStream.Length > MaximumReceiptBytes)
+                MaximumReceiptBytes,
+                retainBytes: true,
+                "Issue #10 same-run App report");
+            var reportBytes = heldAppReport.Bytes ??
+                throw new InvalidOperationException("Issue #10 same-run App report bytes were not retained.");
+            if (reportBytes.Length == 0)
             {
                 throw new InvalidOperationException("Issue #10 same-run App report has an invalid bounded length.");
             }
-            var reportBytes = new byte[checked((int)reportStream.Length)];
-            reportStream.ReadExactly(reportBytes);
             using var reportDocument = JsonDocument.Parse(
                 reportBytes,
                 new JsonDocumentOptions
@@ -185,14 +185,14 @@ public static class Issue10WidgetEvidenceProducer
                 reportBytes,
                 ManifestSerializerOptions) ??
                 throw new InvalidOperationException("Issue #10 same-run App report deserialized to null.");
-            Write(
+            WriteHeld(
                 values.OutputPath,
                 values.BindingManifestPath,
-                values.AppReportPath,
                 values.RunNonce,
                 values.SourceCommit,
                 values.SourceTree,
-                report);
+                report,
+                heldAppReport);
             return 0;
         }
         catch
@@ -271,25 +271,24 @@ public static class Issue10WidgetEvidenceProducer
         }
     }
 
-    public static void Write(
+    private static void WriteHeld(
         string outputPath,
         string bindingManifestPath,
-        string appReportPath,
         string runNonce,
         string sourceCommit,
         string sourceTree,
-        AppRuntimeEvidenceReport report)
+        AppRuntimeEvidenceReport report,
+        HeldArtifact heldAppReport)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(outputPath);
         ArgumentException.ThrowIfNullOrWhiteSpace(bindingManifestPath);
-        ArgumentException.ThrowIfNullOrWhiteSpace(appReportPath);
         ArgumentException.ThrowIfNullOrWhiteSpace(runNonce);
         ArgumentException.ThrowIfNullOrWhiteSpace(sourceCommit);
         ArgumentException.ThrowIfNullOrWhiteSpace(sourceTree);
         ArgumentNullException.ThrowIfNull(report);
 
         var manifestLoad = LoadManifest(bindingManifestPath);
-        var held = new List<HeldArtifact> { manifestLoad.Manifest };
+        var held = new List<HeldArtifact> { manifestLoad.Manifest, heldAppReport };
         try
         {
             var authority = manifestLoad.Authority;
@@ -297,7 +296,7 @@ public static class Issue10WidgetEvidenceProducer
 
             var root = ResolveRoot(authority.EvidenceRoot, bindingManifestPath);
             var output = ResolveContainedPath(root, outputPath, "Issue #10 widget report output");
-            var appReport = ResolveContainedPath(root, appReportPath, "Issue #10 App runtime report");
+            var appReport = ResolveContainedPath(root, heldAppReport.Path, "Issue #10 App runtime report");
             if (string.Equals(output, appReport, StringComparison.OrdinalIgnoreCase))
             {
                 throw new InvalidOperationException(
@@ -316,7 +315,10 @@ public static class Issue10WidgetEvidenceProducer
             HoldExpectedArtifact(held, authorityFiles, root, authority.Performance.RawSource, MaximumAuthorityArtifactBytes, "Issue #10 performance raw source");
             HoldExpectedArtifact(held, authorityFiles, root, authority.SoakReceipt, MaximumAuthorityArtifactBytes, "Issue #10 soak receipt");
             HoldExpectedArtifact(held, authorityFiles, root, authority.Runtime.HerdrExecutable, MaximumAuthorityArtifactBytes, "Issue #10 Herdr executable");
-            var heldAppReport = HoldArtifact(held, appReport, MaximumReceiptBytes, retainBytes: false, "Issue #10 App runtime report");
+            if (!string.Equals(heldAppReport.Path, appReport, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidOperationException("Issue #10 held App report resolved to an unexpected path.");
+            }
 
             var captures = HoldCaptures(held, root, output, report);
             var observation = BuildObservation(
@@ -336,8 +338,7 @@ public static class Issue10WidgetEvidenceProducer
                 item.Revalidate();
             }
 
-            PublishNoClobber(output, observation);
-            using var published = HeldArtifact.Open(output, MaximumReceiptBytes, retainBytes: false, "Issue #10 published widget report");
+            using var published = PublishNoClobber(output, observation);
             foreach (var item in held)
             {
                 item.Revalidate();
@@ -357,6 +358,37 @@ public static class Issue10WidgetEvidenceProducer
     {
         var loaded = LoadManifest(bindingManifestPath);
         loaded.Manifest.Dispose();
+    }
+
+    internal static string HoldAndParseJsonForTesting(string path, Action? afterHeld = null)
+    {
+        using var artifact = HeldArtifact.Open(path, MaximumReceiptBytes, retainBytes: true, "Issue #10 test production JSON");
+        afterHeld?.Invoke();
+        using var document = JsonDocument.Parse(
+            artifact.Bytes ?? throw new InvalidOperationException("Issue #10 test JSON bytes were not retained."),
+            new JsonDocumentOptions { AllowTrailingCommas = false, CommentHandling = JsonCommentHandling.Disallow });
+        RejectDuplicateProperties(document.RootElement, "Issue #10 test production JSON");
+        artifact.Revalidate();
+        return artifact.Sha256;
+    }
+
+    internal static string HoldContainedArtifactForTesting(string root, string path)
+    {
+        var resolvedRoot = Path.GetFullPath(root);
+        RejectReparseComponents(resolvedRoot, leafMayBeMissing: false, "Issue #10 test evidence root");
+        var resolved = ResolveContainedPath(resolvedRoot, path, "Issue #10 test contained artifact");
+        using var artifact = HeldArtifact.Open(resolved, MaximumReceiptBytes, retainBytes: false, "Issue #10 test contained artifact");
+        artifact.Revalidate();
+        return artifact.Sha256;
+    }
+
+    internal static string PublishOwnedJsonForTesting(string path, Action? afterPublish = null)
+    {
+        var bytes = Encoding.UTF8.GetBytes("{\"Issue\":10}\r\n");
+        using var artifact = HeldArtifact.CreateOwned(path, bytes, MaximumReceiptBytes, "Issue #10 test published widget report");
+        afterPublish?.Invoke();
+        artifact.Revalidate();
+        return artifact.Sha256;
     }
 
     private static ManifestLoad LoadManifest(string path)
@@ -803,6 +835,7 @@ public static class Issue10WidgetEvidenceProducer
         {
             throw new InvalidOperationException($"Issue #10 evidence root does not exist: {fullRoot}");
         }
+        RejectReparseComponents(fullRoot, leafMayBeMissing: false, "Issue #10 evidence root");
         if (!IsContainedPath(fullRoot, manifestDirectory))
         {
             throw new InvalidOperationException("Issue #10 binding manifest must be inside its declared evidence root.");
@@ -822,7 +855,35 @@ public static class Issue10WidgetEvidenceProducer
         {
             throw new InvalidOperationException($"{context} escaped the declared evidence root: {full}");
         }
+        RejectReparseComponents(full, leafMayBeMissing: !File.Exists(full) && !Directory.Exists(full), context);
         return full;
+    }
+
+    private static void RejectReparseComponents(string path, bool leafMayBeMissing, string context)
+    {
+        var full = Path.GetFullPath(path);
+        var root = Path.GetPathRoot(full) ?? throw new InvalidOperationException($"{context} has no filesystem root.");
+        var relative = full[root.Length..];
+        var current = root;
+        var components = relative.Split(
+            new[] { Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar },
+            StringSplitOptions.RemoveEmptyEntries);
+        for (var index = 0; index < components.Length; index++)
+        {
+            current = Path.Combine(current, components[index]);
+            if (!File.Exists(current) && !Directory.Exists(current))
+            {
+                if (leafMayBeMissing && index == components.Length - 1)
+                {
+                    return;
+                }
+                throw new InvalidOperationException($"{context} has a missing path component: {current}");
+            }
+            if ((File.GetAttributes(current) & FileAttributes.ReparsePoint) != 0)
+            {
+                throw new InvalidOperationException($"{context} contains a reparse-point component: {current}");
+            }
+        }
     }
 
     private static bool IsContainedPath(string root, string path)
@@ -866,35 +927,19 @@ public static class Issue10WidgetEvidenceProducer
         return artifact;
     }
 
-    private static void PublishNoClobber(string path, Issue10WidgetObservation observation)
+    private static HeldArtifact PublishNoClobber(string path, Issue10WidgetObservation observation)
     {
         var directory = Path.GetDirectoryName(path) ??
             throw new InvalidOperationException("Issue #10 widget report output has no parent directory.");
-        Directory.CreateDirectory(directory);
-        var temporary = Path.Combine(directory, $".{Path.GetFileName(path)}.{Guid.NewGuid():N}.tmp");
-        try
+        if (!Directory.Exists(directory))
         {
-            var bytes = JsonSerializer.SerializeToUtf8Bytes(observation, ReceiptSerializerOptions)
-                .Concat(new byte[] { (byte)'\r', (byte)'\n' })
-                .ToArray();
-            using (var stream = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None))
-            {
-                stream.Write(bytes, 0, bytes.Length);
-                stream.Flush(flushToDisk: true);
-            }
-            File.Move(temporary, path);
+            throw new InvalidOperationException("Issue #10 widget report output parent is missing.");
         }
-        catch (IOException exception) when (File.Exists(path))
-        {
-            throw new InvalidOperationException($"Issue #10 widget report publication refused to clobber '{path}'.", exception);
-        }
-        finally
-        {
-            if (File.Exists(temporary))
-            {
-                File.Delete(temporary);
-            }
-        }
+        RejectReparseComponents(directory, leafMayBeMissing: false, "Issue #10 widget report output parent");
+        var bytes = JsonSerializer.SerializeToUtf8Bytes(observation, ReceiptSerializerOptions)
+            .Concat(new byte[] { (byte)'\r', (byte)'\n' })
+            .ToArray();
+        return HeldArtifact.CreateOwned(path, bytes, MaximumReceiptBytes, "Issue #10 published widget report");
     }
 
     private static void ValidateRunNonce(string value, string context)
@@ -949,6 +994,7 @@ public static class Issue10WidgetEvidenceProducer
     {
         private HeldArtifact(
             string path,
+            HeldDirectory parent,
             FileStream stream,
             long length,
             string sha256,
@@ -956,6 +1002,7 @@ public static class Issue10WidgetEvidenceProducer
             byte[]? bytes)
         {
             Path = path;
+            Parent = parent;
             Stream = stream;
             Length = length;
             Sha256 = sha256;
@@ -964,6 +1011,8 @@ public static class Issue10WidgetEvidenceProducer
         }
 
         public string Path { get; }
+
+        private HeldDirectory Parent { get; }
 
         public FileStream Stream { get; }
 
@@ -978,8 +1027,12 @@ public static class Issue10WidgetEvidenceProducer
         public static HeldArtifact Open(string path, long maximumBytes, bool retainBytes, string context)
         {
             var fullPath = System.IO.Path.GetFullPath(path);
+            var parent = HeldDirectory.Open(
+                System.IO.Path.GetDirectoryName(fullPath) ?? throw new InvalidOperationException($"{context} has no parent directory."),
+                $"{context} parent");
             if (!File.Exists(fullPath))
             {
+                parent.Dispose();
                 throw new InvalidOperationException($"{context} is missing: {fullPath}");
             }
             var stream = new FileStream(fullPath, FileMode.Open, FileAccess.Read, FileShare.Read);
@@ -990,6 +1043,10 @@ public static class Issue10WidgetEvidenceProducer
                     throw new InvalidOperationException($"{context} exceeds its bounded size of {maximumBytes} bytes.");
                 }
                 var before = ReadIdentity(stream);
+                if (before.NumberOfLinks != 1)
+                {
+                    throw new InvalidOperationException($"{context} must have exactly one hard link (observed {before.NumberOfLinks}).");
+                }
                 byte[]? bytes = null;
                 string sha256;
                 if (retainBytes)
@@ -1012,21 +1069,95 @@ public static class Issue10WidgetEvidenceProducer
                 {
                     throw new InvalidOperationException($"{context} changed while being read.");
                 }
-                return new HeldArtifact(fullPath, stream, after.Length, sha256, after, bytes);
+                var finalPath = GetFinalPath(stream, context);
+                if (!string.Equals(finalPath, fullPath, StringComparison.OrdinalIgnoreCase))
+                {
+                    throw new InvalidOperationException($"{context} final path differs from its requested path.");
+                }
+                return new HeldArtifact(fullPath, parent, stream, after.Length, sha256, after, bytes);
             }
             catch
             {
                 stream.Dispose();
+                parent.Dispose();
+                throw;
+            }
+        }
+
+        public static HeldArtifact CreateOwned(string path, byte[] bytes, long maximumBytes, string context)
+        {
+            var fullPath = System.IO.Path.GetFullPath(path);
+            var parent = HeldDirectory.Open(
+                System.IO.Path.GetDirectoryName(fullPath) ?? throw new InvalidOperationException($"{context} has no parent directory."),
+                $"{context} parent");
+            if (bytes.Length == 0 || bytes.LongLength > maximumBytes)
+            {
+                throw new InvalidOperationException($"{context} has an invalid bounded length.");
+            }
+            var handle = CreateFile(
+                fullPath,
+                0xC0010000,
+                1,
+                IntPtr.Zero,
+                1,
+                0x80,
+                IntPtr.Zero);
+            if (handle.IsInvalid)
+            {
+                var error = Marshal.GetLastWin32Error();
+                handle.Dispose();
+                parent.Dispose();
+                throw new InvalidOperationException($"{context} refused to clobber or create '{fullPath}' (Win32 {error}).");
+            }
+            FileStream? stream = null;
+            try
+            {
+                stream = new FileStream(handle, FileAccess.ReadWrite);
+                var before = ReadIdentity(stream);
+                if (before.NumberOfLinks != 1)
+                {
+                    throw new InvalidOperationException($"{context} must have exactly one hard link.");
+                }
+                stream.Write(bytes, 0, bytes.Length);
+                stream.Flush(flushToDisk: true);
+                stream.Position = 0;
+                var sha256 = Convert.ToHexString(SHA256.HashData(stream));
+                var after = ReadIdentity(stream);
+                if (after.NumberOfLinks != 1 || after.Length != bytes.LongLength ||
+                    !string.Equals(GetFinalPath(stream, context), fullPath, StringComparison.OrdinalIgnoreCase))
+                {
+                    throw new InvalidOperationException($"{context} changed identity, link count, length, or final path during publication.");
+                }
+                return new HeldArtifact(fullPath, parent, stream, after.Length, sha256, after, bytes: null);
+            }
+            catch
+            {
+                if (stream is not null)
+                {
+                    var disposition = new FileDispositionInformation { DeleteFile = true };
+                    _ = SetFileInformationByHandle(stream.SafeFileHandle, 4, ref disposition, 4);
+                    stream.Dispose();
+                }
+                else
+                {
+                    handle.Dispose();
+                }
+                parent.Dispose();
                 throw;
             }
         }
 
         public void Revalidate()
         {
+            Parent.Revalidate();
             var current = ReadIdentity(Stream);
             if (!Identity.Equals(current))
             {
                 throw new InvalidOperationException($"Held Issue #10 artifact identity changed: {Path}");
+            }
+            if (!string.Equals(GetFinalPath(Stream, "held Issue #10 artifact"), Path, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidOperationException($"Held Issue #10 artifact final path changed: {Path}");
             }
             Stream.Position = 0;
             var currentSha = Convert.ToHexString(SHA256.HashData(Stream));
@@ -1041,7 +1172,11 @@ public static class Issue10WidgetEvidenceProducer
             }
         }
 
-        public void Dispose() => Stream.Dispose();
+        public void Dispose()
+        {
+            Stream.Dispose();
+            Parent.Dispose();
+        }
 
         private static void ReadExactly(FileStream stream, byte[] bytes, string context)
         {
@@ -1067,10 +1202,110 @@ public static class Issue10WidgetEvidenceProducer
             var fileId = ((ulong)information.FileIndexHigh << 32) | information.FileIndexLow;
             var length = ((long)information.FileSizeHigh << 32) | information.FileSizeLow;
             return new FileIdentity(
+                information.FileAttributes,
                 information.VolumeSerialNumber,
                 fileId,
                 information.NumberOfLinks,
                 length);
+        }
+
+        private static string GetFinalPath(FileStream stream, string context)
+        {
+            var buffer = new StringBuilder(32768);
+            var length = GetFinalPathNameByHandle(stream.SafeFileHandle, buffer, buffer.Capacity, 0);
+            if (length == 0 || length >= buffer.Capacity)
+            {
+                throw new InvalidOperationException(
+                    $"GetFinalPathNameByHandle failed for {context} with Win32 error {Marshal.GetLastWin32Error()}.");
+            }
+            var value = buffer.ToString();
+            const string prefix = @"\\?\";
+            if (value.StartsWith(prefix, StringComparison.Ordinal))
+            {
+                value = value[prefix.Length..];
+            }
+            return System.IO.Path.GetFullPath(value);
+        }
+    }
+
+    private sealed class HeldDirectory : IDisposable
+    {
+        private HeldDirectory(string path, SafeFileHandle handle, FileIdentity identity)
+        {
+            Path = path;
+            Handle = handle;
+            Identity = identity;
+        }
+
+        private string Path { get; }
+        private SafeFileHandle Handle { get; }
+        private FileIdentity Identity { get; }
+
+        public static HeldDirectory Open(string path, string context)
+        {
+            var fullPath = System.IO.Path.GetFullPath(path);
+            RejectReparseComponents(fullPath, leafMayBeMissing: false, context);
+            var handle = CreateFile(fullPath, 0x80, 1, IntPtr.Zero, 3, 0x02000000, IntPtr.Zero);
+            if (handle.IsInvalid)
+            {
+                var error = Marshal.GetLastWin32Error();
+                handle.Dispose();
+                throw new InvalidOperationException($"{context} could not be held (Win32 {error}).");
+            }
+            try
+            {
+                var identity = ReadIdentity(handle, context);
+                if ((identity.Attributes & (uint)FileAttributes.ReparsePoint) != 0 ||
+                    !string.Equals(GetFinalPath(handle, context), fullPath, StringComparison.OrdinalIgnoreCase))
+                {
+                    throw new InvalidOperationException($"{context} is a reparse point or resolved to an unexpected final path.");
+                }
+                return new HeldDirectory(fullPath, handle, identity);
+            }
+            catch
+            {
+                handle.Dispose();
+                throw;
+            }
+        }
+
+        public void Revalidate()
+        {
+            var current = ReadIdentity(Handle, "held Issue #10 parent");
+            if (!Identity.Equals(current) ||
+                !string.Equals(GetFinalPath(Handle, "held Issue #10 parent"), Path, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidOperationException($"Held Issue #10 parent identity or final path changed: {Path}");
+            }
+        }
+
+        public void Dispose() => Handle.Dispose();
+
+        private static FileIdentity ReadIdentity(SafeFileHandle handle, string context)
+        {
+            if (!GetFileInformationByHandle(handle, out var information))
+            {
+                throw new InvalidOperationException($"GetFileInformationByHandle failed for {context} with Win32 error {Marshal.GetLastWin32Error()}.");
+            }
+            return new FileIdentity(
+                information.FileAttributes,
+                information.VolumeSerialNumber,
+                ((ulong)information.FileIndexHigh << 32) | information.FileIndexLow,
+                information.NumberOfLinks,
+                ((long)information.FileSizeHigh << 32) | information.FileSizeLow);
+        }
+
+        private static string GetFinalPath(SafeFileHandle handle, string context)
+        {
+            var buffer = new StringBuilder(32768);
+            var length = GetFinalPathNameByHandle(handle, buffer, buffer.Capacity, 0);
+            if (length == 0 || length >= buffer.Capacity)
+            {
+                throw new InvalidOperationException($"GetFinalPathNameByHandle failed for {context} with Win32 error {Marshal.GetLastWin32Error()}.");
+            }
+            var value = buffer.ToString();
+            if (value.StartsWith(@"\\?\", StringComparison.Ordinal)) value = value[4..];
+            return System.IO.Path.GetFullPath(value);
         }
     }
 
@@ -1083,12 +1318,20 @@ public static class Issue10WidgetEvidenceProducer
         string SourceTree);
 
     private readonly record struct FileIdentity(
+        uint Attributes,
         uint VolumeSerialNumber,
         ulong FileId,
         uint NumberOfLinks,
         long Length);
 
     [StructLayout(LayoutKind.Sequential)]
+    private struct FileDispositionInformation
+    {
+        [MarshalAs(UnmanagedType.Bool)]
+        public bool DeleteFile;
+    }
+
+    [StructLayout(LayoutKind.Sequential, Pack = 4)]
     private struct NativeFileInformation
     {
         public uint FileAttributes;
@@ -1107,4 +1350,29 @@ public static class Issue10WidgetEvidenceProducer
     private static extern bool GetFileInformationByHandle(
         SafeFileHandle handle,
         out NativeFileInformation fileInformation);
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern uint GetFinalPathNameByHandle(
+        SafeFileHandle handle,
+        StringBuilder path,
+        int characterCount,
+        uint flags);
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern SafeFileHandle CreateFile(
+        string fileName,
+        uint desiredAccess,
+        uint shareMode,
+        IntPtr securityAttributes,
+        uint creationDisposition,
+        uint flagsAndAttributes,
+        IntPtr templateFile);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool SetFileInformationByHandle(
+        SafeFileHandle handle,
+        int fileInformationClass,
+        ref FileDispositionInformation fileInformation,
+        uint bufferSize);
 }

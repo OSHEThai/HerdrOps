@@ -757,24 +757,83 @@ function Test-Issue10ContainedPath {
     return $pathFull.StartsWith($rootFull+[IO.Path]::DirectorySeparatorChar,[StringComparison]::OrdinalIgnoreCase)
 }
 
+function Assert-Issue10NoReparseComponents {
+    param([Parameter(Mandatory)][string]$Path,[switch]$LeafMayBeMissing,[Parameter(Mandatory)][string]$Context)
+    $full=[IO.Path]::GetFullPath($Path);$root=[IO.Path]::GetPathRoot($full);$current=$root
+    $parts=$full.Substring($root.Length).Split(@([IO.Path]::DirectorySeparatorChar,[IO.Path]::AltDirectorySeparatorChar),[StringSplitOptions]::RemoveEmptyEntries)
+    for($index=0;$index-lt$parts.Length;$index++){
+        $current=Join-Path $current $parts[$index]
+        if(-not(Test-Path -LiteralPath $current)){
+            if($LeafMayBeMissing-and$index-eq($parts.Length-1)){return}
+            throw "$Context has a missing path component: $current"
+        }
+        if(([IO.File]::GetAttributes($current)-band[IO.FileAttributes]::ReparsePoint)-ne0){throw "$Context contains a reparse-point component: $current"}
+    }
+}
+
+function Get-Issue10FinalPath {
+    param([Parameter(Mandatory)][IO.FileStream]$Stream,[Parameter(Mandatory)][string]$Context)
+    $builder=New-Object Text.StringBuilder 32768
+    $length=[HerdrOpsV02FileIdentityNative]::GetFinalPathNameByHandle($Stream.SafeFileHandle,$builder,$builder.Capacity,0)
+    if($length-eq0-or$length-ge$builder.Capacity){throw "$Context final-path lookup failed with Win32 $([Runtime.InteropServices.Marshal]::GetLastWin32Error())."}
+    $value=$builder.ToString();if($value.StartsWith('\\?\',[StringComparison]::Ordinal)){$value=$value.Substring(4)}
+    return [IO.Path]::GetFullPath($value)
+}
+
+function Assert-Issue10HeldLeaf {
+    param([Parameter(Mandatory)]$Owned,[Parameter(Mandatory)][string]$Context)
+    $current=Get-V02FileInformation -FileStream $Owned.HeldStream
+    Assert-V02FileIdentityContinuity -BaselineInfo $Owned.Identity -CurrentInfo $current -Context $Context
+    if($current.NumberOfLinks-ne1){throw "$Context must have exactly one hard link."}
+    $final=Get-Issue10FinalPath -Stream $Owned.HeldStream -Context $Context
+    if(-not$final.Equals([IO.Path]::GetFullPath($Owned.Path),[StringComparison]::OrdinalIgnoreCase)){throw "$Context final path changed: $final"}
+}
+
+function New-Issue10OwnedLeafStream {
+    param([Parameter(Mandatory)][string]$Path,[Parameter(Mandatory)][string]$Context)
+    $handle=[HerdrOpsV02FileIdentityNative]::CreateFile([IO.Path]::GetFullPath($Path),[uint32]3221291008,1,[IntPtr]::Zero,1,0x80,[IntPtr]::Zero)
+    if($null-eq$handle-or$handle.IsInvalid){$errorCode=[Runtime.InteropServices.Marshal]::GetLastWin32Error();if($null-ne$handle){$handle.Dispose()};throw "$Context exact owned-leaf create failed with Win32 $errorCode."}
+    try{return New-Object IO.FileStream $handle,([IO.FileAccess]::ReadWrite)}catch{$handle.Dispose();throw}
+}
+
+function Remove-Issue10OwnedLeaf {
+    param([Parameter(Mandatory)]$Owned,[Parameter(Mandatory)][string]$Context)
+    if($null-eq$Owned-or$null-eq$Owned.HeldStream){return}
+    try{
+        Assert-Issue10HeldLeaf -Owned $Owned -Context $Context
+        $disposition=New-Object HerdrOpsV02FileIdentityNative+FILE_DISPOSITION_INFO;$disposition.DeleteFile=$true
+        if(-not[HerdrOpsV02FileIdentityNative]::SetFileInformationByHandle($Owned.HeldStream.SafeFileHandle,4,[ref]$disposition,4)){throw "$Context exact-handle cleanup failed with Win32 $([Runtime.InteropServices.Marshal]::GetLastWin32Error())."}
+    }finally{$Owned.HeldStream.Dispose();$Owned.HeldStream=$null}
+}
+
+function Close-Issue10OwnedLeaves {
+    param([Parameter(Mandatory)]$Leaves)
+    foreach($owned in @($Leaves)){if($null-ne$owned.HeldStream){Assert-Issue10HeldLeaf $owned 'Issue #10 committed owned leaf';$owned.HeldStream.Dispose();$owned.HeldStream=$null}}
+}
+
 function Copy-Issue10HeldAuthorityFile {
     param([Parameter(Mandatory)][string]$Source,[Parameter(Mandatory)][string]$Destination,[Parameter(Mandatory)][string]$Context)
     if(-not(Test-Path -LiteralPath $Source -PathType Leaf)){throw "$Context is missing: $Source"}
     if(Test-Path -LiteralPath $Destination){throw "$Context destination already exists: $Destination"}
-    $sourceStream=$null;$destinationStream=$null;$sha=$null
+    Assert-Issue10NoReparseComponents -Path $Source -Context $Context
+    Assert-Issue10NoReparseComponents -Path $Destination -LeafMayBeMissing -Context "$Context destination"
+    $sourceStream=$null;$destinationStream=$null;$sha=$null;$complete=$false
     try{
         $sourceStream=[IO.File]::Open([IO.Path]::GetFullPath($Source),[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read)
         $before=Get-V02FileInformation -FileStream $sourceStream
         if($before.NumberOfLinks -ne 1){throw "$Context source must have exactly one hard link."}
-        $destinationStream=[IO.File]::Open([IO.Path]::GetFullPath($Destination),[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::None)
-        $sourceStream.CopyTo($destinationStream);$destinationStream.Flush($true);$destinationStream.Dispose();$destinationStream=$null
+        if(-not(Get-Issue10FinalPath -Stream $sourceStream -Context $Context).Equals([IO.Path]::GetFullPath($Source),[StringComparison]::OrdinalIgnoreCase)){throw "$Context source final path changed."}
+        $destinationStream=New-Issue10OwnedLeafStream -Path $Destination -Context "$Context destination"
+        $sourceStream.CopyTo($destinationStream);$destinationStream.Flush($true)
         $sourceStream.Position=0;$sha=[Security.Cryptography.SHA256]::Create();$sourceHash=([BitConverter]::ToString($sha.ComputeHash($sourceStream))).Replace('-','')
         $after=Get-V02FileInformation -FileStream $sourceStream
         Assert-V02FileIdentityContinuity -BaselineInfo $before -CurrentInfo $after -Context $Context
-        $destinationHash=(Get-FileHash -LiteralPath $Destination -Algorithm SHA256).Hash
+        $destinationStream.Position=0;$destinationHash=([BitConverter]::ToString($sha.ComputeHash($destinationStream))).Replace('-','')
         if($destinationHash -cne $sourceHash){throw "$Context changed across the held copy."}
-        return [pscustomobject]@{Path=[IO.Path]::GetFullPath($Destination);Sha256=$destinationHash}
-    }finally{if($null-ne$sha){$sha.Dispose()};if($null-ne$destinationStream){$destinationStream.Dispose()};if($null-ne$sourceStream){$sourceStream.Dispose()}}
+        $owned=[pscustomobject]@{Path=[IO.Path]::GetFullPath($Destination);Sha256=$destinationHash;HeldStream=$destinationStream;Identity=(Get-V02FileInformation -FileStream $destinationStream)}
+        Assert-Issue10HeldLeaf -Owned $owned -Context "$Context destination"
+        $complete=$true;return $owned
+    }finally{if($null-ne$sha){$sha.Dispose()};if(-not$complete-and$null-ne$destinationStream){$failed=[pscustomobject]@{Path=[IO.Path]::GetFullPath($Destination);HeldStream=$destinationStream;Identity=(Get-V02FileInformation -FileStream $destinationStream)};Remove-Issue10OwnedLeaf $failed "$Context failed-copy cleanup"};if($null-ne$sourceStream){$sourceStream.Dispose()}}
 }
 
 function New-Issue10SameRunBindingManifest {
@@ -787,24 +846,29 @@ function New-Issue10SameRunBindingManifest {
     }
     if($manifestFull.Equals($widgetFull,[StringComparison]::OrdinalIgnoreCase)){throw 'Issue #10 manifest and widget output paths must be distinct.'}
     foreach($currentRunPath in @($GateReportPath,$CoreRuntimeReportPath,$AppRuntimeReportPath)){if(-not(Test-Issue10ContainedPath $RunEvidenceDirectory $currentRunPath)){throw "Issue #10 current-run report escaped its exact run directory: $currentRunPath"}}
-    $authorityDirectory=Join-Path $RunEvidenceDirectory 'issue10-authority';if(Test-Path -LiteralPath $authorityDirectory){throw "Issue #10 authority directory already exists: $authorityDirectory"};New-Item -ItemType Directory -Path $authorityDirectory|Out-Null
-    $manifestCreated=$false
+    Assert-Issue10NoReparseComponents -Path $AllowedEvidenceRoot -Context 'Issue #10 evidence root'
+    foreach($output in @($manifestFull,$widgetFull)){Assert-Issue10NoReparseComponents -Path $output -LeafMayBeMissing -Context 'Issue #10 same-run output'}
+    $authorityDirectory=Join-Path $RunEvidenceDirectory 'issue10-authority';if(Test-Path -LiteralPath $authorityDirectory){throw "Issue #10 authority directory already exists: $authorityDirectory"};Assert-Issue10NoReparseComponents -Path $authorityDirectory -LeafMayBeMissing -Context 'Issue #10 authority directory';New-Item -ItemType Directory -Path $authorityDirectory|Out-Null
+    $ownedLeaves=New-Object Collections.Generic.List[object];$manifestOwned=$null
     try{
-        $identity=Copy-Issue10HeldAuthorityFile $PackageBinding.IdentityPath (Join-Path $authorityDirectory 'identity.json') 'Issue #10 package identity'
-        $archive=Copy-Issue10HeldAuthorityFile $PackageBinding.ArchivePath (Join-Path $authorityDirectory 'HerdrOps-0.2.0-win-x64.zip') 'Issue #10 package archive'
-        $packageManifest=Copy-Issue10HeldAuthorityFile $PackageBinding.ManifestPath (Join-Path $authorityDirectory 'package-manifest.json') 'Issue #10 package manifest'
-        $app=Copy-Issue10HeldAuthorityFile $PackageBinding.AppPath (Join-Path $authorityDirectory 'HerdrOps.App.exe') 'Issue #10 App'
-        $core=Copy-Issue10HeldAuthorityFile $PackageBinding.CorePath (Join-Path $authorityDirectory 'HerdrOps.Core.exe') 'Issue #10 Core'
-        $performance=Copy-Issue10HeldAuthorityFile $PerformanceReceiptPath (Join-Path $authorityDirectory 'performance-receipt.json') 'Issue #10 performance receipt'
-        $performanceRaw=Copy-Issue10HeldAuthorityFile $PerformanceRawSourcePath (Join-Path $authorityDirectory 'performance-raw.json') 'Issue #10 performance raw source'
-        $soak=Copy-Issue10HeldAuthorityFile $SoakReceiptPath (Join-Path $authorityDirectory 'soak-receipt.json') 'Issue #10 soak receipt'
-        $herdr=Copy-Issue10HeldAuthorityFile $HerdrExecutablePath (Join-Path $authorityDirectory 'herdr.exe') 'Issue #10 Herdr executable'
+        $identity=Copy-Issue10HeldAuthorityFile $PackageBinding.IdentityPath (Join-Path $authorityDirectory 'identity.json') 'Issue #10 package identity';$ownedLeaves.Add($identity)
+        $archive=Copy-Issue10HeldAuthorityFile $PackageBinding.ArchivePath (Join-Path $authorityDirectory 'HerdrOps-0.2.0-win-x64.zip') 'Issue #10 package archive';$ownedLeaves.Add($archive)
+        $packageManifest=Copy-Issue10HeldAuthorityFile $PackageBinding.ManifestPath (Join-Path $authorityDirectory 'package-manifest.json') 'Issue #10 package manifest';$ownedLeaves.Add($packageManifest)
+        $app=Copy-Issue10HeldAuthorityFile $PackageBinding.AppPath (Join-Path $authorityDirectory 'HerdrOps.App.exe') 'Issue #10 App';$ownedLeaves.Add($app)
+        $core=Copy-Issue10HeldAuthorityFile $PackageBinding.CorePath (Join-Path $authorityDirectory 'HerdrOps.Core.exe') 'Issue #10 Core';$ownedLeaves.Add($core)
+        $performance=Copy-Issue10HeldAuthorityFile $PerformanceReceiptPath (Join-Path $authorityDirectory 'performance-receipt.json') 'Issue #10 performance receipt';$ownedLeaves.Add($performance)
+        $performanceRaw=Copy-Issue10HeldAuthorityFile $PerformanceRawSourcePath (Join-Path $authorityDirectory 'performance-raw.json') 'Issue #10 performance raw source';$ownedLeaves.Add($performanceRaw)
+        $soak=Copy-Issue10HeldAuthorityFile $SoakReceiptPath (Join-Path $authorityDirectory 'soak-receipt.json') 'Issue #10 soak receipt';$ownedLeaves.Add($soak)
+        $herdr=Copy-Issue10HeldAuthorityFile $HerdrExecutablePath (Join-Path $authorityDirectory 'herdr.exe') 'Issue #10 Herdr executable';$ownedLeaves.Add($herdr)
         foreach($binding in @(@($identity,$PackageBinding.IdentityFileSha256,'identity'),@($archive,$PackageBinding.ArchiveSha256,'archive'),@($packageManifest,$PackageBinding.ManifestSha256,'manifest'),@($app,$PackageBinding.AppSha256,'App'),@($core,$PackageBinding.CoreSha256,'Core'))){if($binding[0].Sha256-cne[string]$binding[1]){throw "Issue #10 staged package $($binding[2]) hash differs from the validated package binding."}}
         $artifact={param($path)[pscustomobject][ordered]@{Path=[IO.Path]::GetFullPath($path);Sha256=(Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash}}
-        $manifest=[pscustomobject][ordered]@{SchemaVersion=1;EvidenceClassification='Issue10ProductionBinding';Issue=10;EvidenceRoot=[IO.Path]::GetFullPath($AllowedEvidenceRoot);RunNonce=$RunNonce;EvidenceStartedUtc=$EvidenceStartedUtc.ToUniversalTime().ToString('O');Source=[pscustomobject][ordered]@{CommitSha=$SourceCommit;TreeSha=$SourceTree};GateReport=&$artifact $GateReportPath;CoreRuntimeReport=&$artifact $CoreRuntimeReportPath;Package=[pscustomobject][ordered]@{Identity=$identity;IdentityReceiptSha256=$PackageBinding.ReceiptSha256;Archive=$archive;Manifest=$packageManifest;App=$app;Core=$core};Performance=[pscustomobject][ordered]@{Receipt=$performance;RawSource=$performanceRaw};SoakReceipt=$soak;Runtime=[pscustomobject][ordered]@{HerdrExecutable=$herdr;ControlSessionIdentity=$ControlSessionIdentity;TargetSessionIdentity=$TargetSessionIdentity};EvidenceBoundary=[pscustomobject][ordered]@{Runtime='NOT_OBSERVED';Human='NOT_OBSERVED';Release='NOT_OBSERVED';CreditGranted=$false}}
-        $json=($manifest|ConvertTo-Json -Depth 12 -Compress)+"`n";$bytes=(New-Object Text.UTF8Encoding($false)).GetBytes($json);$stream=[IO.File]::Open($manifestFull,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::None);try{$stream.Write($bytes,0,$bytes.Length);$stream.Flush($true)}finally{$stream.Dispose()};$manifestCreated=$true
-        return [pscustomobject]@{ManifestPath=$manifestFull;WidgetOutputPath=$widgetFull;AuthorityDirectory=$authorityDirectory;ManifestSha256=(Get-FileHash -LiteralPath $manifestFull -Algorithm SHA256).Hash}
-    }catch{if($manifestCreated-and(Test-Path -LiteralPath $manifestFull)){Remove-Item -LiteralPath $manifestFull -Force};if(Test-Path -LiteralPath $authorityDirectory){Remove-Item -LiteralPath $authorityDirectory -Recurse -Force};throw}
+        $ownedArtifact={param($owned)[pscustomobject][ordered]@{Path=[string]$owned.Path;Sha256=[string]$owned.Sha256}}
+        $manifest=[pscustomobject][ordered]@{SchemaVersion=1;EvidenceClassification='Issue10ProductionBinding';Issue=10;EvidenceRoot=[IO.Path]::GetFullPath($AllowedEvidenceRoot);RunNonce=$RunNonce;EvidenceStartedUtc=$EvidenceStartedUtc.ToUniversalTime().ToString('O');Source=[pscustomobject][ordered]@{CommitSha=$SourceCommit;TreeSha=$SourceTree};GateReport=&$artifact $GateReportPath;CoreRuntimeReport=&$artifact $CoreRuntimeReportPath;Package=[pscustomobject][ordered]@{Identity=&$ownedArtifact $identity;IdentityReceiptSha256=$PackageBinding.ReceiptSha256;Archive=&$ownedArtifact $archive;Manifest=&$ownedArtifact $packageManifest;App=&$ownedArtifact $app;Core=&$ownedArtifact $core};Performance=[pscustomobject][ordered]@{Receipt=&$ownedArtifact $performance;RawSource=&$ownedArtifact $performanceRaw};SoakReceipt=&$ownedArtifact $soak;Runtime=[pscustomobject][ordered]@{HerdrExecutable=&$ownedArtifact $herdr;ControlSessionIdentity=$ControlSessionIdentity;TargetSessionIdentity=$TargetSessionIdentity};EvidenceBoundary=[pscustomobject][ordered]@{Runtime='NOT_OBSERVED';Human='NOT_OBSERVED';Release='NOT_OBSERVED';CreditGranted=$false}}
+        $json=($manifest|ConvertTo-Json -Depth 12 -Compress)+"`n";$bytes=(New-Object Text.UTF8Encoding($false)).GetBytes($json)
+        $stream=New-Issue10OwnedLeafStream -Path $manifestFull -Context 'Issue #10 binding manifest';$manifestOwned=[pscustomobject]@{Path=$manifestFull;Sha256='';HeldStream=$stream;Identity=(Get-V02FileInformation -FileStream $stream)};$stream.Write($bytes,0,$bytes.Length);$stream.Flush($true);$stream.Position=0;$sha=[Security.Cryptography.SHA256]::Create();try{$manifestHash=([BitConverter]::ToString($sha.ComputeHash($stream))).Replace('-','')}finally{$sha.Dispose()}
+        $manifestOwned.Sha256=$manifestHash;Assert-Issue10HeldLeaf $manifestOwned 'Issue #10 binding manifest'
+        return [pscustomobject]@{ManifestPath=$manifestFull;WidgetOutputPath=$widgetFull;AuthorityDirectory=$authorityDirectory;ManifestSha256=$manifestHash;OwnedLeaves=@($ownedLeaves.ToArray())+$manifestOwned}
+    }catch{if($null-ne$manifestOwned){Remove-Issue10OwnedLeaf $manifestOwned 'Issue #10 binding manifest cleanup'};for($index=$ownedLeaves.Count-1;$index-ge0;$index--){Remove-Issue10OwnedLeaf $ownedLeaves[$index] 'Issue #10 staged authority cleanup'};throw}
 }
 
 $repositoryRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
@@ -864,6 +928,8 @@ try {
     if ($issue10SuppliedCount -eq $issue10Arguments.Count) {
         foreach($inputPath in @($Issue10PerformanceReceiptPath,$Issue10PerformanceRawSourcePath,$Issue10SoakReceiptPath)){
             if(-not(Test-Path -LiteralPath $inputPath -PathType Leaf)){throw "Issue #10 same-run input is missing before runtime: $inputPath"}
+            Assert-Issue10NoReparseComponents -Path $inputPath -Context 'Issue #10 same-run input'
+            $inputStream=[IO.File]::Open([IO.Path]::GetFullPath($inputPath),[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read);try{$inputIdentity=Get-V02FileInformation -FileStream $inputStream;if($inputIdentity.NumberOfLinks-ne1){throw "Issue #10 same-run input must have exactly one hard link: $inputPath"};if(-not(Get-Issue10FinalPath -Stream $inputStream -Context 'Issue #10 same-run input').Equals([IO.Path]::GetFullPath($inputPath),[StringComparison]::OrdinalIgnoreCase)){throw "Issue #10 same-run input final path changed: $inputPath"}}finally{$inputStream.Dispose()}
         }
         foreach($outputPath in @($Issue10WidgetReportPath,$Issue10BindingManifestPath)){
             if(-not(Test-Issue10ContainedPath $runtimeEvidenceRoot $outputPath)){throw "Issue #10 same-run output must be inside the v0.2 runtime evidence root: $outputPath"}
@@ -1849,6 +1915,7 @@ if($issue10SuppliedCount -eq $issue10Arguments.Count){
     $finalizerArguments=@('--finalize-issue10-widget-report','--issue10-widget-report',$issue10SameRunBinding.WidgetOutputPath,'--issue10-binding-manifest',$issue10SameRunBinding.ManifestPath,'--runtime-evidence-report',$appReportPath,'--issue10-run-nonce',$EvidenceRunNonce,'--issue10-source-commit',$ExpectedSourceCommit.ToLowerInvariant(),'--issue10-source-tree',$ExpectedSourceTree.ToLowerInvariant())
     $finalizerProcess=Start-Process -FilePath $appExecutable -ArgumentList $finalizerArguments -WindowStyle Hidden -Wait -PassThru
     if($finalizerProcess.ExitCode-ne0-or-not(Test-Path -LiteralPath $issue10SameRunBinding.WidgetOutputPath -PathType Leaf)){throw "Issue #10 same-run finalizer failed after exact run reports were sealed (exit=$($finalizerProcess.ExitCode))."}
+    Close-Issue10OwnedLeaves -Leaves $issue10SameRunBinding.OwnedLeaves
     $issue10WidgetOutputCreated=$true
 }
 
@@ -1863,8 +1930,8 @@ if($issue10WidgetOutputCreated){Write-Output "Issue10BindingManifest: $($issue10
 } catch {
     $failureRecord = $_
     if($null-ne$issue10SameRunBinding){
-        foreach($ownedFile in @($issue10SameRunBinding.WidgetOutputPath,$issue10SameRunBinding.ManifestPath)){if(Test-Path -LiteralPath $ownedFile -PathType Leaf){Remove-Item -LiteralPath $ownedFile -Force -ErrorAction SilentlyContinue}}
-        if(Test-Path -LiteralPath $issue10SameRunBinding.AuthorityDirectory -PathType Container){Remove-Item -LiteralPath $issue10SameRunBinding.AuthorityDirectory -Recurse -Force -ErrorAction SilentlyContinue}
+        for($index=@($issue10SameRunBinding.OwnedLeaves).Count-1;$index-ge0;$index--){try{Remove-Issue10OwnedLeaf $issue10SameRunBinding.OwnedLeaves[$index] 'Issue #10 transaction cleanup'}catch{Write-Warning $_.Exception.Message}}
+        if(Test-Path -LiteralPath $issue10SameRunBinding.AuthorityDirectory -PathType Container){Remove-Item -LiteralPath $issue10SameRunBinding.AuthorityDirectory -Force -ErrorAction SilentlyContinue}
     }
     $failureMessage = [string]$failureRecord.Exception.Message
     if ([string]::IsNullOrWhiteSpace($failureMessage)) {
