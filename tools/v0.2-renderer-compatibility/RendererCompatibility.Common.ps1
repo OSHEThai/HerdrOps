@@ -28,6 +28,13 @@ using System.Runtime.InteropServices;
 using System.Text;
 using Microsoft.Win32.SafeHandles;
 namespace RendererCompatibility {
+    public sealed class NativeFileSnapshot {
+        public string FileIdentity { get; internal set; }
+        public uint LinkCount { get; internal set; }
+        public long Length { get; internal set; }
+        public long LastWriteTimeUtcFileTime { get; internal set; }
+    }
+
     public static class NativePath {
         [StructLayout(LayoutKind.Sequential)]
         private struct ByHandleFileInformation {
@@ -81,6 +88,17 @@ namespace RendererCompatibility {
             ByHandleFileInformation value;
             if (!GetFileInformationByHandle(handle, out value)) throw new Win32Exception(Marshal.GetLastWin32Error(), "GetFileInformationByHandle failed");
             return value.NumberOfLinks;
+        }
+
+        public static NativeFileSnapshot GetSnapshot(SafeFileHandle handle) {
+            ByHandleFileInformation value;
+            if (!GetFileInformationByHandle(handle, out value)) throw new Win32Exception(Marshal.GetLastWin32Error(), "GetFileInformationByHandle failed");
+            return new NativeFileSnapshot {
+                FileIdentity = value.VolumeSerialNumber.ToString("X8") + ":" + value.FileIndexHigh.ToString("X8") + value.FileIndexLow.ToString("X8"),
+                LinkCount = value.NumberOfLinks,
+                Length = ((long)value.FileSizeHigh << 32) | value.FileSizeLow,
+                LastWriteTimeUtcFileTime = ((long)value.LastWriteTime.dwHighDateTime << 32) | (uint)value.LastWriteTime.dwLowDateTime
+            };
         }
 
         public static SafeFileHandle OpenDirectory(string path, bool allowDelete) {
@@ -680,11 +698,11 @@ function Get-RendererStableFileIdentity { param([string]$Root,[string]$Path,[str
     $stream=New-Object IO.FileStream($pathFull,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read)
     try{
         $final=[IO.Path]::GetFullPath([RendererCompatibility.NativePath]::GetFinalPath($stream.SafeFileHandle));if($final-cne$pathFull){throw "$Context final opened path changed."};if($final-cne$rootFull-and-not$final.StartsWith($rootFull+[IO.Path]::DirectorySeparatorChar,[StringComparison]::OrdinalIgnoreCase)){throw "$Context final opened path escaped the evidence root."}
-        $fileIdentity=[RendererCompatibility.NativePath]::GetIdentity($stream.SafeFileHandle);$linkCount=[long][RendererCompatibility.NativePath]::GetLinkCount($stream.SafeFileHandle);if($linkCount-ne1){throw "$Context must have exactly one hard link."}
+        $snapshot=[RendererCompatibility.NativePath]::GetSnapshot($stream.SafeFileHandle);$fileIdentity=[string]$snapshot.FileIdentity;$linkCount=[long]$snapshot.LinkCount;if($linkCount-ne1){throw "$Context must have exactly one hard link."};if([long]$snapshot.Length-ne[long]$stream.Length){throw "$Context by-handle length differs from stream length."}
         $before=$stream.Length;$algorithm=[Security.Cryptography.SHA256]::Create();try{$hash=([BitConverter]::ToString($algorithm.ComputeHash($stream))).Replace('-','').ToUpperInvariant()}finally{$algorithm.Dispose()};$after=$stream.Length;if($before-ne$after-or$stream.Position-ne$after){throw "$Context changed during the same-handle read."}
-        $bytes=$null;if($IncludeBytes){if($after-gt$script:RendererMaximumManifestBytes){throw "$Context exceeds the bounded read."};$stream.Position=0;$bytes=New-Object byte[] ([int]$after);$offset=0;while($offset-lt$bytes.Length){$read=$stream.Read($bytes,$offset,$bytes.Length-$offset);if($read-le0){throw "$Context ended during the same-handle read."};$offset+=$read}}
-        $finalAfter=[IO.Path]::GetFullPath([RendererCompatibility.NativePath]::GetFinalPath($stream.SafeFileHandle));$identityAfter=[RendererCompatibility.NativePath]::GetIdentity($stream.SafeFileHandle);$linksAfter=[long][RendererCompatibility.NativePath]::GetLinkCount($stream.SafeFileHandle);if($finalAfter-cne$final-or$identityAfter-cne$fileIdentity-or$linksAfter-ne1){throw "$Context FinalPath/FileId/link-count changed during the same-handle read."}
-        return [pscustomobject]@{Bytes=[long]$after;Sha256=$hash;Content=$bytes;FinalPath=$final;FileIdentity=$fileIdentity;LinkCount=$linkCount;Stream=if($KeepOpen){$stream}else{$null}}
+        $bytes=$null;if($IncludeBytes){if($after-gt$script:RendererMaximumManifestBytes){throw "$Context exceeds the bounded read."};$stream.Position=0;$bytes=New-Object byte[] ([int]$after);$offset=0;while($offset-lt$bytes.Length){$read=$stream.Read($bytes,$offset,$bytes.Length-$offset);if($read-le0){throw "$Context ended during the same-handle read."};$offset+=$read};$rereadAlgorithm=[Security.Cryptography.SHA256]::Create();try{$rereadHash=([BitConverter]::ToString($rereadAlgorithm.ComputeHash($bytes))).Replace('-','').ToUpperInvariant()}finally{$rereadAlgorithm.Dispose()};if($rereadHash-cne$hash){throw "$Context bytes changed between the same-handle hash and reread."}}
+        $finalAfter=[IO.Path]::GetFullPath([RendererCompatibility.NativePath]::GetFinalPath($stream.SafeFileHandle));$snapshotAfter=[RendererCompatibility.NativePath]::GetSnapshot($stream.SafeFileHandle);if($finalAfter-cne$final-or[string]$snapshotAfter.FileIdentity-cne$fileIdentity-or[long]$snapshotAfter.LinkCount-ne1-or[long]$snapshotAfter.Length-ne[long]$snapshot.Length-or[long]$snapshotAfter.LastWriteTimeUtcFileTime-ne[long]$snapshot.LastWriteTimeUtcFileTime-or[long]$stream.Length-ne[long]$snapshot.Length){throw "$Context FinalPath/FileId/link-count/by-handle length/LastWriteTime changed during the same-handle read."}
+        return [pscustomobject]@{Bytes=[long]$after;Sha256=$hash;Content=$bytes;FinalPath=$final;FileIdentity=$fileIdentity;LinkCount=$linkCount;LastWriteTimeUtc=[DateTime]::FromFileTimeUtc([long]$snapshot.LastWriteTimeUtcFileTime);Stream=if($KeepOpen){$stream}else{$null}}
     }finally{if(-not$KeepOpen){$stream.Dispose()}}
 }
 function Assert-RendererRequiredProperties { param($Value,[string[]]$Names,[string]$Context)
@@ -782,7 +800,7 @@ function Assert-RendererTargetBindingReceipt { param($Receipt,$Manifest)
     for($i=0;$i-lt$expectedKeys.Count;$i++){if($actualKeys[$i]-cne$expectedKeys[$i]){throw "Target capture index $i is not '$($expectedKeys[$i])'."}}
 }
 function Get-RendererPngIdentity { param([string]$Root,[string]$Path,[string]$Context)
-    $identity=Get-RendererStableFileIdentity $Root $Path $Context -IncludeBytes;$stream=New-Object IO.MemoryStream(,$identity.Content);try{$decoder=New-Object Windows.Media.Imaging.PngBitmapDecoder($stream,[Windows.Media.Imaging.BitmapCreateOptions]::PreservePixelFormat,[Windows.Media.Imaging.BitmapCacheOption]::OnLoad);if($decoder.Frames.Count-ne1){throw "$Context must decode as exactly one PNG frame."};$frame=$decoder.Frames[0];if($frame.PixelWidth-le0-or$frame.PixelHeight-le0){throw "$Context decoded PNG dimensions are invalid."};return [pscustomobject]@{Width=[int]$frame.PixelWidth;Height=[int]$frame.PixelHeight;Bytes=$identity.Bytes;Sha256=$identity.Sha256;Content=$identity.Content;Frame=$frame;FinalPath=$identity.FinalPath;FileIdentity=$identity.FileIdentity;LinkCount=$identity.LinkCount}}catch{throw "$Context is not a complete decodable PNG: $($_.Exception.Message)"}finally{$stream.Dispose()}
+    $identity=Get-RendererStableFileIdentity $Root $Path $Context -IncludeBytes;$stream=New-Object IO.MemoryStream(,$identity.Content);try{$decoder=New-Object Windows.Media.Imaging.PngBitmapDecoder($stream,[Windows.Media.Imaging.BitmapCreateOptions]::PreservePixelFormat,[Windows.Media.Imaging.BitmapCacheOption]::OnLoad);if($decoder.Frames.Count-ne1){throw "$Context must decode as exactly one PNG frame."};$frame=$decoder.Frames[0];if($frame.PixelWidth-le0-or$frame.PixelHeight-le0){throw "$Context decoded PNG dimensions are invalid."};return [pscustomobject]@{Width=[int]$frame.PixelWidth;Height=[int]$frame.PixelHeight;Bytes=$identity.Bytes;Sha256=$identity.Sha256;Content=$identity.Content;Frame=$frame;FinalPath=$identity.FinalPath;FileIdentity=$identity.FileIdentity;LinkCount=$identity.LinkCount;LastWriteTimeUtc=$identity.LastWriteTimeUtc}}catch{throw "$Context is not a complete decodable PNG: $($_.Exception.Message)"}finally{$stream.Dispose()}
 }
 function Assert-RendererFileBinding { param($Binding,[string]$Context,[string]$Root,[switch]$ValidateBindings)
     Assert-RendererExactProperties $Binding @('relativePath','bytes','sha256') $Context
