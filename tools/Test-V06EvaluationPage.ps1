@@ -8,35 +8,57 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
-$PSNativeCommandUseErrorActionPreference = $false
 
 $repositoryRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
 $artifactRoot = Join-Path $repositoryRoot 'artifacts'
-$referencePath = Join-Path $repositoryRoot 'docs\design\reference\09-evaluation.png'
-$expectedReferenceSha256 = '7721C24EE49887286854D07132BBFE12C52B028AAE50CE7EB8062F0877C2B23D'
+$approvedReferenceSha256 = '7721C24EE49887286854D07132BBFE12C52B028AAE50CE7EB8062F0877C2B23D'
 
-$requiredSources = @(
-    [ordered]@{ Name = 'EvaluationState'; Path = (Join-Path $repositoryRoot 'src\HerdrOps.App\Evaluation\EvaluationState.cs') }
-    [ordered]@{ Name = 'EvaluationView'; Path = (Join-Path $repositoryRoot 'src\HerdrOps.App\Views\EvaluationView.xaml') }
-    [ordered]@{ Name = 'EvaluationViewCodeBehind'; Path = (Join-Path $repositoryRoot 'src\HerdrOps.App\Views\EvaluationView.xaml.cs') }
-    [ordered]@{ Name = 'EvaluationScoreDistributionChart'; Path = (Join-Path $repositoryRoot 'src\HerdrOps.App\Controls\EvaluationScoreDistributionChart.cs') }
-    [ordered]@{ Name = 'EvaluationScoreTrendChart'; Path = (Join-Path $repositoryRoot 'src\HerdrOps.App\Controls\EvaluationScoreTrendChart.cs') }
-    [ordered]@{ Name = 'ShellView'; Path = (Join-Path $repositoryRoot 'src\HerdrOps.App\Views\ShellView.xaml') }
-    [ordered]@{ Name = 'ShellViewCodeBehind'; Path = (Join-Path $repositoryRoot 'src\HerdrOps.App\Views\ShellView.xaml.cs') }
-    [ordered]@{ Name = 'UiLanguageService'; Path = (Join-Path $repositoryRoot 'src\HerdrOps.App\Localization\UiLanguageService.cs') }
-)
+function Assert-InRepository {
+    param(
+        [Parameter(Mandatory)]
+        [string]$Path
+    )
 
-$requiredTests = @(
-    [ordered]@{ Name = 'EvaluationStateTests'; Path = (Join-Path $repositoryRoot 'tests\HerdrOps.IntegrationTests\EvaluationStateTests.cs') }
-    [ordered]@{ Name = 'EvaluationPresentationContractTests'; Path = (Join-Path $repositoryRoot 'tests\HerdrOps.ContractTests\EvaluationPresentationContractTests.cs') }
-    [ordered]@{ Name = 'EvaluationRenderingTests'; Path = (Join-Path $repositoryRoot 'tests\HerdrOps.RuntimeTests\EvaluationRenderingTests.cs') }
-    [ordered]@{ Name = 'UiLanguageCatalogTests'; Path = (Join-Path $repositoryRoot 'tests\HerdrOps.IntegrationTests\UiLanguageCatalogTests.cs') }
-)
+    $separatorChars = [char[]]@([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
+    $normalizedRoot = [IO.Path]::GetFullPath($repositoryRoot).TrimEnd($separatorChars)
+    $normalizedPath = [IO.Path]::GetFullPath($Path)
+    $rootPrefix = $normalizedRoot + [IO.Path]::DirectorySeparatorChar
+    if ($normalizedPath -ne $normalizedRoot -and
+        -not $normalizedPath.StartsWith($rootPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "Resolved path is outside the repository root: $normalizedPath"
+    }
 
-$contractProject = Join-Path $repositoryRoot 'tests\HerdrOps.ContractTests\HerdrOps.ContractTests.csproj'
-$integrationProject = Join-Path $repositoryRoot 'tests\HerdrOps.IntegrationTests\HerdrOps.IntegrationTests.csproj'
-$runtimeProject = Join-Path $repositoryRoot 'tests\HerdrOps.RuntimeTests\HerdrOps.RuntimeTests.csproj'
-$evidenceDirectory = Join-Path $artifactRoot 'design-evidence\v0.6.0\issue-31\evaluation'
+    return $normalizedPath
+}
+
+function Get-RepositoryPath {
+    param(
+        [Parameter(Mandatory)]
+        [string]$RelativePath
+    )
+
+    if ([string]::IsNullOrWhiteSpace($RelativePath) -or [IO.Path]::IsPathRooted($RelativePath)) {
+        throw "Repository path must be a non-empty relative path: $RelativePath"
+    }
+
+    return Assert-InRepository -Path ([IO.Path]::GetFullPath((Join-Path $repositoryRoot $RelativePath)))
+}
+
+function Get-RepositoryRelativePath {
+    param(
+        [Parameter(Mandatory)]
+        [string]$Path
+    )
+
+    $normalizedPath = Assert-InRepository -Path $Path
+    $separatorChars = [char[]]@([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
+    $normalizedRoot = [IO.Path]::GetFullPath($repositoryRoot).TrimEnd($separatorChars)
+    if ($normalizedPath -eq $normalizedRoot) {
+        return ''
+    }
+
+    return $normalizedPath.Substring(($normalizedRoot + [IO.Path]::DirectorySeparatorChar).Length).Replace('\', '/')
+}
 
 function Assert-RequiredFile {
     param(
@@ -50,389 +72,560 @@ function Assert-RequiredFile {
     if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
         throw "Required Issue #31 $Description is missing: $Path"
     }
+
+    $resolvedPath = (Resolve-Path -LiteralPath $Path).Path
+    [void](Assert-InRepository -Path $resolvedPath)
+    return $resolvedPath
 }
 
-function Get-RepositoryRelativePath {
+function Assert-ContainsText {
     param(
         [Parameter(Mandatory)]
-        [string]$Path
+        [string]$Path,
+
+        [Parameter(Mandatory)]
+        [string[]]$RequiredText,
+
+        [Parameter(Mandatory)]
+        [string]$Description
     )
 
-    $separatorChars = [char[]]@([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
-    $normalizedRoot = [IO.Path]::GetFullPath($repositoryRoot).TrimEnd($separatorChars)
-    $normalizedPath = [IO.Path]::GetFullPath($Path)
-    $rootPrefix = $normalizedRoot + [IO.Path]::DirectorySeparatorChar
-    if (-not $normalizedPath.StartsWith($rootPrefix, [StringComparison]::OrdinalIgnoreCase)) {
-        throw "Path is outside the repository root: $normalizedPath"
+    $content = Get-Content -LiteralPath $Path -Raw
+    foreach ($text in $RequiredText) {
+        if ($content.IndexOf($text, [StringComparison]::Ordinal) -lt 0) {
+            throw "Issue #31 $Description is missing required marker '$text': $Path"
+        }
     }
-
-    return $normalizedPath.Substring($rootPrefix.Length).Replace('\', '/')
 }
 
-function Get-FileEvidence {
+function Get-PngUInt32 {
     param(
         [Parameter(Mandatory)]
-        [string]$Name,
+        [byte[]]$Bytes,
 
         [Parameter(Mandatory)]
-        [string]$Path
+        [int]$Offset
     )
 
-    Assert-RequiredFile -Path $Path -Description "$Name file"
-    $item = Get-Item -LiteralPath $Path
-    if ($item.Length -le 0) {
-        throw "Required Issue #31 $Name file is empty: $Path"
-    }
-
-    return [pscustomobject]@{
-        Name = $Name
-        Path = $Path
-        RelativePath = Get-RepositoryRelativePath -Path $Path
-        Length = $item.Length
-        Sha256 = (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToUpperInvariant()
-    }
+    return [uint32](([uint64]$Bytes[$Offset] -shl 24) -bor
+        ([uint64]$Bytes[$Offset + 1] -shl 16) -bor
+        ([uint64]$Bytes[$Offset + 2] -shl 8) -bor
+        [uint64]$Bytes[$Offset + 3])
 }
 
-function Get-PngDimensions {
+function Get-PngMetadata {
     param(
         [Parameter(Mandatory)]
         [string]$Path
     )
 
     $bytes = [IO.File]::ReadAllBytes($Path)
-    if ($bytes.Length -lt 24 -or
-        $bytes[0] -ne 137 -or $bytes[1] -ne 80 -or $bytes[2] -ne 78 -or $bytes[3] -ne 71 -or
-        $bytes[4] -ne 13 -or $bytes[5] -ne 10 -or $bytes[6] -ne 26 -or $bytes[7] -ne 10) {
-        throw "Evidence is not a valid PNG file: $Path"
+    if ($bytes.Length -lt 33) {
+        throw "PNG is truncated or too small: $Path"
     }
 
-    if ([Text.Encoding]::ASCII.GetString($bytes, 12, 4) -ne 'IHDR') {
-        throw "Evidence PNG does not contain an IHDR header: $Path"
+    $signature = [byte[]](137, 80, 78, 71, 13, 10, 26, 10)
+    for ($index = 0; $index -lt $signature.Length; $index++) {
+        if ($bytes[$index] -ne $signature[$index]) {
+            throw "Required evidence is not a PNG: $Path"
+        }
     }
 
-    $widthBytes = [byte[]]$bytes[16..19]
-    $heightBytes = [byte[]]$bytes[20..23]
-    [Array]::Reverse($widthBytes)
-    [Array]::Reverse($heightBytes)
+    $offset = 8
+    $hasIhdr = $false
+    $hasIend = $false
+    $width = 0
+    $height = 0
+    while ($offset -lt $bytes.Length) {
+        if ($bytes.Length - $offset -lt 12) {
+            throw "PNG has an incomplete chunk: $Path"
+        }
+
+        $chunkLength = [uint64](Get-PngUInt32 -Bytes $bytes -Offset $offset)
+        $chunkEnd = [uint64]$offset + 12 + $chunkLength
+        if ($chunkEnd -gt [uint64]$bytes.Length) {
+            throw "PNG chunk extends beyond the file: $Path"
+        }
+
+        $chunkType = [Text.Encoding]::ASCII.GetString($bytes, $offset + 4, 4)
+        if (-not $hasIhdr -and $chunkType -ne 'IHDR') {
+            throw "PNG does not begin with IHDR: $Path"
+        }
+
+        if ($chunkType -eq 'IHDR') {
+            if ($hasIhdr -or $offset -ne 8 -or $chunkLength -ne 13) {
+                throw "PNG has an invalid IHDR chunk: $Path"
+            }
+
+            $width = [int](Get-PngUInt32 -Bytes $bytes -Offset ($offset + 8))
+            $height = [int](Get-PngUInt32 -Bytes $bytes -Offset ($offset + 12))
+            if ($width -le 0 -or $height -le 0) {
+                throw "PNG has invalid dimensions: $Path"
+            }
+
+            $hasIhdr = $true
+        }
+
+        if ($chunkType -eq 'IEND') {
+            if ($chunkLength -ne 0) {
+                throw "PNG has an invalid IEND chunk: $Path"
+            }
+
+            $hasIend = $true
+            $offset = [int]$chunkEnd
+            break
+        }
+
+        $offset = [int]$chunkEnd
+    }
+
+    if (-not $hasIhdr -or -not $hasIend -or $offset -ne $bytes.Length) {
+        throw "PNG is missing a complete IHDR/IEND structure: $Path"
+    }
+
     return [pscustomobject]@{
-        Width = [BitConverter]::ToUInt32($widthBytes, 0)
-        Height = [BitConverter]::ToUInt32($heightBytes, 0)
+        Width = $width
+        Height = $height
+        Length = [int64]$bytes.Length
     }
 }
 
-function Get-PngEvidence {
+function Invoke-GitCapture {
     param(
         [Parameter(Mandatory)]
-        [System.Collections.IDictionary]$Requirement,
-
-        [Parameter(Mandatory)]
-        [DateTime]$EvidenceStartedUtc
+        [string[]]$Arguments
     )
 
-    $path = Join-Path $evidenceDirectory $Requirement.FileName
-    Assert-RequiredFile -Path $path -Description "$($Requirement.Name) screenshot"
-    $item = Get-Item -LiteralPath $path
-    if ($item.Length -le 10000) {
-        throw "Issue #31 screenshot is unexpectedly small: $path"
+    $output = @(& git -C $repositoryRoot @Arguments 2>&1)
+    if ($LASTEXITCODE -ne 0) {
+        throw "Git command failed: git -C $repositoryRoot $($Arguments -join ' ')"
     }
 
-    if ($item.LastWriteTimeUtc -lt $EvidenceStartedUtc.AddSeconds(-2)) {
-        throw "Issue #31 screenshot was not freshly written by this gate: $path"
+    return @($output | ForEach-Object { [string]$_ })
+}
+
+function Get-TestMethodNames {
+    param(
+        [Parameter(Mandatory)]
+        [string]$Path
+    )
+
+    $content = Get-Content -LiteralPath $Path -Raw
+    $pattern = '(?ms)\[TestMethod\](?:\s*\[[^\]]+\])*\s*public\s+(?:static\s+)?(?:[\w<>\[\],?]+\s+)+(?<Name>[A-Za-z_][A-Za-z0-9_]*)\s*\('
+    $names = @([regex]::Matches($content, $pattern) | ForEach-Object { $_.Groups['Name'].Value })
+    $names = @($names | Sort-Object -Unique)
+    if ($names.Count -eq 0) {
+        throw "Issue #31 test source has no [TestMethod] names: $Path"
     }
 
-    $dimensions = Get-PngDimensions -Path $path
-    if ($dimensions.Width -ne $Requirement.Width -or $dimensions.Height -ne $Requirement.Height) {
-        throw "Issue #31 screenshot dimensions drifted for $path`: expected $($Requirement.Width)x$($Requirement.Height), observed $($dimensions.Width)x$($dimensions.Height)"
+    return $names
+}
+
+function Get-TrxCounter {
+    param(
+        [Parameter(Mandatory)]
+        [System.Xml.XmlElement]$Counters,
+
+        [Parameter(Mandatory)]
+        [string]$Name
+    )
+
+    if (-not $Counters.HasAttribute($Name)) {
+        throw "Fresh TRX result is missing counter '$Name'."
     }
 
-    return [pscustomobject]@{
-        Name = $Requirement.Name
-        FileName = $Requirement.FileName
-        RelativePath = Get-RepositoryRelativePath -Path $path
-        Width = $dimensions.Width
-        Height = $dimensions.Height
-        Length = $item.Length
-        Sha256 = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToUpperInvariant()
+    $rawValue = $Counters.GetAttribute($Name)
+    if ([string]::IsNullOrWhiteSpace($rawValue) -or $rawValue -notmatch '^(0|[1-9][0-9]*)$') {
+        throw "Fresh TRX counter '$Name' is malformed: '$rawValue'."
+    }
+
+    try {
+        return [int64]$rawValue
+    }
+    catch {
+        throw "Fresh TRX counter '$Name' is outside the supported range: '$rawValue'."
     }
 }
 
-function Invoke-FreshTestRun {
+function Assert-AllPassingCounters {
     param(
         [Parameter(Mandatory)]
-        [System.Collections.IDictionary]$TestRun,
+        [System.Collections.IDictionary]$Counters,
 
         [Parameter(Mandatory)]
-        [string]$TestResultDirectory
+        [string]$Name
     )
 
-    Assert-RequiredFile -Path $TestRun.Project -Description "$($TestRun.Name) test project"
-    $logPath = Join-Path $TestResultDirectory $TestRun.Log
-    & dotnet test $TestRun.Project `
+    if ($Counters['total'] -le 0 -or
+        $Counters['executed'] -ne $Counters['total'] -or
+        $Counters['passed'] -ne $Counters['total'] -or
+        $Counters['failed'] -ne 0 -or
+        $Counters['error'] -ne 0 -or
+        $Counters['timeout'] -ne 0 -or
+        $Counters['aborted'] -ne 0 -or
+        $Counters['inconclusive'] -ne 0 -or
+        $Counters['notExecuted'] -ne 0 -or
+        $Counters['completed'] -ne 0 -or
+        $Counters['notRunnable'] -ne 0 -or
+        $Counters['disconnected'] -ne 0 -or
+        $Counters['warning'] -ne 0) {
+        throw "Issue #31 $Name TRX counters are not an exact all-pass result: $($Counters | Out-String)"
+    }
+}
+
+function Get-StatusLabel {
+    param(
+        [Parameter(Mandatory)]
+        [string[]]$Status
+    )
+
+    if ($Status.Count -eq 0) {
+        return 'CLEAN'
+    }
+
+    return 'DIRTY'
+}
+
+$referencePath = Get-RepositoryPath -RelativePath 'docs\design\reference\09-evaluation.png'
+$referencePath = Assert-RequiredFile -Path $referencePath -Description 'immutable Evaluation reference PNG'
+$referencePng = Get-PngMetadata -Path $referencePath
+if ($referencePng.Width -ne 1672 -or $referencePng.Height -ne 941) {
+    throw "Approved Evaluation reference dimensions drifted: expected 1672x941, observed $($referencePng.Width)x$($referencePng.Height)"
+}
+$referenceSha256 = (Get-FileHash -LiteralPath $referencePath -Algorithm SHA256).Hash.ToUpperInvariant()
+if ($referenceSha256 -ne $approvedReferenceSha256) {
+    throw "Approved Evaluation reference SHA-256 drifted: expected $approvedReferenceSha256 observed $referenceSha256"
+}
+
+$requiredFiles = @(
+    [ordered]@{ Name = 'EvaluationState'; RelativePath = 'src\HerdrOps.App\Evaluation\EvaluationState.cs'; Description = 'EvaluationState.cs' }
+    [ordered]@{ Name = 'EvaluationView'; RelativePath = 'src\HerdrOps.App\Views\EvaluationView.xaml'; Description = 'EvaluationView.xaml' }
+    [ordered]@{ Name = 'EvaluationViewCodeBehind'; RelativePath = 'src\HerdrOps.App\Views\EvaluationView.xaml.cs'; Description = 'EvaluationView.xaml.cs' }
+    [ordered]@{ Name = 'EvaluationRenderingTests'; RelativePath = 'tests\HerdrOps.RuntimeTests\EvaluationRenderingTests.cs'; Description = 'EvaluationRenderingTests.cs' }
+    [ordered]@{ Name = 'EvaluationStateTests'; RelativePath = 'tests\HerdrOps.IntegrationTests\EvaluationStateTests.cs'; Description = 'EvaluationStateTests.cs' }
+    [ordered]@{ Name = 'EvaluationPresentationContractTests'; RelativePath = 'tests\HerdrOps.ContractTests\EvaluationPresentationContractTests.cs'; Description = 'EvaluationPresentationContractTests.cs' }
+    [ordered]@{ Name = 'UiLanguageCatalogTests'; RelativePath = 'tests\HerdrOps.IntegrationTests\UiLanguageCatalogTests.cs'; Description = 'UiLanguageCatalogTests.cs' }
+)
+$requiredFileByName = @{}
+foreach ($entry in $requiredFiles) {
+    $entry['Path'] = Assert-RequiredFile `
+        -Path (Get-RepositoryPath -RelativePath ([string]$entry['RelativePath'])) `
+        -Description ([string]$entry['Description'])
+    $entry['Sha256'] = (Get-FileHash -LiteralPath $entry['Path'] -Algorithm SHA256).Hash.ToUpperInvariant()
+    if ([string]$entry['Sha256'] -notmatch '^[0-9A-F]{64}$') {
+        throw "Required Issue #31 file produced an invalid SHA-256: $($entry['Path'])"
+    }
+
+    $requiredFileByName[[string]$entry['Name']] = $entry
+}
+
+Assert-ContainsText `
+    -Path $requiredFileByName['EvaluationRenderingTests']['Path'] `
+    -Description 'synthetic rendering test source' `
+    -RequiredText @('RenderTargetBitmap', '1672', '941', '1366', '768', 'issue-31', 'evaluation')
+
+$testDefinitions = @(
+    [ordered]@{
+        Name = 'Contract'
+        ProjectRelativePath = 'tests\HerdrOps.ContractTests\HerdrOps.ContractTests.csproj'
+        Filter = 'FullyQualifiedName~EvaluationPresentationContractTests'
+        Log = 'evaluation-contract.trx'
+        SourceNames = @('EvaluationPresentationContractTests')
+    }
+    [ordered]@{
+        Name = 'Integration'
+        ProjectRelativePath = 'tests\HerdrOps.IntegrationTests\HerdrOps.IntegrationTests.csproj'
+        Filter = 'FullyQualifiedName~EvaluationStateTests|FullyQualifiedName~UiLanguageCatalogTests'
+        Log = 'evaluation-integration.trx'
+        SourceNames = @('EvaluationStateTests', 'UiLanguageCatalogTests')
+    }
+    [ordered]@{
+        Name = 'Synthetic rendering'
+        ProjectRelativePath = 'tests\HerdrOps.RuntimeTests\HerdrOps.RuntimeTests.csproj'
+        Filter = 'FullyQualifiedName~EvaluationRenderingTests'
+        Log = 'evaluation-rendering.trx'
+        SourceNames = @('EvaluationRenderingTests')
+    }
+)
+
+foreach ($definition in $testDefinitions) {
+    $definition['Project'] = Assert-RequiredFile `
+        -Path (Get-RepositoryPath -RelativePath ([string]$definition['ProjectRelativePath'])) `
+        -Description "$($definition['Name']) test project"
+    $definition['TestNames'] = @()
+    foreach ($sourceName in @($definition['SourceNames'])) {
+        $sourceEntry = $requiredFileByName[[string]$sourceName]
+        $sourceContent = Get-Content -LiteralPath $sourceEntry['Path'] -Raw
+        if (-not [regex]::IsMatch($sourceContent, '(?m)\bclass\s+' + [regex]::Escape([string]$sourceName) + '\b')) {
+            throw "Issue #31 test source does not declare the expected class ${sourceName}: $($sourceEntry['Path'])"
+        }
+
+        $definition['TestNames'] += @(Get-TestMethodNames -Path $sourceEntry['Path'])
+    }
+
+    $definition['TestNames'] = @($definition['TestNames'] | Sort-Object -Unique)
+    if ($definition['TestNames'].Count -eq 0) {
+        throw "Issue #31 $($definition['Name']) run has no required test names."
+    }
+}
+
+$sourceCommitOutput = @(Invoke-GitCapture -Arguments @('rev-parse', '--verify', 'HEAD^{commit}'))
+$sourceCommit = ($sourceCommitOutput -join '').Trim()
+if ([string]::IsNullOrWhiteSpace($sourceCommit) -or $sourceCommit -notmatch '^[0-9a-fA-F]{40}$') {
+    throw 'Could not resolve a committed source HEAD for the Issue #31 gate.'
+}
+$initialWorkingTreeStatus = @(Invoke-GitCapture -Arguments @('status', '--porcelain=v1', '--untracked-files=all'))
+
+$artifactRoot = Get-RepositoryPath -RelativePath 'artifacts'
+$runId = "$([DateTime]::UtcNow.ToString('yyyyMMddTHHmmssfffffffZ', [Globalization.CultureInfo]::InvariantCulture))-$([Guid]::NewGuid().ToString('N').Substring(0, 8))"
+$gateDirectory = Join-Path $artifactRoot "release-gates\v0.6.0\issue-31\$runId"
+[void](Assert-InRepository -Path $gateDirectory)
+if (Test-Path -LiteralPath $gateDirectory) {
+    throw "Generated Issue #31 gate directory already exists: $gateDirectory"
+}
+$testResultDirectory = Join-Path $gateDirectory 'test-results'
+New-Item -ItemType Directory -Path $testResultDirectory -Force | Out-Null
+
+$buildResult = 'SKIPPED'
+if (-not $SkipBuild) {
+    $buildScript = Assert-RequiredFile `
+        -Path (Get-RepositoryPath -RelativePath 'tools\Invoke-Build.ps1') `
+        -Description 'Issue #31 build helper'
+    & $buildScript -Configuration $Configuration -SkipTests -VerifyFormat
+    if ($LASTEXITCODE -ne 0) {
+        throw "Issue #31 build gate failed with exit code $LASTEXITCODE."
+    }
+
+    $buildResult = 'PASS'
+}
+
+$capturePattern = '(?i)(?<FileName>evaluation-[a-z0-9-]+-(?<Width>[0-9]+)x(?<Height>[0-9]+)\.png)'
+$renderingSource = Get-Content -LiteralPath $requiredFileByName['EvaluationRenderingTests']['Path'] -Raw
+$captureRequirementsByName = [ordered]@{}
+foreach ($match in [regex]::Matches($renderingSource, $capturePattern)) {
+    $fileName = $match.Groups['FileName'].Value
+    $captureRequirementsByName[$fileName] = [ordered]@{
+        FileName = $fileName
+        Width = [int]$match.Groups['Width'].Value
+        Height = [int]$match.Groups['Height'].Value
+    }
+}
+
+foreach ($requiredCaptureName in @('evaluation-th-1672x941.png', 'evaluation-en-1672x941.png')) {
+    if (-not $captureRequirementsByName.Contains($requiredCaptureName)) {
+        throw "Synthetic rendering test does not name the required reference capture: $requiredCaptureName"
+    }
+}
+if (@($captureRequirementsByName.Values | Where-Object { $_['Width'] -eq 1366 -and $_['Height'] -eq 768 }).Count -eq 0) {
+    throw 'Synthetic rendering test does not name a required 1366x768 compact capture.'
+}
+
+$evidenceDirectory = Get-RepositoryPath -RelativePath 'artifacts\design-evidence\v0.6.0\issue-31\evaluation'
+$testResultEvidence = @()
+$evidenceStartedUtc = $null
+$counterNames = @('total', 'executed', 'passed', 'failed', 'error', 'timeout', 'aborted', 'inconclusive', 'notExecuted', 'completed', 'notRunnable', 'disconnected', 'warning')
+foreach ($definition in $testDefinitions) {
+    if ([string]$definition['Name'] -eq 'Synthetic rendering') {
+        $evidenceStartedUtc = [DateTime]::UtcNow
+    }
+
+    $logPath = Join-Path $testResultDirectory ([string]$definition['Log'])
+    $existingTrx = @(Get-ChildItem -LiteralPath $testResultDirectory -Recurse -Filter '*.trx' -File)
+    if ($existingTrx.Count -ne $testResultEvidence.Count) {
+        throw "Issue #31 test result directory was not fresh before $($definition['Name']) tests."
+    }
+
+    $testStartedUtc = [DateTime]::UtcNow
+    & dotnet test $definition['Project'] `
         --configuration $Configuration `
         --no-restore `
         --no-build `
         --artifacts-path $artifactRoot `
-        --results-directory $TestResultDirectory `
-        --filter $TestRun.Filter `
-        --logger "trx;LogFileName=$($TestRun.Log)" | Out-Host
+        --results-directory $testResultDirectory `
+        --filter $definition['Filter'] `
+        --logger "trx;LogFileName=$($definition['Log'])"
     if ($LASTEXITCODE -ne 0) {
-        throw "Issue #31 $($TestRun.Name) tests failed with exit code $LASTEXITCODE."
+        throw "Issue #31 $($definition['Name']) tests failed with exit code $LASTEXITCODE."
     }
 
-    Assert-RequiredFile -Path $logPath -Description "$($TestRun.Name) TRX result"
-    return [pscustomobject]@{
-        Name = $TestRun.Name
-        Path = $logPath
-        RelativePath = Get-RepositoryRelativePath -Path $logPath
-        Sha256 = (Get-FileHash -LiteralPath $logPath -Algorithm SHA256).Hash.ToUpperInvariant()
-        Log = Get-Content -LiteralPath $logPath -Raw
+    $trxCandidates = @(Get-ChildItem -LiteralPath $testResultDirectory -Recurse -Filter ([string]$definition['Log']) -File)
+    if ($trxCandidates.Count -ne 1) {
+        throw "Expected exactly one fresh Issue #31 $($definition['Name']) TRX named $($definition['Log']), found $($trxCandidates.Count)."
     }
-}
 
-function Assert-TestResult {
-    param(
-        [Parameter(Mandatory)]
-        [pscustomobject]$TestResult,
+    $trxPath = $trxCandidates[0].FullName
+    $trxItem = Get-Item -LiteralPath $trxPath
+    if ($trxItem.LastWriteTimeUtc -lt $testStartedUtc.AddSeconds(-2) -or $trxItem.Length -le 0) {
+        throw "Issue #31 $($definition['Name']) TRX is stale or empty: $trxPath"
+    }
 
-        [Parameter(Mandatory)]
-        [string[]]$RequiredChecks
-    )
+    $trxLog = Get-Content -LiteralPath $trxPath -Raw
+    [xml]$trx = $trxLog
+    $counters = $trx.TestRun.ResultSummary.Counters
+    if ($null -eq $counters) {
+        throw "Issue #31 $($definition['Name']) TRX has no ResultSummary.Counters element: $trxPath"
+    }
 
-    foreach ($check in $RequiredChecks) {
-        if ($TestResult.Log -notmatch [Regex]::Escape($check)) {
-            throw "Required Issue #31 check is absent from the fresh $($TestResult.Name) TRX result: $check"
+    $counterEvidence = [ordered]@{}
+    foreach ($counterName in $counterNames) {
+        $counterEvidence[$counterName] = Get-TrxCounter -Counters $counters -Name $counterName
+    }
+    Assert-AllPassingCounters -Counters $counterEvidence -Name ([string]$definition['Name'])
+    foreach ($testName in @($definition['TestNames'])) {
+        if ($trxLog -notmatch [regex]::Escape([string]$testName)) {
+            throw "Required Issue #31 test name is absent from fresh $($definition['Name']) TRX: $testName"
         }
     }
 
-    [xml]$trx = $TestResult.Log
-    $counters = $trx.TestRun.ResultSummary.Counters
-    if ($null -eq $counters) {
-        throw "Fresh Issue #31 $($TestResult.Name) TRX result has no counters."
-    }
-
-    $total = [int]$counters.total
-    $passed = [int]$counters.passed
-    $failed = [int]$counters.failed
-    if ($total -le 0 -or $passed -ne $total -or $failed -ne 0) {
-        throw "Issue #31 $($TestResult.Name) counters are not all passing: total=$total passed=$passed failed=$failed"
-    }
-
-    $TestResult | Add-Member -NotePropertyName Total -NotePropertyValue $total
-    $TestResult | Add-Member -NotePropertyName Passed -NotePropertyValue $passed
-    $TestResult | Add-Member -NotePropertyName Failed -NotePropertyValue $failed
-}
-
-function Get-CheckoutSnapshot {
-    $head = (& git -C $repositoryRoot rev-parse --verify 'HEAD^{commit}').Trim()
-    if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($head)) {
-        throw 'Could not resolve HEAD for the Issue #31 checkout-integrity gate.'
-    }
-
-    $statusLines = @(& git -C $repositoryRoot status --porcelain=v1 --untracked-files=all)
-    if ($LASTEXITCODE -ne 0) {
-        throw 'Could not inspect working-tree status for the Issue #31 checkout-integrity gate.'
-    }
-
-    return [pscustomobject]@{
-        Head = $head
-        StatusLines = $statusLines
-        StatusText = $statusLines -join "`n"
+    $testResultEvidence += [pscustomobject]@{
+        Name = [string]$definition['Name']
+        Path = $trxPath
+        Log = [string]$definition['Log']
+        Counters = $counterEvidence
+        Sha256 = (Get-FileHash -LiteralPath $trxPath -Algorithm SHA256).Hash.ToUpperInvariant()
     }
 }
 
-function Get-TrackedPathsAtCommit {
-    param(
-        [Parameter(Mandatory)]
-        [string]$Commit
-    )
-
-    $paths = @(& git -C $repositoryRoot ls-tree -r --name-only $Commit)
-    if ($LASTEXITCODE -ne 0) {
-        throw "Could not enumerate tracked paths at source commit $Commit."
-    }
-
-    return $paths
+if ($null -eq $evidenceStartedUtc) {
+    throw 'Issue #31 synthetic rendering evidence start time was not recorded.'
 }
 
-function Assert-CheckoutUnchanged {
-    param(
-        [Parameter(Mandatory)]
-        [pscustomobject]$Baseline,
-
-        [Parameter(Mandatory)]
-        [string]$Phase
-    )
-
-    $current = Get-CheckoutSnapshot
-    if ($current.Head -cne $Baseline.Head) {
-        throw "Issue #31 checkout integrity failed $Phase`: HEAD changed from $($Baseline.Head) to $($current.Head)."
-    }
-
-    if ($current.StatusText -cne $Baseline.StatusText) {
-        $observed = if ([string]::IsNullOrWhiteSpace($current.StatusText)) { '(clean)' } else { $current.StatusText }
-        throw "Issue #31 checkout integrity failed $Phase`: working-tree status changed. Observed: $observed"
-    }
-
-    if ($current.StatusLines.Count -ne 0) {
-        throw "Issue #31 checkout integrity failed $Phase`: checkout is not clean."
-    }
-
-    return $current
+$allTrx = @(Get-ChildItem -LiteralPath $testResultDirectory -Recurse -Filter '*.trx' -File)
+if ($allTrx.Count -ne $testDefinitions.Count) {
+    throw "Expected exactly $($testDefinitions.Count) fresh Issue #31 TRX files, found $($allTrx.Count)."
 }
 
-$initialCheckout = Get-CheckoutSnapshot
-if ($initialCheckout.StatusLines.Count -ne 0) {
-    throw "Issue #31 gate requires a clean checkout before build/tests. Observed: $($initialCheckout.StatusText)"
+if (-not (Test-Path -LiteralPath $evidenceDirectory -PathType Container)) {
+    throw "Issue #31 synthetic evidence directory is missing: $evidenceDirectory"
 }
 
-$sourceCommit = $initialCheckout.Head
-$requiredGitPaths = @(
-    $requiredSources | ForEach-Object { Get-RepositoryRelativePath -Path $_.Path }
-    $requiredTests | ForEach-Object { Get-RepositoryRelativePath -Path $_.Path }
-    Get-RepositoryRelativePath -Path $referencePath
-    Get-RepositoryRelativePath -Path (Join-Path $PSScriptRoot 'Test-V06EvaluationPage.ps1')
-) | Sort-Object -Unique
-$trackedPaths = Get-TrackedPathsAtCommit -Commit $sourceCommit
-foreach ($requiredGitPath in $requiredGitPaths) {
-    if (-not ($trackedPaths -contains $requiredGitPath)) {
-        throw "Issue #31 required file is not tracked at source commit $sourceCommit`: $requiredGitPath"
+$captureEvidence = @()
+$captureByName = @{}
+foreach ($captureRequirement in @($captureRequirementsByName.Values)) {
+    $capturePath = Join-Path $evidenceDirectory ([string]$captureRequirement['FileName'])
+    $capturePath = Assert-RequiredFile -Path $capturePath -Description "$($captureRequirement['FileName']) synthetic PNG evidence"
+    $captureItem = Get-Item -LiteralPath $capturePath
+    if ($captureItem.Length -le 10000) {
+        throw "Issue #31 PNG evidence is unexpectedly small: $capturePath"
+    }
+    if ($captureItem.LastWriteTimeUtc -lt $evidenceStartedUtc.AddSeconds(-2)) {
+        throw "Issue #31 PNG evidence is stale and was not freshly rendered: $capturePath"
+    }
+
+    $png = Get-PngMetadata -Path $capturePath
+    if ($png.Width -ne [int]$captureRequirement['Width'] -or
+        $png.Height -ne [int]$captureRequirement['Height']) {
+        throw "Issue #31 PNG dimensions drifted for $capturePath`: expected $($captureRequirement['Width'])x$($captureRequirement['Height']), observed $($png.Width)x$($png.Height)"
+    }
+
+    $captureRecord = [pscustomobject]@{
+        FileName = [string]$captureRequirement['FileName']
+        Path = $capturePath
+        Width = $png.Width
+        Height = $png.Height
+        Length = $png.Length
+        Sha256 = (Get-FileHash -LiteralPath $capturePath -Algorithm SHA256).Hash.ToUpperInvariant()
+    }
+    $captureEvidence += $captureRecord
+    $captureByName[$captureRecord.FileName] = $captureRecord
+}
+
+if ($captureByName['evaluation-th-1672x941.png'].Sha256 -eq $captureByName['evaluation-en-1672x941.png'].Sha256) {
+    throw 'Thai and English Issue #31 reference captures have identical bytes.'
+}
+foreach ($capture in @($captureEvidence | Where-Object { $_.FileName -match '(?i)missing|score' })) {
+    if ($capture.Width -eq 1672 -and $capture.Height -eq 941 -and
+        $capture.Sha256 -eq $captureByName['evaluation-th-1672x941.png'].Sha256) {
+        throw "Missing-score Issue #31 evidence is byte-identical to the complete Thai capture: $($capture.FileName)"
     }
 }
 
-Assert-RequiredFile -Path $referencePath -Description 'immutable Evaluation reference'
-$referenceHash = (Get-FileHash -LiteralPath $referencePath -Algorithm SHA256).Hash.ToUpperInvariant()
-if ($referenceHash -ne $expectedReferenceSha256) {
-    throw "Immutable Evaluation reference SHA-256 drifted: expected $expectedReferenceSha256 observed $referenceHash"
-}
-$referenceDimensions = Get-PngDimensions -Path $referencePath
-if ($referenceDimensions.Width -ne 1672 -or $referenceDimensions.Height -ne 941) {
-    throw "Immutable Evaluation reference dimensions drifted: expected 1672x941, observed $($referenceDimensions.Width)x$($referenceDimensions.Height)"
-}
-
-$sourceEvidence = @($requiredSources | ForEach-Object { Get-FileEvidence -Name $_.Name -Path $_.Path })
-$testEvidence = @($requiredTests | ForEach-Object { Get-FileEvidence -Name $_.Name -Path $_.Path })
-
-if (-not $SkipBuild) {
-    & (Join-Path $PSScriptRoot 'Invoke-Build.ps1') -Configuration $Configuration
-    if ($LASTEXITCODE -ne 0) {
-        throw "Issue #31 build failed with exit code $LASTEXITCODE."
+foreach ($entry in $requiredFiles) {
+    $observedSha256 = (Get-FileHash -LiteralPath $entry['Path'] -Algorithm SHA256).Hash.ToUpperInvariant()
+    if ($observedSha256 -ne [string]$entry['Sha256']) {
+        throw "Issue #31 required file changed during the gate: $($entry['Path'])"
     }
 }
+$finalReferenceSha256 = (Get-FileHash -LiteralPath $referencePath -Algorithm SHA256).Hash.ToUpperInvariant()
+if ($finalReferenceSha256 -ne $approvedReferenceSha256) {
+    throw "Approved Evaluation reference changed during the gate: $referencePath"
+}
 
-$runId = "$([DateTime]::UtcNow.ToString('yyyyMMddTHHmmssfffffffZ', [Globalization.CultureInfo]::InvariantCulture))-$([Guid]::NewGuid().ToString('N').Substring(0, 8))"
-$gateDirectory = Join-Path $artifactRoot "release-gates\v0.6.0\issue-31\$runId"
-$testResultDirectory = Join-Path $gateDirectory 'test-results'
-New-Item -ItemType Directory -Path $testResultDirectory -Force | Out-Null
-$evidenceStartedUtc = [DateTime]::UtcNow
+$finalSourceCommitOutput = @(Invoke-GitCapture -Arguments @('rev-parse', '--verify', 'HEAD^{commit}'))
+$finalSourceCommit = ($finalSourceCommitOutput -join '').Trim()
+$finalWorkingTreeStatus = @(Invoke-GitCapture -Arguments @('status', '--porcelain=v1', '--untracked-files=all'))
+if ($finalSourceCommit -ne $sourceCommit) {
+    throw "Source commit changed while the Issue #31 gate ran: $sourceCommit -> $finalSourceCommit"
+}
 
-$testRuns = @(
-    [ordered]@{
-        Name = 'Contract'
-        Project = $contractProject
-        Filter = 'FullyQualifiedName~EvaluationPresentationContractTests'
-        Log = 'evaluation-contract.trx'
+$sourceHashReport = @()
+foreach ($entry in $requiredFiles) {
+    $sourceHashReport += "SHA256 $($entry['Sha256']) SourceTest $($entry['Name']) $(Get-RepositoryRelativePath -Path $entry['Path'])"
+}
+$testCounterReport = @()
+foreach ($testResult in $testResultEvidence) {
+    $counters = $testResult.Counters
+    $testCounterReport += "TRX $($testResult.Name) total=$($counters['total']) executed=$($counters['executed']) passed=$($counters['passed']) failed=$($counters['failed']) error=$($counters['error']) timeout=$($counters['timeout']) aborted=$($counters['aborted']) inconclusive=$($counters['inconclusive']) notExecuted=$($counters['notExecuted']) completed=$($counters['completed']) notRunnable=$($counters['notRunnable']) disconnected=$($counters['disconnected']) warning=$($counters['warning']) sha256=$($testResult.Sha256)"
+}
+$testNameReport = @()
+foreach ($definition in $testDefinitions) {
+    foreach ($testName in @($definition['TestNames'])) {
+        $testNameReport += "PASS $($definition['Name']) $testName"
     }
-    [ordered]@{
-        Name = 'Integration'
-        Project = $integrationProject
-        Filter = 'FullyQualifiedName~EvaluationStateTests|FullyQualifiedName~UiLanguageCatalogTests'
-        Log = 'evaluation-integration.trx'
-    }
-    [ordered]@{
-        Name = 'Synthetic UI'
-        Project = $runtimeProject
-        Filter = 'FullyQualifiedName~EvaluationRenderingTests'
-        Log = 'evaluation-rendering.trx'
-    }
-)
-
-$testResults = @()
-foreach ($testRun in $testRuns) {
-    $testResults += Invoke-FreshTestRun -TestRun $testRun -TestResultDirectory $testResultDirectory
 }
-
-Assert-TestResult -TestResult $testResults[0] -RequiredChecks @(
-    'ViewPreservesApprovedHierarchyAndAccessibleTextEquivalents',
-    'StateUsesOneSnapshotAndExposesSixDimensionRowsWithMissingAndTieSemantics',
-    'ApprovedEvaluationReferenceBytesRemainImmutable')
-Assert-TestResult -TestResult $testResults[1] -RequiredChecks @(
-    'SyntheticPreview_UsesOneSnapshotForEveryPresentationSurface',
-    'MissingScorePreview_IsExplicitAndExcludedFromPassAndRanking',
-    'Rankings_MakeEqualScoresDeterministicAndExplicit',
-    'RefreshLanguage_RendersExactlyOneSelectedLanguage',
-    'UnavailablePreview_ReportsUnavailableWithoutRankingData',
-    'ThaiIsTheDefaultAndBothCatalogsContainTheSameNonEmptyKeys',
-    'EveryV01XamlLanguageBindingExistsAndNoBilingualLiteralRemains')
-Assert-TestResult -TestResult $testResults[2] -RequiredChecks @(
-    'SyntheticWpfEvaluationRendersLocalizedReferenceHierarchyAndMissingScore')
-
-$captureRequirements = @(
-    [ordered]@{ Name = 'EvaluationThai1672x941'; FileName = 'evaluation-th-1672x941.png'; Width = 1672; Height = 941 }
-    [ordered]@{ Name = 'EvaluationThai1366x768'; FileName = 'evaluation-th-1366x768.png'; Width = 1366; Height = 768 }
-    [ordered]@{ Name = 'EvaluationThaiMissingScore1672x941'; FileName = 'evaluation-th-missing-score-1672x941.png'; Width = 1672; Height = 941 }
-    [ordered]@{ Name = 'EvaluationEnglish1672x941'; FileName = 'evaluation-en-1672x941.png'; Width = 1672; Height = 941 }
-    [ordered]@{ Name = 'EvaluationEnglish1366x768'; FileName = 'evaluation-en-1366x768.png'; Width = 1366; Height = 768 }
-)
-$captureEvidence = @($captureRequirements | ForEach-Object {
-    Get-PngEvidence -Requirement $_ -EvidenceStartedUtc $evidenceStartedUtc
-})
-
-$finalCheckout = Assert-CheckoutUnchanged -Baseline $initialCheckout -Phase 'after evidence capture'
-
-$sourceReport = $sourceEvidence | ForEach-Object {
-    "SHA256 $($_.Sha256) $($_.Name) $($_.RelativePath) bytes=$($_.Length)"
+$captureReport = @()
+foreach ($capture in $captureEvidence) {
+    $captureReport += "PNG $($capture.FileName) $($capture.Width)x$($capture.Height) bytes=$($capture.Length) sha256=$($capture.Sha256)"
 }
-$testSourceReport = $testEvidence | ForEach-Object {
-    "SHA256 $($_.Sha256) $($_.Name) $($_.RelativePath) bytes=$($_.Length)"
-}
-$testReport = $testResults | ForEach-Object {
-    "TRX $($_.Name) total=$($_.Total) passed=$($_.Passed) failed=$($_.Failed) sha256=$($_.Sha256) path=$($_.RelativePath)"
-}
-$captureReport = $captureEvidence | ForEach-Object {
-    "PNG $($_.FileName) $($_.Width)x$($_.Height) bytes=$($_.Length) sha256=$($_.Sha256) path=$($_.RelativePath)"
-}
-$statusReport = if ($finalCheckout.StatusLines.Count -eq 0) { '(clean)' } else { $finalCheckout.StatusText }
+$initialStatusLabel = Get-StatusLabel -Status $initialWorkingTreeStatus
+$finalStatusLabel = Get-StatusLabel -Status $finalWorkingTreeStatus
 
 $gateReportPath = Join-Path $gateDirectory 'gate-report.txt'
 $gateReport = @(
     'HerdrOps v0.6 Issue #31 Evaluation Page Implementation Gate',
     "GeneratedUtc: $([DateTime]::UtcNow.ToString('O'))",
     "SourceCommit: $sourceCommit",
-    "WorkingTreeStatus: $statusReport",
-    'CheckoutIntegrity: PASS (HEAD and clean status unchanged after evidence)',
-    'RequiredFilesTrackedAtSourceCommit: PASS',
+    "WorkingTreeStatus: $finalStatusLabel",
+    "WorkingTreeStatusAtStart: $initialStatusLabel",
+    "WorkingTreeStatusAtEnd: $finalStatusLabel",
+    "Build: $buildResult",
     'Result: PASS',
     'ImplementationGate: PASS',
-    'IssueAcceptance: PENDING UI/INDEPENDENT REVIEW',
+    'IssueAcceptance: PENDING INDEPENDENT REVIEW',
     'VersionReleaseGate: PENDING',
-    'StaticEvidence: OBSERVED (source, immutable reference, exact hashes)',
-    'ContractEvidence: OBSERVED (presentation contract tests)',
-    'SyntheticEvidence: OBSERVED (deterministic state, language, and WPF rendering)',
-    'RuntimeEvidence: NOT OBSERVED',
+    'StaticEvidence: OBSERVED',
+    'ContractEvidence: OBSERVED',
+    'SyntheticEvidence: OBSERVED AGAINST SYNTHETIC PREVIEW DATA',
     'ActualHerdrRuntime: NOT OBSERVED / NOT CLAIMED',
     'IndependentReview: NOT OBSERVED / NOT CLAIMED',
     'ReleaseEvidence: NOT OBSERVED / NOT CLAIMED',
-    "Reference09EvaluationSha256: $referenceHash",
-    "Reference09EvaluationDimensions: $($referenceDimensions.Width)x$($referenceDimensions.Height)",
+    "ApprovedReference: $(Get-RepositoryRelativePath -Path $referencePath)",
+    "ApprovedReferenceSha256: $referenceSha256",
+    "ApprovedReferenceDimensions: $($referencePng.Width)x$($referencePng.Height)",
     '',
-    'ExactSourceSha256Anchors:',
-    $sourceReport,
+    'RequiredSourceAndTestFileSha256:'
+) + $sourceHashReport + @(
     '',
-    'ExactTestSourceSha256Anchors:',
-    $testSourceReport,
+    'FreshTrxCountersAndSha256:'
+) + $testCounterReport + @(
     '',
-    'FreshTestResults:',
-    $testReport,
+    'RequiredTestNames:'
+) + $testNameReport + @(
     '',
-    'FreshDesignEvidence:',
-    $captureReport,
+    'FreshPngEvidence:'
+) + $captureReport + @(
+    '',
+    'WorkingTreeStatusEntriesAtStart:'
+) + @($initialWorkingTreeStatus | ForEach-Object { "STATUS $_" }) + @(
+    '',
+    'WorkingTreeStatusEntriesAtEnd:'
+) + @($finalWorkingTreeStatus | ForEach-Object { "STATUS $_" }) + @(
     '',
     'EvidenceBoundary:',
-    'Static evidence covers source existence, immutable-reference identity, PNG structure and exact hashes.',
-    'Contract evidence covers the Issue #31 presentation contract and source markers.',
-    'Synthetic evidence covers deterministic Evaluation state, language isolation, missing-score behavior, and WPF rendering from synthetic state.',
-    'Actual Herdr Runtime is NOT OBSERVED and is NOT CLAIMED. This gate does not prove installed Herdr compatibility, live ingestion, independent acceptance, or v0.6 release readiness.'
+    'Static evidence covers the pinned immutable reference, required source/test presence, stable source/test hashes, and PNG structure/dimensions.',
+    'Contract evidence covers the fresh Evaluation presentation contract test result. Integration evidence covers Evaluation state and selected-language catalog tests. Synthetic evidence covers WPF rendering from synthetic preview data and fresh Thai/English captures.',
+    'This gate does not prove an installed Herdr instance, actual Herdr runtime behavior, role authorization, independent acceptance, package installation, or v0.6 release readiness.'
 )
-[IO.File]::WriteAllLines($gateReportPath, $gateReport, [Text.UTF8Encoding]::new($false))
+$gateReport | Set-Content -LiteralPath $gateReportPath -Encoding UTF8
 $gateReport | Write-Output
 Write-Output "GateReport: $gateReportPath"
