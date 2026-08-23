@@ -365,6 +365,16 @@ jobs:
         shell: powershell
         run: ./tools/Test-V02ExactBinding.Tests.ps1
 
+      # Static/Synthetic hostile fixtures for the final composed release gate.
+      # These do not authenticate GitHub state or grant Runtime/Human/Release credit.
+      - name: Run v0.2 release gate hostile tests (PowerShell 7)
+        shell: pwsh
+        run: ./tools/Test-V02ReleaseGate.Tests.ps1
+
+      - name: Run v0.2 release gate hostile tests (Windows PowerShell 5.1)
+        shell: powershell
+        run: ./tools/Test-V02ReleaseGate.Tests.ps1
+
   v02-acceptance-gates:
     name: v0.2 Acceptance Composition Gates
     runs-on: windows-latest

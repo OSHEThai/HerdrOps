@@ -509,7 +509,7 @@ function New-V02ReleaseGateTestGitHubSnapshot {
         [pscustomobject][ordered]@{ number = 11; title = '[v0.2.0] Release readiness tracker'; state = 'closed'; milestone = $milestone }
         [pscustomobject][ordered]@{ number = 54; title = 'issue 54'; state = 'closed'; milestone = $milestone }
         [pscustomobject][ordered]@{ number = 63; title = 'issue 63'; state = 'closed'; milestone = $milestone }
-        [pscustomobject][ordered]@{ number = 149; title = 'issue 149'; state = 'closed'; milestone = $null }
+        [pscustomobject][ordered]@{ number = 149; title = 'issue 149'; state = 'closed'; milestone = $milestone }
     )
     $snapshot = [pscustomobject][ordered]@{
         schemaVersion = 1
@@ -923,6 +923,24 @@ try {
         $forged = $snapshot | ConvertTo-Json -Depth 20 | ConvertFrom-Json
         $forged | Add-Member -MemberType NoteProperty -Name Authenticated -Value $true
         Assert-V02ReleaseGateTestThrows { Assert-V02ReleaseGateGitHubSnapshot -Snapshot $forged } 'exactly'
+    }
+
+    Invoke-V02ReleaseGateTestCase 'Issue #149 detached from v0.2.0 fails closed' {
+        $snapshot = New-V02ReleaseGateTestGitHubSnapshot -Path (Join-Path $script:TestRoot 'github-149-detached.json')
+        $issue149 = @($snapshot.issues | Where-Object { [int]$_.number -eq 149 })[0]
+        $issue149.milestone = $null
+        Assert-V02ReleaseGateTestThrows {
+            Assert-V02ReleaseGateGitHubSnapshot -Snapshot $snapshot
+        } 'issue set is incomplete or unexpected'
+    }
+
+    Invoke-V02ReleaseGateTestCase 'Issue #149 attached to a different milestone fails closed' {
+        $snapshot = New-V02ReleaseGateTestGitHubSnapshot -Path (Join-Path $script:TestRoot 'github-149-wrong-milestone.json')
+        $issue149 = @($snapshot.issues | Where-Object { [int]$_.number -eq 149 })[0]
+        $issue149.milestone = [pscustomobject][ordered]@{ number = 3; title = 'v0.3.0' }
+        Assert-V02ReleaseGateTestThrows {
+            Assert-V02ReleaseGateGitHubSnapshot -Snapshot $snapshot
+        } 'issue set is incomplete or unexpected'
     }
 
     Invoke-V02ReleaseGateTestCase 'local Human GO is role/check-bound but remains NOT_OBSERVED' {
