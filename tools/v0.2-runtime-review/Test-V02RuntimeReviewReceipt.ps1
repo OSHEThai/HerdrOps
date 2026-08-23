@@ -24,8 +24,8 @@ $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'RuntimeReview.Common.ps1')
 
 function Get-V02RuntimeReviewGitValue {
-    param([Parameter(Mandatory)][string]$Root, [Parameter(Mandatory)][string]$Expression, [Parameter(Mandatory)][string]$Context)
-    $value = @(& git -C ([IO.Path]::GetFullPath($Root)) $Expression 2>&1)
+    param([Parameter(Mandatory)][string]$Root, [Parameter(Mandatory)][string[]]$Arguments, [Parameter(Mandatory)][string]$Context)
+    $value = @(& git -C ([IO.Path]::GetFullPath($Root)) @Arguments 2>&1)
     $exitCode = $LASTEXITCODE
     $global:LASTEXITCODE = 0
     if ($exitCode -ne 0 -or $value.Count -ne 1 -or [string]::IsNullOrWhiteSpace([string]$value[0])) { throw "Unable to resolve $Context." }
@@ -36,8 +36,8 @@ function Assert-V02RuntimeReviewCleanSource {
     param([Parameter(Mandatory)][string]$Root, [Parameter(Mandatory)][string]$ExpectedCommit, [Parameter(Mandatory)][string]$ExpectedTree)
     $fullRoot = [IO.Path]::GetFullPath($Root)
     if (-not (Test-Path -LiteralPath (Join-Path $fullRoot '.git'))) { throw 'RepositoryRoot is not a Git worktree.' }
-    $commit = Get-V02RuntimeReviewGitValue $fullRoot 'rev-parse HEAD' 'source commit'
-    $tree = Get-V02RuntimeReviewGitValue $fullRoot 'rev-parse HEAD^{tree}' 'source tree'
+    $commit = Get-V02RuntimeReviewGitValue $fullRoot @('rev-parse', 'HEAD') 'source commit'
+    $tree = Get-V02RuntimeReviewGitValue $fullRoot @('rev-parse', 'HEAD^{tree}') 'source tree'
     if ($commit -cne $ExpectedCommit -or $tree -cne $ExpectedTree) { throw "Source checkout does not match ExpectedSourceCommit/ExpectedSourceTree: $commit/$tree" }
     $status = @(& git -C $fullRoot status --porcelain=v1 --untracked-files=all 2>&1)
     $exitCode = $LASTEXITCODE
