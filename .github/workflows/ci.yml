@@ -287,7 +287,7 @@ jobs:
   v02-package-gates:
     name: v0.2 Package and Evidence Gates
     runs-on: windows-latest
-    # This partition deliberately runs the full 919-test Release prerequisite
+    # This partition deliberately runs the full 926-test Release prerequisite
     # plus the hostile evidence suites under both PowerShell 7 and 5.1.  The
     # PS5 held-file/reparse checks are materially slower on hosted runners, so
     # keep a finite job bound without cancelling a valid exact-head run.
@@ -455,6 +455,14 @@ jobs:
         shell: powershell
         run: ./tools/v0.2-issue10-live-widget/Test-V02Issue10Acceptance.Tests.ps1
 
+      - name: Run v0.2 Issue #10 same-run causality selftests (PowerShell 7)
+        shell: pwsh
+        run: ./tools/v0.2-issue10-live-widget/Test-V02Issue10SameRunCausality.Tests.ps1
+
+      - name: Run v0.2 Issue #10 same-run causality selftests (Windows PowerShell 5.1)
+        shell: powershell
+        run: ./tools/v0.2-issue10-live-widget/Test-V02Issue10SameRunCausality.Tests.ps1
+
       - name: Run v0.2 Thai and English language-mode gate
         shell: pwsh
         run: ./tools/Test-V02LanguageModes.ps1 -Configuration Release -SkipBuild
@@ -465,9 +473,25 @@ jobs:
         shell: pwsh
         run: ./tools/v0.2-renderer-compatibility/Invoke-V02SoakMeasurement.SelfTests.ps1
 
+      - name: Run v0.2 performance hostile selftests (PowerShell 7)
+        shell: pwsh
+        run: ./tools/v0.2-renderer-compatibility/Invoke-V02PerformanceMeasurement.SelfTests.ps1
+
       - name: Run v0.2 soak hostile selftests (Windows PowerShell 5.1)
         shell: powershell
         run: ./tools/v0.2-renderer-compatibility/Invoke-V02SoakMeasurement.SelfTests.ps1
+
+      - name: Run v0.2 performance hostile selftests (Windows PowerShell 5.1)
+        shell: powershell
+        run: ./tools/v0.2-renderer-compatibility/Invoke-V02PerformanceMeasurement.SelfTests.ps1
+
+      - name: Run v0.2 Issue #10 evidence composer selftests (PowerShell 7)
+        shell: pwsh
+        run: ./tools/v0.2-issue10-live-widget/Publish-V02Issue10PerformanceSoakEvidence.SelfTests.ps1
+
+      - name: Run v0.2 Issue #10 evidence composer selftests (Windows PowerShell 5.1)
+        shell: powershell
+        run: ./tools/v0.2-issue10-live-widget/Publish-V02Issue10PerformanceSoakEvidence.SelfTests.ps1
 
       - name: Upload v0.2 live Widgets gate report
         if: always()

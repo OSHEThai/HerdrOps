@@ -26,7 +26,11 @@ public sealed record Issue10ProductionAuthorityPackage(
 
 public sealed record Issue10ProductionAuthorityPerformance(
     Issue10ProductionAuthorityFile Receipt,
-    Issue10ProductionAuthorityFile RawSource);
+    Issue10ProductionAuthorityFile RawSource,
+    Issue10ProductionAuthorityFile TelemetryBinding,
+    Issue10ProductionAuthorityFile TransactionCommit,
+    string RuntimeAppPath,
+    string RuntimeCorePath);
 
 public sealed record Issue10ProductionAuthorityRuntime(
     Issue10ProductionAuthorityFile HerdrExecutable,
@@ -71,6 +75,8 @@ public sealed record Issue10WidgetBindings(
     string CoreSha256,
     string HerdrExecutableSha256,
     string PerformanceReceiptSha256,
+    string PerformanceTelemetryBindingSha256,
+    string PerformanceTransactionCommitSha256,
     string SoakReceiptSha256,
     string ControlSessionIdentity,
     string TargetSessionIdentity);
@@ -350,6 +356,8 @@ public static class Issue10WidgetEvidenceProducer
             HoldExpectedArtifact(held, authorityFiles, root, authority.Package.Core, MaximumAuthorityArtifactBytes, "Issue #10 package Core component");
             HoldExpectedArtifact(held, authorityFiles, root, authority.Performance.Receipt, MaximumAuthorityArtifactBytes, "Issue #10 performance receipt");
             HoldExpectedArtifact(held, authorityFiles, root, authority.Performance.RawSource, MaximumAuthorityArtifactBytes, "Issue #10 performance raw source");
+            HoldExpectedArtifact(held, authorityFiles, root, authority.Performance.TelemetryBinding, MaximumAuthorityArtifactBytes, "Issue #10 performance telemetry binding");
+            HoldExpectedArtifact(held, authorityFiles, root, authority.Performance.TransactionCommit, MaximumAuthorityArtifactBytes, "Issue #10 performance transaction commit");
             HoldExpectedArtifact(held, authorityFiles, root, authority.SoakReceipt, MaximumAuthorityArtifactBytes, "Issue #10 soak receipt");
             HoldExpectedArtifact(held, authorityFiles, root, authority.Runtime.HerdrExecutable, MaximumAuthorityArtifactBytes, "Issue #10 Herdr executable");
             if (!string.Equals(heldAppReport.Path, appReport, StringComparison.OrdinalIgnoreCase))
@@ -519,9 +527,11 @@ public static class Issue10WidgetEvidenceProducer
         {
             RequireArtifactShape(root.GetProperty("Package").GetProperty(name), $"Issue #10 package {name}");
         }
-        RequireExactProperties(root.GetProperty("Performance"), "Issue #10 performance authority", "Receipt", "RawSource");
+        RequireExactProperties(root.GetProperty("Performance"), "Issue #10 performance authority", "Receipt", "RawSource", "TelemetryBinding", "TransactionCommit", "RuntimeAppPath", "RuntimeCorePath");
         RequireArtifactShape(root.GetProperty("Performance").GetProperty("Receipt"), "Issue #10 performance receipt");
         RequireArtifactShape(root.GetProperty("Performance").GetProperty("RawSource"), "Issue #10 performance raw source");
+        RequireArtifactShape(root.GetProperty("Performance").GetProperty("TelemetryBinding"), "Issue #10 performance telemetry binding");
+        RequireArtifactShape(root.GetProperty("Performance").GetProperty("TransactionCommit"), "Issue #10 performance transaction commit");
         RequireArtifactShape(root.GetProperty("SoakReceipt"), "Issue #10 soak receipt");
         RequireExactProperties(
             root.GetProperty("Runtime"),
@@ -574,11 +584,22 @@ public static class Issue10WidgetEvidenceProducer
             authority.CoreRuntimeReport is null ||
             authority.Package is null ||
             authority.Performance is null ||
+            authority.Performance.Receipt is null ||
+            authority.Performance.RawSource is null ||
+            authority.Performance.TelemetryBinding is null ||
+            authority.Performance.TransactionCommit is null ||
+            string.IsNullOrWhiteSpace(authority.Performance.RuntimeAppPath) ||
+            string.IsNullOrWhiteSpace(authority.Performance.RuntimeCorePath) ||
             authority.SoakReceipt is null ||
             authority.Runtime is null ||
             authority.EvidenceBoundary is null)
         {
             throw new InvalidOperationException("Issue #10 binding manifest contains a missing required authority object or evidence root.");
+        }
+        if (!Path.IsPathFullyQualified(authority.Performance.RuntimeAppPath) ||
+            !Path.IsPathFullyQualified(authority.Performance.RuntimeCorePath))
+        {
+            throw new InvalidOperationException("Issue #10 runtime App/Core authority paths must be fully qualified.");
         }
         if (authority.SchemaVersion != 1 ||
             !string.Equals(authority.EvidenceClassification, ExpectedEvidenceClassification, StringComparison.Ordinal) ||
@@ -634,6 +655,8 @@ public static class Issue10WidgetEvidenceProducer
         yield return authority.Package.Core;
         yield return authority.Performance.Receipt;
         yield return authority.Performance.RawSource;
+        yield return authority.Performance.TelemetryBinding;
+        yield return authority.Performance.TransactionCommit;
         yield return authority.SoakReceipt;
         yield return authority.Runtime.HerdrExecutable;
     }
@@ -794,6 +817,8 @@ public static class Issue10WidgetEvidenceProducer
                 artifact[ResolveContainedPath(root, authority.Package.Core.Path, "Issue #10 package Core component")].Sha256,
                 artifact[ResolveContainedPath(root, authority.Runtime.HerdrExecutable.Path, "Issue #10 Herdr executable")].Sha256,
                 artifact[ResolveContainedPath(root, authority.Performance.Receipt.Path, "Issue #10 performance receipt")].Sha256,
+                artifact[ResolveContainedPath(root, authority.Performance.TelemetryBinding.Path, "Issue #10 performance telemetry binding")].Sha256,
+                artifact[ResolveContainedPath(root, authority.Performance.TransactionCommit.Path, "Issue #10 performance transaction commit")].Sha256,
                 artifact[ResolveContainedPath(root, authority.SoakReceipt.Path, "Issue #10 soak receipt")].Sha256,
                 authority.Runtime.ControlSessionIdentity,
                 authority.Runtime.TargetSessionIdentity),

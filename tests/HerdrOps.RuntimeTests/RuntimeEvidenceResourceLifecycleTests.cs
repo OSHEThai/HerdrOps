@@ -1,6 +1,8 @@
 using System.Diagnostics;
 using System.Globalization;
 using System.IO;
+using System.Security.Cryptography;
+using System.Text;
 using System.Windows;
 using System.Windows.Interop;
 using System.Windows.Media;
@@ -67,6 +69,29 @@ public sealed class RuntimeEvidenceResourceLifecycleTests
     [TestMethod]
     public void AppEnforcesSoftwareRenderingBeforeAnyTestWindowIsCreated()
     {
+        Assert.IsTrue(Issue10PerformanceTelemetryOptions.TryParseInvocation([], out var normalOptions, out var normalError));
+        Assert.IsNull(normalOptions);
+        Assert.IsNull(normalError);
+        Assert.IsFalse(Issue10PerformanceTelemetryOptions.TryParseInvocation(
+            ["--issue10-performance-renderer-mode", "Hardware"], out var partialOptions, out var partialError));
+        Assert.IsNull(partialOptions);
+        StringAssert.Contains(partialError, "complete exact argument set");
+        var packageProbe = Path.Combine(Path.GetTempPath(), "herdrops-issue10-package-probe-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(Path.Combine(packageProbe, "package"));
+        var identityProbe = Path.Combine(packageProbe, "identity.json");
+        var archiveProbe = Path.Combine(packageProbe, "HerdrOps-0.2.0-win-x64.zip");
+        var profileProbe = Path.Combine(packageProbe, "package-identity-profile.json");
+        File.WriteAllText(identityProbe, "{}\n", new UTF8Encoding(false));
+        File.WriteAllBytes(archiveProbe, [1, 2, 3]);
+        File.WriteAllText(profileProbe, "{}\n", new UTF8Encoding(false));
+        var packageFailure = Assert.ThrowsExactly<InvalidDataException>(() => Issue10PackageValidator.Validate(
+            identityProbe, Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes("{}"))),
+            archiveProbe, Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(archiveProbe))),
+            Path.Combine(packageProbe, "package"), profileProbe, new string('a', 40), new string('b', 40),
+            Environment.ProcessPath!));
+        StringAssert.Contains(packageFailure.Message, "committed v0.2 package profile bytes drifted");
+        Directory.Delete(packageProbe, true);
+
         WpfTestHost.Run(() =>
         {
             Assert.IsInstanceOfType<HerdrOps.App.App>(Application.Current);

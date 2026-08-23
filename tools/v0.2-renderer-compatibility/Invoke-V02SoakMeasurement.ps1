@@ -3,9 +3,6 @@
 [CmdletBinding(DefaultParameterSetName = 'Live')]
 param(
     [Parameter(ParameterSetName = 'Live')]
-    [int]$AppProcessId,
-
-    [Parameter(ParameterSetName = 'Live')]
     [int]$CoreProcessId,
 
     [Parameter(ParameterSetName = 'Live')]
@@ -27,9 +24,6 @@ param(
     [Parameter(ParameterSetName = 'Live')]
     [Parameter(ParameterSetName = 'Synthetic')]
     [string]$ExpectedSourceTree,
-
-    [Parameter(ParameterSetName = 'Live')]
-    [object]$TelemetryChannel,
 
     [Parameter(ParameterSetName = 'Live')]
     [string]$ChannelNonce,
@@ -132,6 +126,12 @@ function Assert-SoakExactProperties {
     }
 }
 
+function ConvertTo-V02SoakNativeArgument { param([string]$Value)
+    if($Value-notmatch'[\s"]'){return $Value};$b=New-Object Text.StringBuilder;[void]$b.Append('"');$n=0
+    foreach($c in $Value.ToCharArray()){if($c-eq'\'){$n++;continue};if($c-eq'"'){[void]$b.Append(('\'*($n*2+1)));[void]$b.Append('"');$n=0;continue};if($n-gt0){[void]$b.Append(('\'*$n));$n=0};[void]$b.Append($c)}
+    if($n-gt0){[void]$b.Append(('\'*($n*2)))};[void]$b.Append('"');$b.ToString()
+}
+
 # Resolve repository root
 if ([string]::IsNullOrWhiteSpace($RepositoryRoot)) {
     $RepositoryRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
@@ -181,12 +181,6 @@ if (-not $Synthetic) {
         [string]::IsNullOrWhiteSpace($PackageArchivePath) -or
         [string]::IsNullOrWhiteSpace($ExtractedPackageRoot)) {
         throw 'Live soak measurement requires exact candidate package bindings: PackageIdentityPath, PackageArchivePath, and ExtractedPackageRoot are mandatory.'
-    }
-    if ($null -eq $TelemetryChannel) {
-        throw 'Live soak measurement requires an authenticated TelemetryChannel; hardcoded defaults and arbitrary caller scriptblocks are forbidden.'
-    }
-    if ([string]::IsNullOrWhiteSpace($ChannelNonce)) {
-        throw 'Live soak measurement requires a non-empty ChannelNonce for the trusted telemetry channel.'
     }
 }
 
@@ -256,12 +250,7 @@ $coreStartTimeUtc = $null
 $currentSessionId = [System.Diagnostics.Process]::GetCurrentProcess().SessionId
 
 if (-not $Synthetic) {
-    if ($AppProcessId -le 0 -or $CoreProcessId -le 0) {
-        throw 'Live soak measurement requires positive AppProcessId and CoreProcessId.'
-    }
-    if ($AppProcessId -eq $CoreProcessId) {
-        throw 'AppProcessId and CoreProcessId must be distinct processes.'
-    }
+    if ($CoreProcessId -le 0) { throw 'Live soak measurement requires a positive CoreProcessId.' }
 
     $principal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
     if ($principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
@@ -269,45 +258,54 @@ if (-not $Synthetic) {
     }
 
     try {
-        $appProcess = [System.Diagnostics.Process]::GetProcessById($AppProcessId)
         $coreProcess = [System.Diagnostics.Process]::GetProcessById($CoreProcessId)
     } catch {
-        throw "Unable to connect to target App ($AppProcessId) or Core ($CoreProcessId) process: $($_.Exception.Message)"
+        throw "Unable to connect to target Core ($CoreProcessId) process: $($_.Exception.Message)"
     }
 
-    if ($appProcess.HasExited -or $coreProcess.HasExited) {
-        throw 'App or Core process has already exited before soak start.'
+    if ($coreProcess.HasExited) {
+        throw 'Core process has already exited before soak start.'
     }
 
-    if ($appProcess.SessionId -ne $currentSessionId -or $coreProcess.SessionId -ne $currentSessionId) {
-        throw "Process session ID mismatch: App session ($($appProcess.SessionId)), Core session ($($coreProcess.SessionId)), Current session ($currentSessionId)."
+    if ($coreProcess.SessionId -ne $currentSessionId) {
+        throw "Process session ID mismatch: Core session ($($coreProcess.SessionId)), Current session ($currentSessionId)."
     }
 
-    $appStartTimeUtc = $appProcess.StartTime.ToUniversalTime()
     $coreStartTimeUtc = $coreProcess.StartTime.ToUniversalTime()
 
     # Exact binding between running processes and candidate package executables
-    $appExePath = $appProcess.MainModule.FileName
     $coreExePath = $coreProcess.MainModule.FileName
 
-    if ($appExePath -cne $packageBinding.AppPath) {
-        throw "App process executable path '$appExePath' does not match bound package App path '$($packageBinding.AppPath)'."
-    }
     if ($coreExePath -cne $packageBinding.CorePath) {
         throw "Core process executable path '$coreExePath' does not match bound package Core path '$($packageBinding.CorePath)'."
     }
 
-    $appHash = (Get-FileHash -LiteralPath $appExePath -Algorithm SHA256).Hash.ToUpperInvariant()
     $coreHash = (Get-FileHash -LiteralPath $coreExePath -Algorithm SHA256).Hash.ToUpperInvariant()
 
-    if ($appHash -cne $packageBinding.AppSha256) {
-        throw "App process executable hash '$appHash' does not match bound package App hash '$($packageBinding.AppSha256)'."
-    }
     if ($coreHash -cne $packageBinding.CoreSha256) {
         throw "Core process executable hash '$coreHash' does not match bound package Core hash '$($packageBinding.CoreSha256)'."
     }
+    if ($ChannelNonce -cnotmatch '^[0-9a-f]{32}$') { throw 'Live soak measurement requires a lowercase 32-hex ChannelNonce/runNonce.' }
 }
 
+$telemetryPipe=$null;$telemetryReader=$null;$telemetryWriter=$null
+if(-not$Synthetic){
+    $pipeName="herdrops-v02-issue10-perf-$ChannelNonce-0";$telemetryPipe=New-RendererTargetObservationPipe $pipeName
+    $server=[Diagnostics.Process]::GetCurrentProcess();$serverPath=[IO.Path]::GetFullPath($server.MainModule.FileName);$serverSha=(Get-FileHash -LiteralPath $serverPath -Algorithm SHA256).Hash.ToUpperInvariant();$serverStart=$server.StartTime.ToUniversalTime()
+    $args=@('--issue10-performance-telemetry-pipe',$pipeName,'--issue10-performance-run-nonce',$ChannelNonce,'--issue10-performance-source-commit',$ExpectedSourceCommit,'--issue10-performance-source-tree',$ExpectedSourceTree,'--issue10-performance-package-identity-path',$packageBinding.IdentityPath,'--issue10-performance-package-identity-sha256',$packageBinding.ReceiptSha256,'--issue10-performance-package-archive-path',$packageBinding.ArchivePath,'--issue10-performance-package-archive-sha256',$packageBinding.ArchiveSha256,'--issue10-performance-package-root',$packageBinding.PackageRoot,'--issue10-performance-package-profile-path',$packageBinding.ProfilePath,'--issue10-performance-server-pid',[string]$server.Id,'--issue10-performance-server-start-utc',$serverStart.ToString('O',[Globalization.CultureInfo]::InvariantCulture),'--issue10-performance-server-path',$serverPath,'--issue10-performance-server-sha256',$serverSha,'--issue10-performance-renderer-mode','SoftwareOnly')
+    $psi=New-Object Diagnostics.ProcessStartInfo;$psi.FileName=$packageBinding.AppPath;$qa=@($args|ForEach-Object{ConvertTo-V02SoakNativeArgument ([string]$_)});$psi.Arguments=$qa-join' ';$psi.UseShellExecute=$false;$psi.CreateNoWindow=$true
+    $appProcess=[Diagnostics.Process]::Start($psi);if($null-eq$appProcess){throw 'Packaged soak App did not start.'};$appStartTimeUtc=$appProcess.StartTime.ToUniversalTime()
+    $clientPid=Wait-RendererTargetObservationPipe $telemetryPipe 60;Assert-RendererPipeClientProcessId ([int]$clientPid) ([int]$appProcess.Id) 'Soak telemetry'
+    $telemetryReader=New-Object IO.StreamReader($telemetryPipe,(New-Object Text.UTF8Encoding($false,$true)),$false,65536,$true);$telemetryWriter=New-Object IO.StreamWriter($telemetryPipe,(New-Object Text.UTF8Encoding($false)),65536,$true);$telemetryWriter.AutoFlush=$true
+    $helloJson=Read-RendererTargetPipeLine $telemetryReader 30;$hello=if($PSVersionTable.PSVersion.Major-ge7-and(Get-Command ConvertFrom-Json).Parameters.ContainsKey('DateKind')){$helloJson|ConvertFrom-Json -DateKind String}else{$helloJson|ConvertFrom-Json}
+    Assert-SoakExactProperties $hello @('schemaVersion','kind','runNonce','sourceCommit','sourceTree','packageIdentitySha256','packageArchiveSha256','server','app','renderer') 'Soak producer hello'
+    Assert-SoakExactProperties $hello.server @('pid','startUtc','path','sha256') 'Soak producer hello server'
+    Assert-SoakExactProperties $hello.app @('pid','startUtc','path','sha256') 'Soak producer hello App';Assert-SoakExactProperties $hello.renderer @('requestedMode','nativeProcessRenderMode','nativeTier','hasAnyHwnd','preFirstHwnd','hardwareComparatorBoundary') 'Soak producer hello renderer'
+    if([int]$hello.schemaVersion-ne1-or$hello.kind-cne'issue10-performance-hello'-or$hello.runNonce-cne$ChannelNonce-or$hello.sourceCommit-cne$ExpectedSourceCommit-or$hello.sourceTree-cne$ExpectedSourceTree-or$hello.packageIdentitySha256-cne$packageBinding.ReceiptSha256-or$hello.packageArchiveSha256-cne$packageBinding.ArchiveSha256-or[int]$hello.app.pid-ne$appProcess.Id-or$hello.app.sha256-cne$packageBinding.AppSha256-or$hello.renderer.requestedMode-cne'SoftwareOnly'-or$hello.renderer.nativeProcessRenderMode-cne'SoftwareOnly'-or-not[bool]$hello.renderer.preFirstHwnd){throw 'Soak producer hello binding is invalid.'}
+    if([int]$hello.server.pid-ne$server.Id-or[DateTimeOffset]::Parse([string]$hello.server.startUtc).UtcDateTime-ne$serverStart-or-not[StringComparer]::OrdinalIgnoreCase.Equals([string]$hello.server.path,$serverPath)-or$hello.server.sha256-cne$serverSha){throw 'Soak producer hello server identity is invalid.'}
+}
+
+try {
 # Verify Initial Power Source
 $initialPower = Get-CurrentPowerStatus -SyntheticMode:$Synthetic -SyntheticProvider:$SyntheticPowerStateProvider
 if ($initialPower -cne $PowerSource) {
@@ -421,7 +419,7 @@ for ($binIndex = 0; $binIndex -lt $totalBins; $binIndex++) {
             # LIVE PROCESS VERIFICATION AND TELEMETRY
             $appIdentity = Get-V02LiveProcessIdentity `
                 -Process $appProcess `
-                -ExpectedProcessId $AppProcessId `
+                -ExpectedProcessId $appProcess.Id `
                 -ExpectedStartTimeUtc $appStartTimeUtc `
                 -Role 'App' `
                 -BinIndex $binIndex `
@@ -467,11 +465,10 @@ for ($binIndex = 0; $binIndex -lt $totalBins; $binIndex++) {
             # Authenticated live latency and UI stall source across trusted channel
             $packet = $null
             try {
-                $packet = if ($TelemetryChannel -is [scriptblock]) {
-                    & $TelemetryChannel $binIndex $sampleIdx $elapsedMs
-                } else {
-                    $TelemetryChannel.ReadPacket($binIndex, $sampleIdx)
-                }
+                $request=[pscustomobject][ordered]@{schemaVersion=1;kind='issue10-soak-sample-request';runNonce=$ChannelNonce;sequenceNumber=$globalSequenceNumber;binIndex=$binIndex;sampleIndex=$sampleIdx;coreProcessId=$CoreProcessId;coreStartUtc=$coreStartTimeUtc.ToString('O')}
+                Write-RendererTargetPipeLine $telemetryWriter (ConvertTo-RendererCanonicalJson $request $RepositoryRoot)
+                $packetJson=Read-RendererTargetPipeLine $telemetryReader 330
+                $packet=if($PSVersionTable.PSVersion.Major-ge7-and(Get-Command ConvertFrom-Json).Parameters.ContainsKey('DateKind')){$packetJson|ConvertFrom-Json -DateKind String}else{$packetJson|ConvertFrom-Json}
             } catch {
                 throw "Telemetry channel failed to read packet during bin $binIndex sample $($sampleIdx): $($_.Exception.Message)"
             }
@@ -482,7 +479,7 @@ for ($binIndex = 0; $binIndex -lt $totalBins; $binIndex++) {
                 -ExpectedSequenceNumber $globalSequenceNumber `
                 -ExpectedBinIndex $binIndex `
                 -ExpectedSampleIndex $sampleIdx `
-                -ExpectedAppProcessId $AppProcessId `
+                -ExpectedAppProcessId $appProcess.Id `
                 -ExpectedCoreProcessId $CoreProcessId `
                 -ExpectedAppStartTimeUtc $appStartTimeUtc `
                 -ExpectedCoreStartTimeUtc $coreStartTimeUtc `
@@ -492,6 +489,11 @@ for ($binIndex = 0; $binIndex -lt $totalBins; $binIndex++) {
                 -ExpectedCoreExecutableSha256 $packageBinding.CoreSha256 `
                 -PreviousTimestampRef ([ref]$lastObservedTelemetryUtc) `
                 -RepositoryRoot $RepositoryRoot
+
+            $null=Get-V02LiveProcessIdentity -Process $appProcess -ExpectedProcessId $appProcess.Id -ExpectedStartTimeUtc $appStartTimeUtc -Role 'App' -BinIndex $binIndex -SampleIndex $sampleIdx
+            $null=Get-V02LiveProcessIdentity -Process $coreProcess -ExpectedProcessId $CoreProcessId -ExpectedStartTimeUtc $coreStartTimeUtc -Role 'Core' -BinIndex $binIndex -SampleIndex $sampleIdx
+            $postAppPath=[IO.Path]::GetFullPath($appProcess.MainModule.FileName);$postCorePath=[IO.Path]::GetFullPath($coreProcess.MainModule.FileName)
+            if(-not[StringComparer]::OrdinalIgnoreCase.Equals($postAppPath,$packageBinding.AppPath)-or-not[StringComparer]::OrdinalIgnoreCase.Equals($postCorePath,$packageBinding.CorePath)-or(Get-FileHash -LiteralPath $postAppPath -Algorithm SHA256).Hash-cne$packageBinding.AppSha256-or(Get-FileHash -LiteralPath $postCorePath -Algorithm SHA256).Hash-cne$packageBinding.CoreSha256){throw "App/Core executable identity changed after telemetry response during bin $binIndex sample $sampleIdx."}
 
             $globalSequenceNumber++
             $sampleUtcStr = [string]$packet.observedUtc
@@ -668,7 +670,8 @@ if ($null -ne $packageBinding) {
         archiveSha256 = [string]$packageBinding.ArchiveSha256
         appSha256 = [string]$packageBinding.AppSha256
         coreSha256 = [string]$packageBinding.CoreSha256
-    })
+})
+    if(-not$Synthetic){$receiptDocument | Add-Member -MemberType NoteProperty -Name 'runNonce' -Value ([string]$ChannelNonce)}
 }
 
 # Generate RFC 8785 canonical JCS JSON and SHA-256
@@ -786,4 +789,8 @@ if ($stableIdentity.Sha256 -cne (Get-FileHash -LiteralPath $fullDestination -Alg
         canonicalSha256 = [string]$canonicalSha
     }
     ReceiptDocument = $receiptDocument
+}
+} finally {
+    if($null-ne$telemetryWriter){$telemetryWriter.Dispose()};if($null-ne$telemetryReader){$telemetryReader.Dispose()};if($null-ne$telemetryPipe){$telemetryPipe.Dispose()}
+    if(-not$Synthetic-and$null-ne$appProcess){try{if(-not$appProcess.HasExited){$appProcess.WaitForExit(10000)|Out-Null};if(-not$appProcess.HasExited-and$appProcess.StartTime.ToUniversalTime()-eq$appStartTimeUtc){$appProcess.Kill();$appProcess.WaitForExit(5000)|Out-Null}}catch{};$appProcess.Dispose()}
 }

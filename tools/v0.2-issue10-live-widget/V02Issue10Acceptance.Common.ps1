@@ -157,10 +157,9 @@ function Assert-I10Integer {
 function Assert-I10Utc {
     param([Parameter(Mandatory = $true)]$Value,[Parameter(Mandatory = $true)][string]$Context)
     if ($Value -isnot [string]) { throw "$Context must be an ISO-8601 string." }
-    try { $parsed = [DateTimeOffset]::Parse([string]$Value, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::RoundtripKind) }
-    catch { throw "$Context is not a valid ISO-8601 timestamp." }
-    if ($parsed.Offset -eq [TimeSpan]::Zero -and [string]$Value -notmatch '(Z|[+-][0-9]{2}:[0-9]{2})$') { throw "$Context must carry an explicit UTC offset." }
-    return $parsed.ToUniversalTime()
+    $parsed=[DateTimeOffset]::MinValue
+    if(-not[DateTimeOffset]::TryParseExact([string]$Value,'O',[Globalization.CultureInfo]::InvariantCulture,[Globalization.DateTimeStyles]::None,[ref]$parsed)-or$parsed.Offset-ne[TimeSpan]::Zero){throw "$Context must be an exact round-trip UTC timestamp."}
+    return $parsed
 }
 
 function Assert-I10RunNonce {
@@ -651,19 +650,63 @@ function Assert-I10ReceiptProvenance {
     }
 }
 
+function Read-I10PerformanceProvenanceBinding {
+    param($Binding,[string]$Name,[string]$EvidenceRoot,$Transaction)
+    Assert-I10ExactProperties $Binding @('relativePath','bytes','fileSha256','canonicalSha256') "$Name binding"
+    Assert-I10String $Binding.relativePath "$Name relativePath";Assert-I10Integer $Binding.bytes "$Name bytes";Assert-I10Sha256 $Binding.fileSha256 "$Name fileSha256";Assert-I10Sha256 $Binding.canonicalSha256 "$Name canonicalSha256"
+    $path=Resolve-I10ContainedPath -Root $EvidenceRoot -RelativePath ([string]$Binding.relativePath) -Context "$Name path"
+    $read=Read-I10StrictJson -Path $path -Context $Name -Transaction $Transaction
+    if($read.Held.Length-ne[long]$Binding.bytes-or$read.Held.Sha256-cne[string]$Binding.fileSha256.ToUpperInvariant()-or(Get-I10CanonicalSha256 -Value $read.Value)-cne[string]$Binding.canonicalSha256.ToUpperInvariant()){throw "$Name binding does not match the held canonical file."}
+    [pscustomobject]@{Path=$path;Read=$read}
+}
+
+function Assert-I10PerformanceReceiptProvenance {
+    param($Provenance,[string]$ExpectedSourceCommit,[string]$ExpectedSourceTree,$Package,[string]$ExpectedRunNonce,[string]$EvidenceRoot,$Transaction)
+    Assert-I10ExactProperties $Provenance @('runNonce','candidate','package','profile','referenceHost','renderer','session','performanceTelemetryBinding','performanceTransactionCommit') 'Performance receipt provenance'
+    $base=[pscustomobject][ordered]@{runNonce=$Provenance.runNonce;candidate=$Provenance.candidate;package=$Provenance.package}
+    Assert-I10ReceiptProvenance -Provenance $base -ExpectedSourceCommit $ExpectedSourceCommit -ExpectedSourceTree $ExpectedSourceTree -Package $Package -ExpectedRunNonce $ExpectedRunNonce -Context 'Performance receipt provenance'
+    Assert-I10ExactProperties $Provenance.profile @('id','relativePath','bytes','fileSha256','canonicalSha256') 'Performance profile provenance'
+    $identityProfile=$Package.IdentityValue.profile
+    foreach($name in @('id','relativePath','bytes','fileSha256','canonicalSha256')){if([string]$Provenance.profile.$name-cne[string]$identityProfile.$name){throw "Performance profile provenance '$name' is not exact."}}
+    Assert-I10ExactProperties $Provenance.referenceHost @('profileId','profileSha256') 'Performance reference-host provenance';if([string]$Provenance.referenceHost.profileId-cne[string]$Package.IdentityValue.referenceHost.profileId-or[string]$Provenance.referenceHost.profileSha256-cne[string]$Package.IdentityValue.referenceHost.profileSha256){throw 'Performance reference-host provenance is not exact.'}
+    Assert-I10ExactProperties $Provenance.renderer @('policy','wpfProcessRenderMode','policySha256') 'Performance renderer provenance';if([string]$Provenance.renderer.policy-cne'software-only-process-wide'-or[string]$Provenance.renderer.wpfProcessRenderMode-cne'SoftwareOnly'-or[string]$Provenance.renderer.policySha256-cne'1D37C9C39449556EB30F9AB5B734F0C5411CF4203321AF0B238993D017229E92'){throw 'Performance renderer provenance is not governed.'}
+    Assert-I10ExactProperties $Provenance.session @('kind','name','sessionId','transport','powerSource','thermalState','elevated','userScope') 'Performance session provenance';if([string]$Provenance.session.kind-cne'LocalConsole'-or[string]$Provenance.session.transport-cne'Physical'-or[bool]$Provenance.session.elevated-or[string]$Provenance.session.userScope-cne'SingleUser'){throw 'Performance session provenance is not a governed local physical session.'}
+    $binding=Read-I10PerformanceProvenanceBinding $Provenance.performanceTelemetryBinding 'Performance telemetry sidecar' $EvidenceRoot $Transaction
+    $commit=Read-I10PerformanceProvenanceBinding $Provenance.performanceTransactionCommit 'Performance transaction commit' $EvidenceRoot $Transaction
+    [pscustomobject]@{Binding=$binding;Commit=$commit}
+}
+
 function Assert-I10PerformanceReceipt {
     param([Parameter(Mandatory = $true)][string]$Path,[Parameter(Mandatory = $true)][string]$EvidenceRoot,[Parameter(Mandatory = $true)][string]$ExpectedSourceCommit,[Parameter(Mandatory = $true)][string]$ExpectedSourceTree,[Parameter(Mandatory = $true)]$Package,[Parameter(Mandatory = $true)][string]$ExpectedRunNonce,[Parameter(Mandatory = $true)][DateTimeOffset]$EvidenceStartedUtc,[Parameter(Mandatory = $true)][DateTimeOffset]$TrustedNowUtc,[AllowNull()]$Transaction)
     $read = Read-I10StrictJson -Path $Path -Context 'Issue #10 raw AB/BA performance receipt' -Transaction $Transaction
     $value = $read.Value
     Assert-I10ExactProperties $value @('provenance','rawSource','orders','soakBins','aggregateStatus') 'Issue #10 performance receipt'
     if ([string]$value.aggregateStatus -cne 'PASS') { throw 'Performance receipt aggregateStatus is not PASS.' }
-    Assert-I10ReceiptProvenance -Provenance $value.provenance -ExpectedSourceCommit $ExpectedSourceCommit -ExpectedSourceTree $ExpectedSourceTree -Package $Package -ExpectedRunNonce $ExpectedRunNonce -Context 'Performance receipt provenance'
+    $extendedProvenance=Assert-I10PerformanceReceiptProvenance -Provenance $value.provenance -ExpectedSourceCommit $ExpectedSourceCommit -ExpectedSourceTree $ExpectedSourceTree -Package $Package -ExpectedRunNonce $ExpectedRunNonce -EvidenceRoot $EvidenceRoot -Transaction $Transaction
     Assert-I10ExactProperties $value.rawSource @('relativePath','bytes','fileSha256','canonicalSha256') 'Performance rawSource binding'
     Assert-I10String $value.rawSource.relativePath 'Performance rawSource relativePath'; Assert-I10Integer $value.rawSource.bytes 'Performance rawSource bytes'; Assert-I10Sha256 $value.rawSource.fileSha256 'Performance rawSource fileSha256'; Assert-I10Sha256 $value.rawSource.canonicalSha256 'Performance rawSource canonicalSha256'
     $rawPath = Resolve-I10ContainedPath -Root $EvidenceRoot -RelativePath ([string]$value.rawSource.relativePath) -Context 'Performance rawSource path'
     $raw = Read-I10StrictJson -Path $rawPath -Context 'Performance raw observations' -Transaction $Transaction
     if ($raw.Held.Length -ne [long]$value.rawSource.bytes -or $raw.Held.Sha256 -cne [string]$value.rawSource.fileSha256.ToUpperInvariant()) { throw 'Performance rawSource binding does not match held bytes.' }
     if ((Get-I10CanonicalSha256 -Value $raw.Value) -cne [string]$value.rawSource.canonicalSha256.ToUpperInvariant()) { throw 'Performance rawSource canonical hash does not match its parsed object.' }
+    $commitValue=$extendedProvenance.Commit.Read.Value;Assert-I10ExactProperties $commitValue @('schemaVersion','kind','runNonce','raw','binding','creditGranted') 'Performance transaction commit';Assert-I10ExactProperties $commitValue.raw @('fileName','bytes','sha256') 'Performance commit raw';Assert-I10ExactProperties $commitValue.binding @('fileName','bytes','sha256') 'Performance commit sidecar'
+    if([int]$commitValue.schemaVersion-ne1-or[string]$commitValue.kind-cne'issue10-performance-transaction-commit'-or[string]$commitValue.runNonce-cne$ExpectedRunNonce-or[bool]$commitValue.creditGranted-or[string]$commitValue.raw.fileName-cne[IO.Path]::GetFileName($rawPath)-or[long]$commitValue.raw.bytes-ne$raw.Held.Length-or[string]$commitValue.raw.sha256-cne$raw.Held.Sha256-or[string]$commitValue.binding.fileName-cne[IO.Path]::GetFileName($extendedProvenance.Binding.Path)-or[long]$commitValue.binding.bytes-ne$extendedProvenance.Binding.Read.Held.Length-or[string]$commitValue.binding.sha256-cne$extendedProvenance.Binding.Read.Held.Sha256){throw 'Performance transaction commit does not bind the held raw and telemetry sidecar.'}
+    $sidecar=$extendedProvenance.Binding.Read.Value;Assert-I10ExactProperties $sidecar @('schemaVersion','evidenceClassification','runNonce','source','package','rawSource','acquisitions','evidenceBoundary') 'Performance telemetry sidecar'
+    Assert-I10ExactProperties $sidecar.source @('commitSha','treeSha') 'Performance telemetry sidecar source';Assert-I10ExactProperties $sidecar.package @('identitySha256','identityFileSha256','profileFileSha256','archiveSha256','manifestSha256','appSha256','coreSha256') 'Performance telemetry sidecar package';Assert-I10ExactProperties $sidecar.rawSource @('relativePath','bytes','fileSha256','canonicalSha256') 'Performance telemetry sidecar rawSource'
+    if([int]$sidecar.schemaVersion-ne1-or[string]$sidecar.evidenceClassification-cne'PackagedCompatibilityPerformanceTelemetryBinding-NoRuntimeCredit'-or[string]$sidecar.runNonce-cne$ExpectedRunNonce-or[string]$sidecar.source.commitSha-cne$ExpectedSourceCommit-or[string]$sidecar.source.treeSha-cne$ExpectedSourceTree-or[string]$sidecar.package.identitySha256-cne$Package.ReceiptSha256-or[string]$sidecar.package.identityFileSha256-cne$Package.IdentityFileSha256-or[string]$sidecar.package.profileFileSha256-cne[string]$Package.IdentityValue.profile.fileSha256-or[string]$sidecar.package.archiveSha256-cne$Package.ArchiveSha256-or[string]$sidecar.package.manifestSha256-cne$Package.ManifestSha256-or[string]$sidecar.package.appSha256-cne$Package.AppSha256-or[string]$sidecar.package.coreSha256-cne$Package.CoreSha256-or[string]$sidecar.rawSource.relativePath-cne[string]$value.rawSource.relativePath-or[long]$sidecar.rawSource.bytes-ne$raw.Held.Length-or[string]$sidecar.rawSource.fileSha256-cne$raw.Held.Sha256-or[string]$sidecar.rawSource.canonicalSha256-cne[string]$value.rawSource.canonicalSha256){throw 'Performance telemetry sidecar source/package/raw binding is not exact.'}
+    $acquisitions=@($sidecar.acquisitions);if($acquisitions.Count-ne24){throw 'Performance telemetry sidecar must contain exactly 24 acquisitions.'};$appIdentities=@{};$coreIdentity=$null;$serverIdentity=$null;$lastAcquisitionUtc=$EvidenceStartedUtc
+    for($acquisitionIndex=0;$acquisitionIndex-lt24;$acquisitionIndex++){
+        $item=$acquisitions[$acquisitionIndex];Assert-I10ExactProperties $item @('sequenceNumber','order','isWarmup','repetitionOrdinal','semanticMode','requestedMode','appProcessId','appStartUtc','appPath','appSha256','coreProcessId','coreStartUtc','corePath','coreSha256','serverProcessId','serverStartUtc','serverPath','serverSha256','nativeProcessRenderMode','nativeTier','preFirstHwndProof','observedUtc','boundary') "Performance telemetry acquisition $acquisitionIndex"
+        $order=if($acquisitionIndex-lt12){'AB'}else{'BA'};$within=$acquisitionIndex%12;$warmup=$within-lt2;$repetition=if($warmup){0}else{[int][Math]::Floor(($within-2)/2)};$mode=if($order-ceq'AB'){if($within%2-eq0){'a'}else{'b'}}else{if($within%2-eq0){'b'}else{'a'}};$requested=if($mode-ceq'a'){'Hardware'}else{'SoftwareOnly'};$native=if($mode-ceq'a'){'Default'}else{'SoftwareOnly'}
+        Assert-I10Integer $item.appProcessId "Performance telemetry acquisition $acquisitionIndex App PID";Assert-I10Integer $item.coreProcessId "Performance telemetry acquisition $acquisitionIndex Core PID";Assert-I10Integer $item.serverProcessId "Performance telemetry acquisition $acquisitionIndex server PID";Assert-I10Integer $item.nativeTier "Performance telemetry acquisition $acquisitionIndex native tier" -AllowZero
+        foreach($shaName in @('appSha256','coreSha256','serverSha256')){Assert-I10Sha256 $item.$shaName "Performance telemetry acquisition $acquisitionIndex $shaName"};foreach($pathName in @('appPath','corePath','serverPath')){Assert-I10String $item.$pathName "Performance telemetry acquisition $acquisitionIndex $pathName"}
+        $appStart=Assert-I10Utc $item.appStartUtc "Performance telemetry acquisition $acquisitionIndex App start";$coreStart=Assert-I10Utc $item.coreStartUtc "Performance telemetry acquisition $acquisitionIndex Core start";$serverStart=Assert-I10Utc $item.serverStartUtc "Performance telemetry acquisition $acquisitionIndex server start";$observed=Assert-I10FreshUtc -Value ([string]$item.observedUtc) -EvidenceStartedUtc $EvidenceStartedUtc -TrustedNowUtc $TrustedNowUtc -Context "Performance telemetry acquisition $acquisitionIndex observedUtc"
+        if($appStart-ge$observed-or$coreStart-ge$observed-or$serverStart-ge$observed-or$observed-le$lastAcquisitionUtc){throw "Performance telemetry acquisition $acquisitionIndex process/observation chronology is invalid."};$lastAcquisitionUtc=$observed
+        if([int]$item.sequenceNumber-ne$acquisitionIndex-or[string]$item.order-cne$order-or[bool]$item.isWarmup-ne$warmup-or[int]$item.repetitionOrdinal-ne$repetition-or[string]$item.semanticMode-cne$mode-or[string]$item.requestedMode-cne$requested-or[string]$item.nativeProcessRenderMode-cne$native-or($mode-ceq'a'-and[int]$item.nativeTier-le0)-or-not[bool]$item.preFirstHwndProof-or-not[IO.Path]::GetFullPath([string]$item.appPath).Equals([string]$Package.RuntimeAppPath,[StringComparison]::OrdinalIgnoreCase)-or-not[IO.Path]::GetFullPath([string]$item.corePath).Equals([string]$Package.RuntimeCorePath,[StringComparison]::OrdinalIgnoreCase)-or[string]$item.appSha256-cne$Package.AppSha256-or[string]$item.coreSha256-cne$Package.CoreSha256-or[string]$item.boundary-cne'PackagedCompatibilityPerformance-NativeTierComparator-NoPerFrameGpuOrRuntimeCredit'){throw "Performance telemetry acquisition $acquisitionIndex is not the governed comparator sequence."}
+        $appKey=([string]$item.appProcessId)+'|'+$appStart.ToString('O');if($appIdentities.ContainsKey($appKey)){throw "Performance telemetry acquisition $acquisitionIndex reused an App PID/start identity."};$appIdentities[$appKey]=$true
+        $thisCore=([string][int]$item.coreProcessId)+'|'+$coreStart.ToString('O')+'|'+[string]$item.corePath+'|'+[string]$item.coreSha256;if($null-eq$coreIdentity){$coreIdentity=$thisCore}elseif($coreIdentity-cne$thisCore){throw 'Performance telemetry Core identity changed.'}
+        $thisServer=([string][int]$item.serverProcessId)+'|'+$serverStart.ToString('O')+'|'+[string]$item.serverPath+'|'+[string]$item.serverSha256;if($null-eq$serverIdentity){$serverIdentity=$thisServer}elseif($serverIdentity-cne$thisServer){throw 'Performance telemetry server identity changed.'}
+    }
     Assert-I10ExactProperties $raw.Value @('orders','soakBins') 'Performance raw observations'
     if ((Get-I10CanonicalSha256 -Value $raw.Value.orders) -ne (Get-I10CanonicalSha256 -Value $value.orders) -or
         (Get-I10CanonicalSha256 -Value $raw.Value.soakBins) -ne (Get-I10CanonicalSha256 -Value $value.soakBins)) { throw 'Performance receipt aggregate fields are not byte-bound to the held raw observations.' }
@@ -707,7 +750,7 @@ function Assert-I10PerformanceReceipt {
             }
         }
     }
-    [pscustomobject][ordered]@{ Path = [IO.Path]::GetFullPath($Path); Hash = $read.Held.Sha256; RawSourcePath = $rawPath; RawSourceHash = $raw.Held.Sha256 }
+    [pscustomobject][ordered]@{ Path = [IO.Path]::GetFullPath($Path); Hash = $read.Held.Sha256; RawSourcePath = $rawPath; RawSourceHash = $raw.Held.Sha256; TelemetryBindingPath=$extendedProvenance.Binding.Path;TelemetryBindingHash=$extendedProvenance.Binding.Read.Held.Sha256;TransactionCommitPath=$extendedProvenance.Commit.Path;TransactionCommitHash=$extendedProvenance.Commit.Read.Held.Sha256 }
 }
 
 function Assert-I10SoakReceipt {
@@ -750,9 +793,9 @@ function Assert-I10WidgetReport {
     Assert-I10RunNonce -Value ([string]$value.RunNonce) -Context "Issue #10 $ExpectedLanguage widget runNonce" | Out-Null
     if ([string]$value.RunNonce -cne $ExpectedRunNonce) { throw "Issue #10 $ExpectedLanguage widget runNonce is not bound to this acceptance invocation." }
     Assert-I10ExactProperties $value.Source @('CommitSha','TreeSha') "Issue #10 $ExpectedLanguage source"; if ([string]$value.Source.CommitSha -cne $ExpectedSourceCommit -or [string]$value.Source.TreeSha -cne $ExpectedSourceTree) { throw "Issue #10 $ExpectedLanguage widget source is not exact." }
-    Assert-I10ExactProperties $value.Bindings @('GateReportSha256','AppRuntimeReportSha256','CoreRuntimeReportSha256','PackageIdentityFileSha256','PackageIdentityReceiptSha256','PackageArchiveSha256','PackageManifestSha256','AppSha256','CoreSha256','HerdrExecutableSha256','PerformanceReceiptSha256','SoakReceiptSha256','ControlSessionIdentity','TargetSessionIdentity') "Issue #10 $ExpectedLanguage bindings"
-    foreach ($name in @('GateReportSha256','AppRuntimeReportSha256','CoreRuntimeReportSha256','PackageIdentityFileSha256','PackageIdentityReceiptSha256','PackageArchiveSha256','PackageManifestSha256','AppSha256','CoreSha256','HerdrExecutableSha256','PerformanceReceiptSha256','SoakReceiptSha256')) { Assert-I10Sha256 $value.Bindings.$name "Issue #10 $ExpectedLanguage binding $name" }
-    $expectedBindings = [ordered]@{ GateReportSha256 = $Runtime.Hash; AppRuntimeReportSha256 = $Runtime.AppHash; CoreRuntimeReportSha256 = $Runtime.CoreHash; PackageIdentityFileSha256 = $Package.IdentityFileSha256; PackageIdentityReceiptSha256 = $Package.ReceiptSha256; PackageArchiveSha256 = $Package.ArchiveSha256; PackageManifestSha256 = $Package.ManifestSha256; AppSha256 = $Package.AppSha256; CoreSha256 = $Package.CoreSha256; HerdrExecutableSha256 = $Runtime.HerdrExecutableSha256; PerformanceReceiptSha256 = $Performance.Hash; SoakReceiptSha256 = $Soak.Hash }
+    Assert-I10ExactProperties $value.Bindings @('GateReportSha256','AppRuntimeReportSha256','CoreRuntimeReportSha256','PackageIdentityFileSha256','PackageIdentityReceiptSha256','PackageArchiveSha256','PackageManifestSha256','AppSha256','CoreSha256','HerdrExecutableSha256','PerformanceReceiptSha256','PerformanceTelemetryBindingSha256','PerformanceTransactionCommitSha256','SoakReceiptSha256','ControlSessionIdentity','TargetSessionIdentity') "Issue #10 $ExpectedLanguage bindings"
+    foreach ($name in @('GateReportSha256','AppRuntimeReportSha256','CoreRuntimeReportSha256','PackageIdentityFileSha256','PackageIdentityReceiptSha256','PackageArchiveSha256','PackageManifestSha256','AppSha256','CoreSha256','HerdrExecutableSha256','PerformanceReceiptSha256','PerformanceTelemetryBindingSha256','PerformanceTransactionCommitSha256','SoakReceiptSha256')) { Assert-I10Sha256 $value.Bindings.$name "Issue #10 $ExpectedLanguage binding $name" }
+    $expectedBindings = [ordered]@{ GateReportSha256 = $Runtime.Hash; AppRuntimeReportSha256 = $Runtime.AppHash; CoreRuntimeReportSha256 = $Runtime.CoreHash; PackageIdentityFileSha256 = $Package.IdentityFileSha256; PackageIdentityReceiptSha256 = $Package.ReceiptSha256; PackageArchiveSha256 = $Package.ArchiveSha256; PackageManifestSha256 = $Package.ManifestSha256; AppSha256 = $Package.AppSha256; CoreSha256 = $Package.CoreSha256; HerdrExecutableSha256 = $Runtime.HerdrExecutableSha256; PerformanceReceiptSha256 = $Performance.Hash; PerformanceTelemetryBindingSha256=$Performance.TelemetryBindingHash;PerformanceTransactionCommitSha256=$Performance.TransactionCommitHash; SoakReceiptSha256 = $Soak.Hash }
     foreach ($name in $expectedBindings.Keys) { if ([string]$value.Bindings.$name -cne [string]$expectedBindings[$name]) { throw "Issue #10 $ExpectedLanguage binding $name is not cross-bound." } }
     if ([string]$value.Bindings.ControlSessionIdentity -cne [string]$Runtime.ControlSession -or [string]$value.Bindings.TargetSessionIdentity -cne [string]$Runtime.TargetSession) { throw "Issue #10 $ExpectedLanguage control/target session binding is not exact." }
     Assert-I10ExactProperties $value.Chronology @('RuntimeStartUtc','DashboardObservedUtc','WidgetObservedUtc','CapturedUtc','StateSequence') "Issue #10 $ExpectedLanguage chronology"
@@ -883,8 +926,12 @@ function Assert-I10PackageBinding {
         ManifestLength = $manifest.Length
         AppSha256 = $app.Sha256
         AppLength = $app.Length
+        AppPath = $app.Path
+        RuntimeAppPath = if($null-ne$Package.PSObject.Properties['RuntimeAppPath']){[IO.Path]::GetFullPath([string]$Package.RuntimeAppPath)}else{[IO.Path]::GetFullPath([string]$Package.AppPath)}
         CoreSha256 = $core.Sha256
         CoreLength = $core.Length
+        CorePath = $core.Path
+        RuntimeCorePath = if($null-ne$Package.PSObject.Properties['RuntimeCorePath']){[IO.Path]::GetFullPath([string]$Package.RuntimeCorePath)}else{[IO.Path]::GetFullPath([string]$Package.CorePath)}
         ProfileId = if ($null -ne $identityValue.profileId) { [string]$identityValue.profileId } else { $null }
         IdentityValue = $identityValue
     }
@@ -943,7 +990,7 @@ function Invoke-I10Issue10Acceptance {
             Source = [pscustomobject][ordered]@{ CommitSha = $ExpectedSourceCommit; TreeSha = $ExpectedSourceTree }
             Package = [pscustomobject][ordered]@{ IdentityFileSha256 = $package.IdentityFileSha256; IdentityReceiptSha256 = $package.ReceiptSha256; ArchiveSha256 = $package.ArchiveSha256; ManifestSha256 = $package.ManifestSha256; AppSha256 = $package.AppSha256; CoreSha256 = $package.CoreSha256 }
             Runtime = [pscustomobject][ordered]@{ ThaiGateSha256 = $thaiRuntime.Hash; EnglishGateSha256 = $englishRuntime.Hash; AppReportSha256 = [string]$thaiRuntime.AppHash; CoreReportSha256 = [string]$thaiRuntime.CoreHash; HerdrExecutableSha256 = $thaiRuntime.HerdrExecutableSha256; ControlSession = $thaiRuntime.ControlSession; TargetSession = $thaiRuntime.TargetSession; StateHashes = @($thaiRuntime.StateHashes) }
-            Performance = [pscustomobject][ordered]@{ ReceiptPath = $performance.Path; ReceiptSha256 = $performance.Hash; RawSourcePath = $performance.RawSourcePath; RawSourceSha256 = $performance.RawSourceHash; Limits = [pscustomobject]$script:I10ApprovedLimits }
+            Performance = [pscustomobject][ordered]@{ ReceiptPath = $performance.Path; ReceiptSha256 = $performance.Hash; RawSourcePath = $performance.RawSourcePath; RawSourceSha256 = $performance.RawSourceHash; TelemetryBindingPath=$performance.TelemetryBindingPath;TelemetryBindingSha256=$performance.TelemetryBindingHash;TransactionCommitPath=$performance.TransactionCommitPath;TransactionCommitSha256=$performance.TransactionCommitHash; Limits = [pscustomobject]$script:I10ApprovedLimits }
             Soak = [pscustomobject][ordered]@{ ReceiptPath = $soak.Path; ReceiptSha256 = $soak.Hash; AcMinutes = 60; BatteryMinutes = 60 }
             Languages = @([pscustomobject][ordered]@{ Language = 'Thai'; WidgetReportPath = $thaiWidget.Path; WidgetReportSha256 = $thaiWidget.Hash; DashboardStateSha256 = $thaiWidget.StateSha256 },[pscustomobject][ordered]@{ Language = 'English'; WidgetReportPath = $englishWidget.Path; WidgetReportSha256 = $englishWidget.Hash; DashboardStateSha256 = $englishWidget.StateSha256 })
             EvidenceBoundary = [pscustomobject][ordered]@{ RuntimeInput = $runtimeInput; Runtime = 'NOT_OBSERVED'; Human = 'NOT_OBSERVED'; Release = 'NOT_OBSERVED'; CreditGranted = $false; FixtureMode = [bool]$FixtureMode }

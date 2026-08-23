@@ -123,6 +123,38 @@ try {
     }
     Pass-PositiveCase 'valid synthetic raw performance observations generation in AB then BA order'
 
+    # The collector must execute BA as b,a while retaining semantic a/b fields.
+    $executionTrace = New-Object Collections.Generic.List[string]
+    $orderedDest = Join-Path $tempRoot 'perf\ordered-performance-observations.json'
+    $orderedResult = & $script:InvokePerfPath -Synthetic `
+        -DestinationPath $orderedDest `
+        -EvidenceRoot $tempRoot `
+        -RepositoryRoot $repoRoot `
+        -SyntheticTelemetryProvider {
+            param($order,$warmup,$repetition,$mode)
+            $executionTrace.Add("$order|$warmup|$repetition|$mode")
+            [pscustomobject][ordered]@{
+                cpuBasisPoints = if ($mode -ceq 'a') { 40 } else { 41 }
+                workingSetMaximumBytes = 104857600
+                latencyMicroseconds = @(1..20 | ForEach-Object { if ($mode -ceq 'a') { 90000L } else { 91000L } })
+                uiStallMicroseconds = @(1..20 | ForEach-Object { 10000L })
+            }
+        }
+    $expectedTrace = @()
+    foreach ($order in @('AB','BA')) {
+        $modes = if ($order -ceq 'AB') { @('a','b') } else { @('b','a') }
+        foreach ($mode in $modes) { $expectedTrace += "$order|True|0|$mode" }
+        foreach ($rep in 0..4) { foreach ($mode in $modes) { $expectedTrace += "$order|False|$rep|$mode" } }
+    }
+    if ((@($executionTrace) -join "`n") -cne ($expectedTrace -join "`n")) {
+        throw "Performance execution order was not exact AB=a,b then BA=b,a.`nActual: $($executionTrace -join ', ')"
+    }
+    if ($orderedResult.Orders[1].warmup[0].a.cpuBasisPoints -ne 40 -or
+        $orderedResult.Orders[1].warmup[0].b.cpuBasisPoints -ne 41) {
+        throw 'BA execution results were stored by position instead of semantic mode a/b.'
+    }
+    Pass-PositiveCase 'governed execution is AB a,b then BA b,a with semantic a/b storage'
+
     # 2. Canonical JCS JSON File Verification without BOM ending with LF
     $rawBytes = [IO.File]::ReadAllBytes($rawDest)
     if ($rawBytes[0] -eq 0xEF -and $rawBytes[1] -eq 0xBB -and $rawBytes[2] -eq 0xBF) {
@@ -203,6 +235,7 @@ try {
     $receiptStable = Get-RendererPackageStableIdentity $receiptPath
 
     $candidateProvenance = [pscustomobject][ordered]@{
+        runNonce = ('1' * 32)
         candidate = [pscustomobject][ordered]@{ commitSha = $repo.Commit; treeSha = $repo.Tree }
         package = [pscustomobject][ordered]@{
             profileId = $script:RendererPackageProfileId
@@ -227,6 +260,8 @@ try {
             elevated = $false
             userScope = 'SingleUser'
         }
+        performanceTelemetryBinding = [pscustomobject][ordered]@{relativePath='performance/binding.json';bytes=1L;fileSha256=('4'*64);canonicalSha256=('5'*64)}
+        performanceTransactionCommit = [pscustomobject][ordered]@{relativePath='performance/commit.json';bytes=1L;fileSha256=('6'*64);canonicalSha256=('7'*64)}
     }
 
     $receiptDestDir = Join-Path $tempRoot 'perf-receipt-out'
@@ -298,7 +333,9 @@ try {
     if ($commandParams.ContainsKey('ForceOverwrite') -or
         $commandParams.ContainsKey('AllowThresholdBreach') -or
         $commandParams.ContainsKey('TestOnlyLiveAcceleration') -or
-        $commandParams.ContainsKey('TestOnlyProcessIdentityProvider')) {
+        $commandParams.ContainsKey('TestOnlyProcessIdentityProvider') -or
+        $commandParams.ContainsKey('LiveTelemetryProvider') -or
+        $commandParams.ContainsKey('AppProcessId')) {
         throw 'Public API parameter dictionary still contains removed test or bypass switches.'
     }
     Pass-NegativeCase 'public API parameter dictionary omits all test acceleration and bypass switches'
@@ -312,7 +349,6 @@ try {
                 -DestinationPath $negEnvBypassDest `
                 -EvidenceRoot $tempRoot `
                 -RepositoryRoot $repoRoot `
-                -AppProcessId 123 `
                 -CoreProcessId 456
         } 'exact candidate source bindings|exact candidate package bindings' 'HERDROPS_V02_PERF_SELFTEST=1 cannot bypass live package binding requirements' $negEnvBypassDest
     } finally {
@@ -408,7 +444,7 @@ try {
     $soakObj = [pscustomobject][ordered]@{ soakBins = $soakBinsFixture }
     Write-RendererPackageCanonicalJson $soakObj $soakFixturePath $repoRoot
 
-    # 12. Live mode invalid process IDs (zero or negative)
+    # 12. Arbitrary caller telemetry is rejected before any process launch.
     $negProc1Dest = Join-Path $tempRoot 'perf\neg-proc1.json'
     Assert-ThrowsMatchAndZeroOutput {
         & $script:InvokePerfPath `
@@ -424,9 +460,9 @@ try {
             -AppProcessId 0 `
             -CoreProcessId 0 `
             -SoakEvidencePath $soakFixturePath
-    } 'Live performance measurement requires positive AppProcessId and CoreProcessId' 'live mode invalid process IDs produces zero output' $negProc1Dest
+    } "parameter cannot be found.*LiveTelemetryProvider" 'live mode API has no arbitrary caller telemetry parameter' $negProc1Dest
 
-    # 13. Live mode identical process IDs
+    # 13. Live mode invalid Core PID
     $negProcIdentDest = Join-Path $tempRoot 'perf\neg-proc-ident.json'
     Assert-ThrowsMatchAndZeroOutput {
         & $script:InvokePerfPath `
@@ -438,11 +474,11 @@ try {
             -ExtractedPackageRoot $packageRoot `
             -ExpectedSourceCommit $repo.Commit `
             -ExpectedSourceTree $repo.Tree `
-            -LiveTelemetryProvider { $null } `
-            -AppProcessId 1234 `
-            -CoreProcessId 1234 `
+            -RunNonce ([Guid]::NewGuid().ToString('N')) `
+            -CoreProcessId 0 `
+            -BindingDestinationPath (Join-Path $tempRoot 'perf\neg-proc-ident-binding.json') `
             -SoakEvidencePath $soakFixturePath
-    } 'AppProcessId and CoreProcessId must be distinct processes' 'live mode identical process IDs for App and Core produces zero output' $negProcIdentDest
+    } 'requires a positive CoreProcessId' 'live mode invalid Core PID produces zero output' $negProcIdentDest
 
     # 14. Live mode non-existent process ID
     $negProc2Dest = Join-Path $tempRoot 'perf\neg-proc2.json'
@@ -456,11 +492,11 @@ try {
             -ExtractedPackageRoot $packageRoot `
             -ExpectedSourceCommit $repo.Commit `
             -ExpectedSourceTree $repo.Tree `
-            -LiveTelemetryProvider { $null } `
-            -AppProcessId 999999 `
+            -RunNonce ([Guid]::NewGuid().ToString('N')) `
             -CoreProcessId 999998 `
+            -BindingDestinationPath (Join-Path $tempRoot 'perf\neg-proc2-binding.json') `
             -SoakEvidencePath $soakFixturePath
-    } 'Unable to connect to target App process' 'live mode non-existent process ID produces zero output' $negProc2Dest
+    } 'Unable to connect to target Core process' 'live mode non-existent Core process ID produces zero output' $negProc2Dest
 
     # 15. Live mode missing soak evidence file fails closed
     $negNoSoakDest = Join-Path $tempRoot 'perf\neg-nosoak.json'
@@ -474,8 +510,7 @@ try {
             -ExtractedPackageRoot $packageRoot `
             -ExpectedSourceCommit $repo.Commit `
             -ExpectedSourceTree $repo.Tree `
-            -LiveTelemetryProvider { $null } `
-            -AppProcessId 123 `
+            -RunNonce ([Guid]::NewGuid().ToString('N')) `
             -CoreProcessId 456
     } 'Live performance measurement requires separate validated soak evidence' 'live mode missing soak evidence parameter fails closed' $negNoSoakDest
 
@@ -515,7 +550,6 @@ try {
             -ExtractedPackageRoot $packageRoot `
             -ExpectedSourceCommit '0000000000000000000000000000000000000000' `
             -ExpectedSourceTree $repo.Tree `
-            -AppProcessId 123 `
             -CoreProcessId 456 `
             -SoakEvidencePath $soakFixturePath
     } 'Source commit mismatch' 'source commit mismatch produces zero output' $negCommitDest
@@ -532,7 +566,6 @@ try {
             -ExtractedPackageRoot $packageRoot `
             -ExpectedSourceCommit $repo.Commit `
             -ExpectedSourceTree '0000000000000000000000000000000000000000' `
-            -AppProcessId 123 `
             -CoreProcessId 456 `
             -SoakEvidencePath $soakFixturePath
     } 'Source tree mismatch' 'source tree mismatch produces zero output' $negTreeDest
@@ -551,64 +584,30 @@ try {
             -ExtractedPackageRoot $packageRoot `
             -ExpectedSourceCommit $repo.Commit `
             -ExpectedSourceTree $repo.Tree `
-            -AppProcessId 123 `
             -CoreProcessId 456 `
             -SoakEvidencePath $soakFixturePath
     } 'Manifest/package-root inventories are not exact and coherent|Package App/Core bytes changed after package validation|hash.*mismatch' 'package component hash mismatch fails closed with zero output' $negPkgTamperDest
     # Restore app binary
     [IO.File]::WriteAllBytes($tamperedAppPath, [Text.Encoding]::UTF8.GetBytes('app-binary'))
 
-    # -------------------------------------------------------------------------
-    # LIVE PROBE TESTS VIA TEST HARNESS (REAL BOUND CHILD PROCESSES)
-    # -------------------------------------------------------------------------
+    # Exercise the exact production CurrentUserOnly pipe and client-PID guard.
+    $pipeNonce=[Guid]::NewGuid().ToString('N');$pipeName="herdrops-v02-issue10-perf-$pipeNonce-0";$pipe=New-RendererTargetObservationPipe $pipeName
+    $clientScript=Join-Path $tempRoot 'pipe-client.ps1';[IO.File]::WriteAllText($clientScript,@'
+param([string]$Name)
+$pipe=[IO.Pipes.NamedPipeClientStream]::new('.', $Name, [IO.Pipes.PipeDirection]::InOut, [IO.Pipes.PipeOptions]::None)
+try{$pipe.Connect(10000);$writer=[IO.StreamWriter]::new($pipe,[Text.UTF8Encoding]::new($false),65536,$true);$writer.AutoFlush=$true;$writer.WriteLine('{"kind":"live-production-pipe-probe"}');Start-Sleep -Milliseconds 500}finally{$pipe.Dispose()}
+'@,(New-Object Text.UTF8Encoding($false)))
+    $client=Start-Process -FilePath (Get-Process -Id $PID).Path -ArgumentList @('-NoProfile','-File',$clientScript,$pipeName) -PassThru -WindowStyle Hidden
+    try{$actualClientPid=Wait-RendererTargetObservationPipe $pipe 15;Assert-RendererPipeClientProcessId $actualClientPid $client.Id 'Performance telemetry';$reader=[IO.StreamReader]::new($pipe,(New-Object Text.UTF8Encoding($false,$true)),$false,65536,$true);$line=Read-RendererTargetPipeLine $reader 10;if($line-cne'{"kind":"live-production-pipe-probe"}'){throw 'Production pipe probe payload changed.'};Pass-PositiveCase 'real CurrentUserOnly production pipe binds the launched client PID and transports a frame';Assert-ThrowsMatch {Assert-RendererPipeClientProcessId $actualClientPid ($client.Id+1) 'Performance telemetry'} 'not connected by the launched packaged App PID' 'production pipe rejects transplanted client PID'}finally{if($null-ne$reader){$reader.Dispose()};$pipe.Dispose();if(-not$client.HasExited){Stop-Process -Id $client.Id -Force};$client.Dispose()}
 
-    # 21. Controlled live probe: unexpected child exit triggers exit guard
-    try {
-        Invoke-V02LivePerformanceGuardProbe -GuardMode 'UnexpectedExit' -TempRoot $tempRoot
-        throw 'Expected unexpected exit probe to throw, but it succeeded.'
-    } catch {
-        if ($_.Exception.Message -match 'terminated unexpectedly during Order') {
-            Pass-NegativeCase 'controlled live probe reaches unexpected App exit guard without publishing'
-        } else {
-            throw "Expected unexpected exit error, got: $($_.Exception.Message)"
-        }
-    }
-
-    # 22. Controlled live probe: PID/start-time drift triggers recycle guard
-    try {
-        Invoke-V02LivePerformanceGuardProbe -GuardMode 'PidStartContinuity' -TempRoot $tempRoot
-        throw 'Expected PID/start-time continuity probe to throw, but it succeeded.'
-    } catch {
-        if ($_.Exception.Message -match 'App start time drifted|was recycled') {
-            Pass-NegativeCase 'controlled live probe rejects PID/start-time reuse continuity drift without publishing'
-        } else {
-            throw "Expected PID recycle error, got: $($_.Exception.Message)"
-        }
-    }
-
-    # 23. Controlled live probe: forged renderer mode is rejected fail-closed
-    try {
-        Invoke-V02LivePerformanceGuardProbe -GuardMode 'ForgedRendererMode' -TempRoot $tempRoot
-        throw 'Expected forged renderer mode probe to throw, but it succeeded.'
-    } catch {
-        if ($_.Exception.Message -match 'expected renderer mode') {
-            Pass-NegativeCase 'controlled live probe rejects forged renderer mode without publishing'
-        } else {
-            throw "Expected forged renderer error, got: $($_.Exception.Message)"
-        }
-    }
-
-    # 24. Controlled live probe: stale / non-monotonic timestamp is rejected fail-closed
-    try {
-        Invoke-V02LivePerformanceGuardProbe -GuardMode 'StaleTimestamp' -TempRoot $tempRoot
-        throw 'Expected stale timestamp probe to throw, but it succeeded.'
-    } catch {
-        if ($_.Exception.Message -match 'timestamp is not strictly increasing') {
-            Pass-NegativeCase 'controlled live probe rejects stale non-monotonic timestamp without publishing'
-        } else {
-            throw "Expected stale timestamp error, got: $($_.Exception.Message)"
-        }
-    }
+    # Execute the exact production directory transaction used for raw+binding.
+    . (Join-Path $PSScriptRoot 'lib\V02PerformanceTransaction.ps1')
+    $transactionRoot=Join-Path $tempRoot 'transaction';New-Item -ItemType Directory -Path $transactionRoot|Out-Null
+    $rawBytes=[Text.Encoding]::UTF8.GetBytes("raw`n");$bindingBytes=[Text.Encoding]::UTF8.GetBytes("binding`n");$commitBytes=[Text.Encoding]::UTF8.GetBytes("commit`n")
+    $goodTransaction=Join-Path $transactionRoot 'good';$tx=Publish-V02PerformanceTransaction $goodTransaction $tempRoot 'raw.json' $rawBytes 'binding.json' $bindingBytes $commitBytes
+    if(-not(Test-Path -LiteralPath $tx.RawPath -PathType Leaf)-or-not(Test-Path -LiteralPath $tx.BindingPath -PathType Leaf)-or-not(Test-Path -LiteralPath $tx.CommitPath -PathType Leaf)){throw 'Production performance transaction did not publish all three files atomically.'};Pass-PositiveCase 'production raw, binding, and commit marker publish as one directory transaction'
+    Assert-ThrowsMatch {Publish-V02PerformanceTransaction $goodTransaction $tempRoot 'raw.json' $rawBytes 'binding.json' $bindingBytes $commitBytes|Out-Null} 'already exists' 'production transaction no-clobber preserves committed directory'
+    foreach($fault in @('AfterRawStage','AfterBindingStage','AfterCommitMarkerStage','BeforeCommit')){$faultDest=Join-Path $transactionRoot $fault;Assert-ThrowsMatch {Publish-V02PerformanceTransaction $faultDest $tempRoot 'raw.json' $rawBytes 'binding.json' $bindingBytes $commitBytes $fault|Out-Null} 'Injected performance transaction failure' "production transaction $fault fault rolls back";if(Test-Path -LiteralPath $faultDest){throw "Production transaction $fault exposed a partial directory."};if(@(Get-ChildItem -LiteralPath $transactionRoot -Force|Where-Object Name -Like ".$fault.stage-*").Count){throw "Production transaction $fault leaked staging."}}
 
     Write-Host ""
     [pscustomobject][ordered]@{

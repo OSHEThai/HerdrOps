@@ -24,7 +24,7 @@ any application process.
 
 The per-language widget observation is finalized by the composite runtime gate
 only after that invocation's Gate, Core, and App reports have been sealed. Pass
-all five optional inputs together; both output paths must be new direct children of
+all seven optional inputs together; both output paths must be new direct children of
 `artifacts/runtime-evidence/v0.2/issues-7-9-10/`:
 
 ```powershell
@@ -33,10 +33,13 @@ all five optional inputs together; both output paths must be new direct children
   -Issue10BindingManifestPath <new-same-run-binding.json> `
   -Issue10PerformanceReceiptPath <performance-receipt.json> `
   -Issue10PerformanceRawSourcePath <performance-raw-source.json> `
+  -Issue10PerformanceTelemetryBindingPath <performance-telemetry-binding.json> `
+  -Issue10PerformanceTransactionCommitPath <performance-transaction-commit.json> `
   -Issue10SoakReceiptPath <soak-receipt.json>
 ```
 
-The gate stages held copies of package, performance, soak, and installed-Herdr
+The gate stages held copies of package, performance receipt/raw/telemetry-binding/
+transaction-commit, soak, and installed-Herdr
 authority bytes under the exact run directory, binds the same-run Gate/Core/App
 hashes plus invocation nonce/source, then invokes the packaged App in headless
 finalization mode. Prior-run reports, escaped outputs, incomplete inputs,
@@ -76,6 +79,22 @@ provenance must carry the same invocation `runNonce` and both raw-byte and
 canonical package-receipt hashes. The separate soak receipt carries the same
 nonce and contains `provenance`, `soakBins`, and `aggregateStatus`.
 
+`Publish-V02Issue10PerformanceSoakEvidence.ps1` is the only governed adapter
+from the two live soak collector outputs, raw AB/BA collector output, its
+authenticated per-acquisition telemetry binding, and the atomic transaction
+commit marker that hash-binds both raw and binding files to the same nonce to
+those Issue #10 receipts. It holds and canonicalizes the AC, Battery, and raw
+files; revalidates the exact package and source; requires all 24 sequential
+exact-App acquisitions (positions 0-11 AB `a,b`, then 12-23 BA `b,a`, with an
+exact warmup pair followed by repetitions 0-4) with native pre-HWND renderer
+proof. Each acquisition binds a distinct App PID/start/path/hash and the exact
+stable Core and telemetry-server PID/start/path/hash; PID alone is never
+authority. The adapter requires the raw 24-bin set to
+equal the held AC-then-Battery outputs; and constructs `runNonce`, candidate,
+and package provenance internally. It publishes a new directory atomically
+and never grants Runtime, Human, or Release credit. Caller-authored provenance
+or handcrafted aggregate receipts are not production inputs.
+
 The verifier uses its own trusted UTC clock, accepts evidence only from the
 preceding six hours and rejects a reused nonce with an atomic CreateNew claim.
 Package and evidence handles remain open and their volume, FileId, link-count,
@@ -91,8 +110,11 @@ Focused static/synthetic selftests:
 ```powershell
 pwsh -File ./tools/v0.2-issue10-live-widget/Test-V02Issue10Acceptance.Tests.ps1
 powershell -File ./tools/v0.2-issue10-live-widget/Test-V02Issue10Acceptance.Tests.ps1
+pwsh -File ./tools/v0.2-issue10-live-widget/Publish-V02Issue10PerformanceSoakEvidence.SelfTests.ps1
+powershell -File ./tools/v0.2-issue10-live-widget/Publish-V02Issue10PerformanceSoakEvidence.SelfTests.ps1
 ```
 
-These tests are Static/Synthetic evidence only and never invoke a runtime
-process, mutate the default Herdr session, install a package, or grant release
-credit.
+These tests are Static/Synthetic/Contract evidence only. The pipe hostile tests
+launch short-lived PowerShell clients against the production CurrentUserOnly
+named-pipe and PID guards; they do not invoke installed Herdr, mutate the
+default Herdr session, install a package, or grant Runtime or Release credit.
