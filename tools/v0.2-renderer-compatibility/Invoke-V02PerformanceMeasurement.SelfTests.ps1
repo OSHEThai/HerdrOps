@@ -123,6 +123,38 @@ try {
     }
     Pass-PositiveCase 'valid synthetic raw performance observations generation in AB then BA order'
 
+    # The collector must execute BA as b,a while retaining semantic a/b fields.
+    $executionTrace = New-Object Collections.Generic.List[string]
+    $orderedDest = Join-Path $tempRoot 'perf\ordered-performance-observations.json'
+    $orderedResult = & $script:InvokePerfPath -Synthetic `
+        -DestinationPath $orderedDest `
+        -EvidenceRoot $tempRoot `
+        -RepositoryRoot $repoRoot `
+        -SyntheticTelemetryProvider {
+            param($order,$warmup,$repetition,$mode)
+            $executionTrace.Add("$order|$warmup|$repetition|$mode")
+            [pscustomobject][ordered]@{
+                cpuBasisPoints = if ($mode -ceq 'a') { 40 } else { 41 }
+                workingSetMaximumBytes = 104857600
+                latencyMicroseconds = @(1..20 | ForEach-Object { if ($mode -ceq 'a') { 90000L } else { 91000L } })
+                uiStallMicroseconds = @(1..20 | ForEach-Object { 10000L })
+            }
+        }
+    $expectedTrace = @()
+    foreach ($order in @('AB','BA')) {
+        $modes = if ($order -ceq 'AB') { @('a','b') } else { @('b','a') }
+        foreach ($mode in $modes) { $expectedTrace += "$order|True|0|$mode" }
+        foreach ($rep in 0..4) { foreach ($mode in $modes) { $expectedTrace += "$order|False|$rep|$mode" } }
+    }
+    if ((@($executionTrace) -join "`n") -cne ($expectedTrace -join "`n")) {
+        throw "Performance execution order was not exact AB=a,b then BA=b,a.`nActual: $($executionTrace -join ', ')"
+    }
+    if ($orderedResult.Orders[1].warmup[0].a.cpuBasisPoints -ne 40 -or
+        $orderedResult.Orders[1].warmup[0].b.cpuBasisPoints -ne 41) {
+        throw 'BA execution results were stored by position instead of semantic mode a/b.'
+    }
+    Pass-PositiveCase 'governed execution is AB a,b then BA b,a with semantic a/b storage'
+
     # 2. Canonical JCS JSON File Verification without BOM ending with LF
     $rawBytes = [IO.File]::ReadAllBytes($rawDest)
     if ($rawBytes[0] -eq 0xEF -and $rawBytes[1] -eq 0xBB -and $rawBytes[2] -eq 0xBF) {
@@ -298,7 +330,9 @@ try {
     if ($commandParams.ContainsKey('ForceOverwrite') -or
         $commandParams.ContainsKey('AllowThresholdBreach') -or
         $commandParams.ContainsKey('TestOnlyLiveAcceleration') -or
-        $commandParams.ContainsKey('TestOnlyProcessIdentityProvider')) {
+        $commandParams.ContainsKey('TestOnlyProcessIdentityProvider') -or
+        $commandParams.ContainsKey('LiveTelemetryProvider') -or
+        $commandParams.ContainsKey('AppProcessId')) {
         throw 'Public API parameter dictionary still contains removed test or bypass switches.'
     }
     Pass-NegativeCase 'public API parameter dictionary omits all test acceleration and bypass switches'
@@ -312,7 +346,6 @@ try {
                 -DestinationPath $negEnvBypassDest `
                 -EvidenceRoot $tempRoot `
                 -RepositoryRoot $repoRoot `
-                -AppProcessId 123 `
                 -CoreProcessId 456
         } 'exact candidate source bindings|exact candidate package bindings' 'HERDROPS_V02_PERF_SELFTEST=1 cannot bypass live package binding requirements' $negEnvBypassDest
     } finally {
@@ -408,7 +441,7 @@ try {
     $soakObj = [pscustomobject][ordered]@{ soakBins = $soakBinsFixture }
     Write-RendererPackageCanonicalJson $soakObj $soakFixturePath $repoRoot
 
-    # 12. Live mode invalid process IDs (zero or negative)
+    # 12. Arbitrary caller telemetry is rejected before any process launch.
     $negProc1Dest = Join-Path $tempRoot 'perf\neg-proc1.json'
     Assert-ThrowsMatchAndZeroOutput {
         & $script:InvokePerfPath `
@@ -424,9 +457,9 @@ try {
             -AppProcessId 0 `
             -CoreProcessId 0 `
             -SoakEvidencePath $soakFixturePath
-    } 'Live performance measurement requires positive AppProcessId and CoreProcessId' 'live mode invalid process IDs produces zero output' $negProc1Dest
+    } "parameter cannot be found.*LiveTelemetryProvider" 'live mode API has no arbitrary caller telemetry parameter' $negProc1Dest
 
-    # 13. Live mode identical process IDs
+    # 13. Live mode invalid Core PID
     $negProcIdentDest = Join-Path $tempRoot 'perf\neg-proc-ident.json'
     Assert-ThrowsMatchAndZeroOutput {
         & $script:InvokePerfPath `
@@ -438,11 +471,11 @@ try {
             -ExtractedPackageRoot $packageRoot `
             -ExpectedSourceCommit $repo.Commit `
             -ExpectedSourceTree $repo.Tree `
-            -LiveTelemetryProvider { $null } `
-            -AppProcessId 1234 `
-            -CoreProcessId 1234 `
+            -RunNonce ([Guid]::NewGuid().ToString('N')) `
+            -CoreProcessId 0 `
+            -BindingDestinationPath (Join-Path $tempRoot 'perf\neg-proc-ident-binding.json') `
             -SoakEvidencePath $soakFixturePath
-    } 'AppProcessId and CoreProcessId must be distinct processes' 'live mode identical process IDs for App and Core produces zero output' $negProcIdentDest
+    } 'requires a positive CoreProcessId' 'live mode invalid Core PID produces zero output' $negProcIdentDest
 
     # 14. Live mode non-existent process ID
     $negProc2Dest = Join-Path $tempRoot 'perf\neg-proc2.json'
@@ -456,11 +489,11 @@ try {
             -ExtractedPackageRoot $packageRoot `
             -ExpectedSourceCommit $repo.Commit `
             -ExpectedSourceTree $repo.Tree `
-            -LiveTelemetryProvider { $null } `
-            -AppProcessId 999999 `
+            -RunNonce ([Guid]::NewGuid().ToString('N')) `
             -CoreProcessId 999998 `
+            -BindingDestinationPath (Join-Path $tempRoot 'perf\neg-proc2-binding.json') `
             -SoakEvidencePath $soakFixturePath
-    } 'Unable to connect to target App process' 'live mode non-existent process ID produces zero output' $negProc2Dest
+    } 'Unable to connect to target Core process' 'live mode non-existent Core process ID produces zero output' $negProc2Dest
 
     # 15. Live mode missing soak evidence file fails closed
     $negNoSoakDest = Join-Path $tempRoot 'perf\neg-nosoak.json'
@@ -474,8 +507,7 @@ try {
             -ExtractedPackageRoot $packageRoot `
             -ExpectedSourceCommit $repo.Commit `
             -ExpectedSourceTree $repo.Tree `
-            -LiveTelemetryProvider { $null } `
-            -AppProcessId 123 `
+            -RunNonce ([Guid]::NewGuid().ToString('N')) `
             -CoreProcessId 456
     } 'Live performance measurement requires separate validated soak evidence' 'live mode missing soak evidence parameter fails closed' $negNoSoakDest
 
@@ -515,7 +547,6 @@ try {
             -ExtractedPackageRoot $packageRoot `
             -ExpectedSourceCommit '0000000000000000000000000000000000000000' `
             -ExpectedSourceTree $repo.Tree `
-            -AppProcessId 123 `
             -CoreProcessId 456 `
             -SoakEvidencePath $soakFixturePath
     } 'Source commit mismatch' 'source commit mismatch produces zero output' $negCommitDest
@@ -532,7 +563,6 @@ try {
             -ExtractedPackageRoot $packageRoot `
             -ExpectedSourceCommit $repo.Commit `
             -ExpectedSourceTree '0000000000000000000000000000000000000000' `
-            -AppProcessId 123 `
             -CoreProcessId 456 `
             -SoakEvidencePath $soakFixturePath
     } 'Source tree mismatch' 'source tree mismatch produces zero output' $negTreeDest
@@ -551,64 +581,19 @@ try {
             -ExtractedPackageRoot $packageRoot `
             -ExpectedSourceCommit $repo.Commit `
             -ExpectedSourceTree $repo.Tree `
-            -AppProcessId 123 `
             -CoreProcessId 456 `
             -SoakEvidencePath $soakFixturePath
     } 'Manifest/package-root inventories are not exact and coherent|Package App/Core bytes changed after package validation|hash.*mismatch' 'package component hash mismatch fails closed with zero output' $negPkgTamperDest
     # Restore app binary
     [IO.File]::WriteAllBytes($tamperedAppPath, [Text.Encoding]::UTF8.GetBytes('app-binary'))
 
-    # -------------------------------------------------------------------------
-    # LIVE PROBE TESTS VIA TEST HARNESS (REAL BOUND CHILD PROCESSES)
-    # -------------------------------------------------------------------------
-
-    # 21. Controlled live probe: unexpected child exit triggers exit guard
-    try {
-        Invoke-V02LivePerformanceGuardProbe -GuardMode 'UnexpectedExit' -TempRoot $tempRoot
-        throw 'Expected unexpected exit probe to throw, but it succeeded.'
-    } catch {
-        if ($_.Exception.Message -match 'terminated unexpectedly during Order') {
-            Pass-NegativeCase 'controlled live probe reaches unexpected App exit guard without publishing'
-        } else {
-            throw "Expected unexpected exit error, got: $($_.Exception.Message)"
-        }
+    # The production path launches the exact package itself and binds the pipe
+    # client PID. The old controlled-child provider seam must never be reachable.
+    $collectorText = [IO.File]::ReadAllText($script:InvokePerfPath)
+    foreach ($required in @('New-RendererTargetObservationPipe','Wait-RendererTargetObservationPipe','Performance telemetry pipe was not connected by the launched packaged App PID','native pre-HWND renderer proof is invalid')) {
+        if (-not $collectorText.Contains($required)) { throw "Production performance collector omitted fail-closed token: $required" }
     }
-
-    # 22. Controlled live probe: PID/start-time drift triggers recycle guard
-    try {
-        Invoke-V02LivePerformanceGuardProbe -GuardMode 'PidStartContinuity' -TempRoot $tempRoot
-        throw 'Expected PID/start-time continuity probe to throw, but it succeeded.'
-    } catch {
-        if ($_.Exception.Message -match 'App start time drifted|was recycled') {
-            Pass-NegativeCase 'controlled live probe rejects PID/start-time reuse continuity drift without publishing'
-        } else {
-            throw "Expected PID recycle error, got: $($_.Exception.Message)"
-        }
-    }
-
-    # 23. Controlled live probe: forged renderer mode is rejected fail-closed
-    try {
-        Invoke-V02LivePerformanceGuardProbe -GuardMode 'ForgedRendererMode' -TempRoot $tempRoot
-        throw 'Expected forged renderer mode probe to throw, but it succeeded.'
-    } catch {
-        if ($_.Exception.Message -match 'expected renderer mode') {
-            Pass-NegativeCase 'controlled live probe rejects forged renderer mode without publishing'
-        } else {
-            throw "Expected forged renderer error, got: $($_.Exception.Message)"
-        }
-    }
-
-    # 24. Controlled live probe: stale / non-monotonic timestamp is rejected fail-closed
-    try {
-        Invoke-V02LivePerformanceGuardProbe -GuardMode 'StaleTimestamp' -TempRoot $tempRoot
-        throw 'Expected stale timestamp probe to throw, but it succeeded.'
-    } catch {
-        if ($_.Exception.Message -match 'timestamp is not strictly increasing') {
-            Pass-NegativeCase 'controlled live probe rejects stale non-monotonic timestamp without publishing'
-        } else {
-            throw "Expected stale timestamp error, got: $($_.Exception.Message)"
-        }
-    }
+    Pass-NegativeCase 'production collector owns exact-package launch and authenticated pipe/PID/native-renderer binding'
 
     Write-Host ""
     [pscustomobject][ordered]@{

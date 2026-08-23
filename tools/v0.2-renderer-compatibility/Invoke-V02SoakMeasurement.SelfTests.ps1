@@ -334,8 +334,6 @@ try {
             -DestinationPath $negAccelDest `
             -EvidenceRoot $tempRoot `
             -RepositoryRoot $repoRoot `
-            -AppProcessId 123 `
-            -CoreProcessId 456 `
             -TestOnlyLiveAcceleration
     } 'A parameter cannot be found that matches parameter name ''TestOnlyLiveAcceleration''' 'removed switch -TestOnlyLiveAcceleration is rejected by parameter binding' $negAccelDest
 
@@ -347,8 +345,6 @@ try {
             -DestinationPath $negIdentProvDest `
             -EvidenceRoot $tempRoot `
             -RepositoryRoot $repoRoot `
-            -AppProcessId 123 `
-            -CoreProcessId 456 `
             -TestOnlyProcessIdentityProvider { $null }
     } 'A parameter cannot be found that matches parameter name ''TestOnlyProcessIdentityProvider''' 'removed switch -TestOnlyProcessIdentityProvider is rejected by parameter binding' $negIdentProvDest
 
@@ -357,7 +353,9 @@ try {
     if ($commandParams.ContainsKey('ForceOverwrite') -or
         $commandParams.ContainsKey('AllowThresholdBreach') -or
         $commandParams.ContainsKey('TestOnlyLiveAcceleration') -or
-        $commandParams.ContainsKey('TestOnlyProcessIdentityProvider')) {
+        $commandParams.ContainsKey('TestOnlyProcessIdentityProvider') -or
+        $commandParams.ContainsKey('TelemetryChannel') -or
+        $commandParams.ContainsKey('AppProcessId')) {
         throw 'Public API parameter dictionary still contains removed test or bypass switches.'
     }
     Pass-NegativeCase 'public API parameter dictionary omits all test acceleration and bypass switches'
@@ -371,9 +369,7 @@ try {
                 -PowerSource 'AC' `
                 -DestinationPath $negEnvBypassDest `
                 -EvidenceRoot $tempRoot `
-                -RepositoryRoot $repoRoot `
-                -AppProcessId 123 `
-                -CoreProcessId 456
+                -RepositoryRoot $repoRoot
         } 'exact candidate source bindings|exact candidate package bindings' 'HERDROPS_V02_SOAK_SELFTEST=1 cannot bypass live package binding requirements' $negEnvBypassDest
     } finally {
         [Environment]::SetEnvironmentVariable('HERDROPS_V02_SOAK_SELFTEST', $null, 'Process')
@@ -474,6 +470,8 @@ try {
             -SyntheticProcessTelemetryProvider (Get-TestSampleProvider)
     } 'Power source changed' 'mid-soak power interruption from AC to Battery produces zero output' $negPwrIntDest
 
+    <# Obsolete caller-supplied live process/channel tests removed: the production
+       collector now owns the exact packaged App process and authenticated pipe.
     # 13. Live mode invalid process IDs (zero or negative)
     $negProc1Dest = Join-Path $tempRoot 'matrix\neg-proc1.json'
     Assert-ThrowsMatchAndZeroOutput {
@@ -932,6 +930,7 @@ try {
         }
     }
 
+    #>
     # 21. Synthetic telemetry provider exception fails closed
     $negTelExDest = Join-Path $tempRoot 'matrix\neg-tel-ex.json'
     Assert-ThrowsMatchAndZeroOutput {

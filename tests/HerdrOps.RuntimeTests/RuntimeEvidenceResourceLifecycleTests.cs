@@ -67,6 +67,14 @@ public sealed class RuntimeEvidenceResourceLifecycleTests
     [TestMethod]
     public void AppEnforcesSoftwareRenderingBeforeAnyTestWindowIsCreated()
     {
+        Assert.IsTrue(Issue10PerformanceTelemetryOptions.TryParseInvocation([], out var normalOptions, out var normalError));
+        Assert.IsNull(normalOptions);
+        Assert.IsNull(normalError);
+        Assert.IsFalse(Issue10PerformanceTelemetryOptions.TryParseInvocation(
+            ["--issue10-performance-renderer-mode", "Hardware"], out var partialOptions, out var partialError));
+        Assert.IsNull(partialOptions);
+        StringAssert.Contains(partialError, "complete exact argument set");
+
         WpfTestHost.Run(() =>
         {
             Assert.IsInstanceOfType<HerdrOps.App.App>(Application.Current);

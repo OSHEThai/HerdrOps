@@ -76,6 +76,18 @@ provenance must carry the same invocation `runNonce` and both raw-byte and
 canonical package-receipt hashes. The separate soak receipt carries the same
 nonce and contains `provenance`, `soakBins`, and `aggregateStatus`.
 
+`Publish-V02Issue10PerformanceSoakEvidence.ps1` is the only governed adapter
+from the two live soak collector outputs, raw AB/BA collector output, and its
+authenticated per-acquisition telemetry binding to
+those Issue #10 receipts. It holds and canonicalizes the AC, Battery, and raw
+files; revalidates the exact package and source; requires all 24 sequential
+exact-App acquisitions (AB `a,b`, then BA `b,a`) with native pre-HWND renderer
+proof; requires the raw 24-bin set to
+equal the held AC-then-Battery outputs; and constructs `runNonce`, candidate,
+and package provenance internally. It publishes a new directory atomically
+and never grants Runtime, Human, or Release credit. Caller-authored provenance
+or handcrafted aggregate receipts are not production inputs.
+
 The verifier uses its own trusted UTC clock, accepts evidence only from the
 preceding six hours and rejects a reused nonce with an atomic CreateNew claim.
 Package and evidence handles remain open and their volume, FileId, link-count,
@@ -91,6 +103,8 @@ Focused static/synthetic selftests:
 ```powershell
 pwsh -File ./tools/v0.2-issue10-live-widget/Test-V02Issue10Acceptance.Tests.ps1
 powershell -File ./tools/v0.2-issue10-live-widget/Test-V02Issue10Acceptance.Tests.ps1
+pwsh -File ./tools/v0.2-issue10-live-widget/Publish-V02Issue10PerformanceSoakEvidence.SelfTests.ps1
+powershell -File ./tools/v0.2-issue10-live-widget/Publish-V02Issue10PerformanceSoakEvidence.SelfTests.ps1
 ```
 
 These tests are Static/Synthetic evidence only and never invoke a runtime

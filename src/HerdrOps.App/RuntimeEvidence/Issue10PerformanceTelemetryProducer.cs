@@ -1,0 +1,528 @@
+using System.Diagnostics;
+using System.IO;
+using System.IO.Pipes;
+using System.Runtime.InteropServices;
+using System.Security.Cryptography;
+using System.Text;
+using System.Text.Json;
+using System.Text.RegularExpressions;
+using System.Windows.Threading;
+using HerdrOps.App.Widgets;
+
+namespace HerdrOps.App.RuntimeEvidence;
+
+internal sealed record Issue10PerformanceTelemetryOptions(
+    string PipeName,
+    string RunNonce,
+    string SourceCommit,
+    string SourceTree,
+    string PackageIdentityPath,
+    string PackageIdentitySha256,
+    string PackageArchivePath,
+    string PackageArchiveSha256,
+    string PackageRoot,
+    int ServerProcessId,
+    string ServerExecutablePath,
+    string ServerExecutableSha256,
+    string RendererMode,
+    bool PreWpfHasAnyHwnd,
+    string AppExecutableSha256,
+    string CoreExecutablePath,
+    string CoreExecutableSha256)
+{
+    private static readonly Regex Lower32 = new("^[0-9a-f]{32}$", RegexOptions.CultureInvariant);
+    private static readonly Regex Lower40 = new("^[0-9a-f]{40}$", RegexOptions.CultureInvariant);
+    private static readonly Regex Upper64 = new("^[0-9A-F]{64}$", RegexOptions.CultureInvariant);
+    private static readonly Regex Pipe = new("^herdrops-v02-issue10-perf-[0-9a-f]{32}-[0-9]{1,3}$", RegexOptions.CultureInvariant);
+
+    internal static bool TryParseInvocation(
+        IReadOnlyList<string> args,
+        out Issue10PerformanceTelemetryOptions? options,
+        out string? error)
+    {
+        options = null;
+        error = null;
+        var names = new[]
+        {
+            "--issue10-performance-telemetry-pipe", "--issue10-performance-run-nonce",
+            "--issue10-performance-source-commit", "--issue10-performance-source-tree",
+            "--issue10-performance-package-identity-path", "--issue10-performance-package-identity-sha256",
+            "--issue10-performance-package-archive-path", "--issue10-performance-package-archive-sha256",
+            "--issue10-performance-package-root",
+            "--issue10-performance-server-pid", "--issue10-performance-server-path",
+            "--issue10-performance-server-sha256", "--issue10-performance-renderer-mode",
+        };
+        var requested = args.Any(argument => argument.StartsWith("--issue10-performance-", StringComparison.Ordinal));
+        if (!requested)
+        {
+            return true;
+        }
+
+        try
+        {
+            if (args.Count != names.Length * 2)
+            {
+                throw new InvalidOperationException("Issue #10 performance mode requires one complete exact argument set.");
+            }
+            var values = new Dictionary<string, string>(StringComparer.Ordinal);
+            for (var index = 0; index < args.Count; index += 2)
+            {
+                if (!names.Contains(args[index], StringComparer.Ordinal) ||
+                    !values.TryAdd(args[index], args[index + 1]))
+                {
+                    throw new InvalidOperationException("Issue #10 performance mode contains an unknown or duplicate option.");
+                }
+            }
+            if (names.Any(name => !values.ContainsKey(name)))
+            {
+                throw new InvalidOperationException("Issue #10 performance mode omitted a required option.");
+            }
+            var pipe = values[names[0]];
+            var nonce = values[names[1]];
+            var commit = values[names[2]];
+            var tree = values[names[3]];
+            var identityPath = Path.GetFullPath(values[names[4]]);
+            var identitySha = values[names[5]];
+            var archivePath = Path.GetFullPath(values[names[6]]);
+            var archiveSha = values[names[7]];
+            var packageRoot = Path.GetFullPath(values[names[8]]);
+            if (!int.TryParse(values[names[9]], out var serverPid) || serverPid <= 0 || serverPid == Environment.ProcessId)
+            {
+                throw new InvalidOperationException("Issue #10 performance server PID is invalid.");
+            }
+            var serverPath = Path.GetFullPath(values[names[10]]);
+            var serverSha = values[names[11]];
+            var mode = values[names[12]];
+            if (!Pipe.IsMatch(pipe) || !pipe.Contains(nonce, StringComparison.Ordinal) ||
+                !Lower32.IsMatch(nonce) || !Lower40.IsMatch(commit) || !Lower40.IsMatch(tree) ||
+                !Upper64.IsMatch(identitySha) || !Upper64.IsMatch(archiveSha) || !Upper64.IsMatch(serverSha) ||
+                mode is not ("Hardware" or "SoftwareOnly"))
+            {
+                throw new InvalidOperationException("Issue #10 performance identifiers or renderer mode are invalid.");
+            }
+            var package = ValidateExactPackageBeforeWpf(
+                identityPath, identitySha, archivePath, archiveSha, packageRoot, commit, tree);
+            if (HasProcessHwnd(Environment.ProcessId))
+            {
+                throw new InvalidOperationException("Issue #10 performance process already owns an HWND before renderer policy selection.");
+            }
+            options = new Issue10PerformanceTelemetryOptions(
+                pipe, nonce, commit, tree, identityPath, identitySha, archivePath,
+                archiveSha, packageRoot, serverPid, serverPath, serverSha, mode, false,
+                package.AppSha256, package.CorePath, package.CoreSha256);
+            return true;
+        }
+        catch (Exception exception) when (exception is not OutOfMemoryException)
+        {
+            error = exception.Message;
+            return false;
+        }
+    }
+
+    private static PackageExecutables ValidateExactPackageBeforeWpf(
+        string identityPath,
+        string identitySha,
+        string archivePath,
+        string archiveSha,
+        string packageRoot,
+        string commit,
+        string tree)
+    {
+        var identityBytes = File.ReadAllBytes(identityPath);
+        if (identityBytes.Length is <= 0 or > 4 * 1024 * 1024 ||
+            (identityBytes.Length >= 3 && identityBytes[0] == 0xEF && identityBytes[1] == 0xBB && identityBytes[2] == 0xBF))
+        {
+            throw new InvalidDataException("Issue #10 package identity bytes are invalid.");
+        }
+        var canonicalLength = identityBytes.Length;
+        while (canonicalLength > 0 && identityBytes[canonicalLength - 1] is (byte)'\r' or (byte)'\n') canonicalLength--;
+        var canonical = identityBytes.AsMemory(0, canonicalLength);
+        if (!Hash(canonical.Span).Equals(identitySha, StringComparison.Ordinal) ||
+            !HashFile(archivePath).Equals(archiveSha, StringComparison.Ordinal))
+        {
+            throw new InvalidDataException("Issue #10 package identity or archive bytes do not match the requested hashes.");
+        }
+        using var document = JsonDocument.Parse(canonical, new JsonDocumentOptions
+        {
+            AllowTrailingCommas = false,
+            CommentHandling = JsonCommentHandling.Disallow,
+        });
+        RejectDuplicates(document.RootElement);
+        var root = document.RootElement;
+        if (root.GetProperty("source").GetProperty("commitSha").GetString() != commit ||
+            root.GetProperty("source").GetProperty("treeSha").GetString() != tree ||
+            root.GetProperty("archive").GetProperty("sha256").GetString() != archiveSha)
+        {
+            throw new InvalidDataException("Issue #10 package source/archive binding is not exact.");
+        }
+        var app = root.GetProperty("components").GetProperty("app");
+        var appRelative = app.GetProperty("relativePath").GetString() ?? throw new InvalidDataException("Package App path is missing.");
+        if (Path.IsPathRooted(appRelative) || appRelative.Contains("..", StringComparison.Ordinal))
+        {
+            throw new InvalidDataException("Package App relative path is unsafe.");
+        }
+        var expectedApp = Path.GetFullPath(Path.Combine(packageRoot, appRelative));
+        var actualApp = Path.GetFullPath(Environment.ProcessPath ?? Process.GetCurrentProcess().MainModule?.FileName ?? string.Empty);
+        var appSha = app.GetProperty("sha256").GetString() ?? string.Empty;
+        if (!string.Equals(expectedApp, actualApp, StringComparison.OrdinalIgnoreCase) ||
+            !HashFile(actualApp).Equals(appSha, StringComparison.Ordinal))
+        {
+            throw new InvalidDataException("Issue #10 performance process is not the exact packaged App component.");
+        }
+        var core = root.GetProperty("components").GetProperty("core");
+        var coreRelative = core.GetProperty("relativePath").GetString() ?? throw new InvalidDataException("Package Core path is missing.");
+        if (Path.IsPathRooted(coreRelative) || coreRelative.Contains("..", StringComparison.Ordinal)) throw new InvalidDataException("Package Core relative path is unsafe.");
+        var corePath = Path.GetFullPath(Path.Combine(packageRoot, coreRelative));
+        var coreSha = core.GetProperty("sha256").GetString() ?? string.Empty;
+        if (!HashFile(corePath).Equals(coreSha, StringComparison.Ordinal)) throw new InvalidDataException("Issue #10 package Core bytes are not exact.");
+        return new PackageExecutables(appSha, corePath, coreSha);
+    }
+
+    private static void RejectDuplicates(JsonElement element)
+    {
+        if (element.ValueKind == JsonValueKind.Object)
+        {
+            var names = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var property in element.EnumerateObject())
+            {
+                if (!names.Add(property.Name)) throw new InvalidDataException("Package identity contains a duplicate JSON property.");
+                RejectDuplicates(property.Value);
+            }
+        }
+        else if (element.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var item in element.EnumerateArray()) RejectDuplicates(item);
+        }
+    }
+
+    internal static string HashFile(string path)
+    {
+        using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+        return Convert.ToHexString(SHA256.HashData(stream));
+    }
+
+    private static string Hash(ReadOnlySpan<byte> bytes) => Convert.ToHexString(SHA256.HashData(bytes));
+
+    internal static bool HasProcessHwnd(int processId)
+    {
+        var found = false;
+        _ = EnumWindows((window, parameter) =>
+        {
+            _ = GetWindowThreadProcessId(window, out var owner);
+            if (owner != (uint)processId) return true;
+            found = true;
+            return false;
+        }, IntPtr.Zero);
+        return found;
+    }
+
+    [DllImport("user32.dll")]
+    private static extern bool EnumWindows(EnumWindowsProc callback, IntPtr parameter);
+
+    [DllImport("user32.dll")]
+    private static extern uint GetWindowThreadProcessId(IntPtr window, out uint processId);
+
+    private delegate bool EnumWindowsProc(IntPtr window, IntPtr parameter);
+
+    private sealed record PackageExecutables(string AppSha256, string CorePath, string CoreSha256);
+}
+
+internal sealed class Issue10PerformanceTelemetryProducer : IAsyncDisposable
+{
+    private const string Boundary = "PackagedCompatibilityPerformance-NativeTierComparator-NoPerFrameGpuOrRuntimeCredit";
+    private readonly Issue10PerformanceTelemetryOptions _options;
+    private readonly Dispatcher _dispatcher;
+    private readonly LiveWidgetState _widgets;
+    private readonly RuntimeRenderPolicyObservation _startup;
+    private NamedPipeClientStream? _pipe;
+    private StreamReader? _reader;
+    private StreamWriter? _writer;
+
+    internal static bool IsRemoteSession => GetSystemMetrics(0x1000) != 0;
+
+    internal Issue10PerformanceTelemetryProducer(
+        Issue10PerformanceTelemetryOptions options,
+        Dispatcher dispatcher,
+        LiveWidgetState widgets,
+        RuntimeRenderPolicyObservation startup)
+    {
+        _options = options;
+        _dispatcher = dispatcher;
+        _widgets = widgets;
+        _startup = startup;
+    }
+
+    internal async Task RunAsync(CancellationToken cancellationToken)
+    {
+        ValidateServer();
+        _pipe = new NamedPipeClientStream(".", _options.PipeName, PipeDirection.InOut, PipeOptions.Asynchronous);
+        await _pipe.ConnectAsync(30_000, cancellationToken);
+        var serverPid = GetServerProcessId(_pipe.SafePipeHandle.DangerousGetHandle());
+        if (serverPid != _options.ServerProcessId) throw new UnauthorizedAccessException("Issue #10 telemetry pipe server PID changed.");
+        _reader = new StreamReader(_pipe, new UTF8Encoding(false, true), false, 65_536, true);
+        _writer = new StreamWriter(_pipe, new UTF8Encoding(false), 65_536, true) { AutoFlush = true };
+        await _writer.WriteLineAsync(JsonSerializer.Serialize(BuildHello()));
+        while (true)
+        {
+            var requestLine = await _reader.ReadLineAsync(cancellationToken);
+            if (requestLine is null) break;
+            var request = ParseRequest(requestLine);
+            var response = request.IsSoak
+                ? await MeasureSoakAsync(request, cancellationToken)
+                : await MeasureAsync(request, cancellationToken);
+            await _writer.WriteLineAsync(JsonSerializer.Serialize(response));
+            if (!request.IsSoak) break;
+        }
+    }
+
+    private object BuildHello()
+    {
+        using var process = Process.GetCurrentProcess();
+        var start = process.StartTime.ToUniversalTime().ToString("O");
+        return new
+        {
+            schemaVersion = 1,
+            kind = "issue10-performance-hello",
+            runNonce = _options.RunNonce,
+            sourceCommit = _options.SourceCommit,
+            sourceTree = _options.SourceTree,
+            packageIdentitySha256 = _options.PackageIdentitySha256,
+            packageArchiveSha256 = _options.PackageArchiveSha256,
+            serverProcessId = _options.ServerProcessId,
+            app = new { pid = Environment.ProcessId, startUtc = start, path = Environment.ProcessPath, sha256 = _options.AppExecutableSha256 },
+            renderer = new
+            {
+                requestedMode = _options.RendererMode,
+                nativeProcessRenderMode = _startup.WpfProcessRenderMode,
+                nativeTier = _startup.RenderTier,
+                hasAnyHwnd = _options.PreWpfHasAnyHwnd,
+                preFirstHwnd = true,
+                hardwareComparatorBoundary = Boundary,
+            },
+        };
+    }
+
+    private SampleRequest ParseRequest(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json) || Encoding.UTF8.GetByteCount(json) > 16_384) throw new InvalidDataException("Issue #10 sample request is empty or oversized.");
+        using var document = JsonDocument.Parse(json);
+        RejectRequestDuplicates(document.RootElement);
+        var root = document.RootElement;
+        var kind = root.GetProperty("kind").GetString() ?? string.Empty;
+        if (kind == "issue10-soak-sample-request")
+        {
+            var expected = new[] { "schemaVersion", "kind", "runNonce", "sequenceNumber", "binIndex", "sampleIndex", "coreProcessId" };
+            RequireExactRequestShape(root, expected);
+            var soak = new SampleRequest(root.GetProperty("schemaVersion").GetInt32(), kind,
+                root.GetProperty("runNonce").GetString() ?? string.Empty,
+                root.GetProperty("sequenceNumber").GetInt32(), "SOAK", false, 0, "b", true,
+                root.GetProperty("binIndex").GetInt32(), root.GetProperty("sampleIndex").GetInt32(), root.GetProperty("coreProcessId").GetInt32());
+            if (_options.RendererMode != "SoftwareOnly" || soak.SchemaVersion != 1 || soak.RunNonce != _options.RunNonce ||
+                soak.SequenceNumber is < 0 or > 3599 || soak.BinIndex is < 0 or > 11 || soak.SampleIndex is < 0 or > 299 ||
+                soak.SequenceNumber != soak.BinIndex * 300 + soak.SampleIndex || soak.CoreProcessId <= 0 || soak.CoreProcessId == Environment.ProcessId)
+            {
+                throw new InvalidDataException("Issue #10 soak request binding is invalid.");
+            }
+            return soak;
+        }
+        RequireExactRequestShape(root, new[] { "schemaVersion", "kind", "runNonce", "sequenceNumber", "order", "isWarmup", "repetitionOrdinal", "semanticMode" });
+        var request = new SampleRequest(
+            root.GetProperty("schemaVersion").GetInt32(),
+            kind,
+            root.GetProperty("runNonce").GetString() ?? string.Empty,
+            root.GetProperty("sequenceNumber").GetInt32(),
+            root.GetProperty("order").GetString() ?? string.Empty,
+            root.GetProperty("isWarmup").GetBoolean(),
+            root.GetProperty("repetitionOrdinal").GetInt32(),
+            root.GetProperty("semanticMode").GetString() ?? string.Empty,
+            false, -1, -1, 0);
+        var expectedSemantic = _options.RendererMode == "Hardware" ? "a" : "b";
+        if (request.SchemaVersion != 1 || request.Kind != "issue10-performance-sample-request" ||
+            request.RunNonce != _options.RunNonce || request.SequenceNumber is < 0 or > 23 ||
+            request.Order is not ("AB" or "BA") || request.RepetitionOrdinal is < 0 or > 4 ||
+            request.SemanticMode != expectedSemantic)
+        {
+            throw new InvalidDataException("Issue #10 sample request binding is invalid.");
+        }
+        return request;
+    }
+
+    private async Task<object> MeasureSoakAsync(SampleRequest request, CancellationToken cancellationToken)
+    {
+        using var core = Process.GetProcessById(request.CoreProcessId);
+        core.Refresh();
+        var corePath = Path.GetFullPath(core.MainModule?.FileName ?? string.Empty);
+        if (!string.Equals(corePath, _options.CoreExecutablePath, StringComparison.OrdinalIgnoreCase) ||
+            !Issue10PerformanceTelemetryOptions.HashFile(corePath).Equals(_options.CoreExecutableSha256, StringComparison.Ordinal))
+        {
+            throw new UnauthorizedAccessException("Issue #10 soak Core process is not the exact packaged component.");
+        }
+        var deadline = DateTimeOffset.UtcNow.AddMinutes(5);
+        WidgetUpdateLatencySample[] latency = [];
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            latency = _widgets.UpdateLatencySnapshot.Samples
+                .Where(sample => sample.UpdateKind is "Snapshot" or "Delta")
+                .TakeLast(20).ToArray();
+            if (latency.Length == 20) break;
+            await Task.Delay(100, cancellationToken);
+        }
+        if (latency.Length != 20) throw new TimeoutException("Issue #10 soak telemetry did not observe 20 production Widget updates.");
+        var stalls = await ObserveDispatcherStallsAsync(cancellationToken);
+        var render = RuntimeRenderPolicy.ObserveAndRequireConfiguredMode("issue10-soak-sample");
+        var observedUtc = DateTimeOffset.UtcNow.ToString("O");
+        using var app = Process.GetCurrentProcess();
+        var unsigned = new
+        {
+            schemaVersion = 1,
+            nonce = _options.RunNonce,
+            sequenceNumber = request.SequenceNumber,
+            observedUtc,
+            binIndex = request.BinIndex,
+            sampleIndex = request.SampleIndex,
+            producer = new
+            {
+                appProcessId = Environment.ProcessId,
+                coreProcessId = core.Id,
+                appStartTimeUtc = app.StartTime.ToUniversalTime().ToString("O"),
+                coreStartTimeUtc = core.StartTime.ToUniversalTime().ToString("O"),
+                appExecutablePath = Environment.ProcessPath,
+                coreExecutablePath = corePath,
+                appExecutableSha256 = _options.AppExecutableSha256,
+                coreExecutableSha256 = _options.CoreExecutableSha256,
+            },
+            metrics = new
+            {
+                latencyMicroseconds = latency.Select(sample => checked((long)Math.Round(sample.Milliseconds * 1000.0))).ToArray(),
+                uiStallMicroseconds = stalls,
+                rendererStable = render.SoftwareOnlyConfirmed && render.WpfProcessRenderMode == "SoftwareOnly",
+            },
+        };
+        var canonical = JsonSerializer.Serialize(unsigned);
+        var packetSha256 = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(canonical)));
+        return new
+        {
+            unsigned.schemaVersion, unsigned.nonce, unsigned.sequenceNumber, unsigned.observedUtc,
+            unsigned.binIndex, unsigned.sampleIndex, unsigned.producer, unsigned.metrics, packetSha256,
+        };
+    }
+
+    private async Task<object> MeasureAsync(SampleRequest request, CancellationToken cancellationToken)
+    {
+        var baseline = _widgets.UpdateLatencySnapshot.SampleCount;
+        using var process = Process.GetCurrentProcess();
+        var cpuStart = process.TotalProcessorTime;
+        var wall = Stopwatch.StartNew();
+        long maximumWorkingSet = process.WorkingSet64;
+        var deadline = DateTimeOffset.UtcNow.AddMinutes(5);
+        IReadOnlyList<WidgetUpdateLatencySample> fresh = [];
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            process.Refresh();
+            maximumWorkingSet = Math.Max(maximumWorkingSet, process.WorkingSet64);
+            var snapshot = _widgets.UpdateLatencySnapshot;
+            fresh = snapshot.Samples.Skip(Math.Min(baseline, snapshot.Samples.Count))
+                .Where(sample => sample.UpdateKind is "Snapshot" or "Delta")
+                .TakeLast(20).ToArray();
+            if (fresh.Count == 20) break;
+            await Task.Delay(100, cancellationToken);
+        }
+        if (fresh.Count != 20) throw new TimeoutException("Issue #10 performance sample did not observe 20 fresh production Widget updates.");
+        var stalls = await ObserveDispatcherStallsAsync(cancellationToken);
+        process.Refresh();
+        maximumWorkingSet = Math.Max(maximumWorkingSet, process.WorkingSet64);
+        wall.Stop();
+        var cpuBasisPoints = wall.Elapsed.TotalMilliseconds <= 0 ? 0L : checked((long)Math.Round(
+            (process.TotalProcessorTime - cpuStart).TotalMilliseconds /
+            (wall.Elapsed.TotalMilliseconds * Environment.ProcessorCount) * 10_000.0));
+        var observation = RuntimeRenderPolicy.ObserveAndRequireConfiguredMode("issue10-performance-sample");
+        return new
+        {
+            schemaVersion = 1,
+            kind = "issue10-performance-sample",
+            runNonce = _options.RunNonce,
+            sequenceNumber = request.SequenceNumber,
+            observedUtc = DateTimeOffset.UtcNow.ToString("O"),
+            app = new { pid = Environment.ProcessId, startUtc = process.StartTime.ToUniversalTime().ToString("O"), path = Environment.ProcessPath, sha256 = _options.AppExecutableSha256 },
+            renderer = new { requestedMode = _options.RendererMode, nativeProcessRenderMode = observation.WpfProcessRenderMode, nativeTier = observation.RenderTier, hasAnyHwnd = Issue10PerformanceTelemetryOptions.HasProcessHwnd(Environment.ProcessId), preFirstHwnd = false },
+            cpuBasisPoints = Math.Max(0, cpuBasisPoints),
+            workingSetMaximumBytes = maximumWorkingSet,
+            latencyMicroseconds = fresh.Select(sample => checked((long)Math.Round(sample.Milliseconds * 1000.0))).ToArray(),
+            uiStallMicroseconds = stalls,
+            boundary = Boundary,
+        };
+    }
+
+    private async Task<long[]> ObserveDispatcherStallsAsync(CancellationToken cancellationToken)
+    {
+        var stalls = new long[20];
+        for (var index = 0; index < stalls.Length; index++)
+        {
+            var started = Stopwatch.GetTimestamp();
+            await _dispatcher.InvokeAsync(static () => { }, DispatcherPriority.Background, cancellationToken);
+            stalls[index] = checked((long)Math.Round(Stopwatch.GetElapsedTime(started).TotalMilliseconds * 1000.0));
+        }
+        return stalls;
+    }
+
+    private void ValidateServer()
+    {
+        using var process = Process.GetProcessById(_options.ServerProcessId);
+        var actual = Path.GetFullPath(process.MainModule?.FileName ?? string.Empty);
+        if (!string.Equals(actual, _options.ServerExecutablePath, StringComparison.OrdinalIgnoreCase) ||
+            !Issue10PerformanceTelemetryOptions.HashFile(actual).Equals(_options.ServerExecutableSha256, StringComparison.Ordinal))
+        {
+            throw new UnauthorizedAccessException("Issue #10 telemetry server executable identity is invalid.");
+        }
+    }
+
+    private static void RejectRequestDuplicates(JsonElement root)
+    {
+        if (root.ValueKind != JsonValueKind.Object) throw new InvalidDataException("Issue #10 sample request must be an object.");
+        var actual = root.EnumerateObject().Select(property => property.Name).ToArray();
+        if (actual.Distinct(StringComparer.Ordinal).Count() != actual.Length) throw new InvalidDataException("Issue #10 sample request contains duplicate properties.");
+    }
+
+    private static void RequireExactRequestShape(JsonElement root, string[] expected)
+    {
+        var actual = root.EnumerateObject().Select(property => property.Name).ToArray();
+        if (!actual.SequenceEqual(expected, StringComparer.Ordinal))
+        {
+            throw new InvalidDataException("Issue #10 sample request shape or property order is invalid.");
+        }
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (_writer is not null) await _writer.DisposeAsync();
+        _reader?.Dispose();
+        _pipe?.Dispose();
+    }
+
+    [DllImport("user32.dll")]
+    private static extern int GetSystemMetrics(int index);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool GetNamedPipeServerProcessId(IntPtr pipe, out uint processId);
+
+    private static int GetServerProcessId(IntPtr handle) =>
+        GetNamedPipeServerProcessId(handle, out var processId) && processId > 0
+            ? checked((int)processId)
+            : throw new InvalidOperationException("Issue #10 telemetry pipe server PID is unavailable.");
+
+    private sealed record SampleRequest(
+        int SchemaVersion,
+        string Kind,
+        string RunNonce,
+        int SequenceNumber,
+        string Order,
+        bool IsWarmup,
+        int RepetitionOrdinal,
+        string SemanticMode,
+        bool IsSoak,
+        int BinIndex,
+        int SampleIndex,
+        int CoreProcessId);
+}
