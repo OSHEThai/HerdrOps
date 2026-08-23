@@ -455,9 +455,17 @@ jobs:
         shell: pwsh
         run: ./tools/v0.2-renderer-compatibility/Invoke-V02SoakMeasurement.SelfTests.ps1
 
+      - name: Run v0.2 performance hostile selftests (PowerShell 7)
+        shell: pwsh
+        run: ./tools/v0.2-renderer-compatibility/Invoke-V02PerformanceMeasurement.SelfTests.ps1
+
       - name: Run v0.2 soak hostile selftests (Windows PowerShell 5.1)
         shell: powershell
         run: ./tools/v0.2-renderer-compatibility/Invoke-V02SoakMeasurement.SelfTests.ps1
+
+      - name: Run v0.2 performance hostile selftests (Windows PowerShell 5.1)
+        shell: powershell
+        run: ./tools/v0.2-renderer-compatibility/Invoke-V02PerformanceMeasurement.SelfTests.ps1
 
       - name: Run v0.2 Issue #10 evidence composer selftests (PowerShell 7)
         shell: pwsh

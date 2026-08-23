@@ -21,6 +21,7 @@ internal sealed record Issue10PerformanceTelemetryOptions(
     string PackageArchivePath,
     string PackageArchiveSha256,
     string PackageRoot,
+    string PackageProfilePath,
     int ServerProcessId,
     string ServerExecutablePath,
     string ServerExecutableSha256,
@@ -28,7 +29,11 @@ internal sealed record Issue10PerformanceTelemetryOptions(
     bool PreWpfHasAnyHwnd,
     string AppExecutableSha256,
     string CoreExecutablePath,
-    string CoreExecutableSha256)
+    string CoreExecutableSha256,
+    string ManifestPath,
+    string ManifestSha256,
+    string IdentityFileSha256,
+    string ProfileFileSha256)
 {
     private static readonly Regex Lower32 = new("^[0-9a-f]{32}$", RegexOptions.CultureInvariant);
     private static readonly Regex Lower40 = new("^[0-9a-f]{40}$", RegexOptions.CultureInvariant);
@@ -49,6 +54,7 @@ internal sealed record Issue10PerformanceTelemetryOptions(
             "--issue10-performance-package-identity-path", "--issue10-performance-package-identity-sha256",
             "--issue10-performance-package-archive-path", "--issue10-performance-package-archive-sha256",
             "--issue10-performance-package-root",
+            "--issue10-performance-package-profile-path",
             "--issue10-performance-server-pid", "--issue10-performance-server-path",
             "--issue10-performance-server-sha256", "--issue10-performance-renderer-mode",
         };
@@ -86,13 +92,14 @@ internal sealed record Issue10PerformanceTelemetryOptions(
             var archivePath = Path.GetFullPath(values[names[6]]);
             var archiveSha = values[names[7]];
             var packageRoot = Path.GetFullPath(values[names[8]]);
-            if (!int.TryParse(values[names[9]], out var serverPid) || serverPid <= 0 || serverPid == Environment.ProcessId)
+            var profilePath = Path.GetFullPath(values[names[9]]);
+            if (!int.TryParse(values[names[10]], out var serverPid) || serverPid <= 0 || serverPid == Environment.ProcessId)
             {
                 throw new InvalidOperationException("Issue #10 performance server PID is invalid.");
             }
-            var serverPath = Path.GetFullPath(values[names[10]]);
-            var serverSha = values[names[11]];
-            var mode = values[names[12]];
+            var serverPath = Path.GetFullPath(values[names[11]]);
+            var serverSha = values[names[12]];
+            var mode = values[names[13]];
             if (!Pipe.IsMatch(pipe) || !pipe.Contains(nonce, StringComparison.Ordinal) ||
                 !Lower32.IsMatch(nonce) || !Lower40.IsMatch(commit) || !Lower40.IsMatch(tree) ||
                 !Upper64.IsMatch(identitySha) || !Upper64.IsMatch(archiveSha) || !Upper64.IsMatch(serverSha) ||
@@ -100,16 +107,18 @@ internal sealed record Issue10PerformanceTelemetryOptions(
             {
                 throw new InvalidOperationException("Issue #10 performance identifiers or renderer mode are invalid.");
             }
-            var package = ValidateExactPackageBeforeWpf(
-                identityPath, identitySha, archivePath, archiveSha, packageRoot, commit, tree);
+            var package = Issue10PackageValidator.Validate(
+                identityPath, identitySha, archivePath, archiveSha, packageRoot, profilePath, commit, tree,
+                Environment.ProcessPath ?? throw new InvalidOperationException("Issue #10 App process path is unavailable."));
             if (HasProcessHwnd(Environment.ProcessId))
             {
                 throw new InvalidOperationException("Issue #10 performance process already owns an HWND before renderer policy selection.");
             }
             options = new Issue10PerformanceTelemetryOptions(
                 pipe, nonce, commit, tree, identityPath, identitySha, archivePath,
-                archiveSha, packageRoot, serverPid, serverPath, serverSha, mode, false,
-                package.AppSha256, package.CorePath, package.CoreSha256);
+                archiveSha, packageRoot, profilePath, serverPid, serverPath, serverSha, mode, false,
+                package.AppSha256, package.CorePath, package.CoreSha256, package.ManifestPath,
+                package.ManifestSha256, package.IdentityFileSha256, package.ProfileFileSha256);
             return true;
         }
         catch (Exception exception) when (exception is not OutOfMemoryException)
@@ -117,65 +126,6 @@ internal sealed record Issue10PerformanceTelemetryOptions(
             error = exception.Message;
             return false;
         }
-    }
-
-    private static PackageExecutables ValidateExactPackageBeforeWpf(
-        string identityPath,
-        string identitySha,
-        string archivePath,
-        string archiveSha,
-        string packageRoot,
-        string commit,
-        string tree)
-    {
-        var identityBytes = File.ReadAllBytes(identityPath);
-        if (identityBytes.Length is <= 0 or > 4 * 1024 * 1024 ||
-            (identityBytes.Length >= 3 && identityBytes[0] == 0xEF && identityBytes[1] == 0xBB && identityBytes[2] == 0xBF))
-        {
-            throw new InvalidDataException("Issue #10 package identity bytes are invalid.");
-        }
-        var canonicalLength = identityBytes.Length;
-        while (canonicalLength > 0 && identityBytes[canonicalLength - 1] is (byte)'\r' or (byte)'\n') canonicalLength--;
-        var canonical = identityBytes.AsMemory(0, canonicalLength);
-        if (!Hash(canonical.Span).Equals(identitySha, StringComparison.Ordinal) ||
-            !HashFile(archivePath).Equals(archiveSha, StringComparison.Ordinal))
-        {
-            throw new InvalidDataException("Issue #10 package identity or archive bytes do not match the requested hashes.");
-        }
-        using var document = JsonDocument.Parse(canonical, new JsonDocumentOptions
-        {
-            AllowTrailingCommas = false,
-            CommentHandling = JsonCommentHandling.Disallow,
-        });
-        RejectDuplicates(document.RootElement);
-        var root = document.RootElement;
-        if (root.GetProperty("source").GetProperty("commitSha").GetString() != commit ||
-            root.GetProperty("source").GetProperty("treeSha").GetString() != tree ||
-            root.GetProperty("archive").GetProperty("sha256").GetString() != archiveSha)
-        {
-            throw new InvalidDataException("Issue #10 package source/archive binding is not exact.");
-        }
-        var app = root.GetProperty("components").GetProperty("app");
-        var appRelative = app.GetProperty("relativePath").GetString() ?? throw new InvalidDataException("Package App path is missing.");
-        if (Path.IsPathRooted(appRelative) || appRelative.Contains("..", StringComparison.Ordinal))
-        {
-            throw new InvalidDataException("Package App relative path is unsafe.");
-        }
-        var expectedApp = Path.GetFullPath(Path.Combine(packageRoot, appRelative));
-        var actualApp = Path.GetFullPath(Environment.ProcessPath ?? Process.GetCurrentProcess().MainModule?.FileName ?? string.Empty);
-        var appSha = app.GetProperty("sha256").GetString() ?? string.Empty;
-        if (!string.Equals(expectedApp, actualApp, StringComparison.OrdinalIgnoreCase) ||
-            !HashFile(actualApp).Equals(appSha, StringComparison.Ordinal))
-        {
-            throw new InvalidDataException("Issue #10 performance process is not the exact packaged App component.");
-        }
-        var core = root.GetProperty("components").GetProperty("core");
-        var coreRelative = core.GetProperty("relativePath").GetString() ?? throw new InvalidDataException("Package Core path is missing.");
-        if (Path.IsPathRooted(coreRelative) || coreRelative.Contains("..", StringComparison.Ordinal)) throw new InvalidDataException("Package Core relative path is unsafe.");
-        var corePath = Path.GetFullPath(Path.Combine(packageRoot, coreRelative));
-        var coreSha = core.GetProperty("sha256").GetString() ?? string.Empty;
-        if (!HashFile(corePath).Equals(coreSha, StringComparison.Ordinal)) throw new InvalidDataException("Issue #10 package Core bytes are not exact.");
-        return new PackageExecutables(appSha, corePath, coreSha);
     }
 
     private static void RejectDuplicates(JsonElement element)
@@ -201,8 +151,6 @@ internal sealed record Issue10PerformanceTelemetryOptions(
         return Convert.ToHexString(SHA256.HashData(stream));
     }
 
-    private static string Hash(ReadOnlySpan<byte> bytes) => Convert.ToHexString(SHA256.HashData(bytes));
-
     internal static bool HasProcessHwnd(int processId)
     {
         var found = false;
@@ -224,7 +172,6 @@ internal sealed record Issue10PerformanceTelemetryOptions(
 
     private delegate bool EnumWindowsProc(IntPtr window, IntPtr parameter);
 
-    private sealed record PackageExecutables(string AppSha256, string CorePath, string CoreSha256);
 }
 
 internal sealed class Issue10PerformanceTelemetryProducer : IAsyncDisposable
@@ -288,7 +235,7 @@ internal sealed class Issue10PerformanceTelemetryProducer : IAsyncDisposable
             sourceTree = _options.SourceTree,
             packageIdentitySha256 = _options.PackageIdentitySha256,
             packageArchiveSha256 = _options.PackageArchiveSha256,
-            serverProcessId = _options.ServerProcessId,
+            server = ObserveServer(),
             app = new { pid = Environment.ProcessId, startUtc = start, path = Environment.ProcessPath, sha256 = _options.AppExecutableSha256 },
             renderer = new
             {
@@ -300,6 +247,18 @@ internal sealed class Issue10PerformanceTelemetryProducer : IAsyncDisposable
                 hardwareComparatorBoundary = Boundary,
             },
         };
+    }
+
+    private object ObserveServer()
+    {
+        using var server = Process.GetProcessById(_options.ServerProcessId);
+        var path = Path.GetFullPath(server.MainModule?.FileName ?? string.Empty);
+        if (!string.Equals(path, _options.ServerExecutablePath, StringComparison.OrdinalIgnoreCase) ||
+            !Issue10PerformanceTelemetryOptions.HashFile(path).Equals(_options.ServerExecutableSha256, StringComparison.Ordinal))
+        {
+            throw new UnauthorizedAccessException("Issue #10 telemetry server identity changed.");
+        }
+        return new { pid=server.Id,startUtc=server.StartTime.ToUniversalTime().ToString("O"),path,sha256=_options.ServerExecutableSha256 };
     }
 
     private SampleRequest ParseRequest(string? json)
@@ -325,7 +284,7 @@ internal sealed class Issue10PerformanceTelemetryProducer : IAsyncDisposable
             }
             return soak;
         }
-        RequireExactRequestShape(root, new[] { "schemaVersion", "kind", "runNonce", "sequenceNumber", "order", "isWarmup", "repetitionOrdinal", "semanticMode" });
+        RequireExactRequestShape(root, new[] { "schemaVersion", "kind", "runNonce", "sequenceNumber", "order", "isWarmup", "repetitionOrdinal", "semanticMode", "coreProcessId" });
         var request = new SampleRequest(
             root.GetProperty("schemaVersion").GetInt32(),
             kind,
@@ -335,12 +294,12 @@ internal sealed class Issue10PerformanceTelemetryProducer : IAsyncDisposable
             root.GetProperty("isWarmup").GetBoolean(),
             root.GetProperty("repetitionOrdinal").GetInt32(),
             root.GetProperty("semanticMode").GetString() ?? string.Empty,
-            false, -1, -1, 0);
+            false, -1, -1, root.GetProperty("coreProcessId").GetInt32());
         var expectedSemantic = _options.RendererMode == "Hardware" ? "a" : "b";
         if (request.SchemaVersion != 1 || request.Kind != "issue10-performance-sample-request" ||
             request.RunNonce != _options.RunNonce || request.SequenceNumber is < 0 or > 23 ||
             request.Order is not ("AB" or "BA") || request.RepetitionOrdinal is < 0 or > 4 ||
-            request.SemanticMode != expectedSemantic)
+            request.SemanticMode != expectedSemantic || request.CoreProcessId <= 0 || request.CoreProcessId == Environment.ProcessId)
         {
             throw new InvalidDataException("Issue #10 sample request binding is invalid.");
         }
@@ -412,16 +371,30 @@ internal sealed class Issue10PerformanceTelemetryProducer : IAsyncDisposable
     {
         var baseline = _widgets.UpdateLatencySnapshot.SampleCount;
         using var process = Process.GetCurrentProcess();
+        using var core = Process.GetProcessById(request.CoreProcessId);
+        core.Refresh();
+        var corePath = Path.GetFullPath(core.MainModule?.FileName ?? string.Empty);
+        var coreStart = core.StartTime.ToUniversalTime();
+        if (!string.Equals(corePath, _options.CoreExecutablePath, StringComparison.OrdinalIgnoreCase) ||
+            !Issue10PerformanceTelemetryOptions.HashFile(corePath).Equals(_options.CoreExecutableSha256, StringComparison.Ordinal))
+        {
+            throw new UnauthorizedAccessException("Issue #10 performance Core process is not the exact packaged component.");
+        }
         var cpuStart = process.TotalProcessorTime;
+        var coreCpuStart = core.TotalProcessorTime;
         var wall = Stopwatch.StartNew();
         long maximumWorkingSet = process.WorkingSet64;
+        long maximumCoreWorkingSet = core.WorkingSet64;
         var deadline = DateTimeOffset.UtcNow.AddMinutes(5);
         IReadOnlyList<WidgetUpdateLatencySample> fresh = [];
         while (DateTimeOffset.UtcNow < deadline)
         {
             cancellationToken.ThrowIfCancellationRequested();
             process.Refresh();
+            core.Refresh();
+            if (core.HasExited || core.StartTime.ToUniversalTime() != coreStart) throw new InvalidOperationException("Issue #10 performance Core process changed during acquisition.");
             maximumWorkingSet = Math.Max(maximumWorkingSet, process.WorkingSet64);
+            maximumCoreWorkingSet = Math.Max(maximumCoreWorkingSet, core.WorkingSet64);
             var snapshot = _widgets.UpdateLatencySnapshot;
             fresh = snapshot.Samples.Skip(Math.Min(baseline, snapshot.Samples.Count))
                 .Where(sample => sample.UpdateKind is "Snapshot" or "Delta")
@@ -432,10 +405,12 @@ internal sealed class Issue10PerformanceTelemetryProducer : IAsyncDisposable
         if (fresh.Count != 20) throw new TimeoutException("Issue #10 performance sample did not observe 20 fresh production Widget updates.");
         var stalls = await ObserveDispatcherStallsAsync(cancellationToken);
         process.Refresh();
+        core.Refresh();
         maximumWorkingSet = Math.Max(maximumWorkingSet, process.WorkingSet64);
+        maximumCoreWorkingSet = Math.Max(maximumCoreWorkingSet, core.WorkingSet64);
         wall.Stop();
         var cpuBasisPoints = wall.Elapsed.TotalMilliseconds <= 0 ? 0L : checked((long)Math.Round(
-            (process.TotalProcessorTime - cpuStart).TotalMilliseconds /
+            ((process.TotalProcessorTime - cpuStart).TotalMilliseconds + (core.TotalProcessorTime - coreCpuStart).TotalMilliseconds) /
             (wall.Elapsed.TotalMilliseconds * Environment.ProcessorCount) * 10_000.0));
         var observation = RuntimeRenderPolicy.ObserveAndRequireConfiguredMode("issue10-performance-sample");
         return new
@@ -446,9 +421,10 @@ internal sealed class Issue10PerformanceTelemetryProducer : IAsyncDisposable
             sequenceNumber = request.SequenceNumber,
             observedUtc = DateTimeOffset.UtcNow.ToString("O"),
             app = new { pid = Environment.ProcessId, startUtc = process.StartTime.ToUniversalTime().ToString("O"), path = Environment.ProcessPath, sha256 = _options.AppExecutableSha256 },
+            core = new { pid=core.Id,startUtc=coreStart.ToString("O"),path=corePath,sha256=_options.CoreExecutableSha256 },
             renderer = new { requestedMode = _options.RendererMode, nativeProcessRenderMode = observation.WpfProcessRenderMode, nativeTier = observation.RenderTier, hasAnyHwnd = Issue10PerformanceTelemetryOptions.HasProcessHwnd(Environment.ProcessId), preFirstHwnd = false },
             cpuBasisPoints = Math.Max(0, cpuBasisPoints),
-            workingSetMaximumBytes = maximumWorkingSet,
+            workingSetMaximumBytes = checked(maximumWorkingSet + maximumCoreWorkingSet),
             latencyMicroseconds = fresh.Select(sample => checked((long)Math.Round(sample.Milliseconds * 1000.0))).ToArray(),
             uiStallMicroseconds = stalls,
             boundary = Boundary,

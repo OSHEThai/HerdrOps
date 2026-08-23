@@ -6,6 +6,7 @@ param(
     [Parameter(Mandatory = $true)][string]$BatterySoakMeasurementPath,
     [Parameter(Mandatory = $true)][string]$RawPerformancePath,
     [Parameter(Mandatory = $true)][string]$PerformanceBindingPath,
+    [Parameter(Mandatory = $true)][string]$PerformanceCommitPath,
     [Parameter(Mandatory = $true)][string]$DestinationDirectory,
     [Parameter(Mandatory = $true)][string]$EvidenceRoot,
     [Parameter(Mandatory = $true)][string]$RepositoryRoot,
@@ -88,6 +89,8 @@ function Assert-SoakMeasurement {
     foreach ($pair in @(@('receiptSha256',$script:Package.ReceiptSha256),@('archiveSha256',$script:Package.ArchiveSha256),@('appSha256',$script:Package.AppSha256),@('coreSha256',$script:Package.CoreSha256))) {
         if ([string]$value.package.($pair[0]) -cne [string]$pair[1]) { throw "$Power soak package $($pair[0]) binding is not exact." }
     }
+    Assert-ExactProperties $value.session @('kind','sessionId','transport','powerSource','thermalState','elevated','userScope') "$Power soak session"
+    if($value.session.kind-cne'LocalConsole'-or[long]$value.session.sessionId-lt0-or$value.session.transport-cne'Physical'-or$value.session.powerSource-cne$Power-or$value.session.thermalState-cne'Nominal'-or[bool]$value.session.elevated-or$value.session.userScope-cne'SingleUser'){throw "$Power soak session is not the governed local physical session."}
     Assert-ExactProperties $value.evidenceBoundary @('evidenceClass','actualHerdrRuntime','humanReview','release','creditGranted') "$Power soak evidence boundary"
     if ($value.evidenceBoundary.actualHerdrRuntime -cne 'NOT_OBSERVED' -or [bool]$value.evidenceBoundary.creditGranted) { throw "$Power soak output inflated Runtime credit." }
     $bins = @($value.soakBins)
@@ -131,16 +134,22 @@ function Assert-PerformanceBinding {
     if([int]$value.schemaVersion-ne1-or$value.evidenceClassification-cne'PackagedCompatibilityPerformanceTelemetryBinding-NoRuntimeCredit'-or$value.runNonce-cne$RunNonce){throw 'Performance telemetry binding identity is invalid.'}
     Assert-ExactProperties $value.source @('commitSha','treeSha') 'Performance telemetry binding source'
     if($value.source.commitSha-cne$ExpectedSourceCommit-or$value.source.treeSha-cne$ExpectedSourceTree){throw 'Performance telemetry binding source is stale.'}
-    Assert-ExactProperties $value.package @('identitySha256','archiveSha256','appSha256','coreSha256') 'Performance telemetry binding package'
-    if($value.package.identitySha256-cne$script:Package.ReceiptSha256-or$value.package.archiveSha256-cne$script:Package.ArchiveSha256-or$value.package.appSha256-cne$script:Package.AppSha256-or$value.package.coreSha256-cne$script:Package.CoreSha256){throw 'Performance telemetry binding package is stale.'}
+    Assert-ExactProperties $value.package @('identitySha256','identityFileSha256','profileFileSha256','archiveSha256','manifestSha256','appSha256','coreSha256') 'Performance telemetry binding package'
+    if($value.package.identitySha256-cne$script:Package.ReceiptSha256-or$value.package.identityFileSha256-cne$script:Package.IdentityFileSha256-or$value.package.profileFileSha256-cne$script:Package.ProfileFileSha256-or$value.package.archiveSha256-cne$script:Package.ArchiveSha256-or$value.package.manifestSha256-cne$script:Package.ManifestSha256-or$value.package.appSha256-cne$script:Package.AppSha256-or$value.package.coreSha256-cne$script:Package.CoreSha256){throw 'Performance telemetry binding package is stale.'}
     Assert-ExactProperties $value.rawSource @('relativePath','bytes','fileSha256','canonicalSha256') 'Performance telemetry binding raw source'
     if($value.rawSource.relativePath-cne(Get-RelativePath $RawPath 'Raw performance observations')-or[long]$value.rawSource.bytes-ne[long]$RawRead.Held.Bytes-or$value.rawSource.fileSha256-cne$RawRead.Held.Sha256-or$value.rawSource.canonicalSha256-cne$RawRead.CanonicalSha256){throw 'Performance telemetry binding does not bind the held raw observations.'}
     $items=@($value.acquisitions);if($items.Count-ne24){throw 'Performance telemetry binding must contain exactly 24 acquisitions.'}
+    $appIdentities=@{};$coreIdentity=$null;$serverIdentity=$null;$previousObserved=[DateTimeOffset]::MinValue
     for($i=0;$i-lt24;$i++){
-        $item=$items[$i];Assert-ExactProperties $item @('sequenceNumber','order','isWarmup','repetitionOrdinal','semanticMode','requestedMode','appProcessId','appStartUtc','appPath','appSha256','nativeProcessRenderMode','nativeTier','preFirstHwndProof','observedUtc','boundary') "Performance acquisition $i"
+        $item=$items[$i];Assert-ExactProperties $item @('sequenceNumber','order','isWarmup','repetitionOrdinal','semanticMode','requestedMode','appProcessId','appStartUtc','appPath','appSha256','coreProcessId','coreStartUtc','corePath','coreSha256','serverProcessId','serverStartUtc','serverPath','serverSha256','nativeProcessRenderMode','nativeTier','preFirstHwndProof','observedUtc','boundary') "Performance acquisition $i"
         $order=if($i-lt12){'AB'}else{'BA'};$within=$i%12;$pair=[int][Math]::Floor($within/2);$mode=if($order-ceq'AB'){if($within%2-eq0){'a'}else{'b'}}else{if($within%2-eq0){'b'}else{'a'}};$warm=($pair-eq0);$rep=if($warm){0}else{$pair-1};$requested=if($mode-ceq'a'){'Hardware'}else{'SoftwareOnly'};$native=if($mode-ceq'a'){'Default'}else{'SoftwareOnly'}
-        if([int]$item.sequenceNumber-ne$i-or$item.order-cne$order-or[bool]$item.isWarmup-ne$warm-or[int]$item.repetitionOrdinal-ne$rep-or$item.semanticMode-cne$mode-or$item.requestedMode-cne$requested-or$item.nativeProcessRenderMode-cne$native-or($mode-ceq'a'-and[int]$item.nativeTier-le0)-or-not[bool]$item.preFirstHwndProof-or$item.appPath-cne$script:Package.AppPath-or$item.appSha256-cne$script:Package.AppSha256-or$item.boundary-cne'PackagedCompatibilityPerformance-NativeTierComparator-NoPerFrameGpuOrRuntimeCredit'){throw "Performance acquisition $i is not the governed exact-package AB/BA sequence."}
-        Assert-RendererUtc $item.appStartUtc "Performance acquisition $i App start";Assert-RendererUtc $item.observedUtc "Performance acquisition $i observation";if([int]$item.appProcessId-le0){throw "Performance acquisition $i App PID is invalid."}
+        if([int]$item.sequenceNumber-ne$i-or$item.order-cne$order-or[bool]$item.isWarmup-ne$warm-or[int]$item.repetitionOrdinal-ne$rep-or$item.semanticMode-cne$mode-or$item.requestedMode-cne$requested-or$item.nativeProcessRenderMode-cne$native-or($mode-ceq'a'-and[int]$item.nativeTier-le0)-or-not[bool]$item.preFirstHwndProof-or-not[StringComparer]::OrdinalIgnoreCase.Equals([string]$item.appPath,$script:Package.AppPath)-or$item.appSha256-cne$script:Package.AppSha256-or-not[StringComparer]::OrdinalIgnoreCase.Equals([string]$item.corePath,$script:Package.CorePath)-or$item.coreSha256-cne$script:Package.CoreSha256-or$item.boundary-cne'PackagedCompatibilityPerformance-NativeTierComparator-NoPerFrameGpuOrRuntimeCredit'){throw "Performance acquisition $i is not the governed exact-package AB/BA sequence."}
+        Assert-RendererUtc $item.appStartUtc "Performance acquisition $i App start";Assert-RendererUtc $item.coreStartUtc "Performance acquisition $i Core start";Assert-RendererUtc $item.serverStartUtc "Performance acquisition $i server start";Assert-RendererUtc $item.observedUtc "Performance acquisition $i observation";if([int]$item.appProcessId-le0-or[int]$item.coreProcessId-le0-or[int]$item.serverProcessId-le0){throw "Performance acquisition $i process PID is invalid."}
+        $appStart=[DateTimeOffset]::Parse([string]$item.appStartUtc);$coreStart=[DateTimeOffset]::Parse([string]$item.coreStartUtc);$serverStart=[DateTimeOffset]::Parse([string]$item.serverStartUtc);$observed=[DateTimeOffset]::Parse([string]$item.observedUtc)
+        if($appStart-ge$observed-or$coreStart-ge$observed-or$serverStart-ge$observed-or$observed-le$previousObserved){throw "Performance acquisition $i chronology is invalid."};$previousObserved=$observed
+        $appKey=([string][int]$item.appProcessId)+'|'+$appStart.ToUniversalTime().ToString('O');if($appIdentities.ContainsKey($appKey)){throw "Performance acquisition $i reused an App PID/start identity."};$appIdentities[$appKey]=$true
+        $thisCore=([string][int]$item.coreProcessId)+'|'+$coreStart.ToUniversalTime().ToString('O')+'|'+[string]$item.corePath+'|'+[string]$item.coreSha256;if($null-eq$coreIdentity){$coreIdentity=$thisCore}elseif($thisCore-cne$coreIdentity){throw "Performance acquisition $i Core identity changed."}
+        if([string]$item.serverSha256-cnotmatch'^[0-9A-F]{64}$'){throw "Performance acquisition $i server SHA is invalid."};$thisServer=([string][int]$item.serverProcessId)+'|'+$serverStart.ToUniversalTime().ToString('O')+'|'+[string]$item.serverPath+'|'+[string]$item.serverSha256;if($null-eq$serverIdentity){$serverIdentity=$thisServer}elseif($thisServer-cne$serverIdentity){throw "Performance acquisition $i server identity changed."}
     }
     Assert-ExactProperties $value.evidenceBoundary @('actualHerdrRuntime','humanReview','release','creditGranted') 'Performance telemetry binding boundary'
     if($value.evidenceBoundary.actualHerdrRuntime-cne'NOT_OBSERVED'-or$value.evidenceBoundary.humanReview-cne'NOT_OBSERVED'-or$value.evidenceBoundary.release-cne'NOT_OBSERVED'-or[bool]$value.evidenceBoundary.creditGranted){throw 'Performance telemetry binding inflated acceptance credit.'}
@@ -158,6 +167,7 @@ $profilePath = Join-Path $RepositoryRoot 'tools\packaging\v0.2\package-identity-
 $script:Package = Resolve-V02RuntimePackageBinding -IdentityPath $PackageIdentityPath -ArchivePath $PackageArchivePath `
     -PackageRoot $ExtractedPackageRoot -RepositoryRoot $RepositoryRoot -ProfilePath $profilePath `
     -ExpectedSourceCommit $ExpectedSourceCommit -ExpectedSourceTree $ExpectedSourceTree
+$packageHolds=@()
 
 $destination = Resolve-ContainedPath $script:EvidenceRootFull $DestinationDirectory 'Issue #10 composed output directory'
 if (Test-Path -LiteralPath $destination) { throw 'Issue #10 composed output directory already exists; refusing to clobber.' }
@@ -168,22 +178,39 @@ $stage = Join-Path $parent ('.issue10-compose-' + [Guid]::NewGuid().ToString('N'
 
 $reads = @()
 try {
+    foreach($leaf in @(
+        @($script:Package.IdentityPath,$script:Package.IdentityFileSha256,'Package identity'),
+        @($script:Package.ProfilePath,$script:Package.ProfileFileSha256,'Package profile'),
+        @($script:Package.ArchivePath,$script:Package.ArchiveSha256,'Package archive'),
+        @($script:Package.ManifestPath,$script:Package.ManifestSha256,'Package manifest'),
+        @($script:Package.AppPath,$script:Package.AppSha256,'Package App'),
+        @($script:Package.CorePath,$script:Package.CoreSha256,'Package Core'))){
+        $hold=Get-RendererStableFileIdentity (Split-Path -Parent $leaf[0]) $leaf[0] $leaf[2] -KeepOpen
+        if($hold.Sha256-cne$leaf[1]){$hold.Stream.Dispose();throw "$($leaf[2]) changed after committed package validation."};$packageHolds+=$hold
+    }
     $acPath = Resolve-ContainedPath $script:EvidenceRootFull $AcSoakMeasurementPath 'AC soak measurement'
     $batteryPath = Resolve-ContainedPath $script:EvidenceRootFull $BatterySoakMeasurementPath 'Battery soak measurement'
     $rawPath = Resolve-ContainedPath $script:EvidenceRootFull $RawPerformancePath 'Raw performance observations'
     $bindingPath = Resolve-ContainedPath $script:EvidenceRootFull $PerformanceBindingPath 'Performance telemetry binding'
+    $commitPath = Resolve-ContainedPath $script:EvidenceRootFull $PerformanceCommitPath 'Performance transaction commit'
     $ac = Read-StrictCanonicalJson $acPath 'AC soak measurement'; $reads += $ac
     $battery = Read-StrictCanonicalJson $batteryPath 'Battery soak measurement'; $reads += $battery
     $raw = Read-StrictCanonicalJson $rawPath 'Raw performance observations'; $reads += $raw
     $binding = Read-StrictCanonicalJson $bindingPath 'Performance telemetry binding'; $reads += $binding
+    $commit = Read-StrictCanonicalJson $commitPath 'Performance transaction commit'; $reads += $commit
     $bins = @(Assert-SoakMeasurement $ac 'AC') + @(Assert-SoakMeasurement $battery 'Battery')
+    if([long]$ac.Value.session.sessionId-ne[long]$battery.Value.session.sessionId){throw 'AC and Battery soak outputs do not bind the same session.'}
     Assert-ExactProperties $raw.Value @('orders','soakBins') 'Raw performance observations'
     Assert-PerformanceBinding $binding $raw $rawPath
+    Assert-ExactProperties $commit.Value @('schemaVersion','kind','runNonce','raw','binding','creditGranted') 'Performance transaction commit'
+    Assert-ExactProperties $commit.Value.raw @('fileName','bytes','sha256') 'Performance transaction raw leaf';Assert-ExactProperties $commit.Value.binding @('fileName','bytes','sha256') 'Performance transaction binding leaf'
+    if([int]$commit.Value.schemaVersion-ne1-or$commit.Value.kind-cne'issue10-performance-transaction-commit'-or$commit.Value.runNonce-cne$RunNonce-or[bool]$commit.Value.creditGranted-or$commit.Value.raw.fileName-cne[IO.Path]::GetFileName($rawPath)-or[long]$commit.Value.raw.bytes-ne[long]$raw.Held.Bytes-or$commit.Value.raw.sha256-cne$raw.Held.Sha256-or$commit.Value.binding.fileName-cne[IO.Path]::GetFileName($bindingPath)-or[long]$commit.Value.binding.bytes-ne[long]$binding.Held.Bytes-or$commit.Value.binding.sha256-cne$binding.Held.Sha256){throw 'Performance transaction commit does not bind the held raw and telemetry files.'}
     if ((ConvertTo-RendererCanonicalJson @($raw.Value.soakBins) $RepositoryRoot) -cne (ConvertTo-RendererCanonicalJson $bins $RepositoryRoot)) {
         throw 'Raw performance observations are not bound to the exact held AC and Battery soak outputs.'
     }
 
     $identityInfo = Get-Item -LiteralPath $script:Package.IdentityPath
+    $profileInfo = Get-Item -LiteralPath $script:Package.ProfilePath
     $archiveInfo = Get-Item -LiteralPath $script:Package.ArchivePath
     $appInfo = Get-Item -LiteralPath $script:Package.AppPath
     $coreInfo = Get-Item -LiteralPath $script:Package.CorePath
@@ -200,6 +227,12 @@ try {
                 core = [pscustomobject][ordered]@{ relativePath=(Get-RelativePath $script:Package.CorePath 'Package Core'); bytes=[long]$coreInfo.Length; sha256=$script:Package.CoreSha256 }
             }
         }
+        profile = [pscustomobject][ordered]@{id=$script:Package.ProfileId;relativePath='tools/packaging/v0.2/package-identity-profile.json';bytes=[long]$profileInfo.Length;fileSha256=$script:Package.ProfileFileSha256;canonicalSha256=$script:Package.ProfileCanonicalSha256}
+        referenceHost = [pscustomobject][ordered]@{profileId=$script:RendererProfileId;profileSha256=$script:Package.ReferenceHostProfileSha256}
+        renderer = [pscustomobject][ordered]@{policy='software-only-process-wide';wpfProcessRenderMode='SoftwareOnly';policySha256=$script:Package.RendererPolicySha256}
+        session = [pscustomobject][ordered]@{kind='LocalConsole';name='Issue10PerformanceComparator';sessionId=[long]$ac.Value.session.sessionId;transport='Physical';powerSource='AC';thermalState='Nominal';elevated=$false;userScope='SingleUser'}
+        performanceTelemetryBinding = [pscustomobject][ordered]@{relativePath=(Get-RelativePath $bindingPath 'Performance telemetry binding');bytes=[long]$binding.Held.Bytes;fileSha256=[string]$binding.Held.Sha256;canonicalSha256=[string]$binding.CanonicalSha256}
+        performanceTransactionCommit = [pscustomobject][ordered]@{relativePath=(Get-RelativePath $commitPath 'Performance transaction commit');bytes=[long]$commit.Held.Bytes;fileSha256=[string]$commit.Held.Sha256;canonicalSha256=[string]$commit.CanonicalSha256}
     }
 
     if ($TestFaultInjectionStage -ceq 'BeforePerformanceReceipt') { throw 'Injected failure before performance receipt.' }
@@ -233,4 +266,5 @@ try {
 } finally {
     foreach ($read in $reads) { if ($null -ne $read.Held.Stream) { $read.Held.Stream.Dispose() } }
     if ($null -ne $stage -and (Test-Path -LiteralPath $stage)) { Remove-Item -LiteralPath $stage -Recurse -Force }
+    foreach($hold in $packageHolds){if($null-ne$hold.Stream){$hold.Stream.Dispose()}}
 }

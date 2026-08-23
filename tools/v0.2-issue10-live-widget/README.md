@@ -77,8 +77,9 @@ canonical package-receipt hashes. The separate soak receipt carries the same
 nonce and contains `provenance`, `soakBins`, and `aggregateStatus`.
 
 `Publish-V02Issue10PerformanceSoakEvidence.ps1` is the only governed adapter
-from the two live soak collector outputs, raw AB/BA collector output, and its
-authenticated per-acquisition telemetry binding to
+from the two live soak collector outputs, raw AB/BA collector output, its
+authenticated per-acquisition telemetry binding, and the atomic transaction
+commit marker that hash-binds both raw and binding files to the same nonce to
 those Issue #10 receipts. It holds and canonicalizes the AC, Battery, and raw
 files; revalidates the exact package and source; requires all 24 sequential
 exact-App acquisitions (AB `a,b`, then BA `b,a`) with native pre-HWND renderer
@@ -107,6 +108,7 @@ pwsh -File ./tools/v0.2-issue10-live-widget/Publish-V02Issue10PerformanceSoakEvi
 powershell -File ./tools/v0.2-issue10-live-widget/Publish-V02Issue10PerformanceSoakEvidence.SelfTests.ps1
 ```
 
-These tests are Static/Synthetic evidence only and never invoke a runtime
-process, mutate the default Herdr session, install a package, or grant release
-credit.
+These tests are Static/Synthetic/Contract evidence only. The pipe hostile tests
+launch short-lived PowerShell clients against the production CurrentUserOnly
+named-pipe and PID guards; they do not invoke installed Herdr, mutate the
+default Herdr session, install a package, or grant Runtime or Release credit.

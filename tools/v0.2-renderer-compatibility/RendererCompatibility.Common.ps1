@@ -770,6 +770,9 @@ function Wait-RendererTargetObservationPipe { param($Pipe,[int]$TimeoutSeconds=3
     $Pipe.EndWaitForConnection($async)
     [RendererCompatibility.NativePath]::GetPipeClientProcessId($Pipe.SafePipeHandle.DangerousGetHandle())
 }
+function Assert-RendererPipeClientProcessId { param([int]$ActualClientPid,[int]$ExpectedProcessId,[string]$Context)
+    if($ActualClientPid-le0-or$ExpectedProcessId-le0-or$ActualClientPid-ne$ExpectedProcessId){throw "$Context pipe was not connected by the launched packaged App PID."}
+}
 function Read-RendererTargetPipeLine { param([IO.StreamReader]$Reader,[int]$TimeoutSeconds=30)
     $task=$Reader.ReadLineAsync()
     if (-not $task.Wait($TimeoutSeconds*1000)) { throw "Target observation pipe response timed out after $TimeoutSeconds seconds." }
@@ -1249,7 +1252,10 @@ function Get-RendererMatrixExpectedCheckValue {
 
 function Assert-RendererPerformanceProvenance {
     param($Value,[string]$Context='Performance provenance')
-    Assert-RendererExactProperties $Value @('candidate','package','profile','referenceHost','renderer','session') $Context
+    Assert-RendererExactProperties $Value @('runNonce','candidate','package','profile','referenceHost','renderer','session','performanceTelemetryBinding','performanceTransactionCommit') $Context
+    if ($Value.runNonce -isnot [string] -or [string]$Value.runNonce -cnotmatch '^[0-9a-f]{32}$') { throw "$Context runNonce must be lowercase 32-hex." }
+    Assert-RendererPerformanceJsonBinding $Value.performanceTelemetryBinding "$Context performance telemetry binding"
+    Assert-RendererPerformanceJsonBinding $Value.performanceTransactionCommit "$Context performance transaction commit"
 
     Assert-RendererExactProperties $Value.candidate @('commitSha','treeSha') "$Context candidate"
     foreach ($name in @('commitSha','treeSha')) {

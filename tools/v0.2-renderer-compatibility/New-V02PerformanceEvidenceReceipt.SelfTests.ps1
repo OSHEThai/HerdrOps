@@ -91,6 +91,7 @@ function New-ValidRawObservations {
 
 function New-ProvenanceFixture {
     [pscustomobject][ordered]@{
+        runNonce = ('1' * 32)
         candidate = [pscustomobject][ordered]@{
             commitSha = ('a' * 40)
             treeSha = ('b' * 40)
@@ -141,6 +142,8 @@ function New-ProvenanceFixture {
             elevated = $false
             userScope = 'SingleUser'
         }
+        performanceTelemetryBinding = [pscustomobject][ordered]@{ relativePath='performance/performance-telemetry-binding.json';bytes=[long]789;fileSha256=('4'*64);canonicalSha256=('5'*64) }
+        performanceTransactionCommit = [pscustomobject][ordered]@{ relativePath='performance/performance-commit.json';bytes=[long]321;fileSha256=('6'*64);canonicalSha256=('7'*64) }
     }
 }
 

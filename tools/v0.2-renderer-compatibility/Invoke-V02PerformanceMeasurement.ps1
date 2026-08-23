@@ -40,6 +40,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 . (Join-Path $PSScriptRoot 'RendererCompatibility.Common.ps1')
+. (Join-Path $PSScriptRoot 'lib\V02PerformanceTransaction.ps1')
 $packageBindingLib = Join-Path $PSScriptRoot '..\lib\V02RuntimePackageBinding.ps1'
 if (Test-Path -LiteralPath $packageBindingLib) {
     . $packageBindingLib
@@ -103,6 +104,7 @@ function Invoke-V02ProductionPerformanceSample {
         $server = [Diagnostics.Process]::GetCurrentProcess()
         $serverPath = [IO.Path]::GetFullPath($server.MainModule.FileName)
         $serverSha = (Get-FileHash -LiteralPath $serverPath -Algorithm SHA256).Hash.ToUpperInvariant()
+        $serverStart = $server.StartTime.ToUniversalTime()
         $arguments = @(
             '--issue10-performance-telemetry-pipe',$pipeName,
             '--issue10-performance-run-nonce',$RunNonce,
@@ -113,6 +115,7 @@ function Invoke-V02ProductionPerformanceSample {
             '--issue10-performance-package-archive-path',$Package.ArchivePath,
             '--issue10-performance-package-archive-sha256',$Package.ArchiveSha256,
             '--issue10-performance-package-root',$Package.PackageRoot,
+            '--issue10-performance-package-profile-path',$Package.ProfilePath,
             '--issue10-performance-server-pid',[string]$server.Id,
             '--issue10-performance-server-path',$serverPath,
             '--issue10-performance-server-sha256',$serverSha,
@@ -126,45 +129,45 @@ function Invoke-V02ProductionPerformanceSample {
         if($null-eq$app){throw 'Packaged performance App did not start.'}
         $appStart=$app.StartTime.ToUniversalTime()
         $clientPid=Wait-RendererTargetObservationPipe $pipe 60
-        if([int]$clientPid-ne[int]$app.Id){throw 'Performance telemetry pipe was not connected by the launched packaged App PID.'}
+        Assert-RendererPipeClientProcessId ([int]$clientPid) ([int]$app.Id) 'Performance telemetry'
         $reader=New-Object IO.StreamReader($pipe,(New-Object Text.UTF8Encoding($false,$true)),$false,65536,$true)
         $writer=New-Object IO.StreamWriter($pipe,(New-Object Text.UTF8Encoding($false)),65536,$true);$writer.AutoFlush=$true
         $helloJson=Read-RendererTargetPipeLine $reader 30
         $hello=if($PSVersionTable.PSVersion.Major-ge7-and(Get-Command ConvertFrom-Json).Parameters.ContainsKey('DateKind')){$helloJson|ConvertFrom-Json -DateKind String}else{$helloJson|ConvertFrom-Json}
-        Assert-RawExactProperties $hello @('schemaVersion','kind','runNonce','sourceCommit','sourceTree','packageIdentitySha256','packageArchiveSha256','serverProcessId','app','renderer') 'Performance producer hello'
+        Assert-RawExactProperties $hello @('schemaVersion','kind','runNonce','sourceCommit','sourceTree','packageIdentitySha256','packageArchiveSha256','server','app','renderer') 'Performance producer hello'
+        Assert-RawExactProperties $hello.server @('pid','startUtc','path','sha256') 'Performance producer hello server'
         Assert-RawExactProperties $hello.app @('pid','startUtc','path','sha256') 'Performance producer hello App'
         Assert-RawExactProperties $hello.renderer @('requestedMode','nativeProcessRenderMode','nativeTier','hasAnyHwnd','preFirstHwnd','hardwareComparatorBoundary') 'Performance producer hello renderer'
-        if([int]$hello.schemaVersion-ne1-or$hello.kind-cne'issue10-performance-hello'-or$hello.runNonce-cne$RunNonce-or$hello.sourceCommit-cne$ExpectedSourceCommit-or$hello.sourceTree-cne$ExpectedSourceTree-or$hello.packageIdentitySha256-cne$Package.ReceiptSha256-or$hello.packageArchiveSha256-cne$Package.ArchiveSha256-or[int]$hello.serverProcessId-ne$server.Id){throw 'Performance producer hello top-level binding is invalid.'}
+        if([int]$hello.schemaVersion-ne1-or$hello.kind-cne'issue10-performance-hello'-or$hello.runNonce-cne$RunNonce-or$hello.sourceCommit-cne$ExpectedSourceCommit-or$hello.sourceTree-cne$ExpectedSourceTree-or$hello.packageIdentitySha256-cne$Package.ReceiptSha256-or$hello.packageArchiveSha256-cne$Package.ArchiveSha256){throw 'Performance producer hello top-level binding is invalid.'}
+        if([int]$hello.server.pid-ne$server.Id-or[DateTimeOffset]::Parse([string]$hello.server.startUtc).UtcDateTime-ne$serverStart-or-not[StringComparer]::OrdinalIgnoreCase.Equals([string]$hello.server.path,$serverPath)-or$hello.server.sha256-cne$serverSha){throw 'Performance producer hello server process binding is invalid.'}
         if([int]$hello.app.pid-ne$app.Id-or[DateTimeOffset]::Parse([string]$hello.app.startUtc).UtcDateTime-ne$appStart-or-not[StringComparer]::OrdinalIgnoreCase.Equals([string]$hello.app.path,$Package.AppPath)-or$hello.app.sha256-cne$Package.AppSha256){throw 'Performance producer hello App process/package binding is invalid.'}
         $expectedNative=if($Mode-ceq'a'){'Default'}else{'SoftwareOnly'}
         if($hello.renderer.requestedMode-cne$rendererMode-or$hello.renderer.nativeProcessRenderMode-cne$expectedNative-or(-not[bool]$hello.renderer.preFirstHwnd)-or[bool]$hello.renderer.hasAnyHwnd-or($Mode-ceq'a'-and[int]$hello.renderer.nativeTier-le0)){throw 'Performance producer native pre-HWND renderer proof is invalid.'}
         if([string]$hello.renderer.hardwareComparatorBoundary-cne'PackagedCompatibilityPerformance-NativeTierComparator-NoPerFrameGpuOrRuntimeCredit'){throw 'Performance producer hardware boundary is invalid.'}
-        $CoreProcess.Refresh()
-        $coreCpuStart = $CoreProcess.TotalProcessorTime
-        $coreWorkingSetMaximum = [long]$CoreProcess.WorkingSet64
-        $coreWall = [Diagnostics.Stopwatch]::StartNew()
-        $request=[pscustomobject][ordered]@{schemaVersion=1;kind='issue10-performance-sample-request';runNonce=$RunNonce;sequenceNumber=$Sequence;order=$Order;isWarmup=$Warmup;repetitionOrdinal=$Repetition;semanticMode=$Mode}
+        $request=[pscustomobject][ordered]@{schemaVersion=1;kind='issue10-performance-sample-request';runNonce=$RunNonce;sequenceNumber=$Sequence;order=$Order;isWarmup=$Warmup;repetitionOrdinal=$Repetition;semanticMode=$Mode;coreProcessId=[int]$CoreProcess.Id}
         Write-RendererTargetPipeLine $writer (ConvertTo-RendererCanonicalJson $request $RepositoryRoot)
         $sampleJson=Read-RendererTargetPipeLine $reader 330
         $sample=if($PSVersionTable.PSVersion.Major-ge7-and(Get-Command ConvertFrom-Json).Parameters.ContainsKey('DateKind')){$sampleJson|ConvertFrom-Json -DateKind String}else{$sampleJson|ConvertFrom-Json}
-        Assert-RawExactProperties $sample @('schemaVersion','kind','runNonce','sequenceNumber','observedUtc','app','renderer','cpuBasisPoints','workingSetMaximumBytes','latencyMicroseconds','uiStallMicroseconds','boundary') 'Performance producer sample'
+        Assert-RawExactProperties $sample @('schemaVersion','kind','runNonce','sequenceNumber','observedUtc','app','core','renderer','cpuBasisPoints','workingSetMaximumBytes','latencyMicroseconds','uiStallMicroseconds','boundary') 'Performance producer sample'
         Assert-RawExactProperties $sample.app @('pid','startUtc','path','sha256') 'Performance producer sample App'
+        Assert-RawExactProperties $sample.core @('pid','startUtc','path','sha256') 'Performance producer sample Core'
         Assert-RawExactProperties $sample.renderer @('requestedMode','nativeProcessRenderMode','nativeTier','hasAnyHwnd','preFirstHwnd') 'Performance producer sample renderer'
         if([int]$sample.schemaVersion-ne1-or$sample.kind-cne'issue10-performance-sample'-or$sample.runNonce-cne$RunNonce-or[int]$sample.sequenceNumber-ne$Sequence-or$sample.boundary-cne'PackagedCompatibilityPerformance-NativeTierComparator-NoPerFrameGpuOrRuntimeCredit'){throw 'Performance producer sample binding is invalid.'}
         if([int]$sample.app.pid-ne$app.Id-or[DateTimeOffset]::Parse([string]$sample.app.startUtc).UtcDateTime-ne$appStart-or-not[StringComparer]::OrdinalIgnoreCase.Equals([string]$sample.app.path,$Package.AppPath)-or$sample.app.sha256-cne$Package.AppSha256){throw 'Performance producer sample App identity changed.'}
+        if([int]$sample.core.pid-ne$CoreProcess.Id-or[DateTimeOffset]::Parse([string]$sample.core.startUtc).UtcDateTime-ne$CoreStartUtc-or-not[StringComparer]::OrdinalIgnoreCase.Equals([string]$sample.core.path,$Package.CorePath)-or$sample.core.sha256-cne$Package.CoreSha256){throw 'Performance producer sample Core identity changed.'}
         if($sample.renderer.requestedMode-cne$rendererMode-or$sample.renderer.nativeProcessRenderMode-cne$expectedNative-or-not[bool]$sample.renderer.hasAnyHwnd-or[bool]$sample.renderer.preFirstHwnd-or($Mode-ceq'a'-and[int]$sample.renderer.nativeTier-le0)){throw 'Performance producer sample native renderer proof is invalid.'}
-        $coreWall.Stop();$CoreProcess.Refresh();if($CoreProcess.HasExited-or(Get-ProcessSafeCreationTime $CoreProcess)-ne$CoreStartUtc){throw 'Core process changed during the performance sample.'}
-        $coreWorkingSetMaximum=[Math]::Max($coreWorkingSetMaximum,[long]$CoreProcess.WorkingSet64)
-        $coreCpuBasisPoints=if($coreWall.Elapsed.TotalMilliseconds-le0){0L}else{[long][Math]::Round((($CoreProcess.TotalProcessorTime-$coreCpuStart).TotalMilliseconds/($coreWall.Elapsed.TotalMilliseconds*[Environment]::ProcessorCount))*10000.0)}
+        $CoreProcess.Refresh();if($CoreProcess.HasExited-or(Get-ProcessSafeCreationTime $CoreProcess)-ne$CoreStartUtc){throw 'Core process changed during the performance sample.'}
         $latencies=@($sample.latencyMicroseconds);$stalls=@($sample.uiStallMicroseconds)
         $script:V02ProductionPerformanceBindings += [pscustomobject][ordered]@{
             sequenceNumber=[int]$Sequence;order=$Order;isWarmup=[bool]$Warmup;repetitionOrdinal=[int]$Repetition;semanticMode=$Mode
             requestedMode=$rendererMode;appProcessId=[int]$app.Id;appStartUtc=$appStart.ToString('O');appPath=$Package.AppPath;appSha256=$Package.AppSha256
+            coreProcessId=[int]$CoreProcess.Id;coreStartUtc=$CoreStartUtc.ToString('O');corePath=$Package.CorePath;coreSha256=$Package.CoreSha256
+            serverProcessId=[int]$server.Id;serverStartUtc=$serverStart.ToString('O');serverPath=$serverPath;serverSha256=$serverSha
             nativeProcessRenderMode=[string]$sample.renderer.nativeProcessRenderMode;nativeTier=[int]$sample.renderer.nativeTier
             preFirstHwndProof=[bool]$hello.renderer.preFirstHwnd;observedUtc=[string]$sample.observedUtc
             boundary='PackagedCompatibilityPerformance-NativeTierComparator-NoPerFrameGpuOrRuntimeCredit'
         }
-        [pscustomobject][ordered]@{Authenticated=$true;Source='PackagedAppCurrentUserPipe';AppProcessId=[int]$app.Id;CoreProcessId=[int]$CoreProcess.Id;AppStartTimeUtc=$appStart;CoreStartTimeUtc=$CoreStartUtc;ObservedUtc=[string]$sample.observedUtc;RendererMode=$rendererMode;CpuBasisPoints=([long]$sample.cpuBasisPoints+[Math]::Max(0L,$coreCpuBasisPoints));WorkingSetMaximumBytes=([long]$sample.workingSetMaximumBytes+$coreWorkingSetMaximum);LatencyMicroseconds=$latencies;UiStallMicroseconds=$stalls}
+        [pscustomobject][ordered]@{Authenticated=$true;Source='PackagedAppCurrentUserPipe';AppProcessId=[int]$app.Id;CoreProcessId=[int]$CoreProcess.Id;AppStartTimeUtc=$appStart;CoreStartTimeUtc=$CoreStartUtc;ObservedUtc=[string]$sample.observedUtc;RendererMode=$rendererMode;CpuBasisPoints=[long]$sample.cpuBasisPoints;WorkingSetMaximumBytes=[long]$sample.workingSetMaximumBytes;LatencyMicroseconds=$latencies;UiStallMicroseconds=$stalls}
     } finally {
         if($null-ne$writer){$writer.Dispose()};if($null-ne$reader){$reader.Dispose()};$pipe.Dispose()
         if($null-ne$app){try{if(-not$app.HasExited){$app.WaitForExit(10000)|Out-Null};if(-not$app.HasExited-and$app.StartTime.ToUniversalTime()-eq$appStart){$app.Kill();$app.WaitForExit(5000)|Out-Null}}catch{};$app.Dispose()}
@@ -204,7 +207,7 @@ if (Test-Path -LiteralPath $fullDestinationPath) {
 }
 
 $destinationParent = Split-Path -Parent $fullDestinationPath
-if (-not (Test-Path -LiteralPath $destinationParent -PathType Container)) {
+if ($Synthetic -and -not (Test-Path -LiteralPath $destinationParent -PathType Container)) {
     New-Item -ItemType Directory -Path $destinationParent -Force | Out-Null
 }
 
@@ -257,6 +260,7 @@ if (-not $Synthetic) {
         -ProfilePath $profileCandidatePath `
         -ExpectedSourceCommit $ExpectedSourceCommit `
         -ExpectedSourceTree $ExpectedSourceTree
+
 
     if ($CoreProcessId -le 0) { throw 'Live performance measurement requires a positive CoreProcessId.' }
     if ($RunNonce -cnotmatch '^[0-9a-f]{32}$') { throw 'Live performance measurement requires a lowercase 32-hex RunNonce.' }
@@ -346,6 +350,7 @@ if (-not $Synthetic) {
     if ($liveCoreHash -cne $packageBinding.CoreSha256) {
         throw "Running Core executable SHA-256 hash '$liveCoreHash' does not match validated package hash '$($packageBinding.CoreSha256)'."
     }
+    if (Test-Path -LiteralPath $destinationParent) { throw "Live raw performance transaction directory already exists; refusing to clobber '$destinationParent'." }
 
     # Governed order sequence: AB then BA. Each acquisition launches the exact
     # packaged App in one explicit pre-HWND comparator mode; normal production
@@ -644,57 +649,23 @@ if (-not $Synthetic) {
     $bindingObject=[pscustomobject][ordered]@{
         schemaVersion=1;evidenceClassification='PackagedCompatibilityPerformanceTelemetryBinding-NoRuntimeCredit';runNonce=$RunNonce
         source=[pscustomobject][ordered]@{commitSha=$ExpectedSourceCommit;treeSha=$ExpectedSourceTree}
-        package=[pscustomobject][ordered]@{identitySha256=$packageBinding.ReceiptSha256;archiveSha256=$packageBinding.ArchiveSha256;appSha256=$packageBinding.AppSha256;coreSha256=$packageBinding.CoreSha256}
+        package=[pscustomobject][ordered]@{identitySha256=$packageBinding.ReceiptSha256;identityFileSha256=$packageBinding.IdentityFileSha256;profileFileSha256=$packageBinding.ProfileFileSha256;archiveSha256=$packageBinding.ArchiveSha256;manifestSha256=$packageBinding.ManifestSha256;appSha256=$packageBinding.AppSha256;coreSha256=$packageBinding.CoreSha256}
         rawSource=[pscustomobject][ordered]@{relativePath=$destinationRelative;bytes=[long]$fileBytes.Length;fileSha256=(Get-HumanDesignReviewSha256ForBytes $fileBytes);canonicalSha256=$canonicalSha}
         acquisitions=@($script:V02ProductionPerformanceBindings)
         evidenceBoundary=[pscustomobject][ordered]@{actualHerdrRuntime='NOT_OBSERVED';humanReview='NOT_OBSERVED';release='NOT_OBSERVED';creditGranted=$false}
     }
     $bindingJson=ConvertTo-RendererCanonicalJson $bindingObject $RepositoryRoot
     $bindingBytes=(New-Object Text.UTF8Encoding($false,$true)).GetBytes($bindingJson+"`n")
+    $commitObject=[pscustomobject][ordered]@{schemaVersion=1;kind='issue10-performance-transaction-commit';runNonce=$RunNonce;raw=[pscustomobject][ordered]@{fileName=[IO.Path]::GetFileName($fullDestinationPath);bytes=[long]$fileBytes.Length;sha256=(Get-HumanDesignReviewSha256ForBytes $fileBytes)};binding=[pscustomobject][ordered]@{fileName=[IO.Path]::GetFileName($fullBindingDestinationPath);bytes=[long]$bindingBytes.Length;sha256=(Get-HumanDesignReviewSha256ForBytes $bindingBytes)};creditGranted=$false}
+    $commitJson=ConvertTo-RendererCanonicalJson $commitObject $RepositoryRoot;$commitBytes=(New-Object Text.UTF8Encoding($false,$true)).GetBytes($commitJson+"`n")
 }
 
 # Atomic Write / Commit with crash rollback
-$stagingDirectory = Join-Path $destinationParent ('.raw-perf-stage-' + [Guid]::NewGuid().ToString('N'))
-New-Item -ItemType Directory -Path $stagingDirectory | Out-Null
-$stagingPath = Join-Path $stagingDirectory ([IO.Path]::GetFileName($fullDestinationPath))
-$bindingStagingPath = if ($null-ne$fullBindingDestinationPath) { Join-Path $stagingDirectory ([IO.Path]::GetFileName($fullBindingDestinationPath)) } else { $null }
-$rawPublished=$false
-
-try {
-    $stream = [IO.File]::Open($stagingPath, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
-    try {
-        $stream.Write($fileBytes, 0, $fileBytes.Length)
-        $stream.Flush($true)
-        if ($TestFaultInjectionStage -eq 'MidWrite') {
-            throw 'Injected performance collector crash during staging write.'
-        }
-    } finally {
-        $stream.Dispose()
-    }
-    if ($null-ne$bindingBytes) {
-        $bindingStream=[IO.File]::Open($bindingStagingPath,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::None)
-        try{$bindingStream.Write($bindingBytes,0,$bindingBytes.Length);$bindingStream.Flush($true)}finally{$bindingStream.Dispose()}
-    }
-
-    if ($TestFaultInjectionStage -eq 'BeforeCommit') {
-        throw 'Injected performance collector crash before atomic commit.'
-    }
-
-    Assert-RendererNonReparsePath -Root $EvidenceRoot -Path $stagingPath -Context 'Staged raw performance observations'
-
-    # Check for destination collision immediately before atomic move
-    if (Test-Path -LiteralPath $fullDestinationPath) {
-        throw "Raw performance observations destination file appeared during publish; refusing to clobber '$fullDestinationPath'."
-    }
-
-    if ($null-ne$fullBindingDestinationPath -and (Test-Path -LiteralPath $fullBindingDestinationPath)) { throw 'Performance telemetry binding destination appeared during publish.' }
-    [IO.File]::Move($stagingPath, $fullDestinationPath);$rawPublished=$true
-    if ($null-ne$fullBindingDestinationPath) { [IO.File]::Move($bindingStagingPath,$fullBindingDestinationPath) }
-} finally {
-    if ($rawPublished -and $null-ne$fullBindingDestinationPath -and -not (Test-Path -LiteralPath $fullBindingDestinationPath) -and (Test-Path -LiteralPath $fullDestinationPath)) { Remove-Item -LiteralPath $fullDestinationPath -Force -ErrorAction SilentlyContinue }
-    if (Test-Path -LiteralPath $stagingDirectory) {
-        Remove-Item -LiteralPath $stagingDirectory -Recurse -Force -ErrorAction SilentlyContinue
-    }
+if(-not$Synthetic){
+    $transaction=Publish-V02PerformanceTransaction -DestinationDirectory $destinationParent -EvidenceRoot $EvidenceRoot -RawFileName ([IO.Path]::GetFileName($fullDestinationPath)) -RawBytes $fileBytes -BindingFileName ([IO.Path]::GetFileName($fullBindingDestinationPath)) -BindingBytes $bindingBytes -CommitBytes $commitBytes -FaultStage $TestFaultInjectionStage
+}else{
+    $stagingDirectory=Join-Path $destinationParent ('.raw-perf-stage-'+[Guid]::NewGuid().ToString('N'));New-Item -ItemType Directory -Path $stagingDirectory|Out-Null;$stagingPath=Join-Path $stagingDirectory ([IO.Path]::GetFileName($fullDestinationPath))
+    try{$stream=[IO.File]::Open($stagingPath,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::None);try{$stream.Write($fileBytes,0,$fileBytes.Length);$stream.Flush($true);if($TestFaultInjectionStage-eq'MidWrite'){throw 'Injected performance collector crash during staging write.'}}finally{$stream.Dispose()};if($TestFaultInjectionStage-eq'BeforeCommit'){throw 'Injected performance collector crash before atomic commit.'};if(Test-Path -LiteralPath $fullDestinationPath){throw "Raw performance observations destination file appeared during publish; refusing to clobber '$fullDestinationPath'."};[IO.File]::Move($stagingPath,$fullDestinationPath)}finally{if(Test-Path -LiteralPath $stagingDirectory){Remove-Item -LiteralPath $stagingDirectory -Recurse -Force -ErrorAction SilentlyContinue}}
 }
 
 # Verify post-move stable file identity
@@ -710,6 +681,7 @@ for ($i = 0; $i -lt $fileBytes.Length; $i++) {
         throw 'Raw performance observations bytes changed during atomic publish.'
     }
 }
+if(-not$Synthetic){$bindingStable=Get-RendererStableFileIdentity $EvidenceRoot $fullBindingDestinationPath 'Performance telemetry binding' -IncludeBytes;$commitPath=Join-Path $destinationParent 'performance-commit.json';$commitStable=Get-RendererStableFileIdentity $EvidenceRoot $commitPath 'Performance transaction commit' -IncludeBytes;if($bindingStable.Sha256-cne(Get-HumanDesignReviewSha256ForBytes $bindingBytes)-or$commitStable.Sha256-cne(Get-HumanDesignReviewSha256ForBytes $commitBytes)){throw 'Live performance transaction files changed after atomic directory commit.'}}
 
 $evidenceClass = if ($Synthetic) { 'SyntheticVerifierSelftest' } else { 'PackagedCompatibilityRawPerformance' }
 
@@ -717,6 +689,7 @@ $evidenceClass = if ($Synthetic) { 'SyntheticVerifierSelftest' } else { 'Package
     EvidenceClassification = $evidenceClass
     RawSourcePath = $fullDestinationPath
     BindingPath = $fullBindingDestinationPath
+    CommitMarkerPath = if($Synthetic){$null}else{Join-Path $destinationParent 'performance-commit.json'}
     RelativePath = $destinationRelative
     Bytes = [long]$stableIdentity.Bytes
     FileSha256 = [string]$stableIdentity.Sha256
