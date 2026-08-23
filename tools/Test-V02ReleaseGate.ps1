@@ -1879,6 +1879,7 @@ function Read-V02ReleaseGateRuntimeReviewReceipt {
     $receipt = $document.Value
     Assert-V02ReleaseGateExactProperties $receipt @('SchemaVersion','EvidenceClassification','Result','Issues','RunNonces','Source','Package','Roles','Herdr','Sessions','MatrixCandidate','Languages','EvidenceBoundary') 'Runtime-review receipt'
     Assert-V02ReleaseGateInteger $receipt.SchemaVersion 'Runtime-review receipt SchemaVersion' 1
+    if ([int64]$receipt.SchemaVersion -ne 1) { throw 'Runtime-review receipt SchemaVersion must be exactly 1.' }
     Assert-V02ReleaseGateExactString $receipt.EvidenceClassification 'IndependentReviewCandidate' 'Runtime-review receipt classification'
     Assert-V02ReleaseGateExactString $receipt.Result 'PASS' 'Runtime-review receipt result'
     if ((ConvertTo-V02Jcs @($receipt.Issues)) -cne (ConvertTo-V02Jcs @(7,9,10,11,149))) { throw 'Runtime-review receipt Issues must exactly bind #7, #9, #10, #11, and #149.' }
@@ -1894,9 +1895,26 @@ function Read-V02ReleaseGateRuntimeReviewReceipt {
     Assert-V02ReleaseGateExactProperties $receipt.Package $reviewPackageNames 'Runtime-review receipt Package'
     foreach($pair in @(@('ReceiptSha256',$Package.ReceiptSha256),@('IdentityFileSha256',$Package.ReceiptFileSha256),@('ArchiveSha256',$Package.ArchiveSha256),@('ManifestSha256',$Package.ManifestSha256),@('AppSha256',$Package.AppSha256),@('CoreSha256',$Package.CoreSha256))){Assert-V02ReleaseGateEqual $receipt.Package.($pair[0]) $pair[1] "Runtime-review package $($pair[0])"}
     Assert-V02ReleaseGateExactProperties $receipt.Roles @('BuilderIdentity','RuntimeOperatorIdentity','MatrixProducerIdentity','RuntimeReviewerIdentity','ReviewerDistinctCaseInsensitive') 'Runtime-review receipt Roles'
-    Assert-V02ReleaseGateEqual $receipt.Roles.RuntimeReviewerIdentity $IndependentReceipt.ReviewerIdentity 'Runtime-review authenticated reviewer identity'
-    if (-not (Assert-V02ReleaseGateBoolean $receipt.Roles.ReviewerDistinctCaseInsensitive 'Runtime-review role separation')) { throw 'Runtime-review roles must remain distinct.' }
+    
+    $rBuilder = Assert-V02ReleaseGateString $receipt.Roles.BuilderIdentity 'Runtime-review BuilderIdentity'
+    $rOperator = Assert-V02ReleaseGateString $receipt.Roles.RuntimeOperatorIdentity 'Runtime-review RuntimeOperatorIdentity'
+    $rProducer = Assert-V02ReleaseGateString $receipt.Roles.MatrixProducerIdentity 'Runtime-review MatrixProducerIdentity'
+    $rReviewer = Assert-V02ReleaseGateString $receipt.Roles.RuntimeReviewerIdentity 'Runtime-review RuntimeReviewerIdentity'
+    
+    $distinctIdentities = @($rBuilder, $rOperator, $rProducer, $rReviewer) | ForEach-Object { $_.ToLowerInvariant() } | Select-Object -Unique
+    if ($distinctIdentities.Count -ne 4) { throw 'Runtime-review roles must remain distinct.' }
+    Assert-V02ReleaseGateEqual $rReviewer $IndependentReceipt.ReviewerIdentity 'Runtime-review authenticated reviewer identity'
+    Assert-V02ReleaseGateBoolean $receipt.Roles.ReviewerDistinctCaseInsensitive 'Runtime-review role separation boolean check' | Out-Null
+    
+    Assert-V02ReleaseGateExactProperties $receipt.Herdr @('ReleaseId','ExecutablePath','ExecutableSha256','BundledSchemaSha256','Protocol') 'Runtime-review receipt Herdr'
+    Assert-V02ReleaseGateString $receipt.Herdr.ExecutableSha256 'Runtime-review receipt Herdr ExecutableSha256' | Out-Null
+    
+    Assert-V02ReleaseGateExactProperties $receipt.Sessions @('Control','Target') 'Runtime-review receipt Sessions'
+    Assert-V02ReleaseGateExactProperties $receipt.Sessions.Control @('Name','SocketPath','ServerIdentity') 'Runtime-review receipt Sessions.Control'
+    Assert-V02ReleaseGateExactProperties $receipt.Sessions.Target @('Name','SocketPath','Reference') 'Runtime-review receipt Sessions.Target'
+
     Assert-V02ReleaseGateExactProperties $receipt.MatrixCandidate @('Path','FileSha256','PayloadSha256','ProducerRunNonce','EvidenceClassification','IndependentHumanReview','ReleaseCredit') 'Runtime-review MatrixCandidate'
+    Assert-V02ReleaseGateExactString $receipt.MatrixCandidate.EvidenceClassification 'RuntimeMatrixCandidate' 'Runtime-review matrix classification'
     Assert-V02ReleaseGateEqual ([IO.Path]::GetFullPath([string]$receipt.MatrixCandidate.Path)) ([IO.Path]::GetFullPath([string]$Matrix.ManifestPath)) 'Runtime-review matrix path'
     Assert-V02ReleaseGateEqual $receipt.MatrixCandidate.FileSha256 $Matrix.ManifestFileSha256 'Runtime-review matrix file hash'
     Assert-V02ReleaseGateEqual $receipt.MatrixCandidate.PayloadSha256 $Matrix.ManifestPayloadSha256 'Runtime-review matrix payload hash'
@@ -1904,6 +1922,7 @@ function Read-V02ReleaseGateRuntimeReviewReceipt {
     Assert-V02ReleaseGateEqual $matrixNonce $Matrix.Candidate.Payload.RunNonce 'Runtime-review matrix-producer RunNonce binding'
     Assert-V02ReleaseGateExactString $receipt.MatrixCandidate.IndependentHumanReview 'NOT_OBSERVED' 'Runtime-review matrix Human boundary'
     if (Assert-V02ReleaseGateBoolean $receipt.MatrixCandidate.ReleaseCredit 'Runtime-review matrix ReleaseCredit') { throw 'Runtime-review matrix cannot grant Release credit.' }
+    
     $languages = @($receipt.Languages)
     if ($languages.Count -ne 2) { throw 'Runtime-review receipt must contain exactly two language legs.' }
     $evidenceNonces = New-Object System.Collections.Generic.List[string]
@@ -1915,15 +1934,21 @@ function Read-V02ReleaseGateRuntimeReviewReceipt {
         $nonce=Assert-V02ReleaseGateString $leg.EvidenceRunNonce "Runtime-review language leg $index EvidenceRunNonce"
         if($nonce-cnotmatch'^[0-9a-f]{32}$'){throw "Runtime-review language leg $index EvidenceRunNonce must be lowercase 32-hex."}
         [void]$evidenceNonces.Add($nonce)
+        foreach ($f in $leg.Files) {
+            Assert-V02ReleaseGateExactProperties $f @('Path','Bytes','Sha256') "Runtime-review language leg $index file shape"
+        }
     }
     Assert-V02ReleaseGateDistinctSet -Values $evidenceNonces.ToArray() -Context 'Runtime-review evidence RunNonce values'
     Assert-V02ReleaseGateDistinctSet -Values @($matrixNonce,$reviewNonce,$evidenceNonces[0],$evidenceNonces[1]) -Context 'Runtime-review producer/reviewer/evidence RunNonce values'
     for($index=0;$index-lt2;$index++){Assert-V02ReleaseGateEqual $languages[$index].EvidenceRunNonce $Matrix.Candidate.Payload.Runs[$index].EvidenceRunNonce "Runtime-review language leg $index EvidenceRunNonce binding";Assert-V02ReleaseGateEqual $languages[$index].GateReportSha256 $Matrix.Candidate.Payload.Runs[$index].GateReportSha256 "Runtime-review language leg $index gate hash binding"}
+    
     Assert-V02ReleaseGateExactProperties $receipt.EvidenceBoundary @('IndependentReview','ExternalReviewerAttestation','HumanVisualGo','RuntimeCredit','ReleaseCredit','OutputAuthority','NoCallerAuthoredAuthority') 'Runtime-review EvidenceBoundary'
     Assert-V02ReleaseGateExactString $receipt.EvidenceBoundary.IndependentReview 'NOT_OBSERVED' 'Runtime-review independent review boundary'
     Assert-V02ReleaseGateExactString $receipt.EvidenceBoundary.ExternalReviewerAttestation 'NOT_PROVIDED' 'Runtime-review external attestation boundary'
     Assert-V02ReleaseGateExactString $receipt.EvidenceBoundary.HumanVisualGo 'NOT_OBSERVED' 'Runtime-review Human boundary'
     if ((Assert-V02ReleaseGateBoolean $receipt.EvidenceBoundary.RuntimeCredit 'Runtime-review RuntimeCredit') -or (Assert-V02ReleaseGateBoolean $receipt.EvidenceBoundary.ReleaseCredit 'Runtime-review ReleaseCredit')) { throw 'Runtime-review receipt cannot grant Runtime or Release credit.' }
+    Assert-V02ReleaseGateExactString $receipt.EvidenceBoundary.OutputAuthority 'IndependentReviewCandidate' 'Runtime-review output authority'
+    if (-not (Assert-V02ReleaseGateBoolean $receipt.EvidenceBoundary.NoCallerAuthoredAuthority 'Runtime-review no caller-authored authority')) { throw 'Runtime-review must not allow caller-authored authority.' }
     return [pscustomobject][ordered]@{Path=$document.Path;ReceiptSha256=$document.FileSha256;RunNonces=$receipt.RunNonces;Roles=$receipt.Roles;Value=$receipt}
 }
 

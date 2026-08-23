@@ -434,7 +434,8 @@ function New-V02ReleaseGateTestRuntimeReviewCandidate {
         Source=[pscustomobject][ordered]@{CommitSha=$script:GateIdentity.Commit;TreeSha=$script:GateIdentity.Tree;GitTreeClean=$true}
         Package=[pscustomobject][ordered]@{IdentityPath=$package.IdentityPath;IdentityFileSha256=$package.ReceiptFileSha256;ReceiptSha256=$package.ReceiptSha256;ArchivePath=$package.ArchivePath;ArchiveSha256=$package.ArchiveSha256;ManifestPath=$package.ManifestPath;ManifestSha256=$package.ManifestSha256;AppPath=$package.AppPath;AppSha256=$package.AppSha256;CorePath=$package.CorePath;CoreSha256=$package.CoreSha256}
         Roles=[pscustomobject][ordered]@{BuilderIdentity='builder';RuntimeOperatorIdentity='runtime-operator';MatrixProducerIdentity='matrix-producer';RuntimeReviewerIdentity=$ReviewerIdentity;ReviewerDistinctCaseInsensitive=$true}
-        Herdr=[pscustomobject][ordered]@{};Sessions=[pscustomobject][ordered]@{}
+        Herdr=[pscustomobject][ordered]@{ReleaseId='v0.2.0-rc';ExecutablePath='herdr.exe';ExecutableSha256=('8'*64);BundledSchemaSha256=('9'*64);Protocol='2.0'}
+        Sessions=[pscustomobject][ordered]@{Control=[pscustomobject][ordered]@{Name='control';SocketPath='sock';ServerIdentity='id'};Target=[pscustomobject][ordered]@{Name='target';SocketPath='sock';Reference='ref'}}
         MatrixCandidate=[pscustomobject][ordered]@{Path=$matrix.ManifestPath;FileSha256=$matrix.ManifestFileSha256;PayloadSha256=$matrix.ManifestPayloadSha256;ProducerRunNonce=$matrix.Candidate.Payload.RunNonce;EvidenceClassification='RuntimeMatrixCandidate';IndependentHumanReview='NOT_OBSERVED';ReleaseCredit=$false}
         Languages=$languages
         EvidenceBoundary=[pscustomobject][ordered]@{IndependentReview='NOT_OBSERVED';ExternalReviewerAttestation='NOT_PROVIDED';HumanVisualGo='NOT_OBSERVED';RuntimeCredit=$false;ReleaseCredit=$false;OutputAuthority='IndependentReviewCandidate';NoCallerAuthoredAuthority=$true}
@@ -865,7 +866,15 @@ try {
             [pscustomobject]@{Name='matrix producer mismatch';Pattern='carried producer RunNonce';Apply={param($v)$v.MatrixCandidate.ProducerRunNonce='c'*32}},
             [pscustomobject]@{Name='classification mismatch';Pattern='classification';Apply={param($v)$v.EvidenceClassification='Runtime'}},
             [pscustomobject]@{Name='payload hash mismatch';Pattern='matrix payload hash';Apply={param($v)$v.MatrixCandidate.PayloadSha256='0'*64}},
-            [pscustomobject]@{Name='schema extra';Pattern='exactly';Apply={param($v)$v|Add-Member CallerReviewRunNonce ('c'*32)}}
+            [pscustomobject]@{Name='schema extra';Pattern='exactly';Apply={param($v)$v|Add-Member CallerReviewRunNonce ('c'*32)}},
+            [pscustomobject]@{Name='schema version wrong';Pattern='SchemaVersion must be exactly 1';Apply={param($v)$v.SchemaVersion=2}},
+            [pscustomobject]@{Name='herdr missing releaseid';Pattern='Herdr';Apply={param($v)$v.Herdr.PSObject.Properties.Remove('ReleaseId')}},
+            [pscustomobject]@{Name='sessions missing control';Pattern='Sessions';Apply={param($v)$v.Sessions.PSObject.Properties.Remove('Control')}},
+            [pscustomobject]@{Name='role distinctness violation';Pattern='roles must remain distinct';Apply={param($v)$v.Roles.RuntimeReviewerIdentity=$v.Roles.BuilderIdentity}},
+            [pscustomobject]@{Name='matrix candidate classification';Pattern='matrix classification';Apply={param($v)$v.MatrixCandidate.EvidenceClassification='Matrix'}},
+            [pscustomobject]@{Name='language leg missing bytes';Pattern='file shape';Apply={param($v)$v.Languages[0].Files[0].PSObject.Properties.Remove('Bytes')}},
+            [pscustomobject]@{Name='evidence boundary output authority';Pattern='output authority';Apply={param($v)$v.EvidenceBoundary.OutputAuthority='Matrix'}},
+            [pscustomobject]@{Name='evidence boundary caller authored authority';Pattern='caller-authored authority';Apply={param($v)$v.EvidenceBoundary.NoCallerAuthoredAuthority=$false}}
         )
         $index=0;foreach($case in $cases){$value=$base|ConvertTo-Json -Depth 100|ConvertFrom-Json;$value.Source.CommitSha=$script:GateIdentity.Commit;$value.Source.TreeSha=$script:GateIdentity.Tree;&$case.Apply $value;$casePath=Join-Path $root ("hostile-$index.json");Write-V02ReleaseGateTestJson $casePath $value|Out-Null;Assert-V02ReleaseGateTestThrows {Read-V02ReleaseGateRuntimeReviewReceipt -Path $casePath -Package $fixture.Package -Matrix $fixture.Matrix -IndependentReceipt $independent -ExpectedSourceCommit $script:GateIdentity.Commit -ExpectedSourceTree $script:GateIdentity.Tree|Out-Null} $case.Pattern;$index++}
         Assert-V02ReleaseGateTestThrows {Read-V02ReleaseGateRuntimeReviewReceipt -Path (Join-Path $root 'missing.json') -Package $fixture.Package -Matrix $fixture.Matrix -IndependentReceipt $independent -ExpectedSourceCommit $script:GateIdentity.Commit -ExpectedSourceTree $script:GateIdentity.Tree|Out-Null} 'is missing'

@@ -64,7 +64,7 @@ $result = Invoke-V02RuntimeReviewVerification `
     -BuilderIdentity $BuilderIdentity `
     -RuntimeOperatorIdentity $RuntimeOperatorIdentity `
     -MatrixProducerIdentity $MatrixProducerIdentity `
-    -RuntimeReviewerIdentity $RuntimeReviewerIdentity
+    -RuntimeReviewerIdentity $RuntimeReviewerIdentity `
     -ReviewRunNonce $ReviewRunNonce
 
 Write-Output 'EvidenceClass: IndependentReviewCandidate'

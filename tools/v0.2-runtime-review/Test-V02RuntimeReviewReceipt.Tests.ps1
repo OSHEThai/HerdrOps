@@ -350,6 +350,20 @@ try {
     try { New-Item -ItemType Junction -Path $reparseLink -Value $fixture.Thai | Out-Null; $reparseCreated = $true } catch { }
     if ($reparseCreated) { Assert-RRFailure 'reparse component' { Invoke-RRFixture ($fixture | ForEach-Object { $_.Thai = $reparseLink; $_ }) | Out-Null } } else { Write-Output 'PASS hostile: reparse component guard (fixture creation unavailable; path containment still exercised)' }
 
+    $cliExe = if ($PSVersionTable.PSVersion.Major -ge 7) { Join-Path $PSHOME 'pwsh.exe' } else { Join-Path $PSHOME 'powershell.exe' }
+    $cliScript = Join-Path $PSScriptRoot 'Test-V02RuntimeReviewReceipt.ps1'
+    $cliOut = Join-Path $fixture.Root 'cli-receipt.json'
+    $repoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
+    $cliArgs = @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', $cliScript, '-RepositoryRoot', $repoRoot, '-MatrixReceiptPath', $fixture.MatrixReceiptPath, '-IdentityReceiptPath', $fixture.IdentityReceiptPath, '-ThaiEvidenceRoot', $fixture.Thai, '-EnglishEvidenceRoot', $fixture.English, '-ExpectedSourceCommit', $fixture.Matrix.Candidate.Payload.Source.CommitSha, '-ExpectedSourceTree', $fixture.Matrix.Candidate.Payload.Source.TreeSha, '-OutputPath', $cliOut, '-BuilderIdentity', '@builder', '-RuntimeOperatorIdentity', '@operator', '-MatrixProducerIdentity', '@producer', '-RuntimeReviewerIdentity', '@reviewer')
+    $p = Start-Process -FilePath $cliExe -ArgumentList $cliArgs -WindowStyle Hidden -Wait -PassThru
+    if ($p.ExitCode -eq 0) { throw 'CLI invocation succeeded without ReviewRunNonce parameter.' }
+    $cliArgs += '-ReviewRunNonce'
+    $cliArgs += ('d'*32)
+    $p = Start-Process -FilePath $cliExe -ArgumentList $cliArgs -WindowStyle Hidden -Wait -PassThru
+    if ($p.ExitCode -ne 0) { throw "CLI invocation failed with ReviewRunNonce parameter. Exit code: $($p.ExitCode)" }
+    if (-not (Test-Path -LiteralPath $cliOut)) { throw 'CLI invocation did not produce the expected output file.' }
+    Write-Output 'PASS hostile: CLI invocation requires and accepts ReviewRunNonce parameter wiring'
+
     Write-Output 'V02 runtime-review receipt hostile selftests: PASS'
 }
 finally {
