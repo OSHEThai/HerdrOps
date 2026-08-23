@@ -58,6 +58,7 @@ $PSNativeCommandUseErrorActionPreference = $false
 . (Join-Path $PSScriptRoot 'lib/V02RendererEvidence.ps1')
 . (Join-Path $PSScriptRoot 'lib/V02RuntimePackageBinding.ps1')
 . (Join-Path $PSScriptRoot 'lib/V02RuntimeSemanticBinding.ps1')
+. (Join-Path $PSScriptRoot 'v0.2-issue9-live-ui/Issue9LiveUi.Production.ps1')
 
 function Get-ExpectedCleanSourceIdentity {
     param(
@@ -736,6 +737,8 @@ $appExecutable = ''
 $runId = [DateTimeOffset]::UtcNow.ToString('yyyyMMddTHHmmssZ')
 $evidenceDirectory = Join-Path $artifactRoot "runtime-evidence\v0.2\issues-7-9-10\$runId"
 $captureDirectory = Join-Path $evidenceDirectory 'captures'
+$issue9UiDirectory = Join-Path $evidenceDirectory 'issue9-ui'
+$issue9SideBySideCapturePath = Join-Path $issue9UiDirectory 'actual-herdr-ui-side-by-side.png'
 $databasePath = Join-Path $evidenceDirectory 'herdrops-runtime.db'
 $coreReportPath = Join-Path $evidenceDirectory 'core-runtime.json'
 $appReportPath = Join-Path $evidenceDirectory 'app-runtime.json'
@@ -772,9 +775,11 @@ $observedAppLanguage = 'NOT_OBSERVED'
 $packageBinding = $null
 $trxEvidence = $null
 $targetAgentSessionAttestation = $null
+$issue9SideBySideObservation = $null
 
 try {
     New-Item -ItemType Directory -Path $captureDirectory -Force | Out-Null
+    New-Item -ItemType Directory -Path $issue9UiDirectory -Force | Out-Null
     Assert-ProgressCanonicalKnownVector
     if (Test-Path -LiteralPath $completionSignalPath) {
         throw "Completion signal path already exists: $completionSignalPath"
@@ -952,6 +957,12 @@ try {
                         }
                         'capturing-live-dashboard-and-widgets' {
                             Write-Host 'Capturing the three live pages and three live Widgets. Keep Herdr state steady.'
+                            if ($null -eq $issue9SideBySideObservation) {
+                                $issue9SideBySideObservation = New-I9DesktopSideBySideCapture `
+                                    -OutputPath $issue9SideBySideCapturePath `
+                                    -Progress $progress
+                                Write-Host "Captured exact-phase actual-Herdr/UI desktop evidence: $issue9SideBySideCapturePath"
+                            }
                         }
                         'waiting-for-pre-close-update' {
                             Write-Host 'Event A: trigger one genuine Agent-status transition in the target Agent Lab. Focus, workspace, tab, and pane changes do not count. The Dashboard will close after the status event arrives.'
@@ -1706,12 +1717,32 @@ $reportLines = @(
 )
 $reportLines | Set-Content -LiteralPath $gateReportPath -Encoding utf8
 $gateHash = (Get-FileHash -LiteralPath $gateReportPath -Algorithm SHA256).Hash
+$controlServerIdentityAfterRun = Get-ControlHerdrServerIdentity -ExpectedExecutablePath $HerdrExecutable
+if ($null -eq $issue9SideBySideObservation) {
+    throw 'Issue #9 production observation was not captured during the initial semantic phase.'
+}
+$issue9Observation = New-I9LiveUiObservation `
+    -RuntimeEvidenceDirectory $evidenceDirectory `
+    -UiEvidenceDirectory $issue9UiDirectory `
+    -GateReportPath $gateReportPath `
+    -AppRuntimeReportPath $appReportPath `
+    -CoreRuntimeReportPath $coreReportPath `
+    -SideBySideCapture $issue9SideBySideObservation `
+    -Language $Language `
+    -ExpectedSourceCommit $ExpectedSourceCommit.ToLowerInvariant() `
+    -ExpectedSourceTree $ExpectedSourceTree.ToLowerInvariant() `
+    -RunNonce $EvidenceRunNonce `
+    -ProducerScriptPath $PSCommandPath `
+    -ControlServerIdentityBefore $controlServerIdentity `
+    -ControlServerIdentityAfter $controlServerIdentityAfterRun
 
 $reportLines | Write-Output
 Write-Output "GateReport: $gateReportPath"
 Write-Output "GateReportSha256: $gateHash"
 Write-Output "CoreRuntimeReport: $coreReportPath"
 Write-Output "AppRuntimeReport: $appReportPath"
+Write-Output "Issue9UiObservation: $($issue9Observation.Path)"
+Write-Output "Issue9UiObservationSha256: $($issue9Observation.Sha256)"
 } catch {
     $failureRecord = $_
     $failureMessage = [string]$failureRecord.Exception.Message

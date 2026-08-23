@@ -1,6 +1,7 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot '..\lib\V02ReferenceHostProfile.ps1')
+. (Join-Path $PSScriptRoot '..\lib\V02GateProvenance.ps1')
 
 $script:I9MaximumFileBytes = [int64]16777216
 $script:I9MaximumEvidenceBytes = [int64]67108864
@@ -65,6 +66,8 @@ function Read-I9HeldFile {
         # One held read with FileShare.Read blocks replacement/deletion during
         # hashing; the post-read identity check closes the path TOCTOU window.
         $stream = [IO.File]::Open($full, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+        $identityBefore = Get-V02FileInformation -FileStream $stream
+        if ([uint32]$identityBefore.NumberOfLinks -ne 1) { throw "Held file must have exactly one link; hardlink/path alias rejected: $full" }
         $length = [int64]$stream.Length
         if ($length -ne [int64]$before.Length -or $length -gt $MaximumBytes) { throw "Held file changed before reading: $full" }
         $buffer = New-Object byte[] 65536
@@ -76,13 +79,60 @@ function Read-I9HeldFile {
         }
         if ($memory.Length -ne $length) { throw "Held file length changed during read: $full" }
         $bytes = $memory.ToArray(); $hash = Get-I9Hash $bytes
+        $identityAfter = Get-V02FileInformation -FileStream $stream
+        Assert-V02FileIdentityContinuity -BaselineInfo $identityBefore -CurrentInfo $identityAfter -Context 'Issue #9 held file'
+        if ([uint32]$identityAfter.NumberOfLinks -ne 1) { throw "Held file link count changed or is non-singular: $full" }
     } finally { if ($null -ne $stream) { $stream.Dispose() }; $memory.Dispose() }
     $after = Get-Item -LiteralPath $full -Force -ErrorAction Stop
     if ([int64]$after.Length -ne [int64]$before.Length -or $after.LastWriteTimeUtc.Ticks -ne $before.LastWriteTimeUtc.Ticks) { throw "Held file identity changed during read: $full" }
     Assert-I9NoReparse $full 'held file after read'
-    $result = [pscustomobject][ordered]@{ Path = $full; Bytes = $length; Sha256 = $hash }
+    $result = [pscustomobject][ordered]@{ Path = $full; Bytes = $length; Sha256 = $hash; VolumeSerialNumber = [uint32]$identityAfter.VolumeSerialNumber; FileId = [uint64]$identityAfter.FileIndex; LinkCount = [uint32]$identityAfter.NumberOfLinks }
     if ($IncludeBytes) { $result | Add-Member -NotePropertyName Content -NotePropertyValue $bytes }
     return $result
+}
+
+function Assert-I9Png {
+    param([Parameter(Mandatory)][string]$Path, [Parameter(Mandatory)][string]$Context)
+    $held = Read-I9HeldFile $Path -MaximumBytes $script:I9MaximumEvidenceBytes -IncludeBytes
+    $signature = [byte[]](0x89,0x50,0x4E,0x47,0x0D,0x0A,0x1A,0x0A)
+    if ($held.Content.Length -lt $signature.Length) { throw "$Context is not a PNG: signature is missing." }
+    for ($index = 0; $index -lt $signature.Length; $index++) {
+        if ($held.Content[$index] -ne $signature[$index]) { throw "$Context is not a PNG: signature mismatch." }
+    }
+    try {
+        Add-Type -AssemblyName PresentationCore -ErrorAction Stop
+        $memory = [IO.MemoryStream]::new($held.Content, $false)
+        try {
+            $decoder = [Windows.Media.Imaging.PngBitmapDecoder]::new(
+                $memory,
+                [Windows.Media.Imaging.BitmapCreateOptions]::PreservePixelFormat,
+                [Windows.Media.Imaging.BitmapCacheOption]::OnLoad)
+            if ($decoder.Frames.Count -ne 1) { throw "$Context must decode to exactly one PNG frame." }
+            $frame = $decoder.Frames[0]
+            if ($frame.PixelWidth -le 0 -or $frame.PixelHeight -le 0) { throw "$Context decoded dimensions are invalid." }
+            # Force a full pixel decode so a valid header with corrupt image data is rejected.
+            $stride = [Math]::Max(1, [int](($frame.PixelWidth * $frame.Format.BitsPerPixel + 7) / 8))
+            $pixels = New-Object byte[] ([int]($stride * $frame.PixelHeight))
+            $frame.CopyPixels($pixels, $stride, 0)
+            return [pscustomobject][ordered]@{ Path=$held.Path; Bytes=$held.Bytes; Sha256=$held.Sha256; PixelWidth=[int]$frame.PixelWidth; PixelHeight=[int]$frame.PixelHeight; FileId=$held.FileId; LinkCount=$held.LinkCount }
+        } finally { $memory.Dispose() }
+    } catch {
+        if ($_.Exception.Message -match '^.+must decode|^.+decoded dimensions') { throw }
+        throw "$Context failed PNG decoding: $($_.Exception.Message)"
+    }
+}
+
+function ConvertTo-I9Utc {
+    param($Value, [Parameter(Mandatory)][string]$Context)
+    if ($Value -isnot [string] -or [string]$Value -cnotmatch '(?:Z|\+00:00)$') { throw "$Context must be an explicit UTC timestamp ending in Z or +00:00." }
+    $parsed = [DateTimeOffset]::MinValue
+    if (-not [DateTimeOffset]::TryParse([string]$Value,[Globalization.CultureInfo]::InvariantCulture,[Globalization.DateTimeStyles]::RoundtripKind,[ref]$parsed) -or $parsed.Offset -ne [TimeSpan]::Zero) { throw "$Context is not a valid UTC timestamp." }
+    return $parsed.ToUniversalTime()
+}
+
+function Get-I9RedactedIdentity {
+    param([Parameter(Mandatory)][string]$Kind,[Parameter(Mandatory)][string]$Value)
+    return Get-I9Hash ([Text.UTF8Encoding]::new($false).GetBytes($Kind + [char]0 + $Value))
 }
 
 function Read-I9Json {
@@ -142,7 +192,7 @@ function Get-I9GateMap {
     param([Parameter(Mandatory)][string]$Path)
     $held = Read-I9HeldFile $Path -MaximumBytes 1048576 -IncludeBytes
     try { $text = (New-Object Text.UTF8Encoding($false, $true)).GetString($held.Content) } catch { throw "Gate report is not UTF-8: $Path" }
-    $known = @('ExpectedSourceCommit','ExpectedSourceTree','SourceCommit','SourceTree','PreRunSourceCommit','PreRunSourceTree','PreRunGitTreeClean','PostRunSourceCommit','PostRunSourceTree','PostRunGitTreeClean','Result','EvidenceClass','SessionControlInvoked','AcceptanceControlSession','TargetAgentLabSession','AcceptanceControlSocketPath','TargetAgentLabSocketPath','SeparateSessionSockets','AcceptanceControlServerIdentity','TargetAgentSessionReference','PackageIdentityPath','PackageIdentityFileSha256','PackageIdentityReceiptSha256','PackageArchivePath','PackageArchiveSha256','ExtractedPackageRoot','PackageManifestPath','PackageManifestSha256','PackageProfileId','PackageValidationEvidenceClass','AppSha256','CoreSha256','HerdrReleaseId','HerdrExecutableSha256','BundledSchemaSha256','HerdrProtocol','ReferenceHostProfileId','ReferenceHostProfileSha256','ReferenceHostSchemaSha256','Language','AppRuntimeReportSha256','CoreRuntimeReportSha256','TrxSelectionReceiptPath','TrxSelectionReceiptSha256','ProgressHistoryPath','ProgressHistorySha256','ProgressHistoryLastEntrySha256','CaptureDirectory','CoreAcceptedEventKindCheck','SemanticCaptureBindingCheck','SnapshotObserved','EventObserved','ReconnectObserved')
+    $known = @('RunNonce','GeneratedUtc','ExpectedSourceCommit','ExpectedSourceTree','SourceCommit','SourceTree','PreRunSourceCommit','PreRunSourceTree','PreRunGitTreeClean','PostRunSourceCommit','PostRunSourceTree','PostRunGitTreeClean','Result','EvidenceClass','SessionControlInvoked','AcceptanceControlSession','TargetAgentLabSession','AcceptanceControlSocketPath','TargetAgentLabSocketPath','SeparateSessionSockets','AcceptanceControlServerIdentity','TargetAgentSessionReference','PackageIdentityPath','PackageIdentityFileSha256','PackageIdentityReceiptSha256','PackageArchivePath','PackageArchiveSha256','ExtractedPackageRoot','PackageManifestPath','PackageManifestSha256','PackageProfileId','PackageValidationEvidenceClass','AppSha256','CoreSha256','HerdrReleaseId','HerdrExecutableSha256','BundledSchemaSha256','HerdrProtocol','ReferenceHostProfileId','ReferenceHostProfileSha256','ReferenceHostSchemaSha256','Language','AppRuntimeReportSha256','CoreRuntimeReportSha256','TrxSelectionReceiptPath','TrxSelectionReceiptSha256','ProgressHistoryPath','ProgressHistorySha256','ProgressHistoryLastEntrySha256','CaptureDirectory','CoreAcceptedEventKindCheck','SemanticCaptureBindingCheck','SnapshotObserved','EventObserved','ReconnectObserved')
     $values = @{}
     foreach ($line in ($text -split "`r?`n")) {
         if ($line -notmatch '^([A-Za-z][A-Za-z0-9]*):[ ]?(.*)$') { continue }
@@ -191,6 +241,8 @@ function Assert-I9RuntimeRun {
     param([Parameter(Mandatory)][string]$RuntimeRoot, [Parameter(Mandatory)][ValidateSet('Thai','English')][string]$Language, [Parameter(Mandatory)][string]$ExpectedCommit, [Parameter(Mandatory)][string]$ExpectedTree, [Parameter(Mandatory)]$Package)
     $root = Get-I9FullPath $RuntimeRoot 'runtime evidence'; Assert-I9NoReparse $root 'runtime evidence'
     $gate = Get-I9GateMap (Join-Path $root 'gate-report.txt'); Assert-I9Gate $gate $Language $ExpectedCommit $ExpectedTree
+    $runNonce = Assert-I9String (Get-I9GateValue $gate 'RunNonce' "$Language gate") "$Language gate RunNonce"
+    if ($runNonce -cnotmatch '^[0-9a-f]{32}$') { throw "$Language gate RunNonce is invalid." }
     $appPath = Join-Path $root 'app-runtime.json'; $corePath = Join-Path $root 'core-runtime.json'; $appDoc = Read-I9Json $appPath "$Language App report"; $coreDoc = Read-I9Json $corePath "$Language Core report"; $app = $appDoc.Value; $core = $coreDoc.Value
     Assert-I9String $app.EvidenceClassification "$Language App classification" 'RuntimeCandidate' | Out-Null; Assert-I9String $app.Language "$Language App language" $Language | Out-Null; Assert-I9String $app.FinalLanguage "$Language App final language" $Language | Out-Null; Assert-I9True $app.LanguageStableThroughFinish "$Language language stability"; Assert-I9False $app.SessionControlInvoked "$Language App session control"; if ([int64]$app.LanguageChangeCount -ne 0) { throw "$Language App language changed." }
     Assert-I9String $core.EvidenceClassification "$Language Core classification" 'Runtime' | Out-Null; foreach ($name in @('RuntimeObserved','SnapshotObserved','EventObserved','ReconnectObserved','CompletionSignalObserved')) { Assert-I9True $core.$name "$Language Core.$name" }; Assert-I9False $core.SessionControlInvoked "$Language Core session control"
@@ -213,39 +265,77 @@ function Assert-I9RuntimeRun {
     if ((Get-I9GateValue $gate 'AppRuntimeReportSha256' "$Language gate") -cne $appDoc.Sha256 -or (Get-I9GateValue $gate 'CoreRuntimeReportSha256' "$Language gate") -cne $coreDoc.Sha256) { throw "$Language gate report hashes are stale." }
     if ($null -eq $core.Admission) { throw "$Language Core report has no Herdr admission." }
     foreach ($pair in @(@('HerdrReleaseId','ReleaseId'),@('HerdrExecutableSha256','ExecutableSha256'),@('BundledSchemaSha256','BundledSchemaSha256'),@('HerdrProtocol','Protocol'))) { if ((Get-I9GateValue $gate $pair[0] "$Language gate") -cne [string]$core.Admission.($pair[1])) { throw "$Language gate/Core Herdr admission is not exactly bound." } }
-    return [pscustomobject][ordered]@{ Language = $Language; Root = $root; Gate = $gate; GateSha256 = $gate.Sha256; App = $app; AppSha256 = $appDoc.Sha256; Core = $core; CoreSha256 = $coreDoc.Sha256; AcceptedStatus = $accepted; Reconciliation = $reconciled[$reconciled.Count - 1]; EventAStateSha256 = [string]$eventA.CurrentStateSha256; EventBStateSha256 = [string]$eventB.CurrentStateSha256; StateHashes = @($transitions | ForEach-Object { [string]$_.ContractStateSha256 }) }
+    $semantic = @($app.SemanticStateCaptures)
+    if ($semantic.Count -ne 3) { throw "$Language App report must contain exactly three semantic captures." }
+    $eventAChanges = @($eventA.Changes); $eventBChanges = @($eventB.Changes)
+    if ($eventAChanges.Count -ne 1 -or $eventBChanges.Count -ne 1) { throw "$Language App report must bind exactly one Agent change in each Event." }
+    return [pscustomobject][ordered]@{ Language = $Language; RunNonce = $runNonce; Root = $root; Gate = $gate; GateSha256 = $gate.Sha256; App = $app; AppSha256 = $appDoc.Sha256; Core = $core; CoreSha256 = $coreDoc.Sha256; AcceptedStatus = $accepted; EventAChange=$eventAChanges[0]; EventBChange=$eventBChanges[0]; InitialSemantic=$semantic[0]; EventASemantic=$semantic[1]; EventBSemantic=$semantic[2]; Reconciliation = $reconciled[$reconciled.Count - 1]; EventAStateSha256 = [string]$eventA.CurrentStateSha256; EventBStateSha256 = [string]$eventB.CurrentStateSha256; StateHashes = @($transitions | ForEach-Object { [string]$_.ContractStateSha256 }) }
 }
 
 function Assert-I9UiLeg {
-    param([Parameter(Mandatory)][string]$UiRoot, [Parameter(Mandatory)][ValidateSet('Thai','English')][string]$Language, [Parameter(Mandatory)]$Runtime, [Parameter(Mandatory)]$Package, [Parameter(Mandatory)][string]$ExpectedCommit, [Parameter(Mandatory)][string]$ExpectedTree, [Parameter(Mandatory)][string]$MatrixPayloadSha256)
+    param([Parameter(Mandatory)][string]$UiRoot, [Parameter(Mandatory)][ValidateSet('Thai','English')][string]$Language, [Parameter(Mandatory)]$Runtime, [Parameter(Mandatory)]$Package, [Parameter(Mandatory)][string]$ExpectedCommit, [Parameter(Mandatory)][string]$ExpectedTree, [Parameter(Mandatory)][string]$RepositoryRoot)
     $root = Get-I9FullPath $UiRoot 'UI evidence'; Assert-I9NoReparse $root 'UI evidence'; $doc = Read-I9Json (Join-Path $root 'issue9-ui-functional.json') "$Language Issue #9 UI receipt"; $receipt = $doc.Value
-    Assert-I9ExactProperties $receipt @('SchemaVersion','EvidenceClassification','Issue','Language','Source','Bindings','SideBySideCapture','Pages','Selection','Lifecycle','EvidenceBoundary') "$Language UI receipt"
-    if ([int64]$receipt.SchemaVersion -ne 1 -or [int64]$receipt.Issue -ne 9) { throw "$Language UI receipt version/issue mismatch." }
+    Assert-I9ExactProperties $receipt @('SchemaVersion','EvidenceClassification','Issue','Language','RunNonce','Source','Producer','IdentityMapping','Bindings','SideBySideCapture','Pages','Selection','Lifecycle','EvidenceBoundary') "$Language UI receipt"
+    if ([int64]$receipt.SchemaVersion -ne 2 -or [int64]$receipt.Issue -ne 9) { throw "$Language UI receipt version/issue mismatch." }
     Assert-I9String $receipt.EvidenceClassification "$Language UI classification" 'Issue9LiveUiObservation' | Out-Null; Assert-I9String $receipt.Language "$Language UI language" $Language | Out-Null
+    if ([string]$receipt.RunNonce -cne [string]$Runtime.RunNonce) { throw "$Language UI RunNonce is replayed or cross-leg." }
     Assert-I9ExactProperties $receipt.Source @('CommitSha','TreeSha') "$Language UI source"; Assert-I9GitSha $receipt.Source.CommitSha "$Language UI source commit" | Out-Null; Assert-I9GitSha $receipt.Source.TreeSha "$Language UI source tree" | Out-Null
-    Assert-I9ExactProperties $receipt.Bindings @('GateReportSha256','AppRuntimeReportSha256','CoreRuntimeReportSha256','PackageIdentityReceiptSha256','PackageArchiveSha256','PackageManifestSha256','AppSha256','CoreSha256','HerdrExecutableSha256','BundledSchemaSha256','MatrixCandidatePayloadSha256') "$Language UI bindings"
+    Assert-I9ExactProperties $receipt.Producer @('Name','ScriptPath','ScriptSha256','AppProcessId','AppExecutableSha256','GeneratedUtc') "$Language UI producer"
+    Assert-I9String $receipt.Producer.Name "$Language UI producer name" 'Test-V02LiveRuntimeAcceptance.ps1/HerdrOps.App.RuntimeEvidenceRunner' | Out-Null
+    $expectedProducerPath = Join-Path ([IO.Path]::GetFullPath($RepositoryRoot)) 'tools\Test-V02LiveRuntimeAcceptance.ps1'
+    $producerPath = Resolve-I9Path ([IO.Path]::GetFullPath($RepositoryRoot)) ([string]$receipt.Producer.ScriptPath) "$Language UI producer script"
+    if (-not $producerPath.Equals([IO.Path]::GetFullPath($expectedProducerPath),[StringComparison]::OrdinalIgnoreCase)) { throw "$Language UI producer path is not the composite runtime producer." }
+    $producerHeld = Read-I9HeldFile $producerPath -MaximumBytes 2097152
+    if ([string]$receipt.Producer.ScriptSha256 -cne $producerHeld.Sha256 -or [string]$receipt.Producer.AppExecutableSha256 -cne [string]$Package.AppSha256 -or [int]$receipt.Producer.AppProcessId -ne [int]$Runtime.App.AppProcessId) { throw "$Language UI producer provenance is stale or forged." }
+    $null = ConvertTo-I9Utc ([string]$receipt.Producer.GeneratedUtc) "$Language UI producer GeneratedUtc"
+    Assert-I9ExactProperties $receipt.IdentityMapping @('ProjectIdSource','TaskIdSource','AgentIdSource') "$Language identity mapping"
+    if ([string]$receipt.IdentityMapping.ProjectIdSource -cne 'Core.WorkspaceId' -or [string]$receipt.IdentityMapping.TaskIdSource -cne 'Core.TabId' -or [string]$receipt.IdentityMapping.AgentIdSource -cne 'Core.TerminalId') { throw "$Language UI identity mapping is not the v0.2 Core semantic mapping." }
+    Assert-I9ExactProperties $receipt.Bindings @('GateReportSha256','AppRuntimeReportSha256','CoreRuntimeReportSha256','ProgressHistorySha256','PackageIdentityReceiptSha256','PackageArchiveSha256','PackageManifestSha256','AppSha256','CoreSha256','HerdrExecutableSha256','BundledSchemaSha256') "$Language UI bindings"
     if ([string]$receipt.Source.CommitSha -cne $ExpectedCommit -or [string]$receipt.Source.TreeSha -cne $ExpectedTree) { throw "$Language UI source binding mismatch." }
-    foreach ($name in @('GateReportSha256','AppRuntimeReportSha256','CoreRuntimeReportSha256','PackageIdentityReceiptSha256','PackageArchiveSha256','PackageManifestSha256','AppSha256','CoreSha256','HerdrExecutableSha256','BundledSchemaSha256','MatrixCandidatePayloadSha256')) { Assert-I9Sha $receipt.Bindings.$name "$Language UI binding $name" | Out-Null }
+    foreach ($name in @('GateReportSha256','AppRuntimeReportSha256','CoreRuntimeReportSha256','ProgressHistorySha256','PackageIdentityReceiptSha256','PackageArchiveSha256','PackageManifestSha256','AppSha256','CoreSha256','HerdrExecutableSha256','BundledSchemaSha256')) { Assert-I9Sha $receipt.Bindings.$name "$Language UI binding $name" | Out-Null }
     $expectedHerdrSha = Get-I9GateValue $Runtime.Gate 'HerdrExecutableSha256' "$Language gate"; $expectedSchemaSha = Get-I9GateValue $Runtime.Gate 'BundledSchemaSha256' "$Language gate"
-    if ($receipt.Bindings.GateReportSha256 -cne $Runtime.GateSha256 -or $receipt.Bindings.AppRuntimeReportSha256 -cne $Runtime.AppSha256 -or $receipt.Bindings.CoreRuntimeReportSha256 -cne $Runtime.CoreSha256 -or $receipt.Bindings.PackageIdentityReceiptSha256 -cne $Package.ReceiptSha256 -or $receipt.Bindings.PackageArchiveSha256 -cne $Package.ArchiveSha256 -or $receipt.Bindings.PackageManifestSha256 -cne $Package.ManifestSha256 -or $receipt.Bindings.AppSha256 -cne $Package.AppSha256 -or $receipt.Bindings.CoreSha256 -cne $Package.CoreSha256 -or $receipt.Bindings.HerdrExecutableSha256 -cne $expectedHerdrSha -or $receipt.Bindings.BundledSchemaSha256 -cne $expectedSchemaSha -or $receipt.Bindings.MatrixCandidatePayloadSha256 -cne $MatrixPayloadSha256) { throw "$Language UI receipt is not bound to the exact runtime/package/Herdr/matrix hashes." }
-    $side = Get-I9Prop $receipt 'SideBySideCapture' "$Language UI receipt"; Assert-I9ExactProperties $side @('Path','Bytes','Sha256','ArtifactRole') "$Language side-by-side capture"; Assert-I9String $side.ArtifactRole "$Language side-by-side role" 'ActualHerdrAndUiSideBySide' | Out-Null; Assert-I9Sha $side.Sha256 "$Language side-by-side hash" | Out-Null; if ($side.Bytes -isnot [int] -and $side.Bytes -isnot [long]) { throw "$Language side-by-side bytes must be a native integer." }; if ([int64]$side.Bytes -le 0 -or [int64]$side.Bytes -gt $script:I9MaximumEvidenceBytes) { throw "$Language side-by-side capture exceeds its bound." }; $sidePath = Resolve-I9Path $root $side.Path "$Language side-by-side capture"; $sideFile = Read-I9HeldFile $sidePath; if ([int64]$side.Bytes -ne $sideFile.Bytes -or [string]$side.Sha256 -cne $sideFile.Sha256) { throw "$Language side-by-side capture hash mismatch." }
+    if ($receipt.Bindings.GateReportSha256 -cne $Runtime.GateSha256 -or $receipt.Bindings.AppRuntimeReportSha256 -cne $Runtime.AppSha256 -or $receipt.Bindings.CoreRuntimeReportSha256 -cne $Runtime.CoreSha256 -or $receipt.Bindings.ProgressHistorySha256 -cne (Get-I9GateValue $Runtime.Gate 'ProgressHistorySha256' "$Language gate") -or $receipt.Bindings.PackageIdentityReceiptSha256 -cne $Package.ReceiptSha256 -or $receipt.Bindings.PackageArchiveSha256 -cne $Package.ArchiveSha256 -or $receipt.Bindings.PackageManifestSha256 -cne $Package.ManifestSha256 -or $receipt.Bindings.AppSha256 -cne $Package.AppSha256 -or $receipt.Bindings.CoreSha256 -cne $Package.CoreSha256 -or $receipt.Bindings.HerdrExecutableSha256 -cne $expectedHerdrSha -or $receipt.Bindings.BundledSchemaSha256 -cne $expectedSchemaSha) { throw "$Language UI receipt is not bound to the exact runtime/package/Herdr hashes." }
+    $initial = $Runtime.InitialSemantic
+    $initialUtc = ConvertTo-I9Utc ([string]$initial.ObservedUtc) "$Language initial semantic time"
+    $eventAPhaseUtc = ConvertTo-I9Utc ([string]$Runtime.App.EventA.PhaseEnteredUtc) "$Language Event A phase time"
+    $side = Get-I9Prop $receipt 'SideBySideCapture' "$Language UI receipt"; Assert-I9ExactProperties $side @('Path','Bytes','Sha256','PixelWidth','PixelHeight','ObservedUtc','Phase','Sequence','StateSha256','RunNonce','ArtifactRole') "$Language side-by-side capture"; Assert-I9String $side.ArtifactRole "$Language side-by-side role" 'ActualHerdrAndUiSideBySide' | Out-Null
+    if ([string]$side.RunNonce -cne [string]$Runtime.RunNonce) { throw "$Language side-by-side capture RunNonce is replayed or cross-leg." }
+    if ([string]$side.Phase -cne 'initial' -or [long]$side.Sequence -ne [long]$initial.Sequence -or [string]$side.StateSha256 -cne [string]$initial.NormalizedStateSha256) { throw "$Language side-by-side capture is bound to the wrong semantic phase/state." }
+    $sideFile = Assert-I9Png (Resolve-I9Path $root $side.Path "$Language side-by-side capture") "$Language side-by-side capture"
+    if ($sideFile.PixelWidth -gt 16384 -or $sideFile.PixelHeight -gt 16384 -or ([int64]$sideFile.PixelWidth * [int64]$sideFile.PixelHeight) -gt 134217728) { throw "$Language side-by-side capture dimensions exceed the bounded capture envelope." }
+    $sideUtc = ConvertTo-I9Utc ([string]$side.ObservedUtc) "$Language side-by-side capture time"
+    if ($sideUtc -lt (ConvertTo-I9Utc ([string]$Runtime.App.StartedUtc) "$Language App start") -or $sideUtc -ge $eventAPhaseUtc) { throw "$Language side-by-side capture is stale or outside its semantic window." }
+    if ([int64]$side.Bytes -ne $sideFile.Bytes -or [string]$side.Sha256 -cne $sideFile.Sha256 -or [int]$side.PixelWidth -ne $sideFile.PixelWidth -or [int]$side.PixelHeight -ne $sideFile.PixelHeight) { throw "$Language side-by-side capture PNG bytes/hash/dimensions mismatch." }
     $pages = @($receipt.Pages); if ($pages.Count -ne 3) { throw "$Language UI receipt must contain exactly three pages." }; $seen = @{}
+    $normalizedPages = @()
     foreach ($page in $pages) {
-        Assert-I9ExactProperties $page @('Name','Language','UiCapturePath','UiCaptureSha256','StateSha256','WorkspaceId','ProjectId','AgentId','TaskId','AgentStatus','PaneId') "$Language page"
+        Assert-I9ExactProperties $page @('Name','Language','UiCapturePath','UiCaptureSha256','PixelWidth','PixelHeight','ObservedUtc','Phase','Sequence','StateSha256','WorkspaceId','ProjectId','AgentId','TaskId','AgentStatus','PaneId') "$Language page"
         $name = Assert-I9String $page.Name "$Language page name"; if ($script:I9ExpectedPages -notcontains $name -or $seen.ContainsKey($name)) { throw "$Language page set is missing/duplicated/unknown." }; $seen[$name] = $true
-        Assert-I9String $page.Language "$Language page language" $Language | Out-Null; Assert-I9Sha $page.UiCaptureSha256 "$Language $name capture hash" | Out-Null; Assert-I9Sha $page.StateSha256 "$Language $name state hash" | Out-Null; if ($Runtime.StateHashes -notcontains [string]$page.StateSha256) { throw "$Language $name page state is not Core-bound." }
-        $capture = Read-I9HeldFile (Resolve-I9Path $root $page.UiCapturePath "$Language $name UI capture"); if ($capture.Sha256 -cne $page.UiCaptureSha256) { throw "$Language $name UI capture hash mismatch." }
+        Assert-I9String $page.Language "$Language page language" $Language | Out-Null; Assert-I9Sha $page.UiCaptureSha256 "$Language $name capture hash" | Out-Null; Assert-I9Sha $page.StateSha256 "$Language $name state hash" | Out-Null
+        if ([string]$page.Phase -cne 'initial' -or [long]$page.Sequence -ne [long]$initial.Sequence -or [string]$page.StateSha256 -cne [string]$initial.NormalizedStateSha256) { throw "$Language $name page is bound to the wrong semantic phase/state." }
+        $capture = Assert-I9Png (Resolve-I9Path $Runtime.Root $page.UiCapturePath "$Language $name UI capture") "$Language $name UI capture"
+        if ($capture.PixelWidth -ne 1672 -or $capture.PixelHeight -ne 941) { throw "$Language $name UI capture must decode to exactly 1672x941." }
+        $captureUtc = ConvertTo-I9Utc ([string]$page.ObservedUtc) "$Language $name capture time"
+        if ($captureUtc -gt $initialUtc -or [string]$capture.Sha256 -cne [string]$page.UiCaptureSha256 -or [int]$capture.PixelWidth -ne [int]$page.PixelWidth -or [int]$capture.PixelHeight -ne [int]$page.PixelHeight) { throw "$Language $name UI capture PNG bytes/hash/dimensions/timestamp mismatch." }
         foreach ($field in @('WorkspaceId','ProjectId','AgentId','TaskId','AgentStatus','PaneId')) { Assert-I9String $page.$field "$Language $name $field" | Out-Null }
+        $normalizedPages += [pscustomobject][ordered]@{ Name=[string]$page.Name; Language=[string]$page.Language; UiCapturePath=[string]$page.UiCapturePath; UiCaptureSha256=[string]$page.UiCaptureSha256; StateSha256=[string]$page.StateSha256; WorkspaceId=[string]$page.WorkspaceId; ProjectId=[string]$page.ProjectId; AgentId=[string]$page.AgentId; TaskId=[string]$page.TaskId; AgentStatus=[string]$page.AgentStatus; PaneId=[string]$page.PaneId }
     }
-    $selection = $receipt.Selection; Assert-I9ExactProperties $selection @('WorkspaceId','ProjectId','AgentId','TaskId','AgentStatus','PaneId','StateSha256','Source') "$Language selection"; Assert-I9String $selection.Source "$Language selection source" 'CoreSnapshot' | Out-Null
+    $selection = $receipt.Selection; Assert-I9ExactProperties $selection @('WorkspaceId','ProjectId','AgentId','TaskId','AgentStatus','PaneId','StateSha256','Source') "$Language selection"; Assert-I9String $selection.Source "$Language selection source" 'CoreSemanticSnapshot' | Out-Null
     foreach ($page in $pages) { foreach ($field in @('WorkspaceId','ProjectId','AgentId','TaskId','AgentStatus','PaneId')) { if ([string]$page.$field -cne [string]$selection.$field) { throw "$Language page selection does not match the single Core selection." } } }
-    if ([string]$selection.WorkspaceId -cne [string]$Runtime.AcceptedStatus.WorkspaceId -or [string]$selection.PaneId -cne [string]$Runtime.AcceptedStatus.PaneId -or [string]$selection.AgentStatus -cne [string]$Runtime.AcceptedStatus.AgentStatus) { throw "$Language selected workspace/pane/status does not match accepted Core Agent event." }
-    if ($Runtime.StateHashes -notcontains [string]$selection.StateSha256) { throw "$Language selected state is not in Core transition trace." }
+    $change = $Runtime.EventAChange
+    if ([string]$selection.WorkspaceId -cne [string]$change.WorkspaceId -or [string]$selection.ProjectId -cne [string]$change.WorkspaceId -or [string]$selection.AgentId -cne [string]$change.TerminalId -or [string]$selection.TaskId -cne [string]$change.TabId -or [string]$selection.PaneId -cne [string]$change.PaneId -or [string]$selection.AgentStatus -cne [string]$change.PreviousStatus -or [string]$selection.StateSha256 -cne [string]$initial.NormalizedStateSha256) { throw "$Language selected identifiers/status/state are not the exact initial Core semantic snapshot." }
+    $selectedHash = Get-I9RedactedIdentity 'agent' ([string]$selection.AgentId)
+    $semanticAgents = @($initial.SourceState.Agents | Where-Object { [string]$_.AgentIdentitySha256 -ceq $selectedHash })
+    if ([string]$initial.SourceState.SelectedAgentIdentitySha256 -cne $selectedHash -or $semanticAgents.Count -ne 1 -or [string]$semanticAgents[0].WorkspaceIdentitySha256 -cne (Get-I9RedactedIdentity 'workspace' ([string]$selection.WorkspaceId)) -or [string]$semanticAgents[0].TabIdentitySha256 -cne (Get-I9RedactedIdentity 'tab' ([string]$selection.TaskId)) -or [string]$semanticAgents[0].PaneIdentitySha256 -cne (Get-I9RedactedIdentity 'pane' ([string]$selection.PaneId)) -or [string]$semanticAgents[0].Status -cne [string]$selection.AgentStatus) { throw "$Language forged synchronized identifiers do not reach the exact semantic identity guard." }
     Assert-I9ExactProperties $receipt.EvidenceBoundary @('Runtime','HumanVisual','ReleaseCredit') "$Language evidence boundary"; Assert-I9False $receipt.EvidenceBoundary.ReleaseCredit "$Language UI Release boundary"; Assert-I9String $receipt.EvidenceBoundary.Runtime "$Language UI runtime boundary" 'NOT_OBSERVED' | Out-Null; Assert-I9String $receipt.EvidenceBoundary.HumanVisual "$Language UI human boundary" 'NOT_OBSERVED' | Out-Null
-    $life = $receipt.Lifecycle; Assert-I9ExactProperties $life @('DashboardClosed','CoreConnectedAfterDashboardClose','DisconnectObserved','ReconnectObserved','ReconciliationObserved','EventAStateSha256','EventBStateSha256','ReconciledStateSha256','ControlServerSurvivedTargetRestart') "$Language lifecycle"; foreach ($name in @('DashboardClosed','CoreConnectedAfterDashboardClose','DisconnectObserved','ReconnectObserved','ReconciliationObserved','ControlServerSurvivedTargetRestart')) { Assert-I9True $life.$name "$Language lifecycle $name" }
+    $life = $receipt.Lifecycle; Assert-I9ExactProperties $life @('DashboardClosed','DashboardClosedUtc','CoreConnectedAfterDashboardClose','DisconnectObserved','DisconnectObservedUtc','ReconnectObserved','ReconnectObservedUtc','ReconciliationObserved','ReconciliationCount','EventAStateSha256','EventBStateSha256','ReconciledStateSha256','ControlServerSurvivedTargetRestart') "$Language lifecycle"; foreach ($name in @('DashboardClosed','CoreConnectedAfterDashboardClose','DisconnectObserved','ReconnectObserved','ReconciliationObserved','ControlServerSurvivedTargetRestart')) { Assert-I9True $life.$name "$Language lifecycle $name" }
     foreach ($name in @('EventAStateSha256','EventBStateSha256','ReconciledStateSha256')) { Assert-I9Sha $life.$name "$Language lifecycle $name" | Out-Null; if ($Runtime.StateHashes -notcontains [string]$life.$name) { throw "$Language lifecycle $name is not Core-bound." } }
     if ([string]$life.EventAStateSha256 -cne $Runtime.EventAStateSha256 -or [string]$life.EventBStateSha256 -cne $Runtime.EventBStateSha256 -or [string]$life.ReconciledStateSha256 -cne [string]$Runtime.Reconciliation.ContractStateSha256) { throw "$Language lifecycle states are not exact runtime-bound states." }
-    return [pscustomobject][ordered]@{ Language = $Language; ReceiptPath = $doc.Path; ReceiptSha256 = $doc.Sha256; SideBySidePath = $sideFile.Path; SideBySideSha256 = $sideFile.Sha256; Pages = @($pages); Selection = $selection; Lifecycle = $life }
+    $dashboardUtc=ConvertTo-I9Utc ([string]$life.DashboardClosedUtc) "$Language lifecycle DashboardClosedUtc";$disconnectUtc=ConvertTo-I9Utc ([string]$life.DisconnectObservedUtc) "$Language lifecycle DisconnectObservedUtc";$reconnectUtc=ConvertTo-I9Utc ([string]$life.ReconnectObservedUtc) "$Language lifecycle ReconnectObservedUtc"
+    if ($dashboardUtc -ne (ConvertTo-I9Utc ([string]$Runtime.App.DashboardClosedUtc) "$Language App DashboardClosedUtc") -or $disconnectUtc -ne (ConvertTo-I9Utc ([string]$Runtime.App.DisconnectObservedUtc) "$Language App DisconnectObservedUtc") -or $reconnectUtc -ne (ConvertTo-I9Utc ([string]$Runtime.App.ReconnectObservedUtc) "$Language App ReconnectObservedUtc") -or -not ($initialUtc -lt $eventAPhaseUtc -and $dashboardUtc -lt $disconnectUtc -and $disconnectUtc -lt $reconnectUtc -and $reconnectUtc -lt (ConvertTo-I9Utc ([string]$Runtime.App.EventB.ObservedUtc) "$Language Event B time"))) { throw "$Language lifecycle chronology is invalid or stale." }
+    $normalizedSelection=[pscustomobject][ordered]@{WorkspaceId=[string]$selection.WorkspaceId;ProjectId=[string]$selection.ProjectId;AgentId=[string]$selection.AgentId;TaskId=[string]$selection.TaskId;AgentStatus=[string]$selection.AgentStatus;PaneId=[string]$selection.PaneId;StateSha256=[string]$selection.StateSha256;Source='CoreSnapshot'}
+    $normalizedLifecycle=[pscustomobject][ordered]@{DashboardClosed=[bool]$life.DashboardClosed;CoreConnectedAfterDashboardClose=[bool]$life.CoreConnectedAfterDashboardClose;DisconnectObserved=[bool]$life.DisconnectObserved;ReconnectObserved=[bool]$life.ReconnectObserved;ReconciliationObserved=[bool]$life.ReconciliationObserved;EventAStateSha256=[string]$life.EventAStateSha256;EventBStateSha256=[string]$life.EventBStateSha256;ReconciledStateSha256=[string]$life.ReconciledStateSha256;ControlServerSurvivedTargetRestart=[bool]$life.ControlServerSurvivedTargetRestart}
+    return [pscustomobject][ordered]@{ Language = $Language; RunNonce=[string]$receipt.RunNonce; ReceiptPath = $doc.Path; ReceiptSha256 = $doc.Sha256; SideBySidePath = $sideFile.Path; SideBySideSha256 = $sideFile.Sha256; Pages = @($normalizedPages); Selection = $normalizedSelection; Lifecycle = $normalizedLifecycle }
 }
 
 function Assert-I9MatrixCandidate {
@@ -293,7 +383,8 @@ function Invoke-I9LiveUiVerification {
     $thai = Assert-I9RuntimeRun $thaiRoot 'Thai' $ExpectedSourceCommit $ExpectedSourceTree $package; $english = Assert-I9RuntimeRun $englishRoot 'English' $ExpectedSourceCommit $ExpectedSourceTree $package
     foreach ($name in @('AcceptanceControlSession','TargetAgentLabSession','AcceptanceControlSocketPath','TargetAgentLabSocketPath','TargetAgentSessionReference','AcceptanceControlServerIdentity','HerdrReleaseId','HerdrExecutableSha256','BundledSchemaSha256','HerdrProtocol')) { if ((Get-I9GateValue $thai.Gate $name 'Thai binding') -cne (Get-I9GateValue $english.Gate $name 'English binding')) { throw "Thai/English $name identity mismatch." } }
     $matrix = Assert-I9MatrixCandidate $MatrixCandidatePath $thai $english $package $ExpectedSourceCommit $ExpectedSourceTree; $null = Assert-I9DerivedMatrix $RepositoryRoot $thaiRoot $englishRoot $PackageIdentityPath $PackageArchivePath $ExtractedPackageRoot $thai $english -FixtureMode:$FixtureMode
-    $thaiUi = Assert-I9UiLeg $ThaiUiEvidenceDirectory 'Thai' $thai $package $ExpectedSourceCommit $ExpectedSourceTree $matrix.PayloadSha256; $englishUi = Assert-I9UiLeg $EnglishUiEvidenceDirectory 'English' $english $package $ExpectedSourceCommit $ExpectedSourceTree $matrix.PayloadSha256
+    if ([string]$thai.RunNonce -ceq [string]$english.RunNonce) { throw 'Thai and English runtime legs must have distinct RunNonce values; cross-leg replay rejected.' }
+    $thaiUi = Assert-I9UiLeg $ThaiUiEvidenceDirectory 'Thai' $thai $package $ExpectedSourceCommit $ExpectedSourceTree $RepositoryRoot; $englishUi = Assert-I9UiLeg $EnglishUiEvidenceDirectory 'English' $english $package $ExpectedSourceCommit $ExpectedSourceTree $RepositoryRoot
     foreach ($field in @('WorkspaceId','ProjectId','AgentId','TaskId','AgentStatus','PaneId','StateSha256')) { if ([string]$thaiUi.Selection.$field -cne [string]$englishUi.Selection.$field) { throw "Thai/English UI selections are not the same exact candidate state ($field)." } }
     $payload = [ordered]@{ SchemaVersion = 1; EvidenceClassification = 'Issue9RuntimeCandidate'; Issue = 9; Result = 'PASS'; Source = [ordered]@{ CommitSha = $ExpectedSourceCommit; TreeSha = $ExpectedSourceTree; GitTreeClean = $true }; Package = [ordered]@{ IdentityPath = $package.IdentityPath; IdentityFileSha256 = $package.IdentityFileSha256; ReceiptSha256 = $package.ReceiptSha256; ArchivePath = $package.ArchivePath; ArchiveSha256 = $package.ArchiveSha256; ManifestPath = $package.ManifestPath; ManifestSha256 = $package.ManifestSha256; AppPath = $package.AppPath; AppSha256 = $package.AppSha256; CorePath = $package.CorePath; CoreSha256 = $package.CoreSha256 }; Herdr = [ordered]@{ ReleaseId = Get-I9GateValue $thai.Gate 'HerdrReleaseId' 'Thai gate'; ExecutableSha256 = Get-I9GateValue $thai.Gate 'HerdrExecutableSha256' 'Thai gate'; BundledSchemaSha256 = Get-I9GateValue $thai.Gate 'BundledSchemaSha256' 'Thai gate'; Protocol = Get-I9GateValue $thai.Gate 'HerdrProtocol' 'Thai gate' }; Sessions = [ordered]@{ Control = [ordered]@{ Name = Get-I9GateValue $thai.Gate 'AcceptanceControlSession' 'Thai gate'; SocketPath = Get-I9GateValue $thai.Gate 'AcceptanceControlSocketPath' 'Thai gate'; ServerIdentity = Get-I9GateValue $thai.Gate 'AcceptanceControlServerIdentity' 'Thai gate' }; Target = [ordered]@{ Name = Get-I9GateValue $thai.Gate 'TargetAgentLabSession' 'Thai gate'; SocketPath = Get-I9GateValue $thai.Gate 'TargetAgentLabSocketPath' 'Thai gate'; Reference = Get-I9GateValue $thai.Gate 'TargetAgentSessionReference' 'Thai gate' } }; MatrixCandidate = [ordered]@{ Path = $matrix.Path; FileSha256 = $matrix.FileSha256; PayloadSha256 = $matrix.PayloadSha256; EvidenceClassification = 'RuntimeMatrixCandidate'; IndependentHumanReview = 'NOT_OBSERVED'; ReleaseCredit = $false }; Languages = @([ordered]@{ Language = 'Thai'; RuntimeEvidenceDirectory = $thai.Root; UiEvidenceDirectory = [IO.Path]::GetFullPath($ThaiUiEvidenceDirectory); UiReceiptPath = $thaiUi.ReceiptPath; UiReceiptSha256 = $thaiUi.ReceiptSha256; SideBySideCaptureSha256 = $thaiUi.SideBySideSha256; Pages = @($thaiUi.Pages); Selection = $thaiUi.Selection; Lifecycle = $thaiUi.Lifecycle },[ordered]@{ Language = 'English'; RuntimeEvidenceDirectory = $english.Root; UiEvidenceDirectory = [IO.Path]::GetFullPath($EnglishUiEvidenceDirectory); UiReceiptPath = $englishUi.ReceiptPath; UiReceiptSha256 = $englishUi.ReceiptSha256; SideBySideCaptureSha256 = $englishUi.SideBySideSha256; Pages = @($englishUi.Pages); Selection = $englishUi.Selection; Lifecycle = $englishUi.Lifecycle }); EvidenceBoundary = [ordered]@{ Runtime = 'NOT_OBSERVED'; HumanVisual = 'NOT_OBSERVED'; ReleaseCredit = $false; OutputAuthority = 'RuntimeCandidate'; FixtureMode = [bool]$FixtureMode } }
     if (-not $FixtureMode) { $root = [IO.Path]::GetFullPath($RepositoryRoot); $commitAfter = ((@(& git -C $root rev-parse HEAD 2>&1)) -join '').Trim(); $treeAfter = ((@(& git -C $root rev-parse 'HEAD^{tree}' 2>&1)) -join '').Trim(); $statusAfter = @(& git -C $root status --porcelain=v1 --untracked-files=all); if ($commitAfter -cne $ExpectedSourceCommit -or $treeAfter -cne $ExpectedSourceTree -or $statusAfter.Count -ne 0) { throw 'Source changed before Issue #9 candidate publication.' } }
