@@ -13,6 +13,76 @@ namespace HerdrOps.RuntimeTests;
 public sealed class RuntimeEvidenceResourceLifecycleTests
 {
     [TestMethod]
+    public void DedicatedDashboardDispatcherProjectsExactStateAndTerminates()
+    {
+        WpfTestHost.Run(() =>
+        {
+            var widgetDispatcherThreadId = Environment.CurrentManagedThreadId;
+            using var source = new LiveDashboardState();
+            using var host = RuntimeEvidenceDashboardHost
+                .StartAsync(CancellationToken.None)
+                .GetAwaiter()
+                .GetResult();
+            var projection = RuntimeDashboardProjection.Capture(source);
+
+            var receipt = host.ProjectAsync(projection, CancellationToken.None)
+                .GetAwaiter()
+                .GetResult();
+            Assert.AreEqual(projection.Sequence, receipt.AppliedSequence);
+            Assert.AreEqual(projection.StateSha256, receipt.AppliedStateSha256);
+
+            host.ShutdownAsync(CancellationToken.None)
+                .GetAwaiter()
+                .GetResult();
+            var diagnostic = host.Diagnostic;
+            Assert.AreNotEqual(widgetDispatcherThreadId, diagnostic.DashboardDispatcherThreadId);
+            Assert.IsTrue(diagnostic.DashboardDispatcherShutdownCompleted);
+            Assert.IsTrue(diagnostic.DashboardDispatcherThreadJoined);
+            Assert.IsFalse(diagnostic.DashboardDispatcherAliveAfterJoin);
+            Assert.IsTrue(diagnostic.DashboardResourcesReleased);
+            Assert.AreEqual(projection.Sequence, diagnostic.DashboardLastProjectedSequence);
+            Assert.AreEqual(
+                projection.StateSha256,
+                diagnostic.DashboardLastProjectedStateSha256);
+            Assert.IsNotNull(diagnostic.DashboardCloseRequestedUtc);
+            Assert.IsNotNull(diagnostic.DashboardDispatcherShutdownCompletedUtc);
+            Assert.IsNotNull(diagnostic.DashboardDispatcherJoinedUtc);
+            Assert.IsTrue(
+                diagnostic.DashboardDispatcherShutdownCompletedUtc >=
+                diagnostic.DashboardCloseRequestedUtc);
+            Assert.IsTrue(
+                diagnostic.DashboardDispatcherJoinedUtc >=
+                diagnostic.DashboardDispatcherShutdownCompletedUtc);
+        }, TimeSpan.FromSeconds(60));
+    }
+
+    [TestMethod]
+    public void DedicatedDashboardDispatcherRejectsProjectionHashMismatch()
+    {
+        WpfTestHost.Run(() =>
+        {
+            using var source = new LiveDashboardState();
+            using var host = RuntimeEvidenceDashboardHost
+                .StartAsync(CancellationToken.None)
+                .GetAwaiter()
+                .GetResult();
+            var projection = RuntimeDashboardProjection.Capture(source) with
+            {
+                StateSha256 = new string('A', 64),
+            };
+
+            Assert.ThrowsExactly<InvalidOperationException>(() =>
+                host.ProjectAsync(projection, CancellationToken.None)
+                    .GetAwaiter()
+                    .GetResult());
+
+            host.ShutdownAsync(CancellationToken.None)
+                .GetAwaiter()
+                .GetResult();
+        }, TimeSpan.FromSeconds(60));
+    }
+
+    [TestMethod]
     public void ResourceStageDiagnosticsRemainExactAndOrdered()
     {
         CollectionAssert.AreEqual(

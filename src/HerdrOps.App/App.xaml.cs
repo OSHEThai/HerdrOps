@@ -216,7 +216,6 @@ public partial class App : Application
         }
 
         RuntimeEvidenceRunner? runner = null;
-        MainWindow? mainWindow = null;
         var exitCode = 2;
         Exception? primaryFailure = null;
         Exception? cleanupFailure = null;
@@ -228,10 +227,7 @@ public partial class App : Application
                 state,
                 new DispatcherLiveDashboardUiScheduler(Dispatcher));
             _runtime.Start();
-            mainWindow = new MainWindow(state);
-            MainWindow = mainWindow;
-            mainWindow.Show();
-            runner = new RuntimeEvidenceRunner(state, mainWindow, options);
+            runner = new RuntimeEvidenceRunner(state, options);
             var report = await runner.RunAsync();
             exitCode = report.CompositeCandidateChecksPassed ? 0 : 2;
         }
@@ -249,15 +245,6 @@ public partial class App : Application
                         "runtime-evidence-windows",
                         () => runner?.CloseEvidenceWindows()),
                     new ShutdownCleanupAction("runtime", DisposeRuntime),
-                    new ShutdownCleanupAction(
-                        "dashboard",
-                        () =>
-                        {
-                            if (mainWindow is { IsClosed: false })
-                            {
-                                mainWindow.CloseForShutdown();
-                            }
-                        }),
                 ]);
             }
             catch (Exception exception)

@@ -404,6 +404,8 @@ public sealed record AppRuntimeEvidenceReport(
     IReadOnlyList<WidgetUpdateLatencySample> WidgetLatencyUnsupportedExcludedSamples,
     RuntimeIdleQuiescence IdleQuiescence,
     RuntimeResourceMeasurement ResourceMeasurement,
+    RuntimeDashboardDispatcherDiagnostic DashboardDispatcher,
+    bool DashboardDispatcherFeasibilityChecksPassed,
     IReadOnlyList<RuntimeEvidenceCapture> Captures,
     HerdrRuntimeHealthContract FinalRuntimeHealth,
     HerdrSessionStateContract FinalState,
@@ -413,7 +415,6 @@ public sealed record AppRuntimeEvidenceReport(
 
 public sealed class RuntimeEvidenceRunner(
     LiveDashboardState state,
-    MainWindow mainWindow,
     RuntimeEvidenceOptions options)
 {
     private const double CpuTargetPercent = 1;
@@ -451,16 +452,18 @@ public sealed class RuntimeEvidenceRunner(
     };
 
     private readonly LiveDashboardState _state = state ?? throw new ArgumentNullException(nameof(state));
-    private readonly MainWindow _mainWindow = mainWindow ?? throw new ArgumentNullException(nameof(mainWindow));
     private readonly RuntimeEvidenceOptions _options = options ?? throw new ArgumentNullException(nameof(options));
     private readonly List<RuntimeEvidenceCapture> _captures = [];
     private readonly List<WeakReference<RenderTargetBitmap>> _captureBitmapReferences = [];
     private readonly List<RuntimeResourceStageCheckpoint> _resourceStageCheckpoints = [];
     private readonly List<RuntimeEvidenceProgress> _progressHistory = [];
     private readonly List<WidgetWindow> _widgetWindows = [];
+    private RuntimeEvidenceDashboardHost? _dashboardHost;
+    private int _widgetDispatcherThreadId;
 
     public async Task<AppRuntimeEvidenceReport> RunAsync(CancellationToken cancellationToken = default)
     {
+        _widgetDispatcherThreadId = Environment.CurrentManagedThreadId;
         var startedUtc = DateTimeOffset.UtcNow;
         var deadline = startedUtc.AddSeconds(_options.TimeoutSeconds);
         Directory.CreateDirectory(_options.CaptureDirectory);
@@ -475,6 +478,7 @@ public sealed class RuntimeEvidenceRunner(
         }
         UiLanguageService.Shared.SetLanguage(_options.Language);
         _state.RefreshLanguage();
+        _dashboardHost = await RuntimeEvidenceDashboardHost.StartAsync(cancellationToken);
         _ = WriteProgress("waiting-for-live-state");
         await WaitUntilAsync(
             () => _state.IsCoreConnected &&
@@ -523,8 +527,11 @@ public sealed class RuntimeEvidenceRunner(
         var preRestartConnectionEpoch = _state.CurrentState.ConnectionEpoch;
         var preRestartBootstrapCount = _state.CurrentRuntimeHealth.BootstrapCount;
         var preRestartDisconnectCount = _state.CurrentRuntimeHealth.DisconnectCount;
-        _mainWindow.Close();
-        var dashboardClosedUtc = DateTimeOffset.UtcNow;
+        var dashboardHost = RequireDashboardHost();
+        await dashboardHost.ShutdownAsync(cancellationToken);
+        var dashboardClosedUtc = dashboardHost.Diagnostic.DashboardCloseRequestedUtc ??
+            throw new InvalidOperationException(
+                "The dedicated Dashboard host omitted its close-request timestamp.");
         await Dispatcher.Yield(DispatcherPriority.ApplicationIdle);
         RecordResourceStageCheckpoint("post-dashboard-close");
         _ = WriteProgress("dashboard-closed-waiting-for-herdr-disconnect");
@@ -594,6 +601,36 @@ public sealed class RuntimeEvidenceRunner(
         var latencyPassed = latencySamples >= MinimumLatencySamples &&
                             latencyP95 is not null &&
                             latencyP95 <= WidgetLatencyTargetMilliseconds;
+        var dashboardDiagnostic = RequireDashboardHost().Diagnostic;
+        var dashboardDiagnosticChecks = new (string Name, bool Passed)[]
+        {
+            ("DashboardDispatcherThreadDistinct",
+                dashboardDiagnostic.DashboardDispatcherThreadId > 0 &&
+                dashboardDiagnostic.DashboardDispatcherThreadId != _widgetDispatcherThreadId),
+            ("DashboardDispatcherCloseTimestampPresent",
+                dashboardDiagnostic.DashboardCloseRequestedUtc is not null &&
+                dashboardDiagnostic.DashboardCloseRequestedUtc >= dashboardDiagnostic.DashboardDispatcherStartedUtc),
+            ("DashboardDispatcherShutdownTimestampOrdered",
+                dashboardDiagnostic.DashboardDispatcherShutdownCompletedUtc is not null &&
+                dashboardDiagnostic.DashboardCloseRequestedUtc is not null &&
+                dashboardDiagnostic.DashboardDispatcherShutdownCompletedUtc >= dashboardDiagnostic.DashboardCloseRequestedUtc),
+            ("DashboardDispatcherJoinTimestampOrdered",
+                dashboardDiagnostic.DashboardDispatcherJoinedUtc is not null &&
+                dashboardDiagnostic.DashboardDispatcherShutdownCompletedUtc is not null &&
+                dashboardDiagnostic.DashboardDispatcherJoinedUtc >= dashboardDiagnostic.DashboardDispatcherShutdownCompletedUtc),
+            ("DashboardDispatcherShutdownCompleted",
+                dashboardDiagnostic.DashboardDispatcherShutdownCompleted),
+            ("DashboardDispatcherThreadJoined",
+                dashboardDiagnostic.DashboardDispatcherThreadJoined),
+            ("DashboardDispatcherThreadTerminated",
+                !dashboardDiagnostic.DashboardDispatcherAliveAfterJoin),
+            ("DashboardProjectionBoundToPreCloseState",
+                dashboardDiagnostic.DashboardLastProjectedSequence == preCloseSequence &&
+                string.Equals(
+                    dashboardDiagnostic.DashboardLastProjectedStateSha256,
+                    preCloseStateHash,
+                    StringComparison.Ordinal)),
+        };
         var candidateChecks = new (string Name, bool Passed)[]
         {
             ("IdleStateSequenceStable", resources.StateSequenceStable),
@@ -625,14 +662,15 @@ public sealed class RuntimeEvidenceRunner(
             ("DisconnectCountAdvanced", reconnectedDisconnectCount > preRestartDisconnectCount),
             ("WidgetLatencyTargetPassed", latencyPassed),
             ("RequiredCapturesPresent", _captures.Count >= 8),
-        };
+        }.Concat(dashboardDiagnosticChecks).ToArray();
         var failedCandidateChecks = candidateChecks
             .Where(check => !check.Passed)
             .Select(check => check.Name)
-            .ToArray();
-        var checksPassed = failedCandidateChecks.Length == 0;
+            .ToList();
+        var feasibilityChecksPassed = failedCandidateChecks.Count == 0;
+        failedCandidateChecks.Add("DedicatedDashboardDispatcherFeasibilityNoRuntimeCredit");
         var report = new AppRuntimeEvidenceReport(
-            "RuntimeCandidate",
+            "NoRuntimeCredit",
             CoreStateObserved: true,
             SessionControlInvoked: false,
             startedUtc,
@@ -650,7 +688,8 @@ public sealed class RuntimeEvidenceRunner(
             postCloseSequence,
             postCloseStateHash,
             UpdateObservedBeforeDashboardClose: preCloseSequence > initialSequence,
-            DashboardClosed: !_mainWindow.IsVisible &&
+            DashboardClosed: dashboardDiagnostic.DashboardDispatcherThreadJoined &&
+                             !dashboardDiagnostic.DashboardDispatcherAliveAfterJoin &&
                              resources.Preparation.DashboardResourcesReleased,
             UpdateObservedAfterDashboardClose: postCloseSequence > preCloseSequence,
             CoreConnectedAfterDashboardClose: _state.IsCoreConnected,
@@ -686,14 +725,16 @@ public sealed class RuntimeEvidenceRunner(
             unsupportedLatencySamples,
             idleQuiescence,
             resources,
+            dashboardDiagnostic,
+            feasibilityChecksPassed,
             _captures.ToArray(),
             _state.CurrentRuntimeHealth,
             _state.CurrentState,
-            failedCandidateChecks,
-            checksPassed,
-            checksPassed
-                ? "The production WPF views and Widgets consumed actual Core state through the App-wide subscription. Composite Runtime credit still requires the matching exact-Herdr Core report."
-                : "One or more App runtime candidate checks failed; this report does not independently earn Runtime credit.");
+            failedCandidateChecks.ToArray(),
+            CompositeCandidateChecksPassed: false,
+            feasibilityChecksPassed
+                ? "The dedicated Dashboard Dispatcher feasibility checks passed. This experiment is intentionally ineligible for Runtime or Release credit."
+                : "One or more dedicated Dashboard Dispatcher feasibility checks failed. This experiment is intentionally ineligible for Runtime or Release credit.");
         WriteJsonAtomically(_options.ReportPath, report);
         _ = WriteProgress("complete");
         return report;
@@ -710,6 +751,8 @@ public sealed class RuntimeEvidenceRunner(
         }
 
         _widgetWindows.Clear();
+        _dashboardHost?.Dispose();
+        _dashboardHost = null;
     }
 
     public static void WriteFailure(
@@ -786,10 +829,22 @@ public sealed class RuntimeEvidenceRunner(
         CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        _mainWindow.Shell.Navigation.SelectedIndex = index;
-        _mainWindow.UpdateLayout();
-        await Dispatcher.Yield(DispatcherPriority.ApplicationIdle);
-        SaveVisual(_mainWindow.Shell, fileName);
+        var projection = RuntimeDashboardProjection.Capture(_state);
+        var path = Path.Combine(_options.CaptureDirectory, fileName);
+        var capture = await RequireDashboardHost().CaptureDashboardPageAsync(
+            projection,
+            index,
+            path,
+            cancellationToken);
+        _captureBitmapReferences.Add(capture.BitmapReference);
+        _captures.Add(new RuntimeEvidenceCapture(
+            Path.GetFileNameWithoutExtension(fileName),
+            capture.Path,
+            capture.Sha256,
+            capture.PixelWidth,
+            capture.PixelHeight,
+            capture.ProjectionReceipt.AppliedSequence,
+            capture.ProjectionReceipt.AppliedStateSha256));
     }
 
     private async Task CaptureWindowAsync(
@@ -804,7 +859,11 @@ public sealed class RuntimeEvidenceRunner(
         SaveVisual(visual, fileName);
     }
 
-    private void SaveVisual(FrameworkElement visual, string fileName)
+    private void SaveVisual(
+        FrameworkElement visual,
+        string fileName,
+        long? projectedSequence = null,
+        string? projectedStateSha256 = null)
     {
         visual.UpdateLayout();
         var width = checked((int)Math.Ceiling(visual.ActualWidth));
@@ -838,8 +897,8 @@ public sealed class RuntimeEvidenceRunner(
             Convert.ToHexString(SHA256.HashData(capture)),
             width,
             height,
-            _state.CurrentState.LastIngestSequence,
-            CurrentStateHash()));
+            projectedSequence ?? _state.CurrentState.LastIngestSequence,
+            projectedStateSha256 ?? CurrentStateHash()));
     }
 
     private async Task<RuntimeResourceMeasurement> MeasureResourcesAsync(
@@ -1016,7 +1075,8 @@ public sealed class RuntimeEvidenceRunner(
             trackedCaptureBitmapCount > 0 && retainedCaptureBitmapCount == 0;
         _captureBitmapReferences.Clear();
 
-        var dashboardResourcesReleased = _mainWindow.DashboardResourcesReleased;
+        var dashboardResourcesReleased =
+            RequireDashboardHost().Diagnostic.DashboardResourcesReleased;
         var retainedEvidenceWindows = _widgetWindows.Count;
         var visibleEvidenceWindows = _widgetWindows.Count(window => window.IsVisible);
         app.Refresh();
@@ -1054,6 +1114,10 @@ public sealed class RuntimeEvidenceRunner(
         using var app = Process.GetCurrentProcess();
         _resourceStageCheckpoints.Add(ObserveResourceStageCheckpoint(stage, app));
     }
+
+    private RuntimeEvidenceDashboardHost RequireDashboardHost() =>
+        _dashboardHost ?? throw new InvalidOperationException(
+            "The dedicated Dashboard Dispatcher host is unavailable.");
 
     internal static RuntimeResourceStageCheckpoint ObserveResourceStageCheckpoint(
         string stage,
