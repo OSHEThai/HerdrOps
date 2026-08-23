@@ -37,7 +37,7 @@ $ErrorActionPreference = 'Stop'
 $script:V02ReleaseGateVersion = 'v0.2.0'
 $script:V02ReleaseGateMilestoneNumber = 2
 $script:V02ReleaseGateTrackerIssue = 11
-$script:V02ReleaseGateExpectedMilestoneIssues = @(6, 7, 8, 9, 10, 11, 54, 63)
+$script:V02ReleaseGateExpectedMilestoneIssues = @(6, 7, 8, 9, 10, 11, 54, 63, 149)
 $script:V02ReleaseGateRequiredIssues = @(7, 9, 10, 149)
 $script:V02ReleaseGatePackageProfileId = 'herdrops-v0.2-package-software-only-issue-149'
 $script:V02ReleaseGateReferenceHostProfileId = 'herdrops-v0.2-submark-nb-software-only-20260822'
@@ -2135,11 +2135,9 @@ function Assert-V02ReleaseGateGitHubSnapshot {
         }
         $issue = $matches[0]
         Assert-V02ReleaseGateExactString $issue.state 'closed' "$Context issue #$number state"
-        if ($number -ne 149) {
-            if ($null -eq $issue.milestone -or [int]$issue.milestone.number -ne $script:V02ReleaseGateMilestoneNumber -or
-                [string]$issue.milestone.title -cne $script:V02ReleaseGateVersion) {
-                throw "$Context issue #$number is not attached to the exact v0.2.0 milestone."
-            }
+        if ($null -eq $issue.milestone -or [int]$issue.milestone.number -ne $script:V02ReleaseGateMilestoneNumber -or
+            [string]$issue.milestone.title -cne $script:V02ReleaseGateVersion) {
+            throw "$Context issue #$number is not attached to the exact v0.2.0 milestone."
         }
     }
     $tracker = @($issues | Where-Object { [int]$_.number -eq $script:V02ReleaseGateTrackerIssue })[0]
