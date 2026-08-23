@@ -24,7 +24,7 @@ any application process.
 
 The per-language widget observation is finalized by the composite runtime gate
 only after that invocation's Gate, Core, and App reports have been sealed. Pass
-all five optional inputs together; both output paths must be new direct children of
+all seven optional inputs together; both output paths must be new direct children of
 `artifacts/runtime-evidence/v0.2/issues-7-9-10/`:
 
 ```powershell
@@ -33,10 +33,13 @@ all five optional inputs together; both output paths must be new direct children
   -Issue10BindingManifestPath <new-same-run-binding.json> `
   -Issue10PerformanceReceiptPath <performance-receipt.json> `
   -Issue10PerformanceRawSourcePath <performance-raw-source.json> `
+  -Issue10PerformanceTelemetryBindingPath <performance-telemetry-binding.json> `
+  -Issue10PerformanceTransactionCommitPath <performance-transaction-commit.json> `
   -Issue10SoakReceiptPath <soak-receipt.json>
 ```
 
-The gate stages held copies of package, performance, soak, and installed-Herdr
+The gate stages held copies of package, performance receipt/raw/telemetry-binding/
+transaction-commit, soak, and installed-Herdr
 authority bytes under the exact run directory, binds the same-run Gate/Core/App
 hashes plus invocation nonce/source, then invokes the packaged App in headless
 finalization mode. Prior-run reports, escaped outputs, incomplete inputs,
@@ -82,8 +85,11 @@ authenticated per-acquisition telemetry binding, and the atomic transaction
 commit marker that hash-binds both raw and binding files to the same nonce to
 those Issue #10 receipts. It holds and canonicalizes the AC, Battery, and raw
 files; revalidates the exact package and source; requires all 24 sequential
-exact-App acquisitions (AB `a,b`, then BA `b,a`) with native pre-HWND renderer
-proof; requires the raw 24-bin set to
+exact-App acquisitions (positions 0-11 AB `a,b`, then 12-23 BA `b,a`, with an
+exact warmup pair followed by repetitions 0-4) with native pre-HWND renderer
+proof. Each acquisition binds a distinct App PID/start/path/hash and the exact
+stable Core and telemetry-server PID/start/path/hash; PID alone is never
+authority. The adapter requires the raw 24-bin set to
 equal the held AC-then-Battery outputs; and constructs `runNonce`, candidate,
 and package provenance internally. It publishes a new directory atomically
 and never grants Runtime, Human, or Release credit. Caller-authored provenance

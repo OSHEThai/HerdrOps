@@ -214,7 +214,7 @@ try {
     $archiveInfo = Get-Item -LiteralPath $script:Package.ArchivePath
     $appInfo = Get-Item -LiteralPath $script:Package.AppPath
     $coreInfo = Get-Item -LiteralPath $script:Package.CorePath
-    $provenance = [pscustomobject][ordered]@{
+    $baseProvenance = [pscustomobject][ordered]@{
         runNonce = $RunNonce
         candidate = [pscustomobject][ordered]@{ commitSha=$ExpectedSourceCommit; treeSha=$ExpectedSourceTree }
         package = [pscustomobject][ordered]@{
@@ -227,6 +227,9 @@ try {
                 core = [pscustomobject][ordered]@{ relativePath=(Get-RelativePath $script:Package.CorePath 'Package Core'); bytes=[long]$coreInfo.Length; sha256=$script:Package.CoreSha256 }
             }
         }
+    }
+    $performanceProvenance = [pscustomobject][ordered]@{
+        runNonce=$baseProvenance.runNonce;candidate=$baseProvenance.candidate;package=$baseProvenance.package
         profile = [pscustomobject][ordered]@{id=$script:Package.ProfileId;relativePath='tools/packaging/v0.2/package-identity-profile.json';bytes=[long]$profileInfo.Length;fileSha256=$script:Package.ProfileFileSha256;canonicalSha256=$script:Package.ProfileCanonicalSha256}
         referenceHost = [pscustomobject][ordered]@{profileId=$script:RendererProfileId;profileSha256=$script:Package.ReferenceHostProfileSha256}
         renderer = [pscustomobject][ordered]@{policy='software-only-process-wide';wpfProcessRenderMode='SoftwareOnly';policySha256=$script:Package.RendererPolicySha256}
@@ -237,10 +240,10 @@ try {
 
     if ($TestFaultInjectionStage -ceq 'BeforePerformanceReceipt') { throw 'Injected failure before performance receipt.' }
     $performance = & (Join-Path $rendererRoot 'New-V02PerformanceEvidenceReceipt.ps1') -RawObservations $raw.Value `
-        -RawSourcePath $rawPath -DestinationDirectory (Join-Path $stage 'performance') -CandidateProvenance $provenance `
+        -RawSourcePath $rawPath -DestinationDirectory (Join-Path $stage 'performance') -CandidateProvenance $performanceProvenance `
         -EvidenceRoot $script:EvidenceRootFull -RepositoryRoot $RepositoryRoot
 
-    $soakObject = [pscustomobject][ordered]@{ provenance=$provenance; soakBins=$bins; aggregateStatus='PASS' }
+    $soakObject = [pscustomobject][ordered]@{ provenance=$baseProvenance; soakBins=$bins; aggregateStatus='PASS' }
     $soakJson = ConvertTo-RendererCanonicalJson $soakObject $RepositoryRoot
     $soakPath = Join-Path $stage 'issue10-soak-receipt.json'
     $soakBytes = (New-Object Text.UTF8Encoding($false,$true)).GetBytes($soakJson + "`n")
@@ -256,6 +259,10 @@ try {
         PerformanceReceiptSha256=$performance.FileSha256
         RawPerformancePath=$rawPath
         RawPerformanceSha256=$raw.Held.Sha256
+        PerformanceTelemetryBindingPath=$bindingPath
+        PerformanceTelemetryBindingSha256=$binding.Held.Sha256
+        PerformanceTransactionCommitPath=$commitPath
+        PerformanceTransactionCommitSha256=$commit.Held.Sha256
         SoakReceiptPath=(Join-Path $destination 'issue10-soak-receipt.json')
         SoakReceiptSha256=(Get-FileHash -LiteralPath (Join-Path $destination 'issue10-soak-receipt.json') -Algorithm SHA256).Hash
         RunNonce=$RunNonce

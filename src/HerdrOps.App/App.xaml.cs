@@ -59,8 +59,14 @@ public partial class App : Application
             processArgs,
             out _performanceTelemetryOptions,
             out _performanceTelemetryOptionError);
-        RuntimeRenderPolicy.EnforceBeforeFirstWpfComposition(
-            _performanceTelemetryOptions?.RendererMode);
+        try
+        {
+            _performanceTelemetryOptions?.PackageLease.Revalidate("before renderer policy selection");
+            RuntimeRenderPolicy.EnforceBeforeFirstWpfComposition(
+                _performanceTelemetryOptions?.RendererMode);
+            _performanceTelemetryOptions?.PackageLease.Revalidate("after renderer policy selection");
+        }
+        catch { _performanceTelemetryOptions?.PackageLease.Dispose();throw; }
         _instanceGateFactory = instanceGateFactory ?? throw new ArgumentNullException(nameof(instanceGateFactory));
         _suppressStartupForTestHost = suppressStartupForTestHost;
     }
@@ -218,6 +224,7 @@ public partial class App : Application
     private async Task RunIssue10PerformanceTelemetryAsync(
         Issue10PerformanceTelemetryOptions options)
     {
+        var telemetryOwnsLease = false;
         try
         {
             await StartNormalAsync();
@@ -232,6 +239,7 @@ public partial class App : Application
                 Dispatcher,
                 _dashboardState.Widgets,
                 RuntimeRenderPolicy.StartupObservation);
+            telemetryOwnsLease = true;
             _performanceTelemetry = telemetry;
             await telemetry.RunAsync(CancellationToken.None);
             _performanceTelemetry = null;
@@ -242,6 +250,7 @@ public partial class App : Application
             _startupFailure = exception;
             Shutdown(2);
         }
+        finally { if(!telemetryOwnsLease)options.PackageLease.Dispose(); }
     }
 
     private async Task RunRuntimeEvidenceAsync(IReadOnlyList<string> args)

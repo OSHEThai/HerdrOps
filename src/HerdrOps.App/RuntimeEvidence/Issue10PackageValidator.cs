@@ -8,10 +8,70 @@ using System.Text.Json;
 
 namespace HerdrOps.App.RuntimeEvidence;
 
-internal sealed record Issue10ValidatedPackage(
-    string AppPath, string AppSha256, string CorePath, string CoreSha256,
-    string ManifestPath, string ManifestSha256, string IdentityFileSha256,
-    string ProfileFileSha256, string ArchiveSha256);
+internal sealed class Issue10ValidatedPackage : IDisposable
+{
+    private readonly HeldPackageFile[] _heldFiles;
+    private bool _disposed;
+
+    internal Issue10ValidatedPackage(string appPath,string appSha256,string corePath,string coreSha256,
+        string manifestPath,string manifestSha256,string identityFileSha256,string profileFileSha256,
+        string archiveSha256,HeldPackageFile[] heldFiles)
+    {
+        AppPath=appPath;AppSha256=appSha256;CorePath=corePath;CoreSha256=coreSha256;
+        ManifestPath=manifestPath;ManifestSha256=manifestSha256;IdentityFileSha256=identityFileSha256;
+        ProfileFileSha256=profileFileSha256;ArchiveSha256=archiveSha256;_heldFiles=heldFiles;
+    }
+
+    internal string AppPath { get; }
+    internal string AppSha256 { get; }
+    internal string CorePath { get; }
+    internal string CoreSha256 { get; }
+    internal string ManifestPath { get; }
+    internal string ManifestSha256 { get; }
+    internal string IdentityFileSha256 { get; }
+    internal string ProfileFileSha256 { get; }
+    internal string ArchiveSha256 { get; }
+
+    internal void Revalidate(string boundary)
+    {
+        ObjectDisposedException.ThrowIf(_disposed,this);
+        foreach(var file in _heldFiles)file.Revalidate(boundary);
+    }
+
+    public void Dispose()
+    {
+        if(_disposed)return;_disposed=true;
+        foreach(var file in _heldFiles)file.Dispose();
+    }
+
+    internal sealed class HeldPackageFile : IDisposable
+    {
+        private readonly string _context;private readonly string _path;private readonly string _sha256;
+        private readonly FileStream _stream;private readonly RendererFileIdentity _identity;private readonly string _finalPath;
+        internal HeldPackageFile(string path,string sha256,string context)
+        {
+            _context=context;_path=Path.GetFullPath(path);_sha256=sha256;
+            _stream=new FileStream(_path,FileMode.Open,FileAccess.Read,FileShare.Read);
+            try
+            {
+                _finalPath=RendererTargetNativeMethods.GetFinalPath(_stream.SafeFileHandle);
+                _identity=RendererTargetNativeMethods.GetFileIdentity(_stream.SafeFileHandle);
+                if(!StringComparer.OrdinalIgnoreCase.Equals(_finalPath,_path)||_identity.NumberOfLinks!=1||HashHeld()!=_sha256)
+                    throw new InvalidDataException($"Issue #10 {_context} held-file identity is not exact.");
+            }
+            catch { _stream.Dispose();throw; }
+        }
+        internal void Revalidate(string boundary)
+        {
+            var identity=RendererTargetNativeMethods.GetFileIdentity(_stream.SafeFileHandle);
+            var finalPath=RendererTargetNativeMethods.GetFinalPath(_stream.SafeFileHandle);
+            if(identity!=_identity||!StringComparer.OrdinalIgnoreCase.Equals(finalPath,_finalPath)||HashHeld()!=_sha256)
+                throw new InvalidDataException($"Issue #10 {_context} changed across {boundary}.");
+        }
+        private string HashHeld(){_stream.Position=0;var hash=Convert.ToHexString(SHA256.HashData(_stream));_stream.Position=0;return hash;}
+        public void Dispose()=>_stream.Dispose();
+    }
+}
 
 internal static class Issue10PackageValidator
 {
@@ -26,7 +86,8 @@ internal static class Issue10PackageValidator
 
     internal static Issue10ValidatedPackage Validate(
         string identityPath, string identityCanonicalSha, string archivePath, string archiveSha,
-        string packageRoot, string profilePath, string commit, string tree, string processPath)
+        string packageRoot, string profilePath, string commit, string tree, string processPath,
+        Action<string>? leaseAcquisitionHook = null)
     {
         identityPath = Path.GetFullPath(identityPath); archivePath = Path.GetFullPath(archivePath);
         packageRoot = Path.GetFullPath(packageRoot).TrimEnd(Path.DirectorySeparatorChar); profilePath = Path.GetFullPath(profilePath);
@@ -82,8 +143,19 @@ internal static class Issue10PackageValidator
         var appPath = Path.Combine(packageRoot, appEntry.Path.Replace('/', Path.DirectorySeparatorChar));
         var actualApp = Path.GetFullPath(processPath);
         if (!StringComparer.OrdinalIgnoreCase.Equals(appPath, actualApp)) throw new InvalidDataException("Issue #10 process is not the exact validated package App.");
-        return new(appPath, appEntry.Sha256, Path.Combine(packageRoot, coreEntry.Path.Replace('/', Path.DirectorySeparatorChar)), coreEntry.Sha256,
-            manifestPath, manifestSha, Hash(identityBytes), ProfileFileSha, archiveSha);
+        var corePath=Path.Combine(packageRoot,coreEntry.Path.Replace('/',Path.DirectorySeparatorChar));
+        var identityFileSha=Hash(identityBytes);var leases=new List<Issue10ValidatedPackage.HeldPackageFile>();
+        try
+        {
+            foreach(var item in new[]{(identityPath,identityFileSha,"package identity"),(profilePath,ProfileFileSha,"package profile"),(archivePath,archiveSha,"package archive"),(manifestPath,manifestSha,"package manifest"),(appPath,appEntry.Sha256,"package App"),(corePath,coreEntry.Sha256,"package Core")})
+            {
+                leaseAcquisitionHook?.Invoke(item.Item3);
+                leases.Add(new Issue10ValidatedPackage.HeldPackageFile(item.Item1,item.Item2,item.Item3));
+            }
+            var lease=new Issue10ValidatedPackage(appPath,appEntry.Sha256,corePath,coreEntry.Sha256,manifestPath,manifestSha,identityFileSha,ProfileFileSha,archiveSha,leases.ToArray());
+            lease.Revalidate("validated package lease acquisition");return lease;
+        }
+        catch { foreach(var lease in leases.AsEnumerable().Reverse())lease.Dispose();throw; }
     }
 
     private static void ValidateProfile(JsonElement p)

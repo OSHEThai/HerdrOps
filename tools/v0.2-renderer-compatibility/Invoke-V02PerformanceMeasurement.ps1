@@ -117,6 +117,7 @@ function Invoke-V02ProductionPerformanceSample {
             '--issue10-performance-package-root',$Package.PackageRoot,
             '--issue10-performance-package-profile-path',$Package.ProfilePath,
             '--issue10-performance-server-pid',[string]$server.Id,
+            '--issue10-performance-server-start-utc',$serverStart.ToString('O',[Globalization.CultureInfo]::InvariantCulture),
             '--issue10-performance-server-path',$serverPath,
             '--issue10-performance-server-sha256',$serverSha,
             '--issue10-performance-renderer-mode',$rendererMode)
@@ -144,7 +145,7 @@ function Invoke-V02ProductionPerformanceSample {
         $expectedNative=if($Mode-ceq'a'){'Default'}else{'SoftwareOnly'}
         if($hello.renderer.requestedMode-cne$rendererMode-or$hello.renderer.nativeProcessRenderMode-cne$expectedNative-or(-not[bool]$hello.renderer.preFirstHwnd)-or[bool]$hello.renderer.hasAnyHwnd-or($Mode-ceq'a'-and[int]$hello.renderer.nativeTier-le0)){throw 'Performance producer native pre-HWND renderer proof is invalid.'}
         if([string]$hello.renderer.hardwareComparatorBoundary-cne'PackagedCompatibilityPerformance-NativeTierComparator-NoPerFrameGpuOrRuntimeCredit'){throw 'Performance producer hardware boundary is invalid.'}
-        $request=[pscustomobject][ordered]@{schemaVersion=1;kind='issue10-performance-sample-request';runNonce=$RunNonce;sequenceNumber=$Sequence;order=$Order;isWarmup=$Warmup;repetitionOrdinal=$Repetition;semanticMode=$Mode;coreProcessId=[int]$CoreProcess.Id}
+        $request=[pscustomobject][ordered]@{schemaVersion=1;kind='issue10-performance-sample-request';runNonce=$RunNonce;sequenceNumber=$Sequence;order=$Order;isWarmup=$Warmup;repetitionOrdinal=$Repetition;semanticMode=$Mode;coreProcessId=[int]$CoreProcess.Id;coreStartUtc=$CoreStartUtc.ToString('O')}
         Write-RendererTargetPipeLine $writer (ConvertTo-RendererCanonicalJson $request $RepositoryRoot)
         $sampleJson=Read-RendererTargetPipeLine $reader 330
         $sample=if($PSVersionTable.PSVersion.Major-ge7-and(Get-Command ConvertFrom-Json).Parameters.ContainsKey('DateKind')){$sampleJson|ConvertFrom-Json -DateKind String}else{$sampleJson|ConvertFrom-Json}

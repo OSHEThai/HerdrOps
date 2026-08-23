@@ -1,8 +1,11 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.IO.Compression;
+using System.IO.Pipes;
 using System.Linq;
+using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Encodings.Web;
@@ -18,6 +21,9 @@ namespace HerdrOps.RuntimeTests;
 [DoNotParallelize]
 public sealed class Issue10PackageValidatorHostileTests
 {
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool GetNamedPipeClientProcessId(IntPtr pipe, out uint processId);
+
     [TestMethod]
     public void ExactPackageValidatorRejectsHostileInputsBeforeHardwareSelection()
     {
@@ -49,6 +55,118 @@ public sealed class Issue10PackageValidatorHostileTests
             "No hostile package may reach Hardware renderer selection.");
     }
 
+    [TestMethod]
+    public void ValidatedPackageLeaseHoldsEveryAuthorityLeafUntilDisposed()
+    {
+        using var fixture = PackageFixture.Create();
+        var lease = fixture.Validate();
+        try
+        {
+            lease.Revalidate("hostile lease test");
+            foreach (var path in fixture.AuthorityPaths)
+            {
+                Assert.ThrowsExactly<IOException>(() =>
+                {
+                    using var _ = new FileStream(path, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
+                }, "Validated authority leaf was not held: " + path);
+            }
+        }
+        finally
+        {
+            lease.Dispose();
+        }
+
+        foreach (var path in fixture.AuthorityPaths)
+        {
+            using var _ = new FileStream(path, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
+        }
+        Assert.ThrowsExactly<ObjectDisposedException>(() => lease.Revalidate("after disposal"));
+    }
+
+    [TestMethod]
+    public void ValidatedPackageLeaseAcquisitionFaultReleasesEarlierHandles()
+    {
+        using var fixture = PackageFixture.Create();
+        var exception = Assert.ThrowsExactly<InvalidOperationException>(() =>
+            Issue10PackageValidator.Validate(
+                fixture.IdentityPath, fixture.IdentityCanonicalSha, fixture.ArchivePath, fixture.ArchiveSha,
+                fixture.PackageRoot, fixture.ProfilePath, fixture.Commit, fixture.Tree, fixture.ProcessPath,
+                context => { if (context == "package Core") throw new InvalidOperationException("injected lease fault"); }));
+        StringAssert.Contains(exception.Message, "injected lease fault");
+
+        foreach (var path in fixture.AuthorityPaths)
+        {
+            using var _ = new FileStream(path, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
+        }
+    }
+
+    [TestMethod]
+    public async Task ExactPackagedAppUsesProductionPipeAndRejectsHostileNonceWithoutSample()
+    {
+        using var fixture = PackageFixture.CreateExecutable();
+        var nonce = Guid.NewGuid().ToString("N");
+        var pipeName = $"herdrops-v02-issue10-perf-{nonce}-0";
+        await using var pipe = new NamedPipeServerStream(pipeName, PipeDirection.InOut, 1,
+            PipeTransmissionMode.Byte, PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
+        using var server = Process.GetCurrentProcess();
+        var serverPath = server.MainModule!.FileName!;
+        var serverSha = Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(serverPath)));
+        var serverStart = new DateTimeOffset(server.StartTime.ToUniversalTime(), TimeSpan.Zero).ToString("O");
+        var arguments = new[]
+        {
+            "--issue10-performance-telemetry-pipe", pipeName,
+            "--issue10-performance-run-nonce", nonce,
+            "--issue10-performance-source-commit", fixture.Commit,
+            "--issue10-performance-source-tree", fixture.Tree,
+            "--issue10-performance-package-identity-path", fixture.IdentityPath,
+            "--issue10-performance-package-identity-sha256", fixture.IdentityCanonicalSha,
+            "--issue10-performance-package-archive-path", fixture.ArchivePath,
+            "--issue10-performance-package-archive-sha256", fixture.ArchiveSha,
+            "--issue10-performance-package-root", fixture.PackageRoot,
+            "--issue10-performance-package-profile-path", fixture.ProfilePath,
+            "--issue10-performance-server-pid", server.Id.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            "--issue10-performance-server-start-utc", serverStart,
+            "--issue10-performance-server-path", serverPath,
+            "--issue10-performance-server-sha256", serverSha,
+            "--issue10-performance-renderer-mode", "SoftwareOnly",
+        };
+        var startInfo = new ProcessStartInfo(fixture.AppPath)
+        {
+            UseShellExecute = false,
+            CreateNoWindow = true,
+        };
+        foreach (var argument in arguments) startInfo.ArgumentList.Add(argument);
+        using var app = Process.Start(startInfo) ?? throw new AssertFailedException("Exact packaged App did not start.");
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        await pipe.WaitForConnectionAsync(timeout.Token);
+        Assert.IsTrue(GetNamedPipeClientProcessId(pipe.SafePipeHandle.DangerousGetHandle(), out var clientPid));
+        Assert.AreEqual(app.Id, checked((int)clientPid), "Production pipe client was not the exact packaged App process.");
+        using var reader = new StreamReader(pipe, new UTF8Encoding(false, true), false, 65_536, true);
+        using var writer = new StreamWriter(pipe, new UTF8Encoding(false), 65_536, true) { AutoFlush = true };
+        var hello = await reader.ReadLineAsync(timeout.Token);
+        StringAssert.Contains(hello!, "issue10-performance-hello");
+        StringAssert.Contains(hello!, $"\"pid\":{app.Id}");
+
+        var hostile = JsonSerializer.Serialize(new
+        {
+            schemaVersion = 1,
+            kind = "issue10-performance-sample-request",
+            runNonce = new string('f', 32),
+            sequenceNumber = 0,
+            order = "AB",
+            isWarmup = true,
+            repetitionOrdinal = 0,
+            semanticMode = "b",
+            coreProcessId = server.Id,
+            coreStartUtc = serverStart,
+        });
+        await writer.WriteLineAsync(hostile);
+        Assert.IsNull(await reader.ReadLineAsync(timeout.Token), "Hostile request produced a sample instead of closing fail-closed.");
+        await app.WaitForExitAsync(timeout.Token);
+        Assert.AreEqual(2, app.ExitCode);
+        Assert.AreEqual(fixture.AppSha, PackageFixture.HashFile(fixture.AppPath));
+    }
+
     private static void WriteEntry(ZipArchive zip, string name, byte[] bytes)
     {
         var entry = zip.CreateEntry(name, CompressionLevel.NoCompression);
@@ -78,6 +196,8 @@ public sealed class Issue10PackageValidatorHostileTests
         public string IdentityCanonicalSha { get; set; } = "";
         public string ArchiveSha { get; private set; } = "";
         public string ProcessPath { get; set; } = "";
+        public string AppSha => HashFile(AppPath);
+        public string[] AuthorityPaths => [IdentityPath, ProfilePath, ArchivePath, ManifestPath, AppPath, CorePath];
 
         private PackageFixture(string root)
         {
@@ -100,7 +220,33 @@ public sealed class Issue10PackageValidatorHostileTests
             fixture.Identity = fixture.NewIdentity();
             fixture.SyncIdentityBindings();
             fixture.WriteIdentity();
-            _ = fixture.Validate();
+            using var validation = fixture.Validate();
+            return fixture;
+        }
+
+        public static PackageFixture CreateExecutable()
+        {
+            var root = Path.Combine(Path.GetTempPath(), "herdrops-i10-executable-" + Guid.NewGuid().ToString("N"));
+            var fixture = new PackageFixture(root);
+            Directory.CreateDirectory(fixture.PackageRoot);
+            File.Copy(FindProfile(), fixture.ProfilePath);
+            var appSource = AppContext.BaseDirectory;
+            if (!File.Exists(Path.Combine(appSource, "HerdrOps.App.exe")) ||
+                !File.Exists(Path.Combine(appSource, "HerdrOps.App.dll")) ||
+                !File.Exists(Path.Combine(appSource, "HerdrOps.App.runtimeconfig.json")))
+            {
+                throw new FileNotFoundException("Current test output omitted the packaged App host or managed/runtimeconfig leaves.");
+            }
+            foreach (var source in Directory.EnumerateFiles(appSource, "*", SearchOption.AllDirectories))
+            {
+                var destination = Path.Combine(fixture.PackageRoot, Path.GetRelativePath(appSource, source));
+                Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
+                File.Copy(source, destination);
+            }
+            File.Copy(Environment.ProcessPath ?? throw new InvalidOperationException("Test host path is unavailable."), fixture.CorePath, true);
+            fixture.ProcessPath = fixture.AppPath;
+            fixture.Manifest = fixture.NewManifest();fixture.WriteManifest();fixture.RebuildArchive();fixture.Identity = fixture.NewIdentity();fixture.SyncIdentityBindings();fixture.WriteIdentity();
+            using var validation = fixture.Validate();
             return fixture;
         }
 
@@ -168,12 +314,15 @@ public sealed class Issue10PackageValidatorHostileTests
             }
         }
 
-        private Issue10ValidatedPackage Validate() => Issue10PackageValidator.Validate(
+        internal Issue10ValidatedPackage Validate() => Issue10PackageValidator.Validate(
             IdentityPath, IdentityCanonicalSha, ArchivePath, ArchiveSha, PackageRoot, ProfilePath, Commit, Tree, ProcessPath);
 
         private JsonObject NewManifest()
         {
-            var files = new JsonArray(NewFile(AppPath, "HerdrOps.App.exe"), NewFile(CorePath, "HerdrOps.Core.exe"));
+            var files = new JsonArray(Directory.EnumerateFiles(PackageRoot, "*", SearchOption.AllDirectories)
+                .Where(path => !path.Equals(ManifestPath, StringComparison.OrdinalIgnoreCase))
+                .OrderBy(path => Path.GetRelativePath(PackageRoot, path).Replace('\\', '/'), StringComparer.Ordinal)
+                .Select(path => (JsonNode?)NewFile(path, Path.GetRelativePath(PackageRoot, path).Replace('\\', '/'))).ToArray());
             var inventory = string.Concat(files.Select(n => $"{n!["path"]!.GetValue<string>()}\t{n["length"]!.GetValue<long>()}\t{n["sha256"]!.GetValue<string>()}\n"));
             return new JsonObject
             {
@@ -182,7 +331,7 @@ public sealed class Issue10PackageValidatorHostileTests
                 ["source"] = new JsonObject { ["commitSha"] = Commit, ["treeSha"] = Tree },
                 ["referenceHost"] = new JsonObject { ["profileId"] = ReferenceId, ["profileSha256"] = ReferenceSha },
                 ["renderer"] = new JsonObject { ["policy"] = "software-only-process-wide", ["wpfProcessRenderMode"] = "SoftwareOnly", ["policySha256"] = PolicySha },
-                ["fileCount"] = 2, ["totalBytes"] = files.Sum(n => n!["length"]!.GetValue<long>()),
+                ["fileCount"] = files.Count, ["totalBytes"] = files.Sum(n => n!["length"]!.GetValue<long>()),
                 ["contentSha256"] = Hash(Encoding.UTF8.GetBytes(inventory)), ["files"] = files,
                 ["evidenceClass"] = "Static/PackagedCompatibilityPreparation"
             };
@@ -220,7 +369,7 @@ public sealed class Issue10PackageValidatorHostileTests
         private static void WriteCanonical(string path, JsonObject value) => File.WriteAllText(path, Canonical(JsonDocument.Parse(value.ToJsonString()).RootElement) + "\n", new UTF8Encoding(false));
         private static string Canonical(JsonElement value) => value.ValueKind switch { JsonValueKind.Object => "{" + string.Join(",", value.EnumerateObject().OrderBy(p => p.Name, StringComparer.Ordinal).Select(p => JsonSerializer.Serialize(p.Name, StringOptions) + ":" + Canonical(p.Value))) + "}", JsonValueKind.Array => "[" + string.Join(",", value.EnumerateArray().Select(Canonical)) + "]", JsonValueKind.String => JsonSerializer.Serialize(value.GetString(), StringOptions), JsonValueKind.Number => value.GetInt64().ToString(System.Globalization.CultureInfo.InvariantCulture), JsonValueKind.True => "true", JsonValueKind.False => "false", JsonValueKind.Null => "null", _ => throw new InvalidDataException() };
         private static string Hash(byte[] bytes) => Convert.ToHexString(SHA256.HashData(bytes));
-        private static string HashFile(string path) => Hash(File.ReadAllBytes(path));
+        internal static string HashFile(string path) => Hash(File.ReadAllBytes(path));
         private static string FindProfile() { var path = AppContext.BaseDirectory; while (path is not null) { var candidate = Path.Combine(path, "tools", "packaging", "v0.2", "package-identity-profile.json"); if (File.Exists(candidate)) return candidate; path = Directory.GetParent(path)?.FullName; } throw new FileNotFoundException("Repository package profile not found."); }
         public void Dispose() { if (Directory.Exists(Root)) Directory.Delete(Root, true); }
     }

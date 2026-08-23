@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Globalization;
 using System.IO;
 using System.IO.Pipes;
 using System.Runtime.InteropServices;
@@ -23,6 +24,7 @@ internal sealed record Issue10PerformanceTelemetryOptions(
     string PackageRoot,
     string PackageProfilePath,
     int ServerProcessId,
+    DateTimeOffset ServerStartUtc,
     string ServerExecutablePath,
     string ServerExecutableSha256,
     string RendererMode,
@@ -33,7 +35,8 @@ internal sealed record Issue10PerformanceTelemetryOptions(
     string ManifestPath,
     string ManifestSha256,
     string IdentityFileSha256,
-    string ProfileFileSha256)
+    string ProfileFileSha256,
+    Issue10ValidatedPackage PackageLease)
 {
     private static readonly Regex Lower32 = new("^[0-9a-f]{32}$", RegexOptions.CultureInvariant);
     private static readonly Regex Lower40 = new("^[0-9a-f]{40}$", RegexOptions.CultureInvariant);
@@ -55,7 +58,7 @@ internal sealed record Issue10PerformanceTelemetryOptions(
             "--issue10-performance-package-archive-path", "--issue10-performance-package-archive-sha256",
             "--issue10-performance-package-root",
             "--issue10-performance-package-profile-path",
-            "--issue10-performance-server-pid", "--issue10-performance-server-path",
+            "--issue10-performance-server-pid", "--issue10-performance-server-start-utc", "--issue10-performance-server-path",
             "--issue10-performance-server-sha256", "--issue10-performance-renderer-mode",
         };
         var requested = args.Any(argument => argument.StartsWith("--issue10-performance-", StringComparison.Ordinal));
@@ -97,9 +100,15 @@ internal sealed record Issue10PerformanceTelemetryOptions(
             {
                 throw new InvalidOperationException("Issue #10 performance server PID is invalid.");
             }
-            var serverPath = Path.GetFullPath(values[names[11]]);
-            var serverSha = values[names[12]];
-            var mode = values[names[13]];
+            if (!DateTimeOffset.TryParseExact(values[names[11]], "O", CultureInfo.InvariantCulture,
+                DateTimeStyles.None, out var serverStartUtc) ||
+                serverStartUtc.Offset != TimeSpan.Zero)
+            {
+                throw new InvalidOperationException("Issue #10 performance server start UTC is invalid.");
+            }
+            var serverPath = Path.GetFullPath(values[names[12]]);
+            var serverSha = values[names[13]];
+            var mode = values[names[14]];
             if (!Pipe.IsMatch(pipe) || !pipe.Contains(nonce, StringComparison.Ordinal) ||
                 !Lower32.IsMatch(nonce) || !Lower40.IsMatch(commit) || !Lower40.IsMatch(tree) ||
                 !Upper64.IsMatch(identitySha) || !Upper64.IsMatch(archiveSha) || !Upper64.IsMatch(serverSha) ||
@@ -110,15 +119,23 @@ internal sealed record Issue10PerformanceTelemetryOptions(
             var package = Issue10PackageValidator.Validate(
                 identityPath, identitySha, archivePath, archiveSha, packageRoot, profilePath, commit, tree,
                 Environment.ProcessPath ?? throw new InvalidOperationException("Issue #10 App process path is unavailable."));
-            if (HasProcessHwnd(Environment.ProcessId))
+            try
             {
-                throw new InvalidOperationException("Issue #10 performance process already owns an HWND before renderer policy selection.");
+                if (HasProcessHwnd(Environment.ProcessId))
+                {
+                    throw new InvalidOperationException("Issue #10 performance process already owns an HWND before renderer policy selection.");
+                }
+                options = new Issue10PerformanceTelemetryOptions(
+                    pipe, nonce, commit, tree, identityPath, identitySha, archivePath,
+                    archiveSha, packageRoot, profilePath, serverPid, serverStartUtc, serverPath, serverSha, mode, false,
+                    package.AppSha256, package.CorePath, package.CoreSha256, package.ManifestPath,
+                    package.ManifestSha256, package.IdentityFileSha256, package.ProfileFileSha256, package);
             }
-            options = new Issue10PerformanceTelemetryOptions(
-                pipe, nonce, commit, tree, identityPath, identitySha, archivePath,
-                archiveSha, packageRoot, profilePath, serverPid, serverPath, serverSha, mode, false,
-                package.AppSha256, package.CorePath, package.CoreSha256, package.ManifestPath,
-                package.ManifestSha256, package.IdentityFileSha256, package.ProfileFileSha256);
+            catch
+            {
+                package.Dispose();
+                throw;
+            }
             return true;
         }
         catch (Exception exception) when (exception is not OutOfMemoryException)
@@ -201,6 +218,7 @@ internal sealed class Issue10PerformanceTelemetryProducer : IAsyncDisposable
 
     internal async Task RunAsync(CancellationToken cancellationToken)
     {
+        _options.PackageLease.Revalidate("telemetry startup");
         ValidateServer();
         _pipe = new NamedPipeClientStream(".", _options.PipeName, PipeDirection.InOut, PipeOptions.Asynchronous);
         await _pipe.ConnectAsync(30_000, cancellationToken);
@@ -213,7 +231,9 @@ internal sealed class Issue10PerformanceTelemetryProducer : IAsyncDisposable
         {
             var requestLine = await _reader.ReadLineAsync(cancellationToken);
             if (requestLine is null) break;
-            var request = ParseRequest(requestLine);
+            var request = ParseRequest(requestLine, _options.RendererMode, _options.RunNonce, Environment.ProcessId);
+            _options.PackageLease.Revalidate("authenticated telemetry request");
+            ValidateServer();
             var response = request.IsSoak
                 ? await MeasureSoakAsync(request, cancellationToken)
                 : await MeasureAsync(request, cancellationToken);
@@ -252,16 +272,12 @@ internal sealed class Issue10PerformanceTelemetryProducer : IAsyncDisposable
     private object ObserveServer()
     {
         using var server = Process.GetProcessById(_options.ServerProcessId);
-        var path = Path.GetFullPath(server.MainModule?.FileName ?? string.Empty);
-        if (!string.Equals(path, _options.ServerExecutablePath, StringComparison.OrdinalIgnoreCase) ||
-            !Issue10PerformanceTelemetryOptions.HashFile(path).Equals(_options.ServerExecutableSha256, StringComparison.Ordinal))
-        {
-            throw new UnauthorizedAccessException("Issue #10 telemetry server identity changed.");
-        }
-        return new { pid=server.Id,startUtc=server.StartTime.ToUniversalTime().ToString("O"),path,sha256=_options.ServerExecutableSha256 };
+        var (startUtc, path) = ValidateProcessIdentity(server, _options.ServerStartUtc, _options.ServerExecutablePath,
+            _options.ServerExecutableSha256, "telemetry server");
+        return new { pid=server.Id,startUtc=startUtc.ToString("O"),path,sha256=_options.ServerExecutableSha256 };
     }
 
-    private SampleRequest ParseRequest(string? json)
+    internal static SampleRequest ParseRequest(string? json, string rendererMode, string runNonce, int appProcessId)
     {
         if (string.IsNullOrWhiteSpace(json) || Encoding.UTF8.GetByteCount(json) > 16_384) throw new InvalidDataException("Issue #10 sample request is empty or oversized.");
         using var document = JsonDocument.Parse(json);
@@ -270,21 +286,21 @@ internal sealed class Issue10PerformanceTelemetryProducer : IAsyncDisposable
         var kind = root.GetProperty("kind").GetString() ?? string.Empty;
         if (kind == "issue10-soak-sample-request")
         {
-            var expected = new[] { "schemaVersion", "kind", "runNonce", "sequenceNumber", "binIndex", "sampleIndex", "coreProcessId" };
+            var expected = new[] { "schemaVersion", "kind", "runNonce", "sequenceNumber", "binIndex", "sampleIndex", "coreProcessId", "coreStartUtc" };
             RequireExactRequestShape(root, expected);
             var soak = new SampleRequest(root.GetProperty("schemaVersion").GetInt32(), kind,
                 root.GetProperty("runNonce").GetString() ?? string.Empty,
                 root.GetProperty("sequenceNumber").GetInt32(), "SOAK", false, 0, "b", true,
-                root.GetProperty("binIndex").GetInt32(), root.GetProperty("sampleIndex").GetInt32(), root.GetProperty("coreProcessId").GetInt32());
-            if (_options.RendererMode != "SoftwareOnly" || soak.SchemaVersion != 1 || soak.RunNonce != _options.RunNonce ||
+                root.GetProperty("binIndex").GetInt32(), root.GetProperty("sampleIndex").GetInt32(), root.GetProperty("coreProcessId").GetInt32(), ParseRequestUtc(root.GetProperty("coreStartUtc"), "Core start UTC"));
+            if (rendererMode != "SoftwareOnly" || soak.SchemaVersion != 1 || soak.RunNonce != runNonce ||
                 soak.SequenceNumber is < 0 or > 3599 || soak.BinIndex is < 0 or > 11 || soak.SampleIndex is < 0 or > 299 ||
-                soak.SequenceNumber != soak.BinIndex * 300 + soak.SampleIndex || soak.CoreProcessId <= 0 || soak.CoreProcessId == Environment.ProcessId)
+                soak.SequenceNumber != soak.BinIndex * 300 + soak.SampleIndex || soak.CoreProcessId <= 0 || soak.CoreProcessId == appProcessId)
             {
                 throw new InvalidDataException("Issue #10 soak request binding is invalid.");
             }
             return soak;
         }
-        RequireExactRequestShape(root, new[] { "schemaVersion", "kind", "runNonce", "sequenceNumber", "order", "isWarmup", "repetitionOrdinal", "semanticMode", "coreProcessId" });
+        RequireExactRequestShape(root, new[] { "schemaVersion", "kind", "runNonce", "sequenceNumber", "order", "isWarmup", "repetitionOrdinal", "semanticMode", "coreProcessId", "coreStartUtc" });
         var request = new SampleRequest(
             root.GetProperty("schemaVersion").GetInt32(),
             kind,
@@ -294,12 +310,20 @@ internal sealed class Issue10PerformanceTelemetryProducer : IAsyncDisposable
             root.GetProperty("isWarmup").GetBoolean(),
             root.GetProperty("repetitionOrdinal").GetInt32(),
             root.GetProperty("semanticMode").GetString() ?? string.Empty,
-            false, -1, -1, root.GetProperty("coreProcessId").GetInt32());
-        var expectedSemantic = _options.RendererMode == "Hardware" ? "a" : "b";
+            false, -1, -1, root.GetProperty("coreProcessId").GetInt32(), ParseRequestUtc(root.GetProperty("coreStartUtc"), "Core start UTC"));
+        var expectedSemantic = rendererMode == "Hardware" ? "a" : "b";
+        var expectedOrder = request.SequenceNumber < 12 ? "AB" : "BA";
+        var withinOrder = request.SequenceNumber % 12;
+        var expectedWarmup = withinOrder < 2;
+        var expectedRepetition = expectedWarmup ? 0 : (withinOrder - 2) / 2;
+        var expectedPositionSemantic = expectedOrder == "AB"
+            ? (withinOrder % 2 == 0 ? "a" : "b")
+            : (withinOrder % 2 == 0 ? "b" : "a");
         if (request.SchemaVersion != 1 || request.Kind != "issue10-performance-sample-request" ||
-            request.RunNonce != _options.RunNonce || request.SequenceNumber is < 0 or > 23 ||
-            request.Order is not ("AB" or "BA") || request.RepetitionOrdinal is < 0 or > 4 ||
-            request.SemanticMode != expectedSemantic || request.CoreProcessId <= 0 || request.CoreProcessId == Environment.ProcessId)
+            request.RunNonce != runNonce || request.SequenceNumber is < 0 or > 23 ||
+            request.Order != expectedOrder || request.IsWarmup != expectedWarmup || request.RepetitionOrdinal != expectedRepetition ||
+            request.SemanticMode != expectedSemantic || request.SemanticMode != expectedPositionSemantic ||
+            request.CoreProcessId <= 0 || request.CoreProcessId == appProcessId)
         {
             throw new InvalidDataException("Issue #10 sample request binding is invalid.");
         }
@@ -308,9 +332,12 @@ internal sealed class Issue10PerformanceTelemetryProducer : IAsyncDisposable
 
     private async Task<object> MeasureSoakAsync(SampleRequest request, CancellationToken cancellationToken)
     {
+        var baselineStateSequence = CaptureLatencyBaseline(_widgets.UpdateLatencySnapshot);
         using var core = Process.GetProcessById(request.CoreProcessId);
         core.Refresh();
         var corePath = Path.GetFullPath(core.MainModule?.FileName ?? string.Empty);
+        var coreStart = core.StartTime.ToUniversalTime();
+        if (new DateTimeOffset(coreStart, TimeSpan.Zero) != request.CoreStartUtc) throw new UnauthorizedAccessException("Issue #10 soak Core process start identity is invalid.");
         if (!string.Equals(corePath, _options.CoreExecutablePath, StringComparison.OrdinalIgnoreCase) ||
             !Issue10PerformanceTelemetryOptions.HashFile(corePath).Equals(_options.CoreExecutableSha256, StringComparison.Ordinal))
         {
@@ -321,14 +348,21 @@ internal sealed class Issue10PerformanceTelemetryProducer : IAsyncDisposable
         while (DateTimeOffset.UtcNow < deadline)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            latency = _widgets.UpdateLatencySnapshot.Samples
-                .Where(sample => sample.UpdateKind is "Snapshot" or "Delta")
-                .TakeLast(20).ToArray();
+            core.Refresh();
+            if (core.HasExited || core.StartTime.ToUniversalTime() != coreStart ||
+                !string.Equals(Path.GetFullPath(core.MainModule?.FileName ?? string.Empty), corePath, StringComparison.OrdinalIgnoreCase) ||
+                !Issue10PerformanceTelemetryOptions.HashFile(corePath).Equals(_options.CoreExecutableSha256, StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException("Issue #10 soak Core process changed during acquisition.");
+            }
+            latency = SelectRollingSoakLatencySamples(_widgets.UpdateLatencySnapshot, baselineStateSequence);
             if (latency.Length == 20) break;
             await Task.Delay(100, cancellationToken);
         }
         if (latency.Length != 20) throw new TimeoutException("Issue #10 soak telemetry did not observe 20 production Widget updates.");
         var stalls = await ObserveDispatcherStallsAsync(cancellationToken);
+        _ = ValidateProcessIdentity(core, request.CoreStartUtc, _options.CoreExecutablePath,
+            _options.CoreExecutableSha256, "soak Core final boundary");
         var render = RuntimeRenderPolicy.ObserveAndRequireConfiguredMode("issue10-soak-sample");
         var observedUtc = DateTimeOffset.UtcNow.ToString("O");
         using var app = Process.GetCurrentProcess();
@@ -345,7 +379,7 @@ internal sealed class Issue10PerformanceTelemetryProducer : IAsyncDisposable
                 appProcessId = Environment.ProcessId,
                 coreProcessId = core.Id,
                 appStartTimeUtc = app.StartTime.ToUniversalTime().ToString("O"),
-                coreStartTimeUtc = core.StartTime.ToUniversalTime().ToString("O"),
+                coreStartTimeUtc = coreStart.ToString("O"),
                 appExecutablePath = Environment.ProcessPath,
                 coreExecutablePath = corePath,
                 appExecutableSha256 = _options.AppExecutableSha256,
@@ -369,12 +403,13 @@ internal sealed class Issue10PerformanceTelemetryProducer : IAsyncDisposable
 
     private async Task<object> MeasureAsync(SampleRequest request, CancellationToken cancellationToken)
     {
-        var baseline = _widgets.UpdateLatencySnapshot.SampleCount;
+        var baselineStateSequence = CaptureLatencyBaseline(_widgets.UpdateLatencySnapshot);
         using var process = Process.GetCurrentProcess();
         using var core = Process.GetProcessById(request.CoreProcessId);
         core.Refresh();
         var corePath = Path.GetFullPath(core.MainModule?.FileName ?? string.Empty);
         var coreStart = core.StartTime.ToUniversalTime();
+        if (new DateTimeOffset(coreStart, TimeSpan.Zero) != request.CoreStartUtc) throw new UnauthorizedAccessException("Issue #10 performance Core process start identity is invalid.");
         if (!string.Equals(corePath, _options.CoreExecutablePath, StringComparison.OrdinalIgnoreCase) ||
             !Issue10PerformanceTelemetryOptions.HashFile(corePath).Equals(_options.CoreExecutableSha256, StringComparison.Ordinal))
         {
@@ -395,10 +430,7 @@ internal sealed class Issue10PerformanceTelemetryProducer : IAsyncDisposable
             if (core.HasExited || core.StartTime.ToUniversalTime() != coreStart) throw new InvalidOperationException("Issue #10 performance Core process changed during acquisition.");
             maximumWorkingSet = Math.Max(maximumWorkingSet, process.WorkingSet64);
             maximumCoreWorkingSet = Math.Max(maximumCoreWorkingSet, core.WorkingSet64);
-            var snapshot = _widgets.UpdateLatencySnapshot;
-            fresh = snapshot.Samples.Skip(Math.Min(baseline, snapshot.Samples.Count))
-                .Where(sample => sample.UpdateKind is "Snapshot" or "Delta")
-                .TakeLast(20).ToArray();
+            fresh = SelectFreshLatencySamples(_widgets.UpdateLatencySnapshot, baselineStateSequence);
             if (fresh.Count == 20) break;
             await Task.Delay(100, cancellationToken);
         }
@@ -408,6 +440,8 @@ internal sealed class Issue10PerformanceTelemetryProducer : IAsyncDisposable
         core.Refresh();
         maximumWorkingSet = Math.Max(maximumWorkingSet, process.WorkingSet64);
         maximumCoreWorkingSet = Math.Max(maximumCoreWorkingSet, core.WorkingSet64);
+        _ = ValidateProcessIdentity(core, request.CoreStartUtc, _options.CoreExecutablePath,
+            _options.CoreExecutableSha256, "performance Core final boundary");
         wall.Stop();
         var cpuBasisPoints = wall.Elapsed.TotalMilliseconds <= 0 ? 0L : checked((long)Math.Round(
             ((process.TotalProcessorTime - cpuStart).TotalMilliseconds + (core.TotalProcessorTime - coreCpuStart).TotalMilliseconds) /
@@ -431,6 +465,49 @@ internal sealed class Issue10PerformanceTelemetryProducer : IAsyncDisposable
         };
     }
 
+    internal static long CaptureLatencyBaseline(WidgetLatencySnapshot snapshot) =>
+        snapshot.Samples
+            .Where(sample => sample.UpdateKind is "Snapshot" or "Delta")
+            .Select(sample => sample.StateSequence)
+            .DefaultIfEmpty(-1)
+            .Max();
+
+    internal static WidgetUpdateLatencySample[] SelectFreshLatencySamples(
+        WidgetLatencySnapshot snapshot,
+        long baselineStateSequence)
+    {
+        var candidates = snapshot.Samples
+            .Where(sample => sample.UpdateKind is "Snapshot" or "Delta")
+            .Where(sample => sample.StateSequence > baselineStateSequence)
+            .ToArray();
+        for (var index = 1; index < candidates.Length; index++)
+        {
+            if (candidates[index].StateSequence <= candidates[index - 1].StateSequence)
+            {
+                throw new InvalidDataException("Issue #10 Widget latency stream replayed or reordered a state sequence.");
+            }
+        }
+        return candidates.Take(20).ToArray();
+    }
+
+    internal static WidgetUpdateLatencySample[] SelectRollingSoakLatencySamples(
+        WidgetLatencySnapshot snapshot,
+        long baselineStateSequence)
+    {
+        var eligible = snapshot.Samples
+            .Where(sample => sample.UpdateKind is "Snapshot" or "Delta")
+            .ToArray();
+        for (var index = 1; index < eligible.Length; index++)
+        {
+            if (eligible[index].StateSequence <= eligible[index - 1].StateSequence)
+            {
+                throw new InvalidDataException("Issue #10 Widget soak latency stream replayed or reordered a state sequence.");
+            }
+        }
+        if (eligible.Length < 20 || eligible[^1].StateSequence <= baselineStateSequence) return [];
+        return eligible.TakeLast(20).ToArray();
+    }
+
     private async Task<long[]> ObserveDispatcherStallsAsync(CancellationToken cancellationToken)
     {
         var stalls = new long[20];
@@ -446,12 +523,30 @@ internal sealed class Issue10PerformanceTelemetryProducer : IAsyncDisposable
     private void ValidateServer()
     {
         using var process = Process.GetProcessById(_options.ServerProcessId);
-        var actual = Path.GetFullPath(process.MainModule?.FileName ?? string.Empty);
-        if (!string.Equals(actual, _options.ServerExecutablePath, StringComparison.OrdinalIgnoreCase) ||
-            !Issue10PerformanceTelemetryOptions.HashFile(actual).Equals(_options.ServerExecutableSha256, StringComparison.Ordinal))
+        _ = ValidateProcessIdentity(process, _options.ServerStartUtc, _options.ServerExecutablePath,
+            _options.ServerExecutableSha256, "telemetry server");
+    }
+
+    internal static (DateTimeOffset StartUtc, string Path) ValidateProcessIdentity(
+        Process process,
+        DateTimeOffset expectedStartUtc,
+        string expectedPath,
+        string expectedSha256,
+        string context)
+    {
+        process.Refresh();
+        var startBefore = new DateTimeOffset(process.StartTime.ToUniversalTime(), TimeSpan.Zero);
+        var actualPath = Path.GetFullPath(process.MainModule?.FileName ?? string.Empty);
+        var actualHash = Issue10PerformanceTelemetryOptions.HashFile(actualPath);
+        process.Refresh();
+        var startAfter = new DateTimeOffset(process.StartTime.ToUniversalTime(), TimeSpan.Zero);
+        if (process.HasExited || startBefore != startAfter || startAfter != expectedStartUtc ||
+            !string.Equals(actualPath, Path.GetFullPath(expectedPath), StringComparison.OrdinalIgnoreCase) ||
+            !actualHash.Equals(expectedSha256, StringComparison.Ordinal))
         {
-            throw new UnauthorizedAccessException("Issue #10 telemetry server executable identity is invalid.");
+            throw new UnauthorizedAccessException($"Issue #10 {context} PID/start/path/hash identity is invalid.");
         }
+        return (startAfter, actualPath);
     }
 
     private static void RejectRequestDuplicates(JsonElement root)
@@ -464,17 +559,40 @@ internal sealed class Issue10PerformanceTelemetryProducer : IAsyncDisposable
     private static void RequireExactRequestShape(JsonElement root, string[] expected)
     {
         var actual = root.EnumerateObject().Select(property => property.Name).ToArray();
-        if (!actual.SequenceEqual(expected, StringComparer.Ordinal))
+        if (actual.Length != expected.Length || actual.Except(expected, StringComparer.Ordinal).Any())
         {
-            throw new InvalidDataException("Issue #10 sample request shape or property order is invalid.");
+            throw new InvalidDataException("Issue #10 sample request shape is invalid.");
         }
+    }
+
+    private static DateTimeOffset ParseRequestUtc(JsonElement value, string context)
+    {
+        if (value.ValueKind != JsonValueKind.String ||
+            !DateTimeOffset.TryParseExact(value.GetString(), "O", CultureInfo.InvariantCulture,
+                DateTimeStyles.None, out var parsed) ||
+            parsed.Offset != TimeSpan.Zero)
+        {
+            throw new InvalidDataException($"Issue #10 {context} is invalid.");
+        }
+        return parsed;
     }
 
     public async ValueTask DisposeAsync()
     {
-        if (_writer is not null) await _writer.DisposeAsync();
-        _reader?.Dispose();
-        _pipe?.Dispose();
+        try
+        {
+            _options.PackageLease.Revalidate("telemetry shutdown");
+        }
+        finally
+        {
+            try
+            {
+                if (_writer is not null) await _writer.DisposeAsync();
+                _reader?.Dispose();
+                _pipe?.Dispose();
+            }
+            finally { _options.PackageLease.Dispose(); }
+        }
     }
 
     [DllImport("user32.dll")]
@@ -488,7 +606,7 @@ internal sealed class Issue10PerformanceTelemetryProducer : IAsyncDisposable
             ? checked((int)processId)
             : throw new InvalidOperationException("Issue #10 telemetry pipe server PID is unavailable.");
 
-    private sealed record SampleRequest(
+    internal sealed record SampleRequest(
         int SchemaVersion,
         string Kind,
         string RunNonce,
@@ -500,5 +618,6 @@ internal sealed class Issue10PerformanceTelemetryProducer : IAsyncDisposable
         bool IsSoak,
         int BinIndex,
         int SampleIndex,
-        int CoreProcessId);
+        int CoreProcessId,
+        DateTimeOffset CoreStartUtc);
 }

@@ -292,7 +292,7 @@ $telemetryPipe=$null;$telemetryReader=$null;$telemetryWriter=$null
 if(-not$Synthetic){
     $pipeName="herdrops-v02-issue10-perf-$ChannelNonce-0";$telemetryPipe=New-RendererTargetObservationPipe $pipeName
     $server=[Diagnostics.Process]::GetCurrentProcess();$serverPath=[IO.Path]::GetFullPath($server.MainModule.FileName);$serverSha=(Get-FileHash -LiteralPath $serverPath -Algorithm SHA256).Hash.ToUpperInvariant();$serverStart=$server.StartTime.ToUniversalTime()
-    $args=@('--issue10-performance-telemetry-pipe',$pipeName,'--issue10-performance-run-nonce',$ChannelNonce,'--issue10-performance-source-commit',$ExpectedSourceCommit,'--issue10-performance-source-tree',$ExpectedSourceTree,'--issue10-performance-package-identity-path',$packageBinding.IdentityPath,'--issue10-performance-package-identity-sha256',$packageBinding.ReceiptSha256,'--issue10-performance-package-archive-path',$packageBinding.ArchivePath,'--issue10-performance-package-archive-sha256',$packageBinding.ArchiveSha256,'--issue10-performance-package-root',$packageBinding.PackageRoot,'--issue10-performance-package-profile-path',$packageBinding.ProfilePath,'--issue10-performance-server-pid',[string]$server.Id,'--issue10-performance-server-path',$serverPath,'--issue10-performance-server-sha256',$serverSha,'--issue10-performance-renderer-mode','SoftwareOnly')
+    $args=@('--issue10-performance-telemetry-pipe',$pipeName,'--issue10-performance-run-nonce',$ChannelNonce,'--issue10-performance-source-commit',$ExpectedSourceCommit,'--issue10-performance-source-tree',$ExpectedSourceTree,'--issue10-performance-package-identity-path',$packageBinding.IdentityPath,'--issue10-performance-package-identity-sha256',$packageBinding.ReceiptSha256,'--issue10-performance-package-archive-path',$packageBinding.ArchivePath,'--issue10-performance-package-archive-sha256',$packageBinding.ArchiveSha256,'--issue10-performance-package-root',$packageBinding.PackageRoot,'--issue10-performance-package-profile-path',$packageBinding.ProfilePath,'--issue10-performance-server-pid',[string]$server.Id,'--issue10-performance-server-start-utc',$serverStart.ToString('O',[Globalization.CultureInfo]::InvariantCulture),'--issue10-performance-server-path',$serverPath,'--issue10-performance-server-sha256',$serverSha,'--issue10-performance-renderer-mode','SoftwareOnly')
     $psi=New-Object Diagnostics.ProcessStartInfo;$psi.FileName=$packageBinding.AppPath;$qa=@($args|ForEach-Object{ConvertTo-V02SoakNativeArgument ([string]$_)});$psi.Arguments=$qa-join' ';$psi.UseShellExecute=$false;$psi.CreateNoWindow=$true
     $appProcess=[Diagnostics.Process]::Start($psi);if($null-eq$appProcess){throw 'Packaged soak App did not start.'};$appStartTimeUtc=$appProcess.StartTime.ToUniversalTime()
     $clientPid=Wait-RendererTargetObservationPipe $telemetryPipe 60;Assert-RendererPipeClientProcessId ([int]$clientPid) ([int]$appProcess.Id) 'Soak telemetry'
@@ -465,7 +465,7 @@ for ($binIndex = 0; $binIndex -lt $totalBins; $binIndex++) {
             # Authenticated live latency and UI stall source across trusted channel
             $packet = $null
             try {
-                $request=[pscustomobject][ordered]@{schemaVersion=1;kind='issue10-soak-sample-request';runNonce=$ChannelNonce;sequenceNumber=$globalSequenceNumber;binIndex=$binIndex;sampleIndex=$sampleIdx;coreProcessId=$CoreProcessId}
+                $request=[pscustomobject][ordered]@{schemaVersion=1;kind='issue10-soak-sample-request';runNonce=$ChannelNonce;sequenceNumber=$globalSequenceNumber;binIndex=$binIndex;sampleIndex=$sampleIdx;coreProcessId=$CoreProcessId;coreStartUtc=$coreStartTimeUtc.ToString('O')}
                 Write-RendererTargetPipeLine $telemetryWriter (ConvertTo-RendererCanonicalJson $request $RepositoryRoot)
                 $packetJson=Read-RendererTargetPipeLine $telemetryReader 330
                 $packet=if($PSVersionTable.PSVersion.Major-ge7-and(Get-Command ConvertFrom-Json).Parameters.ContainsKey('DateKind')){$packetJson|ConvertFrom-Json -DateKind String}else{$packetJson|ConvertFrom-Json}
@@ -489,6 +489,11 @@ for ($binIndex = 0; $binIndex -lt $totalBins; $binIndex++) {
                 -ExpectedCoreExecutableSha256 $packageBinding.CoreSha256 `
                 -PreviousTimestampRef ([ref]$lastObservedTelemetryUtc) `
                 -RepositoryRoot $RepositoryRoot
+
+            $null=Get-V02LiveProcessIdentity -Process $appProcess -ExpectedProcessId $appProcess.Id -ExpectedStartTimeUtc $appStartTimeUtc -Role 'App' -BinIndex $binIndex -SampleIndex $sampleIdx
+            $null=Get-V02LiveProcessIdentity -Process $coreProcess -ExpectedProcessId $CoreProcessId -ExpectedStartTimeUtc $coreStartTimeUtc -Role 'Core' -BinIndex $binIndex -SampleIndex $sampleIdx
+            $postAppPath=[IO.Path]::GetFullPath($appProcess.MainModule.FileName);$postCorePath=[IO.Path]::GetFullPath($coreProcess.MainModule.FileName)
+            if(-not[StringComparer]::OrdinalIgnoreCase.Equals($postAppPath,$packageBinding.AppPath)-or-not[StringComparer]::OrdinalIgnoreCase.Equals($postCorePath,$packageBinding.CorePath)-or(Get-FileHash -LiteralPath $postAppPath -Algorithm SHA256).Hash-cne$packageBinding.AppSha256-or(Get-FileHash -LiteralPath $postCorePath -Algorithm SHA256).Hash-cne$packageBinding.CoreSha256){throw "App/Core executable identity changed after telemetry response during bin $binIndex sample $sampleIdx."}
 
             $globalSequenceNumber++
             $sampleUtcStr = [string]$packet.observedUtc
