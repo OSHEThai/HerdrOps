@@ -1,5 +1,5 @@
 # HerdrOps Solution Test Scheduling and CI Partitioned Workflow Regression and Hostile Tests
-# Issue #135: Validates single testhost canonical scheduling and 5-job partitioned CI invariants
+# Issue #135: Validates single testhost canonical scheduling and 7-job partitioned CI invariants
 
 [CmdletBinding()]
 param()
@@ -91,6 +91,19 @@ try {
             $ciContent = Get-Content -LiteralPath (Join-Path $repositoryRoot '.github\workflows\ci.yml') -Raw
             $tamperedCi = $ciContent -replace '(?ms)      - name: Run v0\.2 canonical Release build prerequisite \(clean runner\)\r?\n        shell: pwsh\r?\n        run: \./tools/Invoke-Build\.ps1 -Configuration Release -VerifyFormat\r?\n', ''
             $tamperedCiPath = Join-Path $tempRoot 'tampered-ci-missing-build-prerequisite.yml'
+            Set-Content -LiteralPath $tamperedCiPath -Value $tamperedCi -Encoding utf8
+
+            . $schedulerScript
+            Test-CiWorkflowScheduling -WorkflowPath $tamperedCiPath
+        }
+
+    # 2b. Every v0.2 subpartition must retain its own clean-runner build.
+    Assert-Throws -TestName 'Hostile CI: Missing v0.2 package subpartition build prerequisite is rejected' `
+        -ExpectedMessagePattern "Partitioned job 'v02-package-gates' must have exactly one canonical clean-runner build prerequisite" `
+        -ScriptBlock {
+            $ciContent = Get-Content -LiteralPath (Join-Path $repositoryRoot '.github\workflows\ci.yml') -Raw
+            $tamperedCi = $ciContent -replace '(?ms)      - name: Run v0\.2 package/evidence canonical Release build prerequisite \(clean runner\)\r?\n        shell: pwsh\r?\n        run: \./tools/Invoke-Build\.ps1 -Configuration Release -VerifyFormat\r?\n', ''
+            $tamperedCiPath = Join-Path $tempRoot 'tampered-ci-package-missing-build-prerequisite.yml'
             Set-Content -LiteralPath $tamperedCiPath -Value $tamperedCi -Encoding utf8
 
             . $schedulerScript
@@ -218,6 +231,8 @@ try {
             Assert-CiAggregatorResults -Results @{
                 'build-and-v01' = 'success'
                 'v02-gates' = 'success'
+                'v02-package-gates' = 'success'
+                'v02-acceptance-gates' = 'success'
                 'v03-v04-gates' = 'success'
                 'v05-v06-gates' = 'failure'
                 'v07-v10-gates' = 'success'
@@ -232,6 +247,8 @@ try {
             Assert-CiAggregatorResults -Results @{
                 'build-and-v01' = 'success'
                 'v02-gates' = 'success'
+                'v02-package-gates' = 'success'
+                'v02-acceptance-gates' = 'success'
                 'v03-v04-gates' = 'success'
                 'v05-v06-gates' = 'skipped'
                 'v07-v10-gates' = 'success'
@@ -246,6 +263,8 @@ try {
             Assert-CiAggregatorResults -Results @{
                 'build-and-v01' = 'success'
                 'v02-gates' = 'success'
+                'v02-package-gates' = 'success'
+                'v02-acceptance-gates' = 'success'
                 'v03-v04-gates' = 'success'
                 'v05-v06-gates' = 'cancelled'
                 'v07-v10-gates' = 'success'
