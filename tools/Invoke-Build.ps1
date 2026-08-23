@@ -40,15 +40,32 @@ if (-not $SkipTests) {
     if ([string]::IsNullOrWhiteSpace($env:HERDOPS_V02_LIVE_WIDGET_RUN_TOKEN)) {
         $env:HERDOPS_V02_LIVE_WIDGET_RUN_TOKEN = "$([DateTime]::UtcNow.ToString('yyyyMMddTHHmmssfffffffZ', [Globalization.CultureInfo]::InvariantCulture))-$([Guid]::NewGuid().ToString('N').Substring(0, 8))"
     }
-    $resultsDirectory = Join-Path $artifactRoot 'test-results'
-    if (Test-Path -LiteralPath $resultsDirectory) {
-        Remove-Item -LiteralPath $resultsDirectory -Recurse -Force -ErrorAction Stop
+    $stagingDirectory = Join-Path ([IO.Path]::GetTempPath()) ('herdrops-ci-test-staging-' + [Guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path $stagingDirectory -Force | Out-Null
+    try {
+        & dotnet test $solutionPath -m:1 --configuration $Configuration --no-restore --no-build --artifacts-path $artifactRoot --results-directory $stagingDirectory --logger trx
+        if ($LASTEXITCODE -ne 0) { throw 'Tests failed.' }
+        . (Join-Path $PSScriptRoot 'lib\CanonicalTestManifest.ps1')
+        [void](New-CanonicalTestResultsManifest -TestResultsDirectory $stagingDirectory -Configuration $Configuration -RepositoryRoot $repositoryRoot)
+        [void](Assert-CanonicalTestResultsManifest -TestResultsDirectory $stagingDirectory -RepositoryRoot $repositoryRoot)
+
+        # Atomic publish to destination results directory
+        $resultsDirectory = Join-Path $artifactRoot 'test-results'
+        if (-not (Test-Path -LiteralPath $resultsDirectory -PathType Container)) {
+            New-Item -ItemType Directory -Path $resultsDirectory -Force | Out-Null
+        } else {
+            Get-ChildItem -LiteralPath $resultsDirectory -File | Remove-Item -Force
+        }
+        foreach ($stagedFile in (Get-ChildItem -LiteralPath $stagingDirectory -File)) {
+            $destFile = Join-Path $resultsDirectory $stagedFile.Name
+            Copy-Item -LiteralPath $stagedFile.FullName -Destination $destFile -Force
+        }
     }
-    New-Item -ItemType Directory -Path $resultsDirectory -Force | Out-Null
-    & dotnet test $solutionPath -m:1 --configuration $Configuration --no-restore --no-build --artifacts-path $artifactRoot --results-directory $resultsDirectory --logger trx
-    if ($LASTEXITCODE -ne 0) { throw 'Tests failed.' }
-    . (Join-Path $PSScriptRoot 'lib\CanonicalTestManifest.ps1')
-    [void](New-CanonicalTestResultsManifest -TestResultsDirectory $resultsDirectory -Configuration $Configuration -RepositoryRoot $repositoryRoot)
+    finally {
+        if (Test-Path -LiteralPath $stagingDirectory) {
+            Remove-Item -LiteralPath $stagingDirectory -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
 }
 
 Write-Host "HerdrOps $Configuration build completed. Artifacts: $artifactRoot"

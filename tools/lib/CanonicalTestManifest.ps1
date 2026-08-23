@@ -1,5 +1,5 @@
 # HerdrOps Canonical Test Manifest Library
-# Issue #9, #10, #135: Authenticated test manifest bound to exact HEAD, tree, and 888/888/0 counters
+# Issue #9, #10, #135: Authenticated test manifest bound to exact HEAD, tree, 4 unique projects, result-row validation, and 888/888/0 counters
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
@@ -45,37 +45,61 @@ function New-CanonicalTestResultsManifest {
     $passedTests = 0
     $failedTests = 0
     $skippedTests = 0
+    $seenProjectNames = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    $seenFileHashes = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    $seenFileNames = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+
+    $startTimes = New-Object System.Collections.Generic.List[DateTimeOffset]
+    $finishTimes = New-Object System.Collections.Generic.List[DateTimeOffset]
 
     $sha256 = [Security.Cryptography.SHA256]::Create()
     try {
         foreach ($file in ($trxFiles | Sort-Object Name)) {
+            if (-not $seenFileNames.Add($file.Name)) {
+                throw "Duplicate TRX file name detected: $($file.Name)"
+            }
+
             $bytes = [IO.File]::ReadAllBytes($file.FullName)
             $fileHash = ([BitConverter]::ToString($sha256.ComputeHash($bytes))).Replace("-", "").ToUpperInvariant()
+            if (-not $seenFileHashes.Add($fileHash)) {
+                throw "Duplicate TRX content hash detected: $fileHash ($($file.Name))"
+            }
 
             $memory = New-Object IO.MemoryStream(, $bytes)
+            $trx = New-Object Xml.XmlDocument
             try {
-                $trx = New-Object Xml.XmlDocument
                 $trx.Load($memory)
             } finally {
                 $memory.Dispose()
             }
 
-            $unitTests = @($trx.TestRun.TestDefinitions.UnitTest)
-            $storage = if ($unitTests.Count -gt 0) { [string]$unitTests[0].storage } else { "" }
-            $matchedProject = $null
-            foreach ($p in $expectedProjects) {
-                if ($storage -match [Regex]::Escape($p) -or $file.Name -match [Regex]::Escape($p)) {
-                    $matchedProject = $p
-                    break
+            # Parse Times for execution window
+            if ($null -ne $trx.TestRun.Times) {
+                if (-not [string]::IsNullOrWhiteSpace($trx.TestRun.Times.start)) {
+                    $startTimes.Add([DateTimeOffset]::Parse($trx.TestRun.Times.start))
+                }
+                if (-not [string]::IsNullOrWhiteSpace($trx.TestRun.Times.finish)) {
+                    $finishTimes.Add([DateTimeOffset]::Parse($trx.TestRun.Times.finish))
                 }
             }
 
-            if ($null -eq $matchedProject -and $unitTests.Count -gt 0) {
-                $className = [string]$unitTests[0].TestMethod.className
+            $unitTests = @($trx.TestRun.TestDefinitions.UnitTest)
+            if ($unitTests.Count -eq 0) {
+                throw "TRX file contains zero UnitTest definitions: $($file.Name)"
+            }
+
+            $matchedProject = $null
+            # Identify project from unit test definitions
+            foreach ($ut in $unitTests) {
+                $storage = [string]$ut.storage
+                $className = if ($null -ne $ut.TestMethod) { [string]$ut.TestMethod.className } else { "" }
                 foreach ($p in $expectedProjects) {
-                    if ($className.StartsWith($p, [StringComparison]::OrdinalIgnoreCase)) {
-                        $matchedProject = $p
-                        break
+                    if ($storage -match "(?i)[\\/]?$p\.dll$" -or $storage -match "(?i)$p" -or $className.StartsWith($p, [StringComparison]::OrdinalIgnoreCase) -or $file.Name -match "(?i)$p") {
+                        if ($null -eq $matchedProject) {
+                            $matchedProject = $p
+                        } elseif ($matchedProject -cne $p) {
+                            throw "TRX file contains mixed project definitions ($matchedProject vs $p): $($file.Name)"
+                        }
                     }
                 }
             }
@@ -84,11 +108,48 @@ function New-CanonicalTestResultsManifest {
                 throw "Could not identify canonical test project for TRX file: $($file.Name)"
             }
 
+            if (-not $seenProjectNames.Add($matchedProject)) {
+                throw "Duplicate test project results detected in manifest: $matchedProject"
+            }
+
+            # Result row validation: inspect every UnitTestResult element
+            $results = @($trx.TestRun.Results.UnitTestResult)
+            if ($results.Count -eq 0) {
+                throw "TRX file contains zero UnitTestResult rows: $($file.Name)"
+            }
+
+            $fileResultPassed = 0
+            $fileResultFailed = 0
+            $fileResultOther = 0
+
+            foreach ($res in $results) {
+                $outcome = [string]$res.outcome
+                if ($outcome -ceq 'Passed') {
+                    $fileResultPassed++
+                } elseif ($outcome -ceq 'Failed') {
+                    $fileResultFailed++
+                } else {
+                    $fileResultOther++
+                }
+            }
+
             $counters = $trx.TestRun.ResultSummary.Counters
             $fileTotal = [int]$counters.total
             $filePassed = [int]$counters.passed
             $fileFailed = [int]$counters.failed
             $fileSkipped = [int]$counters.notExecuted
+
+            if ($results.Count -ne $fileTotal) {
+                throw "Result row count ($($results.Count)) does not match Counters.total ($fileTotal) in $($file.Name)"
+            }
+
+            if ($fileResultPassed -ne $filePassed -or $fileResultFailed -ne $fileFailed -or $fileResultOther -ne $fileSkipped) {
+                throw "Result row outcomes do not match Counters in $($file.Name): rowsPassed=$fileResultPassed countersPassed=$filePassed"
+            }
+
+            if ($fileFailed -ne 0 -or $fileSkipped -ne 0 -or $fileResultFailed -ne 0 -or $fileResultOther -ne 0) {
+                throw "TRX file contains non-passing test results: $($file.Name) (failed=$fileFailed, skipped=$fileSkipped)"
+            }
 
             $totalTests += $fileTotal
             $passedTests += $filePassed
@@ -110,14 +171,13 @@ function New-CanonicalTestResultsManifest {
         $sha256.Dispose()
     }
 
-    $discoveredProjects = @($projectEntries | ForEach-Object { $_.ProjectName })
     foreach ($p in $expectedProjects) {
-        if ($discoveredProjects -notcontains $p) {
+        if (-not $seenProjectNames.Contains($p)) {
             throw "Canonical test results omitted expected project: $p"
         }
     }
 
-    if ($discoveredProjects.Count -ne 4 -or (@($discoveredProjects | Select-Object -Unique).Count -ne 4)) {
+    if ($projectEntries.Count -ne 4) {
         throw "Canonical test results must contain exactly one TRX per expected project without duplicates."
     }
 
@@ -125,17 +185,28 @@ function New-CanonicalTestResultsManifest {
         throw "Canonical test counters are not exact 888/888/0: total=$totalTests passed=$passedTests failed=$failedTests skipped=$skippedTests"
     }
 
+    # Sort project entries deterministically by ProjectName
+    $sortedProjects = @($projectEntries | Sort-Object -Property ProjectName)
+
+    $earliestStart = if ($startTimes.Count -gt 0) { ($startTimes | Sort-Object)[0].ToString("O") } else { [DateTimeOffset]::UtcNow.ToString("O") }
+    $latestFinish = if ($finishTimes.Count -gt 0) { ($finishTimes | Sort-Object)[-1].ToString("O") } else { [DateTimeOffset]::UtcNow.ToString("O") }
+
     $manifest = [pscustomobject][ordered]@{
-        SchemaVersion = 1
+        SchemaVersion = 2
+        EvidenceClass = "CanonicalTestResultsManifest"
         SourceCommit = $sourceCommit
         SourceTree = $sourceTree
         Configuration = $Configuration
+        ExecutionWindow = [pscustomobject][ordered]@{
+            StartUtc = $earliestStart
+            EndUtc = $latestFinish
+        }
         GeneratedUtc = ([DateTimeOffset]::UtcNow.ToString("O"))
         TotalTests = $totalTests
         PassedTests = $passedTests
         FailedTests = $failedTests
         SkippedTests = $skippedTests
-        Projects = @($projectEntries.ToArray())
+        Projects = $sortedProjects
     }
 
     $manifestPath = Join-Path $TestResultsDirectory "test-results-manifest.json"
@@ -195,10 +266,42 @@ function Assert-CanonicalTestResultsManifest {
         throw "Canonical test results manifest must contain exactly 4 projects; found $($projects.Count)."
     }
 
+    $expectedProjects = @(
+        "HerdrOps.ContractTests",
+        "HerdrOps.IntegrationTests",
+        "HerdrOps.RuntimeTests",
+        "HerdrOps.UnitTests"
+    )
+
+    $manifestProjectNames = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    $manifestFileNames = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    $manifestHashes = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+
+    foreach ($p in $projects) {
+        if (-not $manifestProjectNames.Add([string]$p.ProjectName)) {
+            throw "Duplicate ProjectName in manifest: $($p.ProjectName)"
+        }
+        if (-not $manifestFileNames.Add([string]$p.FileName)) {
+            throw "Duplicate FileName in manifest: $($p.FileName)"
+        }
+        if (-not $manifestHashes.Add([string]$p.Sha256)) {
+            throw "Duplicate Sha256 in manifest: $($p.Sha256)"
+        }
+    }
+
+    foreach ($ep in $expectedProjects) {
+        if (-not $manifestProjectNames.Contains($ep)) {
+            throw "Manifest omitted expected project: $ep"
+        }
+    }
+
     $actualTrxFiles = @(Get-ChildItem -LiteralPath $TestResultsDirectory -Filter "*.trx" -File)
     if ($actualTrxFiles.Count -ne 4) {
         throw "Test results directory contains $($actualTrxFiles.Count) TRX files; expected exactly 4 authenticated TRX files."
     }
+
+    $actualTotal = 0
+    $actualPassed = 0
 
     foreach ($project in $projects) {
         $trxPath = Join-Path $TestResultsDirectory $project.FileName
@@ -209,6 +312,33 @@ function Assert-CanonicalTestResultsManifest {
         if ($actualHash -cne [string]$project.Sha256) {
             throw "TRX file hash mismatch for $($project.FileName): expected=$($project.Sha256) observed=$actualHash"
         }
+
+        # Validate actual TRX contents
+        $bytes = [IO.File]::ReadAllBytes($trxPath)
+        $memory = New-Object IO.MemoryStream(, $bytes)
+        $trx = New-Object Xml.XmlDocument
+        try {
+            $trx.Load($memory)
+        } finally {
+            $memory.Dispose()
+        }
+
+        $results = @($trx.TestRun.Results.UnitTestResult)
+        if ($results.Count -ne [int]$project.Total) {
+            throw "TRX $($project.FileName) result row count ($($results.Count)) does not match manifest total ($($project.Total))"
+        }
+        foreach ($res in $results) {
+            if ([string]$res.outcome -cne 'Passed') {
+                throw "TRX $($project.FileName) contains non-passing result row outcome: $($res.outcome)"
+            }
+        }
+
+        $actualTotal += [int]$project.Total
+        $actualPassed += [int]$project.Passed
+    }
+
+    if ($actualTotal -ne $ExpectedTotal -or $actualPassed -ne $ExpectedPassed) {
+        throw "TRX aggregate actual results mismatch: expected $ExpectedTotal/$ExpectedPassed, observed $actualTotal/$actualPassed"
     }
 
     return $manifest

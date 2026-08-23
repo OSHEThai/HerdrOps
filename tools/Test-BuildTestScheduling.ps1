@@ -33,6 +33,25 @@ function Test-BuildScriptScheduling {
         throw "Build script does not parse cleanly: $ScriptPath"
     }
 
+    # Verify solution variable definition if used
+    $solutionAssignments = @($ast.FindAll({
+        param($node)
+        if ($node -is [System.Management.Automation.Language.AssignmentStatementAst] -and
+            $node.Left -is [System.Management.Automation.Language.VariableExpressionAst] -and
+            $node.Left.VariablePath.UserPath -ceq 'solutionPath') {
+            return $true
+        }
+        return $false
+    }, $true))
+
+    foreach ($assign in $solutionAssignments) {
+        $rightText = $assign.Right.Extent.Text
+        if ($rightText -notmatch "Join-Path\s+\`$repositoryRoot\s+['""]HerdrOps\.sln['""]" -and
+            $rightText -notmatch "['""]HerdrOps\.sln['""]") {
+            throw "solutionPath must be anchored to repositoryRoot and HerdrOps.sln; found: $rightText"
+        }
+    }
+
     $testCommands = @($ast.FindAll({
         param($node)
 
@@ -54,18 +73,29 @@ function Test-BuildScriptScheduling {
         throw 'The canonical dotnet test command must specify a target solution argument.'
     }
 
+    # Verify the target solution argument is strictly $solutionPath or HerdrOps.sln at repo root
     $targetArgument = $commandElements[2].Extent.Text
-    if ($targetArgument -cne '$solutionPath' -and $targetArgument -notmatch 'HerdrOps\.sln') {
-        throw "The canonical dotnet test command must target `$solutionPath or HerdrOps.sln; found: $targetArgument"
+    if ($targetArgument -cne '$solutionPath' -and $targetArgument -cne '"$solutionPath"' -and $targetArgument -cne "'HerdrOps.sln'" -and $targetArgument -cne '"HerdrOps.sln"') {
+        # Check if it specifies an external attacker path or non-solution target
+        if ($targetArgument -match '[:\\/]' -or $targetArgument -notmatch '^(\$solutionPath|["'']?HerdrOps\.sln["'']?)$') {
+            throw "The canonical dotnet test command must target `$solutionPath or HerdrOps.sln at repo root; found: $targetArgument"
+        }
     }
 
     $arguments = @($commandElements |
         Select-Object -Skip 2 |
         ForEach-Object { $_.Extent.Text })
-    $boundedSchedulers = @($arguments | Where-Object { $_ -cmatch '^(?:-m|--maxcpucount):1$' })
 
-    if ($boundedSchedulers.Count -ne 1) {
-        throw 'The canonical solution test command must serialize project scheduling with exactly one -m:1 or --maxcpucount:1 argument.'
+    # Check for any concurrency arguments across the entire command
+    $concurrencyArgs = @($arguments | Where-Object { $_ -match '^(?:[-/]|--)(?:m|maxcpucount)(?::.*)?$' })
+
+    if ($concurrencyArgs.Count -ne 1) {
+        throw "The canonical solution test command must contain exactly one concurrency argument; found $($concurrencyArgs.Count): $($concurrencyArgs -join ', ')"
+    }
+
+    $concurrencyArg = $concurrencyArgs[0]
+    if ($concurrencyArg -notmatch '^(?:-m:1|--maxcpucount:1|/m:1|/maxcpucount:1)$') {
+        throw "The canonical solution test command must serialize project scheduling with exactly one -m:1 or --maxcpucount:1 argument; found: $concurrencyArg"
     }
 
     return
@@ -88,47 +118,75 @@ function Test-CiWorkflowScheduling {
         throw 'CI workflow must contain the canonical Invoke-Build.ps1 -Configuration Release step.'
     }
 
-    # 2. Ensure NO step runs `dotnet test` directly in CI workflow (including multiline run: | or run: > blocks)
+    # 2. Parse and normalize all `run:` blocks in YAML to ensure NO step runs `dotnet test` directly
     $lines = $content -split "`r?`n"
-    $inRunBlock = $false
-    $runBlockIndent = 0
     $offending = New-Object System.Collections.ArrayList
+    $i = 0
 
-    for ($i = 0; $i -lt $lines.Count; $i++) {
+    while ($i -lt $lines.Count) {
         $line = $lines[$i]
         $trimmed = $line.Trim()
 
-        if ($trimmed.StartsWith('#')) {
+        if ($trimmed.StartsWith('#') -or [string]::IsNullOrWhiteSpace($trimmed)) {
+            $i++
             continue
         }
 
-        if ($line -match '^\s*run:\s*(?:\||>|>-|\|-|\+\||>+)') {
-            $inRunBlock = $true
-            $runBlockIndent = $line.Length - $line.TrimStart().Length
+        # Check for run: block scalar indicators (| or > with optional modifiers -, +)
+        if ($line -match '^(\s*)run:\s*([|>][\-+]?)\s*(?:#.*)?$') {
+            $runIndent = $Matches[1].Length
+            $scalarType = $Matches[2]
+            $blockLines = New-Object System.Collections.ArrayList
+            $startLineNum = $i + 1
+            $i++
+
+            while ($i -lt $lines.Count) {
+                $childLine = $lines[$i]
+                $childTrimmed = $childLine.Trim()
+                if ($childTrimmed.Length -gt 0) {
+                    $childIndent = $childLine.Length - $childLine.TrimStart().Length
+                    if ($childIndent -le $runIndent) {
+                        break
+                    }
+                    $stripped = $childLine
+                    if ($stripped -match '^(.*?)(?<!\$)(?:#.*)$') { $stripped = $Matches[1] }
+                    [void]$blockLines.Add($stripped.Trim())
+                }
+                $i++
+            }
+
+            # Normalize command based on scalar type
+            $normalizedCommand = ""
+            if ($scalarType.StartsWith('>')) {
+                # Folded scalar: join non-empty lines with a space
+                $normalizedCommand = ($blockLines.ToArray() -join ' ')
+            } else {
+                # Literal scalar: join lines with newline, but also check combined tokens
+                $normalizedCommand = ($blockLines.ToArray() -join "`n")
+            }
+
+            # Test normalized command string for direct dotnet test invocations
+            # Handle split dotnet / test, excessive spacing, quotes, or line breaks
+            $collapsed = $normalizedCommand -replace '\s+', ' '
+            if ($collapsed -match '\bdotnet(\.exe)?\s+test\b') {
+                [void]$offending.Add("run block starting line ${startLineNum}: $collapsed")
+            }
             continue
         }
 
+        # Single-line run: command
         if ($line -match '^\s*run:\s*(.*)$') {
             $cmd = $Matches[1]
             if ($cmd -match '^(.*?)(?<!\$)(?:#.*)$') { $cmd = $Matches[1] }
-            if ($cmd -match '\bdotnet\s+test\b') {
-                [void]$offending.Add("line $($i+1): $($line.Trim())")
+            $collapsed = $cmd.Trim() -replace '\s+', ' '
+            if ($collapsed -match '\bdotnet(\.exe)?\s+test\b') {
+                [void]$offending.Add("line $($i+1): $collapsed")
             }
+            $i++
             continue
         }
 
-        if ($inRunBlock) {
-            $lineIndent = $line.Length - $line.TrimStart().Length
-            if ($trimmed.Length -gt 0 -and $lineIndent -le $runBlockIndent) {
-                $inRunBlock = $false
-            } else {
-                $strippedLine = $line
-                if ($strippedLine -match '^(.*?)(?<!\$)(?:#.*)$') { $strippedLine = $Matches[1] }
-                if ($strippedLine -match '\bdotnet\s+test\b') {
-                    [void]$offending.Add("line $($i+1): $($line.Trim())")
-                }
-            }
-        }
+        $i++
     }
 
     if ($offending.Count -gt 0) {
@@ -239,6 +297,22 @@ function Test-GateScriptSkipTestsSupport {
         $paramNames = @($ast.ParamBlock.Parameters | ForEach-Object { $_.Name.VariablePath.UserPath })
         if ($paramNames -notcontains 'SkipTests') {
             throw "Gate script '$scriptName' is missing required [switch]`$SkipTests parameter."
+        }
+
+        # Behavioral verification: Ensure $SkipTests is referenced in the script body
+        $allSkipTests = @($ast.FindAll({
+            param($node)
+            return ($node -is [System.Management.Automation.Language.VariableExpressionAst] -and
+                    $node.VariablePath.UserPath -ceq 'SkipTests')
+        }, $true))
+        $paramSkipTests = @($ast.ParamBlock.FindAll({
+            param($node)
+            return ($node -is [System.Management.Automation.Language.VariableExpressionAst] -and
+                    $node.VariablePath.UserPath -ceq 'SkipTests')
+        }, $true))
+
+        if (($allSkipTests.Count - $paramSkipTests.Count) -le 0) {
+            throw "Gate script '$scriptName' declares [switch]`$SkipTests but does not reference or honor it in script body."
         }
     }
 
