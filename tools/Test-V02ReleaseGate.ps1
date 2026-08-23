@@ -16,6 +16,7 @@ param(
     [string]$ContractEvidencePath,
     [string]$SyntheticEvidencePath,
     [string]$HumanReviewPath,
+    [string]$CleanMachineReportPath,
     [string]$GitHubSnapshotPath,
     [string]$CandidateLockPath,
     [string]$AuthorityReferencePath,
@@ -85,6 +86,9 @@ $script:V02ReleaseGateTransitiveGovernanceRelativePaths = @(
     'tools/lib/V02ReferenceHostProfile.ps1',
     'tools/packaging/v0.2/Test-V02PackageIdentity.ps1',
     'tools/packaging/v0.2/V02PackageIdentity.Common.ps1',
+    'tools/packaging/v0.2/V02CleanMachine.Common.ps1',
+    'tools/packaging/v0.2/V02Packaging.Common.ps1',
+    'tools/packaging/v0.2/clean-machine-report.schema.json',
     'tools/packaging/Packaging.Common.ps1',
     'tools/v0.2-renderer-compatibility/Test-V02RendererCompatibilityManifest.ps1',
     'tools/v0.2-renderer-compatibility/RendererCompatibility.Common.ps1',
@@ -1886,6 +1890,66 @@ function Assert-V02ReleaseGateIndependentReceiptBinding {
     }
 }
 
+function Read-V02ReleaseGateCleanMachineReport {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$RepositoryRoot,
+        [Parameter(Mandatory = $true)][string]$ExpectedSourceCommit,
+        [Parameter(Mandatory = $true)][string]$ExpectedSourceTree,
+        [Parameter(Mandatory = $true)]$Package
+    )
+
+    # Reuse the producer's strict schema/semantic verifier, then add the
+    # release-gate-specific exact-candidate binding.  The report's own
+    # CleanMachine credit is install-lifecycle evidence only and cannot grant
+    # Runtime, Human, or Release authority.
+    . (Join-Path $RepositoryRoot 'tools\packaging\v0.2\V02CleanMachine.Common.ps1')
+    $document = Read-V02ReleaseGateJsonFile -Path $Path -Context 'Clean-machine acceptance report'
+    Assert-V02CleanMachineReportSchema -Report $document.Value -RepositoryRoot $RepositoryRoot
+    $report = $document.Value
+
+    Assert-V02ReleaseGateExactString $report.status 'PASS' 'Clean-machine report status'
+    Assert-V02ReleaseGateExactString $report.mode 'Live' 'Clean-machine report mode'
+    Assert-V02ReleaseGateExactString $report.evidenceBoundary.evidenceClass 'CleanMachine' 'Clean-machine evidence class'
+    if (-not (Assert-V02ReleaseGateBoolean $report.evidenceBoundary.creditGranted 'Clean-machine lifecycle credit')) {
+        throw 'Clean-machine report must grant genuine Live install-lifecycle credit.'
+    }
+    foreach ($phase in @('initial', 'final')) {
+        $binding = $report.bindings.$phase
+        foreach ($pair in @(
+                [pscustomobject]@{ Name = 'sourceCommit'; Actual = $binding.sourceCommit; Expected = $ExpectedSourceCommit }
+                [pscustomobject]@{ Name = 'sourceTree'; Actual = $binding.sourceTree; Expected = $ExpectedSourceTree }
+                [pscustomobject]@{ Name = 'receiptSha256'; Actual = $binding.receiptSha256; Expected = $Package.ReceiptSha256 }
+                [pscustomobject]@{ Name = 'archiveSha256'; Actual = $binding.archiveSha256; Expected = $Package.ArchiveSha256 }
+                [pscustomobject]@{ Name = 'packageManifestSha256'; Actual = $binding.packageManifestSha256; Expected = $Package.ManifestSha256 }
+                [pscustomobject]@{ Name = 'appSha256'; Actual = $binding.appSha256; Expected = $Package.AppSha256 }
+                [pscustomobject]@{ Name = 'coreSha256'; Actual = $binding.coreSha256; Expected = $Package.CoreSha256 }
+            )) {
+            Assert-V02ReleaseGateEqual $pair.Actual $pair.Expected "Clean-machine $phase.$($pair.Name)"
+        }
+    }
+    Assert-V02ReleaseGateEqual $report.profileId $Package.ProfileId 'Clean-machine package profile'
+    Assert-V02ReleaseGateEqual $report.bindings.referenceHostProfileSha256 $Package.ReferenceHostProfileSha256 'Clean-machine reference-host profile'
+    Assert-V02ReleaseGateEqual $report.bindings.rendererPolicySha256 $Package.RendererPolicySha256 'Clean-machine renderer policy'
+
+    return [pscustomobject][ordered]@{
+        Path = $document.Path
+        FileSha256 = $document.FileSha256
+        EvidenceClass = 'CleanMachine'
+        Status = 'PASS'
+        Mode = 'Live'
+        RunId = [string]$report.runId
+        MachineFingerprint = [string]$report.machine.machineFingerprint
+        OperatorIdentity = [string]$report.actor.operator.identity
+        ObserverIdentity = [string]$report.actor.observer.identity
+        AuthorizationSignerThumbprint = [string]$report.actor.authorization.signerThumbprint
+        LifecycleCreditGranted = $true
+        Runtime = 'NOT_OBSERVED'
+        Human = 'NOT_OBSERVED'
+        Release = 'NOT_OBSERVED'
+    }
+}
+
 function Assert-V02ReleaseGateGitHubSnapshot {
     param(
         [Parameter(Mandatory = $true)]$Snapshot,
@@ -2183,6 +2247,7 @@ function Invoke-V02ReleaseGate {
         [Parameter(Mandatory = $true)][string]$ContractEvidencePath,
         [Parameter(Mandatory = $true)][string]$SyntheticEvidencePath,
         [Parameter(Mandatory = $true)][string]$HumanReviewPath,
+        [Parameter(Mandatory = $true)][string]$CleanMachineReportPath,
         [Parameter(Mandatory = $true)][string]$GitHubSnapshotPath,
         [string]$CandidateLockPath,
         [string]$AuthorityReferencePath,
@@ -2231,6 +2296,7 @@ function Invoke-V02ReleaseGate {
         [pscustomobject]@{ Path = $ContractEvidencePath; Type = 'Leaf'; Name = 'Contract evidence receipt' }
         [pscustomobject]@{ Path = $SyntheticEvidencePath; Type = 'Leaf'; Name = 'Synthetic evidence receipt' }
         [pscustomobject]@{ Path = $HumanReviewPath; Type = 'Leaf'; Name = 'Human review record' }
+        [pscustomobject]@{ Path = $CleanMachineReportPath; Type = 'Leaf'; Name = 'Clean-machine acceptance report' }
         [pscustomobject]@{ Path = $GitHubSnapshotPath; Type = 'Leaf'; Name = 'GitHub snapshot' }
     )
     foreach ($input in $evidenceInputs) {
@@ -2298,6 +2364,7 @@ function Invoke-V02ReleaseGate {
         (Resolve-V02ReleaseGateExistingPath -Path $ContractEvidencePath -Type Leaf -Context 'Contract evidence receipt'),
         (Resolve-V02ReleaseGateExistingPath -Path $SyntheticEvidencePath -Type Leaf -Context 'Synthetic evidence receipt'),
         (Resolve-V02ReleaseGateExistingPath -Path $HumanReviewPath -Type Leaf -Context 'Human review record'),
+        (Resolve-V02ReleaseGateExistingPath -Path $CleanMachineReportPath -Type Leaf -Context 'Clean-machine acceptance report'),
         (Resolve-V02ReleaseGateExistingPath -Path $GitHubSnapshotPath -Type Leaf -Context 'GitHub snapshot'),
         $candidateLock.Path, $authority.Path, $candidateLock.IndependentReceipt.Path
     )
@@ -2316,6 +2383,9 @@ function Invoke-V02ReleaseGate {
 
     $package = Invoke-V02ReleaseGatePackageValidation -Context $context `
         -ExpectedSourceCommit $ExpectedSourceCommit -ExpectedSourceTree $ExpectedSourceTree
+    $cleanMachine = Read-V02ReleaseGateCleanMachineReport -Path $CleanMachineReportPath `
+        -RepositoryRoot $identityBefore.RepositoryRoot -ExpectedSourceCommit $ExpectedSourceCommit `
+        -ExpectedSourceTree $ExpectedSourceTree -Package $package
     Assert-V02ReleaseGateBoundSnapshots -Snapshots $preValidationSnapshots -Phase 'Post-package validation'
     $renderer = Invoke-V02ReleaseGateRendererValidation -Context $context -Package $package `
         -ExpectedSourceCommit $ExpectedSourceCommit -ExpectedSourceTree $ExpectedSourceTree
@@ -2456,6 +2526,7 @@ function Invoke-V02ReleaseGate {
             RoleDistinct = [bool]$reviewDocument.Value.Reviewer.RoleDistinct
             OpenFindingCount = @($reviewDocument.Value.OpenFindings).Count
         }
+        CleanMachine = $cleanMachine
         EvidenceClasses = [pscustomobject][ordered]@{
             Static = [pscustomobject][ordered]@{ Status = 'PASS'; Classification = 'Static/PackagedCompatibilityPreparation'; Credit = 'PREPARATION_ONLY' }
             Contract = [pscustomobject][ordered]@{ Status = 'PASS'; Classification = 'Contract'; Credit = 'CONTRACT_ONLY' }
@@ -2510,6 +2581,7 @@ if ($MyInvocation.InvocationName -ne '.') {
         -ContractEvidencePath $ContractEvidencePath `
         -SyntheticEvidencePath $SyntheticEvidencePath `
         -HumanReviewPath $HumanReviewPath `
+        -CleanMachineReportPath $CleanMachineReportPath `
         -GitHubSnapshotPath $GitHubSnapshotPath `
         -CandidateLockPath $CandidateLockPath `
         -AuthorityReferencePath $AuthorityReferencePath `
