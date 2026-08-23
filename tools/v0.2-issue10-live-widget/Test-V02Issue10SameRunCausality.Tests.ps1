@@ -8,6 +8,18 @@ $gatePath=Join-Path $repositoryRoot 'tools\Test-V02LiveRuntimeAcceptance.ps1'
 $passed=0
 function Pass-Test([string]$Name){$script:passed++;Write-Output "PASS: $Name"}
 function Assert-True([bool]$Condition,[string]$Message){if(-not$Condition){throw $Message}}
+function Assert-Issue10AppBuildOutput([string]$OutputDirectory){
+    $resolved=[IO.Path]::GetFullPath($OutputDirectory)
+    if(-not(Test-Path -LiteralPath $resolved -PathType Container)){throw "Governed Issue #10 App build output is missing: $resolved"}
+    Assert-Issue10NoReparseComponents -Path $resolved -Context 'Governed Issue #10 App build output'
+    $paths=[ordered]@{Exe=(Join-Path $resolved 'HerdrOps.App.exe');Dll=(Join-Path $resolved 'HerdrOps.App.dll');RuntimeConfig=(Join-Path $resolved 'HerdrOps.App.runtimeconfig.json')}
+    foreach($name in $paths.Keys){if(-not(Test-Path -LiteralPath $paths[$name] -PathType Leaf)){throw "Governed Issue #10 App $name prerequisite is missing: $($paths[$name])"};$item=Get-Item -LiteralPath $paths[$name] -Force -ErrorAction Stop;if($item.Length-le0-or($item.Attributes-band[IO.FileAttributes]::ReparsePoint)){throw "Governed Issue #10 App $name prerequisite is not an exact nonempty regular file: $($paths[$name])"}}
+    if([Reflection.AssemblyName]::GetAssemblyName($paths.Dll).Name-cne'HerdrOps.App'){throw 'Governed Issue #10 App DLL assembly identity is invalid.'}
+    $runtimeConfig=Get-Content -LiteralPath $paths.RuntimeConfig -Raw|ConvertFrom-Json
+    $frameworkNames=@($runtimeConfig.runtimeOptions.frameworks|ForEach-Object{[string]$_.name})
+    if([string]$runtimeConfig.runtimeOptions.tfm-cne'net10.0'-or$frameworkNames.Count-ne2-or$frameworkNames[0]-cne'Microsoft.NETCore.App'-or$frameworkNames[1]-cne'Microsoft.WindowsDesktop.App'){throw 'Governed Issue #10 App runtimeconfig identity is invalid.'}
+    return [pscustomobject]@{ExecutablePath=[IO.Path]::GetFullPath($paths.Exe);ExecutableSha256=(Get-FileHash -LiteralPath $paths.Exe -Algorithm SHA256).Hash;AssemblyPath=[IO.Path]::GetFullPath($paths.Dll);AssemblySha256=(Get-FileHash -LiteralPath $paths.Dll -Algorithm SHA256).Hash;RuntimeConfigPath=[IO.Path]::GetFullPath($paths.RuntimeConfig);RuntimeConfigSha256=(Get-FileHash -LiteralPath $paths.RuntimeConfig -Algorithm SHA256).Hash}
+}
 function Invoke-GateHostile([string[]]$ExtraArguments){
     $engine=(Get-Process -Id $PID).Path
     $arguments=@('-NoLogo','-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',$gatePath,'-TargetHerdrSocketPath','missing.sock','-ExpectedSourceCommit',('a'*40),'-ExpectedSourceTree',('b'*40),'-EvidenceRunNonce',('c'*32),'-PackageIdentityPath','missing-identity.json','-PackageArchivePath','missing.zip','-ExtractedPackageRoot','missing-package','-TargetAgentSessionReference','same-run-hostile')+$ExtraArguments
@@ -74,7 +86,18 @@ try{
         Pass-Test 'pre-existing same-run output reaches no-clobber guard without mutation'
     }finally{if(Test-Path -LiteralPath $existingWidget){Remove-Item -LiteralPath $existingWidget -Force}}
 
-    $appExecutable=Join-Path $repositoryRoot 'src\HerdrOps.App\bin\Release\net10.0-windows\win-x64\HerdrOps.App.exe'
+    $scriptSource=(Get-Content -LiteralPath $PSCommandPath -Raw).Replace('/','\')
+    $forbiddenSourceBin=('src'+'\HerdrOps.App'+'\bin')
+    Assert-True (-not$scriptSource.Contains($forbiddenSourceBin)) 'Same-run test source retains a forbidden source-bin fallback.'
+    Assert-True ($scriptSource.Contains("artifacts\bin\HerdrOps.App\release")) 'Same-run test source does not bind the governed Invoke-Build App output.'
+    Pass-Test 'same-run executable source binds only governed artifacts output and forbids source-bin fallback'
+    $incompleteOutput=Join-Path $fixture 'incomplete-governed-output';New-Item -ItemType Directory -Path $incompleteOutput|Out-Null;[IO.File]::WriteAllText((Join-Path $incompleteOutput 'HerdrOps.App.exe'),'stale source-bin lookalike')
+    $incompleteRejected=$false;try{Assert-Issue10AppBuildOutput $incompleteOutput|Out-Null}catch{$incompleteRejected=$_.Exception.Message.Contains('prerequisite')}
+    Assert-True $incompleteRejected 'An App executable lookalike without governed DLL/runtimeconfig companions masked the clean-runner prerequisite.'
+    Pass-Test 'incomplete App lookalike cannot mask governed clean-runner output'
+    $governedAppOutput=Join-Path $repositoryRoot 'artifacts\bin\HerdrOps.App\release'
+    $governedApp=Assert-Issue10AppBuildOutput $governedAppOutput
+    $appExecutable=$governedApp.ExecutablePath
     if(Test-Path -LiteralPath $appExecutable -PathType Leaf){
         $finalizerOutput=Join-Path $fixture 'finalizer-output.json'
         $process=Start-Process -FilePath $appExecutable -ArgumentList @('--finalize-issue10-widget-report','--issue10-widget-report',$finalizerOutput) -WindowStyle Hidden -Wait -PassThru
@@ -116,6 +139,6 @@ try{
         $tamperFailure=$null;try{Open-Issue10PublishedBinding -WidgetPath $tamperWidget -ReceiptPath $tamperReceipt -ReceiptKey $tamperKey -RunNonce $runNonce -ProducerProcessId $completeProcess.Id -AfterChildExitForTest {$value=Get-Content $tamperReceipt -Raw|ConvertFrom-Json;$value.AuthenticationSha256='0'*64;&$writeUtf8 $tamperReceipt (($value|ConvertTo-Json -Depth 20)+"`r`n")}|Out-Null}catch{$tamperFailure=$_}
         Assert-True ($null-ne$tamperFailure-and$tamperFailure.Exception.Message.Contains('authentication failed')) 'Tampered child receipt did not reach the exact parent authentication guard.'
         Pass-Test 'post-child-exit receipt tamper reaches HMAC authentication guard'
-    }else{throw "Build the App before this hostile CLI test: $appExecutable"}
+    }else{throw "Run the governed Invoke-Build.ps1 Release prerequisite before this hostile CLI test: $appExecutable"}
 }finally{if(Test-Path -LiteralPath $fixture){Remove-Item -LiteralPath $fixture -Recurse -Force}}
 Write-Output "RESULT: $passed passed, 0 failed"
