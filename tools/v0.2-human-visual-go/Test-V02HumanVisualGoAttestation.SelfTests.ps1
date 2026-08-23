@@ -110,7 +110,10 @@ while ([DateTimeOffset]::UtcNow -lt $until -and -not (Test-Path -LiteralPath $St
             } catch { $last = $_.Exception.Message }
         }
     }
-    Start-Sleep -Milliseconds 25
+    # A sustained rejected mutation attempt is sufficient for this hostile
+    # window.  Avoid starving Windows PowerShell 5.1 with exception-heavy
+    # file operations while the production verifier holds the target.
+    Start-Sleep -Milliseconds 100
 }
 try { [IO.File]::WriteAllBytes($Target, $originalBytes) } catch { $last = $_.Exception.Message }
 $terminationReason = if (Test-Path -LiteralPath $StopPath -PathType Leaf) { 'wrapper-stop' } else { 'deadline' }
