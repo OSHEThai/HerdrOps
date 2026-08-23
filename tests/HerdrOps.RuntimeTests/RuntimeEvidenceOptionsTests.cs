@@ -167,11 +167,70 @@ public sealed class RuntimeEvidenceOptionsTests
         Assert.AreEqual(requested, options.Language.ToString());
     }
 
-    private static string[] CompleteArguments() =>
+    [TestMethod]
+    public void TryParsePreservesCompleteRendererTargetBinding()
+    {
+        var root = Path.GetFullPath("renderer-evidence");
+        var captures = Path.Combine(root, "captures");
+        var parsed = RuntimeEvidenceOptions.TryParse(
+            CompleteArguments(captures, Environment.ProcessId == 1 ? 2 : 1)
+                .Concat(RendererArguments(root))
+                .ToArray(),
+            out var options,
+            out var error);
+
+        Assert.IsTrue(parsed, error);
+        Assert.IsNotNull(options?.RendererObservation);
+        Assert.AreEqual($"herdrops-v02-renderer-{new string('d', 32)}", options.RendererObservation.PipeName);
+        Assert.AreEqual(root, options.RendererObservation.RuntimeEvidenceRoot);
+        Assert.AreEqual(captures, options.RendererObservation.CaptureDirectory);
+        Assert.AreEqual(new string('d', 32), options.RendererObservation.RunNonce);
+        Assert.AreEqual(new string('E', 64), options.RendererObservation.PackageReceiptSha256);
+    }
+
+    [TestMethod]
+    public void TryParseRejectsPartialRendererTargetBinding()
+    {
+        var parsed = RuntimeEvidenceOptions.TryParse(
+            CompleteArguments()
+                .Concat(["--renderer-observation-pipe", "renderer-fixture"])
+                .ToArray(),
+            out var options,
+            out var error);
+
+        Assert.IsFalse(parsed);
+        Assert.IsNull(options);
+        StringAssert.Contains(error, "requires --renderer-observation-pipe");
+    }
+
+    [TestMethod]
+    [DataRow("bad/pipe", "renderer-evidence", "renderer-evidence/captures")]
+    [DataRow("valid-pipe", "renderer-evidence", "outside-captures")]
+    public void TryParseRejectsHostileRendererPipeOrPath(
+        string pipeName,
+        string root,
+        string captures)
+    {
+        var rendererArguments = RendererArguments(Path.GetFullPath(root));
+        rendererArguments[1] = pipeName;
+        var parsed = RuntimeEvidenceOptions.TryParse(
+            CompleteArguments(Path.GetFullPath(captures))
+                .Concat(rendererArguments)
+                .ToArray(),
+            out var options,
+            out _);
+
+        Assert.IsFalse(parsed);
+        Assert.IsNull(options);
+    }
+
+    private static string[] CompleteArguments(
+        string captureDirectory = "captures",
+        int? coreProcessId = null) =>
     [
         "--runtime-evidence-report", "runtime-report.json",
-        "--capture-directory", "captures",
-        "--core-pid", Environment.ProcessId.ToString(),
+        "--capture-directory", captureDirectory,
+        "--core-pid", (coreProcessId ?? Environment.ProcessId).ToString(),
         "--reference-host-profile-id", RuntimeEvidenceOptions.ApprovedProfileId,
         "--reference-host-profile-sha256", RuntimeEvidenceOptions.ApprovedProfileSha256,
     ];
@@ -183,5 +242,16 @@ public sealed class RuntimeEvidenceOptionsTests
         "--issue10-run-nonce", new string('c', 32),
         "--issue10-source-commit", new string('a', 40),
         "--issue10-source-tree", new string('b', 40),
+    ];
+
+    private static string[] RendererArguments(string root) =>
+    [
+        "--renderer-observation-pipe", $"herdrops-v02-renderer-{new string('d', 32)}",
+        "--renderer-runtime-evidence-root", root,
+        "--renderer-run-nonce", new string('d', 32),
+        "--renderer-package-identity-path", "identity.json",
+        "--renderer-package-receipt-sha256", new string('E', 64),
+        "--renderer-source-commit", new string('a', 40),
+        "--renderer-source-tree", new string('b', 40),
     ];
 }
