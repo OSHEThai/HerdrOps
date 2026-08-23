@@ -49,28 +49,47 @@ public sealed class Issue10WidgetEvidenceSecurityTests
     }
 
     [TestMethod]
-    public void ProductionOwnedPublicationSucceedsAndPostCheckSwapIsBlocked()
+    public void PostPublicationReplacementFailsAndPreservesCallerReplacement()
     {
         using var fixture = new TemporaryDirectory();
         var path = Path.Combine(fixture.Path, "widget.json");
         var replacement = Path.Combine(fixture.Path, "replacement.json");
         File.WriteAllText(replacement, "{\"Issue\":999}\r\n");
-        var swapBlocked = false;
-
-        var hash = Issue10WidgetEvidenceProducer.PublishOwnedJsonForTesting(path, () =>
+        Exception? failure = null;
+        try
         {
-            try
+            Issue10WidgetEvidenceProducer.PublishOwnedJsonForTesting(path, () =>
             {
                 File.Move(replacement, path, overwrite: true);
-            }
-            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
-            {
-                swapBlocked = true;
-            }
-        });
+            });
+        }
+        catch (Exception exception)
+        {
+            failure = exception;
+        }
+        Assert.IsNotNull(failure, "A replacement during the publication post-check was accepted.");
 
-        Assert.IsTrue(swapBlocked, "The transaction-owned widget output was replaceable before its production post-check completed.");
-        Assert.AreEqual(Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(path))), hash);
+        Assert.IsFalse(File.Exists(path), "Failed publication retained its owned output pathname.");
+        Assert.AreEqual("{\"Issue\":999}\r\n", File.ReadAllText(replacement),
+            "Exact-identity cleanup deleted or changed the caller replacement.");
+    }
+
+    [TestMethod]
+    public void PostPublicationHardLinkFailureDeletesEveryOwnedAlias()
+    {
+        using var fixture = new TemporaryDirectory();
+        var path = Path.Combine(fixture.Path, "widget.json");
+        var alias = Path.Combine(fixture.Path, "widget-alias.json");
+
+        Assert.ThrowsExactly<InvalidOperationException>(() =>
+            Issue10WidgetEvidenceProducer.PublishOwnedJsonForTesting(path, () =>
+            {
+                Assert.IsTrue(CreateHardLink(alias, path, IntPtr.Zero),
+                    $"CreateHardLink failed: {Marshal.GetLastWin32Error()}");
+            }));
+
+        Assert.IsFalse(File.Exists(path), "Failed publication retained its owned output pathname.");
+        Assert.IsFalse(File.Exists(alias), "Failed publication retained a hard-link alias to owned bytes.");
     }
 
     [TestMethod]

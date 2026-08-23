@@ -126,9 +126,27 @@ public sealed record Issue10WidgetObservation(
     IReadOnlyList<Issue10AttentionCapture> AttentionStates,
     Issue10WidgetUnknownPolicy UnknownPolicy);
 
+public sealed record Issue10OutputPublicationReceipt(
+    int SchemaVersion,
+    string EvidenceClassification,
+    int Issue,
+    string RunNonce,
+    string OutputPath,
+    long OutputLength,
+    string OutputSha256,
+    string OutputVolumeSerialNumber,
+    string OutputFileId,
+    uint OutputNumberOfLinks,
+    string ParentPath,
+    string ParentVolumeSerialNumber,
+    string ParentFileId,
+    int ProducerProcessId,
+    string AuthenticationSha256);
+
 public static class Issue10WidgetEvidenceProducer
 {
     private const string FinalizeSwitch = "--finalize-issue10-widget-report";
+    private const string OutputReceiptKeyEnvironmentVariable = "HERDROPS_ISSUE10_OUTPUT_RECEIPT_KEY";
     private const long MaximumManifestBytes = 4 * 1024 * 1024;
     private const long MaximumReceiptBytes = 16 * 1024 * 1024;
     private const long MaximumCaptureBytes = 128 * 1024 * 1024;
@@ -161,38 +179,7 @@ public static class Issue10WidgetEvidenceProducer
     {
         try
         {
-            var values = ParseFinalizationArguments(args);
-            using var heldAppReport = HeldArtifact.Open(
-                values.AppReportPath,
-                MaximumReceiptBytes,
-                retainBytes: true,
-                "Issue #10 same-run App report");
-            var reportBytes = heldAppReport.Bytes ??
-                throw new InvalidOperationException("Issue #10 same-run App report bytes were not retained.");
-            if (reportBytes.Length == 0)
-            {
-                throw new InvalidOperationException("Issue #10 same-run App report has an invalid bounded length.");
-            }
-            using var reportDocument = JsonDocument.Parse(
-                reportBytes,
-                new JsonDocumentOptions
-                {
-                    AllowTrailingCommas = false,
-                    CommentHandling = JsonCommentHandling.Disallow,
-                });
-            RejectDuplicateProperties(reportDocument.RootElement, "Issue #10 same-run App report");
-            var report = JsonSerializer.Deserialize<AppRuntimeEvidenceReport>(
-                reportBytes,
-                ManifestSerializerOptions) ??
-                throw new InvalidOperationException("Issue #10 same-run App report deserialized to null.");
-            WriteHeld(
-                values.OutputPath,
-                values.BindingManifestPath,
-                values.RunNonce,
-                values.SourceCommit,
-                values.SourceTree,
-                report,
-                heldAppReport);
+            Finalize(args);
             return 0;
         }
         catch
@@ -201,11 +188,50 @@ public static class Issue10WidgetEvidenceProducer
         }
     }
 
+    private static void Finalize(IReadOnlyList<string> args)
+    {
+        var values = ParseFinalizationArguments(args);
+        using var heldAppReport = HeldArtifact.Open(
+            values.AppReportPath,
+            MaximumReceiptBytes,
+            retainBytes: true,
+            "Issue #10 same-run App report");
+        var reportBytes = heldAppReport.Bytes ??
+            throw new InvalidOperationException("Issue #10 same-run App report bytes were not retained.");
+        if (reportBytes.Length == 0)
+        {
+            throw new InvalidOperationException("Issue #10 same-run App report has an invalid bounded length.");
+        }
+        using var reportDocument = JsonDocument.Parse(
+            reportBytes,
+            new JsonDocumentOptions
+            {
+                AllowTrailingCommas = false,
+                CommentHandling = JsonCommentHandling.Disallow,
+            });
+        RejectDuplicateProperties(reportDocument.RootElement, "Issue #10 same-run App report");
+        var report = JsonSerializer.Deserialize<AppRuntimeEvidenceReport>(
+            reportBytes,
+            ManifestSerializerOptions) ??
+            throw new InvalidOperationException("Issue #10 same-run App report deserialized to null.");
+        WriteHeld(
+            values.OutputPath,
+            values.OutputReceiptPath,
+            values.OutputReceiptKey,
+            values.BindingManifestPath,
+            values.RunNonce,
+            values.SourceCommit,
+            values.SourceTree,
+            report,
+            heldAppReport);
+    }
+
     private static FinalizationArguments ParseFinalizationArguments(IReadOnlyList<string> args)
     {
         var allowed = new HashSet<string>(StringComparer.Ordinal)
         {
             "--issue10-widget-report",
+            "--issue10-output-receipt",
             "--issue10-binding-manifest",
             "--runtime-evidence-report",
             "--issue10-run-nonce",
@@ -241,6 +267,9 @@ public static class Issue10WidgetEvidenceProducer
         }
         return new FinalizationArguments(
             Path.GetFullPath(values["--issue10-widget-report"]),
+            Path.GetFullPath(values["--issue10-output-receipt"]),
+            Environment.GetEnvironmentVariable(OutputReceiptKeyEnvironmentVariable) ??
+                throw new InvalidOperationException("Issue #10 output receipt authentication key was not inherited by the finalizer."),
             Path.GetFullPath(values["--issue10-binding-manifest"]),
             Path.GetFullPath(values["--runtime-evidence-report"]),
             values["--issue10-run-nonce"],
@@ -273,6 +302,8 @@ public static class Issue10WidgetEvidenceProducer
 
     private static void WriteHeld(
         string outputPath,
+        string outputReceiptPath,
+        string outputReceiptKey,
         string bindingManifestPath,
         string runNonce,
         string sourceCommit,
@@ -281,11 +312,14 @@ public static class Issue10WidgetEvidenceProducer
         HeldArtifact heldAppReport)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(outputPath);
+        ArgumentException.ThrowIfNullOrWhiteSpace(outputReceiptPath);
+        ArgumentException.ThrowIfNullOrWhiteSpace(outputReceiptKey);
         ArgumentException.ThrowIfNullOrWhiteSpace(bindingManifestPath);
         ArgumentException.ThrowIfNullOrWhiteSpace(runNonce);
         ArgumentException.ThrowIfNullOrWhiteSpace(sourceCommit);
         ArgumentException.ThrowIfNullOrWhiteSpace(sourceTree);
         ArgumentNullException.ThrowIfNull(report);
+        ValidateSha(outputReceiptKey, "Issue #10 output receipt authentication key");
 
         var manifestLoad = LoadManifest(bindingManifestPath);
         var held = new List<HeldArtifact> { manifestLoad.Manifest, heldAppReport };
@@ -296,11 +330,14 @@ public static class Issue10WidgetEvidenceProducer
 
             var root = ResolveRoot(authority.EvidenceRoot, bindingManifestPath);
             var output = ResolveContainedPath(root, outputPath, "Issue #10 widget report output");
+            var outputReceipt = ResolveContainedPath(root, outputReceiptPath, "Issue #10 output publication receipt");
             var appReport = ResolveContainedPath(root, heldAppReport.Path, "Issue #10 App runtime report");
-            if (string.Equals(output, appReport, StringComparison.OrdinalIgnoreCase))
+            if (string.Equals(output, appReport, StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(outputReceipt, appReport, StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(outputReceipt, output, StringComparison.OrdinalIgnoreCase))
             {
                 throw new InvalidOperationException(
-                    "Issue #10 widget report output must not overwrite the App runtime report.");
+                    "Issue #10 widget report and publication receipt must be distinct and must not overwrite the App runtime report.");
             }
 
             var authorityFiles = new Dictionary<string, HeldArtifact>(StringComparer.OrdinalIgnoreCase);
@@ -338,12 +375,48 @@ public static class Issue10WidgetEvidenceProducer
                 item.Revalidate();
             }
 
-            using var published = PublishNoClobber(output, observation);
-            foreach (var item in held)
+            HeldArtifact? published = null;
+            HeldArtifact? publicationReceipt = null;
+            var publicationCommitted = false;
+            try
             {
-                item.Revalidate();
+                published = PublishNoClobber(output, observation);
+                foreach (var item in held)
+                {
+                    item.Revalidate();
+                }
+                published.Revalidate();
+                publicationReceipt = PublishOutputReceiptNoClobber(
+                    outputReceipt,
+                    runNonce,
+                    outputReceiptKey,
+                    published);
+                published.Revalidate();
+                publicationReceipt.Revalidate();
+                publicationCommitted = true;
             }
-            published.Revalidate();
+            finally
+            {
+                try
+                {
+                    if (!publicationCommitted)
+                    {
+                        try
+                        {
+                            publicationReceipt?.DeleteOwnedPublication();
+                        }
+                        finally
+                        {
+                            published?.DeleteOwnedPublication();
+                        }
+                    }
+                }
+                finally
+                {
+                    publicationReceipt?.Dispose();
+                    published?.Dispose();
+                }
+            }
         }
         finally
         {
@@ -386,9 +459,17 @@ public static class Issue10WidgetEvidenceProducer
     {
         var bytes = Encoding.UTF8.GetBytes("{\"Issue\":10}\r\n");
         using var artifact = HeldArtifact.CreateOwned(path, bytes, MaximumReceiptBytes, "Issue #10 test published widget report");
-        afterPublish?.Invoke();
-        artifact.Revalidate();
-        return artifact.Sha256;
+        try
+        {
+            afterPublish?.Invoke();
+            artifact.Revalidate();
+            return artifact.Sha256;
+        }
+        catch
+        {
+            artifact.DeleteOwnedPublication();
+            throw;
+        }
     }
 
     private static ManifestLoad LoadManifest(string path)
@@ -942,6 +1023,62 @@ public static class Issue10WidgetEvidenceProducer
         return HeldArtifact.CreateOwned(path, bytes, MaximumReceiptBytes, "Issue #10 published widget report");
     }
 
+    private static HeldArtifact PublishOutputReceiptNoClobber(
+        string path,
+        string runNonce,
+        string authenticationKey,
+        HeldArtifact output)
+    {
+        var unsigned = new Issue10OutputPublicationReceipt(
+            1,
+            "Issue10OutputPublicationReceipt",
+            10,
+            runNonce,
+            output.Path,
+            output.Length,
+            output.Sha256,
+            output.Identity.VolumeSerialNumber.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            output.Identity.FileId.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            output.Identity.NumberOfLinks,
+            output.Parent.Path,
+            output.Parent.Identity.VolumeSerialNumber.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            output.Parent.Identity.FileId.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            Environment.ProcessId,
+            string.Empty);
+        var authentication = ComputeOutputReceiptAuthentication(unsigned, authenticationKey);
+        var receipt = unsigned with { AuthenticationSha256 = authentication };
+        var bytes = JsonSerializer.SerializeToUtf8Bytes(receipt, ReceiptSerializerOptions)
+            .Concat(new byte[] { (byte)'\r', (byte)'\n' })
+            .ToArray();
+        return HeldArtifact.CreateOwned(path, bytes, MaximumReceiptBytes, "Issue #10 output publication receipt");
+    }
+
+    internal static string ComputeOutputReceiptAuthentication(
+        Issue10OutputPublicationReceipt receipt,
+        string authenticationKey)
+    {
+        ValidateSha(authenticationKey, "Issue #10 output receipt authentication key");
+        var canonical = string.Join("\n",
+        [
+            receipt.SchemaVersion.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            receipt.EvidenceClassification,
+            receipt.Issue.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            receipt.RunNonce,
+            Path.GetFullPath(receipt.OutputPath),
+            receipt.OutputLength.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            receipt.OutputSha256,
+            receipt.OutputVolumeSerialNumber.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            receipt.OutputFileId.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            receipt.OutputNumberOfLinks.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            Path.GetFullPath(receipt.ParentPath),
+            receipt.ParentVolumeSerialNumber.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            receipt.ParentFileId.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            receipt.ProducerProcessId.ToString(System.Globalization.CultureInfo.InvariantCulture),
+        ]) + "\n";
+        using var hmac = new HMACSHA256(Convert.FromHexString(authenticationKey));
+        return Convert.ToHexString(hmac.ComputeHash(Encoding.UTF8.GetBytes(canonical)));
+    }
+
     private static void ValidateRunNonce(string value, string context)
     {
         if (string.IsNullOrEmpty(value) || value.Length != 32 || value.Any(character => !IsLowerHex(character)))
@@ -1012,7 +1149,7 @@ public static class Issue10WidgetEvidenceProducer
 
         public string Path { get; }
 
-        private HeldDirectory Parent { get; }
+        internal HeldDirectory Parent { get; }
 
         public FileStream Stream { get; }
 
@@ -1097,7 +1234,7 @@ public static class Issue10WidgetEvidenceProducer
             var handle = CreateFile(
                 fullPath,
                 0xC0010000,
-                1,
+                7,
                 IntPtr.Zero,
                 1,
                 0x80,
@@ -1132,17 +1269,25 @@ public static class Issue10WidgetEvidenceProducer
             }
             catch
             {
-                if (stream is not null)
+                try
                 {
-                    var disposition = new FileDispositionInformation { DeleteFile = true };
-                    _ = SetFileInformationByHandle(stream.SafeFileHandle, 4, ref disposition, 4);
-                    stream.Dispose();
+                    if (stream is not null)
+                    {
+                        DeleteOwnedLinks(stream, fullPath);
+                    }
                 }
-                else
+                finally
                 {
-                    handle.Dispose();
+                    if (stream is not null)
+                    {
+                        stream.Dispose();
+                    }
+                    else
+                    {
+                        handle.Dispose();
+                    }
+                    parent.Dispose();
                 }
-                parent.Dispose();
                 throw;
             }
         }
@@ -1170,6 +1315,90 @@ public static class Issue10WidgetEvidenceProducer
             {
                 throw new InvalidOperationException($"Held Issue #10 artifact identity changed after hashing: {Path}");
             }
+        }
+
+        public void DeleteOwnedPublication() => DeleteOwnedLinks(Stream, Path);
+
+        private static void DeleteOwnedLinks(FileStream stream, string requestedPath)
+        {
+            var owned = ReadIdentity(stream);
+            var finalPath = GetFinalPath(stream, "owned Issue #10 publication cleanup");
+            var links = EnumerateHardLinks(finalPath);
+            var deleted = 0;
+            foreach (var link in links)
+            {
+                var handle = CreateFile(
+                    link,
+                    0x00010080,
+                    7,
+                    IntPtr.Zero,
+                    3,
+                    0x00200000,
+                    IntPtr.Zero);
+                if (handle.IsInvalid)
+                {
+                    handle.Dispose();
+                    continue;
+                }
+                using (handle)
+                {
+                    var candidate = ReadIdentity(handle, "owned Issue #10 publication cleanup candidate");
+                    if (candidate.VolumeSerialNumber != owned.VolumeSerialNumber || candidate.FileId != owned.FileId)
+                    {
+                        continue;
+                    }
+                    var disposition = new FileDispositionInformation { DeleteFile = true };
+                    if (!SetFileInformationByHandle(handle, 4, ref disposition, 4))
+                    {
+                        throw new InvalidOperationException(
+                            $"Exact-handle cleanup failed for owned Issue #10 publication '{link}' with Win32 error {Marshal.GetLastWin32Error()}.");
+                    }
+                    deleted++;
+                }
+            }
+            if (deleted == 0)
+            {
+                throw new InvalidOperationException(
+                    $"Exact-handle cleanup could not locate the owned Issue #10 publication identity for '{requestedPath}'.");
+            }
+        }
+
+        private static IReadOnlyList<string> EnumerateHardLinks(string path)
+        {
+            var names = new List<string>();
+            var buffer = new StringBuilder(32768);
+            var length = buffer.Capacity;
+            var find = FindFirstFileName(path, 0, ref length, buffer);
+            if (find == new IntPtr(-1))
+            {
+                throw new InvalidOperationException(
+                    $"Could not enumerate owned Issue #10 publication links with Win32 error {Marshal.GetLastWin32Error()}.");
+            }
+            try
+            {
+                var volumeRoot = System.IO.Path.GetPathRoot(path) ??
+                    throw new InvalidOperationException("Owned Issue #10 publication has no volume root.");
+                do
+                {
+                    names.Add(System.IO.Path.GetFullPath(
+                        System.IO.Path.Combine(volumeRoot, buffer.ToString().TrimStart('\\'))));
+                    buffer.Clear();
+                    buffer.EnsureCapacity(32768);
+                    length = buffer.Capacity;
+                }
+                while (FindNextFileName(find, ref length, buffer));
+                var error = Marshal.GetLastWin32Error();
+                if (error != 38)
+                {
+                    throw new InvalidOperationException(
+                        $"Owned Issue #10 publication link enumeration failed with Win32 error {error}.");
+                }
+            }
+            finally
+            {
+                _ = FindClose(find);
+            }
+            return names.Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
         }
 
         public void Dispose()
@@ -1209,6 +1438,21 @@ public static class Issue10WidgetEvidenceProducer
                 length);
         }
 
+        private static FileIdentity ReadIdentity(SafeFileHandle handle, string context)
+        {
+            if (!GetFileInformationByHandle(handle, out var information))
+            {
+                throw new InvalidOperationException(
+                    $"GetFileInformationByHandle failed for {context} with Win32 error {Marshal.GetLastWin32Error()}.");
+            }
+            return new FileIdentity(
+                information.FileAttributes,
+                information.VolumeSerialNumber,
+                ((ulong)information.FileIndexHigh << 32) | information.FileIndexLow,
+                information.NumberOfLinks,
+                ((long)information.FileSizeHigh << 32) | information.FileSizeLow);
+        }
+
         private static string GetFinalPath(FileStream stream, string context)
         {
             var buffer = new StringBuilder(32768);
@@ -1237,9 +1481,9 @@ public static class Issue10WidgetEvidenceProducer
             Identity = identity;
         }
 
-        private string Path { get; }
+        internal string Path { get; }
         private SafeFileHandle Handle { get; }
-        private FileIdentity Identity { get; }
+        internal FileIdentity Identity { get; }
 
         public static HeldDirectory Open(string path, string context)
         {
@@ -1311,6 +1555,8 @@ public static class Issue10WidgetEvidenceProducer
 
     private sealed record FinalizationArguments(
         string OutputPath,
+        string OutputReceiptPath,
+        string OutputReceiptKey,
         string BindingManifestPath,
         string AppReportPath,
         string RunNonce,
@@ -1375,4 +1621,22 @@ public static class Issue10WidgetEvidenceProducer
         int fileInformationClass,
         ref FileDispositionInformation fileInformation,
         uint bufferSize);
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern IntPtr FindFirstFileName(
+        string fileName,
+        uint flags,
+        ref int stringLength,
+        StringBuilder linkName);
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool FindNextFileName(
+        IntPtr findStream,
+        ref int stringLength,
+        StringBuilder linkName);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool FindClose(IntPtr findStream);
 }
