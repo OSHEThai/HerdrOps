@@ -92,7 +92,8 @@ function Read-V02CleanHostAuthorization {
         [Parameter(Mandatory = $true)][string]$InstallRoot,
         [Parameter(Mandatory = $true)][string]$UserDataRoot,
         [Parameter(Mandatory = $true)]$InitialBinding,
-        [Parameter(Mandatory = $true)]$FinalBinding
+        [Parameter(Mandatory = $true)]$FinalBinding,
+        [DateTimeOffset]$VerificationTimeUtc = [DateTimeOffset]::MinValue
     )
     foreach ($path in @($AuthorizationPath,$SignaturePath)) {
         if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "External clean-host authorization input is missing: $path" }
@@ -139,7 +140,7 @@ function Read-V02CleanHostAuthorization {
     }
     if ([string]::IsNullOrWhiteSpace([string]$value.observerIdentity) -or [string]$value.observerIdentity -ieq $PrincipalSid) { throw 'External observer identity is missing or not role-distinct.' }
     if ([string]$value.nonce -cnotmatch '^[0-9a-f]{32}$') { throw 'External clean-host authorization nonce is invalid.' }
-    $now = [DateTimeOffset]::UtcNow
+    $now = if ($VerificationTimeUtc -eq [DateTimeOffset]::MinValue) { [DateTimeOffset]::UtcNow } else { $VerificationTimeUtc.ToUniversalTime() }
     $issued = [DateTimeOffset]::Parse([string]$value.issuedAtUtc,[Globalization.CultureInfo]::InvariantCulture)
     $expires = [DateTimeOffset]::Parse([string]$value.expiresAtUtc,[Globalization.CultureInfo]::InvariantCulture)
     if ($issued -gt $now -or $expires -le $now -or ($expires-$issued).TotalHours -gt 24) { throw 'External clean-host authorization validity window is invalid.' }
@@ -495,6 +496,17 @@ function Assert-V02CleanMachineReportSchema {
     if ([string]$Report.mode -cnotin @('DryRun', 'Fixture', 'Live')) { throw 'mode is invalid.' }
     if ([string]$Report.runId -notmatch '^[0-9a-f]{32}$') { throw 'runId is not a 32-hex string.' }
 
+    $started = [DateTimeOffset]::MinValue
+    $completed = [DateTimeOffset]::MinValue
+    if (-not [DateTimeOffset]::TryParseExact([string]$Report.startedAtUtc, 'o', [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::RoundtripKind, [ref]$started) -or $started.Offset -ne [TimeSpan]::Zero) {
+        throw 'startedAtUtc must be an exact UTC round-trip timestamp.'
+    }
+    if (-not [DateTimeOffset]::TryParseExact([string]$Report.completedAtUtc, 'o', [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::RoundtripKind, [ref]$completed) -or $completed.Offset -ne [TimeSpan]::Zero) {
+        throw 'completedAtUtc must be an exact UTC round-trip timestamp.'
+    }
+    if ($completed -lt $started) { throw 'completedAtUtc must not precede startedAtUtc.' }
+    if ($completed -gt [DateTimeOffset]::UtcNow.AddMinutes(5)) { throw 'completedAtUtc must not be in the future.' }
+
     if ([bool]$Report.actualHerdrStarted -ne $false) { throw 'actualHerdrStarted must be false.' }
     if ([bool]$Report.herdrOpsStarted -ne $false) { throw 'herdrOpsStarted must be false.' }
     if ([bool]$Report.networkContacted -ne $false) { throw 'networkContacted must be false.' }
@@ -504,6 +516,19 @@ function Assert-V02CleanMachineReportSchema {
     if ([string]::IsNullOrWhiteSpace($Report.machine.machineName)) { throw 'machine.machineName must not be empty.' }
     if ([string]$Report.machine.machineFingerprint -notmatch '^[0-9A-F]{64}$') { throw 'machine.machineFingerprint must be 64-hex uppercase.' }
 
+    # Targets must be absolute canonical non-system paths.  On the producing
+    # transported reports bind these paths through the detached external
+    # authorization instead of comparing another host's username.
+    foreach ($targetName in @('installRoot','userDataRoot')) {
+        $targetValue = [string]$Report.targets.$targetName
+        if ([string]::IsNullOrWhiteSpace($targetValue) -or -not [IO.Path]::IsPathRooted($targetValue)) { throw "targets.$targetName must be an absolute path." }
+        $targetFull = [IO.Path]::GetFullPath($targetValue).TrimEnd('\','/')
+        if (-not [StringComparer]::OrdinalIgnoreCase.Equals($targetFull,$targetValue.TrimEnd('\','/'))) { throw "targets.$targetName must be canonical." }
+        Assert-V02NotSystemDirectory $targetFull
+    }
+    if ([StringComparer]::OrdinalIgnoreCase.Equals(([IO.Path]::GetFullPath([string]$Report.targets.installRoot)).TrimEnd('\','/'),([IO.Path]::GetFullPath([string]$Report.targets.userDataRoot)).TrimEnd('\','/'))) {
+        throw 'targets.installRoot and targets.userDataRoot must be distinct.'
+    }
     # Actor
     Assert-V02ActorIdentities -OperatorIdentity $Report.actor.operator.identity -ObserverIdentity $Report.actor.observer.identity
     if ([string]$Report.actor.operator.role -cne 'EvidenceOperator') { throw "operator.role must be 'EvidenceOperator'." }
@@ -544,6 +569,19 @@ function Assert-V02CleanMachineReportSchema {
 
     # Residue
     if ([string]$Report.status -eq 'PASS') {
+        if (@($Report.preflight).Count -eq 0) { throw 'Passing report must contain preflight observations.' }
+        foreach ($check in @($Report.preflight)) {
+            if ([string]::IsNullOrWhiteSpace([string]$check.name) -or [string]$check.status -cnotin @('PASS','NOT_APPLICABLE')) { throw "Passing report preflight '$([string]$check.name)' status must be PASS or NOT_APPLICABLE." }
+            if ([string]$Report.mode -eq 'Live' -and [string]$check.status -cne 'PASS') { throw "Passing Live report preflight '$([string]$check.name)' status must be PASS." }
+        }
+        if ([string]$Report.mode -eq 'Live') {
+            $requiredLivePreflight = @('non-elevated-token','actor-identity-distinctness','live-machine-confirmation','identity-receipt-schema-and-hash','source-commit-match','source-tree-match')
+            $observedLivePreflight = @($Report.preflight | ForEach-Object { [string]$_.name })
+            if ($observedLivePreflight.Count -ne $requiredLivePreflight.Count -or @($requiredLivePreflight | Where-Object { $observedLivePreflight -cnotcontains $_ }).Count -ne 0) {
+                throw 'Passing Live report must contain exactly the complete production preflight set.'
+            }
+        }
+        if (-not [string]::IsNullOrEmpty([string]$Report.failureDetails)) { throw 'Passing report failureDetails must be empty.' }
         if ([bool]$Report.residue.orphanedStagingPresent) { throw 'residue.orphanedStagingPresent must be false on passing report.' }
         if ([bool]$Report.residue.orphanedBackupPresent) { throw 'residue.orphanedBackupPresent must be false on passing report.' }
         if ([int]$Report.residue.activePipesRemaining -ne 0) { throw 'residue.activePipesRemaining must be 0 on passing report.' }
@@ -551,6 +589,13 @@ function Assert-V02CleanMachineReportSchema {
         if ([int]$Report.residue.activeListenersRemaining -ne 0) { throw 'residue.activeListenersRemaining must be 0 on passing report.' }
         if (-not [bool]$Report.residue.startupRegistryCleaned -or -not [bool]$Report.residue.shortcutsCleaned) { throw 'Registry and shortcut residue must be clean on passing report.' }
         if ([string]$Report.mode -ne 'DryRun') {
+            foreach ($stepName in @('cleanInstall','sameVersionCandidateReplacement','rollback','uninstall')) {
+                if ([string]$Report.lifecycle.$stepName.status -cne 'PASS') { throw "Passing report lifecycle.$stepName.status must be PASS." }
+            }
+            if ([string]$Report.retainedData.markerStatus -cne 'PRESERVED' -or [int]$Report.retainedData.preservedFileCount -lt 1) {
+                throw 'Passing lifecycle retainedData must record at least one PRESERVED file.'
+            }
+            if ([int]$Report.lifecycle.cleanInstall.installedFileCount -lt 1) { throw 'Passing lifecycle cleanInstall.installedFileCount must be positive.' }
             if (-not [bool]$Report.lifecycle.cleanInstall.identityReceiptBound -or -not [bool]$Report.lifecycle.cleanInstall.installStateBound -or -not [bool]$Report.lifecycle.cleanInstall.startupRegistered) { throw 'Passing lifecycle did not observe a complete clean install.' }
             if (-not [bool]$Report.lifecycle.sameVersionCandidateReplacement.replacementObserved -or -not [bool]$Report.lifecycle.sameVersionCandidateReplacement.backupCreatedAndRetired -or -not [bool]$Report.lifecycle.sameVersionCandidateReplacement.userDataPreserved) { throw 'Passing lifecycle did not observe exact candidate replacement.' }
             if ([string]$Report.lifecycle.sameVersionCandidateReplacement.backupVolumeSerialNumber -cnotmatch '^[0-9A-F]{8}$' -or [string]$Report.lifecycle.sameVersionCandidateReplacement.backupFileId -cnotmatch '^[0-9A-F]{16}$' -or [int]$Report.lifecycle.sameVersionCandidateReplacement.backupLinkCount -ne 1) { throw 'Passing replacement did not bind the exact single-link backup identity.' }
