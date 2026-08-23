@@ -129,6 +129,36 @@ $script:V02ReleaseGateTransitiveGovernanceRelativePaths = @(
 $script:V02ReleaseGateValidatorRelativePaths = $script:V02ReleaseGateTransitiveGovernanceRelativePaths
 $script:V02ReleaseGateHeldValidatorIndex = $null
 
+# Load the CleanMachine authority verifier once from the same source tree as
+# this release-gate script. Keep it in an isolated dynamic-module scope so a
+# caller cannot shadow its functions or committed signer pin by supplying a
+# different RepositoryRoot or defining same-named functions.
+$v02ReleaseGateSourceRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
+$v02ReleaseGateCleanMachineVerifierPath = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot 'packaging\v0.2\V02CleanMachine.Common.ps1'))
+if (-not (Test-Path -LiteralPath $v02ReleaseGateCleanMachineVerifierPath -PathType Leaf)) {
+    throw "Committed CleanMachine verifier is missing beside the release gate: $v02ReleaseGateCleanMachineVerifierPath"
+}
+$v02ReleaseGateCleanMachineVerifierModule = New-Module -Name ('HerdrOps.V02ReleaseGate.CleanMachineVerifier.' + [Guid]::NewGuid().ToString('N')) -ArgumentList @($v02ReleaseGateCleanMachineVerifierPath) -ScriptBlock {
+    param([Parameter(Mandatory = $true)][string]$VerifierPath)
+    . $VerifierPath
+
+    function Invoke-V02AnchoredCleanMachineVerifier {
+        param(
+            [Parameter(Mandatory = $true)][ValidateSet('AssertReport','ReadAuthorization','ReadAcceptanceReceipt')][string]$Operation,
+            [Parameter(Mandatory = $true)][hashtable]$Arguments
+        )
+        switch ($Operation) {
+            'AssertReport' { Assert-V02CleanMachineReportSchema @Arguments; return }
+            'ReadAuthorization' { return Read-V02CleanHostAuthorization @Arguments }
+            'ReadAcceptanceReceipt' { return Read-V02CleanHostAcceptanceReceipt @Arguments }
+        }
+    }
+    Export-ModuleMember -Function Invoke-V02AnchoredCleanMachineVerifier
+}
+Set-Variable -Scope Script -Name V02ReleaseGateSourceRoot -Value $v02ReleaseGateSourceRoot -Option ReadOnly
+Set-Variable -Scope Script -Name V02ReleaseGateCleanMachineVerifierPath -Value $v02ReleaseGateCleanMachineVerifierPath -Option ReadOnly
+Set-Variable -Scope Script -Name V02ReleaseGateCleanMachineVerifierModule -Value $v02ReleaseGateCleanMachineVerifierModule -Option ReadOnly
+
 if (-not ('V02ReleaseGateNative' -as [type])) {
     Add-Type -TypeDefinition @'
 using System;
@@ -1897,7 +1927,6 @@ function Assert-V02ReleaseGateIndependentReceiptBinding {
 function Read-V02ReleaseGateCleanMachineReport {
     param(
         [Parameter(Mandatory = $true)][string]$Path,
-        [Parameter(Mandatory = $true)][string]$RepositoryRoot,
         [Parameter(Mandatory = $true)][string]$ExpectedSourceCommit,
         [Parameter(Mandatory = $true)][string]$ExpectedSourceTree,
         [Parameter(Mandatory = $true)]$Package,
@@ -1911,9 +1940,9 @@ function Read-V02ReleaseGateCleanMachineReport {
     # release-gate-specific exact-candidate binding.  The report's own
     # CleanMachine credit is install-lifecycle evidence only and cannot grant
     # Runtime, Human, or Release authority.
-    . (Join-Path $RepositoryRoot 'tools\packaging\v0.2\V02CleanMachine.Common.ps1')
     $document = Read-V02ReleaseGateJsonFile -Path $Path -Context 'Clean-machine acceptance report'
-    Assert-V02CleanMachineReportSchema -Report $document.Value -RepositoryRoot $RepositoryRoot
+    & $script:V02ReleaseGateCleanMachineVerifierModule Invoke-V02AnchoredCleanMachineVerifier `
+        -Operation AssertReport -Arguments @{ Report = $document.Value; RepositoryRoot = $script:V02ReleaseGateSourceRoot }
     $report = $document.Value
 
     Assert-V02ReleaseGateExactString $report.status 'PASS' 'Clean-machine report status'
@@ -1944,17 +1973,19 @@ function Read-V02ReleaseGateCleanMachineReport {
         throw 'Clean-machine Live PASS requires the external authorization JSON and detached CMS signature bytes.'
     }
     $completedAtUtc = [DateTimeOffset]::ParseExact([string]$report.completedAtUtc, 'o', [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::RoundtripKind)
-    $authorization = Read-V02CleanHostAuthorization `
-        -AuthorizationPath $CleanHostAuthorizationPath `
-        -SignaturePath $CleanHostAuthorizationSignaturePath `
-        -MachineName ([string]$report.machine.machineName) `
-        -MachineFingerprint ([string]$report.machine.machineFingerprint) `
-        -PrincipalSid ([string]$report.machine.userScope) `
-        -InstallRoot ([string]$report.targets.installRoot) `
-        -UserDataRoot ([string]$report.targets.userDataRoot) `
-        -InitialBinding $report.bindings.initial `
-        -FinalBinding $report.bindings.final `
-        -VerificationTimeUtc $completedAtUtc
+    $authorization = & $script:V02ReleaseGateCleanMachineVerifierModule Invoke-V02AnchoredCleanMachineVerifier `
+        -Operation ReadAuthorization -Arguments @{
+            AuthorizationPath = $CleanHostAuthorizationPath
+            SignaturePath = $CleanHostAuthorizationSignaturePath
+            MachineName = [string]$report.machine.machineName
+            MachineFingerprint = [string]$report.machine.machineFingerprint
+            PrincipalSid = [string]$report.machine.userScope
+            InstallRoot = [string]$report.targets.installRoot
+            UserDataRoot = [string]$report.targets.userDataRoot
+            InitialBinding = $report.bindings.initial
+            FinalBinding = $report.bindings.final
+            VerificationTimeUtc = $completedAtUtc
+        }
     Assert-V02ReleaseGateEqual $report.actor.operator.identity $report.machine.userScope 'Clean-machine operator/principal binding'
     Assert-V02ReleaseGateEqual $report.actor.observer.identity $authorization.Value.observerIdentity 'Clean-machine observer authorization binding'
     Assert-V02ReleaseGateEqual $report.actor.authorization.signerThumbprint $authorization.SignerThumbprint 'Clean-machine authorization signer thumbprint'
@@ -1964,12 +1995,14 @@ function Read-V02ReleaseGateCleanMachineReport {
     if ([string]::IsNullOrWhiteSpace($CleanHostAcceptanceReceiptPath) -or [string]::IsNullOrWhiteSpace($CleanHostAcceptanceReceiptSignaturePath)) {
         throw 'Clean-machine Live PASS requires the post-run observer acceptance receipt JSON and detached CMS signature bytes.'
     }
-    $acceptanceReceipt = Read-V02CleanHostAcceptanceReceipt `
-        -ReceiptPath $CleanHostAcceptanceReceiptPath `
-        -SignaturePath $CleanHostAcceptanceReceiptSignaturePath `
-        -ReportSha256 $document.FileSha256 `
-        -Report $report `
-        -Authorization $authorization
+    $acceptanceReceipt = & $script:V02ReleaseGateCleanMachineVerifierModule Invoke-V02AnchoredCleanMachineVerifier `
+        -Operation ReadAcceptanceReceipt -Arguments @{
+            ReceiptPath = $CleanHostAcceptanceReceiptPath
+            SignaturePath = $CleanHostAcceptanceReceiptSignaturePath
+            ReportSha256 = $document.FileSha256
+            Report = $report
+            Authorization = $authorization
+        }
 
     return [pscustomobject][ordered]@{
         Path = $document.Path
@@ -2438,7 +2471,7 @@ function Invoke-V02ReleaseGate {
     $package = Invoke-V02ReleaseGatePackageValidation -Context $context `
         -ExpectedSourceCommit $ExpectedSourceCommit -ExpectedSourceTree $ExpectedSourceTree
     $cleanMachine = Read-V02ReleaseGateCleanMachineReport -Path $CleanMachineReportPath `
-        -RepositoryRoot $identityBefore.RepositoryRoot -ExpectedSourceCommit $ExpectedSourceCommit `
+        -ExpectedSourceCommit $ExpectedSourceCommit `
         -ExpectedSourceTree $ExpectedSourceTree -Package $package `
         -CleanHostAuthorizationPath $CleanHostAuthorizationPath `
         -CleanHostAuthorizationSignaturePath $CleanHostAuthorizationSignaturePath `
