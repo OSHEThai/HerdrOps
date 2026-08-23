@@ -12,6 +12,14 @@ $script:V02CleanMachineSchemaId = 'https://herdrops.local/schema/v0.2/clean-mach
 # present and trusted; callers cannot replace this pin with a parameter.
 $script:V02CleanMachineObserverSignerThumbprint = '8F319A7C115B0793D880D6E6F02F47B36E87D518'
 
+function Import-V02CleanMachinePkcsAssembly {
+    try {
+        Add-Type -AssemblyName System.Security.Cryptography.Pkcs -ErrorAction Stop
+    } catch {
+        Add-Type -AssemblyName System.Security -ErrorAction Stop
+    }
+}
+
 function Get-V02MachineFingerprint {
     $machineGuid = ''
     try {
@@ -93,7 +101,9 @@ function Read-V02CleanHostAuthorization {
         [Parameter(Mandatory = $true)][string]$UserDataRoot,
         [Parameter(Mandatory = $true)]$InitialBinding,
         [Parameter(Mandatory = $true)]$FinalBinding,
-        [DateTimeOffset]$VerificationTimeUtc = [DateTimeOffset]::MinValue
+        [DateTimeOffset]$VerificationTimeUtc = [DateTimeOffset]::MinValue,
+        [string]$ExpectedSignerThumbprint = $script:V02CleanMachineObserverSignerThumbprint,
+        [switch]$AllowUntrustedRootForTest
     )
     foreach ($path in @($AuthorizationPath,$SignaturePath)) {
         if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "External clean-host authorization input is missing: $path" }
@@ -104,15 +114,15 @@ function Read-V02CleanHostAuthorization {
     $authorizationBytes = $authorizationStable.Bytes
     $signatureBytes = $signatureStable.Bytes
     try {
-        Add-Type -AssemblyName System.Security.Cryptography.Pkcs -ErrorAction Stop
+        Import-V02CleanMachinePkcsAssembly
         $cms = [Security.Cryptography.Pkcs.SignedCms]::new([Security.Cryptography.Pkcs.ContentInfo]::new($authorizationBytes),$true)
         $cms.Decode($signatureBytes)
-        $cms.CheckSignature($false)
+        $cms.CheckSignature([bool]$AllowUntrustedRootForTest)
     }
     catch { throw "External clean-host authorization signature is invalid or untrusted: $($_.Exception.Message)" }
     if ($cms.SignerInfos.Count -ne 1) { throw 'External clean-host authorization must have exactly one signer.' }
     $signer = $cms.SignerInfos[0].Certificate
-    if ($null -eq $signer -or $signer.Thumbprint.Replace(' ','').ToUpperInvariant() -cne $script:V02CleanMachineObserverSignerThumbprint) {
+    if ($null -eq $signer -or $signer.Thumbprint.Replace(' ','').ToUpperInvariant() -cne $ExpectedSignerThumbprint) {
         throw 'External clean-host authorization signer does not equal the committed independent-observer certificate pin.'
     }
     $document = ConvertFrom-V02StrictBytes -Bytes $authorizationBytes -Description 'external clean-host authorization'
@@ -145,6 +155,85 @@ function Read-V02CleanHostAuthorization {
     $expires = [DateTimeOffset]::Parse([string]$value.expiresAtUtc,[Globalization.CultureInfo]::InvariantCulture)
     if ($issued -gt $now -or $expires -le $now -or ($expires-$issued).TotalHours -gt 24) { throw 'External clean-host authorization validity window is invalid.' }
     return [pscustomobject]@{ Value=$value; SignerThumbprint=$signer.Thumbprint.Replace(' ','').ToUpperInvariant(); AuthorizationSha256=$authorizationStable.Sha256; SignatureSha256=$signatureStable.Sha256 }
+}
+
+function Read-V02CleanHostAcceptanceReceipt {
+    param(
+        [Parameter(Mandatory = $true)][string]$ReceiptPath,
+        [Parameter(Mandatory = $true)][string]$SignaturePath,
+        [Parameter(Mandatory = $true)][string]$ReportSha256,
+        [Parameter(Mandatory = $true)]$Report,
+        [Parameter(Mandatory = $true)]$Authorization,
+        [string]$ExpectedSignerThumbprint = $script:V02CleanMachineObserverSignerThumbprint,
+        [switch]$AllowUntrustedRootForTest
+    )
+    foreach ($path in @($ReceiptPath,$SignaturePath)) {
+        if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "External clean-host acceptance receipt input is missing: $path" }
+        Assert-V02PathNoReparse ([IO.Path]::GetFullPath($path))
+    }
+    $receiptStable = Get-V02StableFileIdentity -Path ([IO.Path]::GetFullPath($ReceiptPath)) -IncludeBytes
+    $signatureStable = Get-V02StableFileIdentity -Path ([IO.Path]::GetFullPath($SignaturePath)) -IncludeBytes
+    try {
+        Import-V02CleanMachinePkcsAssembly
+        $cms = [Security.Cryptography.Pkcs.SignedCms]::new([Security.Cryptography.Pkcs.ContentInfo]::new($receiptStable.Bytes),$true)
+        $cms.Decode($signatureStable.Bytes)
+        $cms.CheckSignature([bool]$AllowUntrustedRootForTest)
+    }
+    catch { throw "External clean-host acceptance receipt signature is invalid or untrusted: $($_.Exception.Message)" }
+    if ($cms.SignerInfos.Count -ne 1) { throw 'External clean-host acceptance receipt must have exactly one signer.' }
+    $signer = $cms.SignerInfos[0].Certificate
+    $thumbprint = if ($null -eq $signer) { '' } else { $signer.Thumbprint.Replace(' ','').ToUpperInvariant() }
+    if ($thumbprint -cne $ExpectedSignerThumbprint) { throw 'External clean-host acceptance receipt signer does not equal the pinned independent-observer certificate.' }
+
+    $document = ConvertFrom-V02StrictBytes -Bytes $receiptStable.Bytes -Description 'external clean-host acceptance receipt'
+    $value = $document.Value
+    $required = @('schemaVersion','receiptKind','report','authorization','machine','actors','source','semantics','issuedAtUtc','receiptNonce')
+    $names = @($value.PSObject.Properties.Name)
+    if ($names.Count -ne $required.Count -or @($required | Where-Object { -not ($names -ccontains $_) }).Count -ne 0) { throw 'External clean-host acceptance receipt has an unexpected schema.' }
+    if ([int]$value.schemaVersion -ne 1 -or [string]$value.receiptKind -cne 'HerdrOps.V02CleanHostAcceptanceReceipt') { throw 'External clean-host acceptance receipt kind/version is invalid.' }
+
+    $reportRequired = @('sha256','runId','startedAtUtc','completedAtUtc')
+    $authorizationRequired = @('authorizationSha256','signatureSha256','nonce')
+    $machineRequired = @('machineName','machineFingerprint','principalSid','installRoot','userDataRoot')
+    $actorsRequired = @('operatorIdentity','observerIdentity')
+    $sourceRequired = @('initial','final')
+    $semanticsRequired = @('status','mode','evidenceClass','creditGranted','cleanInstall','sameVersionCandidateReplacement','rollback','uninstall','retainedData','residueClean')
+    foreach ($shape in @(@($value.report,$reportRequired,'report'),@($value.authorization,$authorizationRequired,'authorization'),@($value.machine,$machineRequired,'machine'),@($value.actors,$actorsRequired,'actors'),@($value.source,$sourceRequired,'source'),@($value.semantics,$semanticsRequired,'semantics'))) {
+        $actual = @($shape[0].PSObject.Properties.Name); $expected = @($shape[1])
+        if ($actual.Count -ne $expected.Count -or @($expected | Where-Object { -not ($actual -ccontains $_) }).Count -ne 0) { throw "External clean-host acceptance receipt $($shape[2]) schema is invalid." }
+    }
+
+    foreach ($pair in @(
+        @($value.report.sha256,$ReportSha256,'report SHA-256'),@($value.report.runId,$Report.runId,'runId'),
+        @($value.report.startedAtUtc,$Report.startedAtUtc,'startedAtUtc'),@($value.report.completedAtUtc,$Report.completedAtUtc,'completedAtUtc'),
+        @($value.authorization.authorizationSha256,$Authorization.AuthorizationSha256,'authorization SHA-256'),
+        @($value.authorization.signatureSha256,$Authorization.SignatureSha256,'authorization signature SHA-256'),@($value.authorization.nonce,$Authorization.Value.nonce,'authorization nonce'),
+        @($value.machine.machineName,$Report.machine.machineName,'machineName'),@($value.machine.machineFingerprint,$Report.machine.machineFingerprint,'machineFingerprint'),
+        @($value.machine.principalSid,$Report.machine.userScope,'principalSid'),@($value.machine.installRoot,$Report.targets.installRoot,'installRoot'),@($value.machine.userDataRoot,$Report.targets.userDataRoot,'userDataRoot'),
+        @($value.actors.operatorIdentity,$Report.actor.operator.identity,'operatorIdentity'),@($value.actors.observerIdentity,$Report.actor.observer.identity,'observerIdentity'),
+        @($value.semantics.status,$Report.status,'status'),@($value.semantics.mode,$Report.mode,'mode'),@($value.semantics.evidenceClass,$Report.evidenceBoundary.evidenceClass,'evidenceClass'),
+        @($value.semantics.cleanInstall,$Report.lifecycle.cleanInstall.status,'cleanInstall'),@($value.semantics.sameVersionCandidateReplacement,$Report.lifecycle.sameVersionCandidateReplacement.status,'sameVersionCandidateReplacement'),
+        @($value.semantics.rollback,$Report.lifecycle.rollback.status,'rollback'),@($value.semantics.uninstall,$Report.lifecycle.uninstall.status,'uninstall'),@($value.semantics.retainedData,$Report.retainedData.markerStatus,'retainedData'))) {
+        if ([string]$pair[0] -cne [string]$pair[1]) { throw "External clean-host acceptance receipt $($pair[2]) binding mismatch." }
+    }
+    if ($value.semantics.creditGranted -isnot [bool] -or $value.semantics.residueClean -isnot [bool] -or
+        $Report.evidenceBoundary.creditGranted -isnot [bool] -or
+        $value.semantics.creditGranted -ne $Report.evidenceBoundary.creditGranted -or
+        -not $value.semantics.creditGranted -or -not $value.semantics.residueClean) {
+        throw 'External clean-host acceptance receipt semantic credit/residue binding is invalid.'
+    }
+    foreach ($phase in @('initial','final')) {
+        $authorized = $value.source.$phase; $expected = $Report.bindings.$phase
+        $bindingNames = @('sourceCommit','sourceTree','receiptSha256','archiveSha256','packageManifestSha256','appSha256','coreSha256')
+        $actualNames = @($authorized.PSObject.Properties.Name)
+        if ($actualNames.Count -ne $bindingNames.Count -or @($bindingNames | Where-Object { -not ($actualNames -ccontains $_) }).Count -ne 0) { throw "External clean-host acceptance receipt source.$phase schema is invalid." }
+        foreach ($name in $bindingNames) { if ([string]$authorized.$name -cne [string]$expected.$name) { throw "External clean-host acceptance receipt source.$phase.$name binding mismatch." } }
+    }
+    if ([string]$value.receiptNonce -cnotmatch '^[0-9a-f]{32}$' -or [string]$value.receiptNonce -ceq [string]$Authorization.Value.nonce) { throw 'External clean-host acceptance receipt nonce is invalid or reuses the authorization nonce.' }
+    $issued = [DateTimeOffset]::ParseExact([string]$value.issuedAtUtc,'o',[Globalization.CultureInfo]::InvariantCulture,[Globalization.DateTimeStyles]::RoundtripKind)
+    $completed = [DateTimeOffset]::ParseExact([string]$Report.completedAtUtc,'o',[Globalization.CultureInfo]::InvariantCulture,[Globalization.DateTimeStyles]::RoundtripKind)
+    if ($issued.Offset -ne [TimeSpan]::Zero -or $issued -lt $completed -or $issued -gt [DateTimeOffset]::UtcNow.AddMinutes(5)) { throw 'External clean-host acceptance receipt issuedAtUtc is outside the post-run observer window.' }
+    return [pscustomobject]@{ Value=$value; SignerThumbprint=$thumbprint; ReceiptSha256=$receiptStable.Sha256; SignatureSha256=$signatureStable.Sha256 }
 }
 
 function Assert-V02ActorIdentities {
@@ -466,7 +555,8 @@ function New-V02CleanMachineReportObject {
 function Assert-V02CleanMachineReportSchema {
     param(
         [Parameter(Mandatory = $true)]$Report,
-        [Parameter(Mandatory = $true)][string]$RepositoryRoot
+        [Parameter(Mandatory = $true)][string]$RepositoryRoot,
+        [string]$ExpectedSignerThumbprint = $script:V02CleanMachineObserverSignerThumbprint
     )
 
     $names = @($Report.PSObject.Properties.Name)
@@ -534,7 +624,7 @@ function Assert-V02CleanMachineReportSchema {
     if ([string]$Report.actor.operator.role -cne 'EvidenceOperator') { throw "operator.role must be 'EvidenceOperator'." }
     if ([string]$Report.actor.observer.role -cne 'IndependentObserver') { throw "observer.role must be 'IndependentObserver'." }
     if ([string]$Report.mode -eq 'Live') {
-        if ([string]$Report.actor.authorization.status -cne 'VERIFIED' -or [string]$Report.actor.authorization.signerThumbprint -cne $script:V02CleanMachineObserverSignerThumbprint) { throw 'Live actor authorization must be externally verified by the pinned observer.' }
+        if ([string]$Report.actor.authorization.status -cne 'VERIFIED' -or [string]$Report.actor.authorization.signerThumbprint -cne $ExpectedSignerThumbprint) { throw 'Live actor authorization must be externally verified by the pinned observer.' }
         foreach ($name in @('authorizationSha256','signatureSha256')) { if ([string]$Report.actor.authorization.$name -cnotmatch '^[0-9A-F]{64}$') { throw "Live actor authorization $name is invalid." } }
         if ([string]$Report.actor.authorization.nonce -cnotmatch '^[0-9a-f]{32}$') { throw 'Live actor authorization nonce is invalid.' }
     } else {

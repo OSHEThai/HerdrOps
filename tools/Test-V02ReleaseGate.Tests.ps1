@@ -72,6 +72,33 @@ function Write-V02ReleaseGateTestJson {
     return Write-V02ReleaseGateTestText -Path $Path -Text ($Value | ConvertTo-Json -Depth 100)
 }
 
+function New-V02ReleaseGateTestCmsCertificate {
+    $rsa = [Security.Cryptography.RSA]::Create(2048)
+    $request = [Security.Cryptography.X509Certificates.CertificateRequest]::new(
+        'CN=HerdrOps V02 Test Observer',
+        $rsa,
+        [Security.Cryptography.HashAlgorithmName]::SHA256,
+        [Security.Cryptography.RSASignaturePadding]::Pkcs1)
+    $certificate = $request.CreateSelfSigned([DateTimeOffset]::UtcNow.AddDays(-1),[DateTimeOffset]::UtcNow.AddDays(1))
+    $rsa.Dispose()
+    return $certificate
+}
+
+function Write-V02ReleaseGateTestDetachedCms {
+    param([Parameter(Mandatory = $true)][string]$ContentPath,[Parameter(Mandatory = $true)][string]$SignaturePath,[Parameter(Mandatory = $true)]$Certificate)
+    try {
+        Add-Type -AssemblyName System.Security.Cryptography.Pkcs -ErrorAction Stop
+    } catch {
+        Add-Type -AssemblyName System.Security -ErrorAction Stop
+    }
+    $bytes = [IO.File]::ReadAllBytes($ContentPath)
+    $cms = [Security.Cryptography.Pkcs.SignedCms]::new([Security.Cryptography.Pkcs.ContentInfo]::new($bytes),$true)
+    $signer = [Security.Cryptography.Pkcs.CmsSigner]::new([Security.Cryptography.Pkcs.SubjectIdentifierType]::IssuerAndSerialNumber,$Certificate)
+    $signer.IncludeOption = [Security.Cryptography.X509Certificates.X509IncludeOption]::EndCertOnly
+    $cms.ComputeSignature($signer)
+    Write-V02ReleaseGateTestBytes -Path $SignaturePath -Bytes $cms.Encode() | Out-Null
+}
+
 function Get-V02ReleaseGateTestRepositoryIdentity {
     param([Parameter(Mandatory = $true)][string]$RepositoryRoot)
     return Get-V02ReleaseGateGitIdentity -RepositoryRoot $RepositoryRoot
@@ -82,7 +109,8 @@ function New-V02ReleaseGateTestCleanMachineReport {
         [Parameter(Mandatory = $true)][string]$Path,
         [Parameter(Mandatory = $true)]$Identity,
         [Parameter(Mandatory = $true)]$Package,
-        [ValidateSet('Live', 'Fixture')][string]$Mode = 'Live'
+        [ValidateSet('Live', 'Fixture')][string]$Mode = 'Live',
+        [string]$SignerThumbprint = '8F319A7C115B0793D880D6E6F02F47B36E87D518'
     )
     $binding = [pscustomobject][ordered]@{
         sourceCommit = $Identity.Commit; sourceTree = $Identity.Tree
@@ -100,7 +128,7 @@ function New-V02ReleaseGateTestCleanMachineReport {
             operator = [pscustomobject][ordered]@{ identity = 'S-1-5-21-1000'; role = 'EvidenceOperator' }
             observer = [pscustomobject][ordered]@{ identity = 'external-clean-host-observer'; role = 'IndependentObserver' }
             authorization = if ($isLive) {
-                [pscustomobject][ordered]@{ status = 'VERIFIED'; signerThumbprint = '8F319A7C115B0793D880D6E6F02F47B36E87D518'; authorizationSha256 = ('B' * 64); signatureSha256 = ('C' * 64); nonce = ('b' * 32) }
+                [pscustomobject][ordered]@{ status = 'VERIFIED'; signerThumbprint = $SignerThumbprint; authorizationSha256 = ('B' * 64); signatureSha256 = ('C' * 64); nonce = ('b' * 32) }
             } else {
                 [pscustomobject][ordered]@{ status = 'NOT_APPLICABLE'; signerThumbprint = ''; authorizationSha256 = ''; signatureSha256 = ''; nonce = '' }
             }
@@ -127,6 +155,43 @@ function New-V02ReleaseGateTestCleanMachineReport {
     }
     Write-V02ReleaseGateTestJson -Path $Path -Value $report | Out-Null
     return $report
+}
+
+function New-V02ReleaseGateTestSignedCleanMachineBundle {
+    param([Parameter(Mandatory = $true)][string]$Root,[Parameter(Mandatory = $true)]$Identity,[Parameter(Mandatory = $true)]$Package,[Parameter(Mandatory = $true)]$Certificate)
+    New-V02ReleaseGateTestDirectory -Path $Root
+    $thumbprint = $Certificate.Thumbprint.Replace(' ','').ToUpperInvariant()
+    $reportPath = Join-Path $Root 'clean-machine-report.json'
+    $report = New-V02ReleaseGateTestCleanMachineReport -Path $reportPath -Identity $Identity -Package $Package -SignerThumbprint $thumbprint
+    $authorizationPath = Join-Path $Root 'clean-host-authorization.json'
+    $authorizationSignaturePath = Join-Path $Root 'clean-host-authorization.p7s'
+    $authorization = [pscustomobject][ordered]@{
+        schemaVersion=1;authorizationKind='HerdrOps.V02CleanHostAuthorization';machineName=$report.machine.machineName;machineFingerprint=$report.machine.machineFingerprint
+        principalSid=$report.machine.userScope;operatorSid=$report.machine.userScope;observerIdentity=$report.actor.observer.identity
+        installRoot=$report.targets.installRoot;userDataRoot=$report.targets.userDataRoot;initial=$report.bindings.initial;final=$report.bindings.final
+        issuedAtUtc='2026-08-23T09:55:00.0000000Z';expiresAtUtc='2026-08-23T10:30:00.0000000Z';nonce=('b'*32)
+    }
+    Write-V02ReleaseGateTestJson -Path $authorizationPath -Value $authorization | Out-Null
+    Write-V02ReleaseGateTestDetachedCms -ContentPath $authorizationPath -SignaturePath $authorizationSignaturePath -Certificate $Certificate
+    $report.actor.authorization.authorizationSha256 = Get-V02ReleaseGateFileSha256 -Path $authorizationPath
+    $report.actor.authorization.signatureSha256 = Get-V02ReleaseGateFileSha256 -Path $authorizationSignaturePath
+    Write-V02ReleaseGateTestJson -Path $reportPath -Value $report | Out-Null
+    $reportSha = Get-V02ReleaseGateFileSha256 -Path $reportPath
+    $receiptPath = Join-Path $Root 'clean-host-acceptance-receipt.json'
+    $receiptSignaturePath = Join-Path $Root 'clean-host-acceptance-receipt.p7s'
+    $receipt = [pscustomobject][ordered]@{
+        schemaVersion=1;receiptKind='HerdrOps.V02CleanHostAcceptanceReceipt'
+        report=[pscustomobject][ordered]@{sha256=$reportSha;runId=$report.runId;startedAtUtc=$report.startedAtUtc;completedAtUtc=$report.completedAtUtc}
+        authorization=[pscustomobject][ordered]@{authorizationSha256=$report.actor.authorization.authorizationSha256;signatureSha256=$report.actor.authorization.signatureSha256;nonce=$report.actor.authorization.nonce}
+        machine=[pscustomobject][ordered]@{machineName=$report.machine.machineName;machineFingerprint=$report.machine.machineFingerprint;principalSid=$report.machine.userScope;installRoot=$report.targets.installRoot;userDataRoot=$report.targets.userDataRoot}
+        actors=[pscustomobject][ordered]@{operatorIdentity=$report.actor.operator.identity;observerIdentity=$report.actor.observer.identity}
+        source=[pscustomobject][ordered]@{initial=$report.bindings.initial;final=$report.bindings.final}
+        semantics=[pscustomobject][ordered]@{status='PASS';mode='Live';evidenceClass='CleanMachine';creditGranted=$true;cleanInstall='PASS';sameVersionCandidateReplacement='PASS';rollback='PASS';uninstall='PASS';retainedData='PRESERVED';residueClean=$true}
+        issuedAtUtc='2026-08-23T10:20:00.0000000Z';receiptNonce=('c'*32)
+    }
+    Write-V02ReleaseGateTestJson -Path $receiptPath -Value $receipt | Out-Null
+    Write-V02ReleaseGateTestDetachedCms -ContentPath $receiptPath -SignaturePath $receiptSignaturePath -Certificate $Certificate
+    return [pscustomobject]@{ReportPath=$reportPath;Report=$report;AuthorizationPath=$authorizationPath;AuthorizationSignaturePath=$authorizationSignaturePath;ReceiptPath=$receiptPath;ReceiptSignaturePath=$receiptSignaturePath;Thumbprint=$thumbprint}
 }
 
 function New-V02ReleaseGateTestCleanRepository {
@@ -896,6 +961,68 @@ try {
         } 'signature is invalid or untrusted'
     }
 
+    Invoke-V02ReleaseGateTestCase 'valid pinned-shape CMS authorization and post-run receipt admit exact report bytes only' {
+        $package = [pscustomobject][ordered]@{ProfileId=$script:V02ReleaseGatePackageProfileId;ReceiptSha256=('1'*64);ArchiveSha256=('2'*64);ManifestSha256=('3'*64);AppSha256=('4'*64);CoreSha256=('5'*64);ReferenceHostProfileSha256=$script:V02ReleaseGateReferenceHostProfileSha256;RendererPolicySha256=$script:V02ReleaseGateRendererPolicySha256}
+        $certificate = New-V02ReleaseGateTestCmsCertificate
+        try {
+            $bundle = New-V02ReleaseGateTestSignedCleanMachineBundle -Root (Join-Path $script:TestRoot 'clean-machine-valid-cms') -Identity $script:GateIdentity -Package $package -Certificate $certificate
+            $result = Read-V02ReleaseGateCleanMachineReport -Path $bundle.ReportPath -RepositoryRoot $script:GateRepositoryRoot -ExpectedSourceCommit $script:GateIdentity.Commit -ExpectedSourceTree $script:GateIdentity.Tree -Package $package `
+                -CleanHostAuthorizationPath $bundle.AuthorizationPath -CleanHostAuthorizationSignaturePath $bundle.AuthorizationSignaturePath -CleanHostAcceptanceReceiptPath $bundle.ReceiptPath -CleanHostAcceptanceReceiptSignaturePath $bundle.ReceiptSignaturePath `
+                -ExpectedObserverSignerThumbprint $bundle.Thumbprint -AllowUntrustedObserverRootForTest
+            if(-not$result.LifecycleCreditGranted-or$result.AcceptanceReceiptNonce-cne('c'*32)){throw 'Valid post-run observer receipt was not admitted.'}
+        } finally { $certificate.Dispose() }
+    }
+
+    Invoke-V02ReleaseGateTestCase 'observer receipt reuse against another completed report reaches exact report digest guard' {
+        $package = [pscustomobject][ordered]@{ProfileId=$script:V02ReleaseGatePackageProfileId;ReceiptSha256=('1'*64);ArchiveSha256=('2'*64);ManifestSha256=('3'*64);AppSha256=('4'*64);CoreSha256=('5'*64);ReferenceHostProfileSha256=$script:V02ReleaseGateReferenceHostProfileSha256;RendererPolicySha256=$script:V02ReleaseGateRendererPolicySha256}
+        $certificate = New-V02ReleaseGateTestCmsCertificate
+        try {
+            $first = New-V02ReleaseGateTestSignedCleanMachineBundle -Root (Join-Path $script:TestRoot 'clean-machine-reuse-a') -Identity $script:GateIdentity -Package $package -Certificate $certificate
+            $second = New-V02ReleaseGateTestSignedCleanMachineBundle -Root (Join-Path $script:TestRoot 'clean-machine-reuse-b') -Identity $script:GateIdentity -Package $package -Certificate $certificate
+            $secondReportText = Get-Content -LiteralPath $second.ReportPath -Raw
+            Write-V02ReleaseGateTestText -Path $second.ReportPath -Text ($secondReportText.Replace(('a'*32),('d'*32))) | Out-Null
+            Assert-V02ReleaseGateTestThrows {
+                Read-V02ReleaseGateCleanMachineReport -Path $second.ReportPath -RepositoryRoot $script:GateRepositoryRoot -ExpectedSourceCommit $script:GateIdentity.Commit -ExpectedSourceTree $script:GateIdentity.Tree -Package $package `
+                    -CleanHostAuthorizationPath $second.AuthorizationPath -CleanHostAuthorizationSignaturePath $second.AuthorizationSignaturePath -CleanHostAcceptanceReceiptPath $first.ReceiptPath -CleanHostAcceptanceReceiptSignaturePath $first.ReceiptSignaturePath `
+                    -ExpectedObserverSignerThumbprint $first.Thumbprint -AllowUntrustedObserverRootForTest
+            } 'report SHA-256 binding mismatch'
+        } finally { $certificate.Dispose() }
+    }
+
+    Invoke-V02ReleaseGateTestCase 'post-signature report semantic-detail tamper reaches exact report digest guard' {
+        $package = [pscustomobject][ordered]@{ProfileId=$script:V02ReleaseGatePackageProfileId;ReceiptSha256=('1'*64);ArchiveSha256=('2'*64);ManifestSha256=('3'*64);AppSha256=('4'*64);CoreSha256=('5'*64);ReferenceHostProfileSha256=$script:V02ReleaseGateReferenceHostProfileSha256;RendererPolicySha256=$script:V02ReleaseGateRendererPolicySha256}
+        $certificate = New-V02ReleaseGateTestCmsCertificate
+        try {
+            $bundle = New-V02ReleaseGateTestSignedCleanMachineBundle -Root (Join-Path $script:TestRoot 'clean-machine-report-tamper') -Identity $script:GateIdentity -Package $package -Certificate $certificate
+            $tampered = Get-Content -LiteralPath $bundle.ReportPath -Raw
+            $tamperedBytes = ([regex]'"details"\s*:\s*"observed"').Replace($tampered,'"details": "caller changed completed report after observer signature"',1)
+            if ($tamperedBytes -ceq $tampered) { throw 'Semantic-tamper fixture did not alter the completed report bytes.' }
+            Write-V02ReleaseGateTestText -Path $bundle.ReportPath -Text $tamperedBytes | Out-Null
+            Assert-V02ReleaseGateTestThrows {
+                Read-V02ReleaseGateCleanMachineReport -Path $bundle.ReportPath -RepositoryRoot $script:GateRepositoryRoot -ExpectedSourceCommit $script:GateIdentity.Commit -ExpectedSourceTree $script:GateIdentity.Tree -Package $package `
+                    -CleanHostAuthorizationPath $bundle.AuthorizationPath -CleanHostAuthorizationSignaturePath $bundle.AuthorizationSignaturePath -CleanHostAcceptanceReceiptPath $bundle.ReceiptPath -CleanHostAcceptanceReceiptSignaturePath $bundle.ReceiptSignaturePath `
+                    -ExpectedObserverSignerThumbprint $bundle.Thumbprint -AllowUntrustedObserverRootForTest
+            } 'report SHA-256 binding mismatch'
+        } finally { $certificate.Dispose() }
+    }
+
+    Invoke-V02ReleaseGateTestCase 'completed report byte swap after observer receipt fails closed' {
+        $package = [pscustomobject][ordered]@{ProfileId=$script:V02ReleaseGatePackageProfileId;ReceiptSha256=('1'*64);ArchiveSha256=('2'*64);ManifestSha256=('3'*64);AppSha256=('4'*64);CoreSha256=('5'*64);ReferenceHostProfileSha256=$script:V02ReleaseGateReferenceHostProfileSha256;RendererPolicySha256=$script:V02ReleaseGateRendererPolicySha256}
+        $certificate = New-V02ReleaseGateTestCmsCertificate
+        try {
+            $bundle = New-V02ReleaseGateTestSignedCleanMachineBundle -Root (Join-Path $script:TestRoot 'clean-machine-report-swap') -Identity $script:GateIdentity -Package $package -Certificate $certificate
+            $swapped = Get-Content -LiteralPath $bundle.ReportPath -Raw
+            $swappedBytes = ([regex]'"details"\s*:\s*"fixture verifier input"').Replace($swapped,'"details": "different still-semantic PASS report bytes"',1)
+            if ($swappedBytes -ceq $swapped) { throw 'Report-swap fixture did not alter the completed report bytes.' }
+            Write-V02ReleaseGateTestText -Path $bundle.ReportPath -Text $swappedBytes | Out-Null
+            Assert-V02ReleaseGateTestThrows {
+                Read-V02ReleaseGateCleanMachineReport -Path $bundle.ReportPath -RepositoryRoot $script:GateRepositoryRoot -ExpectedSourceCommit $script:GateIdentity.Commit -ExpectedSourceTree $script:GateIdentity.Tree -Package $package `
+                    -CleanHostAuthorizationPath $bundle.AuthorizationPath -CleanHostAuthorizationSignaturePath $bundle.AuthorizationSignaturePath -CleanHostAcceptanceReceiptPath $bundle.ReceiptPath -CleanHostAcceptanceReceiptSignaturePath $bundle.ReceiptSignaturePath `
+                    -ExpectedObserverSignerThumbprint $bundle.Thumbprint -AllowUntrustedObserverRootForTest
+            } 'report SHA-256 binding mismatch'
+        } finally { $certificate.Dispose() }
+    }
+
     Invoke-V02ReleaseGateTestCase 'fixture CleanMachine lookalike reaches exact mode guard and earns no credit' {
         $package = [pscustomobject][ordered]@{
             ProfileId = $script:V02ReleaseGatePackageProfileId
@@ -1319,7 +1446,7 @@ try {
             New-V02ReleaseGateTestDirectory -Path $packageRoot
             New-V02ReleaseGateTestDirectory -Path (Join-Path $root 'Thai')
             New-V02ReleaseGateTestDirectory -Path (Join-Path $root 'English')
-            foreach ($file in @('package-identity.json', 'archive.zip', 'renderer.json', 'matrix.json', 'issue9.json', 'contract.json', 'synthetic.json', 'human.json', 'clean-machine.json', 'clean-host-authorization.json', 'clean-host-authorization.p7s', 'github.json')) {
+            foreach ($file in @('package-identity.json', 'archive.zip', 'renderer.json', 'matrix.json', 'issue9.json', 'contract.json', 'synthetic.json', 'human.json', 'clean-machine.json', 'clean-host-authorization.json', 'clean-host-authorization.p7s', 'clean-host-acceptance-receipt.json', 'clean-host-acceptance-receipt.p7s', 'github.json')) {
                 Write-V02ReleaseGateTestText -Path (Join-Path $root $file) -Text '{}' | Out-Null
             }
             foreach ($file in @('package-manifest.json', 'HerdrOps.App.exe', 'HerdrOps.Core.exe')) {
@@ -1343,6 +1470,8 @@ try {
                 CleanMachineReportPath = Join-Path $root 'clean-machine.json'
                 CleanHostAuthorizationPath = Join-Path $root 'clean-host-authorization.json'
                 CleanHostAuthorizationSignaturePath = Join-Path $root 'clean-host-authorization.p7s'
+                CleanHostAcceptanceReceiptPath = Join-Path $root 'clean-host-acceptance-receipt.json'
+                CleanHostAcceptanceReceiptSignaturePath = Join-Path $root 'clean-host-acceptance-receipt.p7s'
                 GitHubSnapshotPath = Join-Path $root 'github.json'
                 EvidenceRoot = $root
                 RepositoryRoot = $fixtureRepo

@@ -19,6 +19,8 @@ param(
     [string]$CleanMachineReportPath,
     [string]$CleanHostAuthorizationPath,
     [string]$CleanHostAuthorizationSignaturePath,
+    [string]$CleanHostAcceptanceReceiptPath,
+    [string]$CleanHostAcceptanceReceiptSignaturePath,
     [string]$GitHubSnapshotPath,
     [string]$CandidateLockPath,
     [string]$AuthorityReferencePath,
@@ -1900,7 +1902,11 @@ function Read-V02ReleaseGateCleanMachineReport {
         [Parameter(Mandatory = $true)][string]$ExpectedSourceTree,
         [Parameter(Mandatory = $true)]$Package,
         [string]$CleanHostAuthorizationPath,
-        [string]$CleanHostAuthorizationSignaturePath
+        [string]$CleanHostAuthorizationSignaturePath,
+        [string]$CleanHostAcceptanceReceiptPath,
+        [string]$CleanHostAcceptanceReceiptSignaturePath,
+        [string]$ExpectedObserverSignerThumbprint,
+        [switch]$AllowUntrustedObserverRootForTest
     )
 
     # Reuse the producer's strict schema/semantic verifier, then add the
@@ -1908,8 +1914,11 @@ function Read-V02ReleaseGateCleanMachineReport {
     # CleanMachine credit is install-lifecycle evidence only and cannot grant
     # Runtime, Human, or Release authority.
     . (Join-Path $RepositoryRoot 'tools\packaging\v0.2\V02CleanMachine.Common.ps1')
+    if ([string]::IsNullOrWhiteSpace($ExpectedObserverSignerThumbprint)) {
+        $ExpectedObserverSignerThumbprint = $script:V02CleanMachineObserverSignerThumbprint
+    }
     $document = Read-V02ReleaseGateJsonFile -Path $Path -Context 'Clean-machine acceptance report'
-    Assert-V02CleanMachineReportSchema -Report $document.Value -RepositoryRoot $RepositoryRoot
+    Assert-V02CleanMachineReportSchema -Report $document.Value -RepositoryRoot $RepositoryRoot -ExpectedSignerThumbprint $ExpectedObserverSignerThumbprint
     $report = $document.Value
 
     Assert-V02ReleaseGateExactString $report.status 'PASS' 'Clean-machine report status'
@@ -1950,13 +1959,26 @@ function Read-V02ReleaseGateCleanMachineReport {
         -UserDataRoot ([string]$report.targets.userDataRoot) `
         -InitialBinding $report.bindings.initial `
         -FinalBinding $report.bindings.final `
-        -VerificationTimeUtc $completedAtUtc
+        -VerificationTimeUtc $completedAtUtc `
+        -ExpectedSignerThumbprint $ExpectedObserverSignerThumbprint `
+        -AllowUntrustedRootForTest:$AllowUntrustedObserverRootForTest
     Assert-V02ReleaseGateEqual $report.actor.operator.identity $report.machine.userScope 'Clean-machine operator/principal binding'
     Assert-V02ReleaseGateEqual $report.actor.observer.identity $authorization.Value.observerIdentity 'Clean-machine observer authorization binding'
     Assert-V02ReleaseGateEqual $report.actor.authorization.signerThumbprint $authorization.SignerThumbprint 'Clean-machine authorization signer thumbprint'
     Assert-V02ReleaseGateEqual $report.actor.authorization.authorizationSha256 $authorization.AuthorizationSha256 'Clean-machine authorization file hash'
     Assert-V02ReleaseGateEqual $report.actor.authorization.signatureSha256 $authorization.SignatureSha256 'Clean-machine authorization signature hash'
     Assert-V02ReleaseGateEqual $report.actor.authorization.nonce $authorization.Value.nonce 'Clean-machine authorization nonce'
+    if ([string]::IsNullOrWhiteSpace($CleanHostAcceptanceReceiptPath) -or [string]::IsNullOrWhiteSpace($CleanHostAcceptanceReceiptSignaturePath)) {
+        throw 'Clean-machine Live PASS requires the post-run observer acceptance receipt JSON and detached CMS signature bytes.'
+    }
+    $acceptanceReceipt = Read-V02CleanHostAcceptanceReceipt `
+        -ReceiptPath $CleanHostAcceptanceReceiptPath `
+        -SignaturePath $CleanHostAcceptanceReceiptSignaturePath `
+        -ReportSha256 $document.FileSha256 `
+        -Report $report `
+        -Authorization $authorization `
+        -ExpectedSignerThumbprint $ExpectedObserverSignerThumbprint `
+        -AllowUntrustedRootForTest:$AllowUntrustedObserverRootForTest
 
     return [pscustomobject][ordered]@{
         Path = $document.Path
@@ -1969,6 +1991,9 @@ function Read-V02ReleaseGateCleanMachineReport {
         OperatorIdentity = [string]$report.actor.operator.identity
         ObserverIdentity = [string]$report.actor.observer.identity
         AuthorizationSignerThumbprint = [string]$report.actor.authorization.signerThumbprint
+        AcceptanceReceiptSha256 = [string]$acceptanceReceipt.ReceiptSha256
+        AcceptanceReceiptSignatureSha256 = [string]$acceptanceReceipt.SignatureSha256
+        AcceptanceReceiptNonce = [string]$acceptanceReceipt.Value.receiptNonce
         LifecycleCreditGranted = $true
         Runtime = 'NOT_OBSERVED'
         Human = 'NOT_OBSERVED'
@@ -2276,6 +2301,8 @@ function Invoke-V02ReleaseGate {
         [Parameter(Mandatory = $true)][string]$CleanMachineReportPath,
         [Parameter(Mandatory = $true)][string]$CleanHostAuthorizationPath,
         [Parameter(Mandatory = $true)][string]$CleanHostAuthorizationSignaturePath,
+        [Parameter(Mandatory = $true)][string]$CleanHostAcceptanceReceiptPath,
+        [Parameter(Mandatory = $true)][string]$CleanHostAcceptanceReceiptSignaturePath,
         [Parameter(Mandatory = $true)][string]$GitHubSnapshotPath,
         [string]$CandidateLockPath,
         [string]$AuthorityReferencePath,
@@ -2327,6 +2354,8 @@ function Invoke-V02ReleaseGate {
         [pscustomobject]@{ Path = $CleanMachineReportPath; Type = 'Leaf'; Name = 'Clean-machine acceptance report' }
         [pscustomobject]@{ Path = $CleanHostAuthorizationPath; Type = 'Leaf'; Name = 'Clean-host authorization' }
         [pscustomobject]@{ Path = $CleanHostAuthorizationSignaturePath; Type = 'Leaf'; Name = 'Clean-host authorization signature' }
+        [pscustomobject]@{ Path = $CleanHostAcceptanceReceiptPath; Type = 'Leaf'; Name = 'Clean-host acceptance receipt' }
+        [pscustomobject]@{ Path = $CleanHostAcceptanceReceiptSignaturePath; Type = 'Leaf'; Name = 'Clean-host acceptance receipt signature' }
         [pscustomobject]@{ Path = $GitHubSnapshotPath; Type = 'Leaf'; Name = 'GitHub snapshot' }
     )
     foreach ($input in $evidenceInputs) {
@@ -2397,6 +2426,8 @@ function Invoke-V02ReleaseGate {
         (Resolve-V02ReleaseGateExistingPath -Path $CleanMachineReportPath -Type Leaf -Context 'Clean-machine acceptance report'),
         (Resolve-V02ReleaseGateExistingPath -Path $CleanHostAuthorizationPath -Type Leaf -Context 'Clean-host authorization'),
         (Resolve-V02ReleaseGateExistingPath -Path $CleanHostAuthorizationSignaturePath -Type Leaf -Context 'Clean-host authorization signature'),
+        (Resolve-V02ReleaseGateExistingPath -Path $CleanHostAcceptanceReceiptPath -Type Leaf -Context 'Clean-host acceptance receipt'),
+        (Resolve-V02ReleaseGateExistingPath -Path $CleanHostAcceptanceReceiptSignaturePath -Type Leaf -Context 'Clean-host acceptance receipt signature'),
         (Resolve-V02ReleaseGateExistingPath -Path $GitHubSnapshotPath -Type Leaf -Context 'GitHub snapshot'),
         $candidateLock.Path, $authority.Path, $candidateLock.IndependentReceipt.Path
     )
@@ -2419,7 +2450,9 @@ function Invoke-V02ReleaseGate {
         -RepositoryRoot $identityBefore.RepositoryRoot -ExpectedSourceCommit $ExpectedSourceCommit `
         -ExpectedSourceTree $ExpectedSourceTree -Package $package `
         -CleanHostAuthorizationPath $CleanHostAuthorizationPath `
-        -CleanHostAuthorizationSignaturePath $CleanHostAuthorizationSignaturePath
+        -CleanHostAuthorizationSignaturePath $CleanHostAuthorizationSignaturePath `
+        -CleanHostAcceptanceReceiptPath $CleanHostAcceptanceReceiptPath `
+        -CleanHostAcceptanceReceiptSignaturePath $CleanHostAcceptanceReceiptSignaturePath
     Assert-V02ReleaseGateBoundSnapshots -Snapshots $preValidationSnapshots -Phase 'Post-package validation'
     $renderer = Invoke-V02ReleaseGateRendererValidation -Context $context -Package $package `
         -ExpectedSourceCommit $ExpectedSourceCommit -ExpectedSourceTree $ExpectedSourceTree
@@ -2618,6 +2651,8 @@ if ($MyInvocation.InvocationName -ne '.') {
         -CleanMachineReportPath $CleanMachineReportPath `
         -CleanHostAuthorizationPath $CleanHostAuthorizationPath `
         -CleanHostAuthorizationSignaturePath $CleanHostAuthorizationSignaturePath `
+        -CleanHostAcceptanceReceiptPath $CleanHostAcceptanceReceiptPath `
+        -CleanHostAcceptanceReceiptSignaturePath $CleanHostAcceptanceReceiptSignaturePath `
         -GitHubSnapshotPath $GitHubSnapshotPath `
         -CandidateLockPath $CandidateLockPath `
         -AuthorityReferencePath $AuthorityReferencePath `
