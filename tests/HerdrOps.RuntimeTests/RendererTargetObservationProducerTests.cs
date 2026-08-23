@@ -332,14 +332,14 @@ public sealed class RendererTargetObservationProducerTests
             var pipeName = $"herdrops-renderer-protocol-{Guid.NewGuid():N}";
             _server = new NamedPipeServerStream(pipeName, PipeDirection.InOut, 1,
                 PipeTransmissionMode.Byte, PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
-            _core = Process.Start(new ProcessStartInfo("ping.exe", "-n 60 127.0.0.1")
+            var corePath = Path.GetFullPath(Path.Combine(Environment.SystemDirectory, "ping.exe"));
+            _core = Process.Start(new ProcessStartInfo(corePath, "-n 60 127.0.0.1")
             {
                 CreateNoWindow = true,
                 UseShellExecute = false,
             })!;
             _core.Refresh();
             var appPath = Path.GetFullPath(Environment.ProcessPath!);
-            var corePath = Path.GetFullPath(_core.MainModule!.FileName);
             var appSha = Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(appPath)));
             var coreSha = Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(corePath)));
             var identityPath = Path.Combine(Root, "identity.json");
