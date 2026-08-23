@@ -238,6 +238,17 @@ public partial class App : Application
                 options,
                 producerBinding);
             var report = await runner.RunAsync();
+            if (options.Issue10WidgetReportPath is not null)
+            {
+                Issue10WidgetEvidenceProducer.Write(
+                    options.Issue10WidgetReportPath,
+                    options.Issue10BindingManifestPath!,
+                    options.ReportPath,
+                    options.Issue10RunNonce!,
+                    options.Issue10SourceCommit!,
+                    options.Issue10SourceTree!,
+                    report);
+            }
             exitCode = report.CompositeCandidateChecksPassed ? 0 : 2;
         }
         catch (Exception exception)

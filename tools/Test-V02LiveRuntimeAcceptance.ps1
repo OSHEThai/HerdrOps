@@ -32,6 +32,10 @@ param(
     [ValidateNotNullOrEmpty()]
     [string]$TargetAgentSessionReference,
 
+    [string]$Issue10WidgetReportPath = '',
+
+    [string]$Issue10BindingManifestPath = '',
+
     [string]$HerdrExecutable = (Join-Path $env:LOCALAPPDATA 'Programs\Herdr\bin\herdr.exe'),
 
     [ValidateRange(90, 900)]
@@ -58,6 +62,15 @@ $PSNativeCommandUseErrorActionPreference = $false
 . (Join-Path $PSScriptRoot 'lib/V02RendererEvidence.ps1')
 . (Join-Path $PSScriptRoot 'lib/V02RuntimePackageBinding.ps1')
 . (Join-Path $PSScriptRoot 'lib/V02RuntimeSemanticBinding.ps1')
+
+if ([string]::IsNullOrWhiteSpace($Issue10WidgetReportPath) -xor
+    [string]::IsNullOrWhiteSpace($Issue10BindingManifestPath)) {
+    throw 'Issue #10 production widget evidence requires both Issue10WidgetReportPath and Issue10BindingManifestPath.'
+}
+if (-not [string]::IsNullOrWhiteSpace($Issue10BindingManifestPath) -and
+    -not (Test-Path -LiteralPath $Issue10BindingManifestPath -PathType Leaf)) {
+    throw "Issue #10 production binding manifest does not exist before App launch: $Issue10BindingManifestPath"
+}
 
 function Get-ExpectedCleanSourceIdentity {
     param(
@@ -913,6 +926,15 @@ $appArguments = @(
     '--reference-host-profile-id', $referenceHostProfile.Profile.profileId,
     '--reference-host-profile-sha256', $referenceHostProfile.Sha256
 )
+if (-not [string]::IsNullOrWhiteSpace($Issue10WidgetReportPath)) {
+    $appArguments += @(
+        '--issue10-widget-report', [IO.Path]::GetFullPath($Issue10WidgetReportPath),
+        '--issue10-binding-manifest', [IO.Path]::GetFullPath($Issue10BindingManifestPath),
+        '--issue10-run-nonce', $EvidenceRunNonce,
+        '--issue10-source-commit', $ExpectedSourceCommit.ToLowerInvariant(),
+        '--issue10-source-tree', $ExpectedSourceTree.ToLowerInvariant()
+    )
+}
 
 $tcpListeners = @{}
 try {
