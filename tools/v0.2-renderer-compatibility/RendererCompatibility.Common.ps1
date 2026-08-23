@@ -696,14 +696,17 @@ function Assert-RendererLiveEnvironment {
 function Get-RendererStableFileIdentity { param([string]$Root,[string]$Path,[string]$Context,[switch]$IncludeBytes,[switch]$KeepOpen)
     $rootFull=[IO.Path]::GetFullPath($Root).TrimEnd('\','/');$pathFull=[IO.Path]::GetFullPath($Path);Assert-RendererNonReparsePath $rootFull $pathFull $Context
     $stream=New-Object IO.FileStream($pathFull,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read)
+    $streamOwnershipTransferred=$false
     try{
         $final=[IO.Path]::GetFullPath([RendererCompatibility.NativePath]::GetFinalPath($stream.SafeFileHandle));if($final-cne$pathFull){throw "$Context final opened path changed."};if($final-cne$rootFull-and-not$final.StartsWith($rootFull+[IO.Path]::DirectorySeparatorChar,[StringComparison]::OrdinalIgnoreCase)){throw "$Context final opened path escaped the evidence root."}
         $snapshot=[RendererCompatibility.NativePath]::GetSnapshot($stream.SafeFileHandle);$fileIdentity=[string]$snapshot.FileIdentity;$linkCount=[long]$snapshot.LinkCount;if($linkCount-ne1){throw "$Context must have exactly one hard link."};if([long]$snapshot.Length-ne[long]$stream.Length){throw "$Context by-handle length differs from stream length."}
         $before=$stream.Length;$algorithm=[Security.Cryptography.SHA256]::Create();try{$hash=([BitConverter]::ToString($algorithm.ComputeHash($stream))).Replace('-','').ToUpperInvariant()}finally{$algorithm.Dispose()};$after=$stream.Length;if($before-ne$after-or$stream.Position-ne$after){throw "$Context changed during the same-handle read."}
         $bytes=$null;if($IncludeBytes){if($after-gt$script:RendererMaximumManifestBytes){throw "$Context exceeds the bounded read."};$stream.Position=0;$bytes=New-Object byte[] ([int]$after);$offset=0;while($offset-lt$bytes.Length){$read=$stream.Read($bytes,$offset,$bytes.Length-$offset);if($read-le0){throw "$Context ended during the same-handle read."};$offset+=$read};$rereadAlgorithm=[Security.Cryptography.SHA256]::Create();try{$rereadHash=([BitConverter]::ToString($rereadAlgorithm.ComputeHash($bytes))).Replace('-','').ToUpperInvariant()}finally{$rereadAlgorithm.Dispose()};if($rereadHash-cne$hash){throw "$Context bytes changed between the same-handle hash and reread."}}
         $finalAfter=[IO.Path]::GetFullPath([RendererCompatibility.NativePath]::GetFinalPath($stream.SafeFileHandle));$snapshotAfter=[RendererCompatibility.NativePath]::GetSnapshot($stream.SafeFileHandle);if($finalAfter-cne$final-or[string]$snapshotAfter.FileIdentity-cne$fileIdentity-or[long]$snapshotAfter.LinkCount-ne1-or[long]$snapshotAfter.Length-ne[long]$snapshot.Length-or[long]$snapshotAfter.LastWriteTimeUtcFileTime-ne[long]$snapshot.LastWriteTimeUtcFileTime-or[long]$stream.Length-ne[long]$snapshot.Length){throw "$Context FinalPath/FileId/link-count/by-handle length/LastWriteTime changed during the same-handle read."}
-        return [pscustomobject]@{Bytes=[long]$after;Sha256=$hash;Content=$bytes;FinalPath=$final;FileIdentity=$fileIdentity;LinkCount=$linkCount;LastWriteTimeUtc=[DateTime]::FromFileTimeUtc([long]$snapshot.LastWriteTimeUtcFileTime);Stream=if($KeepOpen){$stream}else{$null}}
-    }finally{if(-not$KeepOpen){$stream.Dispose()}}
+        $result=[pscustomobject]@{Bytes=[long]$after;Sha256=$hash;Content=$bytes;FinalPath=$final;FileIdentity=$fileIdentity;LinkCount=$linkCount;LastWriteTimeUtc=[DateTime]::FromFileTimeUtc([long]$snapshot.LastWriteTimeUtcFileTime);Stream=if($KeepOpen){$stream}else{$null}}
+        if($KeepOpen){$streamOwnershipTransferred=$true}
+        return $result
+    }finally{if(-not$streamOwnershipTransferred){$stream.Dispose()}}
 }
 function Assert-RendererRequiredProperties { param($Value,[string[]]$Names,[string]$Context)
     if ($null -eq $Value) { throw "$Context is missing." }
