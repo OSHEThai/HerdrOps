@@ -1,5 +1,6 @@
 using HerdrOps.App.RuntimeEvidence;
 using HerdrOps.App.Localization;
+using System.IO;
 
 namespace HerdrOps.RuntimeTests;
 
@@ -77,6 +78,63 @@ public sealed class RuntimeEvidenceOptionsTests
     }
 
     [TestMethod]
+    public void TryParsePreservesExactIssue10ProducerBindings()
+    {
+        var arguments = CompleteArguments()
+            .Concat(Issue10ProducerArguments())
+            .ToArray();
+
+        var parsed = RuntimeEvidenceOptions.TryParse(arguments, out var options, out var error);
+
+        Assert.IsTrue(parsed, error);
+        Assert.IsNotNull(options);
+        Assert.AreEqual(
+            Path.GetFullPath("issue10-widget.json"),
+            options.Issue10WidgetReportPath);
+        Assert.AreEqual(
+            Path.GetFullPath("issue10-binding.json"),
+            options.Issue10BindingManifestPath);
+        Assert.AreEqual(new string('c', 32), options.Issue10RunNonce);
+        Assert.AreEqual(new string('a', 40), options.Issue10SourceCommit);
+        Assert.AreEqual(new string('b', 40), options.Issue10SourceTree);
+    }
+
+    [TestMethod]
+    public void TryParseRejectsPartialIssue10ProducerBinding()
+    {
+        var parsed = RuntimeEvidenceOptions.TryParse(
+            CompleteArguments()
+                .Concat(
+                [
+                    "--issue10-widget-report", "issue10-widget.json",
+                    "--issue10-binding-manifest", "issue10-binding.json",
+                    "--issue10-run-nonce", new string('c', 32),
+                ])
+                .ToArray(),
+            out var options,
+            out var error);
+
+        Assert.IsFalse(parsed);
+        Assert.IsNull(options);
+        StringAssert.Contains(error, "requires --issue10-widget-report");
+    }
+
+    [TestMethod]
+    public void TryParseRejectsNonCanonicalIssue10InvocationIdentity()
+    {
+        var arguments = CompleteArguments()
+            .Concat(Issue10ProducerArguments())
+            .ToArray();
+        arguments[^5] = new string('C', 32);
+
+        var parsed = RuntimeEvidenceOptions.TryParse(arguments, out var options, out var error);
+
+        Assert.IsFalse(parsed);
+        Assert.IsNull(options);
+        StringAssert.Contains(error, "lowercase hexadecimal");
+    }
+
+    [TestMethod]
     [DataRow("19")]
     [DataRow("21")]
     public void TryParseRejectsUnapprovedIdleDuration(string idleSeconds)
@@ -116,5 +174,14 @@ public sealed class RuntimeEvidenceOptionsTests
         "--core-pid", Environment.ProcessId.ToString(),
         "--reference-host-profile-id", RuntimeEvidenceOptions.ApprovedProfileId,
         "--reference-host-profile-sha256", RuntimeEvidenceOptions.ApprovedProfileSha256,
+    ];
+
+    private static string[] Issue10ProducerArguments() =>
+    [
+        "--issue10-widget-report", "issue10-widget.json",
+        "--issue10-binding-manifest", "issue10-binding.json",
+        "--issue10-run-nonce", new string('c', 32),
+        "--issue10-source-commit", new string('a', 40),
+        "--issue10-source-tree", new string('b', 40),
     ];
 }

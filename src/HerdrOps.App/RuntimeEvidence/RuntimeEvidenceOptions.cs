@@ -13,7 +13,12 @@ public sealed record RuntimeEvidenceOptions(
     int IdleSeconds,
     UiLanguage Language,
     string ProfileId,
-    string ProfileSha256)
+    string ProfileSha256,
+    string? Issue10WidgetReportPath = null,
+    string? Issue10BindingManifestPath = null,
+    string? Issue10RunNonce = null,
+    string? Issue10SourceCommit = null,
+    string? Issue10SourceTree = null)
 {
     public const string ApprovedProfileId = "herdrops-v0.2-submark-nb-software-only-20260822";
     public const string ApprovedProfileSha256 = "96D01ED15A536F2DF50B59B43CFDEB3683DCE8667AE2E7BF6A96124182FE13A3";
@@ -50,6 +55,11 @@ public sealed record RuntimeEvidenceOptions(
         var language = UiLanguage.Thai;
         string? profileId = null;
         string? profileSha256 = null;
+        string? issue10WidgetReportPath = null;
+        string? issue10BindingManifestPath = null;
+        string? issue10RunNonce = null;
+        string? issue10SourceCommit = null;
+        string? issue10SourceTree = null;
 
         for (var index = 0; index < args.Count; index++)
         {
@@ -122,6 +132,21 @@ public sealed record RuntimeEvidenceOptions(
                 case "--reference-host-profile-sha256":
                     profileSha256 = value;
                     break;
+                case "--issue10-widget-report":
+                    issue10WidgetReportPath = value;
+                    break;
+                case "--issue10-binding-manifest":
+                    issue10BindingManifestPath = value;
+                    break;
+                case "--issue10-run-nonce":
+                    issue10RunNonce = value;
+                    break;
+                case "--issue10-source-commit":
+                    issue10SourceCommit = value;
+                    break;
+                case "--issue10-source-tree":
+                    issue10SourceTree = value;
+                    break;
                 default:
                     error = $"Unknown runtime evidence option '{argument}'.";
                     return false;
@@ -150,6 +175,32 @@ public sealed record RuntimeEvidenceOptions(
             return false;
         }
 
+        var issue10ProducerRequested =
+            !string.IsNullOrWhiteSpace(issue10WidgetReportPath) ||
+            !string.IsNullOrWhiteSpace(issue10BindingManifestPath) ||
+            !string.IsNullOrWhiteSpace(issue10RunNonce) ||
+            !string.IsNullOrWhiteSpace(issue10SourceCommit) ||
+            !string.IsNullOrWhiteSpace(issue10SourceTree);
+        if (issue10ProducerRequested &&
+            (string.IsNullOrWhiteSpace(issue10WidgetReportPath) ||
+             string.IsNullOrWhiteSpace(issue10BindingManifestPath) ||
+             string.IsNullOrWhiteSpace(issue10RunNonce) ||
+             string.IsNullOrWhiteSpace(issue10SourceCommit) ||
+             string.IsNullOrWhiteSpace(issue10SourceTree)))
+        {
+            error = "Issue #10 production widget evidence requires --issue10-widget-report, --issue10-binding-manifest, --issue10-run-nonce, --issue10-source-commit, and --issue10-source-tree together.";
+            return false;
+        }
+
+        if (issue10ProducerRequested &&
+            (!Regex.IsMatch(issue10RunNonce!, "^[0-9a-f]{32}$", RegexOptions.CultureInvariant) ||
+             !Regex.IsMatch(issue10SourceCommit!, "^[0-9a-f]{40}$", RegexOptions.CultureInvariant) ||
+             !Regex.IsMatch(issue10SourceTree!, "^[0-9a-f]{40}$", RegexOptions.CultureInvariant)))
+        {
+            error = "Issue #10 production widget evidence requires lowercase hexadecimal RunNonce, source commit, and source tree bindings.";
+            return false;
+        }
+
         if (!string.Equals(profileId, ApprovedProfileId, StringComparison.Ordinal))
         {
             error = $"Option --reference-host-profile-id must equal the approved profile ID '{ApprovedProfileId}'.";
@@ -169,6 +220,11 @@ public sealed record RuntimeEvidenceOptions(
             progressPath = string.IsNullOrWhiteSpace(progressPath)
                 ? Path.Combine(Path.GetDirectoryName(reportPath)!, "app-progress.json")
                 : Path.GetFullPath(progressPath);
+            if (issue10ProducerRequested)
+            {
+                issue10WidgetReportPath = Path.GetFullPath(issue10WidgetReportPath!);
+                issue10BindingManifestPath = Path.GetFullPath(issue10BindingManifestPath!);
+            }
         }
         catch (Exception exception) when (
             exception is ArgumentException or NotSupportedException or PathTooLongException)
@@ -186,7 +242,12 @@ public sealed record RuntimeEvidenceOptions(
             idleSeconds,
             language,
             profileId,
-            profileSha256);
+            profileSha256,
+            issue10WidgetReportPath,
+            issue10BindingManifestPath,
+            issue10RunNonce,
+            issue10SourceCommit,
+            issue10SourceTree);
         return true;
     }
 }
