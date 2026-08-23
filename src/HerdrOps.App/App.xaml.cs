@@ -220,6 +220,10 @@ public partial class App : Application
         var exitCode = 2;
         Exception? primaryFailure = null;
         Exception? cleanupFailure = null;
+        using var rendererDeadline = new CancellationTokenSource();
+        var rendererRemaining = startedUtc.AddSeconds(options.TimeoutSeconds) - DateTimeOffset.UtcNow;
+        rendererDeadline.CancelAfter(rendererRemaining > TimeSpan.Zero ? rendererRemaining : TimeSpan.Zero);
+        var rendererCancellation = rendererDeadline.Token;
         try
         {
             producerBinding = RuntimeEvidenceProducerBinding.ObserveBeforeFirstWindow(
@@ -230,7 +234,7 @@ public partial class App : Application
                     options.RendererObservation);
                 rendererObservation.Start();
                 await rendererObservation.WaitForFirstWindowPermissionAsync(
-                    CancellationToken.None);
+                    rendererCancellation);
             }
 
             var state = new LiveDashboardState();
@@ -252,17 +256,17 @@ public partial class App : Application
             var report = await runner.RunAsync();
             if (rendererObservation is not null)
             {
-                await rendererObservation.WaitForThaiCapturePermissionAsync(CancellationToken.None);
+                await rendererObservation.WaitForThaiCapturePermissionAsync(rendererCancellation);
                 await runner.CaptureRendererCompatibilitySetAsync(
                     rendererObservation,
                     UiLanguage.Thai,
-                    CancellationToken.None);
-                await rendererObservation.WaitForEnglishCapturePermissionAsync(CancellationToken.None);
+                    rendererCancellation);
+                await rendererObservation.WaitForEnglishCapturePermissionAsync(rendererCancellation);
                 await runner.CaptureRendererCompatibilitySetAsync(
                     rendererObservation,
                     UiLanguage.English,
-                    CancellationToken.None);
-                await rendererObservation.Completion;
+                    rendererCancellation);
+                await rendererObservation.Completion.WaitAsync(rendererCancellation);
             }
             if (options.Issue10WidgetReportPath is not null)
             {
