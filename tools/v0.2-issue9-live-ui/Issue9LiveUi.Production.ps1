@@ -11,6 +11,76 @@ function Assert-I9RunNonce {
     return $text
 }
 
+function Publish-I9DesktopBitmapNoClobber {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]$Bitmap,
+        [Parameter(Mandatory)][string]$OutputPath,
+        [scriptblock]$BeforeAtomicMoveSelfTestHook
+    )
+
+    $full = Get-I9FullPath $OutputPath 'Issue #9 desktop capture output'
+    $parent = [IO.Path]::GetDirectoryName($full)
+    if (-not (Test-Path -LiteralPath $parent -PathType Container)) { throw 'Issue #9 desktop capture parent is missing.' }
+    Assert-I9NoReparse $parent 'Issue #9 desktop capture parent'
+    if (Test-Path -LiteralPath $full) { throw 'Issue #9 desktop capture output already exists.' }
+
+    $temporary = Join-Path $parent ('.' + [IO.Path]::GetFileName($full) + '.' + [Guid]::NewGuid().ToString('N') + '.capture.tmp')
+    $stream = $null
+    $createdIdentity = $null
+    $ownsTemporary = $false
+    try {
+        $stream = [IO.File]::Open($temporary,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::None)
+        $ownsTemporary = $true
+        $createdIdentity = Get-V02FileInformation -FileStream $stream
+        if ([uint32]$createdIdentity.NumberOfLinks -ne 1) { throw 'Issue #9 desktop capture temporary must have exactly one link.' }
+        $Bitmap.Save($stream,[Drawing.Imaging.ImageFormat]::Png)
+        $stream.Flush($true)
+        $writtenIdentity = Get-V02FileInformation -FileStream $stream
+        Assert-V02FileIdentityContinuity -BaselineInfo $createdIdentity -CurrentInfo $writtenIdentity -Context 'Issue #9 desktop capture temporary'
+        if ([uint32]$writtenIdentity.NumberOfLinks -ne 1 -or [int64]$stream.Length -le 0 -or [int64]$stream.Length -gt $script:I9MaximumEvidenceBytes) {
+            throw 'Issue #9 desktop capture temporary is empty, oversized, or aliased.'
+        }
+        $stream.Dispose()
+        $stream = $null
+
+        $heldTemporary = Read-I9HeldFile $temporary -MaximumBytes $script:I9MaximumEvidenceBytes
+        if ([uint32]$heldTemporary.VolumeSerialNumber -ne [uint32]$createdIdentity.VolumeSerialNumber -or
+            [uint64]$heldTemporary.FileId -ne [uint64]$createdIdentity.FileIndex -or
+            [uint32]$heldTemporary.LinkCount -ne 1) {
+            throw 'Issue #9 desktop capture temporary identity changed before publication.'
+        }
+        Assert-I9NoReparse $parent 'Issue #9 desktop capture parent before publication'
+
+        # This seam is intentionally private to the helper and is never exposed by
+        # New-I9DesktopSideBySideCapture. It deterministically exercises the exact
+        # destination-creation race at the atomic move boundary in selftests.
+        if ($null -ne $BeforeAtomicMoveSelfTestHook) { & $BeforeAtomicMoveSelfTestHook $full }
+        Assert-I9NoReparse $parent 'Issue #9 desktop capture parent at publication'
+        try {
+            [IO.File]::Move($temporary,$full)
+        } catch {
+            if ([IO.File]::Exists($full) -and [IO.File]::Exists($temporary)) {
+                throw 'Issue #9 desktop capture atomic no-clobber guard rejected a destination created during publication.'
+            }
+            throw
+        }
+        $ownsTemporary = $false
+    } finally {
+        if ($null -ne $stream) { $stream.Dispose() }
+        if ($ownsTemporary -and [IO.File]::Exists($temporary)) {
+            $cleanupIdentity = Read-I9HeldFile $temporary -MaximumBytes $script:I9MaximumEvidenceBytes
+            if ([uint32]$cleanupIdentity.VolumeSerialNumber -ne [uint32]$createdIdentity.VolumeSerialNumber -or
+                [uint64]$cleanupIdentity.FileId -ne [uint64]$createdIdentity.FileIndex -or
+                [uint32]$cleanupIdentity.LinkCount -ne 1) {
+                throw 'Issue #9 desktop capture temporary identity changed; refusing to delete an unowned file.'
+            }
+            [IO.File]::Delete($temporary)
+        }
+    }
+    return Assert-I9Png $full 'Issue #9 actual-Herdr/UI desktop capture'
+}
+
 function New-I9DesktopSideBySideCapture {
     [CmdletBinding()]
     param(
@@ -38,13 +108,12 @@ function New-I9DesktopSideBySideCapture {
     $graphics = [Drawing.Graphics]::FromImage($bitmap)
     try {
         $graphics.CopyFromScreen($bounds.Left,$bounds.Top,0,0,$bounds.Size,[Drawing.CopyPixelOperation]::SourceCopy)
-        $bitmap.Save($full,[Drawing.Imaging.ImageFormat]::Png)
+        $png = Publish-I9DesktopBitmapNoClobber -Bitmap $bitmap -OutputPath $full
+        $observedUtc = [DateTimeOffset]::UtcNow
     } finally {
         $graphics.Dispose()
         $bitmap.Dispose()
     }
-    $observedUtc = [DateTimeOffset]::UtcNow
-    $png = Assert-I9Png $full 'Issue #9 actual-Herdr/UI desktop capture'
     return [pscustomobject][ordered]@{
         Path = $png.Path
         Bytes = $png.Bytes

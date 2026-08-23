@@ -237,6 +237,26 @@ try {
     $noClobber=Join-Path $root 'no-clobber.json'; $firstArgs=@{}+$invokeArgs;$firstArgs.OutputPath=$noClobber;$null=Invoke-I9LiveUiVerification @firstArgs
     Expect-I9Failure { Invoke-I9LiveUiVerification @firstArgs } 'duplicate output publication' 'already exists'
 
+    Add-Type -AssemblyName System.Drawing -ErrorAction Stop
+    $captureRacePath=Join-Path $root 'desktop-capture-race.png'
+    $sentinelBytes=[Text.UTF8Encoding]::new($false).GetBytes('concurrent-owner-sentinel')
+    $captureRaceHook={
+        param([string]$DestinationPath)
+        $sentinelStream=[IO.File]::Open($DestinationPath,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::None)
+        try {
+            $sentinelStream.Write($sentinelBytes,0,$sentinelBytes.Length)
+            $sentinelStream.Flush($true)
+        } finally { $sentinelStream.Dispose() }
+    }.GetNewClosure()
+    $captureRaceBitmap=[Drawing.Bitmap]::new(2,2,[Drawing.Imaging.PixelFormat]::Format32bppPArgb)
+    try {
+        Expect-I9Failure { Publish-I9DesktopBitmapNoClobber -Bitmap $captureRaceBitmap -OutputPath $captureRacePath -BeforeAtomicMoveSelfTestHook $captureRaceHook } 'desktop capture concurrent destination' 'atomic no-clobber guard rejected'
+    } finally { $captureRaceBitmap.Dispose() }
+    $survivingSentinel=[IO.File]::ReadAllBytes($captureRacePath)
+    Assert-I9Test ([Convert]::ToBase64String($survivingSentinel) -ceq [Convert]::ToBase64String($sentinelBytes)) 'Desktop capture race overwrote or altered the concurrently created sentinel.'
+    $captureTemporaryPattern='.'+[IO.Path]::GetFileName($captureRacePath)+'.*.capture.tmp'
+    Assert-I9Test (@(Get-ChildItem -LiteralPath $root -Filter $captureTemporaryPattern -Force).Count -eq 0) 'Desktop capture race left its owned temporary behind.'
+
     foreach ($path in @((Join-Path $PSScriptRoot 'Test-V02Issue9LiveUiAcceptance.ps1'),(Join-Path $PSScriptRoot 'Issue9LiveUi.Common.ps1'),(Join-Path $PSScriptRoot 'Issue9LiveUi.Production.ps1'))) {
         $text=[IO.File]::ReadAllText($path,[Text.UTF8Encoding]::new($false)); Assert-I9Test ($text -notmatch '(?i)Start-Process|Stop-Process|herdr session') "Issue #9 helper contains process/session control: $path"
     }
