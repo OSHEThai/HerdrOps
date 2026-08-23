@@ -7,6 +7,7 @@ param(
     [Parameter(Mandatory)][string]$ExtractedPackageRoot,
     [Parameter(Mandatory)][string]$RepositoryRoot,
     [Parameter(Mandatory)][string]$PackageProfilePath,
+    [Parameter(Mandatory)][ValidatePattern('^[0-9a-f]{32}$')][string]$ProducerRunNonce,
     [string]$OutputPath
 )
 
@@ -15,6 +16,7 @@ $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'lib\V02ReferenceHostProfile.ps1')
 $script:V02LanguageMatrixMaximumEvidenceBytes = [int64]16777216
 $script:V02LanguageMatrixMaximumOutputBytes = [int64]16777216
+$script:V02LanguageMatrixMaximumAgeMinutes = 120
 
 function Get-MatrixFullPath {
     param([Parameter(Mandatory)][string]$Path,[Parameter(Mandatory)][string]$Context)
@@ -133,6 +135,12 @@ function Get-MatrixProperty {
 function Assert-MatrixSha256 {
     param([Parameter(Mandatory)]$Value,[Parameter(Mandatory)][string]$Context)
     if ($Value -isnot [string] -or [string]$Value -notmatch '^[0-9A-F]{64}$') { throw "$Context must be uppercase SHA-256." }
+    return [string]$Value
+}
+
+function Assert-MatrixRunNonce {
+    param([Parameter(Mandatory)]$Value,[Parameter(Mandatory)][string]$Context)
+    if ($Value -isnot [string] -or [string]$Value -cnotmatch '^[0-9a-f]{32}$') { throw "$Context must be a lowercase 32-hex invocation nonce." }
     return [string]$Value
 }
 
@@ -257,6 +265,11 @@ function Read-MatrixRun {
     param([Parameter(Mandatory)][string]$EvidenceDirectory,[Parameter(Mandatory)][ValidateSet('Thai','English')][string]$ExpectedLanguage,[Parameter(Mandatory)]$Package)
     $gatePath=Resolve-MatrixEvidencePath $EvidenceDirectory (Join-Path $EvidenceDirectory 'gate-report.txt') "$ExpectedLanguage gate report" 'Leaf';$appPath=Resolve-MatrixEvidencePath $EvidenceDirectory (Join-Path $EvidenceDirectory 'app-runtime.json') "$ExpectedLanguage App report" 'Leaf';$corePath=Resolve-MatrixEvidencePath $EvidenceDirectory (Join-Path $EvidenceDirectory 'core-runtime.json') "$ExpectedLanguage Core report" 'Leaf'
     $gate=Read-MatrixGateReport -EvidenceRoot $EvidenceDirectory -Path $gatePath
+    $runNonce=Assert-MatrixRunNonce (Get-MatrixGateValue $gate 'RunNonce' $ExpectedLanguage) "$ExpectedLanguage RunNonce"
+    $generatedUtc=[DateTimeOffset]::MinValue
+    if(-not[DateTimeOffset]::TryParse((Get-MatrixGateValue $gate 'GeneratedUtc' $ExpectedLanguage),[Globalization.CultureInfo]::InvariantCulture,[Globalization.DateTimeStyles]::RoundtripKind,[ref]$generatedUtc)){throw "$ExpectedLanguage gate GeneratedUtc is not a round-trip timestamp."}
+    $validationUtc=[DateTimeOffset]::UtcNow;$generatedUtc=$generatedUtc.ToUniversalTime()
+    if($generatedUtc-gt$validationUtc-or$generatedUtc-lt$validationUtc.AddMinutes(-$script:V02LanguageMatrixMaximumAgeMinutes)){throw "$ExpectedLanguage gate run is outside the bounded fresh review window."}
     Assert-MatrixEqual (Get-MatrixGateValue $gate 'Result' $ExpectedLanguage) 'PASS' "$ExpectedLanguage gate result"
     Assert-MatrixEqual (Get-MatrixGateValue $gate 'EvidenceClass' $ExpectedLanguage) 'Runtime' "$ExpectedLanguage gate evidence class"
     Assert-MatrixEqual (Get-MatrixGateValue $gate 'PreRunGitTreeClean' $ExpectedLanguage) 'True' "$ExpectedLanguage pre-run clean tree"
@@ -349,7 +362,7 @@ function Read-MatrixRun {
     $seen=@{};foreach($decl in $gateCaptures){if($seen.ContainsKey($decl.Name)-or-not$captureByName.ContainsKey($decl.Name)){throw "$ExpectedLanguage gate capture names are duplicated or unknown."};Assert-MatrixEqual $decl.Sha256 $captureByName[$decl.Name].Sha256 "$ExpectedLanguage gate capture '$($decl.Name)'";$seen[$decl.Name]=$true}
 
     $historyFinalIdentity=Get-MatrixStableFileIdentity $EvidenceDirectory $progressHistoryPath "$ExpectedLanguage progress history";$progressFinalIdentity=Get-MatrixStableFileIdentity $EvidenceDirectory $progressPath "$ExpectedLanguage progress report";if($historyFinalIdentity.Sha256-cne$historyIdentity.Sha256-or$progressFinalIdentity.Sha256-cne$progressDocument.Identity.Sha256){throw "$ExpectedLanguage progress evidence changed during validation."}
-    return [pscustomobject]@{Language=$ExpectedLanguage;Culture=$expectedCulture;EvidenceDirectory=$EvidenceDirectory;CaptureRoot=[string]@($captureRoots.Keys)[0];GateReportSha256=$gateFinalIdentity.Sha256;AppRuntimeReportSha256=$actualAppReportHash;CoreRuntimeReportSha256=$actualCoreReportHash;ProgressHistorySha256=$historyFileSha;ProgressHistoryLastEntrySha256=$previous;PackageIdentityReceiptSha256=$packageReceiptSha;SourceCommit=$identity.ExpectedSourceCommit;SourceTree=$identity.ExpectedSourceTree;ProfileId=$profileId;ProfileSha256=$profileSha;ReferenceHostSchemaSha256=$referenceHostSchemaSha;HerdrReleaseId=$herdrRelease;HerdrExecutableSha256=$herdrSha;AppExecutableSha256=$appBinary;CoreExecutableSha256=$coreBinary;BundledSchemaSha256=$schemaSha;HerdrProtocol=$protocol;RendererPolicyId=$rendererPolicy;WpfProcessRenderMode=$renderMode;CaptureCount=$captures.Count;Captures=@($captureByName.Values|Sort-Object Name)}
+    return [pscustomobject]@{Language=$ExpectedLanguage;EvidenceRunNonce=$runNonce;Culture=$expectedCulture;EvidenceDirectory=$EvidenceDirectory;CaptureRoot=[string]@($captureRoots.Keys)[0];GateReportSha256=$gateFinalIdentity.Sha256;AppRuntimeReportSha256=$actualAppReportHash;CoreRuntimeReportSha256=$actualCoreReportHash;ProgressHistorySha256=$historyFileSha;ProgressHistoryLastEntrySha256=$previous;PackageIdentityReceiptSha256=$packageReceiptSha;SourceCommit=$identity.ExpectedSourceCommit;SourceTree=$identity.ExpectedSourceTree;ProfileId=$profileId;ProfileSha256=$profileSha;ReferenceHostSchemaSha256=$referenceHostSchemaSha;HerdrReleaseId=$herdrRelease;HerdrExecutableSha256=$herdrSha;AppExecutableSha256=$appBinary;CoreExecutableSha256=$coreBinary;BundledSchemaSha256=$schemaSha;HerdrProtocol=$protocol;RendererPolicyId=$rendererPolicy;WpfProcessRenderMode=$renderMode;CaptureCount=$captures.Count;Captures=@($captureByName.Values|Sort-Object Name)}
 }
 
 function Publish-MatrixCandidateNoClobber {
@@ -379,12 +392,15 @@ Assert-MatrixDistinctTrees $thaiDirectory $englishDirectory 'Thai and English ev
 $matrixEvidenceRoot=Get-MatrixCommonDirectory $thaiDirectory $englishDirectory 'Thai and English evidence directories'
 $thai=Read-MatrixRun $thaiDirectory 'Thai' $package;$english=Read-MatrixRun $englishDirectory 'English' $package
 Assert-MatrixDistinctTrees $thai.CaptureRoot $english.CaptureRoot 'Thai and English capture roots'
+if($thai.EvidenceRunNonce-ceq$english.EvidenceRunNonce){throw 'Thai and English runtime legs replay the same evidence RunNonce.'}
+$matrixProducerRunNonce=Assert-MatrixRunNonce $ProducerRunNonce 'Matrix producer RunNonce'
+if($matrixProducerRunNonce-ceq$thai.EvidenceRunNonce-or$matrixProducerRunNonce-ceq$english.EvidenceRunNonce){throw 'Matrix producer RunNonce must be distinct from both runtime-evidence RunNonce values.'}
 foreach($name in @('SourceCommit','SourceTree','ProfileId','ProfileSha256','ReferenceHostSchemaSha256','HerdrReleaseId','HerdrExecutableSha256','AppExecutableSha256','CoreExecutableSha256','BundledSchemaSha256','HerdrProtocol','RendererPolicyId','WpfProcessRenderMode','PackageIdentityReceiptSha256')) { Assert-MatrixEqual $thai.$name $english.$name "Thai/English $name" }
 Assert-MatrixEqual (Get-FileHash $package.IdentityPath -Algorithm SHA256).Hash $package.IdentityFileSha256 'package receipt stability';Assert-MatrixEqual (Get-FileHash $package.AppPath -Algorithm SHA256).Hash $package.AppSha256 'package App post-matrix stability';Assert-MatrixEqual (Get-FileHash $package.CorePath -Algorithm SHA256).Hash $package.CoreSha256 'package Core post-matrix stability';Assert-MatrixEqual (Get-FileHash $package.ManifestPath -Algorithm SHA256).Hash $package.ManifestSha256 'package manifest post-matrix stability';Assert-MatrixEqual (Get-FileHash $package.ArchivePath -Algorithm SHA256).Hash $package.ArchiveSha256 'package archive post-matrix stability'
 
 if([string]::IsNullOrWhiteSpace($OutputPath)){ $OutputPath=Join-Path $matrixEvidenceRoot 'v0.2-language-matrix-candidate.json' }
 $outputFull=Get-MatrixFullPath $OutputPath 'OutputPath';if((Test-MatrixPathWithinOrEqual $outputFull $thaiDirectory)-or(Test-MatrixPathWithinOrEqual $outputFull $englishDirectory)){throw 'OutputPath must be outside both accepted evidence directory trees.'}
-$payload=[ordered]@{GeneratedUnixTimeMilliseconds=[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds();IndependentHumanReview='NOT_OBSERVED';ReleaseCredit=$false;Binding=[ordered]@{SourceCommit=$thai.SourceCommit;SourceTree=$thai.SourceTree;ProfileId=$thai.ProfileId;ProfileSha256=$thai.ProfileSha256;ReferenceHostSchemaSha256=$thai.ReferenceHostSchemaSha256;PackageIdentityReceiptSha256=$thai.PackageIdentityReceiptSha256;HerdrReleaseId=$thai.HerdrReleaseId;HerdrExecutableSha256=$thai.HerdrExecutableSha256;AppExecutableSha256=$thai.AppExecutableSha256;CoreExecutableSha256=$thai.CoreExecutableSha256;BundledSchemaSha256=$thai.BundledSchemaSha256;HerdrProtocol=$thai.HerdrProtocol};Runs=@($thai,$english)}
+$payload=[ordered]@{GeneratedUnixTimeMilliseconds=[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds();RunNonce=$matrixProducerRunNonce;IndependentHumanReview='NOT_OBSERVED';ReleaseCredit=$false;Binding=[ordered]@{SourceCommit=$thai.SourceCommit;SourceTree=$thai.SourceTree;ProfileId=$thai.ProfileId;ProfileSha256=$thai.ProfileSha256;ReferenceHostSchemaSha256=$thai.ReferenceHostSchemaSha256;PackageIdentityReceiptSha256=$thai.PackageIdentityReceiptSha256;HerdrReleaseId=$thai.HerdrReleaseId;HerdrExecutableSha256=$thai.HerdrExecutableSha256;AppExecutableSha256=$thai.AppExecutableSha256;CoreExecutableSha256=$thai.CoreExecutableSha256;BundledSchemaSha256=$thai.BundledSchemaSha256;HerdrProtocol=$thai.HerdrProtocol};Runs=@($thai,$english)}
 $payloadValue=(($payload|ConvertTo-Json -Depth 20)|ConvertFrom-Json);$payloadJson=ConvertTo-V02Jcs $payloadValue;$utf8=New-Object Text.UTF8Encoding($false);$payloadSha=([BitConverter]::ToString([Security.Cryptography.SHA256]::Create().ComputeHash($utf8.GetBytes($payloadJson)))).Replace('-','')
 $manifest=[ordered]@{EvidenceClassification='RuntimeMatrixCandidate';IndependentHumanReview='NOT_OBSERVED';ReleaseCredit=$false;ManifestFormatVersion=1;ManifestHashScope='SHA256OfRFC8785JcsUtf8NoBomPayload';ManifestPayloadSha256=$payloadSha;Payload=$payloadValue}
 $json=$manifest|ConvertTo-Json -Depth 20;$published=Publish-MatrixCandidateNoClobber -AllowedRoot $matrixEvidenceRoot -OutputPath $outputFull -Json $json;$fileSha=$published.Sha256

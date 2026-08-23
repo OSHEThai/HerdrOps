@@ -15,7 +15,8 @@ param(
     [Parameter(Mandatory = $true)][string]$BuilderIdentity,
     [Parameter(Mandatory = $true)][string]$RuntimeOperatorIdentity,
     [Parameter(Mandatory = $true)][string]$MatrixProducerIdentity,
-    [Parameter(Mandatory = $true)][string]$RuntimeReviewerIdentity
+    [Parameter(Mandatory = $true)][string]$RuntimeReviewerIdentity,
+    [Parameter(Mandatory = $true)][ValidatePattern('^[0-9a-f]{32}$')][string]$ReviewRunNonce
 )
 
 Set-StrictMode -Version Latest
@@ -64,6 +65,7 @@ $result = Invoke-V02RuntimeReviewVerification `
     -RuntimeOperatorIdentity $RuntimeOperatorIdentity `
     -MatrixProducerIdentity $MatrixProducerIdentity `
     -RuntimeReviewerIdentity $RuntimeReviewerIdentity
+    -ReviewRunNonce $ReviewRunNonce
 
 Write-Output 'EvidenceClass: IndependentReviewCandidate'
 Write-Output "Result: $($result.Result)"

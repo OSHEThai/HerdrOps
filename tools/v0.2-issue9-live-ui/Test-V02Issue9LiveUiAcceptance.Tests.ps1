@@ -95,7 +95,7 @@ try {
     $identityDoc=Read-I9Json $packageIdentityPath 'fixture package identity'
     $packageReceiptSha=Get-I9Hash ([Text.UTF8Encoding]::new($false).GetBytes((ConvertTo-V02Jcs $identityDoc.Value)))
 
-    $t0=[DateTimeOffset]::Parse('2026-08-23T00:00:00Z'); $t1=$t0.AddSeconds(1); $t2=$t0.AddSeconds(2); $t3=$t0.AddSeconds(3); $t4=$t0.AddSeconds(4); $t5=$t0.AddSeconds(5); $t6=$t0.AddSeconds(6); $t7=$t0.AddSeconds(7); $t8=$t0.AddSeconds(8); $t9=$t0.AddSeconds(9); $t10=$t0.AddSeconds(10); $t11=$t0.AddSeconds(11)
+    $t0=[DateTimeOffset]::UtcNow.AddSeconds(-20); $t1=$t0.AddSeconds(1); $t2=$t0.AddSeconds(2); $t3=$t0.AddSeconds(3); $t4=$t0.AddSeconds(4); $t5=$t0.AddSeconds(5); $t6=$t0.AddSeconds(6); $t7=$t0.AddSeconds(7); $t8=$t0.AddSeconds(8); $t9=$t0.AddSeconds(9); $t10=$t0.AddSeconds(10); $t11=$t0.AddSeconds(11)
     $initial='1'*64; $pre='2'*64; $reconciled='3'*64; $post='4'*64
     $workspace='workspace-1'; $terminal='term-1'; $tab='tab-1'; $pane='pane-1'
     $eventAChange=[ordered]@{TerminalId=$terminal;WorkspaceId=$workspace;TabId=$tab;PaneId=$pane;PreviousStatus='Idle';CurrentStatus='Working'}
@@ -157,7 +157,7 @@ try {
         $side=New-I9TestPng (Join-Path (Join-Path $RuntimeRoot 'issue9-ui') 'actual-herdr-ui-side-by-side.png') 1200 700 ([byte]($Seed+10))
         $sideObservation=[pscustomobject][ordered]@{Path=$side.Path;Bytes=$side.Bytes;Sha256=$side.Sha256;PixelWidth=$side.PixelWidth;PixelHeight=$side.PixelHeight;ObservedUtc=$t2.ToString('O');Phase='capturing-live-dashboard-and-widgets';Sequence=1;StateSha256=$initial}
         $receipt=New-I9LiveUiObservation -RuntimeEvidenceDirectory $RuntimeRoot -UiEvidenceDirectory (Join-Path $RuntimeRoot 'issue9-ui') -GateReportPath $gatePath -AppRuntimeReportPath $appPath -CoreRuntimeReportPath $corePath -SideBySideCapture $sideObservation -Language $Language -ExpectedSourceCommit $commit -ExpectedSourceTree $tree -RunNonce $Nonce -ProducerScriptPath $producerScript -ControlServerIdentityBefore $controlIdentity -ControlServerIdentityAfter $controlIdentity
-        return [pscustomobject]@{Root=[IO.Path]::GetFullPath($RuntimeRoot);GatePath=$gatePath;GateHash=(Read-I9HeldFile $gatePath).Sha256;AppPath=$appPath;AppHash=$appHash;CorePath=$corePath;CoreHash=$coreHash;SideObservation=$sideObservation;ReceiptPath=$receipt.Path}
+        return [pscustomobject]@{Root=[IO.Path]::GetFullPath($RuntimeRoot);EvidenceRunNonce=$Nonce;GatePath=$gatePath;GateHash=(Read-I9HeldFile $gatePath).Sha256;AppPath=$appPath;AppHash=$appHash;CorePath=$corePath;CoreHash=$coreHash;SideObservation=$sideObservation;ReceiptPath=$receipt.Path}
     }
 
     $thai=New-I9RuntimeLeg $thaiRuntime 'Thai' $thaiNonce 20
@@ -171,11 +171,11 @@ try {
     Expect-I9Failure { New-I9LiveUiObservation -RuntimeEvidenceDirectory $thaiRuntime -UiEvidenceDirectory $thaiUi -GateReportPath $thai.GatePath -AppRuntimeReportPath $thai.AppPath -CoreRuntimeReportPath $thai.CorePath -SideBySideCapture $thai.SideObservation -Language Thai -ExpectedSourceCommit $commit -ExpectedSourceTree $tree -RunNonce $englishNonce -ProducerScriptPath $producerScript -ControlServerIdentityBefore $controlIdentity -ControlServerIdentityAfter $controlIdentity -OutputPath (Join-Path $thaiUi 'cross-leg.json') } 'producer cross-leg nonce' 'does not match the held runtime leg'
 
     $matrixPayload=[ordered]@{
-        GeneratedUnixTimeMilliseconds=[int64]1;IndependentHumanReview='NOT_OBSERVED';ReleaseCredit=$false
+        GeneratedUnixTimeMilliseconds=[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds();RunNonce=('3'*32);IndependentHumanReview='NOT_OBSERVED';ReleaseCredit=$false
         Binding=[ordered]@{SourceCommit=$commit;SourceTree=$tree;ProfileId='herdrops-v0.2-package-software-only-issue-149';ProfileSha256=$profileSha;ReferenceHostSchemaSha256=$hostSchemaSha;PackageIdentityReceiptSha256=$packageReceiptSha;HerdrReleaseId=$admission.ReleaseId;HerdrExecutableSha256=$herdrSha;AppExecutableSha256=$appFile.Sha256;CoreExecutableSha256=$coreFile.Sha256;BundledSchemaSha256=$schemaSha;HerdrProtocol='20'}
         Runs=@(
-            [ordered]@{Language='Thai';EvidenceDirectory=$thai.Root;GateReportSha256=$thai.GateHash;AppRuntimeReportSha256=$thai.AppHash;CoreRuntimeReportSha256=$thai.CoreHash;SourceCommit=$commit;SourceTree=$tree;PackageIdentityReceiptSha256=$packageReceiptSha},
-            [ordered]@{Language='English';EvidenceDirectory=$english.Root;GateReportSha256=$english.GateHash;AppRuntimeReportSha256=$english.AppHash;CoreRuntimeReportSha256=$english.CoreHash;SourceCommit=$commit;SourceTree=$tree;PackageIdentityReceiptSha256=$packageReceiptSha}
+            [ordered]@{Language='Thai';EvidenceRunNonce=$thai.EvidenceRunNonce;EvidenceDirectory=$thai.Root;GateReportSha256=$thai.GateHash;AppRuntimeReportSha256=$thai.AppHash;CoreRuntimeReportSha256=$thai.CoreHash;SourceCommit=$commit;SourceTree=$tree;PackageIdentityReceiptSha256=$packageReceiptSha},
+            [ordered]@{Language='English';EvidenceRunNonce=$english.EvidenceRunNonce;EvidenceDirectory=$english.Root;GateReportSha256=$english.GateHash;AppRuntimeReportSha256=$english.AppHash;CoreRuntimeReportSha256=$english.CoreHash;SourceCommit=$commit;SourceTree=$tree;PackageIdentityReceiptSha256=$packageReceiptSha}
         )
     }
     $matrixCanonical=ConvertTo-V02Jcs (($matrixPayload|ConvertTo-Json -Depth 100|ConvertFrom-Json)); $matrixPayloadHash=Get-I9Hash ([Text.UTF8Encoding]::new($false).GetBytes($matrixCanonical))
@@ -191,6 +191,7 @@ try {
 
     $schemaPath=Join-Path $PSScriptRoot 'issue9-live-ui-candidate.schema.json'; $null=Read-I9Json $schemaPath 'Issue #9 candidate schema'
     if ($null -ne (Get-Command Test-Json -ErrorAction SilentlyContinue)) { Assert-I9Test (Test-Json -LiteralPath $published.Path -SchemaFile $schemaPath) 'Published candidate failed strict schema.' }
+    Assert-I9Test (@($candidate.Languages.EvidenceRunNonce|Sort-Object -Unique).Count -eq 2 -and [string]$candidate.MatrixCandidate.ProducerRunNonce-ceq('3'*32)) 'Candidate did not preserve role-distinct matrix/evidence RunNonce bindings.'
 
     function Invoke-I9ReceiptMutation {
         param([string]$Name,[string]$Expected,[scriptblock]$Mutate,[scriptblock]$Prepare,[scriptblock]$Cleanup)
