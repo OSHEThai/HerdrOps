@@ -811,9 +811,12 @@ try {
         '-ChildResultPath', $rendererChildResultPath
     )
     $rendererChildProcess = Start-Process -FilePath $childHost -WindowStyle Hidden -PassThru -ArgumentList $childArguments -RedirectStandardOutput $rendererChildStdoutPath -RedirectStandardError $rendererChildStderrPath
-    if (-not $rendererChildProcess.WaitForExit(600000)) {
+    # PS5.1 canonical verification is materially slower than PS7 on the full
+    # held evidence graph. Keep the test bounded below the hostile child's
+    # independent 900-second deadline while allowing the verifier to finish.
+    if (-not $rendererChildProcess.WaitForExit(780000)) {
         try { & taskkill.exe /PID $rendererChildProcess.Id /T /F 2>$null | Out-Null } catch { }
-        throw 'Renderer-window child exceeded the bounded 600-second fixture timeout.'
+        throw 'Renderer-window child exceeded the bounded 780-second fixture timeout.'
     }
     # Flush redirected stdout/stderr after the process handle is signaled.
     $rendererChildProcess.WaitForExit()
