@@ -232,7 +232,7 @@ function Get-V02StableFileIdentity {
     $stream = $null
     $sha = $null
     try {
-        $stream = [IO.File]::Open($fullPath, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::None)
+        $stream = [IO.File]::Open($fullPath, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
         if ([int64]$stream.Length -ne $beforeLength) { throw "Stable file length changed before hashing: $fullPath" }
         $sha = [Security.Cryptography.SHA256]::Create()
         $hash = ([BitConverter]::ToString($sha.ComputeHash($stream))).Replace('-', '')
@@ -468,7 +468,7 @@ function Get-V02ArchiveInventory {
     }
     $stream = $null; $zip = $null; $sha = $null
     try {
-        $stream = [IO.File]::Open($fullPath,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::None)
+        $stream = [IO.File]::Open($fullPath,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read)
         if ([int64]$stream.Length -ne [int64]$before.Length) { throw 'Archive changed before stable inspection.' }
         if ([int64]$stream.Length -gt $bounds.MaximumArchiveBytes) { throw "Archive exceeds the maximum allowed byte size of $($bounds.MaximumArchiveBytes)." }
         $sha = [Security.Cryptography.SHA256]::Create(); $archiveHash = ([BitConverter]::ToString($sha.ComputeHash($stream))).Replace('-',''); $stream.Position = 0

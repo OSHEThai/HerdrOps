@@ -98,6 +98,14 @@ namespace HumanVisualGo {
             return information.VolumeSerialNumber.ToString("X8") + ":" +
                 information.FileIndexHigh.ToString("X8") + information.FileIndexLow.ToString("X8");
         }
+
+        public static uint GetNumberOfLinks(SafeFileHandle handle) {
+            FileInformation information;
+            if (!GetFileInformationByHandle(handle, out information)) {
+                throw new Win32Exception(Marshal.GetLastWin32Error(), "GetFileInformationByHandle failed.");
+            }
+            return information.NumberOfLinks;
+        }
     }
 }
 '@
@@ -111,6 +119,7 @@ $script:HumanVisualGoAuthorizedReviewer = '@yutthaphon'
 $script:HumanVisualGoAuthorizedReviewerRole = 'HumanReviewer'
 $script:HumanVisualGoAuthorizedAuthorityRole = 'ProductOwner'
 $script:HumanVisualGoAttestationMethod = 'EXTERNAL_CANDIDATE_SPECIFIC_HUMAN_ATTESTATION'
+$script:HumanVisualGoMaximumAuthorityKeyBytes = 64KB
 $script:HumanVisualGoExpectedRendererProfileId = 'herdrops-v0.2-submark-nb-software-only-20260822'
 $script:HumanVisualGoExpectedRendererProfileSha256 = '96D01ED15A536F2DF50B59B43CFDEB3683DCE8667AE2E7BF6A96124182FE13A3'
 $script:HumanVisualGoExpectedRendererPolicySha256 = '1D37C9C39449556EB30F9AB5B734F0C5411CF4203321AF0B238993D017229E92'
@@ -205,6 +214,49 @@ function Get-HumanVisualGoCanonicalText {
 function Get-HumanVisualGoCanonicalSha256 {
     param([Parameter(Mandatory = $true)]$Value, [Parameter(Mandatory = $true)][string]$RepositoryRoot)
     return Get-HumanVisualGoSha256ForBytes -Bytes ([Text.UTF8Encoding]::new($false).GetBytes((Get-HumanVisualGoCanonicalText $Value $RepositoryRoot)))
+}
+
+function Get-HumanVisualGoAttestationSigningValue {
+    param([Parameter(Mandatory = $true)]$Attestation)
+
+    # The detached signature covers every attestation field and all authority
+    # metadata except the proof hash and signature bytes themselves.  The
+    # trusted verifier supplies the public key; no JSON field is a trust root.
+    return [pscustomobject][ordered]@{
+        '$id' = [string]$Attestation.'$id'
+        schemaVersion = [int]$Attestation.schemaVersion
+        evidenceClassification = [string]$Attestation.evidenceClassification
+        issue = [int]$Attestation.issue
+        compatibilityIssue = [int]$Attestation.compatibilityIssue
+        attestationId = [string]$Attestation.attestationId
+        decision = [string]$Attestation.decision
+        decisionRationale = [string]$Attestation.decisionRationale
+        reviewedUtc = [string]$Attestation.reviewedUtc
+        replayNonce = [string]$Attestation.replayNonce
+        candidate = $Attestation.candidate
+        reviewer = $Attestation.reviewer
+        authority = [pscustomobject][ordered]@{
+            reference = [string]$Attestation.authority.reference
+            authenticationMethod = [string]$Attestation.authority.authenticationMethod
+            authenticated = [bool]$Attestation.authority.authenticated
+            publicKeySha256 = [string]$Attestation.authority.publicKeySha256
+            signatureAlgorithm = [string]$Attestation.authority.signatureAlgorithm
+        }
+        visualDispositions = @($Attestation.visualDispositions)
+        visualChecks = @($Attestation.visualChecks)
+        defects = @($Attestation.defects)
+        evidenceBindings = @($Attestation.evidenceBindings)
+        evidenceSetSha256 = [string]$Attestation.evidenceSetSha256
+        evidenceBoundary = $Attestation.evidenceBoundary
+    }
+}
+
+function Get-HumanVisualGoAttestationSigningCanonicalText {
+    param(
+        [Parameter(Mandatory = $true)]$Attestation,
+        [Parameter(Mandatory = $true)][string]$RepositoryRoot
+    )
+    return Get-HumanVisualGoCanonicalText -Value (Get-HumanVisualGoAttestationSigningValue -Attestation $Attestation) -RepositoryRoot $RepositoryRoot
 }
 
 function ConvertFrom-HumanVisualGoJsonBytes {
@@ -461,6 +513,38 @@ function Assert-HumanVisualGoExternalPath {
     return $full
 }
 
+function Assert-HumanVisualGoExternalDirectory {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$RepositoryRoot,
+        [Parameter(Mandatory = $true)][string]$EvidenceRoot,
+        [Parameter(Mandatory = $true)][string]$Context
+    )
+
+    Assert-HumanVisualGoString $Path $Context
+    $full = [IO.Path]::GetFullPath($Path).TrimEnd('\', '/')
+    if ((Test-HumanVisualGoPathUnderRoot -Root $RepositoryRoot -Path $full) -or
+        (Test-HumanVisualGoPathUnderRoot -Root $EvidenceRoot -Path $full)) {
+        throw "$Context must be external to the repository and evidence root; repository-pinned replay state is forbidden."
+    }
+    if (-not (Test-Path -LiteralPath $full -PathType Container)) {
+        throw "$Context directory is missing."
+    }
+    Assert-HumanVisualGoNoReparsePath -Root ([IO.Path]::GetPathRoot($full)) -Path $full -Context $Context
+    return $full
+}
+
+function Get-HumanVisualGoFixedReplayLedgerRoot {
+    $knownFolder = [Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)
+    if ([string]::IsNullOrWhiteSpace($knownFolder)) {
+        throw 'TRUST_ROOT_NOT_CONFIGURED: the trusted LocalApplicationData Known Folder is unavailable.'
+    }
+    # This is a fixed product-local location, not a caller-selected trust or
+    # replay root. It remains unused until Plan supplies the authority and
+    # freshness policy required for a production Human decision.
+    return [IO.Path]::GetFullPath((Join-Path $knownFolder 'HerdrOps\v0.2\human-visual-go\replay-ledger')).TrimEnd('\', '/')
+}
+
 function New-HumanVisualGoHoldContext {
     return [pscustomobject]@{
         Files = @{}
@@ -536,6 +620,10 @@ function Open-HumanVisualGoAbsoluteHeldFile {
             throw "$ContextName changed during the same-handle read."
         }
         $identity = [HumanVisualGo.NativeFile]::GetFileIdentity($stream.SafeFileHandle)
+        $linkCount = [uint32][HumanVisualGo.NativeFile]::GetNumberOfLinks($stream.SafeFileHandle)
+        if ($linkCount -gt 1) {
+            throw "$ContextName has NumberOfLinks=$linkCount; external hardlink/file-identity aliases are forbidden."
+        }
         if ($Context.Identities.ContainsKey($identity) -and
             -not $Context.Identities[$identity].Equals($full, [StringComparison]::OrdinalIgnoreCase)) {
             throw "$ContextName is a hardlink/file-identity alias of '$($Context.Identities[$identity])'."
@@ -544,7 +632,7 @@ function Open-HumanVisualGoAbsoluteHeldFile {
         if ($null -ne $existing) {
             if ($existing.Bytes -ne $length -or $existing.Sha256 -cne $hash -or
                 $existing.FileIdentity -cne $identity -or
-                $existing.FinalPath -cne $final) {
+                $existing.FinalPath -cne $final -or $existing.LinkCount -ne $linkCount) {
                 throw "$ContextName changed while reacquiring its held bytes."
             }
             $existing.Stream = $stream
@@ -565,6 +653,7 @@ function Open-HumanVisualGoAbsoluteHeldFile {
             Content = $bytes
             FinalPath = $final
             FileIdentity = $identity
+            LinkCount = $linkCount
             Stream = $stream
             ParentHandle = $parentHandle
         }
@@ -582,23 +671,6 @@ function Open-HumanVisualGoAbsoluteHeldFile {
     }
 }
 
-function Release-HumanVisualGoHeldFileStreams {
-    param([Parameter(Mandatory = $true)]$Context)
-
-    foreach ($held in @($Context.Files.Values)) {
-        if ($null -ne $held.Stream) { $held.Stream.Dispose(); $held.Stream = $null }
-        if ($null -ne $held.ParentHandle) { $held.ParentHandle.Dispose(); $held.ParentHandle = $null }
-    }
-}
-
-function Reopen-HumanVisualGoHeldFileStreams {
-    param([Parameter(Mandatory = $true)]$Context)
-
-    foreach ($held in @($Context.Files.Values | Sort-Object Path)) {
-        [void](Open-HumanVisualGoAbsoluteHeldFile -Context $Context -Path $held.Path -ContextName "reacquire $($held.Path)" -Root $held.Root -RootKind $held.RootKind)
-    }
-}
-
 function Assert-HumanVisualGoHeldUnchanged {
     param([Parameter(Mandatory = $true)]$Context, [string]$Description = 'held Human visual-GO evidence')
 
@@ -610,6 +682,10 @@ function Assert-HumanVisualGoHeldUnchanged {
         $identity = [HumanVisualGo.NativeFile]::GetFileIdentity($held.Stream.SafeFileHandle)
         if ($identity -cne [string]$held.FileIdentity) {
             throw "$Description file identity changed for '$($held.Path)'."
+        }
+        $linkCount = [uint32][HumanVisualGo.NativeFile]::GetNumberOfLinks($held.Stream.SafeFileHandle)
+        if ($linkCount -gt 1 -or $linkCount -ne [uint32]$held.LinkCount) {
+            throw "$Description NumberOfLinks changed for '$($held.Path)'; external hardlink/file-identity aliases are forbidden."
         }
         $length = [long]$held.Stream.Length
         if ($length -ne [long]$held.Bytes) {
@@ -745,6 +821,218 @@ function Assert-HumanVisualGoExternalUri {
     }
 }
 
+function Assert-HumanVisualGoAttestationAuthority {
+    param(
+        [Parameter(Mandatory = $true)]$Attestation,
+        [Parameter(Mandatory = $true)][string]$TrustedAuthorityPublicKeyXml,
+        [Parameter(Mandatory = $true)][string]$TrustedAuthorityPublicKeySha256,
+        [Parameter(Mandatory = $true)][string]$ExpectedSignatureAlgorithm,
+        [Parameter(Mandatory = $true)][string]$RepositoryRoot
+    )
+
+    Assert-HumanVisualGoExactProperties $Attestation.authority @('reference', 'authenticationMethod', 'authenticated', 'proofSha256', 'publicKeySha256', 'signatureAlgorithm', 'signatureBase64') 'External attestation authority'
+    Assert-HumanVisualGoExternalUri -Reference ([string]$Attestation.authority.reference)
+    Assert-HumanVisualGoString $ExpectedSignatureAlgorithm 'Expected Human authority signature algorithm'
+    if ([string]$Attestation.authority.authenticationMethod -cne $script:HumanVisualGoAttestationMethod) {
+        throw 'External Human attestation authentication method is not the governed external method.'
+    }
+    Assert-HumanVisualGoBoolean $Attestation.authority.authenticated 'External Human authority authenticated'
+    if (-not [bool]$Attestation.authority.authenticated) {
+        throw 'External Human authority authenticated must be true only after trusted signature verification.'
+    }
+    if ([string]$Attestation.authority.signatureAlgorithm -cne $ExpectedSignatureAlgorithm) {
+        throw 'External Human authority signature algorithm does not equal the independently supplied expected algorithm.'
+    }
+    Assert-HumanVisualGoSha256 $Attestation.authority.publicKeySha256 'External Human authority public-key SHA-256'
+    Assert-HumanVisualGoSha256 $TrustedAuthorityPublicKeySha256 'Trusted authority public-key SHA-256'
+    Assert-HumanVisualGoString $TrustedAuthorityPublicKeyXml 'Trusted authority public-key XML'
+    $trustedKeyBytes = [Text.UTF8Encoding]::new($false, $true).GetBytes($TrustedAuthorityPublicKeyXml)
+    if ($trustedKeyBytes.Length -le 0 -or $trustedKeyBytes.Length -gt $script:HumanVisualGoMaximumAuthorityKeyBytes) {
+        throw 'Trusted authority public-key XML is outside the bounded key size.'
+    }
+    $computedKeySha = Get-HumanVisualGoSha256ForBytes -Bytes $trustedKeyBytes
+    if ($computedKeySha -cne [string]$TrustedAuthorityPublicKeySha256 -or
+        [string]$Attestation.authority.publicKeySha256 -cne $computedKeySha) {
+        throw 'External Human authority public-key fingerprint does not equal the independently supplied trusted key.'
+    }
+
+    Assert-HumanVisualGoString $Attestation.authority.signatureBase64 'External Human authority signature'
+    $signatureBytes = $null
+    try { $signatureBytes = [Convert]::FromBase64String([string]$Attestation.authority.signatureBase64) }
+    catch { throw 'External Human authority signature is not valid base64.' }
+    if ($signatureBytes.Length -le 0 -or $signatureBytes.Length -gt 64KB) {
+        throw 'External Human authority signature is outside the bounded size.'
+    }
+    $payload = Get-HumanVisualGoAttestationSigningCanonicalText -Attestation $Attestation -RepositoryRoot $RepositoryRoot
+    $payloadBytes = [Text.UTF8Encoding]::new($false, $true).GetBytes($payload)
+    $rsa = $null
+    try {
+        $rsa = New-Object System.Security.Cryptography.RSACryptoServiceProvider
+        try { $rsa.FromXmlString($TrustedAuthorityPublicKeyXml) }
+        catch { throw 'Trusted authority public-key XML is not a usable RSA public key.' }
+        $verified = $false
+        try { $verified = [bool]$rsa.VerifyData($payloadBytes, 'SHA256', $signatureBytes) }
+        catch { throw 'Trusted authority signature verification could not be performed.' }
+        if (-not $verified) {
+            throw 'Trusted cryptographic authority signature verification failed.'
+        }
+    }
+    finally {
+        if ($null -ne $rsa) { $rsa.Dispose() }
+    }
+    Assert-HumanVisualGoSha256 $Attestation.authority.proofSha256 'External Human authority proof SHA-256'
+    $computedProofSha = Get-HumanVisualGoSha256ForBytes -Bytes $signatureBytes
+    if ([string]$Attestation.authority.proofSha256 -cne $computedProofSha) {
+        throw 'External Human authority proof SHA-256 does not equal the verified signature bytes.'
+    }
+}
+
+function ConvertFrom-HumanVisualGoEvidenceUtc {
+    param([Parameter(Mandatory = $true)][string]$Value, [Parameter(Mandatory = $true)][string]$Name)
+    $parsed = [DateTimeOffset]::MinValue
+    $formats = @("yyyy-MM-dd'T'HH:mm:ss.fffffff'Z'", "yyyy-MM-dd'T'HH:mm:ss.fffffffzzz")
+    $matched = $false
+    foreach ($format in $formats) {
+        $candidate = [DateTimeOffset]::MinValue
+        if ([DateTimeOffset]::TryParseExact($Value, $format, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::AssumeUniversal, [ref]$candidate)) {
+            $parsed = $candidate
+            $matched = $true
+            break
+        }
+    }
+    if (-not $matched -or $parsed.Offset -ne [TimeSpan]::Zero) {
+        throw "Evidence timestamp '$Name' is not canonical UTC."
+    }
+    return $parsed.ToUniversalTime()
+}
+
+function Get-HumanVisualGoTimestampValues {
+    param([AllowNull()][object]$Value)
+
+    if ($null -eq $Value) { return }
+    $timestampNames = @('observedUtc', 'declaredUtc', 'startedUtc', 'completedUtc', 'createdUtc', 'firstHwndCreatedUtc')
+    if ($Value -is [Collections.IDictionary]) {
+        foreach ($name in @($Value.Keys)) {
+            $child = $Value[$name]
+            if ($timestampNames -ccontains [string]$name -and $child -is [string] -and -not [string]::IsNullOrWhiteSpace([string]$child)) {
+                Write-Output (ConvertFrom-HumanVisualGoEvidenceUtc -Value ([string]$child) -Name ([string]$name))
+            }
+            foreach ($nested in @(Get-HumanVisualGoTimestampValues -Value $child)) { Write-Output $nested }
+        }
+        return
+    }
+    if ($Value -is [pscustomobject]) {
+        foreach ($property in @($Value.PSObject.Properties)) {
+            $child = $property.Value
+            if ($timestampNames -ccontains [string]$property.Name -and $child -is [string] -and -not [string]::IsNullOrWhiteSpace([string]$child)) {
+                Write-Output (ConvertFrom-HumanVisualGoEvidenceUtc -Value ([string]$child) -Name ([string]$property.Name))
+            }
+            foreach ($nested in @(Get-HumanVisualGoTimestampValues -Value $child)) { Write-Output $nested }
+        }
+        return
+    }
+    if ($Value -is [Collections.IEnumerable] -and $Value -isnot [string]) {
+        foreach ($item in @($Value)) { foreach ($nested in @(Get-HumanVisualGoTimestampValues -Value $item)) { Write-Output $nested } }
+    }
+}
+
+function Get-HumanVisualGoLatestEvidenceUtc {
+    param(
+        [Parameter(Mandatory = $true)]$Candidate,
+        [Parameter(Mandatory = $true)][string]$EvidenceRoot,
+        [Parameter(Mandatory = $true)][string]$RepositoryRoot
+    )
+
+    $evidenceFull = [IO.Path]::GetFullPath($EvidenceRoot).TrimEnd('\', '/')
+    $repoFull = [IO.Path]::GetFullPath($RepositoryRoot).TrimEnd('\', '/')
+    $timestamps = @(
+        Get-HumanVisualGoTimestampValues -Value $Candidate
+    )
+    $context = New-HumanVisualGoHoldContext
+    try {
+        Open-HumanVisualGoRootHandle -Context $context -Root $evidenceFull -ContextName 'Freshness evidence root'
+        Open-HumanVisualGoRootHandle -Context $context -Root $repoFull -ContextName 'Freshness repository root'
+        foreach ($binding in @($Candidate.evidenceBindings)) {
+            $root = if ([string]$binding.root -ceq 'EvidenceRoot') { $evidenceFull } elseif ([string]$binding.root -ceq 'RepositoryRoot') { $repoFull } else { throw "Freshness binding '$($binding.kind)' has an unknown root." }
+            $held = Open-HumanVisualGoContainedHeldFile -Context $context -Root $root -RelativePath ([string]$binding.relativePath) -ContextName "Freshness binding '$($binding.kind)'" -RootKind ([string]$binding.root)
+            if ([string]$binding.relativePath -match '(?i)\.json$') {
+                $document = Read-HumanVisualGoHeldJson -Held $held -Description "Freshness binding '$($binding.kind)'" -RepositoryRoot $repoFull
+                $timestamps += @(Get-HumanVisualGoTimestampValues -Value $document.Value)
+            }
+        }
+        Assert-HumanVisualGoHeldUnchanged -Context $context -Description 'Freshness evidence'
+    }
+    finally {
+        Close-HumanVisualGoHoldContext -Context $context
+    }
+    if (@($timestamps).Count -eq 0) { throw 'No trusted evidence timestamp was available for Human attestation chronology.' }
+    return (@($timestamps) | Sort-Object)[-1]
+}
+
+function Assert-HumanVisualGoAttestationFreshness {
+    param(
+        [Parameter(Mandatory = $true)]$Candidate,
+        [Parameter(Mandatory = $true)]$Attestation,
+        [Parameter(Mandatory = $true)][string]$EvidenceRoot,
+        [Parameter(Mandatory = $true)][string]$RepositoryRoot,
+        [Parameter(Mandatory = $true)][DateTimeOffset]$TrustedNowUtc,
+        [Parameter(Mandatory = $true)][TimeSpan]$MaximumAge,
+        [Parameter(Mandatory = $true)][TimeSpan]$MaximumFutureSkew
+    )
+
+    if ($MaximumAge -le [TimeSpan]::Zero -or $MaximumFutureSkew -lt [TimeSpan]::Zero) {
+        throw 'FRESHNESS_POLICY_NOT_CONFIGURED: maximum age and future-skew policy must be configured owner inputs.'
+    }
+    $reviewed = [DateTimeOffset]::ParseExact([string]$Attestation.reviewedUtc, "yyyy-MM-dd'T'HH:mm:ss.fffffff'Z'", [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::AssumeUniversal)
+    $latestEvidence = Get-HumanVisualGoLatestEvidenceUtc -Candidate $Candidate -EvidenceRoot $EvidenceRoot -RepositoryRoot $RepositoryRoot
+    if ($reviewed -le $latestEvidence) {
+        throw "External Human attestation reviewedUtc must be later than the latest held evidence timestamp ($($latestEvidence.ToString('O', [Globalization.CultureInfo]::InvariantCulture)))."
+    }
+    if ($reviewed -lt $TrustedNowUtc.Subtract($MaximumAge)) {
+        throw 'External Human attestation reviewedUtc exceeds the configured maximum accepted age.'
+    }
+    if ($reviewed -gt $TrustedNowUtc.Add($MaximumFutureSkew)) {
+        throw 'External Human attestation reviewedUtc is ahead of the trusted verifier clock.'
+    }
+}
+
+function Claim-HumanVisualGoReplayNonce {
+    param(
+        [Parameter(Mandatory = $true)][string]$RegistryRoot,
+        [Parameter(Mandatory = $true)][string]$Nonce,
+        [Parameter(Mandatory = $true)][string]$CandidateBindingSha256,
+        [Parameter(Mandatory = $true)][string]$RepositoryRoot
+    )
+
+    Assert-HumanVisualGoSha256 $Nonce 'Human attestation replay nonce'
+    Assert-HumanVisualGoSha256 $CandidateBindingSha256 'Human attestation replay candidate binding'
+    $registryFull = [IO.Path]::GetFullPath($RegistryRoot).TrimEnd('\', '/')
+    $noncePath = Join-Path $registryFull ($Nonce.ToUpperInvariant() + '.nonce')
+    Assert-HumanVisualGoNoReparsePath -Root $registryFull -Path $registryFull -Context 'Human attestation replay registry'
+    if (Test-Path -LiteralPath $noncePath) {
+        throw 'External Human attestation replay nonce is already claimed; atomic CreateNew rejected a clobber.'
+    }
+    $record = [pscustomobject][ordered]@{
+        nonce = $Nonce.ToUpperInvariant()
+        candidateBindingSha256 = $CandidateBindingSha256
+        claimedUtc = [DateTimeOffset]::UtcNow.ToString("yyyy-MM-dd'T'HH:mm:ss.fffffff'Z'", [Globalization.CultureInfo]::InvariantCulture)
+    }
+    $bytes = [Text.UTF8Encoding]::new($false, $true).GetBytes((Get-HumanVisualGoCanonicalText -Value $record -RepositoryRoot $RepositoryRoot) + "`n")
+    $stream = $null
+    try {
+        try { $stream = New-Object IO.FileStream($noncePath, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None) }
+        catch [IO.IOException] { throw 'External Human attestation replay nonce is already claimed; atomic CreateNew rejected a clobber.' }
+        $final = [IO.Path]::GetFullPath([HumanVisualGo.NativeFile]::GetFinalPath($stream.SafeFileHandle))
+        if (-not $final.Equals([IO.Path]::GetFullPath($noncePath), [StringComparison]::OrdinalIgnoreCase)) { throw 'Replay nonce final path changed or aliases another path.' }
+        $stream.Write($bytes, 0, $bytes.Length)
+        $stream.Flush($true)
+    }
+    finally {
+        if ($null -ne $stream) { $stream.Dispose() }
+    }
+    return [pscustomobject][ordered]@{ Path = $noncePath; Nonce = $Nonce.ToUpperInvariant(); CandidateBindingSha256 = $CandidateBindingSha256 }
+}
+
 function Get-HumanVisualGoManifestRelativePath {
     param([Parameter(Mandatory = $true)][string]$ManifestPath, [Parameter(Mandatory = $true)][string]$EvidenceRoot)
     $full = [IO.Path]::GetFullPath($ManifestPath)
@@ -875,6 +1163,7 @@ function Add-HumanVisualGoManifestEvidence {
     [void](Add-HumanVisualGoEvidenceBinding -Context $Context -Root $RepositoryRoot -RootKind RepositoryRoot -RelativePath 'Plan/reference-hosts/v0.2.json' -Kind 'ReferenceHostProfile' -RepositoryRoot $RepositoryRoot -Json)
     [void](Add-HumanVisualGoEvidenceBinding -Context $Context -Root $RepositoryRoot -RootKind RepositoryRoot -RelativePath 'Plan/reference-hosts/reference-host-profile.schema.json' -Kind 'ReferenceHostSchema' -RepositoryRoot $RepositoryRoot -Json)
     [void](Add-HumanVisualGoEvidenceBinding -Context $Context -Root $RepositoryRoot -RootKind RepositoryRoot -RelativePath 'tools/packaging/v0.2/package-identity-receipt.schema.json' -Kind 'PackageReceiptSchema' -RepositoryRoot $RepositoryRoot -Json)
+    [void](Add-HumanVisualGoEvidenceBinding -Context $Context -Root $RepositoryRoot -RootKind RepositoryRoot -RelativePath 'docs/design/reference/MANIFEST.md' -Kind 'ReferenceManifest' -RepositoryRoot $RepositoryRoot)
 
     [void](Add-HumanVisualGoEvidenceBinding -Context $Context -Root $EvidenceRoot -RootKind EvidenceRoot -RelativePath ([string]$Manifest.rendererEvidence.producerReport.relativePath) -Kind 'RendererProducerReport' -RepositoryRoot $RepositoryRoot -Json -Expected $Manifest.rendererEvidence.producerReport)
     if ($null -ne $Manifest.comparison.maskSetReceipt) {
@@ -1037,14 +1326,15 @@ function New-V02HumanVisualGoCandidateCore {
 
         $rendererManifestBinding = Add-HumanVisualGoManifestEvidence -Context $context -Manifest $manifest -EvidenceRoot $evidenceFull -RepositoryRoot $repoFull -ManifestRelativePath $manifestRelative
         $reviewEvidence = Add-HumanVisualGoReviewEvidence -Context $context -Manifest $manifest -RendererManifestBinding $rendererManifestBinding -ReviewEvidencePath $HumanReviewEvidencePath -EvidenceRoot $evidenceFull -RepositoryRoot $repoFull
-        # The existing renderer verifier opens its inputs with FileShare.None.
-        # Release only the OS file handles (the exact bytes remain pinned in
-        # each held object), run it, then reacquire and compare every held file
-        # by final path, file identity, length, and same-handle bytes.
-        Release-HumanVisualGoHeldFileStreams -Context $context
+        # Keep every original evidence/repository handle open for the entire
+        # renderer-verifier window. The renderer verifier opens its own reads
+        # with FileShare.Read, which is compatible with these held read handles;
+        # directory handles deny rename/delete and file handles deny writes.
+        # The same held identities, link counts, lengths, and bytes are checked
+        # immediately after rendering and again after candidate schema validation.
         $rendererResult = Test-RendererCompatibilityManifest -ManifestPath $manifestFull -EvidenceRoot $evidenceFull -RepositoryRoot $repoFull -ValidateBindings
-        Reopen-HumanVisualGoHeldFileStreams -Context $context
         Assert-HumanVisualGoHeldUnchanged -Context $context -Description 'Renderer validation held evidence'
+        Assert-HumanVisualGoHeldUnchanged -Context $context -Description 'Renderer validation post-window evidence'
         if ($rendererResult.EvidenceClassification -cne 'PackagedCompatibilityCandidate' -or
             $rendererResult.BindingValidation -cne 'PASS' -or
             $rendererResult.ActualHerdrRuntime -cne 'NOT_OBSERVED' -or
@@ -1150,6 +1440,7 @@ function New-V02HumanVisualGoCandidateCore {
             throw 'Human candidate renderer binding is not the governed SoftwareOnly policy.'
         }
         Assert-HumanVisualGoSchema -Value $candidate -SchemaPath (Join-Path $PSScriptRoot 'human-review-candidate.schema.json') -RepositoryRoot $repoFull -Description 'HumanReviewCandidate'
+        Assert-HumanVisualGoHeldUnchanged -Context $context -Description 'Final Human candidate same-handle evidence'
         return $candidate
     }
     finally {
@@ -1195,12 +1486,13 @@ function Assert-HumanVisualGoCandidateShape {
 
 function Assert-HumanVisualGoAttestationShape {
     param([Parameter(Mandatory = $true)]$Attestation)
-    Assert-HumanVisualGoExactProperties $Attestation @('$id', 'schemaVersion', 'evidenceClassification', 'issue', 'compatibilityIssue', 'attestationId', 'decision', 'decisionRationale', 'reviewedUtc', 'candidate', 'reviewer', 'authority', 'visualDispositions', 'visualChecks', 'defects', 'evidenceBindings', 'evidenceSetSha256', 'evidenceBoundary') 'External Human attestation'
+    Assert-HumanVisualGoExactProperties $Attestation @('$id', 'schemaVersion', 'evidenceClassification', 'issue', 'compatibilityIssue', 'attestationId', 'decision', 'decisionRationale', 'reviewedUtc', 'replayNonce', 'candidate', 'reviewer', 'authority', 'visualDispositions', 'visualChecks', 'defects', 'evidenceBindings', 'evidenceSetSha256', 'evidenceBoundary') 'External Human attestation'
     if ([string]$Attestation.'$id' -cne $script:HumanVisualGoAttestationSchemaId -or [int]$Attestation.schemaVersion -ne 1 -or [string]$Attestation.evidenceClassification -cne 'ExternalHumanVisualGoAttestation' -or [int]$Attestation.issue -ne 11 -or [int]$Attestation.compatibilityIssue -ne 149) { throw 'External Human attestation identity is invalid.' }
     if ([string]$Attestation.decision -cnotin @('GO', 'NO_GO')) { throw 'External Human attestation decision must be explicit GO or NO_GO.' }
     Assert-HumanVisualGoString $Attestation.attestationId 'Attestation ID'
     Assert-HumanVisualGoString $Attestation.decisionRationale 'Attestation rationale'
     Assert-HumanVisualGoUtc $Attestation.reviewedUtc 'Attestation reviewedUtc'
+    Assert-HumanVisualGoSha256 $Attestation.replayNonce 'Attestation replay nonce'
     Assert-HumanVisualGoSha256 $Attestation.evidenceSetSha256 'Attestation evidenceSetSha256'
     Assert-HumanVisualGoExactProperties $Attestation.evidenceBoundary @('humanReview', 'actualHerdrRuntime', 'release', 'creditGranted') 'External attestation evidenceBoundary'
     if ($Attestation.evidenceBoundary.humanReview -cne [string]$Attestation.decision -or $Attestation.evidenceBoundary.actualHerdrRuntime -cne 'NOT_OBSERVED' -or $Attestation.evidenceBoundary.release -cne 'NOT_OBSERVED' -or $Attestation.evidenceBoundary.creditGranted -isnot [bool] -or [bool]$Attestation.evidenceBoundary.creditGranted) { throw 'External attestation boundary grants Runtime or Release credit.' }
@@ -1212,7 +1504,10 @@ function Assert-HumanVisualGoAttestationAgainstCandidate {
         [Parameter(Mandatory = $true)]$Attestation,
         [Parameter(Mandatory = $true)][string]$CandidateFileSha256,
         [Parameter(Mandatory = $true)][string]$CandidateCanonicalSha256,
-        [Parameter(Mandatory = $true)][string]$RepositoryRoot
+        [Parameter(Mandatory = $true)][string]$RepositoryRoot,
+        [Parameter(Mandatory = $true)][string]$TrustedAuthorityPublicKeyXml,
+        [Parameter(Mandatory = $true)][string]$TrustedAuthorityPublicKeySha256,
+        [Parameter(Mandatory = $true)][string]$ExpectedSignatureAlgorithm
     )
 
     Assert-HumanVisualGoAttestationShape -Attestation $Attestation
@@ -1237,10 +1532,7 @@ function Assert-HumanVisualGoAttestationAgainstCandidate {
     if ($candidateVisualCanonical -cne $attestationVisualCanonical) { throw 'External Human attestation visual dispositions do not cover every governed comparison.' }
     if ((Get-HumanVisualGoCanonicalText -Value @($Candidate.visualReview.checks) -RepositoryRoot $RepositoryRoot) -cne (Get-HumanVisualGoCanonicalText -Value @($Attestation.visualChecks) -RepositoryRoot $RepositoryRoot)) { throw 'External Human attestation omitted or changed a governed visual check.' }
     if ((Get-HumanVisualGoCanonicalText -Value @($Candidate.defects) -RepositoryRoot $RepositoryRoot) -cne (Get-HumanVisualGoCanonicalText -Value @($Attestation.defects) -RepositoryRoot $RepositoryRoot)) { throw 'External Human attestation omitted or changed a defect disposition.' }
-    Assert-HumanVisualGoExactProperties $Attestation.authority @('reference', 'authenticationMethod', 'authenticated', 'proofSha256') 'External attestation authority'
-    Assert-HumanVisualGoExternalUri -Reference ([string]$Attestation.authority.reference)
-    if ([string]$Attestation.authority.authenticationMethod -cne $script:HumanVisualGoAttestationMethod -or $Attestation.authority.authenticated -isnot [bool] -or -not [bool]$Attestation.authority.authenticated) { throw 'External Human attestation is not externally authenticated.' }
-    Assert-HumanVisualGoSha256 $Attestation.authority.proofSha256 'External attestation proof SHA-256'
+    Assert-HumanVisualGoAttestationAuthority -Attestation $Attestation -TrustedAuthorityPublicKeyXml $TrustedAuthorityPublicKeyXml -TrustedAuthorityPublicKeySha256 $TrustedAuthorityPublicKeySha256 -ExpectedSignatureAlgorithm $ExpectedSignatureAlgorithm -RepositoryRoot $RepositoryRoot
     $decision = [string]$Attestation.decision
     if ($decision -ceq 'GO' -and ([string]$Candidate.eligibility -cne 'ELIGIBLE_FOR_EXTERNAL_HUMAN_GO' -or @($Candidate.visualReview.comparisons | Where-Object { $_.status -cne 'PASS' }).Count -ne 0 -or @($Candidate.visualReview.checks | Where-Object { $_.status -cne 'PASS' }).Count -ne 0 -or @($Candidate.defects | Where-Object { $_.status -ceq 'Open' -or ($_.severity -in @('P0', 'P1') -and $_.status -ceq 'Accepted') }).Count -ne 0)) {
         throw 'Human GO is not allowed for an incomplete, failed, or open-defect candidate.'
@@ -1277,6 +1569,8 @@ function Test-V02HumanVisualGoAttestationCore {
     if (-not [string]::IsNullOrWhiteSpace($AttestationPath)) {
         $attestationFull = Assert-HumanVisualGoExternalPath -Path $AttestationPath -RepositoryRoot $RepositoryRoot -EvidenceRoot $EvidenceRoot -Context 'Human attestation input'
         if ($candidateFull.Equals($attestationFull, [StringComparison]::OrdinalIgnoreCase)) { throw 'Candidate and external attestation must be distinct files.' }
+        $null = Get-HumanVisualGoFixedReplayLedgerRoot
+        throw 'TRUST_ROOT_NOT_CONFIGURED; FRESHNESS_POLICY_NOT_CONFIGURED: Plan does not define an approved Human cryptographic trust root, authority fingerprint/allowlist, freshness age, or replay-ledger residual-risk policy.'
     }
     $context = New-HumanVisualGoHoldContext
     try {
@@ -1293,25 +1587,15 @@ function Test-V02HumanVisualGoAttestationCore {
         $expectedCandidate = New-V02HumanVisualGoCandidateCore -RendererManifestPath (Join-Path $EvidenceRoot $candidate.rendererManifest.relativePath) -HumanReviewEvidencePath $reviewEvidencePath -EvidenceRoot $EvidenceRoot -RepositoryRoot $RepositoryRoot -BuilderIdentity ([string]$candidate.roles.builderIdentity) -RuntimeOperatorIdentity ([string]$candidate.roles.runtimeOperatorIdentity) -IndependentValidatorIdentity ([string]$candidate.roles.independentValidatorIdentity)
         $expectedCanonical = Get-HumanVisualGoCanonicalText -Value $expectedCandidate -RepositoryRoot ([IO.Path]::GetFullPath($RepositoryRoot))
         if ([string]$candidateDocument.Canonical -cne $expectedCanonical) { throw 'HumanReviewCandidate was copied, stale, forged, or mixed with a different renderer candidate.' }
-        $externalAttestation = $null
-        if ($null -ne $attestationFull) {
-            $attestationHeld = Open-HumanVisualGoAbsoluteHeldFile -Context $context -Path $attestationFull -ContextName 'Human attestation input' -Root ([IO.Path]::GetPathRoot($attestationFull)) -RootKind External
-            $attestationDocument = Read-HumanVisualGoCanonicalJsonDocument -Held $attestationHeld -Description 'External Human attestation' -RepositoryRoot ([IO.Path]::GetFullPath($RepositoryRoot))
-            Assert-HumanVisualGoCanonicalJsonFile -Document $attestationDocument -Description 'External Human attestation'
-            $externalAttestation = $attestationDocument.Value
-            Assert-HumanVisualGoAttestationAgainstCandidate -Candidate $candidate -Attestation $externalAttestation -CandidateFileSha256 $candidateHeld.Sha256 -CandidateCanonicalSha256 $candidateDocument.CanonicalSha256 -RepositoryRoot ([IO.Path]::GetFullPath($RepositoryRoot))
-            Assert-HumanVisualGoSchema -Value $externalAttestation -SchemaPath (Join-Path $PSScriptRoot 'human-go-attestation.schema.json') -RepositoryRoot ([IO.Path]::GetFullPath($RepositoryRoot)) -Description 'External Human attestation'
-        }
-        $humanDecision = 'NOT_OBSERVED'
-        if ($null -ne $externalAttestation) { $humanDecision = [string]$externalAttestation.decision }
         return [pscustomobject][ordered]@{
             EvidenceClass = 'Synthetic'
             EvidenceClassification = 'HumanReviewCandidate'
             CandidateStatus = 'HumanReviewCandidate'
             CandidateCanonicalSha256 = [string]$candidateDocument.CanonicalSha256
             BindingValidation = 'PASS'
-            ExternalAttestation = if ($null -eq $externalAttestation) { 'NOT_OBSERVED' } else { 'PASS' }
-            HumanReview = $humanDecision
+            ExternalAttestation = 'NOT_OBSERVED'
+            ReplayNonceClaimed = 'NOT_OBSERVED'
+            HumanReview = 'NOT_OBSERVED'
             ActualHerdrRuntime = 'NOT_OBSERVED'
             Release = 'NOT_OBSERVED'
             CreditGranted = $false
