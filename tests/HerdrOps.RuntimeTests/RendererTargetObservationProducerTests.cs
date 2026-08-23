@@ -239,6 +239,11 @@ public sealed class RendererTargetObservationProducerTests
         {
             using var fixture = new ProducerFixture();
             var server = fixture.RunServerAsync(failAfterOrdinal, invalidOrdinal);
+            Assert.IsTrue(fixture.CoreExecutableReady,
+                "The fixture did not establish the exact Core executable identity before Producer.Start().");
+            Assert.AreEqual("ping.exe", Path.GetFileName(fixture.CoreExecutablePath), true);
+            Assert.IsGreaterThan(0, fixture.CoreProcessId);
+            Assert.IsGreaterThan(DateTime.UnixEpoch, fixture.CoreStartTimeUtc);
             fixture.Producer.Start();
             // RunServerAsync captures this STA dispatcher. Waiting only for the
             // producer and then synchronously observing the server can deadlock
@@ -253,6 +258,44 @@ public sealed class RendererTargetObservationProducerTests
                 $"{scenario} left a producer waiter pending.");
             Assert.IsTrue(fixture.Producer.PendingWaitersForTesting.All(task => task.IsFaulted),
                 $"{scenario} did not propagate the terminal exception to every waiter.");
+            if (failAfterOrdinal is not null)
+            {
+                Assert.AreEqual(failAfterOrdinal.Value, fixture.TerminalDisconnectOrdinal,
+                    "The hostile server did not inject EOF at the intended protocol ordinal.");
+                Assert.AreEqual(failAfterOrdinal.Value - 1, fixture.LastAcknowledgedOrdinal,
+                    "The producer did not complete the preceding stage before hostile EOF injection.");
+                Assert.AreEqual(-1, fixture.InvalidStageOrdinal);
+            }
+            else
+            {
+                Assert.AreEqual(invalidOrdinal!.Value, fixture.InvalidStageOrdinal,
+                    "The hostile server did not send the intended invalid stage.");
+                Assert.AreEqual(invalidOrdinal.Value - 1, fixture.LastAcknowledgedOrdinal,
+                    "The producer did not complete the preceding stage before the invalid request.");
+                Assert.AreEqual(-1, fixture.TerminalDisconnectOrdinal);
+            }
+            var terminal = fixture.Producer.Completion.Exception!.InnerExceptions.Single();
+            if (failAfterOrdinal is not null)
+            {
+                if (terminal is InvalidDataException)
+                {
+                    Assert.AreEqual("Renderer target observation request is empty or oversized.", terminal.Message);
+                }
+                else
+                {
+                    // Windows named-pipe disconnect can surface either as a clean
+                    // EOF (parsed above) or as the exact transport IOException.
+                    Assert.IsInstanceOfType<IOException>(terminal);
+                }
+            }
+            else
+            {
+                Assert.IsInstanceOfType<InvalidDataException>(terminal);
+                Assert.AreEqual("Renderer target observation request binding is invalid.", terminal.Message);
+            }
+            Assert.IsTrue(fixture.Producer.PendingWaitersForTesting.All(task =>
+                    ReferenceEquals(terminal, task.Exception!.InnerExceptions.Single())),
+                $"{scenario} did not propagate the exact terminal protocol exception to every waiter.");
             try { fixture.Producer.DisposeAsync().AsTask().GetAwaiter().GetResult(); }
             catch { /* The expected terminal protocol failure remains observable on Completion. */ }
         }, TimeSpan.FromSeconds(20));
@@ -344,10 +387,26 @@ public sealed class RendererTargetObservationProducerTests
                 CreateNoWindow = true,
                 UseShellExecute = false,
             })!;
-            _core.Refresh();
+            (string Sha256, DateTime StartTimeUtc) coreIdentity;
+            try
+            {
+                coreIdentity = WaitForCoreExecutableReady(_core, corePath);
+            }
+            catch
+            {
+                if (!_core.HasExited) _core.Kill(entireProcessTree: true);
+                _core.Dispose();
+                _server.Dispose();
+                if (Directory.Exists(Root)) Directory.Delete(Root, recursive: true);
+                throw;
+            }
+            CoreExecutableReady = true;
+            CoreExecutablePath = corePath;
+            CoreProcessId = _core.Id;
+            CoreStartTimeUtc = coreIdentity.StartTimeUtc;
             var appPath = Path.GetFullPath(Environment.ProcessPath!);
             var appSha = Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(appPath)));
-            var coreSha = Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(corePath)));
+            var coreSha = coreIdentity.Sha256;
             var identityPath = Path.Combine(Root, "identity.json");
             var canonical = JsonSerializer.Serialize(new
             {
@@ -366,6 +425,13 @@ public sealed class RendererTargetObservationProducerTests
         public string Root { get; }
         public RendererTargetObservationProducer Producer { get; }
         public bool CaptureSwapBlocked { get; private set; }
+        public bool CoreExecutableReady { get; }
+        public string CoreExecutablePath { get; }
+        public int CoreProcessId { get; }
+        public DateTime CoreStartTimeUtc { get; }
+        public int LastAcknowledgedOrdinal { get; private set; } = -1;
+        public int TerminalDisconnectOrdinal { get; private set; } = -1;
+        public int InvalidStageOrdinal { get; private set; } = -1;
 
         public async Task RunServerAsync(int? failAfterOrdinal, int? invalidOrdinal)
         {
@@ -377,16 +443,85 @@ public sealed class RendererTargetObservationProducerTests
             {
                 if (failAfterOrdinal == ordinal)
                 {
+                    TerminalDisconnectOrdinal = ordinal;
                     _server.Disconnect();
                     return;
                 }
                 var stage = invalidOrdinal == ordinal ? "InvalidStage" : Stages[ordinal];
+                if (invalidOrdinal == ordinal) InvalidStageOrdinal = ordinal;
                 await writer.WriteLineAsync(
                     $"{{\"protocol\":\"V02RendererTargetObservation\",\"version\":1,\"issue\":149,\"stage\":\"{stage}\",\"ordinal\":{ordinal},\"challenge\":\"{Challenge}\"}}");
                 if (invalidOrdinal == ordinal) return;
                 if (string.IsNullOrWhiteSpace(await reader.ReadLineAsync()))
                     throw new IOException("Producer closed without a response.");
+                LastAcknowledgedOrdinal = ordinal;
             }
+        }
+
+        private static (string Sha256, DateTime StartTimeUtc) WaitForCoreExecutableReady(
+            Process core,
+            string expectedPath)
+        {
+            var deadline = Stopwatch.StartNew();
+            string? lastMismatch = null;
+            while (deadline.Elapsed < TimeSpan.FromSeconds(5))
+            {
+                core.Refresh();
+                if (core.HasExited)
+                {
+                    throw new InvalidOperationException("Renderer fixture Core process exited before identity readiness.");
+                }
+
+                var expectedStartTimeUtc = core.StartTime.ToUniversalTime();
+                using var observed = Process.GetProcessById(core.Id);
+                observed.Refresh();
+                var modulePath = observed.MainModule?.FileName;
+                if (modulePath is null)
+                {
+                    Thread.Sleep(10);
+                    continue;
+                }
+
+                modulePath = Path.GetFullPath(modulePath);
+                if (!string.Equals(modulePath, expectedPath, StringComparison.OrdinalIgnoreCase) ||
+                    observed.StartTime.ToUniversalTime() != expectedStartTimeUtc)
+                {
+                    lastMismatch =
+                        $"expectedPath={expectedPath}; observedPath={modulePath}; " +
+                        $"expectedStart={expectedStartTimeUtc:O}; observedStart={observed.StartTime.ToUniversalTime():O}";
+                    Thread.Sleep(10);
+                    continue;
+                }
+
+                using var stream = new FileStream(modulePath, FileMode.Open, FileAccess.Read, FileShare.Read);
+                var length = stream.Length;
+                var finalPath = RendererTargetNativeMethods.GetFinalPath(stream.SafeFileHandle);
+                var sha256 = Convert.ToHexString(SHA256.HashData(stream));
+                if (!string.Equals(finalPath, expectedPath, StringComparison.OrdinalIgnoreCase) ||
+                    stream.Length != length)
+                {
+                    lastMismatch =
+                        $"expectedFinalPath={expectedPath}; observedFinalPath={finalPath}; " +
+                        $"expectedLength={length}; observedLength={stream.Length}";
+                    Thread.Sleep(10);
+                    continue;
+                }
+
+                observed.Refresh();
+                if (observed.HasExited || observed.Id != core.Id ||
+                    observed.StartTime.ToUniversalTime() != expectedStartTimeUtc)
+                {
+                    lastMismatch = "Renderer fixture Core PID/start identity changed during executable verification.";
+                    Thread.Sleep(10);
+                    continue;
+                }
+
+                return (sha256, expectedStartTimeUtc);
+            }
+
+            throw new InvalidOperationException(
+                "Renderer fixture Core executable identity was not ready within the bounded fixture setup period. " +
+                lastMismatch);
         }
 
         public void RegisterLanguage(string language)
