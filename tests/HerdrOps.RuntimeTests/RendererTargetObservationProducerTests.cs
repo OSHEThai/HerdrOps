@@ -240,7 +240,13 @@ public sealed class RendererTargetObservationProducerTests
             using var fixture = new ProducerFixture();
             var server = fixture.RunServerAsync(failAfterOrdinal, invalidOrdinal);
             fixture.Producer.Start();
-            PumpDispatcherUntil(fixture.Producer.Completion, TimeSpan.FromSeconds(10), expectFailure: true);
+            // RunServerAsync captures this STA dispatcher. Waiting only for the
+            // producer and then synchronously observing the server can deadlock
+            // when its final WriteLineAsync continuation is still queued here.
+            // Keep pumping until both protocol peers have terminated.
+            var protocol = Task.WhenAll(fixture.Producer.Completion, server);
+            PumpDispatcherUntil(protocol, TimeSpan.FromSeconds(10), expectFailure: true);
+            Assert.IsTrue(server.IsCompleted, $"{scenario} left the protocol server pending.");
             try { server.GetAwaiter().GetResult(); }
             catch (InvalidOperationException) when (failAfterOrdinal is not null) { }
             Assert.IsTrue(fixture.Producer.PendingWaitersForTesting.All(task => task.IsCompleted),
