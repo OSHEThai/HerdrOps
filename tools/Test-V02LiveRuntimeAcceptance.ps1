@@ -36,6 +36,12 @@ param(
 
     [string]$Issue10BindingManifestPath = '',
 
+    [string]$Issue10PerformanceReceiptPath = '',
+
+    [string]$Issue10PerformanceRawSourcePath = '',
+
+    [string]$Issue10SoakReceiptPath = '',
+
     [string]$HerdrExecutable = (Join-Path $env:LOCALAPPDATA 'Programs\Herdr\bin\herdr.exe'),
 
     [ValidateRange(90, 900)]
@@ -64,13 +70,15 @@ $PSNativeCommandUseErrorActionPreference = $false
 . (Join-Path $PSScriptRoot 'lib/V02RuntimeSemanticBinding.ps1')
 . (Join-Path $PSScriptRoot 'v0.2-issue9-live-ui/Issue9LiveUi.Production.ps1')
 
-if ([string]::IsNullOrWhiteSpace($Issue10WidgetReportPath) -xor
-    [string]::IsNullOrWhiteSpace($Issue10BindingManifestPath)) {
-    throw 'Issue #10 production widget evidence requires both Issue10WidgetReportPath and Issue10BindingManifestPath.'
-}
-if (-not [string]::IsNullOrWhiteSpace($Issue10BindingManifestPath) -and
-    -not (Test-Path -LiteralPath $Issue10BindingManifestPath -PathType Leaf)) {
-    throw "Issue #10 production binding manifest does not exist before App launch: $Issue10BindingManifestPath"
+$issue10Arguments = @(
+    $Issue10WidgetReportPath,
+    $Issue10BindingManifestPath,
+    $Issue10PerformanceReceiptPath,
+    $Issue10PerformanceRawSourcePath,
+    $Issue10SoakReceiptPath)
+$issue10SuppliedCount = @($issue10Arguments | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }).Count
+if ($issue10SuppliedCount -ne 0 -and $issue10SuppliedCount -ne $issue10Arguments.Count) {
+    throw 'Issue #10 same-run production evidence requires widget output, binding output, performance receipt/raw source, and soak receipt together.'
 }
 
 function Get-ExpectedCleanSourceIdentity {
@@ -742,13 +750,71 @@ function Assert-AgentStatusTransitionEvidence {
     }
 }
 
+function Test-Issue10ContainedPath {
+    param([Parameter(Mandatory)][string]$Root,[Parameter(Mandatory)][string]$Path)
+    $rootFull=[IO.Path]::GetFullPath($Root).TrimEnd('\','/')
+    $pathFull=[IO.Path]::GetFullPath($Path)
+    return $pathFull.StartsWith($rootFull+[IO.Path]::DirectorySeparatorChar,[StringComparison]::OrdinalIgnoreCase)
+}
+
+function Copy-Issue10HeldAuthorityFile {
+    param([Parameter(Mandatory)][string]$Source,[Parameter(Mandatory)][string]$Destination,[Parameter(Mandatory)][string]$Context)
+    if(-not(Test-Path -LiteralPath $Source -PathType Leaf)){throw "$Context is missing: $Source"}
+    if(Test-Path -LiteralPath $Destination){throw "$Context destination already exists: $Destination"}
+    $sourceStream=$null;$destinationStream=$null;$sha=$null
+    try{
+        $sourceStream=[IO.File]::Open([IO.Path]::GetFullPath($Source),[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read)
+        $before=Get-V02FileInformation -FileStream $sourceStream
+        if($before.NumberOfLinks -ne 1){throw "$Context source must have exactly one hard link."}
+        $destinationStream=[IO.File]::Open([IO.Path]::GetFullPath($Destination),[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::None)
+        $sourceStream.CopyTo($destinationStream);$destinationStream.Flush($true);$destinationStream.Dispose();$destinationStream=$null
+        $sourceStream.Position=0;$sha=[Security.Cryptography.SHA256]::Create();$sourceHash=([BitConverter]::ToString($sha.ComputeHash($sourceStream))).Replace('-','')
+        $after=Get-V02FileInformation -FileStream $sourceStream
+        Assert-V02FileIdentityContinuity -BaselineInfo $before -CurrentInfo $after -Context $Context
+        $destinationHash=(Get-FileHash -LiteralPath $Destination -Algorithm SHA256).Hash
+        if($destinationHash -cne $sourceHash){throw "$Context changed across the held copy."}
+        return [pscustomobject]@{Path=[IO.Path]::GetFullPath($Destination);Sha256=$destinationHash}
+    }finally{if($null-ne$sha){$sha.Dispose()};if($null-ne$destinationStream){$destinationStream.Dispose()};if($null-ne$sourceStream){$sourceStream.Dispose()}}
+}
+
+function New-Issue10SameRunBindingManifest {
+    param([string]$AllowedEvidenceRoot,[string]$RunEvidenceDirectory,[string]$ManifestPath,[string]$WidgetOutputPath,[string]$RunNonce,[DateTime]$EvidenceStartedUtc,[string]$SourceCommit,[string]$SourceTree,$PackageBinding,[string]$GateReportPath,[string]$CoreRuntimeReportPath,[string]$AppRuntimeReportPath,[string]$PerformanceReceiptPath,[string]$PerformanceRawSourcePath,[string]$SoakReceiptPath,[string]$HerdrExecutablePath,[string]$ControlSessionIdentity,[string]$TargetSessionIdentity)
+    $manifestFull=[IO.Path]::GetFullPath($ManifestPath);$widgetFull=[IO.Path]::GetFullPath($WidgetOutputPath)
+    foreach($output in @($manifestFull,$widgetFull)){
+        if(-not(Test-Issue10ContainedPath $AllowedEvidenceRoot $output)){throw "Issue #10 same-run output escaped the current evidence root: $output"}
+        $parent=Split-Path -Parent $output;if(-not(Test-Path -LiteralPath $parent -PathType Container)){throw "Issue #10 same-run output parent is missing: $parent"}
+        if(Test-Path -LiteralPath $output){throw "Issue #10 same-run output already exists: $output"}
+    }
+    if($manifestFull.Equals($widgetFull,[StringComparison]::OrdinalIgnoreCase)){throw 'Issue #10 manifest and widget output paths must be distinct.'}
+    foreach($currentRunPath in @($GateReportPath,$CoreRuntimeReportPath,$AppRuntimeReportPath)){if(-not(Test-Issue10ContainedPath $RunEvidenceDirectory $currentRunPath)){throw "Issue #10 current-run report escaped its exact run directory: $currentRunPath"}}
+    $authorityDirectory=Join-Path $RunEvidenceDirectory 'issue10-authority';if(Test-Path -LiteralPath $authorityDirectory){throw "Issue #10 authority directory already exists: $authorityDirectory"};New-Item -ItemType Directory -Path $authorityDirectory|Out-Null
+    $manifestCreated=$false
+    try{
+        $identity=Copy-Issue10HeldAuthorityFile $PackageBinding.IdentityPath (Join-Path $authorityDirectory 'identity.json') 'Issue #10 package identity'
+        $archive=Copy-Issue10HeldAuthorityFile $PackageBinding.ArchivePath (Join-Path $authorityDirectory 'HerdrOps-0.2.0-win-x64.zip') 'Issue #10 package archive'
+        $packageManifest=Copy-Issue10HeldAuthorityFile $PackageBinding.ManifestPath (Join-Path $authorityDirectory 'package-manifest.json') 'Issue #10 package manifest'
+        $app=Copy-Issue10HeldAuthorityFile $PackageBinding.AppPath (Join-Path $authorityDirectory 'HerdrOps.App.exe') 'Issue #10 App'
+        $core=Copy-Issue10HeldAuthorityFile $PackageBinding.CorePath (Join-Path $authorityDirectory 'HerdrOps.Core.exe') 'Issue #10 Core'
+        $performance=Copy-Issue10HeldAuthorityFile $PerformanceReceiptPath (Join-Path $authorityDirectory 'performance-receipt.json') 'Issue #10 performance receipt'
+        $performanceRaw=Copy-Issue10HeldAuthorityFile $PerformanceRawSourcePath (Join-Path $authorityDirectory 'performance-raw.json') 'Issue #10 performance raw source'
+        $soak=Copy-Issue10HeldAuthorityFile $SoakReceiptPath (Join-Path $authorityDirectory 'soak-receipt.json') 'Issue #10 soak receipt'
+        $herdr=Copy-Issue10HeldAuthorityFile $HerdrExecutablePath (Join-Path $authorityDirectory 'herdr.exe') 'Issue #10 Herdr executable'
+        foreach($binding in @(@($identity,$PackageBinding.IdentityFileSha256,'identity'),@($archive,$PackageBinding.ArchiveSha256,'archive'),@($packageManifest,$PackageBinding.ManifestSha256,'manifest'),@($app,$PackageBinding.AppSha256,'App'),@($core,$PackageBinding.CoreSha256,'Core'))){if($binding[0].Sha256-cne[string]$binding[1]){throw "Issue #10 staged package $($binding[2]) hash differs from the validated package binding."}}
+        $artifact={param($path)[pscustomobject][ordered]@{Path=[IO.Path]::GetFullPath($path);Sha256=(Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash}}
+        $manifest=[pscustomobject][ordered]@{SchemaVersion=1;EvidenceClassification='Issue10ProductionBinding';Issue=10;EvidenceRoot=[IO.Path]::GetFullPath($AllowedEvidenceRoot);RunNonce=$RunNonce;EvidenceStartedUtc=$EvidenceStartedUtc.ToUniversalTime().ToString('O');Source=[pscustomobject][ordered]@{CommitSha=$SourceCommit;TreeSha=$SourceTree};GateReport=&$artifact $GateReportPath;CoreRuntimeReport=&$artifact $CoreRuntimeReportPath;Package=[pscustomobject][ordered]@{Identity=$identity;IdentityReceiptSha256=$PackageBinding.ReceiptSha256;Archive=$archive;Manifest=$packageManifest;App=$app;Core=$core};Performance=[pscustomobject][ordered]@{Receipt=$performance;RawSource=$performanceRaw};SoakReceipt=$soak;Runtime=[pscustomobject][ordered]@{HerdrExecutable=$herdr;ControlSessionIdentity=$ControlSessionIdentity;TargetSessionIdentity=$TargetSessionIdentity};EvidenceBoundary=[pscustomobject][ordered]@{Runtime='NOT_OBSERVED';Human='NOT_OBSERVED';Release='NOT_OBSERVED';CreditGranted=$false}}
+        $json=($manifest|ConvertTo-Json -Depth 12 -Compress)+"`n";$bytes=(New-Object Text.UTF8Encoding($false)).GetBytes($json);$stream=[IO.File]::Open($manifestFull,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::None);try{$stream.Write($bytes,0,$bytes.Length);$stream.Flush($true)}finally{$stream.Dispose()};$manifestCreated=$true
+        return [pscustomobject]@{ManifestPath=$manifestFull;WidgetOutputPath=$widgetFull;AuthorityDirectory=$authorityDirectory;ManifestSha256=(Get-FileHash -LiteralPath $manifestFull -Algorithm SHA256).Hash}
+    }catch{if($manifestCreated-and(Test-Path -LiteralPath $manifestFull)){Remove-Item -LiteralPath $manifestFull -Force};if(Test-Path -LiteralPath $authorityDirectory){Remove-Item -LiteralPath $authorityDirectory -Recurse -Force};throw}
+}
+
 $repositoryRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $artifactRoot = Join-Path $repositoryRoot 'artifacts'
 $configurationDirectory = $Configuration.ToLowerInvariant()
 $coreExecutable = ''
 $appExecutable = ''
 $runId = [DateTimeOffset]::UtcNow.ToString('yyyyMMddTHHmmssZ')
-$evidenceDirectory = Join-Path $artifactRoot "runtime-evidence\v0.2\issues-7-9-10\$runId"
+$runtimeEvidenceRoot = Join-Path $artifactRoot 'runtime-evidence\v0.2\issues-7-9-10'
+$evidenceDirectory = Join-Path $runtimeEvidenceRoot $runId
 $captureDirectory = Join-Path $evidenceDirectory 'captures'
 $issue9UiDirectory = Join-Path $evidenceDirectory 'issue9-ui'
 $issue9SideBySideCapturePath = Join-Path $issue9UiDirectory 'actual-herdr-ui-side-by-side.png'
@@ -789,10 +855,22 @@ $packageBinding = $null
 $trxEvidence = $null
 $targetAgentSessionAttestation = $null
 $issue9SideBySideObservation = $null
+$issue10SameRunBinding = $null
+$issue10WidgetOutputCreated = $false
 
 try {
     New-Item -ItemType Directory -Path $captureDirectory -Force | Out-Null
     New-Item -ItemType Directory -Path $issue9UiDirectory -Force | Out-Null
+    if ($issue10SuppliedCount -eq $issue10Arguments.Count) {
+        foreach($inputPath in @($Issue10PerformanceReceiptPath,$Issue10PerformanceRawSourcePath,$Issue10SoakReceiptPath)){
+            if(-not(Test-Path -LiteralPath $inputPath -PathType Leaf)){throw "Issue #10 same-run input is missing before runtime: $inputPath"}
+        }
+        foreach($outputPath in @($Issue10WidgetReportPath,$Issue10BindingManifestPath)){
+            if(-not(Test-Issue10ContainedPath $runtimeEvidenceRoot $outputPath)){throw "Issue #10 same-run output must be inside the v0.2 runtime evidence root: $outputPath"}
+            if(-not([IO.Path]::GetFullPath((Split-Path -Parent $outputPath)).Equals([IO.Path]::GetFullPath($runtimeEvidenceRoot),[StringComparison]::OrdinalIgnoreCase))){throw "Issue #10 same-run outputs must be direct children of the v0.2 runtime evidence root so current-run captures remain contained: $outputPath"}
+            if(Test-Path -LiteralPath $outputPath){throw "Issue #10 same-run output already exists before runtime: $outputPath"}
+        }
+    }
     Assert-ProgressCanonicalKnownVector
     if (Test-Path -LiteralPath $completionSignalPath) {
         throw "Completion signal path already exists: $completionSignalPath"
@@ -931,16 +1009,6 @@ $appArguments = @(
     '--reference-host-profile-id', $referenceHostProfile.Profile.profileId,
     '--reference-host-profile-sha256', $referenceHostProfile.Sha256
 )
-if (-not [string]::IsNullOrWhiteSpace($Issue10WidgetReportPath)) {
-    $appArguments += @(
-        '--issue10-widget-report', [IO.Path]::GetFullPath($Issue10WidgetReportPath),
-        '--issue10-binding-manifest', [IO.Path]::GetFullPath($Issue10BindingManifestPath),
-        '--issue10-run-nonce', $EvidenceRunNonce,
-        '--issue10-source-commit', $ExpectedSourceCommit.ToLowerInvariant(),
-        '--issue10-source-tree', $ExpectedSourceTree.ToLowerInvariant()
-    )
-}
-
 $tcpListeners = @{}
 try {
     $coreProcess = Start-Process `
@@ -1758,6 +1826,32 @@ $issue9Observation = New-I9LiveUiObservation `
     -ControlServerIdentityBefore $controlServerIdentity `
     -ControlServerIdentityAfter $controlServerIdentityAfterRun
 
+if($issue10SuppliedCount -eq $issue10Arguments.Count){
+    $issue10SameRunBinding=New-Issue10SameRunBindingManifest `
+        -AllowedEvidenceRoot $runtimeEvidenceRoot `
+        -RunEvidenceDirectory $evidenceDirectory `
+        -ManifestPath $Issue10BindingManifestPath `
+        -WidgetOutputPath $Issue10WidgetReportPath `
+        -RunNonce $EvidenceRunNonce `
+        -EvidenceStartedUtc $buildStartedUtc `
+        -SourceCommit $ExpectedSourceCommit.ToLowerInvariant() `
+        -SourceTree $ExpectedSourceTree.ToLowerInvariant() `
+        -PackageBinding $packageBinding `
+        -GateReportPath $gateReportPath `
+        -CoreRuntimeReportPath $coreReportPath `
+        -AppRuntimeReportPath $appReportPath `
+        -PerformanceReceiptPath $Issue10PerformanceReceiptPath `
+        -PerformanceRawSourcePath $Issue10PerformanceRawSourcePath `
+        -SoakReceiptPath $Issue10SoakReceiptPath `
+        -HerdrExecutablePath $HerdrExecutable `
+        -ControlSessionIdentity $sessionTopology.ControlSessionName `
+        -TargetSessionIdentity $sessionTopology.TargetSessionName
+    $finalizerArguments=@('--finalize-issue10-widget-report','--issue10-widget-report',$issue10SameRunBinding.WidgetOutputPath,'--issue10-binding-manifest',$issue10SameRunBinding.ManifestPath,'--runtime-evidence-report',$appReportPath,'--issue10-run-nonce',$EvidenceRunNonce,'--issue10-source-commit',$ExpectedSourceCommit.ToLowerInvariant(),'--issue10-source-tree',$ExpectedSourceTree.ToLowerInvariant())
+    $finalizerProcess=Start-Process -FilePath $appExecutable -ArgumentList $finalizerArguments -WindowStyle Hidden -Wait -PassThru
+    if($finalizerProcess.ExitCode-ne0-or-not(Test-Path -LiteralPath $issue10SameRunBinding.WidgetOutputPath -PathType Leaf)){throw "Issue #10 same-run finalizer failed after exact run reports were sealed (exit=$($finalizerProcess.ExitCode))."}
+    $issue10WidgetOutputCreated=$true
+}
+
 $reportLines | Write-Output
 Write-Output "GateReport: $gateReportPath"
 Write-Output "GateReportSha256: $gateHash"
@@ -1765,8 +1859,13 @@ Write-Output "CoreRuntimeReport: $coreReportPath"
 Write-Output "AppRuntimeReport: $appReportPath"
 Write-Output "Issue9UiObservation: $($issue9Observation.Path)"
 Write-Output "Issue9UiObservationSha256: $($issue9Observation.Sha256)"
+if($issue10WidgetOutputCreated){Write-Output "Issue10BindingManifest: $($issue10SameRunBinding.ManifestPath)";Write-Output "Issue10BindingManifestSha256: $($issue10SameRunBinding.ManifestSha256)";Write-Output "Issue10WidgetReport: $($issue10SameRunBinding.WidgetOutputPath)";Write-Output "Issue10WidgetReportSha256: $((Get-FileHash -LiteralPath $issue10SameRunBinding.WidgetOutputPath -Algorithm SHA256).Hash)"}
 } catch {
     $failureRecord = $_
+    if($null-ne$issue10SameRunBinding){
+        foreach($ownedFile in @($issue10SameRunBinding.WidgetOutputPath,$issue10SameRunBinding.ManifestPath)){if(Test-Path -LiteralPath $ownedFile -PathType Leaf){Remove-Item -LiteralPath $ownedFile -Force -ErrorAction SilentlyContinue}}
+        if(Test-Path -LiteralPath $issue10SameRunBinding.AuthorityDirectory -PathType Container){Remove-Item -LiteralPath $issue10SameRunBinding.AuthorityDirectory -Recurse -Force -ErrorAction SilentlyContinue}
+    }
     $failureMessage = [string]$failureRecord.Exception.Message
     if ([string]::IsNullOrWhiteSpace($failureMessage)) {
         $failureMessage = [string]$failureRecord

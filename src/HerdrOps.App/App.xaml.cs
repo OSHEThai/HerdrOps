@@ -68,6 +68,12 @@ public partial class App : Application
             return;
         }
 
+        if (Issue10WidgetEvidenceProducer.IsFinalizationRequested(e.Args))
+        {
+            Shutdown(Issue10WidgetEvidenceProducer.FinalizeFromCommandLine(e.Args));
+            return;
+        }
+
         if (RuntimeEvidenceOptions.IsRequested(e.Args))
         {
             await RunRuntimeEvidenceAsync(e.Args);
@@ -196,6 +202,17 @@ public partial class App : Application
         }
 
         var options = parsedOptions!;
+        if (options.Issue10WidgetReportPath is not null)
+        {
+            RuntimeEvidenceRunner.WriteFailure(
+                options.ReportPath,
+                startedUtc,
+                new InvalidOperationException(
+                    "Issue #10 widget evidence must be finalized by the composite gate after the same-run Gate/Core/App reports are sealed."),
+                options.ProgressPath);
+            Shutdown(64);
+            return;
+        }
         ShutdownMode = ShutdownMode.OnExplicitShutdown;
         if (!string.Equals(
                 Environment.GetEnvironmentVariable("HERDR_ENV"),
@@ -238,17 +255,6 @@ public partial class App : Application
                 options,
                 producerBinding);
             var report = await runner.RunAsync();
-            if (options.Issue10WidgetReportPath is not null)
-            {
-                Issue10WidgetEvidenceProducer.Write(
-                    options.Issue10WidgetReportPath,
-                    options.Issue10BindingManifestPath!,
-                    options.ReportPath,
-                    options.Issue10RunNonce!,
-                    options.Issue10SourceCommit!,
-                    options.Issue10SourceTree!,
-                    report);
-            }
             exitCode = report.CompositeCandidateChecksPassed ? 0 : 2;
         }
         catch (Exception exception)
