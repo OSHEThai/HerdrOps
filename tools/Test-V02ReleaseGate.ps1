@@ -17,6 +17,8 @@ param(
     [string]$SyntheticEvidencePath,
     [string]$HumanReviewPath,
     [string]$CleanMachineReportPath,
+    [string]$CleanHostAuthorizationPath,
+    [string]$CleanHostAuthorizationSignaturePath,
     [string]$GitHubSnapshotPath,
     [string]$CandidateLockPath,
     [string]$AuthorityReferencePath,
@@ -1896,7 +1898,9 @@ function Read-V02ReleaseGateCleanMachineReport {
         [Parameter(Mandatory = $true)][string]$RepositoryRoot,
         [Parameter(Mandatory = $true)][string]$ExpectedSourceCommit,
         [Parameter(Mandatory = $true)][string]$ExpectedSourceTree,
-        [Parameter(Mandatory = $true)]$Package
+        [Parameter(Mandatory = $true)]$Package,
+        [string]$CleanHostAuthorizationPath,
+        [string]$CleanHostAuthorizationSignaturePath
     )
 
     # Reuse the producer's strict schema/semantic verifier, then add the
@@ -1931,6 +1935,28 @@ function Read-V02ReleaseGateCleanMachineReport {
     Assert-V02ReleaseGateEqual $report.profileId $Package.ProfileId 'Clean-machine package profile'
     Assert-V02ReleaseGateEqual $report.bindings.referenceHostProfileSha256 $Package.ReferenceHostProfileSha256 'Clean-machine reference-host profile'
     Assert-V02ReleaseGateEqual $report.bindings.rendererPolicySha256 $Package.RendererPolicySha256 'Clean-machine renderer policy'
+
+    if ([string]::IsNullOrWhiteSpace($CleanHostAuthorizationPath) -or [string]::IsNullOrWhiteSpace($CleanHostAuthorizationSignaturePath)) {
+        throw 'Clean-machine Live PASS requires the external authorization JSON and detached CMS signature bytes.'
+    }
+    $completedAtUtc = [DateTimeOffset]::ParseExact([string]$report.completedAtUtc, 'o', [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::RoundtripKind)
+    $authorization = Read-V02CleanHostAuthorization `
+        -AuthorizationPath $CleanHostAuthorizationPath `
+        -SignaturePath $CleanHostAuthorizationSignaturePath `
+        -MachineName ([string]$report.machine.machineName) `
+        -MachineFingerprint ([string]$report.machine.machineFingerprint) `
+        -PrincipalSid ([string]$report.machine.userScope) `
+        -InstallRoot ([string]$report.targets.installRoot) `
+        -UserDataRoot ([string]$report.targets.userDataRoot) `
+        -InitialBinding $report.bindings.initial `
+        -FinalBinding $report.bindings.final `
+        -VerificationTimeUtc $completedAtUtc
+    Assert-V02ReleaseGateEqual $report.actor.operator.identity $report.machine.userScope 'Clean-machine operator/principal binding'
+    Assert-V02ReleaseGateEqual $report.actor.observer.identity $authorization.Value.observerIdentity 'Clean-machine observer authorization binding'
+    Assert-V02ReleaseGateEqual $report.actor.authorization.signerThumbprint $authorization.SignerThumbprint 'Clean-machine authorization signer thumbprint'
+    Assert-V02ReleaseGateEqual $report.actor.authorization.authorizationSha256 $authorization.AuthorizationSha256 'Clean-machine authorization file hash'
+    Assert-V02ReleaseGateEqual $report.actor.authorization.signatureSha256 $authorization.SignatureSha256 'Clean-machine authorization signature hash'
+    Assert-V02ReleaseGateEqual $report.actor.authorization.nonce $authorization.Value.nonce 'Clean-machine authorization nonce'
 
     return [pscustomobject][ordered]@{
         Path = $document.Path
@@ -2248,6 +2274,8 @@ function Invoke-V02ReleaseGate {
         [Parameter(Mandatory = $true)][string]$SyntheticEvidencePath,
         [Parameter(Mandatory = $true)][string]$HumanReviewPath,
         [Parameter(Mandatory = $true)][string]$CleanMachineReportPath,
+        [Parameter(Mandatory = $true)][string]$CleanHostAuthorizationPath,
+        [Parameter(Mandatory = $true)][string]$CleanHostAuthorizationSignaturePath,
         [Parameter(Mandatory = $true)][string]$GitHubSnapshotPath,
         [string]$CandidateLockPath,
         [string]$AuthorityReferencePath,
@@ -2297,6 +2325,8 @@ function Invoke-V02ReleaseGate {
         [pscustomobject]@{ Path = $SyntheticEvidencePath; Type = 'Leaf'; Name = 'Synthetic evidence receipt' }
         [pscustomobject]@{ Path = $HumanReviewPath; Type = 'Leaf'; Name = 'Human review record' }
         [pscustomobject]@{ Path = $CleanMachineReportPath; Type = 'Leaf'; Name = 'Clean-machine acceptance report' }
+        [pscustomobject]@{ Path = $CleanHostAuthorizationPath; Type = 'Leaf'; Name = 'Clean-host authorization' }
+        [pscustomobject]@{ Path = $CleanHostAuthorizationSignaturePath; Type = 'Leaf'; Name = 'Clean-host authorization signature' }
         [pscustomobject]@{ Path = $GitHubSnapshotPath; Type = 'Leaf'; Name = 'GitHub snapshot' }
     )
     foreach ($input in $evidenceInputs) {
@@ -2365,6 +2395,8 @@ function Invoke-V02ReleaseGate {
         (Resolve-V02ReleaseGateExistingPath -Path $SyntheticEvidencePath -Type Leaf -Context 'Synthetic evidence receipt'),
         (Resolve-V02ReleaseGateExistingPath -Path $HumanReviewPath -Type Leaf -Context 'Human review record'),
         (Resolve-V02ReleaseGateExistingPath -Path $CleanMachineReportPath -Type Leaf -Context 'Clean-machine acceptance report'),
+        (Resolve-V02ReleaseGateExistingPath -Path $CleanHostAuthorizationPath -Type Leaf -Context 'Clean-host authorization'),
+        (Resolve-V02ReleaseGateExistingPath -Path $CleanHostAuthorizationSignaturePath -Type Leaf -Context 'Clean-host authorization signature'),
         (Resolve-V02ReleaseGateExistingPath -Path $GitHubSnapshotPath -Type Leaf -Context 'GitHub snapshot'),
         $candidateLock.Path, $authority.Path, $candidateLock.IndependentReceipt.Path
     )
@@ -2385,7 +2417,9 @@ function Invoke-V02ReleaseGate {
         -ExpectedSourceCommit $ExpectedSourceCommit -ExpectedSourceTree $ExpectedSourceTree
     $cleanMachine = Read-V02ReleaseGateCleanMachineReport -Path $CleanMachineReportPath `
         -RepositoryRoot $identityBefore.RepositoryRoot -ExpectedSourceCommit $ExpectedSourceCommit `
-        -ExpectedSourceTree $ExpectedSourceTree -Package $package
+        -ExpectedSourceTree $ExpectedSourceTree -Package $package `
+        -CleanHostAuthorizationPath $CleanHostAuthorizationPath `
+        -CleanHostAuthorizationSignaturePath $CleanHostAuthorizationSignaturePath
     Assert-V02ReleaseGateBoundSnapshots -Snapshots $preValidationSnapshots -Phase 'Post-package validation'
     $renderer = Invoke-V02ReleaseGateRendererValidation -Context $context -Package $package `
         -ExpectedSourceCommit $ExpectedSourceCommit -ExpectedSourceTree $ExpectedSourceTree
@@ -2582,6 +2616,8 @@ if ($MyInvocation.InvocationName -ne '.') {
         -SyntheticEvidencePath $SyntheticEvidencePath `
         -HumanReviewPath $HumanReviewPath `
         -CleanMachineReportPath $CleanMachineReportPath `
+        -CleanHostAuthorizationPath $CleanHostAuthorizationPath `
+        -CleanHostAuthorizationSignaturePath $CleanHostAuthorizationSignaturePath `
         -GitHubSnapshotPath $GitHubSnapshotPath `
         -CandidateLockPath $CandidateLockPath `
         -AuthorityReferencePath $AuthorityReferencePath `
