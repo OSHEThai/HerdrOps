@@ -287,7 +287,11 @@ jobs:
   v02-package-gates:
     name: v0.2 Package and Evidence Gates
     runs-on: windows-latest
-    timeout-minutes: 30
+    # This partition deliberately runs the full 891-test Release prerequisite
+    # plus the hostile evidence suites under both PowerShell 7 and 5.1.  The
+    # PS5 held-file/reparse checks are materially slower on hosted runners, so
+    # keep a finite job bound without cancelling a valid exact-head run.
+    timeout-minutes: 60
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
