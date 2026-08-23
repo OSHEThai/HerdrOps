@@ -91,6 +91,7 @@ $script:V02ReleaseGateTransitiveGovernanceRelativePaths = @(
     'tools/packaging/v0.2/Test-V02PackageIdentity.ps1',
     'tools/packaging/v0.2/V02PackageIdentity.Common.ps1',
     'tools/packaging/v0.2/V02CleanMachine.Common.ps1',
+    'tools/packaging/v0.2/Invoke-V02CleanMachineReleaseVerifier.ps1',
     'tools/packaging/v0.2/V02Packaging.Common.ps1',
     'tools/packaging/v0.2/clean-machine-report.schema.json',
     'tools/packaging/Packaging.Common.ps1',
@@ -128,36 +129,6 @@ $script:V02ReleaseGateTransitiveGovernanceRelativePaths = @(
 )
 $script:V02ReleaseGateValidatorRelativePaths = $script:V02ReleaseGateTransitiveGovernanceRelativePaths
 $script:V02ReleaseGateHeldValidatorIndex = $null
-
-# Load the CleanMachine authority verifier once from the same source tree as
-# this release-gate script. Keep it in an isolated dynamic-module scope so a
-# caller cannot shadow its functions or committed signer pin by supplying a
-# different RepositoryRoot or defining same-named functions.
-$v02ReleaseGateSourceRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
-$v02ReleaseGateCleanMachineVerifierPath = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot 'packaging\v0.2\V02CleanMachine.Common.ps1'))
-if (-not (Test-Path -LiteralPath $v02ReleaseGateCleanMachineVerifierPath -PathType Leaf)) {
-    throw "Committed CleanMachine verifier is missing beside the release gate: $v02ReleaseGateCleanMachineVerifierPath"
-}
-$v02ReleaseGateCleanMachineVerifierModule = New-Module -Name ('HerdrOps.V02ReleaseGate.CleanMachineVerifier.' + [Guid]::NewGuid().ToString('N')) -ArgumentList @($v02ReleaseGateCleanMachineVerifierPath) -ScriptBlock {
-    param([Parameter(Mandatory = $true)][string]$VerifierPath)
-    . $VerifierPath
-
-    function Invoke-V02AnchoredCleanMachineVerifier {
-        param(
-            [Parameter(Mandatory = $true)][ValidateSet('AssertReport','ReadAuthorization','ReadAcceptanceReceipt')][string]$Operation,
-            [Parameter(Mandatory = $true)][hashtable]$Arguments
-        )
-        switch ($Operation) {
-            'AssertReport' { Assert-V02CleanMachineReportSchema @Arguments; return }
-            'ReadAuthorization' { return Read-V02CleanHostAuthorization @Arguments }
-            'ReadAcceptanceReceipt' { return Read-V02CleanHostAcceptanceReceipt @Arguments }
-        }
-    }
-    Export-ModuleMember -Function Invoke-V02AnchoredCleanMachineVerifier
-}
-Set-Variable -Scope Script -Name V02ReleaseGateSourceRoot -Value $v02ReleaseGateSourceRoot -Option ReadOnly
-Set-Variable -Scope Script -Name V02ReleaseGateCleanMachineVerifierPath -Value $v02ReleaseGateCleanMachineVerifierPath -Option ReadOnly
-Set-Variable -Scope Script -Name V02ReleaseGateCleanMachineVerifierModule -Value $v02ReleaseGateCleanMachineVerifierModule -Option ReadOnly
 
 if (-not ('V02ReleaseGateNative' -as [type])) {
     Add-Type -TypeDefinition @'
@@ -1924,6 +1895,139 @@ function Assert-V02ReleaseGateIndependentReceiptBinding {
     }
 }
 
+function Invoke-V02ReleaseGateIsolatedCleanMachineVerifier {
+    param(
+        [Parameter(Mandatory = $true)][string]$ReportPath,
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$AuthorizationPath,
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$AuthorizationSignaturePath,
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$AcceptanceReceiptPath,
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$AcceptanceReceiptSignaturePath,
+        [Parameter(Mandatory = $true)][string]$ExpectedSourceCommit,
+        [Parameter(Mandatory = $true)][string]$ExpectedSourceTree,
+        [Parameter(Mandatory = $true)]$Package
+    )
+
+    # Derive the verifier location from this function's defining script block,
+    # never from a caller-visible script variable or module object.
+    $gateScriptPath = [IO.Path]::GetFullPath($MyInvocation.MyCommand.ScriptBlock.File)
+    $gateToolsRoot = [IO.Path]::GetDirectoryName($gateScriptPath)
+    $verifierPath = [IO.Path]::GetFullPath((Join-Path $gateToolsRoot 'packaging\v0.2\Invoke-V02CleanMachineReleaseVerifier.ps1'))
+    $commonPath = [IO.Path]::GetFullPath((Join-Path $gateToolsRoot 'packaging\v0.2\V02CleanMachine.Common.ps1'))
+    $requestRoot = Join-Path ([IO.Path]::GetTempPath()) ('HerdrOps-V02ReleaseVerifier-' + [Guid]::NewGuid().ToString('N'))
+    $requestPath = Join-Path $requestRoot 'request.json'
+    $held = New-Object System.Collections.Generic.List[object]
+    $inputSnapshots = @{}
+    $process = $null
+    try {
+        [void][IO.Directory]::CreateDirectory($requestRoot)
+        $verifierSnapshot = Get-V02ReleaseGateStableFileSnapshot -Path $verifierPath -Context 'Isolated CleanMachine verifier source' -KeepOpen
+        [void]$held.Add($verifierSnapshot)
+        $commonSnapshot = Get-V02ReleaseGateStableFileSnapshot -Path $commonPath -Context 'CleanMachine common verifier source' -KeepOpen
+        [void]$held.Add($commonSnapshot)
+        foreach ($input in @(
+                @('report',$ReportPath,'CleanMachine report input'),
+                @('authorization',$AuthorizationPath,'CleanMachine authorization input'),
+                @('authorizationSignature',$AuthorizationSignaturePath,'CleanMachine authorization signature input'),
+                @('acceptanceReceipt',$AcceptanceReceiptPath,'CleanMachine acceptance receipt input'),
+                @('acceptanceReceiptSignature',$AcceptanceReceiptSignaturePath,'CleanMachine acceptance receipt signature input'))) {
+            if (-not [string]::IsNullOrWhiteSpace([string]$input[1])) {
+                $inputSnapshot = Get-V02ReleaseGateStableFileSnapshot -Path ([string]$input[1]) -Context ([string]$input[2]) -KeepOpen
+                $inputSnapshots[[string]$input[0]] = $inputSnapshot
+                [void]$held.Add($inputSnapshot)
+            }
+        }
+        $enginePath = [IO.Path]::GetFullPath([Diagnostics.Process]::GetCurrentProcess().MainModule.FileName)
+        $engineSnapshot = Get-V02ReleaseGateStableFileSnapshot -Path $enginePath -Context 'Isolated PowerShell executable' -KeepOpen
+        [void]$held.Add($engineSnapshot)
+        $request = [pscustomobject][ordered]@{
+            reportPath = [IO.Path]::GetFullPath($ReportPath)
+            authorizationPath = $(if ([string]::IsNullOrWhiteSpace($AuthorizationPath)) { '' } else { [IO.Path]::GetFullPath($AuthorizationPath) })
+            authorizationSignaturePath = $(if ([string]::IsNullOrWhiteSpace($AuthorizationSignaturePath)) { '' } else { [IO.Path]::GetFullPath($AuthorizationSignaturePath) })
+            acceptanceReceiptPath = $(if ([string]::IsNullOrWhiteSpace($AcceptanceReceiptPath)) { '' } else { [IO.Path]::GetFullPath($AcceptanceReceiptPath) })
+            acceptanceReceiptSignaturePath = $(if ([string]::IsNullOrWhiteSpace($AcceptanceReceiptSignaturePath)) { '' } else { [IO.Path]::GetFullPath($AcceptanceReceiptSignaturePath) })
+            expectedSourceCommit = $ExpectedSourceCommit
+            expectedSourceTree = $ExpectedSourceTree
+            engineSha256 = $engineSnapshot.Sha256
+            verifierSha256 = $verifierSnapshot.Sha256
+            commonSha256 = $commonSnapshot.Sha256
+            reportSha256 = $inputSnapshots['report'].Sha256
+            authorizationSha256 = $(if ($inputSnapshots.ContainsKey('authorization')) { $inputSnapshots['authorization'].Sha256 } else { '' })
+            authorizationSignatureSha256 = $(if ($inputSnapshots.ContainsKey('authorizationSignature')) { $inputSnapshots['authorizationSignature'].Sha256 } else { '' })
+            acceptanceReceiptSha256 = $(if ($inputSnapshots.ContainsKey('acceptanceReceipt')) { $inputSnapshots['acceptanceReceipt'].Sha256 } else { '' })
+            acceptanceReceiptSignatureSha256 = $(if ($inputSnapshots.ContainsKey('acceptanceReceiptSignature')) { $inputSnapshots['acceptanceReceiptSignature'].Sha256 } else { '' })
+            package = [pscustomobject][ordered]@{
+                profileId = $Package.ProfileId; receiptSha256 = $Package.ReceiptSha256
+                archiveSha256 = $Package.ArchiveSha256; manifestSha256 = $Package.ManifestSha256
+                appSha256 = $Package.AppSha256; coreSha256 = $Package.CoreSha256
+                referenceHostProfileSha256 = $Package.ReferenceHostProfileSha256
+                rendererPolicySha256 = $Package.RendererPolicySha256
+            }
+        }
+        $requestJson = $request | ConvertTo-Json -Compress -Depth 8
+        [IO.File]::WriteAllText($requestPath, $requestJson, (New-Object Text.UTF8Encoding($false)))
+        $requestSnapshot = Get-V02ReleaseGateStableFileSnapshot -Path $requestPath -Context 'Isolated CleanMachine verifier request' -KeepOpen
+        [void]$held.Add($requestSnapshot)
+        Assert-V02ReleaseGateDistinctFileIdentities -Snapshots $held.ToArray() -Context 'Isolated CleanMachine verifier sources and inputs'
+
+        $start = New-Object Diagnostics.ProcessStartInfo
+        $start.FileName = $enginePath
+        $start.Arguments = '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + $verifierPath + '"'
+        $start.UseShellExecute = $false
+        $start.CreateNoWindow = $true
+        $start.RedirectStandardOutput = $true
+        $start.RedirectStandardError = $true
+        $start.EnvironmentVariables['HERDROPS_V02_RELEASE_VERIFY_REQUEST'] = $requestPath
+        $start.EnvironmentVariables['HERDROPS_V02_RELEASE_VERIFY_REQUEST_SHA256'] = $requestSnapshot.Sha256
+        $start.EnvironmentVariables['PSModulePath'] = ''
+        $start.EnvironmentVariables['PSModuleAnalysisCachePath'] = ''
+        $process = New-Object Diagnostics.Process
+        $process.StartInfo = $start
+        if (-not $process.Start()) { throw 'The isolated CleanMachine verifier process did not start.' }
+        $stdout = $process.StandardOutput.ReadToEnd()
+        $stderr = $process.StandardError.ReadToEnd()
+        if (-not $process.WaitForExit(120000)) {
+            try { $process.Kill() } catch {}
+            throw 'The isolated CleanMachine verifier process exceeded its 120-second bound.'
+        }
+        if ($process.ExitCode -ne 0) {
+            throw "Isolated CleanMachine verifier rejected the evidence: $($stderr.Trim())"
+        }
+        $lines = @($stdout -split "`r?`n" | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+        if ($lines.Count -ne 1) { throw 'The isolated CleanMachine verifier returned an ambiguous result stream.' }
+        $result = $lines[0] | ConvertFrom-Json
+        $expectedProperties = @('protocol','version','requestSha256','engineSha256','verifierSha256','commonSha256','reportSha256','authorizationSha256','authorizationSignatureSha256','runId','machineFingerprint','operatorIdentity','observerIdentity','authorizationSignerThumbprint','acceptanceReceiptSha256','acceptanceReceiptSignatureSha256','acceptanceReceiptNonce','resultBindingSha256')
+        $actualProperties = @($result.PSObject.Properties.Name)
+        if ($actualProperties.Count -ne $expectedProperties.Count -or @($actualProperties | Where-Object { $expectedProperties -cnotcontains $_ }).Count -ne 0) {
+            throw 'The isolated CleanMachine verifier returned a malformed result.'
+        }
+        Assert-V02ReleaseGateExactString $result.protocol 'HerdrOps.V02IsolatedCleanMachineVerifierResult' 'Isolated CleanMachine verifier protocol'
+        Assert-V02ReleaseGateEqual $result.version 1 'Isolated CleanMachine verifier version'
+        Assert-V02ReleaseGateEqual $result.requestSha256 $requestSnapshot.Sha256 'Isolated CleanMachine verifier request binding'
+        Assert-V02ReleaseGateEqual $result.engineSha256 $engineSnapshot.Sha256 'Isolated PowerShell executable binding'
+        Assert-V02ReleaseGateEqual $result.verifierSha256 $verifierSnapshot.Sha256 'Isolated CleanMachine verifier source binding'
+        Assert-V02ReleaseGateEqual $result.commonSha256 $commonSnapshot.Sha256 'Isolated CleanMachine common source binding'
+        Assert-V02ReleaseGateEqual $result.reportSha256 $inputSnapshots['report'].Sha256 'Isolated CleanMachine report input binding'
+        Assert-V02ReleaseGateEqual $result.authorizationSha256 $inputSnapshots['authorization'].Sha256 'Isolated CleanMachine authorization input binding'
+        Assert-V02ReleaseGateEqual $result.authorizationSignatureSha256 $inputSnapshots['authorizationSignature'].Sha256 'Isolated CleanMachine authorization signature binding'
+        Assert-V02ReleaseGateEqual $result.acceptanceReceiptSha256 $inputSnapshots['acceptanceReceipt'].Sha256 'Isolated CleanMachine acceptance receipt input binding'
+        Assert-V02ReleaseGateEqual $result.acceptanceReceiptSignatureSha256 $inputSnapshots['acceptanceReceiptSignature'].Sha256 'Isolated CleanMachine acceptance receipt signature binding'
+        $resultBindingText = @(
+            $requestSnapshot.Sha256,$engineSnapshot.Sha256,$verifierSnapshot.Sha256,$commonSnapshot.Sha256,$inputSnapshots['report'].Sha256,
+            $inputSnapshots['authorization'].Sha256,$inputSnapshots['authorizationSignature'].Sha256,
+            $inputSnapshots['acceptanceReceipt'].Sha256,$inputSnapshots['acceptanceReceiptSignature'].Sha256,
+            [string]$result.runId,[string]$result.acceptanceReceiptNonce
+        ) -join "`n"
+        Assert-V02ReleaseGateEqual $result.resultBindingSha256 (Get-V02Sha256Hex -Bytes ([Text.Encoding]::UTF8.GetBytes($resultBindingText))) 'Isolated CleanMachine result cryptographic binding'
+        return $result
+    }
+    finally {
+        if ($null -ne $process) { $process.Dispose() }
+        Close-V02ReleaseGateHeldSnapshots -Snapshots $held.ToArray()
+        if (Test-Path -LiteralPath $requestPath -PathType Leaf) { [IO.File]::Delete($requestPath) }
+        if (Test-Path -LiteralPath $requestRoot -PathType Container) { [IO.Directory]::Delete($requestRoot, $false) }
+    }
+}
+
 function Read-V02ReleaseGateCleanMachineReport {
     param(
         [Parameter(Mandatory = $true)][string]$Path,
@@ -1936,88 +2040,27 @@ function Read-V02ReleaseGateCleanMachineReport {
         [string]$CleanHostAcceptanceReceiptSignaturePath
     )
 
-    # Reuse the producer's strict schema/semantic verifier, then add the
-    # release-gate-specific exact-candidate binding.  The report's own
-    # CleanMachine credit is install-lifecycle evidence only and cannot grant
-    # Runtime, Human, or Release authority.
-    $document = Read-V02ReleaseGateJsonFile -Path $Path -Context 'Clean-machine acceptance report'
-    & $script:V02ReleaseGateCleanMachineVerifierModule Invoke-V02AnchoredCleanMachineVerifier `
-        -Operation AssertReport -Arguments @{ Report = $document.Value; RepositoryRoot = $script:V02ReleaseGateSourceRoot }
-    $report = $document.Value
-
-    Assert-V02ReleaseGateExactString $report.status 'PASS' 'Clean-machine report status'
-    Assert-V02ReleaseGateExactString $report.mode 'Live' 'Clean-machine report mode'
-    Assert-V02ReleaseGateExactString $report.evidenceBoundary.evidenceClass 'CleanMachine' 'Clean-machine evidence class'
-    if (-not (Assert-V02ReleaseGateBoolean $report.evidenceBoundary.creditGranted 'Clean-machine lifecycle credit')) {
-        throw 'Clean-machine report must grant genuine Live install-lifecycle credit.'
-    }
-    foreach ($phase in @('initial', 'final')) {
-        $binding = $report.bindings.$phase
-        foreach ($pair in @(
-                [pscustomobject]@{ Name = 'sourceCommit'; Actual = $binding.sourceCommit; Expected = $ExpectedSourceCommit }
-                [pscustomobject]@{ Name = 'sourceTree'; Actual = $binding.sourceTree; Expected = $ExpectedSourceTree }
-                [pscustomobject]@{ Name = 'receiptSha256'; Actual = $binding.receiptSha256; Expected = $Package.ReceiptSha256 }
-                [pscustomobject]@{ Name = 'archiveSha256'; Actual = $binding.archiveSha256; Expected = $Package.ArchiveSha256 }
-                [pscustomobject]@{ Name = 'packageManifestSha256'; Actual = $binding.packageManifestSha256; Expected = $Package.ManifestSha256 }
-                [pscustomobject]@{ Name = 'appSha256'; Actual = $binding.appSha256; Expected = $Package.AppSha256 }
-                [pscustomobject]@{ Name = 'coreSha256'; Actual = $binding.coreSha256; Expected = $Package.CoreSha256 }
-            )) {
-            Assert-V02ReleaseGateEqual $pair.Actual $pair.Expected "Clean-machine $phase.$($pair.Name)"
-        }
-    }
-    Assert-V02ReleaseGateEqual $report.profileId $Package.ProfileId 'Clean-machine package profile'
-    Assert-V02ReleaseGateEqual $report.bindings.referenceHostProfileSha256 $Package.ReferenceHostProfileSha256 'Clean-machine reference-host profile'
-    Assert-V02ReleaseGateEqual $report.bindings.rendererPolicySha256 $Package.RendererPolicySha256 'Clean-machine renderer policy'
-
-    if ([string]::IsNullOrWhiteSpace($CleanHostAuthorizationPath) -or [string]::IsNullOrWhiteSpace($CleanHostAuthorizationSignaturePath)) {
-        throw 'Clean-machine Live PASS requires the external authorization JSON and detached CMS signature bytes.'
-    }
-    $completedAtUtc = [DateTimeOffset]::ParseExact([string]$report.completedAtUtc, 'o', [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::RoundtripKind)
-    $authorization = & $script:V02ReleaseGateCleanMachineVerifierModule Invoke-V02AnchoredCleanMachineVerifier `
-        -Operation ReadAuthorization -Arguments @{
-            AuthorizationPath = $CleanHostAuthorizationPath
-            SignaturePath = $CleanHostAuthorizationSignaturePath
-            MachineName = [string]$report.machine.machineName
-            MachineFingerprint = [string]$report.machine.machineFingerprint
-            PrincipalSid = [string]$report.machine.userScope
-            InstallRoot = [string]$report.targets.installRoot
-            UserDataRoot = [string]$report.targets.userDataRoot
-            InitialBinding = $report.bindings.initial
-            FinalBinding = $report.bindings.final
-            VerificationTimeUtc = $completedAtUtc
-        }
-    Assert-V02ReleaseGateEqual $report.actor.operator.identity $report.machine.userScope 'Clean-machine operator/principal binding'
-    Assert-V02ReleaseGateEqual $report.actor.observer.identity $authorization.Value.observerIdentity 'Clean-machine observer authorization binding'
-    Assert-V02ReleaseGateEqual $report.actor.authorization.signerThumbprint $authorization.SignerThumbprint 'Clean-machine authorization signer thumbprint'
-    Assert-V02ReleaseGateEqual $report.actor.authorization.authorizationSha256 $authorization.AuthorizationSha256 'Clean-machine authorization file hash'
-    Assert-V02ReleaseGateEqual $report.actor.authorization.signatureSha256 $authorization.SignatureSha256 'Clean-machine authorization signature hash'
-    Assert-V02ReleaseGateEqual $report.actor.authorization.nonce $authorization.Value.nonce 'Clean-machine authorization nonce'
-    if ([string]::IsNullOrWhiteSpace($CleanHostAcceptanceReceiptPath) -or [string]::IsNullOrWhiteSpace($CleanHostAcceptanceReceiptSignaturePath)) {
-        throw 'Clean-machine Live PASS requires the post-run observer acceptance receipt JSON and detached CMS signature bytes.'
-    }
-    $acceptanceReceipt = & $script:V02ReleaseGateCleanMachineVerifierModule Invoke-V02AnchoredCleanMachineVerifier `
-        -Operation ReadAcceptanceReceipt -Arguments @{
-            ReceiptPath = $CleanHostAcceptanceReceiptPath
-            SignaturePath = $CleanHostAcceptanceReceiptSignaturePath
-            ReportSha256 = $document.FileSha256
-            Report = $report
-            Authorization = $authorization
-        }
+    $isolated = Invoke-V02ReleaseGateIsolatedCleanMachineVerifier `
+        -ReportPath $Path -AuthorizationPath $CleanHostAuthorizationPath `
+        -AuthorizationSignaturePath $CleanHostAuthorizationSignaturePath `
+        -AcceptanceReceiptPath $CleanHostAcceptanceReceiptPath `
+        -AcceptanceReceiptSignaturePath $CleanHostAcceptanceReceiptSignaturePath `
+        -ExpectedSourceCommit $ExpectedSourceCommit -ExpectedSourceTree $ExpectedSourceTree -Package $Package
 
     return [pscustomobject][ordered]@{
-        Path = $document.Path
-        FileSha256 = $document.FileSha256
+        Path = [IO.Path]::GetFullPath($Path)
+        FileSha256 = [string]$isolated.reportSha256
         EvidenceClass = 'CleanMachine'
         Status = 'PASS'
         Mode = 'Live'
-        RunId = [string]$report.runId
-        MachineFingerprint = [string]$report.machine.machineFingerprint
-        OperatorIdentity = [string]$report.actor.operator.identity
-        ObserverIdentity = [string]$report.actor.observer.identity
-        AuthorizationSignerThumbprint = [string]$report.actor.authorization.signerThumbprint
-        AcceptanceReceiptSha256 = [string]$acceptanceReceipt.ReceiptSha256
-        AcceptanceReceiptSignatureSha256 = [string]$acceptanceReceipt.SignatureSha256
-        AcceptanceReceiptNonce = [string]$acceptanceReceipt.Value.receiptNonce
+        RunId = [string]$isolated.runId
+        MachineFingerprint = [string]$isolated.machineFingerprint
+        OperatorIdentity = [string]$isolated.operatorIdentity
+        ObserverIdentity = [string]$isolated.observerIdentity
+        AuthorizationSignerThumbprint = [string]$isolated.authorizationSignerThumbprint
+        AcceptanceReceiptSha256 = [string]$isolated.acceptanceReceiptSha256
+        AcceptanceReceiptSignatureSha256 = [string]$isolated.acceptanceReceiptSignatureSha256
+        AcceptanceReceiptNonce = [string]$isolated.acceptanceReceiptNonce
         LifecycleCreditGranted = $true
         Runtime = 'NOT_OBSERVED'
         Human = 'NOT_OBSERVED'

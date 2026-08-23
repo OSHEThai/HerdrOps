@@ -1054,6 +1054,43 @@ try {
         } finally { $certificate.Dispose() }
     }
 
+    Invoke-V02ReleaseGateTestCase 'isolated production verifier ignores Force-replaced legacy gate variables' {
+        $package = [pscustomobject][ordered]@{ProfileId=$script:V02ReleaseGatePackageProfileId;ReceiptSha256=('1'*64);ArchiveSha256=('2'*64);ManifestSha256=('3'*64);AppSha256=('4'*64);CoreSha256=('5'*64);ReferenceHostProfileSha256=$script:V02ReleaseGateReferenceHostProfileSha256;RendererPolicySha256=$script:V02ReleaseGateRendererPolicySha256}
+        $certificate = New-V02ReleaseGateTestCmsCertificate
+        try {
+            $bundle = New-V02ReleaseGateTestSignedCleanMachineBundle -Root (Join-Path $script:TestRoot 'production-force-variable') -Identity $script:GateIdentity -Package $package -Certificate $certificate
+            Set-Variable -Scope Script -Name V02ReleaseGateSourceRoot -Value (Split-Path $bundle.ReportPath -Parent) -Option ReadOnly -Force
+            Set-Variable -Scope Script -Name V02ReleaseGateCleanMachineVerifierPath -Value $bundle.ReportPath -Option ReadOnly -Force
+            Set-Variable -Scope Script -Name V02CleanMachineObserverSignerThumbprint -Value $bundle.Thumbprint -Option ReadOnly -Force
+            Assert-V02ReleaseGateTestThrows {
+                Read-V02ReleaseGateCleanMachineReport -Path $bundle.ReportPath -ExpectedSourceCommit $script:GateIdentity.Commit -ExpectedSourceTree $script:GateIdentity.Tree -Package $package `
+                    -CleanHostAuthorizationPath $bundle.AuthorizationPath -CleanHostAuthorizationSignaturePath $bundle.AuthorizationSignaturePath -CleanHostAcceptanceReceiptPath $bundle.ReceiptPath -CleanHostAcceptanceReceiptSignaturePath $bundle.ReceiptSignaturePath
+            } 'pinned observer|invalid or untrusted'
+        } finally {
+            Remove-Variable -Scope Script -Name V02ReleaseGateSourceRoot,V02ReleaseGateCleanMachineVerifierPath,V02CleanMachineObserverSignerThumbprint -Force -ErrorAction SilentlyContinue
+            $certificate.Dispose()
+        }
+    }
+
+    Invoke-V02ReleaseGateTestCase 'isolated production verifier exposes no invokable module capability' {
+        $package = [pscustomobject][ordered]@{ProfileId=$script:V02ReleaseGatePackageProfileId;ReceiptSha256=('1'*64);ArchiveSha256=('2'*64);ManifestSha256=('3'*64);AppSha256=('4'*64);CoreSha256=('5'*64);ReferenceHostProfileSha256=$script:V02ReleaseGateReferenceHostProfileSha256;RendererPolicySha256=$script:V02ReleaseGateRendererPolicySha256}
+        $certificate = New-V02ReleaseGateTestCmsCertificate
+        $attackerModule = New-Module -ScriptBlock { $script:V02CleanMachineObserverSignerThumbprint = ''; function Read-V02CleanHostAuthorization { [pscustomobject]@{} } }
+        try {
+            $bundle = New-V02ReleaseGateTestSignedCleanMachineBundle -Root (Join-Path $script:TestRoot 'production-module-capability') -Identity $script:GateIdentity -Package $package -Certificate $certificate
+            & $attackerModule { param($thumbprint) Set-Variable -Scope Script -Name V02CleanMachineObserverSignerThumbprint -Value $thumbprint -Force; function Read-V02CleanHostAuthorization { [pscustomobject]@{SignerThumbprint=$thumbprint} } } $bundle.Thumbprint
+            Set-Variable -Scope Script -Name V02ReleaseGateCleanMachineVerifierModule -Value $attackerModule -Force
+            Assert-V02ReleaseGateTestThrows {
+                Read-V02ReleaseGateCleanMachineReport -Path $bundle.ReportPath -ExpectedSourceCommit $script:GateIdentity.Commit -ExpectedSourceTree $script:GateIdentity.Tree -Package $package `
+                    -CleanHostAuthorizationPath $bundle.AuthorizationPath -CleanHostAuthorizationSignaturePath $bundle.AuthorizationSignaturePath -CleanHostAcceptanceReceiptPath $bundle.ReceiptPath -CleanHostAcceptanceReceiptSignaturePath $bundle.ReceiptSignaturePath
+            } 'pinned observer|invalid or untrusted'
+        } finally {
+            Remove-Variable -Scope Script -Name V02ReleaseGateCleanMachineVerifierModule -Force -ErrorAction SilentlyContinue
+            Remove-Module $attackerModule -Force -ErrorAction SilentlyContinue
+            $certificate.Dispose()
+        }
+    }
+
     Invoke-V02ReleaseGateTestCase 'fixture verifier exercises valid CMS semantics but cannot grant production credit' {
         $package = [pscustomobject][ordered]@{ProfileId=$script:V02ReleaseGatePackageProfileId;ReceiptSha256=('1'*64);ArchiveSha256=('2'*64);ManifestSha256=('3'*64);AppSha256=('4'*64);CoreSha256=('5'*64);ReferenceHostProfileSha256=$script:V02ReleaseGateReferenceHostProfileSha256;RendererPolicySha256=$script:V02ReleaseGateRendererPolicySha256}
         $certificate = New-V02ReleaseGateTestCmsCertificate
@@ -1588,9 +1625,15 @@ try {
         if (@($readerParameters | Where-Object { $_ -match 'Signer|Trust|Untrusted|Certificate' }).Count -ne 0) {
             throw 'Production clean-machine gate reader exposes a trust or signer override.'
         }
-        $expectedVerifierPath = [IO.Path]::GetFullPath((Join-Path $script:GateRepositoryRoot 'tools\packaging\v0.2\V02CleanMachine.Common.ps1'))
-        if ($script:V02ReleaseGateCleanMachineVerifierPath -cne $expectedVerifierPath) {
-            throw 'Production clean-machine verifier is not anchored beside the release-gate script.'
+        foreach ($legacyCapability in @('V02ReleaseGateSourceRoot','V02ReleaseGateCleanMachineVerifierPath','V02ReleaseGateCleanMachineVerifierModule')) {
+            if ($null -ne (Get-Variable -Scope Script -Name $legacyCapability -ErrorAction SilentlyContinue)) {
+                throw "Production clean-machine verifier exposes caller-mutable capability '$legacyCapability'."
+            }
+        }
+        $isolatedCommand = Get-Command Invoke-V02ReleaseGateIsolatedCleanMachineVerifier -CommandType Function
+        $expectedGatePath = [IO.Path]::GetFullPath((Join-Path $script:GateRepositoryRoot 'tools\Test-V02ReleaseGate.ps1'))
+        if ([IO.Path]::GetFullPath($isolatedCommand.ScriptBlock.File) -cne $expectedGatePath) {
+            throw 'Production clean-machine verifier process launcher is not anchored to the release-gate script file.'
         }
         & {
             . (Join-Path $script:GateRepositoryRoot 'tools\packaging\v0.2\V02CleanMachine.Common.ps1')
