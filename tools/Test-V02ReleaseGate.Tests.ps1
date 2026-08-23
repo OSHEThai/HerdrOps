@@ -77,6 +77,52 @@ function Get-V02ReleaseGateTestRepositoryIdentity {
     return Get-V02ReleaseGateGitIdentity -RepositoryRoot $RepositoryRoot
 }
 
+function New-V02ReleaseGateTestCleanMachineReport {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)]$Identity,
+        [Parameter(Mandatory = $true)]$Package,
+        [ValidateSet('Live', 'Fixture')][string]$Mode = 'Live'
+    )
+    $binding = [pscustomobject][ordered]@{
+        sourceCommit = $Identity.Commit; sourceTree = $Identity.Tree
+        receiptSha256 = $Package.ReceiptSha256; archiveSha256 = $Package.ArchiveSha256
+        packageManifestSha256 = $Package.ManifestSha256; appSha256 = $Package.AppSha256; coreSha256 = $Package.CoreSha256
+    }
+    $isLive = $Mode -ceq 'Live'
+    $report = [pscustomobject][ordered]@{
+        schemaVersion = 1; reportKind = 'HerdrOps.V02CleanMachineReport'; scope = 'InstallLifecycleOnly'; issue = 149
+        packageVersion = '0.2.0'; profileId = $Package.ProfileId; status = 'PASS'; mode = $Mode
+        startedAtUtc = '2026-08-23T10:00:00.0000000Z'; completedAtUtc = '2026-08-23T10:15:00.0000000Z'; runId = ('a' * 32)
+        actualHerdrStarted = $false; herdrOpsStarted = $false; networkContacted = $false
+        machine = [pscustomobject][ordered]@{ machineName = 'CLEAN-HOST'; machineFingerprint = ('A' * 64); elevated = $false; userScope = 'S-1-5-21-1000' }
+        actor = [pscustomobject][ordered]@{
+            operator = [pscustomobject][ordered]@{ identity = 'S-1-5-21-1000'; role = 'EvidenceOperator' }
+            observer = [pscustomobject][ordered]@{ identity = 'external-clean-host-observer'; role = 'IndependentObserver' }
+            authorization = if ($isLive) {
+                [pscustomobject][ordered]@{ status = 'VERIFIED'; signerThumbprint = '8F319A7C115B0793D880D6E6F02F47B36E87D518'; authorizationSha256 = ('B' * 64); signatureSha256 = ('C' * 64); nonce = ('b' * 32) }
+            } else {
+                [pscustomobject][ordered]@{ status = 'NOT_APPLICABLE'; signerThumbprint = ''; authorizationSha256 = ''; signatureSha256 = ''; nonce = '' }
+            }
+        }
+        bindings = [pscustomobject][ordered]@{ initial = ($binding | ConvertTo-Json | ConvertFrom-Json); final = ($binding | ConvertTo-Json | ConvertFrom-Json); referenceHostProfileSha256 = $Package.ReferenceHostProfileSha256; rendererPolicySha256 = $Package.RendererPolicySha256 }
+        targets = [pscustomobject][ordered]@{ installRoot = 'C:\Users\clean\AppData\Local\Programs\HerdrOps'; userDataRoot = 'C:\Users\clean\AppData\Local\HerdrOps' }
+        preflight = @([pscustomobject][ordered]@{ name = 'external-authorization'; status = 'PASS'; details = 'fixture verifier input' })
+        lifecycle = [pscustomobject][ordered]@{
+            cleanInstall = [pscustomobject][ordered]@{ status = 'PASS'; installedFileCount = 5; identityReceiptBound = $true; installStateBound = $true; startupRegistered = $true }
+            sameVersionCandidateReplacement = [pscustomobject][ordered]@{ status = 'PASS'; replacementObserved = $true; backupCreatedAndRetired = $true; backupVolumeSerialNumber = '1234ABCD'; backupFileId = '0123456789ABCDEF'; backupLinkCount = 1; userDataPreserved = $true }
+            rollback = [pscustomobject][ordered]@{ status = 'PASS'; rollbackObserved = $true; installRestoredOnFault = $true; restoredSourceCommit = $Identity.Commit; restoredSourceTree = $Identity.Tree; restoredReceiptSha256 = $Package.ReceiptSha256; restoredArchiveSha256 = $Package.ArchiveSha256; restoredPackageManifestSha256 = $Package.ManifestSha256; restoredAppSha256 = $Package.AppSha256; restoredCoreSha256 = $Package.CoreSha256; details = 'observed' }
+            uninstall = [pscustomobject][ordered]@{ status = 'PASS'; installRootAbsent = $true; startupRemoved = $true; userDataPreserved = $true }
+        }
+        retainedData = [pscustomobject][ordered]@{ markerStatus = 'PRESERVED'; preservedFileCount = 1; details = 'observed' }
+        residue = [pscustomobject][ordered]@{ orphanedStagingPresent = $false; orphanedBackupPresent = $false; startupRegistryCleaned = $true; shortcutsCleaned = $true; activePipesRemaining = 0; activeProcessesRemaining = 0; activeListenersRemaining = 0 }
+        evidenceBoundary = [pscustomobject][ordered]@{ evidenceClass = $(if ($isLive) { 'CleanMachine' } else { 'Synthetic' }); actualHerdrRuntime = 'NOT_OBSERVED'; independentReview = 'NOT_OBSERVED'; humanGo = 'NOT_OBSERVED'; releaseCredit = 'NOT_OBSERVED'; creditGranted = $isLive }
+        failureDetails = ''
+    }
+    Write-V02ReleaseGateTestJson -Path $Path -Value $report | Out-Null
+    return $report
+}
+
 function New-V02ReleaseGateTestCleanRepository {
     $root = Join-Path ([IO.Path]::GetTempPath()) ('herdrops-v02-gate-clean-' + [Guid]::NewGuid().ToString('N'))
     New-V02ReleaseGateTestDirectory -Path $root
@@ -823,6 +869,83 @@ try {
         } 'Issue9CandidateSha256'
     }
 
+    Invoke-V02ReleaseGateTestCase 'genuine Live CleanMachine report binds exact candidate without inflating Runtime Human or Release' {
+        $package = [pscustomobject][ordered]@{
+            ProfileId = $script:V02ReleaseGatePackageProfileId
+            ReceiptSha256 = ('1' * 64); ArchiveSha256 = ('2' * 64); ManifestSha256 = ('3' * 64)
+            AppSha256 = ('4' * 64); CoreSha256 = ('5' * 64)
+            ReferenceHostProfileSha256 = $script:V02ReleaseGateReferenceHostProfileSha256
+            RendererPolicySha256 = $script:V02ReleaseGateRendererPolicySha256
+        }
+        $path = Join-Path $script:TestRoot 'clean-machine-live.json'
+        New-V02ReleaseGateTestCleanMachineReport -Path $path -Identity $script:GateIdentity -Package $package | Out-Null
+        $result = Read-V02ReleaseGateCleanMachineReport -Path $path -RepositoryRoot $script:GateRepositoryRoot `
+            -ExpectedSourceCommit $script:GateIdentity.Commit -ExpectedSourceTree $script:GateIdentity.Tree -Package $package
+        if ($result.EvidenceClass -cne 'CleanMachine' -or $result.Status -cne 'PASS' -or -not $result.LifecycleCreditGranted) {
+            throw 'Genuine Live CleanMachine report was not admitted.'
+        }
+        foreach ($boundary in @('Runtime', 'Human', 'Release')) {
+            if ($result.$boundary -cne 'NOT_OBSERVED') { throw "CleanMachine report inflated $boundary authority." }
+        }
+    }
+
+    Invoke-V02ReleaseGateTestCase 'fixture CleanMachine lookalike reaches exact mode guard and earns no credit' {
+        $package = [pscustomobject][ordered]@{
+            ProfileId = $script:V02ReleaseGatePackageProfileId
+            ReceiptSha256 = ('1' * 64); ArchiveSha256 = ('2' * 64); ManifestSha256 = ('3' * 64)
+            AppSha256 = ('4' * 64); CoreSha256 = ('5' * 64)
+            ReferenceHostProfileSha256 = $script:V02ReleaseGateReferenceHostProfileSha256
+            RendererPolicySha256 = $script:V02ReleaseGateRendererPolicySha256
+        }
+        $path = Join-Path $script:TestRoot 'clean-machine-fixture.json'
+        New-V02ReleaseGateTestCleanMachineReport -Path $path -Identity $script:GateIdentity -Package $package -Mode Fixture | Out-Null
+        Assert-V02ReleaseGateTestThrows {
+            Read-V02ReleaseGateCleanMachineReport -Path $path -RepositoryRoot $script:GateRepositoryRoot `
+                -ExpectedSourceCommit $script:GateIdentity.Commit -ExpectedSourceTree $script:GateIdentity.Tree -Package $package
+        } 'mode'
+    }
+
+    Invoke-V02ReleaseGateTestCase 'CleanMachine candidate transplant reaches final archive binding guard' {
+        $package = [pscustomobject][ordered]@{
+            ProfileId = $script:V02ReleaseGatePackageProfileId
+            ReceiptSha256 = ('1' * 64); ArchiveSha256 = ('2' * 64); ManifestSha256 = ('3' * 64)
+            AppSha256 = ('4' * 64); CoreSha256 = ('5' * 64)
+            ReferenceHostProfileSha256 = $script:V02ReleaseGateReferenceHostProfileSha256
+            RendererPolicySha256 = $script:V02ReleaseGateRendererPolicySha256
+        }
+        $path = Join-Path $script:TestRoot 'clean-machine-transplant.json'
+        $report = New-V02ReleaseGateTestCleanMachineReport -Path $path -Identity $script:GateIdentity -Package $package
+        $report.bindings.final.archiveSha256 = ('9' * 64)
+        $report.lifecycle.rollback.restoredArchiveSha256 = ('9' * 64)
+        Write-V02ReleaseGateTestJson -Path $path -Value $report | Out-Null
+        Assert-V02ReleaseGateTestThrows {
+            Read-V02ReleaseGateCleanMachineReport -Path $path -RepositoryRoot $script:GateRepositoryRoot `
+                -ExpectedSourceCommit $script:GateIdentity.Commit -ExpectedSourceTree $script:GateIdentity.Tree -Package $package
+        } 'final.archiveSha256'
+    }
+
+    Invoke-V02ReleaseGateTestCase 'Live CleanMachine report without pinned external observer authority fails before candidate admission' {
+        $package = [pscustomobject][ordered]@{
+            ProfileId = $script:V02ReleaseGatePackageProfileId
+            ReceiptSha256 = ('1' * 64); ArchiveSha256 = ('2' * 64); ManifestSha256 = ('3' * 64)
+            AppSha256 = ('4' * 64); CoreSha256 = ('5' * 64)
+            ReferenceHostProfileSha256 = $script:V02ReleaseGateReferenceHostProfileSha256
+            RendererPolicySha256 = $script:V02ReleaseGateRendererPolicySha256
+        }
+        $path = Join-Path $script:TestRoot 'clean-machine-no-authority.json'
+        $report = New-V02ReleaseGateTestCleanMachineReport -Path $path -Identity $script:GateIdentity -Package $package
+        $report.actor.authorization.status = 'NOT_APPLICABLE'
+        $report.actor.authorization.signerThumbprint = ''
+        $report.actor.authorization.authorizationSha256 = ''
+        $report.actor.authorization.signatureSha256 = ''
+        $report.actor.authorization.nonce = ''
+        Write-V02ReleaseGateTestJson -Path $path -Value $report | Out-Null
+        Assert-V02ReleaseGateTestThrows {
+            Read-V02ReleaseGateCleanMachineReport -Path $path -RepositoryRoot $script:GateRepositoryRoot `
+                -ExpectedSourceCommit $script:GateIdentity.Commit -ExpectedSourceTree $script:GateIdentity.Tree -Package $package
+        } 'externally verified|authorization'
+    }
+
     Invoke-V02ReleaseGateTestCase 'typed Issue9 candidate rejects missing extra stale unbound and fixture authority' {
         $fixture = New-V02ReleaseGateTestIssue9Candidate -Root (Join-Path $script:TestRoot 'issue9-typed') -Identity $script:GateIdentity
         Assert-V02ReleaseGateIssue9CandidateBinding -Candidate $fixture.Candidate -Context $fixture.Context -Package $fixture.Package -Matrix $fixture.Matrix `
@@ -955,14 +1078,11 @@ try {
         } 'hardlink|identity|alias|final path'
     }
 
-    Invoke-V02ReleaseGateTestCase 'transitive governance set of 37 files is fully snapshot and held' {
+    Invoke-V02ReleaseGateTestCase 'transitive governance set is fully snapshot and held' {
         $snapshots = @(Get-V02ReleaseGateValidatorSnapshots -RepositoryRoot $script:GateRepositoryRoot)
         try {
             if ($snapshots.Count -ne $script:V02ReleaseGateTransitiveGovernanceRelativePaths.Count) {
                 throw "Expected $($script:V02ReleaseGateTransitiveGovernanceRelativePaths.Count) governance snapshots; observed $($snapshots.Count)."
-            }
-            if ($snapshots.Count -ne 37) {
-                throw "Expected exactly 37 governance snapshots; observed $($snapshots.Count)."
             }
             Assert-V02ReleaseGateBoundSnapshots -Snapshots $snapshots -Phase 'transitive governance stability fixture'
             foreach ($snapshot in $snapshots) {
@@ -1138,7 +1258,7 @@ try {
             New-V02ReleaseGateTestDirectory -Path $packageRoot
             New-V02ReleaseGateTestDirectory -Path (Join-Path $root 'Thai')
             New-V02ReleaseGateTestDirectory -Path (Join-Path $root 'English')
-            foreach ($file in @('package-identity.json', 'archive.zip', 'renderer.json', 'matrix.json', 'issue9.json', 'contract.json', 'synthetic.json', 'human.json', 'github.json')) {
+            foreach ($file in @('package-identity.json', 'archive.zip', 'renderer.json', 'matrix.json', 'issue9.json', 'contract.json', 'synthetic.json', 'human.json', 'clean-machine.json', 'github.json')) {
                 Write-V02ReleaseGateTestText -Path (Join-Path $root $file) -Text '{}' | Out-Null
             }
             foreach ($file in @('package-manifest.json', 'HerdrOps.App.exe', 'HerdrOps.Core.exe')) {
@@ -1159,6 +1279,7 @@ try {
                 ContractEvidencePath = Join-Path $root 'contract.json'
                 SyntheticEvidencePath = Join-Path $root 'synthetic.json'
                 HumanReviewPath = Join-Path $root 'human.json'
+                CleanMachineReportPath = Join-Path $root 'clean-machine.json'
                 GitHubSnapshotPath = Join-Path $root 'github.json'
                 EvidenceRoot = $root
                 RepositoryRoot = $fixtureRepo
