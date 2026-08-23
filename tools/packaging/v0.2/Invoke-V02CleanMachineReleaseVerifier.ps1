@@ -35,21 +35,34 @@ try {
     $request = if ((Get-Command ConvertFrom-Json).Parameters.ContainsKey('DateKind')) {
         $requestText | ConvertFrom-Json -DateKind String
     } else { $requestText | ConvertFrom-Json }
-    $required = @('reportPath','authorizationPath','authorizationSignaturePath','acceptanceReceiptPath','acceptanceReceiptSignaturePath','expectedSourceCommit','expectedSourceTree','engineSha256','verifierSha256','commonSha256','reportSha256','authorizationSha256','authorizationSignatureSha256','acceptanceReceiptSha256','acceptanceReceiptSignatureSha256','package')
+    $required = @('reportPath','authorizationPath','authorizationSignaturePath','acceptanceReceiptPath','acceptanceReceiptSignaturePath','expectedSourceCommit','expectedSourceTree','engineSha256','verifierSha256','commonSha256','packagingCommonSha256','packageIdentityCommonSha256','reportSha256','authorizationSha256','authorizationSignatureSha256','acceptanceReceiptSha256','acceptanceReceiptSignatureSha256','package')
     $actual = @($request.PSObject.Properties.Name)
     if ($actual.Count -ne $required.Count -or @($actual | Where-Object { $required -cnotcontains $_ }).Count -ne 0) {
         throw 'The isolated CleanMachine verifier request has unexpected or missing properties.'
     }
 
     $commonPath = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot 'V02CleanMachine.Common.ps1'))
+    $packagingCommonPath = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot 'V02Packaging.Common.ps1'))
+    $packageIdentityCommonPath = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot 'V02PackageIdentity.Common.ps1'))
     $repositoryRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..\..'))
     $engineSha256 = Get-V02ReleaseVerifierSha256 -Bytes ([IO.File]::ReadAllBytes([IO.Path]::GetFullPath([Diagnostics.Process]::GetCurrentProcess().MainModule.FileName)))
     $verifierSha256 = Get-V02ReleaseVerifierSha256 -Bytes ([IO.File]::ReadAllBytes([IO.Path]::GetFullPath($PSCommandPath)))
     $commonSha256 = Get-V02ReleaseVerifierSha256 -Bytes ([IO.File]::ReadAllBytes($commonPath))
+    $packagingCommonSha256 = Get-V02ReleaseVerifierSha256 -Bytes ([IO.File]::ReadAllBytes($packagingCommonPath))
+    $packageIdentityCommonSha256 = Get-V02ReleaseVerifierSha256 -Bytes ([IO.File]::ReadAllBytes($packageIdentityCommonPath))
     Assert-V02ReleaseVerifierEqual $engineSha256 $request.engineSha256 'Isolated PowerShell executable SHA-256'
     Assert-V02ReleaseVerifierEqual $verifierSha256 $request.verifierSha256 'Isolated verifier source SHA-256'
     Assert-V02ReleaseVerifierEqual $commonSha256 $request.commonSha256 'CleanMachine common verifier SHA-256'
+    Assert-V02ReleaseVerifierEqual $packagingCommonSha256 $request.packagingCommonSha256 'V02 packaging common SHA-256'
+    Assert-V02ReleaseVerifierEqual $packageIdentityCommonSha256 $request.packageIdentityCommonSha256 'V02 package identity common SHA-256'
     . $commonPath
+
+    $childProcess = [Diagnostics.Process]::GetCurrentProcess()
+    $childStartUtc = $childProcess.StartTime.ToUniversalTime().ToString('O', [Globalization.CultureInfo]::InvariantCulture)
+    $enginePath = [IO.Path]::GetFullPath($childProcess.MainModule.FileName)
+    $engineStream = [IO.File]::Open($enginePath,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read)
+    try { $engineIdentity = Get-V02HandleIdentity -Handle $engineStream.SafeFileHandle -Context 'Isolated PowerShell executable' }
+    finally { $engineStream.Dispose() }
 
     $reportBytes = [IO.File]::ReadAllBytes([IO.Path]::GetFullPath([string]$request.reportPath))
     $reportSha256 = Get-V02ReleaseVerifierSha256 -Bytes $reportBytes
@@ -117,24 +130,23 @@ try {
     Assert-V02ReleaseVerifierEqual $acceptanceReceipt.ReceiptSha256 $request.acceptanceReceiptSha256 'CleanMachine acceptance receipt held-input SHA-256'
     Assert-V02ReleaseVerifierEqual $acceptanceReceipt.SignatureSha256 $request.acceptanceReceiptSignatureSha256 'CleanMachine acceptance receipt signature held-input SHA-256'
 
-    $resultBindingText = @(
-        $requestSha256,$engineSha256,$verifierSha256,$commonSha256,$reportSha256,
-        $authorization.AuthorizationSha256,$authorization.SignatureSha256,
-        $acceptanceReceipt.ReceiptSha256,$acceptanceReceipt.SignatureSha256,
-        [string]$report.runId,[string]$acceptanceReceipt.Value.receiptNonce
-    ) -join "`n"
-    $resultBindingSha256 = Get-V02ReleaseVerifierSha256 -Bytes ([Text.Encoding]::UTF8.GetBytes($resultBindingText))
-
-    [pscustomobject][ordered]@{
+    $result = [pscustomobject][ordered]@{
         protocol = 'HerdrOps.V02IsolatedCleanMachineVerifierResult'
         version = 1
         requestSha256 = $requestSha256
         engineSha256 = $engineSha256
         verifierSha256 = $verifierSha256
         commonSha256 = $commonSha256
+        packagingCommonSha256 = $packagingCommonSha256
+        packageIdentityCommonSha256 = $packageIdentityCommonSha256
         reportSha256 = $reportSha256
         authorizationSha256 = [string]$authorization.AuthorizationSha256
         authorizationSignatureSha256 = [string]$authorization.SignatureSha256
+        childPid = [int]$PID
+        childStartUtc = $childStartUtc
+        engineFinalPath = [string]$engineIdentity.FinalPath
+        engineVolumeSerialNumber = [string]$engineIdentity.VolumeSerialNumber
+        engineFileId = [string]$engineIdentity.FileId
         runId = [string]$report.runId
         machineFingerprint = [string]$report.machine.machineFingerprint
         operatorIdentity = [string]$report.actor.operator.identity
@@ -143,8 +155,12 @@ try {
         acceptanceReceiptSha256 = [string]$acceptanceReceipt.ReceiptSha256
         acceptanceReceiptSignatureSha256 = [string]$acceptanceReceipt.SignatureSha256
         acceptanceReceiptNonce = [string]$acceptanceReceipt.Value.receiptNonce
-        resultBindingSha256 = $resultBindingSha256
-    } | ConvertTo-Json -Compress -Depth 8
+    }
+    # Canonical ordered JSON binds both property names and values without the
+    # delimiter ambiguity of a value-only joined string.
+    $resultBindingText = $result | ConvertTo-Json -Compress -Depth 8
+    $result | Add-Member -NotePropertyName resultBindingSha256 -NotePropertyValue (Get-V02ReleaseVerifierSha256 -Bytes ([Text.Encoding]::UTF8.GetBytes($resultBindingText)))
+    $result | ConvertTo-Json -Compress -Depth 8
     exit 0
 }
 catch {

@@ -1091,6 +1091,50 @@ try {
         }
     }
 
+    Invoke-V02ReleaseGateTestCase 'dot-source launcher shadow can never return production CleanMachine credit' {
+        $package = [pscustomobject][ordered]@{ProfileId=$script:V02ReleaseGatePackageProfileId;ReceiptSha256=('1'*64);ArchiveSha256=('2'*64);ManifestSha256=('3'*64);AppSha256=('4'*64);CoreSha256=('5'*64);ReferenceHostProfileSha256=$script:V02ReleaseGateReferenceHostProfileSha256;RendererPolicySha256=$script:V02ReleaseGateRendererPolicySha256}
+        & {
+            function Invoke-V02ReleaseGateIsolatedCleanMachineVerifier {
+                [pscustomobject]@{reportSha256=('A'*64);runId=('b'*32);machineFingerprint=('C'*64);operatorIdentity='attacker';observerIdentity='attacker';authorizationSignerThumbprint=('D'*40);acceptanceReceiptSha256=('E'*64);acceptanceReceiptSignatureSha256=('F'*64);acceptanceReceiptNonce=('a'*32)}
+            }
+            $result = Read-V02ReleaseGateCleanMachineReport -Path (Join-Path $script:TestRoot 'nonexistent-report.json') `
+                -ExpectedSourceCommit $script:GateIdentity.Commit -ExpectedSourceTree $script:GateIdentity.Tree -Package $package `
+                -CleanHostAuthorizationPath 'missing-auth.json' -CleanHostAuthorizationSignaturePath 'missing-auth.p7s' `
+                -CleanHostAcceptanceReceiptPath 'missing-receipt.json' -CleanHostAcceptanceReceiptSignaturePath 'missing-receipt.p7s'
+            if ($result.LifecycleCreditGranted -or $result.EvidenceClass -ceq 'CleanMachine') {
+                throw 'A dot-source launcher shadow returned production CleanMachine credit.'
+            }
+        }
+    }
+
+    Invoke-V02ReleaseGateTestCase 'abbreviated wrapper selector plus fake File argument cannot enter production credit path' {
+        $wrapperPath = Join-Path $script:TestRoot 'release-wrapper-shadow.ps1'
+        $sentinelPath = Join-Path $script:TestRoot 'release-wrapper-sentinel.txt'
+        $gatePath = [IO.Path]::GetFullPath((Join-Path $script:GateRepositoryRoot 'tools\Test-V02ReleaseGate.ps1'))
+        $wrapper = @'
+param([string]$GatePath,[string]$SentinelPath,[Parameter(ValueFromRemainingArguments=$true)][object[]]$Rest)
+try {
+    . $GatePath
+    function Invoke-V02ReleaseGateIsolatedCleanMachineVerifier {
+        [IO.File]::WriteAllText($SentinelPath,'SHADOW_EXECUTED')
+        [pscustomobject]@{reportSha256=('A'*64);runId=('b'*32);machineFingerprint=('C'*64);operatorIdentity='attacker';observerIdentity='attacker';authorizationSignerThumbprint=('D'*40);acceptanceReceiptSha256=('E'*64);acceptanceReceiptSignatureSha256=('F'*64);acceptanceReceiptNonce=('a'*32)}
+    }
+    $p=@{ExpectedSourceCommit=('1'*40);ExpectedSourceTree=('2'*40);PackageIdentityPath='x';PackageArchivePath='x';ExtractedPackageRoot='x';PackageProfilePath='x';RendererManifestPath='x';ThaiEvidenceDirectory='x';EnglishEvidenceDirectory='x';RuntimeMatrixManifestPath='x';Issue9CandidatePath='x';ContractEvidencePath='x';SyntheticEvidencePath='x';HumanReviewPath='x';CleanMachineReportPath='x';CleanHostAuthorizationPath='x';CleanHostAuthorizationSignaturePath='x';CleanHostAcceptanceReceiptPath='x';CleanHostAcceptanceReceiptSignaturePath='x';GitHubSnapshotPath='x'}
+    Invoke-V02ReleaseGate @p | ConvertTo-Json -Compress
+} catch { [Console]::Error.WriteLine($_.Exception.Message); exit 17 }
+'@
+        Write-V02ReleaseGateTestText -Path $wrapperPath -Text $wrapper | Out-Null
+        $engine = [Diagnostics.Process]::GetCurrentProcess().MainModule.FileName
+        $output = @()
+        try { $output = @(& $engine -NoLogo -NoProfile -f $wrapperPath $gatePath $sentinelPath -File $gatePath 2>&1) }
+        catch { $output = @($_.Exception.Message) }
+        if (($output -join "`n") -notmatch 'direct-execution-only') {
+            throw "Spoofed wrapper did not reach the exact direct-only guard: $($output -join ' | ')"
+        }
+        if (Test-Path -LiteralPath $sentinelPath) { throw 'Spoofed wrapper executed the shadow launcher.' }
+        if (($output -join "`n") -match 'LifecycleCreditGranted|CleanMachine.*true|READY') { throw 'Spoofed wrapper emitted production credit.' }
+    }
+
     Invoke-V02ReleaseGateTestCase 'fixture verifier exercises valid CMS semantics but cannot grant production credit' {
         $package = [pscustomobject][ordered]@{ProfileId=$script:V02ReleaseGatePackageProfileId;ReceiptSha256=('1'*64);ArchiveSha256=('2'*64);ManifestSha256=('3'*64);AppSha256=('4'*64);CoreSha256=('5'*64);ReferenceHostProfileSha256=$script:V02ReleaseGateReferenceHostProfileSha256;RendererPolicySha256=$script:V02ReleaseGateRendererPolicySha256}
         $certificate = New-V02ReleaseGateTestCmsCertificate
@@ -1612,7 +1656,7 @@ try {
 
     Invoke-V02ReleaseGateTestCase 'production gate exposes no injectable validators' {
         $parameters = @((Get-Command Invoke-V02ReleaseGate -CommandType Function).Parameters.Keys)
-        foreach ($name in @('PackageValidator', 'RendererValidator', 'RuntimeMatrixValidator', 'Issue9Validator')) {
+        foreach ($name in @('PackageValidator', 'RendererValidator', 'RuntimeMatrixValidator', 'Issue9Validator','DirectCleanMachineVerifier')) {
             if ($parameters -contains $name) { throw "Production gate still exposes $name." }
         }
         Assert-V02ReleaseGateTestThrows {
@@ -1635,6 +1679,15 @@ try {
         if ([IO.Path]::GetFullPath($isolatedCommand.ScriptBlock.File) -cne $expectedGatePath) {
             throw 'Production clean-machine verifier process launcher is not anchored to the release-gate script file.'
         }
+        $gateSource = [IO.File]::ReadAllText($expectedGatePath)
+        foreach ($requiredSource in @(
+                'ReadToEndAsync()','WaitForExit(120000)','packagingCommonSha256','packageIdentityCommonSha256',
+                'childPid','childStartUtc','engineFinalPath','engineVolumeSerialNumber','engineFileId',
+                'resultBindingSha256','[Environment]::GetCommandLineArgs()')) {
+            if ($gateSource.IndexOf($requiredSource,[StringComparison]::Ordinal) -lt 0) {
+                throw "Production isolated verifier omitted '$requiredSource'."
+            }
+        }
         & {
             . (Join-Path $script:GateRepositoryRoot 'tools\packaging\v0.2\V02CleanMachine.Common.ps1')
             foreach ($functionName in @('Read-V02CleanHostAuthorization','Read-V02CleanHostAcceptanceReceipt','Assert-V02CleanMachineReportSchema')) {
@@ -1646,7 +1699,60 @@ try {
         }
     }
 
-    Invoke-V02ReleaseGateTestCase 'missing authority returns NOT_READY and no Runtime/Human/Release observation' {
+    Invoke-V02ReleaseGateTestCase 'isolated process drain survives oversized stderr without deadlock' {
+        $childPath = Join-Path $script:TestRoot 'oversized-stderr-child.ps1'
+        Write-V02ReleaseGateTestText -Path $childPath -Text "[Console]::Error.Write(('x' * 2097152)); [Console]::Out.WriteLine('{`"status`":`"OK`"}')" | Out-Null
+        $start = New-Object Diagnostics.ProcessStartInfo
+        $start.FileName = [Diagnostics.Process]::GetCurrentProcess().MainModule.FileName
+        $start.Arguments = '-NoLogo -NoProfile -NonInteractive -File "' + $childPath + '"'
+        $start.UseShellExecute = $false
+        $start.CreateNoWindow = $true
+        $start.RedirectStandardOutput = $true
+        $start.RedirectStandardError = $true
+        $process = New-Object Diagnostics.Process
+        $process.StartInfo = $start
+        try {
+            if (-not $process.Start()) { throw 'Oversized-stderr child did not start.' }
+            $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+            $stderrTask = $process.StandardError.ReadToEndAsync()
+            if (-not $process.WaitForExit(15000)) { try { $process.Kill() } catch {}; throw 'Concurrent drain deadlocked on oversized stderr.' }
+            $stdout = $stdoutTask.GetAwaiter().GetResult()
+            $stderr = $stderrTask.GetAwaiter().GetResult()
+            if ($process.ExitCode -ne 0 -or $stderr.Length -ne 2097152 -or $stdout -notmatch '"status":"OK"') {
+                throw 'Concurrent drain truncated or corrupted the isolated child streams.'
+            }
+        }
+        finally { $process.Dispose() }
+    }
+
+    Invoke-V02ReleaseGateTestCase 'result binding rejects surfaced identity and output tamper' {
+        $surface = [pscustomobject][ordered]@{
+            protocol='HerdrOps.V02IsolatedCleanMachineVerifierResult';version=1;requestSha256=('1'*64);engineSha256=('2'*64)
+            verifierSha256=('3'*64);commonSha256=('4'*64);packagingCommonSha256=('5'*64);packageIdentityCommonSha256=('6'*64)
+            reportSha256=('7'*64);authorizationSha256=('8'*64);authorizationSignatureSha256=('9'*64);childPid=123
+            childStartUtc='2026-08-23T10:00:00.0000000Z';engineFinalPath='C:\Program Files\PowerShell\7\pwsh.exe'
+            engineVolumeSerialNumber='ABC';engineFileId='DEF';runId=('a'*32);machineFingerprint=('b'*64);operatorIdentity='operator'
+            observerIdentity='observer';authorizationSignerThumbprint=('c'*40);acceptanceReceiptSha256=('d'*64)
+            acceptanceReceiptSignatureSha256=('e'*64);acceptanceReceiptNonce=('f'*32)
+        }
+        $original = Get-V02Sha256Hex -Bytes ([Text.Encoding]::UTF8.GetBytes(($surface | ConvertTo-Json -Compress -Depth 8)))
+        foreach ($tamper in @(
+                @{Name='childPid';Value=124}, @{Name='engineFileId';Value='SWAPPED'},
+                @{Name='machineFingerprint';Value=('0'*64)}, @{Name='operatorIdentity';Value='attacker'},
+                @{Name='observerIdentity';Value='attacker'}, @{Name='authorizationSignerThumbprint';Value=('0'*40)})) {
+            $saved = $surface.($tamper.Name)
+            $surface.($tamper.Name) = $tamper.Value
+            $changed = Get-V02Sha256Hex -Bytes ([Text.Encoding]::UTF8.GetBytes(($surface | ConvertTo-Json -Compress -Depth 8)))
+            $surface.($tamper.Name) = $saved
+            if ($changed -ceq $original) { throw "Result binding did not reject tamper of '$($tamper.Name)'." }
+        }
+        $ambiguousOutput = "{}$([Environment]::NewLine){}"
+        if (@($ambiguousOutput -split "`r?`n" | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }).Count -ne 2) {
+            throw 'Ambiguous multi-result output fixture did not reach the exact stream cardinality guard.'
+        }
+    }
+
+    Invoke-V02ReleaseGateTestCase 'dot-sourced full gate is rejected before missing authority can claim lifecycle observation' {
         $fixtureRepo = New-V02ReleaseGateTestCleanRepository
         try {
             $identity = Get-V02ReleaseGateTestRepositoryIdentity -RepositoryRoot $fixtureRepo
@@ -1661,7 +1767,7 @@ try {
             foreach ($file in @('package-manifest.json', 'HerdrOps.App.exe', 'HerdrOps.Core.exe')) {
                 Write-V02ReleaseGateTestText -Path (Join-Path $packageRoot $file) -Text 'fixture' | Out-Null
             }
-            $args = @{
+            $gateArguments = @{
                 ExpectedSourceCommit = $identity.Commit
                 ExpectedSourceTree = $identity.Tree
                 PackageIdentityPath = Join-Path $root 'package-identity.json'
@@ -1685,11 +1791,7 @@ try {
                 EvidenceRoot = $root
                 RepositoryRoot = $fixtureRepo
             }
-            $result = Invoke-V02ReleaseGate @args
-            if ($result.Result -cne 'NOT_READY' -or [bool]$result.ReleaseReady) { throw 'Missing authority did not fail closed.' }
-            foreach ($name in @('Runtime', 'Human', 'Release')) {
-                if ($result.EvidenceClasses.$name.Status -cne 'NOT_OBSERVED') { throw "$name was not NOT_OBSERVED." }
-            }
+            Assert-V02ReleaseGateTestThrows { Invoke-V02ReleaseGate @gateArguments } 'direct-execution-only'
         }
         finally {
             if (Test-Path -LiteralPath $fixtureRepo) { Remove-Item -LiteralPath $fixtureRepo -Recurse -Force }
