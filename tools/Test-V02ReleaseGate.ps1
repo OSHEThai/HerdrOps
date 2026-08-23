@@ -1913,6 +1913,8 @@ function Invoke-V02ReleaseGateIsolatedCleanMachineVerifier {
     $gateToolsRoot = [IO.Path]::GetDirectoryName($gateScriptPath)
     $verifierPath = [IO.Path]::GetFullPath((Join-Path $gateToolsRoot 'packaging\v0.2\Invoke-V02CleanMachineReleaseVerifier.ps1'))
     $commonPath = [IO.Path]::GetFullPath((Join-Path $gateToolsRoot 'packaging\v0.2\V02CleanMachine.Common.ps1'))
+    $packagingCommonPath = [IO.Path]::GetFullPath((Join-Path $gateToolsRoot 'packaging\v0.2\V02Packaging.Common.ps1'))
+    $packageIdentityCommonPath = [IO.Path]::GetFullPath((Join-Path $gateToolsRoot 'packaging\v0.2\V02PackageIdentity.Common.ps1'))
     $requestRoot = Join-Path ([IO.Path]::GetTempPath()) ('HerdrOps-V02ReleaseVerifier-' + [Guid]::NewGuid().ToString('N'))
     $requestPath = Join-Path $requestRoot 'request.json'
     $held = New-Object System.Collections.Generic.List[object]
@@ -1924,6 +1926,10 @@ function Invoke-V02ReleaseGateIsolatedCleanMachineVerifier {
         [void]$held.Add($verifierSnapshot)
         $commonSnapshot = Get-V02ReleaseGateStableFileSnapshot -Path $commonPath -Context 'CleanMachine common verifier source' -KeepOpen
         [void]$held.Add($commonSnapshot)
+        $packagingCommonSnapshot = Get-V02ReleaseGateStableFileSnapshot -Path $packagingCommonPath -Context 'V02 packaging common verifier dependency' -KeepOpen
+        [void]$held.Add($packagingCommonSnapshot)
+        $packageIdentityCommonSnapshot = Get-V02ReleaseGateStableFileSnapshot -Path $packageIdentityCommonPath -Context 'V02 package identity common verifier dependency' -KeepOpen
+        [void]$held.Add($packageIdentityCommonSnapshot)
         foreach ($input in @(
                 @('report',$ReportPath,'CleanMachine report input'),
                 @('authorization',$AuthorizationPath,'CleanMachine authorization input'),
@@ -1950,6 +1956,8 @@ function Invoke-V02ReleaseGateIsolatedCleanMachineVerifier {
             engineSha256 = $engineSnapshot.Sha256
             verifierSha256 = $verifierSnapshot.Sha256
             commonSha256 = $commonSnapshot.Sha256
+            packagingCommonSha256 = $packagingCommonSnapshot.Sha256
+            packageIdentityCommonSha256 = $packageIdentityCommonSnapshot.Sha256
             reportSha256 = $inputSnapshots['report'].Sha256
             authorizationSha256 = $(if ($inputSnapshots.ContainsKey('authorization')) { $inputSnapshots['authorization'].Sha256 } else { '' })
             authorizationSignatureSha256 = $(if ($inputSnapshots.ContainsKey('authorizationSignature')) { $inputSnapshots['authorizationSignature'].Sha256 } else { '' })
@@ -1983,19 +1991,28 @@ function Invoke-V02ReleaseGateIsolatedCleanMachineVerifier {
         $process = New-Object Diagnostics.Process
         $process.StartInfo = $start
         if (-not $process.Start()) { throw 'The isolated CleanMachine verifier process did not start.' }
-        $stdout = $process.StandardOutput.ReadToEnd()
-        $stderr = $process.StandardError.ReadToEnd()
+        $observedChildPid = [int]$process.Id
+        $observedChildStartUtc = $process.StartTime.ToUniversalTime().ToString('O', [Globalization.CultureInfo]::InvariantCulture)
+        # The exact executable bytes and final path were opened and held before
+        # Start().  Reading MainModule after Start races a fast-failing child;
+        # bind the child result to that held launch image instead.
+        $observedChildPath = [string]$engineSnapshot.FinalPath
+        $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+        $stderrTask = $process.StandardError.ReadToEndAsync()
         if (-not $process.WaitForExit(120000)) {
             try { $process.Kill() } catch {}
+            try { $process.WaitForExit() } catch {}
             throw 'The isolated CleanMachine verifier process exceeded its 120-second bound.'
         }
+        $stdout = $stdoutTask.GetAwaiter().GetResult()
+        $stderr = $stderrTask.GetAwaiter().GetResult()
         if ($process.ExitCode -ne 0) {
             throw "Isolated CleanMachine verifier rejected the evidence: $($stderr.Trim())"
         }
         $lines = @($stdout -split "`r?`n" | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
         if ($lines.Count -ne 1) { throw 'The isolated CleanMachine verifier returned an ambiguous result stream.' }
         $result = $lines[0] | ConvertFrom-Json
-        $expectedProperties = @('protocol','version','requestSha256','engineSha256','verifierSha256','commonSha256','reportSha256','authorizationSha256','authorizationSignatureSha256','runId','machineFingerprint','operatorIdentity','observerIdentity','authorizationSignerThumbprint','acceptanceReceiptSha256','acceptanceReceiptSignatureSha256','acceptanceReceiptNonce','resultBindingSha256')
+        $expectedProperties = @('protocol','version','requestSha256','engineSha256','verifierSha256','commonSha256','packagingCommonSha256','packageIdentityCommonSha256','reportSha256','authorizationSha256','authorizationSignatureSha256','childPid','childStartUtc','engineFinalPath','engineVolumeSerialNumber','engineFileId','runId','machineFingerprint','operatorIdentity','observerIdentity','authorizationSignerThumbprint','acceptanceReceiptSha256','acceptanceReceiptSignatureSha256','acceptanceReceiptNonce','resultBindingSha256')
         $actualProperties = @($result.PSObject.Properties.Name)
         if ($actualProperties.Count -ne $expectedProperties.Count -or @($actualProperties | Where-Object { $expectedProperties -cnotcontains $_ }).Count -ne 0) {
             throw 'The isolated CleanMachine verifier returned a malformed result.'
@@ -2006,17 +2023,23 @@ function Invoke-V02ReleaseGateIsolatedCleanMachineVerifier {
         Assert-V02ReleaseGateEqual $result.engineSha256 $engineSnapshot.Sha256 'Isolated PowerShell executable binding'
         Assert-V02ReleaseGateEqual $result.verifierSha256 $verifierSnapshot.Sha256 'Isolated CleanMachine verifier source binding'
         Assert-V02ReleaseGateEqual $result.commonSha256 $commonSnapshot.Sha256 'Isolated CleanMachine common source binding'
+        Assert-V02ReleaseGateEqual $result.packagingCommonSha256 $packagingCommonSnapshot.Sha256 'Isolated V02 packaging dependency binding'
+        Assert-V02ReleaseGateEqual $result.packageIdentityCommonSha256 $packageIdentityCommonSnapshot.Sha256 'Isolated V02 package identity dependency binding'
         Assert-V02ReleaseGateEqual $result.reportSha256 $inputSnapshots['report'].Sha256 'Isolated CleanMachine report input binding'
         Assert-V02ReleaseGateEqual $result.authorizationSha256 $inputSnapshots['authorization'].Sha256 'Isolated CleanMachine authorization input binding'
         Assert-V02ReleaseGateEqual $result.authorizationSignatureSha256 $inputSnapshots['authorizationSignature'].Sha256 'Isolated CleanMachine authorization signature binding'
         Assert-V02ReleaseGateEqual $result.acceptanceReceiptSha256 $inputSnapshots['acceptanceReceipt'].Sha256 'Isolated CleanMachine acceptance receipt input binding'
         Assert-V02ReleaseGateEqual $result.acceptanceReceiptSignatureSha256 $inputSnapshots['acceptanceReceiptSignature'].Sha256 'Isolated CleanMachine acceptance receipt signature binding'
-        $resultBindingText = @(
-            $requestSnapshot.Sha256,$engineSnapshot.Sha256,$verifierSnapshot.Sha256,$commonSnapshot.Sha256,$inputSnapshots['report'].Sha256,
-            $inputSnapshots['authorization'].Sha256,$inputSnapshots['authorizationSignature'].Sha256,
-            $inputSnapshots['acceptanceReceipt'].Sha256,$inputSnapshots['acceptanceReceiptSignature'].Sha256,
-            [string]$result.runId,[string]$result.acceptanceReceiptNonce
-        ) -join "`n"
+        Assert-V02ReleaseGateEqual $result.childPid $observedChildPid 'Isolated CleanMachine child PID binding'
+        Assert-V02ReleaseGateEqual $result.childStartUtc $observedChildStartUtc 'Isolated CleanMachine child start-time binding'
+        Assert-V02ReleaseGateEqual $result.engineFinalPath $engineSnapshot.FinalPath 'Isolated CleanMachine child executable final-path binding'
+        Assert-V02ReleaseGateEqual ($result.engineVolumeSerialNumber + ':' + $result.engineFileId) $engineSnapshot.FileId 'Isolated CleanMachine child executable FileId binding'
+        Assert-V02ReleaseGateEqual $observedChildPath $engineSnapshot.FinalPath 'Observed child executable path binding'
+        $boundResult = [ordered]@{}
+        foreach ($resultPropertyName in @($expectedProperties | Where-Object { $_ -cne 'resultBindingSha256' })) {
+            $boundResult[$resultPropertyName] = $result.$resultPropertyName
+        }
+        $resultBindingText = [pscustomobject]$boundResult | ConvertTo-Json -Compress -Depth 8
         Assert-V02ReleaseGateEqual $result.resultBindingSha256 (Get-V02Sha256Hex -Bytes ([Text.Encoding]::UTF8.GetBytes($resultBindingText))) 'Isolated CleanMachine result cryptographic binding'
         return $result
     }
@@ -2047,10 +2070,13 @@ function Read-V02ReleaseGateCleanMachineReport {
         -AcceptanceReceiptSignaturePath $CleanHostAcceptanceReceiptSignaturePath `
         -ExpectedSourceCommit $ExpectedSourceCommit -ExpectedSourceTree $ExpectedSourceTree -Package $Package
 
+    # This exported helper is intentionally incapable of production credit.
+    # Only direct -File execution receives the privately captured launcher
+    # script block and constructs the production CleanMachine result.
     return [pscustomobject][ordered]@{
         Path = [IO.Path]::GetFullPath($Path)
         FileSha256 = [string]$isolated.reportSha256
-        EvidenceClass = 'CleanMachine'
+        EvidenceClass = 'SyntheticVerifierFixture'
         Status = 'PASS'
         Mode = 'Live'
         RunId = [string]$isolated.runId
@@ -2061,7 +2087,7 @@ function Read-V02ReleaseGateCleanMachineReport {
         AcceptanceReceiptSha256 = [string]$isolated.acceptanceReceiptSha256
         AcceptanceReceiptSignatureSha256 = [string]$isolated.acceptanceReceiptSignatureSha256
         AcceptanceReceiptNonce = [string]$isolated.acceptanceReceiptNonce
-        LifecycleCreditGranted = $true
+        LifecycleCreditGranted = $false
         Runtime = 'NOT_OBSERVED'
         Human = 'NOT_OBSERVED'
         Release = 'NOT_OBSERVED'
@@ -2380,6 +2406,30 @@ function Invoke-V02ReleaseGate {
         [string]$OutputPath
     )
 
+    $definitionPath = [IO.Path]::GetFullPath($MyInvocation.MyCommand.ScriptBlock.File)
+    $commandLine = @([Environment]::GetCommandLineArgs())
+    $isDirectFileExecution = $false
+    $cursor = 1
+    $seenHostSwitches = @{}
+    while ($cursor -lt $commandLine.Count -and [string]$commandLine[$cursor] -ine '-File') {
+        $hostSwitch = [string]$commandLine[$cursor]
+        if ($hostSwitch -in @('-NoLogo','-NoProfile','-NonInteractive') -and -not $seenHostSwitches.ContainsKey($hostSwitch.ToUpperInvariant())) {
+            $seenHostSwitches[$hostSwitch.ToUpperInvariant()] = $true; $cursor++; continue
+        }
+        if ($hostSwitch -ieq '-ExecutionPolicy' -and -not $seenHostSwitches.ContainsKey('EXECUTIONPOLICY') -and
+            $cursor + 1 -lt $commandLine.Count -and [string]$commandLine[$cursor + 1] -ieq 'Bypass') {
+            $seenHostSwitches['EXECUTIONPOLICY'] = $true; $cursor += 2; continue
+        }
+        $cursor = $commandLine.Count; break
+    }
+    if ($cursor + 1 -lt $commandLine.Count -and [string]$commandLine[$cursor] -ieq '-File') {
+        try { $isDirectFileExecution = [StringComparer]::OrdinalIgnoreCase.Equals([IO.Path]::GetFullPath([string]$commandLine[$cursor + 1]),$definitionPath) }
+        catch { $isDirectFileExecution = $false }
+    }
+    if (-not $isDirectFileExecution) {
+        throw 'Production CleanMachine lifecycle credit is direct-execution-only under a clean -File Test-V02ReleaseGate.ps1 process.'
+    }
+
     Assert-V02ReleaseGateGitObjectId $ExpectedSourceCommit 'ExpectedSourceCommit' | Out-Null
     Assert-V02ReleaseGateGitObjectId $ExpectedSourceTree 'ExpectedSourceTree' | Out-Null
     if ([string]::IsNullOrWhiteSpace($RepositoryRoot)) {
@@ -2513,13 +2563,25 @@ function Invoke-V02ReleaseGate {
 
     $package = Invoke-V02ReleaseGatePackageValidation -Context $context `
         -ExpectedSourceCommit $ExpectedSourceCommit -ExpectedSourceTree $ExpectedSourceTree
-    $cleanMachine = Read-V02ReleaseGateCleanMachineReport -Path $CleanMachineReportPath `
-        -ExpectedSourceCommit $ExpectedSourceCommit `
-        -ExpectedSourceTree $ExpectedSourceTree -Package $package `
-        -CleanHostAuthorizationPath $CleanHostAuthorizationPath `
-        -CleanHostAuthorizationSignaturePath $CleanHostAuthorizationSignaturePath `
-        -CleanHostAcceptanceReceiptPath $CleanHostAcceptanceReceiptPath `
-        -CleanHostAcceptanceReceiptSignaturePath $CleanHostAcceptanceReceiptSignaturePath
+    # Capture the script's own launcher body only after the exact process argv
+    # proves this file is the direct -File entrypoint. No caller-supplied
+    # scriptblock or unqualified dynamic command lookup participates in credit.
+    $directCleanMachineVerifier = ${function:Invoke-V02ReleaseGateIsolatedCleanMachineVerifier}
+    $isolatedCleanMachine = & $directCleanMachineVerifier `
+        -ReportPath $CleanMachineReportPath -AuthorizationPath $CleanHostAuthorizationPath `
+        -AuthorizationSignaturePath $CleanHostAuthorizationSignaturePath `
+        -AcceptanceReceiptPath $CleanHostAcceptanceReceiptPath `
+        -AcceptanceReceiptSignaturePath $CleanHostAcceptanceReceiptSignaturePath `
+        -ExpectedSourceCommit $ExpectedSourceCommit -ExpectedSourceTree $ExpectedSourceTree -Package $package
+    $cleanMachine = [pscustomobject][ordered]@{
+        Path=[IO.Path]::GetFullPath($CleanMachineReportPath);FileSha256=[string]$isolatedCleanMachine.reportSha256
+        EvidenceClass='CleanMachine';Status='PASS';Mode='Live';RunId=[string]$isolatedCleanMachine.runId
+        MachineFingerprint=[string]$isolatedCleanMachine.machineFingerprint;OperatorIdentity=[string]$isolatedCleanMachine.operatorIdentity
+        ObserverIdentity=[string]$isolatedCleanMachine.observerIdentity;AuthorizationSignerThumbprint=[string]$isolatedCleanMachine.authorizationSignerThumbprint
+        AcceptanceReceiptSha256=[string]$isolatedCleanMachine.acceptanceReceiptSha256;AcceptanceReceiptSignatureSha256=[string]$isolatedCleanMachine.acceptanceReceiptSignatureSha256
+        AcceptanceReceiptNonce=[string]$isolatedCleanMachine.acceptanceReceiptNonce;LifecycleCreditGranted=$true
+        Runtime='NOT_OBSERVED';Human='NOT_OBSERVED';Release='NOT_OBSERVED'
+    }
     Assert-V02ReleaseGateBoundSnapshots -Snapshots $preValidationSnapshots -Phase 'Post-package validation'
     $renderer = Invoke-V02ReleaseGateRendererValidation -Context $context -Package $package `
         -ExpectedSourceCommit $ExpectedSourceCommit -ExpectedSourceTree $ExpectedSourceTree
@@ -2700,7 +2762,31 @@ function Invoke-V02ReleaseGate {
 # Dot-sourcing imports the functions for read-only selftests without invoking
 # the production gate. Direct execution is the only path that runs the gate.
 if ($MyInvocation.InvocationName -ne '.') {
-    Invoke-V02ReleaseGate `
+    $directDefinitionPath = [IO.Path]::GetFullPath($MyInvocation.MyCommand.Path)
+    $directCommandLine = @([Environment]::GetCommandLineArgs())
+    $directFileAuthorized = $false
+    $directCursor = 1
+    $directSeenHostSwitches = @{}
+    while ($directCursor -lt $directCommandLine.Count -and [string]$directCommandLine[$directCursor] -ine '-File') {
+        $directHostSwitch = [string]$directCommandLine[$directCursor]
+        if ($directHostSwitch -in @('-NoLogo','-NoProfile','-NonInteractive') -and -not $directSeenHostSwitches.ContainsKey($directHostSwitch.ToUpperInvariant())) {
+            $directSeenHostSwitches[$directHostSwitch.ToUpperInvariant()]=$true;$directCursor++;continue
+        }
+        if ($directHostSwitch -ieq '-ExecutionPolicy' -and -not $directSeenHostSwitches.ContainsKey('EXECUTIONPOLICY') -and
+            $directCursor + 1 -lt $directCommandLine.Count -and [string]$directCommandLine[$directCursor + 1] -ieq 'Bypass') {
+            $directSeenHostSwitches['EXECUTIONPOLICY']=$true;$directCursor+=2;continue
+        }
+        $directCursor=$directCommandLine.Count;break
+    }
+    if ($directCursor + 1 -lt $directCommandLine.Count -and [string]$directCommandLine[$directCursor] -ieq '-File') {
+        try { $directFileAuthorized=[StringComparer]::OrdinalIgnoreCase.Equals([IO.Path]::GetFullPath([string]$directCommandLine[$directCursor+1]),$directDefinitionPath) }
+        catch { $directFileAuthorized=$false }
+    }
+    if (-not $directFileAuthorized) {
+        throw 'Production release-gate execution must use a clean PowerShell process with exact -File Test-V02ReleaseGate.ps1.'
+    }
+    $directGate = ${function:Invoke-V02ReleaseGate}
+    & $directGate `
         -ExpectedSourceCommit $ExpectedSourceCommit `
         -ExpectedSourceTree $ExpectedSourceTree `
         -PackageIdentityPath $PackageIdentityPath `
