@@ -22,6 +22,28 @@ always `Runtime=NOT_OBSERVED`, `Human=NOT_OBSERVED`, `Release=NOT_OBSERVED`, and
 still required; fixture/selftest mode never starts or stops Herdr, HerdrOps, or
 any application process.
 
+The per-language widget observation is finalized by the composite runtime gate
+only after that invocation's Gate, Core, and App reports have been sealed. Pass
+all five optional inputs together; both output paths must be new direct children of
+`artifacts/runtime-evidence/v0.2/issues-7-9-10/`:
+
+```powershell
+./tools/Test-V02LiveRuntimeAcceptance.ps1 <required-runtime-arguments> `
+  -Issue10WidgetReportPath <new-widget-observation.json> `
+  -Issue10BindingManifestPath <new-same-run-binding.json> `
+  -Issue10PerformanceReceiptPath <performance-receipt.json> `
+  -Issue10PerformanceRawSourcePath <performance-raw-source.json> `
+  -Issue10SoakReceiptPath <soak-receipt.json>
+```
+
+The gate stages held copies of package, performance, soak, and installed-Herdr
+authority bytes under the exact run directory, binds the same-run Gate/Core/App
+hashes plus invocation nonce/source, then invokes the packaged App in headless
+finalization mode. Prior-run reports, escaped outputs, incomplete inputs,
+changed or hardlinked inputs, and existing destinations fail before publication.
+Direct runtime-App production is rejected, closing the former pre-gate
+causality gap.
+
 Production operator contract (all paths are explicit and must be held by the
 operator before invoking the command):
 

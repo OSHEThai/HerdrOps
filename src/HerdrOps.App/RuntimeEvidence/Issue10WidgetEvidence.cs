@@ -3,6 +3,7 @@ using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using Microsoft.Win32.SafeHandles;
 
 namespace HerdrOps.App.RuntimeEvidence;
@@ -127,6 +128,7 @@ public sealed record Issue10WidgetObservation(
 
 public static class Issue10WidgetEvidenceProducer
 {
+    private const string FinalizeSwitch = "--finalize-issue10-widget-report";
     private const long MaximumManifestBytes = 4 * 1024 * 1024;
     private const long MaximumReceiptBytes = 16 * 1024 * 1024;
     private const long MaximumCaptureBytes = 128 * 1024 * 1024;
@@ -139,6 +141,7 @@ public static class Issue10WidgetEvidenceProducer
         PropertyNameCaseInsensitive = false,
         AllowTrailingCommas = false,
         ReadCommentHandling = JsonCommentHandling.Disallow,
+        Converters = { new JsonStringEnumConverter() },
     };
 
     private static readonly JsonSerializerOptions ReceiptSerializerOptions = new()
@@ -150,6 +153,123 @@ public static class Issue10WidgetEvidenceProducer
     {
         WriteIndented = false,
     };
+
+    public static bool IsFinalizationRequested(IReadOnlyList<string> args) =>
+        args.Any(argument => string.Equals(argument, FinalizeSwitch, StringComparison.Ordinal));
+
+    public static int FinalizeFromCommandLine(IReadOnlyList<string> args)
+    {
+        try
+        {
+            var values = ParseFinalizationArguments(args);
+            using var reportStream = File.Open(
+                values.AppReportPath,
+                FileMode.Open,
+                FileAccess.Read,
+                FileShare.Read);
+            if (reportStream.Length <= 0 || reportStream.Length > MaximumReceiptBytes)
+            {
+                throw new InvalidOperationException("Issue #10 same-run App report has an invalid bounded length.");
+            }
+            var reportBytes = new byte[checked((int)reportStream.Length)];
+            reportStream.ReadExactly(reportBytes);
+            using var reportDocument = JsonDocument.Parse(
+                reportBytes,
+                new JsonDocumentOptions
+                {
+                    AllowTrailingCommas = false,
+                    CommentHandling = JsonCommentHandling.Disallow,
+                });
+            RejectDuplicateProperties(reportDocument.RootElement, "Issue #10 same-run App report");
+            var report = JsonSerializer.Deserialize<AppRuntimeEvidenceReport>(
+                reportBytes,
+                ManifestSerializerOptions) ??
+                throw new InvalidOperationException("Issue #10 same-run App report deserialized to null.");
+            Write(
+                values.OutputPath,
+                values.BindingManifestPath,
+                values.AppReportPath,
+                values.RunNonce,
+                values.SourceCommit,
+                values.SourceTree,
+                report);
+            return 0;
+        }
+        catch
+        {
+            return 2;
+        }
+    }
+
+    private static FinalizationArguments ParseFinalizationArguments(IReadOnlyList<string> args)
+    {
+        var allowed = new HashSet<string>(StringComparer.Ordinal)
+        {
+            "--issue10-widget-report",
+            "--issue10-binding-manifest",
+            "--runtime-evidence-report",
+            "--issue10-run-nonce",
+            "--issue10-source-commit",
+            "--issue10-source-tree",
+        };
+        var values = new Dictionary<string, string>(StringComparer.Ordinal);
+        var sawSwitch = false;
+        for (var index = 0; index < args.Count; index++)
+        {
+            var argument = args[index];
+            if (string.Equals(argument, FinalizeSwitch, StringComparison.Ordinal))
+            {
+                if (sawSwitch)
+                {
+                    throw new InvalidOperationException("Issue #10 finalization switch was supplied more than once.");
+                }
+                sawSwitch = true;
+                continue;
+            }
+            if (!allowed.Contains(argument) || index + 1 >= args.Count)
+            {
+                throw new InvalidOperationException($"Unknown or incomplete Issue #10 finalization argument '{argument}'.");
+            }
+            if (!values.TryAdd(argument, args[++index]))
+            {
+                throw new InvalidOperationException($"Issue #10 finalization argument '{argument}' was supplied more than once.");
+            }
+        }
+        if (!sawSwitch || values.Count != allowed.Count || allowed.Any(name => !values.ContainsKey(name)))
+        {
+            throw new InvalidOperationException("Issue #10 finalization requires one complete exact argument set.");
+        }
+        return new FinalizationArguments(
+            Path.GetFullPath(values["--issue10-widget-report"]),
+            Path.GetFullPath(values["--issue10-binding-manifest"]),
+            Path.GetFullPath(values["--runtime-evidence-report"]),
+            values["--issue10-run-nonce"],
+            values["--issue10-source-commit"],
+            values["--issue10-source-tree"]);
+    }
+
+    private static void RejectDuplicateProperties(JsonElement element, string context)
+    {
+        if (element.ValueKind == JsonValueKind.Object)
+        {
+            var names = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var property in element.EnumerateObject())
+            {
+                if (!names.Add(property.Name))
+                {
+                    throw new InvalidOperationException($"{context} contains duplicate property '{property.Name}'.");
+                }
+                RejectDuplicateProperties(property.Value, context);
+            }
+        }
+        else if (element.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var item in element.EnumerateArray())
+            {
+                RejectDuplicateProperties(item, context);
+            }
+        }
+    }
 
     public static void Write(
         string outputPath,
@@ -953,6 +1073,14 @@ public static class Issue10WidgetEvidenceProducer
                 length);
         }
     }
+
+    private sealed record FinalizationArguments(
+        string OutputPath,
+        string BindingManifestPath,
+        string AppReportPath,
+        string RunNonce,
+        string SourceCommit,
+        string SourceTree);
 
     private readonly record struct FileIdentity(
         uint VolumeSerialNumber,

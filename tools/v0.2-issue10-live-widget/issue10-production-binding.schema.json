@@ -41,9 +41,9 @@
     "Runtime": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["HerdrExecutableSha256", "ControlSessionIdentity", "TargetSessionIdentity"],
+      "required": ["HerdrExecutable", "ControlSessionIdentity", "TargetSessionIdentity"],
       "properties": {
-        "HerdrExecutableSha256": { "$ref": "#/$defs/sha" },
+        "HerdrExecutable": { "$ref": "#/$defs/artifact" },
         "ControlSessionIdentity": { "type": "string", "minLength": 1 },
         "TargetSessionIdentity": { "type": "string", "minLength": 1 }
       }
