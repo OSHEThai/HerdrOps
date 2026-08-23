@@ -811,6 +811,69 @@ function Close-Issue10OwnedLeaves {
     foreach($owned in @($Leaves)){if($null-ne$owned.HeldStream){Assert-Issue10HeldLeaf $owned 'Issue #10 committed owned leaf';$owned.HeldStream.Dispose();$owned.HeldStream=$null}}
 }
 
+function Get-Issue10HandleInformation {
+    param([Parameter(Mandatory)]$Handle,[Parameter(Mandatory)][string]$Context)
+    $info=New-Object HerdrOpsV02FileIdentityNative+BY_HANDLE_FILE_INFORMATION
+    if(-not[HerdrOpsV02FileIdentityNative]::GetFileInformationByHandle($Handle,[ref]$info)){throw "$Context identity read failed with Win32 $([Runtime.InteropServices.Marshal]::GetLastWin32Error())."}
+    [pscustomobject]@{VolumeSerialNumber=[uint32]$info.dwVolumeSerialNumber;FileId=[uint64](([uint64]$info.nFileIndexHigh-shl32)-bor[uint64]$info.nFileIndexLow);NumberOfLinks=[uint32]$info.nNumberOfLinks;Length=[int64](([uint64]$info.nFileSizeHigh-shl32)-bor[uint64]$info.nFileSizeLow)}
+}
+
+function Open-Issue10HeldPublishedLeaf {
+    param([Parameter(Mandatory)][string]$Path,[Parameter(Mandatory)][string]$Context)
+    Assert-Issue10NoReparseComponents -Path $Path -Context $Context
+    $stream=[IO.File]::Open([IO.Path]::GetFullPath($Path),[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read)
+    try{
+        $identity=Get-V02FileInformation -FileStream $stream
+        if($identity.NumberOfLinks-ne1){throw "$Context must have exactly one hard link."}
+        if(-not(Get-Issue10FinalPath -Stream $stream -Context $Context).Equals([IO.Path]::GetFullPath($Path),[StringComparison]::OrdinalIgnoreCase)){throw "$Context final path changed."}
+        $sha=[Security.Cryptography.SHA256]::Create();try{$stream.Position=0;$hash=([BitConverter]::ToString($sha.ComputeHash($stream))).Replace('-','')}finally{$sha.Dispose()}
+        $after=Get-V02FileInformation -FileStream $stream;Assert-V02FileIdentityContinuity -BaselineInfo $identity -CurrentInfo $after -Context $Context
+        $normalized=[pscustomobject]@{VolumeSerialNumber=[uint32]$after.VolumeSerialNumber;FileId=[uint64]$after.FileIndex;NumberOfLinks=[uint32]$after.NumberOfLinks;Length=[uint64]$after.FileSize}
+        [pscustomobject]@{Path=[IO.Path]::GetFullPath($Path);Sha256=$hash;HeldStream=$stream;Identity=$normalized}
+    }catch{$stream.Dispose();throw}
+}
+
+function Open-Issue10HeldPublishedParent {
+    param([Parameter(Mandatory)][string]$Path,[Parameter(Mandatory)][string]$Context)
+    Assert-Issue10NoReparseComponents -Path $Path -Context $Context
+    $full=[IO.Path]::GetFullPath($Path);$handle=[HerdrOpsV02FileIdentityNative]::CreateFile($full,0x80,7,[IntPtr]::Zero,3,0x02000000,[IntPtr]::Zero)
+    if($null-eq$handle-or$handle.IsInvalid){$errorCode=[Runtime.InteropServices.Marshal]::GetLastWin32Error();if($null-ne$handle){$handle.Dispose()};throw "$Context hold failed with Win32 $errorCode."}
+    try{$identity=Get-Issue10HandleInformation $handle $Context;$builder=New-Object Text.StringBuilder 32768;$length=[HerdrOpsV02FileIdentityNative]::GetFinalPathNameByHandle($handle,$builder,$builder.Capacity,0);if($length-eq0-or$length-ge$builder.Capacity){throw "$Context final path read failed."};$final=$builder.ToString();if($final.StartsWith('\\?\')){$final=$final.Substring(4)};if(-not([IO.Path]::GetFullPath($final).Equals($full,[StringComparison]::OrdinalIgnoreCase))){throw "$Context final path changed."};[pscustomobject]@{Path=$full;Handle=$handle;Identity=$identity}}catch{$handle.Dispose();throw}
+}
+
+function Get-Issue10ReceiptAuthentication {
+    param([Parameter(Mandatory)]$Receipt,[Parameter(Mandatory)][string]$Key)
+    if($Key-notmatch'^[0-9A-Fa-f]{64}$'){throw 'Issue #10 output receipt authentication key is malformed.'}
+    $canonical=(@([string]$Receipt.SchemaVersion,[string]$Receipt.EvidenceClassification,[string]$Receipt.Issue,[string]$Receipt.RunNonce,[IO.Path]::GetFullPath([string]$Receipt.OutputPath),[string]$Receipt.OutputLength,[string]$Receipt.OutputSha256,[string]$Receipt.OutputVolumeSerialNumber,[string]$Receipt.OutputFileId,[string]$Receipt.OutputNumberOfLinks,[IO.Path]::GetFullPath([string]$Receipt.ParentPath),[string]$Receipt.ParentVolumeSerialNumber,[string]$Receipt.ParentFileId,[string]$Receipt.ProducerProcessId)-join"`n")+"`n"
+    $keyBytes=New-Object byte[] 32;for($index=0;$index-lt32;$index++){$keyBytes[$index]=[Convert]::ToByte($Key.Substring($index*2,2),16)}
+    $hmac=New-Object Security.Cryptography.HMACSHA256 (,$keyBytes);try{([BitConverter]::ToString($hmac.ComputeHash((New-Object Text.UTF8Encoding($false)).GetBytes($canonical)))).Replace('-','')}finally{$hmac.Dispose()}
+}
+
+function Test-Issue10FixedHexEqual {
+    param([Parameter(Mandatory)][string]$Left,[Parameter(Mandatory)][string]$Right)
+    if($Left.Length-ne$Right.Length){return $false};$difference=0;for($index=0;$index-lt$Left.Length;$index++){$difference=$difference-bor([int][char]$Left[$index]-bxor[int][char]$Right[$index])};return $difference-eq0
+}
+
+function Open-Issue10PublishedBinding {
+    param([Parameter(Mandatory)][string]$WidgetPath,[Parameter(Mandatory)][string]$ReceiptPath,[Parameter(Mandatory)][string]$ReceiptKey,[Parameter(Mandatory)][string]$RunNonce,[Parameter(Mandatory)][int]$ProducerProcessId,[scriptblock]$AfterChildExitForTest)
+    if($null-ne$AfterChildExitForTest){&$AfterChildExitForTest}
+    $receiptHeld=$null;$widgetHeld=$null;$parentHeld=$null
+    try{
+        $receiptHeld=Open-Issue10HeldPublishedLeaf $ReceiptPath 'Issue #10 output publication receipt'
+        $receiptBytes=New-Object byte[] ([int]$receiptHeld.Identity.Length);$receiptHeld.HeldStream.Position=0;$offset=0;while($offset-lt$receiptBytes.Length){$read=$receiptHeld.HeldStream.Read($receiptBytes,$offset,$receiptBytes.Length-$offset);if($read-le0){throw 'Issue #10 output publication receipt ended early.'};$offset+=$read}
+        $receipt=(New-Object Text.UTF8Encoding($false,$true)).GetString($receiptBytes)|ConvertFrom-Json
+        $required=@('SchemaVersion','EvidenceClassification','Issue','RunNonce','OutputPath','OutputLength','OutputSha256','OutputVolumeSerialNumber','OutputFileId','OutputNumberOfLinks','ParentPath','ParentVolumeSerialNumber','ParentFileId','ProducerProcessId','AuthenticationSha256')
+        $actual=@($receipt.PSObject.Properties.Name);if(@($actual).Count-ne$required.Count-or@($required|Where-Object{$actual-cnotcontains$_}).Count-ne0){throw 'Issue #10 output publication receipt shape is not exact.'}
+        if([int]$receipt.SchemaVersion-ne1-or[string]$receipt.EvidenceClassification-cne'Issue10OutputPublicationReceipt'-or[int]$receipt.Issue-ne10-or[string]$receipt.RunNonce-cne$RunNonce-or[int]$receipt.ProducerProcessId-ne$ProducerProcessId){throw 'Issue #10 output publication receipt invocation binding failed.'}
+        $expectedAuthentication=Get-Issue10ReceiptAuthentication $receipt $ReceiptKey;if(-not(Test-Issue10FixedHexEqual ([string]$receipt.AuthenticationSha256) $expectedAuthentication)){throw 'Issue #10 output publication receipt authentication failed.'}
+        $parentHeld=Open-Issue10HeldPublishedParent (Split-Path -Parent $WidgetPath) 'Issue #10 output parent'
+        if(-not$parentHeld.Path.Equals([IO.Path]::GetFullPath([string]$receipt.ParentPath),[StringComparison]::OrdinalIgnoreCase)-or[string]$receipt.ParentVolumeSerialNumber-cne[string]$parentHeld.Identity.VolumeSerialNumber-or[string]$receipt.ParentFileId-cne[string]$parentHeld.Identity.FileId){throw 'Issue #10 output publication receipt parent identity failed.'}
+        $widgetHeld=Open-Issue10HeldPublishedLeaf $WidgetPath 'Issue #10 published widget report'
+        if(-not$widgetHeld.Path.Equals([IO.Path]::GetFullPath([string]$receipt.OutputPath),[StringComparison]::OrdinalIgnoreCase)-or[uint64]$receipt.OutputLength-ne[uint64]$widgetHeld.Identity.Length-or[string]$receipt.OutputSha256-cne[string]$widgetHeld.Sha256-or[string]$receipt.OutputVolumeSerialNumber-cne[string]$widgetHeld.Identity.VolumeSerialNumber-or[string]$receipt.OutputFileId-cne[string]$widgetHeld.Identity.FileId-or[uint32]$receipt.OutputNumberOfLinks-ne1){throw 'Issue #10 published widget identity does not match the authenticated child receipt.'}
+        [pscustomobject]@{Widget=$widgetHeld;Receipt=$receiptHeld;Parent=$parentHeld;ReceiptValue=$receipt};$widgetHeld=$null;$receiptHeld=$null;$parentHeld=$null
+    }finally{if($null-ne$widgetHeld){$widgetHeld.HeldStream.Dispose()};if($null-ne$receiptHeld){$receiptHeld.HeldStream.Dispose()};if($null-ne$parentHeld){$parentHeld.Handle.Dispose()}}
+}
+
 function Copy-Issue10HeldAuthorityFile {
     param([Parameter(Mandatory)][string]$Source,[Parameter(Mandatory)][string]$Destination,[Parameter(Mandatory)][string]$Context)
     if(-not(Test-Path -LiteralPath $Source -PathType Leaf)){throw "$Context is missing: $Source"}
@@ -838,16 +901,16 @@ function Copy-Issue10HeldAuthorityFile {
 
 function New-Issue10SameRunBindingManifest {
     param([string]$AllowedEvidenceRoot,[string]$RunEvidenceDirectory,[string]$ManifestPath,[string]$WidgetOutputPath,[string]$RunNonce,[DateTime]$EvidenceStartedUtc,[string]$SourceCommit,[string]$SourceTree,$PackageBinding,[string]$GateReportPath,[string]$CoreRuntimeReportPath,[string]$AppRuntimeReportPath,[string]$PerformanceReceiptPath,[string]$PerformanceRawSourcePath,[string]$SoakReceiptPath,[string]$HerdrExecutablePath,[string]$ControlSessionIdentity,[string]$TargetSessionIdentity)
-    $manifestFull=[IO.Path]::GetFullPath($ManifestPath);$widgetFull=[IO.Path]::GetFullPath($WidgetOutputPath)
-    foreach($output in @($manifestFull,$widgetFull)){
+    $manifestFull=[IO.Path]::GetFullPath($ManifestPath);$widgetFull=[IO.Path]::GetFullPath($WidgetOutputPath);$receiptFull=$widgetFull+'.publication.json'
+    foreach($output in @($manifestFull,$widgetFull,$receiptFull)){
         if(-not(Test-Issue10ContainedPath $AllowedEvidenceRoot $output)){throw "Issue #10 same-run output escaped the current evidence root: $output"}
         $parent=Split-Path -Parent $output;if(-not(Test-Path -LiteralPath $parent -PathType Container)){throw "Issue #10 same-run output parent is missing: $parent"}
         if(Test-Path -LiteralPath $output){throw "Issue #10 same-run output already exists: $output"}
     }
-    if($manifestFull.Equals($widgetFull,[StringComparison]::OrdinalIgnoreCase)){throw 'Issue #10 manifest and widget output paths must be distinct.'}
+    if($manifestFull.Equals($widgetFull,[StringComparison]::OrdinalIgnoreCase)-or$manifestFull.Equals($receiptFull,[StringComparison]::OrdinalIgnoreCase)){throw 'Issue #10 manifest, widget output, and publication receipt paths must be distinct.'}
     foreach($currentRunPath in @($GateReportPath,$CoreRuntimeReportPath,$AppRuntimeReportPath)){if(-not(Test-Issue10ContainedPath $RunEvidenceDirectory $currentRunPath)){throw "Issue #10 current-run report escaped its exact run directory: $currentRunPath"}}
     Assert-Issue10NoReparseComponents -Path $AllowedEvidenceRoot -Context 'Issue #10 evidence root'
-    foreach($output in @($manifestFull,$widgetFull)){Assert-Issue10NoReparseComponents -Path $output -LeafMayBeMissing -Context 'Issue #10 same-run output'}
+    foreach($output in @($manifestFull,$widgetFull,$receiptFull)){Assert-Issue10NoReparseComponents -Path $output -LeafMayBeMissing -Context 'Issue #10 same-run output'}
     $authorityDirectory=Join-Path $RunEvidenceDirectory 'issue10-authority';if(Test-Path -LiteralPath $authorityDirectory){throw "Issue #10 authority directory already exists: $authorityDirectory"};Assert-Issue10NoReparseComponents -Path $authorityDirectory -LeafMayBeMissing -Context 'Issue #10 authority directory';New-Item -ItemType Directory -Path $authorityDirectory|Out-Null
     $ownedLeaves=New-Object Collections.Generic.List[object];$manifestOwned=$null
     try{
@@ -867,7 +930,7 @@ function New-Issue10SameRunBindingManifest {
         $json=($manifest|ConvertTo-Json -Depth 12 -Compress)+"`n";$bytes=(New-Object Text.UTF8Encoding($false)).GetBytes($json)
         $stream=New-Issue10OwnedLeafStream -Path $manifestFull -Context 'Issue #10 binding manifest';$manifestOwned=[pscustomobject]@{Path=$manifestFull;Sha256='';HeldStream=$stream;Identity=(Get-V02FileInformation -FileStream $stream)};$stream.Write($bytes,0,$bytes.Length);$stream.Flush($true);$stream.Position=0;$sha=[Security.Cryptography.SHA256]::Create();try{$manifestHash=([BitConverter]::ToString($sha.ComputeHash($stream))).Replace('-','')}finally{$sha.Dispose()}
         $manifestOwned.Sha256=$manifestHash;Assert-Issue10HeldLeaf $manifestOwned 'Issue #10 binding manifest'
-        return [pscustomobject]@{ManifestPath=$manifestFull;WidgetOutputPath=$widgetFull;AuthorityDirectory=$authorityDirectory;ManifestSha256=$manifestHash;OwnedLeaves=@($ownedLeaves.ToArray())+$manifestOwned}
+        return [pscustomobject]@{ManifestPath=$manifestFull;WidgetOutputPath=$widgetFull;OutputReceiptPath=$receiptFull;AuthorityDirectory=$authorityDirectory;ManifestSha256=$manifestHash;OwnedLeaves=@($ownedLeaves.ToArray())+$manifestOwned}
     }catch{if($null-ne$manifestOwned){Remove-Issue10OwnedLeaf $manifestOwned 'Issue #10 binding manifest cleanup'};for($index=$ownedLeaves.Count-1;$index-ge0;$index--){Remove-Issue10OwnedLeaf $ownedLeaves[$index] 'Issue #10 staged authority cleanup'};throw}
 }
 
@@ -921,6 +984,7 @@ $targetAgentSessionAttestation = $null
 $issue9SideBySideObservation = $null
 $issue10SameRunBinding = $null
 $issue10WidgetOutputCreated = $false
+$issue10PublishedBinding = $null
 
 try {
     New-Item -ItemType Directory -Path $captureDirectory -Force | Out-Null
@@ -931,7 +995,7 @@ try {
             Assert-Issue10NoReparseComponents -Path $inputPath -Context 'Issue #10 same-run input'
             $inputStream=[IO.File]::Open([IO.Path]::GetFullPath($inputPath),[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read);try{$inputIdentity=Get-V02FileInformation -FileStream $inputStream;if($inputIdentity.NumberOfLinks-ne1){throw "Issue #10 same-run input must have exactly one hard link: $inputPath"};if(-not(Get-Issue10FinalPath -Stream $inputStream -Context 'Issue #10 same-run input').Equals([IO.Path]::GetFullPath($inputPath),[StringComparison]::OrdinalIgnoreCase)){throw "Issue #10 same-run input final path changed: $inputPath"}}finally{$inputStream.Dispose()}
         }
-        foreach($outputPath in @($Issue10WidgetReportPath,$Issue10BindingManifestPath)){
+        foreach($outputPath in @($Issue10WidgetReportPath,$Issue10BindingManifestPath,($Issue10WidgetReportPath+'.publication.json'))){
             if(-not(Test-Issue10ContainedPath $runtimeEvidenceRoot $outputPath)){throw "Issue #10 same-run output must be inside the v0.2 runtime evidence root: $outputPath"}
             if(-not([IO.Path]::GetFullPath((Split-Path -Parent $outputPath)).Equals([IO.Path]::GetFullPath($runtimeEvidenceRoot),[StringComparison]::OrdinalIgnoreCase))){throw "Issue #10 same-run outputs must be direct children of the v0.2 runtime evidence root so current-run captures remain contained: $outputPath"}
             if(Test-Path -LiteralPath $outputPath){throw "Issue #10 same-run output already exists before runtime: $outputPath"}
@@ -1912,9 +1976,11 @@ if($issue10SuppliedCount -eq $issue10Arguments.Count){
         -HerdrExecutablePath $HerdrExecutable `
         -ControlSessionIdentity $sessionTopology.ControlSessionName `
         -TargetSessionIdentity $sessionTopology.TargetSessionName
-    $finalizerArguments=@('--finalize-issue10-widget-report','--issue10-widget-report',$issue10SameRunBinding.WidgetOutputPath,'--issue10-binding-manifest',$issue10SameRunBinding.ManifestPath,'--runtime-evidence-report',$appReportPath,'--issue10-run-nonce',$EvidenceRunNonce,'--issue10-source-commit',$ExpectedSourceCommit.ToLowerInvariant(),'--issue10-source-tree',$ExpectedSourceTree.ToLowerInvariant())
-    $finalizerProcess=Start-Process -FilePath $appExecutable -ArgumentList $finalizerArguments -WindowStyle Hidden -Wait -PassThru
-    if($finalizerProcess.ExitCode-ne0-or-not(Test-Path -LiteralPath $issue10SameRunBinding.WidgetOutputPath -PathType Leaf)){throw "Issue #10 same-run finalizer failed after exact run reports were sealed (exit=$($finalizerProcess.ExitCode))."}
+    $receiptKeyBytes=New-Object byte[] 32;$receiptRng=[Security.Cryptography.RandomNumberGenerator]::Create();try{$receiptRng.GetBytes($receiptKeyBytes)}finally{$receiptRng.Dispose()};$receiptKey=([BitConverter]::ToString($receiptKeyBytes)).Replace('-','')
+    $finalizerArguments=@('--finalize-issue10-widget-report','--issue10-widget-report',$issue10SameRunBinding.WidgetOutputPath,'--issue10-output-receipt',$issue10SameRunBinding.OutputReceiptPath,'--issue10-binding-manifest',$issue10SameRunBinding.ManifestPath,'--runtime-evidence-report',$appReportPath,'--issue10-run-nonce',$EvidenceRunNonce,'--issue10-source-commit',$ExpectedSourceCommit.ToLowerInvariant(),'--issue10-source-tree',$ExpectedSourceTree.ToLowerInvariant())
+    $priorReceiptKey=[Environment]::GetEnvironmentVariable('HERDROPS_ISSUE10_OUTPUT_RECEIPT_KEY','Process');[Environment]::SetEnvironmentVariable('HERDROPS_ISSUE10_OUTPUT_RECEIPT_KEY',$receiptKey,'Process');try{$finalizerProcess=Start-Process -FilePath $appExecutable -ArgumentList $finalizerArguments -WindowStyle Hidden -Wait -PassThru}finally{[Environment]::SetEnvironmentVariable('HERDROPS_ISSUE10_OUTPUT_RECEIPT_KEY',$priorReceiptKey,'Process')}
+    if($finalizerProcess.ExitCode-ne0){throw "Issue #10 same-run finalizer failed after exact run reports were sealed (exit=$($finalizerProcess.ExitCode))."}
+    $issue10PublishedBinding=Open-Issue10PublishedBinding -WidgetPath $issue10SameRunBinding.WidgetOutputPath -ReceiptPath $issue10SameRunBinding.OutputReceiptPath -ReceiptKey $receiptKey -RunNonce $EvidenceRunNonce -ProducerProcessId $finalizerProcess.Id
     Close-Issue10OwnedLeaves -Leaves $issue10SameRunBinding.OwnedLeaves
     $issue10WidgetOutputCreated=$true
 }
@@ -1926,9 +1992,11 @@ Write-Output "CoreRuntimeReport: $coreReportPath"
 Write-Output "AppRuntimeReport: $appReportPath"
 Write-Output "Issue9UiObservation: $($issue9Observation.Path)"
 Write-Output "Issue9UiObservationSha256: $($issue9Observation.Sha256)"
-if($issue10WidgetOutputCreated){Write-Output "Issue10BindingManifest: $($issue10SameRunBinding.ManifestPath)";Write-Output "Issue10BindingManifestSha256: $($issue10SameRunBinding.ManifestSha256)";Write-Output "Issue10WidgetReport: $($issue10SameRunBinding.WidgetOutputPath)";Write-Output "Issue10WidgetReportSha256: $((Get-FileHash -LiteralPath $issue10SameRunBinding.WidgetOutputPath -Algorithm SHA256).Hash)"}
+if($issue10WidgetOutputCreated){Write-Output "Issue10BindingManifest: $($issue10SameRunBinding.ManifestPath)";Write-Output "Issue10BindingManifestSha256: $($issue10SameRunBinding.ManifestSha256)";Write-Output "Issue10WidgetReport: $($issue10SameRunBinding.WidgetOutputPath)";Write-Output "Issue10WidgetReportSha256: $($issue10PublishedBinding.Widget.Sha256)";Write-Output "Issue10OutputPublicationReceipt: $($issue10SameRunBinding.OutputReceiptPath)"}
+if($null-ne$issue10PublishedBinding){$issue10PublishedBinding.Widget.HeldStream.Dispose();$issue10PublishedBinding.Receipt.HeldStream.Dispose();$issue10PublishedBinding.Parent.Handle.Dispose();$issue10PublishedBinding=$null}
 } catch {
     $failureRecord = $_
+    if($null-ne$issue10PublishedBinding){$issue10PublishedBinding.Widget.HeldStream.Dispose();$issue10PublishedBinding.Receipt.HeldStream.Dispose();$issue10PublishedBinding.Parent.Handle.Dispose();$issue10PublishedBinding=$null}
     if($null-ne$issue10SameRunBinding){
         for($index=@($issue10SameRunBinding.OwnedLeaves).Count-1;$index-ge0;$index--){try{Remove-Issue10OwnedLeaf $issue10SameRunBinding.OwnedLeaves[$index] 'Issue #10 transaction cleanup'}catch{Write-Warning $_.Exception.Message}}
         if(Test-Path -LiteralPath $issue10SameRunBinding.AuthorityDirectory -PathType Container){Remove-Item -LiteralPath $issue10SameRunBinding.AuthorityDirectory -Force -ErrorAction SilentlyContinue}
