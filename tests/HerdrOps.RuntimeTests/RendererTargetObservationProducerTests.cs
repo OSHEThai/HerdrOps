@@ -63,6 +63,17 @@ public sealed class RendererTargetObservationProducerTests
     }
 
     [TestMethod]
+    public void ParseRequestRejectsExactEofAndEmptyInput()
+    {
+        foreach (var input in new string?[] { null, string.Empty, " " })
+        {
+            var error = Assert.ThrowsExactly<InvalidDataException>(() =>
+                RendererTargetObservationProducer.ParseRequest(input, 1, Challenge));
+            Assert.AreEqual("Renderer target observation request is empty or oversized.", error.Message);
+        }
+    }
+
+    [TestMethod]
     public void StablePngReadBindsSameHandleBytesAndDimensions()
     {
         var path = Path.Combine(Path.GetTempPath(), $"renderer-png-{Guid.NewGuid():N}.png");
@@ -228,9 +239,9 @@ public sealed class RendererTargetObservationProducerTests
     }
 
     [TestMethod]
-    [DataRow(1, null, "mid-protocol EOF")]
+    [DataRow(1, null, "mid-protocol transport disconnect")]
     [DataRow(null, 1, "invalid stage")]
-    public void TerminalProtocolFailureFaultsEveryPendingWaiterPromptly(
+    public void TerminalTransportDisconnectOrInvalidStageFaultsEveryPendingWaiterPromptly(
         int? failAfterOrdinal,
         int? invalidOrdinal,
         string scenario)
@@ -261,9 +272,9 @@ public sealed class RendererTargetObservationProducerTests
             if (failAfterOrdinal is not null)
             {
                 Assert.AreEqual(failAfterOrdinal.Value, fixture.TerminalDisconnectOrdinal,
-                    "The hostile server did not inject EOF at the intended protocol ordinal.");
+                    "The hostile server did not disconnect the transport at the intended protocol ordinal.");
                 Assert.AreEqual(failAfterOrdinal.Value - 1, fixture.LastAcknowledgedOrdinal,
-                    "The producer did not complete the preceding stage before hostile EOF injection.");
+                    "The producer did not complete the preceding stage before the hostile transport disconnect.");
                 Assert.AreEqual(-1, fixture.InvalidStageOrdinal);
             }
             else
@@ -283,8 +294,11 @@ public sealed class RendererTargetObservationProducerTests
                 }
                 else
                 {
-                    // Windows named-pipe disconnect can surface either as a clean
-                    // EOF (parsed above) or as the exact transport IOException.
+                    // This integration case proves ordinal-bound transport failure
+                    // and terminal waiter propagation, not the exact parser branch.
+                    // Windows can surface Disconnect() as a broken-pipe IOException.
+                    // ParseRequestRejectsExactEofAndEmptyInput owns deterministic
+                    // proof of the clean EOF InvalidDataException guard.
                     Assert.IsInstanceOfType<IOException>(terminal);
                 }
             }
