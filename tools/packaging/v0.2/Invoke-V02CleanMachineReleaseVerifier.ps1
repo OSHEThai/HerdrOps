@@ -35,7 +35,7 @@ try {
     $request = if ((Get-Command ConvertFrom-Json).Parameters.ContainsKey('DateKind')) {
         $requestText | ConvertFrom-Json -DateKind String
     } else { $requestText | ConvertFrom-Json }
-    $required = @('reportPath','authorizationPath','authorizationSignaturePath','acceptanceReceiptPath','acceptanceReceiptSignaturePath','expectedSourceCommit','expectedSourceTree','engineSha256','verifierSha256','commonSha256','packagingCommonSha256','packageIdentityCommonSha256','reportSha256','authorizationSha256','authorizationSignatureSha256','acceptanceReceiptSha256','acceptanceReceiptSignatureSha256','package')
+    $required = @('reportPath','authorizationPath','authorizationSignaturePath','acceptanceReceiptPath','acceptanceReceiptSignaturePath','expectedSourceCommit','expectedSourceTree','engineSha256','verifierSha256','commonSha256','packagingCommonSha256','packageIdentityCommonSha256','rootPackagingCommonSha256','reportSha256','authorizationSha256','authorizationSignatureSha256','acceptanceReceiptSha256','acceptanceReceiptSignatureSha256','package')
     $actual = @($request.PSObject.Properties.Name)
     if ($actual.Count -ne $required.Count -or @($actual | Where-Object { $required -cnotcontains $_ }).Count -ne 0) {
         throw 'The isolated CleanMachine verifier request has unexpected or missing properties.'
@@ -44,21 +44,25 @@ try {
     $commonPath = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot 'V02CleanMachine.Common.ps1'))
     $packagingCommonPath = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot 'V02Packaging.Common.ps1'))
     $packageIdentityCommonPath = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot 'V02PackageIdentity.Common.ps1'))
+    $rootPackagingCommonPath = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\Packaging.Common.ps1'))
     $repositoryRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..\..'))
     $engineSha256 = Get-V02ReleaseVerifierSha256 -Bytes ([IO.File]::ReadAllBytes([IO.Path]::GetFullPath([Diagnostics.Process]::GetCurrentProcess().MainModule.FileName)))
     $verifierSha256 = Get-V02ReleaseVerifierSha256 -Bytes ([IO.File]::ReadAllBytes([IO.Path]::GetFullPath($PSCommandPath)))
     $commonSha256 = Get-V02ReleaseVerifierSha256 -Bytes ([IO.File]::ReadAllBytes($commonPath))
     $packagingCommonSha256 = Get-V02ReleaseVerifierSha256 -Bytes ([IO.File]::ReadAllBytes($packagingCommonPath))
     $packageIdentityCommonSha256 = Get-V02ReleaseVerifierSha256 -Bytes ([IO.File]::ReadAllBytes($packageIdentityCommonPath))
+    $rootPackagingCommonSha256 = Get-V02ReleaseVerifierSha256 -Bytes ([IO.File]::ReadAllBytes($rootPackagingCommonPath))
     Assert-V02ReleaseVerifierEqual $engineSha256 $request.engineSha256 'Isolated PowerShell executable SHA-256'
     Assert-V02ReleaseVerifierEqual $verifierSha256 $request.verifierSha256 'Isolated verifier source SHA-256'
     Assert-V02ReleaseVerifierEqual $commonSha256 $request.commonSha256 'CleanMachine common verifier SHA-256'
     Assert-V02ReleaseVerifierEqual $packagingCommonSha256 $request.packagingCommonSha256 'V02 packaging common SHA-256'
     Assert-V02ReleaseVerifierEqual $packageIdentityCommonSha256 $request.packageIdentityCommonSha256 'V02 package identity common SHA-256'
+    Assert-V02ReleaseVerifierEqual $rootPackagingCommonSha256 $request.rootPackagingCommonSha256 'Root packaging common SHA-256'
     . $commonPath
 
     $childProcess = [Diagnostics.Process]::GetCurrentProcess()
-    $childStartUtc = $childProcess.StartTime.ToUniversalTime().ToString('O', [Globalization.CultureInfo]::InvariantCulture)
+    # Keep exact UTC text stable across PS7 and Windows PowerShell JSON parsing.
+    $childStartUtc = 'UTC:' + $childProcess.StartTime.ToUniversalTime().ToString('O', [Globalization.CultureInfo]::InvariantCulture)
     $enginePath = [IO.Path]::GetFullPath($childProcess.MainModule.FileName)
     $engineStream = [IO.File]::Open($enginePath,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read)
     try { $engineIdentity = Get-V02HandleIdentity -Handle $engineStream.SafeFileHandle -Context 'Isolated PowerShell executable' }
@@ -139,6 +143,7 @@ try {
         commonSha256 = $commonSha256
         packagingCommonSha256 = $packagingCommonSha256
         packageIdentityCommonSha256 = $packageIdentityCommonSha256
+        rootPackagingCommonSha256 = $rootPackagingCommonSha256
         reportSha256 = $reportSha256
         authorizationSha256 = [string]$authorization.AuthorizationSha256
         authorizationSignatureSha256 = [string]$authorization.SignatureSha256
