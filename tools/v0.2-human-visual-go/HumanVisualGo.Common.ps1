@@ -1206,7 +1206,10 @@ function Add-HumanVisualGoManifestEvidence {
         $performanceHeld = Get-HumanVisualGoHeldForBinding -Context $Context -Binding (Get-HumanVisualGoBinding $Context 'PerformanceReceipt')
         $performanceDocument = Read-HumanVisualGoHeldJson -Held $performanceHeld -Description 'Performance receipt' -RepositoryRoot $RepositoryRoot
         if ($null -eq $performanceDocument.Value.rawSource) { throw 'Performance receipt omitted rawSource.' }
+        if ($null -eq $performanceDocument.Value.provenance -or $null -eq $performanceDocument.Value.provenance.performanceTelemetryBinding -or $null -eq $performanceDocument.Value.provenance.performanceTransactionCommit) { throw 'Performance receipt omitted the telemetry sidecar or transaction commit provenance.' }
         [void](Add-HumanVisualGoEvidenceBinding -Context $Context -Root $EvidenceRoot -RootKind EvidenceRoot -RelativePath ([string]$performanceDocument.Value.rawSource.relativePath) -Kind 'PerformanceRawSource' -RepositoryRoot $RepositoryRoot -Json -Expected $performanceDocument.Value.rawSource)
+        [void](Add-HumanVisualGoEvidenceBinding -Context $Context -Root $EvidenceRoot -RootKind EvidenceRoot -RelativePath ([string]$performanceDocument.Value.provenance.performanceTelemetryBinding.relativePath) -Kind 'PerformanceTelemetryBinding' -RepositoryRoot $RepositoryRoot -Json -Expected $performanceDocument.Value.provenance.performanceTelemetryBinding)
+        [void](Add-HumanVisualGoEvidenceBinding -Context $Context -Root $EvidenceRoot -RootKind EvidenceRoot -RelativePath ([string]$performanceDocument.Value.provenance.performanceTransactionCommit.relativePath) -Kind 'PerformanceTransactionCommit' -RepositoryRoot $RepositoryRoot -Json -Expected $performanceDocument.Value.provenance.performanceTransactionCommit)
     }
     return $manifestBinding
 }
@@ -1396,9 +1399,13 @@ function New-V02HumanVisualGoCandidateCore {
         }
         $performanceReceipt = $null
         $performanceRaw = $null
+        $performanceTelemetry = $null
+        $performanceCommit = $null
         if ($null -ne $manifest.performanceProtocol.evidenceReceipt) {
             $performanceReceipt = Get-HumanVisualGoBinding $context 'PerformanceReceipt'
             $performanceRaw = Get-HumanVisualGoBinding $context 'PerformanceRawSource'
+            $performanceTelemetry = Get-HumanVisualGoBinding $context 'PerformanceTelemetryBinding'
+            $performanceCommit = Get-HumanVisualGoBinding $context 'PerformanceTransactionCommit'
         }
         $visualComparisons = @($manifest.comparison.results | ForEach-Object {
             [pscustomobject][ordered]@{ key = "$($_.language)|$($_.captureName)"; status = [string]$_.status; referenceRelativePath = [string]$_.referenceRelativePath; disposition = if ($null -eq $_.disposition) { $null } else { [string]$_.disposition } }
@@ -1426,7 +1433,7 @@ function New-V02HumanVisualGoCandidateCore {
             references = $references
             masks = $masks
             matrix = [pscustomobject]$matrix
-            performance = [pscustomobject][ordered]@{ samplesStatus = [string]$manifest.performanceProtocol.samplesStatus; receipt = $performanceReceipt; rawSource = $performanceRaw; warmupIterations = [int]$manifest.performanceProtocol.warmupIterations; repetitionsPerOrder = [int]$manifest.performanceProtocol.repetitionsPerOrder; soakBins = 24 }
+            performance = [pscustomobject][ordered]@{ samplesStatus = [string]$manifest.performanceProtocol.samplesStatus; receipt = $performanceReceipt; rawSource = $performanceRaw; telemetryBinding = $performanceTelemetry; transactionCommit = $performanceCommit; warmupIterations = [int]$manifest.performanceProtocol.warmupIterations; repetitionsPerOrder = [int]$manifest.performanceProtocol.repetitionsPerOrder; soakBins = 24 }
             visualReview = [pscustomobject][ordered]@{ comparisons = $visualComparisons; checks = $visualChecks }
             defects = @($reviewEvidence.defects | ForEach-Object { [pscustomobject][ordered]@{ id = [string]$_.id; severity = [string]$_.severity; summary = [string]$_.summary; status = [string]$_.status; disposition = [string]$_.disposition } })
             evidenceBindings = @($evidenceBindings)

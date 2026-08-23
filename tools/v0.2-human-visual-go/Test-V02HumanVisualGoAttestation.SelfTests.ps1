@@ -41,6 +41,14 @@ function Copy-HumanTestValue($Value) {
     return ($json | ConvertFrom-Json)
 }
 
+function New-HumanPerformanceAcquisitions($Candidate,[string]$Root) {
+    $packagePrefix=([string]$Candidate.packageRootRelativePath).TrimEnd('/','\')+'/'
+    $componentPaths=@{}
+    foreach($name in @('app','core')){$relative=[string]$Candidate.components.$name.relativePath;$combined=if($relative.Replace('\','/').StartsWith($packagePrefix,[StringComparison]::OrdinalIgnoreCase)){$relative}else{Join-Path $Candidate.packageRootRelativePath $relative};$componentPaths[$name]=[IO.Path]::GetFullPath((Join-Path $Root $combined))}
+    $serverPath=[IO.Path]::GetFullPath([Diagnostics.Process]::GetCurrentProcess().MainModule.FileName);$base=[DateTimeOffset]::Parse('2026-08-22T10:00:00.0000000Z')
+    @(0..23|ForEach-Object{$index=$_;$order=if($index-lt12){'AB'}else{'BA'};$within=$index%12;$warmup=$within-lt2;$repetition=if($warmup){0}else{[int][Math]::Floor(($within-2)/2)};$mode=if($order-ceq'AB'){if($within%2-eq0){'a'}else{'b'}}else{if($within%2-eq0){'b'}else{'a'}};$requested=if($mode-ceq'a'){'Hardware'}else{'SoftwareOnly'};$native=if($mode-ceq'a'){'Default'}else{'SoftwareOnly'};[pscustomobject][ordered]@{sequenceNumber=$index;order=$order;isWarmup=$warmup;repetitionOrdinal=$repetition;semanticMode=$mode;requestedMode=$requested;appProcessId=1000+$index;appStartUtc=$base.AddSeconds($index+1).ToString('O');appPath=$componentPaths.app;appSha256=$Candidate.components.app.sha256;coreProcessId=2000;coreStartUtc=$base.ToString('O');corePath=$componentPaths.core;coreSha256=$Candidate.components.core.sha256;serverProcessId=3000;serverStartUtc=$base.AddMinutes(-1).ToString('O');serverPath=$serverPath;serverSha256=('8'*64);nativeProcessRenderMode=$native;nativeTier=if($mode-ceq'a'){1}else{0};preFirstHwndProof=$true;observedUtc=$base.AddMinutes($index+1).ToString('O');boundary='PackagedCompatibilityPerformance-NativeTierComparator-NoPerFrameGpuOrRuntimeCredit'}})
+}
+
 function Write-HumanCanonicalJson {
     param([Parameter(Mandatory = $true)]$Value, [Parameter(Mandatory = $true)][string]$Path, [Parameter(Mandatory = $true)][string]$RepositoryRoot)
     $canonical = Get-HumanVisualGoCanonicalText -Value $Value -RepositoryRoot $RepositoryRoot
@@ -603,8 +611,19 @@ function Complete-HumanFixture {
     }
     $rawMeasurements = [pscustomobject][ordered]@{ orders = $orders; soakBins = $soakBins }
     $rawBinding = [pscustomobject](New-EvidenceBinding $Fixture.Root 'performance/complete-raw-observations.json' $rawMeasurements $Fixture.RepositoryRoot)
+    $packageReceipt = (Read-RendererCanonicalPackageReceipt (Join-Path $Fixture.Root $manifest.candidate.receipt.relativePath) $Fixture.RepositoryRoot).Identity
+    $telemetryValue = [pscustomobject][ordered]@{
+        schemaVersion=1;evidenceClassification='PackagedCompatibilityPerformanceTelemetryBinding-NoRuntimeCredit';runNonce=('1'*32)
+        source=[pscustomobject][ordered]@{commitSha=$manifest.candidate.source.commitSha;treeSha=$manifest.candidate.source.treeSha}
+        package=[pscustomobject][ordered]@{identitySha256=$manifest.candidate.receipt.canonicalSha256;identityFileSha256=$manifest.candidate.receipt.fileSha256;profileFileSha256=$manifest.candidate.profile.fileSha256;archiveSha256=$manifest.candidate.archive.sha256;manifestSha256=$packageReceipt.packageManifest.sha256;appSha256=$manifest.candidate.components.app.sha256;coreSha256=$manifest.candidate.components.core.sha256}
+        rawSource=$rawBinding;acquisitions=@(New-HumanPerformanceAcquisitions $manifest.candidate $Fixture.Root)
+        evidenceBoundary=[pscustomobject][ordered]@{actualHerdrRuntime='NOT_OBSERVED';humanReview='NOT_OBSERVED';release='NOT_OBSERVED';creditGranted=$false}
+    }
+    $telemetryBinding = [pscustomobject](New-EvidenceBinding $Fixture.Root 'performance/performance-telemetry-binding.json' $telemetryValue $Fixture.RepositoryRoot)
+    $commitValue = [pscustomobject][ordered]@{schemaVersion=1;kind='issue10-performance-transaction-commit';runNonce=('1'*32);raw=[pscustomobject][ordered]@{fileName=[IO.Path]::GetFileName($rawBinding.relativePath);bytes=$rawBinding.bytes;sha256=$rawBinding.fileSha256};binding=[pscustomobject][ordered]@{fileName=[IO.Path]::GetFileName($telemetryBinding.relativePath);bytes=$telemetryBinding.bytes;sha256=$telemetryBinding.fileSha256};creditGranted=$false}
+    $transactionCommit = [pscustomobject](New-EvidenceBinding $Fixture.Root 'performance/performance-commit.json' $commitValue $Fixture.RepositoryRoot)
     $performanceReceipt = [pscustomobject][ordered]@{
-        provenance = New-RendererPerformanceProvenance $manifest.candidate $manifest.environment.session
+        provenance = New-RendererPerformanceProvenance $manifest.candidate $manifest.environment.session ('1' * 32) $telemetryBinding $transactionCommit
         rawSource = $rawBinding
         orders = $orders
         soakBins = $soakBins
@@ -864,9 +883,20 @@ try {
 
     Pass 'builder emits only a HumanReviewCandidate with NOT_OBSERVED boundary'
 
+    if ($null -eq $candidate.performance.telemetryBinding -or $null -eq $candidate.performance.transactionCommit) { throw 'HumanReviewCandidate dropped the held performance telemetry or transaction authority.' }
+    $candidateKinds = @($candidate.evidenceBindings | ForEach-Object { [string]$_.kind })
+    if ($candidateKinds -cnotcontains 'PerformanceTelemetryBinding' -or $candidateKinds -cnotcontains 'PerformanceTransactionCommit') { throw 'HumanReviewCandidate evidence set omitted performance telemetry or transaction authority.' }
+    Pass 'builder preserves held performance telemetry and transaction authority'
+
     $candidateOnly = Test-V02HumanVisualGoAttestationCore -CandidatePath $candidatePath -EvidenceRoot $fixture.Root -RepositoryRoot $fixture.RepositoryRoot
     if ($candidateOnly.HumanReview -cne 'NOT_OBSERVED' -or $candidateOnly.Release -cne 'NOT_OBSERVED' -or $candidateOnly.ActualHerdrRuntime -cne 'NOT_OBSERVED' -or [bool]$candidateOnly.CreditGranted) { throw 'Candidate-only output crossed the Human/Runtime/Release boundary.' }
     Pass 'candidate-only verifier remains NOT_OBSERVED and no-credit'
+
+    $droppedPerformanceAuthority = Copy-HumanTestValue $candidate
+    [void]$droppedPerformanceAuthority.performance.PSObject.Properties.Remove('transactionCommit')
+    $droppedPerformancePath = Join-Path $external 'HumanReviewCandidate-missing-performance-commit.json'
+    Write-HumanCanonicalJson -Value $droppedPerformanceAuthority -Path $droppedPerformancePath -RepositoryRoot $fixture.RepositoryRoot
+    Expect-HumanFailure 'candidate missing performance transaction authority' { Test-V02HumanVisualGoAttestationCore -CandidatePath $droppedPerformancePath -EvidenceRoot $fixture.Root -RepositoryRoot $fixture.RepositoryRoot }
 
     $attestation = New-HumanExternalAttestation -Candidate $candidate -CandidatePath $candidatePath -RepositoryRoot $fixture.RepositoryRoot -AuthorityKey $authorityKey -Decision GO -ReplayNonce ('A' * 64)
     Write-HumanCanonicalJson -Value $attestation -Path $attestationPath -RepositoryRoot $fixture.RepositoryRoot

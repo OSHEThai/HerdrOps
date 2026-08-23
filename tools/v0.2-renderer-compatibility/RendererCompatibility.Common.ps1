@@ -813,8 +813,8 @@ function Assert-RendererFileBinding { param($Binding,[string]$Context,[string]$R
     Assert-RendererRelativePath $Binding.relativePath "$Context relativePath"; Assert-RendererPositiveInteger $Binding.bytes "$Context bytes"; Assert-RendererSha $Binding.sha256 "$Context sha256"
     if($ValidateBindings){$full=Resolve-RendererBoundPath $Root $Binding.relativePath "$Context relativePath";if(-not(Test-Path -LiteralPath $full -PathType Leaf)){throw "$Context file is missing."};$identity=Get-RendererStableFileIdentity $Root $full $Context;if($identity.Bytes-ne[long]$Binding.bytes){throw "$Context byte count mismatch."};if($identity.Sha256-cne[string]$Binding.sha256){throw "$Context SHA-256 mismatch."}}
 }
-function Read-RendererEvidenceReceipt { param($Binding,[string]$Context,[string]$Root,[string]$RepositoryRoot)
-    Assert-RendererExactProperties $Binding @('relativePath','bytes','fileSha256','canonicalSha256') "$Context binding";Assert-RendererRelativePath $Binding.relativePath "$Context path";Assert-RendererPositiveInteger $Binding.bytes "$Context bytes";Assert-RendererSha $Binding.fileSha256 "$Context raw hash";Assert-RendererSha $Binding.canonicalSha256 "$Context canonical hash";$path=Resolve-RendererBoundPath $Root $Binding.relativePath "$Context path";$stable=Get-RendererStableFileIdentity $Root $path $Context -IncludeBytes;if($stable.Bytes-ne[long]$Binding.bytes-or$stable.Sha256-cne$Binding.fileSha256){throw "$Context raw binding failed."};$json=(New-Object Text.UTF8Encoding($false,$true)).GetString($stable.Content);$value=ConvertFrom-StrictHumanDesignReviewJson -Json $json -Description $Context;if($PSVersionTable.PSVersion.Major-ge7-and(Get-Command ConvertFrom-Json).Parameters.ContainsKey('DateKind')){$value=$json|ConvertFrom-Json -DateKind String};$canonical=ConvertTo-RendererCanonicalJson $value $RepositoryRoot;$canonicalSha=Get-HumanDesignReviewSha256ForText $canonical;if($json-cne($canonical+"`n")-or$canonicalSha-cne$Binding.canonicalSha256){throw "$Context must be exact canonical JSON plus one LF with matching canonical SHA-256."};[pscustomobject]@{Value=$value;Stable=$stable;CanonicalSha256=$canonicalSha}
+function Read-RendererEvidenceReceipt { param($Binding,[string]$Context,[string]$Root,[string]$RepositoryRoot,[switch]$KeepOpen)
+    Assert-RendererExactProperties $Binding @('relativePath','bytes','fileSha256','canonicalSha256') "$Context binding";Assert-RendererRelativePath $Binding.relativePath "$Context path";Assert-RendererPositiveInteger $Binding.bytes "$Context bytes";Assert-RendererSha $Binding.fileSha256 "$Context raw hash";Assert-RendererSha $Binding.canonicalSha256 "$Context canonical hash";$path=Resolve-RendererBoundPath $Root $Binding.relativePath "$Context path";$stable=Get-RendererStableFileIdentity $Root $path $Context -IncludeBytes -KeepOpen:$KeepOpen;if($stable.Bytes-ne[long]$Binding.bytes-or$stable.Sha256-cne$Binding.fileSha256){if($null-ne$stable.Stream){$stable.Stream.Dispose()};throw "$Context raw binding failed."};try{$json=(New-Object Text.UTF8Encoding($false,$true)).GetString($stable.Content);$value=ConvertFrom-StrictHumanDesignReviewJson -Json $json -Description $Context;if($PSVersionTable.PSVersion.Major-ge7-and(Get-Command ConvertFrom-Json).Parameters.ContainsKey('DateKind')){$value=$json|ConvertFrom-Json -DateKind String};$canonical=ConvertTo-RendererCanonicalJson $value $RepositoryRoot;$canonicalSha=Get-HumanDesignReviewSha256ForText $canonical;if($json-cne($canonical+"`n")-or$canonicalSha-cne$Binding.canonicalSha256){throw "$Context must be exact canonical JSON plus one LF with matching canonical SHA-256."};[pscustomobject]@{Value=$value;Stable=$stable;CanonicalSha256=$canonicalSha}}catch{if($null-ne$stable.Stream){$stable.Stream.Dispose()};throw}
 }
 function Assert-RendererBindingEqual { param($A,$B,[string]$Context)
     foreach($name in @('relativePath','bytes','fileSha256','canonicalSha256')){if($A.$name-cne$B.$name){throw "$Context binding field '$name' mismatch."}}
@@ -902,20 +902,86 @@ function Get-RendererP95Microseconds { param($Values,[string]$Context)
     $items=@($Values);if($items.Count-ne20){throw "$Context must contain exactly 20 raw observations; missing or extra samples fail closed."};foreach($value in $items){Assert-RendererNonnegativeInteger $value "$Context observation"};$sorted=@($items|Sort-Object {[long]$_});return [long]$sorted[[Math]::Ceiling(0.95*$sorted.Count)-1]
 }
 function Assert-RendererPerformanceReceipt {
-    param($Binding,[string]$Root,[string]$RepositoryRoot,$Limits,$ExpectedProvenance)
-    if ($null -eq $ExpectedProvenance) { throw 'Performance receipt validation requires expected candidate provenance.' }
-    Assert-RendererPerformanceProvenance $ExpectedProvenance 'Expected performance provenance'
-    $receipt=(Read-RendererEvidenceReceipt $Binding 'Performance/soak evidence receipt' $Root $RepositoryRoot).Value
+    param($Binding,[string]$Root,[string]$RepositoryRoot,$Limits,$ExpectedProvenance,$ExpectedCandidate,$ExpectedSession,$ExpectedPackageReceipt,[string]$TestAfterReceiptOpenSignalPath)
+    $hasExpectedCandidate = $null -ne $ExpectedCandidate
+    $hasExpectedSession = $null -ne $ExpectedSession
+    if ($hasExpectedCandidate -ne $hasExpectedSession) { throw 'Performance receipt validation requires both expected candidate and session bindings.' }
+    if ($null -ne $ExpectedProvenance -and $hasExpectedCandidate) { throw 'Performance receipt validation accepts either exact expected provenance or expected candidate/session bindings, not both.' }
+    $receiptRead=Read-RendererEvidenceReceipt $Binding 'Performance/soak evidence receipt' $Root $RepositoryRoot -KeepOpen
+    $rawSourceRead=$null
+    $telemetryRead=$null
+    $commitRead=$null
+    try {
+    if (-not [string]::IsNullOrWhiteSpace($TestAfterReceiptOpenSignalPath)) {
+        if (Test-Path -LiteralPath $TestAfterReceiptOpenSignalPath) { throw 'Performance receipt test synchronization signal path already exists.' }
+        New-Item -ItemType File -Path $TestAfterReceiptOpenSignalPath | Out-Null
+        while (Test-Path -LiteralPath $TestAfterReceiptOpenSignalPath) { Start-Sleep -Milliseconds 10 }
+    }
+    $receipt=$receiptRead.Value
     Assert-RendererExactProperties $receipt @('provenance','rawSource','orders','soakBins','aggregateStatus') 'Performance receipt'
     Assert-RendererPerformanceProvenance $receipt.provenance 'Performance receipt provenance'
+    Assert-RendererPerformanceJsonBinding $receipt.rawSource 'Performance raw-source binding'
+    if ($receipt.rawSource.relativePath -ceq $Binding.relativePath) { throw 'Performance raw-source binding must not point to the receipt itself.' }
+    $rawSourceRead=Read-RendererEvidenceReceipt $receipt.rawSource 'Performance raw-source evidence' $Root $RepositoryRoot -KeepOpen
+    $rawSource=$rawSourceRead.Value
+    Assert-RendererExactProperties $rawSource @('orders','soakBins') 'Performance raw-source document'
+    if ($hasExpectedCandidate) {
+        $ExpectedProvenance = New-RendererPerformanceProvenance $ExpectedCandidate $ExpectedSession $receipt.provenance.runNonce $receipt.provenance.performanceTelemetryBinding $receipt.provenance.performanceTransactionCommit
+    }
+    if ($null -eq $ExpectedProvenance) { throw 'Performance receipt validation requires expected candidate provenance.' }
+    Assert-RendererPerformanceProvenance $ExpectedProvenance 'Expected performance provenance'
     $expectedProvenanceJson=ConvertTo-RendererCanonicalJson $ExpectedProvenance $RepositoryRoot
     $actualProvenanceJson=ConvertTo-RendererCanonicalJson $receipt.provenance $RepositoryRoot
     if ($actualProvenanceJson -cne $expectedProvenanceJson) { throw 'Performance receipt provenance does not equal the exact candidate binding.' }
 
-    Assert-RendererPerformanceJsonBinding $receipt.rawSource 'Performance raw-source binding'
-    if ($receipt.rawSource.relativePath -ceq $Binding.relativePath) { throw 'Performance raw-source binding must not point to the receipt itself.' }
-    $rawSource=(Read-RendererEvidenceReceipt $receipt.rawSource 'Performance raw-source evidence' $Root $RepositoryRoot).Value
-    Assert-RendererExactProperties $rawSource @('orders','soakBins') 'Performance raw-source document'
+    if($null-eq$ExpectedPackageReceipt){throw 'Performance receipt validation requires the independently held package receipt.'}
+    Assert-RendererExactProperties $ExpectedPackageReceipt.packageManifest @('fileName','bytes','sha256','contentSha256','fileCount','totalBytes') 'Expected package receipt manifest'
+    Assert-RendererSha $ExpectedPackageReceipt.packageManifest.sha256 'Expected package receipt manifest sha256'
+    $telemetryRead=Read-RendererEvidenceReceipt $receipt.provenance.performanceTelemetryBinding 'Performance telemetry sidecar' $Root $RepositoryRoot -KeepOpen
+    $commitRead=Read-RendererEvidenceReceipt $receipt.provenance.performanceTransactionCommit 'Performance transaction commit' $Root $RepositoryRoot -KeepOpen
+    $commit=$commitRead.Value
+    Assert-RendererExactProperties $commit @('schemaVersion','kind','runNonce','raw','binding','creditGranted') 'Performance transaction commit'
+    Assert-RendererExactProperties $commit.raw @('fileName','bytes','sha256') 'Performance transaction commit raw'
+    Assert-RendererExactProperties $commit.binding @('fileName','bytes','sha256') 'Performance transaction commit sidecar'
+    Assert-RendererBoolean $commit.creditGranted 'Performance transaction commit creditGranted'
+    foreach($item in @(@($commit.raw,'raw'),@($commit.binding,'sidecar'))){Assert-RendererString $item[0].fileName "Performance transaction commit $($item[1]) fileName";Assert-RendererPositiveInteger $item[0].bytes "Performance transaction commit $($item[1]) bytes";Assert-RendererSha $item[0].sha256 "Performance transaction commit $($item[1]) sha256"}
+    $rawPath=Resolve-RendererBoundPath $Root $receipt.rawSource.relativePath 'Performance raw-source path'
+    $telemetryPath=Resolve-RendererBoundPath $Root $receipt.provenance.performanceTelemetryBinding.relativePath 'Performance telemetry sidecar path'
+    if([long]$commit.schemaVersion-ne1-or[string]$commit.kind-cne'issue10-performance-transaction-commit'-or[string]$commit.runNonce-cne[string]$receipt.provenance.runNonce-or[bool]$commit.creditGranted-or[string]$commit.raw.fileName-cne[IO.Path]::GetFileName($rawPath)-or[long]$commit.raw.bytes-ne[long]$rawSourceRead.Stable.Bytes-or[string]$commit.raw.sha256-cne[string]$rawSourceRead.Stable.Sha256-or[string]$commit.binding.fileName-cne[IO.Path]::GetFileName($telemetryPath)-or[long]$commit.binding.bytes-ne[long]$telemetryRead.Stable.Bytes-or[string]$commit.binding.sha256-cne[string]$telemetryRead.Stable.Sha256){throw 'Performance transaction commit does not bind the held raw and telemetry sidecar.'}
+
+    $sidecar=$telemetryRead.Value
+    Assert-RendererExactProperties $sidecar @('schemaVersion','evidenceClassification','runNonce','source','package','rawSource','acquisitions','evidenceBoundary') 'Performance telemetry sidecar'
+    Assert-RendererExactProperties $sidecar.source @('commitSha','treeSha') 'Performance telemetry sidecar source'
+    Assert-RendererExactProperties $sidecar.package @('identitySha256','identityFileSha256','profileFileSha256','archiveSha256','manifestSha256','appSha256','coreSha256') 'Performance telemetry sidecar package'
+    Assert-RendererPerformanceJsonBinding $sidecar.rawSource 'Performance telemetry sidecar rawSource'
+    Assert-RendererExactProperties $sidecar.evidenceBoundary @('actualHerdrRuntime','humanReview','release','creditGranted') 'Performance telemetry sidecar evidenceBoundary'
+    Assert-RendererBoolean $sidecar.evidenceBoundary.creditGranted 'Performance telemetry sidecar creditGranted'
+    foreach($name in @('identitySha256','identityFileSha256','profileFileSha256','archiveSha256','manifestSha256','appSha256','coreSha256')){Assert-RendererSha $sidecar.package.$name "Performance telemetry sidecar package $name"}
+    $expectedManifestSha=[string]$ExpectedPackageReceipt.packageManifest.sha256
+    if([long]$sidecar.schemaVersion-ne1-or[string]$sidecar.evidenceClassification-cne'PackagedCompatibilityPerformanceTelemetryBinding-NoRuntimeCredit'-or[string]$sidecar.runNonce-cne[string]$receipt.provenance.runNonce-or[string]$sidecar.source.commitSha-cne[string]$receipt.provenance.candidate.commitSha-or[string]$sidecar.source.treeSha-cne[string]$receipt.provenance.candidate.treeSha-or[string]$sidecar.package.identitySha256-cne[string]$receipt.provenance.package.receipt.canonicalSha256-or[string]$sidecar.package.identityFileSha256-cne[string]$receipt.provenance.package.receipt.fileSha256-or[string]$sidecar.package.profileFileSha256-cne[string]$receipt.provenance.profile.fileSha256-or[string]$sidecar.package.archiveSha256-cne[string]$receipt.provenance.package.archive.sha256-or[string]$sidecar.package.manifestSha256-cne$expectedManifestSha-or[string]$sidecar.package.appSha256-cne[string]$receipt.provenance.package.components.app.sha256-or[string]$sidecar.package.coreSha256-cne[string]$receipt.provenance.package.components.core.sha256-or[string]$sidecar.rawSource.relativePath-cne[string]$receipt.rawSource.relativePath-or[long]$sidecar.rawSource.bytes-ne[long]$rawSourceRead.Stable.Bytes-or[string]$sidecar.rawSource.fileSha256-cne[string]$rawSourceRead.Stable.Sha256-or[string]$sidecar.rawSource.canonicalSha256-cne[string]$receipt.rawSource.canonicalSha256-or[string]$sidecar.evidenceBoundary.actualHerdrRuntime-cne'NOT_OBSERVED'-or[string]$sidecar.evidenceBoundary.humanReview-cne'NOT_OBSERVED'-or[string]$sidecar.evidenceBoundary.release-cne'NOT_OBSERVED'-or[bool]$sidecar.evidenceBoundary.creditGranted){throw 'Performance telemetry sidecar source/package/raw binding is not exact.'}
+    $acquisitions=@($sidecar.acquisitions)
+    if($acquisitions.Count-ne24){throw 'Performance telemetry sidecar must contain exactly 24 acquisitions.'}
+    $packageRootRelative=[string]$receipt.provenance.package.packageRootRelativePath
+    $componentPaths=@{}
+    foreach($componentName in @('app','core')){$componentRelative=[string]$receipt.provenance.package.components.$componentName.relativePath;$packagePrefix=$packageRootRelative.TrimEnd('/','\')+'/';$combinedRelative=if($componentRelative.Replace('\','/').StartsWith($packagePrefix,[StringComparison]::OrdinalIgnoreCase)){$componentRelative}else{Join-Path $packageRootRelative $componentRelative};$componentPaths[$componentName]=Resolve-RendererBoundPath $Root $combinedRelative "Performance telemetry $componentName package path"}
+    $appIdentities=@{};$coreIdentity=$null;$serverIdentity=$null;$lastAcquisitionUtc=$null
+    for($acquisitionIndex=0;$acquisitionIndex-lt24;$acquisitionIndex++){
+        $item=$acquisitions[$acquisitionIndex]
+        Assert-RendererExactProperties $item @('sequenceNumber','order','isWarmup','repetitionOrdinal','semanticMode','requestedMode','appProcessId','appStartUtc','appPath','appSha256','coreProcessId','coreStartUtc','corePath','coreSha256','serverProcessId','serverStartUtc','serverPath','serverSha256','nativeProcessRenderMode','nativeTier','preFirstHwndProof','observedUtc','boundary') "Performance telemetry acquisition $acquisitionIndex"
+        foreach($pidName in @('appProcessId','coreProcessId','serverProcessId')){Assert-RendererPositiveInteger $item.$pidName "Performance telemetry acquisition $acquisitionIndex $pidName"}
+        Assert-RendererNonnegativeInteger $item.nativeTier "Performance telemetry acquisition $acquisitionIndex nativeTier"
+        foreach($shaName in @('appSha256','coreSha256','serverSha256')){Assert-RendererSha $item.$shaName "Performance telemetry acquisition $acquisitionIndex $shaName"}
+        foreach($pathName in @('appPath','corePath','serverPath')){Assert-RendererString $item.$pathName "Performance telemetry acquisition $acquisitionIndex $pathName"}
+        Assert-RendererBoolean $item.isWarmup "Performance telemetry acquisition $acquisitionIndex isWarmup";Assert-RendererBoolean $item.preFirstHwndProof "Performance telemetry acquisition $acquisitionIndex preFirstHwndProof"
+        foreach($timeName in @('appStartUtc','coreStartUtc','serverStartUtc','observedUtc')){Assert-RendererUtc $item.$timeName "Performance telemetry acquisition $acquisitionIndex $timeName"}
+        $appStart=[DateTimeOffset]$item.appStartUtc;$coreStart=[DateTimeOffset]$item.coreStartUtc;$serverStart=[DateTimeOffset]$item.serverStartUtc;$observed=[DateTimeOffset]$item.observedUtc
+        if($appStart-ge$observed-or$coreStart-ge$observed-or$serverStart-ge$observed-or($null-ne$lastAcquisitionUtc-and$observed-le$lastAcquisitionUtc)){throw "Performance telemetry acquisition $acquisitionIndex process/observation chronology is invalid."};$lastAcquisitionUtc=$observed
+        $order=if($acquisitionIndex-lt12){'AB'}else{'BA'};$within=$acquisitionIndex%12;$warmup=$within-lt2;$repetition=if($warmup){0}else{[int][Math]::Floor(($within-2)/2)};$mode=if($order-ceq'AB'){if($within%2-eq0){'a'}else{'b'}}else{if($within%2-eq0){'b'}else{'a'}};$requested=if($mode-ceq'a'){'Hardware'}else{'SoftwareOnly'};$native=if($mode-ceq'a'){'Default'}else{'SoftwareOnly'}
+        if([int]$item.sequenceNumber-ne$acquisitionIndex-or[string]$item.order-cne$order-or[bool]$item.isWarmup-ne$warmup-or[int]$item.repetitionOrdinal-ne$repetition-or[string]$item.semanticMode-cne$mode-or[string]$item.requestedMode-cne$requested-or[string]$item.nativeProcessRenderMode-cne$native-or($mode-ceq'a'-and[int]$item.nativeTier-le0)-or($mode-ceq'b'-and[int]$item.nativeTier-ne0)-or-not[bool]$item.preFirstHwndProof-or-not[IO.Path]::GetFullPath([string]$item.appPath).Equals([string]$componentPaths.app,[StringComparison]::OrdinalIgnoreCase)-or-not[IO.Path]::GetFullPath([string]$item.corePath).Equals([string]$componentPaths.core,[StringComparison]::OrdinalIgnoreCase)-or[string]$item.appSha256-cne[string]$receipt.provenance.package.components.app.sha256-or[string]$item.coreSha256-cne[string]$receipt.provenance.package.components.core.sha256-or[string]$item.boundary-cne'PackagedCompatibilityPerformance-NativeTierComparator-NoPerFrameGpuOrRuntimeCredit'){throw "Performance telemetry acquisition $acquisitionIndex is not the governed comparator sequence."}
+        $appKey=([string][int]$item.appProcessId)+'|'+$appStart.ToString('O');if($appIdentities.ContainsKey($appKey)){throw "Performance telemetry acquisition $acquisitionIndex reused an App PID/start identity."};$appIdentities[$appKey]=$true
+        $thisCore=([string][int]$item.coreProcessId)+'|'+$coreStart.ToString('O')+'|'+[IO.Path]::GetFullPath([string]$item.corePath)+'|'+[string]$item.coreSha256;if($null-eq$coreIdentity){$coreIdentity=$thisCore}elseif($coreIdentity-cne$thisCore){throw 'Performance telemetry Core identity changed.'}
+        $thisServer=([string][int]$item.serverProcessId)+'|'+$serverStart.ToString('O')+'|'+[IO.Path]::GetFullPath([string]$item.serverPath)+'|'+[string]$item.serverSha256;if($null-eq$serverIdentity){$serverIdentity=$thisServer}elseif($serverIdentity-cne$thisServer){throw 'Performance telemetry server identity changed.'}
+    }
     $measurementObject=[pscustomobject][ordered]@{orders=$receipt.orders;soakBins=$receipt.soakBins}
     if ((ConvertTo-RendererCanonicalJson $rawSource $RepositoryRoot) -cne (ConvertTo-RendererCanonicalJson $measurementObject $RepositoryRoot)) {
         throw 'Performance receipt raw measurements do not equal the held raw-source document.'
@@ -979,7 +1045,14 @@ function Assert-RendererPerformanceReceipt {
     }
     $computed=if($passed){'PASS'}else{'FAIL'}
     if ($receipt.aggregateStatus -cne $computed) { throw 'Performance receipt aggregateStatus is not recomputed from raw AB/BA samples and soak bins.' }
+    foreach($heldEntry in @(@((Resolve-RendererBoundPath $Root $Binding.relativePath 'Performance receipt path'),$receiptRead.Stable,'Performance/soak evidence receipt'),@($rawPath,$rawSourceRead.Stable,'Performance raw-source evidence'),@($telemetryPath,$telemetryRead.Stable,'Performance telemetry sidecar'),@((Resolve-RendererBoundPath $Root $receipt.provenance.performanceTransactionCommit.relativePath 'Performance transaction commit path'),$commitRead.Stable,'Performance transaction commit'))){Assert-RendererStableFileLease $heldEntry[1] $Root $heldEntry[0] $heldEntry[2]}
     return $computed
+    } finally {
+        if($null-ne$commitRead-and$null-ne$commitRead.Stable.Stream){$commitRead.Stable.Stream.Dispose()}
+        if($null-ne$telemetryRead-and$null-ne$telemetryRead.Stable.Stream){$telemetryRead.Stable.Stream.Dispose()}
+        if($null-ne$rawSourceRead-and$null-ne$rawSourceRead.Stable.Stream){$rawSourceRead.Stable.Stream.Dispose()}
+        if($null-ne$receiptRead-and$null-ne$receiptRead.Stable.Stream){$receiptRead.Stable.Stream.Dispose()}
+    }
 }
 function Get-RendererBgraPixels { param($Frame)
     $converted=New-Object Windows.Media.Imaging.FormatConvertedBitmap($Frame,[Windows.Media.PixelFormats]::Bgra32,$null,0);$stride=$converted.PixelWidth*4;$pixels=New-Object byte[] ($stride*$converted.PixelHeight);$converted.CopyPixels($pixels,$stride,0);[pscustomobject]@{Width=$converted.PixelWidth;Height=$converted.PixelHeight;Pixels=$pixels}
@@ -995,7 +1068,7 @@ function Test-RendererCandidateBindings { param($Candidate,[string]$Root,[string
     $archivePath=Resolve-RendererBoundPath $Root $Candidate.archive.relativePath 'Candidate archive path';$packageRoot=Resolve-RendererBoundPath $Root $Candidate.packageRootRelativePath 'Candidate package root';if(-not(Test-Path -LiteralPath $packageRoot -PathType Container)){throw 'Candidate package root is missing.'}
     $validated=Assert-RendererCommittedPackageIdentity $receipt.Identity $repoProfile $repoRoot $archivePath $packageRoot $repoProfilePath $receipt.ReceiptSha256 $receipt.CanonicalJson
     $expected=[ordered]@{ReceiptSha256=$Candidate.receipt.canonicalSha256;SourceCommit=$Candidate.source.commitSha;SourceTree=$Candidate.source.treeSha;PreparationProfileFileSha256=$Candidate.profile.fileSha256;PreparationProfileCanonicalSha256=$Candidate.profile.canonicalSha256;ArchiveSha256=$Candidate.archive.sha256;AppSha256=$Candidate.components.app.sha256;CoreSha256=$Candidate.components.core.sha256;ReferenceHostProfileSha256=$Candidate.referenceHost.profileSha256;RendererPolicySha256=$script:RendererPolicySha256};foreach($name in $expected.Keys){if($validated.$name-cne$expected[$name]){throw "Committed package validator output '$name' does not equal the renderer candidate."}};if($validated.ProfileId-cne$Candidate.profile.id-or$validated.EvidenceClass-cne'Static/PackagedCompatibilityPreparation'-or$validated.Runtime-cne'NOT OBSERVED'-or$validated.Release-cne'NOT CLAIMED'){throw 'Committed package validator output classification/identity is invalid.'}
-    return $git
+    return [pscustomobject][ordered]@{CommitSha=$git.CommitSha;TreeSha=$git.TreeSha;PackageReceipt=$receipt.Identity}
 }
 
 function Test-RendererCompatibilityManifest {
@@ -1067,7 +1140,7 @@ function Test-RendererCompatibilityManifest {
     $matrixComplete=@($matrices.displayCases+$matrices.mixedDpiTransitions+$matrices.accessibilityCases+$matrices.supportedEnvironmentCases|Where-Object{$_.status-cne'PASS'}).Count-eq0
 
     $performance=$manifest.performanceProtocol;Assert-RendererExactProperties $performance @('sameCandidateContentWorkloadHostSession','onlyRendererPolicyVaries','modeA','modeB','orders','warmupIterations','repetitionsPerOrder','statistic','ownerNumericLimits','samplesStatus','evidenceReceipt') 'Performance protocol';Assert-RendererBoolean $performance.sameCandidateContentWorkloadHostSession 'Performance same binding';Assert-RendererBoolean $performance.onlyRendererPolicyVaries 'Performance only renderer varies';if(-not[bool]$performance.sameCandidateContentWorkloadHostSession-or-not[bool]$performance.onlyRendererPolicyVaries-or$performance.modeA-cne'Hardware'-or$performance.modeB-cne'SoftwareOnly'){throw 'Performance protocol must compare Hardware A with SoftwareOnly B on the same binding.'};Assert-RendererSet @($performance.orders) @('AB','BA') 'Performance order';for($i=0;$i-lt2;$i++){if($performance.orders[$i]-cne@('AB','BA')[$i]){throw 'Performance order must be exact AB, BA.'}};Assert-RendererPositiveInteger $performance.warmupIterations 'Warm-up iterations';Assert-RendererPositiveInteger $performance.repetitionsPerOrder 'Repetitions';Assert-RendererString $performance.statistic 'Performance statistic'
-    $limitNames=@('cpuMaximumPercent','eventToWpfP95Milliseconds','cpuRegressionMaximumPercent','cpuRegressionMaximumPercentagePoints','latencyRegressionMaximumPercent','uiStallP95Milliseconds','uiStallMaximumMilliseconds','soakAcDurationMinutes','soakBatteryDurationMinutes','soakBinMinutes','workingSetMaximumBytes','resourceSlopeMaximumBytesPerTenMinutes');$limits=$performance.ownerNumericLimits;Assert-RendererExactProperties $limits (@('status','approvalReference')+$limitNames) 'Owner numeric limits';if($limits.status-cnotin@('NOT_OBSERVED','APPROVED')){throw 'Owner numeric-limit status is invalid.'};if($limits.status-ceq'NOT_OBSERVED'){foreach($n in @('approvalReference')+$limitNames){if($null-ne$limits.$n){throw 'Unapproved owner numeric limits must remain null.'}}}else{if($limits.approvalReference-cne$script:RendererAuthorizedApprovalReference){throw 'Owner numeric limits do not bind REC-ALL v2.'};$expectedLimits=[ordered]@{cpuMaximumPercent=1;eventToWpfP95Milliseconds=250;cpuRegressionMaximumPercent=10;cpuRegressionMaximumPercentagePoints=0.5;latencyRegressionMaximumPercent=10;uiStallP95Milliseconds=50;uiStallMaximumMilliseconds=100;soakAcDurationMinutes=60;soakBatteryDurationMinutes=60;soakBinMinutes=5;workingSetMaximumBytes=267386880;resourceSlopeMaximumBytesPerTenMinutes=1048576};foreach($n in $limitNames){Assert-RendererFiniteNumber $limits.$n "Owner numeric limit $n" 0 ([double]::MaxValue) -ExclusiveMinimum;if([decimal]$limits.$n-ne[decimal]($expectedLimits[$n])){throw "Owner numeric limit $n does not equal REC-ALL v2."}};foreach($n in @('workingSetMaximumBytes','resourceSlopeMaximumBytesPerTenMinutes')){Assert-RendererPositiveInteger $limits.$n "Owner numeric limit $n"}};if($performance.warmupIterations-ne1-or$performance.repetitionsPerOrder-ne5-or$performance.statistic-cne'p95-and-maximum-missing-sample-fails'){throw 'Performance repetitions/statistic do not equal REC-ALL v2.'};if($performance.samplesStatus-cnotin@('PASS','FAIL','NOT_OBSERVED')){throw 'Performance samples status is invalid.'};if($performance.samplesStatus-ceq'NOT_OBSERVED'){if($null-ne$performance.evidenceReceipt){throw 'Unobserved performance samples cannot claim a receipt.'}}else{if($limits.status-cne'APPROVED'-or-not$ValidateBindings){throw 'Performance samples require approved limits and production binding validation.'};$expectedProvenance=New-RendererPerformanceProvenance $candidate $manifest.environment.session;$computedPerformance=Assert-RendererPerformanceReceipt $performance.evidenceReceipt $root $RepositoryRoot $limits $expectedProvenance;if($performance.samplesStatus-cne$computedPerformance){throw 'Performance samplesStatus does not equal independently recomputed raw evidence.'}}
+    $limitNames=@('cpuMaximumPercent','eventToWpfP95Milliseconds','cpuRegressionMaximumPercent','cpuRegressionMaximumPercentagePoints','latencyRegressionMaximumPercent','uiStallP95Milliseconds','uiStallMaximumMilliseconds','soakAcDurationMinutes','soakBatteryDurationMinutes','soakBinMinutes','workingSetMaximumBytes','resourceSlopeMaximumBytesPerTenMinutes');$limits=$performance.ownerNumericLimits;Assert-RendererExactProperties $limits (@('status','approvalReference')+$limitNames) 'Owner numeric limits';if($limits.status-cnotin@('NOT_OBSERVED','APPROVED')){throw 'Owner numeric-limit status is invalid.'};if($limits.status-ceq'NOT_OBSERVED'){foreach($n in @('approvalReference')+$limitNames){if($null-ne$limits.$n){throw 'Unapproved owner numeric limits must remain null.'}}}else{if($limits.approvalReference-cne$script:RendererAuthorizedApprovalReference){throw 'Owner numeric limits do not bind REC-ALL v2.'};$expectedLimits=[ordered]@{cpuMaximumPercent=1;eventToWpfP95Milliseconds=250;cpuRegressionMaximumPercent=10;cpuRegressionMaximumPercentagePoints=0.5;latencyRegressionMaximumPercent=10;uiStallP95Milliseconds=50;uiStallMaximumMilliseconds=100;soakAcDurationMinutes=60;soakBatteryDurationMinutes=60;soakBinMinutes=5;workingSetMaximumBytes=267386880;resourceSlopeMaximumBytesPerTenMinutes=1048576};foreach($n in $limitNames){Assert-RendererFiniteNumber $limits.$n "Owner numeric limit $n" 0 ([double]::MaxValue) -ExclusiveMinimum;if([decimal]$limits.$n-ne[decimal]($expectedLimits[$n])){throw "Owner numeric limit $n does not equal REC-ALL v2."}};foreach($n in @('workingSetMaximumBytes','resourceSlopeMaximumBytesPerTenMinutes')){Assert-RendererPositiveInteger $limits.$n "Owner numeric limit $n"}};if($performance.warmupIterations-ne1-or$performance.repetitionsPerOrder-ne5-or$performance.statistic-cne'p95-and-maximum-missing-sample-fails'){throw 'Performance repetitions/statistic do not equal REC-ALL v2.'};if($performance.samplesStatus-cnotin@('PASS','FAIL','NOT_OBSERVED')){throw 'Performance samples status is invalid.'};if($performance.samplesStatus-ceq'NOT_OBSERVED'){if($null-ne$performance.evidenceReceipt){throw 'Unobserved performance samples cannot claim a receipt.'}}else{if($limits.status-cne'APPROVED'-or-not$ValidateBindings){throw 'Performance samples require approved limits and production binding validation.'};$computedPerformance=Assert-RendererPerformanceReceipt $performance.evidenceReceipt $root $RepositoryRoot $limits -ExpectedCandidate $candidate -ExpectedSession $manifest.environment.session -ExpectedPackageReceipt $boundGit.PackageReceipt;if($performance.samplesStatus-cne$computedPerformance){throw 'Performance samplesStatus does not equal independently recomputed raw evidence.'}}
 
     $review=$manifest.review;Assert-RendererExactProperties $review @('decision','approvalReference','reviewerIdentity','reviewerRole','reviewedUtc','visualChecks','defects') 'Review';if($review.decision-cnotin@('GO','NO_GO','NOT_OBSERVED')){throw 'Review decision is invalid.'};Assert-RendererMatrixCases @($review.visualChecks) $script:RendererVisualChecks 'Human visual review';$visualReviewComplete=@($review.visualChecks|Where-Object{$_.status-cne'PASS'}).Count-eq0;if($review.decision-ceq'NOT_OBSERVED'){if($null-ne$review.approvalReference-or$null-ne$review.reviewerIdentity-or$null-ne$review.reviewerRole-or$null-ne$review.reviewedUtc-or@($review.visualChecks|Where-Object{$_.status-cne'NOT_OBSERVED'}).Count-ne0){throw 'Unobserved review cannot claim approval/reviewer/time/checks.'}}else{if([string]::IsNullOrWhiteSpace($script:RendererAuthorizedFinalHumanGoReference)-or$review.approvalReference-cne$script:RendererAuthorizedFinalHumanGoReference){throw 'Final Human packaged-compatibility review remains NOT_OBSERVED and is not authorized by REC-ALL.'};if($review.reviewerIdentity-cne$script:RendererAuthorizedReviewerIdentity-or$review.reviewerRole-cne$script:RendererAuthorizedReviewerRole){throw 'Human review identity/role does not equal the hard-pinned REC-ALL authority.'};Assert-RendererUtc $review.reviewedUtc 'Review UTC';if(($review.decision-ceq'GO')-ne$visualReviewComplete){throw 'Human review decision contradicts the exact visual checks.'}};$defectIds=@();$defectsComplete=$true;foreach($defect in @($review.defects)){Assert-RendererExactProperties $defect @('id','severity','summary','status','disposition') 'Defect';$defectIds+=[string]$defect.id;Assert-RendererString $defect.id 'Defect id';if($defect.severity-cnotin@('P0','P1','P2','P3')-or$defect.status-cnotin@('Open','Resolved','Accepted')){throw "Defect '$($defect.id)' enum is invalid."};Assert-RendererString $defect.summary 'Defect summary';Assert-RendererString $defect.disposition 'Defect disposition';if($defect.status-ceq'Open'){$defectsComplete=$false}};if((@($defectIds|Select-Object -Unique)).Count-ne$defectIds.Count){throw 'Defect IDs must be unique.'};if($review.decision-ceq'GO'-and-not$defectsComplete){throw 'Human GO cannot retain an open defect.'}
     $boundary=$manifest.evidenceBoundary;Assert-RendererExactProperties $boundary @('packagedCompatibility','captureMode','humanReview','actualHerdrRuntime','release','creditGranted') 'Evidence boundary';if($boundary.captureMode-cnotin$script:RendererCaptureModes){throw 'Evidence boundary captureMode is invalid.'};if($boundary.packagedCompatibility-cne'CANDIDATE'-or$boundary.humanReview-cne$review.decision-or$boundary.actualHerdrRuntime-cne'NOT_OBSERVED'-or$boundary.release-cne'NOT_OBSERVED'-or$boundary.creditGranted-isnot[bool]-or[bool]$boundary.creditGranted){throw 'Evidence boundary inflates or contradicts the candidate classification.'}
@@ -1178,8 +1251,15 @@ function Assert-RendererPerformanceRepetitionProperties {
 }
 
 function New-RendererPerformanceProvenance {
-    param([Parameter(Mandatory=$true)]$Candidate,[Parameter(Mandatory=$true)]$Session)
+    param(
+        [Parameter(Mandatory=$true)]$Candidate,
+        [Parameter(Mandatory=$true)]$Session,
+        [Parameter(Mandatory=$true)][string]$RunNonce,
+        [Parameter(Mandatory=$true)]$PerformanceTelemetryBinding,
+        [Parameter(Mandatory=$true)]$PerformanceTransactionCommit
+    )
     [pscustomobject][ordered]@{
+        runNonce = $RunNonce
         candidate = [pscustomobject][ordered]@{
             commitSha = [string]$Candidate.source.commitSha
             treeSha = [string]$Candidate.source.treeSha
@@ -1237,6 +1317,18 @@ function New-RendererPerformanceProvenance {
             thermalState = [string]$Session.thermalState
             elevated = [bool]$Session.elevated
             userScope = [string]$Session.userScope
+        }
+        performanceTelemetryBinding = [pscustomobject][ordered]@{
+            relativePath = [string]$PerformanceTelemetryBinding.relativePath
+            bytes = [long]$PerformanceTelemetryBinding.bytes
+            fileSha256 = [string]$PerformanceTelemetryBinding.fileSha256
+            canonicalSha256 = [string]$PerformanceTelemetryBinding.canonicalSha256
+        }
+        performanceTransactionCommit = [pscustomobject][ordered]@{
+            relativePath = [string]$PerformanceTransactionCommit.relativePath
+            bytes = [long]$PerformanceTransactionCommit.bytes
+            fileSha256 = [string]$PerformanceTransactionCommit.fileSha256
+            canonicalSha256 = [string]$PerformanceTransactionCommit.canonicalSha256
         }
     }
 }

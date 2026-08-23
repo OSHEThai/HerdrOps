@@ -84,7 +84,7 @@ $issue10Arguments = @(
     $Issue10SoakReceiptPath)
 $issue10SuppliedCount = @($issue10Arguments | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }).Count
 if ($issue10SuppliedCount -ne 0 -and $issue10SuppliedCount -ne $issue10Arguments.Count) {
-    throw 'Issue #10 same-run production evidence requires widget output, binding output, performance receipt/raw/binding/commit, and soak receipt together.'
+    throw 'ISSUE10_SAME_RUN_ALL_OR_NONE: Issue #10 same-run production evidence requires widget output, binding output, performance receipt/raw/binding/commit, and soak receipt together.'
 }
 
 function Get-ExpectedCleanSourceIdentity {

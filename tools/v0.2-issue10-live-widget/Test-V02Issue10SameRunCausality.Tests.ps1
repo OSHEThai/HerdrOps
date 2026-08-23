@@ -38,7 +38,7 @@ foreach($functionName in @('Test-Issue10ContainedPath','Assert-Issue10NoReparseC
 }
 
 $missing=Invoke-GateHostile @('-Issue10WidgetReportPath','one.json','-Issue10BindingManifestPath','two.json','-Issue10PerformanceReceiptPath','three.json','-Issue10PerformanceRawSourcePath','four.json')
-Assert-True ($missing.ExitCode-ne0-and$missing.Text.Contains('requires widget output, binding output, performance receipt/raw/binding/commit, and soak receipt together')) 'Incomplete same-run input did not reach the exact all-or-none guard.'
+Assert-True ($missing.ExitCode-ne0-and$missing.Text.Contains('ISSUE10_SAME_RUN_ALL_OR_NONE:')) 'Incomplete same-run input did not reach the exact all-or-none guard.'
 Pass-Test 'incomplete same-run authority set reaches all-or-none guard'
 
 $fixture=Join-Path ([IO.Path]::GetTempPath()) ('HerdrOps-I10Causality-'+[guid]::NewGuid().ToString('N'));New-Item -ItemType Directory -Path $fixture|Out-Null

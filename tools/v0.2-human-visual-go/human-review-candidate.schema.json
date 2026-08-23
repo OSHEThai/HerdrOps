@@ -95,8 +95,8 @@
       "properties": { "displayCases": { "type": "array", "minItems": 6, "maxItems": 6, "items": { "$ref": "#/$defs/matrixCase" } }, "mixedDpiTransitions": { "type": "array", "minItems": 4, "maxItems": 4, "items": { "$ref": "#/$defs/matrixCase" } }, "accessibilityCases": { "type": "array", "minItems": 8, "maxItems": 8, "items": { "$ref": "#/$defs/matrixCase" } }, "supportedEnvironmentCases": { "type": "array", "minItems": 7, "maxItems": 7, "items": { "$ref": "#/$defs/matrixCase" } } }
     },
     "performance": {
-      "type": "object", "additionalProperties": false, "required": ["samplesStatus", "receipt", "rawSource", "warmupIterations", "repetitionsPerOrder", "soakBins"],
-      "properties": { "samplesStatus": { "enum": ["PASS", "FAIL", "NOT_OBSERVED"] }, "receipt": { "anyOf": [{ "$ref": "#/$defs/binding" }, { "type": "null" }] }, "rawSource": { "anyOf": [{ "$ref": "#/$defs/binding" }, { "type": "null" }] }, "warmupIterations": { "type": "integer", "minimum": 1 }, "repetitionsPerOrder": { "type": "integer", "minimum": 1 }, "soakBins": { "const": 24 } }
+      "type": "object", "additionalProperties": false, "required": ["samplesStatus", "receipt", "rawSource", "telemetryBinding", "transactionCommit", "warmupIterations", "repetitionsPerOrder", "soakBins"],
+      "properties": { "samplesStatus": { "enum": ["PASS", "FAIL", "NOT_OBSERVED"] }, "receipt": { "anyOf": [{ "$ref": "#/$defs/binding" }, { "type": "null" }] }, "rawSource": { "anyOf": [{ "$ref": "#/$defs/binding" }, { "type": "null" }] }, "telemetryBinding": { "anyOf": [{ "$ref": "#/$defs/binding" }, { "type": "null" }] }, "transactionCommit": { "anyOf": [{ "$ref": "#/$defs/binding" }, { "type": "null" }] }, "warmupIterations": { "type": "integer", "minimum": 1 }, "repetitionsPerOrder": { "type": "integer", "minimum": 1 }, "soakBins": { "const": 24 } }
     },
     "visualComparison": {
       "type": "object", "additionalProperties": false, "required": ["key", "status", "referenceRelativePath", "disposition"],

@@ -191,6 +191,39 @@ function Write-RawSource($Value) {
     Write-RendererPackageCanonicalJson $Value $script:RawSourceFullPath $script:RepoRoot
 }
 
+function New-ProvenanceAcquisitionFixture($Provenance) {
+    $packagePrefix=([string]$Provenance.package.packageRootRelativePath).TrimEnd('/','\')+'/'
+    $componentPaths=@{}
+    foreach($name in @('app','core')){$relative=[string]$Provenance.package.components.$name.relativePath;$combined=if($relative.Replace('\','/').StartsWith($packagePrefix,[StringComparison]::OrdinalIgnoreCase)){$relative}else{Join-Path $Provenance.package.packageRootRelativePath $relative};$componentPaths[$name]=[IO.Path]::GetFullPath((Join-Path $script:EvidenceRoot $combined))}
+    $serverPath=[IO.Path]::GetFullPath([Diagnostics.Process]::GetCurrentProcess().MainModule.FileName);$base=[DateTimeOffset]::Parse('2026-08-22T10:00:00.0000000Z')
+    @(0..23|ForEach-Object{$index=$_;$order=if($index-lt12){'AB'}else{'BA'};$within=$index%12;$warmup=$within-lt2;$repetition=if($warmup){0}else{[int][Math]::Floor(($within-2)/2)};$mode=if($order-ceq'AB'){if($within%2-eq0){'a'}else{'b'}}else{if($within%2-eq0){'b'}else{'a'}};$requested=if($mode-ceq'a'){'Hardware'}else{'SoftwareOnly'};$native=if($mode-ceq'a'){'Default'}else{'SoftwareOnly'};[pscustomobject][ordered]@{sequenceNumber=$index;order=$order;isWarmup=$warmup;repetitionOrdinal=$repetition;semanticMode=$mode;requestedMode=$requested;appProcessId=1000+$index;appStartUtc=$base.AddSeconds($index+1).ToString('O');appPath=$componentPaths.app;appSha256=$Provenance.package.components.app.sha256;coreProcessId=2000;coreStartUtc=$base.ToString('O');corePath=$componentPaths.core;coreSha256=$Provenance.package.components.core.sha256;serverProcessId=3000;serverStartUtc=$base.AddMinutes(-1).ToString('O');serverPath=$serverPath;serverSha256=('8'*64);nativeProcessRenderMode=$native;nativeTier=if($mode-ceq'a'){1}else{0};preFirstHwndProof=$true;observedUtc=$base.AddMinutes($index+1).ToString('O');boundary='PackagedCompatibilityPerformance-NativeTierComparator-NoPerFrameGpuOrRuntimeCredit'}})
+}
+
+function Initialize-ProvenanceEvidenceChain($Raw) {
+    Write-RawSource $Raw
+    $rawStable = Get-RendererStableFileIdentity $script:EvidenceRoot $script:RawSourceFullPath 'Fixture raw performance' -IncludeBytes
+    $rawCanonical = ConvertTo-RendererCanonicalJson $Raw $script:RepoRoot
+    $rawBinding = [pscustomobject][ordered]@{ relativePath=$script:RawSourceRelative;bytes=$rawStable.Bytes;fileSha256=$rawStable.Sha256;canonicalSha256=(Get-HumanDesignReviewSha256ForText $rawCanonical) }
+    $provenance = $script:Provenance
+    $sidecar = [pscustomobject][ordered]@{
+        schemaVersion=1;evidenceClassification='PackagedCompatibilityPerformanceTelemetryBinding-NoRuntimeCredit';runNonce=$provenance.runNonce
+        source=[pscustomobject][ordered]@{commitSha=$provenance.candidate.commitSha;treeSha=$provenance.candidate.treeSha}
+        package=[pscustomobject][ordered]@{identitySha256=$provenance.package.receipt.canonicalSha256;identityFileSha256=$provenance.package.receipt.fileSha256;profileFileSha256=$provenance.profile.fileSha256;archiveSha256=$provenance.package.archive.sha256;manifestSha256=('8'*64);appSha256=$provenance.package.components.app.sha256;coreSha256=$provenance.package.components.core.sha256}
+        rawSource=$rawBinding;acquisitions=@(New-ProvenanceAcquisitionFixture $provenance)
+        evidenceBoundary=[pscustomobject][ordered]@{actualHerdrRuntime='NOT_OBSERVED';humanReview='NOT_OBSERVED';release='NOT_OBSERVED';creditGranted=$false}
+    }
+    $sidecarPath = Join-Path $script:EvidenceRoot 'performance/performance-telemetry-binding.json'
+    Write-RendererPackageCanonicalJson $sidecar $sidecarPath $script:RepoRoot
+    $sidecarStable = Get-RendererStableFileIdentity $script:EvidenceRoot $sidecarPath 'Fixture performance telemetry sidecar' -IncludeBytes
+    $sidecarBinding = [pscustomobject][ordered]@{relativePath='performance/performance-telemetry-binding.json';bytes=$sidecarStable.Bytes;fileSha256=$sidecarStable.Sha256;canonicalSha256=(Get-HumanDesignReviewSha256ForText (ConvertTo-RendererCanonicalJson $sidecar $script:RepoRoot))}
+    $commit = [pscustomobject][ordered]@{schemaVersion=1;kind='issue10-performance-transaction-commit';runNonce=$provenance.runNonce;raw=[pscustomobject][ordered]@{fileName=[IO.Path]::GetFileName($script:RawSourceFullPath);bytes=$rawStable.Bytes;sha256=$rawStable.Sha256};binding=[pscustomobject][ordered]@{fileName=[IO.Path]::GetFileName($sidecarPath);bytes=$sidecarStable.Bytes;sha256=$sidecarStable.Sha256};creditGranted=$false}
+    $commitPath = Join-Path $script:EvidenceRoot 'performance/performance-commit.json'
+    Write-RendererPackageCanonicalJson $commit $commitPath $script:RepoRoot
+    $commitStable = Get-RendererStableFileIdentity $script:EvidenceRoot $commitPath 'Fixture performance transaction commit' -IncludeBytes
+    $provenance.performanceTelemetryBinding = $sidecarBinding
+    $provenance.performanceTransactionCommit = [pscustomobject][ordered]@{relativePath='performance/performance-commit.json';bytes=$commitStable.Bytes;fileSha256=$commitStable.Sha256;canonicalSha256=(Get-HumanDesignReviewSha256ForText (ConvertTo-RendererCanonicalJson $commit $script:RepoRoot))}
+}
+
 function Invoke-Builder($Raw, [string]$Destination, [bool]$WriteSource = $true, $Provenance = $null, $Limits = $null) {
     if ($WriteSource) { Write-RawSource $Raw }
     if ($null -eq $Provenance) { $Provenance = $script:Provenance }
@@ -228,6 +261,7 @@ function Wait-AtomicSignal($Job, [string]$SignalPath) {
 $tempRoot = Join-Path ([IO.Path]::GetTempPath()) ('herdrops-perf-receipt-test-' + [Guid]::NewGuid().ToString('N'))
 $crashJob = $null
 $concurrentJob = $null
+$receiptLeaseJob = $null
 try {
     New-Item -ItemType Directory -Path $tempRoot -Force | Out-Null
     $script:EvidenceRoot = Join-Path $tempRoot 'evidence'
@@ -253,6 +287,8 @@ try {
     $script:RawSourceFullPath = Join-Path $script:EvidenceRoot $script:RawSourceRelative
     $script:Raw1 = New-ValidRawObservations
     $script:Provenance = New-ProvenanceFixture
+    $script:ExpectedPackageReceipt = [pscustomobject][ordered]@{packageManifest=[pscustomobject][ordered]@{fileName='package-manifest.json';bytes=1L;sha256=('8'*64);contentSha256=('9'*64);fileCount=1;totalBytes=1L}}
+    Initialize-ProvenanceEvidenceChain $script:Raw1
     $limits = New-Limits
 
     # A successful receipt is a directory containing one canonical file. Warmups
@@ -269,9 +305,39 @@ try {
     }
     Pass 'valid canonical receipt preserves warmups and raw-source binding'
 
-    $verified = Assert-RendererPerformanceReceipt $out1.Binding $script:EvidenceRoot $script:RepoRoot $limits $script:Provenance
+    $verified = Assert-RendererPerformanceReceipt $out1.Binding $script:EvidenceRoot $script:RepoRoot $limits $script:Provenance -ExpectedPackageReceipt $script:ExpectedPackageReceipt
     if ($verified -cne 'PASS') { throw 'Generated receipt failed independent consumer validation.' }
     Pass 'consumer recomputes receipt with exact provenance and all AB/BA evidence'
+
+    # The consumer must retain a non-delete-sharing handle to the top-level
+    # receipt until its whole authority graph and final leases are validated.
+    $receiptLeaseSignal = Join-Path $tempRoot 'receipt-lease.signal'
+    $receiptLeaseJob = Start-Job -ScriptBlock {
+        param($Common,$Binding,$Evidence,$Repository,$Limits,$Provenance,$PackageReceipt,$Signal)
+        . $Common
+        Assert-RendererPerformanceReceipt $Binding $Evidence $Repository $Limits $Provenance -ExpectedPackageReceipt $PackageReceipt -TestAfterReceiptOpenSignalPath $Signal
+    } -ArgumentList @((Join-Path $PSScriptRoot 'RendererCompatibility.Common.ps1'),$out1.Binding,$script:EvidenceRoot,$script:RepoRoot,$limits,$script:Provenance,$script:ExpectedPackageReceipt,$receiptLeaseSignal)
+    if (-not (Wait-AtomicSignal $receiptLeaseJob $receiptLeaseSignal)) { throw 'Receipt-lease fixture did not reach the held-receipt signal.' }
+    $receiptSwapPath = "$($out1.ReceiptPath).swap"
+    $swapSucceeded = $false
+    try {
+        Move-Item -LiteralPath $out1.ReceiptPath -Destination $receiptSwapPath -ErrorAction Stop
+        $swapSucceeded = $true
+    } catch {
+        # Expected on Windows: the held receipt handle does not share delete.
+    } finally {
+        Remove-Item -LiteralPath $receiptLeaseSignal -Force -ErrorAction SilentlyContinue
+    }
+    Wait-Job -Job $receiptLeaseJob | Out-Null
+    $receiptLeaseOutput = @(Receive-Job $receiptLeaseJob)
+    Remove-Job -Job $receiptLeaseJob -Force -ErrorAction SilentlyContinue
+    $receiptLeaseJob = $null
+    if ($swapSucceeded) {
+        Move-Item -LiteralPath $receiptSwapPath -Destination $out1.ReceiptPath -ErrorAction SilentlyContinue
+        throw 'Consumer allowed the top-level receipt path to be swapped while validation was active.'
+    }
+    if ($receiptLeaseOutput.Count -lt 1 -or $receiptLeaseOutput[-1] -cne 'PASS') { throw 'Receipt-lease consumer did not complete with PASS.' }
+    Pass-Negative 'consumer prevents top-level receipt path swap during validation'
 
     # Every input form must bind to the same held raw-source bytes.
     $outPipeline = $script:Raw1 | & $script:BuilderScript -DestinationDirectory 'performance/receipt-pipeline' -RawSourcePath $script:RawSourceRelative -CandidateProvenance $script:Provenance -EvidenceRoot $script:EvidenceRoot -RepositoryRoot $script:RepoRoot
@@ -303,7 +369,7 @@ try {
     # Provenance and raw-source transplant/mismatch cases fail before publish.
     $transplantedProvenance = Copy-TestValue $script:Provenance
     $transplantedProvenance.candidate.commitSha = ('c' * 40)
-    Expect-ReceiptFailure 'candidate provenance transplant' { Assert-RendererPerformanceReceipt $out1.Binding $script:EvidenceRoot $script:RepoRoot $limits $transplantedProvenance }
+    Expect-ReceiptFailure 'candidate provenance transplant' { Assert-RendererPerformanceReceipt $out1.Binding $script:EvidenceRoot $script:RepoRoot $limits $transplantedProvenance -ExpectedPackageReceipt $script:ExpectedPackageReceipt }
 
     $mismatchedRaw = Copy-TestValue $script:Raw1
     $mismatchedRaw.orders[0].repetitions[0].a.cpuBasisPoints = 51
@@ -355,18 +421,18 @@ try {
     $tamperedStable = Get-RendererStableFileIdentity $script:EvidenceRoot $tamperedReceiptPath 'tampered receipt'
     $tamperedCanonical = ConvertTo-RendererCanonicalJson $tamperedReceipt $script:RepoRoot
     $tamperedBinding = [pscustomobject][ordered]@{ relativePath = 'performance/tampered-receipt.json'; bytes = $tamperedStable.Bytes; fileSha256 = $tamperedStable.Sha256; canonicalSha256 = Get-HumanDesignReviewSha256ForText $tamperedCanonical }
-    Expect-ReceiptFailure 'tampered warmup does not validate against held raw source' { Assert-RendererPerformanceReceipt $tamperedBinding $script:EvidenceRoot $script:RepoRoot $limits $script:Provenance }
+    Expect-ReceiptFailure 'tampered warmup does not validate against held raw source' { Assert-RendererPerformanceReceipt $tamperedBinding $script:EvidenceRoot $script:RepoRoot $limits $script:Provenance -ExpectedPackageReceipt $script:ExpectedPackageReceipt }
 
     $wrongExpected = Copy-TestValue $script:Provenance
     $wrongExpected.package.receipt.fileSha256 = ('6' * 64)
-    Expect-ReceiptFailure 'consumer provenance mismatch' { Assert-RendererPerformanceReceipt $out1.Binding $script:EvidenceRoot $script:RepoRoot $limits $wrongExpected }
+    Expect-ReceiptFailure 'consumer provenance mismatch' { Assert-RendererPerformanceReceipt $out1.Binding $script:EvidenceRoot $script:RepoRoot $limits $wrongExpected -ExpectedPackageReceipt $script:ExpectedPackageReceipt }
 
     $rawOriginal = [IO.File]::ReadAllBytes($script:RawSourceFullPath)
     try {
         $tamperedRaw = Copy-TestValue $script:Raw1
         $tamperedRaw.orders[0].warmup[0].a.cpuBasisPoints = 51
         Write-RawSource $tamperedRaw
-        Expect-ReceiptFailure 'tampered held raw-source file' { Assert-RendererPerformanceReceipt $out1.Binding $script:EvidenceRoot $script:RepoRoot $limits $script:Provenance }
+        Expect-ReceiptFailure 'tampered held raw-source file' { Assert-RendererPerformanceReceipt $out1.Binding $script:EvidenceRoot $script:RepoRoot $limits $script:Provenance -ExpectedPackageReceipt $script:ExpectedPackageReceipt }
     } finally {
         [IO.File]::WriteAllBytes($script:RawSourceFullPath, $rawOriginal)
     }
@@ -411,7 +477,7 @@ try {
     $concurrentJob = $null
     if ($concurrentOutput.Count -lt 1 -or $concurrentOutput[-1].AggregateStatus -cne 'PASS') { throw 'Concurrent-boundary fixture did not publish a PASS receipt.' }
     $concurrentBinding = $concurrentOutput[-1].Binding
-    if ((Assert-RendererPerformanceReceipt $concurrentBinding $script:EvidenceRoot $script:RepoRoot $limits $script:Provenance) -cne 'PASS') { throw 'Concurrent receipt failed post-rename validation.' }
+    if ((Assert-RendererPerformanceReceipt $concurrentBinding $script:EvidenceRoot $script:RepoRoot $limits $script:Provenance -ExpectedPackageReceipt $script:ExpectedPackageReceipt) -cne 'PASS') { throw 'Concurrent receipt failed post-rename validation.' }
     Pass 'concurrent reader sees absent-or-complete directory receipt only'
 
     [pscustomobject]@{
@@ -423,5 +489,6 @@ try {
 } finally {
     if ($null -ne $crashJob) { Stop-Job -Job $crashJob -ErrorAction SilentlyContinue; Remove-Job -Job $crashJob -Force -ErrorAction SilentlyContinue }
     if ($null -ne $concurrentJob) { Remove-Job -Job $concurrentJob -Force -ErrorAction SilentlyContinue }
+    if ($null -ne $receiptLeaseJob) { Stop-Job -Job $receiptLeaseJob -ErrorAction SilentlyContinue; Remove-Job -Job $receiptLeaseJob -Force -ErrorAction SilentlyContinue }
     if (Test-Path -LiteralPath $tempRoot) { Remove-Item -LiteralPath $tempRoot -Recurse -Force }
 }
