@@ -1,5 +1,5 @@
 # HerdrOps Solution Test Scheduling and CI Partitioned Workflow Policy Verifier
-# Issue #135: Canonical single-run solution testhost and 5-job partitioned CI architecture
+# Issue #135: Canonical single-run solution testhost and 7-job partitioned CI architecture
 
 [CmdletBinding()]
 param()
@@ -303,6 +303,8 @@ function Get-CiRequiredPartitionJobKeys {
     return @(
         'build-and-v01'
         'v02-gates'
+        'v02-package-gates'
+        'v02-acceptance-gates'
         'v03-v04-gates'
         'v05-v06-gates'
         'v07-v10-gates'
@@ -364,22 +366,22 @@ function Get-CiGovernedCommandInventory {
         @{ Pattern = 'Test-V02WorkingSetBudget\.Tests\.ps1'; Job = 'v02-gates'; Shell = 'powershell' },
         @{ Pattern = 'V02RendererEvidence\.Tests\.ps1'; Job = 'v02-gates'; Shell = 'pwsh' },
         @{ Pattern = 'V02RendererEvidence\.Tests\.ps1'; Job = 'v02-gates'; Shell = 'powershell' },
-        @{ Pattern = 'Test-V02PackageIdentity\.Tests\.ps1'; Job = 'v02-gates'; Shell = 'pwsh' },
-        @{ Pattern = 'Test-V02PackageIdentity\.Tests\.ps1'; Job = 'v02-gates'; Shell = 'powershell' },
-        @{ Pattern = 'Test-V02RendererCompatibilityManifest\.SelfTests\.ps1'; Job = 'v02-gates'; Shell = 'pwsh' },
-        @{ Pattern = 'Test-V02RendererCompatibilityManifest\.SelfTests\.ps1'; Job = 'v02-gates'; Shell = 'powershell' },
-        @{ Pattern = 'Test-V02ExactBinding\.Tests\.ps1'; Job = 'v02-gates'; Shell = 'pwsh' },
-        @{ Pattern = 'Test-V02ExactBinding\.Tests\.ps1'; Job = 'v02-gates'; Shell = 'powershell' },
-        @{ Pattern = 'V02RuntimePackageBinding\.Tests\.ps1'; Job = 'v02-gates'; Shell = 'pwsh' },
-        @{ Pattern = 'V02RuntimePackageBinding\.Tests\.ps1'; Job = 'v02-gates'; Shell = 'powershell' },
-        @{ Pattern = 'V02RuntimeSemanticBinding\.Tests\.ps1'; Job = 'v02-gates'; Shell = 'pwsh' },
-        @{ Pattern = 'V02RuntimeSemanticBinding\.Tests\.ps1'; Job = 'v02-gates'; Shell = 'powershell' },
-        @{ Pattern = 'Test-V02LanguageMatrixAcceptance\.Tests\.ps1'; Job = 'v02-gates'; Shell = 'pwsh' },
-        @{ Pattern = 'Test-V02LanguageMatrixAcceptance\.Tests\.ps1'; Job = 'v02-gates'; Shell = 'powershell' },
-        @{ Pattern = 'Test-V02LiveWidgets\.ps1'; Job = 'v02-gates'; Shell = 'pwsh' },
-        @{ Pattern = 'Test-V02LanguageModes\.ps1'; Job = 'v02-gates'; Shell = 'pwsh' },
-        @{ Pattern = 'Invoke-V02SoakMeasurement\.SelfTests\.ps1'; Job = 'v02-gates'; Shell = 'pwsh' },
-        @{ Pattern = 'Invoke-V02SoakMeasurement\.SelfTests\.ps1'; Job = 'v02-gates'; Shell = 'powershell' },
+        @{ Pattern = 'Test-V02PackageIdentity\.Tests\.ps1'; Job = 'v02-package-gates'; Shell = 'pwsh' },
+        @{ Pattern = 'Test-V02PackageIdentity\.Tests\.ps1'; Job = 'v02-package-gates'; Shell = 'powershell' },
+        @{ Pattern = 'Test-V02RendererCompatibilityManifest\.SelfTests\.ps1'; Job = 'v02-package-gates'; Shell = 'pwsh' },
+        @{ Pattern = 'Test-V02RendererCompatibilityManifest\.SelfTests\.ps1'; Job = 'v02-package-gates'; Shell = 'powershell' },
+        @{ Pattern = 'Test-V02ExactBinding\.Tests\.ps1'; Job = 'v02-package-gates'; Shell = 'pwsh' },
+        @{ Pattern = 'Test-V02ExactBinding\.Tests\.ps1'; Job = 'v02-package-gates'; Shell = 'powershell' },
+        @{ Pattern = 'V02RuntimePackageBinding\.Tests\.ps1'; Job = 'v02-acceptance-gates'; Shell = 'pwsh' },
+        @{ Pattern = 'V02RuntimePackageBinding\.Tests\.ps1'; Job = 'v02-acceptance-gates'; Shell = 'powershell' },
+        @{ Pattern = 'V02RuntimeSemanticBinding\.Tests\.ps1'; Job = 'v02-acceptance-gates'; Shell = 'pwsh' },
+        @{ Pattern = 'V02RuntimeSemanticBinding\.Tests\.ps1'; Job = 'v02-acceptance-gates'; Shell = 'powershell' },
+        @{ Pattern = 'Test-V02LanguageMatrixAcceptance\.Tests\.ps1'; Job = 'v02-acceptance-gates'; Shell = 'pwsh' },
+        @{ Pattern = 'Test-V02LanguageMatrixAcceptance\.Tests\.ps1'; Job = 'v02-acceptance-gates'; Shell = 'powershell' },
+        @{ Pattern = 'Test-V02LiveWidgets\.ps1'; Job = 'v02-acceptance-gates'; Shell = 'pwsh' },
+        @{ Pattern = 'Test-V02LanguageModes\.ps1'; Job = 'v02-acceptance-gates'; Shell = 'pwsh' },
+        @{ Pattern = 'Invoke-V02SoakMeasurement\.SelfTests\.ps1'; Job = 'v02-acceptance-gates'; Shell = 'pwsh' },
+        @{ Pattern = 'Invoke-V02SoakMeasurement\.SelfTests\.ps1'; Job = 'v02-acceptance-gates'; Shell = 'powershell' },
 
         @{ Pattern = 'Test-V03ImplementationGateTests\.ps1'; Job = 'v03-v04-gates'; Shell = 'pwsh' },
         @{ Pattern = 'Test-V03RuntimeCaptureProvenanceTests\.ps1'; Job = 'v03-v04-gates'; Shell = 'pwsh' },
@@ -490,7 +492,11 @@ function Test-CiWorkflowCleanRunnerIndependence {
             }
         }
 
-        $requiresReleaseBuild = ($skipBuildIndexes.Count -gt 0 -or $buildRequiredIndexes.Count -gt 0)
+        # Each v0.2 partition must rebuild from its own checkout. This preserves
+        # clean-runner independence after the former monolithic job is split.
+        $requiresReleaseBuild = ($requiredJob -like 'v02-*' -or
+            $skipBuildIndexes.Count -gt 0 -or
+            $buildRequiredIndexes.Count -gt 0)
         if ($requiresReleaseBuild) {
             if ($buildPrerequisiteIndexes.Count -ne 1) {
                 throw "Partitioned job '$requiredJob' must have exactly one canonical clean-runner build prerequisite before -SkipBuild or build-required governed gates."
@@ -559,6 +565,8 @@ function Test-CiAggregatorContract {
     Assert-CiAggregatorResults -Results @{
         'build-and-v01' = 'success'
         'v02-gates' = 'success'
+        'v02-package-gates' = 'success'
+        'v02-acceptance-gates' = 'success'
         'v03-v04-gates' = 'success'
         'v05-v06-gates' = 'success'
         'v07-v10-gates' = 'success'
@@ -664,4 +672,4 @@ Test-BuildScriptScheduling -ScriptPath $buildScript
 Test-CiWorkflowScheduling -WorkflowPath $ciWorkflowPath
 
 Write-Output 'Canonical solution test-project scheduling: PASS (max concurrency 1, AST solution target pinned)'
-Write-Output 'CI workflow partitioned job and governed step scheduling: PASS (5 parallel jobs, exact inventory)'
+Write-Output 'CI workflow partitioned job and governed step scheduling: PASS (7 parallel jobs, exact inventory)'
