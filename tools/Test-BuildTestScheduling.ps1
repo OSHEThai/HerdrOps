@@ -382,6 +382,8 @@ function Get-CiGovernedCommandInventory {
         @{ Pattern = 'Test-V02LanguageModes\.ps1'; Job = 'v02-acceptance-gates'; Shell = 'pwsh' },
         @{ Pattern = 'Invoke-V02SoakMeasurement\.SelfTests\.ps1'; Job = 'v02-acceptance-gates'; Shell = 'pwsh' },
         @{ Pattern = 'Invoke-V02SoakMeasurement\.SelfTests\.ps1'; Job = 'v02-acceptance-gates'; Shell = 'powershell' },
+        @{ Pattern = 'Test-V02Issue10SameRunCausality\.Tests\.ps1'; Job = 'v02-acceptance-gates'; Shell = 'pwsh' },
+        @{ Pattern = 'Test-V02Issue10SameRunCausality\.Tests\.ps1'; Job = 'v02-acceptance-gates'; Shell = 'powershell' },
 
         @{ Pattern = 'Test-V03ImplementationGateTests\.ps1'; Job = 'v03-v04-gates'; Shell = 'pwsh' },
         @{ Pattern = 'Test-V03RuntimeCaptureProvenanceTests\.ps1'; Job = 'v03-v04-gates'; Shell = 'pwsh' },
