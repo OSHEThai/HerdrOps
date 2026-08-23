@@ -121,6 +121,61 @@ function New-V02ReleaseGateTestObserverVerifierRepository {
     return $root
 }
 
+function New-V02ReleaseGateTestTamperedLauncherRepository {
+    param(
+        [Parameter(Mandatory = $true)]$Certificate,
+        [Parameter(Mandatory = $true)][ValidateSet('AmbiguousStream','ResultBinding','ChildPid')][string]$Mutation
+    )
+    $root = New-V02ReleaseGateTestObserverVerifierRepository -Certificate $Certificate
+    $gatePath = Join-Path $root 'tools\Test-V02ReleaseGate.ps1'
+    $launcherDefinition = (Get-Command Invoke-V02ReleaseGateIsolatedCleanMachineVerifier -CommandType Function).Definition
+    Write-V02ReleaseGateTestText -Path $gatePath -Text ("function Invoke-V02ReleaseGateIsolatedCleanMachineVerifier {`r`n" + $launcherDefinition + "`r`n}") | Out-Null
+
+    $verifierPath = Join-Path $root 'tools\packaging\v0.2\Invoke-V02CleanMachineReleaseVerifier.ps1'
+    $source = [IO.File]::ReadAllText($verifierPath)
+    $needle = '    $result | ConvertTo-Json -Compress -Depth 8'
+    $index = $source.LastIndexOf($needle,[StringComparison]::Ordinal)
+    if ($index -lt 0) { throw 'Test child verifier output point was not found.' }
+    $replacement = switch ($Mutation) {
+        'AmbiguousStream' { $needle + "`r`n" + $needle }
+        'ResultBinding' { "    `$result.resultBindingSha256 = ('0' * 64)`r`n" + $needle }
+        'ChildPid' { "    `$result.childPid = [int]`$result.childPid + 1`r`n" + $needle }
+    }
+    $source = $source.Substring(0,$index) + $replacement + $source.Substring($index + $needle.Length)
+    Write-V02ReleaseGateTestText -Path $verifierPath -Text $source | Out-Null
+    return $root
+}
+
+function Assert-V02ReleaseGateTestProductionLauncherTamper {
+    param(
+        [Parameter(Mandatory = $true)]$Bundle,
+        [Parameter(Mandatory = $true)][string]$VerifierRoot,
+        [Parameter(Mandatory = $true)]$Identity,
+        [Parameter(Mandatory = $true)]$Package,
+        [Parameter(Mandatory = $true)][string]$ExpectedError
+    )
+    & {
+        param($FixtureBundle,$FixtureRoot,$FixtureIdentity,$FixturePackage,$GuardPattern)
+        . (Join-Path $FixtureRoot 'tools\Test-V02ReleaseGate.ps1')
+        $output = @()
+        $observedError = ''
+        try {
+            $output = @(Invoke-V02ReleaseGateIsolatedCleanMachineVerifier `
+                -ReportPath $FixtureBundle.ReportPath -AuthorizationPath $FixtureBundle.AuthorizationPath `
+                -AuthorizationSignaturePath $FixtureBundle.AuthorizationSignaturePath `
+                -AcceptanceReceiptPath $FixtureBundle.ReceiptPath -AcceptanceReceiptSignaturePath $FixtureBundle.ReceiptSignaturePath `
+                -ExpectedSourceCommit $FixtureIdentity.Commit -ExpectedSourceTree $FixtureIdentity.Tree -Package $FixturePackage)
+        }
+        catch { $observedError = $_.Exception.Message }
+        if ($observedError -notmatch $GuardPattern) {
+            throw "Tampered real child stdout did not reach '$GuardPattern'; observed '$observedError'."
+        }
+        if ($output.Count -ne 0 -or ($output -join "`n") -match 'LifecycleCreditGranted|ReleaseReady|EvidenceClass.*CleanMachine') {
+            throw 'Tampered real child stdout returned CleanMachine or Release credit.'
+        }
+    } $Bundle $VerifierRoot $Identity $Package $ExpectedError
+}
+
 function Get-V02ReleaseGateTestRepositoryIdentity {
     param([Parameter(Mandatory = $true)][string]$RepositoryRoot)
     return Get-V02ReleaseGateGitIdentity -RepositoryRoot $RepositoryRoot
@@ -1146,6 +1201,23 @@ try {
         } finally { $certificate.Dispose() }
     }
 
+    Invoke-V02ReleaseGateTestCase 'production launcher rejects tampered real child stdout identity and binding with no credit' {
+        $package = [pscustomobject][ordered]@{ProfileId=$script:V02ReleaseGatePackageProfileId;ReceiptSha256=('1'*64);ArchiveSha256=('2'*64);ManifestSha256=('3'*64);AppSha256=('4'*64);CoreSha256=('5'*64);ReferenceHostProfileSha256=$script:V02ReleaseGateReferenceHostProfileSha256;RendererPolicySha256=$script:V02ReleaseGateRendererPolicySha256}
+        $certificate = New-V02ReleaseGateTestCmsCertificate
+        try {
+            $bundle = New-V02ReleaseGateTestSignedCleanMachineBundle -Root (Join-Path $script:TestRoot 'clean-machine-launcher-tamper') -Identity $script:GateIdentity -Package $package -Certificate $certificate
+            foreach ($case in @(
+                    @{Mutation='AmbiguousStream';Guard='ambiguous result stream'},
+                    @{Mutation='ChildPid';Guard='child PID binding'},
+                    @{Mutation='ResultBinding';Guard='result cryptographic binding'})) {
+                $verifierRoot = New-V02ReleaseGateTestTamperedLauncherRepository -Certificate $certificate -Mutation $case.Mutation
+                Assert-V02ReleaseGateTestProductionLauncherTamper -Bundle $bundle -VerifierRoot $verifierRoot `
+                    -Identity $script:GateIdentity -Package $package -ExpectedError $case.Guard
+            }
+        }
+        finally { $certificate.Dispose() }
+    }
+
     Invoke-V02ReleaseGateTestCase 'post-run receipt rejects a valid CMS signer that differs from the verifier pin' {
         $package = [pscustomobject][ordered]@{ProfileId=$script:V02ReleaseGatePackageProfileId;ReceiptSha256=('1'*64);ArchiveSha256=('2'*64);ManifestSha256=('3'*64);AppSha256=('4'*64);CoreSha256=('5'*64);ReferenceHostProfileSha256=$script:V02ReleaseGateReferenceHostProfileSha256;RendererPolicySha256=$script:V02ReleaseGateRendererPolicySha256}
         $authorized = New-V02ReleaseGateTestCmsCertificate; $wrong = New-V02ReleaseGateTestCmsCertificate
@@ -1681,7 +1753,7 @@ try {
         }
         $gateSource = [IO.File]::ReadAllText($expectedGatePath)
         foreach ($requiredSource in @(
-                'ReadToEndAsync()','WaitForExit(120000)','packagingCommonSha256','packageIdentityCommonSha256',
+                'ReadToEndAsync()','WaitForExit(120000)','packagingCommonSha256','packageIdentityCommonSha256','rootPackagingCommonSha256',
                 'childPid','childStartUtc','engineFinalPath','engineVolumeSerialNumber','engineFileId',
                 'resultBindingSha256','[Environment]::GetCommandLineArgs()')) {
             if ($gateSource.IndexOf($requiredSource,[StringComparison]::Ordinal) -lt 0) {

@@ -1915,6 +1915,7 @@ function Invoke-V02ReleaseGateIsolatedCleanMachineVerifier {
     $commonPath = [IO.Path]::GetFullPath((Join-Path $gateToolsRoot 'packaging\v0.2\V02CleanMachine.Common.ps1'))
     $packagingCommonPath = [IO.Path]::GetFullPath((Join-Path $gateToolsRoot 'packaging\v0.2\V02Packaging.Common.ps1'))
     $packageIdentityCommonPath = [IO.Path]::GetFullPath((Join-Path $gateToolsRoot 'packaging\v0.2\V02PackageIdentity.Common.ps1'))
+    $rootPackagingCommonPath = [IO.Path]::GetFullPath((Join-Path $gateToolsRoot 'packaging\Packaging.Common.ps1'))
     $requestRoot = Join-Path ([IO.Path]::GetTempPath()) ('HerdrOps-V02ReleaseVerifier-' + [Guid]::NewGuid().ToString('N'))
     $requestPath = Join-Path $requestRoot 'request.json'
     $held = New-Object System.Collections.Generic.List[object]
@@ -1930,6 +1931,8 @@ function Invoke-V02ReleaseGateIsolatedCleanMachineVerifier {
         [void]$held.Add($packagingCommonSnapshot)
         $packageIdentityCommonSnapshot = Get-V02ReleaseGateStableFileSnapshot -Path $packageIdentityCommonPath -Context 'V02 package identity common verifier dependency' -KeepOpen
         [void]$held.Add($packageIdentityCommonSnapshot)
+        $rootPackagingCommonSnapshot = Get-V02ReleaseGateStableFileSnapshot -Path $rootPackagingCommonPath -Context 'Root packaging common verifier dependency' -KeepOpen
+        [void]$held.Add($rootPackagingCommonSnapshot)
         foreach ($input in @(
                 @('report',$ReportPath,'CleanMachine report input'),
                 @('authorization',$AuthorizationPath,'CleanMachine authorization input'),
@@ -1958,6 +1961,7 @@ function Invoke-V02ReleaseGateIsolatedCleanMachineVerifier {
             commonSha256 = $commonSnapshot.Sha256
             packagingCommonSha256 = $packagingCommonSnapshot.Sha256
             packageIdentityCommonSha256 = $packageIdentityCommonSnapshot.Sha256
+            rootPackagingCommonSha256 = $rootPackagingCommonSnapshot.Sha256
             reportSha256 = $inputSnapshots['report'].Sha256
             authorizationSha256 = $(if ($inputSnapshots.ContainsKey('authorization')) { $inputSnapshots['authorization'].Sha256 } else { '' })
             authorizationSignatureSha256 = $(if ($inputSnapshots.ContainsKey('authorizationSignature')) { $inputSnapshots['authorizationSignature'].Sha256 } else { '' })
@@ -1992,7 +1996,9 @@ function Invoke-V02ReleaseGateIsolatedCleanMachineVerifier {
         $process.StartInfo = $start
         if (-not $process.Start()) { throw 'The isolated CleanMachine verifier process did not start.' }
         $observedChildPid = [int]$process.Id
-        $observedChildStartUtc = $process.StartTime.ToUniversalTime().ToString('O', [Globalization.CultureInfo]::InvariantCulture)
+        # Prefix the round-trip UTC value so Windows PowerShell's JSON parser
+        # cannot silently coerce it to a culture-formatted DateTime.
+        $observedChildStartUtc = 'UTC:' + $process.StartTime.ToUniversalTime().ToString('O', [Globalization.CultureInfo]::InvariantCulture)
         # The exact executable bytes and final path were opened and held before
         # Start().  Reading MainModule after Start races a fast-failing child;
         # bind the child result to that held launch image instead.
@@ -2012,7 +2018,7 @@ function Invoke-V02ReleaseGateIsolatedCleanMachineVerifier {
         $lines = @($stdout -split "`r?`n" | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
         if ($lines.Count -ne 1) { throw 'The isolated CleanMachine verifier returned an ambiguous result stream.' }
         $result = $lines[0] | ConvertFrom-Json
-        $expectedProperties = @('protocol','version','requestSha256','engineSha256','verifierSha256','commonSha256','packagingCommonSha256','packageIdentityCommonSha256','reportSha256','authorizationSha256','authorizationSignatureSha256','childPid','childStartUtc','engineFinalPath','engineVolumeSerialNumber','engineFileId','runId','machineFingerprint','operatorIdentity','observerIdentity','authorizationSignerThumbprint','acceptanceReceiptSha256','acceptanceReceiptSignatureSha256','acceptanceReceiptNonce','resultBindingSha256')
+        $expectedProperties = @('protocol','version','requestSha256','engineSha256','verifierSha256','commonSha256','packagingCommonSha256','packageIdentityCommonSha256','rootPackagingCommonSha256','reportSha256','authorizationSha256','authorizationSignatureSha256','childPid','childStartUtc','engineFinalPath','engineVolumeSerialNumber','engineFileId','runId','machineFingerprint','operatorIdentity','observerIdentity','authorizationSignerThumbprint','acceptanceReceiptSha256','acceptanceReceiptSignatureSha256','acceptanceReceiptNonce','resultBindingSha256')
         $actualProperties = @($result.PSObject.Properties.Name)
         if ($actualProperties.Count -ne $expectedProperties.Count -or @($actualProperties | Where-Object { $expectedProperties -cnotcontains $_ }).Count -ne 0) {
             throw 'The isolated CleanMachine verifier returned a malformed result.'
@@ -2025,6 +2031,7 @@ function Invoke-V02ReleaseGateIsolatedCleanMachineVerifier {
         Assert-V02ReleaseGateEqual $result.commonSha256 $commonSnapshot.Sha256 'Isolated CleanMachine common source binding'
         Assert-V02ReleaseGateEqual $result.packagingCommonSha256 $packagingCommonSnapshot.Sha256 'Isolated V02 packaging dependency binding'
         Assert-V02ReleaseGateEqual $result.packageIdentityCommonSha256 $packageIdentityCommonSnapshot.Sha256 'Isolated V02 package identity dependency binding'
+        Assert-V02ReleaseGateEqual $result.rootPackagingCommonSha256 $rootPackagingCommonSnapshot.Sha256 'Isolated root packaging dependency binding'
         Assert-V02ReleaseGateEqual $result.reportSha256 $inputSnapshots['report'].Sha256 'Isolated CleanMachine report input binding'
         Assert-V02ReleaseGateEqual $result.authorizationSha256 $inputSnapshots['authorization'].Sha256 'Isolated CleanMachine authorization input binding'
         Assert-V02ReleaseGateEqual $result.authorizationSignatureSha256 $inputSnapshots['authorizationSignature'].Sha256 'Isolated CleanMachine authorization signature binding'
