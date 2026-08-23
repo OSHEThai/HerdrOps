@@ -40,10 +40,14 @@ function New-RRSelectionReceipt {
 }
 
 function New-RRFixture {
+    param(
+        [string]$SourceCommit = ('a' * 40),
+        [string]$SourceTree = ('b' * 40)
+    )
     $root = Join-Path ([IO.Path]::GetTempPath()) ('herdrops-v02-review-' + [Guid]::NewGuid().ToString('N'))
     $thai = Join-Path $root 'thai'; $english = Join-Path $root 'english'; $package = Join-Path $root 'package'; $matrix = Join-Path $root 'matrix-candidate.json'; $output = Join-Path $root 'review-candidate.json'
     foreach ($directory in @($root, $thai, $english, $package, (Join-Path $thai 'captures'), (Join-Path $english 'captures'), (Join-Path $thai 'test-results'), (Join-Path $english 'test-results'))) { New-Item -ItemType Directory -Path $directory -Force | Out-Null }
-    $commit = 'a' * 40; $tree = 'b' * 40
+    $commit = $SourceCommit; $tree = $SourceTree
     $appPath = Join-Path $package 'HerdrOps.App.exe'; $corePath = Join-Path $package 'HerdrOps.Core.exe'; $manifestPath = Join-Path $package 'package-manifest.json'; $archivePath = Join-Path $root 'HerdrOps-0.2.0-win-x64.zip'; $identityPath = Join-Path $root 'package-identity-receipt.json'
     [IO.File]::WriteAllBytes($appPath, [Text.Encoding]::UTF8.GetBytes('APP-COMPONENT'))
     [IO.File]::WriteAllBytes($corePath, [Text.Encoding]::UTF8.GetBytes('CORE-COMPONENT'))
@@ -53,11 +57,11 @@ function New-RRFixture {
     $identity = [ordered]@{
         schemaVersion = 1; profileId = 'herdrops-v0.2-package-software-only-issue-149'; issue = 149; packageVersion = '0.2.0'; runtimeIdentifier = 'win-x64'
         source = [ordered]@{ commitSha = $commit; treeSha = $tree }
-        profile = [ordered]@{ id = 'herdrops-v0.2-package-software-only-issue-149'; relativePath = 'fixture-profile.json'; bytes = 1; fileSha256 = ('C' * 64); canonicalSha256 = ('D' * 64) }
+        profile = [ordered]@{ id = 'herdrops-v0.2-package-software-only-issue-149'; relativePath = 'tools/packaging/v0.2/package-identity-profile.json'; bytes = 1; fileSha256 = ('C' * 64); canonicalSha256 = ('D' * 64) }
         archive = [ordered]@{ relativePath = 'HerdrOps-0.2.0-win-x64.zip'; fileName = 'HerdrOps-0.2.0-win-x64.zip'; bytes = $archive.Bytes; sha256 = $archive.Sha256 }
         packageManifest = [ordered]@{ fileName = 'package-manifest.json'; bytes = $manifest.Bytes; sha256 = $manifest.Sha256; contentSha256 = ('E' * 64); fileCount = 2; totalBytes = ($app.Bytes + $core.Bytes) }
         components = [ordered]@{ app = [ordered]@{ relativePath = 'HerdrOps.App.exe'; bytes = $app.Bytes; sha256 = $app.Sha256 }; core = [ordered]@{ relativePath = 'HerdrOps.Core.exe'; bytes = $core.Bytes; sha256 = $core.Sha256 } }
-        referenceHost = [ordered]@{ profileId = 'fixture-reference-host'; profileSha256 = ('F' * 64) }
+        referenceHost = [ordered]@{ profileId = 'herdrops-v0.2-submark-nb-software-only-20260822'; profileSha256 = '96D01ED15A536F2DF50B59B43CFDEB3683DCE8667AE2E7BF6A96124182FE13A3' }
         renderer = [ordered]@{ policy = 'software-only-process-wide'; wpfProcessRenderMode = 'SoftwareOnly' }
         evidenceBoundary = [ordered]@{ evidenceClass = 'PackagedCompatibilityPreparation'; runtimeUse = 'not-used'; actualHerdrUsed = $false; runtimeCredit = 'NOT CLAIMED'; releaseCredit = 'NOT CLAIMED' }
     }
@@ -349,6 +353,32 @@ try {
     $reparseCreated = $false
     try { New-Item -ItemType Junction -Path $reparseLink -Value $fixture.Thai | Out-Null; $reparseCreated = $true } catch { }
     if ($reparseCreated) { Assert-RRFailure 'reparse component' { Invoke-RRFixture ($fixture | ForEach-Object { $_.Thai = $reparseLink; $_ }) | Out-Null } } else { Write-Output 'PASS hostile: reparse component guard (fixture creation unavailable; path containment still exercised)' }
+
+    $repoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
+    $repoCommit = [string](& git -C $repoRoot rev-parse HEAD)
+    $repoTree = [string](& git -C $repoRoot rev-parse 'HEAD^{tree}')
+    if ($LASTEXITCODE -ne 0) { throw 'Unable to resolve the clean source identity for the CLI wiring fixture.' }
+    $fixture = New-RRFixture -SourceCommit $repoCommit -SourceTree $repoTree; $fixtures += $fixture
+    $cliExe = if ($PSVersionTable.PSVersion.Major -ge 7) { Join-Path $PSHOME 'pwsh.exe' } else { Join-Path $PSHOME 'powershell.exe' }
+    $cliScript = Join-Path $PSScriptRoot 'Test-V02RuntimeReviewReceipt.ps1'
+    $cliOut = Join-Path $fixture.Root 'cli-receipt.json'
+    $cliArgs = @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', $cliScript, '-RepositoryRoot', $repoRoot, '-MatrixCandidatePath', $fixture.Matrix, '-PackageIdentityPath', $fixture.PackageIdentity, '-PackageArchivePath', $fixture.PackageArchive, '-ExtractedPackageRoot', $fixture.PackageRoot, '-ThaiEvidenceDirectory', $fixture.Thai, '-EnglishEvidenceDirectory', $fixture.English, '-ExpectedSourceCommit', $fixture.Commit, '-ExpectedSourceTree', $fixture.Tree, '-OutputPath', $cliOut, '-BuilderIdentity', 'builder', '-RuntimeOperatorIdentity', 'runtime-operator', '-MatrixProducerIdentity', 'matrix-producer', '-RuntimeReviewerIdentity', 'reviewer')
+    $cliStdout = Join-Path $fixture.Root 'cli.stdout.txt'
+    $cliStderr = Join-Path $fixture.Root 'cli.stderr.txt'
+    $process = Start-Process -FilePath $cliExe -ArgumentList $cliArgs -WindowStyle Hidden -Wait -PassThru -RedirectStandardOutput $cliStdout -RedirectStandardError $cliStderr
+    if ($process.ExitCode -eq 0) { throw 'CLI invocation succeeded without ReviewRunNonce parameter.' }
+    $missingNonceError = if (Test-Path -LiteralPath $cliStderr) { [IO.File]::ReadAllText($cliStderr) } else { '' }
+    if ($missingNonceError -notmatch '(?s)ReviewRunNonce.*mandatory parameter|mandatory parameter.*ReviewRunNonce') { throw "CLI invocation without ReviewRunNonce reached the wrong guard: $missingNonceError" }
+    $cliArgs += @('-ReviewRunNonce', ('d' * 32))
+    Remove-Item -LiteralPath $cliStdout, $cliStderr -Force -ErrorAction SilentlyContinue
+    $process = Start-Process -FilePath $cliExe -ArgumentList $cliArgs -WindowStyle Hidden -Wait -PassThru -RedirectStandardOutput $cliStdout -RedirectStandardError $cliStderr
+    $cliError = if (Test-Path -LiteralPath $cliStderr) { [IO.File]::ReadAllText($cliStderr) } else { '' }
+    if ($process.ExitCode -eq 0 -or $cliError -notmatch 'Identity profile leaf values do not match the stable preparation profile') {
+        $cliOutput = if (Test-Path -LiteralPath $cliStdout) { [IO.File]::ReadAllText($cliStdout) } else { '' }
+        throw "CLI invocation with ReviewRunNonce did not advance to the expected production package guard. Exit code: $($process.ExitCode). stderr: $cliError stdout: $cliOutput"
+    }
+    if (Test-Path -LiteralPath $cliOut) { throw 'Rejected CLI fixture unexpectedly produced an output file.' }
+    Write-Output 'PASS hostile: CLI invocation requires and forwards ReviewRunNonce before production package validation'
 
     Write-Output 'V02 runtime-review receipt hostile selftests: PASS'
 }

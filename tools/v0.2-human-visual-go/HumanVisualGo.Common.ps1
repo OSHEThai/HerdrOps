@@ -910,11 +910,10 @@ function Get-HumanVisualGoTimestampValues {
     param([AllowNull()][object]$Value)
 
     if ($null -eq $Value) { return }
-    $timestampNames = @('observedUtc', 'declaredUtc', 'startedUtc', 'completedUtc', 'createdUtc', 'firstHwndCreatedUtc')
     if ($Value -is [Collections.IDictionary]) {
         foreach ($name in @($Value.Keys)) {
             $child = $Value[$name]
-            if ($timestampNames -ccontains [string]$name -and $child -is [string] -and -not [string]::IsNullOrWhiteSpace([string]$child)) {
+            if ([string]$name -cmatch 'Utc$' -and $child -is [string] -and -not [string]::IsNullOrWhiteSpace([string]$child)) {
                 Write-Output (ConvertFrom-HumanVisualGoEvidenceUtc -Value ([string]$child) -Name ([string]$name))
             }
             foreach ($nested in @(Get-HumanVisualGoTimestampValues -Value $child)) { Write-Output $nested }
@@ -924,7 +923,7 @@ function Get-HumanVisualGoTimestampValues {
     if ($Value -is [pscustomobject]) {
         foreach ($property in @($Value.PSObject.Properties)) {
             $child = $property.Value
-            if ($timestampNames -ccontains [string]$property.Name -and $child -is [string] -and -not [string]::IsNullOrWhiteSpace([string]$child)) {
+            if ([string]$property.Name -cmatch 'Utc$' -and $child -is [string] -and -not [string]::IsNullOrWhiteSpace([string]$child)) {
                 Write-Output (ConvertFrom-HumanVisualGoEvidenceUtc -Value ([string]$child) -Name ([string]$property.Name))
             }
             foreach ($nested in @(Get-HumanVisualGoTimestampValues -Value $child)) { Write-Output $nested }

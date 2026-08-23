@@ -487,11 +487,20 @@ $rendererFixtureDefinitions = (Get-HumanRendererFixtureDefinitions -Source $rend
 Invoke-Expression $rendererFixtureDefinitions
 
 function New-HumanMatrixReceipt {
-    param([Parameter(Mandatory = $true)][string]$CaseId, [Parameter(Mandatory = $true)][string]$Timestamp)
+    param(
+        [Parameter(Mandatory = $true)][string]$CaseId,
+        [Parameter(Mandatory = $true)][string]$Timestamp,
+        [Parameter(Mandatory = $true)]$RawEvidence
+    )
     return [pscustomobject][ordered]@{
+        schemaVersion = 1
         caseId = $CaseId
-        observations = @([pscustomobject][ordered]@{ ordinal = 0; observedUtc = $Timestamp; outcome = 'PASS'; notes = 'synthetic raw observation' })
-        aggregateStatus = 'PASS'
+        observedUtc = $Timestamp
+        outcome = 'PASS'
+        operator = [pscustomobject][ordered]@{ identity = '@human-fixture-operator'; role = 'EvidenceOperator' }
+        observer = [pscustomobject][ordered]@{ identity = '@human-fixture-observer'; role = 'IndependentObserver' }
+        evidenceBoundary = [pscustomobject][ordered]@{ evidenceClass = 'Synthetic'; finalHumanGo = 'NOT_OBSERVED'; release = 'NOT_OBSERVED'; creditGranted = $false }
+        rawEvidence = $RawEvidence
     }
 }
 
@@ -526,11 +535,19 @@ function Complete-HumanFixture {
     }
     $manifest.rendererEvidence.producerReport = New-EvidenceBinding $Fixture.Root 'producer/complete-renderer-report.json' $producer $Fixture.RepositoryRoot
 
+    $caseIndex = 0
     foreach ($group in @('displayCases', 'mixedDpiTransitions', 'accessibilityCases', 'supportedEnvironmentCases')) {
-        $caseIndex = 0
         foreach ($case in @($manifest.matrices.$group)) {
-            $timestamp = '2026-08-22T13:{0:00}:{1:00}.0000000+00:00' -f $caseIndex, 1
-            $receipt = New-HumanMatrixReceipt -CaseId ([string]$case.id) -Timestamp $timestamp
+            $timestamp = '2026-08-22T12:00:{0:00}.0000000+00:00' -f $caseIndex
+            $raw = New-TestMatrixRawPayload -CaseId ([string]$case.id)
+            $raw.observedUtc = $timestamp
+            $rawRelativePath = 'raw/human-matrix-{0:00}.json' -f $caseIndex
+            $rawPath = Join-Path $Fixture.Root $rawRelativePath
+            New-Item -ItemType Directory -Path (Split-Path -Parent $rawPath) -Force | Out-Null
+            Write-TestJson $raw $rawPath
+            $rawIdentity = Get-RendererStableFileIdentity $Fixture.Root $rawPath "human matrix raw fixture $caseIndex"
+            $rawBinding = [pscustomobject][ordered]@{ relativePath = $rawRelativePath; bytes = [long]$rawIdentity.Bytes; sha256 = [string]$rawIdentity.Sha256 }
+            $receipt = New-HumanMatrixReceipt -CaseId ([string]$case.id) -Timestamp $timestamp -RawEvidence $rawBinding
             $case.status = 'PASS'
             $case.notes = 'synthetic complete matrix receipt'
             $case.evidenceReceipt = New-EvidenceBinding $Fixture.Root ("matrix/{0}/{1}.json" -f $group, $caseIndex) $receipt $Fixture.RepositoryRoot
@@ -868,6 +885,15 @@ try {
     $fixtureMaximumAge = $fixtureTrustedNow.Subtract($fixtureReviewed).Add([TimeSpan]::FromSeconds(1))
     if ($fixtureMaximumAge -le [TimeSpan]::Zero) { $fixtureMaximumAge = [TimeSpan]::FromSeconds(1) }
     $fixtureMaximumFutureSkew = [TimeSpan]::Zero
+    $timestampProbe = [pscustomobject][ordered]@{
+        observedUtc = '2026-08-22T10:00:00.0000000Z'
+        run = [pscustomobject][ordered]@{ endedUtc = '2026-08-22T10:05:00.0000000Z' }
+    }
+    $timestampProbeLatest = @((Get-HumanVisualGoTimestampValues -Value $timestampProbe) | Sort-Object)[-1]
+    if ($timestampProbeLatest -ne [DateTimeOffset]::ParseExact('2026-08-22T10:05:00.0000000Z', "yyyy-MM-dd'T'HH:mm:ss.fffffff'Z'", [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::AssumeUniversal)) {
+        throw 'Freshness timestamp discovery omitted a governed endedUtc value.'
+    }
+    Pass 'freshness chronology includes governed endedUtc values'
     Assert-HumanVisualGoAttestationAgainstCandidate -Candidate $candidate -Attestation $attestation -CandidateFileSha256 $candidateReceipt.FileSha256 -CandidateCanonicalSha256 $candidateReceipt.CanonicalSha256 -RepositoryRoot $fixture.RepositoryRoot -TrustedAuthorityPublicKeyXml $authorityKey.PublicXml -TrustedAuthorityPublicKeySha256 $authorityKeySha -ExpectedSignatureAlgorithm $script:HumanVisualGoFixtureSignatureAlgorithm
     Assert-HumanVisualGoAttestationFreshness -Candidate $candidate -Attestation $attestation -EvidenceRoot $fixture.Root -RepositoryRoot $fixture.RepositoryRoot -TrustedNowUtc $fixtureTrustedNow -MaximumAge $fixtureMaximumAge -MaximumFutureSkew $fixtureMaximumFutureSkew
     $replayBinding = [pscustomobject][ordered]@{
