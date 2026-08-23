@@ -1,7 +1,7 @@
 #requires -Version 5.1
 
 Set-StrictMode -Version Latest
-New-Variable -Scope Script -Name V02GovernedPassingTestCount -Value 888 -Option Constant
+New-Variable -Scope Script -Name V02GovernedPassingTestCount -Value 891 -Option Constant
 New-Variable -Scope Script -Name V02GovernedTestAssemblyFileNames -Value ([string[]]@(
     'HerdrOps.UnitTests.dll',
     'HerdrOps.ContractTests.dll',

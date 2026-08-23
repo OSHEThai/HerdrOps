@@ -409,7 +409,7 @@ function Assert-V02RuntimeReviewProgress {
 function Assert-V02RuntimeReviewSelectionReceipt {
     param([string]$EvidenceDirectory,$Gate,[string]$Context)
     $path=Resolve-V02RuntimeReviewPath $EvidenceDirectory (Get-V02RuntimeReviewGateValue $Gate 'TrxSelectionReceiptPath' $Context) "$Context selection receipt";if(-not$path.Equals((Join-Path $EvidenceDirectory 'test-results\selection-receipt.json'),[StringComparison]::OrdinalIgnoreCase)){throw "$Context selection receipt path is not canonical."};$doc=Read-V02RuntimeReviewStrictJsonFile $path "$Context selection receipt";if($doc.Sha256-cne(Get-V02RuntimeReviewGateValue $Gate 'TrxSelectionReceiptSha256' $Context)){throw "$Context selection receipt hash is not exact."}
-    $r=$doc.Value;Assert-V02RuntimeReviewExactProperties $r @('SchemaVersion','InvocationStartedUtc','SelectionUpperBoundUtc','FileCount','Total','Passed','Failed','NotExecuted','Skipped','Files') "$Context selection receipt";if([int64]$r.SchemaVersion-ne2-or[int64]$r.FileCount-ne4-or[int64]$r.Total-ne888-or[int64]$r.Passed-ne888-or[int64]$r.Failed-ne0-or[int64]$r.NotExecuted-ne0-or[int64]$r.Skipped-ne0-or@($r.Files).Count-ne4){throw "$Context selection receipt counters are not governed and all-passing."};$started=[DateTimeOffset]$r.InvocationStartedUtc;$upper=[DateTimeOffset]$r.SelectionUpperBoundUtc;if($started-ge$upper){throw "$Context selection receipt chronology is invalid."}
+    $r=$doc.Value;Assert-V02RuntimeReviewExactProperties $r @('SchemaVersion','InvocationStartedUtc','SelectionUpperBoundUtc','FileCount','Total','Passed','Failed','NotExecuted','Skipped','Files') "$Context selection receipt";if([int64]$r.SchemaVersion-ne2-or[int64]$r.FileCount-ne4-or[int64]$r.Total-ne891-or[int64]$r.Passed-ne891-or[int64]$r.Failed-ne0-or[int64]$r.NotExecuted-ne0-or[int64]$r.Skipped-ne0-or@($r.Files).Count-ne4){throw "$Context selection receipt counters are not governed and all-passing."};$started=[DateTimeOffset]$r.InvocationStartedUtc;$upper=[DateTimeOffset]$r.SelectionUpperBoundUtc;if($started-ge$upper){throw "$Context selection receipt chronology is invalid."}
     $names=@('HerdrOps.UnitTests.trx','HerdrOps.ContractTests.trx','HerdrOps.IntegrationTests.trx','HerdrOps.RuntimeTests.trx');$governedNames=[Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal);foreach($governedName in $names){$null=$governedNames.Add($governedName)};$seen=[Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal);$runIds=@{};$sum=0
     foreach($entry in @($r.Files)){
         Assert-V02RuntimeReviewExactProperties $entry @('Name','SourceName','Bytes','Sha256','LastWriteUtc','TestRunId','RunStartedUtc','RunFinishedUtc','TestAssemblyFileName','Total','Passed','Failed','NotExecuted','Skipped') "$Context selection entry"
@@ -429,7 +429,7 @@ function Assert-V02RuntimeReviewSelectionReceipt {
         $lastWrite=[DateTimeOffset]::MinValue;if(-not[DateTimeOffset]::TryParse([string]$entry.LastWriteUtc,[Globalization.CultureInfo]::InvariantCulture,[Globalization.DateTimeStyles]::RoundtripKind,[ref]$lastWrite)-or$lastWrite-lt$started-or$lastWrite-gt$upper){throw "$Context selected TRX file chronology is out of bounds."}
         $null=$seen.Add($name);$runIds[$runId.ToString('D')]=$true;$sum+=$derived.total
     }
-    if($seen.Count-ne4-or$sum-ne888){throw "$Context selected TRX aggregate is not the exact four-file 888/888 set."}
+    if($seen.Count-ne4-or$sum-ne891){throw "$Context selected TRX aggregate is not the exact four-file 891/891 set."}
 }
 
 function Assert-V02RuntimeReviewReports {
