@@ -225,6 +225,8 @@ function New-LiveTargetFixtureScript([string]$Path) {
 using System;
 using System.Runtime.InteropServices;
 using System.Threading;
+using System.IO;
+using Microsoft.Win32.SafeHandles;
 
 namespace HerdrOps.Testing {
     public static class NativeWindowFixture {
@@ -255,6 +257,25 @@ namespace HerdrOps.Testing {
             public uint time;
             public int pt_x;
             public int pt_y;
+        }
+
+        [StructLayout(LayoutKind.Sequential, Pack = 4)]
+        private struct BY_HANDLE_FILE_INFORMATION {
+            public uint FileAttributes; public long CreationTime; public long LastAccessTime; public long LastWriteTime;
+            public uint VolumeSerialNumber; public uint FileSizeHigh; public uint FileSizeLow; public uint NumberOfLinks;
+            public uint FileIndexHigh; public uint FileIndexLow;
+        }
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool GetFileInformationByHandle(SafeFileHandle handle, out BY_HANDLE_FILE_INFORMATION information);
+
+        public static string GetFileIdentity(string path) {
+            using (FileStream stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read)) {
+                BY_HANDLE_FILE_INFORMATION value;
+                if (!GetFileInformationByHandle(stream.SafeFileHandle, out value)) throw new IOException("GetFileInformationByHandle failed.");
+                if (value.NumberOfLinks != 1) throw new IOException("Fixture capture must have exactly one hard link.");
+                return value.VolumeSerialNumber.ToString("X8") + ":" + value.FileIndexHigh.ToString("X8") + value.FileIndexLow.ToString("X8");
+            }
         }
 
         [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
@@ -455,7 +476,8 @@ function Get-FixtureCaptures([string]$ObservedUtc, [string]$LanguageFilter) {
             $fileObservedUtc = ([DateTimeOffset]([IO.File]::GetLastWriteTimeUtc($path))).ToUniversalTime().ToString('O',[Globalization.CultureInfo]::InvariantCulture)
             $sha = ([BitConverter]::ToString(([Security.Cryptography.SHA256]::Create()).ComputeHash($bytes))).Replace('-','').ToUpperInvariant()
             $token = ([BitConverter]::ToString(([Security.Cryptography.SHA256]::Create()).ComputeHash([Text.Encoding]::UTF8.GetBytes("$language|$name")))).Replace('-','').ToUpperInvariant()
-            $items += ,([ordered]@{language=$language;name=$name;relativePath=$relative;bytes=[long]$bytes.Length;sha256=$sha;widthPixels=64;heightPixels=48;observedUtc=$fileObservedUtc;producerPid=[int]$process.Id;producerStartUtc=$startUtc;runnerTokenSha256=$token})
+            $fileIdentity=[HerdrOps.Testing.NativeWindowFixture]::GetFileIdentity($path)
+            $items += ,([ordered]@{language=$language;name=$name;relativePath=$relative;bytes=[long]$bytes.Length;sha256=$sha;widthPixels=64;heightPixels=48;observedUtc=$fileObservedUtc;producerPid=[int]$process.Id;producerStartUtc=$startUtc;runnerTokenSha256=$token;fileIdentity=$fileIdentity;linkCount=1})
         }
     }
     return $items
@@ -625,7 +647,7 @@ function Invoke-LiveTargetFixtureCase([string]$Root,[string]$RepositoryRoot,[str
             WrongProcess = 'PID reuse|process identity|does not equal'
             WrongWindow = 'HWND ownership|window.*independently observed'
             ArbitraryPng = 'target-process PNG binding|PNG|changed between stable reads'
-            TransientCaptureReplacement = 'changed between stable reads|target-process PNG binding'
+            TransientCaptureReplacement = 'changed between stable identity reads|target-process PNG FileId/link-count binding'
             HungWindow = 'unresponsive or hung|SendMessageTimeout'
             ChangingHwnd = 'changed from initial post-first-window HWND|HWND continuity violated'
         }
@@ -1047,6 +1069,18 @@ try {
             [IO.Directory]::Delete($junctionDir, $false)
         }
     }
+
+    # 11b. Hostile: capture hardlink aliases fail the real held PNG guard.
+    $hardlinkRoot = Join-Path $temp 'hardlink-capture'
+    New-Item -ItemType Directory -Path $hardlinkRoot -Force | Out-Null
+    $hardlinkPng = Join-Path $hardlinkRoot 'capture.png'
+    $hardlinkAlias = Join-Path $hardlinkRoot 'capture-alias.png'
+    Copy-Item -LiteralPath (Join-Path $sourceCaptures 'Thai\dashboard-overview.png') -Destination $hardlinkPng
+    $hardlinkResult = & cmd.exe /d /c mklink /H $hardlinkAlias $hardlinkPng 2>&1
+    if ($LASTEXITCODE -ne 0) { throw "Unable to create hostile capture hardlink: $hardlinkResult" }
+    Assert-Throws {
+        Get-RendererPngIdentity $hardlinkRoot $hardlinkPng 'Hardlinked hostile capture' | Out-Null
+    } 'exactly one hard link' 'hardlinked capture reaches the real same-handle link-count guard'
 
     # 12. Hostile: Injected failure before commit
     $outPreCommit = Join-Path $temp 'evidence-out-pre-commit'

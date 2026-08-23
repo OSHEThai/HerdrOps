@@ -346,13 +346,13 @@ try {
                 captures = @($raw.captures | ForEach-Object { Copy-RendererValue $_ })
             })
             foreach ($captureBinding in @($raw.captures)) {
-                Assert-RendererExactProperties $captureBinding @('language','name','relativePath','bytes','sha256','widthPixels','heightPixels','observedUtc','producerPid','producerStartUtc','runnerTokenSha256') "Target capture '$($captureBinding.language)|$($captureBinding.name)'"
+                Assert-RendererExactProperties $captureBinding @('language','name','relativePath','bytes','sha256','widthPixels','heightPixels','observedUtc','producerPid','producerStartUtc','runnerTokenSha256','fileIdentity','linkCount') "Target capture '$($captureBinding.language)|$($captureBinding.name)'"
                 Assert-RendererSha $captureBinding.runnerTokenSha256 "Target capture '$($captureBinding.language)|$($captureBinding.name)' runner token"
                 if ($captureBinding.relativePath -cne "captures/$($captureBinding.language)/$($captureBinding.name).png") { throw "Target capture '$($captureBinding.language)|$($captureBinding.name)' path is not the exact isolated capture path." }
                 if ($captureBinding.producerPid -ne $targetAppIdentity.pid -or $captureBinding.producerStartUtc -cne $targetAppIdentity.startTimeUtc) { throw "Target capture '$($captureBinding.language)|$($captureBinding.name)' is not bound to the target App PID/start identity." }
                 $captureKey = "$($captureBinding.language)|$($captureBinding.name)"
                 if ($targetCaptureMap.ContainsKey($captureKey)) {
-                    foreach ($field in @('relativePath','bytes','sha256','widthPixels','heightPixels','observedUtc','producerPid','producerStartUtc','runnerTokenSha256')) { if ($targetCaptureMap[$captureKey].$field -cne $captureBinding.$field) { throw "Target capture '$captureKey' changed between lifecycle observations." } }
+                    foreach ($field in @('relativePath','bytes','sha256','widthPixels','heightPixels','observedUtc','producerPid','producerStartUtc','runnerTokenSha256','fileIdentity','linkCount')) { if ($targetCaptureMap[$captureKey].$field -cne $captureBinding.$field) { throw "Target capture '$captureKey' changed between lifecycle observations." } }
                 } else { $targetCaptureMap[$captureKey] = Copy-RendererValue $captureBinding }
             }
         } elseif ($null -ne $OperatorObservationAction) {
@@ -477,8 +477,8 @@ try {
                 $firstSourceIdentity = Get-RendererPngIdentity $RuntimeEvidenceRoot $sourcePng "Target capture '$captureKey' source"
                 if ($TestFaultStage -eq 'TransientCaptureReplacement' -and $captureKey -eq 'Thai|dashboard-overview') { New-RendererTestPng -Path $sourcePng -Width 31 -Height 31 }
                 $sourceIdentity = Get-RendererPngIdentity $RuntimeEvidenceRoot $sourcePng "Target capture '$captureKey' source re-read"
-                if ($firstSourceIdentity.Bytes -ne $sourceIdentity.Bytes -or $firstSourceIdentity.Sha256 -cne $sourceIdentity.Sha256 -or $firstSourceIdentity.Width -ne $sourceIdentity.Width -or $firstSourceIdentity.Height -ne $sourceIdentity.Height) { throw "Target capture '$captureKey' changed between stable reads." }
-                if ($sourceIdentity.Bytes -ne [long]$targetBinding.bytes -or $sourceIdentity.Sha256 -cne [string]$targetBinding.sha256 -or $sourceIdentity.Width -ne [int]$targetBinding.widthPixels -or $sourceIdentity.Height -ne [int]$targetBinding.heightPixels) { throw "Target capture '$captureKey' does not equal the target-process PNG binding." }
+                if ($firstSourceIdentity.Bytes -ne $sourceIdentity.Bytes -or $firstSourceIdentity.Sha256 -cne $sourceIdentity.Sha256 -or $firstSourceIdentity.Width -ne $sourceIdentity.Width -or $firstSourceIdentity.Height -ne $sourceIdentity.Height -or $firstSourceIdentity.FileIdentity -cne $sourceIdentity.FileIdentity -or $firstSourceIdentity.LinkCount -ne 1 -or $sourceIdentity.LinkCount -ne 1) { throw "Target capture '$captureKey' changed between stable identity reads." }
+                if ($sourceIdentity.Bytes -ne [long]$targetBinding.bytes -or $sourceIdentity.Sha256 -cne [string]$targetBinding.sha256 -or $sourceIdentity.Width -ne [int]$targetBinding.widthPixels -or $sourceIdentity.Height -ne [int]$targetBinding.heightPixels -or $sourceIdentity.FileIdentity -cne [string]$targetBinding.fileIdentity -or [long]$targetBinding.linkCount -ne 1) { throw "Target capture '$captureKey' does not equal the target-process PNG FileId/link-count binding." }
                 [IO.File]::WriteAllBytes($destPng, $sourceIdentity.Content)
                 $captureUtc = [string]$targetBinding.observedUtc
             } elseif (-not [string]::IsNullOrWhiteSpace($CaptureSourceDirectory)) {

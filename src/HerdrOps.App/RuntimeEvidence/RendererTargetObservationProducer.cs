@@ -178,6 +178,10 @@ internal static class RendererTargetObservationPath
         }
 
         var rootFull = Path.GetFullPath(root);
+        // Containment below a lexical root is insufficient when any ancestor of
+        // that root is itself a junction/symlink. Walk from the volume root so
+        // the admitted root and every existing descendant component are real.
+        RequireNoReparsePointsFromVolumeRoot(rootFull);
         var current = rootFull;
         RequireNotReparse(current);
         var relative = Path.GetRelativePath(rootFull, Path.GetFullPath(path));
@@ -234,6 +238,12 @@ internal static class RendererTargetNativeMethods
         uint length,
         uint flags);
 
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetFileInformationByHandle(
+        SafeFileHandle file,
+        out ByHandleFileInformation information);
+
     [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool EnumWindows(EnumWindowsCallback callback, IntPtr parameter);
@@ -262,6 +272,18 @@ internal static class RendererTargetNativeMethods
         return Path.GetFullPath(value);
     }
 
+    internal static RendererFileIdentity GetFileIdentity(SafeFileHandle handle)
+    {
+        if (!GetFileInformationByHandle(handle, out var information))
+            throw new IOException($"Renderer file identity observation failed with Win32 {Marshal.GetLastWin32Error()}.");
+        return new RendererFileIdentity(
+            information.VolumeSerialNumber,
+            ((ulong)information.FileIndexHigh << 32) | information.FileIndexLow,
+            information.NumberOfLinks,
+            ((long)information.FileSizeHigh << 32) | information.FileSizeLow,
+            DateTime.FromFileTimeUtc(((long)information.LastWriteTimeHigh << 32) | information.LastWriteTimeLow));
+    }
+
     internal static IReadOnlyList<IntPtr> EnumerateProcessWindowHandles(int processId)
     {
         var handles = new HashSet<IntPtr>();
@@ -280,6 +302,22 @@ internal static class RendererTargetNativeMethods
                 throw new IOException("EnumThreadWindows failed.");
         }
         return handles.ToArray();
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct ByHandleFileInformation
+    {
+        public uint FileAttributes;
+        public System.Runtime.InteropServices.ComTypes.FILETIME CreationTime;
+        public System.Runtime.InteropServices.ComTypes.FILETIME LastAccessTime;
+        public uint LastWriteTimeLow;
+        public int LastWriteTimeHigh;
+        public uint VolumeSerialNumber;
+        public uint FileSizeHigh;
+        public uint FileSizeLow;
+        public uint NumberOfLinks;
+        public uint FileIndexHigh;
+        public uint FileIndexLow;
     }
 }
 
@@ -300,6 +338,7 @@ public sealed class RendererTargetObservationProducer : IAsyncDisposable
     ];
 
     private readonly RendererTargetObservationOptions _options;
+    private readonly Func<int, IReadOnlyList<IntPtr>> _processWindowEnumerator;
     private readonly CancellationTokenSource _stop = new();
     private readonly TaskCompletionSource _preFirstWindowObserved = new(
         TaskCreationOptions.RunContinuationsAsynchronously);
@@ -320,13 +359,27 @@ public sealed class RendererTargetObservationProducer : IAsyncDisposable
     private Window? _window;
     private Task? _runTask;
 
-    internal RendererTargetObservationProducer(RendererTargetObservationOptions options)
+    internal RendererTargetObservationProducer(
+        RendererTargetObservationOptions options,
+        Func<int, IReadOnlyList<IntPtr>>? processWindowEnumerator = null)
     {
         _options = options ?? throw new ArgumentNullException(nameof(options));
+        _processWindowEnumerator = processWindowEnumerator ??
+            RendererTargetNativeMethods.EnumerateProcessWindowHandles;
     }
 
     internal Task Completion => _runTask ?? Task.CompletedTask;
     internal string RuntimeEvidenceRoot => _options.RuntimeEvidenceRoot;
+    internal IReadOnlyList<Task> PendingWaitersForTesting =>
+    [
+        _preFirstWindowObserved.Task,
+        _firstWindowAllowed.Task,
+        _firstWindowAttached.Task,
+        _thaiCapturesComplete.Task,
+        _thaiCapturePermission.Task,
+        _englishCapturePermission.Task,
+        _englishCapturesComplete.Task,
+    ];
 
     internal void Start()
     {
@@ -466,10 +519,20 @@ public sealed class RendererTargetObservationProducer : IAsyncDisposable
         }
         catch (Exception exception)
         {
-            _preFirstWindowObserved.TrySetException(exception);
-            _firstWindowAllowed.TrySetException(exception);
+            FailEveryPendingWaiter(exception);
             throw;
         }
+    }
+
+    private void FailEveryPendingWaiter(Exception exception)
+    {
+        _preFirstWindowObserved.TrySetException(exception);
+        _firstWindowAllowed.TrySetException(exception);
+        _firstWindowAttached.TrySetException(exception);
+        _thaiCapturesComplete.TrySetException(exception);
+        _thaiCapturePermission.TrySetException(exception);
+        _englishCapturePermission.TrySetException(exception);
+        _englishCapturesComplete.TrySetException(exception);
     }
 
     private void ValidateCandidateBinding()
@@ -670,7 +733,7 @@ public sealed class RendererTargetObservationProducer : IAsyncDisposable
         {
             if (_window is not null ||
                 Application.Current.Windows.OfType<Window>().Any() ||
-                RendererTargetNativeMethods.EnumerateProcessWindowHandles(Environment.ProcessId).Count != 0)
+                _processWindowEnumerator(Environment.ProcessId).Count != 0)
             {
                 throw new InvalidOperationException("A WPF window existed before the governed first-window boundary.");
             }
@@ -709,6 +772,8 @@ public sealed class RendererTargetObservationProducer : IAsyncDisposable
                     producerPid = Environment.ProcessId,
                     producerStartUtc,
                     runnerTokenSha256 = capture.RunnerTokenSha256,
+                    fileIdentity = capture.FileIdentity,
+                    linkCount = capture.LinkCount,
                 }).ToArray();
         }
     }
@@ -721,8 +786,10 @@ public sealed class RendererTargetObservationProducer : IAsyncDisposable
     {
         var fullPath = Path.GetFullPath(path);
         RendererTargetObservationPath.RequireNoReparsePoints(_options.RuntimeEvidenceRoot, fullPath);
-        var beforeWrite = File.GetLastWriteTimeUtc(fullPath);
         using var stream = new FileStream(fullPath, FileMode.Open, FileAccess.Read, FileShare.Read);
+        var before = RendererTargetNativeMethods.GetFileIdentity(stream.SafeFileHandle);
+        if (before.NumberOfLinks != 1)
+            throw new UnauthorizedAccessException("Renderer capture must have exactly one hard link.");
         var finalPath = RendererTargetNativeMethods.GetFinalPath(stream.SafeFileHandle);
         if (!RendererTargetObservationPath.IsContained(_options.RuntimeEvidenceRoot, finalPath) ||
             !string.Equals(finalPath, fullPath, StringComparison.OrdinalIgnoreCase))
@@ -741,10 +808,12 @@ public sealed class RendererTargetObservationProducer : IAsyncDisposable
             BitmapCacheOption.OnLoad);
         if (decoder.Frames.Count != 1 || decoder.Frames[0].PixelWidth <= 0 || decoder.Frames[0].PixelHeight <= 0)
             throw new InvalidDataException("Renderer capture must be one complete decodable PNG frame.");
-        var afterWrite = File.GetLastWriteTimeUtc(fullPath);
-        if (beforeWrite != afterWrite || stream.Length != length)
-            throw new IOException("Renderer capture metadata changed during the same-handle read.");
-        if (beforeWrite < Process.GetCurrentProcess().StartTime.ToUniversalTime())
+        var after = RendererTargetNativeMethods.GetFileIdentity(stream.SafeFileHandle);
+        var finalPathAfterRead = RendererTargetNativeMethods.GetFinalPath(stream.SafeFileHandle);
+        if (before != after || after.NumberOfLinks != 1 || stream.Length != length ||
+            !string.Equals(finalPathAfterRead, fullPath, StringComparison.OrdinalIgnoreCase))
+            throw new IOException("Renderer capture identity, link count, length, or final path changed during the same-handle read.");
+        if (before.LastWriteTimeUtc < Process.GetCurrentProcess().StartTime.ToUniversalTime())
             throw new InvalidDataException("Renderer capture predates the bound App process.");
         return new RendererBoundCapture(
             language,
@@ -754,14 +823,21 @@ public sealed class RendererTargetObservationProducer : IAsyncDisposable
             hash,
             decoder.Frames[0].PixelWidth,
             decoder.Frames[0].PixelHeight,
-            new DateTimeOffset(beforeWrite, TimeSpan.Zero).ToString("O"),
-            Convert.ToHexString(SHA256.HashData(Convert.FromHexString(runnerToken))));
+            new DateTimeOffset(before.LastWriteTimeUtc, TimeSpan.Zero).ToString("O"),
+            Convert.ToHexString(SHA256.HashData(Convert.FromHexString(runnerToken))),
+            $"{before.VolumeSerialNumber:X8}:{before.FileId:X16}",
+            before.NumberOfLinks);
     }
 
-    internal static RendererStablePng ReadStablePng(string path)
+    internal static RendererStablePng ReadStablePng(string path, Action? afterOpen = null)
     {
         path = Path.GetFullPath(path);
+        RendererTargetObservationPath.RequireNoReparsePointsFromVolumeRoot(path);
         using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+        var beforeIdentity = RendererTargetNativeMethods.GetFileIdentity(stream.SafeFileHandle);
+        if (beforeIdentity.NumberOfLinks != 1)
+            throw new UnauthorizedAccessException("Renderer capture must have exactly one hard link.");
+        afterOpen?.Invoke();
         var finalPath = RendererTargetNativeMethods.GetFinalPath(stream.SafeFileHandle);
         if (!string.Equals(finalPath, path, StringComparison.OrdinalIgnoreCase))
             throw new UnauthorizedAccessException("Renderer capture final opened path changed.");
@@ -789,9 +865,11 @@ public sealed class RendererTargetObservationProducer : IAsyncDisposable
 
         stream.Position = 0;
         var sha256 = Convert.ToHexString(SHA256.HashData(stream));
-        if (stream.Length != length)
+        var afterIdentity = RendererTargetNativeMethods.GetFileIdentity(stream.SafeFileHandle);
+        if (stream.Length != length || beforeIdentity != afterIdentity || afterIdentity.NumberOfLinks != 1 ||
+            !string.Equals(RendererTargetNativeMethods.GetFinalPath(stream.SafeFileHandle), path, StringComparison.OrdinalIgnoreCase))
         {
-            throw new IOException("Renderer capture changed during the same-handle read.");
+            throw new IOException("Renderer capture identity, link count, or final path changed during the same-handle read.");
         }
 
         return new RendererStablePng(length, sha256, width, height);
@@ -849,6 +927,12 @@ public sealed class RendererTargetObservationProducer : IAsyncDisposable
 
 internal sealed record RendererTargetObservationRequest(string Stage, int Ordinal);
 internal sealed record RendererStablePng(long Bytes, string Sha256, int Width, int Height);
+internal sealed record RendererFileIdentity(
+    uint VolumeSerialNumber,
+    ulong FileId,
+    uint NumberOfLinks,
+    long Length,
+    DateTime LastWriteTimeUtc);
 internal sealed record RendererObservedProcess(
     string StartTimeUtc,
     string Sha256,
@@ -863,4 +947,6 @@ internal sealed record RendererBoundCapture(
     int Width,
     int Height,
     string ObservedUtc,
-    string RunnerTokenSha256);
+    string RunnerTokenSha256,
+    string FileIdentity,
+    uint LinkCount);
