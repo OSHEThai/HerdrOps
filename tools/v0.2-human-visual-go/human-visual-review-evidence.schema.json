@@ -1,0 +1,75 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://herdrops.local/schema/v0.2/human-visual-review-evidence.schema.json",
+  "title": "HerdrOps v0.2 external visual review evidence",
+  "description": "Candidate input only. It records review evidence without granting Human GO, Runtime, or Release authority.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$id", "schemaVersion", "evidenceClassification", "issue", "compatibilityIssue", "candidate", "comparisons", "checks", "defects", "evidenceBoundary"],
+  "properties": {
+    "$id": { "const": "https://herdrops.local/schema/v0.2/human-visual-review-evidence.schema.json" },
+    "schemaVersion": { "const": 1 },
+    "evidenceClassification": { "const": "HumanVisualReviewEvidence" },
+    "issue": { "const": 11 },
+    "compatibilityIssue": { "const": 149 },
+    "candidate": { "$ref": "#/$defs/candidate" },
+    "comparisons": { "type": "array", "minItems": 20, "maxItems": 20, "items": { "$ref": "#/$defs/comparison" } },
+    "checks": { "type": "array", "minItems": 7, "maxItems": 7, "items": { "$ref": "#/$defs/check" } },
+    "defects": { "type": "array", "items": { "$ref": "#/$defs/defect" } },
+    "evidenceBoundary": { "$ref": "#/$defs/boundary" }
+  },
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^[0-9A-F]{64}$" },
+    "commit": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "relativePath": { "type": "string", "minLength": 1, "pattern": "^[^/\\\\].*$" },
+    "candidate": {
+      "type": "object", "additionalProperties": false,
+      "required": ["sourceCommitSha", "sourceTreeSha", "rendererManifestSha256"],
+      "properties": {
+        "sourceCommitSha": { "$ref": "#/$defs/commit" },
+        "sourceTreeSha": { "$ref": "#/$defs/commit" },
+        "rendererManifestSha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "comparison": {
+      "type": "object", "additionalProperties": false,
+      "required": ["key", "status", "referenceRelativePath", "disposition"],
+      "properties": {
+        "key": { "type": "string", "minLength": 1 },
+        "status": { "enum": ["PASS", "FAIL", "NOT_OBSERVED"] },
+        "referenceRelativePath": { "$ref": "#/$defs/relativePath" },
+        "disposition": { "type": "string", "minLength": 1 }
+      }
+    },
+    "check": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "status", "notes"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "status": { "enum": ["PASS", "FAIL", "NOT_OBSERVED"] },
+        "notes": { "type": "string", "minLength": 1 }
+      }
+    },
+    "defect": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "severity", "summary", "status", "disposition"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "severity": { "enum": ["P0", "P1", "P2", "P3"] },
+        "summary": { "type": "string", "minLength": 1 },
+        "status": { "enum": ["Open", "Resolved", "Accepted"] },
+        "disposition": { "type": "string", "minLength": 1 }
+      }
+    },
+    "boundary": {
+      "type": "object", "additionalProperties": false,
+      "required": ["humanReview", "actualHerdrRuntime", "release", "creditGranted"],
+      "properties": {
+        "humanReview": { "const": "NOT_OBSERVED" },
+        "actualHerdrRuntime": { "const": "NOT_OBSERVED" },
+        "release": { "const": "NOT_OBSERVED" },
+        "creditGranted": { "const": false }
+      }
+    }
+  }
+}

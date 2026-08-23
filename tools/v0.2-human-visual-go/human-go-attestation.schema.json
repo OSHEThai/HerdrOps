@@ -1,0 +1,68 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://herdrops.local/schema/v0.2/human-go-attestation.schema.json",
+  "title": "HerdrOps v0.2 external Human visual-GO attestation",
+  "description": "External authority input only. It is never repository-pinned and never grants Runtime or Release.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$id", "schemaVersion", "evidenceClassification", "issue", "compatibilityIssue", "attestationId", "decision", "decisionRationale", "reviewedUtc", "candidate", "reviewer", "authority", "visualDispositions", "visualChecks", "defects", "evidenceBindings", "evidenceSetSha256", "evidenceBoundary"],
+  "properties": {
+    "$id": { "const": "https://herdrops.local/schema/v0.2/human-go-attestation.schema.json" },
+    "schemaVersion": { "const": 1 },
+    "evidenceClassification": { "const": "ExternalHumanVisualGoAttestation" },
+    "issue": { "const": 11 },
+    "compatibilityIssue": { "const": 149 },
+    "attestationId": { "type": "string", "minLength": 1 },
+    "decision": { "enum": ["GO", "NO_GO"] },
+    "decisionRationale": { "type": "string", "minLength": 1 },
+    "reviewedUtc": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{7}Z$" },
+    "candidate": { "$ref": "#/$defs/candidateBinding" },
+    "reviewer": { "$ref": "#/$defs/reviewer" },
+    "authority": { "$ref": "#/$defs/authority" },
+    "visualDispositions": { "type": "array", "minItems": 20, "maxItems": 20, "items": { "$ref": "#/$defs/visualDisposition" } },
+    "visualChecks": { "type": "array", "minItems": 7, "maxItems": 7, "items": { "$ref": "#/$defs/visualCheck" } },
+    "defects": { "type": "array", "items": { "$ref": "#/$defs/defect" } },
+    "evidenceBindings": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/binding" } },
+    "evidenceSetSha256": { "$ref": "#/$defs/sha256" },
+    "evidenceBoundary": { "$ref": "#/$defs/boundary" }
+  },
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^[0-9A-F]{64}$" },
+    "commit": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "binding": {
+      "type": "object", "additionalProperties": false,
+      "required": ["kind", "root", "relativePath", "bytes", "sha256", "canonicalSha256"],
+      "properties": { "kind": { "type": "string", "minLength": 1 }, "root": { "enum": ["EvidenceRoot", "RepositoryRoot"] }, "relativePath": { "type": "string", "minLength": 1 }, "bytes": { "type": "integer", "minimum": 1 }, "sha256": { "$ref": "#/$defs/sha256" }, "canonicalSha256": { "anyOf": [{ "$ref": "#/$defs/sha256" }, { "type": "null" }] } }
+    },
+    "candidateBinding": {
+      "type": "object", "additionalProperties": false,
+      "required": ["sourceCommitSha", "sourceTreeSha", "candidateFileSha256", "candidateCanonicalSha256", "rendererManifestSha256", "packageArchiveSha256", "packageAppSha256", "packageCoreSha256", "herdrExecutableSha256", "herdrBindingSha256", "sessionBindingSha256", "evidenceSetSha256"],
+      "properties": { "sourceCommitSha": { "$ref": "#/$defs/commit" }, "sourceTreeSha": { "$ref": "#/$defs/commit" }, "candidateFileSha256": { "$ref": "#/$defs/sha256" }, "candidateCanonicalSha256": { "$ref": "#/$defs/sha256" }, "rendererManifestSha256": { "$ref": "#/$defs/sha256" }, "packageArchiveSha256": { "$ref": "#/$defs/sha256" }, "packageAppSha256": { "$ref": "#/$defs/sha256" }, "packageCoreSha256": { "$ref": "#/$defs/sha256" }, "herdrExecutableSha256": { "$ref": "#/$defs/sha256" }, "herdrBindingSha256": { "$ref": "#/$defs/sha256" }, "sessionBindingSha256": { "$ref": "#/$defs/sha256" }, "evidenceSetSha256": { "$ref": "#/$defs/sha256" } }
+    },
+    "reviewer": {
+      "type": "object", "additionalProperties": false,
+      "required": ["identity", "role", "authorityRole", "builderIdentity", "runtimeOperatorIdentity", "independentValidatorIdentity", "identityDistinct"],
+      "properties": { "identity": { "const": "@yutthaphon" }, "role": { "const": "HumanReviewer" }, "authorityRole": { "const": "ProductOwner" }, "builderIdentity": { "type": "string", "minLength": 1 }, "runtimeOperatorIdentity": { "type": "string", "minLength": 1 }, "independentValidatorIdentity": { "type": "string", "minLength": 1 }, "identityDistinct": { "const": true } }
+    },
+    "authority": {
+      "type": "object", "additionalProperties": false, "required": ["reference", "authenticationMethod", "authenticated", "proofSha256"],
+      "properties": { "reference": { "type": "string", "format": "uri", "pattern": "^https://" }, "authenticationMethod": { "const": "EXTERNAL_CANDIDATE_SPECIFIC_HUMAN_ATTESTATION" }, "authenticated": { "const": true }, "proofSha256": { "$ref": "#/$defs/sha256" } }
+    },
+    "visualDisposition": {
+      "type": "object", "additionalProperties": false, "required": ["key", "status", "referenceRelativePath", "disposition"],
+      "properties": { "key": { "type": "string", "minLength": 1 }, "status": { "enum": ["PASS", "FAIL", "NOT_OBSERVED"] }, "referenceRelativePath": { "type": "string", "minLength": 1 }, "disposition": { "anyOf": [{ "type": "string" }, { "type": "null" }] } }
+    },
+    "visualCheck": {
+      "type": "object", "additionalProperties": false, "required": ["id", "status", "notes"],
+      "properties": { "id": { "type": "string", "minLength": 1 }, "status": { "enum": ["PASS", "FAIL", "NOT_OBSERVED"] }, "notes": { "type": "string", "minLength": 1 } }
+    },
+    "defect": {
+      "type": "object", "additionalProperties": false, "required": ["id", "severity", "summary", "status", "disposition"],
+      "properties": { "id": { "type": "string", "minLength": 1 }, "severity": { "enum": ["P0", "P1", "P2", "P3"] }, "summary": { "type": "string", "minLength": 1 }, "status": { "enum": ["Open", "Resolved", "Accepted"] }, "disposition": { "type": "string", "minLength": 1 } }
+    },
+    "boundary": {
+      "type": "object", "additionalProperties": false, "required": ["humanReview", "actualHerdrRuntime", "release", "creditGranted"],
+      "properties": { "humanReview": { "enum": ["GO", "NO_GO"] }, "actualHerdrRuntime": { "const": "NOT_OBSERVED" }, "release": { "const": "NOT_OBSERVED" }, "creditGranted": { "const": false } }
+    }
+  }
+}

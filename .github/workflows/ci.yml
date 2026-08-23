@@ -345,6 +345,14 @@ jobs:
         shell: powershell
         run: ./tools/v0.2-renderer-compatibility/New-V02MatrixEvidenceReceipt.Tests.ps1
 
+      - name: Run v0.2 Human visual-GO candidate/attestation self-tests (PowerShell 7)
+        shell: pwsh
+        run: ./tools/v0.2-human-visual-go/Test-V02HumanVisualGoAttestation.SelfTests.ps1
+
+      - name: Run v0.2 Human visual-GO candidate/attestation self-tests (Windows PowerShell 5.1)
+        shell: powershell
+        run: ./tools/v0.2-human-visual-go/Test-V02HumanVisualGoAttestation.SelfTests.ps1
+
       - name: Run v0.2 exact binding static tests (PowerShell 7)
         shell: pwsh
         run: ./tools/Test-V02ExactBinding.Tests.ps1
