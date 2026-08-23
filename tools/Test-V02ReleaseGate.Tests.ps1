@@ -85,7 +85,7 @@ function New-V02ReleaseGateTestCmsCertificate {
 }
 
 function Write-V02ReleaseGateTestDetachedCms {
-    param([Parameter(Mandatory = $true)][string]$ContentPath,[Parameter(Mandatory = $true)][string]$SignaturePath,[Parameter(Mandatory = $true)]$Certificate)
+    param([Parameter(Mandatory = $true)][string]$ContentPath,[Parameter(Mandatory = $true)][string]$SignaturePath,[Parameter(Mandatory = $true)]$Certificate,$AdditionalCertificate)
     try {
         Add-Type -AssemblyName System.Security.Cryptography.Pkcs -ErrorAction Stop
     } catch {
@@ -96,7 +96,29 @@ function Write-V02ReleaseGateTestDetachedCms {
     $signer = [Security.Cryptography.Pkcs.CmsSigner]::new([Security.Cryptography.Pkcs.SubjectIdentifierType]::IssuerAndSerialNumber,$Certificate)
     $signer.IncludeOption = [Security.Cryptography.X509Certificates.X509IncludeOption]::EndCertOnly
     $cms.ComputeSignature($signer)
+    if ($null -ne $AdditionalCertificate) {
+        $additionalSigner = [Security.Cryptography.Pkcs.CmsSigner]::new([Security.Cryptography.Pkcs.SubjectIdentifierType]::IssuerAndSerialNumber,$AdditionalCertificate)
+        $additionalSigner.IncludeOption = [Security.Cryptography.X509Certificates.X509IncludeOption]::EndCertOnly
+        $cms.ComputeSignature($additionalSigner)
+    }
     Write-V02ReleaseGateTestBytes -Path $SignaturePath -Bytes $cms.Encode() | Out-Null
+}
+
+function New-V02ReleaseGateTestObserverVerifierRepository {
+    param([Parameter(Mandatory = $true)]$Certificate,[switch]$RetainProductionPin)
+    $root = Join-Path $script:TestRoot ('observer-verifier-' + [Guid]::NewGuid().ToString('N'))
+    $target = Join-Path $root 'tools\packaging\v0.2\V02CleanMachine.Common.ps1'
+    $toolsRoot = Join-Path $root 'tools'
+    New-V02ReleaseGateTestDirectory -Path $toolsRoot
+    Copy-Item -LiteralPath (Join-Path $script:GateRepositoryRoot 'tools\packaging') -Destination $toolsRoot -Recurse
+    $source = Get-Content -LiteralPath (Join-Path $script:GateRepositoryRoot 'tools\packaging\v0.2\V02CleanMachine.Common.ps1') -Raw
+    $source = $source.Replace('$cms.CheckSignature($false)','$cms.CheckSignature($true)')
+    if (-not $RetainProductionPin) {
+        $source = $source.Replace('8F319A7C115B0793D880D6E6F02F47B36E87D518',$Certificate.Thumbprint.Replace(' ','').ToUpperInvariant())
+    }
+    if ($source -match 'AllowUntrusted|ExpectedSignerThumbprint') { throw 'Test verifier copy unexpectedly retained a production trust override surface.' }
+    Write-V02ReleaseGateTestText -Path $target -Text $source | Out-Null
+    return $root
 }
 
 function Get-V02ReleaseGateTestRepositoryIdentity {
@@ -158,7 +180,7 @@ function New-V02ReleaseGateTestCleanMachineReport {
 }
 
 function New-V02ReleaseGateTestSignedCleanMachineBundle {
-    param([Parameter(Mandatory = $true)][string]$Root,[Parameter(Mandatory = $true)]$Identity,[Parameter(Mandatory = $true)]$Package,[Parameter(Mandatory = $true)]$Certificate)
+    param([Parameter(Mandatory = $true)][string]$Root,[Parameter(Mandatory = $true)]$Identity,[Parameter(Mandatory = $true)]$Package,[Parameter(Mandatory = $true)]$Certificate,$ReceiptCertificate,$AdditionalReceiptCertificate)
     New-V02ReleaseGateTestDirectory -Path $Root
     $thumbprint = $Certificate.Thumbprint.Replace(' ','').ToUpperInvariant()
     $reportPath = Join-Path $Root 'clean-machine-report.json'
@@ -190,8 +212,15 @@ function New-V02ReleaseGateTestSignedCleanMachineBundle {
         issuedAtUtc='2026-08-23T10:20:00.0000000Z';receiptNonce=('c'*32)
     }
     Write-V02ReleaseGateTestJson -Path $receiptPath -Value $receipt | Out-Null
-    Write-V02ReleaseGateTestDetachedCms -ContentPath $receiptPath -SignaturePath $receiptSignaturePath -Certificate $Certificate
-    return [pscustomobject]@{ReportPath=$reportPath;Report=$report;AuthorizationPath=$authorizationPath;AuthorizationSignaturePath=$authorizationSignaturePath;ReceiptPath=$receiptPath;ReceiptSignaturePath=$receiptSignaturePath;Thumbprint=$thumbprint}
+    if ($null -eq $ReceiptCertificate) { $ReceiptCertificate = $Certificate }
+    Write-V02ReleaseGateTestDetachedCms -ContentPath $receiptPath -SignaturePath $receiptSignaturePath -Certificate $ReceiptCertificate -AdditionalCertificate $AdditionalReceiptCertificate
+    return [pscustomobject]@{ReportPath=$reportPath;Report=$report;AuthorizationPath=$authorizationPath;AuthorizationSignaturePath=$authorizationSignaturePath;ReceiptPath=$receiptPath;ReceiptSignaturePath=$receiptSignaturePath;Receipt=$receipt;Thumbprint=$thumbprint}
+}
+
+function Read-V02ReleaseGateTestSignedBundle {
+    param($Bundle,[string]$VerifierRoot,$Identity,$Package)
+    Read-V02ReleaseGateCleanMachineReport -Path $Bundle.ReportPath -RepositoryRoot $VerifierRoot -ExpectedSourceCommit $Identity.Commit -ExpectedSourceTree $Identity.Tree -Package $Package `
+        -CleanHostAuthorizationPath $Bundle.AuthorizationPath -CleanHostAuthorizationSignaturePath $Bundle.AuthorizationSignaturePath -CleanHostAcceptanceReceiptPath $Bundle.ReceiptPath -CleanHostAcceptanceReceiptSignaturePath $Bundle.ReceiptSignaturePath
 }
 
 function New-V02ReleaseGateTestCleanRepository {
@@ -966,10 +995,66 @@ try {
         $certificate = New-V02ReleaseGateTestCmsCertificate
         try {
             $bundle = New-V02ReleaseGateTestSignedCleanMachineBundle -Root (Join-Path $script:TestRoot 'clean-machine-valid-cms') -Identity $script:GateIdentity -Package $package -Certificate $certificate
-            $result = Read-V02ReleaseGateCleanMachineReport -Path $bundle.ReportPath -RepositoryRoot $script:GateRepositoryRoot -ExpectedSourceCommit $script:GateIdentity.Commit -ExpectedSourceTree $script:GateIdentity.Tree -Package $package `
-                -CleanHostAuthorizationPath $bundle.AuthorizationPath -CleanHostAuthorizationSignaturePath $bundle.AuthorizationSignaturePath -CleanHostAcceptanceReceiptPath $bundle.ReceiptPath -CleanHostAcceptanceReceiptSignaturePath $bundle.ReceiptSignaturePath `
-                -ExpectedObserverSignerThumbprint $bundle.Thumbprint -AllowUntrustedObserverRootForTest
+            $verifierRoot = New-V02ReleaseGateTestObserverVerifierRepository -Certificate $certificate
+            $result = Read-V02ReleaseGateCleanMachineReport -Path $bundle.ReportPath -RepositoryRoot $verifierRoot -ExpectedSourceCommit $script:GateIdentity.Commit -ExpectedSourceTree $script:GateIdentity.Tree -Package $package `
+                -CleanHostAuthorizationPath $bundle.AuthorizationPath -CleanHostAuthorizationSignaturePath $bundle.AuthorizationSignaturePath -CleanHostAcceptanceReceiptPath $bundle.ReceiptPath -CleanHostAcceptanceReceiptSignaturePath $bundle.ReceiptSignaturePath
             if(-not$result.LifecycleCreditGranted-or$result.AcceptanceReceiptNonce-cne('c'*32)){throw 'Valid post-run observer receipt was not admitted.'}
+        } finally { $certificate.Dispose() }
+    }
+
+    Invoke-V02ReleaseGateTestCase 'post-run receipt rejects a valid CMS signer that differs from the verifier pin' {
+        $package = [pscustomobject][ordered]@{ProfileId=$script:V02ReleaseGatePackageProfileId;ReceiptSha256=('1'*64);ArchiveSha256=('2'*64);ManifestSha256=('3'*64);AppSha256=('4'*64);CoreSha256=('5'*64);ReferenceHostProfileSha256=$script:V02ReleaseGateReferenceHostProfileSha256;RendererPolicySha256=$script:V02ReleaseGateRendererPolicySha256}
+        $authorized = New-V02ReleaseGateTestCmsCertificate; $wrong = New-V02ReleaseGateTestCmsCertificate
+        try {
+            $bundle = New-V02ReleaseGateTestSignedCleanMachineBundle -Root (Join-Path $script:TestRoot 'receipt-wrong-signer') -Identity $script:GateIdentity -Package $package -Certificate $authorized -ReceiptCertificate $wrong
+            $verifierRoot = New-V02ReleaseGateTestObserverVerifierRepository -Certificate $authorized
+            Assert-V02ReleaseGateTestThrows { Read-V02ReleaseGateTestSignedBundle $bundle $verifierRoot $script:GateIdentity $package | Out-Null } 'acceptance receipt signer does not equal the pinned'
+        } finally { $authorized.Dispose(); $wrong.Dispose() }
+    }
+
+    Invoke-V02ReleaseGateTestCase 'post-run receipt rejects tampered CMS content and multiple signers' {
+        $package = [pscustomobject][ordered]@{ProfileId=$script:V02ReleaseGatePackageProfileId;ReceiptSha256=('1'*64);ArchiveSha256=('2'*64);ManifestSha256=('3'*64);AppSha256=('4'*64);CoreSha256=('5'*64);ReferenceHostProfileSha256=$script:V02ReleaseGateReferenceHostProfileSha256;RendererPolicySha256=$script:V02ReleaseGateRendererPolicySha256}
+        $certificate = New-V02ReleaseGateTestCmsCertificate; $second = New-V02ReleaseGateTestCmsCertificate
+        try {
+            $verifierRoot = New-V02ReleaseGateTestObserverVerifierRepository -Certificate $certificate
+            $tampered = New-V02ReleaseGateTestSignedCleanMachineBundle -Root (Join-Path $script:TestRoot 'receipt-tampered-cms') -Identity $script:GateIdentity -Package $package -Certificate $certificate
+            $receiptText = Get-Content -LiteralPath $tampered.ReceiptPath -Raw
+            Write-V02ReleaseGateTestText -Path $tampered.ReceiptPath -Text ($receiptText.Replace(('c'*32),('d'*32))) | Out-Null
+            Assert-V02ReleaseGateTestThrows { Read-V02ReleaseGateTestSignedBundle $tampered $verifierRoot $script:GateIdentity $package | Out-Null } 'acceptance receipt signature is invalid or untrusted'
+            $multiple = New-V02ReleaseGateTestSignedCleanMachineBundle -Root (Join-Path $script:TestRoot 'receipt-multiple-signers') -Identity $script:GateIdentity -Package $package -Certificate $certificate -AdditionalReceiptCertificate $second
+            Assert-V02ReleaseGateTestThrows { Read-V02ReleaseGateTestSignedBundle $multiple $verifierRoot $script:GateIdentity $package | Out-Null } 'must have exactly one signer'
+        } finally { $certificate.Dispose(); $second.Dispose() }
+    }
+
+    Invoke-V02ReleaseGateTestCase 'post-run receipt rejects pre-completion and future issuance' {
+        $package = [pscustomobject][ordered]@{ProfileId=$script:V02ReleaseGatePackageProfileId;ReceiptSha256=('1'*64);ArchiveSha256=('2'*64);ManifestSha256=('3'*64);AppSha256=('4'*64);CoreSha256=('5'*64);ReferenceHostProfileSha256=$script:V02ReleaseGateReferenceHostProfileSha256;RendererPolicySha256=$script:V02ReleaseGateRendererPolicySha256}
+        $certificate = New-V02ReleaseGateTestCmsCertificate
+        try {
+            $verifierRoot = New-V02ReleaseGateTestObserverVerifierRepository -Certificate $certificate
+            foreach ($case in @(@('receipt-pre-completion','2026-08-23T10:14:59.0000000Z'),@('receipt-future',[DateTimeOffset]::UtcNow.AddMinutes(10).ToString('o')))) {
+                $bundle = New-V02ReleaseGateTestSignedCleanMachineBundle -Root (Join-Path $script:TestRoot $case[0]) -Identity $script:GateIdentity -Package $package -Certificate $certificate
+                $bundle.Receipt.issuedAtUtc = $case[1]
+                Write-V02ReleaseGateTestJson -Path $bundle.ReceiptPath -Value $bundle.Receipt | Out-Null
+                Write-V02ReleaseGateTestDetachedCms -ContentPath $bundle.ReceiptPath -SignaturePath $bundle.ReceiptSignaturePath -Certificate $certificate
+                Assert-V02ReleaseGateTestThrows { Read-V02ReleaseGateTestSignedBundle $bundle $verifierRoot $script:GateIdentity $package | Out-Null } 'issuedAtUtc is outside the post-run observer window'
+            }
+        } finally { $certificate.Dispose() }
+    }
+
+    Invoke-V02ReleaseGateTestCase 'post-run receipt rejects reused nonce authorization transplant and semantic summary mismatch' {
+        $package = [pscustomobject][ordered]@{ProfileId=$script:V02ReleaseGatePackageProfileId;ReceiptSha256=('1'*64);ArchiveSha256=('2'*64);ManifestSha256=('3'*64);AppSha256=('4'*64);CoreSha256=('5'*64);ReferenceHostProfileSha256=$script:V02ReleaseGateReferenceHostProfileSha256;RendererPolicySha256=$script:V02ReleaseGateRendererPolicySha256}
+        $certificate = New-V02ReleaseGateTestCmsCertificate
+        try {
+            $verifierRoot = New-V02ReleaseGateTestObserverVerifierRepository -Certificate $certificate
+            $nonce = New-V02ReleaseGateTestSignedCleanMachineBundle -Root (Join-Path $script:TestRoot 'receipt-reused-nonce') -Identity $script:GateIdentity -Package $package -Certificate $certificate
+            $nonce.Receipt.receiptNonce = ('b'*32); Write-V02ReleaseGateTestJson -Path $nonce.ReceiptPath -Value $nonce.Receipt | Out-Null; Write-V02ReleaseGateTestDetachedCms -ContentPath $nonce.ReceiptPath -SignaturePath $nonce.ReceiptSignaturePath -Certificate $certificate
+            Assert-V02ReleaseGateTestThrows { Read-V02ReleaseGateTestSignedBundle $nonce $verifierRoot $script:GateIdentity $package | Out-Null } 'nonce is invalid or reuses'
+            $transplant = New-V02ReleaseGateTestSignedCleanMachineBundle -Root (Join-Path $script:TestRoot 'authorization-transplant') -Identity $script:GateIdentity -Package $package -Certificate $certificate
+            $foreignAuthorization = Get-Content -LiteralPath $transplant.AuthorizationPath -Raw | ConvertFrom-Json; $foreignAuthorization.nonce = ('d'*32); Write-V02ReleaseGateTestJson -Path $transplant.AuthorizationPath -Value $foreignAuthorization | Out-Null; Write-V02ReleaseGateTestDetachedCms -ContentPath $transplant.AuthorizationPath -SignaturePath $transplant.AuthorizationSignaturePath -Certificate $certificate
+            Assert-V02ReleaseGateTestThrows { Read-V02ReleaseGateTestSignedBundle $transplant $verifierRoot $script:GateIdentity $package | Out-Null } 'authorization file hash'
+            $semantic = New-V02ReleaseGateTestSignedCleanMachineBundle -Root (Join-Path $script:TestRoot 'receipt-semantic-mismatch') -Identity $script:GateIdentity -Package $package -Certificate $certificate
+            $semantic.Receipt.semantics.cleanInstall = 'FAIL'; Write-V02ReleaseGateTestJson -Path $semantic.ReceiptPath -Value $semantic.Receipt | Out-Null; Write-V02ReleaseGateTestDetachedCms -ContentPath $semantic.ReceiptPath -SignaturePath $semantic.ReceiptSignaturePath -Certificate $certificate
+            Assert-V02ReleaseGateTestThrows { Read-V02ReleaseGateTestSignedBundle $semantic $verifierRoot $script:GateIdentity $package | Out-Null } 'cleanInstall binding mismatch'
         } finally { $certificate.Dispose() }
     }
 
@@ -979,12 +1064,12 @@ try {
         try {
             $first = New-V02ReleaseGateTestSignedCleanMachineBundle -Root (Join-Path $script:TestRoot 'clean-machine-reuse-a') -Identity $script:GateIdentity -Package $package -Certificate $certificate
             $second = New-V02ReleaseGateTestSignedCleanMachineBundle -Root (Join-Path $script:TestRoot 'clean-machine-reuse-b') -Identity $script:GateIdentity -Package $package -Certificate $certificate
+            $verifierRoot = New-V02ReleaseGateTestObserverVerifierRepository -Certificate $certificate
             $secondReportText = Get-Content -LiteralPath $second.ReportPath -Raw
             Write-V02ReleaseGateTestText -Path $second.ReportPath -Text ($secondReportText.Replace(('a'*32),('d'*32))) | Out-Null
             Assert-V02ReleaseGateTestThrows {
-                Read-V02ReleaseGateCleanMachineReport -Path $second.ReportPath -RepositoryRoot $script:GateRepositoryRoot -ExpectedSourceCommit $script:GateIdentity.Commit -ExpectedSourceTree $script:GateIdentity.Tree -Package $package `
-                    -CleanHostAuthorizationPath $second.AuthorizationPath -CleanHostAuthorizationSignaturePath $second.AuthorizationSignaturePath -CleanHostAcceptanceReceiptPath $first.ReceiptPath -CleanHostAcceptanceReceiptSignaturePath $first.ReceiptSignaturePath `
-                    -ExpectedObserverSignerThumbprint $first.Thumbprint -AllowUntrustedObserverRootForTest
+                Read-V02ReleaseGateCleanMachineReport -Path $second.ReportPath -RepositoryRoot $verifierRoot -ExpectedSourceCommit $script:GateIdentity.Commit -ExpectedSourceTree $script:GateIdentity.Tree -Package $package `
+                    -CleanHostAuthorizationPath $second.AuthorizationPath -CleanHostAuthorizationSignaturePath $second.AuthorizationSignaturePath -CleanHostAcceptanceReceiptPath $first.ReceiptPath -CleanHostAcceptanceReceiptSignaturePath $first.ReceiptSignaturePath
             } 'report SHA-256 binding mismatch'
         } finally { $certificate.Dispose() }
     }
@@ -994,14 +1079,14 @@ try {
         $certificate = New-V02ReleaseGateTestCmsCertificate
         try {
             $bundle = New-V02ReleaseGateTestSignedCleanMachineBundle -Root (Join-Path $script:TestRoot 'clean-machine-report-tamper') -Identity $script:GateIdentity -Package $package -Certificate $certificate
+            $verifierRoot = New-V02ReleaseGateTestObserverVerifierRepository -Certificate $certificate
             $tampered = Get-Content -LiteralPath $bundle.ReportPath -Raw
             $tamperedBytes = ([regex]'"details"\s*:\s*"observed"').Replace($tampered,'"details": "caller changed completed report after observer signature"',1)
             if ($tamperedBytes -ceq $tampered) { throw 'Semantic-tamper fixture did not alter the completed report bytes.' }
             Write-V02ReleaseGateTestText -Path $bundle.ReportPath -Text $tamperedBytes | Out-Null
             Assert-V02ReleaseGateTestThrows {
-                Read-V02ReleaseGateCleanMachineReport -Path $bundle.ReportPath -RepositoryRoot $script:GateRepositoryRoot -ExpectedSourceCommit $script:GateIdentity.Commit -ExpectedSourceTree $script:GateIdentity.Tree -Package $package `
-                    -CleanHostAuthorizationPath $bundle.AuthorizationPath -CleanHostAuthorizationSignaturePath $bundle.AuthorizationSignaturePath -CleanHostAcceptanceReceiptPath $bundle.ReceiptPath -CleanHostAcceptanceReceiptSignaturePath $bundle.ReceiptSignaturePath `
-                    -ExpectedObserverSignerThumbprint $bundle.Thumbprint -AllowUntrustedObserverRootForTest
+                Read-V02ReleaseGateCleanMachineReport -Path $bundle.ReportPath -RepositoryRoot $verifierRoot -ExpectedSourceCommit $script:GateIdentity.Commit -ExpectedSourceTree $script:GateIdentity.Tree -Package $package `
+                    -CleanHostAuthorizationPath $bundle.AuthorizationPath -CleanHostAuthorizationSignaturePath $bundle.AuthorizationSignaturePath -CleanHostAcceptanceReceiptPath $bundle.ReceiptPath -CleanHostAcceptanceReceiptSignaturePath $bundle.ReceiptSignaturePath
             } 'report SHA-256 binding mismatch'
         } finally { $certificate.Dispose() }
     }
@@ -1011,14 +1096,14 @@ try {
         $certificate = New-V02ReleaseGateTestCmsCertificate
         try {
             $bundle = New-V02ReleaseGateTestSignedCleanMachineBundle -Root (Join-Path $script:TestRoot 'clean-machine-report-swap') -Identity $script:GateIdentity -Package $package -Certificate $certificate
+            $verifierRoot = New-V02ReleaseGateTestObserverVerifierRepository -Certificate $certificate
             $swapped = Get-Content -LiteralPath $bundle.ReportPath -Raw
             $swappedBytes = ([regex]'"details"\s*:\s*"fixture verifier input"').Replace($swapped,'"details": "different still-semantic PASS report bytes"',1)
             if ($swappedBytes -ceq $swapped) { throw 'Report-swap fixture did not alter the completed report bytes.' }
             Write-V02ReleaseGateTestText -Path $bundle.ReportPath -Text $swappedBytes | Out-Null
             Assert-V02ReleaseGateTestThrows {
-                Read-V02ReleaseGateCleanMachineReport -Path $bundle.ReportPath -RepositoryRoot $script:GateRepositoryRoot -ExpectedSourceCommit $script:GateIdentity.Commit -ExpectedSourceTree $script:GateIdentity.Tree -Package $package `
-                    -CleanHostAuthorizationPath $bundle.AuthorizationPath -CleanHostAuthorizationSignaturePath $bundle.AuthorizationSignaturePath -CleanHostAcceptanceReceiptPath $bundle.ReceiptPath -CleanHostAcceptanceReceiptSignaturePath $bundle.ReceiptSignaturePath `
-                    -ExpectedObserverSignerThumbprint $bundle.Thumbprint -AllowUntrustedObserverRootForTest
+                Read-V02ReleaseGateCleanMachineReport -Path $bundle.ReportPath -RepositoryRoot $verifierRoot -ExpectedSourceCommit $script:GateIdentity.Commit -ExpectedSourceTree $script:GateIdentity.Tree -Package $package `
+                    -CleanHostAuthorizationPath $bundle.AuthorizationPath -CleanHostAuthorizationSignaturePath $bundle.AuthorizationSignaturePath -CleanHostAcceptanceReceiptPath $bundle.ReceiptPath -CleanHostAcceptanceReceiptSignaturePath $bundle.ReceiptSignaturePath
             } 'report SHA-256 binding mismatch'
         } finally { $certificate.Dispose() }
     }
@@ -1435,6 +1520,19 @@ try {
         Assert-V02ReleaseGateTestThrows {
             Invoke-V02ReleaseGate -PackageValidator ([scriptblock]::Create('return $null'))
         } 'parameter'
+        $readerParameters = @((Get-Command Read-V02ReleaseGateCleanMachineReport -CommandType Function).Parameters.Keys)
+        if (@($readerParameters | Where-Object { $_ -match 'Signer|Trust|Untrusted|Certificate' }).Count -ne 0) {
+            throw 'Production clean-machine gate reader exposes a trust or signer override.'
+        }
+        & {
+            . (Join-Path $script:GateRepositoryRoot 'tools\packaging\v0.2\V02CleanMachine.Common.ps1')
+            foreach ($functionName in @('Read-V02CleanHostAuthorization','Read-V02CleanHostAcceptanceReceipt','Assert-V02CleanMachineReportSchema')) {
+                $authorityParameters = @((Get-Command $functionName -CommandType Function).Parameters.Keys)
+                if (@($authorityParameters | Where-Object { $_ -match 'Signer|Trust|Untrusted|Certificate' }).Count -ne 0) {
+                    throw "Production authority verifier '$functionName' exposes a trust or signer override."
+                }
+            }
+        }
     }
 
     Invoke-V02ReleaseGateTestCase 'missing authority returns NOT_READY and no Runtime/Human/Release observation' {
