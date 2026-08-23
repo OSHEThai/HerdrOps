@@ -274,7 +274,7 @@ internal sealed class Issue10PerformanceTelemetryProducer : IAsyncDisposable
         using var server = Process.GetProcessById(_options.ServerProcessId);
         var (startUtc, path) = ValidateProcessIdentity(server, _options.ServerStartUtc, _options.ServerExecutablePath,
             _options.ServerExecutableSha256, "telemetry server");
-        return new { pid=server.Id,startUtc=startUtc.ToString("O"),path,sha256=_options.ServerExecutableSha256 };
+        return new { pid = server.Id, startUtc = startUtc.ToString("O"), path, sha256 = _options.ServerExecutableSha256 };
     }
 
     internal static SampleRequest ParseRequest(string? json, string rendererMode, string runNonce, int appProcessId)
@@ -396,8 +396,15 @@ internal sealed class Issue10PerformanceTelemetryProducer : IAsyncDisposable
         var packetSha256 = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(canonical)));
         return new
         {
-            unsigned.schemaVersion, unsigned.nonce, unsigned.sequenceNumber, unsigned.observedUtc,
-            unsigned.binIndex, unsigned.sampleIndex, unsigned.producer, unsigned.metrics, packetSha256,
+            unsigned.schemaVersion,
+            unsigned.nonce,
+            unsigned.sequenceNumber,
+            unsigned.observedUtc,
+            unsigned.binIndex,
+            unsigned.sampleIndex,
+            unsigned.producer,
+            unsigned.metrics,
+            packetSha256,
         };
     }
 
@@ -455,7 +462,7 @@ internal sealed class Issue10PerformanceTelemetryProducer : IAsyncDisposable
             sequenceNumber = request.SequenceNumber,
             observedUtc = DateTimeOffset.UtcNow.ToString("O"),
             app = new { pid = Environment.ProcessId, startUtc = process.StartTime.ToUniversalTime().ToString("O"), path = Environment.ProcessPath, sha256 = _options.AppExecutableSha256 },
-            core = new { pid=core.Id,startUtc=coreStart.ToString("O"),path=corePath,sha256=_options.CoreExecutableSha256 },
+            core = new { pid = core.Id, startUtc = coreStart.ToString("O"), path = corePath, sha256 = _options.CoreExecutableSha256 },
             renderer = new { requestedMode = _options.RendererMode, nativeProcessRenderMode = observation.WpfProcessRenderMode, nativeTier = observation.RenderTier, hasAnyHwnd = Issue10PerformanceTelemetryOptions.HasProcessHwnd(Environment.ProcessId), preFirstHwnd = false },
             cpuBasisPoints = Math.Max(0, cpuBasisPoints),
             workingSetMaximumBytes = checked(maximumWorkingSet + maximumCoreWorkingSet),

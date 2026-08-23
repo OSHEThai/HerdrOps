@@ -66,7 +66,7 @@ public partial class App : Application
                 _performanceTelemetryOptions?.RendererMode);
             _performanceTelemetryOptions?.PackageLease.Revalidate("after renderer policy selection");
         }
-        catch { _performanceTelemetryOptions?.PackageLease.Dispose();throw; }
+        catch { _performanceTelemetryOptions?.PackageLease.Dispose(); throw; }
         _instanceGateFactory = instanceGateFactory ?? throw new ArgumentNullException(nameof(instanceGateFactory));
         _suppressStartupForTestHost = suppressStartupForTestHost;
     }
@@ -250,7 +250,7 @@ public partial class App : Application
             _startupFailure = exception;
             Shutdown(2);
         }
-        finally { if(!telemetryOwnsLease)options.PackageLease.Dispose(); }
+        finally { if (!telemetryOwnsLease) options.PackageLease.Dispose(); }
     }
 
     private async Task RunRuntimeEvidenceAsync(IReadOnlyList<string> args)

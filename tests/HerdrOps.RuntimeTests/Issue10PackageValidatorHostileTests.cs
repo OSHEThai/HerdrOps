@@ -245,7 +245,7 @@ public sealed class Issue10PackageValidatorHostileTests
             }
             File.Copy(Environment.ProcessPath ?? throw new InvalidOperationException("Test host path is unavailable."), fixture.CorePath, true);
             fixture.ProcessPath = fixture.AppPath;
-            fixture.Manifest = fixture.NewManifest();fixture.WriteManifest();fixture.RebuildArchive();fixture.Identity = fixture.NewIdentity();fixture.SyncIdentityBindings();fixture.WriteIdentity();
+            fixture.Manifest = fixture.NewManifest(); fixture.WriteManifest(); fixture.RebuildArchive(); fixture.Identity = fixture.NewIdentity(); fixture.SyncIdentityBindings(); fixture.WriteIdentity();
             using var validation = fixture.Validate();
             return fixture;
         }
@@ -288,9 +288,9 @@ public sealed class Issue10PackageValidatorHostileTests
 
         public void SwapComponentsAndRefreshEvidence()
         {
-            var app = File.ReadAllBytes(AppPath);var core = File.ReadAllBytes(CorePath);
-            File.WriteAllBytes(AppPath, core);File.WriteAllBytes(CorePath, app);
-            Manifest = NewManifest();WriteManifest();RebuildArchive();
+            var app = File.ReadAllBytes(AppPath); var core = File.ReadAllBytes(CorePath);
+            File.WriteAllBytes(AppPath, core); File.WriteAllBytes(CorePath, app);
+            Manifest = NewManifest(); WriteManifest(); RebuildArchive();
         }
 
         public void RebuildArchive(Action<ZipArchive, PackageFixture>? extra = null)
@@ -326,13 +326,18 @@ public sealed class Issue10PackageValidatorHostileTests
             var inventory = string.Concat(files.Select(n => $"{n!["path"]!.GetValue<string>()}\t{n["length"]!.GetValue<long>()}\t{n["sha256"]!.GetValue<string>()}\n"));
             return new JsonObject
             {
-                ["schemaVersion"] = 1, ["profileId"] = ProfileId, ["issue"] = 149,
-                ["packageVersion"] = "0.2.0", ["runtimeIdentifier"] = "win-x64",
+                ["schemaVersion"] = 1,
+                ["profileId"] = ProfileId,
+                ["issue"] = 149,
+                ["packageVersion"] = "0.2.0",
+                ["runtimeIdentifier"] = "win-x64",
                 ["source"] = new JsonObject { ["commitSha"] = Commit, ["treeSha"] = Tree },
                 ["referenceHost"] = new JsonObject { ["profileId"] = ReferenceId, ["profileSha256"] = ReferenceSha },
                 ["renderer"] = new JsonObject { ["policy"] = "software-only-process-wide", ["wpfProcessRenderMode"] = "SoftwareOnly", ["policySha256"] = PolicySha },
-                ["fileCount"] = files.Count, ["totalBytes"] = files.Sum(n => n!["length"]!.GetValue<long>()),
-                ["contentSha256"] = Hash(Encoding.UTF8.GetBytes(inventory)), ["files"] = files,
+                ["fileCount"] = files.Count,
+                ["totalBytes"] = files.Sum(n => n!["length"]!.GetValue<long>()),
+                ["contentSha256"] = Hash(Encoding.UTF8.GetBytes(inventory)),
+                ["files"] = files,
                 ["evidenceClass"] = "Static/PackagedCompatibilityPreparation"
             };
         }
@@ -344,11 +349,15 @@ public sealed class Issue10PackageValidatorHostileTests
             var profileCanonicalSha = Hash(Encoding.UTF8.GetBytes(Canonical(profile.RootElement)));
             return new JsonObject
             {
-                ["schemaVersion"] = 1, ["profileId"] = ProfileId, ["issue"] = 149,
-                ["packageVersion"] = "0.2.0", ["runtimeIdentifier"] = "win-x64",
+                ["schemaVersion"] = 1,
+                ["profileId"] = ProfileId,
+                ["issue"] = 149,
+                ["packageVersion"] = "0.2.0",
+                ["runtimeIdentifier"] = "win-x64",
                 ["source"] = new JsonObject { ["commitSha"] = Commit, ["treeSha"] = Tree },
                 ["profile"] = new JsonObject { ["id"] = ProfileId, ["relativePath"] = "tools/packaging/v0.2/package-identity-profile.json", ["bytes"] = profileBytes.LongLength, ["fileSha256"] = Hash(profileBytes), ["canonicalSha256"] = profileCanonicalSha },
-                ["archive"] = new JsonObject(), ["packageManifest"] = new JsonObject(),
+                ["archive"] = new JsonObject(),
+                ["packageManifest"] = new JsonObject(),
                 ["components"] = new JsonObject { ["app"] = Component(AppPath, "HerdrOps.App.exe"), ["core"] = Component(CorePath, "HerdrOps.Core.exe") },
                 ["referenceHost"] = new JsonObject { ["profileId"] = ReferenceId, ["profileSha256"] = ReferenceSha },
                 ["renderer"] = new JsonObject { ["policy"] = "software-only-process-wide", ["wpfProcessRenderMode"] = "SoftwareOnly" },
