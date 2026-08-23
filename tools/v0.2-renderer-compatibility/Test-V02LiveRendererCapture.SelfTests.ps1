@@ -1070,18 +1070,6 @@ try {
         }
     }
 
-    # 11b. Hostile: capture hardlink aliases fail the real held PNG guard.
-    $hardlinkRoot = Join-Path $temp 'hardlink-capture'
-    New-Item -ItemType Directory -Path $hardlinkRoot -Force | Out-Null
-    $hardlinkPng = Join-Path $hardlinkRoot 'capture.png'
-    $hardlinkAlias = Join-Path $hardlinkRoot 'capture-alias.png'
-    Copy-Item -LiteralPath (Join-Path $sourceCaptures 'Thai\dashboard-overview.png') -Destination $hardlinkPng
-    $hardlinkResult = & cmd.exe /d /c mklink /H $hardlinkAlias $hardlinkPng 2>&1
-    if ($LASTEXITCODE -ne 0) { throw "Unable to create hostile capture hardlink: $hardlinkResult" }
-    Assert-Throws {
-        Get-RendererPngIdentity $hardlinkRoot $hardlinkPng 'Hardlinked hostile capture' | Out-Null
-    } 'exactly one hard link' 'hardlinked capture reaches the real same-handle link-count guard'
-
     # 12. Hostile: Injected failure before commit
     $outPreCommit = Join-Path $temp 'evidence-out-pre-commit'
     Assert-Throws {

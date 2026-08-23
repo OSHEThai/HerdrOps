@@ -339,6 +339,7 @@ public sealed class RendererTargetObservationProducer : IAsyncDisposable
 
     private readonly RendererTargetObservationOptions _options;
     private readonly Func<int, IReadOnlyList<IntPtr>> _processWindowEnumerator;
+    private readonly Action? _afterCaptureOpenForTesting;
     private readonly CancellationTokenSource _stop = new();
     private readonly TaskCompletionSource _preFirstWindowObserved = new(
         TaskCreationOptions.RunContinuationsAsynchronously);
@@ -361,11 +362,13 @@ public sealed class RendererTargetObservationProducer : IAsyncDisposable
 
     internal RendererTargetObservationProducer(
         RendererTargetObservationOptions options,
-        Func<int, IReadOnlyList<IntPtr>>? processWindowEnumerator = null)
+        Func<int, IReadOnlyList<IntPtr>>? processWindowEnumerator = null,
+        Action? afterCaptureOpenForTesting = null)
     {
         _options = options ?? throw new ArgumentNullException(nameof(options));
         _processWindowEnumerator = processWindowEnumerator ??
             RendererTargetNativeMethods.EnumerateProcessWindowHandles;
+        _afterCaptureOpenForTesting = afterCaptureOpenForTesting;
     }
 
     internal Task Completion => _runTask ?? Task.CompletedTask;
@@ -790,6 +793,7 @@ public sealed class RendererTargetObservationProducer : IAsyncDisposable
         var before = RendererTargetNativeMethods.GetFileIdentity(stream.SafeFileHandle);
         if (before.NumberOfLinks != 1)
             throw new UnauthorizedAccessException("Renderer capture must have exactly one hard link.");
+        _afterCaptureOpenForTesting?.Invoke();
         var finalPath = RendererTargetNativeMethods.GetFinalPath(stream.SafeFileHandle);
         if (!RendererTargetObservationPath.IsContained(_options.RuntimeEvidenceRoot, finalPath) ||
             !string.Equals(finalPath, fullPath, StringComparison.OrdinalIgnoreCase))
@@ -829,7 +833,7 @@ public sealed class RendererTargetObservationProducer : IAsyncDisposable
             before.NumberOfLinks);
     }
 
-    internal static RendererStablePng ReadStablePng(string path, Action? afterOpen = null)
+    internal static RendererStablePng ReadStablePng(string path)
     {
         path = Path.GetFullPath(path);
         RendererTargetObservationPath.RequireNoReparsePointsFromVolumeRoot(path);
@@ -837,7 +841,6 @@ public sealed class RendererTargetObservationProducer : IAsyncDisposable
         var beforeIdentity = RendererTargetNativeMethods.GetFileIdentity(stream.SafeFileHandle);
         if (beforeIdentity.NumberOfLinks != 1)
             throw new UnauthorizedAccessException("Renderer capture must have exactly one hard link.");
-        afterOpen?.Invoke();
         var finalPath = RendererTargetNativeMethods.GetFinalPath(stream.SafeFileHandle);
         if (!string.Equals(finalPath, path, StringComparison.OrdinalIgnoreCase))
             throw new UnauthorizedAccessException("Renderer capture final opened path changed.");

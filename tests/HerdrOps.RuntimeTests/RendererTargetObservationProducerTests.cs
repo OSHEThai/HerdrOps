@@ -192,7 +192,7 @@ public sealed class RendererTargetObservationProducerTests
     {
         WpfTestHost.Run(() =>
         {
-            using var fixture = new ProducerFixture();
+            using var fixture = new ProducerFixture(attemptCaptureSwap: true);
             Window? window = null;
             try
             {
@@ -216,6 +216,8 @@ public sealed class RendererTargetObservationProducerTests
                 });
                 PumpDispatcherUntil(orchestration, TimeSpan.FromSeconds(30));
                 Assert.IsTrue(fixture.Producer.PendingWaitersForTesting.All(task => task.IsCompletedSuccessfully));
+                Assert.IsTrue(fixture.CaptureSwapBlocked,
+                    "The production ReadBoundPng handle did not block the hostile FileId/path swap.");
             }
             finally
             {
@@ -251,75 +253,43 @@ public sealed class RendererTargetObservationProducerTests
     }
 
     [TestMethod]
-    public void StablePngRejectsHardlinkedLeaf()
+    [DataRow("hardlink", "exactly one hard link")]
+    [DataRow("junction", "reparse point")]
+    public void ProductionProtocolRegistrationReachesExactHostileCaptureGuard(
+        string hostile,
+        string expectedMessage)
     {
-        var directory = Path.Combine(Path.GetTempPath(), $"renderer-hardlink-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(directory);
-        var path = Path.Combine(directory, "capture.png");
-        var alias = Path.Combine(directory, "capture-alias.png");
-        try
+        WpfTestHost.Run(() =>
         {
-            File.WriteAllBytes(path, OnePixelPng);
-            Assert.IsTrue(CreateHardLink(alias, path, IntPtr.Zero));
-            Assert.ThrowsExactly<UnauthorizedAccessException>(() =>
-                RendererTargetObservationProducer.ReadStablePng(path));
-        }
-        finally
-        {
-            Directory.Delete(directory, recursive: true);
-        }
-    }
-
-    [TestMethod]
-    public void StablePngRejectsJunctionAncestorFromVolumeRoot()
-    {
-        var directory = Path.Combine(Path.GetTempPath(), $"renderer-junction-{Guid.NewGuid():N}");
-        var outside = Path.Combine(Path.GetTempPath(), $"renderer-junction-outside-{Guid.NewGuid():N}");
-        var junction = Path.Combine(directory, "bound-root");
-        Directory.CreateDirectory(directory);
-        Directory.CreateDirectory(outside);
-        File.WriteAllBytes(Path.Combine(outside, "capture.png"), OnePixelPng);
-        try
-        {
-            using var mklink = Process.Start(new ProcessStartInfo(
-                "cmd.exe", $"/d /c mklink /J \"{junction}\" \"{outside}\"")
-            { CreateNoWindow = true, UseShellExecute = false })!;
-            mklink.WaitForExit();
-            Assert.AreEqual(0, mklink.ExitCode, "The hostile junction fixture was not created.");
-            Assert.ThrowsExactly<UnauthorizedAccessException>(() =>
-                RendererTargetObservationProducer.ReadStablePng(Path.Combine(junction, "capture.png")));
-        }
-        finally
-        {
-            if (Directory.Exists(junction)) Directory.Delete(junction);
-            Directory.Delete(directory, recursive: true);
-            Directory.Delete(outside, recursive: true);
-        }
-    }
-
-    [TestMethod]
-    public void StablePngBlocksFileIdPathSwapWhileExactHandleIsHeld()
-    {
-        var directory = Path.Combine(Path.GetTempPath(), $"renderer-swap-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(directory);
-        var path = Path.Combine(directory, "capture.png");
-        var replacement = Path.Combine(directory, "replacement.png");
-        File.WriteAllBytes(path, OnePixelPng);
-        File.WriteAllBytes(replacement, OnePixelPng);
-        var blocked = false;
-        try
-        {
-            _ = RendererTargetObservationProducer.ReadStablePng(path, () =>
+            using var fixture = new ProducerFixture();
+            Window? window = null;
+            try
             {
-                try { File.Move(replacement, path, overwrite: true); }
-                catch (Exception exception) when (exception is IOException or UnauthorizedAccessException) { blocked = true; }
-            });
-            Assert.IsTrue(blocked, "The capture pathname/FileId was replaceable while its exact handle was held.");
-        }
-        finally
-        {
-            Directory.Delete(directory, recursive: true);
-        }
+                var server = fixture.RunServerAsync(null, null);
+                fixture.Producer.Start();
+                var orchestration = Task.Run(async () =>
+                {
+                    await fixture.Producer.WaitForFirstWindowPermissionAsync(CancellationToken.None);
+                    await Application.Current.Dispatcher.InvokeAsync(() =>
+                    {
+                        window = new Window { Width = 32, Height = 32, ShowInTaskbar = false };
+                        window.Show();
+                        fixture.Producer.AttachFirstWindow(window);
+                    });
+                    await fixture.Producer.WaitForThaiCapturePermissionAsync(CancellationToken.None);
+                    var error = Assert.ThrowsExactly<UnauthorizedAccessException>(() =>
+                        fixture.RegisterHostileThaiCapture(hostile));
+                    StringAssert.Contains(error.Message, expectedMessage, StringComparison.OrdinalIgnoreCase);
+                    try { await fixture.Producer.DisposeAsync(); } catch { }
+                    try { await server; } catch { }
+                });
+                PumpDispatcherUntil(orchestration, TimeSpan.FromSeconds(20));
+            }
+            finally
+            {
+                window?.Close();
+            }
+        }, TimeSpan.FromSeconds(30));
     }
 
     private static void PumpDispatcherUntil(Task task, TimeSpan timeout, bool expectFailure = false)
@@ -346,9 +316,16 @@ public sealed class RendererTargetObservationProducerTests
     {
         private readonly NamedPipeServerStream _server;
         private readonly Process _core;
+        private readonly bool _attemptCaptureSwap;
+        private int _captureSwapAttempted;
+        private string? _swapTarget;
+        private string? _swapReplacement;
+        private string? _junction;
+        private string? _junctionOutside;
 
-        public ProducerFixture()
+        public ProducerFixture(bool attemptCaptureSwap = false)
         {
+            _attemptCaptureSwap = attemptCaptureSwap;
             Root = Path.Combine(Path.GetTempPath(), $"renderer-protocol-{Guid.NewGuid():N}");
             Directory.CreateDirectory(Path.Combine(Root, "captures", "Thai"));
             Directory.CreateDirectory(Path.Combine(Root, "captures", "English"));
@@ -372,15 +349,17 @@ public sealed class RendererTargetObservationProducerTests
                 components = new { app = new { sha256 = appSha }, core = new { sha256 = coreSha } },
             });
             File.WriteAllText(identityPath, canonical + "\n", new UTF8Encoding(false));
+            Action? captureHook = attemptCaptureSwap ? AttemptCaptureSwap : null;
             Producer = new RendererTargetObservationProducer(new RendererTargetObservationOptions(
                 pipeName, Root, Path.Combine(Root, "captures", "Thai"), new string('a', 32),
                 identityPath, Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(canonical))),
                 new string('b', 40), new string('c', 40), _core.Id, UiLanguage.Thai, Challenge,
-                Environment.ProcessId, appPath, appSha), static _ => []);
+                Environment.ProcessId, appPath, appSha), static _ => [], captureHook);
         }
 
         public string Root { get; }
         public RendererTargetObservationProducer Producer { get; }
+        public bool CaptureSwapBlocked { get; private set; }
 
         public async Task RunServerAsync(int? failAfterOrdinal, int? invalidOrdinal)
         {
@@ -412,9 +391,51 @@ public sealed class RendererTargetObservationProducerTests
                 var path = Path.Combine(directory, CaptureNames[index] + ".png");
                 File.WriteAllBytes(path, OnePixelPng);
                 File.SetLastWriteTimeUtc(path, DateTime.UtcNow);
+                if (_attemptCaptureSwap && language == "Thai" && index == 0)
+                {
+                    _swapTarget = path;
+                    _swapReplacement = Path.Combine(directory, "hostile-replacement.png");
+                    File.WriteAllBytes(_swapReplacement, OnePixelPng);
+                }
                 Producer.RegisterRunnerCapture(language, CaptureNames[index], path,
                     Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(
                         $"{language}|{index}|{Guid.NewGuid():N}"))));
+            }
+        }
+
+        public void RegisterHostileThaiCapture(string hostile)
+        {
+            var thai = Path.Combine(Root, "captures", "Thai");
+            var path = Path.Combine(thai, "dashboard-overview.png");
+            if (hostile == "hardlink")
+            {
+                File.WriteAllBytes(path, OnePixelPng);
+                Assert.IsTrue(CreateHardLink(Path.Combine(thai, "dashboard-overview-alias.png"), path, IntPtr.Zero));
+            }
+            else
+            {
+                _junctionOutside = Path.Combine(Path.GetTempPath(), $"renderer-outside-{Guid.NewGuid():N}");
+                Directory.CreateDirectory(_junctionOutside);
+                File.WriteAllBytes(Path.Combine(_junctionOutside, "dashboard-overview.png"), OnePixelPng);
+                _junction = Path.Combine(thai, "hostile-junction");
+                using var mklink = Process.Start(new ProcessStartInfo(
+                    "cmd.exe", $"/d /c mklink /J \"{_junction}\" \"{_junctionOutside}\"")
+                { CreateNoWindow = true, UseShellExecute = false })!;
+                mklink.WaitForExit();
+                Assert.AreEqual(0, mklink.ExitCode);
+                path = Path.Combine(_junction, "dashboard-overview.png");
+            }
+            Producer.RegisterRunnerCapture("Thai", "dashboard-overview", path, new string('D', 64));
+        }
+
+        private void AttemptCaptureSwap()
+        {
+            if (Interlocked.Exchange(ref _captureSwapAttempted, 1) != 0 ||
+                _swapTarget is null || _swapReplacement is null) return;
+            try { File.Move(_swapReplacement, _swapTarget, overwrite: true); }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            {
+                CaptureSwapBlocked = true;
             }
         }
 
@@ -423,6 +444,9 @@ public sealed class RendererTargetObservationProducerTests
             _server.Dispose();
             if (!_core.HasExited) _core.Kill(entireProcessTree: true);
             _core.Dispose();
+            if (_junction is not null && Directory.Exists(_junction)) Directory.Delete(_junction);
+            if (_junctionOutside is not null && Directory.Exists(_junctionOutside))
+                Directory.Delete(_junctionOutside, recursive: true);
             if (Directory.Exists(Root)) Directory.Delete(Root, recursive: true);
         }
     }
