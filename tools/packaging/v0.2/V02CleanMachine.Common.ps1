@@ -101,9 +101,7 @@ function Read-V02CleanHostAuthorization {
         [Parameter(Mandatory = $true)][string]$UserDataRoot,
         [Parameter(Mandatory = $true)]$InitialBinding,
         [Parameter(Mandatory = $true)]$FinalBinding,
-        [DateTimeOffset]$VerificationTimeUtc = [DateTimeOffset]::MinValue,
-        [string]$ExpectedSignerThumbprint = $script:V02CleanMachineObserverSignerThumbprint,
-        [switch]$AllowUntrustedRootForTest
+        [DateTimeOffset]$VerificationTimeUtc = [DateTimeOffset]::MinValue
     )
     foreach ($path in @($AuthorizationPath,$SignaturePath)) {
         if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "External clean-host authorization input is missing: $path" }
@@ -117,12 +115,12 @@ function Read-V02CleanHostAuthorization {
         Import-V02CleanMachinePkcsAssembly
         $cms = [Security.Cryptography.Pkcs.SignedCms]::new([Security.Cryptography.Pkcs.ContentInfo]::new($authorizationBytes),$true)
         $cms.Decode($signatureBytes)
-        $cms.CheckSignature([bool]$AllowUntrustedRootForTest)
+        $cms.CheckSignature($false)
     }
     catch { throw "External clean-host authorization signature is invalid or untrusted: $($_.Exception.Message)" }
     if ($cms.SignerInfos.Count -ne 1) { throw 'External clean-host authorization must have exactly one signer.' }
     $signer = $cms.SignerInfos[0].Certificate
-    if ($null -eq $signer -or $signer.Thumbprint.Replace(' ','').ToUpperInvariant() -cne $ExpectedSignerThumbprint) {
+    if ($null -eq $signer -or $signer.Thumbprint.Replace(' ','').ToUpperInvariant() -cne $script:V02CleanMachineObserverSignerThumbprint) {
         throw 'External clean-host authorization signer does not equal the committed independent-observer certificate pin.'
     }
     $document = ConvertFrom-V02StrictBytes -Bytes $authorizationBytes -Description 'external clean-host authorization'
@@ -163,9 +161,7 @@ function Read-V02CleanHostAcceptanceReceipt {
         [Parameter(Mandatory = $true)][string]$SignaturePath,
         [Parameter(Mandatory = $true)][string]$ReportSha256,
         [Parameter(Mandatory = $true)]$Report,
-        [Parameter(Mandatory = $true)]$Authorization,
-        [string]$ExpectedSignerThumbprint = $script:V02CleanMachineObserverSignerThumbprint,
-        [switch]$AllowUntrustedRootForTest
+        [Parameter(Mandatory = $true)]$Authorization
     )
     foreach ($path in @($ReceiptPath,$SignaturePath)) {
         if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "External clean-host acceptance receipt input is missing: $path" }
@@ -177,13 +173,13 @@ function Read-V02CleanHostAcceptanceReceipt {
         Import-V02CleanMachinePkcsAssembly
         $cms = [Security.Cryptography.Pkcs.SignedCms]::new([Security.Cryptography.Pkcs.ContentInfo]::new($receiptStable.Bytes),$true)
         $cms.Decode($signatureStable.Bytes)
-        $cms.CheckSignature([bool]$AllowUntrustedRootForTest)
+        $cms.CheckSignature($false)
     }
     catch { throw "External clean-host acceptance receipt signature is invalid or untrusted: $($_.Exception.Message)" }
     if ($cms.SignerInfos.Count -ne 1) { throw 'External clean-host acceptance receipt must have exactly one signer.' }
     $signer = $cms.SignerInfos[0].Certificate
     $thumbprint = if ($null -eq $signer) { '' } else { $signer.Thumbprint.Replace(' ','').ToUpperInvariant() }
-    if ($thumbprint -cne $ExpectedSignerThumbprint) { throw 'External clean-host acceptance receipt signer does not equal the pinned independent-observer certificate.' }
+    if ($thumbprint -cne $script:V02CleanMachineObserverSignerThumbprint) { throw 'External clean-host acceptance receipt signer does not equal the pinned independent-observer certificate.' }
 
     $document = ConvertFrom-V02StrictBytes -Bytes $receiptStable.Bytes -Description 'external clean-host acceptance receipt'
     $value = $document.Value
@@ -555,8 +551,7 @@ function New-V02CleanMachineReportObject {
 function Assert-V02CleanMachineReportSchema {
     param(
         [Parameter(Mandatory = $true)]$Report,
-        [Parameter(Mandatory = $true)][string]$RepositoryRoot,
-        [string]$ExpectedSignerThumbprint = $script:V02CleanMachineObserverSignerThumbprint
+        [Parameter(Mandatory = $true)][string]$RepositoryRoot
     )
 
     $names = @($Report.PSObject.Properties.Name)
@@ -624,7 +619,7 @@ function Assert-V02CleanMachineReportSchema {
     if ([string]$Report.actor.operator.role -cne 'EvidenceOperator') { throw "operator.role must be 'EvidenceOperator'." }
     if ([string]$Report.actor.observer.role -cne 'IndependentObserver') { throw "observer.role must be 'IndependentObserver'." }
     if ([string]$Report.mode -eq 'Live') {
-        if ([string]$Report.actor.authorization.status -cne 'VERIFIED' -or [string]$Report.actor.authorization.signerThumbprint -cne $ExpectedSignerThumbprint) { throw 'Live actor authorization must be externally verified by the pinned observer.' }
+        if ([string]$Report.actor.authorization.status -cne 'VERIFIED' -or [string]$Report.actor.authorization.signerThumbprint -cne $script:V02CleanMachineObserverSignerThumbprint) { throw 'Live actor authorization must be externally verified by the pinned observer.' }
         foreach ($name in @('authorizationSha256','signatureSha256')) { if ([string]$Report.actor.authorization.$name -cnotmatch '^[0-9A-F]{64}$') { throw "Live actor authorization $name is invalid." } }
         if ([string]$Report.actor.authorization.nonce -cnotmatch '^[0-9a-f]{32}$') { throw 'Live actor authorization nonce is invalid.' }
     } else {

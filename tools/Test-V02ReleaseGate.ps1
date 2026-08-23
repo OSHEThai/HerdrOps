@@ -1904,9 +1904,7 @@ function Read-V02ReleaseGateCleanMachineReport {
         [string]$CleanHostAuthorizationPath,
         [string]$CleanHostAuthorizationSignaturePath,
         [string]$CleanHostAcceptanceReceiptPath,
-        [string]$CleanHostAcceptanceReceiptSignaturePath,
-        [string]$ExpectedObserverSignerThumbprint,
-        [switch]$AllowUntrustedObserverRootForTest
+        [string]$CleanHostAcceptanceReceiptSignaturePath
     )
 
     # Reuse the producer's strict schema/semantic verifier, then add the
@@ -1914,11 +1912,8 @@ function Read-V02ReleaseGateCleanMachineReport {
     # CleanMachine credit is install-lifecycle evidence only and cannot grant
     # Runtime, Human, or Release authority.
     . (Join-Path $RepositoryRoot 'tools\packaging\v0.2\V02CleanMachine.Common.ps1')
-    if ([string]::IsNullOrWhiteSpace($ExpectedObserverSignerThumbprint)) {
-        $ExpectedObserverSignerThumbprint = $script:V02CleanMachineObserverSignerThumbprint
-    }
     $document = Read-V02ReleaseGateJsonFile -Path $Path -Context 'Clean-machine acceptance report'
-    Assert-V02CleanMachineReportSchema -Report $document.Value -RepositoryRoot $RepositoryRoot -ExpectedSignerThumbprint $ExpectedObserverSignerThumbprint
+    Assert-V02CleanMachineReportSchema -Report $document.Value -RepositoryRoot $RepositoryRoot
     $report = $document.Value
 
     Assert-V02ReleaseGateExactString $report.status 'PASS' 'Clean-machine report status'
@@ -1959,9 +1954,7 @@ function Read-V02ReleaseGateCleanMachineReport {
         -UserDataRoot ([string]$report.targets.userDataRoot) `
         -InitialBinding $report.bindings.initial `
         -FinalBinding $report.bindings.final `
-        -VerificationTimeUtc $completedAtUtc `
-        -ExpectedSignerThumbprint $ExpectedObserverSignerThumbprint `
-        -AllowUntrustedRootForTest:$AllowUntrustedObserverRootForTest
+        -VerificationTimeUtc $completedAtUtc
     Assert-V02ReleaseGateEqual $report.actor.operator.identity $report.machine.userScope 'Clean-machine operator/principal binding'
     Assert-V02ReleaseGateEqual $report.actor.observer.identity $authorization.Value.observerIdentity 'Clean-machine observer authorization binding'
     Assert-V02ReleaseGateEqual $report.actor.authorization.signerThumbprint $authorization.SignerThumbprint 'Clean-machine authorization signer thumbprint'
@@ -1976,9 +1969,7 @@ function Read-V02ReleaseGateCleanMachineReport {
         -SignaturePath $CleanHostAcceptanceReceiptSignaturePath `
         -ReportSha256 $document.FileSha256 `
         -Report $report `
-        -Authorization $authorization `
-        -ExpectedSignerThumbprint $ExpectedObserverSignerThumbprint `
-        -AllowUntrustedRootForTest:$AllowUntrustedObserverRootForTest
+        -Authorization $authorization
 
     return [pscustomobject][ordered]@{
         Path = $document.Path
