@@ -25,6 +25,8 @@ param(
 
     [string]$TargetObservationPipeName,
 
+    [string]$TargetObservationChallenge,
+
     [scriptblock]$OperatorCaptureAction,
 
     [scriptblock]$OperatorObservationAction,
@@ -54,6 +56,7 @@ $captureMode = if ($SyntheticCapturesForTesting) { 'SyntheticSelfTest' } else { 
 if ($captureMode -eq 'LiveOperator') {
     if ($TargetAppPid -le 0 -or $TargetCorePid -le 0) { throw 'Live renderer capture requires positive target App/Core PIDs.' }
     if ([string]::IsNullOrWhiteSpace($TargetObservationPipeName)) { throw 'Live renderer capture requires a target-process observation pipe.' }
+    if ($TargetObservationChallenge -cnotmatch '^[0-9A-F]{64}$') { throw 'Live renderer capture requires the exact uppercase 64-hex mutual-admission challenge.' }
     if ([string]::IsNullOrWhiteSpace($RuntimeEvidenceRoot)) { throw 'Live renderer capture requires a bounded runtime evidence root.' }
     if ($null -ne $OperatorObservationAction -or $null -ne $OperatorCaptureAction -or $null -ne $TestLifecycleAction -or -not [string]::IsNullOrWhiteSpace($CaptureSourceDirectory)) {
         throw 'LiveOperator does not accept opaque observation, capture-action, lifecycle, or source-directory claims.'
@@ -72,9 +75,10 @@ function Get-RendererLiveTargetObservation {
         [string]$TargetCorePath,
         [string]$TargetAppStartTimeUtc,
         [string]$TargetCoreStartTimeUtc,
+        [string]$TargetObservationChallenge,
         [string]$TestFaultStage)
 
-    $request = [ordered]@{ protocol = 'V02RendererTargetObservation'; version = 1; issue = 149; stage = $Stage; ordinal = $Ordinal }
+    $request = [ordered]@{ protocol = 'V02RendererTargetObservation'; version = 1; issue = 149; stage = $Stage; ordinal = $Ordinal; challenge = $TargetObservationChallenge }
     Write-RendererTargetPipeLine $Writer ($request | ConvertTo-Json -Depth 20 -Compress)
     $targetJson = Read-RendererTargetPipeLine $Reader
     $strictRaw = ConvertFrom-StrictHumanDesignReviewJson -Json $targetJson -Description "Target observation '$Stage'"
@@ -90,7 +94,7 @@ function Get-RendererLiveTargetObservation {
     $actualApp = Get-RendererProcessIdentity $TargetAppPid $TargetAppPath 'App'
     $actualCore = Get-RendererProcessIdentity $TargetCorePid $TargetCorePath 'Core'
     if ($actualApp.startTimeUtc -cne $TargetAppStartTimeUtc -or $actualCore.startTimeUtc -cne $TargetCoreStartTimeUtc) { throw "Target process start identity changed during '$Stage'." }
-    $actualWindow = Get-RendererWindowObservation $TargetAppPid $TargetAppStartTimeUtc "Target observation '$Stage'"
+    $actualWindow = Get-RendererWindowObservation $TargetAppPid $TargetAppStartTimeUtc "Target observation '$Stage'" ([long]$raw.window.hwnd)
 
     if ($TestFaultStage -eq 'PidReuse' -and $Ordinal -eq 2) { $raw.appProcess.startTimeUtc = ([DateTimeOffset]$raw.appProcess.startTimeUtc).AddSeconds(-1).ToUniversalTime().ToString('O',[Globalization.CultureInfo]::InvariantCulture) }
     if ($TestFaultStage -eq 'WrongProcess' -and $Ordinal -eq 0) { $raw.appProcess.pid = $TargetCorePid }
@@ -317,6 +321,7 @@ try {
                 -TargetCorePath $targetCorePath `
                 -TargetAppStartTimeUtc $targetAppIdentity.startTimeUtc `
                 -TargetCoreStartTimeUtc $targetCoreIdentity.startTimeUtc `
+                -TargetObservationChallenge $TargetObservationChallenge `
                 -TestFaultStage $TestFaultStage
             $raw = $targetStage.raw
             if ($i -eq 2) {
@@ -341,12 +346,13 @@ try {
                 captures = @($raw.captures | ForEach-Object { Copy-RendererValue $_ })
             })
             foreach ($captureBinding in @($raw.captures)) {
-                Assert-RendererExactProperties $captureBinding @('language','name','relativePath','bytes','sha256','widthPixels','heightPixels','observedUtc','producerPid','producerStartUtc') "Target capture '$($captureBinding.language)|$($captureBinding.name)'"
+                Assert-RendererExactProperties $captureBinding @('language','name','relativePath','bytes','sha256','widthPixels','heightPixels','observedUtc','producerPid','producerStartUtc','runnerTokenSha256') "Target capture '$($captureBinding.language)|$($captureBinding.name)'"
+                Assert-RendererSha $captureBinding.runnerTokenSha256 "Target capture '$($captureBinding.language)|$($captureBinding.name)' runner token"
                 if ($captureBinding.relativePath -cne "captures/$($captureBinding.language)/$($captureBinding.name).png") { throw "Target capture '$($captureBinding.language)|$($captureBinding.name)' path is not the exact isolated capture path." }
                 if ($captureBinding.producerPid -ne $targetAppIdentity.pid -or $captureBinding.producerStartUtc -cne $targetAppIdentity.startTimeUtc) { throw "Target capture '$($captureBinding.language)|$($captureBinding.name)' is not bound to the target App PID/start identity." }
                 $captureKey = "$($captureBinding.language)|$($captureBinding.name)"
                 if ($targetCaptureMap.ContainsKey($captureKey)) {
-                    foreach ($field in @('relativePath','bytes','sha256','widthPixels','heightPixels','observedUtc','producerPid','producerStartUtc')) { if ($targetCaptureMap[$captureKey].$field -cne $captureBinding.$field) { throw "Target capture '$captureKey' changed between lifecycle observations." } }
+                    foreach ($field in @('relativePath','bytes','sha256','widthPixels','heightPixels','observedUtc','producerPid','producerStartUtc','runnerTokenSha256')) { if ($targetCaptureMap[$captureKey].$field -cne $captureBinding.$field) { throw "Target capture '$captureKey' changed between lifecycle observations." } }
                 } else { $targetCaptureMap[$captureKey] = Copy-RendererValue $captureBinding }
             }
         } elseif ($null -ne $OperatorObservationAction) {

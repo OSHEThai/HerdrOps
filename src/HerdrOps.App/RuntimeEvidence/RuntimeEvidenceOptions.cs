@@ -68,6 +68,10 @@ public sealed record RuntimeEvidenceOptions(
         string? rendererPackageReceiptSha256 = null;
         string? rendererSourceCommit = null;
         string? rendererSourceTree = null;
+        string? rendererChallenge = null;
+        string? rendererServerPath = null;
+        string? rendererServerSha256 = null;
+        var rendererServerProcessId = 0;
 
         for (var index = 0; index < args.Count; index++)
         {
@@ -176,6 +180,22 @@ public sealed record RuntimeEvidenceOptions(
                 case "--renderer-source-tree":
                     rendererSourceTree = value;
                     break;
+                case "--renderer-challenge":
+                    rendererChallenge = value;
+                    break;
+                case "--renderer-server-pid":
+                    if (!int.TryParse(value, out rendererServerProcessId) || rendererServerProcessId <= 0)
+                    {
+                        error = "Option --renderer-server-pid requires a positive process identifier.";
+                        return false;
+                    }
+                    break;
+                case "--renderer-server-path":
+                    rendererServerPath = value;
+                    break;
+                case "--renderer-server-sha256":
+                    rendererServerSha256 = value;
+                    break;
                 default:
                     error = $"Unknown runtime evidence option '{argument}'.";
                     return false;
@@ -228,17 +248,25 @@ public sealed record RuntimeEvidenceOptions(
             !string.IsNullOrWhiteSpace(rendererPackageIdentityPath) ||
             !string.IsNullOrWhiteSpace(rendererPackageReceiptSha256) ||
             !string.IsNullOrWhiteSpace(rendererSourceCommit) ||
-            !string.IsNullOrWhiteSpace(rendererSourceTree);
+            !string.IsNullOrWhiteSpace(rendererSourceTree) ||
+            !string.IsNullOrWhiteSpace(rendererChallenge) ||
+            rendererServerProcessId > 0 ||
+            !string.IsNullOrWhiteSpace(rendererServerPath) ||
+            !string.IsNullOrWhiteSpace(rendererServerSha256);
         if (rendererProducerRequested &&
             (string.IsNullOrWhiteSpace(rendererObservationPipe) ||
              string.IsNullOrWhiteSpace(rendererRuntimeEvidenceRoot) ||
              string.IsNullOrWhiteSpace(rendererRunNonce) ||
              string.IsNullOrWhiteSpace(rendererPackageIdentityPath) ||
-             string.IsNullOrWhiteSpace(rendererPackageReceiptSha256) ||
-             string.IsNullOrWhiteSpace(rendererSourceCommit) ||
-             string.IsNullOrWhiteSpace(rendererSourceTree)))
+              string.IsNullOrWhiteSpace(rendererPackageReceiptSha256) ||
+              string.IsNullOrWhiteSpace(rendererSourceCommit) ||
+              string.IsNullOrWhiteSpace(rendererSourceTree) ||
+              string.IsNullOrWhiteSpace(rendererChallenge) ||
+              rendererServerProcessId <= 0 ||
+              string.IsNullOrWhiteSpace(rendererServerPath) ||
+              string.IsNullOrWhiteSpace(rendererServerSha256)))
         {
-            error = "Renderer target observation requires --renderer-observation-pipe, --renderer-runtime-evidence-root, --renderer-run-nonce, --renderer-package-identity-path, --renderer-package-receipt-sha256, --renderer-source-commit, and --renderer-source-tree together.";
+            error = "Renderer target observation requires all pipe, root, nonce, package/source, challenge, and expected server process bindings together.";
             return false;
         }
 
@@ -254,6 +282,10 @@ public sealed record RuntimeEvidenceOptions(
                 rendererSourceTree!,
                 coreProcessId,
                 language,
+                rendererChallenge!,
+                rendererServerProcessId,
+                rendererServerPath!,
+                rendererServerSha256!,
                 out rendererObservation,
                 out error))
         {

@@ -171,7 +171,7 @@ public sealed class RuntimeEvidenceOptionsTests
     public void TryParsePreservesCompleteRendererTargetBinding()
     {
         var root = Path.GetFullPath("renderer-evidence");
-        var captures = Path.Combine(root, "captures");
+        var captures = Path.Combine(root, "captures", "Thai");
         var parsed = RuntimeEvidenceOptions.TryParse(
             CompleteArguments(captures, Environment.ProcessId == 1 ? 2 : 1)
                 .Concat(RendererArguments(root))
@@ -200,7 +200,7 @@ public sealed class RuntimeEvidenceOptionsTests
 
         Assert.IsFalse(parsed);
         Assert.IsNull(options);
-        StringAssert.Contains(error, "requires --renderer-observation-pipe");
+        StringAssert.Contains(error, "requires all pipe, root, nonce");
     }
 
     [TestMethod]
@@ -253,5 +253,9 @@ public sealed class RuntimeEvidenceOptionsTests
         "--renderer-package-receipt-sha256", new string('E', 64),
         "--renderer-source-commit", new string('a', 40),
         "--renderer-source-tree", new string('b', 40),
+        "--renderer-challenge", new string('F', 64),
+        "--renderer-server-pid", (Environment.ProcessId == 2 ? 3 : 2).ToString(),
+        "--renderer-server-path", "pwsh.exe",
+        "--renderer-server-sha256", new string('A', 64),
     ];
 }

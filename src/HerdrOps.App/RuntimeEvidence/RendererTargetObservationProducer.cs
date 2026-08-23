@@ -3,11 +3,14 @@ using System.Diagnostics;
 using System.IO;
 using System.IO.Pipes;
 using System.Security.Cryptography;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using System.Windows;
 using System.Windows.Interop;
+using System.Windows.Media.Imaging;
+using Microsoft.Win32.SafeHandles;
 using HerdrOps.App.Localization;
 
 namespace HerdrOps.App.RuntimeEvidence;
@@ -22,7 +25,11 @@ public sealed record RendererTargetObservationOptions(
     string SourceCommit,
     string SourceTree,
     int CoreProcessId,
-    UiLanguage Language)
+    UiLanguage Language,
+    string Challenge,
+    int ServerProcessId,
+    string ServerExecutablePath,
+    string ServerExecutableSha256)
 {
     private static readonly Regex PipePattern = new(
         "^[A-Za-z0-9_.-]{1,200}$",
@@ -48,6 +55,10 @@ public sealed record RendererTargetObservationOptions(
         string sourceTree,
         int coreProcessId,
         UiLanguage language,
+        string challenge,
+        int serverProcessId,
+        string serverExecutablePath,
+        string serverExecutableSha256,
         out RendererTargetObservationOptions? options,
         out string? error)
     {
@@ -60,6 +71,8 @@ public sealed record RendererTargetObservationOptions(
         }
 
         if (!LowerHex32.IsMatch(runNonce) ||
+            !UpperHex64.IsMatch(challenge) ||
+            !UpperHex64.IsMatch(serverExecutableSha256) ||
             !UpperHex64.IsMatch(packageReceiptSha256) ||
             !LowerHex40.IsMatch(sourceCommit) ||
             !LowerHex40.IsMatch(sourceTree))
@@ -83,6 +96,18 @@ public sealed record RendererTargetObservationOptions(
             return false;
         }
 
+        if (serverProcessId <= 0 || serverProcessId == Environment.ProcessId)
+        {
+            error = "Renderer observation server PID must be positive and distinct from the App PID.";
+            return false;
+        }
+
+        if (language != UiLanguage.Thai)
+        {
+            error = "The one-pipe renderer protocol starts with the governed Thai capture phase.";
+            return false;
+        }
+
         try
         {
             var root = Path.GetFullPath(runtimeEvidenceRoot).TrimEnd(
@@ -90,9 +115,18 @@ public sealed record RendererTargetObservationOptions(
                 Path.AltDirectorySeparatorChar);
             var captures = Path.GetFullPath(captureDirectory);
             var identityPath = Path.GetFullPath(packageIdentityPath);
+            var serverPath = Path.GetFullPath(serverExecutablePath);
             if (!RendererTargetObservationPath.IsContained(root, captures))
             {
                 error = "Renderer capture directory must be confined below the runtime evidence root.";
+                return false;
+            }
+            if (!string.Equals(
+                    captures.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar),
+                    Path.Combine(root, "captures", "Thai"),
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                error = "The one-pipe renderer protocol requires --capture-directory to be <runtime-root>/captures/Thai.";
                 return false;
             }
 
@@ -106,7 +140,11 @@ public sealed record RendererTargetObservationOptions(
                 sourceCommit,
                 sourceTree,
                 coreProcessId,
-                language);
+                language,
+                challenge,
+                serverProcessId,
+                serverPath,
+                serverExecutableSha256);
             return true;
         }
         catch (Exception exception) when (
@@ -155,6 +193,20 @@ internal static class RendererTargetObservationPath
         }
     }
 
+    internal static void RequireNoReparsePointsFromVolumeRoot(string path)
+    {
+        var full = Path.GetFullPath(path);
+        var root = Path.GetPathRoot(full) ?? throw new InvalidDataException("Renderer path has no volume root.");
+        var current = root;
+        foreach (var segment in Path.GetRelativePath(root, full).Split(
+                     [Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar],
+                     StringSplitOptions.RemoveEmptyEntries))
+        {
+            current = Path.Combine(current, segment);
+            if (File.Exists(current) || Directory.Exists(current)) RequireNotReparse(current);
+        }
+    }
+
     private static void RequireNotReparse(string path)
     {
         if ((File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0)
@@ -165,7 +217,73 @@ internal static class RendererTargetObservationPath
     }
 }
 
-internal sealed class RendererTargetObservationProducer : IAsyncDisposable
+internal static class RendererTargetNativeMethods
+{
+    internal delegate bool EnumWindowsCallback(IntPtr hwnd, IntPtr parameter);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool GetNamedPipeServerProcessId(
+        SafePipeHandle pipe,
+        out uint serverProcessId);
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern uint GetFinalPathNameByHandle(
+        SafeFileHandle file,
+        StringBuilder path,
+        uint length,
+        uint flags);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool EnumWindows(EnumWindowsCallback callback, IntPtr parameter);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool EnumThreadWindows(
+        uint threadId,
+        EnumWindowsCallback callback,
+        IntPtr parameter);
+
+    [DllImport("user32.dll")]
+    private static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint processId);
+
+    internal static string GetFinalPath(SafeFileHandle handle)
+    {
+        var buffer = new StringBuilder(32_768);
+        var written = GetFinalPathNameByHandle(handle, buffer, (uint)buffer.Capacity, 0);
+        if (written == 0 || written >= buffer.Capacity)
+            throw new IOException("Renderer final path observation failed.");
+        var value = buffer.ToString();
+        if (value.StartsWith(@"\\?\UNC\", StringComparison.OrdinalIgnoreCase))
+            value = @"\\" + value[8..];
+        else if (value.StartsWith(@"\\?\", StringComparison.OrdinalIgnoreCase))
+            value = value[4..];
+        return Path.GetFullPath(value);
+    }
+
+    internal static IReadOnlyList<IntPtr> EnumerateProcessWindowHandles(int processId)
+    {
+        var handles = new HashSet<IntPtr>();
+        EnumWindowsCallback collect = (hwnd, parameter) =>
+        {
+            _ = parameter;
+            GetWindowThreadProcessId(hwnd, out var owner);
+            if (owner == (uint)processId) handles.Add(hwnd);
+            return true;
+        };
+        if (!EnumWindows(collect, IntPtr.Zero)) throw new IOException("EnumWindows failed.");
+        using var process = Process.GetProcessById(processId);
+        foreach (ProcessThread thread in process.Threads)
+        {
+            if (!EnumThreadWindows((uint)thread.Id, collect, IntPtr.Zero))
+                throw new IOException("EnumThreadWindows failed.");
+        }
+        return handles.ToArray();
+    }
+}
+
+public sealed class RendererTargetObservationProducer : IAsyncDisposable
 {
     internal const string Protocol = "V02RendererTargetObservation";
     private static readonly string[] Stages =
@@ -189,6 +307,16 @@ internal sealed class RendererTargetObservationProducer : IAsyncDisposable
         TaskCreationOptions.RunContinuationsAsynchronously);
     private readonly TaskCompletionSource _firstWindowAttached = new(
         TaskCreationOptions.RunContinuationsAsynchronously);
+    private readonly TaskCompletionSource _thaiCapturesComplete = new(
+        TaskCreationOptions.RunContinuationsAsynchronously);
+    private readonly TaskCompletionSource _thaiCapturePermission = new(
+        TaskCreationOptions.RunContinuationsAsynchronously);
+    private readonly TaskCompletionSource _englishCapturePermission = new(
+        TaskCreationOptions.RunContinuationsAsynchronously);
+    private readonly TaskCompletionSource _englishCapturesComplete = new(
+        TaskCreationOptions.RunContinuationsAsynchronously);
+    private readonly object _captureSync = new();
+    private readonly Dictionary<string, RendererBoundCapture> _captures = new(StringComparer.Ordinal);
     private Window? _window;
     private Task? _runTask;
 
@@ -198,6 +326,7 @@ internal sealed class RendererTargetObservationProducer : IAsyncDisposable
     }
 
     internal Task Completion => _runTask ?? Task.CompletedTask;
+    internal string RuntimeEvidenceRoot => _options.RuntimeEvidenceRoot;
 
     internal void Start()
     {
@@ -235,6 +364,48 @@ internal sealed class RendererTargetObservationProducer : IAsyncDisposable
         _firstWindowAttached.TrySetResult();
     }
 
+    internal Task WaitForEnglishCapturePermissionAsync(CancellationToken cancellationToken) =>
+        _englishCapturePermission.Task.WaitAsync(cancellationToken);
+
+    internal Task WaitForThaiCapturePermissionAsync(CancellationToken cancellationToken) =>
+        _thaiCapturePermission.Task.WaitAsync(cancellationToken);
+
+    internal bool IsRunnerCaptureRegistered(string language, string name)
+    {
+        lock (_captureSync) return _captures.ContainsKey($"{language}|{name}");
+    }
+
+    internal void RegisterRunnerCapture(
+        string language,
+        string name,
+        string path,
+        string runnerToken)
+    {
+        if (language is not ("Thai" or "English") ||
+            !CaptureNames.Contains(name, StringComparer.Ordinal) ||
+            !Regex.IsMatch(runnerToken, "^[0-9A-F]{64}$", RegexOptions.CultureInvariant))
+        {
+            throw new InvalidDataException("Renderer runner capture registration is malformed.");
+        }
+
+        var capture = ReadBoundPng(path, language, name, runnerToken);
+        lock (_captureSync)
+        {
+            var key = $"{language}|{name}";
+            if (!_captures.TryAdd(key, capture))
+            {
+                throw new InvalidOperationException($"Renderer runner capture '{key}' was registered more than once.");
+            }
+
+            var languageCount = _captures.Keys.Count(key => key.StartsWith(language + "|", StringComparison.Ordinal));
+            if (languageCount == CaptureNames.Length)
+            {
+                if (language == "Thai") _thaiCapturesComplete.TrySetResult();
+                else _englishCapturesComplete.TrySetResult();
+            }
+        }
+    }
+
     private async Task RunAsync(CancellationToken cancellationToken)
     {
         try
@@ -245,6 +416,7 @@ internal sealed class RendererTargetObservationProducer : IAsyncDisposable
                 PipeDirection.InOut,
                 PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
             await pipe.ConnectAsync(180_000, cancellationToken).ConfigureAwait(false);
+            ValidateServerBinding(pipe);
             using var reader = new StreamReader(
                 pipe,
                 new UTF8Encoding(false, true),
@@ -264,7 +436,7 @@ internal sealed class RendererTargetObservationProducer : IAsyncDisposable
             for (var ordinal = 0; ordinal < Stages.Length; ordinal++)
             {
                 var line = await reader.ReadLineAsync(cancellationToken).ConfigureAwait(false);
-                var request = ParseRequest(line, ordinal);
+                var request = ParseRequest(line, ordinal, _options.Challenge);
                 if (ordinal == 2)
                 {
                     // The independent harness sends PostFirstWindowShown only after
@@ -272,10 +444,20 @@ internal sealed class RendererTargetObservationProducer : IAsyncDisposable
                     _firstWindowAllowed.TrySetResult();
                     await _firstWindowAttached.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
                 }
+                else if (ordinal == 4)
+                {
+                    await _thaiCapturesComplete.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
+                }
+                else if (ordinal == 6)
+                {
+                    await _englishCapturesComplete.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
+                }
                 var response = await Application.Current.Dispatcher.InvokeAsync(
                     () => BuildResponse(request.Stage, ordinal));
                 await writer.WriteLineAsync(JsonSerializer.Serialize(response).AsMemory(), cancellationToken)
                     .ConfigureAwait(false);
+                if (ordinal == 3) _thaiCapturePermission.TrySetResult();
+                if (ordinal == 5) _englishCapturePermission.TrySetResult();
                 if (ordinal == 1)
                 {
                     _preFirstWindowObserved.TrySetResult();
@@ -298,14 +480,18 @@ internal sealed class RendererTargetObservationProducer : IAsyncDisposable
             throw new FileNotFoundException("Renderer package identity receipt was not found.", identityPath);
         }
 
-        if ((File.GetAttributes(identityPath) & FileAttributes.ReparsePoint) != 0)
-        {
-            throw new UnauthorizedAccessException("Renderer package identity receipt is a reparse point.");
-        }
+        RendererTargetObservationPath.RequireNoReparsePointsFromVolumeRoot(identityPath);
 
         byte[] bytes;
         using (var stream = new FileStream(identityPath, FileMode.Open, FileAccess.Read, FileShare.Read))
         {
+            if (!string.Equals(
+                    RendererTargetNativeMethods.GetFinalPath(stream.SafeFileHandle),
+                    identityPath,
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                throw new UnauthorizedAccessException("Renderer package identity final opened path changed.");
+            }
             if (stream.Length is < 3 or > 2 * 1024 * 1024)
             {
                 throw new InvalidDataException("Renderer package identity receipt has an invalid bounded size.");
@@ -365,6 +551,22 @@ internal sealed class RendererTargetObservationProducer : IAsyncDisposable
         }
     }
 
+    private void ValidateServerBinding(NamedPipeClientStream pipe)
+    {
+        if (!RendererTargetNativeMethods.GetNamedPipeServerProcessId(pipe.SafePipeHandle, out var serverPid) ||
+            serverPid != _options.ServerProcessId)
+        {
+            throw new UnauthorizedAccessException("Renderer observation pipe server PID binding failed.");
+        }
+
+        var server = ObserveProcess(_options.ServerProcessId, "Server");
+        if (!string.Equals(server.ExecutablePath, _options.ServerExecutablePath, StringComparison.OrdinalIgnoreCase) ||
+            !string.Equals(server.Sha256, _options.ServerExecutableSha256, StringComparison.Ordinal))
+        {
+            throw new UnauthorizedAccessException("Renderer observation pipe server path/hash binding failed.");
+        }
+    }
+
     private static void RejectDuplicateProperties(JsonElement value, string context)
     {
         if (value.ValueKind == JsonValueKind.Object)
@@ -389,7 +591,10 @@ internal sealed class RendererTargetObservationProducer : IAsyncDisposable
         }
     }
 
-    internal static RendererTargetObservationRequest ParseRequest(string? json, int expectedOrdinal)
+    internal static RendererTargetObservationRequest ParseRequest(
+        string? json,
+        int expectedOrdinal,
+        string expectedChallenge)
     {
         if (string.IsNullOrWhiteSpace(json) || Encoding.UTF8.GetByteCount(json) > 16_384)
         {
@@ -407,7 +612,7 @@ internal sealed class RendererTargetObservationProducer : IAsyncDisposable
 
         var properties = root.EnumerateObject().ToArray();
         var names = properties.Select(property => property.Name).ToArray();
-        var expectedNames = new[] { "protocol", "version", "issue", "stage", "ordinal" };
+        var expectedNames = new[] { "protocol", "version", "issue", "stage", "ordinal", "challenge" };
         if (names.Length != expectedNames.Length ||
             names.Distinct(StringComparer.Ordinal).Count() != names.Length ||
             !names.SequenceEqual(expectedNames, StringComparer.Ordinal))
@@ -419,6 +624,7 @@ internal sealed class RendererTargetObservationProducer : IAsyncDisposable
         if (root.GetProperty("protocol").GetString() != Protocol ||
             root.GetProperty("version").GetInt32() != 1 ||
             root.GetProperty("issue").GetInt32() != 149 ||
+            !string.Equals(root.GetProperty("challenge").GetString(), expectedChallenge, StringComparison.Ordinal) ||
             root.GetProperty("ordinal").GetInt32() != expectedOrdinal ||
             expectedOrdinal < 0 || expectedOrdinal >= Stages.Length ||
             !string.Equals(stage, Stages[expectedOrdinal], StringComparison.Ordinal))
@@ -462,7 +668,9 @@ internal sealed class RendererTargetObservationProducer : IAsyncDisposable
     {
         if (ordinal < 2)
         {
-            if (_window is not null || Application.Current.Windows.OfType<Window>().Any())
+            if (_window is not null ||
+                Application.Current.Windows.OfType<Window>().Any() ||
+                RendererTargetNativeMethods.EnumerateProcessWindowHandles(Environment.ProcessId).Count != 0)
             {
                 throw new InvalidOperationException("A WPF window existed before the governed first-window boundary.");
             }
@@ -483,47 +691,80 @@ internal sealed class RendererTargetObservationProducer : IAsyncDisposable
 
     private object[] ObserveCaptures(string producerStartUtc)
     {
-        if (!Directory.Exists(_options.CaptureDirectory))
+        lock (_captureSync)
         {
-            return [];
+            return _captures.Values
+                .OrderBy(capture => capture.Language == "Thai" ? 0 : 1)
+                .ThenBy(capture => Array.IndexOf(CaptureNames, capture.Name))
+                .Select(capture => (object)new
+                {
+                    language = capture.Language,
+                    name = capture.Name,
+                    relativePath = capture.RelativePath,
+                    bytes = capture.Bytes,
+                    sha256 = capture.Sha256,
+                    widthPixels = capture.Width,
+                    heightPixels = capture.Height,
+                    observedUtc = capture.ObservedUtc,
+                    producerPid = Environment.ProcessId,
+                    producerStartUtc,
+                    runnerTokenSha256 = capture.RunnerTokenSha256,
+                }).ToArray();
+        }
+    }
+
+    private RendererBoundCapture ReadBoundPng(
+        string path,
+        string language,
+        string name,
+        string runnerToken)
+    {
+        var fullPath = Path.GetFullPath(path);
+        RendererTargetObservationPath.RequireNoReparsePoints(_options.RuntimeEvidenceRoot, fullPath);
+        var beforeWrite = File.GetLastWriteTimeUtc(fullPath);
+        using var stream = new FileStream(fullPath, FileMode.Open, FileAccess.Read, FileShare.Read);
+        var finalPath = RendererTargetNativeMethods.GetFinalPath(stream.SafeFileHandle);
+        if (!RendererTargetObservationPath.IsContained(_options.RuntimeEvidenceRoot, finalPath) ||
+            !string.Equals(finalPath, fullPath, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new UnauthorizedAccessException("Renderer capture final opened path escaped or changed.");
         }
 
-        RendererTargetObservationPath.RequireNoReparsePoints(
-            _options.RuntimeEvidenceRoot,
-            _options.CaptureDirectory);
-        var language = _options.Language == UiLanguage.Thai ? "Thai" : "English";
-        var captures = new List<object>();
-        foreach (var name in CaptureNames)
-        {
-            var path = Path.Combine(_options.CaptureDirectory, $"{name}.png");
-            if (!File.Exists(path))
-            {
-                continue;
-            }
-
-            RendererTargetObservationPath.RequireNoReparsePoints(_options.RuntimeEvidenceRoot, path);
-            var captured = ReadStablePng(path);
-            captures.Add(new
-            {
-                language,
-                name,
-                relativePath = Path.GetRelativePath(_options.RuntimeEvidenceRoot, path).Replace('\\', '/'),
-                bytes = captured.Bytes,
-                sha256 = captured.Sha256,
-                widthPixels = captured.Width,
-                heightPixels = captured.Height,
-                observedUtc = File.GetLastWriteTimeUtc(path).ToString("O"),
-                producerPid = Environment.ProcessId,
-                producerStartUtc,
-            });
-        }
-
-        return captures.ToArray();
+        var length = stream.Length;
+        if (length < 24 || length > 64 * 1024 * 1024)
+            throw new InvalidDataException("Renderer capture PNG has an invalid bounded size.");
+        var hash = Convert.ToHexString(SHA256.HashData(stream));
+        stream.Position = 0;
+        var decoder = new PngBitmapDecoder(
+            stream,
+            BitmapCreateOptions.PreservePixelFormat,
+            BitmapCacheOption.OnLoad);
+        if (decoder.Frames.Count != 1 || decoder.Frames[0].PixelWidth <= 0 || decoder.Frames[0].PixelHeight <= 0)
+            throw new InvalidDataException("Renderer capture must be one complete decodable PNG frame.");
+        var afterWrite = File.GetLastWriteTimeUtc(fullPath);
+        if (beforeWrite != afterWrite || stream.Length != length)
+            throw new IOException("Renderer capture metadata changed during the same-handle read.");
+        if (beforeWrite < Process.GetCurrentProcess().StartTime.ToUniversalTime())
+            throw new InvalidDataException("Renderer capture predates the bound App process.");
+        return new RendererBoundCapture(
+            language,
+            name,
+            Path.GetRelativePath(_options.RuntimeEvidenceRoot, fullPath).Replace('\\', '/'),
+            length,
+            hash,
+            decoder.Frames[0].PixelWidth,
+            decoder.Frames[0].PixelHeight,
+            new DateTimeOffset(beforeWrite, TimeSpan.Zero).ToString("O"),
+            Convert.ToHexString(SHA256.HashData(Convert.FromHexString(runnerToken))));
     }
 
     internal static RendererStablePng ReadStablePng(string path)
     {
+        path = Path.GetFullPath(path);
         using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+        var finalPath = RendererTargetNativeMethods.GetFinalPath(stream.SafeFileHandle);
+        if (!string.Equals(finalPath, path, StringComparison.OrdinalIgnoreCase))
+            throw new UnauthorizedAccessException("Renderer capture final opened path changed.");
         var length = stream.Length;
         if (length < 24 || length > 64 * 1024 * 1024)
         {
@@ -564,6 +805,9 @@ internal sealed class RendererTargetObservationProducer : IAsyncDisposable
             $"Renderer target {role} executable path is unavailable."));
         var startTimeUtc = process.StartTime.ToUniversalTime().ToString("O");
         using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+        var finalPath = RendererTargetNativeMethods.GetFinalPath(stream.SafeFileHandle);
+        if (!string.Equals(finalPath, path, StringComparison.OrdinalIgnoreCase))
+            throw new UnauthorizedAccessException($"Renderer target {role} executable final path changed.");
         var length = stream.Length;
         var hash = Convert.ToHexString(SHA256.HashData(stream));
         if (stream.Length != length)
@@ -577,12 +821,12 @@ internal sealed class RendererTargetObservationProducer : IAsyncDisposable
             pid = process.Id,
             startTimeUtc,
             executablePath = path,
-            executableFinalPath = path,
+            executableFinalPath = finalPath,
             bytes = length,
             sha256 = hash,
             processName = process.ProcessName,
         };
-        return new RendererObservedProcess(startTimeUtc, hash, value);
+        return new RendererObservedProcess(startTimeUtc, hash, path, value);
     }
 
     public async ValueTask DisposeAsync()
@@ -605,4 +849,18 @@ internal sealed class RendererTargetObservationProducer : IAsyncDisposable
 
 internal sealed record RendererTargetObservationRequest(string Stage, int Ordinal);
 internal sealed record RendererStablePng(long Bytes, string Sha256, int Width, int Height);
-internal sealed record RendererObservedProcess(string StartTimeUtc, string Sha256, object Value);
+internal sealed record RendererObservedProcess(
+    string StartTimeUtc,
+    string Sha256,
+    string ExecutablePath,
+    object Value);
+internal sealed record RendererBoundCapture(
+    string Language,
+    string Name,
+    string RelativePath,
+    long Bytes,
+    string Sha256,
+    int Width,
+    int Height,
+    string ObservedUtc,
+    string RunnerTokenSha256);

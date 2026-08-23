@@ -11,9 +11,10 @@ if ([string]::IsNullOrWhiteSpace($RepositoryRoot)) {
 $producerPath = Join-Path $RepositoryRoot 'src\HerdrOps.App\RuntimeEvidence\RendererTargetObservationProducer.cs'
 $appPath = Join-Path $RepositoryRoot 'src\HerdrOps.App\App.xaml.cs'
 $optionsPath = Join-Path $RepositoryRoot 'src\HerdrOps.App\RuntimeEvidence\RuntimeEvidenceOptions.cs'
+$commonPath = Join-Path $RepositoryRoot 'tools\v0.2-renderer-compatibility\RendererCompatibility.Common.ps1'
 
 function Assert-ProducerContract {
-    param([string]$Producer,[string]$App,[string]$Options)
+    param([string]$Producer,[string]$App,[string]$Options,[string]$Common)
     $requiredProducer = @(
         'PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly',
         'Renderer target observation producer is one-time only.',
@@ -24,7 +25,11 @@ function Assert-ProducerContract {
         'RuntimeRenderPolicy.ObserveAndRequireSoftwareOnly',
         '_firstWindowAllowed.TrySetResult()',
         '_firstWindowAttached.Task.WaitAsync',
-        'SHA256.HashData(stream)')
+        'SHA256.HashData(stream)',
+        'GetNamedPipeServerProcessId',
+        'EnumerateProcessWindowHandles',
+        'RegisterRunnerCapture',
+        'runnerTokenSha256')
     foreach($token in $requiredProducer) {
         if ($Producer.IndexOf($token,[StringComparison]::Ordinal) -lt 0) {
             throw "Renderer producer omitted required fail-closed token: $token"
@@ -37,10 +42,16 @@ function Assert-ProducerContract {
         '--renderer-observation-pipe','--renderer-runtime-evidence-root',
         '--renderer-run-nonce','--renderer-package-receipt-sha256',
         '--renderer-package-identity-path',
-        '--renderer-source-commit','--renderer-source-tree')) {
+        '--renderer-source-commit','--renderer-source-tree',
+        '--renderer-challenge','--renderer-server-pid',
+        '--renderer-server-path','--renderer-server-sha256')) {
         if ($Options.IndexOf($option,[StringComparison]::Ordinal) -lt 0) {
             throw "Runtime option parser omitted exact renderer binding: $option"
         }
+    }
+    if ($Common.IndexOf("'CurrentUserOnly'",[StringComparison]::Ordinal) -lt 0 -or
+        $Common.IndexOf('PipeAccessRule',[StringComparison]::Ordinal) -lt 0) {
+        throw 'Renderer harness pipe server omitted current-user-only admission.'
     }
     $wait = $App.IndexOf('WaitForFirstWindowPermissionAsync',[StringComparison]::Ordinal)
     $create = $App.IndexOf('mainWindow = new MainWindow',[StringComparison]::Ordinal)
@@ -53,17 +64,21 @@ function Assert-ProducerContract {
 $producer = Get-Content -Raw -LiteralPath $producerPath
 $app = Get-Content -Raw -LiteralPath $appPath
 $options = Get-Content -Raw -LiteralPath $optionsPath
-Assert-ProducerContract $producer $app $options
+$common = Get-Content -Raw -LiteralPath $commonPath
+Assert-ProducerContract $producer $app $options $common
 
 $hostileCases = @(
     @{Name='current-user pipe guard';Text=$producer.Replace('PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly','PipeOptions.Asynchronous')},
     @{Name='duplicate JSON guard';Text=$producer.Replace('names.Distinct(StringComparer.Ordinal).Count() != names.Length','false')},
     @{Name='pre-HWND handshake';Text=$producer.Replace('_firstWindowAttached.Task.WaitAsync','Task.CompletedTask.WaitAsync')},
-    @{Name='same-handle hash';Text=$producer.Replace('SHA256.HashData(stream)','SHA256.HashData(File.ReadAllBytes(path))')}
+    @{Name='same-handle hash';Text=$producer.Replace('SHA256.HashData(stream)','SHA256.HashData(File.ReadAllBytes(path))')},
+    @{Name='server PID admission';Text=$producer.Replace('GetNamedPipeServerProcessId','MissingServerPidGuard')},
+    @{Name='native HWND enumeration';Text=$producer.Replace('EnumerateProcessWindowHandles','MissingNativeHwndGuard')},
+    @{Name='runner capture registration';Text=$producer.Replace('RegisterRunnerCapture','MissingRunnerCaptureGuard')}
 )
 foreach($case in $hostileCases) {
     $failed = $false
-    try { Assert-ProducerContract ([string]$case.Text) $app $options } catch { $failed = $true }
+    try { Assert-ProducerContract ([string]$case.Text) $app $options $common } catch { $failed = $true }
     if (-not $failed) { throw "Hostile mutation escaped renderer producer contract: $($case.Name)" }
 }
 

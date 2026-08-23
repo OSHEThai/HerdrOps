@@ -22,6 +22,8 @@ if ($null -eq ('RendererCompatibility.NativePath' -as [type])) {
     Add-Type -TypeDefinition @'
 using System;
 using System.ComponentModel;
+using System.Collections.Generic;
+using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Text;
 using Microsoft.Win32.SafeHandles;
@@ -126,6 +128,26 @@ namespace RendererCompatibility {
 
         [DllImport("user32.dll")]
         private static extern bool EnumWindows(EnumWindowsProc lpEnumFunc, IntPtr lParam);
+
+        [DllImport("user32.dll")]
+        private static extern bool EnumThreadWindows(uint threadId, EnumWindowsProc lpEnumFunc, IntPtr lParam);
+
+        public static long[] GetProcessWindowHandles(int processId) {
+            var handles = new HashSet<long>();
+            EnumWindowsProc collect = delegate(IntPtr hwnd, IntPtr ignored) {
+                uint owner;
+                GetWindowThreadProcessId(hwnd, out owner);
+                if (owner == (uint)processId) handles.Add(hwnd.ToInt64());
+                return true;
+            };
+            EnumWindows(collect, IntPtr.Zero);
+            using (Process process = Process.GetProcessById(processId)) {
+                foreach (ProcessThread thread in process.Threads) EnumThreadWindows((uint)thread.Id, collect, IntPtr.Zero);
+            }
+            var result = new long[handles.Count];
+            handles.CopyTo(result);
+            return result;
+        }
 
         [DllImport("user32.dll")]
         private static extern bool IsWindowVisible(IntPtr hWnd);
@@ -681,16 +703,20 @@ function Get-RendererProcessIdentity { param([int]$ProcessId,[string]$ExpectedPa
 function Assert-RendererProcessIdentityEqual { param($Actual,$Expected,[string]$Context)
     foreach($name in @('role','pid','startTimeUtc','executablePath','executableFinalPath','bytes','sha256','processName')) { if ($Actual.$name -cne $Expected.$name) { throw "$Context '$name' changed; PID reuse or executable replacement detected." } }
 }
-function Get-RendererWindowObservation { param([int]$TargetAppPid,[string]$TargetAppStartTimeUtc,[string]$Context)
+function Get-RendererWindowObservation { param([int]$TargetAppPid,[string]$TargetAppStartTimeUtc,[string]$Context,[long]$ExpectedHwnd)
     try {
         $process = Get-Process -Id $TargetAppPid -ErrorAction Stop
         $process.Refresh()
-        $hwnd = [Int64][RendererCompatibility.NativePath]::GetProcessMainWindow($TargetAppPid)
-        if ($hwnd -eq 0) { $hwnd = [Int64]$process.MainWindowHandle }
+        $handles = @([RendererCompatibility.NativePath]::GetProcessWindowHandles($TargetAppPid))
     } catch {
         throw "$Context target App window could not be observed: $($_.Exception.Message)"
     }
-    if ($hwnd -eq 0) { return [pscustomobject][ordered]@{hasAnyHwnd=$false;hwnd=[long]0;ownerPid=[int]0;ownerStartTimeUtc=$null} }
+    if ($ExpectedHwnd -eq 0) {
+        if ($handles.Count -ne 0) { throw "$Context independently observed a process-owned native HWND before the governed boundary." }
+        return [pscustomobject][ordered]@{hasAnyHwnd=$false;hwnd=[long]0;ownerPid=[int]0;ownerStartTimeUtc=$null}
+    }
+    if ($handles -notcontains $ExpectedHwnd) { throw "$Context expected HWND is not among the process-owned native HWNDs." }
+    $hwnd = $ExpectedHwnd
     if (-not [RendererCompatibility.NativePath]::IsLiveWindow([IntPtr]$hwnd)) { throw "$Context reported an HWND that is no longer live." }
     if (-not [RendererCompatibility.NativePath]::IsWindowResponsive([IntPtr]$hwnd, 2000)) { throw "$Context target App window HWND is unresponsive or hung (SendMessageTimeout timed out)." }
     $ownerPid = [RendererCompatibility.NativePath]::GetWindowOwnerProcessId([IntPtr]$hwnd)
@@ -704,7 +730,17 @@ function Assert-RendererPipeName { param([string]$Name)
 }
 function New-RendererTargetObservationPipe { param([string]$Name)
     Assert-RendererPipeName $Name
-    New-Object IO.Pipes.NamedPipeServerStream($Name,[IO.Pipes.PipeDirection]::InOut,1,[IO.Pipes.PipeTransmissionMode]::Byte,[IO.Pipes.PipeOptions]::Asynchronous)
+    $options = [IO.Pipes.PipeOptions]::Asynchronous
+    if ([Enum]::GetNames([IO.Pipes.PipeOptions]) -contains 'CurrentUserOnly') {
+        $currentUserOnly = [IO.Pipes.PipeOptions]([Enum]::Parse([IO.Pipes.PipeOptions], 'CurrentUserOnly'))
+        return New-Object IO.Pipes.NamedPipeServerStream($Name,[IO.Pipes.PipeDirection]::InOut,1,[IO.Pipes.PipeTransmissionMode]::Byte,($options -bor $currentUserOnly))
+    }
+    $security = New-Object IO.Pipes.PipeSecurity
+    $security.SetAccessRuleProtection($true, $false)
+    $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User
+    $rule = New-Object IO.Pipes.PipeAccessRule($sid,[IO.Pipes.PipeAccessRights]::FullControl,[Security.AccessControl.AccessControlType]::Allow)
+    $security.AddAccessRule($rule)
+    New-Object IO.Pipes.NamedPipeServerStream($Name,[IO.Pipes.PipeDirection]::InOut,1,[IO.Pipes.PipeTransmissionMode]::Byte,$options,0,0,$security)
 }
 function Wait-RendererTargetObservationPipe { param($Pipe,[int]$TimeoutSeconds=30)
     $async=$Pipe.BeginWaitForConnection($null,$null)
@@ -741,7 +777,7 @@ function Assert-RendererTargetBindingReceipt { param($Receipt,$Manifest)
         $manifestObservation=$manifestObservations[$i];if($observation.stage-cne$manifestObservation.stage-or$observation.observedUtc-cne$manifestObservation.observedUtc-or$observation.render.effectiveMode-cne$manifestObservation.effectiveMode-or$observation.render.softwareOnlyConfirmed-cne$manifestObservation.softwareOnlyConfirmed){throw "Target observation $i does not equal the manifest renderer observation."}
     }
     $captureBindings=@($Receipt.captureBindings);if($captureBindings.Count-ne$Manifest.captures.Count){throw 'Target binding receipt capture count does not equal manifest capture count.'};$expectedKeys=@($Manifest.captures|ForEach-Object{"$($_.language)|$($_.name)"});$actualKeys=@()
-    for($i=0;$i-lt$captureBindings.Count;$i++){$capture=$captureBindings[$i];Assert-RendererExactProperties $capture @('language','name','relativePath','bytes','sha256','widthPixels','heightPixels','observedUtc','producerPid','producerStartUtc') "Target capture $i";$actualKeys+="$($capture.language)|$($capture.name)";Assert-RendererRelativePath $capture.relativePath "Target capture $i path";Assert-RendererPositiveInteger $capture.bytes "Target capture $i bytes";Assert-RendererSha $capture.sha256 "Target capture $i SHA-256";Assert-RendererPositiveInteger $capture.widthPixels "Target capture $i width";Assert-RendererPositiveInteger $capture.heightPixels "Target capture $i height";Assert-RendererUtc $capture.observedUtc "Target capture $i UTC";Assert-RendererPositiveInteger $capture.producerPid "Target capture $i producer PID";Assert-RendererUtc $capture.producerStartUtc "Target capture $i producer start";if($capture.producerPid-ne$Receipt.appProcess.pid-or$capture.producerStartUtc-cne$Receipt.appProcess.startTimeUtc){throw "Target capture $i producer identity does not equal the App PID/start identity."};$manifestCapture=$Manifest.captures[$i];foreach($name in @('language','name','relativePath','bytes','sha256','widthPixels','heightPixels','observedUtc')){if($capture.$name-cne$manifestCapture.$name){throw "Target capture $i does not equal manifest capture '$name'."}}}
+    $runnerTokens=@();for($i=0;$i-lt$captureBindings.Count;$i++){$capture=$captureBindings[$i];Assert-RendererExactProperties $capture @('language','name','relativePath','bytes','sha256','widthPixels','heightPixels','observedUtc','producerPid','producerStartUtc','runnerTokenSha256') "Target capture $i";$actualKeys+="$($capture.language)|$($capture.name)";Assert-RendererRelativePath $capture.relativePath "Target capture $i path";Assert-RendererPositiveInteger $capture.bytes "Target capture $i bytes";Assert-RendererSha $capture.sha256 "Target capture $i SHA-256";Assert-RendererSha $capture.runnerTokenSha256 "Target capture $i runner token";$runnerTokens+=[string]$capture.runnerTokenSha256;Assert-RendererPositiveInteger $capture.widthPixels "Target capture $i width";Assert-RendererPositiveInteger $capture.heightPixels "Target capture $i height";Assert-RendererUtc $capture.observedUtc "Target capture $i UTC";Assert-RendererPositiveInteger $capture.producerPid "Target capture $i producer PID";Assert-RendererUtc $capture.producerStartUtc "Target capture $i producer start";if($capture.producerPid-ne$Receipt.appProcess.pid-or$capture.producerStartUtc-cne$Receipt.appProcess.startTimeUtc){throw "Target capture $i producer identity does not equal the App PID/start identity."};$manifestCapture=$Manifest.captures[$i];foreach($name in @('language','name','relativePath','bytes','sha256','widthPixels','heightPixels','observedUtc')){if($capture.$name-cne$manifestCapture.$name){throw "Target capture $i does not equal manifest capture '$name'."}}};if(@($runnerTokens|Select-Object -Unique).Count-ne$captureBindings.Count){throw 'Target capture runner tokens are not unique per capture.'}
     for($i=0;$i-lt$expectedKeys.Count;$i++){if($actualKeys[$i]-cne$expectedKeys[$i]){throw "Target capture index $i is not '$($expectedKeys[$i])'."}}
 }
 function Get-RendererPngIdentity { param([string]$Root,[string]$Path,[string]$Context)

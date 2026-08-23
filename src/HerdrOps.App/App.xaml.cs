@@ -247,8 +247,23 @@ public partial class App : Application
                 state,
                 mainWindow,
                 options,
-                producerBinding);
+                producerBinding,
+                rendererObservation);
             var report = await runner.RunAsync();
+            if (rendererObservation is not null)
+            {
+                await rendererObservation.WaitForThaiCapturePermissionAsync(CancellationToken.None);
+                await runner.CaptureRendererCompatibilitySetAsync(
+                    rendererObservation,
+                    UiLanguage.Thai,
+                    CancellationToken.None);
+                await rendererObservation.WaitForEnglishCapturePermissionAsync(CancellationToken.None);
+                await runner.CaptureRendererCompatibilitySetAsync(
+                    rendererObservation,
+                    UiLanguage.English,
+                    CancellationToken.None);
+                await rendererObservation.Completion;
+            }
             if (options.Issue10WidgetReportPath is not null)
             {
                 Issue10WidgetEvidenceProducer.Write(

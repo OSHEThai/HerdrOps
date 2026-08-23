@@ -454,7 +454,8 @@ function Get-FixtureCaptures([string]$ObservedUtc, [string]$LanguageFilter) {
             $bytes = [IO.File]::ReadAllBytes($path)
             $fileObservedUtc = ([DateTimeOffset]([IO.File]::GetLastWriteTimeUtc($path))).ToUniversalTime().ToString('O',[Globalization.CultureInfo]::InvariantCulture)
             $sha = ([BitConverter]::ToString(([Security.Cryptography.SHA256]::Create()).ComputeHash($bytes))).Replace('-','').ToUpperInvariant()
-            $items += ,([ordered]@{language=$language;name=$name;relativePath=$relative;bytes=[long]$bytes.Length;sha256=$sha;widthPixels=64;heightPixels=48;observedUtc=$fileObservedUtc;producerPid=[int]$process.Id;producerStartUtc=$startUtc})
+            $token = ([BitConverter]::ToString(([Security.Cryptography.SHA256]::Create()).ComputeHash([Text.Encoding]::UTF8.GetBytes("$language|$name")))).Replace('-','').ToUpperInvariant()
+            $items += ,([ordered]@{language=$language;name=$name;relativePath=$relative;bytes=[long]$bytes.Length;sha256=$sha;widthPixels=64;heightPixels=48;observedUtc=$fileObservedUtc;producerPid=[int]$process.Id;producerStartUtc=$startUtc;runnerTokenSha256=$token})
         }
     }
     return $items
@@ -578,6 +579,7 @@ function Invoke-LiveTargetFixtureCase([string]$Root,[string]$RepositoryRoot,[str
     $environmentPath = New-LiveReferenceEnvironmentSnapshot (Join-Path $fixtureRoot 'environment.json') $RepositoryRoot
     $targetScript = New-LiveTargetFixtureScript (Join-Path $fixtureRoot 'target.ps1')
     $pipeName = 'herdrops-v02-' + [Guid]::NewGuid().ToString('N')
+    $challenge = 'A' * 64
     $core = $null
     $app = $null
     try {
@@ -598,6 +600,7 @@ function Invoke-LiveTargetFixtureCase([string]$Root,[string]$RepositoryRoot,[str
                 -TargetAppPid $app.Id `
                 -TargetCorePid $core.Id `
                 -TargetObservationPipeName $pipeName `
+                -TargetObservationChallenge $challenge `
                 -TestEnvironmentSnapshotPath $environmentPath
             if ($result.CaptureMode -cne 'LiveOperator' -or $result.ActualHerdrRuntime -cne 'NOT_OBSERVED' -or [bool]$result.ReleaseCredit -or $result.CaptureCount -ne 20 -or $result.LifecycleStages -ne 8) { throw 'Positive LiveOperator fixture did not preserve exact no-credit result boundaries.' }
 
@@ -638,6 +641,7 @@ function Invoke-LiveTargetFixtureCase([string]$Root,[string]$RepositoryRoot,[str
                 -TargetAppPid $app.Id `
                 -TargetCorePid $core.Id `
                 -TargetObservationPipeName $pipeName `
+                -TargetObservationChallenge $challenge `
                 -TestEnvironmentSnapshotPath $environmentPath `
                 -TestFaultStage $FaultStage
         } $expectedPatterns[$FaultStage] "LiveOperator hostile fixture '$FaultStage'"
@@ -814,6 +818,7 @@ try {
             -TargetAppPid 1 `
             -TargetCorePid 2 `
             -TargetObservationPipeName 'opaque-guard' `
+            -TargetObservationChallenge ('A' * 64) `
             -OperatorObservationAction (New-MockObservationAction)
     } 'opaque observation' 'LiveOperator rejects opaque operator observations'
 
