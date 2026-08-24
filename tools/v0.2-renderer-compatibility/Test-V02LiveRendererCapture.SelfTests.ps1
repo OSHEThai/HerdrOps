@@ -82,14 +82,22 @@ function New-IsolatedTestRepository([string]$Root) {
     }
 }
 
-function New-IsolatedTestPackage([string]$Root, [string]$RepositoryRoot, [string]$Commit, [string]$Tree, [switch]$ExecutableFixture) {
+function New-IsolatedTestPackage([string]$Root, [string]$RepositoryRoot, [string]$Commit, [string]$Tree, [switch]$ExecutableFixture, [string]$PackagedAppSourceDirectory) {
     New-Item -ItemType Directory -Path $Root -Force | Out-Null
     $packageRoot = Join-Path $Root 'package'
     New-Item -ItemType Directory -Path $packageRoot -Force | Out-Null
 
     $appPath = Join-Path $packageRoot 'HerdrOps.App.exe'
     $corePath = Join-Path $packageRoot 'HerdrOps.Core.exe'
-    if ($ExecutableFixture) {
+    if (-not [string]::IsNullOrWhiteSpace($PackagedAppSourceDirectory)) {
+        if (-not (Test-Path -LiteralPath (Join-Path $PackagedAppSourceDirectory 'HerdrOps.App.exe') -PathType Leaf)) {
+            throw "Real packaged App fixture is missing from '$PackagedAppSourceDirectory'."
+        }
+        foreach ($item in @(Get-ChildItem -LiteralPath $PackagedAppSourceDirectory -Force)) {
+            Copy-Item -LiteralPath $item.FullName -Destination $packageRoot -Recurse -Force
+        }
+        [IO.File]::WriteAllBytes($corePath, [Text.Encoding]::UTF8.GetBytes('Core Binary Content'))
+    } elseif ($ExecutableFixture) {
         $powershellPath = (Get-Command powershell.exe -ErrorAction Stop).Source
         Copy-Item -LiteralPath $powershellPath -Destination $appPath -Force
         Copy-Item -LiteralPath $powershellPath -Destination $corePath -Force
@@ -195,6 +203,19 @@ function New-CaptureSourceDirectory([string]$Root) {
         New-Item -ItemType Directory -Path $languageRoot -Force | Out-Null
         foreach ($name in $script:RendererCaptureNames) {
             New-RendererTestPng -Path (Join-Path $languageRoot "$name.png") -Width 64 -Height 48
+        }
+    }
+    return $Root
+}
+
+function New-ReferenceCaptureSourceDirectory([string]$Root, [string]$RepositoryRoot) {
+    New-Item -ItemType Directory -Path $Root -Force | Out-Null
+    foreach ($language in @('Thai', 'English')) {
+        $languageRoot = Join-Path $Root $language
+        New-Item -ItemType Directory -Path $languageRoot -Force | Out-Null
+        foreach ($name in $script:RendererCaptureNames) {
+            $reference = Join-Path $RepositoryRoot (Get-RendererReferencePath $name)
+            Copy-Item -LiteralPath $reference -Destination (Join-Path $languageRoot "$name.png")
         }
     }
     return $Root
@@ -742,23 +763,65 @@ try {
         -not (Test-Path -LiteralPath (Join-Path $out1 $canonicalManifestName) -PathType Leaf)) {
         throw 'Live capture did not publish the canonical production manifest filename.'
     }
-    foreach ($consumerName in @(
-        'Invoke-V02AutomatedRendererMatrixCapture.ps1',
-        'Complete-V02RendererCompatibilityManifest.ps1')) {
-        $consumerSource = Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot $consumerName)
-        if ($consumerSource -cnotmatch [regex]::Escape("Join-Path `$source 'v0.2-renderer-compatibility-manifest.json'") -and
-            $consumerSource -cnotmatch [regex]::Escape("Join-Path `$capture 'v0.2-renderer-compatibility-manifest.json'")) {
-            throw "$consumerName does not consume the canonical live-capture manifest filename directly."
-        }
-        if ($consumerSource -cmatch "Join-Path [`$][A-Za-z]+ 'renderer-compatibility-manifest[.]json'") {
-            throw "$consumerName retains the obsolete non-canonical manifest filename."
-        }
+    $realAppDirectory = Join-Path ([IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))) 'src\HerdrOps.App\bin\Release\net10.0-windows'
+    $matrixPackage = New-IsolatedTestPackage (Join-Path $temp 'matrix-pkg') $repo.Root $repo.Commit $repo.Tree -PackagedAppSourceDirectory $realAppDirectory
+    $matrixInput = Join-Path $temp 'matrix-input'
+    $matrixCaptureSource = New-ReferenceCaptureSourceDirectory (Join-Path $temp 'matrix-capture-source') $repo.Root
+    $matrixCapture = & (Join-Path $PSScriptRoot 'Invoke-V02LiveRendererCapture.ps1') `
+        -OutputDirectory $matrixInput `
+        -PackageRoot $matrixPackage.PackageRoot `
+        -ArchivePath $matrixPackage.ArchivePath `
+        -IdentityReceiptPath $matrixPackage.ReceiptPath `
+        -RepositoryRoot $repo.Root `
+        -ProfilePath $matrixPackage.ProfilePath `
+        -CaptureSourceDirectory $matrixCaptureSource `
+        -OperatorObservationAction (New-MockObservationAction) `
+        -SyntheticCapturesForTesting `
+        -TestEnvironmentSnapshotPath $fixtureEnvironmentPath
+    if ((Split-Path -Leaf $matrixCapture.ManifestPath) -cne $canonicalManifestName) {
+        throw 'Real-App matrix input did not retain the canonical production manifest filename.'
     }
-    $pipelineSource = Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot 'Invoke-V02Issue149PerformancePipeline.ps1')
-    if ($pipelineSource -cnotmatch [regex]::Escape('$captureManifestPath=Resolve-I149ContainedPath $root $CaptureCandidateManifestPath')) {
-        throw 'Performance pipeline no longer consumes the exact matrix manifest path supplied by the caller.'
+    $matrixOutput = Join-Path $temp 'matrix-output'
+    $matrixResult = & (Join-Path $PSScriptRoot 'Invoke-V02AutomatedRendererMatrixCapture.ps1') `
+        -CaptureCandidateDirectory $matrixInput `
+        -DestinationDirectory $matrixOutput `
+        -OperatorIdentity '@matrix-operator' `
+        -IndependentReviewerIdentity '@matrix-reviewer' `
+        -RepositoryRoot $repo.Root
+    if ($matrixResult.MatrixEvidence -cne 'PASS' -or $matrixResult.PixelComparison -cne 'PASS' -or
+        $matrixResult.ActualHerdrRuntime -cne 'NOT_OBSERVED' -or [bool]$matrixResult.CreditGranted -or
+        (Split-Path -Leaf $matrixResult.ManifestPath) -cne $canonicalManifestName) {
+        throw 'Production automated matrix orchestrator did not publish the exact validated no-credit result.'
     }
-    Pass 'production live output flows to matrix, performance, and finalizer under one canonical manifest filename without rename'
+    $matrixValidation = Test-RendererCompatibilityManifest -ManifestPath $matrixResult.ManifestPath -EvidenceRoot $matrixOutput -RepositoryRoot $repo.Root -ValidateBindings
+    if ($matrixValidation.AutomatedMatrixEvidence -cne 'PASS' -or [bool]$matrixValidation.CreditGranted) {
+        throw 'Production matrix output failed independent manifest validation.'
+    }
+    Pass 'production live output invokes the real matrix orchestrator and publishes one canonical validated candidate without rename'
+
+    Assert-Throws {
+        & (Join-Path $PSScriptRoot 'Invoke-V02AutomatedRendererMatrixCapture.ps1') `
+            -CaptureCandidateDirectory $matrixInput -DestinationDirectory $matrixOutput `
+            -OperatorIdentity '@matrix-operator' -IndependentReviewerIdentity '@matrix-reviewer' -RepositoryRoot $repo.Root
+    } 'already exists; automated matrix publication is no-clobber' 'production matrix orchestrator rejects a pre-existing destination without mutation'
+    Assert-Throws {
+        & (Join-Path $PSScriptRoot 'Invoke-V02AutomatedRendererMatrixCapture.ps1') `
+            -CaptureCandidateDirectory $matrixInput -DestinationDirectory (Join-Path $matrixInput 'nested-output') `
+            -OperatorIdentity '@matrix-operator' -IndependentReviewerIdentity '@matrix-reviewer' -RepositoryRoot $repo.Root
+    } 'must be disjoint' 'production matrix orchestrator rejects source and destination overlap'
+    $reparseTarget = Join-Path $temp 'matrix-reparse-target'
+    New-Item -ItemType Directory -Path $reparseTarget | Out-Null
+    $reparsePath = Join-Path $matrixInput 'prohibited-reparse'
+    New-Item -ItemType Junction -Path $reparsePath -Target $reparseTarget | Out-Null
+    try {
+        Assert-Throws {
+            & (Join-Path $PSScriptRoot 'Invoke-V02AutomatedRendererMatrixCapture.ps1') `
+                -CaptureCandidateDirectory $matrixInput -DestinationDirectory (Join-Path $temp 'matrix-reparse-output') `
+                -OperatorIdentity '@matrix-operator' -IndependentReviewerIdentity '@matrix-reviewer' -RepositoryRoot $repo.Root
+        } 'contains prohibited reparse entry' 'production matrix orchestrator rejects capture child reparse traversal'
+    } finally {
+        if (Test-Path -LiteralPath $reparsePath) { Remove-Item -LiteralPath $reparsePath -Force }
+    }
 
     # 2. Positive real-capture input path: PNG bytes are admitted from a
     # contained source directory, but the result remains synthetic/no-credit.
@@ -926,7 +989,7 @@ try {
         New-Item -ItemType Directory -Path $swapDir2 -Force | Out-Null
         Assert-Throws {
             Assert-RendererDirectoryLease -Lease $swapLease -Root $temp -Path $swapDir2 -Context 'Lease swap test'
-        } 'identity changed|path no longer resolves' 'swapped directory fails lease verification'
+        } 'identity changed|path no longer resolves|held delete-protected directory no longer has the expected path' 'swapped directory fails lease verification'
     } finally {
         $swapLease.Handle.Dispose()
     }

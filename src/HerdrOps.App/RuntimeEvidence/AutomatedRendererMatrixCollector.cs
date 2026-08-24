@@ -6,7 +6,9 @@ using System.Text.Json.Serialization;
 using System.Windows;
 using System.Windows.Automation;
 using System.Windows.Automation.Peers;
+using System.Windows.Automation.Provider;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
@@ -45,6 +47,9 @@ internal static class AutomatedRendererMatrixCollector
 
             var parent = Path.GetDirectoryName(options.OutputDirectory)
                 ?? throw new InvalidOperationException("Renderer matrix output requires a parent directory.");
+            RequireNonReparsePath(parent);
+            if (!string.Equals(Path.GetDirectoryName(options.ErrorPath), parent, StringComparison.OrdinalIgnoreCase))
+                throw new InvalidOperationException("Renderer matrix error output must share the governed output parent.");
             Directory.CreateDirectory(parent);
             var staging = Path.Combine(parent, $".renderer-matrix-staging-{Guid.NewGuid():N}");
             Directory.CreateDirectory(staging);
@@ -55,7 +60,7 @@ internal static class AutomatedRendererMatrixCollector
             }
             catch
             {
-                if (Directory.Exists(staging)) Directory.Delete(staging, recursive: true);
+                if (Directory.Exists(staging)) DeleteOwnedFlatDirectory(staging);
                 throw;
             }
             ExitCode = 0;
@@ -83,14 +88,13 @@ internal static class AutomatedRendererMatrixCollector
         var observations = new List<Observation>();
         UiLanguageService.Shared.SetLanguage(UiLanguage.Thai);
         using var state = LiveDashboardState.CreateSyntheticPreview();
-        var window = new MainWindow(state) { ShowActivated = false, ShowInTaskbar = false };
+        var window = new MainWindow(state) { ShowActivated = false, ShowInTaskbar = false, WindowStartupLocation = WindowStartupLocation.Manual };
         try
         {
             window.Left = -32000;
             window.Top = -32000;
             window.Show();
             await Dispatcher.Yield(DispatcherPriority.ApplicationIdle);
-            window.Hide();
 
             foreach (var item in DisplayCases)
             {
@@ -104,19 +108,36 @@ internal static class AutomatedRendererMatrixCollector
                 var rendered = Render(window, png, item.Width, item.Height, 96 * item.Scale);
                 observations.Add(new(item.Id, "Display",
                 [
-                    Check("offscreen-viewport-configured", !window.IsVisible && !window.ShowInTaskbar && !window.ShowActivated),
-                    Check("packaged-render-completed", rendered),
-                    Check("visual-integrity", rendered && new FileInfo(png).Length > 1024),
+                    Check("offscreen-viewport-configured", window.IsVisible && window.Left + window.ActualWidth <= SystemParameters.VirtualScreenLeft && window.Top + window.ActualHeight <= SystemParameters.VirtualScreenTop && !window.ShowInTaskbar && !window.ShowActivated),
+                    Check("packaged-render-completed", rendered.Bytes > 1024),
+                    Check("visual-integrity", rendered.OpaqueRatio >= .95 && rendered.ContentRatio >= .005 && rendered.ContentRatio <= .95 && rendered.ChannelRange >= 32),
                     Check("single-language", HasExactlyOneSelectedLanguage(window, UiLanguage.Thai)),
-                ], $"Packaged WPF visual rendered off-screen at {item.Width}x{item.Height}, {item.Scale * 100:0}% scale.", png, item.Width, item.Height));
+                ], $"Packaged WPF visual rendered off-screen at {item.Width}x{item.Height}, {item.Scale * 100:0}% scale; position=({window.Left},{window.Top}); visible={window.IsVisible}; opaque={rendered.OpaqueRatio:P2}; content={rendered.ContentRatio:P2}; channelRange={rendered.ChannelRange}.", png, item.Width, item.Height));
             }
 
             var buttons = FindVisuals<Button>(window).Where(button => button.IsEnabled).ToArray();
             var peer = UIElementAutomationPeer.CreatePeerForElement(window) ?? new WindowAutomationPeer(window);
+            var keyboardExercised = buttons.Length > 0;
+            var actionablePeers = new List<IInvokeProvider>();
+            foreach (var button in buttons)
+            {
+                keyboardExercised &= button.Focus();
+                await Dispatcher.Yield(DispatcherPriority.Input);
+                keyboardExercised &= ReferenceEquals(Keyboard.FocusedElement, button) || ReferenceEquals(FocusManager.GetFocusedElement(window), button);
+                var buttonPeer = UIElementAutomationPeer.CreatePeerForElement(button) ?? new ButtonAutomationPeer(button);
+                if (buttonPeer.GetPattern(PatternInterface.Invoke) is IInvokeProvider invokeProvider &&
+                    !string.IsNullOrWhiteSpace(buttonPeer.GetName())) actionablePeers.Add(invokeProvider);
+            }
+            var actionExercised = actionablePeers.Count == buttons.Length && actionablePeers.Count > 0;
+            if (actionExercised)
+            {
+                actionablePeers[0].Invoke();
+                await Dispatcher.Yield(DispatcherPriority.ApplicationIdle);
+            }
             observations.Add(new("keyboard-uia", "Accessibility",
             [
-                Check("keyboard-navigation", buttons.Length > 0 && buttons.All(button => button.Focusable && button.IsTabStop)),
-                Check("uia-tree", peer.GetChildren()?.Count > 0 && buttons.All(button => !string.IsNullOrWhiteSpace(AutomationProperties.GetName(button)) || !string.IsNullOrWhiteSpace(button.Content?.ToString()))),
+                Check("keyboard-navigation", keyboardExercised && buttons.All(button => button.Focusable && button.IsTabStop)),
+                Check("uia-tree", actionExercised && peer.GetChildren()?.Count > 0),
             ],
                 "Keyboard focus and the production UI Automation peer tree were observed."));
 
@@ -138,10 +159,12 @@ internal static class AutomatedRendererMatrixCollector
                 window.UpdateLayout();
                 await Dispatcher.Yield(DispatcherPriority.ApplicationIdle);
                 var text = FindVisuals<TextBlock>(window).Where(item => !string.IsNullOrWhiteSpace(item.Text) && IsLayoutVisible(item, window)).ToArray();
-                var completeLayout = text.Length > 0 && text.All(item => item.IsMeasureValid && item.IsArrangeValid && item.DesiredSize.Width > 0 && item.DesiredSize.Height > 0 && double.IsFinite(item.DesiredSize.Width) && double.IsFinite(item.DesiredSize.Height));
+                var unbounded = text.Where(item => !HasBoundedLayout(item, window)).ToArray();
+                var boundedCount = text.Length - unbounded.Length;
+                var completeLayout = text.Length > 0 && boundedCount == text.Length;
                 observations.Add(new($"text-scale-{scale * 100:0}", "Accessibility",
                 [Check("text-scale-applied", Math.Abs(((ScaleTransform)window.LayoutTransform).ScaleX - scale) < 0.001), Check("no-clipping-overlap", completeLayout)],
-                    $"Production visual tree completed layout at {scale * 100:0}% deterministic text scale."));
+                    $"Production visual tree completed bounded layout for {boundedCount}/{text.Length} visible text elements at {scale * 100:0}% deterministic text scale; unbounded={string.Join("|", unbounded.Select(item => $"{item.Text}:{DescribeLayout(item, window)}"))}."));
             }
             window.LayoutTransform = Transform.Identity;
 
@@ -167,7 +190,7 @@ internal static class AutomatedRendererMatrixCollector
         }
 
         var ended = DateTimeOffset.UtcNow;
-        var failures = observations.SelectMany(item => item.Checks.Where(check => check.ObservedValue != Expected(check.Name)).Select(check => $"{item.Id}/{check.Name}={check.ObservedValue}")).ToArray();
+        var failures = observations.SelectMany(item => item.Checks.Where(check => check.ObservedValue != Expected(check.Name)).Select(check => $"{item.Id}/{check.Name}={check.ObservedValue} [{item.Details}]")).ToArray();
         if (observations.Count != 14 || failures.Length > 0)
             throw new InvalidOperationException($"Governed renderer matrix observations failed: count={observations.Count}; {string.Join(", ", failures)}");
 
@@ -200,13 +223,27 @@ internal static class AutomatedRendererMatrixCollector
 
     private static MatrixCheck Check(string name, bool passed) => new(name, passed ? Expected(name) : "FAIL");
     private static string Expected(string name) => name switch { "os-build-matched" => "26220", "non-elevated" => "false", "single-user" => "SingleUser", _ => "PASS" };
-    private static bool Render(FrameworkElement visual, string path, int width, int height, double dpi)
+    private static RenderMetrics Render(FrameworkElement visual, string path, int width, int height, double dpi)
     {
         var bitmap = new RenderTargetBitmap(width, height, dpi, dpi, PixelFormats.Pbgra32);
         bitmap.Render(visual);
+        var stride = width * 4;
+        var pixels = new byte[stride * height];
+        bitmap.CopyPixels(pixels, stride, 0);
+        var background = new[] { pixels[0], pixels[1], pixels[2], pixels[3] };
+        long opaque = 0, content = 0;
+        byte minimum = byte.MaxValue, maximum = byte.MinValue;
+        for (var offset = 0; offset < pixels.Length; offset += 4)
+        {
+            if (pixels[offset + 3] >= 250) opaque++;
+            var delta = Math.Max(Math.Abs(pixels[offset] - background[0]), Math.Max(Math.Abs(pixels[offset + 1] - background[1]), Math.Abs(pixels[offset + 2] - background[2])));
+            if (pixels[offset + 3] > 0 && delta > 8) content++;
+            for (var channel = 0; channel < 3; channel++) { minimum = Math.Min(minimum, pixels[offset + channel]); maximum = Math.Max(maximum, pixels[offset + channel]); }
+        }
         var encoder = new PngBitmapEncoder(); encoder.Frames.Add(BitmapFrame.Create(bitmap));
         using var output = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.None); encoder.Save(output); output.Flush(true);
-        return output.Length > 0;
+        var total = (long)width * height;
+        return new RenderMetrics(output.Length, opaque / (double)total, content / (double)total, maximum - minimum);
     }
     private static IEnumerable<T> FindVisuals<T>(DependencyObject root) where T : DependencyObject
     {
@@ -237,9 +274,51 @@ internal static class AutomatedRendererMatrixCollector
         }
         return true;
     }
+    private static bool HasBoundedLayout(TextBlock element, FrameworkElement root)
+    {
+        if (!element.IsMeasureValid || !element.IsArrangeValid || element.ActualWidth <= 0 || element.ActualHeight <= 0 ||
+            !double.IsFinite(element.ActualWidth) || !double.IsFinite(element.ActualHeight)) return false;
+        Rect bounds;
+        try { bounds = element.TransformToAncestor(root).TransformBounds(new Rect(0, 0, element.ActualWidth, element.ActualHeight)); }
+        catch (InvalidOperationException) { return false; }
+        var layoutClip = LayoutInformation.GetLayoutClip(element);
+        var withinRoot = bounds.Left >= -1 && bounds.Top >= -1 && bounds.Right <= root.ActualWidth + 1 && bounds.Bottom <= root.ActualHeight + 1;
+        var boundedIntentionalTrimming = layoutClip is null ||
+            (element.TextTrimming != TextTrimming.None && layoutClip.Bounds.Width > 0 && layoutClip.Bounds.Height > 0);
+        return withinRoot && boundedIntentionalTrimming;
+    }
+    private static string DescribeLayout(FrameworkElement element, FrameworkElement root)
+    {
+        try
+        {
+            var bounds = element.TransformToAncestor(root).TransformBounds(new Rect(0, 0, element.ActualWidth, element.ActualHeight));
+            var clip = LayoutInformation.GetLayoutClip(element)?.Bounds.ToString() ?? "none";
+            return $"bounds={bounds};root={root.ActualWidth}x{root.ActualHeight};clip={clip}";
+        }
+        catch (InvalidOperationException exception) { return exception.Message; }
+    }
+    private static void RequireNonReparsePath(string path)
+    {
+        var full = Path.GetFullPath(path);
+        for (var current = new DirectoryInfo(full); current is not null; current = current.Parent)
+            if (current.Exists && current.Attributes.HasFlag(FileAttributes.ReparsePoint))
+                throw new InvalidOperationException($"Renderer matrix path contains a reparse point: {current.FullName}");
+    }
+    private static void DeleteOwnedFlatDirectory(string path)
+    {
+        RequireNonReparsePath(path);
+        foreach (var entry in new DirectoryInfo(path).EnumerateFileSystemInfos())
+        {
+            if (entry.Attributes.HasFlag(FileAttributes.ReparsePoint) || entry is DirectoryInfo)
+                throw new InvalidOperationException("Renderer matrix staging cleanup encountered an unexpected directory or reparse entry.");
+            entry.Delete();
+        }
+        Directory.Delete(path, recursive: false);
+    }
     private static bool IsElevated() => new WindowsPrincipal(WindowsIdentity.GetCurrent()).IsInRole(WindowsBuiltInRole.Administrator);
 
     private sealed record MatrixCheck(string Name, string ObservedValue);
+    private sealed record RenderMetrics(long Bytes, double OpaqueRatio, double ContentRatio, int ChannelRange);
     private sealed record Observation(string Id, string Kind, MatrixCheck[] Checks, string Details, string? ArtifactPath = null, int Width = 0, int Height = 0) { public DateTimeOffset ObservedUtc { get; } = DateTimeOffset.UtcNow; }
     private sealed record DisplayCase(string Id, int Width, int Height, double Scale);
     private static readonly DisplayCase[] DisplayCases =

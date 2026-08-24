@@ -178,7 +178,7 @@
                                    FontWeight="SemiBold"
                                    Text="{Binding [OverviewRecentActivity], Source={x:Static localization:UiLanguageService.Shared}}" />
                         <Border Grid.Column="1"
-                                Padding="8,3"
+                                Padding="8,4"
                                 VerticalAlignment="Center"
                                 Background="{DynamicResource HerdrOps.Brush.PrimarySubtle}"
                                 CornerRadius="{DynamicResource HerdrOps.Radius.Small}">

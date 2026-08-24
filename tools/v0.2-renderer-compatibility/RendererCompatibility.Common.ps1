@@ -56,6 +56,15 @@ namespace RendererCompatibility {
         [DllImport("kernel32.dll", SetLastError = true)]
         private static extern bool SetFileInformationByHandle(SafeFileHandle hFile, int FileInformationClass, IntPtr lpFileInformation, uint dwBufferSize);
 
+        [StructLayout(LayoutKind.Sequential)]
+        private struct IoStatusBlock { public IntPtr Status; public UIntPtr Information; }
+
+        [DllImport("ntdll.dll")]
+        private static extern int NtSetInformationFile(SafeFileHandle fileHandle, out IoStatusBlock ioStatusBlock, IntPtr fileInformation, uint length, int fileInformationClass);
+
+        [DllImport("ntdll.dll")]
+        private static extern uint RtlNtStatusToDosError(int status);
+
         [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
         private static extern SafeFileHandle CreateFile(
             string lpFileName,
@@ -109,8 +118,10 @@ namespace RendererCompatibility {
             return result;
         }
 
-        public static void RenameDirectory(SafeFileHandle handle, string destinationPath) {
-            byte[] name = Encoding.Unicode.GetBytes(destinationPath);
+        public static void RenameDirectory(SafeFileHandle handle, SafeFileHandle destinationParentHandle, string destinationLeafName) {
+            if (destinationLeafName.IndexOfAny(new[] { '\\', '/' }) >= 0 || destinationLeafName == "." || destinationLeafName == "..")
+                throw new ArgumentException("Held-handle directory rename requires one destination leaf name.", nameof(destinationLeafName));
+            byte[] name = Encoding.Unicode.GetBytes(destinationLeafName);
             int rootOffset = IntPtr.Size == 8 ? 8 : 4;
             int lengthOffset = IntPtr.Size == 8 ? 16 : 8;
             int nameOffset = IntPtr.Size == 8 ? 20 : 12;
@@ -118,10 +129,12 @@ namespace RendererCompatibility {
             IntPtr buffer = Marshal.AllocHGlobal(size);
             try {
                 for (int i = 0; i < size; i++) Marshal.WriteByte(buffer, i, 0);
-                Marshal.WriteIntPtr(buffer, rootOffset, IntPtr.Zero);
+                Marshal.WriteIntPtr(buffer, rootOffset, destinationParentHandle.DangerousGetHandle());
                 Marshal.WriteInt32(buffer, lengthOffset, name.Length);
                 Marshal.Copy(name, 0, IntPtr.Add(buffer, nameOffset), name.Length);
-                if (!SetFileInformationByHandle(handle, 3, buffer, (uint)size)) throw new Win32Exception(Marshal.GetLastWin32Error(), "Held-handle directory rename failed");
+                IoStatusBlock statusBlock;
+                int status = NtSetInformationFile(handle, out statusBlock, buffer, (uint)size, 10);
+                if (status != 0) throw new Win32Exception((int)RtlNtStatusToDosError(status), "Held-handle root-relative directory rename failed");
             } finally { Marshal.FreeHGlobal(buffer); }
         }
 
@@ -431,6 +444,10 @@ function Assert-RendererDirectoryLease {
     $heldFinal=[IO.Path]::GetFullPath([RendererCompatibility.NativePath]::GetFinalPath($Lease.Handle)).TrimEnd('\','/')
     $heldIdentity=[RendererCompatibility.NativePath]::GetIdentity($Lease.Handle)
     if($heldFinal-cne$Lease.FinalPath-or$heldIdentity-cne$Lease.Identity){throw "$Context held directory identity changed."}
+    if($Lease.DeleteAccess){
+        if($heldFinal-cne$expected){throw "$Context held delete-protected directory no longer has the expected path."}
+        return
+    }
     $probe=Open-RendererDirectoryLease $Root $expected "$Context current path"
     try {
         if($probe.Identity-cne$Lease.Identity-or$probe.FinalPath-cne$Lease.FinalPath){throw "$Context path no longer resolves to the held directory identity."}
@@ -440,9 +457,13 @@ function Move-RendererLeasedDirectory {
     param($Lease,[string]$Root,[string]$Path,[string]$Destination,[string]$Context)
     if(-not$Lease.DeleteAccess){throw "$Context directory lease lacks held-handle rename access."}
     Assert-RendererDirectoryLease $Lease $Root $Path "$Context before held-handle rename"
-    [RendererCompatibility.NativePath]::RenameDirectory($Lease.Handle,[IO.Path]::GetFullPath($Destination))
-    $movedFinal=[IO.Path]::GetFullPath([RendererCompatibility.NativePath]::GetFinalPath($Lease.Handle)).TrimEnd('\','/')
     $destinationFull=[IO.Path]::GetFullPath($Destination).TrimEnd('\','/')
+    $destinationParent=[IO.Path]::GetDirectoryName($destinationFull)
+    $destinationLeaf=[IO.Path]::GetFileName($destinationFull)
+    if([string]::IsNullOrWhiteSpace($destinationLeaf)){throw "$Context destination leaf is invalid."}
+    $parentLease=Open-RendererDirectoryLease $Root $destinationParent "$Context destination parent"
+    try{[RendererCompatibility.NativePath]::RenameDirectory($Lease.Handle,$parentLease.Handle,$destinationLeaf)}finally{$parentLease.Handle.Dispose()}
+    $movedFinal=[IO.Path]::GetFullPath([RendererCompatibility.NativePath]::GetFinalPath($Lease.Handle)).TrimEnd('\','/')
     $movedIdentity=[RendererCompatibility.NativePath]::GetIdentity($Lease.Handle)
     if($movedFinal-cne$destinationFull-or$movedIdentity-cne$Lease.Identity){throw "$Context held-handle rename did not retain the exact destination/FileId identity. Expected path '$destinationFull' identity '$($Lease.Identity)'; observed path '$movedFinal' identity '$movedIdentity'."}
     $Lease.FinalPath=$movedFinal
@@ -829,6 +850,19 @@ function Assert-RendererTargetBindingReceipt { param($Receipt,$Manifest)
 function Get-RendererPngIdentity { param([string]$Root,[string]$Path,[string]$Context)
     $identity=Get-RendererStableFileIdentity $Root $Path $Context -IncludeBytes;$stream=New-Object IO.MemoryStream(,$identity.Content);try{$decoder=New-Object Windows.Media.Imaging.PngBitmapDecoder($stream,[Windows.Media.Imaging.BitmapCreateOptions]::PreservePixelFormat,[Windows.Media.Imaging.BitmapCacheOption]::OnLoad);if($decoder.Frames.Count-ne1){throw "$Context must decode as exactly one PNG frame."};$frame=$decoder.Frames[0];if($frame.PixelWidth-le0-or$frame.PixelHeight-le0){throw "$Context decoded PNG dimensions are invalid."};return [pscustomobject]@{Width=[int]$frame.PixelWidth;Height=[int]$frame.PixelHeight;Bytes=$identity.Bytes;Sha256=$identity.Sha256;Content=$identity.Content;Frame=$frame;FinalPath=$identity.FinalPath;FileIdentity=$identity.FileIdentity;LinkCount=$identity.LinkCount;LastWriteTimeUtc=$identity.LastWriteTimeUtc}}catch{throw "$Context is not a complete decodable PNG: $($_.Exception.Message)"}finally{$stream.Dispose()}
 }
+function Test-RendererMatrixPngContent { param($Frame,[string]$Context)
+    $decoded=Get-RendererBgraPixels $Frame;$pixels=$decoded.Pixels;$total=[long]$decoded.Width*$decoded.Height
+    if($total-le0-or$pixels.Length-ne$total*4){throw "$Context decoded pixel inventory is invalid."}
+    $background=@([int]$pixels[0],[int]$pixels[1],[int]$pixels[2]);[long]$opaque=0;[long]$content=0;$minimum=255;$maximum=0
+    for($offset=0;$offset-lt$pixels.Length;$offset+=4){
+        if([int]$pixels[$offset+3]-ge250){$opaque++}
+        $delta=[Math]::Max([Math]::Abs([int]$pixels[$offset]-$background[0]),[Math]::Max([Math]::Abs([int]$pixels[$offset+1]-$background[1]),[Math]::Abs([int]$pixels[$offset+2]-$background[2])))
+        if([int]$pixels[$offset+3]-gt0-and$delta-gt8){$content++}
+        foreach($channel in 0,1,2){$value=[int]$pixels[$offset+$channel];if($value-lt$minimum){$minimum=$value};if($value-gt$maximum){$maximum=$value}}
+    }
+    $opaqueRatio=[double]$opaque/$total;$contentRatio=[double]$content/$total;$range=$maximum-$minimum
+    [pscustomobject]@{Pass=($opaqueRatio-ge0.95-and$contentRatio-ge0.005-and$contentRatio-le0.95-and$range-ge32);OpaqueRatio=$opaqueRatio;ContentRatio=$contentRatio;ChannelRange=$range}
+}
 function Assert-RendererFileBinding { param($Binding,[string]$Context,[string]$Root,[switch]$ValidateBindings)
     Assert-RendererExactProperties $Binding @('relativePath','bytes','sha256') $Context
     Assert-RendererRelativePath $Binding.relativePath "$Context relativePath"; Assert-RendererPositiveInteger $Binding.bytes "$Context bytes"; Assert-RendererSha $Binding.sha256 "$Context sha256"
@@ -1115,7 +1149,7 @@ function Get-RendererBgraPixels { param($Frame)
     $converted=New-Object Windows.Media.Imaging.FormatConvertedBitmap($Frame,[Windows.Media.PixelFormats]::Bgra32,$null,0);$stride=$converted.PixelWidth*4;$pixels=New-Object byte[] ($stride*$converted.PixelHeight);$converted.CopyPixels($pixels,$stride,0);[pscustomobject]@{Width=$converted.PixelWidth;Height=$converted.PixelHeight;Pixels=$pixels}
 }
 function Compare-RendererPixels { param($Capture,$Reference,[object[]]$Masks,[string]$CaptureKey)
-    $a=Get-RendererBgraPixels $Capture.Frame;$b=Get-RendererBgraPixels $Reference.Frame;if($a.Width-ne$b.Width-or$a.Height-ne$b.Height){throw "Comparison '$CaptureKey' capture/reference dimensions differ."};$masked=New-Object bool[] ($a.Width*$a.Height);foreach($mask in @($Masks|Where-Object{$_.captureKeys-ccontains$CaptureKey})){$m=Get-RendererBgraPixels $mask.Frame;if($m.Width-ne$a.Width-or$m.Height-ne$a.Height){throw "Comparison '$CaptureKey' mask dimensions differ."};for($p=0;$p-lt$masked.Length;$p++){if($m.Pixels[$p*4+3]-gt0-or$m.Pixels[$p*4]-gt0-or$m.Pixels[$p*4+1]-gt0-or$m.Pixels[$p*4+2]-gt0){$masked[$p]=$true}}};$maskCount=@($masked|Where-Object{$_}).Count;if($maskCount-ge$masked.Length){throw "Comparison '$CaptureKey' mask cannot cover the full frame."};for($y=0;$y-lt$a.Height-1;$y++){for($x=0;$x-lt$a.Width-1;$x++){$p=$y*$a.Width+$x;if($masked[$p]-and$masked[$p+1]-and$masked[$p+$a.Width]-and$masked[$p+$a.Width+1]){throw "Comparison '$CaptureKey' mask exceeds the approved one-pixel anti-aliasing geometry."}}};$different=0;$nonmasked=0;$maximum=0;$actualDifferences=New-Object bool[] $masked.Length;for($p=0;$p-lt$masked.Length;$p++){$delta=0;for($c=0;$c-lt4;$c++){$d=[Math]::Abs([int]$a.Pixels[$p*4+$c]-[int]$b.Pixels[$p*4+$c]);if($d-gt$delta){$delta=$d}};if($delta-gt0){$different++;$actualDifferences[$p]=$true;if($delta-gt$maximum){$maximum=$delta}};if(-not$masked[$p]-and$delta-gt0){$nonmasked++}};for($p=0;$p-lt$masked.Length;$p++){if(-not$masked[$p]){continue};$x=$p%$a.Width;$y=[Math]::Floor($p/$a.Width);$near=$false;for($dy=-1;$dy-le1-and-not$near;$dy++){for($dx=-1;$dx-le1;$dx++){$nx=$x+$dx;$ny=$y+$dy;if($nx-ge0-and$ny-ge0-and$nx-lt$a.Width-and$ny-lt$a.Height-and$actualDifferences[$ny*$a.Width+$nx]){$near=$true;break}}};if(-not$near){throw "Comparison '$CaptureKey' mask pixel is outside the approved one-pixel difference neighborhood."}};[pscustomobject]@{DifferentPixels=[long]$different;DifferentPixelPercent=([double]$different*100/$masked.Length);MaximumChannelDelta=[int]$maximum;NonmaskedDifferenceCount=[long]$nonmasked}
+    $a=Get-RendererBgraPixels $Capture.Frame;$b=Get-RendererBgraPixels $Reference.Frame;if($a.Width-ne$b.Width-or$a.Height-ne$b.Height){throw "Comparison '$CaptureKey' capture/reference dimensions differ."};$applicableMasks=@($Masks|Where-Object{$_.captureKeys-ccontains$CaptureKey});if($Capture.Sha256-ceq$Reference.Sha256-and$applicableMasks.Count-eq0){return [pscustomobject]@{DifferentPixels=[long]0;DifferentPixelPercent=[double]0;MaximumChannelDelta=[int]0;NonmaskedDifferenceCount=[long]0}};$masked=New-Object bool[] ($a.Width*$a.Height);foreach($mask in $applicableMasks){$m=Get-RendererBgraPixels $mask.Frame;if($m.Width-ne$a.Width-or$m.Height-ne$a.Height){throw "Comparison '$CaptureKey' mask dimensions differ."};for($p=0;$p-lt$masked.Length;$p++){if($m.Pixels[$p*4+3]-gt0-or$m.Pixels[$p*4]-gt0-or$m.Pixels[$p*4+1]-gt0-or$m.Pixels[$p*4+2]-gt0){$masked[$p]=$true}}};$maskCount=@($masked|Where-Object{$_}).Count;if($maskCount-ge$masked.Length){throw "Comparison '$CaptureKey' mask cannot cover the full frame."};for($y=0;$y-lt$a.Height-1;$y++){for($x=0;$x-lt$a.Width-1;$x++){$p=$y*$a.Width+$x;if($masked[$p]-and$masked[$p+1]-and$masked[$p+$a.Width]-and$masked[$p+$a.Width+1]){throw "Comparison '$CaptureKey' mask exceeds the approved one-pixel anti-aliasing geometry."}}};$different=0;$nonmasked=0;$maximum=0;$actualDifferences=New-Object bool[] $masked.Length;for($p=0;$p-lt$masked.Length;$p++){$delta=0;for($c=0;$c-lt4;$c++){$d=[Math]::Abs([int]$a.Pixels[$p*4+$c]-[int]$b.Pixels[$p*4+$c]);if($d-gt$delta){$delta=$d}};if($delta-gt0){$different++;$actualDifferences[$p]=$true;if($delta-gt$maximum){$maximum=$delta}};if(-not$masked[$p]-and$delta-gt0){$nonmasked++}};for($p=0;$p-lt$masked.Length;$p++){if(-not$masked[$p]){continue};$x=$p%$a.Width;$y=[Math]::Floor($p/$a.Width);$near=$false;for($dy=-1;$dy-le1-and-not$near;$dy++){for($dx=-1;$dx-le1;$dx++){$nx=$x+$dx;$ny=$y+$dy;if($nx-ge0-and$ny-ge0-and$nx-lt$a.Width-and$ny-lt$a.Height-and$actualDifferences[$ny*$a.Width+$nx]){$near=$true;break}}};if(-not$near){throw "Comparison '$CaptureKey' mask pixel is outside the approved one-pixel difference neighborhood."}};[pscustomobject]@{DifferentPixels=[long]$different;DifferentPixelPercent=([double]$different*100/$masked.Length);MaximumChannelDelta=[int]$maximum;NonmaskedDifferenceCount=[long]$nonmasked}
 }
 
 function Test-RendererCandidateBindings { param($Candidate,[string]$Root,[string]$RepositoryRoot)
@@ -1911,7 +1945,7 @@ function Assert-RendererMatrixRawPayload {
         $artifact=$artifacts[0];Assert-RendererExactProperties $artifact @('kind','relativePath','bytes','sha256','widthPixels','heightPixels') "$Context display artifact"
         if($artifact.kind-cne'OffscreenPng'){throw "$Context display artifact kind must be OffscreenPng."};Assert-RendererRelativePath $artifact.relativePath "$Context display artifact path";Assert-RendererPositiveInteger $artifact.bytes "$Context display artifact bytes";Assert-RendererSha $artifact.sha256 "$Context display artifact SHA-256";Assert-RendererPositiveInteger $artifact.widthPixels "$Context display artifact width";Assert-RendererPositiveInteger $artifact.heightPixels "$Context display artifact height"
         $dimensions=$ExpectedCaseId.Split('-')[0].Split('x');if([long]$artifact.widthPixels-ne[long]$dimensions[0]-or[long]$artifact.heightPixels-ne[long]$dimensions[1]){throw "$Context display artifact dimensions do not equal the governed viewport."}
-        $artifactPath=Resolve-RendererBoundPath $EvidenceRoot ([string]$artifact.relativePath) "$Context display artifact";$artifactIdentity=Get-RendererStableFileIdentity $EvidenceRoot $artifactPath "$Context display artifact";if($artifactIdentity.Bytes-ne[long]$artifact.bytes-or$artifactIdentity.Sha256-cne[string]$artifact.sha256){throw "$Context display artifact byte/hash binding failed."};$null=Get-RendererPngIdentity $EvidenceRoot $artifactPath "$Context display artifact"
+        $artifactPath=Resolve-RendererBoundPath $EvidenceRoot ([string]$artifact.relativePath) "$Context display artifact";$artifactIdentity=Get-RendererStableFileIdentity $EvidenceRoot $artifactPath "$Context display artifact";if($artifactIdentity.Bytes-ne[long]$artifact.bytes-or$artifactIdentity.Sha256-cne[string]$artifact.sha256){throw "$Context display artifact byte/hash binding failed."};$png=Get-RendererPngIdentity $EvidenceRoot $artifactPath "$Context display artifact";$content=Test-RendererMatrixPngContent $png.Frame "$Context display artifact";if(-not$content.Pass){throw "$Context display artifact is blank, transparent, uniform, or lacks bounded rendered content."}
     }elseif($rawSchema-eq4-and$artifacts.Count-ne0){throw "$Context non-display observation cannot claim display artifacts."}
     $p=$Payload.provenance;Assert-RendererString $p.kind "$Context provenance kind";$evidenceClass=$null
     if($p.kind-cin@('StaticInspection','SyntheticFixture','ContractHarness')){
