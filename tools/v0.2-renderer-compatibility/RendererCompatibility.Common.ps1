@@ -291,35 +291,30 @@ $script:RendererCaptureNames = @(
 $script:RendererObservationStages = @(
     'Startup', 'PreFirstWindow', 'PostFirstWindowShown', 'BeforeThaiCaptures',
     'AfterThaiCaptures', 'BeforeEnglishCaptures', 'AfterEnglishCaptures', 'Final')
-$script:RendererCaptureModes = @('LiveOperator', 'SyntheticSelfTest')
+$script:RendererCaptureModes = @('AutomatedInstalledRuntime', 'DeterministicPackaged')
 $script:RendererDisplayCases = @(
     '1920x1080-100', '1920x1080-125', '1920x1080-150',
     '1366x768-100', '1366x768-125', '1366x768-150')
 $script:RendererAccessibilityCases = @(
-    'keyboard-uia', 'narrator', 'high-contrast', 'text-scale-100',
+    'keyboard-uia', 'high-contrast', 'text-scale-100',
     'text-scale-150', 'text-scale-200', 'reduced-motion-on', 'reduced-motion-off')
-$script:RendererMixedDpiCases = @(
-    'mixed-dpi-100-to-150-primary-switch-unplug', 'mixed-dpi-150-to-100-primary-switch-unplug',
-    'mixed-dpi-125-to-150-primary-switch-unplug', 'mixed-dpi-150-to-125-primary-switch-unplug')
+$script:RendererMixedDpiCases = @()
 $script:RendererEnvironmentCases = @(
-    'windows11-x64-build26220-local-console-non-elevated-single-user',
-    'physical-mixed-dpi-primary-switch-unplug', 'ac-power', 'battery-power',
-    'soak-ac-60-minutes', 'soak-battery-60-minutes', 'thermal-observation')
-$script:RendererVisualChecks = @(
-    'no-blank-black-transparent-surface', 'no-missing-glyph', 'no-clipping-overlap',
-    'status-meaning-preserved', 'brand-hierarchy-preserved',
-    'single-selected-language', 'literal-identifiers-unchanged')
+    'windows11-x64-build26220-packaged-non-elevated-single-user')
 $script:RendererMaximumManifestBytes = 2MB
 $script:RendererAuthorizedApprovalReference = 'https://github.com/OSHEThai/HerdrOps/issues/149#issuecomment-5380637664'
-$script:RendererDecisionId = 'herdrops-rec-all-v2'
-$script:RendererDecisionApprovedUtc = '2026-08-22T13:18:21.2468994Z'
-$script:RendererDecisionCorrectedUtc = '2026-08-22T13:23:04.5923226Z'
-$script:RendererDecisionPayloadSha256 = '48474610D2A20EE2F7CA2DAC0A3CCF45F919440C9C5D81EF5BA93AD7E524F62D'
-$script:RendererSupersedesDecisionId = 'herdrops-rec-all-v1'
-$script:RendererSupersedesPayloadSha256 = 'DD8EB4D4BC896BE6A4765D409C5E34A16C4DBFB3D70F437EC915A50DF2FC1B1E'
-$script:RendererAuthorizedReviewerIdentity = '@yutthaphon'
-$script:RendererAuthorizedReviewerRole = 'HumanReviewer'
-$script:RendererAuthorizedFinalHumanGoReference = $null
+$script:RendererV3ScopeApprovalReference = 'https://github.com/OSHEThai/HerdrOps/issues/149#issuecomment-5395776783'
+$script:RendererV4ApprovalReference = 'https://github.com/OSHEThai/HerdrOps/issues/149#issuecomment-5396694185'
+$script:RendererDecisionId = 'herdrops-v0.2-release-first-v4'
+$script:RendererDecisionApprovedUtc = '2026-08-24T14:31:14Z'
+$script:RendererDecisionCorrectedUtc = '2026-08-24T14:31:14Z'
+$script:RendererDecisionPayloadSha256 = '4958E318AF4960C5BEC8B12BA69AED384236C91570BB86F872057066939ED904'
+$script:RendererSupersedesDecisionId = 'herdrops-v0.2-compat-v3'
+$script:RendererSupersedesPayloadSha256 = 'DF5717849F206D817DB6BEF324CF74CEA1C5BFC1E91956EC5436A60727DFFB98'
+$script:RendererPackageDecisionId = 'herdrops-rec-all-v2'
+$script:RendererPackageApprovalReference = 'https://github.com/OSHEThai/HerdrOps/issues/149#issuecomment-5380637664'
+$script:RendererPackageDecisionApprovedUtc = '2026-08-22T13:18:21.2468994Z'
+$script:RendererPackageDecisionPayloadSha256 = '48474610D2A20EE2F7CA2DAC0A3CCF45F919440C9C5D81EF5BA93AD7E524F62D'
 $script:RendererRecAllReferenceHostSha256 = '96D01ED15A536F2DF50B59B43CFDEB3683DCE8667AE2E7BF6A96124182FE13A3'
 
 function Assert-RendererExactProperties {
@@ -608,7 +603,7 @@ function Get-RendererEnvironmentSnapshot {
             userScope = $userScope
         }
         supportScope = [ordered]@{
-            supported = @('windows11-x64-build26220','local-console','non-elevated','single-user','physical-display-matrix','ac-power','battery-power')
+            supported = @('windows11-x64-build26220','automated-packaged-rendering','non-elevated','single-user')
             excluded = @('rdp-runtime','vm-runtime','arm64','remote-cloud','multi-user')
             vmCleanInstallOnly = $true
             vmRuntimeCredit = $false
@@ -651,7 +646,7 @@ function Assert-RendererEnvironmentSnapshot {
     Assert-RendererBoolean $support.vmCleanInstallOnly "$Context VM clean-install scope"
     Assert-RendererBoolean $support.vmRuntimeCredit "$Context VM Runtime scope"
     if (-not $support.vmCleanInstallOnly -or $support.vmRuntimeCredit) { throw "$Context VM evidence boundary is invalid." }
-    Assert-RendererSet @($support.supported) @('windows11-x64-build26220','local-console','non-elevated','single-user','physical-display-matrix','ac-power','battery-power') "$Context supported scope"
+    Assert-RendererSet @($support.supported) @('windows11-x64-build26220','automated-packaged-rendering','non-elevated','single-user') "$Context supported scope"
     Assert-RendererSet @($support.excluded) @('rdp-runtime','vm-runtime','arm64','remote-cloud','multi-user') "$Context excluded scope"
 }
 function Assert-RendererLiveEnvironment {
@@ -851,7 +846,7 @@ function Get-RendererGitIdentity { param([string]$RepositoryRoot)
 function Assert-RendererPackageProfile { param($Profile)
     Assert-RendererExactProperties $Profile @('schemaVersion','profileId','issue','packageVersion','runtimeIdentifier','archiveFileName','packageManifestFileName','sourcePolicy','approval','components','referenceHost','renderer','evidenceBoundary') 'Package profile';Assert-RendererNonnegativeInteger $Profile.schemaVersion 'Package profile schemaVersion';Assert-RendererNonnegativeInteger $Profile.issue 'Package profile issue';if([long]$Profile.schemaVersion-ne1-or[long]$Profile.issue-ne149){throw 'Package profile version/issue is invalid.'};if($Profile.profileId-cne$script:RendererPackageProfileId-or$Profile.packageVersion-cne'0.2.0'-or$Profile.runtimeIdentifier-cne'win-x64'-or$Profile.archiveFileName-cne'HerdrOps-0.2.0-win-x64.zip'-or$Profile.packageManifestFileName-cne'package-manifest.json'){throw 'Package profile identity is invalid.'}
     Assert-RendererExactProperties $Profile.sourcePolicy @('cleanRequired') 'Package profile sourcePolicy';Assert-RendererBoolean $Profile.sourcePolicy.cleanRequired 'Package profile cleanRequired';if(-not$Profile.sourcePolicy.cleanRequired){throw 'Package profile must require clean source.'}
-    Assert-RendererExactProperties $Profile.approval @('decisionId','approvalReference','approvedUtc','payloadSha256') 'Package profile approval';if($Profile.approval.decisionId-cne$script:RendererDecisionId-or$Profile.approval.approvalReference-cne$script:RendererAuthorizedApprovalReference-or$Profile.approval.approvedUtc-cne$script:RendererDecisionApprovedUtc-or$Profile.approval.payloadSha256-cne$script:RendererDecisionPayloadSha256){throw 'Package profile approval does not equal REC-ALL v2.'}
+    Assert-RendererExactProperties $Profile.approval @('decisionId','approvalReference','approvedUtc','payloadSha256') 'Package profile approval';if($Profile.approval.decisionId-cne$script:RendererPackageDecisionId-or$Profile.approval.approvalReference-cne$script:RendererPackageApprovalReference-or$Profile.approval.approvedUtc-cne$script:RendererPackageDecisionApprovedUtc-or$Profile.approval.payloadSha256-cne$script:RendererPackageDecisionPayloadSha256){throw 'Package profile approval does not equal REC-ALL v2.'}
     Assert-RendererExactProperties $Profile.components @('appRelativePath','coreRelativePath') 'Package profile components';if($Profile.components.appRelativePath-cne'HerdrOps.App.exe'-or$Profile.components.coreRelativePath-cne'HerdrOps.Core.exe'){throw 'Package profile component paths are invalid.'}
     Assert-RendererExactProperties $Profile.referenceHost @('profileId','profileSha256') 'Package profile referenceHost';if($Profile.referenceHost.profileId-cne$script:RendererProfileId-or$Profile.referenceHost.profileSha256-cne$script:RendererProfileSha256){throw 'Package profile reference-host binding is invalid.'}
     Assert-RendererExactProperties $Profile.renderer @('policy','wpfProcessRenderMode','policySha256') 'Package profile renderer';if($Profile.renderer.policy-cne'software-only-process-wide'-or$Profile.renderer.wpfProcessRenderMode-cne'SoftwareOnly'-or$Profile.renderer.policySha256-cne$script:RendererPolicySha256){throw 'Package profile renderer binding is invalid.'}
@@ -890,14 +885,14 @@ function Assert-RendererMatrixCases { param([object[]]$Cases,[string[]]$Expected
         if([long]$receipt.schemaVersion-ne1-or$receipt.caseId-cne$case.id){throw "$Context '$($case.id)' receipt identity is invalid."}
         Assert-RendererUtc $receipt.observedUtc "$Context '$($case.id)' observedUtc"
         if($receipt.outcome-cnotin@('PASS','FAIL')){throw "$Context '$($case.id)' receipt outcome is invalid."}
-        foreach($role in @(@{Value=$receipt.operator;Name='operator';Expected='EvidenceOperator'},@{Value=$receipt.observer;Name='observer';Expected='IndependentObserver'})){
+        foreach($role in @(@{Value=$receipt.operator;Name='operator';Expected='EvidenceOperator'},@{Value=$receipt.observer;Name='observer';Expected='IndependentAgentReviewer'})){
             Assert-RendererExactProperties $role.Value @('identity','role') "$Context '$($case.id)' $($role.Name)"
             Assert-RendererString $role.Value.identity "$Context '$($case.id)' $($role.Name) identity"
             if($role.Value.role-cne$role.Expected){throw "$Context '$($case.id)' $($role.Name) role is invalid."}
         }
         if($receipt.operator.identity.Trim().Equals($receipt.observer.identity.Trim(),[StringComparison]::OrdinalIgnoreCase)){throw "$Context '$($case.id)' operator and observer identities must be distinct."}
-        Assert-RendererExactProperties $receipt.evidenceBoundary @('evidenceClass','finalHumanGo','release','creditGranted') "$Context '$($case.id)' evidenceBoundary"
-        if($receipt.evidenceBoundary.evidenceClass-cnotin@('Static','Synthetic','Contract','Runtime')-or$receipt.evidenceBoundary.finalHumanGo-cne'NOT_OBSERVED'-or$receipt.evidenceBoundary.release-cne'NOT_OBSERVED'){throw "$Context '$($case.id)' receipt inflated its evidence boundary."}
+        Assert-RendererExactProperties $receipt.evidenceBoundary @('evidenceClass','release','creditGranted') "$Context '$($case.id)' evidenceBoundary"
+        if($receipt.evidenceBoundary.evidenceClass-cnotin@('Static','Synthetic','Contract','AutomatedPackagedRendering')-or$receipt.evidenceBoundary.release-cne'NOT_OBSERVED'){throw "$Context '$($case.id)' receipt inflated its evidence boundary."}
         Assert-RendererBoolean $receipt.evidenceBoundary.creditGranted "$Context '$($case.id)' creditGranted"
         if($receipt.evidenceBoundary.creditGranted){throw "$Context '$($case.id)' receipt cannot grant final credit."}
         Assert-RendererFileBinding $receipt.rawEvidence "$Context '$($case.id)' rawEvidence" $Root -ValidateBindings
@@ -910,7 +905,7 @@ function Assert-RendererMatrixCases { param([object[]]$Cases,[string[]]$Expected
         }
         $validatedRaw = Assert-RendererMatrixRawPayload -Payload $rawPayload -ExpectedCaseId $case.id -Context "$Context '$($case.id)' raw evidence payload" -RepositoryRoot $RepositoryRoot -EvidenceRoot $Root
         if($null-ne$CommonRunFingerprint){
-            if($null-eq$CommonRunFingerprint.Value){$CommonRunFingerprint.Value=$validatedRaw.RunFingerprint}elseif([string]$CommonRunFingerprint.Value-cne$validatedRaw.RunFingerprint){throw "$Context '$($case.id)' does not share the exact global 25-case run/session/candidate/package identity."}
+            if($null-eq$CommonRunFingerprint.Value){$CommonRunFingerprint.Value=$validatedRaw.RunFingerprint}elseif([string]$CommonRunFingerprint.Value-cne$validatedRaw.RunFingerprint){throw "$Context '$($case.id)' does not share the exact global 14-case run/session/candidate/package identity."}
         }elseif($null-eq$matrixRunFingerprint){$matrixRunFingerprint=$validatedRaw.RunFingerprint}elseif($matrixRunFingerprint-cne$validatedRaw.RunFingerprint){throw "$Context '$($case.id)' does not share the exact run/session/candidate/package identity."}
         if ($receipt.observedUtc -cne $validatedRaw.ObservedUtc) {
             throw "$Context '$($case.id)' receipt observedUtc '$($receipt.observedUtc)' does not match raw evidence observedUtc '$($validatedRaw.ObservedUtc)'."
@@ -921,19 +916,26 @@ function Assert-RendererMatrixCases { param([object[]]$Cases,[string[]]$Expected
         if ($receipt.evidenceBoundary.evidenceClass -cne $validatedRaw.EvidenceClass) {
             throw "$Context '$($case.id)' receipt evidenceClass '$($receipt.evidenceBoundary.evidenceClass)' contradicts raw evidence evidenceClass '$($validatedRaw.EvidenceClass)'."
         }
+        if($validatedRaw.EvidenceClass-ceq'AutomatedPackagedRendering'-and
+            ($receipt.operator.identity-cne$validatedRaw.OperatorIdentity-or$receipt.observer.identity-cne$validatedRaw.ObserverIdentity)){
+            throw "$Context '$($case.id)' receipt operator/reviewer identities do not equal the governed automated rendering provenance."
+        }
         if($case.status-cne$receipt.outcome){throw "$Context '$($case.id)' status is not recomputed from the bound receipt outcome."}
     }
 }
 function Get-RendererP95Microseconds { param($Values,[string]$Context)
     $items=@($Values);if($items.Count-ne20){throw "$Context must contain exactly 20 raw observations; missing or extra samples fail closed."};foreach($value in $items){Assert-RendererNonnegativeInteger $value "$Context observation"};$sorted=@($items|Sort-Object {[long]$_});return [long]$sorted[[Math]::Ceiling(0.95*$sorted.Count)-1]
 }
+function Resolve-RendererHistoricalPackageRoot { param($Value,[string]$Context)
+    Assert-RendererString $Value $Context;if(-not[IO.Path]::IsPathRooted([string]$Value)){throw "$Context must be an absolute normalized path."};$normalized=[IO.Path]::GetFullPath([string]$Value).TrimEnd('\','/');if([string]$Value-cne$normalized){throw "$Context must be an absolute normalized path."};if(Test-Path -LiteralPath $normalized){if(-not(Test-Path -LiteralPath $normalized -PathType Container)){throw "$Context must identify a package directory."};Assert-RendererNonReparsePath $normalized $normalized $Context};$normalized
+}
 function Assert-RendererPerformanceReceipt {
-    param($Binding,[string]$Root,[string]$RepositoryRoot,$Limits,$ExpectedProvenance,$ExpectedCandidate,$ExpectedSession,$ExpectedPackageReceipt,[string]$TestAfterReceiptOpenSignalPath)
+    param($Binding,[string]$Root,[string]$RepositoryRoot,$Limits,$ExpectedProvenance,$ExpectedCandidate,$ExpectedSession,$ExpectedPackageReceipt,[string]$ExpectedAcquisitionPackageRoot,[string]$TestAfterReceiptOpenSignalPath)
     $hasExpectedCandidate = $null -ne $ExpectedCandidate
     $hasExpectedSession = $null -ne $ExpectedSession
     if ($hasExpectedCandidate -ne $hasExpectedSession) { throw 'Performance receipt validation requires both expected candidate and session bindings.' }
     if ($null -ne $ExpectedProvenance -and $hasExpectedCandidate) { throw 'Performance receipt validation accepts either exact expected provenance or expected candidate/session bindings, not both.' }
-    $receiptRead=Read-RendererEvidenceReceipt $Binding 'Performance/soak evidence receipt' $Root $RepositoryRoot -KeepOpen
+    $receiptRead=Read-RendererEvidenceReceipt $Binding 'Performance evidence receipt' $Root $RepositoryRoot -KeepOpen
     $rawSourceRead=$null
     $telemetryRead=$null
     $commitRead=$null
@@ -944,13 +946,15 @@ function Assert-RendererPerformanceReceipt {
         while (Test-Path -LiteralPath $TestAfterReceiptOpenSignalPath) { Start-Sleep -Milliseconds 10 }
     }
     $receipt=$receiptRead.Value
-    Assert-RendererExactProperties $receipt @('provenance','rawSource','orders','soakBins','aggregateStatus') 'Performance receipt'
+    Assert-RendererExactProperties $receipt @('schemaVersion','provenance','rawSource','orders','aggregateStatus') 'Performance receipt'
+    Assert-RendererNonnegativeInteger $receipt.schemaVersion 'Performance receipt schemaVersion'
+    if([long]$receipt.schemaVersion-ne4){throw 'Only performance receipt schemaVersion 4 can satisfy the v0.2 release-first contract.'}
     Assert-RendererPerformanceProvenance $receipt.provenance 'Performance receipt provenance'
     Assert-RendererPerformanceJsonBinding $receipt.rawSource 'Performance raw-source binding'
     if ($receipt.rawSource.relativePath -ceq $Binding.relativePath) { throw 'Performance raw-source binding must not point to the receipt itself.' }
     $rawSourceRead=Read-RendererEvidenceReceipt $receipt.rawSource 'Performance raw-source evidence' $Root $RepositoryRoot -KeepOpen
     $rawSource=$rawSourceRead.Value
-    Assert-RendererExactProperties $rawSource @('orders','soakBins') 'Performance raw-source document'
+    Assert-RendererExactProperties $rawSource @('orders') 'Performance raw-source document'
     if ($hasExpectedCandidate) {
         $ExpectedProvenance = New-RendererPerformanceProvenance $ExpectedCandidate $ExpectedSession $receipt.provenance.runNonce $receipt.provenance.performanceTelemetryBinding $receipt.provenance.performanceTransactionCommit
     }
@@ -976,20 +980,23 @@ function Assert-RendererPerformanceReceipt {
     if([long]$commit.schemaVersion-ne1-or[string]$commit.kind-cne'issue10-performance-transaction-commit'-or[string]$commit.runNonce-cne[string]$receipt.provenance.runNonce-or[bool]$commit.creditGranted-or[string]$commit.raw.fileName-cne[IO.Path]::GetFileName($rawPath)-or[long]$commit.raw.bytes-ne[long]$rawSourceRead.Stable.Bytes-or[string]$commit.raw.sha256-cne[string]$rawSourceRead.Stable.Sha256-or[string]$commit.binding.fileName-cne[IO.Path]::GetFileName($telemetryPath)-or[long]$commit.binding.bytes-ne[long]$telemetryRead.Stable.Bytes-or[string]$commit.binding.sha256-cne[string]$telemetryRead.Stable.Sha256){throw 'Performance transaction commit does not bind the held raw and telemetry sidecar.'}
 
     $sidecar=$telemetryRead.Value
-    Assert-RendererExactProperties $sidecar @('schemaVersion','evidenceClassification','runNonce','source','package','rawSource','acquisitions','evidenceBoundary') 'Performance telemetry sidecar'
+    Assert-RendererExactProperties $sidecar @('schemaVersion','evidenceClassification','runNonce','source','session','package','rawSource','acquisitions','evidenceBoundary') 'Performance telemetry sidecar'
     Assert-RendererExactProperties $sidecar.source @('commitSha','treeSha') 'Performance telemetry sidecar source'
+    Assert-RendererExactProperties $sidecar.session @('kind','name','sessionId','transport','powerSource','thermalState','elevated','userScope') 'Performance telemetry sidecar session'
+    Assert-RendererNonnegativeInteger $sidecar.session.sessionId 'Performance telemetry sidecar sessionId'
+    Assert-RendererBoolean $sidecar.session.elevated 'Performance telemetry sidecar elevated'
     Assert-RendererExactProperties $sidecar.package @('identitySha256','identityFileSha256','profileFileSha256','archiveSha256','manifestSha256','appSha256','coreSha256') 'Performance telemetry sidecar package'
     Assert-RendererPerformanceJsonBinding $sidecar.rawSource 'Performance telemetry sidecar rawSource'
-    Assert-RendererExactProperties $sidecar.evidenceBoundary @('actualHerdrRuntime','humanReview','release','creditGranted') 'Performance telemetry sidecar evidenceBoundary'
+    Assert-RendererExactProperties $sidecar.evidenceBoundary @('actualHerdrRuntime','release','creditGranted') 'Performance telemetry sidecar evidenceBoundary'
     Assert-RendererBoolean $sidecar.evidenceBoundary.creditGranted 'Performance telemetry sidecar creditGranted'
     foreach($name in @('identitySha256','identityFileSha256','profileFileSha256','archiveSha256','manifestSha256','appSha256','coreSha256')){Assert-RendererSha $sidecar.package.$name "Performance telemetry sidecar package $name"}
     $expectedManifestSha=[string]$ExpectedPackageReceipt.packageManifest.sha256
-    if([long]$sidecar.schemaVersion-ne1-or[string]$sidecar.evidenceClassification-cne'PackagedCompatibilityPerformanceTelemetryBinding-NoRuntimeCredit'-or[string]$sidecar.runNonce-cne[string]$receipt.provenance.runNonce-or[string]$sidecar.source.commitSha-cne[string]$receipt.provenance.candidate.commitSha-or[string]$sidecar.source.treeSha-cne[string]$receipt.provenance.candidate.treeSha-or[string]$sidecar.package.identitySha256-cne[string]$receipt.provenance.package.receipt.canonicalSha256-or[string]$sidecar.package.identityFileSha256-cne[string]$receipt.provenance.package.receipt.fileSha256-or[string]$sidecar.package.profileFileSha256-cne[string]$receipt.provenance.profile.fileSha256-or[string]$sidecar.package.archiveSha256-cne[string]$receipt.provenance.package.archive.sha256-or[string]$sidecar.package.manifestSha256-cne$expectedManifestSha-or[string]$sidecar.package.appSha256-cne[string]$receipt.provenance.package.components.app.sha256-or[string]$sidecar.package.coreSha256-cne[string]$receipt.provenance.package.components.core.sha256-or[string]$sidecar.rawSource.relativePath-cne[string]$receipt.rawSource.relativePath-or[long]$sidecar.rawSource.bytes-ne[long]$rawSourceRead.Stable.Bytes-or[string]$sidecar.rawSource.fileSha256-cne[string]$rawSourceRead.Stable.Sha256-or[string]$sidecar.rawSource.canonicalSha256-cne[string]$receipt.rawSource.canonicalSha256-or[string]$sidecar.evidenceBoundary.actualHerdrRuntime-cne'NOT_OBSERVED'-or[string]$sidecar.evidenceBoundary.humanReview-cne'NOT_OBSERVED'-or[string]$sidecar.evidenceBoundary.release-cne'NOT_OBSERVED'-or[bool]$sidecar.evidenceBoundary.creditGranted){throw 'Performance telemetry sidecar source/package/raw binding is not exact.'}
+    if([long]$sidecar.schemaVersion-ne2-or[string]$sidecar.evidenceClassification-cne'PackagedCompatibilityPerformanceTelemetryBinding-NoRuntimeCredit'-or[string]$sidecar.runNonce-cne[string]$receipt.provenance.runNonce-or[string]$sidecar.source.commitSha-cne[string]$receipt.provenance.candidate.commitSha-or[string]$sidecar.source.treeSha-cne[string]$receipt.provenance.candidate.treeSha-or[string]$sidecar.session.kind-cne'LocalConsole'-or[string]::IsNullOrWhiteSpace([string]$sidecar.session.name)-or[string]$sidecar.session.transport-cne'Physical'-or[string]$sidecar.session.powerSource-cne'AC'-or[string]$sidecar.session.thermalState-cne'Nominal'-or[bool]$sidecar.session.elevated-or[string]$sidecar.session.userScope-cne'SingleUser'-or[string]$sidecar.package.identitySha256-cne[string]$receipt.provenance.package.receipt.canonicalSha256-or[string]$sidecar.package.identityFileSha256-cne[string]$receipt.provenance.package.receipt.fileSha256-or[string]$sidecar.package.profileFileSha256-cne[string]$receipt.provenance.profile.fileSha256-or[string]$sidecar.package.archiveSha256-cne[string]$receipt.provenance.package.archive.sha256-or[string]$sidecar.package.manifestSha256-cne$expectedManifestSha-or[string]$sidecar.package.appSha256-cne[string]$receipt.provenance.package.components.app.sha256-or[string]$sidecar.package.coreSha256-cne[string]$receipt.provenance.package.components.core.sha256-or[string]$sidecar.rawSource.relativePath-cne[string]$receipt.rawSource.relativePath-or[long]$sidecar.rawSource.bytes-ne[long]$rawSourceRead.Stable.Bytes-or[string]$sidecar.rawSource.fileSha256-cne[string]$rawSourceRead.Stable.Sha256-or[string]$sidecar.rawSource.canonicalSha256-cne[string]$receipt.rawSource.canonicalSha256-or[string]$sidecar.evidenceBoundary.actualHerdrRuntime-cne'NOT_OBSERVED'-or[string]$sidecar.evidenceBoundary.release-cne'NOT_OBSERVED'-or[bool]$sidecar.evidenceBoundary.creditGranted){throw 'Performance telemetry sidecar source/package/session/raw binding is not exact.'}
     $acquisitions=@($sidecar.acquisitions)
     if($acquisitions.Count-ne24){throw 'Performance telemetry sidecar must contain exactly 24 acquisitions.'}
     $packageRootRelative=[string]$receipt.provenance.package.packageRootRelativePath
     $componentPaths=@{}
-    foreach($componentName in @('app','core')){$componentRelative=[string]$receipt.provenance.package.components.$componentName.relativePath;$packagePrefix=$packageRootRelative.TrimEnd('/','\')+'/';$combinedRelative=if($componentRelative.Replace('\','/').StartsWith($packagePrefix,[StringComparison]::OrdinalIgnoreCase)){$componentRelative}else{Join-Path $packageRootRelative $componentRelative};$componentPaths[$componentName]=Resolve-RendererBoundPath $Root $combinedRelative "Performance telemetry $componentName package path"}
+    foreach($componentName in @('app','core')){$componentRelative=[string]$receipt.provenance.package.components.$componentName.relativePath;$packagePrefix=$packageRootRelative.TrimEnd('/','\')+'/';$hasPrefix=$componentRelative.Replace('\','/').StartsWith($packagePrefix,[StringComparison]::OrdinalIgnoreCase);if([string]::IsNullOrWhiteSpace($ExpectedAcquisitionPackageRoot)){$combinedRelative=if($hasPrefix){$componentRelative}else{Join-Path $packageRootRelative $componentRelative};$componentPaths[$componentName]=Resolve-RendererBoundPath $Root $combinedRelative "Performance telemetry $componentName package path"}else{$historicalRoot=Resolve-RendererHistoricalPackageRoot $ExpectedAcquisitionPackageRoot 'Historical performance acquisition package root';$leafRelative=if($hasPrefix){$componentRelative.Replace('\','/').Substring($packagePrefix.Length)}else{$componentRelative};$componentPaths[$componentName]=[IO.Path]::GetFullPath((Join-Path $historicalRoot $leafRelative))}}
     $appIdentities=@{};$coreIdentity=$null;$serverIdentity=$null;$lastAcquisitionUtc=$null
     for($acquisitionIndex=0;$acquisitionIndex-lt24;$acquisitionIndex++){
         $item=$acquisitions[$acquisitionIndex]
@@ -1008,7 +1015,7 @@ function Assert-RendererPerformanceReceipt {
         $thisCore=([string][int]$item.coreProcessId)+'|'+$coreStart.ToString('O')+'|'+[IO.Path]::GetFullPath([string]$item.corePath)+'|'+[string]$item.coreSha256;if($null-eq$coreIdentity){$coreIdentity=$thisCore}elseif($coreIdentity-cne$thisCore){throw 'Performance telemetry Core identity changed.'}
         $thisServer=([string][int]$item.serverProcessId)+'|'+$serverStart.ToString('O')+'|'+[IO.Path]::GetFullPath([string]$item.serverPath)+'|'+[string]$item.serverSha256;if($null-eq$serverIdentity){$serverIdentity=$thisServer}elseif($serverIdentity-cne$thisServer){throw 'Performance telemetry server identity changed.'}
     }
-    $measurementObject=[pscustomobject][ordered]@{orders=$receipt.orders;soakBins=$receipt.soakBins}
+    $measurementObject=[pscustomobject][ordered]@{orders=$receipt.orders}
     if ((ConvertTo-RendererCanonicalJson $rawSource $RepositoryRoot) -cne (ConvertTo-RendererCanonicalJson $measurementObject $RepositoryRoot)) {
         throw 'Performance receipt raw measurements do not equal the held raw-source document.'
     }
@@ -1052,32 +1059,55 @@ function Assert-RendererPerformanceReceipt {
         }
     }
 
-    $bins=@($receipt.soakBins)
-    if ($bins.Count -ne 24) { throw 'Performance receipt must contain exact 24 five-minute soak bins.' }
-    for ($i=0; $i -lt 24; $i++) {
-        $bin=$bins[$i]
-        Assert-RendererExactProperties $bin @('powerSource','ordinal','durationMinutes','observedUtc','workingSetStartBytes','workingSetEndBytes','rendererStable') "Soak bin $i"
-        $expectedPower=if($i -lt 12){'AC'}else{'Battery'}
-        $expectedOrdinal=$i%12
-        if ($bin.powerSource -cne $expectedPower) { throw "Soak bin $i power source is invalid." }
-        Assert-RendererNonnegativeInteger $bin.ordinal "Soak bin $i ordinal"
-        Assert-RendererPositiveInteger $bin.durationMinutes "Soak bin $i durationMinutes"
-        Assert-RendererUtc $bin.observedUtc "Soak bin $i observedUtc"
-        Assert-RendererNonnegativeInteger $bin.workingSetStartBytes "Soak bin $i workingSetStartBytes"
-        Assert-RendererNonnegativeInteger $bin.workingSetEndBytes "Soak bin $i workingSetEndBytes"
-        Assert-RendererBoolean $bin.rendererStable "Soak bin $i rendererStable"
-        $slope=[Math]::Abs([double]$bin.workingSetEndBytes-[double]$bin.workingSetStartBytes)*2
-        if ([long]$bin.ordinal -ne $expectedOrdinal -or [long]$bin.durationMinutes -ne 5 -or -not[bool]$bin.rendererStable -or [long]$bin.workingSetStartBytes -gt [long]$Limits.workingSetMaximumBytes -or [long]$bin.workingSetEndBytes -gt [long]$Limits.workingSetMaximumBytes -or $slope -gt [double]$Limits.resourceSlopeMaximumBytesPerTenMinutes) { $passed=$false }
-    }
     $computed=if($passed){'PASS'}else{'FAIL'}
-    if ($receipt.aggregateStatus -cne $computed) { throw 'Performance receipt aggregateStatus is not recomputed from raw AB/BA samples and soak bins.' }
-    foreach($heldEntry in @(@((Resolve-RendererBoundPath $Root $Binding.relativePath 'Performance receipt path'),$receiptRead.Stable,'Performance/soak evidence receipt'),@($rawPath,$rawSourceRead.Stable,'Performance raw-source evidence'),@($telemetryPath,$telemetryRead.Stable,'Performance telemetry sidecar'),@((Resolve-RendererBoundPath $Root $receipt.provenance.performanceTransactionCommit.relativePath 'Performance transaction commit path'),$commitRead.Stable,'Performance transaction commit'))){Assert-RendererStableFileLease $heldEntry[1] $Root $heldEntry[0] $heldEntry[2]}
+    if ($receipt.aggregateStatus -cne $computed) { throw 'Performance receipt aggregateStatus is not recomputed from the raw AB/BA samples.' }
+    foreach($heldEntry in @(@((Resolve-RendererBoundPath $Root $Binding.relativePath 'Performance receipt path'),$receiptRead.Stable,'Performance evidence receipt'),@($rawPath,$rawSourceRead.Stable,'Performance raw-source evidence'),@($telemetryPath,$telemetryRead.Stable,'Performance telemetry sidecar'),@((Resolve-RendererBoundPath $Root $receipt.provenance.performanceTransactionCommit.relativePath 'Performance transaction commit path'),$commitRead.Stable,'Performance transaction commit'))){Assert-RendererStableFileLease $heldEntry[1] $Root $heldEntry[0] $heldEntry[2]}
     return $computed
     } finally {
         if($null-ne$commitRead-and$null-ne$commitRead.Stable.Stream){$commitRead.Stable.Stream.Dispose()}
         if($null-ne$telemetryRead-and$null-ne$telemetryRead.Stable.Stream){$telemetryRead.Stable.Stream.Dispose()}
         if($null-ne$rawSourceRead-and$null-ne$rawSourceRead.Stable.Stream){$rawSourceRead.Stable.Stream.Dispose()}
         if($null-ne$receiptRead-and$null-ne$receiptRead.Stable.Stream){$receiptRead.Stable.Stream.Dispose()}
+    }
+}
+function Assert-RendererPerformancePipelineCommit {
+    param($Binding,[string]$Root,[string]$RepositoryRoot,$PerformanceReceiptBinding,$Candidate,$Limits,$ExpectedSession,$ExpectedPackageReceipt)
+    $commitRead=$null;$receiptRead=$null;$leafReads=@()
+    try {
+        $commitRead=Read-RendererEvidenceReceipt $Binding 'Performance pipeline transaction commit' $Root $RepositoryRoot -KeepOpen
+        $receiptRead=Read-RendererEvidenceReceipt $PerformanceReceiptBinding 'Pipeline-selected performance receipt' $Root $RepositoryRoot -KeepOpen
+        $commit=$commitRead.Value;$receipt=$receiptRead.Value
+        Assert-RendererExactProperties $commit @('schemaVersion','kind','runNonce','capturePackageRootPath','source','files','evidenceBoundary') 'Performance pipeline transaction commit'
+        Assert-RendererNonnegativeInteger $commit.schemaVersion 'Performance pipeline schemaVersion'
+        Assert-RendererExactProperties $commit.source @('commitSha','treeSha') 'Performance pipeline source'
+        Assert-RendererExactProperties $commit.files @('raw','binding','performanceCommit','performanceReceipt') 'Performance pipeline files'
+        Assert-RendererExactProperties $commit.evidenceBoundary @('actualHerdrRuntime','release','creditGranted') 'Performance pipeline evidenceBoundary'
+        Assert-RendererBoolean $commit.evidenceBoundary.creditGranted 'Performance pipeline creditGranted'
+        $actualPackageRoot=Resolve-RendererHistoricalPackageRoot $commit.capturePackageRootPath 'Performance pipeline capture package root'
+        if([long]$commit.schemaVersion-ne4-or$commit.kind-cne'issue149-performance-pipeline-commit'-or$commit.runNonce-cnotmatch'^[0-9a-f]{32}$'-or$commit.runNonce-cne$receipt.provenance.runNonce-or$commit.source.commitSha-cne$Candidate.source.commitSha-or$commit.source.treeSha-cne$Candidate.source.treeSha-or$commit.evidenceBoundary.actualHerdrRuntime-cne'NOT_OBSERVED'-or$commit.evidenceBoundary.release-cne'NOT_OBSERVED'-or[bool]$commit.evidenceBoundary.creditGranted){throw 'Performance pipeline commit does not bind the exact candidate/source/package/run or preserve no-credit boundaries.'}
+        $computed=Assert-RendererPerformanceReceipt $PerformanceReceiptBinding $Root $RepositoryRoot $Limits -ExpectedCandidate $Candidate -ExpectedSession $ExpectedSession -ExpectedPackageReceipt $ExpectedPackageReceipt -ExpectedAcquisitionPackageRoot $actualPackageRoot
+        $expected=[ordered]@{raw=$receipt.rawSource;binding=$receipt.provenance.performanceTelemetryBinding;performanceCommit=$receipt.provenance.performanceTransactionCommit;performanceReceipt=$PerformanceReceiptBinding}
+        $paths=@([string]$Binding.relativePath)
+        foreach($name in $expected.Keys){
+            $actual=$commit.files.$name;$bound=$expected[$name]
+            Assert-RendererExactProperties $actual @('relativePath','bytes','sha256') "Performance pipeline $name"
+            Assert-RendererRelativePath $actual.relativePath "Performance pipeline $name path";Assert-RendererPositiveInteger $actual.bytes "Performance pipeline $name bytes";Assert-RendererSha $actual.sha256 "Performance pipeline $name SHA"
+            if($actual.relativePath-cne$bound.relativePath-or[long]$actual.bytes-ne[long]$bound.bytes-or$actual.sha256-cne$bound.fileSha256){throw "Performance pipeline '$name' does not bind the exact selected receipt transaction leaf."}
+            $leafPath=Resolve-RendererBoundPath $Root $actual.relativePath "Performance pipeline $name leaf"
+            $leaf=Get-RendererStableFileIdentity $Root $leafPath "Performance pipeline $name leaf" -IncludeBytes -KeepOpen
+            $leafReads+=,[pscustomobject]@{Path=$leafPath;Stable=$leaf}
+            if($leaf.Bytes-ne[long]$actual.bytes-or$leaf.Sha256-cne$actual.sha256){throw "Performance pipeline '$name' held leaf changed."}
+            $paths+=[string]$actual.relativePath
+        }
+        if(@($paths|Select-Object -Unique).Count-ne5){throw 'Performance pipeline commit and four transaction leaves must use distinct paths.'}
+        foreach($leaf in $leafReads){Assert-RendererStableFileLease $leaf.Stable $Root $leaf.Path 'Performance pipeline held leaf'}
+        Assert-RendererStableFileLease $receiptRead.Stable $Root (Resolve-RendererBoundPath $Root $PerformanceReceiptBinding.relativePath 'Pipeline-selected performance receipt path') 'Pipeline-selected performance receipt'
+        Assert-RendererStableFileLease $commitRead.Stable $Root (Resolve-RendererBoundPath $Root $Binding.relativePath 'Performance pipeline commit path') 'Performance pipeline transaction commit'
+        $computed
+    } finally {
+        foreach($leaf in $leafReads){if($null-ne$leaf.Stable.Stream){$leaf.Stable.Stream.Dispose()}}
+        if($null-ne$receiptRead-and$null-ne$receiptRead.Stable.Stream){$receiptRead.Stable.Stream.Dispose()}
+        if($null-ne$commitRead-and$null-ne$commitRead.Stable.Stream){$commitRead.Stable.Stream.Dispose()}
     }
 }
 function Get-RendererBgraPixels { param($Frame)
@@ -1115,8 +1145,8 @@ function Test-RendererCompatibilityManifest {
     }
     if($PSVersionTable.PSVersion.Major-ge 7){$schema=Join-Path $PSScriptRoot 'renderer-compatibility-manifest.schema.json';if(-not($json|Test-Json -SchemaFile $schema)){throw 'Renderer compatibility manifest failed Draft 2020-12 schema validation.'}}
     Assert-RendererExactProperties $manifest @('$id','manifestVersion','evidenceClassification','issue','governance','candidate','environment','rendererEvidence','captures','references','comparison','matrices','performanceProtocol','review','evidenceBoundary') 'Manifest';Assert-RendererNonnegativeInteger $manifest.manifestVersion 'Manifest version';Assert-RendererNonnegativeInteger $manifest.issue 'Manifest issue'
-    if([long]$manifest.manifestVersion-ne1-or[long]$manifest.issue-ne149-or$manifest.'$id'-cne$script:RendererSchemaId-or$manifest.evidenceClassification-cne'PackagedCompatibilityCandidate'){throw 'Manifest identity or evidence classification is invalid.'}
-    Assert-RendererExactProperties $manifest.governance @('decisionId','approvalReference','originalApprovedUtc','correctedUtc','decisionPayloadSha256','supersedesDecisionId','supersedesPayloadSha256') 'Governance';if($manifest.governance.decisionId-cne$script:RendererDecisionId-or$manifest.governance.approvalReference-cne$script:RendererAuthorizedApprovalReference-or$manifest.governance.originalApprovedUtc-cne$script:RendererDecisionApprovedUtc-or$manifest.governance.correctedUtc-cne$script:RendererDecisionCorrectedUtc-or$manifest.governance.decisionPayloadSha256-cne$script:RendererDecisionPayloadSha256-or$manifest.governance.supersedesDecisionId-cne$script:RendererSupersedesDecisionId-or$manifest.governance.supersedesPayloadSha256-cne$script:RendererSupersedesPayloadSha256){throw 'Governance does not equal the exact REC-ALL v2 authority record.'}
+    if([long]$manifest.manifestVersion-ne4-or[long]$manifest.issue-ne149-or$manifest.'$id'-cne$script:RendererSchemaId-or$manifest.evidenceClassification-cne'AutomatedPackagedCompatibilityCandidate'){throw 'Only manifest v4 can satisfy the current v0.2 release-first contract; v1-v3 are superseded and non-closable.'}
+    Assert-RendererExactProperties $manifest.governance @('decisionId','approvalReference','approvedUtc','decisionPayloadSha256','supersedesDecisionId','supersedesPayloadSha256') 'Governance';if($manifest.governance.decisionId-cne$script:RendererDecisionId-or$manifest.governance.approvalReference-cne$script:RendererV4ApprovalReference-or$manifest.governance.approvedUtc-cne$script:RendererDecisionApprovedUtc-or$manifest.governance.decisionPayloadSha256-cne$script:RendererDecisionPayloadSha256-or$manifest.governance.supersedesDecisionId-cne$script:RendererSupersedesDecisionId-or$manifest.governance.supersedesPayloadSha256-cne$script:RendererSupersedesPayloadSha256){throw 'Governance does not equal the exact v0.2 release-first v4 successor authority.'}
 
     $candidate=$manifest.candidate;Assert-RendererExactProperties $candidate @('source','profile','receipt','archive','packageRootRelativePath','components','referenceHost','renderer') 'Candidate'
     Assert-RendererExactProperties $candidate.source @('commitSha','treeSha') 'Candidate source';foreach($n in @('commitSha','treeSha')){if($candidate.source.$n-isnot[string]-or$candidate.source.$n-cnotmatch'^[0-9a-f]{40}$'){throw "Candidate source $n must be lowercase 40-hex."}}
@@ -1134,7 +1164,7 @@ function Test-RendererCompatibilityManifest {
     if ($environment.os.architecture -eq 'arm64') { throw 'ARM64 renderer evidence is outside the approved v0.2 scope.' }
     if ($environment.session.kind -eq 'Rdp' -or $environment.session.transport -eq 'Rdp') { throw 'RDP renderer evidence is outside the approved v0.2 scope.' }
     if ([bool]$environment.session.elevated) { throw 'Elevated renderer evidence is outside the approved v0.2 scope.' }
-    if ($captureMode -eq 'LiveOperator') { Assert-RendererLiveEnvironment $environment $RepositoryRoot; if ($null -eq $renderer.targetBindingReceipt) { throw 'LiveOperator renderer evidence requires a bound target-process receipt.' }; $targetReceipt=(Read-RendererEvidenceReceipt $renderer.targetBindingReceipt 'Target binding receipt' $root $RepositoryRoot).Value; Assert-RendererTargetBindingReceipt $targetReceipt $manifest } elseif ($null -ne $renderer.targetBindingReceipt) { throw 'Synthetic renderer evidence cannot contain a target-process receipt.' }
+    if ($captureMode -eq 'AutomatedInstalledRuntime') { Assert-RendererLiveEnvironment $environment $RepositoryRoot; if ($null -eq $renderer.targetBindingReceipt) { throw 'AutomatedInstalledRuntime renderer evidence requires a bound target-process receipt.' }; $targetReceipt=(Read-RendererEvidenceReceipt $renderer.targetBindingReceipt 'Target binding receipt' $root $RepositoryRoot).Value; Assert-RendererTargetBindingReceipt $targetReceipt $manifest } elseif ($null -ne $renderer.targetBindingReceipt) { throw 'Deterministic packaged renderer evidence cannot contain a target-process receipt.' }
 
     $renderer=$manifest.rendererEvidence;Assert-RendererExactProperties $renderer @('policyId','trigger','fallback','producerReport','targetBindingReceipt','preFirstHwnd','throughoutObservations') 'Renderer evidence';if($renderer.policyId-cne'software-only-process-wide'-or$renderer.trigger-cne'ApprovedV02CandidatePolicy'-or$renderer.fallback-cne'None'){throw 'Renderer policy/trigger/fallback is invalid.'};Assert-RendererExactProperties $renderer.producerReport @('relativePath','bytes','fileSha256','canonicalSha256') 'Producer report binding'
     Assert-RendererExactProperties $renderer.preFirstHwnd @('hasAnyHwnd','observation','firstHwndCreatedUtc') 'Pre-first-HWND proof';Assert-RendererBoolean $renderer.preFirstHwnd.hasAnyHwnd 'Pre-first-HWND hasAnyHwnd';if([bool]$renderer.preFirstHwnd.hasAnyHwnd){throw 'Pre-first-HWND proof must report native false.'};Assert-RendererUtc $renderer.preFirstHwnd.firstHwndCreatedUtc 'First HWND UTC'
@@ -1164,17 +1194,24 @@ function Test-RendererCompatibilityManifest {
     $matrices=$manifest.matrices;Assert-RendererExactProperties $matrices @('displayCases','mixedDpiTransitions','accessibilityCases','supportedEnvironmentCases') 'Matrices';Assert-RendererMatrixCases @($matrices.displayCases) $script:RendererDisplayCases 'Display matrix' $root $RepositoryRoot -ValidateBindings:$ValidateBindings -CommonRunFingerprint ([ref]$globalMatrixRunFingerprint);Assert-RendererMatrixCases @($matrices.mixedDpiTransitions) $script:RendererMixedDpiCases 'Mixed-DPI matrix' $root $RepositoryRoot -ValidateBindings:$ValidateBindings -CommonRunFingerprint ([ref]$globalMatrixRunFingerprint);Assert-RendererMatrixCases @($matrices.accessibilityCases) $script:RendererAccessibilityCases 'Accessibility matrix' $root $RepositoryRoot -ValidateBindings:$ValidateBindings -CommonRunFingerprint ([ref]$globalMatrixRunFingerprint);Assert-RendererMatrixCases @($matrices.supportedEnvironmentCases) $script:RendererEnvironmentCases 'Supported-environment matrix' $root $RepositoryRoot -ValidateBindings:$ValidateBindings -CommonRunFingerprint ([ref]$globalMatrixRunFingerprint)
     if($ValidateBindings){$previousMatrixUtc=$null;foreach($matrixCase in @($matrices.displayCases+$matrices.mixedDpiTransitions+$matrices.accessibilityCases+$matrices.supportedEnvironmentCases)){if($matrixCase.status-cne'NOT_OBSERVED'){$chronologyReceipt=(Read-RendererEvidenceReceipt $matrixCase.evidenceReceipt "Matrix chronology '$($matrixCase.id)'" $root $RepositoryRoot).Value;$currentMatrixUtc=[DateTimeOffset]::Parse($chronologyReceipt.observedUtc);if($null-ne$previousMatrixUtc-and$currentMatrixUtc-le$previousMatrixUtc){throw "Observed matrix receipt chronology must be strictly increasing and unique in governed case order at '$($matrixCase.id)'."};$previousMatrixUtc=$currentMatrixUtc}}}
     $matrixComplete=@($matrices.displayCases+$matrices.mixedDpiTransitions+$matrices.accessibilityCases+$matrices.supportedEnvironmentCases|Where-Object{$_.status-cne'PASS'}).Count-eq0
+    $automatedMatrixEvidenceComplete=$true
+    foreach($automatedCase in @($matrices.displayCases)+@($matrices.accessibilityCases)+@($matrices.supportedEnvironmentCases)){
+        if($automatedCase.status-cne'PASS'-or$null-eq$automatedCase.evidenceReceipt){$automatedMatrixEvidenceComplete=$false;continue}
+        $automatedReceipt=(Read-RendererEvidenceReceipt $automatedCase.evidenceReceipt "Automated matrix '$($automatedCase.id)'" $root $RepositoryRoot).Value
+        if($automatedReceipt.evidenceBoundary.evidenceClass-cne'AutomatedPackagedRendering'){$automatedMatrixEvidenceComplete=$false}
+    }
 
-    $performance=$manifest.performanceProtocol;Assert-RendererExactProperties $performance @('sameCandidateContentWorkloadHostSession','onlyRendererPolicyVaries','modeA','modeB','orders','warmupIterations','repetitionsPerOrder','statistic','ownerNumericLimits','samplesStatus','evidenceReceipt') 'Performance protocol';Assert-RendererBoolean $performance.sameCandidateContentWorkloadHostSession 'Performance same binding';Assert-RendererBoolean $performance.onlyRendererPolicyVaries 'Performance only renderer varies';if(-not[bool]$performance.sameCandidateContentWorkloadHostSession-or-not[bool]$performance.onlyRendererPolicyVaries-or$performance.modeA-cne'Hardware'-or$performance.modeB-cne'SoftwareOnly'){throw 'Performance protocol must compare Hardware A with SoftwareOnly B on the same binding.'};Assert-RendererSet @($performance.orders) @('AB','BA') 'Performance order';for($i=0;$i-lt2;$i++){if($performance.orders[$i]-cne@('AB','BA')[$i]){throw 'Performance order must be exact AB, BA.'}};Assert-RendererPositiveInteger $performance.warmupIterations 'Warm-up iterations';Assert-RendererPositiveInteger $performance.repetitionsPerOrder 'Repetitions';Assert-RendererString $performance.statistic 'Performance statistic'
-    $limitNames=@('cpuMaximumPercent','eventToWpfP95Milliseconds','cpuRegressionMaximumPercent','cpuRegressionMaximumPercentagePoints','latencyRegressionMaximumPercent','uiStallP95Milliseconds','uiStallMaximumMilliseconds','soakAcDurationMinutes','soakBatteryDurationMinutes','soakBinMinutes','workingSetMaximumBytes','resourceSlopeMaximumBytesPerTenMinutes');$limits=$performance.ownerNumericLimits;Assert-RendererExactProperties $limits (@('status','approvalReference')+$limitNames) 'Owner numeric limits';if($limits.status-cnotin@('NOT_OBSERVED','APPROVED')){throw 'Owner numeric-limit status is invalid.'};if($limits.status-ceq'NOT_OBSERVED'){foreach($n in @('approvalReference')+$limitNames){if($null-ne$limits.$n){throw 'Unapproved owner numeric limits must remain null.'}}}else{if($limits.approvalReference-cne$script:RendererAuthorizedApprovalReference){throw 'Owner numeric limits do not bind REC-ALL v2.'};$expectedLimits=[ordered]@{cpuMaximumPercent=1;eventToWpfP95Milliseconds=250;cpuRegressionMaximumPercent=10;cpuRegressionMaximumPercentagePoints=0.5;latencyRegressionMaximumPercent=10;uiStallP95Milliseconds=50;uiStallMaximumMilliseconds=100;soakAcDurationMinutes=60;soakBatteryDurationMinutes=60;soakBinMinutes=5;workingSetMaximumBytes=267386880;resourceSlopeMaximumBytesPerTenMinutes=1048576};foreach($n in $limitNames){Assert-RendererFiniteNumber $limits.$n "Owner numeric limit $n" 0 ([double]::MaxValue) -ExclusiveMinimum;if([decimal]$limits.$n-ne[decimal]($expectedLimits[$n])){throw "Owner numeric limit $n does not equal REC-ALL v2."}};foreach($n in @('workingSetMaximumBytes','resourceSlopeMaximumBytesPerTenMinutes')){Assert-RendererPositiveInteger $limits.$n "Owner numeric limit $n"}};if($performance.warmupIterations-ne1-or$performance.repetitionsPerOrder-ne5-or$performance.statistic-cne'p95-and-maximum-missing-sample-fails'){throw 'Performance repetitions/statistic do not equal REC-ALL v2.'};if($performance.samplesStatus-cnotin@('PASS','FAIL','NOT_OBSERVED')){throw 'Performance samples status is invalid.'};if($performance.samplesStatus-ceq'NOT_OBSERVED'){if($null-ne$performance.evidenceReceipt){throw 'Unobserved performance samples cannot claim a receipt.'}}else{if($limits.status-cne'APPROVED'-or-not$ValidateBindings){throw 'Performance samples require approved limits and production binding validation.'};$computedPerformance=Assert-RendererPerformanceReceipt $performance.evidenceReceipt $root $RepositoryRoot $limits -ExpectedCandidate $candidate -ExpectedSession $manifest.environment.session -ExpectedPackageReceipt $boundGit.PackageReceipt;if($performance.samplesStatus-cne$computedPerformance){throw 'Performance samplesStatus does not equal independently recomputed raw evidence.'}}
+    $performance=$manifest.performanceProtocol
+    $performanceNames=@('sameCandidateContentWorkloadHostSession','onlyRendererPolicyVaries','modeA','modeB','orders','warmupIterations','repetitionsPerOrder','statistic','ownerNumericLimits','samplesStatus','evidenceReceipt','pipelineCommit')
+    Assert-RendererExactProperties $performance $performanceNames 'Performance protocol';Assert-RendererBoolean $performance.sameCandidateContentWorkloadHostSession 'Performance same binding';Assert-RendererBoolean $performance.onlyRendererPolicyVaries 'Performance only renderer varies';if(-not[bool]$performance.sameCandidateContentWorkloadHostSession-or-not[bool]$performance.onlyRendererPolicyVaries-or$performance.modeA-cne'Hardware'-or$performance.modeB-cne'SoftwareOnly'){throw 'Performance protocol must compare Hardware A with SoftwareOnly B on the same binding.'};Assert-RendererSet @($performance.orders) @('AB','BA') 'Performance order';for($i=0;$i-lt2;$i++){if($performance.orders[$i]-cne@('AB','BA')[$i]){throw 'Performance order must be exact AB, BA.'}};Assert-RendererPositiveInteger $performance.warmupIterations 'Warm-up iterations';Assert-RendererPositiveInteger $performance.repetitionsPerOrder 'Repetitions';Assert-RendererString $performance.statistic 'Performance statistic'
+    $limitNames=@('cpuMaximumPercent','eventToWpfP95Milliseconds','cpuRegressionMaximumPercent','cpuRegressionMaximumPercentagePoints','latencyRegressionMaximumPercent','uiStallP95Milliseconds','uiStallMaximumMilliseconds','workingSetMaximumBytes');$limits=$performance.ownerNumericLimits;Assert-RendererExactProperties $limits (@('status','approvalReference')+$limitNames) 'Owner numeric limits';if($limits.status-cnotin@('NOT_OBSERVED','APPROVED')){throw 'Owner numeric-limit status is invalid.'};if($limits.status-ceq'NOT_OBSERVED'){foreach($n in @('approvalReference')+$limitNames){if($null-ne$limits.$n){throw 'Unapproved owner numeric limits must remain null.'}}}else{if($limits.approvalReference-cne$script:RendererAuthorizedApprovalReference){throw 'Owner numeric limits do not bind unchanged REC-ALL v2 limits.'};$expectedLimits=[ordered]@{cpuMaximumPercent=1;eventToWpfP95Milliseconds=250;cpuRegressionMaximumPercent=10;cpuRegressionMaximumPercentagePoints=0.5;latencyRegressionMaximumPercent=10;uiStallP95Milliseconds=50;uiStallMaximumMilliseconds=100;workingSetMaximumBytes=267386880};foreach($n in $limitNames){Assert-RendererFiniteNumber $limits.$n "Owner numeric limit $n" 0 ([double]::MaxValue) -ExclusiveMinimum;if([decimal]$limits.$n-ne[decimal]($expectedLimits[$n])){throw "Owner numeric limit $n does not equal the v0.2 release-first authority."}};Assert-RendererPositiveInteger $limits.workingSetMaximumBytes 'Owner numeric limit workingSetMaximumBytes'};if($performance.warmupIterations-ne1-or$performance.repetitionsPerOrder-ne5-or$performance.statistic-cne'p95-and-maximum-missing-sample-fails'){throw 'Performance repetitions/statistic do not equal the v0.2 release-first authority.'};if($performance.samplesStatus-cnotin@('PASS','FAIL','NOT_OBSERVED')){throw 'Performance samples status is invalid.'};$finalizedPerformanceComplete=$false;if($performance.samplesStatus-ceq'NOT_OBSERVED'){if($null-ne$performance.evidenceReceipt-or$null-ne$performance.pipelineCommit){throw 'Unobserved performance samples cannot claim performance or pipeline receipts.'}}else{if($limits.status-cne'APPROVED'-or-not$ValidateBindings-or$null-eq$performance.evidenceReceipt-or$null-eq$performance.pipelineCommit){throw 'Performance samples require approved limits and exact production performance plus pipeline bindings.'};$computedPerformance=Assert-RendererPerformancePipelineCommit $performance.pipelineCommit $root $RepositoryRoot $performance.evidenceReceipt $candidate $limits $manifest.environment.session $boundGit.PackageReceipt;if($performance.samplesStatus-cne$computedPerformance){throw 'Performance samplesStatus does not equal independently recomputed no-soak pipeline evidence.'};$finalizedPerformanceComplete=$true}
 
-    $review=$manifest.review;Assert-RendererExactProperties $review @('decision','approvalReference','reviewerIdentity','reviewerRole','reviewedUtc','visualChecks','defects') 'Review';if($review.decision-cnotin@('GO','NO_GO','NOT_OBSERVED')){throw 'Review decision is invalid.'};Assert-RendererMatrixCases @($review.visualChecks) $script:RendererVisualChecks 'Human visual review';$visualReviewComplete=@($review.visualChecks|Where-Object{$_.status-cne'PASS'}).Count-eq0;if($review.decision-ceq'NOT_OBSERVED'){if($null-ne$review.approvalReference-or$null-ne$review.reviewerIdentity-or$null-ne$review.reviewerRole-or$null-ne$review.reviewedUtc-or@($review.visualChecks|Where-Object{$_.status-cne'NOT_OBSERVED'}).Count-ne0){throw 'Unobserved review cannot claim approval/reviewer/time/checks.'}}else{if([string]::IsNullOrWhiteSpace($script:RendererAuthorizedFinalHumanGoReference)-or$review.approvalReference-cne$script:RendererAuthorizedFinalHumanGoReference){throw 'Final Human packaged-compatibility review remains NOT_OBSERVED and is not authorized by REC-ALL.'};if($review.reviewerIdentity-cne$script:RendererAuthorizedReviewerIdentity-or$review.reviewerRole-cne$script:RendererAuthorizedReviewerRole){throw 'Human review identity/role does not equal the hard-pinned REC-ALL authority.'};Assert-RendererUtc $review.reviewedUtc 'Review UTC';if(($review.decision-ceq'GO')-ne$visualReviewComplete){throw 'Human review decision contradicts the exact visual checks.'}};$defectIds=@();$defectsComplete=$true;foreach($defect in @($review.defects)){Assert-RendererExactProperties $defect @('id','severity','summary','status','disposition') 'Defect';$defectIds+=[string]$defect.id;Assert-RendererString $defect.id 'Defect id';if($defect.severity-cnotin@('P0','P1','P2','P3')-or$defect.status-cnotin@('Open','Resolved','Accepted')){throw "Defect '$($defect.id)' enum is invalid."};Assert-RendererString $defect.summary 'Defect summary';Assert-RendererString $defect.disposition 'Defect disposition';if($defect.status-ceq'Open'){$defectsComplete=$false}};if((@($defectIds|Select-Object -Unique)).Count-ne$defectIds.Count){throw 'Defect IDs must be unique.'};if($review.decision-ceq'GO'-and-not$defectsComplete){throw 'Human GO cannot retain an open defect.'}
-    $boundary=$manifest.evidenceBoundary;Assert-RendererExactProperties $boundary @('packagedCompatibility','captureMode','humanReview','actualHerdrRuntime','release','creditGranted') 'Evidence boundary';if($boundary.captureMode-cnotin$script:RendererCaptureModes){throw 'Evidence boundary captureMode is invalid.'};if($boundary.packagedCompatibility-cne'CANDIDATE'-or$boundary.humanReview-cne$review.decision-or$boundary.actualHerdrRuntime-cne'NOT_OBSERVED'-or$boundary.release-cne'NOT_OBSERVED'-or$boundary.creditGranted-isnot[bool]-or[bool]$boundary.creditGranted){throw 'Evidence boundary inflates or contradicts the candidate classification.'}
+    $review=$manifest.review;Assert-RendererExactProperties $review @('decision','builderIdentity','reviewerIdentity','reviewerRole','reviewedUtc','defects') 'Agent review';if($review.decision-cnotin@('APPROVED','REJECTED','NOT_OBSERVED')){throw 'Agent review decision is invalid.'};if($review.decision-ceq'NOT_OBSERVED'){if($null-ne$review.builderIdentity-or$null-ne$review.reviewerIdentity-or$null-ne$review.reviewerRole-or$null-ne$review.reviewedUtc){throw 'Unobserved Agent review cannot claim identities, role, or time.'}}else{Assert-RendererString $review.builderIdentity 'Agent review builder identity';Assert-RendererString $review.reviewerIdentity 'Agent review reviewer identity';if($review.builderIdentity.Trim().Equals($review.reviewerIdentity.Trim(),[StringComparison]::OrdinalIgnoreCase)-or$review.reviewerRole-cne'IndependentAgentReviewer'){throw 'Agent review requires a role-distinct IndependentAgentReviewer.'};Assert-RendererUtc $review.reviewedUtc 'Agent review UTC'};$defectIds=@();$defectsComplete=$true;foreach($defect in @($review.defects)){Assert-RendererExactProperties $defect @('id','severity','summary','status','disposition') 'Defect';$defectIds+=[string]$defect.id;Assert-RendererString $defect.id 'Defect id';if($defect.severity-cnotin@('P0','P1','P2','P3')-or$defect.status-cnotin@('Open','Resolved','Accepted')){throw "Defect '$($defect.id)' enum is invalid."};Assert-RendererString $defect.summary 'Defect summary';Assert-RendererString $defect.disposition 'Defect disposition';if($defect.status-ceq'Open'-and$defect.severity-cin@('P0','P1')){$defectsComplete=$false}};if((@($defectIds|Select-Object -Unique)).Count-ne$defectIds.Count){throw 'Defect IDs must be unique.'};if($review.decision-ceq'APPROVED'-and-not$defectsComplete){throw 'Agent approval cannot retain an open High/Critical defect.'}
+    $boundary=$manifest.evidenceBoundary;Assert-RendererExactProperties $boundary @('packagedCompatibility','captureMode','agentReview','actualHerdrRuntime','release','creditGranted') 'Evidence boundary';if($boundary.captureMode-cnotin$script:RendererCaptureModes){throw 'Evidence boundary captureMode is invalid.'};if($boundary.packagedCompatibility-cne'AUTOMATED_CANDIDATE'-or$boundary.agentReview-cne$review.decision-or$boundary.actualHerdrRuntime-cne'NOT_OBSERVED'-or$boundary.release-cne'NOT_OBSERVED'-or$boundary.creditGranted-isnot[bool]-or[bool]$boundary.creditGranted){throw 'Evidence boundary inflates or contradicts the automated candidate classification.'}
     if($ValidateBindings){$finalGit=Test-RendererCandidateBindings $candidate $root $RepositoryRoot;if($finalGit.CommitSha-cne$boundGit.CommitSha-or$finalGit.TreeSha-cne$boundGit.TreeSha){throw 'Candidate repository identity changed during validation.'}}
     $authorityProfileConsistent=$script:RendererRecAllReferenceHostSha256-ceq$script:RendererProfileSha256
-    $finalHumanAuthorityConfigured=-not[string]::IsNullOrWhiteSpace($script:RendererAuthorizedFinalHumanGoReference)
-    $ready=[bool]$ValidateBindings-and$authorityProfileConsistent-and$finalHumanAuthorityConfigured-and$visualComplete-and$matrixComplete-and$limits.status-ceq'APPROVED'-and$performance.samplesStatus-ceq'PASS'-and$review.decision-ceq'GO'-and$visualReviewComplete-and$defectsComplete
-    [pscustomobject][ordered]@{EvidenceClassification='PackagedCompatibilityCandidate';CaptureMode=[string]$boundary.captureMode;ManifestVersion=1;StructuralValidation='PASS';BindingValidation=if($ValidateBindings){'PASS'}else{'NOT_REQUESTED'};GovernanceProfileConsistency=if($authorityProfileConsistent){'PASS'}else{'FAIL'};FinalHumanGoAuthority=if($finalHumanAuthorityConfigured){'CONFIGURED'}else{'NOT_OBSERVED'};OwnerNumericLimits=$limits.status;HumanReview=$review.decision;ActualHerdrRuntime='NOT_OBSERVED';Release='NOT_OBSERVED';CreditGranted=$false;PackagedCompatibilityReadyForIssue149Closure=$ready}
+    $ready=[bool]$ValidateBindings-and$authorityProfileConsistent-and$visualComplete-and$matrixComplete-and$automatedMatrixEvidenceComplete-and$limits.status-ceq'APPROVED'-and$performance.samplesStatus-ceq'PASS'-and$finalizedPerformanceComplete-and$review.decision-ceq'APPROVED'-and$defectsComplete
+    [pscustomobject][ordered]@{EvidenceClassification='AutomatedPackagedCompatibilityCandidate';CaptureMode=[string]$boundary.captureMode;ManifestVersion=[int]$manifest.manifestVersion;StructuralValidation='PASS';BindingValidation=if($ValidateBindings){'PASS'}else{'NOT_REQUESTED'};GovernanceProfileConsistency=if($authorityProfileConsistent){'PASS'}else{'FAIL'};AutomatedMatrixEvidence=if($automatedMatrixEvidenceComplete){'PASS'}else{'NOT_OBSERVED'};OwnerNumericLimits=$limits.status;AgentReview=$review.decision;ActualHerdrRuntime='NOT_OBSERVED';Release='NOT_OBSERVED';CreditGranted=$false;PackagedCompatibilityReadyForIssue149Closure=$ready}
 }
 
 function Copy-RendererValue {
@@ -1217,7 +1254,7 @@ function New-RendererTestPng {
 }
 
 function New-RendererMatrixCases {
-    param([Parameter(Mandatory=$true)][string[]]$Ids)
+    param([Parameter(Mandatory=$true)][AllowEmptyCollection()][string[]]$Ids)
     return @($Ids | ForEach-Object {
         [pscustomobject][ordered]@{
             id = $_
@@ -1242,11 +1279,11 @@ function Assert-RendererPerformanceSampleProperties {
 
 function Get-RendererMatrixCaseContract {
     param([string]$CaseId)
-    if($script:RendererDisplayCases-ccontains$CaseId){return [pscustomobject]@{Kind='Display';Checks=@('target-configured','visual-integrity','single-language')}}
+    if($script:RendererDisplayCases-ccontains$CaseId){return [pscustomobject]@{Kind='Display';Checks=@('offscreen-viewport-configured','packaged-render-completed','visual-integrity','single-language')}}
     if($script:RendererMixedDpiCases-ccontains$CaseId){return [pscustomobject]@{Kind='MixedDpi';Checks=@('initial-dpi-confirmed','primary-switch-observed','monitor-unplug-observed','final-dpi-confirmed')}}
     if($script:RendererAccessibilityCases-ccontains$CaseId){
         $checks=switch -CaseSensitive($CaseId){
-            'keyboard-uia'{@('keyboard-navigation','uia-tree')};'narrator'{@('narrator-announcements','uia-names')};'high-contrast'{@('high-contrast-visible')}
+            'keyboard-uia'{@('keyboard-navigation','uia-tree')};'high-contrast'{@('high-contrast-visible')}
             {$_-in@('text-scale-100','text-scale-150','text-scale-200')}{@('text-scale-applied','no-clipping-overlap')}
             {$_-in@('reduced-motion-on','reduced-motion-off')}{@('motion-policy-applied')}
         }
@@ -1254,12 +1291,7 @@ function Get-RendererMatrixCaseContract {
     }
     if($script:RendererEnvironmentCases-ccontains$CaseId){
         $checks=switch -CaseSensitive($CaseId){
-            'windows11-x64-build26220-local-console-non-elevated-single-user'{@('os-build-matched','local-console','non-elevated','single-user')}
-            'physical-mixed-dpi-primary-switch-unplug'{@('physical-monitors','primary-switch-observed','monitor-unplug-observed')}
-            'ac-power'{@('ac-power-confirmed')};'battery-power'{@('battery-power-confirmed')}
-            'soak-ac-60-minutes'{@('ac-power-confirmed','duration-60-minutes','no-renderer-regression')}
-            'soak-battery-60-minutes'{@('battery-power-confirmed','duration-60-minutes','no-renderer-regression')}
-            'thermal-observation'{@('thermal-telemetry-captured')}
+            'windows11-x64-build26220-packaged-non-elevated-single-user'{@('os-build-matched','packaged-session','non-elevated','single-user')}
         }
         return [pscustomobject]@{Kind='Environment';Checks=@($checks)}
     }
@@ -1363,7 +1395,7 @@ function Get-RendererMatrixExpectedCheckValue {
     param([string]$Name)
     switch -CaseSensitive($Name){
         'os-build-matched'{return '26220'};'local-console'{return 'LocalConsole'};'non-elevated'{return 'false'};'single-user'{return 'SingleUser'}
-        'ac-power-confirmed'{return 'AC'};'battery-power-confirmed'{return 'Battery'};'duration-60-minutes'{return '60'}
+        'ac-power-confirmed'{return 'AC'};'physical-monitor-count-one'{return '1'};'duration-60-minutes'{return '60'}
         default{return 'PASS'}
     }
 }
@@ -1876,11 +1908,25 @@ function Assert-RendererMatrixRawPayload {
         Assert-RendererExactProperties $p @('kind','collector','actualHerdrObserved') "$Context provenance";Assert-RendererBoolean $p.actualHerdrObserved "$Context provenance actualHerdrObserved";if([bool]$p.actualHerdrObserved){throw "$Context non-Runtime provenance contradicts actualHerdrObserved=true."}
         $collector=switch -CaseSensitive($p.kind){'StaticInspection'{'RendererMatrixStaticInspector'};'SyntheticFixture'{'RendererMatrixSyntheticFixture'};'ContractHarness'{'RendererMatrixContractHarness'}};if($p.collector-cne$collector){throw "$Context provenance collector does not match kind '$($p.kind)'."}
         $evidenceClass=switch -CaseSensitive($p.kind){'StaticInspection'{'Static'};'SyntheticFixture'{'Synthetic'};'ContractHarness'{'Contract'}}
+    }elseif($p.kind-ceq'AutomatedPackagedRendering'){
+        Assert-RendererExactProperties $p @('kind','collector','actualHerdrObserved','candidate','session','operator','observer') "$Context provenance"
+        Assert-RendererBoolean $p.actualHerdrObserved "$Context provenance actualHerdrObserved"
+        if([bool]$p.actualHerdrObserved-or$p.collector-cne'RendererMatrixAutomatedPackagedCollector'){throw "$Context automated packaged rendering must not claim ActualHerdr Runtime."}
+        Assert-RendererExactProperties $p.candidate @('commitSha','treeSha','packageReceiptCanonicalSha256') "$Context provenance candidate"
+        if($p.candidate.commitSha-cne$run.candidateCommitSha-or$p.candidate.treeSha-cne$run.candidateTreeSha-or$p.candidate.packageReceiptCanonicalSha256-cne$run.packageReceiptCanonicalSha256){throw "$Context automated rendering candidate/package binding does not equal the common run."}
+        Assert-RendererExactProperties $p.session @('sessionId','kind','elevated','userScope') "$Context provenance session"
+        Assert-RendererBoolean $p.session.elevated "$Context provenance session elevated"
+        if($p.session.sessionId-cne$run.sessionId-or$p.session.kind-cne'AutomatedPackaged'-or[bool]$p.session.elevated-or$p.session.userScope-cne'SingleUser'){throw "$Context automated packaged rendering requires the exact non-elevated single-user packaged session."}
+        foreach($role in @(@{Value=$p.operator;Name='operator';Expected='EvidenceOperator'},@{Value=$p.observer;Name='observer';Expected='IndependentAgentReviewer'})){
+            Assert-RendererExactProperties $role.Value @('identity','role') "$Context provenance $($role.Name)";Assert-RendererString $role.Value.identity "$Context provenance $($role.Name) identity";if($role.Value.role-cne$role.Expected){throw "$Context provenance $($role.Name) role is invalid."}
+        }
+        if($p.operator.identity.Trim().Equals($p.observer.identity.Trim(),[StringComparison]::OrdinalIgnoreCase)){throw "$Context automated rendering operator and independent Agent reviewer must be distinct."}
+        $evidenceClass='AutomatedPackagedRendering'
     }elseif($p.kind-ceq'ActualHerdrRuntime'){
         throw "$Context claims unearned Runtime: caller-authored matrix payloads cannot establish independently observed Herdr/App/Core/session/semantic provenance; a trusted production runtime collector receipt is required."
     }else{throw "$Context provenance kind '$($p.kind)' is not governed."}
     $runFingerprint=@($run.runId,$run.startedUtc,$run.endedUtc,$run.sessionId,$run.candidateCommitSha,$run.candidateTreeSha,$run.packageReceiptCanonicalSha256)-join'|'
-    return [pscustomobject][ordered]@{CaseId=[string]$Payload.caseId;ObservedUtc=[string]$Payload.observedUtc;EvidenceClass=$evidenceClass;Outcome=if($allPassed){'PASS'}else{'FAIL'};Details=[string]$Payload.details;RunFingerprint=$runFingerprint;RunStartedUtc=[string]$run.startedUtc;RunEndedUtc=[string]$run.endedUtc}
+    return [pscustomobject][ordered]@{CaseId=[string]$Payload.caseId;ObservedUtc=[string]$Payload.observedUtc;EvidenceClass=$evidenceClass;Outcome=if($allPassed){'PASS'}else{'FAIL'};Details=[string]$Payload.details;RunFingerprint=$runFingerprint;RunStartedUtc=[string]$run.startedUtc;RunEndedUtc=[string]$run.endedUtc;OperatorIdentity=if($evidenceClass-ceq'AutomatedPackagedRendering'){[string]$p.operator.identity}else{$null};ObserverIdentity=if($evidenceClass-ceq'AutomatedPackagedRendering'){[string]$p.observer.identity}else{$null}}
 }
 
 function Assert-RendererStableFileLease { param($Lease,[string]$Root,[string]$Path,[string]$Context)

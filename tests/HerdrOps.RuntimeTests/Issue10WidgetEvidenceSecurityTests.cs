@@ -2,6 +2,7 @@ using System.IO;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 using HerdrOps.App.RuntimeEvidence;
 
 namespace HerdrOps.RuntimeTests;
@@ -9,6 +10,63 @@ namespace HerdrOps.RuntimeTests;
 [TestClass]
 public sealed class Issue10WidgetEvidenceSecurityTests
 {
+    [TestMethod]
+    public void V4ProductionBindingRequiresNoSoakAndRetainsExactPerformanceBindings()
+    {
+        using var fixture = new TemporaryDirectory();
+        var path = Path.Combine(fixture.Path, "binding.json");
+        WriteV4Binding(path, fixture.Path);
+
+        Issue10WidgetEvidenceProducer.ValidateBindingManifest(path);
+    }
+
+    [TestMethod]
+    public void V4ProductionBindingRejectsHistoricalSoakReceipt()
+    {
+        using var fixture = new TemporaryDirectory();
+        var path = Path.Combine(fixture.Path, "binding-with-soak.json");
+        var manifest = CreateV4Binding(fixture.Path);
+        manifest["SoakReceipt"] = Artifact("soak.json");
+        File.WriteAllText(path, JsonSerializer.Serialize(manifest));
+
+        var error = Assert.ThrowsExactly<InvalidOperationException>(() =>
+            Issue10WidgetEvidenceProducer.ValidateBindingManifest(path));
+
+        StringAssert.Contains(error.Message, "unknown property 'SoakReceipt'", StringComparison.Ordinal);
+    }
+
+    [TestMethod]
+    public void V4ProductionBindingRejectsHistoricalHumanBoundary()
+    {
+        using var fixture = new TemporaryDirectory();
+        var path = Path.Combine(fixture.Path, "binding-with-human.json");
+        var manifest = CreateV4Binding(fixture.Path);
+        var boundary = (Dictionary<string, object?>)manifest["EvidenceBoundary"]!;
+        boundary["Human"] = "NOT_OBSERVED";
+        File.WriteAllText(path, JsonSerializer.Serialize(manifest));
+
+        var error = Assert.ThrowsExactly<InvalidOperationException>(() =>
+            Issue10WidgetEvidenceProducer.ValidateBindingManifest(path));
+
+        StringAssert.Contains(error.Message, "unknown property 'Human'", StringComparison.Ordinal);
+    }
+
+    [TestMethod]
+    public void V4ProductionBindingRejectsMissingPerformanceTransactionBinding()
+    {
+        using var fixture = new TemporaryDirectory();
+        var path = Path.Combine(fixture.Path, "binding-missing-transaction.json");
+        var manifest = CreateV4Binding(fixture.Path);
+        var performance = (Dictionary<string, object?>)manifest["Performance"]!;
+        performance.Remove("TransactionCommit");
+        File.WriteAllText(path, JsonSerializer.Serialize(manifest));
+
+        var error = Assert.ThrowsExactly<InvalidOperationException>(() =>
+            Issue10WidgetEvidenceProducer.ValidateBindingManifest(path));
+
+        StringAssert.Contains(error.Message, "missing required property 'TransactionCommit'", StringComparison.Ordinal);
+    }
+
     [TestMethod]
     public void ProductionHeldJsonSuccessReturnsExactHeldByteHash()
     {
@@ -162,6 +220,62 @@ public sealed class Issue10WidgetEvidenceSecurityTests
             }
         }
     }
+
+    private static void WriteV4Binding(string path, string evidenceRoot) =>
+        File.WriteAllText(path, JsonSerializer.Serialize(CreateV4Binding(evidenceRoot)));
+
+    private static Dictionary<string, object?> CreateV4Binding(string evidenceRoot) => new()
+    {
+        ["SchemaVersion"] = 4,
+        ["EvidenceClassification"] = "Issue10ProductionBinding",
+        ["Issue"] = 10,
+        ["EvidenceRoot"] = evidenceRoot,
+        ["RunNonce"] = new string('a', 32),
+        ["EvidenceStartedUtc"] = DateTimeOffset.UtcNow,
+        ["Source"] = new Dictionary<string, object?>
+        {
+            ["CommitSha"] = new string('b', 40),
+            ["TreeSha"] = new string('c', 40),
+        },
+        ["GateReport"] = Artifact("gate.json"),
+        ["CoreRuntimeReport"] = Artifact("core-runtime.json"),
+        ["Package"] = new Dictionary<string, object?>
+        {
+            ["Identity"] = Artifact("identity.json"),
+            ["IdentityReceiptSha256"] = new string('D', 64),
+            ["Archive"] = Artifact("package.zip"),
+            ["Manifest"] = Artifact("package-manifest.json"),
+            ["App"] = Artifact("HerdrOps.App.exe"),
+            ["Core"] = Artifact("HerdrOps.Core.exe"),
+        },
+        ["Performance"] = new Dictionary<string, object?>
+        {
+            ["Receipt"] = Artifact("performance.json"),
+            ["RawSource"] = Artifact("performance-raw.json"),
+            ["TelemetryBinding"] = Artifact("performance-binding.json"),
+            ["TransactionCommit"] = Artifact("performance-commit.json"),
+            ["RuntimeAppPath"] = Path.Combine(evidenceRoot, "HerdrOps.App.exe"),
+            ["RuntimeCorePath"] = Path.Combine(evidenceRoot, "HerdrOps.Core.exe"),
+        },
+        ["Runtime"] = new Dictionary<string, object?>
+        {
+            ["HerdrExecutable"] = Artifact("herdr.exe"),
+            ["ControlSessionIdentity"] = "acceptance",
+            ["TargetSessionIdentity"] = "v02-agent-lab",
+        },
+        ["EvidenceBoundary"] = new Dictionary<string, object?>
+        {
+            ["Runtime"] = "NOT_OBSERVED",
+            ["Release"] = "NOT_OBSERVED",
+            ["CreditGranted"] = false,
+        },
+    };
+
+    private static Dictionary<string, object?> Artifact(string path) => new()
+    {
+        ["Path"] = path,
+        ["Sha256"] = new string('A', 64),
+    };
 
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]

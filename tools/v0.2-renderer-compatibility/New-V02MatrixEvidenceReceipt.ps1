@@ -5,13 +5,13 @@ param(
     [Parameter(Mandatory=$true)][string]$OperatorIdentity,
     [Parameter(Mandatory=$true)][ValidateSet('EvidenceOperator')][string]$OperatorRole,
     [Parameter(Mandatory=$true)][Alias('ReviewerIdentity')][string]$ObserverIdentity,
-    [Parameter(Mandatory=$true)][ValidateSet('IndependentObserver')][string]$ObserverRole,
-    [Parameter(Mandatory=$false)][ValidateSet('Static','Synthetic','Contract','Runtime')][string]$EvidenceBoundary,
+    [Parameter(Mandatory=$true)][ValidateSet('IndependentAgentReviewer')][string]$ObserverRole,
+    [Parameter(Mandatory=$false)][ValidateSet('Static','Synthetic','Contract','AutomatedPackagedRendering')][string]$EvidenceBoundary,
     [Parameter(Mandatory=$false)][hashtable]$Outcomes,
     [Parameter(Mandatory=$true)][hashtable]$RawEvidencePaths,
     [Parameter(Mandatory=$false)][string]$EvidenceRoot,
     [Parameter(Mandatory=$false)][string]$RepositoryRoot,
-    [Parameter(DontShow=$true)][ValidateRange(0,25)][int]$SimulateFailureAfterReceiptCount = 0,
+    [Parameter(DontShow=$true)][ValidateRange(0,14)][int]$SimulateFailureAfterReceiptCount = 0,
     [Parameter(DontShow=$true)][ValidateRange(0,120000)][int]$PauseAfterStagingReadyMilliseconds = 0,
     [Parameter(DontShow=$true)][ValidateRange(0,120000)][int]$PauseAfterRecoveryIdentityVerifiedMilliseconds = 0,
     [Parameter(DontShow=$true)][ValidateRange(0,120000)][int]$PauseAfterCleanupIdentityVerifiedMilliseconds = 0,
@@ -129,7 +129,7 @@ function New-MatrixReceiptReplayClaim {
 }
 
 $cases = @(Get-RendererGovernedMatrixCases)
-if ($cases.Count -ne 25) { throw "Governed matrix case count must be exactly 25; observed $($cases.Count)." }
+if ($cases.Count -ne 14) { throw "Governed automated matrix case count must be exactly 14; observed $($cases.Count)." }
 
 Assert-RendererString $OperatorIdentity 'OperatorIdentity'
 Assert-RendererString $ObserverIdentity 'ObserverIdentity'
@@ -161,14 +161,14 @@ try {
     foreach($stale in $staleStaging){Remove-OwnedStaleMatrixStaging $stale.FullName $destinationFull $evidenceRootFull $repositoryFull ([DateTimeOffset]::UtcNow) $PauseAfterRecoveryIdentityVerifiedMilliseconds}
 
 $rawKeys = @($RawEvidencePaths.Keys | ForEach-Object { [string]$_ })
-if ($rawKeys.Count -ne $cases.Count) { throw "RawEvidencePaths must contain exactly the 25 governed case IDs; observed $($rawKeys.Count)." }
+if ($rawKeys.Count -ne $cases.Count) { throw "RawEvidencePaths must contain exactly the 14 governed case IDs; observed $($rawKeys.Count)." }
 foreach ($case in $cases) {
     if (-not ($rawKeys -ccontains $case)) { throw "RawEvidencePaths omitted exact case ID '$case'." }
 }
 
 if ($null -ne $Outcomes) {
     $outcomeKeys = @($Outcomes.Keys | ForEach-Object { [string]$_ })
-    if ($outcomeKeys.Count -ne $cases.Count) { throw "Outcomes must contain exactly the 25 governed case IDs; observed $($outcomeKeys.Count)." }
+    if ($outcomeKeys.Count -ne $cases.Count) { throw "Outcomes must contain exactly the 14 governed case IDs; observed $($outcomeKeys.Count)." }
     foreach ($case in $cases) {
         if (-not ($outcomeKeys -ccontains $case)) { throw "Outcomes omitted exact case ID '$case'." }
         $callerOutcome = $Outcomes[$case]
@@ -206,6 +206,7 @@ foreach ($case in $cases) {
     }
 
     $validated = Assert-RendererMatrixRawPayload -Payload $payload -ExpectedCaseId $case -Context "Raw evidence '$case'" -RepositoryRoot $repositoryFull -EvidenceRoot $evidenceRootFull
+    if($validated.EvidenceClass-ceq'AutomatedPackagedRendering'-and($validated.OperatorIdentity-cne$OperatorIdentity-or$validated.ObserverIdentity-cne$ObserverIdentity)){throw "Raw evidence '$case' automated rendering identities do not equal the publication operator/independent Agent reviewer."}
     if($null-eq$commonRunFingerprint){$commonRunFingerprint=$validated.RunFingerprint}else{if($commonRunFingerprint-cne$validated.RunFingerprint){throw "Raw evidence '$case' does not share the exact common run/session/candidate/package identity."}}
     if($null-eq$commonRunEndedUtc){$commonRunEndedUtc=[DateTimeOffset]::Parse($validated.RunEndedUtc)}
     $runEnd=[DateTimeOffset]::Parse($validated.RunEndedUtc);if($runEnd-gt$publicationUtc-or($publicationUtc-$runEnd).TotalMinutes-gt5){throw "Raw evidence '$case' is outside the trusted current five-minute publication window."}
@@ -264,7 +265,6 @@ try {
             observer = [pscustomobject][ordered]@{ identity = $ObserverIdentity; role = $ObserverRole }
             evidenceBoundary = [pscustomobject][ordered]@{
                 evidenceClass = [string]$derivedClasses[$case]
-                finalHumanGo = 'NOT_OBSERVED'
                 release = 'NOT_OBSERVED'
                 creditGranted = $false
             }

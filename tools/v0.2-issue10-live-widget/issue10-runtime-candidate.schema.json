@@ -4,9 +4,9 @@
   "title": "HerdrOps v0.2 Issue #10 Runtime Candidate",
   "type": "object",
   "additionalProperties": false,
-  "required": ["SchemaVersion", "EvidenceClassification", "Issue", "Result", "RunNonce", "EvidenceStartedUtc", "Source", "Package", "Runtime", "Performance", "Soak", "Languages", "EvidenceBoundary"],
+  "required": ["SchemaVersion", "EvidenceClassification", "Issue", "Result", "RunNonce", "EvidenceStartedUtc", "Source", "Package", "Runtime", "Performance", "Languages", "EvidenceBoundary"],
   "properties": {
-    "SchemaVersion": { "const": 1 },
+    "SchemaVersion": { "const": 4 },
     "EvidenceClassification": { "const": "Issue10RuntimeCandidate" },
     "Issue": { "const": 10 },
     "Result": { "const": "PASS" },
@@ -15,10 +15,9 @@
     "Source": { "$ref": "#/$defs/source" },
     "Package": { "type": "object", "additionalProperties": false, "required": ["IdentityFileSha256", "IdentityReceiptSha256", "ArchiveSha256", "ManifestSha256", "AppSha256", "CoreSha256"], "properties": { "IdentityFileSha256": { "$ref": "#/$defs/sha" }, "IdentityReceiptSha256": { "$ref": "#/$defs/sha" }, "ArchiveSha256": { "$ref": "#/$defs/sha" }, "ManifestSha256": { "$ref": "#/$defs/sha" }, "AppSha256": { "$ref": "#/$defs/sha" }, "CoreSha256": { "$ref": "#/$defs/sha" } } },
     "Runtime": { "type": "object", "additionalProperties": false, "required": ["ThaiGateSha256", "EnglishGateSha256", "AppReportSha256", "CoreReportSha256", "HerdrExecutableSha256", "ControlSession", "TargetSession", "StateHashes"], "properties": { "ThaiGateSha256": { "$ref": "#/$defs/sha" }, "EnglishGateSha256": { "$ref": "#/$defs/sha" }, "AppReportSha256": { "$ref": "#/$defs/sha" }, "CoreReportSha256": { "$ref": "#/$defs/sha" }, "HerdrExecutableSha256": { "$ref": "#/$defs/sha" }, "ControlSession": { "type": "string", "minLength": 1 }, "TargetSession": { "type": "string", "minLength": 1 }, "StateHashes": { "type": "array", "minItems": 3, "items": { "$ref": "#/$defs/sha" } } } },
-    "Performance": { "type": "object", "additionalProperties": false, "required": ["ReceiptPath", "ReceiptSha256", "RawSourcePath", "RawSourceSha256", "Limits"], "properties": { "ReceiptPath": { "type": "string", "minLength": 1 }, "ReceiptSha256": { "$ref": "#/$defs/sha" }, "RawSourcePath": { "type": "string", "minLength": 1 }, "RawSourceSha256": { "$ref": "#/$defs/sha" }, "Limits": { "type": "object", "additionalProperties": true } } },
-    "Soak": { "type": "object", "additionalProperties": false, "required": ["ReceiptPath", "ReceiptSha256", "AcMinutes", "BatteryMinutes"], "properties": { "ReceiptPath": { "type": "string", "minLength": 1 }, "ReceiptSha256": { "$ref": "#/$defs/sha" }, "AcMinutes": { "const": 60 }, "BatteryMinutes": { "const": 60 } } },
+    "Performance": { "type": "object", "additionalProperties": false, "required": ["ReceiptPath", "ReceiptSha256", "RawSourcePath", "RawSourceSha256", "TelemetryBindingPath", "TelemetryBindingSha256", "TransactionCommitPath", "TransactionCommitSha256", "Limits"], "properties": { "ReceiptPath": { "type": "string", "minLength": 1 }, "ReceiptSha256": { "$ref": "#/$defs/sha" }, "RawSourcePath": { "type": "string", "minLength": 1 }, "RawSourceSha256": { "$ref": "#/$defs/sha" }, "TelemetryBindingPath": { "type": "string", "minLength": 1 }, "TelemetryBindingSha256": { "$ref": "#/$defs/sha" }, "TransactionCommitPath": { "type": "string", "minLength": 1 }, "TransactionCommitSha256": { "$ref": "#/$defs/sha" }, "Limits": { "type": "object", "additionalProperties": true } } },
     "Languages": { "type": "array", "minItems": 2, "maxItems": 2, "items": { "type": "object", "additionalProperties": false, "required": ["Language", "WidgetReportPath", "WidgetReportSha256", "DashboardStateSha256"], "properties": { "Language": { "enum": ["Thai", "English"] }, "WidgetReportPath": { "type": "string", "minLength": 1 }, "WidgetReportSha256": { "$ref": "#/$defs/sha" }, "DashboardStateSha256": { "$ref": "#/$defs/sha" } } } },
-    "EvidenceBoundary": { "type": "object", "additionalProperties": false, "required": ["RuntimeInput", "Runtime", "Human", "Release", "CreditGranted", "FixtureMode"], "properties": { "RuntimeInput": { "enum": ["OBSERVED_AND_BOUND", "SYNTHETIC_FIXTURE_BOUND"] }, "Runtime": { "const": "NOT_OBSERVED" }, "Human": { "const": "NOT_OBSERVED" }, "Release": { "const": "NOT_OBSERVED" }, "CreditGranted": { "const": false }, "FixtureMode": { "type": "boolean" } } }
+    "EvidenceBoundary": { "type": "object", "additionalProperties": false, "required": ["RuntimeInput", "Runtime", "Release", "CreditGranted", "FixtureMode"], "properties": { "RuntimeInput": { "enum": ["OBSERVED_AND_BOUND", "SYNTHETIC_FIXTURE_BOUND"] }, "Runtime": { "const": "NOT_OBSERVED" }, "Release": { "const": "NOT_OBSERVED" }, "CreditGranted": { "const": false }, "FixtureMode": { "type": "boolean" } } }
   },
   "$defs": {
     "sha": { "type": "string", "pattern": "^[0-9A-Fa-f]{64}$" },

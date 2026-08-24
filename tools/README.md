@@ -43,6 +43,37 @@ powershell -File ./tools/packaging/v0.2/Test-V02PackageIdentity.Tests.ps1
     -EvidenceRoot '<held-evidence-root>' `
     -RepositoryRoot '<clean-exact-source-worktree>'
 
+# From one unfinalized manifest-v4 capture, collect live AB/BA performance.
+# Only the final pipeline commit admits the four held
+# raw/binding/transaction/receipt files. Its normalized
+# capturePackageRootPath binds historical absolute App/Core acquisition paths;
+# copied package bytes and hashes are still independently checked in final output.
+./tools/v0.2-renderer-compatibility/Invoke-V02Issue149PerformancePipeline.ps1 `
+    -CaptureCandidateManifestPath '<capture/v0.2-renderer-compatibility-manifest.json>' `
+    -CoreProcessId <exact-running-package-core-pid> `
+    -PerformanceOutputDirectory '<evidence/performance-source>' `
+    -ComposedOutputDirectory '<evidence/composed>' `
+    -PipelineCommitPath '<evidence/issue149-pipeline-commit.json>' `
+    -EvidenceRoot '<held-evidence-root>' `
+    -RepositoryRoot '<clean-exact-source-worktree>' `
+    -RunNonce '<lowercase-32-hex>' `
+    -PackageIdentityPath '<identity.json>' `
+    -PackageArchivePath '<HerdrOps-0.2.0-win-x64.zip>' `
+    -ExtractedPackageRoot '<exact-extracted-package-root>' `
+    -ExpectedSourceCommit '<lowercase-40-hex>' `
+    -ExpectedSourceTree '<lowercase-40-hex>'
+
+# Publish a new immutable manifest-v4 evidence directory. The capture candidate
+# is never edited; the finalizer copies only held non-reparse bytes, requires the
+# pipeline commit, recomputes all bindings, validates staging, and atomically
+# renames it without granting Runtime, Human, or Release credit.
+./tools/v0.2-renderer-compatibility/Complete-V02RendererCompatibilityManifest.ps1 `
+    -CaptureCandidateDirectory '<capture-candidate-directory>' `
+    -PipelineCommitPath '<evidence/issue149-pipeline-commit.json>' `
+    -DestinationDirectory '<evidence/finalized-renderer-candidate>' `
+    -EvidenceRoot '<held-evidence-root>' `
+    -RepositoryRoot '<clean-exact-source-worktree>'
+
 # Run renderer-verifier fixtures in both supported shells. Fixture PASS cannot
 # close Issues #10/#149 or substitute for candidate/human/runtime evidence.
 pwsh -File ./tools/v0.2-renderer-compatibility/Test-V02RendererCompatibilityManifest.SelfTests.ps1

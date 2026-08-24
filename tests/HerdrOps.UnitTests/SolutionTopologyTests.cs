@@ -196,11 +196,14 @@ public sealed class SolutionTopologyTests
 
         StringAssert.Contains(architecture, "Status: Approved baseline; v0.2 implementation active");
 
-        StringAssert.Contains(releaseGates, "atomic packaged compatibility, reference-host runtime matrix");
+        StringAssert.Contains(releaseGates, "atomic packaged compatibility, automated reference-host rendering/accessibility coverage");
         StringAssert.Contains(releaseGates, "UI-stall p95 <=50 ms and maximum <=100 ms");
-        StringAssert.Contains(releaseGates, "mixed-DPI 100<->150 and 125<->150 in both directions with primary switch and unplug");
-        StringAssert.Contains(releaseGates, "Narrator and every declared accessibility check are mandatory");
-        StringAssert.Contains(releaseGates, "60 minutes on AC and 60 minutes on battery");
+        StringAssert.Contains(releaseGates, "v0.2 release-first v4 authority and gates");
+        StringAssert.Contains(releaseGates, "six off-screen viewport configurations");
+        StringAssert.Contains(releaseGates, "automated no-soak AB/BA performance/resource checks");
+        StringAssert.Contains(releaseGates, "role-distinct independent Agent review");
+        StringAssert.Contains(releaseGates, "Do not require or admit soak fields");
+        StringAssert.Contains(releaseGates, "Human visual attestation");
         Assert.IsFalse(
             releaseGates.Contains("Until the atomic producer/validator implementation lands", StringComparison.Ordinal),
             "RELEASE-GATES must not retain stale pre-implementation phrasing.");
@@ -217,9 +220,11 @@ public sealed class SolutionTopologyTests
         StringAssert.Contains(githubRoadmap, "Atomic Thai/English language matrix reports");
         StringAssert.Contains(githubRoadmap, "UI-stall p95 <=50 ms max <=100 ms");
 
-        StringAssert.Contains(decisions, "mixed-DPI 100<->150 and 125<->150 transitions in both directions including primary switch and unplug");
-        StringAssert.Contains(decisions, "Narrator and every accessibility check are required");
-        StringAssert.Contains(decisions, "Soak is 60 minutes AC plus 60 minutes battery");
+        StringAssert.Contains(decisions, "D-026 — v0.2 release-first v4 uses agent-collectable automated acceptance");
+        StringAssert.Contains(decisions, "automated performance/resource checks without soak");
+        StringAssert.Contains(decisions, "role-distinct Agent review");
+        StringAssert.Contains(decisions, "No physical monitor, desktop-DPI, power-source, thermal, Narrator");
+        StringAssert.Contains(decisions, "no ProductOwner test action is required");
     }
 
     private static string FindRepositoryRoot()

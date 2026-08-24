@@ -102,26 +102,6 @@ function Invoke-V02LivePerformanceGuardProbe {
     $receiptPath = Join-Path $TempRoot 'package-identity-receipt-probe.json'
     Write-RendererPackageCanonicalJson $receiptValue $receiptPath $repoRoot
 
-    # Create dummy soak evidence file with 24 bins
-    $soakBins = @()
-    foreach ($power in @('AC', 'Battery')) {
-        for ($i = 0; $i -lt 12; $i++) {
-            $offset = if ($power -ceq 'Battery') { 12 } else { 0 }
-            $soakBins += [pscustomobject][ordered]@{
-                powerSource = $power
-                ordinal = $i
-                durationMinutes = 5
-                observedUtc = ('2026-08-22T12:{0:00}:00.0000000Z' -f ($i + 1 + $offset))
-                workingSetStartBytes = 104857600
-                workingSetEndBytes = 104857600
-                rendererStable = $true
-            }
-        }
-    }
-    $soakEvidencePath = Join-Path $TempRoot 'soak-evidence-probe.json'
-    $soakObj = [pscustomobject][ordered]@{ soakBins = $soakBins }
-    Write-RendererPackageCanonicalJson $soakObj $soakEvidencePath $repoRoot
-
     $appProc = $null
     $coreProc = $null
     $appStart = [DateTime]::MinValue
@@ -191,8 +171,7 @@ function Invoke-V02LivePerformanceGuardProbe {
             -ExpectedSourceTree $repoTree `
             -AppProcessId $appProc.Id `
             -CoreProcessId $coreProc.Id `
-            -LiveTelemetryProvider $telemetryProvider `
-            -SoakEvidencePath $soakEvidencePath
+            -LiveTelemetryProvider $telemetryProvider
     } finally {
         Stop-OwnedProcessSafely $appProc $appStart
         Stop-OwnedProcessSafely $coreProc $coreStart

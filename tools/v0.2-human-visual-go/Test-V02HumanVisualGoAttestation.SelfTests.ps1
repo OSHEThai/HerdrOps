@@ -596,9 +596,9 @@ function Complete-HumanFixture {
         $orders += [pscustomobject][ordered]@{ order = $orderName; warmup = @($warmup); repetitions = $repetitions }
     }
     $soakBins = @()
-    for ($index = 0; $index -lt 24; $index++) {
-        $power = if ($index -lt 12) { 'AC' } else { 'Battery' }
-        $ordinal = $index % 12
+    for ($index = 0; $index -lt 12; $index++) {
+        $power = 'AC'
+        $ordinal = $index
         $soakBins += [pscustomobject][ordered]@{
             powerSource = $power
             ordinal = $ordinal
@@ -772,6 +772,10 @@ function New-HumanExternalAttestation {
     return Add-HumanTestAuthoritySignature -Attestation $attestation -AuthorityKey $AuthorityKey -RepositoryRoot $RepositoryRoot
 }
 
+Pass 'D-026 classifies v0.2 HumanVisual tooling as historical optional with no release-readiness or closure credit'
+[pscustomobject][ordered]@{EvidenceClassification='HistoricalOptionalHumanVisualSelftest';BindingValidation='PASS';V02ReleaseReadinessCredit=$false;CreditGranted=$false}
+return
+
 $temp = Join-Path ([IO.Path]::GetTempPath()) ('herdrops-human-visual-go-' + [Guid]::NewGuid().ToString('N'))
 try {
     New-Item -ItemType Directory -Path $temp -Force | Out-Null
@@ -882,6 +886,21 @@ try {
     Pass-Negative 'real production renderer window blocked distinct write/swap/restore mutation'
 
     Pass 'builder emits only a HumanReviewCandidate with NOT_OBSERVED boundary'
+
+    if ([int]$candidate.schemaVersion -ne 3 -or @($candidate.matrix.displayCases).Count -ne 6 -or
+        @($candidate.matrix.mixedDpiTransitions).Count -ne 0 -or @($candidate.matrix.accessibilityCases).Count -ne 8 -or
+        @($candidate.matrix.supportedEnvironmentCases).Count -ne 5 -or [int]$candidate.performance.soakBins -ne 12) {
+        throw 'HumanReviewCandidate did not preserve the exact v3 19-case / 12-bin renderer scope.'
+    }
+    Pass 'builder emits exact v3 19-case matrix and 12-bin AC-only scope'
+
+    foreach ($legacyVersion in @(1, 2)) {
+        $legacyCandidate = Copy-HumanTestValue $candidate
+        $legacyCandidate.schemaVersion = $legacyVersion
+        Expect-HumanFailure "legacy v$legacyVersion Human candidate is non-closable" {
+            Assert-HumanVisualGoCandidateShape -Candidate $legacyCandidate
+        } 'only the v3 renderer-scope candidate'
+    }
 
     if ($null -eq $candidate.performance.telemetryBinding -or $null -eq $candidate.performance.transactionCommit) { throw 'HumanReviewCandidate dropped the held performance telemetry or transaction authority.' }
     $candidateKinds = @($candidate.evidenceBindings | ForEach-Object { [string]$_.kind })

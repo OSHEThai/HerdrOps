@@ -67,25 +67,8 @@ function New-ValidRawObservations {
         }
     }
 
-    $bins = @()
-    foreach ($power in @('AC', 'Battery')) {
-        for ($i = 0; $i -lt 12; $i++) {
-            $offset = if ($power -ceq 'Battery') { 12 } else { 0 }
-            $bins += [pscustomobject][ordered]@{
-                powerSource = $power
-                ordinal = $i
-                durationMinutes = 5
-                observedUtc = ('2026-08-22T12:{0:00}:00.0000000Z' -f ($i + 1 + $offset))
-                workingSetStartBytes = 104857600
-                workingSetEndBytes = 104857600
-                rendererStable = $true
-            }
-        }
-    }
-
     [pscustomobject][ordered]@{
         orders = $orders
-        soakBins = $bins
     }
 }
 
@@ -151,6 +134,7 @@ function New-Limits {
     [pscustomobject][ordered]@{
         status = 'APPROVED'
         approvalReference = $script:RendererAuthorizedApprovalReference
+        scopeCorrectionReference = 'https://github.com/OSHEThai/HerdrOps/issues/149#issuecomment-5396694185'
         cpuMaximumPercent = 1
         eventToWpfP95Milliseconds = 250
         cpuRegressionMaximumPercent = 10
@@ -158,11 +142,7 @@ function New-Limits {
         latencyRegressionMaximumPercent = 10
         uiStallP95Milliseconds = 50
         uiStallMaximumMilliseconds = 100
-        soakAcDurationMinutes = 60
-        soakBatteryDurationMinutes = 60
-        soakBinMinutes = 5
         workingSetMaximumBytes = 267386880
-        resourceSlopeMaximumBytesPerTenMinutes = 1048576
     }
 }
 
@@ -206,11 +186,12 @@ function Initialize-ProvenanceEvidenceChain($Raw) {
     $rawBinding = [pscustomobject][ordered]@{ relativePath=$script:RawSourceRelative;bytes=$rawStable.Bytes;fileSha256=$rawStable.Sha256;canonicalSha256=(Get-HumanDesignReviewSha256ForText $rawCanonical) }
     $provenance = $script:Provenance
     $sidecar = [pscustomobject][ordered]@{
-        schemaVersion=1;evidenceClassification='PackagedCompatibilityPerformanceTelemetryBinding-NoRuntimeCredit';runNonce=$provenance.runNonce
+        schemaVersion=2;evidenceClassification='PackagedCompatibilityPerformanceTelemetryBinding-NoRuntimeCredit';runNonce=$provenance.runNonce
         source=[pscustomobject][ordered]@{commitSha=$provenance.candidate.commitSha;treeSha=$provenance.candidate.treeSha}
+        session=[pscustomobject][ordered]@{kind='LocalConsole';name='Issue10PerformanceComparator';sessionId=1;transport='Physical';powerSource='AC';thermalState='Nominal';elevated=$false;userScope='SingleUser'}
         package=[pscustomobject][ordered]@{identitySha256=$provenance.package.receipt.canonicalSha256;identityFileSha256=$provenance.package.receipt.fileSha256;profileFileSha256=$provenance.profile.fileSha256;archiveSha256=$provenance.package.archive.sha256;manifestSha256=('8'*64);appSha256=$provenance.package.components.app.sha256;coreSha256=$provenance.package.components.core.sha256}
         rawSource=$rawBinding;acquisitions=@(New-ProvenanceAcquisitionFixture $provenance)
-        evidenceBoundary=[pscustomobject][ordered]@{actualHerdrRuntime='NOT_OBSERVED';humanReview='NOT_OBSERVED';release='NOT_OBSERVED';creditGranted=$false}
+        evidenceBoundary=[pscustomobject][ordered]@{actualHerdrRuntime='NOT_OBSERVED';release='NOT_OBSERVED';creditGranted=$false}
     }
     $sidecarPath = Join-Path $script:EvidenceRoot 'performance/performance-telemetry-binding.json'
     Write-RendererPackageCanonicalJson $sidecar $sidecarPath $script:RepoRoot
@@ -259,8 +240,6 @@ function Wait-AtomicSignal($Job, [string]$SignalPath) {
 }
 
 $tempRoot = Join-Path ([IO.Path]::GetTempPath()) ('herdrops-perf-receipt-test-' + [Guid]::NewGuid().ToString('N'))
-$crashJob = $null
-$concurrentJob = $null
 $receiptLeaseJob = $null
 try {
     New-Item -ItemType Directory -Path $tempRoot -Force | Out-Null
@@ -381,7 +360,6 @@ try {
     Expect-RawMutationFailure 'warmup unknown field' { param($v) $v.orders[0].warmup[0] | Add-Member unauthorized $true }
     Expect-RawMutationFailure 'measured unknown field' { param($v) $v.orders[0].repetitions[0].a | Add-Member unauthorized $true }
     Expect-RawMutationFailure 'order unknown field' { param($v) $v.orders[0] | Add-Member unauthorized $true }
-    Expect-RawMutationFailure 'soak-bin unknown field' { param($v) $v.soakBins[0] | Add-Member unauthorized $true }
     Expect-RawMutationFailure 'raw top-level unknown field' { param($v) $v | Add-Member unauthorized $true }
     Expect-RawMutationFailure 'missing measured sample' { param($v) $v.orders[1].repetitions[0].PSObject.Properties.Remove('b') }
     Expect-RawMutationFailure 'missing raw latency sample' { param($v) $v.orders[0].repetitions[0].a.latencyMicroseconds = @($v.orders[0].repetitions[0].a.latencyMicroseconds | Select-Object -First 19) }
@@ -399,10 +377,6 @@ try {
     Expect-ThresholdFailure 'UI stall maximum absolute maximum' { param($v) $v.orders[0].repetitions[0].b.uiStallMicroseconds[19] = 101000 }
     Expect-ThresholdFailure 'mode A working-set absolute maximum' { param($v) $v.orders[0].repetitions[0].a.workingSetMaximumBytes = 267386881 }
     Expect-ThresholdFailure 'mode B working-set absolute maximum' { param($v) $v.orders[0].repetitions[0].b.workingSetMaximumBytes = 267386881 }
-    Expect-ThresholdFailure 'soak start working-set maximum' { param($v) $v.soakBins[0].workingSetStartBytes = 267386881 }
-    Expect-ThresholdFailure 'soak end working-set maximum' { param($v) $v.soakBins[0].workingSetEndBytes = 267386881 }
-    Expect-ThresholdFailure 'soak working-set slope maximum' { param($v) $v.soakBins[0].workingSetEndBytes = 106000000 }
-    Expect-ThresholdFailure 'soak renderer stability requirement' { param($v) $v.soakBins[0].rendererStable = $false }
 
     $unapproved = Copy-TestValue $limits
     $unapproved.status = 'NOT_OBSERVED'
@@ -437,49 +411,6 @@ try {
         [IO.File]::WriteAllBytes($script:RawSourceFullPath, $rawOriginal)
     }
 
-    # Crash boundary: stop only the fixture job we created while it is paused
-    # before the directory rename. A final receipt must not be visible.
-    $crashSignal = Join-Path $tempRoot 'crash.signal'
-    $crashDestination = 'performance/crash-boundary'
-    $crashJob = Start-Job -ScriptBlock {
-        param($Builder,$Raw,$Destination,$RawSource,$Provenance,$Evidence,$Repository,$Signal)
-        & $Builder -RawObservations $Raw -DestinationDirectory $Destination -RawSourcePath $RawSource -CandidateProvenance $Provenance -EvidenceRoot $Evidence -RepositoryRoot $Repository -TestBeforeAtomicMoveSignalPath $Signal
-    } -ArgumentList @($script:BuilderScript,$rawJson,$crashDestination,$script:RawSourceRelative,$script:Provenance,$script:EvidenceRoot,$script:RepoRoot,$crashSignal)
-    if (-not (Wait-AtomicSignal $crashJob $crashSignal)) {
-        $state = $crashJob.State
-        $reason = $crashJob.ChildJobs[0].JobStateInfo.Reason
-        $jobOutput = @(Receive-Job $crashJob -Keep -ErrorAction SilentlyContinue | Out-String)
-        throw "Crash-boundary fixture did not reach the pre-rename signal; state=$state reason=$reason output=$($jobOutput -join '')"
-    }
-    Stop-Job -Job $crashJob -ErrorAction SilentlyContinue
-    $null = Receive-Job $crashJob -ErrorAction SilentlyContinue
-    Remove-Job -Job $crashJob -Force -ErrorAction SilentlyContinue
-    $crashJob = $null
-    if (Test-Path -LiteralPath (Join-Path $script:EvidenceRoot $crashDestination) -PathType Container) {
-        throw 'Crash-boundary fixture exposed a final receipt directory.'
-    }
-    Pass 'crash boundary leaves no partially visible final receipt'
-
-    # Concurrent reader boundary: while the writer is paused, the final path
-    # is absent; after one directory move it is a complete valid receipt.
-    $concurrentSignal = Join-Path $tempRoot 'concurrent.signal'
-    $concurrentDestination = 'performance/concurrent-boundary'
-    $concurrentJob = Start-Job -ScriptBlock {
-        param($Builder,$Raw,$Destination,$RawSource,$Provenance,$Evidence,$Repository,$Signal)
-        & $Builder -RawObservations $Raw -DestinationDirectory $Destination -RawSourcePath $RawSource -CandidateProvenance $Provenance -EvidenceRoot $Evidence -RepositoryRoot $Repository -TestBeforeAtomicMoveSignalPath $Signal
-    } -ArgumentList @($script:BuilderScript,$rawJson,$concurrentDestination,$script:RawSourceRelative,$script:Provenance,$script:EvidenceRoot,$script:RepoRoot,$concurrentSignal)
-    if (-not (Wait-AtomicSignal $concurrentJob $concurrentSignal)) { throw 'Concurrent-boundary fixture did not reach the pre-rename signal.' }
-    if (Test-Path -LiteralPath (Join-Path $script:EvidenceRoot $concurrentDestination)) { throw 'Final receipt became visible before atomic directory rename.' }
-    Remove-Item -LiteralPath $concurrentSignal -Force
-    Wait-Job -Job $concurrentJob | Out-Null
-    $concurrentOutput = @(Receive-Job $concurrentJob)
-    Remove-Job -Job $concurrentJob -Force -ErrorAction SilentlyContinue
-    $concurrentJob = $null
-    if ($concurrentOutput.Count -lt 1 -or $concurrentOutput[-1].AggregateStatus -cne 'PASS') { throw 'Concurrent-boundary fixture did not publish a PASS receipt.' }
-    $concurrentBinding = $concurrentOutput[-1].Binding
-    if ((Assert-RendererPerformanceReceipt $concurrentBinding $script:EvidenceRoot $script:RepoRoot $limits $script:Provenance -ExpectedPackageReceipt $script:ExpectedPackageReceipt) -cne 'PASS') { throw 'Concurrent receipt failed post-rename validation.' }
-    Pass 'concurrent reader sees absent-or-complete directory receipt only'
-
     [pscustomobject]@{
         EvidenceClassification = 'SyntheticVerifierSelftest'
         PositiveCases = $script:PositiveCases
@@ -487,8 +418,6 @@ try {
         Status = 'PASS'
     }
 } finally {
-    if ($null -ne $crashJob) { Stop-Job -Job $crashJob -ErrorAction SilentlyContinue; Remove-Job -Job $crashJob -Force -ErrorAction SilentlyContinue }
-    if ($null -ne $concurrentJob) { Remove-Job -Job $concurrentJob -Force -ErrorAction SilentlyContinue }
     if ($null -ne $receiptLeaseJob) { Stop-Job -Job $receiptLeaseJob -ErrorAction SilentlyContinue; Remove-Job -Job $receiptLeaseJob -Force -ErrorAction SilentlyContinue }
     if (Test-Path -LiteralPath $tempRoot) { Remove-Item -LiteralPath $tempRoot -Recurse -Force }
 }

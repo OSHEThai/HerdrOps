@@ -890,7 +890,7 @@ function Assert-HumanVisualGoAttestationAuthority {
 function ConvertFrom-HumanVisualGoEvidenceUtc {
     param([Parameter(Mandatory = $true)][string]$Value, [Parameter(Mandatory = $true)][string]$Name)
     $parsed = [DateTimeOffset]::MinValue
-    $formats = @("yyyy-MM-dd'T'HH:mm:ss.fffffff'Z'", "yyyy-MM-dd'T'HH:mm:ss.fffffffzzz")
+    $formats = @("yyyy-MM-dd'T'HH:mm:ss'Z'", "yyyy-MM-dd'T'HH:mm:ss.fffffff'Z'", "yyyy-MM-dd'T'HH:mm:ss.fffffffzzz")
     $matched = $false
     foreach ($format in $formats) {
         $candidate = [DateTimeOffset]::MinValue
@@ -1323,6 +1323,9 @@ function New-V02HumanVisualGoCandidateCore {
         $manifestHeld = Open-HumanVisualGoContainedHeldFile -Context $context -Root $evidenceFull -RelativePath $manifestRelative -ContextName 'Renderer manifest' -RootKind EvidenceRoot
         $manifestDocument = Read-HumanVisualGoHeldJson -Held $manifestHeld -Description 'Renderer compatibility manifest' -RepositoryRoot $repoFull
         $manifest = $manifestDocument.Value
+        if ([int]$manifest.manifestVersion -eq 4) {
+            throw 'D-026 makes HumanVisual tooling historical and optional; manifest v4 cannot receive Human review credit or use this path for v0.2 release readiness.'
+        }
         $script:HumanVisualGoCurrentEvidenceRoot = $evidenceFull
         $script:HumanVisualGoCurrentRepositoryRoot = $repoFull
 
@@ -1485,7 +1488,7 @@ function Write-V02HumanVisualGoCandidate {
 function Assert-HumanVisualGoCandidateShape {
     param([Parameter(Mandatory = $true)]$Candidate)
     Assert-HumanVisualGoExactProperties $Candidate @('$id', 'schemaVersion', 'evidenceClassification', 'issue', 'compatibilityIssue', 'roles', 'rendererManifest', 'humanReviewEvidence', 'source', 'package', 'herdr', 'session', 'renderer', 'captures', 'references', 'masks', 'matrix', 'performance', 'visualReview', 'defects', 'evidenceBindings', 'evidenceSetSha256', 'eligibility', 'ineligibilityReasons', 'evidenceBoundary') 'HumanReviewCandidate'
-    if ([string]$Candidate.'$id' -cne $script:HumanVisualGoSchemaId -or [int]$Candidate.schemaVersion -ne 1 -or [string]$Candidate.evidenceClassification -cne 'HumanReviewCandidate' -or [int]$Candidate.issue -ne 11 -or [int]$Candidate.compatibilityIssue -ne 149) { throw 'HumanReviewCandidate identity is invalid.' }
+    if ([string]$Candidate.'$id' -cne $script:HumanVisualGoSchemaId -or [int]$Candidate.schemaVersion -ne 1 -or [string]$Candidate.evidenceClassification -cne 'HumanReviewCandidate' -or [int]$Candidate.issue -ne 11 -or [int]$Candidate.compatibilityIssue -ne 149) { throw 'Historical HumanReviewCandidate identity is invalid.' }
     Assert-HumanVisualGoExactProperties $Candidate.evidenceBoundary @('humanReview', 'actualHerdrRuntime', 'release', 'creditGranted') 'HumanReviewCandidate evidenceBoundary'
     if ($Candidate.evidenceBoundary.humanReview -cne 'NOT_OBSERVED' -or $Candidate.evidenceBoundary.actualHerdrRuntime -cne 'NOT_OBSERVED' -or $Candidate.evidenceBoundary.release -cne 'NOT_OBSERVED' -or $Candidate.evidenceBoundary.creditGranted -isnot [bool] -or [bool]$Candidate.evidenceBoundary.creditGranted) { throw 'HumanReviewCandidate evidence boundary is inflated.' }
 }

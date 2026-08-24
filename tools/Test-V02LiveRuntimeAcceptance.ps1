@@ -44,8 +44,6 @@ param(
 
     [string]$Issue10PerformanceTransactionCommitPath = '',
 
-    [string]$Issue10SoakReceiptPath = '',
-
     [string]$HerdrExecutable = (Join-Path $env:LOCALAPPDATA 'Programs\Herdr\bin\herdr.exe'),
 
     [ValidateRange(90, 900)]
@@ -80,11 +78,10 @@ $issue10Arguments = @(
     $Issue10PerformanceReceiptPath,
     $Issue10PerformanceRawSourcePath,
     $Issue10PerformanceTelemetryBindingPath,
-    $Issue10PerformanceTransactionCommitPath,
-    $Issue10SoakReceiptPath)
+    $Issue10PerformanceTransactionCommitPath)
 $issue10SuppliedCount = @($issue10Arguments | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }).Count
 if ($issue10SuppliedCount -ne 0 -and $issue10SuppliedCount -ne $issue10Arguments.Count) {
-    throw 'ISSUE10_SAME_RUN_ALL_OR_NONE: Issue #10 same-run production evidence requires widget output, binding output, performance receipt/raw/binding/commit, and soak receipt together.'
+    throw 'ISSUE10_SAME_RUN_ALL_OR_NONE: Issue #10 same-run production evidence requires widget output, binding output, and performance receipt/raw/binding/commit together.'
 }
 
 function Get-ExpectedCleanSourceIdentity {
@@ -906,7 +903,7 @@ function Copy-Issue10HeldAuthorityFile {
 }
 
 function New-Issue10SameRunBindingManifest {
-    param([string]$AllowedEvidenceRoot,[string]$RunEvidenceDirectory,[string]$ManifestPath,[string]$WidgetOutputPath,[string]$RunNonce,[DateTime]$EvidenceStartedUtc,[string]$SourceCommit,[string]$SourceTree,$PackageBinding,[string]$GateReportPath,[string]$CoreRuntimeReportPath,[string]$AppRuntimeReportPath,[string]$PerformanceReceiptPath,[string]$PerformanceRawSourcePath,[string]$PerformanceTelemetryBindingPath,[string]$PerformanceTransactionCommitPath,[string]$SoakReceiptPath,[string]$HerdrExecutablePath,[string]$ControlSessionIdentity,[string]$TargetSessionIdentity)
+    param([string]$AllowedEvidenceRoot,[string]$RunEvidenceDirectory,[string]$ManifestPath,[string]$WidgetOutputPath,[string]$RunNonce,[DateTime]$EvidenceStartedUtc,[string]$SourceCommit,[string]$SourceTree,$PackageBinding,[string]$GateReportPath,[string]$CoreRuntimeReportPath,[string]$AppRuntimeReportPath,[string]$PerformanceReceiptPath,[string]$PerformanceRawSourcePath,[string]$PerformanceTelemetryBindingPath,[string]$PerformanceTransactionCommitPath,[string]$HerdrExecutablePath,[string]$ControlSessionIdentity,[string]$TargetSessionIdentity)
     $manifestFull=[IO.Path]::GetFullPath($ManifestPath);$widgetFull=[IO.Path]::GetFullPath($WidgetOutputPath);$receiptFull=$widgetFull+'.publication.json'
     foreach($output in @($manifestFull,$widgetFull,$receiptFull)){
         if(-not(Test-Issue10ContainedPath $AllowedEvidenceRoot $output)){throw "Issue #10 same-run output escaped the current evidence root: $output"}
@@ -929,12 +926,11 @@ function New-Issue10SameRunBindingManifest {
         $performanceRaw=Copy-Issue10HeldAuthorityFile $PerformanceRawSourcePath (Join-Path $authorityDirectory 'performance-raw.json') 'Issue #10 performance raw source';$ownedLeaves.Add($performanceRaw)
         $performanceBinding=Copy-Issue10HeldAuthorityFile $PerformanceTelemetryBindingPath (Join-Path $authorityDirectory 'performance-telemetry-binding.json') 'Issue #10 performance telemetry binding';$ownedLeaves.Add($performanceBinding)
         $performanceCommit=Copy-Issue10HeldAuthorityFile $PerformanceTransactionCommitPath (Join-Path $authorityDirectory 'performance-transaction-commit.json') 'Issue #10 performance transaction commit';$ownedLeaves.Add($performanceCommit)
-        $soak=Copy-Issue10HeldAuthorityFile $SoakReceiptPath (Join-Path $authorityDirectory 'soak-receipt.json') 'Issue #10 soak receipt';$ownedLeaves.Add($soak)
         $herdr=Copy-Issue10HeldAuthorityFile $HerdrExecutablePath (Join-Path $authorityDirectory 'herdr.exe') 'Issue #10 Herdr executable';$ownedLeaves.Add($herdr)
         foreach($binding in @(@($identity,$PackageBinding.IdentityFileSha256,'identity'),@($archive,$PackageBinding.ArchiveSha256,'archive'),@($packageManifest,$PackageBinding.ManifestSha256,'manifest'),@($app,$PackageBinding.AppSha256,'App'),@($core,$PackageBinding.CoreSha256,'Core'))){if($binding[0].Sha256-cne[string]$binding[1]){throw "Issue #10 staged package $($binding[2]) hash differs from the validated package binding."}}
         $artifact={param($path)[pscustomobject][ordered]@{Path=[IO.Path]::GetFullPath($path);Sha256=(Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash}}
         $ownedArtifact={param($owned)[pscustomobject][ordered]@{Path=[string]$owned.Path;Sha256=[string]$owned.Sha256}}
-        $manifest=[pscustomobject][ordered]@{SchemaVersion=1;EvidenceClassification='Issue10ProductionBinding';Issue=10;EvidenceRoot=[IO.Path]::GetFullPath($AllowedEvidenceRoot);RunNonce=$RunNonce;EvidenceStartedUtc=$EvidenceStartedUtc.ToUniversalTime().ToString('O');Source=[pscustomobject][ordered]@{CommitSha=$SourceCommit;TreeSha=$SourceTree};GateReport=&$artifact $GateReportPath;CoreRuntimeReport=&$artifact $CoreRuntimeReportPath;Package=[pscustomobject][ordered]@{Identity=&$ownedArtifact $identity;IdentityReceiptSha256=$PackageBinding.ReceiptSha256;Archive=&$ownedArtifact $archive;Manifest=&$ownedArtifact $packageManifest;App=&$ownedArtifact $app;Core=&$ownedArtifact $core};Performance=[pscustomobject][ordered]@{Receipt=&$ownedArtifact $performance;RawSource=&$ownedArtifact $performanceRaw;TelemetryBinding=&$ownedArtifact $performanceBinding;TransactionCommit=&$ownedArtifact $performanceCommit;RuntimeAppPath=[IO.Path]::GetFullPath($PackageBinding.AppPath);RuntimeCorePath=[IO.Path]::GetFullPath($PackageBinding.CorePath)};SoakReceipt=&$ownedArtifact $soak;Runtime=[pscustomobject][ordered]@{HerdrExecutable=&$ownedArtifact $herdr;ControlSessionIdentity=$ControlSessionIdentity;TargetSessionIdentity=$TargetSessionIdentity};EvidenceBoundary=[pscustomobject][ordered]@{Runtime='NOT_OBSERVED';Human='NOT_OBSERVED';Release='NOT_OBSERVED';CreditGranted=$false}}
+        $manifest=[pscustomobject][ordered]@{SchemaVersion=4;EvidenceClassification='Issue10ProductionBinding';Issue=10;EvidenceRoot=[IO.Path]::GetFullPath($AllowedEvidenceRoot);RunNonce=$RunNonce;EvidenceStartedUtc=$EvidenceStartedUtc.ToUniversalTime().ToString('O');Source=[pscustomobject][ordered]@{CommitSha=$SourceCommit;TreeSha=$SourceTree};GateReport=&$artifact $GateReportPath;CoreRuntimeReport=&$artifact $CoreRuntimeReportPath;Package=[pscustomobject][ordered]@{Identity=&$ownedArtifact $identity;IdentityReceiptSha256=$PackageBinding.ReceiptSha256;Archive=&$ownedArtifact $archive;Manifest=&$ownedArtifact $packageManifest;App=&$ownedArtifact $app;Core=&$ownedArtifact $core};Performance=[pscustomobject][ordered]@{Receipt=&$ownedArtifact $performance;RawSource=&$ownedArtifact $performanceRaw;TelemetryBinding=&$ownedArtifact $performanceBinding;TransactionCommit=&$ownedArtifact $performanceCommit;RuntimeAppPath=[IO.Path]::GetFullPath($PackageBinding.AppPath);RuntimeCorePath=[IO.Path]::GetFullPath($PackageBinding.CorePath)};Runtime=[pscustomobject][ordered]@{HerdrExecutable=&$ownedArtifact $herdr;ControlSessionIdentity=$ControlSessionIdentity;TargetSessionIdentity=$TargetSessionIdentity};EvidenceBoundary=[pscustomobject][ordered]@{Runtime='NOT_OBSERVED';Release='NOT_OBSERVED';CreditGranted=$false}}
         $json=($manifest|ConvertTo-Json -Depth 12 -Compress)+"`n";$bytes=(New-Object Text.UTF8Encoding($false)).GetBytes($json)
         $stream=New-Issue10OwnedLeafStream -Path $manifestFull -Context 'Issue #10 binding manifest';$manifestOwned=[pscustomobject]@{Path=$manifestFull;Sha256='';HeldStream=$stream;Identity=(Get-V02FileInformation -FileStream $stream)};$stream.Write($bytes,0,$bytes.Length);$stream.Flush($true);$stream.Position=0;$sha=[Security.Cryptography.SHA256]::Create();try{$manifestHash=([BitConverter]::ToString($sha.ComputeHash($stream))).Replace('-','')}finally{$sha.Dispose()}
         $manifestOwned.Sha256=$manifestHash;Assert-Issue10HeldLeaf $manifestOwned 'Issue #10 binding manifest'
@@ -998,7 +994,7 @@ try {
     New-Item -ItemType Directory -Path $captureDirectory -Force | Out-Null
     New-Item -ItemType Directory -Path $issue9UiDirectory -Force | Out-Null
     if ($issue10SuppliedCount -eq $issue10Arguments.Count) {
-        foreach($inputPath in @($Issue10PerformanceReceiptPath,$Issue10PerformanceRawSourcePath,$Issue10PerformanceTelemetryBindingPath,$Issue10PerformanceTransactionCommitPath,$Issue10SoakReceiptPath)){
+        foreach($inputPath in @($Issue10PerformanceReceiptPath,$Issue10PerformanceRawSourcePath,$Issue10PerformanceTelemetryBindingPath,$Issue10PerformanceTransactionCommitPath)){
             if(-not(Test-Path -LiteralPath $inputPath -PathType Leaf)){throw "Issue #10 same-run input is missing before runtime: $inputPath"}
             Assert-Issue10NoReparseComponents -Path $inputPath -Context 'Issue #10 same-run input'
             $inputStream=[IO.File]::Open([IO.Path]::GetFullPath($inputPath),[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read);try{$inputIdentity=Get-V02FileInformation -FileStream $inputStream;if($inputIdentity.NumberOfLinks-ne1){throw "Issue #10 same-run input must have exactly one hard link: $inputPath"};if(-not(Get-Issue10FinalPath -Stream $inputStream -Context 'Issue #10 same-run input').Equals([IO.Path]::GetFullPath($inputPath),[StringComparison]::OrdinalIgnoreCase)){throw "Issue #10 same-run input final path changed: $inputPath"}}finally{$inputStream.Dispose()}
@@ -1982,7 +1978,6 @@ if($issue10SuppliedCount -eq $issue10Arguments.Count){
         -PerformanceRawSourcePath $Issue10PerformanceRawSourcePath `
         -PerformanceTelemetryBindingPath $Issue10PerformanceTelemetryBindingPath `
         -PerformanceTransactionCommitPath $Issue10PerformanceTransactionCommitPath `
-        -SoakReceiptPath $Issue10SoakReceiptPath `
         -HerdrExecutablePath $HerdrExecutable `
         -ControlSessionIdentity $sessionTopology.ControlSessionName `
         -TargetSessionIdentity $sessionTopology.TargetSessionName

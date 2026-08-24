@@ -39,7 +39,6 @@ public sealed record Issue10ProductionAuthorityRuntime(
 
 public sealed record Issue10ProductionAuthorityBoundary(
     string Runtime,
-    string Human,
     string Release,
     bool CreditGranted);
 
@@ -55,7 +54,6 @@ public sealed record Issue10ProductionAuthority(
     Issue10ProductionAuthorityFile CoreRuntimeReport,
     Issue10ProductionAuthorityPackage Package,
     Issue10ProductionAuthorityPerformance Performance,
-    Issue10ProductionAuthorityFile SoakReceipt,
     Issue10ProductionAuthorityRuntime Runtime,
     Issue10ProductionAuthorityBoundary EvidenceBoundary);
 
@@ -77,7 +75,6 @@ public sealed record Issue10WidgetBindings(
     string PerformanceReceiptSha256,
     string PerformanceTelemetryBindingSha256,
     string PerformanceTransactionCommitSha256,
-    string SoakReceiptSha256,
     string ControlSessionIdentity,
     string TargetSessionIdentity);
 
@@ -358,7 +355,6 @@ public static class Issue10WidgetEvidenceProducer
             HoldExpectedArtifact(held, authorityFiles, root, authority.Performance.RawSource, MaximumAuthorityArtifactBytes, "Issue #10 performance raw source");
             HoldExpectedArtifact(held, authorityFiles, root, authority.Performance.TelemetryBinding, MaximumAuthorityArtifactBytes, "Issue #10 performance telemetry binding");
             HoldExpectedArtifact(held, authorityFiles, root, authority.Performance.TransactionCommit, MaximumAuthorityArtifactBytes, "Issue #10 performance transaction commit");
-            HoldExpectedArtifact(held, authorityFiles, root, authority.SoakReceipt, MaximumAuthorityArtifactBytes, "Issue #10 soak receipt");
             HoldExpectedArtifact(held, authorityFiles, root, authority.Runtime.HerdrExecutable, MaximumAuthorityArtifactBytes, "Issue #10 Herdr executable");
             if (!string.Equals(heldAppReport.Path, appReport, StringComparison.OrdinalIgnoreCase))
             {
@@ -515,7 +511,7 @@ public static class Issue10WidgetEvidenceProducer
             "Issue #10 binding manifest",
             "SchemaVersion", "EvidenceClassification", "Issue", "EvidenceRoot", "RunNonce",
             "EvidenceStartedUtc", "Source", "GateReport", "CoreRuntimeReport", "Package",
-            "Performance", "SoakReceipt", "Runtime", "EvidenceBoundary");
+            "Performance", "Runtime", "EvidenceBoundary");
         RequireExactProperties(root.GetProperty("Source"), "Issue #10 binding source", "CommitSha", "TreeSha");
         RequireArtifactShape(root.GetProperty("GateReport"), "Issue #10 gate report");
         RequireArtifactShape(root.GetProperty("CoreRuntimeReport"), "Issue #10 Core runtime report");
@@ -532,7 +528,6 @@ public static class Issue10WidgetEvidenceProducer
         RequireArtifactShape(root.GetProperty("Performance").GetProperty("RawSource"), "Issue #10 performance raw source");
         RequireArtifactShape(root.GetProperty("Performance").GetProperty("TelemetryBinding"), "Issue #10 performance telemetry binding");
         RequireArtifactShape(root.GetProperty("Performance").GetProperty("TransactionCommit"), "Issue #10 performance transaction commit");
-        RequireArtifactShape(root.GetProperty("SoakReceipt"), "Issue #10 soak receipt");
         RequireExactProperties(
             root.GetProperty("Runtime"),
             "Issue #10 runtime authority",
@@ -541,7 +536,7 @@ public static class Issue10WidgetEvidenceProducer
         RequireExactProperties(
             root.GetProperty("EvidenceBoundary"),
             "Issue #10 producer evidence boundary",
-            "Runtime", "Human", "Release", "CreditGranted");
+            "Runtime", "Release", "CreditGranted");
     }
 
     private static void RequireArtifactShape(JsonElement value, string context) =>
@@ -590,7 +585,6 @@ public static class Issue10WidgetEvidenceProducer
             authority.Performance.TransactionCommit is null ||
             string.IsNullOrWhiteSpace(authority.Performance.RuntimeAppPath) ||
             string.IsNullOrWhiteSpace(authority.Performance.RuntimeCorePath) ||
-            authority.SoakReceipt is null ||
             authority.Runtime is null ||
             authority.EvidenceBoundary is null)
         {
@@ -601,7 +595,7 @@ public static class Issue10WidgetEvidenceProducer
         {
             throw new InvalidOperationException("Issue #10 runtime App/Core authority paths must be fully qualified.");
         }
-        if (authority.SchemaVersion != 1 ||
+        if (authority.SchemaVersion != 4 ||
             !string.Equals(authority.EvidenceClassification, ExpectedEvidenceClassification, StringComparison.Ordinal) ||
             authority.Issue != 10)
         {
@@ -635,11 +629,10 @@ public static class Issue10WidgetEvidenceProducer
             throw new InvalidOperationException("Issue #10 binding manifest must contain distinct non-placeholder session identities.");
         }
         if (!string.Equals(authority.EvidenceBoundary.Runtime, "NOT_OBSERVED", StringComparison.Ordinal) ||
-            !string.Equals(authority.EvidenceBoundary.Human, "NOT_OBSERVED", StringComparison.Ordinal) ||
             !string.Equals(authority.EvidenceBoundary.Release, "NOT_OBSERVED", StringComparison.Ordinal) ||
             authority.EvidenceBoundary.CreditGranted)
         {
-            throw new InvalidOperationException("Issue #10 production binding cannot grant Runtime, Human, Release, or credit.");
+            throw new InvalidOperationException("Issue #10 production binding cannot grant Runtime, Release, or credit.");
         }
     }
 
@@ -657,7 +650,6 @@ public static class Issue10WidgetEvidenceProducer
         yield return authority.Performance.RawSource;
         yield return authority.Performance.TelemetryBinding;
         yield return authority.Performance.TransactionCommit;
-        yield return authority.SoakReceipt;
         yield return authority.Runtime.HerdrExecutable;
     }
 
@@ -819,7 +811,6 @@ public static class Issue10WidgetEvidenceProducer
                 artifact[ResolveContainedPath(root, authority.Performance.Receipt.Path, "Issue #10 performance receipt")].Sha256,
                 artifact[ResolveContainedPath(root, authority.Performance.TelemetryBinding.Path, "Issue #10 performance telemetry binding")].Sha256,
                 artifact[ResolveContainedPath(root, authority.Performance.TransactionCommit.Path, "Issue #10 performance transaction commit")].Sha256,
-                artifact[ResolveContainedPath(root, authority.SoakReceipt.Path, "Issue #10 soak receipt")].Sha256,
                 authority.Runtime.ControlSessionIdentity,
                 authority.Runtime.TargetSessionIdentity),
             new Issue10WidgetChronology(

@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://herdrops.local/schema/v0.2/human-review-candidate.schema.json",
-  "title": "HerdrOps v0.2 Human visual-GO candidate",
-  "description": "Builder output only. This document can never be Human authority, Runtime evidence, or Release authority.",
+  "title": "HerdrOps v0.2 historical Human visual-review candidate",
+  "description": "Historical optional builder output only. D-026 excludes this artifact from v0.2 release readiness and closure credit; it can never be Human authority, Runtime evidence, or Release authority.",
   "type": "object",
   "additionalProperties": false,
   "required": ["$id", "schemaVersion", "evidenceClassification", "issue", "compatibilityIssue", "roles", "rendererManifest", "humanReviewEvidence", "source", "package", "herdr", "session", "renderer", "captures", "references", "masks", "matrix", "performance", "visualReview", "defects", "evidenceBindings", "evidenceSetSha256", "eligibility", "ineligibilityReasons", "evidenceBoundary"],
