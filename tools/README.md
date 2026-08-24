@@ -151,6 +151,17 @@ $extractedPackageRoot = '<exact-extracted-package-root>'
 # (implementation-only; Issue #10 remains open pending actual Herdr/reference-host evidence)
 ./tools/Test-V02LiveWidgets.ps1
 
+# Produce final v0.2 automated release artifacts. See the protocol contract for
+# the complete parameter list and required two-phase ordering. GH_TOKEN is read
+# only for authenticated GitHub API acquisition and is never serialized.
+./tools/v0.2-release/Invoke-V02ReleaseEvidencePublisher.ps1 -EvidenceClass Contract -ExpectedSourceCommit <commit> -ExpectedSourceTree <tree> -EvidenceRoot <root> -OutputPath <contract.json>
+./tools/v0.2-release/Invoke-V02ReleaseEvidencePublisher.ps1 -EvidenceClass Synthetic -ExpectedSourceCommit <commit> -ExpectedSourceTree <tree> -EvidenceRoot <root> -OutputPath <synthetic.json>
+./tools/v0.2-release/New-V02AuthenticatedGitHubSnapshot.ps1 -Phase Preclosure -ExpectedSourceCommit <commit> -ExpectedSourceTree <tree> -EvidenceRoot <root> -OutputPath <preclosure.json>
+# A role-distinct Agent then supplies an exact GitHub APPROVED review; publish
+# its schema-v4 receipt outside the repository/evidence root, create the lock,
+# run ReleaseGate Preclosure, close #11/#149 + milestone #2, capture FinalClosure,
+# and rerun ReleaseGate. No command above mutates GitHub or publishes a Release.
+
 # From a clean committed checkout, verify the deterministic v0.3 activity-event
 # envelope, bounded pipeline, replay fixture, exact hashes, and fail-closed command.
 ./tools/Test-V03ActivityPipeline.ps1

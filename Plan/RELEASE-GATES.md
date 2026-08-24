@@ -71,6 +71,13 @@ The current install-lifecycle record is `herdrops-v0.2-automated-lifecycle-v5`, 
 - Do not require clean-host preauthorization, certificate pinning, detached CMS signatures, an observer receipt, ProductOwner/manual action or Human attestation.
 - Require the separately authenticated candidate-specific `IndependentAgentReviewer` receipt already used by the v0.2 release gate; builder and reviewer identities must be role-distinct. Report schema v1 is historical and cannot close v0.2.
 
+### v0.2 automated release-artifact production and closure phases
+
+- Publish Contract/Synthetic schema-v2 receipts only by running the exact governed command sets from a clean candidate. Bind every transcript path and SHA-256; schema v1 and arbitrary PASS lists cannot close v0.2.
+- Acquire schema-v3 GitHub state live through authenticated `api.github.com`, then require the final gate to repeat the live acquisition. Local snapshots alone are never authenticated authority.
+- Require an owner-authenticated Issue #149 comment posted by automation that binds the exact candidate plus nonempty, distinct builder/reviewer Agent identities and task IDs, `APPROVED_CANDIDATE_ONLY`, and zero open High/Critical defects. Re-fetch its exact comment ID/body through GitHub at gate time and reject edits. Self-contained RSA keys, arbitrary HTTPS references and schema-v3 review receipts are non-closable.
+- Run `Preclosure` with exactly #11 and #149 open and milestone #2 open. It may authorize the automated GitHub closure step but remains `ReleaseReady=false`. After those two issues and milestone #2 close, acquire `FinalClosure` bound to the preclosure hash and rerun the unchanged candidate. Neither phase publishes a tag, package or release.
+
 ### v0.2 reference-host working-set authority
 
 Product owner `@yutthaphon` approved Issue #149 options M-A and R-A in the dated
