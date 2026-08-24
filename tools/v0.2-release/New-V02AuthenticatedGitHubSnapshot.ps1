@@ -13,12 +13,15 @@ Set-StrictMode -Version Latest;$ErrorActionPreference='Stop'
 . (Join-Path $PSScriptRoot '..\lib\V02ReleaseArtifactProduction.ps1')
 $null=Assert-V02ReleaseArtifactSafeOutput -Path $OutputPath -AllowedRoot $EvidenceRoot
 $preclosureSha=''
+$preclosureLease=$null
+try {
 if($Phase-ceq'FinalClosure'){
     if([string]::IsNullOrWhiteSpace($PreclosureSnapshotPath)){throw 'FinalClosure requires PreclosureSnapshotPath.'}
     Assert-V02ReleaseArtifactExistingFileWithinRoot -Path $PreclosureSnapshotPath -Root $EvidenceRoot -Context 'Preclosure snapshot'|Out-Null
-    $preclosureSha=Get-V02ReleaseArtifactSha256File $PreclosureSnapshotPath
+    $preclosureLease=Open-V02ReleaseArtifactFileLease $PreclosureSnapshotPath 'Preclosure snapshot';$preclosureSha=$preclosureLease.Sha256
 }
 $live=Get-V02ReleaseArtifactGitHubState -SourceCommit $ExpectedSourceCommit -TokenEnvironmentVariable $GitHubTokenEnvironmentVariable
 $value=New-V02ReleaseArtifactGitHubSnapshotValue -Phase $Phase -SourceCommit $ExpectedSourceCommit -SourceTree $ExpectedSourceTree -LiveState $live -PreclosureSnapshotSha256 $preclosureSha
 Assert-V02ReleaseArtifactGitHubPhaseState -Snapshot $value -Phase $Phase
 Publish-V02ReleaseArtifactJsonNoClobber -Value $value -OutputPath $OutputPath -AllowedRoot $EvidenceRoot
+} finally {Close-V02ReleaseArtifactLease $preclosureLease}

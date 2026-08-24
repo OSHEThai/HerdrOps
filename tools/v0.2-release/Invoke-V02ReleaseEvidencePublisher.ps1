@@ -25,24 +25,27 @@ $definitions=if($EvidenceClass-ceq'Contract'){
     )
 }else{
     @(
-        [pscustomobject][ordered]@{Name='live-pages-packaged-rendering';Script='tools/Test-V02LivePages.ps1';Arguments=@('-Configuration','Release','-SkipBuild')},
-        [pscustomobject][ordered]@{Name='live-widgets-packaged-rendering';Script='tools/Test-V02LiveWidgets.ps1';Arguments=@('-Configuration','Release','-SkipBuild','-RunToken',([Guid]::NewGuid().ToString('N')))},
-        [pscustomobject][ordered]@{Name='thai-english-language-modes';Script='tools/Test-V02LanguageModes.ps1';Arguments=@('-Configuration','Release','-SkipBuild')}
+        [pscustomobject][ordered]@{Name='live-pages-packaged-rendering';Script='tools/Test-V02LivePages.ps1';Arguments=@('-Configuration','Release')},
+        [pscustomobject][ordered]@{Name='live-widgets-packaged-rendering';Script='tools/Test-V02LiveWidgets.ps1';Arguments=@('-Configuration','Release')},
+        [pscustomobject][ordered]@{Name='thai-english-language-modes';Script='tools/Test-V02LanguageModes.ps1';Arguments=@('-Configuration','Release')}
     )
 }
-$null=Assert-V02ReleaseArtifactSafeOutput -Path $OutputPath -AllowedRoot $root
-foreach($definition in $definitions){$null=Assert-V02ReleaseArtifactSafeOutput -Path (Join-Path $root ("$($EvidenceClass.ToLowerInvariant())-$($definition.Name).txt")) -AllowedRoot $root}
+$outputFull=[IO.Path]::GetFullPath($OutputPath);$finalSetDirectory=[IO.Path]::GetDirectoryName($outputFull)
+if(-not$finalSetDirectory.StartsWith($root+[IO.Path]::DirectorySeparatorChar,[StringComparison]::OrdinalIgnoreCase)-or[IO.Path]::GetDirectoryName($finalSetDirectory)-cne$root){throw 'OutputPath must be a receipt leaf in one new direct child set directory of EvidenceRoot.'}
+if(Test-Path -LiteralPath $finalSetDirectory){throw 'Governed evidence set destination already exists; publication is no-clobber.'}
 $hostPath=[Diagnostics.Process]::GetCurrentProcess().MainModule.FileName
-$checks=New-Object Collections.Generic.List[object]
-foreach($definition in $definitions){
-    $scriptPath=[IO.Path]::GetFullPath((Join-Path $repo $definition.Script))
-    if(-not[IO.File]::Exists($scriptPath)){throw "Governed check script is missing: $($definition.Script)"}
-    $result=Invoke-V02ReleaseArtifactCheckProcess -HostPath $hostPath -ScriptPath $scriptPath -Arguments @($definition.Arguments)
-    $artifactPath=Join-Path $root ("$($EvidenceClass.ToLowerInvariant())-$($definition.Name).txt")
-    $transcript="COMMAND: $hostPath -File $($definition.Script) $(@($definition.Arguments)-join' ')`nEXIT_CODE: $($result.ExitCode)`n$($result.Output)"
-    $published=Publish-V02ReleaseArtifactBytesNoClobber -Bytes ([Text.UTF8Encoding]::new($false).GetBytes($transcript)) -OutputPath $artifactPath -AllowedRoot $root
-    if($result.ExitCode-ne0){throw "Governed $EvidenceClass check '$($definition.Name)' failed with exit code $($result.ExitCode); no receipt was published."}
-    [void]$checks.Add([pscustomobject][ordered]@{Name=$definition.Name;Result='PASS';Path=$published.Path;Sha256=$published.Sha256})
+$checks=New-Object Collections.Generic.List[object];$files=New-Object Collections.Generic.List[object];$inputLeases=New-Object Collections.Generic.List[object]
+try{
+    foreach($definition in $definitions){$scriptPath=[IO.Path]::GetFullPath((Join-Path $repo $definition.Script));if(-not[IO.File]::Exists($scriptPath)){throw "Governed check script is missing: $($definition.Script)"};[void]$inputLeases.Add((Open-V02ReleaseArtifactFileLease $scriptPath "Governed check $($definition.Name)"))}
+    for($index=0;$index-lt$definitions.Count;$index++){
+        $definition=$definitions[$index];$scriptPath=$inputLeases[$index].Path
+        $result=Invoke-V02ReleaseArtifactCheckProcess -HostPath $hostPath -ScriptPath $scriptPath -Arguments @($definition.Arguments)
+        if($result.ExitCode-ne0){throw "Governed $EvidenceClass check '$($definition.Name)' failed with exit code $($result.ExitCode); no evidence set was published."}
+        $leaf="$($EvidenceClass.ToLowerInvariant())-$($definition.Name).txt";$transcript="COMMAND: $hostPath -File $($definition.Script) $(@($definition.Arguments)-join' ')`nEXIT_CODE: $($result.ExitCode)`n$($result.Output)";$bytes=[Text.UTF8Encoding]::new($false).GetBytes($transcript);$sha=Get-V02ReleaseArtifactSha256Bytes $bytes
+        [void]$files.Add([pscustomobject]@{Name=$leaf;Bytes=$bytes});[void]$checks.Add([pscustomobject][ordered]@{Name=$definition.Name;Result='PASS';Path=(Join-Path $finalSetDirectory $leaf);Sha256=$sha})
+    }
+    $receipt=[pscustomobject][ordered]@{SchemaVersion=2;EvidenceClass=$EvidenceClass;Result='PASS';SourceCommit=$ExpectedSourceCommit;SourceTree=$ExpectedSourceTree;RuntimeObserved=$false;ActualHerdrUsed=$false;ReleaseCredit=$false;Checks=$checks.ToArray()}
+    Publish-V02ReleaseArtifactSetNoClobber -AllowedRoot $root -ReceiptOutputPath $outputFull -Files $files.ToArray() -ReceiptValue $receipt -InputLeases $inputLeases.ToArray()
+} finally {
+    foreach($lease in $inputLeases){Close-V02ReleaseArtifactLease $lease}
 }
-$receipt=[pscustomobject][ordered]@{SchemaVersion=2;EvidenceClass=$EvidenceClass;Result='PASS';SourceCommit=$ExpectedSourceCommit;SourceTree=$ExpectedSourceTree;RuntimeObserved=$false;ActualHerdrUsed=$false;ReleaseCredit=$false;Checks=@($checks)}
-Publish-V02ReleaseArtifactJsonNoClobber -Value $receipt -OutputPath $OutputPath -AllowedRoot $root

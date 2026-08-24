@@ -12,16 +12,22 @@ Assert-V02ReleaseArtifactExistingFileWithinRoot -Path $PreclosureGitHubSnapshotP
 $independentReceiptFull=Assert-V02ReleaseArtifactExistingFileWithinRoot -Path $IndependentCandidateReceiptPath -Root $ExternalReviewRoot -Context 'Independent Agent receipt'
 Assert-V02ReleaseArtifactPathOutsideRoot -Path $independentReceiptFull -Root $RepositoryRoot -Context 'Independent Agent receipt'|Out-Null
 Assert-V02ReleaseArtifactPathOutsideRoot -Path $independentReceiptFull -Root $EvidenceRoot -Context 'Independent Agent receipt'|Out-Null
-$receipt=Get-Content -LiteralPath $IndependentCandidateReceiptPath -Raw|ConvertFrom-Json
+$receiptLease=Open-V02ReleaseArtifactFileLease $independentReceiptFull 'Independent Agent receipt';$snapshotLease=Open-V02ReleaseArtifactFileLease $PreclosureGitHubSnapshotPath 'Preclosure GitHub snapshot';$authorityLease=Open-V02ReleaseArtifactFileLease $AuthorityReferencePath 'Authority reference'
+try {
+$receipt=ConvertFrom-V02ReleaseArtifactCanonicalJsonBytes $receiptLease.Bytes 'Independent Agent receipt'
 if([int]$receipt.SchemaVersion-ne4-or[string]$receipt.EvidenceClass-cne'ExternalIndependentCandidateReceipt'-or[string]$receipt.Result-cne'APPROVED_CANDIDATE_ONLY'){throw 'Independent receipt is not the closable schema v4 Agent review.'}
-$receiptSha=Get-V02ReleaseArtifactSha256File $IndependentCandidateReceiptPath;$snapshotSha=Get-V02ReleaseArtifactSha256File $PreclosureGitHubSnapshotPath
+$receiptSha=$receiptLease.Sha256;$snapshotSha=$snapshotLease.Sha256
 if([string]$receipt.Candidate.PreclosureGitHubSnapshotSha256-cne$snapshotSha){throw 'Independent receipt does not bind the exact preclosure GitHub snapshot bytes.'}
-$authoritySha=Get-V02ReleaseArtifactSha256File $AuthorityReferencePath
+$authoritySha=$authorityLease.Sha256
 $reviewResultFull=Assert-V02ReleaseArtifactExistingFileWithinRoot -Path ([string]$receipt.Review.ReviewResultPath) -Root $ExternalReviewRoot -Context 'Independent Agent review result'
 Assert-V02ReleaseArtifactPathOutsideRoot -Path $reviewResultFull -Root $RepositoryRoot -Context 'Independent Agent review result'|Out-Null
 Assert-V02ReleaseArtifactPathOutsideRoot -Path $reviewResultFull -Root $EvidenceRoot -Context 'Independent Agent review result'|Out-Null
-$reviewResultSha=Get-V02ReleaseArtifactSha256File $reviewResultFull
+$reviewResultLease=Open-V02ReleaseArtifactFileLease $reviewResultFull 'Independent Agent review result'
+try {
+$reviewResultSha=$reviewResultLease.Sha256
 if([string]$receipt.Review.ReviewResultSha256-cne$reviewResultSha){throw 'Independent Agent review-result bytes do not match the owner-authenticated receipt.'}
+$structuredReview=Read-V02ReleaseArtifactAgentReviewResult -Lease $reviewResultLease -ExpectedCandidate $receipt.Candidate
+if((ConvertTo-V02Jcs $structuredReview.Builder)-cne(ConvertTo-V02Jcs $receipt.Builder)-or(ConvertTo-V02Jcs $structuredReview.IndependentReviewer)-cne(ConvertTo-V02Jcs $receipt.IndependentReviewer)){throw 'Independent Agent review-result roles do not match the receipt.'}
 Assert-V02ReleaseArtifactLogicalAgentRoles -Builder $receipt.Builder -IndependentReviewer $receipt.IndependentReviewer
 if([string]$receipt.Review.Result-cne'APPROVED_CANDIDATE_ONLY'-or[int]$receipt.Review.OpenHighCriticalDefects-ne0){throw 'Independent Agent review result is not closable.'}
 if([string]$receipt.Authentication.Method-cne'LIVE_GITHUB_OWNER_AUTHENTICATED_AGENT_REVIEW_COMMENT'-or[string]$receipt.Authentication.CommentAuthor-cne'yutthaphon'-or-not[bool]$receipt.Authentication.Authenticated){throw 'Independent Agent receipt lacks the owner-authenticated GitHub comment boundary.'}
@@ -39,3 +45,5 @@ $lock=[pscustomobject][ordered]@{
     Runtime='NOT_OBSERVED';Release='NOT_OBSERVED'
 }
 Publish-V02ReleaseArtifactJsonNoClobber -Value $lock -OutputPath $OutputPath -AllowedRoot $EvidenceRoot
+} finally {Close-V02ReleaseArtifactLease $reviewResultLease}
+} finally {Close-V02ReleaseArtifactLease $authorityLease;Close-V02ReleaseArtifactLease $snapshotLease;Close-V02ReleaseArtifactLease $receiptLease}

@@ -8,8 +8,6 @@ param(
     [Parameter(Mandatory=$true)][string]$PackageAppSha256,[Parameter(Mandatory=$true)][string]$PackageCoreSha256,
     [Parameter(Mandatory=$true)][string]$RendererManifestSha256,[Parameter(Mandatory=$true)][string]$RuntimeMatrixManifestSha256,
     [Parameter(Mandatory=$true)][string]$Issue9CandidateSha256,[Parameter(Mandatory=$true)][string]$PreclosureGitHubSnapshotPath,[Parameter(Mandatory=$true)][string]$AuthorityReferencePath,
-    [Parameter(Mandatory=$true)][string]$BuilderIdentity,[Parameter(Mandatory=$true)][string]$BuilderTask,
-    [Parameter(Mandatory=$true)][string]$ReviewerIdentity,[Parameter(Mandatory=$true)][string]$ReviewerTask,
     [Parameter(Mandatory=$true)][string]$ReviewResultPath,
     [Parameter(Mandatory=$true)][string]$ExternalOutputRoot,[Parameter(Mandatory=$true)][string]$OutputPath,
     [Parameter(Mandatory=$true)][string]$RepositoryRoot,[Parameter(Mandatory=$true)][string]$EvidenceRoot,
@@ -29,14 +27,13 @@ $reviewResultFull=Assert-V02ReleaseArtifactExistingFileWithinRoot -Path $ReviewR
 Assert-V02ReleaseArtifactPathOutsideRoot -Path $reviewResultFull -Root $RepositoryRoot -Context 'Independent Agent review result'|Out-Null
 Assert-V02ReleaseArtifactPathOutsideRoot -Path $reviewResultFull -Root $EvidenceRoot -Context 'Independent Agent review result'|Out-Null
 if([StringComparer]::OrdinalIgnoreCase.Equals($reviewResultFull,$outputFull)){throw 'Review result and receipt output paths must be distinct.'}
-$reviewResultInfo=Get-Item -LiteralPath $reviewResultFull;if($reviewResultInfo.Length-le0-or$reviewResultInfo.Length-gt16777216){throw 'Independent Agent review result must be 1..16777216 bytes.'}
-$reviewResultSha=Get-V02ReleaseArtifactSha256File $reviewResultFull
-$snapshotSha=Get-V02ReleaseArtifactSha256File $PreclosureGitHubSnapshotPath
-$authoritySha=Get-V02ReleaseArtifactSha256File $AuthorityReferencePath
+$reviewLease=$null;$snapshotLease=$null;$authorityLease=$null
+try{
+$reviewLease=Open-V02ReleaseArtifactFileLease $reviewResultFull 'Independent Agent review result';if($reviewLease.Bytes.Length-le0-or$reviewLease.Bytes.Length-gt16777216){throw 'Independent Agent review result must be 1..16777216 bytes.'}
+$snapshotLease=Open-V02ReleaseArtifactFileLease $PreclosureGitHubSnapshotPath 'Preclosure GitHub snapshot';$authorityLease=Open-V02ReleaseArtifactFileLease $AuthorityReferencePath 'Authority reference'
+$reviewResultSha=$reviewLease.Sha256;$snapshotSha=$snapshotLease.Sha256;$authoritySha=$authorityLease.Sha256
 $candidate=[pscustomobject][ordered]@{SourceCommit=$ExpectedSourceCommit;SourceTree=$ExpectedSourceTree;ProfileId='herdrops-v0.2-package-software-only-issue-149';ProfileFileSha256=$ProfileFileSha256;ProfileCanonicalSha256=$ProfileCanonicalSha256;PackageReceiptSha256=$PackageReceiptSha256;PackageReceiptFileSha256=$PackageReceiptFileSha256;PackageArchiveSha256=$PackageArchiveSha256;PackageManifestSha256=$PackageManifestSha256;PackageAppSha256=$PackageAppSha256;PackageCoreSha256=$PackageCoreSha256;RendererManifestSha256=$RendererManifestSha256;RuntimeMatrixManifestSha256=$RuntimeMatrixManifestSha256;Issue9CandidateSha256=$Issue9CandidateSha256;PreclosureGitHubSnapshotSha256=$snapshotSha}
-$builder=[pscustomobject][ordered]@{Identity=$BuilderIdentity;Task=$BuilderTask;Role='CandidateBuilder'}
-$reviewer=[pscustomobject][ordered]@{Identity=$ReviewerIdentity;Task=$ReviewerTask;Role='IndependentAgentReviewer'}
-Assert-V02ReleaseArtifactLogicalAgentRoles -Builder $builder -IndependentReviewer $reviewer
+$reviewDocument=Read-V02ReleaseArtifactAgentReviewResult -Lease $reviewLease -ExpectedCandidate $candidate;$builder=$reviewDocument.Builder;$reviewer=$reviewDocument.IndependentReviewer
 $review=[pscustomobject][ordered]@{Result='APPROVED_CANDIDATE_ONLY';OpenHighCriticalDefects=0;ReviewResultPath=$reviewResultFull;ReviewResultSha256=$reviewResultSha}
 $commentBody=New-V02ReleaseArtifactAgentReviewCommentBody -Candidate $candidate -Builder $builder -IndependentReviewer $reviewer -Review $review
 if(-not$PublishGitHubComment){throw 'GitHub mutation is disabled. Pass -PublishGitHubComment only after the role-distinct Agent review is final.'}
@@ -50,3 +47,4 @@ $receipt=[pscustomobject][ordered]@{
     RoleDistinct=$true;Runtime='NOT_OBSERVED';Release='NOT_OBSERVED';CreditGranted=$false
 }
 Publish-V02ReleaseArtifactJsonNoClobber -Value $receipt -OutputPath $OutputPath -AllowedRoot $ExternalOutputRoot
+} finally {Close-V02ReleaseArtifactLease $authorityLease;Close-V02ReleaseArtifactLease $snapshotLease;Close-V02ReleaseArtifactLease $reviewLease}

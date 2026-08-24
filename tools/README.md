@@ -154,8 +154,8 @@ $extractedPackageRoot = '<exact-extracted-package-root>'
 # Produce final v0.2 automated release artifacts. See the protocol contract for
 # the complete parameter list and required two-phase ordering. GH_TOKEN is read
 # only for authenticated GitHub API acquisition and is never serialized.
-./tools/v0.2-release/Invoke-V02ReleaseEvidencePublisher.ps1 -EvidenceClass Contract -ExpectedSourceCommit <commit> -ExpectedSourceTree <tree> -EvidenceRoot <root> -OutputPath <contract.json>
-./tools/v0.2-release/Invoke-V02ReleaseEvidencePublisher.ps1 -EvidenceClass Synthetic -ExpectedSourceCommit <commit> -ExpectedSourceTree <tree> -EvidenceRoot <root> -OutputPath <synthetic.json>
+./tools/v0.2-release/Invoke-V02ReleaseEvidencePublisher.ps1 -EvidenceClass Contract -ExpectedSourceCommit <commit> -ExpectedSourceTree <tree> -EvidenceRoot <root> -OutputPath <root>\contract\receipt.json
+./tools/v0.2-release/Invoke-V02ReleaseEvidencePublisher.ps1 -EvidenceClass Synthetic -ExpectedSourceCommit <commit> -ExpectedSourceTree <tree> -EvidenceRoot <root> -OutputPath <root>\synthetic\receipt.json
 ./tools/v0.2-release/New-V02AuthenticatedGitHubSnapshot.ps1 -Phase Preclosure -ExpectedSourceCommit <commit> -ExpectedSourceTree <tree> -EvidenceRoot <root> -OutputPath <preclosure.json>
 # A role-distinct Agent then supplies an exact GitHub APPROVED review; publish
 # its schema-v4 receipt outside the repository/evidence root, create the lock,

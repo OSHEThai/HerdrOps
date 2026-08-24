@@ -62,7 +62,7 @@ $script:V02ReleaseGateLifecycleDecisionPayloadSha256 = 'C7E5D74621D67D5ADD82BF8B
 $script:V02ReleaseGateLifecycleDecisionReference = 'https://github.com/OSHEThai/HerdrOps/issues/149#issuecomment-5398171130'
 $script:V02ReleaseGateLifecycleApprovedUtc = '2026-08-24T16:25:24Z'
 $script:V02ReleaseGateAuthorityReferenceRelativePath = 'Plan/DECISIONS.md#D-026'
-$script:V02ReleaseGateAuthorityFileSha256 = '80D01D7B263BF600C5EDDB21718F38885C582CF7004CCAE8E192B96F5F537F17'
+$script:V02ReleaseGateAuthorityFileSha256 = '1A38220430D47CCD94DE146A2763E987FE2EB468F9C24D7E5F73991CD9C32980'
 $script:V02ReleaseGateAuthorityOwner = '@yutthaphon'
 $script:V02ReleaseGateAuthorityRole = 'ProductOwner'
 $script:V02ReleaseGateIndependentReceiptEvidenceClass = 'ExternalIndependentCandidateReceipt'
@@ -1050,6 +1050,9 @@ function Read-V02ReleaseGateExternalIndependentCandidateReceipt {
     Assert-V02ReleaseGateSha256 $receipt.Review.ReviewResultSha256 'Independent Agent review result SHA-256'|Out-Null
     $reviewResultSnapshot=Get-V02ReleaseGateStableFileSnapshot -Path $reviewResultPath -Context 'Independent Agent review result'
     Assert-V02ReleaseGateEqual $reviewResultSnapshot.Sha256 $receipt.Review.ReviewResultSha256 'Independent Agent review result bytes'
+    $structuredReview=Read-V02ReleaseArtifactAgentReviewResult -Lease ([pscustomobject]@{Bytes=$reviewResultSnapshot.Bytes;Sha256=$reviewResultSnapshot.Sha256;Path=$reviewResultPath}) -ExpectedCandidate $receipt.Candidate
+    Assert-V02ReleaseGateEqual (ConvertTo-V02Jcs $structuredReview.Builder) (ConvertTo-V02Jcs $receipt.Builder) 'Structured Agent review builder binding'
+    Assert-V02ReleaseGateEqual (ConvertTo-V02Jcs $structuredReview.IndependentReviewer) (ConvertTo-V02Jcs $receipt.IndependentReviewer) 'Structured Agent review reviewer binding'
     Assert-V02ReleaseGateExactProperties $receipt.Authentication @(
         'Method','ApiUrl','HtmlUrl','IssueNumber','CommentId','CommentAuthor','AuthorAssociation',
         'CreatedAtUtc','UpdatedAtUtc','CommentBodySha256','Authenticated'
@@ -2431,6 +2434,12 @@ function Assert-V02ReleaseGateBoundSnapshots {
     }
 }
 
+function Get-V02ReleaseGatePhaseBoundary {
+    param([Parameter(Mandatory=$true)][ValidateSet('Preclosure','FinalClosure')][string]$ReleasePhase)
+    if($ReleasePhase-ceq'FinalClosure'){return [pscustomobject]@{ReleaseReady=$true;ReleaseStatus='PASS';ReleaseCredit='READY_NOT_PUBLISHED';ReleaseCreditBoundToExactCandidate=$true}}
+    return [pscustomobject]@{ReleaseReady=$false;ReleaseStatus='NOT_READY';ReleaseCredit='NONE';ReleaseCreditBoundToExactCandidate=$false}
+}
+
 function Invoke-V02ReleaseGate {
     [CmdletBinding()]
     param(
@@ -2693,13 +2702,14 @@ function Invoke-V02ReleaseGate {
 
     Assert-V02ReleaseGateBoundSnapshots -Snapshots $preValidationSnapshots -Phase 'Final post-validation'
 
+    $phaseBoundary=Get-V02ReleaseGatePhaseBoundary $ReleasePhase
     $report = [pscustomobject][ordered]@{
         SchemaVersion = 4
         Version = $script:V02ReleaseGateVersion
         Result = 'PASS'
         ReleasePhase = $ReleasePhase
         ClosureReady = $true
-        ReleaseReady = ($ReleasePhase -ceq 'FinalClosure')
+        ReleaseReady = $phaseBoundary.ReleaseReady
         SourceCommit = $ExpectedSourceCommit
         SourceTree = $ExpectedSourceTree
         SourceParents = @($identityAfter.Parents)
@@ -2803,7 +2813,7 @@ function Invoke-V02ReleaseGate {
             Contract = [pscustomobject][ordered]@{ Status = 'PASS'; Classification = 'Contract'; Credit = 'CONTRACT_ONLY' }
             Synthetic = [pscustomobject][ordered]@{ Status = 'PASS'; Classification = 'Synthetic'; Credit = 'SYNTHETIC_ONLY' }
             Runtime = [pscustomobject][ordered]@{ Status = 'PASS'; Classification = 'ActualHerdrRuntime'; Credit = 'EXACT_CANDIDATE_ONLY' }
-            Release = [pscustomobject][ordered]@{ Status = $(if($ReleasePhase-ceq'FinalClosure'){'PASS'}else{'NOT_READY'}); Classification = 'ReleaseAcceptance'; Credit = $(if($ReleasePhase-ceq'FinalClosure'){'READY_NOT_PUBLISHED'}else{'NONE'}) }
+            Release = [pscustomobject][ordered]@{ Status = $phaseBoundary.ReleaseStatus; Classification = 'ReleaseAcceptance'; Credit = $phaseBoundary.ReleaseCredit }
         }
         EvidenceBoundary = [pscustomobject][ordered]@{
             ActualHerdrControlInvoked = $false
@@ -2813,7 +2823,7 @@ function Invoke-V02ReleaseGate {
             RuntimeMatrixRemainsCandidate = $true
             RuntimeObserved = $true
             AgentReviewObserved = $true
-            ReleaseCreditBoundToExactCandidate = $true
+            ReleaseCreditBoundToExactCandidate = $phaseBoundary.ReleaseCreditBoundToExactCandidate
         }
     }
     if (-not [string]::IsNullOrWhiteSpace($OutputPath)) {

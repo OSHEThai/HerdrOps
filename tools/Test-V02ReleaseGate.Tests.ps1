@@ -236,8 +236,9 @@ function New-V02ReleaseGateTestExternalIndependentReceipt {
     $candidate=[pscustomobject][ordered]@{SourceCommit=$Identity.Commit;SourceTree=$Identity.Tree;ProfileId=$script:V02ReleaseGatePackageProfileId;ProfileFileSha256=$ProfileFileSha256;ProfileCanonicalSha256=$ProfileCanonicalSha256;PackageReceiptSha256=$PackageReceiptSha256;PackageReceiptFileSha256=$PackageReceiptFileSha256;PackageArchiveSha256=$PackageArchiveSha256;PackageManifestSha256=$PackageManifestSha256;PackageAppSha256=$PackageAppSha256;PackageCoreSha256=$PackageCoreSha256;RendererManifestSha256=$RendererManifestSha256;RuntimeMatrixManifestSha256=$RuntimeMatrixManifestSha256;Issue9CandidateSha256=$Issue9CandidateSha256;PreclosureGitHubSnapshotSha256=$GitHubSnapshotSha256}
     $builder=[pscustomobject][ordered]@{Identity='builder-agent';Task='build-v02-candidate';Role='CandidateBuilder'}
     $reviewer=[pscustomobject][ordered]@{Identity=$ReviewerIdentity;Task='review-v02-candidate';Role='IndependentAgentReviewer'}
-    $reviewResultPath=Join-Path ([IO.Path]::GetDirectoryName([IO.Path]::GetFullPath($Path))) 'agent-review-result.txt'
-    $reviewResultSha=Write-V02ReleaseGateTestText -Path $reviewResultPath -Text "Independent Agent reviewed exact candidate $($Identity.Commit) and found zero open High/Critical defects.`n"
+    $reviewResultPath=Join-Path ([IO.Path]::GetDirectoryName([IO.Path]::GetFullPath($Path))) 'agent-review-result.json'
+    $reviewResultValue=[pscustomobject][ordered]@{SchemaVersion=1;EvidenceClass='IndependentAgentReviewResult';DecisionId='herdrops-v0.2-release-first-v4';Candidate=$candidate;Builder=$builder;IndependentReviewer=$reviewer;Decision='APPROVED_CANDIDATE_ONLY';Findings=@();EvidenceBoundary=[pscustomobject][ordered]@{Runtime='NOT_OBSERVED';Release='NOT_OBSERVED';CreditGranted=$false}}
+    $reviewResultSha=Write-V02ReleaseGateTestText -Path $reviewResultPath -Text ((ConvertTo-V02Jcs $reviewResultValue)+"`n")
     $review=[pscustomobject][ordered]@{Result='APPROVED_CANDIDATE_ONLY';OpenHighCriticalDefects=0;ReviewResultPath=$reviewResultPath;ReviewResultSha256=$reviewResultSha}
     $body=New-V02ReleaseArtifactAgentReviewCommentBody $candidate $builder $reviewer $review
     $bodySha=Get-V02ReleaseArtifactSha256Bytes ([Text.UTF8Encoding]::new($false,$true).GetBytes($body));$commentId=[long]9001
@@ -502,7 +503,7 @@ try {
             Read-V02ReleaseGateExternalIndependentCandidateReceipt -Path $receipt.Path `
                 -RepositoryRoot $script:GateRepositoryRoot -EvidenceRoot (Join-Path $script:TestRoot 'tampered-payload-evidence') `
                 -ExpectedSourceCommit $script:GateIdentity.Commit -ExpectedSourceTree $script:GateIdentity.Tree
-        } 'comment body hash'
+        } 'exact expected candidate'
     }
 
     Invoke-V02ReleaseGateTestCase 'tampered independent Agent review-result bytes fail closed' {
@@ -543,7 +544,7 @@ try {
             Read-V02ReleaseGateExternalIndependentCandidateReceipt -Path $receipt.Path `
                 -RepositoryRoot $script:GateRepositoryRoot -EvidenceRoot (Join-Path $script:TestRoot 'external-issue9-stale') `
                 -ExpectedSourceCommit $script:GateIdentity.Commit -ExpectedSourceTree $script:GateIdentity.Tree
-        } 'comment body hash'
+        } 'exact expected candidate'
     }
 
     Invoke-V02ReleaseGateTestCase 'preclosure GitHub snapshot hash is mandatory in Agent receipt and candidate lock' {
@@ -1189,6 +1190,12 @@ try {
         if ($receipt.Value.PSObject.Properties.Name -contains 'Human') {
             throw 'Release-first v4 Agent receipt still requires a Human boundary input.'
         }
+    }
+
+    Invoke-V02ReleaseGateTestCase 'Preclosure cannot overclaim exact-candidate Release credit' {
+        $pre=Get-V02ReleaseGatePhaseBoundary Preclosure;$final=Get-V02ReleaseGatePhaseBoundary FinalClosure
+        if($pre.ReleaseReady-or$pre.ReleaseCreditBoundToExactCandidate-or$pre.ReleaseStatus-cne'NOT_READY'-or$pre.ReleaseCredit-cne'NONE'){throw 'Preclosure inflated Release credit.'}
+        if(-not$final.ReleaseReady-or-not$final.ReleaseCreditBoundToExactCandidate-or$final.ReleaseStatus-cne'PASS'-or$final.ReleaseCredit-cne'READY_NOT_PUBLISHED'){throw 'FinalClosure phase boundary is not exact.'}
     }
 
     Invoke-V02ReleaseGateTestCase 'Issue9 performance and release-first v4 governance cannot mutate delete or disappear' {
