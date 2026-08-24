@@ -7,18 +7,6 @@ Set-StrictMode -Version Latest
 
 $script:V02CleanMachineSchemaPath = Join-Path $PSScriptRoot 'clean-machine-report.schema.json'
 $script:V02CleanMachineSchemaId = 'https://herdrops.local/schema/v0.2/clean-machine-report.schema.json'
-# SHA-1 thumbprint of the independently administered clean-host observer
-# signing certificate.  Live evidence is impossible until that certificate is
-# present and trusted; callers cannot replace this pin with a parameter.
-$script:V02CleanMachineObserverSignerThumbprint = '8F319A7C115B0793D880D6E6F02F47B36E87D518'
-
-function Import-V02CleanMachinePkcsAssembly {
-    try {
-        Add-Type -AssemblyName System.Security.Cryptography.Pkcs -ErrorAction Stop
-    } catch {
-        Add-Type -AssemblyName System.Security -ErrorAction Stop
-    }
-}
 
 function Get-V02MachineFingerprint {
     $machineGuid = ''
@@ -67,15 +55,6 @@ function Assert-V02PathWithinRoot {
     return $full
 }
 
-function Assert-V02PathOutsideRoot {
-    param([Parameter(Mandatory = $true)][string]$Path,[Parameter(Mandatory = $true)][string]$Root,[Parameter(Mandatory = $true)][string]$Context)
-    $full = [IO.Path]::GetFullPath($Path).TrimEnd('\','/')
-    $rootFull = [IO.Path]::GetFullPath($Root).TrimEnd('\','/')
-    if ([StringComparer]::OrdinalIgnoreCase.Equals($full,$rootFull) -or $full.StartsWith($rootFull + [IO.Path]::DirectorySeparatorChar,[StringComparison]::OrdinalIgnoreCase)) {
-        throw "$Context must be externally anchored outside '$rootFull'."
-    }
-}
-
 function Assert-V02LiveRootsAreDefault {
     param([Parameter(Mandatory = $true)][string]$InstallRoot,[Parameter(Mandatory = $true)][string]$UserDataRoot)
     # Trusted Known Folder defaults (SHGetKnownFolderPath), never the
@@ -87,165 +66,6 @@ function Assert-V02LiveRootsAreDefault {
     $defaultUserData = [IO.Path]::GetFullPath((Get-V02DefaultUserDataRoot))
     if (-not [StringComparer]::OrdinalIgnoreCase.Equals($safeInstallRoot,$defaultInstall) -or -not [StringComparer]::OrdinalIgnoreCase.Equals($safeUserDataRoot,$defaultUserData)) {
         throw 'Live mode requires the exact per-user HerdrOps install and user-data roots; test/custom roots are forbidden.'
-    }
-}
-
-function Read-V02CleanHostAuthorization {
-    param(
-        [Parameter(Mandatory = $true)][string]$AuthorizationPath,
-        [Parameter(Mandatory = $true)][string]$SignaturePath,
-        [Parameter(Mandatory = $true)][string]$MachineName,
-        [Parameter(Mandatory = $true)][string]$MachineFingerprint,
-        [Parameter(Mandatory = $true)][string]$PrincipalSid,
-        [Parameter(Mandatory = $true)][string]$InstallRoot,
-        [Parameter(Mandatory = $true)][string]$UserDataRoot,
-        [Parameter(Mandatory = $true)]$InitialBinding,
-        [Parameter(Mandatory = $true)]$FinalBinding,
-        [DateTimeOffset]$VerificationTimeUtc = [DateTimeOffset]::MinValue
-    )
-    foreach ($path in @($AuthorizationPath,$SignaturePath)) {
-        if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "External clean-host authorization input is missing: $path" }
-        Assert-V02PathNoReparse ([IO.Path]::GetFullPath($path))
-    }
-    $authorizationStable = Get-V02StableFileIdentity -Path ([IO.Path]::GetFullPath($AuthorizationPath)) -IncludeBytes
-    $signatureStable = Get-V02StableFileIdentity -Path ([IO.Path]::GetFullPath($SignaturePath)) -IncludeBytes
-    $authorizationBytes = $authorizationStable.Bytes
-    $signatureBytes = $signatureStable.Bytes
-    try {
-        Import-V02CleanMachinePkcsAssembly
-        $cms = [Security.Cryptography.Pkcs.SignedCms]::new([Security.Cryptography.Pkcs.ContentInfo]::new($authorizationBytes),$true)
-        $cms.Decode($signatureBytes)
-        $cms.CheckSignature($false)
-    }
-    catch { throw "External clean-host authorization signature is invalid or untrusted: $($_.Exception.Message)" }
-    if ($cms.SignerInfos.Count -ne 1) { throw 'External clean-host authorization must have exactly one signer.' }
-    $signer = $cms.SignerInfos[0].Certificate
-    if ($null -eq $signer -or $signer.Thumbprint.Replace(' ','').ToUpperInvariant() -cne $script:V02CleanMachineObserverSignerThumbprint) {
-        throw 'External clean-host authorization signer does not equal the committed independent-observer certificate pin.'
-    }
-    $document = ConvertFrom-V02StrictBytes -Bytes $authorizationBytes -Description 'external clean-host authorization'
-    $value = $document.Value
-    $required = @('schemaVersion','authorizationKind','machineName','machineFingerprint','principalSid','operatorSid','observerIdentity','installRoot','userDataRoot','initial','final','issuedAtUtc','expiresAtUtc','nonce')
-    $names = @($value.PSObject.Properties.Name)
-    if ($names.Count -ne $required.Count -or @($required | Where-Object { -not ($names -ccontains $_) }).Count -ne 0) { throw 'External clean-host authorization has an unexpected schema.' }
-    if ([int]$value.schemaVersion -ne 1 -or [string]$value.authorizationKind -cne 'HerdrOps.V02CleanHostAuthorization') { throw 'External clean-host authorization kind/version is invalid.' }
-    foreach ($binding in @(
-        @('machineName',$MachineName),@('machineFingerprint',$MachineFingerprint),@('principalSid',$PrincipalSid),@('operatorSid',$PrincipalSid))) {
-        if ([string]$value.($binding[0]) -cne [string]$binding[1]) { throw "External clean-host authorization $($binding[0]) binding mismatch." }
-    }
-    foreach ($binding in @(@('installRoot',$InstallRoot),@('userDataRoot',$UserDataRoot))) {
-        if (-not [StringComparer]::OrdinalIgnoreCase.Equals([IO.Path]::GetFullPath([string]$value.($binding[0])).TrimEnd('\','/'),[IO.Path]::GetFullPath([string]$binding[1]).TrimEnd('\','/'))) { throw "External clean-host authorization $($binding[0]) binding mismatch." }
-    }
-    $bindingNames = @('sourceCommit','sourceTree','receiptSha256','archiveSha256','packageManifestSha256','appSha256','coreSha256')
-    foreach ($phase in @('initial','final')) {
-        $authorized = $value.$phase
-        $expected = if ($phase -ceq 'initial') { $InitialBinding } else { $FinalBinding }
-        $actualNames = @($authorized.PSObject.Properties.Name)
-        if ($actualNames.Count -ne $bindingNames.Count -or @($bindingNames | Where-Object { -not ($actualNames -ccontains $_) }).Count -ne 0) { throw "External clean-host authorization $phase binding schema is invalid." }
-        foreach ($name in $bindingNames) {
-            if ([string]$authorized.$name -cne [string]$expected.$name) { throw "External clean-host authorization $phase.$name binding mismatch." }
-        }
-    }
-    if ([string]::IsNullOrWhiteSpace([string]$value.observerIdentity) -or [string]$value.observerIdentity -ieq $PrincipalSid) { throw 'External observer identity is missing or not role-distinct.' }
-    if ([string]$value.nonce -cnotmatch '^[0-9a-f]{32}$') { throw 'External clean-host authorization nonce is invalid.' }
-    $now = if ($VerificationTimeUtc -eq [DateTimeOffset]::MinValue) { [DateTimeOffset]::UtcNow } else { $VerificationTimeUtc.ToUniversalTime() }
-    $issued = [DateTimeOffset]::Parse([string]$value.issuedAtUtc,[Globalization.CultureInfo]::InvariantCulture)
-    $expires = [DateTimeOffset]::Parse([string]$value.expiresAtUtc,[Globalization.CultureInfo]::InvariantCulture)
-    if ($issued -gt $now -or $expires -le $now -or ($expires-$issued).TotalHours -gt 24) { throw 'External clean-host authorization validity window is invalid.' }
-    return [pscustomobject]@{ Value=$value; SignerThumbprint=$signer.Thumbprint.Replace(' ','').ToUpperInvariant(); AuthorizationSha256=$authorizationStable.Sha256; SignatureSha256=$signatureStable.Sha256 }
-}
-
-function Read-V02CleanHostAcceptanceReceipt {
-    param(
-        [Parameter(Mandatory = $true)][string]$ReceiptPath,
-        [Parameter(Mandatory = $true)][string]$SignaturePath,
-        [Parameter(Mandatory = $true)][string]$ReportSha256,
-        [Parameter(Mandatory = $true)]$Report,
-        [Parameter(Mandatory = $true)]$Authorization
-    )
-    foreach ($path in @($ReceiptPath,$SignaturePath)) {
-        if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "External clean-host acceptance receipt input is missing: $path" }
-        Assert-V02PathNoReparse ([IO.Path]::GetFullPath($path))
-    }
-    $receiptStable = Get-V02StableFileIdentity -Path ([IO.Path]::GetFullPath($ReceiptPath)) -IncludeBytes
-    $signatureStable = Get-V02StableFileIdentity -Path ([IO.Path]::GetFullPath($SignaturePath)) -IncludeBytes
-    try {
-        Import-V02CleanMachinePkcsAssembly
-        $cms = [Security.Cryptography.Pkcs.SignedCms]::new([Security.Cryptography.Pkcs.ContentInfo]::new($receiptStable.Bytes),$true)
-        $cms.Decode($signatureStable.Bytes)
-        $cms.CheckSignature($false)
-    }
-    catch { throw "External clean-host acceptance receipt signature is invalid or untrusted: $($_.Exception.Message)" }
-    if ($cms.SignerInfos.Count -ne 1) { throw 'External clean-host acceptance receipt must have exactly one signer.' }
-    $signer = $cms.SignerInfos[0].Certificate
-    $thumbprint = if ($null -eq $signer) { '' } else { $signer.Thumbprint.Replace(' ','').ToUpperInvariant() }
-    if ($thumbprint -cne $script:V02CleanMachineObserverSignerThumbprint) { throw 'External clean-host acceptance receipt signer does not equal the pinned independent-observer certificate.' }
-
-    $document = ConvertFrom-V02StrictBytes -Bytes $receiptStable.Bytes -Description 'external clean-host acceptance receipt'
-    $value = $document.Value
-    $required = @('schemaVersion','receiptKind','report','authorization','machine','actors','source','semantics','issuedAtUtc','receiptNonce')
-    $names = @($value.PSObject.Properties.Name)
-    if ($names.Count -ne $required.Count -or @($required | Where-Object { -not ($names -ccontains $_) }).Count -ne 0) { throw 'External clean-host acceptance receipt has an unexpected schema.' }
-    if ([int]$value.schemaVersion -ne 1 -or [string]$value.receiptKind -cne 'HerdrOps.V02CleanHostAcceptanceReceipt') { throw 'External clean-host acceptance receipt kind/version is invalid.' }
-
-    $reportRequired = @('sha256','runId','startedAtUtc','completedAtUtc')
-    $authorizationRequired = @('authorizationSha256','signatureSha256','nonce')
-    $machineRequired = @('machineName','machineFingerprint','principalSid','installRoot','userDataRoot')
-    $actorsRequired = @('operatorIdentity','observerIdentity')
-    $sourceRequired = @('initial','final')
-    $semanticsRequired = @('status','mode','evidenceClass','creditGranted','cleanInstall','sameVersionCandidateReplacement','rollback','uninstall','retainedData','residueClean')
-    foreach ($shape in @(@($value.report,$reportRequired,'report'),@($value.authorization,$authorizationRequired,'authorization'),@($value.machine,$machineRequired,'machine'),@($value.actors,$actorsRequired,'actors'),@($value.source,$sourceRequired,'source'),@($value.semantics,$semanticsRequired,'semantics'))) {
-        $actual = @($shape[0].PSObject.Properties.Name); $expected = @($shape[1])
-        if ($actual.Count -ne $expected.Count -or @($expected | Where-Object { -not ($actual -ccontains $_) }).Count -ne 0) { throw "External clean-host acceptance receipt $($shape[2]) schema is invalid." }
-    }
-
-    foreach ($pair in @(
-        @($value.report.sha256,$ReportSha256,'report SHA-256'),@($value.report.runId,$Report.runId,'runId'),
-        @($value.report.startedAtUtc,$Report.startedAtUtc,'startedAtUtc'),@($value.report.completedAtUtc,$Report.completedAtUtc,'completedAtUtc'),
-        @($value.authorization.authorizationSha256,$Authorization.AuthorizationSha256,'authorization SHA-256'),
-        @($value.authorization.signatureSha256,$Authorization.SignatureSha256,'authorization signature SHA-256'),@($value.authorization.nonce,$Authorization.Value.nonce,'authorization nonce'),
-        @($value.machine.machineName,$Report.machine.machineName,'machineName'),@($value.machine.machineFingerprint,$Report.machine.machineFingerprint,'machineFingerprint'),
-        @($value.machine.principalSid,$Report.machine.userScope,'principalSid'),@($value.machine.installRoot,$Report.targets.installRoot,'installRoot'),@($value.machine.userDataRoot,$Report.targets.userDataRoot,'userDataRoot'),
-        @($value.actors.operatorIdentity,$Report.actor.operator.identity,'operatorIdentity'),@($value.actors.observerIdentity,$Report.actor.observer.identity,'observerIdentity'),
-        @($value.semantics.status,$Report.status,'status'),@($value.semantics.mode,$Report.mode,'mode'),@($value.semantics.evidenceClass,$Report.evidenceBoundary.evidenceClass,'evidenceClass'),
-        @($value.semantics.cleanInstall,$Report.lifecycle.cleanInstall.status,'cleanInstall'),@($value.semantics.sameVersionCandidateReplacement,$Report.lifecycle.sameVersionCandidateReplacement.status,'sameVersionCandidateReplacement'),
-        @($value.semantics.rollback,$Report.lifecycle.rollback.status,'rollback'),@($value.semantics.uninstall,$Report.lifecycle.uninstall.status,'uninstall'),@($value.semantics.retainedData,$Report.retainedData.markerStatus,'retainedData'))) {
-        if ([string]$pair[0] -cne [string]$pair[1]) { throw "External clean-host acceptance receipt $($pair[2]) binding mismatch." }
-    }
-    if ($value.semantics.creditGranted -isnot [bool] -or $value.semantics.residueClean -isnot [bool] -or
-        $Report.evidenceBoundary.creditGranted -isnot [bool] -or
-        $value.semantics.creditGranted -ne $Report.evidenceBoundary.creditGranted -or
-        -not $value.semantics.creditGranted -or -not $value.semantics.residueClean) {
-        throw 'External clean-host acceptance receipt semantic credit/residue binding is invalid.'
-    }
-    foreach ($phase in @('initial','final')) {
-        $authorized = $value.source.$phase; $expected = $Report.bindings.$phase
-        $bindingNames = @('sourceCommit','sourceTree','receiptSha256','archiveSha256','packageManifestSha256','appSha256','coreSha256')
-        $actualNames = @($authorized.PSObject.Properties.Name)
-        if ($actualNames.Count -ne $bindingNames.Count -or @($bindingNames | Where-Object { -not ($actualNames -ccontains $_) }).Count -ne 0) { throw "External clean-host acceptance receipt source.$phase schema is invalid." }
-        foreach ($name in $bindingNames) { if ([string]$authorized.$name -cne [string]$expected.$name) { throw "External clean-host acceptance receipt source.$phase.$name binding mismatch." } }
-    }
-    if ([string]$value.receiptNonce -cnotmatch '^[0-9a-f]{32}$' -or [string]$value.receiptNonce -ceq [string]$Authorization.Value.nonce) { throw 'External clean-host acceptance receipt nonce is invalid or reuses the authorization nonce.' }
-    $issued = [DateTimeOffset]::ParseExact([string]$value.issuedAtUtc,'o',[Globalization.CultureInfo]::InvariantCulture,[Globalization.DateTimeStyles]::RoundtripKind)
-    $completed = [DateTimeOffset]::ParseExact([string]$Report.completedAtUtc,'o',[Globalization.CultureInfo]::InvariantCulture,[Globalization.DateTimeStyles]::RoundtripKind)
-    if ($issued.Offset -ne [TimeSpan]::Zero -or $issued -lt $completed -or $issued -gt [DateTimeOffset]::UtcNow.AddMinutes(5)) { throw 'External clean-host acceptance receipt issuedAtUtc is outside the post-run observer window.' }
-    return [pscustomobject]@{ Value=$value; SignerThumbprint=$thumbprint; ReceiptSha256=$receiptStable.Sha256; SignatureSha256=$signatureStable.Sha256 }
-}
-
-function Assert-V02ActorIdentities {
-    param(
-        [Parameter(Mandatory = $true)][string]$OperatorIdentity,
-        [Parameter(Mandatory = $true)][string]$ObserverIdentity
-    )
-
-    if ([string]::IsNullOrWhiteSpace($OperatorIdentity)) {
-        throw 'OperatorIdentity must not be empty.'
-    }
-    if ([string]::IsNullOrWhiteSpace($ObserverIdentity)) {
-        throw 'ObserverIdentity must not be empty.'
-    }
-    if ($OperatorIdentity.Trim().Equals($ObserverIdentity.Trim(), [StringComparison]::OrdinalIgnoreCase)) {
-        throw 'OperatorIdentity and ObserverIdentity must be distinct (case-insensitive).'
     }
 }
 
@@ -508,14 +328,14 @@ function New-V02CleanMachineReportObject {
         [Parameter(Mandatory = $true)]$Lifecycle,
         [Parameter(Mandatory = $true)]$RetainedData,
         [Parameter(Mandatory = $true)]$Residue,
-        [Parameter(Mandatory = $true)][ValidateSet('Synthetic', 'CleanMachine')][string]$EvidenceClass,
+        [Parameter(Mandatory = $true)][ValidateSet('Synthetic', 'AutomatedLiveLifecycle')][string]$EvidenceClass,
         [bool]$CreditGranted = $false,
         [string]$FailureDetails = ''
     )
 
     return [pscustomobject][ordered]@{
-        schemaVersion = 1
-        reportKind = 'HerdrOps.V02CleanMachineReport'
+        schemaVersion = 2
+        reportKind = 'HerdrOps.V02AutomatedLiveLifecycleReport'
         scope = 'InstallLifecycleOnly'
         issue = 149
         packageVersion = '0.2.0'
@@ -539,8 +359,7 @@ function New-V02CleanMachineReportObject {
         evidenceBoundary = [pscustomobject][ordered]@{
             evidenceClass = $EvidenceClass
             actualHerdrRuntime = 'NOT_OBSERVED'
-            independentReview = 'NOT_OBSERVED'
-            humanGo = 'NOT_OBSERVED'
+            independentAgentReview = 'NOT_OBSERVED'
             releaseCredit = 'NOT_OBSERVED'
             creditGranted = $CreditGranted
         }
@@ -571,8 +390,8 @@ function Assert-V02CleanMachineReportSchema {
         throw "Report contains unexpected properties."
     }
 
-    if ([int]$Report.schemaVersion -ne 1) { throw 'schemaVersion must be 1.' }
-    if ([string]$Report.reportKind -cne 'HerdrOps.V02CleanMachineReport') { throw "reportKind must be 'HerdrOps.V02CleanMachineReport'." }
+    if ([int]$Report.schemaVersion -ne 2) { throw 'schemaVersion must be 2.' }
+    if ([string]$Report.reportKind -cne 'HerdrOps.V02AutomatedLiveLifecycleReport') { throw "reportKind must be 'HerdrOps.V02AutomatedLiveLifecycleReport'." }
     if ([string]$Report.scope -cne 'InstallLifecycleOnly') { throw "scope must be 'InstallLifecycleOnly'." }
     if ([int]$Report.issue -ne 149) { throw 'issue must be 149.' }
     if ([string]$Report.packageVersion -cne '0.2.0') { throw "packageVersion must be '0.2.0'." }
@@ -601,9 +420,8 @@ function Assert-V02CleanMachineReportSchema {
     if ([string]::IsNullOrWhiteSpace($Report.machine.machineName)) { throw 'machine.machineName must not be empty.' }
     if ([string]$Report.machine.machineFingerprint -notmatch '^[0-9A-F]{64}$') { throw 'machine.machineFingerprint must be 64-hex uppercase.' }
 
-    # Targets must be absolute canonical non-system paths.  On the producing
-    # transported reports bind these paths through the detached external
-    # authorization instead of comparing another host's username.
+    # Targets must be absolute canonical non-system paths. The release gate
+    # holds and binds this report together with the exact package candidate.
     foreach ($targetName in @('installRoot','userDataRoot')) {
         $targetValue = [string]$Report.targets.$targetName
         if ([string]::IsNullOrWhiteSpace($targetValue) -or -not [IO.Path]::IsPathRooted($targetValue)) { throw "targets.$targetName must be an absolute path." }
@@ -615,16 +433,13 @@ function Assert-V02CleanMachineReportSchema {
         throw 'targets.installRoot and targets.userDataRoot must be distinct.'
     }
     # Actor
-    Assert-V02ActorIdentities -OperatorIdentity $Report.actor.operator.identity -ObserverIdentity $Report.actor.observer.identity
+    if (@($Report.actor.PSObject.Properties.Name).Count -ne 1 -or -not (@($Report.actor.PSObject.Properties.Name) -ccontains 'operator')) { throw 'actor must contain exactly operator.' }
+    $operatorNames = @($Report.actor.operator.PSObject.Properties.Name)
+    if ($operatorNames.Count -ne 2 -or -not ($operatorNames -ccontains 'identity') -or -not ($operatorNames -ccontains 'role')) { throw 'actor.operator must contain exactly identity and role.' }
+    if ([string]::IsNullOrWhiteSpace([string]$Report.actor.operator.identity)) { throw 'operator.identity must not be empty.' }
     if ([string]$Report.actor.operator.role -cne 'EvidenceOperator') { throw "operator.role must be 'EvidenceOperator'." }
-    if ([string]$Report.actor.observer.role -cne 'IndependentObserver') { throw "observer.role must be 'IndependentObserver'." }
     if ([string]$Report.mode -eq 'Live') {
-        if ([string]$Report.actor.authorization.status -cne 'VERIFIED' -or [string]$Report.actor.authorization.signerThumbprint -cne $script:V02CleanMachineObserverSignerThumbprint) { throw 'Live actor authorization must be externally verified by the pinned observer.' }
-        foreach ($name in @('authorizationSha256','signatureSha256')) { if ([string]$Report.actor.authorization.$name -cnotmatch '^[0-9A-F]{64}$') { throw "Live actor authorization $name is invalid." } }
-        if ([string]$Report.actor.authorization.nonce -cnotmatch '^[0-9a-f]{32}$') { throw 'Live actor authorization nonce is invalid.' }
-    } else {
-        $unexpectedAuthorizationValues = @('signerThumbprint','authorizationSha256','signatureSha256','nonce') | Where-Object { -not [string]::IsNullOrEmpty([string]$Report.actor.authorization.$_) }
-        if ([string]$Report.actor.authorization.status -cne 'NOT_APPLICABLE' -or @($unexpectedAuthorizationValues).Count -ne 0) { throw 'Synthetic actor authorization must remain NOT_APPLICABLE and empty.' }
+        if ([string]$Report.actor.operator.identity -cne [string]$Report.machine.userScope) { throw 'Live operator identity must equal the executing principal SID.' }
     }
 
     # Exact initial/final candidate bindings.
@@ -660,7 +475,7 @@ function Assert-V02CleanMachineReportSchema {
             if ([string]$Report.mode -eq 'Live' -and [string]$check.status -cne 'PASS') { throw "Passing Live report preflight '$([string]$check.name)' status must be PASS." }
         }
         if ([string]$Report.mode -eq 'Live') {
-            $requiredLivePreflight = @('non-elevated-token','actor-identity-distinctness','live-machine-confirmation','identity-receipt-schema-and-hash','source-commit-match','source-tree-match')
+            $requiredLivePreflight = @('non-elevated-token','live-machine-confirmation','identity-receipt-schema-and-hash','source-commit-match','source-tree-match')
             $observedLivePreflight = @($Report.preflight | ForEach-Object { [string]$_.name })
             if ($observedLivePreflight.Count -ne $requiredLivePreflight.Count -or @($requiredLivePreflight | Where-Object { $observedLivePreflight -cnotcontains $_ }).Count -ne 0) {
                 throw 'Passing Live report must contain exactly the complete production preflight set.'
@@ -692,15 +507,18 @@ function Assert-V02CleanMachineReportSchema {
     }
 
     # Evidence boundary
-    if ([string]$Report.evidenceBoundary.evidenceClass -cnotin @('Synthetic', 'CleanMachine')) { throw 'evidenceClass is invalid.' }
+    $boundaryNames = @($Report.evidenceBoundary.PSObject.Properties.Name)
+    $expectedBoundaryNames = @('evidenceClass','actualHerdrRuntime','independentAgentReview','releaseCredit','creditGranted')
+    if ($boundaryNames.Count -ne $expectedBoundaryNames.Count -or @($expectedBoundaryNames | Where-Object { $boundaryNames -cnotcontains $_ }).Count -ne 0) { throw 'evidenceBoundary has an unexpected or missing property.' }
+    if ($Report.evidenceBoundary.creditGranted -isnot [bool]) { throw 'evidenceBoundary.creditGranted must be a native JSON boolean.' }
+    if ([string]$Report.evidenceBoundary.evidenceClass -cnotin @('Synthetic', 'AutomatedLiveLifecycle')) { throw 'evidenceClass is invalid.' }
     if ([string]$Report.evidenceBoundary.actualHerdrRuntime -cne 'NOT_OBSERVED') { throw 'actualHerdrRuntime must be NOT_OBSERVED.' }
-    if ([string]$Report.evidenceBoundary.independentReview -cne 'NOT_OBSERVED') { throw 'independentReview must be NOT_OBSERVED.' }
-    if ([string]$Report.evidenceBoundary.humanGo -cne 'NOT_OBSERVED') { throw 'humanGo must be NOT_OBSERVED.' }
+    if ([string]$Report.evidenceBoundary.independentAgentReview -cne 'NOT_OBSERVED') { throw 'independentAgentReview must be NOT_OBSERVED.' }
     if ([string]$Report.evidenceBoundary.releaseCredit -cne 'NOT_OBSERVED') { throw 'releaseCredit must be NOT_OBSERVED.' }
 
     if ([string]$Report.mode -eq 'Live' -and [string]$Report.status -eq 'PASS') {
-        if ([string]$Report.evidenceBoundary.evidenceClass -ne 'CleanMachine') {
-            throw "Live passing report must earn 'CleanMachine' evidence class."
+        if ([string]$Report.evidenceBoundary.evidenceClass -ne 'AutomatedLiveLifecycle') {
+            throw "Live passing report must earn 'AutomatedLiveLifecycle' evidence class."
         }
         if ([bool]$Report.evidenceBoundary.creditGranted -ne $true) {
             throw 'Live passing report must have creditGranted = true for install lifecycle.'

@@ -11,7 +11,7 @@ Status: Planned acceptance framework
 | Contract | Message/schema compatibility and error handling | End-to-end product operation |
 | Runtime | Observed behavior with actual Herdr and Windows processes | Install/upgrade/release readiness |
 | Independent review | Role-distinct design, compliance or release judgement | Runtime unless the reviewer observed it |
-| Release | Exact packaged bytes passed install, runtime and human gates | Future versions |
+| Release | Exact packaged bytes passed all version-local install, runtime and review gates | Future versions |
 
 ## Version gate matrix
 
@@ -60,6 +60,16 @@ The current record is `herdrops-v0.2-release-first-v4`, approved UTC `2026-08-24
 - Preserve automated actual-installed-Herdr Runtime, clean install/upgrade/uninstall, no-listener/non-elevated/security checks, exact-head CI, issue mapping, and version-local release integrity. No automated verifier may self-grant Runtime or Release without its separately bound gate evidence.
 
 Historical/manual HumanVisual tooling is optional and non-authoritative for v0.2. Its absence or NO_GO cannot block v4; its presence cannot grant v0.2 closure or Release credit.
+
+### v0.2 automated lifecycle v5 authority
+
+The current install-lifecycle record is `herdrops-v0.2-automated-lifecycle-v5`, approved UTC `2026-08-24T16:25:24Z`, payload SHA-256 `C7E5D74621D67D5ADD82BF8BE369B192AA64B5E337727FA986DB09A1F8540C7B`, in [Issue #149 comment 5398171130](https://github.com/OSHEThai/HerdrOps/issues/149#issuecomment-5398171130). It supersedes D-026 only for v0.2 lifecycle authorization.
+
+- Require a real standard-user, non-elevated live run of clean install, startup registration, same-version replacement, rollback restoration, uninstall with retained data and final residue inspection.
+- Bind the machine fingerprint, executing principal SID, canonical per-user roots and exact source/package/App/Core hashes in report schema v2. The gate must hold the report and verifier inputs across validation and fail on path, file identity, hash, schema, chronology, lifecycle or residue drift.
+- Classify a passing report as `AutomatedLiveLifecycle`. It is not `CleanMachine`, actual-Herdr Runtime, Human or Release evidence and grants only lifecycle credit.
+- Do not require clean-host preauthorization, certificate pinning, detached CMS signatures, an observer receipt, ProductOwner/manual action or Human attestation.
+- Require the separately authenticated candidate-specific `IndependentAgentReviewer` receipt already used by the v0.2 release gate; builder and reviewer identities must be role-distinct. Report schema v1 is historical and cannot close v0.2.
 
 ### v0.2 reference-host working-set authority
 

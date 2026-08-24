@@ -14,8 +14,7 @@ param(
     [string]$ProfilePath,
     [string]$RepositoryRoot,
     [string]$ReportPath,
-    [string]$OperatorIdentity = '@operator',
-    [string]$ObserverIdentity = '@observer',
+    [string]$OperatorIdentity,
     [string]$ExpectedSourceCommit,
     [string]$ExpectedSourceTree,
     [string]$ExpectedReplacementSourceCommit,
@@ -23,8 +22,6 @@ param(
     [string]$ExpectedMachineName,
     [string]$ExpectedMachineFingerprint,
     [string]$FixtureRoot,
-    [string]$CleanHostAuthorizationPath,
-    [string]$CleanHostAuthorizationSignaturePath,
     [string]$LiveConfirmationToken,
     [switch]$IUnderstandLiveMutation,
     [switch]$AllowElevatedForTesting,
@@ -79,10 +76,6 @@ try {
     }
 }
 
-# Actor checks
-Assert-V02ActorIdentities -OperatorIdentity $OperatorIdentity -ObserverIdentity $ObserverIdentity
-Add-PreflightCheck 'actor-identity-distinctness' 'PASS' "Operator '$OperatorIdentity' and Observer '$ObserverIdentity' are distinct."
-
 # Machine checks
 $currentMachine = [Environment]::MachineName
 $currentFingerprint = Get-V02MachineFingerprint
@@ -92,8 +85,8 @@ if ($Mode -eq 'Live') {
     if (-not $IUnderstandLiveMutation) {
         throw 'Live clean-machine acceptance requires -IUnderstandLiveMutation.'
     }
-    if ($LiveConfirmationToken -cne 'HERDROPS-V02-CLEAN-MACHINE') {
-        throw "Live clean-machine acceptance requires -LiveConfirmationToken 'HERDROPS-V02-CLEAN-MACHINE'."
+    if ($LiveConfirmationToken -cne 'HERDROPS-V02-AUTOMATED-LIFECYCLE') {
+        throw "Live automated lifecycle acceptance requires -LiveConfirmationToken 'HERDROPS-V02-AUTOMATED-LIFECYCLE'."
     }
     if ([string]::IsNullOrWhiteSpace($ExpectedMachineName) -or [string]::IsNullOrWhiteSpace($ExpectedMachineFingerprint)) {
         throw 'Live clean-machine acceptance requires explicit ExpectedMachineName and ExpectedMachineFingerprint bindings.'
@@ -139,16 +132,6 @@ if ($Mode -eq 'Live') {
         throw 'Live mode rejects mock registry and all test-only controls.'
     }
     Assert-V02LiveRootsAreDefault -InstallRoot $safeInstallRoot -UserDataRoot $safeUserDataRoot
-    foreach ($externalPath in @($CleanHostAuthorizationPath,$CleanHostAuthorizationSignaturePath)) {
-        if (-not [string]::IsNullOrWhiteSpace($externalPath)) {
-            Assert-V02PathOutsideRoot $externalPath $repositoryFull 'Clean-host authorization'
-            Assert-V02PathOutsideRoot $externalPath $safeInstallRoot 'Clean-host authorization'
-            Assert-V02PathOutsideRoot $externalPath $safeUserDataRoot 'Clean-host authorization'
-            if (-not [string]::IsNullOrWhiteSpace($ReportPath)) {
-                Assert-V02PathOutsideRoot $externalPath ([IO.Path]::GetDirectoryName([IO.Path]::GetFullPath($ReportPath))) 'Clean-host authorization'
-            }
-        }
-    }
 }
 
 # Validate Identity Receipt
@@ -216,32 +199,9 @@ $machineObj = [pscustomobject][ordered]@{
 # Actor object
 $actorObj = [pscustomobject][ordered]@{
     operator = [pscustomobject][ordered]@{
-        identity = $OperatorIdentity
+        identity = $(if ($Mode -eq 'Live' -or [string]::IsNullOrWhiteSpace($OperatorIdentity)) { $principalSid } else { $OperatorIdentity })
         role = 'EvidenceOperator'
     }
-    observer = [pscustomobject][ordered]@{
-        identity = $ObserverIdentity
-        role = 'IndependentObserver'
-    }
-    authorization = [pscustomobject][ordered]@{
-        status = 'NOT_APPLICABLE'
-        signerThumbprint = ''
-        authorizationSha256 = ''
-        signatureSha256 = ''
-        nonce = ''
-    }
-}
-
-if ($Mode -eq 'Live') {
-    if ([string]::IsNullOrWhiteSpace($CleanHostAuthorizationPath) -or [string]::IsNullOrWhiteSpace($CleanHostAuthorizationSignaturePath)) { throw 'Live mode requires detached externally signed clean-host authorization.' }
-    $authorization = Read-V02CleanHostAuthorization -AuthorizationPath $CleanHostAuthorizationPath -SignaturePath $CleanHostAuthorizationSignaturePath -MachineName $currentMachine -MachineFingerprint $currentFingerprint -PrincipalSid $principalSid -InstallRoot $safeInstallRoot -UserDataRoot $safeUserDataRoot -InitialBinding $initialBinding -FinalBinding $finalBinding
-    $actorObj.operator.identity = $principalSid
-    $actorObj.observer.identity = [string]$authorization.Value.observerIdentity
-    $actorObj.authorization.status = 'VERIFIED'
-    $actorObj.authorization.signerThumbprint = [string]$authorization.SignerThumbprint
-    $actorObj.authorization.authorizationSha256 = [string]$authorization.AuthorizationSha256
-    $actorObj.authorization.signatureSha256 = [string]$authorization.SignatureSha256
-    $actorObj.authorization.nonce = [string]$authorization.Value.nonce
 }
 
 # Targets object
@@ -250,7 +210,7 @@ $targetsObj = [pscustomobject][ordered]@{
     userDataRoot = $safeUserDataRoot
 }
 
-$evidenceClass = if ($Mode -eq 'Live') { 'CleanMachine' } else { 'Synthetic' }
+$evidenceClass = if ($Mode -eq 'Live') { 'AutomatedLiveLifecycle' } else { 'Synthetic' }
 
 # If DryRun mode: return preflight plan without mutating targets
 if ($Mode -eq 'DryRun') {

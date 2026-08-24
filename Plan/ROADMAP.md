@@ -69,6 +69,7 @@ Versioning: Semantic Versioning; every version has a version-local acceptance ga
 - Renderer compatibility และ visual parity บน reference-host profile (`96D01ED15A536F2DF50B59B43CFDEB3683DCE8667AE2E7BF6A96124182FE13A3`, Windows 11 build 26220, non-elevated single-user)
 - Atomic Thai/English language matrix reports พร้อม disjoint capture roots และ automated UIA accessibility checks
 - Automated packaged display coverage แบบ off-screen viewport จำนวน 6 cases: 1920x1080 และ 1366x768 ที่ 100/125/150% พร้อม automated language/UIA-accessibility checks; v0.2 ไม่ต้องเปลี่ยน physical display และไม่ต้องมี ProductOwner/manual UI/Human attestation gate
+- Automated live install lifecycle แบบ non-elevated ต้องผ่าน clean install → same-version replacement → rollback → uninstall/residue โดยผูก exact machine/principal/package/report; ไม่ต้องมี clean-host certificate หรือ manual observer และให้ role-distinct IndependentAgentReviewer ตัดสิน candidate แยกจาก producer
 - Performance budgets (CPU <=1%, event-to-WPF p95 <=250 ms, UI-stall p95 <=50 ms max <=100 ms, regression <=10%) จาก AB/BA comparator จำนวน 24 acquisitions; v0.2 ไม่มี soak requirement
 - ไม่มี localhost HTTP listener และไม่ต้องใช้ Administrator
 
