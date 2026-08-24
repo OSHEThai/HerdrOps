@@ -4,7 +4,9 @@ The current v0.2 contract is performance-only. Physical mixed-DPI review,
 Battery testing, AC soak, duration/bin evidence, latency-measurement summaries,
 resource slopes, and every manual review gate are out of scope and cannot close
 the v4 gate. Legacy candidates or receipts containing those fields fail exact
-shape/version validation.
+shape/version validation. Performance telemetry uses schema v3 and contains no
+power-source or thermal field; v1/v2 telemetry sidecars are historical and
+non-closable.
 
 The production comparator remains exactly 24 authenticated acquisitions: AB
 then BA, one warmup pair and five measured repetitions per order. Every mode

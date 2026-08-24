@@ -120,8 +120,6 @@ function New-ProvenanceFixture {
             name = 'FixtureConsole'
             sessionId = [long]1
             transport = 'SyntheticFixture'
-            powerSource = 'AC'
-            thermalState = 'Nominal'
             elevated = $false
             userScope = 'SingleUser'
         }
@@ -186,9 +184,9 @@ function Initialize-ProvenanceEvidenceChain($Raw) {
     $rawBinding = [pscustomobject][ordered]@{ relativePath=$script:RawSourceRelative;bytes=$rawStable.Bytes;fileSha256=$rawStable.Sha256;canonicalSha256=(Get-HumanDesignReviewSha256ForText $rawCanonical) }
     $provenance = $script:Provenance
     $sidecar = [pscustomobject][ordered]@{
-        schemaVersion=2;evidenceClassification='PackagedCompatibilityPerformanceTelemetryBinding-NoRuntimeCredit';runNonce=$provenance.runNonce
+        schemaVersion=3;evidenceClassification='PackagedCompatibilityPerformanceTelemetryBinding-NoRuntimeCredit';runNonce=$provenance.runNonce
         source=[pscustomobject][ordered]@{commitSha=$provenance.candidate.commitSha;treeSha=$provenance.candidate.treeSha}
-        session=[pscustomobject][ordered]@{kind='LocalConsole';name='Issue10PerformanceComparator';sessionId=1;transport='Physical';powerSource='AC';thermalState='Nominal';elevated=$false;userScope='SingleUser'}
+        session=[pscustomobject][ordered]@{kind='LocalConsole';name='Issue10PerformanceComparator';sessionId=1;transport='Physical';elevated=$false;userScope='SingleUser'}
         package=[pscustomobject][ordered]@{identitySha256=$provenance.package.receipt.canonicalSha256;identityFileSha256=$provenance.package.receipt.fileSha256;profileFileSha256=$provenance.profile.fileSha256;archiveSha256=$provenance.package.archive.sha256;manifestSha256=('8'*64);appSha256=$provenance.package.components.app.sha256;coreSha256=$provenance.package.components.core.sha256}
         rawSource=$rawBinding;acquisitions=@(New-ProvenanceAcquisitionFixture $provenance)
         evidenceBoundary=[pscustomobject][ordered]@{actualHerdrRuntime='NOT_OBSERVED';release='NOT_OBSERVED';creditGranted=$false}

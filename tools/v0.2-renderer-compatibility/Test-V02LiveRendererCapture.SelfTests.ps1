@@ -596,12 +596,10 @@ function New-LiveReferenceEnvironmentSnapshot([string]$Path, [string]$Repository
     # The live fixture reads the repository reference host below.
     $reference = Get-Content -Raw -LiteralPath (Join-Path $RepositoryRoot 'Plan\reference-hosts\v0.2.json') | ConvertFrom-Json
     $hostRecord = $reference.environmentBinding.host
-    $display = $reference.environmentBinding.activeDisplay
     $adapters = @($reference.environmentBinding.graphicsAdapters | ForEach-Object { [ordered]@{displayName=$_.displayName;pnpDeviceId=$_.pnpDeviceId;driverVersion=$_.driverVersion} })
     $value = [ordered]@{
         os = [ordered]@{caption=$hostRecord.operatingSystemCaption;version=$hostRecord.operatingSystemVersion;build=[int]$hostRecord.operatingSystemBuild;architecture='x64'}
         graphicsAdapters = $adapters
-        display = [ordered]@{deviceName=$display.primaryDisplayDeviceName;physicalWidthPixels=[int]$display.physicalWidthPixels;physicalHeightPixels=[int]$display.physicalHeightPixels;logicalWidthPixels=[int]$display.logicalWidthPixels;logicalHeightPixels=[int]$display.logicalHeightPixels;desktopAppliedDpi=[int]$display.desktopAppliedDpi;scalePercent=[int]$display.scalePercent;refreshRateHz=[int]$display.refreshRateHz;monitorCount=[int]$display.activeMonitorCount}
         session = [ordered]@{kind='LocalConsole';name='Console';sessionId=1;transport='Physical';powerSource='AC';thermalState='Nominal';elevated=$false;userScope='SingleUser'}
         supportScope = [ordered]@{supported=@('windows11-x64-build26220','automated-packaged-rendering','non-elevated','single-user');excluded=@('rdp-runtime','vm-runtime','arm64','remote-cloud','multi-user');vmCleanInstallOnly=$true;vmRuntimeCredit=$false}
     }
@@ -953,6 +951,12 @@ try {
     if (Test-Path -LiteralPath $elevatedOutput) {
         throw 'Elevated evidence rejection left a published output directory.'
     }
+
+    $headlessEnvironment = Get-Content -Raw -LiteralPath $fixtureEnvironmentPath | ConvertFrom-Json
+    $headlessEnvironment.session.powerSource = 'Battery'
+    $headlessEnvironment.session.thermalState = 'Unknown'
+    Assert-RendererLiveEnvironment $headlessEnvironment $repo.Root
+    Pass 'live admission requires no physical display or DPI and ignores power/thermal diagnostics'
 
     $elevatedEnvironment = Get-Content -Raw -LiteralPath $elevatedEnvironmentPath | ConvertFrom-Json
     Assert-Throws {

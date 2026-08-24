@@ -553,9 +553,9 @@ $bindingBytes = $null
 if (-not $Synthetic) {
     if ($script:V02ProductionPerformanceBindings.Count -ne 24) { throw 'Production performance telemetry binding must contain exactly 24 authenticated acquisitions.' }
     $bindingObject=[pscustomobject][ordered]@{
-        schemaVersion=2;evidenceClassification='PackagedCompatibilityPerformanceTelemetryBinding-NoRuntimeCredit';runNonce=$RunNonce
+        schemaVersion=3;evidenceClassification='PackagedCompatibilityPerformanceTelemetryBinding-NoRuntimeCredit';runNonce=$RunNonce
         source=[pscustomobject][ordered]@{commitSha=$ExpectedSourceCommit;treeSha=$ExpectedSourceTree}
-        session=[pscustomobject][ordered]@{kind='LocalConsole';name='Issue10PerformanceComparator';sessionId=$performanceSessionId;transport='Physical';powerSource='AC';thermalState='Nominal';elevated=$false;userScope='SingleUser'}
+        session=[pscustomobject][ordered]@{kind='LocalConsole';name='Issue10PerformanceComparator';sessionId=$performanceSessionId;transport='Physical';elevated=$false;userScope='SingleUser'}
         package=[pscustomobject][ordered]@{identitySha256=$packageBinding.ReceiptSha256;identityFileSha256=$packageBinding.IdentityFileSha256;profileFileSha256=$packageBinding.ProfileFileSha256;archiveSha256=$packageBinding.ArchiveSha256;manifestSha256=$packageBinding.ManifestSha256;appSha256=$packageBinding.AppSha256;coreSha256=$packageBinding.CoreSha256}
         rawSource=[pscustomobject][ordered]@{relativePath=$destinationRelative;bytes=[long]$fileBytes.Length;fileSha256=(Get-HumanDesignReviewSha256ForBytes $fileBytes);canonicalSha256=$canonicalSha}
         acquisitions=@($script:V02ProductionPerformanceBindings)

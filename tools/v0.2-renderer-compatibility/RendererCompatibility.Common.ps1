@@ -533,38 +533,6 @@ function Get-RendererEnvironmentSnapshot {
             })
     if ($adapters.Count -lt 1) { throw 'No graphics adapter with a PNP identity was observed.' }
 
-    Add-Type -AssemblyName System.Windows.Forms -ErrorAction Stop
-    $screens = @([System.Windows.Forms.Screen]::AllScreens)
-    if ($screens.Count -lt 1) { throw 'No physical display was observed.' }
-    $primaryCandidates = @($screens | Where-Object { $_.Primary })
-    $primary = if ($primaryCandidates.Count -gt 0) { $primaryCandidates[0] } else { $screens[0] }
-
-    $controllers = @(
-        Get-CimInstance -ClassName Win32_VideoController -ErrorAction Stop |
-            Where-Object {
-                $_.CurrentHorizontalResolution -gt 0 -and
-                $_.CurrentVerticalResolution -gt 0 -and
-                $_.CurrentRefreshRate -gt 0
-            } |
-            Sort-Object PNPDeviceID)
-    $displayCandidates = @($controllers | Where-Object {
-        [int]$_.CurrentHorizontalResolution -eq [int]$primary.Bounds.Width -or
-        [int]$_.CurrentVerticalResolution -eq [int]$primary.Bounds.Height
-    })
-    $displayController = if ($displayCandidates.Count -gt 0) { $displayCandidates[0] } elseif ($controllers.Count -gt 0) { $controllers[0] } else { $null }
-    if ($null -eq $displayController) {
-        throw 'The active display did not expose physical resolution and refresh rate.'
-    }
-    $physicalWidth = [int]$displayController.CurrentHorizontalResolution
-    $physicalHeight = [int]$displayController.CurrentVerticalResolution
-    $logicalWidth = [int]$primary.Bounds.Width
-    $logicalHeight = [int]$primary.Bounds.Height
-    if ($physicalWidth -le 0 -or $physicalHeight -le 0 -or $logicalWidth -le 0 -or $logicalHeight -le 0) {
-        throw 'The active display exposed invalid dimensions.'
-    }
-    $desktopDpi = [int][Math]::Round(96.0 * $physicalWidth / $logicalWidth)
-    $scalePercent = [int][Math]::Round(100.0 * $desktopDpi / 96.0)
-
     $sessionId = [Diagnostics.Process]::GetCurrentProcess().SessionId
     $sessionName = [string]$env:SESSIONNAME
     $isRemote = (-not [string]::IsNullOrWhiteSpace($sessionName) -and $sessionName -match '^(RDP|ICA)')
@@ -602,17 +570,6 @@ function Get-RendererEnvironmentSnapshot {
             architecture = $architecture
         }
         graphicsAdapters = @($adapters)
-        display = [ordered]@{
-            deviceName = [string]$primary.DeviceName
-            physicalWidthPixels = $physicalWidth
-            physicalHeightPixels = $physicalHeight
-            logicalWidthPixels = $logicalWidth
-            logicalHeightPixels = $logicalHeight
-            desktopAppliedDpi = $desktopDpi
-            scalePercent = $scalePercent
-            refreshRateHz = [int]$displayController.CurrentRefreshRate
-            monitorCount = [int]$screens.Count
-        }
         session = [ordered]@{
             kind = $kind
             name = if ([string]::IsNullOrWhiteSpace($sessionName)) { "Session-$sessionId" } else { $sessionName }
@@ -633,7 +590,7 @@ function Get-RendererEnvironmentSnapshot {
 }
 function Assert-RendererEnvironmentSnapshot {
     param($Environment,[string]$Context='Environment')
-    Assert-RendererExactProperties $Environment @('os','graphicsAdapters','display','session','supportScope') $Context
+    Assert-RendererExactProperties $Environment @('os','graphicsAdapters','session','supportScope') $Context
     Assert-RendererExactProperties $Environment.os @('caption','version','build','architecture') "$Context OS"
     Assert-RendererString $Environment.os.caption "$Context OS caption"
     Assert-RendererString $Environment.os.version "$Context OS version"
@@ -650,9 +607,6 @@ function Assert-RendererEnvironmentSnapshot {
         $adapterIds += [string]$adapter.pnpDeviceId
     }
     if ((@($adapterIds | Select-Object -Unique)).Count -ne $adapterIds.Count) { throw "$Context graphics adapter PNP IDs must be unique." }
-    Assert-RendererExactProperties $Environment.display @('deviceName','physicalWidthPixels','physicalHeightPixels','logicalWidthPixels','logicalHeightPixels','desktopAppliedDpi','scalePercent','refreshRateHz','monitorCount') "$Context display"
-    Assert-RendererString $Environment.display.deviceName "$Context display deviceName"
-    foreach ($name in @('physicalWidthPixels','physicalHeightPixels','logicalWidthPixels','logicalHeightPixels','desktopAppliedDpi','scalePercent','refreshRateHz','monitorCount')) { Assert-RendererPositiveInteger $Environment.display.$name "$Context display $name" }
     Assert-RendererExactProperties $Environment.session @('kind','name','sessionId','transport','powerSource','thermalState','elevated','userScope') "$Context session"
     if ([string]$Environment.session.kind -cnotin @('LocalConsole','Rdp','Unknown')) { throw "$Context session kind is invalid." }
     if ([string]$Environment.session.transport -cnotin @('Physical','Rdp','Unknown')) { throw "$Context session transport is invalid." }
@@ -686,20 +640,13 @@ function Assert-RendererLiveEnvironment {
     $referenceJson = [IO.File]::ReadAllText($referencePath)
     $reference = if ($PSVersionTable.PSVersion.Major -ge 7 -and (Get-Command ConvertFrom-Json).Parameters.ContainsKey('DateKind')) { $referenceJson | ConvertFrom-Json -DateKind String } else { $referenceJson | ConvertFrom-Json }
     $referenceHost = $reference.environmentBinding.host
-    $display = $reference.environmentBinding.activeDisplay
     if ([string]$Environment.os.caption -cne [string]$referenceHost.operatingSystemCaption -or
         [string]$Environment.os.version -cne [string]$referenceHost.operatingSystemVersion -or
         [int]$Environment.os.build -ne [int]$referenceHost.operatingSystemBuild -or
         [string]$Environment.os.architecture -cne [string]$referenceHost.architecture) { throw 'Observed live OS does not match the approved reference-host profile.' }
-    if ([string]$Environment.display.deviceName -cne [string]$display.primaryDisplayDeviceName -or
-        [int]$Environment.display.physicalWidthPixels -ne [int]$display.physicalWidthPixels -or
-        [int]$Environment.display.physicalHeightPixels -ne [int]$display.physicalHeightPixels -or
-        [int]$Environment.display.logicalWidthPixels -ne [int]$display.logicalWidthPixels -or
-        [int]$Environment.display.logicalHeightPixels -ne [int]$display.logicalHeightPixels -or
-        [int]$Environment.display.desktopAppliedDpi -ne [int]$display.desktopAppliedDpi -or
-        [int]$Environment.display.scalePercent -ne [int]$display.scalePercent -or
-        [int]$Environment.display.refreshRateHz -ne [int]$display.refreshRateHz -or
-        [int]$Environment.display.monitorCount -ne [int]$display.activeMonitorCount) { throw 'Observed live display does not match the approved reference-host profile.' }
+    # D-026 omits physical-display and desktop-DPI observations from admission.
+    # Power-source and thermal observations remain diagnostic-only. The six
+    # governed configurations are collected as off-screen packaged-rendering cases.
     $expectedAdapters = @($reference.environmentBinding.graphicsAdapters | Sort-Object pnpDeviceId)
     $actualAdapters = @($Environment.graphicsAdapters | Sort-Object pnpDeviceId)
     if ($actualAdapters.Count -ne $expectedAdapters.Count) { throw 'Observed live graphics adapter count does not match the approved reference-host profile.' }
@@ -1017,7 +964,7 @@ function Assert-RendererPerformanceReceipt {
     $sidecar=$telemetryRead.Value
     Assert-RendererExactProperties $sidecar @('schemaVersion','evidenceClassification','runNonce','source','session','package','rawSource','acquisitions','evidenceBoundary') 'Performance telemetry sidecar'
     Assert-RendererExactProperties $sidecar.source @('commitSha','treeSha') 'Performance telemetry sidecar source'
-    Assert-RendererExactProperties $sidecar.session @('kind','name','sessionId','transport','powerSource','thermalState','elevated','userScope') 'Performance telemetry sidecar session'
+    Assert-RendererExactProperties $sidecar.session @('kind','name','sessionId','transport','elevated','userScope') 'Performance telemetry sidecar session'
     Assert-RendererNonnegativeInteger $sidecar.session.sessionId 'Performance telemetry sidecar sessionId'
     Assert-RendererBoolean $sidecar.session.elevated 'Performance telemetry sidecar elevated'
     Assert-RendererExactProperties $sidecar.package @('identitySha256','identityFileSha256','profileFileSha256','archiveSha256','manifestSha256','appSha256','coreSha256') 'Performance telemetry sidecar package'
@@ -1026,7 +973,7 @@ function Assert-RendererPerformanceReceipt {
     Assert-RendererBoolean $sidecar.evidenceBoundary.creditGranted 'Performance telemetry sidecar creditGranted'
     foreach($name in @('identitySha256','identityFileSha256','profileFileSha256','archiveSha256','manifestSha256','appSha256','coreSha256')){Assert-RendererSha $sidecar.package.$name "Performance telemetry sidecar package $name"}
     $expectedManifestSha=[string]$ExpectedPackageReceipt.packageManifest.sha256
-    if([long]$sidecar.schemaVersion-ne2-or[string]$sidecar.evidenceClassification-cne'PackagedCompatibilityPerformanceTelemetryBinding-NoRuntimeCredit'-or[string]$sidecar.runNonce-cne[string]$receipt.provenance.runNonce-or[string]$sidecar.source.commitSha-cne[string]$receipt.provenance.candidate.commitSha-or[string]$sidecar.source.treeSha-cne[string]$receipt.provenance.candidate.treeSha-or[string]$sidecar.session.kind-cne'LocalConsole'-or[string]::IsNullOrWhiteSpace([string]$sidecar.session.name)-or[string]$sidecar.session.transport-cne'Physical'-or[string]$sidecar.session.powerSource-cne'AC'-or[string]$sidecar.session.thermalState-cne'Nominal'-or[bool]$sidecar.session.elevated-or[string]$sidecar.session.userScope-cne'SingleUser'-or[string]$sidecar.package.identitySha256-cne[string]$receipt.provenance.package.receipt.canonicalSha256-or[string]$sidecar.package.identityFileSha256-cne[string]$receipt.provenance.package.receipt.fileSha256-or[string]$sidecar.package.profileFileSha256-cne[string]$receipt.provenance.profile.fileSha256-or[string]$sidecar.package.archiveSha256-cne[string]$receipt.provenance.package.archive.sha256-or[string]$sidecar.package.manifestSha256-cne$expectedManifestSha-or[string]$sidecar.package.appSha256-cne[string]$receipt.provenance.package.components.app.sha256-or[string]$sidecar.package.coreSha256-cne[string]$receipt.provenance.package.components.core.sha256-or[string]$sidecar.rawSource.relativePath-cne[string]$receipt.rawSource.relativePath-or[long]$sidecar.rawSource.bytes-ne[long]$rawSourceRead.Stable.Bytes-or[string]$sidecar.rawSource.fileSha256-cne[string]$rawSourceRead.Stable.Sha256-or[string]$sidecar.rawSource.canonicalSha256-cne[string]$receipt.rawSource.canonicalSha256-or[string]$sidecar.evidenceBoundary.actualHerdrRuntime-cne'NOT_OBSERVED'-or[string]$sidecar.evidenceBoundary.release-cne'NOT_OBSERVED'-or[bool]$sidecar.evidenceBoundary.creditGranted){throw 'Performance telemetry sidecar source/package/session/raw binding is not exact.'}
+    if([long]$sidecar.schemaVersion-ne3-or[string]$sidecar.evidenceClassification-cne'PackagedCompatibilityPerformanceTelemetryBinding-NoRuntimeCredit'-or[string]$sidecar.runNonce-cne[string]$receipt.provenance.runNonce-or[string]$sidecar.source.commitSha-cne[string]$receipt.provenance.candidate.commitSha-or[string]$sidecar.source.treeSha-cne[string]$receipt.provenance.candidate.treeSha-or[string]$sidecar.session.kind-cne'LocalConsole'-or[string]::IsNullOrWhiteSpace([string]$sidecar.session.name)-or[string]$sidecar.session.transport-cne'Physical'-or[bool]$sidecar.session.elevated-or[string]$sidecar.session.userScope-cne'SingleUser'-or[string]$sidecar.package.identitySha256-cne[string]$receipt.provenance.package.receipt.canonicalSha256-or[string]$sidecar.package.identityFileSha256-cne[string]$receipt.provenance.package.receipt.fileSha256-or[string]$sidecar.package.profileFileSha256-cne[string]$receipt.provenance.profile.fileSha256-or[string]$sidecar.package.archiveSha256-cne[string]$receipt.provenance.package.archive.sha256-or[string]$sidecar.package.manifestSha256-cne$expectedManifestSha-or[string]$sidecar.package.appSha256-cne[string]$receipt.provenance.package.components.app.sha256-or[string]$sidecar.package.coreSha256-cne[string]$receipt.provenance.package.components.core.sha256-or[string]$sidecar.rawSource.relativePath-cne[string]$receipt.rawSource.relativePath-or[long]$sidecar.rawSource.bytes-ne[long]$rawSourceRead.Stable.Bytes-or[string]$sidecar.rawSource.fileSha256-cne[string]$rawSourceRead.Stable.Sha256-or[string]$sidecar.rawSource.canonicalSha256-cne[string]$receipt.rawSource.canonicalSha256-or[string]$sidecar.evidenceBoundary.actualHerdrRuntime-cne'NOT_OBSERVED'-or[string]$sidecar.evidenceBoundary.release-cne'NOT_OBSERVED'-or[bool]$sidecar.evidenceBoundary.creditGranted){throw 'Performance telemetry sidecar source/package/session/raw binding is not exact.'}
     $acquisitions=@($sidecar.acquisitions)
     if($acquisitions.Count-ne24){throw 'Performance telemetry sidecar must contain exactly 24 acquisitions.'}
     $packageRootRelative=[string]$receipt.provenance.package.packageRootRelativePath
@@ -1406,8 +1353,6 @@ function New-RendererPerformanceProvenance {
             name = [string]$Session.name
             sessionId = [long]$Session.sessionId
             transport = [string]$Session.transport
-            powerSource = [string]$Session.powerSource
-            thermalState = [string]$Session.thermalState
             elevated = [bool]$Session.elevated
             userScope = [string]$Session.userScope
         }
@@ -1486,8 +1431,8 @@ function Assert-RendererPerformanceProvenance {
     Assert-RendererSha $Value.renderer.policySha256 "$Context renderer policySha256"
     if ($Value.renderer.policy -cne 'software-only-process-wide' -or $Value.renderer.wpfProcessRenderMode -cne 'SoftwareOnly' -or $Value.renderer.policySha256 -cne $script:RendererPolicySha256) { throw "$Context renderer policy does not bind the approved SoftwareOnly policy." }
 
-    Assert-RendererExactProperties $Value.session @('kind','name','sessionId','transport','powerSource','thermalState','elevated','userScope') "$Context session"
-    foreach ($name in @('kind','name','transport','powerSource','thermalState','userScope')) {
+    Assert-RendererExactProperties $Value.session @('kind','name','sessionId','transport','elevated','userScope') "$Context session"
+    foreach ($name in @('kind','name','transport','userScope')) {
         Assert-RendererString $Value.session.$name "$Context session $name"
     }
     Assert-RendererNonnegativeInteger $Value.session.sessionId "$Context session sessionId"
