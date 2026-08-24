@@ -53,6 +53,16 @@ function Assert-Throws([scriptblock]$Action, [string]$ExpectedPattern, [string]$
     Pass-Negative $Context
 }
 
+function Test-V02SelfTestProcessElevated {
+    $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+    try {
+        $principal = [Security.Principal.WindowsPrincipal]::new($identity)
+        return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+    } finally {
+        $identity.Dispose()
+    }
+}
+
 function New-BuiltAppResolverFixture([string]$Root, [string]$RelativeOutput) {
     $project = Join-Path $Root 'src\HerdrOps.App'
     $output = Join-Path $project $RelativeOutput
@@ -835,22 +845,40 @@ try {
         throw 'Real-App matrix input did not retain the canonical production manifest filename.'
     }
     $matrixOutput = Join-Path $temp 'matrix-output'
-    $matrixResult = & (Join-Path $PSScriptRoot 'Invoke-V02AutomatedRendererMatrixCapture.ps1') `
-        -CaptureCandidateDirectory $matrixInput `
-        -DestinationDirectory $matrixOutput `
-        -OperatorIdentity '@matrix-operator' `
-        -IndependentReviewerIdentity '@matrix-reviewer' `
-        -RepositoryRoot $repo.Root
-    if ($matrixResult.MatrixEvidence -cne 'PASS' -or $matrixResult.PixelComparison -cne 'PASS' -or
-        $matrixResult.ActualHerdrRuntime -cne 'NOT_OBSERVED' -or [bool]$matrixResult.CreditGranted -or
-        (Split-Path -Leaf $matrixResult.ManifestPath) -cne $canonicalManifestName) {
-        throw 'Production automated matrix orchestrator did not publish the exact validated no-credit result.'
+    if (Test-V02SelfTestProcessElevated) {
+        Assert-Throws {
+            & (Join-Path $PSScriptRoot 'Invoke-V02AutomatedRendererMatrixCapture.ps1') `
+                -CaptureCandidateDirectory $matrixInput `
+                -DestinationDirectory $matrixOutput `
+                -OperatorIdentity '@matrix-operator' `
+                -IndependentReviewerIdentity '@matrix-reviewer' `
+                -RepositoryRoot $repo.Root
+        } 'Packaged App automated renderer collector exited 70:.*Automated renderer collection must be non-elevated' 'production matrix orchestrator rejects an elevated runner without Runtime or Release credit'
+        if (Test-Path -LiteralPath $matrixOutput) {
+            throw 'Elevated matrix rejection published a destination candidate.'
+        }
+        if (@(Get-ChildItem -LiteralPath (Split-Path -Parent $matrixOutput) -Directory -Filter '.renderer-matrix-candidate-staging-*').Count -ne 0) {
+            throw 'Elevated matrix rejection left an owned staging directory behind.'
+        }
+        New-Item -ItemType Directory -Path $matrixOutput | Out-Null
+    } else {
+        $matrixResult = & (Join-Path $PSScriptRoot 'Invoke-V02AutomatedRendererMatrixCapture.ps1') `
+            -CaptureCandidateDirectory $matrixInput `
+            -DestinationDirectory $matrixOutput `
+            -OperatorIdentity '@matrix-operator' `
+            -IndependentReviewerIdentity '@matrix-reviewer' `
+            -RepositoryRoot $repo.Root
+        if ($matrixResult.MatrixEvidence -cne 'PASS' -or $matrixResult.PixelComparison -cne 'PASS' -or
+            $matrixResult.ActualHerdrRuntime -cne 'NOT_OBSERVED' -or [bool]$matrixResult.CreditGranted -or
+            (Split-Path -Leaf $matrixResult.ManifestPath) -cne $canonicalManifestName) {
+            throw 'Production automated matrix orchestrator did not publish the exact validated no-credit result.'
+        }
+        $matrixValidation = Test-RendererCompatibilityManifest -ManifestPath $matrixResult.ManifestPath -EvidenceRoot $matrixOutput -RepositoryRoot $repo.Root -ValidateBindings
+        if ($matrixValidation.AutomatedMatrixEvidence -cne 'PASS' -or [bool]$matrixValidation.CreditGranted) {
+            throw 'Production matrix output failed independent manifest validation.'
+        }
+        Pass 'production live output invokes the real matrix orchestrator and publishes one canonical validated candidate without rename'
     }
-    $matrixValidation = Test-RendererCompatibilityManifest -ManifestPath $matrixResult.ManifestPath -EvidenceRoot $matrixOutput -RepositoryRoot $repo.Root -ValidateBindings
-    if ($matrixValidation.AutomatedMatrixEvidence -cne 'PASS' -or [bool]$matrixValidation.CreditGranted) {
-        throw 'Production matrix output failed independent manifest validation.'
-    }
-    Pass 'production live output invokes the real matrix orchestrator and publishes one canonical validated candidate without rename'
 
     Assert-Throws {
         & (Join-Path $PSScriptRoot 'Invoke-V02AutomatedRendererMatrixCapture.ps1') `
