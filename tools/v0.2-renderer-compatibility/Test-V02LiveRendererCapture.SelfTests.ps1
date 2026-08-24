@@ -15,6 +15,7 @@ if ($invokeSource -match 'AllowElevatedForTesting|AllowNonReferenceHostForTestin
 }
 
 . (Join-Path $PSScriptRoot 'RendererCompatibility.Common.ps1')
+. (Join-Path $PSScriptRoot 'lib\V02BuiltAppFixture.ps1')
 
 $script:PositiveCases = 0
 $script:NegativeCases = 0
@@ -52,6 +53,27 @@ function Assert-Throws([scriptblock]$Action, [string]$ExpectedPattern, [string]$
     Pass-Negative $Context
 }
 
+function Test-V02SelfTestProcessElevated {
+    $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+    try {
+        $principal = [Security.Principal.WindowsPrincipal]::new($identity)
+        return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+    } finally {
+        $identity.Dispose()
+    }
+}
+
+function New-BuiltAppResolverFixture([string]$Root, [string]$RelativeOutput) {
+    $project = Join-Path $Root 'src\HerdrOps.App'
+    $output = Join-Path $project $RelativeOutput
+    New-Item -ItemType Directory -Path $output -Force | Out-Null
+    [IO.File]::WriteAllText((Join-Path $project 'HerdrOps.App.csproj'), '<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><OutputType>WinExe</OutputType><TargetFramework>net10.0-windows</TargetFramework><RuntimeIdentifiers>win-x64</RuntimeIdentifiers></PropertyGroup></Project>', [Text.UTF8Encoding]::new($false))
+    foreach ($name in @('HerdrOps.App.exe','HerdrOps.App.dll','HerdrOps.App.deps.json','HerdrOps.App.runtimeconfig.json')) {
+        [IO.File]::WriteAllBytes((Join-Path $output $name), [byte[]](1,2,3,4))
+    }
+    return $output
+}
+
 function New-IsolatedTestRepository([string]$Root) {
     New-Item -ItemType Directory -Path $Root -Force | Out-Null
     [IO.File]::WriteAllText((Join-Path $Root 'source.txt'), 'bound source', (New-Object Text.UTF8Encoding($false)))
@@ -82,14 +104,22 @@ function New-IsolatedTestRepository([string]$Root) {
     }
 }
 
-function New-IsolatedTestPackage([string]$Root, [string]$RepositoryRoot, [string]$Commit, [string]$Tree, [switch]$ExecutableFixture) {
+function New-IsolatedTestPackage([string]$Root, [string]$RepositoryRoot, [string]$Commit, [string]$Tree, [switch]$ExecutableFixture, [string]$PackagedAppSourceDirectory) {
     New-Item -ItemType Directory -Path $Root -Force | Out-Null
     $packageRoot = Join-Path $Root 'package'
     New-Item -ItemType Directory -Path $packageRoot -Force | Out-Null
 
     $appPath = Join-Path $packageRoot 'HerdrOps.App.exe'
     $corePath = Join-Path $packageRoot 'HerdrOps.Core.exe'
-    if ($ExecutableFixture) {
+    if (-not [string]::IsNullOrWhiteSpace($PackagedAppSourceDirectory)) {
+        if (-not (Test-Path -LiteralPath (Join-Path $PackagedAppSourceDirectory 'HerdrOps.App.exe') -PathType Leaf)) {
+            throw "Real packaged App fixture is missing from '$PackagedAppSourceDirectory'."
+        }
+        foreach ($item in @(Get-ChildItem -LiteralPath $PackagedAppSourceDirectory -Force)) {
+            Copy-Item -LiteralPath $item.FullName -Destination $packageRoot -Recurse -Force
+        }
+        [IO.File]::WriteAllBytes($corePath, [Text.Encoding]::UTF8.GetBytes('Core Binary Content'))
+    } elseif ($ExecutableFixture) {
         $powershellPath = (Get-Command powershell.exe -ErrorAction Stop).Source
         Copy-Item -LiteralPath $powershellPath -Destination $appPath -Force
         Copy-Item -LiteralPath $powershellPath -Destination $corePath -Force
@@ -195,6 +225,19 @@ function New-CaptureSourceDirectory([string]$Root) {
         New-Item -ItemType Directory -Path $languageRoot -Force | Out-Null
         foreach ($name in $script:RendererCaptureNames) {
             New-RendererTestPng -Path (Join-Path $languageRoot "$name.png") -Width 64 -Height 48
+        }
+    }
+    return $Root
+}
+
+function New-ReferenceCaptureSourceDirectory([string]$Root, [string]$RepositoryRoot) {
+    New-Item -ItemType Directory -Path $Root -Force | Out-Null
+    foreach ($language in @('Thai', 'English')) {
+        $languageRoot = Join-Path $Root $language
+        New-Item -ItemType Directory -Path $languageRoot -Force | Out-Null
+        foreach ($name in $script:RendererCaptureNames) {
+            $reference = Join-Path $RepositoryRoot (Get-RendererReferencePath $name)
+            Copy-Item -LiteralPath $reference -Destination (Join-Path $languageRoot "$name.png")
         }
     }
     return $Root
@@ -553,12 +596,10 @@ function New-LiveReferenceEnvironmentSnapshot([string]$Path, [string]$Repository
     # The live fixture reads the repository reference host below.
     $reference = Get-Content -Raw -LiteralPath (Join-Path $RepositoryRoot 'Plan\reference-hosts\v0.2.json') | ConvertFrom-Json
     $hostRecord = $reference.environmentBinding.host
-    $display = $reference.environmentBinding.activeDisplay
     $adapters = @($reference.environmentBinding.graphicsAdapters | ForEach-Object { [ordered]@{displayName=$_.displayName;pnpDeviceId=$_.pnpDeviceId;driverVersion=$_.driverVersion} })
     $value = [ordered]@{
         os = [ordered]@{caption=$hostRecord.operatingSystemCaption;version=$hostRecord.operatingSystemVersion;build=[int]$hostRecord.operatingSystemBuild;architecture='x64'}
         graphicsAdapters = $adapters
-        display = [ordered]@{deviceName=$display.primaryDisplayDeviceName;physicalWidthPixels=[int]$display.physicalWidthPixels;physicalHeightPixels=[int]$display.physicalHeightPixels;logicalWidthPixels=[int]$display.logicalWidthPixels;logicalHeightPixels=[int]$display.logicalHeightPixels;desktopAppliedDpi=[int]$display.desktopAppliedDpi;scalePercent=[int]$display.scalePercent;refreshRateHz=[int]$display.refreshRateHz;monitorCount=[int]$display.activeMonitorCount}
         session = [ordered]@{kind='LocalConsole';name='Console';sessionId=1;transport='Physical';powerSource='AC';thermalState='Nominal';elevated=$false;userScope='SingleUser'}
         supportScope = [ordered]@{supported=@('windows11-x64-build26220','automated-packaged-rendering','non-elevated','single-user');excluded=@('rdp-runtime','vm-runtime','arm64','remote-cloud','multi-user');vmCleanInstallOnly=$true;vmRuntimeCredit=$false}
     }
@@ -676,6 +717,43 @@ function Invoke-LiveTargetFixtureCase([string]$Root,[string]$RepositoryRoot,[str
 $temp = Join-Path ([IO.Path]::GetTempPath()) ('herdrops-capture-harness-' + [Guid]::NewGuid().ToString('N'))
 try {
     New-Item -ItemType Directory -Path $temp -Force | Out-Null
+    $resolverRoot = Join-Path $temp 'built-app-resolver'
+    $resolverBuildStartedUtc = [DateTime]::UtcNow
+    $frameworkRelative = 'bin\Release\net10.0-windows'
+    $ridRelative = 'bin\Release\net10.0-windows\win-x64'
+    $frameworkFixture = New-BuiltAppResolverFixture $resolverRoot $frameworkRelative
+    if ((Resolve-V02BuiltAppFixtureDirectory $resolverRoot -BuildStartedUtc $resolverBuildStartedUtc) -cne [IO.Path]::GetFullPath($frameworkFixture)) {
+        throw 'Built App resolver did not return the exact framework output.'
+    }
+    Pass 'built App resolver admits the exact framework output layout'
+    [IO.Directory]::Delete($frameworkFixture, $true)
+    $ridFixture = New-BuiltAppResolverFixture $resolverRoot $ridRelative
+    if ((Resolve-V02BuiltAppFixtureDirectory $resolverRoot -BuildStartedUtc $resolverBuildStartedUtc) -cne [IO.Path]::GetFullPath($ridFixture)) {
+        throw 'Built App resolver did not return the exact RID output.'
+    }
+    Pass 'built App resolver admits the exact win-x64 output layout'
+    $frameworkFixture = New-BuiltAppResolverFixture $resolverRoot $frameworkRelative
+    Assert-Throws { Resolve-V02BuiltAppFixtureDirectory $resolverRoot -BuildStartedUtc $resolverBuildStartedUtc | Out-Null } 'ambiguous across the supported TFM and RID layouts' 'built App resolver rejects ambiguous supported outputs'
+    [IO.Directory]::Delete($ridFixture, $true)
+    [IO.Directory]::Delete($frameworkFixture, $true)
+    $arbitrary = New-BuiltAppResolverFixture $resolverRoot 'bin\Release\stale-arbitrary-layout'
+    Assert-Throws { Resolve-V02BuiltAppFixtureDirectory $resolverRoot -BuildStartedUtc $resolverBuildStartedUtc | Out-Null } 'No fresh exact HerdrOps.App fixture exists' 'built App resolver rejects arbitrary stale executable layouts'
+    [IO.Directory]::Delete($arbitrary, $true)
+    $staleExact = New-BuiltAppResolverFixture $resolverRoot $frameworkRelative
+    foreach ($file in @(Get-ChildItem -LiteralPath $staleExact -File)) { $file.LastWriteTimeUtc = $resolverBuildStartedUtc.AddMinutes(-1) }
+    Assert-Throws { Resolve-V02BuiltAppFixtureDirectory $resolverRoot -BuildStartedUtc $resolverBuildStartedUtc | Out-Null } 'No fresh exact HerdrOps.App fixture exists' 'built App resolver rejects stale exact-path output'
+    [IO.Directory]::Delete($staleExact, $true)
+    $reparseRoot = Join-Path $temp 'built-app-resolver-reparse'
+    $reparseExternal = Join-Path $temp 'built-app-resolver-reparse-external'
+    $null = New-BuiltAppResolverFixture $reparseExternal $frameworkRelative
+    New-Item -ItemType Directory -Path (Join-Path $reparseRoot 'src') -Force | Out-Null
+    $reparseProject = Join-Path $reparseRoot 'src\HerdrOps.App'
+    New-Item -ItemType Junction -Path $reparseProject -Target (Join-Path $reparseExternal 'src\HerdrOps.App') | Out-Null
+    try {
+        Assert-Throws { Resolve-V02BuiltAppFixtureDirectory $reparseRoot -BuildStartedUtc $resolverBuildStartedUtc | Out-Null } 'contains a reparse point' 'built App resolver rejects a project ancestor reparse point'
+    } finally {
+        if (Test-Path -LiteralPath $reparseProject) { [IO.Directory]::Delete($reparseProject, $false) }
+    }
     Write-Host 'INFO creating isolated repo fixture...'
     $repo = New-IsolatedTestRepository (Join-Path $temp 'repo')
     Write-Host 'INFO creating isolated package fixture...'
@@ -733,6 +811,97 @@ try {
     }
     Pass 'operator-driven capture harness generates strict validated synthetic candidate evidence'
 
+    # The production chain passes the live-capture directory directly through
+    # matrix enrichment and finalization. Every stage must therefore use the
+    # canonical live manifest name; copying or renaming it would break the held
+    # evidence identity that the downstream pipeline validates.
+    $canonicalManifestName = 'v0.2-renderer-compatibility-manifest.json'
+    if ((Split-Path -Leaf $result1.ManifestPath) -cne $canonicalManifestName -or
+        -not (Test-Path -LiteralPath (Join-Path $out1 $canonicalManifestName) -PathType Leaf)) {
+        throw 'Live capture did not publish the canonical production manifest filename.'
+    }
+    $sourceRepositoryRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
+    $fixtureBuildStartedUtc = [DateTime]::UtcNow
+    & dotnet build (Join-Path $sourceRepositoryRoot 'src\HerdrOps.App\HerdrOps.App.csproj') --configuration Release --no-restore --artifacts-path (Join-Path $sourceRepositoryRoot 'artifacts') --target Rebuild
+    if ($LASTEXITCODE -ne 0) { throw 'Fresh exact HerdrOps.App fixture rebuild failed.' }
+    $realAppDirectory = Resolve-V02BuiltAppFixtureDirectory $sourceRepositoryRoot -BuildStartedUtc $fixtureBuildStartedUtc
+    $matrixPackage = New-IsolatedTestPackage (Join-Path $temp 'matrix-pkg') $repo.Root $repo.Commit $repo.Tree -PackagedAppSourceDirectory $realAppDirectory
+    $matrixInput = Join-Path $temp 'matrix-input'
+    $matrixCaptureSource = New-ReferenceCaptureSourceDirectory (Join-Path $temp 'matrix-capture-source') $repo.Root
+    $matrixCapture = & (Join-Path $PSScriptRoot 'Invoke-V02LiveRendererCapture.ps1') `
+        -OutputDirectory $matrixInput `
+        -PackageRoot $matrixPackage.PackageRoot `
+        -ArchivePath $matrixPackage.ArchivePath `
+        -IdentityReceiptPath $matrixPackage.ReceiptPath `
+        -RepositoryRoot $repo.Root `
+        -ProfilePath $matrixPackage.ProfilePath `
+        -CaptureSourceDirectory $matrixCaptureSource `
+        -OperatorObservationAction (New-MockObservationAction) `
+        -SyntheticCapturesForTesting `
+        -TestEnvironmentSnapshotPath $fixtureEnvironmentPath
+    if ((Split-Path -Leaf $matrixCapture.ManifestPath) -cne $canonicalManifestName) {
+        throw 'Real-App matrix input did not retain the canonical production manifest filename.'
+    }
+    $matrixOutput = Join-Path $temp 'matrix-output'
+    if (Test-V02SelfTestProcessElevated) {
+        Assert-Throws {
+            & (Join-Path $PSScriptRoot 'Invoke-V02AutomatedRendererMatrixCapture.ps1') `
+                -CaptureCandidateDirectory $matrixInput `
+                -DestinationDirectory $matrixOutput `
+                -OperatorIdentity '@matrix-operator' `
+                -IndependentReviewerIdentity '@matrix-reviewer' `
+                -RepositoryRoot $repo.Root
+        } 'Packaged App automated renderer collector exited 70:.*Automated renderer collection must be non-elevated' 'production matrix orchestrator rejects an elevated runner without Runtime or Release credit'
+        if (Test-Path -LiteralPath $matrixOutput) {
+            throw 'Elevated matrix rejection published a destination candidate.'
+        }
+        if (@(Get-ChildItem -LiteralPath (Split-Path -Parent $matrixOutput) -Directory -Filter '.renderer-matrix-candidate-staging-*').Count -ne 0) {
+            throw 'Elevated matrix rejection left an owned staging directory behind.'
+        }
+        New-Item -ItemType Directory -Path $matrixOutput | Out-Null
+    } else {
+        $matrixResult = & (Join-Path $PSScriptRoot 'Invoke-V02AutomatedRendererMatrixCapture.ps1') `
+            -CaptureCandidateDirectory $matrixInput `
+            -DestinationDirectory $matrixOutput `
+            -OperatorIdentity '@matrix-operator' `
+            -IndependentReviewerIdentity '@matrix-reviewer' `
+            -RepositoryRoot $repo.Root
+        if ($matrixResult.MatrixEvidence -cne 'PASS' -or $matrixResult.PixelComparison -cne 'PASS' -or
+            $matrixResult.ActualHerdrRuntime -cne 'NOT_OBSERVED' -or [bool]$matrixResult.CreditGranted -or
+            (Split-Path -Leaf $matrixResult.ManifestPath) -cne $canonicalManifestName) {
+            throw 'Production automated matrix orchestrator did not publish the exact validated no-credit result.'
+        }
+        $matrixValidation = Test-RendererCompatibilityManifest -ManifestPath $matrixResult.ManifestPath -EvidenceRoot $matrixOutput -RepositoryRoot $repo.Root -ValidateBindings
+        if ($matrixValidation.AutomatedMatrixEvidence -cne 'PASS' -or [bool]$matrixValidation.CreditGranted) {
+            throw 'Production matrix output failed independent manifest validation.'
+        }
+        Pass 'production live output invokes the real matrix orchestrator and publishes one canonical validated candidate without rename'
+    }
+
+    Assert-Throws {
+        & (Join-Path $PSScriptRoot 'Invoke-V02AutomatedRendererMatrixCapture.ps1') `
+            -CaptureCandidateDirectory $matrixInput -DestinationDirectory $matrixOutput `
+            -OperatorIdentity '@matrix-operator' -IndependentReviewerIdentity '@matrix-reviewer' -RepositoryRoot $repo.Root
+    } 'already exists; automated matrix publication is no-clobber' 'production matrix orchestrator rejects a pre-existing destination without mutation'
+    Assert-Throws {
+        & (Join-Path $PSScriptRoot 'Invoke-V02AutomatedRendererMatrixCapture.ps1') `
+            -CaptureCandidateDirectory $matrixInput -DestinationDirectory (Join-Path $matrixInput 'nested-output') `
+            -OperatorIdentity '@matrix-operator' -IndependentReviewerIdentity '@matrix-reviewer' -RepositoryRoot $repo.Root
+    } 'must be disjoint' 'production matrix orchestrator rejects source and destination overlap'
+    $reparseTarget = Join-Path $temp 'matrix-reparse-target'
+    New-Item -ItemType Directory -Path $reparseTarget | Out-Null
+    $reparsePath = Join-Path $matrixInput 'prohibited-reparse'
+    New-Item -ItemType Junction -Path $reparsePath -Target $reparseTarget | Out-Null
+    try {
+        Assert-Throws {
+            & (Join-Path $PSScriptRoot 'Invoke-V02AutomatedRendererMatrixCapture.ps1') `
+                -CaptureCandidateDirectory $matrixInput -DestinationDirectory (Join-Path $temp 'matrix-reparse-output') `
+                -OperatorIdentity '@matrix-operator' -IndependentReviewerIdentity '@matrix-reviewer' -RepositoryRoot $repo.Root
+        } 'contains prohibited reparse entry' 'production matrix orchestrator rejects capture child reparse traversal'
+    } finally {
+        if (Test-Path -LiteralPath $reparsePath) { Remove-Item -LiteralPath $reparsePath -Force }
+    }
+
     # 2. Positive real-capture input path: PNG bytes are admitted from a
     # contained source directory, but the result remains synthetic/no-credit.
     $sourceCaptures = New-CaptureSourceDirectory (Join-Path $temp 'capture-source')
@@ -782,6 +951,12 @@ try {
     if (Test-Path -LiteralPath $elevatedOutput) {
         throw 'Elevated evidence rejection left a published output directory.'
     }
+
+    $headlessEnvironment = Get-Content -Raw -LiteralPath $fixtureEnvironmentPath | ConvertFrom-Json
+    $headlessEnvironment.session.powerSource = 'Battery'
+    $headlessEnvironment.session.thermalState = 'Unknown'
+    Assert-RendererLiveEnvironment $headlessEnvironment $repo.Root
+    Pass 'live admission requires no physical display or DPI and ignores power/thermal diagnostics'
 
     $elevatedEnvironment = Get-Content -Raw -LiteralPath $elevatedEnvironmentPath | ConvertFrom-Json
     Assert-Throws {
@@ -899,7 +1074,7 @@ try {
         New-Item -ItemType Directory -Path $swapDir2 -Force | Out-Null
         Assert-Throws {
             Assert-RendererDirectoryLease -Lease $swapLease -Root $temp -Path $swapDir2 -Context 'Lease swap test'
-        } 'identity changed|path no longer resolves' 'swapped directory fails lease verification'
+        } 'identity changed|path no longer resolves|held delete-protected directory no longer has the expected path' 'swapped directory fails lease verification'
     } finally {
         $swapLease.Handle.Dispose()
     }

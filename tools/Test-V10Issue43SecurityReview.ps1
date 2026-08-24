@@ -397,7 +397,9 @@ function Find-ForbiddenProductPattern {
         [Parameter(Mandatory)]
         [string]$RawPattern,
 
-        [switch]$TreatJsonQuotedTextAsCode
+        [switch]$TreatJsonQuotedTextAsCode,
+
+        $ExactCodeAllowance
     )
 
     $hits = @()
@@ -405,6 +407,9 @@ function Find-ForbiddenProductPattern {
         $text = Get-RepositoryText -RelativePath $relativePath
         if ($null -eq $text) {
             continue
+        }
+        if ($null -ne $ExactCodeAllowance) {
+            $text = Remove-Issue43ExactAllowedDeclaration -Text $text -RelativePath $relativePath -Allowance $ExactCodeAllowance
         }
         $isJson = [IO.Path]::GetExtension($relativePath).Equals('.json', [StringComparison]::OrdinalIgnoreCase)
         $result = Test-Issue43ForbiddenDeclaration -Text $text -CodePattern $CodePattern -RawPattern $RawPattern -TreatQuotedTextAsCode:($TreatJsonQuotedTextAsCode -and $isJson)
@@ -430,14 +435,17 @@ function Test-ForbiddenProductPattern {
         [Parameter(Mandatory)]
         [string]$Description,
 
-        [switch]$TreatJsonQuotedTextAsCode
+        [switch]$TreatJsonQuotedTextAsCode,
+
+        $ExactCodeAllowance
     )
 
     $hits = @(Find-ForbiddenProductPattern `
         -ScanPaths $productScanPaths `
         -CodePattern $CodePattern `
         -RawPattern $RawPattern `
-        -TreatJsonQuotedTextAsCode:$TreatJsonQuotedTextAsCode)
+        -TreatJsonQuotedTextAsCode:$TreatJsonQuotedTextAsCode `
+        -ExactCodeAllowance $ExactCodeAllowance)
 
     if ($hits.Count -eq 0) {
         Record-Check -Id $Id -Status 'PASS' -EvidenceClass 'Static' -Detail "${Description}: 0 declarations across tracked product source/config inputs"
@@ -1093,7 +1101,11 @@ Test-ForbiddenProductPattern -Id 'S-07-LOOPBACK' -CodePattern $loopbackCodePatte
 
 $administratorCodePattern = '(?i)\b(?:requireAdministrator|highestAvailable|requestedExecutionLevel|uiAccess|runas|WindowsBuiltInRole\s*\.\s*Administrator|PrincipalPermission|IsInRole|AdjustTokenPrivileges|Se(?:Debug|Impersonate|TakeOwnership)Privilege|ShellExecute(?:Ex)?)\b'
 $administratorRawPattern = '(?i)(?:requestedExecutionLevel\b|uiAccess\s*=)|(?:Verb|verb)\s*=\s*["'']runas["'']|(?:DllImport|LibraryImport)[^\r\n]*(?:AdjustTokenPrivileges|ShellExecute|runas)'
-Test-ForbiddenProductPattern -Id 'S-08-ADMIN' -CodePattern $administratorCodePattern -RawPattern $administratorRawPattern -Description 'Administrator/elevation declarations' | Out-Null
+$administratorExactAllowance = [pscustomobject]@{
+    Path = 'src/HerdrOps.App/RuntimeEvidence/AutomatedRendererMatrixCollector.cs'
+    Declaration = 'new WindowsPrincipal(WindowsIdentity.GetCurrent()).IsInRole(WindowsBuiltInRole.Administrator)'
+}
+Test-ForbiddenProductPattern -Id 'S-08-ADMIN' -CodePattern $administratorCodePattern -RawPattern $administratorRawPattern -Description 'Administrator/elevation declarations outside the one governed fail-closed renderer admission check' -ExactCodeAllowance $administratorExactAllowance | Out-Null
 
 Test-SelectedTest -Id 'C-01' -Name 'ipc' -EvidenceClass 'Contract' -Project 'tests/HerdrOps.ContractTests/HerdrOps.ContractTests.csproj' -Filter 'FullyQualifiedName~StateIpcContractTests|FullyQualifiedName~SelfReportContractTests'
 Test-SelectedTest -Id 'C-02' -Name 'export' -EvidenceClass 'Contract' -Project 'tests/HerdrOps.ContractTests/HerdrOps.ContractTests.csproj' -Filter 'FullyQualifiedName~SnapshotExportContractTests'
