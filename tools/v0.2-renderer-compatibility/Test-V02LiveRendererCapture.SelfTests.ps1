@@ -15,6 +15,7 @@ if ($invokeSource -match 'AllowElevatedForTesting|AllowNonReferenceHostForTestin
 }
 
 . (Join-Path $PSScriptRoot 'RendererCompatibility.Common.ps1')
+. (Join-Path $PSScriptRoot 'lib\V02BuiltAppFixture.ps1')
 
 $script:PositiveCases = 0
 $script:NegativeCases = 0
@@ -50,6 +51,17 @@ function Assert-Throws([scriptblock]$Action, [string]$ExpectedPattern, [string]$
         }
     }
     Pass-Negative $Context
+}
+
+function New-BuiltAppResolverFixture([string]$Root, [string]$RelativeOutput) {
+    $project = Join-Path $Root 'src\HerdrOps.App'
+    $output = Join-Path $project $RelativeOutput
+    New-Item -ItemType Directory -Path $output -Force | Out-Null
+    [IO.File]::WriteAllText((Join-Path $project 'HerdrOps.App.csproj'), '<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><OutputType>WinExe</OutputType><TargetFramework>net10.0-windows</TargetFramework><RuntimeIdentifiers>win-x64</RuntimeIdentifiers></PropertyGroup></Project>', [Text.UTF8Encoding]::new($false))
+    foreach ($name in @('HerdrOps.App.exe','HerdrOps.App.dll','HerdrOps.App.deps.json','HerdrOps.App.runtimeconfig.json')) {
+        [IO.File]::WriteAllBytes((Join-Path $output $name), [byte[]](1,2,3,4))
+    }
+    return $output
 }
 
 function New-IsolatedTestRepository([string]$Root) {
@@ -697,6 +709,43 @@ function Invoke-LiveTargetFixtureCase([string]$Root,[string]$RepositoryRoot,[str
 $temp = Join-Path ([IO.Path]::GetTempPath()) ('herdrops-capture-harness-' + [Guid]::NewGuid().ToString('N'))
 try {
     New-Item -ItemType Directory -Path $temp -Force | Out-Null
+    $resolverRoot = Join-Path $temp 'built-app-resolver'
+    $resolverBuildStartedUtc = [DateTime]::UtcNow
+    $frameworkRelative = 'bin\Release\net10.0-windows'
+    $ridRelative = 'bin\Release\net10.0-windows\win-x64'
+    $frameworkFixture = New-BuiltAppResolverFixture $resolverRoot $frameworkRelative
+    if ((Resolve-V02BuiltAppFixtureDirectory $resolverRoot -BuildStartedUtc $resolverBuildStartedUtc) -cne [IO.Path]::GetFullPath($frameworkFixture)) {
+        throw 'Built App resolver did not return the exact framework output.'
+    }
+    Pass 'built App resolver admits the exact framework output layout'
+    [IO.Directory]::Delete($frameworkFixture, $true)
+    $ridFixture = New-BuiltAppResolverFixture $resolverRoot $ridRelative
+    if ((Resolve-V02BuiltAppFixtureDirectory $resolverRoot -BuildStartedUtc $resolverBuildStartedUtc) -cne [IO.Path]::GetFullPath($ridFixture)) {
+        throw 'Built App resolver did not return the exact RID output.'
+    }
+    Pass 'built App resolver admits the exact win-x64 output layout'
+    $frameworkFixture = New-BuiltAppResolverFixture $resolverRoot $frameworkRelative
+    Assert-Throws { Resolve-V02BuiltAppFixtureDirectory $resolverRoot -BuildStartedUtc $resolverBuildStartedUtc | Out-Null } 'ambiguous across the supported TFM and RID layouts' 'built App resolver rejects ambiguous supported outputs'
+    [IO.Directory]::Delete($ridFixture, $true)
+    [IO.Directory]::Delete($frameworkFixture, $true)
+    $arbitrary = New-BuiltAppResolverFixture $resolverRoot 'bin\Release\stale-arbitrary-layout'
+    Assert-Throws { Resolve-V02BuiltAppFixtureDirectory $resolverRoot -BuildStartedUtc $resolverBuildStartedUtc | Out-Null } 'No fresh exact HerdrOps.App fixture exists' 'built App resolver rejects arbitrary stale executable layouts'
+    [IO.Directory]::Delete($arbitrary, $true)
+    $staleExact = New-BuiltAppResolverFixture $resolverRoot $frameworkRelative
+    foreach ($file in @(Get-ChildItem -LiteralPath $staleExact -File)) { $file.LastWriteTimeUtc = $resolverBuildStartedUtc.AddMinutes(-1) }
+    Assert-Throws { Resolve-V02BuiltAppFixtureDirectory $resolverRoot -BuildStartedUtc $resolverBuildStartedUtc | Out-Null } 'No fresh exact HerdrOps.App fixture exists' 'built App resolver rejects stale exact-path output'
+    [IO.Directory]::Delete($staleExact, $true)
+    $reparseRoot = Join-Path $temp 'built-app-resolver-reparse'
+    $reparseExternal = Join-Path $temp 'built-app-resolver-reparse-external'
+    $null = New-BuiltAppResolverFixture $reparseExternal $frameworkRelative
+    New-Item -ItemType Directory -Path (Join-Path $reparseRoot 'src') -Force | Out-Null
+    $reparseProject = Join-Path $reparseRoot 'src\HerdrOps.App'
+    New-Item -ItemType Junction -Path $reparseProject -Target (Join-Path $reparseExternal 'src\HerdrOps.App') | Out-Null
+    try {
+        Assert-Throws { Resolve-V02BuiltAppFixtureDirectory $reparseRoot -BuildStartedUtc $resolverBuildStartedUtc | Out-Null } 'contains a reparse point' 'built App resolver rejects a project ancestor reparse point'
+    } finally {
+        if (Test-Path -LiteralPath $reparseProject) { [IO.Directory]::Delete($reparseProject, $false) }
+    }
     Write-Host 'INFO creating isolated repo fixture...'
     $repo = New-IsolatedTestRepository (Join-Path $temp 'repo')
     Write-Host 'INFO creating isolated package fixture...'
@@ -763,7 +812,11 @@ try {
         -not (Test-Path -LiteralPath (Join-Path $out1 $canonicalManifestName) -PathType Leaf)) {
         throw 'Live capture did not publish the canonical production manifest filename.'
     }
-    $realAppDirectory = Join-Path ([IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))) 'src\HerdrOps.App\bin\Release\net10.0-windows'
+    $sourceRepositoryRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
+    $fixtureBuildStartedUtc = [DateTime]::UtcNow
+    & dotnet build (Join-Path $sourceRepositoryRoot 'src\HerdrOps.App\HerdrOps.App.csproj') --configuration Release --no-restore --artifacts-path (Join-Path $sourceRepositoryRoot 'artifacts') --target Rebuild
+    if ($LASTEXITCODE -ne 0) { throw 'Fresh exact HerdrOps.App fixture rebuild failed.' }
+    $realAppDirectory = Resolve-V02BuiltAppFixtureDirectory $sourceRepositoryRoot -BuildStartedUtc $fixtureBuildStartedUtc
     $matrixPackage = New-IsolatedTestPackage (Join-Path $temp 'matrix-pkg') $repo.Root $repo.Commit $repo.Tree -PackagedAppSourceDirectory $realAppDirectory
     $matrixInput = Join-Path $temp 'matrix-input'
     $matrixCaptureSource = New-ReferenceCaptureSourceDirectory (Join-Path $temp 'matrix-capture-source') $repo.Root

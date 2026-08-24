@@ -2,9 +2,13 @@
 $ErrorActionPreference='Stop'
 Set-StrictMode -Version Latest
 . (Join-Path $PSScriptRoot 'RendererCompatibility.Common.ps1')
+. (Join-Path $PSScriptRoot 'lib\V02BuiltAppFixture.ps1')
 function ConvertTo-MatrixProcessArgument {param([AllowEmptyString()][string]$Argument);if($null-eq$Argument){$Argument=''};$builder=New-Object Text.StringBuilder;$null=$builder.Append('"');$slashes=0;foreach($character in $Argument.ToCharArray()){if($character-eq[char]92){$slashes++;continue};if($character-eq[char]34){$null=$builder.Append(('\'* (($slashes*2)+1)) -join '');$null=$builder.Append('"');$slashes=0;continue};if($slashes-gt0){$null=$builder.Append(('\'*$slashes)-join'');$slashes=0};$null=$builder.Append([string]$character)};if($slashes-gt0){$null=$builder.Append(('\'*($slashes*2))-join'')};$null=$builder.Append('"');$builder.ToString()}
 $repo=(Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
-$app=Join-Path $repo 'src/HerdrOps.App/bin/Release/net10.0-windows/HerdrOps.App.exe'
+$fixtureBuildStartedUtc=[DateTime]::UtcNow
+& dotnet build (Join-Path $repo 'src\HerdrOps.App\HerdrOps.App.csproj') --configuration Release --no-restore --artifacts-path (Join-Path $repo 'artifacts') --target Rebuild
+if($LASTEXITCODE-ne0){throw 'Fresh exact HerdrOps.App fixture rebuild failed.'}
+$app=Join-Path (Resolve-V02BuiltAppFixtureDirectory $repo -BuildStartedUtc $fixtureBuildStartedUtc) 'HerdrOps.App.exe'
 $temp=Join-Path $env:TEMP ('HerdrOps Automated Renderer Matrix '+[guid]::NewGuid().ToString('N'))
 function Invoke-Collector([string]$Output,[string]$ErrorPath){
     $arguments=@('--renderer-matrix-output',$Output,'--renderer-matrix-error-path',$ErrorPath,'--renderer-matrix-run-id','matrix-selftest-0001','--renderer-matrix-session-id','session-selftest-0001','--renderer-matrix-candidate-commit',('2'*40),'--renderer-matrix-candidate-tree',('1'*40),'--renderer-matrix-package-receipt-sha256',('A'*64),'--renderer-matrix-operator','@operator','--renderer-matrix-observer','@reviewer')
