@@ -201,6 +201,11 @@ internal sealed class Issue10PerformanceTelemetryProducer : IAsyncDisposable
     private NamedPipeClientStream? _pipe;
     private StreamReader? _reader;
     private StreamWriter? _writer;
+    private long _soakLatencyBaselineStateSequence = -1;
+    private long _soakLatencyWatermarkStateSequence = -1;
+    private long _soakLatencyBaselineRecordCount;
+    private long _soakLatencyWatermarkRecordCount;
+    private int _nextSoakSequenceNumber;
 
     internal static bool IsRemoteSession => GetSystemMetrics(0x1000) != 0;
 
@@ -226,18 +231,33 @@ internal sealed class Issue10PerformanceTelemetryProducer : IAsyncDisposable
         if (serverPid != _options.ServerProcessId) throw new UnauthorizedAccessException("Issue #10 telemetry pipe server PID changed.");
         _reader = new StreamReader(_pipe, new UTF8Encoding(false, true), false, 65_536, true);
         _writer = new StreamWriter(_pipe, new UTF8Encoding(false), 65_536, true) { AutoFlush = true };
+        var admissionSnapshot = _widgets.UpdateLatencySnapshot;
+        _soakLatencyBaselineStateSequence = CaptureLatencyBaseline(admissionSnapshot);
+        _soakLatencyWatermarkStateSequence = _soakLatencyBaselineStateSequence;
+        _soakLatencyBaselineRecordCount = admissionSnapshot.TotalRecorded;
+        _soakLatencyWatermarkRecordCount = _soakLatencyBaselineRecordCount;
         await _writer.WriteLineAsync(JsonSerializer.Serialize(BuildHello()));
         while (true)
         {
             var requestLine = await _reader.ReadLineAsync(cancellationToken);
             if (requestLine is null) break;
             var request = ParseRequest(requestLine, _options.RendererMode, _options.RunNonce, Environment.ProcessId);
+            if (request.IsSoak) RequireNextSoakSequence(request.SequenceNumber, _nextSoakSequenceNumber);
             _options.PackageLease.Revalidate("authenticated telemetry request");
             ValidateServer();
-            var response = request.IsSoak
-                ? await MeasureSoakAsync(request, cancellationToken)
-                : await MeasureAsync(request, cancellationToken);
-            await _writer.WriteLineAsync(JsonSerializer.Serialize(response));
+            if (request.IsSoak)
+            {
+                var response = await MeasureSoakAsync(request, cancellationToken);
+                await _writer.WriteLineAsync(JsonSerializer.Serialize(response.Payload));
+                _soakLatencyWatermarkStateSequence = response.WatermarkStateSequence;
+                _soakLatencyWatermarkRecordCount = response.WatermarkRecordCount;
+                _nextSoakSequenceNumber++;
+            }
+            else
+            {
+                var response = await MeasureAsync(request, cancellationToken);
+                await _writer.WriteLineAsync(JsonSerializer.Serialize(response));
+            }
             if (!request.IsSoak) break;
         }
     }
@@ -330,9 +350,8 @@ internal sealed class Issue10PerformanceTelemetryProducer : IAsyncDisposable
         return request;
     }
 
-    private async Task<object> MeasureSoakAsync(SampleRequest request, CancellationToken cancellationToken)
+    private async Task<SoakMeasurementResponse> MeasureSoakAsync(SampleRequest request, CancellationToken cancellationToken)
     {
-        var baselineStateSequence = CaptureLatencyBaseline(_widgets.UpdateLatencySnapshot);
         using var core = Process.GetProcessById(request.CoreProcessId);
         core.Refresh();
         var corePath = Path.GetFullPath(core.MainModule?.FileName ?? string.Empty);
@@ -343,23 +362,25 @@ internal sealed class Issue10PerformanceTelemetryProducer : IAsyncDisposable
         {
             throw new UnauthorizedAccessException("Issue #10 soak Core process is not the exact packaged component.");
         }
-        var deadline = DateTimeOffset.UtcNow.AddMinutes(5);
-        WidgetUpdateLatencySample[] latency = [];
-        while (DateTimeOffset.UtcNow < deadline)
+        cancellationToken.ThrowIfCancellationRequested();
+        core.Refresh();
+        if (core.HasExited || core.StartTime.ToUniversalTime() != coreStart ||
+            !string.Equals(Path.GetFullPath(core.MainModule?.FileName ?? string.Empty), corePath, StringComparison.OrdinalIgnoreCase) ||
+            !Issue10PerformanceTelemetryOptions.HashFile(corePath).Equals(_options.CoreExecutableSha256, StringComparison.Ordinal))
         {
-            cancellationToken.ThrowIfCancellationRequested();
-            core.Refresh();
-            if (core.HasExited || core.StartTime.ToUniversalTime() != coreStart ||
-                !string.Equals(Path.GetFullPath(core.MainModule?.FileName ?? string.Empty), corePath, StringComparison.OrdinalIgnoreCase) ||
-                !Issue10PerformanceTelemetryOptions.HashFile(corePath).Equals(_options.CoreExecutableSha256, StringComparison.Ordinal))
-            {
-                throw new InvalidOperationException("Issue #10 soak Core process changed during acquisition.");
-            }
-            latency = SelectRollingSoakLatencySamples(_widgets.UpdateLatencySnapshot, baselineStateSequence);
-            if (latency.Length == 20) break;
-            await Task.Delay(100, cancellationToken);
+            throw new InvalidOperationException("Issue #10 soak Core process changed during acquisition.");
         }
-        if (latency.Length != 20) throw new TimeoutException("Issue #10 soak telemetry did not observe 20 production Widget updates.");
+        var afterStateSequence = _soakLatencyWatermarkStateSequence;
+        var afterRecordCount = _soakLatencyWatermarkRecordCount;
+        var latencySnapshot = _widgets.UpdateLatencySnapshot;
+        var latency = SelectNewSoakLatencySamples(
+            latencySnapshot,
+            _soakLatencyBaselineStateSequence,
+            afterStateSequence,
+            _soakLatencyBaselineRecordCount,
+            afterRecordCount);
+        var watermarkStateSequence = latency.Length == 0 ? afterStateSequence : latency[^1].StateSequence;
+        var watermarkRecordCount = latencySnapshot.TotalRecorded;
         var stalls = await ObserveDispatcherStallsAsync(cancellationToken);
         _ = ValidateProcessIdentity(core, request.CoreStartUtc, _options.CoreExecutablePath,
             _options.CoreExecutableSha256, "soak Core final boundary");
@@ -368,7 +389,7 @@ internal sealed class Issue10PerformanceTelemetryProducer : IAsyncDisposable
         using var app = Process.GetCurrentProcess();
         var unsigned = new
         {
-            schemaVersion = 1,
+            schemaVersion = 2,
             nonce = _options.RunNonce,
             sequenceNumber = request.SequenceNumber,
             observedUtc,
@@ -387,14 +408,36 @@ internal sealed class Issue10PerformanceTelemetryProducer : IAsyncDisposable
             },
             metrics = new
             {
-                latencyMicroseconds = latency.Select(sample => checked((long)Math.Round(sample.Milliseconds * 1000.0))).ToArray(),
+                latency = new
+                {
+                    baselineStateSequence = _soakLatencyBaselineStateSequence,
+                    afterStateSequence,
+                    watermarkStateSequence,
+                    baselineRecordCount = _soakLatencyBaselineRecordCount,
+                    afterRecordCount,
+                    recordCount = watermarkRecordCount,
+                    updates = latency.Select(sample => new
+                    {
+                        stateSequence = sample.StateSequence,
+                        eventCount = sample.EventCount,
+                        envelopeSequence = sample.EnvelopeSequence,
+                        envelopeCorrelationId = sample.EnvelopeCorrelationId.ToString("D"),
+                        stateSha256 = sample.StateSha256.ToUpperInvariant(),
+                        updateKind = sample.UpdateKind,
+                        coreAcceptedStateUtc = sample.CoreAcceptedStateUtc.ToString("O"),
+                        ipcSentUtc = sample.IpcSentUtc.ToString("O"),
+                        wpfAppliedUtc = sample.WpfAppliedUtc.ToString("O"),
+                        latencyMicroseconds = checked((long)Math.Round(sample.Milliseconds * 1000.0)),
+                    }).ToArray(),
+                },
                 uiStallMicroseconds = stalls,
                 rendererStable = render.SoftwareOnlyConfirmed && render.WpfProcessRenderMode == "SoftwareOnly",
             },
         };
-        var canonical = JsonSerializer.Serialize(unsigned);
+        using var unsignedDocument = JsonDocument.Parse(JsonSerializer.Serialize(unsigned));
+        var canonical = Issue10PackageValidator.Canonicalize(unsignedDocument.RootElement);
         var packetSha256 = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(canonical)));
-        return new
+        var payload = new
         {
             unsigned.schemaVersion,
             unsigned.nonce,
@@ -406,6 +449,7 @@ internal sealed class Issue10PerformanceTelemetryProducer : IAsyncDisposable
             unsigned.metrics,
             packetSha256,
         };
+        return new SoakMeasurementResponse(payload, watermarkStateSequence, watermarkRecordCount);
     }
 
     private async Task<object> MeasureAsync(SampleRequest request, CancellationToken cancellationToken)
@@ -497,10 +541,17 @@ internal sealed class Issue10PerformanceTelemetryProducer : IAsyncDisposable
         return candidates.Take(20).ToArray();
     }
 
-    internal static WidgetUpdateLatencySample[] SelectRollingSoakLatencySamples(
+    internal static WidgetUpdateLatencySample[] SelectNewSoakLatencySamples(
         WidgetLatencySnapshot snapshot,
-        long baselineStateSequence)
+        long baselineStateSequence,
+        long watermarkStateSequence,
+        long baselineRecordCount,
+        long watermarkRecordCount)
     {
+        if (watermarkStateSequence < baselineStateSequence || watermarkRecordCount < baselineRecordCount || snapshot.TotalRecorded < watermarkRecordCount)
+        {
+            throw new InvalidDataException("Issue #10 Widget soak latency watermark precedes its admission baseline or recorded-count boundary.");
+        }
         var eligible = snapshot.Samples
             .Where(sample => sample.UpdateKind is "Snapshot" or "Delta")
             .ToArray();
@@ -511,8 +562,20 @@ internal sealed class Issue10PerformanceTelemetryProducer : IAsyncDisposable
                 throw new InvalidDataException("Issue #10 Widget soak latency stream replayed or reordered a state sequence.");
             }
         }
-        if (eligible.Length < 20 || eligible[^1].StateSequence <= baselineStateSequence) return [];
-        return eligible.TakeLast(20).ToArray();
+        var selected = eligible
+            .Where(sample => sample.StateSequence > baselineStateSequence && sample.StateSequence > watermarkStateSequence)
+            .ToArray();
+        var recordedDelta = snapshot.TotalRecorded - watermarkRecordCount;
+        if (selected.LongLength != recordedDelta)
+        {
+            throw new InvalidDataException("Issue #10 Widget soak latency ring lost or reset an eligible update before packet emission.");
+        }
+        return selected;
+    }
+
+    internal static void RequireNextSoakSequence(int actual, int expected)
+    {
+        if (actual != expected) throw new InvalidDataException($"Issue #10 soak request sequence must be exactly {expected}; found {actual}.");
     }
 
     private async Task<long[]> ObserveDispatcherStallsAsync(CancellationToken cancellationToken)
@@ -627,4 +690,6 @@ internal sealed class Issue10PerformanceTelemetryProducer : IAsyncDisposable
         int SampleIndex,
         int CoreProcessId,
         DateTimeOffset CoreStartUtc);
+
+    private sealed record SoakMeasurementResponse(object Payload, long WatermarkStateSequence, long WatermarkRecordCount);
 }

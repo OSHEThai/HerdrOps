@@ -775,10 +775,36 @@ function Assert-RendererPipeClientProcessId { param([int]$ActualClientPid,[int]$
 }
 function Read-RendererTargetPipeLine { param([IO.StreamReader]$Reader,[int]$TimeoutSeconds=30)
     $task=$Reader.ReadLineAsync()
-    if (-not $task.Wait($TimeoutSeconds*1000)) { throw "Target observation pipe response timed out after $TimeoutSeconds seconds." }
+    if (-not $task.Wait($TimeoutSeconds*1000)) {
+        # A pending StreamReader ReadLineAsync can otherwise make later Reader
+        # disposal wait forever. Tear down the failed transport before throwing;
+        # callers cannot safely reuse a pipe after a response deadline anyway.
+        try { $Reader.BaseStream.Dispose() } catch {}
+        throw "Target observation pipe response timed out after $TimeoutSeconds seconds."
+    }
     $line=$task.GetAwaiter().GetResult()
     if ([string]::IsNullOrWhiteSpace($line)) { throw 'Target observation pipe closed without a response.' }
     $line
+}
+function ConvertFrom-RendererTransportJson { param([string]$Json,[string]$Context='Renderer transport JSON')
+    $value=ConvertFrom-StrictHumanDesignReviewJson -Json $Json -Description $Context
+    if($PSVersionTable.PSVersion.Major-ge7-and(Get-Command ConvertFrom-Json).Parameters.ContainsKey('DateKind')){return ($Json|ConvertFrom-Json -DateKind String)}
+    return $value
+}
+function Close-RendererTargetPipeSession {
+    param($Writer,$Reader,$Pipe,$AppProcess,[DateTime]$AppStartTimeUtc=[DateTime]::MinValue,[int]$GracefulWaitMilliseconds=10000,[int]$KillWaitMilliseconds=5000)
+    $writerAttempted=$false;$readerAttempted=$false;$pipeAttempted=$false;$appAttempted=$false;$terminationAttempted=$false
+    if($null-ne$Writer){$writerAttempted=$true;try{$Writer.Dispose()}catch{}}
+    if($null-ne$Reader){$readerAttempted=$true;try{$Reader.Dispose()}catch{}}
+    if($null-ne$Pipe){$pipeAttempted=$true;try{$Pipe.Dispose()}catch{}}
+    if($null-ne$AppProcess){
+        $appAttempted=$true
+        try{
+            if(-not$AppProcess.HasExited){$AppProcess.WaitForExit($GracefulWaitMilliseconds)|Out-Null}
+            if(-not$AppProcess.HasExited-and($AppStartTimeUtc-eq[DateTime]::MinValue-or$AppProcess.StartTime.ToUniversalTime()-eq$AppStartTimeUtc)){$terminationAttempted=$true;$AppProcess.Kill();$AppProcess.WaitForExit($KillWaitMilliseconds)|Out-Null}
+        }catch{}finally{try{$AppProcess.Dispose()}catch{}}
+    }
+    [pscustomobject][ordered]@{WriterCleanupAttempted=$writerAttempted;ReaderCleanupAttempted=$readerAttempted;PipeCleanupAttempted=$pipeAttempted;AppCleanupAttempted=$appAttempted;AppTerminationAttempted=$terminationAttempted}
 }
 function Write-RendererTargetPipeLine { param([IO.StreamWriter]$Writer,[string]$Line)
     $Writer.WriteLine($Line);$Writer.Flush()
@@ -1445,6 +1471,18 @@ function Assert-V02TrustedTelemetryPacket {
         [Parameter(Mandatory = $true)]
         [ref]$PreviousTimestampRef,
 
+        [Parameter(Mandatory = $true)]
+        [ref]$LatencyBaselineRef,
+
+        [Parameter(Mandatory = $true)]
+        [ref]$PreviousLatencyWatermarkRef,
+
+        [Parameter(Mandatory = $true)]
+        [ref]$LatencyBaselineRecordCountRef,
+
+        [Parameter(Mandatory = $true)]
+        [ref]$PreviousLatencyRecordCountRef,
+
         [Parameter(Mandatory = $false)]
         [string]$RepositoryRoot
     )
@@ -1453,9 +1491,13 @@ function Assert-V02TrustedTelemetryPacket {
         'schemaVersion', 'nonce', 'sequenceNumber', 'observedUtc',
         'binIndex', 'sampleIndex', 'producer', 'metrics', 'packetSha256'
     ) 'Telemetry packet'
+    Assert-RendererPositiveInteger $Packet.schemaVersion 'Telemetry packet schemaVersion'
+    Assert-RendererNonnegativeInteger $Packet.sequenceNumber 'Telemetry packet sequenceNumber'
+    Assert-RendererNonnegativeInteger $Packet.binIndex 'Telemetry packet binIndex'
+    Assert-RendererNonnegativeInteger $Packet.sampleIndex 'Telemetry packet sampleIndex'
 
-    if ($Packet.schemaVersion -ne 1) {
-        throw "Telemetry packet schemaVersion must be 1; found $($Packet.schemaVersion)."
+    if ($Packet.schemaVersion -ne 2) {
+        throw "Telemetry packet schemaVersion must be 2; found $($Packet.schemaVersion)."
     }
     if ([string]$Packet.nonce -cne $ExpectedNonce) {
         throw "Telemetry packet nonce mismatch: expected '$ExpectedNonce', found '$($Packet.nonce)'."
@@ -1476,6 +1518,10 @@ function Assert-V02TrustedTelemetryPacket {
         'appProcessId', 'coreProcessId', 'appStartTimeUtc', 'coreStartTimeUtc',
         'appExecutablePath', 'coreExecutablePath', 'appExecutableSha256', 'coreExecutableSha256'
     ) 'Telemetry packet producer'
+    Assert-RendererPositiveInteger $prod.appProcessId 'Telemetry packet producer appProcessId'
+    Assert-RendererPositiveInteger $prod.coreProcessId 'Telemetry packet producer coreProcessId'
+    Assert-RendererUtc $prod.appStartTimeUtc 'Telemetry packet producer appStartTimeUtc'
+    Assert-RendererUtc $prod.coreStartTimeUtc 'Telemetry packet producer coreStartTimeUtc'
 
     if ([int]$prod.appProcessId -ne $ExpectedAppProcessId) {
         throw "Telemetry packet producer appProcessId mismatch: expected $ExpectedAppProcessId, found $($prod.appProcessId)."
@@ -1484,8 +1530,8 @@ function Assert-V02TrustedTelemetryPacket {
         throw "Telemetry packet producer coreProcessId mismatch: expected $ExpectedCoreProcessId, found $($prod.coreProcessId)."
     }
 
-    $pAppStart = if ($prod.appStartTimeUtc -is [DateTime]) { $prod.appStartTimeUtc.ToUniversalTime() } else { [DateTimeOffset]::Parse([string]$prod.appStartTimeUtc, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::AssumeUniversal).UtcDateTime }
-    $pCoreStart = if ($prod.coreStartTimeUtc -is [DateTime]) { $prod.coreStartTimeUtc.ToUniversalTime() } else { [DateTimeOffset]::Parse([string]$prod.coreStartTimeUtc, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::AssumeUniversal).UtcDateTime }
+    $pAppStart = [DateTimeOffset]::Parse([string]$prod.appStartTimeUtc, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::AssumeUniversal).UtcDateTime
+    $pCoreStart = [DateTimeOffset]::Parse([string]$prod.coreStartTimeUtc, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::AssumeUniversal).UtcDateTime
     if ($pAppStart -ne $ExpectedAppStartTimeUtc.ToUniversalTime()) {
         throw "Telemetry packet producer appStartTimeUtc mismatch: expected '$($ExpectedAppStartTimeUtc.ToUniversalTime().ToString('o', [Globalization.CultureInfo]::InvariantCulture))', found '$($pAppStart.ToString('o', [Globalization.CultureInfo]::InvariantCulture))'."
     }
@@ -1512,23 +1558,65 @@ function Assert-V02TrustedTelemetryPacket {
     if ($PreviousTimestampRef.Value -ne [DateTime]::MinValue -and $sampleTime -le $PreviousTimestampRef.Value) {
         throw "Telemetry packet observedUtc is not strictly monotonic increasing ($($Packet.observedUtc) <= $($PreviousTimestampRef.Value.ToString('o', [Globalization.CultureInfo]::InvariantCulture)))."
     }
-    $PreviousTimestampRef.Value = $sampleTime
-
     # Verify Metrics
     $m = $Packet.metrics
-    Assert-RendererExactProperties $m @('latencyMicroseconds', 'uiStallMicroseconds', 'rendererStable') 'Telemetry packet metrics'
+    Assert-RendererExactProperties $m @('latency', 'uiStallMicroseconds', 'rendererStable') 'Telemetry packet metrics'
     Assert-RendererBoolean $m.rendererStable 'Telemetry packet rendererStable'
 
-    $latencies = @($m.latencyMicroseconds)
-    $stalls = @($m.uiStallMicroseconds)
-    if ($latencies.Count -lt 20) {
-        throw "Telemetry packet requires at least 20 latency observations; found $($latencies.Count)."
+    $latency = $m.latency
+    Assert-RendererExactProperties $latency @('baselineStateSequence','afterStateSequence','watermarkStateSequence','baselineRecordCount','afterRecordCount','recordCount','updates') 'Telemetry packet latency'
+    foreach ($name in @('baselineStateSequence','afterStateSequence','watermarkStateSequence')) {
+        if ($latency.$name -isnot [sbyte] -and $latency.$name -isnot [byte] -and
+            $latency.$name -isnot [int16] -and $latency.$name -isnot [uint16] -and
+            $latency.$name -isnot [int32] -and $latency.$name -isnot [uint32] -and
+            $latency.$name -isnot [int64]) { throw "Telemetry packet latency $name must be an integer." }
+        if ([long]$latency.$name -lt -1) { throw "Telemetry packet latency $name must be at least -1." }
     }
+    $baseline = [long]$latency.baselineStateSequence
+    $after = [long]$latency.afterStateSequence
+    $watermark = [long]$latency.watermarkStateSequence
+    foreach($name in @('baselineRecordCount','afterRecordCount','recordCount')){Assert-RendererNonnegativeInteger $latency.$name "Telemetry packet latency $name"}
+    $baselineRecordCount=[long]$latency.baselineRecordCount;$afterRecordCount=[long]$latency.afterRecordCount;$recordCount=[long]$latency.recordCount
+    if ($LatencyBaselineRef.Value -ne [long]::MinValue -and $baseline -ne [long]$LatencyBaselineRef.Value) {
+        throw 'Telemetry packet latency admission baseline changed during the soak.'
+    }
+    $expectedAfter = if ($PreviousLatencyWatermarkRef.Value -eq [long]::MinValue) { $baseline } else { [long]$PreviousLatencyWatermarkRef.Value }
+    if ($after -ne $expectedAfter -or $watermark -lt $after) {
+        throw "Telemetry packet latency watermark continuity is invalid ($after -> $watermark, expected after $expectedAfter)."
+    }
+    if($LatencyBaselineRecordCountRef.Value-ne[long]::MinValue-and$baselineRecordCount-ne[long]$LatencyBaselineRecordCountRef.Value){throw 'Telemetry packet latency admission record count changed during the soak.'}
+    $expectedAfterRecordCount=if($PreviousLatencyRecordCountRef.Value-eq[long]::MinValue){$baselineRecordCount}else{[long]$PreviousLatencyRecordCountRef.Value}
+    if($afterRecordCount-ne$expectedAfterRecordCount-or$recordCount-lt$afterRecordCount){throw 'Telemetry packet latency record-count continuity is invalid.'}
+    $updates = @($latency.updates)
+    $canonicalUpdates = @()
+    $seenSequences = @{}
+    $seenCorrelations = @{}
+    $lastUpdateSequence = $after
+    foreach ($update in $updates) {
+        Assert-RendererExactProperties $update @('stateSequence','eventCount','envelopeSequence','envelopeCorrelationId','stateSha256','updateKind','coreAcceptedStateUtc','ipcSentUtc','wpfAppliedUtc','latencyMicroseconds') 'Telemetry packet latency update'
+        foreach ($name in @('stateSequence','eventCount','envelopeSequence','latencyMicroseconds')) { Assert-RendererNonnegativeInteger $update.$name "Telemetry packet latency update $name" }
+        $stateSequence = [long]$update.stateSequence
+        if ($stateSequence -le $baseline -or $stateSequence -le $lastUpdateSequence -or [long]$update.envelopeSequence -ne $stateSequence) { throw 'Telemetry packet latency updates are historical, replayed, reordered, or envelope-mismatched.' }
+        if ([string]$update.updateKind -cnotin @('Snapshot','Delta')) { throw 'Telemetry packet latency update kind must be Snapshot or Delta.' }
+        Assert-RendererSha $update.stateSha256 'Telemetry packet latency update stateSha256'
+        $correlation = [Guid]::Empty
+        if (-not [Guid]::TryParseExact([string]$update.envelopeCorrelationId, 'D', [ref]$correlation) -or $correlation -eq [Guid]::Empty) { throw 'Telemetry packet latency update correlation ID is invalid.' }
+        if ($seenSequences.ContainsKey([string]$stateSequence) -or $seenCorrelations.ContainsKey($correlation.ToString('D'))) { throw 'Telemetry packet latency update identity is duplicated.' }
+        $seenSequences[[string]$stateSequence]=$true;$seenCorrelations[$correlation.ToString('D')]=$true
+        foreach ($name in @('coreAcceptedStateUtc','ipcSentUtc','wpfAppliedUtc')) { Assert-RendererUtc $update.$name "Telemetry packet latency update $name" }
+        $accepted=[DateTimeOffset]::Parse([string]$update.coreAcceptedStateUtc,[Globalization.CultureInfo]::InvariantCulture)
+        $sent=[DateTimeOffset]::Parse([string]$update.ipcSentUtc,[Globalization.CultureInfo]::InvariantCulture)
+        $applied=[DateTimeOffset]::Parse([string]$update.wpfAppliedUtc,[Globalization.CultureInfo]::InvariantCulture)
+        $derived=[long][Math]::Round(($applied-$accepted).TotalMilliseconds*1000.0)
+        if ($sent -lt $accepted -or $applied -lt $sent -or $applied.UtcDateTime -gt $sampleTime -or [long]$update.latencyMicroseconds -ne $derived) { throw 'Telemetry packet latency update chronology or derived latency is invalid.' }
+        $canonicalUpdates += [pscustomobject][ordered]@{stateSequence=$stateSequence;eventCount=[long]$update.eventCount;envelopeSequence=[long]$update.envelopeSequence;envelopeCorrelationId=$correlation.ToString('D');stateSha256=[string]$update.stateSha256;updateKind=[string]$update.updateKind;coreAcceptedStateUtc=[string]$update.coreAcceptedStateUtc;ipcSentUtc=[string]$update.ipcSentUtc;wpfAppliedUtc=[string]$update.wpfAppliedUtc;latencyMicroseconds=[long]$update.latencyMicroseconds}
+        $lastUpdateSequence = $stateSequence
+    }
+    if (($updates.Count -eq 0 -and $watermark -ne $after) -or ($updates.Count -gt 0 -and $watermark -ne $lastUpdateSequence)) { throw 'Telemetry packet latency watermark does not equal its emitted update boundary.' }
+    if([long]$updates.Count-ne($recordCount-$afterRecordCount)){throw 'Telemetry packet latency record count proves an omitted or extra update.'}
+    $stalls = @($m.uiStallMicroseconds)
     if ($stalls.Count -lt 20) {
         throw "Telemetry packet requires at least 20 UI-stall observations; found $($stalls.Count)."
-    }
-    foreach ($lat in $latencies) {
-        Assert-RendererNonnegativeInteger $lat 'Telemetry packet latency sample'
     }
     foreach ($stl in $stalls) {
         Assert-RendererNonnegativeInteger $stl 'Telemetry packet UI-stall sample'
@@ -1553,7 +1641,7 @@ function Assert-V02TrustedTelemetryPacket {
             coreExecutableSha256 = [string]$prod.coreExecutableSha256
         }
         metrics = [pscustomobject][ordered]@{
-            latencyMicroseconds = @($latencies | ForEach-Object { [long]$_ })
+            latency = [pscustomobject][ordered]@{baselineStateSequence=$baseline;afterStateSequence=$after;watermarkStateSequence=$watermark;baselineRecordCount=$baselineRecordCount;afterRecordCount=$afterRecordCount;recordCount=$recordCount;updates=$canonicalUpdates}
             uiStallMicroseconds = @($stalls | ForEach-Object { [long]$_ })
             rendererStable = [bool]$m.rendererStable
         }
@@ -1563,6 +1651,11 @@ function Assert-V02TrustedTelemetryPacket {
     if ([string]$Packet.packetSha256 -cne $expectedHash) {
         throw "Telemetry packet SHA-256 hash mismatch: expected '$expectedHash', found '$($Packet.packetSha256)'."
     }
+    if ($LatencyBaselineRef.Value -eq [long]::MinValue) { $LatencyBaselineRef.Value = $baseline }
+    if ($LatencyBaselineRecordCountRef.Value -eq [long]::MinValue) { $LatencyBaselineRecordCountRef.Value = $baselineRecordCount }
+    $PreviousLatencyWatermarkRef.Value = $watermark
+    $PreviousLatencyRecordCountRef.Value = $recordCount
+    $PreviousTimestampRef.Value = $sampleTime
 }
 
 function Get-V02LiveProcessIdentity {

@@ -76,8 +76,32 @@ The raw performance receipt keeps the existing v0.2 shape (`provenance`,
 AB then BA, one warmup and five measured repetitions per order, twenty raw
 latency/stall observations per mode, and 24 five-minute bins. Its governed
 provenance must carry the same invocation `runNonce` and both raw-byte and
-canonical package-receipt hashes. The separate soak receipt carries the same
-nonce and contains `provenance`, `soakBins`, and `aggregateStatus`.
+canonical package-receipt hashes. The separate soak receipt is schema v2,
+carries the same nonce, retains the existing 24 `soakBins`, and embeds exact AC
+then Battery `latencyMeasurements`. Each measurement retains its full 3,600-row
+one-second `resourceTimeline`, including App/Core working-set and private-byte
+values, combined working set and CPU, UI-stall p95/maximum, power source,
+renderer stability, and latency-update count. The final gate recomputes these
+limits and aggregates without depending on an external raw path. Packet sequence is derived from bin/sample,
+every row's `latencyUpdateCount` is recomputed from the embedded latency
+records. The governed one-second cadence allows bounded scheduler jitter only:
+every adjacent Stopwatch and UTC interval must be 750–1,250 ms and their
+intervals may differ by at most 250 ms. Every 300-row bin must bind its first
+row timestamp, place its first and last Stopwatch boundaries no more than
+250 ms late, and span 298,750–299,250 ms on both clocks. Row `n` must still
+prove at least `(n + 1) * 1000` elapsed milliseconds, the full held UTC span
+must remain within five seconds of the monotonic Stopwatch span, and the final
+elapsed value must prove at least 3,600,000 ms. Each power run requires at least twenty
+unique post-admission production Widget updates, at least one update observed
+in every five-minute bin, a producer-domain state-sequence baseline (`-1` or
+nonnegative) with a strictly newer nonnegative final sequence, nonnegative
+ordered record-count boundaries, monotonic state/correlation identities,
+ordered Core/IPC/WPF UTC timestamps, and independently recomputed event-to-WPF
+p95 no greater than 250 ms. One-second resource packets may contain zero new
+updates and never replay historical updates; CPU, working-set, UI-stall, power,
+renderer, and slope guards remain sampled at their original cadence. The soak
+boundary remains `PackagedCompatibilitySoak` with Runtime, Human, Release, and
+credit explicitly not observed/granted.
 
 `Publish-V02Issue10PerformanceSoakEvidence.ps1` is the only governed adapter
 from the two live soak collector outputs, raw AB/BA collector output, its

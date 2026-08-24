@@ -146,6 +146,34 @@ try {
     $repo = New-TestRepository (Join-Path $tempRoot 'repo')
     $repoRoot = $repo.Root
 
+    $goldenPacket=New-V02TestTelemetryPacket -Nonce ('a'*32) -SequenceNumber 0 -BinIndex 0 -SampleIndex 0 -AppProcessId 101 -CoreProcessId 202 -AppStartTimeUtc ([datetime]'2026-08-24T00:00:00Z') -CoreStartTimeUtc ([datetime]'2026-08-24T00:00:00Z') -AppExecutablePath 'C:\Program Files\HerdrOps\HerdrOps.App.exe' -CoreExecutablePath 'C:\Program Files\HerdrOps\HerdrOps.Core.exe' -AppExecutableSha256 ('A'*64) -CoreExecutableSha256 ('B'*64) -ObservedUtc '2026-08-24T00:00:01.0000000+00:00' -BaselineStateSequence 10 -AfterStateSequence 10 -BaselineRecordCount 20 -AfterRecordCount 20 -LatencyUpdates @() -RepositoryRoot $repoRoot
+    if($goldenPacket.packetSha256-cne'A8BD43DE995F7C62959B65F99827E55ED644918113A1E01B1032750A1F7B84D1'){throw 'Cross-language zero-update packet golden hash drifted.'}
+    $goldenTransportJson=$goldenPacket|ConvertTo-Json -Depth 30 -Compress;$parsedGoldenPacket=ConvertFrom-RendererTransportJson $goldenTransportJson 'Golden soak transport packet'
+    foreach($timestamp in @($parsedGoldenPacket.observedUtc,$parsedGoldenPacket.producer.appStartTimeUtc,$parsedGoldenPacket.producer.coreStartTimeUtc)){if($timestamp-isnot[string]){throw "Transport JSON timestamp was coerced to $($timestamp.GetType().FullName)."}}
+    $previousUtc=[datetime]::MinValue;$baseline=[long]::MinValue;$watermark=[long]::MinValue;$baselineCount=[long]::MinValue;$recordCount=[long]::MinValue
+    Assert-V02TrustedTelemetryPacket -Packet $parsedGoldenPacket -ExpectedNonce ('a'*32) -ExpectedSequenceNumber 0 -ExpectedBinIndex 0 -ExpectedSampleIndex 0 -ExpectedAppProcessId 101 -ExpectedCoreProcessId 202 -ExpectedAppStartTimeUtc ([datetime]'2026-08-24T00:00:00Z') -ExpectedCoreStartTimeUtc ([datetime]'2026-08-24T00:00:00Z') -ExpectedAppExecutablePath 'C:\Program Files\HerdrOps\HerdrOps.App.exe' -ExpectedCoreExecutablePath 'C:\Program Files\HerdrOps\HerdrOps.Core.exe' -ExpectedAppExecutableSha256 ('A'*64) -ExpectedCoreExecutableSha256 ('B'*64) -PreviousTimestampRef ([ref]$previousUtc) -LatencyBaselineRef ([ref]$baseline) -PreviousLatencyWatermarkRef ([ref]$watermark) -LatencyBaselineRecordCountRef ([ref]$baselineCount) -PreviousLatencyRecordCountRef ([ref]$recordCount) -RepositoryRoot $repoRoot
+    Pass-PositiveCase 'C# and PowerShell RFC8785 zero-update packet golden is stable'
+    $validateGolden={param($packet)$p=[datetime]::MinValue;$b=[long]::MinValue;$w=[long]::MinValue;$bc=[long]::MinValue;$rc=[long]::MinValue;Assert-V02TrustedTelemetryPacket -Packet $packet -ExpectedNonce ('a'*32) -ExpectedSequenceNumber 0 -ExpectedBinIndex 0 -ExpectedSampleIndex 0 -ExpectedAppProcessId 101 -ExpectedCoreProcessId 202 -ExpectedAppStartTimeUtc ([datetime]'2026-08-24T00:00:00Z') -ExpectedCoreStartTimeUtc ([datetime]'2026-08-24T00:00:00Z') -ExpectedAppExecutablePath 'C:\Program Files\HerdrOps\HerdrOps.App.exe' -ExpectedCoreExecutablePath 'C:\Program Files\HerdrOps\HerdrOps.Core.exe' -ExpectedAppExecutableSha256 ('A'*64) -ExpectedCoreExecutableSha256 ('B'*64) -PreviousTimestampRef ([ref]$p) -LatencyBaselineRef ([ref]$b) -PreviousLatencyWatermarkRef ([ref]$w) -LatencyBaselineRecordCountRef ([ref]$bc) -PreviousLatencyRecordCountRef ([ref]$rc) -RepositoryRoot $repoRoot}
+    foreach($case in @('schema','sequence','pid','renderer')){$bad=ConvertFrom-RendererTransportJson $goldenTransportJson "Golden $case hostile";switch($case){'schema'{$bad.schemaVersion='2'}'sequence'{$bad.sequenceNumber='0'}'pid'{$bad.producer.appProcessId='101'}'renderer'{$bad.metrics.rendererStable='false'}};Assert-ThrowsMatch {&$validateGolden $bad} 'native integer|native boolean' "telemetry $case native JSON type confusion fails closed"}
+
+    $timeoutServer=$null;$timeoutClient=$null;$timeoutReader=$null;$timeoutWriter=$null;$cleanupProbe=$null;$cleanupProbeId=0
+    try{
+        $timeoutPipeName='herdrops-soak-timeout-'+[Guid]::NewGuid().ToString('N')
+        $timeoutServer=New-Object IO.Pipes.NamedPipeServerStream($timeoutPipeName,[IO.Pipes.PipeDirection]::InOut,1,[IO.Pipes.PipeTransmissionMode]::Byte,[IO.Pipes.PipeOptions]::Asynchronous)
+        $timeoutClient=New-Object IO.Pipes.NamedPipeClientStream('.', $timeoutPipeName,[IO.Pipes.PipeDirection]::InOut,[IO.Pipes.PipeOptions]::Asynchronous)
+        $connectTask=$timeoutServer.WaitForConnectionAsync();$timeoutClient.Connect(5000);$connectTask.GetAwaiter().GetResult()|Out-Null
+        $timeoutReader=New-Object IO.StreamReader($timeoutServer,(New-Object Text.UTF8Encoding($false,$true)),$false,4096,$true)
+        $timeoutWriter=New-Object IO.StreamWriter($timeoutServer,(New-Object Text.UTF8Encoding($false)),4096,$true);$timeoutWriter.AutoFlush=$true
+        $encoded=[Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes('Start-Sleep -Seconds 60'));$cleanupProbe=Start-Process -FilePath (Get-Process -Id $PID).Path -ArgumentList @('-NoLogo','-NoProfile','-NonInteractive','-EncodedCommand',$encoded) -WindowStyle Hidden -PassThru;$cleanupProbeId=$cleanupProbe.Id;$cleanupProbeStart=$cleanupProbe.StartTime.ToUniversalTime()
+        $primaryMessage=$null;try{Read-RendererTargetPipeLine $timeoutReader 1|Out-Null}catch{$primaryMessage=$_.Exception.Message}
+        $cleanup=Close-RendererTargetPipeSession -Writer $timeoutWriter -Reader $timeoutReader -Pipe $timeoutServer -AppProcess $cleanupProbe -AppStartTimeUtc $cleanupProbeStart -GracefulWaitMilliseconds 50 -KillWaitMilliseconds 2000
+        if($primaryMessage-notmatch'timed out after 1 seconds'-or-not$cleanup.WriterCleanupAttempted-or-not$cleanup.ReaderCleanupAttempted-or-not$cleanup.PipeCleanupAttempted-or-not$cleanup.AppCleanupAttempted-or-not$cleanup.AppTerminationAttempted-or$null-ne(Get-Process -Id $cleanupProbeId -ErrorAction SilentlyContinue)){throw 'Pending-read timeout did not preserve its primary error and complete independent writer/reader/pipe/App teardown.'}
+        Pass-NegativeCase 'pending-read timeout preserves primary error and cannot skip writer/reader/pipe/App teardown'
+    }finally{
+        foreach($disposable in @($timeoutWriter,$timeoutReader,$timeoutClient,$timeoutServer)){if($null-ne$disposable){try{$disposable.Dispose()}catch{}}}
+        if($cleanupProbeId-gt0){$leftover=Get-Process -Id $cleanupProbeId -ErrorAction SilentlyContinue;if($null-ne$leftover){try{$leftover.Kill();$leftover.WaitForExit(2000)|Out-Null}catch{}finally{$leftover.Dispose()}}}
+    }
+
     # -------------------------------------------------------------------------
     # POSITIVE TESTS
     # -------------------------------------------------------------------------
@@ -240,7 +268,7 @@ try {
     $appPath = Join-Path $packageRoot 'HerdrOps.App.exe'
     $corePath = Join-Path $packageRoot 'HerdrOps.Core.exe'
     [IO.File]::WriteAllBytes($appPath, [Text.Encoding]::UTF8.GetBytes('app-binary'))
-    [IO.File]::WriteAllBytes($corePath, [Text.Encoding]::UTF8.GetBytes('core-binary'))
+    Copy-Item -LiteralPath (Join-Path $env:WINDIR 'System32\WindowsPowerShell\v1.0\powershell.exe') -Destination $corePath
     $profilePath = Join-Path $repoRoot 'tools\packaging\v0.2\package-identity-profile.json'
     $profileValue = Read-RendererPackageProfile $profilePath
     $manifestObj = New-RendererPackageManifest $profileValue $repoRoot $packageRoot
@@ -295,6 +323,22 @@ try {
         throw "Package binding was not recorded in the receipt document."
     }
     Pass-PositiveCase 'valid package identity binding when package parameters are supplied'
+
+    # Exercise the actual live setup boundary: the pipe is created and the
+    # exact packaged Core is live, but the invalid packaged App fails before
+    # connect/hello. The outer production finally must release the pipe.
+    $preHelloNonce=[Guid]::NewGuid().ToString('N');$preHelloDest=Join-Path $tempRoot 'matrix\pre-hello-failure.json';$coreProbe=$null;$preHelloFailure=$null;$reopenedPipe=$null
+    try{
+        $encodedSleep=[Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes('Start-Sleep -Seconds 60'))
+        $coreProbe=Start-Process -FilePath $corePath -ArgumentList @('-NoLogo','-NoProfile','-NonInteractive','-EncodedCommand',$encodedSleep) -WindowStyle Hidden -PassThru
+        try{&$script:InvokeSoakPath -PowerSource AC -DestinationPath $preHelloDest -EvidenceRoot $tempRoot -RepositoryRoot $repoRoot -CoreProcessId $coreProbe.Id -PackageIdentityPath $receiptPath -PackageArchivePath $archivePath -ExtractedPackageRoot $packageRoot -ExpectedSourceCommit $repo.Commit -ExpectedSourceTree $repo.Tree -ChannelNonce $preHelloNonce|Out-Null}catch{$preHelloFailure=$_}
+        $reopenedPipe=New-RendererTargetObservationPipe "herdrops-v02-issue10-perf-$preHelloNonce-0"
+        if($null-eq$preHelloFailure-or(Test-Path -LiteralPath $preHelloDest)){throw 'Actual pre-hello production failure did not fail closed with zero output.'}
+        Pass-NegativeCase 'actual production pre-hello App failure releases its owned pipe through outer teardown'
+    }finally{
+        if($null-ne$reopenedPipe){$reopenedPipe.Dispose()}
+        if($null-ne$coreProbe){try{if(-not$coreProbe.HasExited){$coreProbe.Kill();$coreProbe.WaitForExit(2000)|Out-Null}}catch{}finally{$coreProbe.Dispose()}}
+    }
 
     # -------------------------------------------------------------------------
     # HOSTILE NEGATIVE TESTS (ALL MUST FAIL CLOSED WITH ZERO PUBLISHED OUTPUT)
@@ -567,6 +611,18 @@ try{$pipe.Connect(10000);$writer=[IO.StreamWriter]::new($pipe,[Text.UTF8Encoding
             -SyntheticPowerStateProvider { 'AC' } `
             -SyntheticProcessTelemetryProvider (Get-TestSampleProvider -LatMs 300)
     } 'latency P95 .* > limit' 'latency P95 breach > 250 ms produces zero published output' $negLatDest
+
+    $missingBinBase=Get-TestSampleProvider;$missingBinProvider={param($binIndex,$sampleIndex,$elapsedMs);$sample=&$missingBinBase $binIndex $sampleIndex $elapsedMs;if($binIndex-eq0){$sample.LatencyMicroseconds=@()};$sample}.GetNewClosure()
+    $missingBinDest=Join-Path $tempRoot 'matrix\neg-latency-bin.json'
+    Assert-ThrowsMatchAndZeroOutput {
+        & $script:InvokeSoakPath -Synthetic -PowerSource 'AC' -DestinationPath $missingBinDest -EvidenceRoot $tempRoot -RepositoryRoot $repoRoot -SyntheticTotalBins 12 -SyntheticSamplesPerBin 1 -SyntheticPowerStateProvider {'AC'} -SyntheticProcessTelemetryProvider $missingBinProvider
+    } 'Bin 0 did not observe a fresh production Widget latency update' 'missing five-minute latency coverage fails closed' $missingBinDest
+
+    $fewUpdatesBase=Get-TestSampleProvider;$fewUpdatesProvider={param($binIndex,$sampleIndex,$elapsedMs);$sample=&$fewUpdatesBase $binIndex $sampleIndex $elapsedMs;$sample.LatencyMicroseconds=@(100000L);$sample}.GetNewClosure()
+    $fewUpdatesDest=Join-Path $tempRoot 'matrix\neg-latency-count.json'
+    Assert-ThrowsMatchAndZeroOutput {
+        & $script:InvokeSoakPath -Synthetic -PowerSource 'AC' -DestinationPath $fewUpdatesDest -EvidenceRoot $tempRoot -RepositoryRoot $repoRoot -SyntheticTotalBins 12 -SyntheticSamplesPerBin 1 -SyntheticPowerStateProvider {'AC'} -SyntheticProcessTelemetryProvider $fewUpdatesProvider
+    } 'requires at least 20 unique fresh production Widget updates' 'fewer than twenty unique run-level latency updates fails closed' $fewUpdatesDest
 
     # 27. UI Stall P95 breach (> 50 ms)
     $negStlDest = Join-Path $tempRoot 'matrix\neg-stl.json'

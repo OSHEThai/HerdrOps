@@ -3,6 +3,7 @@
 param()
 Set-StrictMode -Version Latest
 $ErrorActionPreference='Stop'
+$global:LASTEXITCODE=0
 $repositoryRoot=[IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
 $gatePath=Join-Path $repositoryRoot 'tools\Test-V02LiveRuntimeAcceptance.ps1'
 $passed=0
@@ -23,8 +24,8 @@ function Assert-Issue10AppBuildOutput([string]$OutputDirectory){
 function Invoke-GateHostile([string[]]$ExtraArguments){
     $engine=(Get-Process -Id $PID).Path
     $arguments=@('-NoLogo','-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',$gatePath,'-TargetHerdrSocketPath','missing.sock','-ExpectedSourceCommit',('a'*40),'-ExpectedSourceTree',('b'*40),'-EvidenceRunNonce',('c'*32),'-PackageIdentityPath','missing-identity.json','-PackageArchivePath','missing.zip','-ExtractedPackageRoot','missing-package','-TargetAgentSessionReference','same-run-hostile')+$ExtraArguments
-    $priorPreference=$ErrorActionPreference;$ErrorActionPreference='Continue'
-    try{$output=@(& $engine @arguments 2>&1);$exit=$LASTEXITCODE}finally{$ErrorActionPreference=$priorPreference}
+    $priorPreference=$ErrorActionPreference;$priorExitCode=$global:LASTEXITCODE;$ErrorActionPreference='Continue'
+    try{$output=@(& $engine @arguments 2>&1);$exit=$global:LASTEXITCODE}finally{$ErrorActionPreference=$priorPreference;$global:LASTEXITCODE=$priorExitCode}
     return [pscustomobject]@{ExitCode=$exit;Text=($output-join"`n")}
 }
 
@@ -63,8 +64,9 @@ try{
     $junction=Join-Path $fixture 'junction';$outsideJunction=Join-Path $fixture 'outside-junction';New-Item -ItemType Directory -Path $outsideJunction|Out-Null
     $junctionCreated=$false
     try{
-        $junctionResult=& cmd.exe /d /c mklink /J $junction $outsideJunction 2>&1
-        $junctionCreated=($LASTEXITCODE-eq0)
+        $priorExitCode=$global:LASTEXITCODE
+        try{$junctionResult=& cmd.exe /d /c mklink /J $junction $outsideJunction 2>&1;$junctionExitCode=$global:LASTEXITCODE}finally{$global:LASTEXITCODE=$priorExitCode}
+        $junctionCreated=($junctionExitCode-eq0)
         if($junctionCreated){
             $junctionReceipt=Join-Path $junction 'performance.json';[IO.File]::WriteAllText($junctionReceipt,"{}`n",(New-Object Text.UTF8Encoding($false)))
             $runtimeRoot=Join-Path $repositoryRoot 'artifacts\runtime-evidence\v0.2\issues-7-9-10';New-Item -ItemType Directory -Path $runtimeRoot -Force|Out-Null
@@ -141,4 +143,5 @@ try{
         Pass-Test 'post-child-exit receipt tamper reaches HMAC authentication guard'
     }else{throw "Run the governed Invoke-Build.ps1 Release prerequisite before this hostile CLI test: $appExecutable"}
 }finally{if(Test-Path -LiteralPath $fixture){Remove-Item -LiteralPath $fixture -Recurse -Force}}
+Assert-True ($global:LASTEXITCODE-eq0) 'Expected-failure native child exit code leaked into the workflow result.'
 Write-Output "RESULT: $passed passed, 0 failed"

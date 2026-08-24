@@ -134,7 +134,7 @@ function Invoke-V02ProductionPerformanceSample {
         $reader=New-Object IO.StreamReader($pipe,(New-Object Text.UTF8Encoding($false,$true)),$false,65536,$true)
         $writer=New-Object IO.StreamWriter($pipe,(New-Object Text.UTF8Encoding($false)),65536,$true);$writer.AutoFlush=$true
         $helloJson=Read-RendererTargetPipeLine $reader 30
-        $hello=if($PSVersionTable.PSVersion.Major-ge7-and(Get-Command ConvertFrom-Json).Parameters.ContainsKey('DateKind')){$helloJson|ConvertFrom-Json -DateKind String}else{$helloJson|ConvertFrom-Json}
+        $hello=ConvertFrom-RendererTransportJson $helloJson 'Performance producer hello'
         Assert-RawExactProperties $hello @('schemaVersion','kind','runNonce','sourceCommit','sourceTree','packageIdentitySha256','packageArchiveSha256','server','app','renderer') 'Performance producer hello'
         Assert-RawExactProperties $hello.server @('pid','startUtc','path','sha256') 'Performance producer hello server'
         Assert-RawExactProperties $hello.app @('pid','startUtc','path','sha256') 'Performance producer hello App'
@@ -148,7 +148,7 @@ function Invoke-V02ProductionPerformanceSample {
         $request=[pscustomobject][ordered]@{schemaVersion=1;kind='issue10-performance-sample-request';runNonce=$RunNonce;sequenceNumber=$Sequence;order=$Order;isWarmup=$Warmup;repetitionOrdinal=$Repetition;semanticMode=$Mode;coreProcessId=[int]$CoreProcess.Id;coreStartUtc=$CoreStartUtc.ToString('O')}
         Write-RendererTargetPipeLine $writer (ConvertTo-RendererCanonicalJson $request $RepositoryRoot)
         $sampleJson=Read-RendererTargetPipeLine $reader 330
-        $sample=if($PSVersionTable.PSVersion.Major-ge7-and(Get-Command ConvertFrom-Json).Parameters.ContainsKey('DateKind')){$sampleJson|ConvertFrom-Json -DateKind String}else{$sampleJson|ConvertFrom-Json}
+        $sample=ConvertFrom-RendererTransportJson $sampleJson "Performance producer sample $Sequence"
         Assert-RawExactProperties $sample @('schemaVersion','kind','runNonce','sequenceNumber','observedUtc','app','core','renderer','cpuBasisPoints','workingSetMaximumBytes','latencyMicroseconds','uiStallMicroseconds','boundary') 'Performance producer sample'
         Assert-RawExactProperties $sample.app @('pid','startUtc','path','sha256') 'Performance producer sample App'
         Assert-RawExactProperties $sample.core @('pid','startUtc','path','sha256') 'Performance producer sample Core'
@@ -170,8 +170,7 @@ function Invoke-V02ProductionPerformanceSample {
         }
         [pscustomobject][ordered]@{Authenticated=$true;Source='PackagedAppCurrentUserPipe';AppProcessId=[int]$app.Id;CoreProcessId=[int]$CoreProcess.Id;AppStartTimeUtc=$appStart;CoreStartTimeUtc=$CoreStartUtc;ObservedUtc=[string]$sample.observedUtc;RendererMode=$rendererMode;CpuBasisPoints=[long]$sample.cpuBasisPoints;WorkingSetMaximumBytes=[long]$sample.workingSetMaximumBytes;LatencyMicroseconds=$latencies;UiStallMicroseconds=$stalls}
     } finally {
-        if($null-ne$writer){$writer.Dispose()};if($null-ne$reader){$reader.Dispose()};$pipe.Dispose()
-        if($null-ne$app){try{if(-not$app.HasExited){$app.WaitForExit(10000)|Out-Null};if(-not$app.HasExited-and$app.StartTime.ToUniversalTime()-eq$appStart){$app.Kill();$app.WaitForExit(5000)|Out-Null}}catch{};$app.Dispose()}
+        Close-RendererTargetPipeSession -Writer $writer -Reader $reader -Pipe $pipe -AppProcess $app -AppStartTimeUtc $(if($null-ne$app){$appStart}else{[DateTime]::MinValue}) | Out-Null
     }
 }
 

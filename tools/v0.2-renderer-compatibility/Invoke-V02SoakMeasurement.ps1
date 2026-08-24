@@ -245,7 +245,7 @@ if (-not $Synthetic -and $null -eq $packageBinding) {
 # Live process verification & anti-PID-reuse checks
 $appProcess = $null
 $coreProcess = $null
-$appStartTimeUtc = $null
+$appStartTimeUtc = [DateTime]::MinValue
 $coreStartTimeUtc = $null
 $currentSessionId = [System.Diagnostics.Process]::GetCurrentProcess().SessionId
 
@@ -289,6 +289,7 @@ if (-not $Synthetic) {
 }
 
 $telemetryPipe=$null;$telemetryReader=$null;$telemetryWriter=$null
+try {
 if(-not$Synthetic){
     $pipeName="herdrops-v02-issue10-perf-$ChannelNonce-0";$telemetryPipe=New-RendererTargetObservationPipe $pipeName
     $server=[Diagnostics.Process]::GetCurrentProcess();$serverPath=[IO.Path]::GetFullPath($server.MainModule.FileName);$serverSha=(Get-FileHash -LiteralPath $serverPath -Algorithm SHA256).Hash.ToUpperInvariant();$serverStart=$server.StartTime.ToUniversalTime()
@@ -297,7 +298,7 @@ if(-not$Synthetic){
     $appProcess=[Diagnostics.Process]::Start($psi);if($null-eq$appProcess){throw 'Packaged soak App did not start.'};$appStartTimeUtc=$appProcess.StartTime.ToUniversalTime()
     $clientPid=Wait-RendererTargetObservationPipe $telemetryPipe 60;Assert-RendererPipeClientProcessId ([int]$clientPid) ([int]$appProcess.Id) 'Soak telemetry'
     $telemetryReader=New-Object IO.StreamReader($telemetryPipe,(New-Object Text.UTF8Encoding($false,$true)),$false,65536,$true);$telemetryWriter=New-Object IO.StreamWriter($telemetryPipe,(New-Object Text.UTF8Encoding($false)),65536,$true);$telemetryWriter.AutoFlush=$true
-    $helloJson=Read-RendererTargetPipeLine $telemetryReader 30;$hello=if($PSVersionTable.PSVersion.Major-ge7-and(Get-Command ConvertFrom-Json).Parameters.ContainsKey('DateKind')){$helloJson|ConvertFrom-Json -DateKind String}else{$helloJson|ConvertFrom-Json}
+    $helloJson=Read-RendererTargetPipeLine $telemetryReader 30;$hello=ConvertFrom-RendererTransportJson $helloJson 'Soak producer hello'
     Assert-SoakExactProperties $hello @('schemaVersion','kind','runNonce','sourceCommit','sourceTree','packageIdentitySha256','packageArchiveSha256','server','app','renderer') 'Soak producer hello'
     Assert-SoakExactProperties $hello.server @('pid','startUtc','path','sha256') 'Soak producer hello server'
     Assert-SoakExactProperties $hello.app @('pid','startUtc','path','sha256') 'Soak producer hello App';Assert-SoakExactProperties $hello.renderer @('requestedMode','nativeProcessRenderMode','nativeTier','hasAnyHwnd','preFirstHwnd','hardwareComparatorBoundary') 'Soak producer hello renderer'
@@ -305,7 +306,6 @@ if(-not$Synthetic){
     if([int]$hello.server.pid-ne$server.Id-or[DateTimeOffset]::Parse([string]$hello.server.startUtc).UtcDateTime-ne$serverStart-or-not[StringComparer]::OrdinalIgnoreCase.Equals([string]$hello.server.path,$serverPath)-or$hello.server.sha256-cne$serverSha){throw 'Soak producer hello server identity is invalid.'}
 }
 
-try {
 # Verify Initial Power Source
 $initialPower = Get-CurrentPowerStatus -SyntheticMode:$Synthetic -SyntheticProvider:$SyntheticPowerStateProvider
 if ($initialPower -cne $PowerSource) {
@@ -340,6 +340,13 @@ $lastObservedTicks = [DateTime]::UtcNow.Ticks
 $bins = @()
 $observations = @()
 $rawSamples = @()
+$latencySamples = @()
+$latencyStateSequences = @{}
+$latencyCorrelationIds = @{}
+$latencyBaselineStateSequence = [long]::MinValue
+$latencyWatermarkStateSequence = [long]::MinValue
+$latencyBaselineRecordCount = [long]::MinValue
+$latencyRecordCount = [long]::MinValue
 
 $prevAppCpuTime = $null
 $prevCoreCpuTime = $null
@@ -360,8 +367,10 @@ for ($binIndex = 0; $binIndex -lt $totalBins; $binIndex++) {
     $binStartWorkingSet = 0L
     $binEndWorkingSet = 0L
     $binRendererStable = $true
+    $binLatencyUpdateCount = 0
 
     for ($sampleIdx = 0; $sampleIdx -lt $samplesPerBin; $sampleIdx++) {
+        $packetSequenceNumber = $globalSequenceNumber
         $sampleTargetElapsedMs = ($binIndex * $binDurationMinutes * 60 * 1000) + (($sampleIdx + 1) * $sampleIntervalMs)
 
         if (-not $Synthetic) {
@@ -467,8 +476,8 @@ for ($binIndex = 0; $binIndex -lt $totalBins; $binIndex++) {
             try {
                 $request=[pscustomobject][ordered]@{schemaVersion=1;kind='issue10-soak-sample-request';runNonce=$ChannelNonce;sequenceNumber=$globalSequenceNumber;binIndex=$binIndex;sampleIndex=$sampleIdx;coreProcessId=$CoreProcessId;coreStartUtc=$coreStartTimeUtc.ToString('O')}
                 Write-RendererTargetPipeLine $telemetryWriter (ConvertTo-RendererCanonicalJson $request $RepositoryRoot)
-                $packetJson=Read-RendererTargetPipeLine $telemetryReader 330
-                $packet=if($PSVersionTable.PSVersion.Major-ge7-and(Get-Command ConvertFrom-Json).Parameters.ContainsKey('DateKind')){$packetJson|ConvertFrom-Json -DateKind String}else{$packetJson|ConvertFrom-Json}
+                $packetJson=Read-RendererTargetPipeLine $telemetryReader 45
+                $packet=ConvertFrom-RendererTransportJson $packetJson "Soak telemetry packet $globalSequenceNumber"
             } catch {
                 throw "Telemetry channel failed to read packet during bin $binIndex sample $($sampleIdx): $($_.Exception.Message)"
             }
@@ -488,6 +497,10 @@ for ($binIndex = 0; $binIndex -lt $totalBins; $binIndex++) {
                 -ExpectedAppExecutableSha256 $packageBinding.AppSha256 `
                 -ExpectedCoreExecutableSha256 $packageBinding.CoreSha256 `
                 -PreviousTimestampRef ([ref]$lastObservedTelemetryUtc) `
+                -LatencyBaselineRef ([ref]$latencyBaselineStateSequence) `
+                -PreviousLatencyWatermarkRef ([ref]$latencyWatermarkStateSequence) `
+                -LatencyBaselineRecordCountRef ([ref]$latencyBaselineRecordCount) `
+                -PreviousLatencyRecordCountRef ([ref]$latencyRecordCount) `
                 -RepositoryRoot $RepositoryRoot
 
             $null=Get-V02LiveProcessIdentity -Process $appProcess -ExpectedProcessId $appProcess.Id -ExpectedStartTimeUtc $appStartTimeUtc -Role 'App' -BinIndex $binIndex -SampleIndex $sampleIdx
@@ -495,13 +508,12 @@ for ($binIndex = 0; $binIndex -lt $totalBins; $binIndex++) {
             $postAppPath=[IO.Path]::GetFullPath($appProcess.MainModule.FileName);$postCorePath=[IO.Path]::GetFullPath($coreProcess.MainModule.FileName)
             if(-not[StringComparer]::OrdinalIgnoreCase.Equals($postAppPath,$packageBinding.AppPath)-or-not[StringComparer]::OrdinalIgnoreCase.Equals($postCorePath,$packageBinding.CorePath)-or(Get-FileHash -LiteralPath $postAppPath -Algorithm SHA256).Hash-cne$packageBinding.AppSha256-or(Get-FileHash -LiteralPath $postCorePath -Algorithm SHA256).Hash-cne$packageBinding.CoreSha256){throw "App/Core executable identity changed after telemetry response during bin $binIndex sample $sampleIdx."}
 
-            $globalSequenceNumber++
             $sampleUtcStr = [string]$packet.observedUtc
             if ($sampleIdx -eq 0) {
                 $binStartUtcStr = $sampleUtcStr
             }
 
-            $liveLatency = @($packet.metrics.latencyMicroseconds)
+            $liveLatencyUpdates = @($packet.metrics.latency.updates)
             $liveStall = @($packet.metrics.uiStallMicroseconds)
             $liveStable = [bool]$packet.metrics.rendererStable
 
@@ -512,7 +524,7 @@ for ($binIndex = 0; $binIndex -lt $totalBins; $binIndex++) {
                 CoreWorkingSetBytes = $coreWs
                 CorePrivateBytes = $corePriv
                 CoreCpuBasisPoints = $coreCpuBp
-                LatencyMicroseconds = $liveLatency
+                LatencyUpdates = $liveLatencyUpdates
                 UiStallMicroseconds = $liveStall
                 RendererStable = $liveStable
             }
@@ -520,9 +532,36 @@ for ($binIndex = 0; $binIndex -lt $totalBins; $binIndex++) {
 
         if ($null -eq $sampleData.AppWorkingSetBytes -or $null -eq $sampleData.CoreWorkingSetBytes -or
             $null -eq $sampleData.AppCpuBasisPoints -or $null -eq $sampleData.CoreCpuBasisPoints -or
-            $null -eq $sampleData.LatencyMicroseconds -or $null -eq $sampleData.UiStallMicroseconds) {
+            $null -eq $sampleData.UiStallMicroseconds) {
             throw "Incomplete telemetry sample data during bin $binIndex sample $sampleIdx."
         }
+
+        if ($Synthetic) {
+            $syntheticLatencies = @()
+            if ($sampleIdx -eq 0) { $syntheticLatencies = @($sampleData.LatencyMicroseconds) }
+            $syntheticUpdates = @()
+            for ($latencyIndex = 0; $latencyIndex -lt $syntheticLatencies.Count; $latencyIndex++) {
+                $syntheticSequence = [long](($packetSequenceNumber * 100) + $latencyIndex)
+                $syntheticApplied = $sampleUtc
+                $syntheticAccepted = $syntheticApplied.AddTicks(-([long]$syntheticLatencies[$latencyIndex] * 10L))
+                $syntheticCorrelation = ('00000000-0000-0000-0000-{0:x12}' -f ($syntheticSequence + 1))
+                $syntheticUpdates += [pscustomobject][ordered]@{stateSequence=$syntheticSequence;eventCount=$syntheticSequence;envelopeSequence=$syntheticSequence;envelopeCorrelationId=$syntheticCorrelation;stateSha256=('{0:X64}' -f ($syntheticSequence + 1));updateKind='Delta';coreAcceptedStateUtc=$syntheticAccepted.ToString('O');ipcSentUtc=$syntheticAccepted.ToString('O');wpfAppliedUtc=$syntheticApplied.ToString('O');latencyMicroseconds=[long]$syntheticLatencies[$latencyIndex]}
+            }
+            $sampleData | Add-Member -NotePropertyName LatencyUpdates -NotePropertyValue $syntheticUpdates
+            if ($latencyBaselineStateSequence -eq [long]::MinValue) { $latencyBaselineStateSequence = -1L }
+            if ($latencyBaselineRecordCount -eq [long]::MinValue) { $latencyBaselineRecordCount=0L;$latencyRecordCount=0L }
+            $latencyRecordCount += $syntheticUpdates.Count
+            if ($syntheticUpdates.Count -gt 0) { $latencyWatermarkStateSequence = [long]$syntheticUpdates[-1].stateSequence }
+        }
+
+        $sampleLatencyUpdates = @($sampleData.LatencyUpdates)
+        foreach ($update in $sampleLatencyUpdates) {
+            $sequenceKey=[string][long]$update.stateSequence;$correlationKey=[string]$update.envelopeCorrelationId
+            if($latencyStateSequences.ContainsKey($sequenceKey)-or$latencyCorrelationIds.ContainsKey($correlationKey)){throw "Duplicate soak latency identity during bin $binIndex sample $sampleIdx."}
+            $latencyStateSequences[$sequenceKey]=$true;$latencyCorrelationIds[$correlationKey]=$true
+            $latencySamples += [pscustomobject][ordered]@{binOrdinal=[int]$binIndex;sampleIndex=[int]$sampleIdx;packetSequenceNumber=[int]$packetSequenceNumber;stateSequence=[long]$update.stateSequence;eventCount=[long]$update.eventCount;envelopeSequence=[long]$update.envelopeSequence;envelopeCorrelationId=[string]$update.envelopeCorrelationId;stateSha256=[string]$update.stateSha256;updateKind=[string]$update.updateKind;coreAcceptedStateUtc=[string]$update.coreAcceptedStateUtc;ipcSentUtc=[string]$update.ipcSentUtc;wpfAppliedUtc=[string]$update.wpfAppliedUtc;latencyMicroseconds=[long]$update.latencyMicroseconds}
+        }
+        $binLatencyUpdateCount += $sampleLatencyUpdates.Count
 
         $combinedWs = [long]$sampleData.AppWorkingSetBytes + [long]$sampleData.CoreWorkingSetBytes
         $combinedCpuBp = [long]$sampleData.AppCpuBasisPoints + [long]$sampleData.CoreCpuBasisPoints
@@ -537,11 +576,9 @@ for ($binIndex = 0; $binIndex -lt $totalBins; $binIndex++) {
             $binRendererStable = $false
         }
 
-        $latP95Us = Get-RendererP95Microseconds $sampleData.LatencyMicroseconds "Bin $binIndex sample $sampleIdx latency"
         $stlP95Us = Get-RendererP95Microseconds $sampleData.UiStallMicroseconds "Bin $binIndex sample $sampleIdx UI stall"
         $stlMaxUs = [long](@($sampleData.UiStallMicroseconds | Sort-Object { [long]$_ })[-1])
 
-        $latP95Ms = [double]$latP95Us / 1000.0
         $stlP95Ms = [double]$stlP95Us / 1000.0
         $stlMaxMs = [double]$stlMaxUs / 1000.0
 
@@ -551,9 +588,6 @@ for ($binIndex = 0; $binIndex -lt $totalBins; $binIndex++) {
         }
         if ($combinedCpuPercent -gt $approvedLimits.cpuMaximumPercent) {
             throw "Bin $binIndex sample $sampleIdx combined CPU ($combinedCpuPercent%) > limit ($($approvedLimits.cpuMaximumPercent)%)."
-        }
-        if ($latP95Ms -gt $approvedLimits.latencyP95Milliseconds) {
-            throw "Bin $binIndex sample $sampleIdx latency P95 ($latP95Ms ms) > limit ($($approvedLimits.latencyP95Milliseconds) ms)."
         }
         if ($stlP95Ms -gt $approvedLimits.uiStallP95Milliseconds) {
             throw "Bin $binIndex sample $sampleIdx UI stall P95 ($stlP95Ms ms) > limit ($($approvedLimits.uiStallP95Milliseconds) ms)."
@@ -574,11 +608,12 @@ for ($binIndex = 0; $binIndex -lt $totalBins; $binIndex++) {
             corePrivateBytes = [long]$sampleData.CorePrivateBytes
             combinedWorkingSetBytes = [long]$combinedWs
             combinedCpuBasisPoints = [long]$combinedCpuBp
-            latencyP95Microseconds = [long]$latP95Us
+            latencyUpdateCount = [int]$sampleLatencyUpdates.Count
             uiStallP95Microseconds = [long]$stlP95Us
             uiStallMaximumMicroseconds = [long]$stlMaxUs
             rendererStable = [bool]$binRendererStable
         }
+        $globalSequenceNumber++
     }
 
     # Evaluate working set slope across the bin (scaled to bytes per 10 minutes)
@@ -589,6 +624,7 @@ for ($binIndex = 0; $binIndex -lt $totalBins; $binIndex++) {
     if (-not $binRendererStable) {
         throw "Bin $binIndex renderer stability failure."
     }
+    if ($binLatencyUpdateCount -lt 1) { throw "Bin $binIndex did not observe a fresh production Widget latency update." }
 
     $bins += [pscustomobject][ordered]@{
         powerSource = [string]$PowerSource
@@ -610,6 +646,19 @@ for ($binIndex = 0; $binIndex -lt $totalBins; $binIndex++) {
 
 $soakStopwatch.Stop()
 
+# Bind the held raw timeline to the governed completion boundary. The last
+# sampling instant precedes completion by up to one interval, so preserve the
+# actual completion stopwatch value on the final held row.
+if ($rawSamples.Count -gt 0) {
+    $rawSamples[-1].elapsedMilliseconds = [long][Math]::Round($soakStopwatch.Elapsed.TotalMilliseconds)
+}
+
+if ($latencySamples.Count -lt 20) { throw "Soak latency measurement requires at least 20 unique fresh production Widget updates; found $($latencySamples.Count)." }
+$orderedLatency = @($latencySamples | ForEach-Object { [long]$_.latencyMicroseconds } | Sort-Object)
+$latencyP95Microseconds = [long]$orderedLatency[[Math]::Ceiling($orderedLatency.Count * 0.95) - 1]
+if ($latencyP95Microseconds -gt 250000L) { throw "Soak latency P95 ($latencyP95Microseconds microseconds) > limit (250000 microseconds)." }
+$latencyMeasurement = [pscustomobject][ordered]@{measurement='CoreAcceptedStateUtcToWpfAppliedUtc';baselineStateSequence=[long]$latencyBaselineStateSequence;finalStateSequence=[long]$latencyWatermarkStateSequence;baselineRecordCount=[long]$latencyBaselineRecordCount;finalRecordCount=[long]$latencyRecordCount;minimumUniqueSampleCount=20;uniqueSampleCount=[int]$latencySamples.Count;requiredCoveredBinCount=[int]$totalBins;coveredBinCount=[int]$totalBins;p95Microseconds=$latencyP95Microseconds;targetMaximumMicroseconds=250000L;status='PASS';samples=$latencySamples}
+
 # In live mode: Enforce that total Stopwatch elapsed time is >= 60 minutes (3600 seconds)
 if (-not $Synthetic) {
     if ($soakStopwatch.Elapsed.TotalMinutes -lt [double]$totalDurationMinutes) {
@@ -620,6 +669,7 @@ if (-not $Synthetic) {
 # Construct canonical matrix observation receipt document
 $evidenceClass = if ($Synthetic) { 'SyntheticVerifierSelftest' } else { 'PackagedCompatibilitySoak' }
 $receiptDocument = [pscustomobject][ordered]@{
+    schemaVersion = 2
     caseId = [string]$caseId
     evidenceClassification = [string]$evidenceClass
     powerSource = [string]$PowerSource
@@ -655,6 +705,7 @@ $receiptDocument = [pscustomobject][ordered]@{
     soakBins = $bins
     observations = $observations
     rawSamples = $rawSamples
+    latencyMeasurement = $latencyMeasurement
     evidenceBoundary = [pscustomobject][ordered]@{
         evidenceClass = [string]$evidenceClass
         actualHerdrRuntime = 'NOT_OBSERVED'
@@ -791,6 +842,5 @@ if ($stableIdentity.Sha256 -cne (Get-FileHash -LiteralPath $fullDestination -Alg
     ReceiptDocument = $receiptDocument
 }
 } finally {
-    if($null-ne$telemetryWriter){$telemetryWriter.Dispose()};if($null-ne$telemetryReader){$telemetryReader.Dispose()};if($null-ne$telemetryPipe){$telemetryPipe.Dispose()}
-    if(-not$Synthetic-and$null-ne$appProcess){try{if(-not$appProcess.HasExited){$appProcess.WaitForExit(10000)|Out-Null};if(-not$appProcess.HasExited-and$appProcess.StartTime.ToUniversalTime()-eq$appStartTimeUtc){$appProcess.Kill();$appProcess.WaitForExit(5000)|Out-Null}}catch{};$appProcess.Dispose()}
+    Close-RendererTargetPipeSession -Writer $telemetryWriter -Reader $telemetryReader -Pipe $telemetryPipe -AppProcess $(if(-not$Synthetic){$appProcess}else{$null}) -AppStartTimeUtc $(if(-not$Synthetic-and$null-ne$appProcess){$appStartTimeUtc}else{[DateTime]::MinValue}) | Out-Null
 }

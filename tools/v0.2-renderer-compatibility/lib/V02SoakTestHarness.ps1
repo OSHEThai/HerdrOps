@@ -50,14 +50,18 @@ function New-V02TestTelemetryPacket {
         [Parameter(Mandatory = $true)][string]$AppExecutableSha256,
         [Parameter(Mandatory = $true)][string]$CoreExecutableSha256,
         [Parameter(Mandatory = $true)][string]$ObservedUtc,
-        [Parameter(Mandatory = $false)][long[]]$LatencyMicroseconds = @(1..20 | ForEach-Object { 100000L }),
+        [Parameter(Mandatory = $false)][long]$BaselineStateSequence = -1,
+        [Parameter(Mandatory = $false)][long]$AfterStateSequence = -1,
+        [Parameter(Mandatory = $false)][long]$BaselineRecordCount = 0,
+        [Parameter(Mandatory = $false)][long]$AfterRecordCount = 0,
+        [Parameter(Mandatory = $false)][object[]]$LatencyUpdates = @(),
         [Parameter(Mandatory = $false)][long[]]$UiStallMicroseconds = @(1..20 | ForEach-Object { 10000L }),
         [Parameter(Mandatory = $false)][bool]$RendererStable = $true,
         [Parameter(Mandatory = $false)][string]$RepositoryRoot = $null
     )
 
     $raw = [pscustomobject][ordered]@{
-        schemaVersion = 1
+        schemaVersion = 2
         nonce = $Nonce
         sequenceNumber = $SequenceNumber
         observedUtc = $ObservedUtc
@@ -74,7 +78,15 @@ function New-V02TestTelemetryPacket {
             coreExecutableSha256 = $CoreExecutableSha256
         }
         metrics = [pscustomobject][ordered]@{
-            latencyMicroseconds = @($LatencyMicroseconds | ForEach-Object { [long]$_ })
+            latency = [pscustomobject][ordered]@{
+                baselineStateSequence = $BaselineStateSequence
+                afterStateSequence = $AfterStateSequence
+                watermarkStateSequence = if ($LatencyUpdates.Count) { [long]$LatencyUpdates[-1].stateSequence } else { $AfterStateSequence }
+                baselineRecordCount = $BaselineRecordCount
+                afterRecordCount = $AfterRecordCount
+                recordCount = $AfterRecordCount + $LatencyUpdates.Count
+                updates = @($LatencyUpdates)
+            }
             uiStallMicroseconds = @($UiStallMicroseconds | ForEach-Object { [long]$_ })
             rendererStable = $RendererStable
         }
@@ -84,7 +96,7 @@ function New-V02TestTelemetryPacket {
     $hash = Get-HumanDesignReviewSha256ForText $canonicalBody
 
     return [pscustomobject][ordered]@{
-        schemaVersion = 1
+        schemaVersion = 2
         nonce = $Nonce
         sequenceNumber = $SequenceNumber
         observedUtc = $ObservedUtc
