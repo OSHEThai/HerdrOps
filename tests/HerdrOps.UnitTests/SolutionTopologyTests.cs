@@ -229,7 +229,7 @@ public sealed class SolutionTopologyTests
         StringAssert.Contains(releaseGates, "AutomatedLiveLifecycle");
         StringAssert.Contains(githubRoadmap, "no clean-host certificate or manual observer is required");
 
-        var v02Gate = File.ReadAllText(Path.Combine(root, "tools", "Test-V02ReleaseGate.ps1"));
+        var v02Gate = File.ReadAllText(Path.Combine(repositoryRoot, "tools", "Test-V02ReleaseGate.ps1"));
         StringAssert.Contains(v02Gate, "AutomatedLifecycleReportPath");
         Assert.IsFalse(v02Gate.Contains("CleanHostAuthorizationPath", StringComparison.Ordinal));
         Assert.IsFalse(v02Gate.Contains("CleanHostAcceptanceReceiptPath", StringComparison.Ordinal));
