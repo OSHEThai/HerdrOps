@@ -1,0 +1,38 @@
+{
+  "schemaVersion": 1,
+  "profileId": "herdrops-v0.2-package-software-only-issue-149",
+  "issue": 149,
+  "packageVersion": "0.2.0",
+  "runtimeIdentifier": "win-x64",
+  "archiveFileName": "HerdrOps-0.2.0-win-x64.zip",
+  "packageManifestFileName": "package-manifest.json",
+  "sourcePolicy": {
+    "cleanRequired": true
+  },
+  "approval": {
+    "decisionId": "herdrops-rec-all-v2",
+    "approvalReference": "https://github.com/OSHEThai/HerdrOps/issues/149#issuecomment-5380637664",
+    "approvedUtc": "2026-08-22T13:18:21.2468994Z",
+    "payloadSha256": "48474610D2A20EE2F7CA2DAC0A3CCF45F919440C9C5D81EF5BA93AD7E524F62D"
+  },
+  "components": {
+    "appRelativePath": "HerdrOps.App.exe",
+    "coreRelativePath": "HerdrOps.Core.exe"
+  },
+  "referenceHost": {
+    "profileId": "herdrops-v0.2-submark-nb-software-only-20260822",
+    "profileSha256": "96D01ED15A536F2DF50B59B43CFDEB3683DCE8667AE2E7BF6A96124182FE13A3"
+  },
+  "renderer": {
+    "policy": "software-only-process-wide",
+    "wpfProcessRenderMode": "SoftwareOnly",
+    "policySha256": "1D37C9C39449556EB30F9AB5B734F0C5411CF4203321AF0B238993D017229E92"
+  },
+  "evidenceBoundary": {
+    "evidenceClass": "PackagedCompatibilityPreparation",
+    "runtimeUse": "not-used",
+    "actualHerdrUsed": false,
+    "runtimeCredit": "NOT CLAIMED",
+    "releaseCredit": "NOT CLAIMED"
+  }
+}

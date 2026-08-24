@@ -30,6 +30,10 @@ public partial class App : Application
     private Exception? _startupFailure;
     private readonly Func<IApplicationInstanceGate> _instanceGateFactory;
     private readonly bool _suppressStartupForTestHost;
+    private readonly Issue10PerformanceTelemetryOptions? _performanceTelemetryOptions;
+    private readonly string? _performanceTelemetryOptionError;
+    private Issue10PerformanceTelemetryProducer? _performanceTelemetry;
+    private LiveDashboardState? _dashboardState;
 
     public App()
         : this(() => new WindowsPerUserApplicationInstanceGate(), false)
@@ -50,7 +54,19 @@ public partial class App : Application
         Func<IApplicationInstanceGate> instanceGateFactory,
         bool suppressStartupForTestHost)
     {
-        RuntimeRenderPolicy.EnforceBeforeFirstWpfComposition();
+        var processArgs = Environment.GetCommandLineArgs().Skip(1).ToArray();
+        _ = Issue10PerformanceTelemetryOptions.TryParseInvocation(
+            processArgs,
+            out _performanceTelemetryOptions,
+            out _performanceTelemetryOptionError);
+        try
+        {
+            _performanceTelemetryOptions?.PackageLease.Revalidate("before renderer policy selection");
+            RuntimeRenderPolicy.EnforceBeforeFirstWpfComposition(
+                _performanceTelemetryOptions?.RendererMode);
+            _performanceTelemetryOptions?.PackageLease.Revalidate("after renderer policy selection");
+        }
+        catch { _performanceTelemetryOptions?.PackageLease.Dispose(); throw; }
         _instanceGateFactory = instanceGateFactory ?? throw new ArgumentNullException(nameof(instanceGateFactory));
         _suppressStartupForTestHost = suppressStartupForTestHost;
     }
@@ -59,12 +75,30 @@ public partial class App : Application
 
     protected override async void OnStartup(StartupEventArgs e)
     {
-        _ = RuntimeRenderPolicy.ObserveAndRequireSoftwareOnly(
+        _ = RuntimeRenderPolicy.ObserveAndRequireConfiguredMode(
             "app-on-startup-before-base");
         base.OnStartup(e);
         ShutdownMode = ShutdownMode.OnExplicitShutdown;
         if (_suppressStartupForTestHost)
         {
+            return;
+        }
+
+        if (_performanceTelemetryOptionError is not null)
+        {
+            Shutdown(64);
+            return;
+        }
+
+        if (_performanceTelemetryOptions is not null)
+        {
+            await RunIssue10PerformanceTelemetryAsync(_performanceTelemetryOptions);
+            return;
+        }
+
+        if (Issue10WidgetEvidenceProducer.IsFinalizationRequested(e.Args))
+        {
+            Shutdown(Issue10WidgetEvidenceProducer.FinalizeFromCommandLine(e.Args));
             return;
         }
 
@@ -132,6 +166,7 @@ public partial class App : Application
                 reviewState,
                 _reviewCommands,
                 reviewerActorId);
+            _dashboardState = state;
             _runtime = new LiveDashboardRuntime(
                 new HerdrOpsStatePipeClient(HerdrOpsStatePipeClientOptions.ForCurrentUser()),
                 state,
@@ -186,6 +221,38 @@ public partial class App : Application
         }
     }
 
+    private async Task RunIssue10PerformanceTelemetryAsync(
+        Issue10PerformanceTelemetryOptions options)
+    {
+        var telemetryOwnsLease = false;
+        try
+        {
+            await StartNormalAsync();
+            if (_dashboardState is null)
+            {
+                throw new InvalidOperationException(
+                    "Issue #10 performance telemetry requires initialized production dashboard state.");
+            }
+
+            await using var telemetry = new Issue10PerformanceTelemetryProducer(
+                options,
+                Dispatcher,
+                _dashboardState.Widgets,
+                RuntimeRenderPolicy.StartupObservation);
+            telemetryOwnsLease = true;
+            _performanceTelemetry = telemetry;
+            await telemetry.RunAsync(CancellationToken.None);
+            _performanceTelemetry = null;
+            Shutdown(0);
+        }
+        catch (Exception exception)
+        {
+            _startupFailure = exception;
+            Shutdown(2);
+        }
+        finally { if (!telemetryOwnsLease) options.PackageLease.Dispose(); }
+    }
+
     private async Task RunRuntimeEvidenceAsync(IReadOnlyList<string> args)
     {
         var startedUtc = DateTimeOffset.UtcNow;
@@ -196,6 +263,17 @@ public partial class App : Application
         }
 
         var options = parsedOptions!;
+        if (options.Issue10WidgetReportPath is not null)
+        {
+            RuntimeEvidenceRunner.WriteFailure(
+                options.ReportPath,
+                startedUtc,
+                new InvalidOperationException(
+                    "Issue #10 widget evidence must be finalized by the composite gate after the same-run Gate/Core/App reports are sealed."),
+                options.ProgressPath);
+            Shutdown(64);
+            return;
+        }
         ShutdownMode = ShutdownMode.OnExplicitShutdown;
         if (!string.Equals(
                 Environment.GetEnvironmentVariable("HERDR_ENV"),
@@ -215,14 +293,28 @@ public partial class App : Application
 
         RuntimeEvidenceRunner? runner = null;
         RuntimeEvidenceProducerBinding? producerBinding = null;
+        RendererTargetObservationProducer? rendererObservation = null;
         MainWindow? mainWindow = null;
         var exitCode = 2;
         Exception? primaryFailure = null;
         Exception? cleanupFailure = null;
+        using var rendererDeadline = new CancellationTokenSource();
+        var rendererRemaining = startedUtc.AddSeconds(options.TimeoutSeconds) - DateTimeOffset.UtcNow;
+        rendererDeadline.CancelAfter(rendererRemaining > TimeSpan.Zero ? rendererRemaining : TimeSpan.Zero);
+        var rendererCancellation = rendererDeadline.Token;
         try
         {
             producerBinding = RuntimeEvidenceProducerBinding.ObserveBeforeFirstWindow(
                 options);
+            if (options.RendererObservation is not null)
+            {
+                rendererObservation = new RendererTargetObservationProducer(
+                    options.RendererObservation);
+                rendererObservation.Start();
+                await rendererObservation.WaitForFirstWindowPermissionAsync(
+                    rendererCancellation);
+            }
+
             var state = new LiveDashboardState();
             _runtime = new LiveDashboardRuntime(
                 new HerdrOpsStatePipeClient(HerdrOpsStatePipeClientOptions.ForCurrentUser()),
@@ -232,12 +324,28 @@ public partial class App : Application
             mainWindow = new MainWindow(state);
             MainWindow = mainWindow;
             mainWindow.Show();
+            rendererObservation?.AttachFirstWindow(mainWindow);
             runner = new RuntimeEvidenceRunner(
                 state,
                 mainWindow,
                 options,
-                producerBinding);
+                producerBinding,
+                rendererObservation);
             var report = await runner.RunAsync();
+            if (rendererObservation is not null)
+            {
+                await rendererObservation.WaitForThaiCapturePermissionAsync(rendererCancellation);
+                await runner.CaptureRendererCompatibilitySetAsync(
+                    rendererObservation,
+                    UiLanguage.Thai,
+                    rendererCancellation);
+                await rendererObservation.WaitForEnglishCapturePermissionAsync(rendererCancellation);
+                await runner.CaptureRendererCompatibilitySetAsync(
+                    rendererObservation,
+                    UiLanguage.English,
+                    rendererCancellation);
+                await rendererObservation.Completion.WaitAsync(rendererCancellation);
+            }
             exitCode = report.CompositeCandidateChecksPassed ? 0 : 2;
         }
         catch (Exception exception)
@@ -304,6 +412,22 @@ public partial class App : Application
         finally
         {
             producerBinding?.LanguageChangeTracker?.Dispose();
+            if (rendererObservation is not null)
+            {
+                try
+                {
+                    await rendererObservation.DisposeAsync();
+                }
+                catch (Exception exception)
+                {
+                    RuntimeEvidenceRunner.WriteFailure(
+                        options.ReportPath,
+                        startedUtc,
+                        exception,
+                        options.ProgressPath);
+                    exitCode = 2;
+                }
+            }
         }
 
         Shutdown(exitCode);
@@ -395,6 +519,7 @@ public partial class App : Application
 
         runtime.Dispose();
         _runtime = null;
+        _dashboardState = null;
     }
 
     private void ClearReviewCommands() => _reviewCommands = null;
@@ -454,6 +579,7 @@ internal static class RuntimeRenderPolicy
     internal const string PreFirstWindowPhase = "runtime-evidence-pre-first-window";
     private static readonly object Sync = new();
     private static RuntimeRenderPolicyObservation? _startupObservation;
+    private static string _configuredMode = ExpectedProcessRenderMode;
 
     internal static RuntimeRenderPolicyObservation StartupObservation
     {
@@ -467,19 +593,24 @@ internal static class RuntimeRenderPolicy
         }
     }
 
-    internal static void EnforceBeforeFirstWpfComposition()
+    internal static void EnforceBeforeFirstWpfComposition(string? requestedMode = null)
     {
         lock (Sync)
         {
             if (_startupObservation is not null)
             {
-                _ = ObserveAndRequireSoftwareOnlyLocked(
+                _ = ObserveAndRequireConfiguredModeLocked(
                     StartupPhase);
                 return;
             }
 
-            RenderOptions.ProcessRenderMode = RenderMode.SoftwareOnly;
-            _startupObservation = ObserveAndRequireSoftwareOnlyLocked(
+            _configuredMode = string.Equals(requestedMode, "Hardware", StringComparison.Ordinal)
+                ? "Hardware"
+                : ExpectedProcessRenderMode;
+            RenderOptions.ProcessRenderMode = _configuredMode == "Hardware"
+                ? RenderMode.Default
+                : RenderMode.SoftwareOnly;
+            _startupObservation = ObserveAndRequireConfiguredModeLocked(
                 StartupPhase);
         }
     }
@@ -496,25 +627,49 @@ internal static class RuntimeRenderPolicy
                     "The process-wide WPF render policy was observed before its pre-composition enforcement.");
             }
 
-            return ObserveAndRequireSoftwareOnlyLocked(phase);
+            if (!string.Equals(_configuredMode, ExpectedProcessRenderMode, StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException(
+                    "SoftwareOnly production observation cannot run in the acceptance-only Hardware comparator process.");
+            }
+
+            return ObserveAndRequireConfiguredModeLocked(phase);
         }
     }
 
-    private static RuntimeRenderPolicyObservation ObserveAndRequireSoftwareOnlyLocked(
+    internal static RuntimeRenderPolicyObservation ObserveAndRequireConfiguredMode(string phase)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(phase);
+        lock (Sync)
+        {
+            if (_startupObservation is null)
+            {
+                throw new InvalidOperationException(
+                    "The process-wide WPF render policy was observed before its pre-composition enforcement.");
+            }
+
+            return ObserveAndRequireConfiguredModeLocked(phase);
+        }
+    }
+
+    private static RuntimeRenderPolicyObservation ObserveAndRequireConfiguredModeLocked(
         string phase)
     {
         var observedMode = RenderOptions.ProcessRenderMode;
-        var confirmed = observedMode == RenderMode.SoftwareOnly;
+        var nativeTier = RenderCapability.Tier >> 16;
+        var confirmed = _configuredMode == "Hardware"
+            ? observedMode == RenderMode.Default && nativeTier > 0 && !Issue10PerformanceTelemetryProducer.IsRemoteSession
+            : observedMode == RenderMode.SoftwareOnly;
         var observation = new RuntimeRenderPolicyObservation(
             phase,
             DateTimeOffset.UtcNow,
             observedMode.ToString(),
-            RenderCapability.Tier >> 16,
+            nativeTier,
             confirmed);
         if (!confirmed)
         {
             throw new InvalidOperationException(
-                $"The process-wide WPF render policy changed during '{phase}': expected {ExpectedProcessRenderMode}, observed {observedMode}.");
+                $"The process-wide WPF render policy changed during '{phase}': expected {_configuredMode}, observed {observedMode}, tier {nativeTier}, remote={Issue10PerformanceTelemetryProducer.IsRemoteSession}.");
         }
 
         return observation;

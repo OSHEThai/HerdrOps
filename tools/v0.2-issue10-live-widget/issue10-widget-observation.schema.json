@@ -1,0 +1,125 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://herdrops.invalid/schemas/v0.2/issue10-widget-observation.schema.json",
+  "title": "HerdrOps v0.2 Issue #10 production widget observation",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["SchemaVersion", "EvidenceClassification", "Issue", "Language", "RunNonce", "Source", "Bindings", "Chronology", "Dashboard", "Widgets", "AttentionStates", "UnknownPolicy"],
+  "properties": {
+    "SchemaVersion": { "const": 1 },
+    "EvidenceClassification": { "const": "Issue10WidgetObservation" },
+    "Issue": { "const": 10 },
+    "Language": { "enum": ["Thai", "English"] },
+    "RunNonce": { "type": "string", "pattern": "^[0-9a-f]{32}$" },
+    "Source": { "$ref": "#/$defs/source" },
+    "Bindings": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["GateReportSha256", "AppRuntimeReportSha256", "CoreRuntimeReportSha256", "PackageIdentityFileSha256", "PackageIdentityReceiptSha256", "PackageArchiveSha256", "PackageManifestSha256", "AppSha256", "CoreSha256", "HerdrExecutableSha256", "PerformanceReceiptSha256", "SoakReceiptSha256", "ControlSessionIdentity", "TargetSessionIdentity"],
+      "properties": {
+        "GateReportSha256": { "$ref": "#/$defs/sha" },
+        "AppRuntimeReportSha256": { "$ref": "#/$defs/sha" },
+        "CoreRuntimeReportSha256": { "$ref": "#/$defs/sha" },
+        "PackageIdentityFileSha256": { "$ref": "#/$defs/sha" },
+        "PackageIdentityReceiptSha256": { "$ref": "#/$defs/sha" },
+        "PackageArchiveSha256": { "$ref": "#/$defs/sha" },
+        "PackageManifestSha256": { "$ref": "#/$defs/sha" },
+        "AppSha256": { "$ref": "#/$defs/sha" },
+        "CoreSha256": { "$ref": "#/$defs/sha" },
+        "HerdrExecutableSha256": { "$ref": "#/$defs/sha" },
+        "PerformanceReceiptSha256": { "$ref": "#/$defs/sha" },
+        "SoakReceiptSha256": { "$ref": "#/$defs/sha" },
+        "ControlSessionIdentity": { "type": "string", "minLength": 1 },
+        "TargetSessionIdentity": { "type": "string", "minLength": 1 }
+      }
+    },
+    "Chronology": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["RuntimeStartUtc", "DashboardObservedUtc", "WidgetObservedUtc", "CapturedUtc", "StateSequence"],
+      "properties": {
+        "RuntimeStartUtc": { "type": "string", "minLength": 1 },
+        "DashboardObservedUtc": { "type": "string", "minLength": 1 },
+        "WidgetObservedUtc": { "type": "string", "minLength": 1 },
+        "CapturedUtc": { "type": "string", "minLength": 1 },
+        "StateSequence": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "Dashboard": { "$ref": "#/$defs/dashboard" },
+    "Widgets": {
+      "type": "array",
+      "minItems": 3,
+      "maxItems": 3,
+      "items": { "$ref": "#/$defs/widget" }
+    },
+    "AttentionStates": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 2,
+      "items": { "$ref": "#/$defs/attention" }
+    },
+    "UnknownPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["UnknownDataRendersUnknown", "OfflineDataRendersUnknown", "UnknownState", "OfflineState", "NoSyntheticSuccess", "SyntheticFieldsCount"],
+      "properties": {
+        "UnknownDataRendersUnknown": { "const": true },
+        "OfflineDataRendersUnknown": { "const": true },
+        "UnknownState": { "type": "string", "minLength": 1 },
+        "OfflineState": { "type": "string", "minLength": 1 },
+        "NoSyntheticSuccess": { "const": true },
+        "SyntheticFieldsCount": { "const": 0 }
+      }
+    }
+  },
+  "$defs": {
+    "sha": { "type": "string", "pattern": "^[0-9A-Fa-f]{64}$" },
+    "commit": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["CommitSha", "TreeSha"],
+      "properties": {
+        "CommitSha": { "$ref": "#/$defs/commit" },
+        "TreeSha": { "$ref": "#/$defs/commit" }
+      }
+    },
+    "dashboard": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["StateSha256", "CapturePath", "CaptureBytes", "CaptureSha256"],
+      "properties": {
+        "StateSha256": { "$ref": "#/$defs/sha" },
+        "CapturePath": { "type": "string", "minLength": 1 },
+        "CaptureBytes": { "type": "integer", "minimum": 1 },
+        "CaptureSha256": { "$ref": "#/$defs/sha" }
+      }
+    },
+    "widget": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["Name", "StateSha256", "SourceStateSha256", "CapturePath", "CaptureBytes", "CaptureSha256"],
+      "properties": {
+        "Name": { "enum": ["Compact", "Normal", "FloatingVertical"] },
+        "StateSha256": { "$ref": "#/$defs/sha" },
+        "SourceStateSha256": { "$ref": "#/$defs/sha" },
+        "CapturePath": { "type": "string", "minLength": 1 },
+        "CaptureBytes": { "type": "integer", "minimum": 1 },
+        "CaptureSha256": { "$ref": "#/$defs/sha" }
+      }
+    },
+    "attention": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["Name", "Status", "SemanticFingerprint", "CapturePath", "CaptureBytes", "CaptureSha256"],
+      "properties": {
+        "Name": { "enum": ["Blocked", "Done"] },
+        "Status": { "enum": ["Blocked", "Done"] },
+        "SemanticFingerprint": { "$ref": "#/$defs/sha" },
+        "CapturePath": { "type": "string", "minLength": 1 },
+        "CaptureBytes": { "type": "integer", "minimum": 1 },
+        "CaptureSha256": { "$ref": "#/$defs/sha" }
+      }
+    }
+  }
+}

@@ -166,6 +166,7 @@ public sealed record WidgetUpdateLatencySample(
 
 public sealed record WidgetLatencySnapshot(
     int SampleCount,
+    long TotalRecorded,
     double? LastMilliseconds,
     double? P95Milliseconds,
     IReadOnlyList<WidgetUpdateLatencySample> Samples);
@@ -175,6 +176,7 @@ public sealed class WidgetUpdateTelemetry
     private const int MaximumSamples = 512;
     private readonly object _sync = new();
     private readonly Queue<WidgetUpdateLatencySample> _samples = new(MaximumSamples);
+    private long _totalRecorded;
 
     public void Record(WidgetUpdateLatencySample sample)
     {
@@ -211,6 +213,7 @@ public sealed class WidgetUpdateTelemetry
             }
 
             _samples.Enqueue(sample);
+            _totalRecorded = checked(_totalRecorded + 1);
         }
     }
 
@@ -249,7 +252,7 @@ public sealed class WidgetUpdateTelemetry
         {
             if (_samples.Count == 0)
             {
-                return new WidgetLatencySnapshot(0, null, null, []);
+                return new WidgetLatencySnapshot(0, _totalRecorded, null, null, []);
             }
 
             var samples = _samples.ToArray();
@@ -257,6 +260,7 @@ public sealed class WidgetUpdateTelemetry
             var percentileIndex = Math.Max(0, (int)Math.Ceiling(ordered.Length * 0.95) - 1);
             return new WidgetLatencySnapshot(
                 ordered.Length,
+                _totalRecorded,
                 samples[^1].Milliseconds,
                 ordered[percentileIndex],
                 samples);

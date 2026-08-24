@@ -1,0 +1,321 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://herdrops.local/schema/v0.2/clean-machine-report.schema.json",
+  "title": "HerdrOps v0.2 Clean-Machine Acceptance Report Schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "reportKind",
+    "scope",
+    "issue",
+    "packageVersion",
+    "profileId",
+    "status",
+    "mode",
+    "startedAtUtc",
+    "completedAtUtc",
+    "runId",
+    "actualHerdrStarted",
+    "herdrOpsStarted",
+    "networkContacted",
+    "machine",
+    "actor",
+    "bindings",
+    "targets",
+    "preflight",
+    "lifecycle",
+    "retainedData",
+    "residue",
+    "evidenceBoundary",
+    "failureDetails"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "type": "integer",
+      "const": 1
+    },
+    "reportKind": {
+      "type": "string",
+      "const": "HerdrOps.V02CleanMachineReport"
+    },
+    "scope": {
+      "type": "string",
+      "const": "InstallLifecycleOnly"
+    },
+    "issue": {
+      "type": "integer",
+      "const": 149
+    },
+    "packageVersion": {
+      "type": "string",
+      "const": "0.2.0"
+    },
+    "profileId": {
+      "type": "string",
+      "const": "herdrops-v0.2-package-software-only-issue-149"
+    },
+    "status": {
+      "type": "string",
+      "enum": ["PASS", "FAIL", "CANCELLED"]
+    },
+    "mode": {
+      "type": "string",
+      "enum": ["DryRun", "Fixture", "Live"]
+    },
+    "startedAtUtc": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?(?:Z|[+-]\\d{2}:\\d{2})$"
+    },
+    "completedAtUtc": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?(?:Z|[+-]\\d{2}:\\d{2})$"
+    },
+    "runId": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{32}$"
+    },
+    "actualHerdrStarted": {
+      "type": "boolean",
+      "const": false
+    },
+    "herdrOpsStarted": {
+      "type": "boolean",
+      "const": false
+    },
+    "networkContacted": {
+      "type": "boolean",
+      "const": false
+    },
+    "machine": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["machineName", "machineFingerprint", "elevated", "userScope"],
+      "properties": {
+        "machineName": {
+          "type": "string",
+          "minLength": 1
+        },
+        "machineFingerprint": {
+          "type": "string",
+          "pattern": "^[0-9A-F]{64}$"
+        },
+        "elevated": {
+          "type": "boolean"
+        },
+        "userScope": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "actor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["operator", "observer", "authorization"],
+      "properties": {
+        "operator": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["identity", "role"],
+          "properties": {
+            "identity": { "type": "string", "minLength": 1 },
+            "role": { "type": "string", "const": "EvidenceOperator" }
+          }
+        },
+        "observer": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["identity", "role"],
+          "properties": {
+            "identity": { "type": "string", "minLength": 1 },
+            "role": { "type": "string", "const": "IndependentObserver" }
+          }
+        },
+        "authorization": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["status", "signerThumbprint", "authorizationSha256", "signatureSha256", "nonce"],
+          "properties": {
+            "status": { "type": "string", "enum": ["NOT_APPLICABLE", "VERIFIED"] },
+            "signerThumbprint": { "type": "string" },
+            "authorizationSha256": { "type": "string" },
+            "signatureSha256": { "type": "string" },
+            "nonce": { "type": "string" }
+          }
+        }
+      }
+    },
+    "bindings": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "initial",
+        "final",
+        "referenceHostProfileSha256",
+        "rendererPolicySha256"
+      ],
+      "properties": {
+        "initial": { "$ref": "#/$defs/candidateBinding" },
+        "final": { "$ref": "#/$defs/candidateBinding" },
+        "referenceHostProfileSha256": { "type": "string", "const": "96D01ED15A536F2DF50B59B43CFDEB3683DCE8667AE2E7BF6A96124182FE13A3" },
+        "rendererPolicySha256": { "type": "string", "const": "1D37C9C39449556EB30F9AB5B734F0C5411CF4203321AF0B238993D017229E92" }
+      }
+    },
+    "targets": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["installRoot", "userDataRoot"],
+      "properties": {
+        "installRoot": { "type": "string", "minLength": 1 },
+        "userDataRoot": { "type": "string", "minLength": 1 }
+      }
+    },
+    "preflight": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "status", "details"],
+        "properties": {
+          "name": { "type": "string", "minLength": 1 },
+          "status": { "type": "string", "enum": ["PASS", "FAIL", "NOT_APPLICABLE"] },
+          "details": { "type": "string" }
+        }
+      }
+    },
+    "lifecycle": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["cleanInstall", "sameVersionCandidateReplacement", "rollback", "uninstall"],
+      "properties": {
+        "cleanInstall": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["status", "installedFileCount", "identityReceiptBound", "installStateBound", "startupRegistered"],
+          "properties": {
+            "status": { "type": "string", "enum": ["PASS", "FAIL", "SKIPPED", "NOT_RUN"] },
+            "installedFileCount": { "type": "integer", "minimum": 0 },
+            "identityReceiptBound": { "type": "boolean" },
+            "installStateBound": { "type": "boolean" },
+            "startupRegistered": { "type": "boolean" }
+          }
+        },
+        "sameVersionCandidateReplacement": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["status", "replacementObserved", "backupCreatedAndRetired", "backupVolumeSerialNumber", "backupFileId", "backupLinkCount", "userDataPreserved"],
+          "properties": {
+            "status": { "type": "string", "enum": ["PASS", "FAIL", "SKIPPED", "NOT_RUN"] },
+            "replacementObserved": { "type": "boolean" },
+            "backupCreatedAndRetired": { "type": "boolean" },
+            "backupVolumeSerialNumber": { "type": "string", "pattern": "^$|^[0-9A-F]{8}$" },
+            "backupFileId": { "type": "string", "pattern": "^$|^[0-9A-F]{16}$" },
+            "backupLinkCount": { "type": "integer", "minimum": 0 },
+            "userDataPreserved": { "type": "boolean" }
+          }
+        },
+        "rollback": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["status", "rollbackObserved", "installRestoredOnFault", "restoredSourceCommit", "restoredSourceTree", "restoredReceiptSha256", "restoredArchiveSha256", "restoredPackageManifestSha256", "restoredAppSha256", "restoredCoreSha256", "details"],
+          "properties": {
+            "status": { "type": "string", "enum": ["PASS", "FAIL", "SKIPPED", "NOT_RUN"] },
+            "rollbackObserved": { "type": "boolean" },
+            "installRestoredOnFault": { "type": "boolean" },
+            "restoredSourceCommit": { "type": "string", "pattern": "^$|^[0-9a-f]{40}$" },
+            "restoredSourceTree": { "type": "string", "pattern": "^$|^[0-9a-f]{40}$" },
+            "restoredReceiptSha256": { "type": "string", "pattern": "^$|^[0-9A-F]{64}$" },
+            "restoredArchiveSha256": { "type": "string", "pattern": "^$|^[0-9A-F]{64}$" },
+            "restoredPackageManifestSha256": { "type": "string", "pattern": "^$|^[0-9A-F]{64}$" },
+            "restoredAppSha256": { "type": "string", "pattern": "^$|^[0-9A-F]{64}$" },
+            "restoredCoreSha256": { "type": "string", "pattern": "^$|^[0-9A-F]{64}$" },
+            "details": { "type": "string" }
+          }
+        },
+        "uninstall": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["status", "installRootAbsent", "startupRemoved", "userDataPreserved"],
+          "properties": {
+            "status": { "type": "string", "enum": ["PASS", "FAIL", "SKIPPED", "NOT_RUN"] },
+            "installRootAbsent": { "type": "boolean" },
+            "startupRemoved": { "type": "boolean" },
+            "userDataPreserved": { "type": "boolean" }
+          }
+        }
+      }
+    },
+    "retainedData": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["markerStatus", "preservedFileCount", "details"],
+      "properties": {
+        "markerStatus": { "type": "string", "enum": ["PRESERVED", "SKIPPED", "CORRUPTED", "NOT_RUN"] },
+        "preservedFileCount": { "type": "integer", "minimum": 0 },
+        "details": { "type": "string" }
+      }
+    },
+    "residue": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "orphanedStagingPresent",
+        "orphanedBackupPresent",
+        "startupRegistryCleaned",
+        "shortcutsCleaned",
+        "activePipesRemaining",
+        "activeProcessesRemaining",
+        "activeListenersRemaining"
+      ],
+      "properties": {
+        "orphanedStagingPresent": { "type": "boolean" },
+        "orphanedBackupPresent": { "type": "boolean" },
+        "startupRegistryCleaned": { "type": "boolean" },
+        "shortcutsCleaned": { "type": "boolean" },
+        "activePipesRemaining": { "type": "integer", "minimum": 0 },
+        "activeProcessesRemaining": { "type": "integer", "minimum": 0 },
+        "activeListenersRemaining": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "evidenceBoundary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "evidenceClass",
+        "actualHerdrRuntime",
+        "independentReview",
+        "humanGo",
+        "releaseCredit",
+        "creditGranted"
+      ],
+      "properties": {
+        "evidenceClass": { "type": "string", "enum": ["Synthetic", "CleanMachine"] },
+        "actualHerdrRuntime": { "type": "string", "const": "NOT_OBSERVED" },
+        "independentReview": { "type": "string", "const": "NOT_OBSERVED" },
+        "humanGo": { "type": "string", "const": "NOT_OBSERVED" },
+        "releaseCredit": { "type": "string", "const": "NOT_OBSERVED" },
+        "creditGranted": { "type": "boolean" }
+      }
+    },
+    "failureDetails": {
+      "type": "string"
+    }
+  },
+  "$defs": {
+    "candidateBinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sourceCommit", "sourceTree", "receiptSha256", "archiveSha256", "packageManifestSha256", "appSha256", "coreSha256"],
+      "properties": {
+        "sourceCommit": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+        "sourceTree": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+        "receiptSha256": { "type": "string", "pattern": "^[0-9A-F]{64}$" },
+        "archiveSha256": { "type": "string", "pattern": "^[0-9A-F]{64}$" },
+        "packageManifestSha256": { "type": "string", "pattern": "^[0-9A-F]{64}$" },
+        "appSha256": { "type": "string", "pattern": "^[0-9A-F]{64}$" },
+        "coreSha256": { "type": "string", "pattern": "^[0-9A-F]{64}$" }
+      }
+    }
+  }
+}

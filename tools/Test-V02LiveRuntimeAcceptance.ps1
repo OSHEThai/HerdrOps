@@ -12,6 +12,40 @@ param(
     [ValidatePattern('^[0-9a-fA-F]{40}$')]
     [string]$ExpectedSourceTree,
 
+    [Parameter(Mandatory)]
+    [ValidatePattern('^[0-9a-f]{32}$')]
+    [string]$EvidenceRunNonce,
+
+    [Parameter(Mandatory)]
+    [ValidateNotNullOrEmpty()]
+    [string]$PackageIdentityPath,
+
+    [Parameter(Mandatory)]
+    [ValidateNotNullOrEmpty()]
+    [string]$PackageArchivePath,
+
+    [Parameter(Mandatory)]
+    [ValidateNotNullOrEmpty()]
+    [string]$ExtractedPackageRoot,
+
+    [Parameter(Mandatory)]
+    [ValidateNotNullOrEmpty()]
+    [string]$TargetAgentSessionReference,
+
+    [string]$Issue10WidgetReportPath = '',
+
+    [string]$Issue10BindingManifestPath = '',
+
+    [string]$Issue10PerformanceReceiptPath = '',
+
+    [string]$Issue10PerformanceRawSourcePath = '',
+
+    [string]$Issue10PerformanceTelemetryBindingPath = '',
+
+    [string]$Issue10PerformanceTransactionCommitPath = '',
+
+    [string]$Issue10SoakReceiptPath = '',
+
     [string]$HerdrExecutable = (Join-Path $env:LOCALAPPDATA 'Programs\Herdr\bin\herdr.exe'),
 
     [ValidateRange(90, 900)]
@@ -36,6 +70,22 @@ $PSNativeCommandUseErrorActionPreference = $false
 . (Join-Path $PSScriptRoot 'lib/V02WorkingSetBudgetPolicy.ps1')
 . (Join-Path $PSScriptRoot 'lib/V02ReferenceHostProfile.ps1')
 . (Join-Path $PSScriptRoot 'lib/V02RendererEvidence.ps1')
+. (Join-Path $PSScriptRoot 'lib/V02RuntimePackageBinding.ps1')
+. (Join-Path $PSScriptRoot 'lib/V02RuntimeSemanticBinding.ps1')
+. (Join-Path $PSScriptRoot 'v0.2-issue9-live-ui/Issue9LiveUi.Production.ps1')
+
+$issue10Arguments = @(
+    $Issue10WidgetReportPath,
+    $Issue10BindingManifestPath,
+    $Issue10PerformanceReceiptPath,
+    $Issue10PerformanceRawSourcePath,
+    $Issue10PerformanceTelemetryBindingPath,
+    $Issue10PerformanceTransactionCommitPath,
+    $Issue10SoakReceiptPath)
+$issue10SuppliedCount = @($issue10Arguments | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }).Count
+if ($issue10SuppliedCount -ne 0 -and $issue10SuppliedCount -ne $issue10Arguments.Count) {
+    throw 'ISSUE10_SAME_RUN_ALL_OR_NONE: Issue #10 same-run production evidence requires widget output, binding output, performance receipt/raw/binding/commit, and soak receipt together.'
+}
 
 function Get-ExpectedCleanSourceIdentity {
     param(
@@ -135,35 +185,6 @@ function Test-SameHerdrServerProcess {
         $leftStart.UtcDateTime.Ticks -eq $rightStart.UtcDateTime.Ticks
 }
 
-function Get-FreshTestCounts {
-    param(
-        [Parameter(Mandatory)][string]$Directory,
-        [Parameter(Mandatory)][DateTime]$StartedUtc
-    )
-
-    $trxFiles = @(Get-ChildItem -LiteralPath $Directory -Filter '*.trx' -File |
-        Where-Object { $_.LastWriteTimeUtc -ge $StartedUtc.AddSeconds(-2) })
-    if ($trxFiles.Count -ne 4) {
-        throw "Expected four fresh TRX files, found $($trxFiles.Count)."
-    }
-
-    $total = 0
-    $passed = 0
-    $failed = 0
-    foreach ($trxFile in $trxFiles) {
-        [xml]$trx = Get-Content -LiteralPath $trxFile.FullName -Raw
-        $counters = $trx.TestRun.ResultSummary.Counters
-        $total += [int]$counters.total
-        $passed += [int]$counters.passed
-        $failed += [int]$counters.failed
-    }
-    if ($total -le 0 -or $failed -ne 0 -or $total -ne $passed) {
-        throw "Fresh test counters are not all passing: total=$total passed=$passed failed=$failed"
-    }
-
-    return [pscustomobject]@{ Total = $total; Passed = $passed; Failed = $failed }
-}
-
 function Assert-True {
     param(
         [Parameter(Mandatory)][bool]$Condition,
@@ -228,9 +249,19 @@ function Write-FailureGateReport {
         [AllowEmptyString()][string]$AppExitCode = 'NOT_OBSERVED',
         [AllowEmptyString()][string]$CoreExitCode = 'NOT_OBSERVED',
         [AllowEmptyString()][string]$CoreAcceptedEventKindCheck = 'NOT_EVALUATED',
+        [AllowEmptyString()][string]$SemanticCaptureBindingCheck = 'NOT_EVALUATED',
         [AllowEmptyString()][string]$ObservedLanguage = 'NOT_OBSERVED',
         [AllowEmptyString()][string]$CaptureDirectory = '',
         [AllowEmptyString()][string]$ReferenceHostSchemaSha256 = 'NOT_OBSERVED',
+        [AllowEmptyString()][string]$PackageIdentityReceiptSha256 = 'NOT_OBSERVED',
+        [AllowEmptyString()][string]$PackageArchiveSha256 = 'NOT_OBSERVED',
+        [AllowEmptyString()][string]$PackageManifestSha256 = 'NOT_OBSERVED',
+        [AllowEmptyString()][string]$PackageProfileFileSha256 = 'NOT_OBSERVED',
+        [AllowEmptyString()][string]$PackageProfileCanonicalSha256 = 'NOT_OBSERVED',
+        [AllowEmptyString()][string]$AppSha256 = 'NOT_OBSERVED',
+        [AllowEmptyString()][string]$CoreSha256 = 'NOT_OBSERVED',
+        [AllowEmptyString()][string]$TrxSelectionReceiptSha256 = 'NOT_OBSERVED',
+        [AllowEmptyString()][string]$TargetAgentSessionReference = 'NOT_OBSERVED',
         [AllowEmptyString()][string]$FailureType = 'TerminatingFailure'
     )
 
@@ -243,6 +274,7 @@ function Write-FailureGateReport {
         $reportLines = @(
             'HerdrOps v0.2 Composite Actual Herdr Runtime Acceptance',
             "GeneratedUtc: $([DateTimeOffset]::UtcNow.ToString('O'))",
+            "RunNonce: $EvidenceRunNonce",
             "ExpectedSourceCommit: $ExpectedSourceCommit",
             "ExpectedSourceTree: $ExpectedSourceTree",
             "SourceCommit: $SourceCommit",
@@ -260,8 +292,20 @@ function Write-FailureGateReport {
             "OriginalAppExitCode: $AppExitCode",
             "OriginalCoreExitCode: $CoreExitCode",
             "CoreAcceptedEventKindCheck: $CoreAcceptedEventKindCheck",
+            "SemanticCaptureBindingCheck: $SemanticCaptureBindingCheck",
             "Language: $ObservedLanguage",
             "ReferenceHostSchemaSha256: $ReferenceHostSchemaSha256",
+            "PackageIdentityReceiptSha256: $PackageIdentityReceiptSha256",
+            "PackageArchiveSha256: $PackageArchiveSha256",
+            "PackageManifestSha256: $PackageManifestSha256",
+            "PackageProfileFileSha256: $PackageProfileFileSha256",
+            "PackageProfileCanonicalSha256: $PackageProfileCanonicalSha256",
+            "AppSha256: $AppSha256",
+            "CoreSha256: $CoreSha256",
+            "TrxSelectionReceiptSha256: $TrxSelectionReceiptSha256",
+            "TargetAgentSessionReference: $TargetAgentSessionReference",
+            'TargetAgentSessionReferenceEvidenceSource: OperatorAttestation',
+            'TargetAgentSessionReferenceObservableByGate: false',
             "CaptureDirectory: $CaptureDirectory",
             "CoreRuntimeReportPath: $CoreReportPath",
             "CoreRuntimeReportSha256: $(Get-OptionalFileSha256 -Path $CoreReportPath)",
@@ -712,14 +756,203 @@ function Assert-AgentStatusTransitionEvidence {
     }
 }
 
+function Test-Issue10ContainedPath {
+    param([Parameter(Mandatory)][string]$Root,[Parameter(Mandatory)][string]$Path)
+    $rootFull=[IO.Path]::GetFullPath($Root).TrimEnd('\','/')
+    $pathFull=[IO.Path]::GetFullPath($Path)
+    return $pathFull.StartsWith($rootFull+[IO.Path]::DirectorySeparatorChar,[StringComparison]::OrdinalIgnoreCase)
+}
+
+function Assert-Issue10NoReparseComponents {
+    param([Parameter(Mandatory)][string]$Path,[switch]$LeafMayBeMissing,[Parameter(Mandatory)][string]$Context)
+    $full=[IO.Path]::GetFullPath($Path);$root=[IO.Path]::GetPathRoot($full);$current=$root
+    $parts=$full.Substring($root.Length).Split(@([IO.Path]::DirectorySeparatorChar,[IO.Path]::AltDirectorySeparatorChar),[StringSplitOptions]::RemoveEmptyEntries)
+    for($index=0;$index-lt$parts.Length;$index++){
+        $current=Join-Path $current $parts[$index]
+        if(-not(Test-Path -LiteralPath $current)){
+            if($LeafMayBeMissing-and$index-eq($parts.Length-1)){return}
+            throw "$Context has a missing path component: $current"
+        }
+        if(([IO.File]::GetAttributes($current)-band[IO.FileAttributes]::ReparsePoint)-ne0){throw "$Context contains a reparse-point component: $current"}
+    }
+}
+
+function Get-Issue10FinalPath {
+    param([Parameter(Mandatory)][IO.FileStream]$Stream,[Parameter(Mandatory)][string]$Context)
+    $builder=New-Object Text.StringBuilder 32768
+    $length=[HerdrOpsV02FileIdentityNative]::GetFinalPathNameByHandle($Stream.SafeFileHandle,$builder,$builder.Capacity,0)
+    if($length-eq0-or$length-ge$builder.Capacity){throw "$Context final-path lookup failed with Win32 $([Runtime.InteropServices.Marshal]::GetLastWin32Error())."}
+    $value=$builder.ToString();if($value.StartsWith('\\?\',[StringComparison]::Ordinal)){$value=$value.Substring(4)}
+    return [IO.Path]::GetFullPath($value)
+}
+
+function Assert-Issue10HeldLeaf {
+    param([Parameter(Mandatory)]$Owned,[Parameter(Mandatory)][string]$Context)
+    $current=Get-V02FileInformation -FileStream $Owned.HeldStream
+    Assert-V02FileIdentityContinuity -BaselineInfo $Owned.Identity -CurrentInfo $current -Context $Context
+    if($current.NumberOfLinks-ne1){throw "$Context must have exactly one hard link."}
+    $final=Get-Issue10FinalPath -Stream $Owned.HeldStream -Context $Context
+    if(-not$final.Equals([IO.Path]::GetFullPath($Owned.Path),[StringComparison]::OrdinalIgnoreCase)){throw "$Context final path changed: $final"}
+}
+
+function New-Issue10OwnedLeafStream {
+    param([Parameter(Mandatory)][string]$Path,[Parameter(Mandatory)][string]$Context)
+    $handle=[HerdrOpsV02FileIdentityNative]::CreateFile([IO.Path]::GetFullPath($Path),[uint32]3221291008,1,[IntPtr]::Zero,1,0x80,[IntPtr]::Zero)
+    if($null-eq$handle-or$handle.IsInvalid){$errorCode=[Runtime.InteropServices.Marshal]::GetLastWin32Error();if($null-ne$handle){$handle.Dispose()};throw "$Context exact owned-leaf create failed with Win32 $errorCode."}
+    try{return New-Object IO.FileStream $handle,([IO.FileAccess]::ReadWrite)}catch{$handle.Dispose();throw}
+}
+
+function Remove-Issue10OwnedLeaf {
+    param([Parameter(Mandatory)]$Owned,[Parameter(Mandatory)][string]$Context)
+    if($null-eq$Owned-or$null-eq$Owned.HeldStream){return}
+    try{
+        Assert-Issue10HeldLeaf -Owned $Owned -Context $Context
+        $disposition=New-Object HerdrOpsV02FileIdentityNative+FILE_DISPOSITION_INFO;$disposition.DeleteFile=$true
+        if(-not[HerdrOpsV02FileIdentityNative]::SetFileInformationByHandle($Owned.HeldStream.SafeFileHandle,4,[ref]$disposition,4)){throw "$Context exact-handle cleanup failed with Win32 $([Runtime.InteropServices.Marshal]::GetLastWin32Error())."}
+    }finally{$Owned.HeldStream.Dispose();$Owned.HeldStream=$null}
+}
+
+function Close-Issue10OwnedLeaves {
+    param([Parameter(Mandatory)]$Leaves)
+    foreach($owned in @($Leaves)){if($null-ne$owned.HeldStream){Assert-Issue10HeldLeaf $owned 'Issue #10 committed owned leaf';$owned.HeldStream.Dispose();$owned.HeldStream=$null}}
+}
+
+function Get-Issue10HandleInformation {
+    param([Parameter(Mandatory)]$Handle,[Parameter(Mandatory)][string]$Context)
+    $info=New-Object HerdrOpsV02FileIdentityNative+BY_HANDLE_FILE_INFORMATION
+    if(-not[HerdrOpsV02FileIdentityNative]::GetFileInformationByHandle($Handle,[ref]$info)){throw "$Context identity read failed with Win32 $([Runtime.InteropServices.Marshal]::GetLastWin32Error())."}
+    [pscustomobject]@{VolumeSerialNumber=[uint32]$info.dwVolumeSerialNumber;FileId=[uint64](([uint64]$info.nFileIndexHigh-shl32)-bor[uint64]$info.nFileIndexLow);NumberOfLinks=[uint32]$info.nNumberOfLinks;Length=[int64](([uint64]$info.nFileSizeHigh-shl32)-bor[uint64]$info.nFileSizeLow)}
+}
+
+function Open-Issue10HeldPublishedLeaf {
+    param([Parameter(Mandatory)][string]$Path,[Parameter(Mandatory)][string]$Context)
+    Assert-Issue10NoReparseComponents -Path $Path -Context $Context
+    $stream=[IO.File]::Open([IO.Path]::GetFullPath($Path),[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read)
+    try{
+        $identity=Get-V02FileInformation -FileStream $stream
+        if($identity.NumberOfLinks-ne1){throw "$Context must have exactly one hard link."}
+        if(-not(Get-Issue10FinalPath -Stream $stream -Context $Context).Equals([IO.Path]::GetFullPath($Path),[StringComparison]::OrdinalIgnoreCase)){throw "$Context final path changed."}
+        $sha=[Security.Cryptography.SHA256]::Create();try{$stream.Position=0;$hash=([BitConverter]::ToString($sha.ComputeHash($stream))).Replace('-','')}finally{$sha.Dispose()}
+        $after=Get-V02FileInformation -FileStream $stream;Assert-V02FileIdentityContinuity -BaselineInfo $identity -CurrentInfo $after -Context $Context
+        $normalized=[pscustomobject]@{VolumeSerialNumber=[uint32]$after.VolumeSerialNumber;FileId=[uint64]$after.FileIndex;NumberOfLinks=[uint32]$after.NumberOfLinks;Length=[uint64]$after.FileSize}
+        [pscustomobject]@{Path=[IO.Path]::GetFullPath($Path);Sha256=$hash;HeldStream=$stream;Identity=$normalized}
+    }catch{$stream.Dispose();throw}
+}
+
+function Open-Issue10HeldPublishedParent {
+    param([Parameter(Mandatory)][string]$Path,[Parameter(Mandatory)][string]$Context)
+    Assert-Issue10NoReparseComponents -Path $Path -Context $Context
+    $full=[IO.Path]::GetFullPath($Path);$handle=[HerdrOpsV02FileIdentityNative]::CreateFile($full,0x80,7,[IntPtr]::Zero,3,0x02000000,[IntPtr]::Zero)
+    if($null-eq$handle-or$handle.IsInvalid){$errorCode=[Runtime.InteropServices.Marshal]::GetLastWin32Error();if($null-ne$handle){$handle.Dispose()};throw "$Context hold failed with Win32 $errorCode."}
+    try{$identity=Get-Issue10HandleInformation $handle $Context;$builder=New-Object Text.StringBuilder 32768;$length=[HerdrOpsV02FileIdentityNative]::GetFinalPathNameByHandle($handle,$builder,$builder.Capacity,0);if($length-eq0-or$length-ge$builder.Capacity){throw "$Context final path read failed."};$final=$builder.ToString();if($final.StartsWith('\\?\')){$final=$final.Substring(4)};if(-not([IO.Path]::GetFullPath($final).Equals($full,[StringComparison]::OrdinalIgnoreCase))){throw "$Context final path changed."};[pscustomobject]@{Path=$full;Handle=$handle;Identity=$identity}}catch{$handle.Dispose();throw}
+}
+
+function Get-Issue10ReceiptAuthentication {
+    param([Parameter(Mandatory)]$Receipt,[Parameter(Mandatory)][string]$Key)
+    if($Key-notmatch'^[0-9A-Fa-f]{64}$'){throw 'Issue #10 output receipt authentication key is malformed.'}
+    $canonical=(@([string]$Receipt.SchemaVersion,[string]$Receipt.EvidenceClassification,[string]$Receipt.Issue,[string]$Receipt.RunNonce,[IO.Path]::GetFullPath([string]$Receipt.OutputPath),[string]$Receipt.OutputLength,[string]$Receipt.OutputSha256,[string]$Receipt.OutputVolumeSerialNumber,[string]$Receipt.OutputFileId,[string]$Receipt.OutputNumberOfLinks,[IO.Path]::GetFullPath([string]$Receipt.ParentPath),[string]$Receipt.ParentVolumeSerialNumber,[string]$Receipt.ParentFileId,[string]$Receipt.ProducerProcessId)-join"`n")+"`n"
+    $keyBytes=New-Object byte[] 32;for($index=0;$index-lt32;$index++){$keyBytes[$index]=[Convert]::ToByte($Key.Substring($index*2,2),16)}
+    $hmac=New-Object Security.Cryptography.HMACSHA256 (,$keyBytes);try{([BitConverter]::ToString($hmac.ComputeHash((New-Object Text.UTF8Encoding($false)).GetBytes($canonical)))).Replace('-','')}finally{$hmac.Dispose()}
+}
+
+function Test-Issue10FixedHexEqual {
+    param([Parameter(Mandatory)][string]$Left,[Parameter(Mandatory)][string]$Right)
+    if($Left.Length-ne$Right.Length){return $false};$difference=0;for($index=0;$index-lt$Left.Length;$index++){$difference=$difference-bor([int][char]$Left[$index]-bxor[int][char]$Right[$index])};return $difference-eq0
+}
+
+function Open-Issue10PublishedBinding {
+    param([Parameter(Mandatory)][string]$WidgetPath,[Parameter(Mandatory)][string]$ReceiptPath,[Parameter(Mandatory)][string]$ReceiptKey,[Parameter(Mandatory)][string]$RunNonce,[Parameter(Mandatory)][int]$ProducerProcessId,[scriptblock]$AfterChildExitForTest)
+    if($null-ne$AfterChildExitForTest){&$AfterChildExitForTest}
+    $receiptHeld=$null;$widgetHeld=$null;$parentHeld=$null
+    try{
+        $receiptHeld=Open-Issue10HeldPublishedLeaf $ReceiptPath 'Issue #10 output publication receipt'
+        $receiptBytes=New-Object byte[] ([int]$receiptHeld.Identity.Length);$receiptHeld.HeldStream.Position=0;$offset=0;while($offset-lt$receiptBytes.Length){$read=$receiptHeld.HeldStream.Read($receiptBytes,$offset,$receiptBytes.Length-$offset);if($read-le0){throw 'Issue #10 output publication receipt ended early.'};$offset+=$read}
+        $receipt=(New-Object Text.UTF8Encoding($false,$true)).GetString($receiptBytes)|ConvertFrom-Json
+        $required=@('SchemaVersion','EvidenceClassification','Issue','RunNonce','OutputPath','OutputLength','OutputSha256','OutputVolumeSerialNumber','OutputFileId','OutputNumberOfLinks','ParentPath','ParentVolumeSerialNumber','ParentFileId','ProducerProcessId','AuthenticationSha256')
+        $actual=@($receipt.PSObject.Properties.Name);if(@($actual).Count-ne$required.Count-or@($required|Where-Object{$actual-cnotcontains$_}).Count-ne0){throw 'Issue #10 output publication receipt shape is not exact.'}
+        if([int]$receipt.SchemaVersion-ne1-or[string]$receipt.EvidenceClassification-cne'Issue10OutputPublicationReceipt'-or[int]$receipt.Issue-ne10-or[string]$receipt.RunNonce-cne$RunNonce-or[int]$receipt.ProducerProcessId-ne$ProducerProcessId){throw 'Issue #10 output publication receipt invocation binding failed.'}
+        $expectedAuthentication=Get-Issue10ReceiptAuthentication $receipt $ReceiptKey;if(-not(Test-Issue10FixedHexEqual ([string]$receipt.AuthenticationSha256) $expectedAuthentication)){throw 'Issue #10 output publication receipt authentication failed.'}
+        $parentHeld=Open-Issue10HeldPublishedParent (Split-Path -Parent $WidgetPath) 'Issue #10 output parent'
+        if(-not$parentHeld.Path.Equals([IO.Path]::GetFullPath([string]$receipt.ParentPath),[StringComparison]::OrdinalIgnoreCase)-or[string]$receipt.ParentVolumeSerialNumber-cne[string]$parentHeld.Identity.VolumeSerialNumber-or[string]$receipt.ParentFileId-cne[string]$parentHeld.Identity.FileId){throw 'Issue #10 output publication receipt parent identity failed.'}
+        $widgetHeld=Open-Issue10HeldPublishedLeaf $WidgetPath 'Issue #10 published widget report'
+        if(-not$widgetHeld.Path.Equals([IO.Path]::GetFullPath([string]$receipt.OutputPath),[StringComparison]::OrdinalIgnoreCase)-or[uint64]$receipt.OutputLength-ne[uint64]$widgetHeld.Identity.Length-or[string]$receipt.OutputSha256-cne[string]$widgetHeld.Sha256-or[string]$receipt.OutputVolumeSerialNumber-cne[string]$widgetHeld.Identity.VolumeSerialNumber-or[string]$receipt.OutputFileId-cne[string]$widgetHeld.Identity.FileId-or[uint32]$receipt.OutputNumberOfLinks-ne1){throw 'Issue #10 published widget identity does not match the authenticated child receipt.'}
+        [pscustomobject]@{Widget=$widgetHeld;Receipt=$receiptHeld;Parent=$parentHeld;ReceiptValue=$receipt};$widgetHeld=$null;$receiptHeld=$null;$parentHeld=$null
+    }finally{if($null-ne$widgetHeld){$widgetHeld.HeldStream.Dispose()};if($null-ne$receiptHeld){$receiptHeld.HeldStream.Dispose()};if($null-ne$parentHeld){$parentHeld.Handle.Dispose()}}
+}
+
+function Copy-Issue10HeldAuthorityFile {
+    param([Parameter(Mandatory)][string]$Source,[Parameter(Mandatory)][string]$Destination,[Parameter(Mandatory)][string]$Context)
+    if(-not(Test-Path -LiteralPath $Source -PathType Leaf)){throw "$Context is missing: $Source"}
+    if(Test-Path -LiteralPath $Destination){throw "$Context destination already exists: $Destination"}
+    Assert-Issue10NoReparseComponents -Path $Source -Context $Context
+    Assert-Issue10NoReparseComponents -Path $Destination -LeafMayBeMissing -Context "$Context destination"
+    $sourceStream=$null;$destinationStream=$null;$sha=$null;$complete=$false
+    try{
+        $sourceStream=[IO.File]::Open([IO.Path]::GetFullPath($Source),[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read)
+        $before=Get-V02FileInformation -FileStream $sourceStream
+        if($before.NumberOfLinks -ne 1){throw "$Context source must have exactly one hard link."}
+        if(-not(Get-Issue10FinalPath -Stream $sourceStream -Context $Context).Equals([IO.Path]::GetFullPath($Source),[StringComparison]::OrdinalIgnoreCase)){throw "$Context source final path changed."}
+        $destinationStream=New-Issue10OwnedLeafStream -Path $Destination -Context "$Context destination"
+        $sourceStream.CopyTo($destinationStream);$destinationStream.Flush($true)
+        $sourceStream.Position=0;$sha=[Security.Cryptography.SHA256]::Create();$sourceHash=([BitConverter]::ToString($sha.ComputeHash($sourceStream))).Replace('-','')
+        $after=Get-V02FileInformation -FileStream $sourceStream
+        Assert-V02FileIdentityContinuity -BaselineInfo $before -CurrentInfo $after -Context $Context
+        $destinationStream.Position=0;$destinationHash=([BitConverter]::ToString($sha.ComputeHash($destinationStream))).Replace('-','')
+        if($destinationHash -cne $sourceHash){throw "$Context changed across the held copy."}
+        $owned=[pscustomobject]@{Path=[IO.Path]::GetFullPath($Destination);Sha256=$destinationHash;HeldStream=$destinationStream;Identity=(Get-V02FileInformation -FileStream $destinationStream)}
+        Assert-Issue10HeldLeaf -Owned $owned -Context "$Context destination"
+        $complete=$true;return $owned
+    }finally{if($null-ne$sha){$sha.Dispose()};if(-not$complete-and$null-ne$destinationStream){$failed=[pscustomobject]@{Path=[IO.Path]::GetFullPath($Destination);HeldStream=$destinationStream;Identity=(Get-V02FileInformation -FileStream $destinationStream)};Remove-Issue10OwnedLeaf $failed "$Context failed-copy cleanup"};if($null-ne$sourceStream){$sourceStream.Dispose()}}
+}
+
+function New-Issue10SameRunBindingManifest {
+    param([string]$AllowedEvidenceRoot,[string]$RunEvidenceDirectory,[string]$ManifestPath,[string]$WidgetOutputPath,[string]$RunNonce,[DateTime]$EvidenceStartedUtc,[string]$SourceCommit,[string]$SourceTree,$PackageBinding,[string]$GateReportPath,[string]$CoreRuntimeReportPath,[string]$AppRuntimeReportPath,[string]$PerformanceReceiptPath,[string]$PerformanceRawSourcePath,[string]$PerformanceTelemetryBindingPath,[string]$PerformanceTransactionCommitPath,[string]$SoakReceiptPath,[string]$HerdrExecutablePath,[string]$ControlSessionIdentity,[string]$TargetSessionIdentity)
+    $manifestFull=[IO.Path]::GetFullPath($ManifestPath);$widgetFull=[IO.Path]::GetFullPath($WidgetOutputPath);$receiptFull=$widgetFull+'.publication.json'
+    foreach($output in @($manifestFull,$widgetFull,$receiptFull)){
+        if(-not(Test-Issue10ContainedPath $AllowedEvidenceRoot $output)){throw "Issue #10 same-run output escaped the current evidence root: $output"}
+        $parent=Split-Path -Parent $output;if(-not(Test-Path -LiteralPath $parent -PathType Container)){throw "Issue #10 same-run output parent is missing: $parent"}
+        if(Test-Path -LiteralPath $output){throw "Issue #10 same-run output already exists: $output"}
+    }
+    if($manifestFull.Equals($widgetFull,[StringComparison]::OrdinalIgnoreCase)-or$manifestFull.Equals($receiptFull,[StringComparison]::OrdinalIgnoreCase)){throw 'Issue #10 manifest, widget output, and publication receipt paths must be distinct.'}
+    foreach($currentRunPath in @($GateReportPath,$CoreRuntimeReportPath,$AppRuntimeReportPath)){if(-not(Test-Issue10ContainedPath $RunEvidenceDirectory $currentRunPath)){throw "Issue #10 current-run report escaped its exact run directory: $currentRunPath"}}
+    Assert-Issue10NoReparseComponents -Path $AllowedEvidenceRoot -Context 'Issue #10 evidence root'
+    foreach($output in @($manifestFull,$widgetFull,$receiptFull)){Assert-Issue10NoReparseComponents -Path $output -LeafMayBeMissing -Context 'Issue #10 same-run output'}
+    $authorityDirectory=Join-Path $RunEvidenceDirectory 'issue10-authority';if(Test-Path -LiteralPath $authorityDirectory){throw "Issue #10 authority directory already exists: $authorityDirectory"};Assert-Issue10NoReparseComponents -Path $authorityDirectory -LeafMayBeMissing -Context 'Issue #10 authority directory';New-Item -ItemType Directory -Path $authorityDirectory|Out-Null
+    $ownedLeaves=New-Object Collections.Generic.List[object];$manifestOwned=$null
+    try{
+        $identity=Copy-Issue10HeldAuthorityFile $PackageBinding.IdentityPath (Join-Path $authorityDirectory 'identity.json') 'Issue #10 package identity';$ownedLeaves.Add($identity)
+        $archive=Copy-Issue10HeldAuthorityFile $PackageBinding.ArchivePath (Join-Path $authorityDirectory 'HerdrOps-0.2.0-win-x64.zip') 'Issue #10 package archive';$ownedLeaves.Add($archive)
+        $packageManifest=Copy-Issue10HeldAuthorityFile $PackageBinding.ManifestPath (Join-Path $authorityDirectory 'package-manifest.json') 'Issue #10 package manifest';$ownedLeaves.Add($packageManifest)
+        $app=Copy-Issue10HeldAuthorityFile $PackageBinding.AppPath (Join-Path $authorityDirectory 'HerdrOps.App.exe') 'Issue #10 App';$ownedLeaves.Add($app)
+        $core=Copy-Issue10HeldAuthorityFile $PackageBinding.CorePath (Join-Path $authorityDirectory 'HerdrOps.Core.exe') 'Issue #10 Core';$ownedLeaves.Add($core)
+        $performance=Copy-Issue10HeldAuthorityFile $PerformanceReceiptPath (Join-Path $authorityDirectory 'performance-receipt.json') 'Issue #10 performance receipt';$ownedLeaves.Add($performance)
+        $performanceRaw=Copy-Issue10HeldAuthorityFile $PerformanceRawSourcePath (Join-Path $authorityDirectory 'performance-raw.json') 'Issue #10 performance raw source';$ownedLeaves.Add($performanceRaw)
+        $performanceBinding=Copy-Issue10HeldAuthorityFile $PerformanceTelemetryBindingPath (Join-Path $authorityDirectory 'performance-telemetry-binding.json') 'Issue #10 performance telemetry binding';$ownedLeaves.Add($performanceBinding)
+        $performanceCommit=Copy-Issue10HeldAuthorityFile $PerformanceTransactionCommitPath (Join-Path $authorityDirectory 'performance-transaction-commit.json') 'Issue #10 performance transaction commit';$ownedLeaves.Add($performanceCommit)
+        $soak=Copy-Issue10HeldAuthorityFile $SoakReceiptPath (Join-Path $authorityDirectory 'soak-receipt.json') 'Issue #10 soak receipt';$ownedLeaves.Add($soak)
+        $herdr=Copy-Issue10HeldAuthorityFile $HerdrExecutablePath (Join-Path $authorityDirectory 'herdr.exe') 'Issue #10 Herdr executable';$ownedLeaves.Add($herdr)
+        foreach($binding in @(@($identity,$PackageBinding.IdentityFileSha256,'identity'),@($archive,$PackageBinding.ArchiveSha256,'archive'),@($packageManifest,$PackageBinding.ManifestSha256,'manifest'),@($app,$PackageBinding.AppSha256,'App'),@($core,$PackageBinding.CoreSha256,'Core'))){if($binding[0].Sha256-cne[string]$binding[1]){throw "Issue #10 staged package $($binding[2]) hash differs from the validated package binding."}}
+        $artifact={param($path)[pscustomobject][ordered]@{Path=[IO.Path]::GetFullPath($path);Sha256=(Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash}}
+        $ownedArtifact={param($owned)[pscustomobject][ordered]@{Path=[string]$owned.Path;Sha256=[string]$owned.Sha256}}
+        $manifest=[pscustomobject][ordered]@{SchemaVersion=1;EvidenceClassification='Issue10ProductionBinding';Issue=10;EvidenceRoot=[IO.Path]::GetFullPath($AllowedEvidenceRoot);RunNonce=$RunNonce;EvidenceStartedUtc=$EvidenceStartedUtc.ToUniversalTime().ToString('O');Source=[pscustomobject][ordered]@{CommitSha=$SourceCommit;TreeSha=$SourceTree};GateReport=&$artifact $GateReportPath;CoreRuntimeReport=&$artifact $CoreRuntimeReportPath;Package=[pscustomobject][ordered]@{Identity=&$ownedArtifact $identity;IdentityReceiptSha256=$PackageBinding.ReceiptSha256;Archive=&$ownedArtifact $archive;Manifest=&$ownedArtifact $packageManifest;App=&$ownedArtifact $app;Core=&$ownedArtifact $core};Performance=[pscustomobject][ordered]@{Receipt=&$ownedArtifact $performance;RawSource=&$ownedArtifact $performanceRaw;TelemetryBinding=&$ownedArtifact $performanceBinding;TransactionCommit=&$ownedArtifact $performanceCommit;RuntimeAppPath=[IO.Path]::GetFullPath($PackageBinding.AppPath);RuntimeCorePath=[IO.Path]::GetFullPath($PackageBinding.CorePath)};SoakReceipt=&$ownedArtifact $soak;Runtime=[pscustomobject][ordered]@{HerdrExecutable=&$ownedArtifact $herdr;ControlSessionIdentity=$ControlSessionIdentity;TargetSessionIdentity=$TargetSessionIdentity};EvidenceBoundary=[pscustomobject][ordered]@{Runtime='NOT_OBSERVED';Human='NOT_OBSERVED';Release='NOT_OBSERVED';CreditGranted=$false}}
+        $json=($manifest|ConvertTo-Json -Depth 12 -Compress)+"`n";$bytes=(New-Object Text.UTF8Encoding($false)).GetBytes($json)
+        $stream=New-Issue10OwnedLeafStream -Path $manifestFull -Context 'Issue #10 binding manifest';$manifestOwned=[pscustomobject]@{Path=$manifestFull;Sha256='';HeldStream=$stream;Identity=(Get-V02FileInformation -FileStream $stream)};$stream.Write($bytes,0,$bytes.Length);$stream.Flush($true);$stream.Position=0;$sha=[Security.Cryptography.SHA256]::Create();try{$manifestHash=([BitConverter]::ToString($sha.ComputeHash($stream))).Replace('-','')}finally{$sha.Dispose()}
+        $manifestOwned.Sha256=$manifestHash;Assert-Issue10HeldLeaf $manifestOwned 'Issue #10 binding manifest'
+        return [pscustomobject]@{ManifestPath=$manifestFull;WidgetOutputPath=$widgetFull;OutputReceiptPath=$receiptFull;AuthorityDirectory=$authorityDirectory;ManifestSha256=$manifestHash;OwnedLeaves=@($ownedLeaves.ToArray())+$manifestOwned}
+    }catch{if($null-ne$manifestOwned){Remove-Issue10OwnedLeaf $manifestOwned 'Issue #10 binding manifest cleanup'};for($index=$ownedLeaves.Count-1;$index-ge0;$index--){Remove-Issue10OwnedLeaf $ownedLeaves[$index] 'Issue #10 staged authority cleanup'};throw}
+}
+
 $repositoryRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $artifactRoot = Join-Path $repositoryRoot 'artifacts'
 $configurationDirectory = $Configuration.ToLowerInvariant()
-$coreExecutable = Join-Path $artifactRoot "bin\HerdrOps.Core\$configurationDirectory\HerdrOps.Core.exe"
-$appExecutable = Join-Path $artifactRoot "bin\HerdrOps.App\$configurationDirectory\HerdrOps.App.exe"
+$coreExecutable = ''
+$appExecutable = ''
 $runId = [DateTimeOffset]::UtcNow.ToString('yyyyMMddTHHmmssZ')
-$evidenceDirectory = Join-Path $artifactRoot "runtime-evidence\v0.2\issues-7-9-10\$runId"
+$runtimeEvidenceRoot = Join-Path $artifactRoot 'runtime-evidence\v0.2\issues-7-9-10'
+$evidenceDirectory = Join-Path $runtimeEvidenceRoot $runId
 $captureDirectory = Join-Path $evidenceDirectory 'captures'
+$issue9UiDirectory = Join-Path $evidenceDirectory 'issue9-ui'
+$issue9SideBySideCapturePath = Join-Path $issue9UiDirectory 'actual-herdr-ui-side-by-side.png'
 $databasePath = Join-Path $evidenceDirectory 'herdrops-runtime.db'
 $coreReportPath = Join-Path $evidenceDirectory 'core-runtime.json'
 $appReportPath = Join-Path $evidenceDirectory 'app-runtime.json'
@@ -753,9 +986,29 @@ $coreAcceptedEventKindCheck = 'NOT_EVALUATED'
 $referenceHostProfile = $null
 $trustedReferenceHost = $null
 $observedAppLanguage = 'NOT_OBSERVED'
+$packageBinding = $null
+$trxEvidence = $null
+$targetAgentSessionAttestation = $null
+$issue9SideBySideObservation = $null
+$issue10SameRunBinding = $null
+$issue10WidgetOutputCreated = $false
+$issue10PublishedBinding = $null
 
 try {
     New-Item -ItemType Directory -Path $captureDirectory -Force | Out-Null
+    New-Item -ItemType Directory -Path $issue9UiDirectory -Force | Out-Null
+    if ($issue10SuppliedCount -eq $issue10Arguments.Count) {
+        foreach($inputPath in @($Issue10PerformanceReceiptPath,$Issue10PerformanceRawSourcePath,$Issue10PerformanceTelemetryBindingPath,$Issue10PerformanceTransactionCommitPath,$Issue10SoakReceiptPath)){
+            if(-not(Test-Path -LiteralPath $inputPath -PathType Leaf)){throw "Issue #10 same-run input is missing before runtime: $inputPath"}
+            Assert-Issue10NoReparseComponents -Path $inputPath -Context 'Issue #10 same-run input'
+            $inputStream=[IO.File]::Open([IO.Path]::GetFullPath($inputPath),[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read);try{$inputIdentity=Get-V02FileInformation -FileStream $inputStream;if($inputIdentity.NumberOfLinks-ne1){throw "Issue #10 same-run input must have exactly one hard link: $inputPath"};if(-not(Get-Issue10FinalPath -Stream $inputStream -Context 'Issue #10 same-run input').Equals([IO.Path]::GetFullPath($inputPath),[StringComparison]::OrdinalIgnoreCase)){throw "Issue #10 same-run input final path changed: $inputPath"}}finally{$inputStream.Dispose()}
+        }
+        foreach($outputPath in @($Issue10WidgetReportPath,$Issue10BindingManifestPath,($Issue10WidgetReportPath+'.publication.json'))){
+            if(-not(Test-Issue10ContainedPath $runtimeEvidenceRoot $outputPath)){throw "Issue #10 same-run output must be inside the v0.2 runtime evidence root: $outputPath"}
+            if(-not([IO.Path]::GetFullPath((Split-Path -Parent $outputPath)).Equals([IO.Path]::GetFullPath($runtimeEvidenceRoot),[StringComparison]::OrdinalIgnoreCase))){throw "Issue #10 same-run outputs must be direct children of the v0.2 runtime evidence root so current-run captures remain contained: $outputPath"}
+            if(Test-Path -LiteralPath $outputPath){throw "Issue #10 same-run output already exists before runtime: $outputPath"}
+        }
+    }
     Assert-ProgressCanonicalKnownVector
     if (Test-Path -LiteralPath $completionSignalPath) {
         throw "Completion signal path already exists: $completionSignalPath"
@@ -776,9 +1029,7 @@ if (Test-IsAdministrator) {
 if (-not (Test-Path -LiteralPath $HerdrExecutable -PathType Leaf)) {
     throw "Installed Herdr executable not found: $HerdrExecutable"
 }
-if (-not (Get-Command Get-NetTCPConnection -ErrorAction SilentlyContinue)) {
-    throw 'Get-NetTCPConnection is required to verify that Core and App open no TCP listener.'
-}
+$null = Assert-V02TcpListenerInspectionCapability
 if (-not (Get-Command Get-CimInstance -ErrorAction SilentlyContinue)) {
     throw 'Get-CimInstance is required to bind the gate process to its Acceptance control Herdr server.'
 }
@@ -848,10 +1099,24 @@ $sourceIdentity = Get-ExpectedCleanSourceIdentity `
 $sourceCommit = $sourceIdentity.SourceCommit
 $sourceTree = $sourceIdentity.SourceTree
 $preRunGitTreeClean = [string]$sourceIdentity.GitTreeClean
+$targetAgentSessionAttestation = New-V02TargetAgentSessionAttestation -Reference $TargetAgentSessionReference
 $buildStartedUtc = [DateTime]::UtcNow
 & (Join-Path $PSScriptRoot 'Invoke-Build.ps1') -Configuration $Configuration -VerifyFormat
 if ($LASTEXITCODE -ne 0) { throw 'Build and automated tests failed before runtime acceptance.' }
-$testCounts = Get-FreshTestCounts -Directory (Join-Path $artifactRoot 'test-results') -StartedUtc $buildStartedUtc
+$trxEvidence = Save-V02FreshTrxEvidence -ResultsDirectory (Join-Path $artifactRoot 'test-results') `
+    -StartedUtc $buildStartedUtc -EvidenceDirectory $evidenceDirectory
+$testCounts = $trxEvidence
+$packageProfilePath = Join-Path $repositoryRoot 'tools\packaging\v0.2\package-identity-profile.json'
+$packageBinding = Resolve-V02RuntimePackageBinding `
+    -IdentityPath $PackageIdentityPath `
+    -ArchivePath $PackageArchivePath `
+    -PackageRoot $ExtractedPackageRoot `
+    -RepositoryRoot $repositoryRoot `
+    -ProfilePath $packageProfilePath `
+    -ExpectedSourceCommit $ExpectedSourceCommit `
+    -ExpectedSourceTree $ExpectedSourceTree
+$coreExecutable = $packageBinding.CorePath
+$appExecutable = $packageBinding.AppPath
 
 foreach ($executable in @($coreExecutable, $appExecutable)) {
     if (-not (Test-Path -LiteralPath $executable -PathType Leaf)) {
@@ -882,7 +1147,6 @@ $appArguments = @(
     '--reference-host-profile-id', $referenceHostProfile.Profile.profileId,
     '--reference-host-profile-sha256', $referenceHostProfile.Sha256
 )
-
 $tcpListeners = @{}
 try {
     $coreProcess = Start-Process `
@@ -921,6 +1185,12 @@ try {
                         }
                         'capturing-live-dashboard-and-widgets' {
                             Write-Host 'Capturing the three live pages and three live Widgets. Keep Herdr state steady.'
+                            if ($null -eq $issue9SideBySideObservation) {
+                                $issue9SideBySideObservation = New-I9DesktopSideBySideCapture `
+                                    -OutputPath $issue9SideBySideCapturePath `
+                                    -Progress $progress
+                                Write-Host "Captured exact-phase actual-Herdr/UI desktop evidence: $issue9SideBySideCapturePath"
+                            }
                         }
                         'waiting-for-pre-close-update' {
                             Write-Host 'Event A: trigger one genuine Agent-status transition in the target Agent Lab. Focus, workspace, tab, and pane changes do not count. The Dashboard will close after the status event arrives.'
@@ -966,9 +1236,11 @@ try {
 
     $appExitCode = $appProcess.ExitCode
     try {
-        # The signal is created only after the App process has exited. Core observes
-        # appearance only, then performs its normal graceful report-writing path.
-        [System.IO.File]::WriteAllBytes($completionSignalPath, [byte[]]@())
+        # The signal is created only after the App process has exited, via an
+        # atomic no-clobber create so a concurrently-existing path can never be
+        # silently overwritten. Core observes appearance only, then performs its
+        # normal graceful report-writing path.
+        New-V02AtomicNoClobberEmptyFile -Path $completionSignalPath
     } catch {
         $completionSignalWriteFailure = $_.Exception.Message
     }
@@ -1045,6 +1317,7 @@ try {
 
 $coreExecutableHashAfterRun = Get-OptionalFileSha256 -Path $coreExecutable
 $appExecutableHashAfterRun = Get-OptionalFileSha256 -Path $appExecutable
+$null = Assert-V02RuntimePackageExecutablesUnchanged -Binding $packageBinding
 $executableHashMismatch = @()
 if ($coreExecutableHashAfterRun -ne $coreExecutableHashBeforeLaunch) {
     $executableHashMismatch += 'HerdrOps.Core executable bytes changed during runtime acceptance.'
@@ -1305,6 +1578,7 @@ Assert-True ($tcpListeners.Count -eq 0) 'Core or App opened a TCP listener durin
 Assert-True ($controlServerIdentity.ExecutableSha256 -eq $coreReport.Admission.ExecutableSha256) 'Acceptance control server executable hash does not match the admitted Herdr executable.'
 $coreTransitions = @($coreReport.Transitions)
 Assert-True ($coreTransitions.Count -gt 0) 'Core runtime report contains no transitions.'
+Assert-V02AllAgentStatusesInDomain -Transitions $coreTransitions -FinalMonitorState $coreReport.FinalMonitorState -Context 'Core report'
 $eventABaselineProgressCandidates = @($progressHistoryEntries | Where-Object { $_.Phase -eq 'waiting-for-pre-close-update' })
 Assert-True ($eventABaselineProgressCandidates.Count -eq 1) 'The App progress history does not contain exactly one Event A baseline phase.'
 $eventABaselineProgress = $eventABaselineProgressCandidates[0]
@@ -1472,6 +1746,15 @@ foreach ($capture in $captures) {
     Assert-True ($actualHash -eq $capture.Sha256) "Runtime capture hash mismatch: $($capture.Name)"
 }
 
+# Static/Contract/Synthetic preparation with no Runtime/Release credit. Independently
+# re-derives and cross-checks SemanticStateCaptures/SemanticProjectionSha256/CaptureStateSha256
+# (Issue #9, #10) against the phase sequences/hashes already Core-trace-bound above and the
+# already hash-verified top-level captures; never accepts the App report's own claims as proof.
+Assert-V02RuntimeSemanticStateCaptures -AppReport $appReport -RuntimeCaptures $captures `
+    -ExpectedLanguage $Language -ExpectedLanguageCultureName $expectedLanguageCultureName `
+    -ValidationUtc ([DateTimeOffset]::UtcNow)
+$semanticCaptureBindingCheck = 'SemanticStateCaptures independently cross-checked (sequence/hash/identity/bilingual-parity/timestamp-order); Static/Contract/Synthetic, no Runtime/Release credit.'
+
 $finalSourceIdentity = Get-ExpectedCleanSourceIdentity `
     -Root $repositoryRoot `
     -ExpectedCommit $ExpectedSourceCommit `
@@ -1488,6 +1771,7 @@ $appReportHash = (Get-FileHash -LiteralPath $appReportPath -Algorithm SHA256).Ha
 $reportLines = @(
     'HerdrOps v0.2 Composite Actual Herdr Runtime Acceptance',
     "GeneratedUtc: $([DateTimeOffset]::UtcNow.ToString('O'))",
+    "RunNonce: $EvidenceRunNonce",
     "ExpectedSourceCommit: $($ExpectedSourceCommit.ToLowerInvariant())",
     "ExpectedSourceTree: $($ExpectedSourceTree.ToLowerInvariant())",
     "SourceCommit: $sourceCommit",
@@ -1516,11 +1800,34 @@ $reportLines = @(
     "EventBIncrementTransition: index=$eventBIncrementTransitionIndex utc=$($eventBIncrementTransition.ObservedUtc) eventCount=$($eventBIncrementTransition.EventCount)",
     "EventBTransition: index=$eventBTransitionIndex utc=$($eventBTransition.ObservedUtc) eventCount=$($eventBTransition.EventCount)",
     "CoreAcceptedEventKindCheck: $coreAcceptedEventKindCheck",
+    "SemanticCaptureBindingCheck: $semanticCaptureBindingCheck",
     "EventAIntegrity: admissionPath=$($eventACorrelation.AdmissionPath) sequenceDelta=$($appReport.EventA.CurrentSequence - $appReport.EventA.BaselineSequence) eventCountDelta=$($appReport.EventA.CurrentEventCount - $appReport.EventA.BaselineEventCount) connectionEpoch=$($appReport.EventA.ConnectionEpoch) bootstrapDelta=$($appReport.EventA.CurrentBootstrapCount - $appReport.EventA.BaselineBootstrapCount) disconnectDelta=$($appReport.EventA.CurrentDisconnectCount - $appReport.EventA.BaselineDisconnectCount) reconciliationDelta=$($eventACorrelation.ReconciliationDelta)",
     "EventBIntegrity: admissionPath=$($eventBCorrelation.AdmissionPath) sequenceDelta=$($appReport.EventB.CurrentSequence - $appReport.EventB.BaselineSequence) eventCountDelta=$($appReport.EventB.CurrentEventCount - $appReport.EventB.BaselineEventCount) connectionEpoch=$($appReport.EventB.ConnectionEpoch) bootstrapDelta=$($appReport.EventB.CurrentBootstrapCount - $appReport.EventB.BaselineBootstrapCount) disconnectDelta=$($appReport.EventB.CurrentDisconnectCount - $appReport.EventB.BaselineDisconnectCount) reconciliationDelta=$($eventBCorrelation.ReconciliationDelta)",
     "EventAAgentStatusTransition: terminal=$($eventAChange.TerminalId) workspace=$($eventAChange.WorkspaceId) tab=$($eventAChange.TabId) pane=$($eventAChange.PaneId) previous=$($eventAChange.PreviousStatus) current=$($eventAChange.CurrentStatus) stateChangeSequence=$($eventAChange.PreviousStateChangeSequence)->$($eventAChange.CurrentStateChangeSequence)",
     "EventBAgentStatusTransition: terminal=$($eventBChange.TerminalId) workspace=$($eventBChange.WorkspaceId) tab=$($eventBChange.TabId) pane=$($eventBChange.PaneId) previous=$($eventBChange.PreviousStatus) current=$($eventBChange.CurrentStatus) stateChangeSequence=$($eventBChange.PreviousStateChangeSequence)->$($eventBChange.CurrentStateChangeSequence)",
     "AutomatedTests: $($testCounts.Passed)/$($testCounts.Total) PASS",
+    "TrxEvidenceDirectory: $($trxEvidence.Directory)",
+    "TrxSelectionReceiptPath: $($trxEvidence.ReceiptPath)",
+    "TrxSelectionReceiptSha256: $($trxEvidence.ReceiptSha256)",
+    "PackageValidatorPath: $($packageBinding.ValidatorPath)",
+    "PackageIdentityPath: $($packageBinding.IdentityPath)",
+    "PackageIdentityFileSha256: $($packageBinding.IdentityFileSha256)",
+    "PackageIdentityReceiptSha256: $($packageBinding.ReceiptSha256)",
+    "PackageArchivePath: $($packageBinding.ArchivePath)",
+    "PackageArchiveSha256: $($packageBinding.ArchiveSha256)",
+    "ExtractedPackageRoot: $($packageBinding.PackageRoot)",
+    "PackageManifestPath: $($packageBinding.ManifestPath)",
+    "PackageManifestSha256: $($packageBinding.ManifestSha256)",
+    "AppSha256: $($packageBinding.AppSha256)",
+    "CoreSha256: $($packageBinding.CoreSha256)",
+    "PackageProfileId: $($packageBinding.ProfileId)",
+    "PackageProfileFileSha256: $($packageBinding.ProfileFileSha256)",
+    "PackageProfileCanonicalSha256: $($packageBinding.ProfileCanonicalSha256)",
+    "PackageValidationEvidenceClass: $($packageBinding.ValidationEvidenceClass)",
+    "TargetAgentSessionReference: $($targetAgentSessionAttestation.Reference)",
+    "TargetAgentSessionReferenceEvidenceSource: $($targetAgentSessionAttestation.EvidenceSource)",
+    "TargetAgentSessionReferenceObservableByGate: $($targetAgentSessionAttestation.ObservableByGate)",
+    "TargetAgentSessionReferenceBoundary: $($targetAgentSessionAttestation.Boundary)",
     "HerdrReleaseId: $($coreReport.Admission.ReleaseId)",
     "HerdrExecutableSha256: $($coreReport.Admission.ExecutableSha256)",
     "HerdrOpsCoreExecutableSha256BeforeLaunch: $coreExecutableHashBeforeLaunch",
@@ -1632,18 +1939,78 @@ $reportLines = @(
     '',
     'EvidenceBoundary:',
     'This gate proves exact-hash-bound actual Herdr snapshot/Agent-status-event/reconnect behavior, separate Acceptance-control and Agent-Lab target sessions, Core-to-App runtime-health propagation, live production WPF page and Widget rendering, Dashboard-close continuity, state-hash correspondence, measured latency/resources, no owned TCP listener, and non-elevated operation for this host and run.',
-    'It does not prove packaging, clean-machine installation, later-version features, independent human review, or future Herdr releases.'
+    'It launches the App and Core from the package root whose receipt, ZIP, manifest, source, and component bytes passed the committed package validator. This is runtime use of validated package bytes, not clean-machine installation or Release evidence.',
+    'The native target Agent/session reference is operator attestation because the gate cannot independently observe that client-owned session identity.',
+    'It does not prove clean-machine installation, later-version features, independent human review, or future Herdr releases.'
 )
 $reportLines | Set-Content -LiteralPath $gateReportPath -Encoding utf8
 $gateHash = (Get-FileHash -LiteralPath $gateReportPath -Algorithm SHA256).Hash
+$controlServerIdentityAfterRun = Get-ControlHerdrServerIdentity -ExpectedExecutablePath $HerdrExecutable
+if ($null -eq $issue9SideBySideObservation) {
+    throw 'Issue #9 production observation was not captured during the initial semantic phase.'
+}
+$issue9Observation = New-I9LiveUiObservation `
+    -RuntimeEvidenceDirectory $evidenceDirectory `
+    -UiEvidenceDirectory $issue9UiDirectory `
+    -GateReportPath $gateReportPath `
+    -AppRuntimeReportPath $appReportPath `
+    -CoreRuntimeReportPath $coreReportPath `
+    -SideBySideCapture $issue9SideBySideObservation `
+    -Language $Language `
+    -ExpectedSourceCommit $ExpectedSourceCommit.ToLowerInvariant() `
+    -ExpectedSourceTree $ExpectedSourceTree.ToLowerInvariant() `
+    -RunNonce $EvidenceRunNonce `
+    -ProducerScriptPath $PSCommandPath `
+    -ControlServerIdentityBefore $controlServerIdentity `
+    -ControlServerIdentityAfter $controlServerIdentityAfterRun
+
+if($issue10SuppliedCount -eq $issue10Arguments.Count){
+    $issue10SameRunBinding=New-Issue10SameRunBindingManifest `
+        -AllowedEvidenceRoot $runtimeEvidenceRoot `
+        -RunEvidenceDirectory $evidenceDirectory `
+        -ManifestPath $Issue10BindingManifestPath `
+        -WidgetOutputPath $Issue10WidgetReportPath `
+        -RunNonce $EvidenceRunNonce `
+        -EvidenceStartedUtc $buildStartedUtc `
+        -SourceCommit $ExpectedSourceCommit.ToLowerInvariant() `
+        -SourceTree $ExpectedSourceTree.ToLowerInvariant() `
+        -PackageBinding $packageBinding `
+        -GateReportPath $gateReportPath `
+        -CoreRuntimeReportPath $coreReportPath `
+        -AppRuntimeReportPath $appReportPath `
+        -PerformanceReceiptPath $Issue10PerformanceReceiptPath `
+        -PerformanceRawSourcePath $Issue10PerformanceRawSourcePath `
+        -PerformanceTelemetryBindingPath $Issue10PerformanceTelemetryBindingPath `
+        -PerformanceTransactionCommitPath $Issue10PerformanceTransactionCommitPath `
+        -SoakReceiptPath $Issue10SoakReceiptPath `
+        -HerdrExecutablePath $HerdrExecutable `
+        -ControlSessionIdentity $sessionTopology.ControlSessionName `
+        -TargetSessionIdentity $sessionTopology.TargetSessionName
+    $receiptKeyBytes=New-Object byte[] 32;$receiptRng=[Security.Cryptography.RandomNumberGenerator]::Create();try{$receiptRng.GetBytes($receiptKeyBytes)}finally{$receiptRng.Dispose()};$receiptKey=([BitConverter]::ToString($receiptKeyBytes)).Replace('-','')
+    $finalizerArguments=@('--finalize-issue10-widget-report','--issue10-widget-report',$issue10SameRunBinding.WidgetOutputPath,'--issue10-output-receipt',$issue10SameRunBinding.OutputReceiptPath,'--issue10-binding-manifest',$issue10SameRunBinding.ManifestPath,'--runtime-evidence-report',$appReportPath,'--issue10-run-nonce',$EvidenceRunNonce,'--issue10-source-commit',$ExpectedSourceCommit.ToLowerInvariant(),'--issue10-source-tree',$ExpectedSourceTree.ToLowerInvariant())
+    $priorReceiptKey=[Environment]::GetEnvironmentVariable('HERDROPS_ISSUE10_OUTPUT_RECEIPT_KEY','Process');[Environment]::SetEnvironmentVariable('HERDROPS_ISSUE10_OUTPUT_RECEIPT_KEY',$receiptKey,'Process');try{$finalizerProcess=Start-Process -FilePath $appExecutable -ArgumentList $finalizerArguments -WindowStyle Hidden -Wait -PassThru}finally{[Environment]::SetEnvironmentVariable('HERDROPS_ISSUE10_OUTPUT_RECEIPT_KEY',$priorReceiptKey,'Process')}
+    if($finalizerProcess.ExitCode-ne0){throw "Issue #10 same-run finalizer failed after exact run reports were sealed (exit=$($finalizerProcess.ExitCode))."}
+    $issue10PublishedBinding=Open-Issue10PublishedBinding -WidgetPath $issue10SameRunBinding.WidgetOutputPath -ReceiptPath $issue10SameRunBinding.OutputReceiptPath -ReceiptKey $receiptKey -RunNonce $EvidenceRunNonce -ProducerProcessId $finalizerProcess.Id
+    Close-Issue10OwnedLeaves -Leaves $issue10SameRunBinding.OwnedLeaves
+    $issue10WidgetOutputCreated=$true
+}
 
 $reportLines | Write-Output
 Write-Output "GateReport: $gateReportPath"
 Write-Output "GateReportSha256: $gateHash"
 Write-Output "CoreRuntimeReport: $coreReportPath"
 Write-Output "AppRuntimeReport: $appReportPath"
+Write-Output "Issue9UiObservation: $($issue9Observation.Path)"
+Write-Output "Issue9UiObservationSha256: $($issue9Observation.Sha256)"
+if($issue10WidgetOutputCreated){Write-Output "Issue10BindingManifest: $($issue10SameRunBinding.ManifestPath)";Write-Output "Issue10BindingManifestSha256: $($issue10SameRunBinding.ManifestSha256)";Write-Output "Issue10WidgetReport: $($issue10SameRunBinding.WidgetOutputPath)";Write-Output "Issue10WidgetReportSha256: $($issue10PublishedBinding.Widget.Sha256)";Write-Output "Issue10OutputPublicationReceipt: $($issue10SameRunBinding.OutputReceiptPath)"}
+if($null-ne$issue10PublishedBinding){$issue10PublishedBinding.Widget.HeldStream.Dispose();$issue10PublishedBinding.Receipt.HeldStream.Dispose();$issue10PublishedBinding.Parent.Handle.Dispose();$issue10PublishedBinding=$null}
 } catch {
     $failureRecord = $_
+    if($null-ne$issue10PublishedBinding){$issue10PublishedBinding.Widget.HeldStream.Dispose();$issue10PublishedBinding.Receipt.HeldStream.Dispose();$issue10PublishedBinding.Parent.Handle.Dispose();$issue10PublishedBinding=$null}
+    if($null-ne$issue10SameRunBinding){
+        for($index=@($issue10SameRunBinding.OwnedLeaves).Count-1;$index-ge0;$index--){try{Remove-Issue10OwnedLeaf $issue10SameRunBinding.OwnedLeaves[$index] 'Issue #10 transaction cleanup'}catch{Write-Warning $_.Exception.Message}}
+        if(Test-Path -LiteralPath $issue10SameRunBinding.AuthorityDirectory -PathType Container){Remove-Item -LiteralPath $issue10SameRunBinding.AuthorityDirectory -Force -ErrorAction SilentlyContinue}
+    }
     $failureMessage = [string]$failureRecord.Exception.Message
     if ([string]::IsNullOrWhiteSpace($failureMessage)) {
         $failureMessage = [string]$failureRecord
@@ -1683,6 +2050,15 @@ Write-Output "AppRuntimeReport: $appReportPath"
         -ObservedLanguage $observedAppLanguage `
         -CaptureDirectory $captureDirectory `
         -ReferenceHostSchemaSha256 $script:V02ReferenceHostSchemaSha256 `
+        -PackageIdentityReceiptSha256 $(if($null -eq $packageBinding){'NOT_OBSERVED'}else{$packageBinding.ReceiptSha256}) `
+        -PackageArchiveSha256 $(if($null -eq $packageBinding){'NOT_OBSERVED'}else{$packageBinding.ArchiveSha256}) `
+        -PackageManifestSha256 $(if($null -eq $packageBinding){'NOT_OBSERVED'}else{$packageBinding.ManifestSha256}) `
+        -PackageProfileFileSha256 $(if($null -eq $packageBinding){'NOT_OBSERVED'}else{$packageBinding.ProfileFileSha256}) `
+        -PackageProfileCanonicalSha256 $(if($null -eq $packageBinding){'NOT_OBSERVED'}else{$packageBinding.ProfileCanonicalSha256}) `
+        -AppSha256 $(if($null -eq $packageBinding){'NOT_OBSERVED'}else{$packageBinding.AppSha256}) `
+        -CoreSha256 $(if($null -eq $packageBinding){'NOT_OBSERVED'}else{$packageBinding.CoreSha256}) `
+        -TrxSelectionReceiptSha256 $(if($null -eq $trxEvidence){'NOT_OBSERVED'}else{$trxEvidence.ReceiptSha256}) `
+        -TargetAgentSessionReference $(if($null -eq $targetAgentSessionAttestation){'NOT_OBSERVED'}else{$targetAgentSessionAttestation.Reference}) `
         -FailureType $failureType
     throw $failureRecord
 }

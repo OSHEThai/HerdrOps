@@ -626,7 +626,8 @@ public sealed class HerdrRuntimeMonitorTests
             [
                 raceSubscription,
                 ScriptedSubscription.BlockUntilCancelled(),
-            ]);
+            ],
+            blockSnapshotReadsWhenExhausted: true);
         var monitor = CreateMonitor(
             apiClient,
             options: new HerdrRuntimeMonitorOptions(TimeSpan.FromMilliseconds(5)));
@@ -638,6 +639,7 @@ public sealed class HerdrRuntimeMonitorTests
             state => state.BootstrapCount == 2 &&
                      state.Status == HerdrRuntimeMonitorStatus.Connected &&
                      state.State.Panes.ContainsKey("pane-2"));
+        await apiClient.SnapshotReadBarrierEntered.WaitAsync(TimeSpan.FromSeconds(5));
 
         cancellation.Cancel();
         await Assert.ThrowsAsync<OperationCanceledException>(() => runTask);
@@ -1422,32 +1424,45 @@ public sealed class HerdrRuntimeMonitorTests
     {
         private readonly Queue<HerdrSessionSnapshot> _snapshots;
         private readonly Queue<IHerdrEventSubscription> _subscriptions;
+        private readonly bool _blockSnapshotReadsWhenExhausted;
+        private readonly TaskCompletionSource _snapshotReadBarrierEntered =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         public ScriptedApiClient(
             IEnumerable<HerdrSessionSnapshot> snapshots,
             IEnumerable<IHerdrEventSubscription> subscriptions,
-            HerdrServerProcessIdentity? serverIdentity = null)
+            HerdrServerProcessIdentity? serverIdentity = null,
+            bool blockSnapshotReadsWhenExhausted = false)
         {
             _snapshots = new Queue<HerdrSessionSnapshot>(snapshots);
             _subscriptions = new Queue<IHerdrEventSubscription>(subscriptions);
+            _blockSnapshotReadsWhenExhausted = blockSnapshotReadsWhenExhausted;
             LastVerifiedServerIdentity = serverIdentity;
         }
 
         public List<HashSet<string>> SubscriptionPaneIds { get; } = [];
 
+        public Task SnapshotReadBarrierEntered => _snapshotReadBarrierEntered.Task;
+
         public HerdrServerProcessIdentity? LastVerifiedServerIdentity { get; }
 
-        public Task<HerdrSessionSnapshot> GetSnapshotAsync(
+        public async Task<HerdrSessionSnapshot> GetSnapshotAsync(
             HerdrPipeEndpoint endpoint,
             CancellationToken cancellationToken)
         {
             cancellationToken.ThrowIfCancellationRequested();
             if (_snapshots.Count == 0)
             {
+                if (_blockSnapshotReadsWhenExhausted)
+                {
+                    _snapshotReadBarrierEntered.TrySetResult();
+                    await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+                }
+
                 throw new IOException("No scripted snapshot remains.");
             }
 
-            return Task.FromResult(_snapshots.Dequeue());
+            return _snapshots.Dequeue();
         }
 
         public Task<IHerdrEventSubscription> SubscribeAsync(

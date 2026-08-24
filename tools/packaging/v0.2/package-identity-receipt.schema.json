@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "profileId", "issue", "packageVersion", "runtimeIdentifier", "source", "profile", "archive", "packageManifest", "components", "referenceHost", "renderer", "evidenceBoundary"],
+  "properties": {
+    "schemaVersion": {"const": 1, "type": "integer"},
+    "profileId": {"const": "herdrops-v0.2-package-software-only-issue-149", "type": "string"},
+    "issue": {"const": 149, "type": "integer"},
+    "packageVersion": {"const": "0.2.0", "type": "string"},
+    "runtimeIdentifier": {"const": "win-x64", "type": "string"},
+    "source": {"type": "object", "additionalProperties": false, "required": ["commitSha", "treeSha"], "properties": {"commitSha": {"type": "string", "pattern": "^[0-9a-f]{40}$"}, "treeSha": {"type": "string", "pattern": "^[0-9a-f]{40}$"}}},
+    "profile": {"type": "object", "additionalProperties": false, "required": ["id", "relativePath", "bytes", "fileSha256", "canonicalSha256"], "properties": {"id": {"const": "herdrops-v0.2-package-software-only-issue-149", "type": "string"}, "relativePath": {"const": "tools/packaging/v0.2/package-identity-profile.json", "type": "string"}, "bytes": {"type": "integer", "minimum": 1}, "fileSha256": {"$ref": "#/$defs/sha256"}, "canonicalSha256": {"$ref": "#/$defs/sha256"}}},
+    "archive": {"type": "object", "additionalProperties": false, "required": ["relativePath", "fileName", "bytes", "sha256"], "properties": {"relativePath": {"const": "HerdrOps-0.2.0-win-x64.zip", "type": "string"}, "fileName": {"const": "HerdrOps-0.2.0-win-x64.zip", "type": "string"}, "bytes": {"type": "integer", "minimum": 1}, "sha256": {"$ref": "#/$defs/sha256"}}},
+    "packageManifest": {"type": "object", "additionalProperties": false, "required": ["fileName", "bytes", "sha256", "contentSha256", "fileCount", "totalBytes"], "properties": {"fileName": {"const": "package-manifest.json", "type": "string"}, "bytes": {"type": "integer", "minimum": 1}, "sha256": {"$ref": "#/$defs/sha256"}, "contentSha256": {"$ref": "#/$defs/sha256"}, "fileCount": {"type": "integer", "minimum": 2}, "totalBytes": {"type": "integer", "minimum": 2}}},
+    "components": {"type": "object", "additionalProperties": false, "required": ["app", "core"], "properties": {"app": {"type": "object", "additionalProperties": false, "required": ["relativePath", "bytes", "sha256"], "properties": {"relativePath": {"const": "HerdrOps.App.exe", "type": "string"}, "bytes": {"type": "integer", "minimum": 1}, "sha256": {"$ref": "#/$defs/sha256"}}}, "core": {"type": "object", "additionalProperties": false, "required": ["relativePath", "bytes", "sha256"], "properties": {"relativePath": {"const": "HerdrOps.Core.exe", "type": "string"}, "bytes": {"type": "integer", "minimum": 1}, "sha256": {"$ref": "#/$defs/sha256"}}}}},
+    "referenceHost": {"type": "object", "additionalProperties": false, "required": ["profileId", "profileSha256"], "properties": {"profileId": {"const": "herdrops-v0.2-submark-nb-software-only-20260822", "type": "string"}, "profileSha256": {"const": "96D01ED15A536F2DF50B59B43CFDEB3683DCE8667AE2E7BF6A96124182FE13A3", "type": "string"}}},
+    "renderer": {"type": "object", "additionalProperties": false, "required": ["policy", "wpfProcessRenderMode"], "properties": {"policy": {"const": "software-only-process-wide", "type": "string"}, "wpfProcessRenderMode": {"const": "SoftwareOnly", "type": "string"}}},
+    "evidenceBoundary": {"type": "object", "additionalProperties": false, "required": ["evidenceClass", "runtimeUse", "actualHerdrUsed", "runtimeCredit", "releaseCredit"], "properties": {"evidenceClass": {"const": "PackagedCompatibilityPreparation", "type": "string"}, "runtimeUse": {"const": "not-used", "type": "string"}, "actualHerdrUsed": {"const": false, "type": "boolean"}, "runtimeCredit": {"const": "NOT CLAIMED", "type": "string"}, "releaseCredit": {"const": "NOT CLAIMED", "type": "string"}}}
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9A-F]{64}$"}
+  }
+}
