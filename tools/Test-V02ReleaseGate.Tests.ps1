@@ -72,113 +72,23 @@ function Write-V02ReleaseGateTestJson {
     return Write-V02ReleaseGateTestText -Path $Path -Text ($Value | ConvertTo-Json -Depth 100)
 }
 
-function New-V02ReleaseGateTestCmsCertificate {
-    $rsa = [Security.Cryptography.RSA]::Create(2048)
-    $request = [Security.Cryptography.X509Certificates.CertificateRequest]::new(
-        'CN=HerdrOps V02 Test Observer',
-        $rsa,
-        [Security.Cryptography.HashAlgorithmName]::SHA256,
-        [Security.Cryptography.RSASignaturePadding]::Pkcs1)
-    $certificate = $request.CreateSelfSigned([DateTimeOffset]::UtcNow.AddDays(-1),[DateTimeOffset]::UtcNow.AddDays(1))
-    $rsa.Dispose()
-    return $certificate
-}
-
-function Write-V02ReleaseGateTestDetachedCms {
-    param([Parameter(Mandatory = $true)][string]$ContentPath,[Parameter(Mandatory = $true)][string]$SignaturePath,[Parameter(Mandatory = $true)]$Certificate,$AdditionalCertificate)
-    try {
-        Add-Type -AssemblyName System.Security.Cryptography.Pkcs -ErrorAction Stop
-    } catch {
-        Add-Type -AssemblyName System.Security -ErrorAction Stop
-    }
-    $bytes = [IO.File]::ReadAllBytes($ContentPath)
-    $cms = [Security.Cryptography.Pkcs.SignedCms]::new([Security.Cryptography.Pkcs.ContentInfo]::new($bytes),$true)
-    $signer = [Security.Cryptography.Pkcs.CmsSigner]::new([Security.Cryptography.Pkcs.SubjectIdentifierType]::IssuerAndSerialNumber,$Certificate)
-    $signer.IncludeOption = [Security.Cryptography.X509Certificates.X509IncludeOption]::EndCertOnly
-    $cms.ComputeSignature($signer)
-    if ($null -ne $AdditionalCertificate) {
-        $additionalSigner = [Security.Cryptography.Pkcs.CmsSigner]::new([Security.Cryptography.Pkcs.SubjectIdentifierType]::IssuerAndSerialNumber,$AdditionalCertificate)
-        $additionalSigner.IncludeOption = [Security.Cryptography.X509Certificates.X509IncludeOption]::EndCertOnly
-        $cms.ComputeSignature($additionalSigner)
-    }
-    Write-V02ReleaseGateTestBytes -Path $SignaturePath -Bytes $cms.Encode() | Out-Null
-}
-
-function New-V02ReleaseGateTestObserverVerifierRepository {
-    param([Parameter(Mandatory = $true)]$Certificate,[switch]$RetainProductionPin)
-    $root = Join-Path $script:TestRoot ('observer-verifier-' + [Guid]::NewGuid().ToString('N'))
-    $target = Join-Path $root 'tools\packaging\v0.2\V02CleanMachine.Common.ps1'
-    $toolsRoot = Join-Path $root 'tools'
-    New-V02ReleaseGateTestDirectory -Path $toolsRoot
-    Copy-Item -LiteralPath (Join-Path $script:GateRepositoryRoot 'tools\packaging') -Destination $toolsRoot -Recurse
-    $source = Get-Content -LiteralPath (Join-Path $script:GateRepositoryRoot 'tools\packaging\v0.2\V02CleanMachine.Common.ps1') -Raw
-    $source = $source.Replace('$cms.CheckSignature($false)','$cms.CheckSignature($true)')
-    if (-not $RetainProductionPin) {
-        $source = $source.Replace('8F319A7C115B0793D880D6E6F02F47B36E87D518',$Certificate.Thumbprint.Replace(' ','').ToUpperInvariant())
-    }
-    if ($source -match 'AllowUntrusted|ExpectedSignerThumbprint') { throw 'Test verifier copy unexpectedly retained a production trust override surface.' }
-    Write-V02ReleaseGateTestText -Path $target -Text $source | Out-Null
-    return $root
-}
-
-function New-V02ReleaseGateTestTamperedLauncherRepository {
-    param(
-        [Parameter(Mandatory = $true)]$Certificate,
-        [Parameter(Mandatory = $true)][ValidateSet('AmbiguousStream','ResultBinding','ChildPid')][string]$Mutation
-    )
-    $root = New-V02ReleaseGateTestObserverVerifierRepository -Certificate $Certificate
-    $gatePath = Join-Path $root 'tools\Test-V02ReleaseGate.ps1'
-    $launcherDefinition = (Get-Command Invoke-V02ReleaseGateIsolatedCleanMachineVerifier -CommandType Function).Definition
-    Write-V02ReleaseGateTestText -Path $gatePath -Text ("function Invoke-V02ReleaseGateIsolatedCleanMachineVerifier {`r`n" + $launcherDefinition + "`r`n}") | Out-Null
-
-    $verifierPath = Join-Path $root 'tools\packaging\v0.2\Invoke-V02CleanMachineReleaseVerifier.ps1'
-    $source = [IO.File]::ReadAllText($verifierPath)
-    $needle = '    $result | ConvertTo-Json -Compress -Depth 8'
-    $index = $source.LastIndexOf($needle,[StringComparison]::Ordinal)
-    if ($index -lt 0) { throw 'Test child verifier output point was not found.' }
-    $replacement = switch ($Mutation) {
-        'AmbiguousStream' { $needle + "`r`n" + $needle }
-        'ResultBinding' { "    `$result.resultBindingSha256 = ('0' * 64)`r`n" + $needle }
-        'ChildPid' { "    `$result.childPid = [int]`$result.childPid + 1`r`n" + $needle }
-    }
-    $source = $source.Substring(0,$index) + $replacement + $source.Substring($index + $needle.Length)
-    Write-V02ReleaseGateTestText -Path $verifierPath -Text $source | Out-Null
-    return $root
-}
-
-function Assert-V02ReleaseGateTestProductionLauncherTamper {
-    param(
-        [Parameter(Mandatory = $true)]$Bundle,
-        [Parameter(Mandatory = $true)][string]$VerifierRoot,
-        [Parameter(Mandatory = $true)]$Identity,
-        [Parameter(Mandatory = $true)]$Package,
-        [Parameter(Mandatory = $true)][string]$ExpectedError
-    )
-    & {
-        param($FixtureBundle,$FixtureRoot,$FixtureIdentity,$FixturePackage,$GuardPattern)
-        . (Join-Path $FixtureRoot 'tools\Test-V02ReleaseGate.ps1')
-        $output = @()
-        $observedError = ''
-        try {
-            $output = @(Invoke-V02ReleaseGateIsolatedCleanMachineVerifier `
-                -ReportPath $FixtureBundle.ReportPath -AuthorizationPath $FixtureBundle.AuthorizationPath `
-                -AuthorizationSignaturePath $FixtureBundle.AuthorizationSignaturePath `
-                -AcceptanceReceiptPath $FixtureBundle.ReceiptPath -AcceptanceReceiptSignaturePath $FixtureBundle.ReceiptSignaturePath `
-                -ExpectedSourceCommit $FixtureIdentity.Commit -ExpectedSourceTree $FixtureIdentity.Tree -Package $FixturePackage)
-        }
-        catch { $observedError = $_.Exception.Message }
-        if ($observedError -notmatch $GuardPattern) {
-            throw "Tampered real child stdout did not reach '$GuardPattern'; observed '$observedError'."
-        }
-        if ($output.Count -ne 0 -or ($output -join "`n") -match 'LifecycleCreditGranted|ReleaseReady|EvidenceClass.*CleanMachine') {
-            throw 'Tampered real child stdout returned CleanMachine or Release credit.'
-        }
-    } $Bundle $VerifierRoot $Identity $Package $ExpectedError
-}
-
 function Get-V02ReleaseGateTestRepositoryIdentity {
     param([Parameter(Mandatory = $true)][string]$RepositoryRoot)
     return Get-V02ReleaseGateGitIdentity -RepositoryRoot $RepositoryRoot
+}
+
+function New-V02ReleaseGateTestPackageSummary {
+    param([Parameter(Mandatory = $true)]$Identity)
+    return [pscustomobject][ordered]@{
+        ProfileId = $script:V02ReleaseGatePackageProfileId
+        ReceiptSha256 = ('1' * 64)
+        ArchiveSha256 = ('2' * 64)
+        ManifestSha256 = ('3' * 64)
+        AppSha256 = ('4' * 64)
+        CoreSha256 = ('5' * 64)
+        ReferenceHostProfileSha256 = $script:V02ReleaseGateReferenceHostProfileSha256
+        RendererPolicySha256 = $script:V02ReleaseGateRendererPolicySha256
+    }
 }
 
 function New-V02ReleaseGateTestCleanMachineReport {
@@ -186,8 +96,7 @@ function New-V02ReleaseGateTestCleanMachineReport {
         [Parameter(Mandatory = $true)][string]$Path,
         [Parameter(Mandatory = $true)]$Identity,
         [Parameter(Mandatory = $true)]$Package,
-        [ValidateSet('Live', 'Fixture')][string]$Mode = 'Live',
-        [string]$SignerThumbprint = '8F319A7C115B0793D880D6E6F02F47B36E87D518'
+        [ValidateSet('Live', 'Fixture')][string]$Mode = 'Live'
     )
     $binding = [pscustomobject][ordered]@{
         sourceCommit = $Identity.Commit; sourceTree = $Identity.Tree
@@ -196,24 +105,18 @@ function New-V02ReleaseGateTestCleanMachineReport {
     }
     $isLive = $Mode -ceq 'Live'
     $report = [pscustomobject][ordered]@{
-        schemaVersion = 1; reportKind = 'HerdrOps.V02CleanMachineReport'; scope = 'InstallLifecycleOnly'; issue = 149
+        schemaVersion = 2; reportKind = 'HerdrOps.V02AutomatedLiveLifecycleReport'; scope = 'InstallLifecycleOnly'; issue = 149
         packageVersion = '0.2.0'; profileId = $Package.ProfileId; status = 'PASS'; mode = $Mode
         startedAtUtc = '2026-08-23T10:00:00.0000000Z'; completedAtUtc = '2026-08-23T10:15:00.0000000Z'; runId = ('a' * 32)
         actualHerdrStarted = $false; herdrOpsStarted = $false; networkContacted = $false
         machine = [pscustomobject][ordered]@{ machineName = 'CLEAN-HOST'; machineFingerprint = ('A' * 64); elevated = $false; userScope = 'S-1-5-21-1000' }
         actor = [pscustomobject][ordered]@{
             operator = [pscustomobject][ordered]@{ identity = 'S-1-5-21-1000'; role = 'EvidenceOperator' }
-            observer = [pscustomobject][ordered]@{ identity = 'external-clean-host-observer'; role = 'IndependentObserver' }
-            authorization = if ($isLive) {
-                [pscustomobject][ordered]@{ status = 'VERIFIED'; signerThumbprint = $SignerThumbprint; authorizationSha256 = ('B' * 64); signatureSha256 = ('C' * 64); nonce = ('b' * 32) }
-            } else {
-                [pscustomobject][ordered]@{ status = 'NOT_APPLICABLE'; signerThumbprint = ''; authorizationSha256 = ''; signatureSha256 = ''; nonce = '' }
-            }
         }
         bindings = [pscustomobject][ordered]@{ initial = ($binding | ConvertTo-Json | ConvertFrom-Json); final = ($binding | ConvertTo-Json | ConvertFrom-Json); referenceHostProfileSha256 = $Package.ReferenceHostProfileSha256; rendererPolicySha256 = $Package.RendererPolicySha256 }
         targets = [pscustomobject][ordered]@{ installRoot = 'C:\Users\clean\AppData\Local\Programs\HerdrOps'; userDataRoot = 'C:\Users\clean\AppData\Local\HerdrOps' }
         preflight = if ($isLive) {
-            @('non-elevated-token','actor-identity-distinctness','live-machine-confirmation','identity-receipt-schema-and-hash','source-commit-match','source-tree-match') | ForEach-Object {
+            @('non-elevated-token','live-machine-confirmation','identity-receipt-schema-and-hash','source-commit-match','source-tree-match') | ForEach-Object {
                 [pscustomobject][ordered]@{ name = $_; status = 'PASS'; details = 'fixture verifier input' }
             }
         } else {
@@ -227,89 +130,11 @@ function New-V02ReleaseGateTestCleanMachineReport {
         }
         retainedData = [pscustomobject][ordered]@{ markerStatus = 'PRESERVED'; preservedFileCount = 1; details = 'observed' }
         residue = [pscustomobject][ordered]@{ orphanedStagingPresent = $false; orphanedBackupPresent = $false; startupRegistryCleaned = $true; shortcutsCleaned = $true; activePipesRemaining = 0; activeProcessesRemaining = 0; activeListenersRemaining = 0 }
-        evidenceBoundary = [pscustomobject][ordered]@{ evidenceClass = $(if ($isLive) { 'CleanMachine' } else { 'Synthetic' }); actualHerdrRuntime = 'NOT_OBSERVED'; independentReview = 'NOT_OBSERVED'; humanGo = 'NOT_OBSERVED'; releaseCredit = 'NOT_OBSERVED'; creditGranted = $isLive }
+        evidenceBoundary = [pscustomobject][ordered]@{ evidenceClass = $(if ($isLive) { 'AutomatedLiveLifecycle' } else { 'Synthetic' }); actualHerdrRuntime = 'NOT_OBSERVED'; independentAgentReview = 'NOT_OBSERVED'; releaseCredit = 'NOT_OBSERVED'; creditGranted = $isLive }
         failureDetails = ''
     }
     Write-V02ReleaseGateTestJson -Path $Path -Value $report | Out-Null
     return $report
-}
-
-function New-V02ReleaseGateTestSignedCleanMachineBundle {
-    param([Parameter(Mandatory = $true)][string]$Root,[Parameter(Mandatory = $true)]$Identity,[Parameter(Mandatory = $true)]$Package,[Parameter(Mandatory = $true)]$Certificate,$ReceiptCertificate,$AdditionalReceiptCertificate,[string]$ReportSignerThumbprint)
-    New-V02ReleaseGateTestDirectory -Path $Root
-    $thumbprint = $Certificate.Thumbprint.Replace(' ','').ToUpperInvariant()
-    $reportPath = Join-Path $Root 'clean-machine-report.json'
-    if ([string]::IsNullOrWhiteSpace($ReportSignerThumbprint)) { $ReportSignerThumbprint = $thumbprint }
-    $report = New-V02ReleaseGateTestCleanMachineReport -Path $reportPath -Identity $Identity -Package $Package -SignerThumbprint $ReportSignerThumbprint
-    $authorizationPath = Join-Path $Root 'clean-host-authorization.json'
-    $authorizationSignaturePath = Join-Path $Root 'clean-host-authorization.p7s'
-    $authorization = [pscustomobject][ordered]@{
-        schemaVersion=1;authorizationKind='HerdrOps.V02CleanHostAuthorization';machineName=$report.machine.machineName;machineFingerprint=$report.machine.machineFingerprint
-        principalSid=$report.machine.userScope;operatorSid=$report.machine.userScope;observerIdentity=$report.actor.observer.identity
-        installRoot=$report.targets.installRoot;userDataRoot=$report.targets.userDataRoot;initial=$report.bindings.initial;final=$report.bindings.final
-        issuedAtUtc='2026-08-23T09:55:00.0000000Z';expiresAtUtc='2026-08-23T10:30:00.0000000Z';nonce=('b'*32)
-    }
-    Write-V02ReleaseGateTestJson -Path $authorizationPath -Value $authorization | Out-Null
-    Write-V02ReleaseGateTestDetachedCms -ContentPath $authorizationPath -SignaturePath $authorizationSignaturePath -Certificate $Certificate
-    $report.actor.authorization.authorizationSha256 = Get-V02ReleaseGateFileSha256 -Path $authorizationPath
-    $report.actor.authorization.signatureSha256 = Get-V02ReleaseGateFileSha256 -Path $authorizationSignaturePath
-    Write-V02ReleaseGateTestJson -Path $reportPath -Value $report | Out-Null
-    $reportSha = Get-V02ReleaseGateFileSha256 -Path $reportPath
-    $receiptPath = Join-Path $Root 'clean-host-acceptance-receipt.json'
-    $receiptSignaturePath = Join-Path $Root 'clean-host-acceptance-receipt.p7s'
-    $receipt = [pscustomobject][ordered]@{
-        schemaVersion=1;receiptKind='HerdrOps.V02CleanHostAcceptanceReceipt'
-        report=[pscustomobject][ordered]@{sha256=$reportSha;runId=$report.runId;startedAtUtc=$report.startedAtUtc;completedAtUtc=$report.completedAtUtc}
-        authorization=[pscustomobject][ordered]@{authorizationSha256=$report.actor.authorization.authorizationSha256;signatureSha256=$report.actor.authorization.signatureSha256;nonce=$report.actor.authorization.nonce}
-        machine=[pscustomobject][ordered]@{machineName=$report.machine.machineName;machineFingerprint=$report.machine.machineFingerprint;principalSid=$report.machine.userScope;installRoot=$report.targets.installRoot;userDataRoot=$report.targets.userDataRoot}
-        actors=[pscustomobject][ordered]@{operatorIdentity=$report.actor.operator.identity;observerIdentity=$report.actor.observer.identity}
-        source=[pscustomobject][ordered]@{initial=$report.bindings.initial;final=$report.bindings.final}
-        semantics=[pscustomobject][ordered]@{status='PASS';mode='Live';evidenceClass='CleanMachine';creditGranted=$true;cleanInstall='PASS';sameVersionCandidateReplacement='PASS';rollback='PASS';uninstall='PASS';retainedData='PRESERVED';residueClean=$true}
-        issuedAtUtc='2026-08-23T10:20:00.0000000Z';receiptNonce=('c'*32)
-    }
-    Write-V02ReleaseGateTestJson -Path $receiptPath -Value $receipt | Out-Null
-    if ($null -eq $ReceiptCertificate) { $ReceiptCertificate = $Certificate }
-    Write-V02ReleaseGateTestDetachedCms -ContentPath $receiptPath -SignaturePath $receiptSignaturePath -Certificate $ReceiptCertificate -AdditionalCertificate $AdditionalReceiptCertificate
-    return [pscustomobject]@{ReportPath=$reportPath;Report=$report;AuthorizationPath=$authorizationPath;AuthorizationSignaturePath=$authorizationSignaturePath;ReceiptPath=$receiptPath;ReceiptSignaturePath=$receiptSignaturePath;Receipt=$receipt;Thumbprint=$thumbprint}
-}
-
-function Read-V02ReleaseGateTestSignedBundle {
-    param($Bundle,[string]$VerifierRoot,$Identity,$Package)
-    # Fixture-only semantic seam. It executes the rewritten verifier in a
-    # child scope and can never return production CleanMachine credit.
-    & {
-        param($FixtureBundle,$FixtureVerifierRoot,$FixtureIdentity,$FixturePackage)
-        . (Join-Path $FixtureVerifierRoot 'tools\packaging\v0.2\V02CleanMachine.Common.ps1')
-        $document = Read-V02ReleaseGateJsonFile -Path $FixtureBundle.ReportPath -Context 'fixture clean-machine report'
-        Assert-V02CleanMachineReportSchema -Report $document.Value -RepositoryRoot $FixtureVerifierRoot
-        $report = $document.Value
-        if ([string]$report.status -cne 'PASS' -or [string]$report.mode -cne 'Live') { throw 'Fixture semantic seam requires a passing Live-shaped report.' }
-        foreach ($phase in @('initial','final')) {
-            $binding = $report.bindings.$phase
-            foreach ($pair in @(
-                @($binding.sourceCommit,$FixtureIdentity.Commit,"$phase sourceCommit"),@($binding.sourceTree,$FixtureIdentity.Tree,"$phase sourceTree"),
-                @($binding.receiptSha256,$FixturePackage.ReceiptSha256,"$phase receiptSha256"),@($binding.archiveSha256,$FixturePackage.ArchiveSha256,"$phase archiveSha256"),
-                @($binding.packageManifestSha256,$FixturePackage.ManifestSha256,"$phase packageManifestSha256"),@($binding.appSha256,$FixturePackage.AppSha256,"$phase appSha256"),@($binding.coreSha256,$FixturePackage.CoreSha256,"$phase coreSha256"))) {
-                Assert-V02ReleaseGateEqual $pair[0] $pair[1] "Fixture clean-machine $($pair[2])"
-            }
-        }
-        $completed = [DateTimeOffset]::ParseExact([string]$report.completedAtUtc,'o',[Globalization.CultureInfo]::InvariantCulture,[Globalization.DateTimeStyles]::RoundtripKind)
-        $authorization = Read-V02CleanHostAuthorization -AuthorizationPath $FixtureBundle.AuthorizationPath -SignaturePath $FixtureBundle.AuthorizationSignaturePath `
-            -MachineName $report.machine.machineName -MachineFingerprint $report.machine.machineFingerprint -PrincipalSid $report.machine.userScope `
-            -InstallRoot $report.targets.installRoot -UserDataRoot $report.targets.userDataRoot -InitialBinding $report.bindings.initial -FinalBinding $report.bindings.final -VerificationTimeUtc $completed
-        Assert-V02ReleaseGateEqual $report.actor.authorization.authorizationSha256 $authorization.AuthorizationSha256 'Fixture authorization file hash'
-        Assert-V02ReleaseGateEqual $report.actor.authorization.signatureSha256 $authorization.SignatureSha256 'Fixture authorization signature hash'
-        $receipt = Read-V02CleanHostAcceptanceReceipt -ReceiptPath $FixtureBundle.ReceiptPath -SignaturePath $FixtureBundle.ReceiptSignaturePath `
-            -ReportSha256 $document.FileSha256 -Report $report -Authorization $authorization
-        return [pscustomobject][ordered]@{
-            EvidenceClass = 'SyntheticVerifierFixture'
-            Status = 'PASS_FIXTURE_ONLY'
-            AcceptanceReceiptNonce = [string]$receipt.Value.receiptNonce
-            LifecycleCreditGranted = $false
-            Runtime = 'NOT_OBSERVED'
-            Release = 'NOT_OBSERVED'
-        }
-    } $Bundle $VerifierRoot $Identity $Package
 }
 
 function New-V02ReleaseGateTestCleanRepository {
@@ -1166,378 +991,45 @@ try {
         } 'Issue9CandidateSha256'
     }
 
-    Invoke-V02ReleaseGateTestCase 'well-shaped caller-authored CleanMachine authority cannot earn Live credit' {
-        $package = [pscustomobject][ordered]@{
-            ProfileId = $script:V02ReleaseGatePackageProfileId
-            ReceiptSha256 = ('1' * 64); ArchiveSha256 = ('2' * 64); ManifestSha256 = ('3' * 64)
-            AppSha256 = ('4' * 64); CoreSha256 = ('5' * 64)
-            ReferenceHostProfileSha256 = $script:V02ReleaseGateReferenceHostProfileSha256
-            RendererPolicySha256 = $script:V02ReleaseGateRendererPolicySha256
-        }
-        $path = Join-Path $script:TestRoot 'clean-machine-live.json'
-        New-V02ReleaseGateTestCleanMachineReport -Path $path -Identity $script:GateIdentity -Package $package | Out-Null
-        $authorizationPath = Join-Path $script:TestRoot 'forged-clean-host-authorization.json'
-        $signaturePath = Join-Path $script:TestRoot 'forged-clean-host-authorization.p7s'
-        Write-V02ReleaseGateTestText -Path $authorizationPath -Text '{}' | Out-Null
-        Write-V02ReleaseGateTestBytes -Path $signaturePath -Bytes ([byte[]](1,2,3,4)) | Out-Null
-        Assert-V02ReleaseGateTestThrows {
-            Read-V02ReleaseGateCleanMachineReport -Path $path `
-                -ExpectedSourceCommit $script:GateIdentity.Commit -ExpectedSourceTree $script:GateIdentity.Tree -Package $package `
-                -CleanHostAuthorizationPath $authorizationPath -CleanHostAuthorizationSignaturePath $signaturePath
-        } 'signature is invalid or untrusted'
-    }
-
-    Invoke-V02ReleaseGateTestCase 'production-root rejects cryptographically valid but untrusted detached CMS' {
-        $package = [pscustomobject][ordered]@{ProfileId=$script:V02ReleaseGatePackageProfileId;ReceiptSha256=('1'*64);ArchiveSha256=('2'*64);ManifestSha256=('3'*64);AppSha256=('4'*64);CoreSha256=('5'*64);ReferenceHostProfileSha256=$script:V02ReleaseGateReferenceHostProfileSha256;RendererPolicySha256=$script:V02ReleaseGateRendererPolicySha256}
-        $certificate = New-V02ReleaseGateTestCmsCertificate
-        try {
-            $bundle = New-V02ReleaseGateTestSignedCleanMachineBundle -Root (Join-Path $script:TestRoot 'production-untrusted-cms') -Identity $script:GateIdentity -Package $package -Certificate $certificate -ReportSignerThumbprint '8F319A7C115B0793D880D6E6F02F47B36E87D518'
-            Assert-V02ReleaseGateTestThrows {
-                Read-V02ReleaseGateCleanMachineReport -Path $bundle.ReportPath -ExpectedSourceCommit $script:GateIdentity.Commit -ExpectedSourceTree $script:GateIdentity.Tree -Package $package `
-                    -CleanHostAuthorizationPath $bundle.AuthorizationPath -CleanHostAuthorizationSignaturePath $bundle.AuthorizationSignaturePath -CleanHostAcceptanceReceiptPath $bundle.ReceiptPath -CleanHostAcceptanceReceiptSignaturePath $bundle.ReceiptSignaturePath
-            } 'authorization signature is invalid or untrusted'
-        } finally { $certificate.Dispose() }
-    }
-
-    Invoke-V02ReleaseGateTestCase 'anchored production verifier retains committed pin despite caller function shadows' {
-        $package = [pscustomobject][ordered]@{ProfileId=$script:V02ReleaseGatePackageProfileId;ReceiptSha256=('1'*64);ArchiveSha256=('2'*64);ManifestSha256=('3'*64);AppSha256=('4'*64);CoreSha256=('5'*64);ReferenceHostProfileSha256=$script:V02ReleaseGateReferenceHostProfileSha256;RendererPolicySha256=$script:V02ReleaseGateRendererPolicySha256}
-        $certificate = New-V02ReleaseGateTestCmsCertificate
-        try {
-            $bundle = New-V02ReleaseGateTestSignedCleanMachineBundle -Root (Join-Path $script:TestRoot 'production-pin-shadow') -Identity $script:GateIdentity -Package $package -Certificate $certificate
-            Assert-V02ReleaseGateTestThrows {
-                & {
-                    function Assert-V02CleanMachineReportSchema { param($Report,$RepositoryRoot) }
-                    function Read-V02CleanHostAuthorization { return [pscustomobject]@{} }
-                    function Read-V02CleanHostAcceptanceReceipt { return [pscustomobject]@{} }
-                    Read-V02ReleaseGateCleanMachineReport -Path $bundle.ReportPath -ExpectedSourceCommit $script:GateIdentity.Commit -ExpectedSourceTree $script:GateIdentity.Tree -Package $package `
-                        -CleanHostAuthorizationPath $bundle.AuthorizationPath -CleanHostAuthorizationSignaturePath $bundle.AuthorizationSignaturePath -CleanHostAcceptanceReceiptPath $bundle.ReceiptPath -CleanHostAcceptanceReceiptSignaturePath $bundle.ReceiptSignaturePath
-                }
-            } 'pinned observer'
-        } finally { $certificate.Dispose() }
-    }
-
-    Invoke-V02ReleaseGateTestCase 'isolated production verifier ignores Force-replaced legacy gate variables' {
-        $package = [pscustomobject][ordered]@{ProfileId=$script:V02ReleaseGatePackageProfileId;ReceiptSha256=('1'*64);ArchiveSha256=('2'*64);ManifestSha256=('3'*64);AppSha256=('4'*64);CoreSha256=('5'*64);ReferenceHostProfileSha256=$script:V02ReleaseGateReferenceHostProfileSha256;RendererPolicySha256=$script:V02ReleaseGateRendererPolicySha256}
-        $certificate = New-V02ReleaseGateTestCmsCertificate
-        try {
-            $bundle = New-V02ReleaseGateTestSignedCleanMachineBundle -Root (Join-Path $script:TestRoot 'production-force-variable') -Identity $script:GateIdentity -Package $package -Certificate $certificate
-            Set-Variable -Scope Script -Name V02ReleaseGateSourceRoot -Value (Split-Path $bundle.ReportPath -Parent) -Option ReadOnly -Force
-            Set-Variable -Scope Script -Name V02ReleaseGateCleanMachineVerifierPath -Value $bundle.ReportPath -Option ReadOnly -Force
-            Set-Variable -Scope Script -Name V02CleanMachineObserverSignerThumbprint -Value $bundle.Thumbprint -Option ReadOnly -Force
-            Assert-V02ReleaseGateTestThrows {
-                Read-V02ReleaseGateCleanMachineReport -Path $bundle.ReportPath -ExpectedSourceCommit $script:GateIdentity.Commit -ExpectedSourceTree $script:GateIdentity.Tree -Package $package `
-                    -CleanHostAuthorizationPath $bundle.AuthorizationPath -CleanHostAuthorizationSignaturePath $bundle.AuthorizationSignaturePath -CleanHostAcceptanceReceiptPath $bundle.ReceiptPath -CleanHostAcceptanceReceiptSignaturePath $bundle.ReceiptSignaturePath
-            } 'pinned observer|invalid or untrusted'
-        } finally {
-            Remove-Variable -Scope Script -Name V02ReleaseGateSourceRoot,V02ReleaseGateCleanMachineVerifierPath,V02CleanMachineObserverSignerThumbprint -Force -ErrorAction SilentlyContinue
-            $certificate.Dispose()
-        }
-    }
-
-    Invoke-V02ReleaseGateTestCase 'isolated production verifier exposes no invokable module capability' {
-        $package = [pscustomobject][ordered]@{ProfileId=$script:V02ReleaseGatePackageProfileId;ReceiptSha256=('1'*64);ArchiveSha256=('2'*64);ManifestSha256=('3'*64);AppSha256=('4'*64);CoreSha256=('5'*64);ReferenceHostProfileSha256=$script:V02ReleaseGateReferenceHostProfileSha256;RendererPolicySha256=$script:V02ReleaseGateRendererPolicySha256}
-        $certificate = New-V02ReleaseGateTestCmsCertificate
-        $attackerModule = New-Module -ScriptBlock { $script:V02CleanMachineObserverSignerThumbprint = ''; function Read-V02CleanHostAuthorization { [pscustomobject]@{} } }
-        try {
-            $bundle = New-V02ReleaseGateTestSignedCleanMachineBundle -Root (Join-Path $script:TestRoot 'production-module-capability') -Identity $script:GateIdentity -Package $package -Certificate $certificate
-            & $attackerModule { param($thumbprint) Set-Variable -Scope Script -Name V02CleanMachineObserverSignerThumbprint -Value $thumbprint -Force; function Read-V02CleanHostAuthorization { [pscustomobject]@{SignerThumbprint=$thumbprint} } } $bundle.Thumbprint
-            Set-Variable -Scope Script -Name V02ReleaseGateCleanMachineVerifierModule -Value $attackerModule -Force
-            Assert-V02ReleaseGateTestThrows {
-                Read-V02ReleaseGateCleanMachineReport -Path $bundle.ReportPath -ExpectedSourceCommit $script:GateIdentity.Commit -ExpectedSourceTree $script:GateIdentity.Tree -Package $package `
-                    -CleanHostAuthorizationPath $bundle.AuthorizationPath -CleanHostAuthorizationSignaturePath $bundle.AuthorizationSignaturePath -CleanHostAcceptanceReceiptPath $bundle.ReceiptPath -CleanHostAcceptanceReceiptSignaturePath $bundle.ReceiptSignaturePath
-            } 'pinned observer|invalid or untrusted'
-        } finally {
-            Remove-Variable -Scope Script -Name V02ReleaseGateCleanMachineVerifierModule -Force -ErrorAction SilentlyContinue
-            Remove-Module $attackerModule -Force -ErrorAction SilentlyContinue
-            $certificate.Dispose()
-        }
-    }
-
-    Invoke-V02ReleaseGateTestCase 'dot-source launcher shadow can never return production CleanMachine credit' {
-        $package = [pscustomobject][ordered]@{ProfileId=$script:V02ReleaseGatePackageProfileId;ReceiptSha256=('1'*64);ArchiveSha256=('2'*64);ManifestSha256=('3'*64);AppSha256=('4'*64);CoreSha256=('5'*64);ReferenceHostProfileSha256=$script:V02ReleaseGateReferenceHostProfileSha256;RendererPolicySha256=$script:V02ReleaseGateRendererPolicySha256}
-        & {
-            function Invoke-V02ReleaseGateIsolatedCleanMachineVerifier {
-                [pscustomobject]@{reportSha256=('A'*64);runId=('b'*32);machineFingerprint=('C'*64);operatorIdentity='attacker';observerIdentity='attacker';authorizationSignerThumbprint=('D'*40);acceptanceReceiptSha256=('E'*64);acceptanceReceiptSignatureSha256=('F'*64);acceptanceReceiptNonce=('a'*32)}
-            }
-            $result = Read-V02ReleaseGateCleanMachineReport -Path (Join-Path $script:TestRoot 'nonexistent-report.json') `
-                -ExpectedSourceCommit $script:GateIdentity.Commit -ExpectedSourceTree $script:GateIdentity.Tree -Package $package `
-                -CleanHostAuthorizationPath 'missing-auth.json' -CleanHostAuthorizationSignaturePath 'missing-auth.p7s' `
-                -CleanHostAcceptanceReceiptPath 'missing-receipt.json' -CleanHostAcceptanceReceiptSignaturePath 'missing-receipt.p7s'
-            if ($result.LifecycleCreditGranted -or $result.EvidenceClass -ceq 'CleanMachine') {
-                throw 'A dot-source launcher shadow returned production CleanMachine credit.'
-            }
-        }
-    }
-
-    Invoke-V02ReleaseGateTestCase 'abbreviated wrapper selector plus fake File argument cannot enter production credit path' {
-        $wrapperPath = Join-Path $script:TestRoot 'release-wrapper-shadow.ps1'
-        $sentinelPath = Join-Path $script:TestRoot 'release-wrapper-sentinel.txt'
-        $gatePath = [IO.Path]::GetFullPath((Join-Path $script:GateRepositoryRoot 'tools\Test-V02ReleaseGate.ps1'))
-        $wrapper = @'
-param([string]$GatePath,[string]$SentinelPath,[Parameter(ValueFromRemainingArguments=$true)][object[]]$Rest)
-try {
-    . $GatePath
-    function Invoke-V02ReleaseGateIsolatedCleanMachineVerifier {
-        [IO.File]::WriteAllText($SentinelPath,'SHADOW_EXECUTED')
-        [pscustomobject]@{reportSha256=('A'*64);runId=('b'*32);machineFingerprint=('C'*64);operatorIdentity='attacker';observerIdentity='attacker';authorizationSignerThumbprint=('D'*40);acceptanceReceiptSha256=('E'*64);acceptanceReceiptSignatureSha256=('F'*64);acceptanceReceiptNonce=('a'*32)}
-    }
-    $p=@{ExpectedSourceCommit=('1'*40);ExpectedSourceTree=('2'*40);PackageIdentityPath='x';PackageArchivePath='x';ExtractedPackageRoot='x';PackageProfilePath='x';RendererManifestPath='x';ThaiEvidenceDirectory='x';EnglishEvidenceDirectory='x';RuntimeMatrixManifestPath='x';Issue9CandidatePath='x';ContractEvidencePath='x';SyntheticEvidencePath='x';CleanMachineReportPath='x';CleanHostAuthorizationPath='x';CleanHostAuthorizationSignaturePath='x';CleanHostAcceptanceReceiptPath='x';CleanHostAcceptanceReceiptSignaturePath='x';GitHubSnapshotPath='x'}
-    Invoke-V02ReleaseGate @p | ConvertTo-Json -Compress
-} catch { [Console]::Error.WriteLine($_.Exception.Message); exit 17 }
-'@
-        Write-V02ReleaseGateTestText -Path $wrapperPath -Text $wrapper | Out-Null
-        $engine = [Diagnostics.Process]::GetCurrentProcess().MainModule.FileName
-        $output = @()
-        try { $output = @(& $engine -NoLogo -NoProfile -f $wrapperPath $gatePath $sentinelPath -File $gatePath 2>&1) }
-        catch { $output = @($_.Exception.Message) }
-        if (($output -join "`n") -notmatch 'direct-execution-only') {
-            throw "Spoofed wrapper did not reach the exact direct-only guard: $($output -join ' | ')"
-        }
-        if (Test-Path -LiteralPath $sentinelPath) { throw 'Spoofed wrapper executed the shadow launcher.' }
-        if (($output -join "`n") -match 'LifecycleCreditGranted|CleanMachine.*true|READY') { throw 'Spoofed wrapper emitted production credit.' }
-    }
-
-    Invoke-V02ReleaseGateTestCase 'fixture verifier exercises valid CMS semantics but cannot grant production credit' {
-        $package = [pscustomobject][ordered]@{ProfileId=$script:V02ReleaseGatePackageProfileId;ReceiptSha256=('1'*64);ArchiveSha256=('2'*64);ManifestSha256=('3'*64);AppSha256=('4'*64);CoreSha256=('5'*64);ReferenceHostProfileSha256=$script:V02ReleaseGateReferenceHostProfileSha256;RendererPolicySha256=$script:V02ReleaseGateRendererPolicySha256}
-        $certificate = New-V02ReleaseGateTestCmsCertificate
-        try {
-            $bundle = New-V02ReleaseGateTestSignedCleanMachineBundle -Root (Join-Path $script:TestRoot 'clean-machine-valid-cms') -Identity $script:GateIdentity -Package $package -Certificate $certificate
-            $verifierRoot = New-V02ReleaseGateTestObserverVerifierRepository -Certificate $certificate
-            $result = Read-V02ReleaseGateTestSignedBundle $bundle $verifierRoot $script:GateIdentity $package
-            if($result.LifecycleCreditGranted-or$result.EvidenceClass-cne'SyntheticVerifierFixture'-or$result.AcceptanceReceiptNonce-cne('c'*32)){throw 'Fixture seam granted production credit or did not validate the receipt.'}
-        } finally { $certificate.Dispose() }
-    }
-
-    Invoke-V02ReleaseGateTestCase 'production launcher rejects tampered real child stdout identity and binding with no credit' {
-        $package = [pscustomobject][ordered]@{ProfileId=$script:V02ReleaseGatePackageProfileId;ReceiptSha256=('1'*64);ArchiveSha256=('2'*64);ManifestSha256=('3'*64);AppSha256=('4'*64);CoreSha256=('5'*64);ReferenceHostProfileSha256=$script:V02ReleaseGateReferenceHostProfileSha256;RendererPolicySha256=$script:V02ReleaseGateRendererPolicySha256}
-        $certificate = New-V02ReleaseGateTestCmsCertificate
-        try {
-            $bundle = New-V02ReleaseGateTestSignedCleanMachineBundle -Root (Join-Path $script:TestRoot 'clean-machine-launcher-tamper') -Identity $script:GateIdentity -Package $package -Certificate $certificate
-            foreach ($case in @(
-                    @{Mutation='AmbiguousStream';Guard='ambiguous result stream'},
-                    @{Mutation='ChildPid';Guard='child PID binding'},
-                    @{Mutation='ResultBinding';Guard='result cryptographic binding'})) {
-                $verifierRoot = New-V02ReleaseGateTestTamperedLauncherRepository -Certificate $certificate -Mutation $case.Mutation
-                Assert-V02ReleaseGateTestProductionLauncherTamper -Bundle $bundle -VerifierRoot $verifierRoot `
-                    -Identity $script:GateIdentity -Package $package -ExpectedError $case.Guard
-            }
-        }
-        finally { $certificate.Dispose() }
-    }
-
-    Invoke-V02ReleaseGateTestCase 'post-run receipt rejects a valid CMS signer that differs from the verifier pin' {
-        $package = [pscustomobject][ordered]@{ProfileId=$script:V02ReleaseGatePackageProfileId;ReceiptSha256=('1'*64);ArchiveSha256=('2'*64);ManifestSha256=('3'*64);AppSha256=('4'*64);CoreSha256=('5'*64);ReferenceHostProfileSha256=$script:V02ReleaseGateReferenceHostProfileSha256;RendererPolicySha256=$script:V02ReleaseGateRendererPolicySha256}
-        $authorized = New-V02ReleaseGateTestCmsCertificate; $wrong = New-V02ReleaseGateTestCmsCertificate
-        try {
-            $bundle = New-V02ReleaseGateTestSignedCleanMachineBundle -Root (Join-Path $script:TestRoot 'receipt-wrong-signer') -Identity $script:GateIdentity -Package $package -Certificate $authorized -ReceiptCertificate $wrong
-            $verifierRoot = New-V02ReleaseGateTestObserverVerifierRepository -Certificate $authorized
-            Assert-V02ReleaseGateTestThrows { Read-V02ReleaseGateTestSignedBundle $bundle $verifierRoot $script:GateIdentity $package | Out-Null } 'acceptance receipt signer does not equal the pinned'
-        } finally { $authorized.Dispose(); $wrong.Dispose() }
-    }
-
-    Invoke-V02ReleaseGateTestCase 'post-run receipt rejects tampered CMS content and multiple signers' {
-        $package = [pscustomobject][ordered]@{ProfileId=$script:V02ReleaseGatePackageProfileId;ReceiptSha256=('1'*64);ArchiveSha256=('2'*64);ManifestSha256=('3'*64);AppSha256=('4'*64);CoreSha256=('5'*64);ReferenceHostProfileSha256=$script:V02ReleaseGateReferenceHostProfileSha256;RendererPolicySha256=$script:V02ReleaseGateRendererPolicySha256}
-        $certificate = New-V02ReleaseGateTestCmsCertificate; $second = New-V02ReleaseGateTestCmsCertificate
-        try {
-            $verifierRoot = New-V02ReleaseGateTestObserverVerifierRepository -Certificate $certificate
-            $tampered = New-V02ReleaseGateTestSignedCleanMachineBundle -Root (Join-Path $script:TestRoot 'receipt-tampered-cms') -Identity $script:GateIdentity -Package $package -Certificate $certificate
-            $receiptText = Get-Content -LiteralPath $tampered.ReceiptPath -Raw
-            Write-V02ReleaseGateTestText -Path $tampered.ReceiptPath -Text ($receiptText.Replace(('c'*32),('d'*32))) | Out-Null
-            Assert-V02ReleaseGateTestThrows { Read-V02ReleaseGateTestSignedBundle $tampered $verifierRoot $script:GateIdentity $package | Out-Null } 'acceptance receipt signature is invalid or untrusted'
-            $multiple = New-V02ReleaseGateTestSignedCleanMachineBundle -Root (Join-Path $script:TestRoot 'receipt-multiple-signers') -Identity $script:GateIdentity -Package $package -Certificate $certificate -AdditionalReceiptCertificate $second
-            Assert-V02ReleaseGateTestThrows { Read-V02ReleaseGateTestSignedBundle $multiple $verifierRoot $script:GateIdentity $package | Out-Null } 'must have exactly one signer'
-        } finally { $certificate.Dispose(); $second.Dispose() }
-    }
-
-    Invoke-V02ReleaseGateTestCase 'post-run receipt rejects pre-completion and future issuance' {
-        $package = [pscustomobject][ordered]@{ProfileId=$script:V02ReleaseGatePackageProfileId;ReceiptSha256=('1'*64);ArchiveSha256=('2'*64);ManifestSha256=('3'*64);AppSha256=('4'*64);CoreSha256=('5'*64);ReferenceHostProfileSha256=$script:V02ReleaseGateReferenceHostProfileSha256;RendererPolicySha256=$script:V02ReleaseGateRendererPolicySha256}
-        $certificate = New-V02ReleaseGateTestCmsCertificate
-        try {
-            $verifierRoot = New-V02ReleaseGateTestObserverVerifierRepository -Certificate $certificate
-            foreach ($case in @(@('receipt-pre-completion','2026-08-23T10:14:59.0000000Z'),@('receipt-future',[DateTimeOffset]::UtcNow.AddMinutes(10).ToString('o')))) {
-                $bundle = New-V02ReleaseGateTestSignedCleanMachineBundle -Root (Join-Path $script:TestRoot $case[0]) -Identity $script:GateIdentity -Package $package -Certificate $certificate
-                $bundle.Receipt.issuedAtUtc = $case[1]
-                Write-V02ReleaseGateTestJson -Path $bundle.ReceiptPath -Value $bundle.Receipt | Out-Null
-                Write-V02ReleaseGateTestDetachedCms -ContentPath $bundle.ReceiptPath -SignaturePath $bundle.ReceiptSignaturePath -Certificate $certificate
-                Assert-V02ReleaseGateTestThrows { Read-V02ReleaseGateTestSignedBundle $bundle $verifierRoot $script:GateIdentity $package | Out-Null } 'issuedAtUtc is outside the post-run observer window'
-            }
-        } finally { $certificate.Dispose() }
-    }
-
-    Invoke-V02ReleaseGateTestCase 'post-run receipt rejects reused nonce authorization transplant and semantic summary mismatch' {
-        $package = [pscustomobject][ordered]@{ProfileId=$script:V02ReleaseGatePackageProfileId;ReceiptSha256=('1'*64);ArchiveSha256=('2'*64);ManifestSha256=('3'*64);AppSha256=('4'*64);CoreSha256=('5'*64);ReferenceHostProfileSha256=$script:V02ReleaseGateReferenceHostProfileSha256;RendererPolicySha256=$script:V02ReleaseGateRendererPolicySha256}
-        $certificate = New-V02ReleaseGateTestCmsCertificate
-        try {
-            $verifierRoot = New-V02ReleaseGateTestObserverVerifierRepository -Certificate $certificate
-            $nonce = New-V02ReleaseGateTestSignedCleanMachineBundle -Root (Join-Path $script:TestRoot 'receipt-reused-nonce') -Identity $script:GateIdentity -Package $package -Certificate $certificate
-            $nonce.Receipt.receiptNonce = ('b'*32); Write-V02ReleaseGateTestJson -Path $nonce.ReceiptPath -Value $nonce.Receipt | Out-Null; Write-V02ReleaseGateTestDetachedCms -ContentPath $nonce.ReceiptPath -SignaturePath $nonce.ReceiptSignaturePath -Certificate $certificate
-            Assert-V02ReleaseGateTestThrows { Read-V02ReleaseGateTestSignedBundle $nonce $verifierRoot $script:GateIdentity $package | Out-Null } 'nonce is invalid or reuses'
-            $transplant = New-V02ReleaseGateTestSignedCleanMachineBundle -Root (Join-Path $script:TestRoot 'authorization-transplant') -Identity $script:GateIdentity -Package $package -Certificate $certificate
-            $foreignAuthorization = Get-Content -LiteralPath $transplant.AuthorizationPath -Raw | ConvertFrom-Json; $foreignAuthorization.nonce = ('d'*32); Write-V02ReleaseGateTestJson -Path $transplant.AuthorizationPath -Value $foreignAuthorization | Out-Null; Write-V02ReleaseGateTestDetachedCms -ContentPath $transplant.AuthorizationPath -SignaturePath $transplant.AuthorizationSignaturePath -Certificate $certificate
-            Assert-V02ReleaseGateTestThrows { Read-V02ReleaseGateTestSignedBundle $transplant $verifierRoot $script:GateIdentity $package | Out-Null } 'authorization file hash'
-            $semantic = New-V02ReleaseGateTestSignedCleanMachineBundle -Root (Join-Path $script:TestRoot 'receipt-semantic-mismatch') -Identity $script:GateIdentity -Package $package -Certificate $certificate
-            $semantic.Receipt.semantics.cleanInstall = 'FAIL'; Write-V02ReleaseGateTestJson -Path $semantic.ReceiptPath -Value $semantic.Receipt | Out-Null; Write-V02ReleaseGateTestDetachedCms -ContentPath $semantic.ReceiptPath -SignaturePath $semantic.ReceiptSignaturePath -Certificate $certificate
-            Assert-V02ReleaseGateTestThrows { Read-V02ReleaseGateTestSignedBundle $semantic $verifierRoot $script:GateIdentity $package | Out-Null } 'cleanInstall binding mismatch'
-        } finally { $certificate.Dispose() }
-    }
-
-    Invoke-V02ReleaseGateTestCase 'observer receipt reuse against another completed report reaches exact report digest guard' {
-        $package = [pscustomobject][ordered]@{ProfileId=$script:V02ReleaseGatePackageProfileId;ReceiptSha256=('1'*64);ArchiveSha256=('2'*64);ManifestSha256=('3'*64);AppSha256=('4'*64);CoreSha256=('5'*64);ReferenceHostProfileSha256=$script:V02ReleaseGateReferenceHostProfileSha256;RendererPolicySha256=$script:V02ReleaseGateRendererPolicySha256}
-        $certificate = New-V02ReleaseGateTestCmsCertificate
-        try {
-            $first = New-V02ReleaseGateTestSignedCleanMachineBundle -Root (Join-Path $script:TestRoot 'clean-machine-reuse-a') -Identity $script:GateIdentity -Package $package -Certificate $certificate
-            $second = New-V02ReleaseGateTestSignedCleanMachineBundle -Root (Join-Path $script:TestRoot 'clean-machine-reuse-b') -Identity $script:GateIdentity -Package $package -Certificate $certificate
-            $verifierRoot = New-V02ReleaseGateTestObserverVerifierRepository -Certificate $certificate
-            $secondReportText = Get-Content -LiteralPath $second.ReportPath -Raw
-            Write-V02ReleaseGateTestText -Path $second.ReportPath -Text ($secondReportText.Replace(('a'*32),('d'*32))) | Out-Null
-            Assert-V02ReleaseGateTestThrows {
-                $second.ReceiptPath = $first.ReceiptPath; $second.ReceiptSignaturePath = $first.ReceiptSignaturePath
-                Read-V02ReleaseGateTestSignedBundle $second $verifierRoot $script:GateIdentity $package | Out-Null
-            } 'report SHA-256 binding mismatch'
-        } finally { $certificate.Dispose() }
-    }
-
-    Invoke-V02ReleaseGateTestCase 'post-signature report semantic-detail tamper reaches exact report digest guard' {
-        $package = [pscustomobject][ordered]@{ProfileId=$script:V02ReleaseGatePackageProfileId;ReceiptSha256=('1'*64);ArchiveSha256=('2'*64);ManifestSha256=('3'*64);AppSha256=('4'*64);CoreSha256=('5'*64);ReferenceHostProfileSha256=$script:V02ReleaseGateReferenceHostProfileSha256;RendererPolicySha256=$script:V02ReleaseGateRendererPolicySha256}
-        $certificate = New-V02ReleaseGateTestCmsCertificate
-        try {
-            $bundle = New-V02ReleaseGateTestSignedCleanMachineBundle -Root (Join-Path $script:TestRoot 'clean-machine-report-tamper') -Identity $script:GateIdentity -Package $package -Certificate $certificate
-            $verifierRoot = New-V02ReleaseGateTestObserverVerifierRepository -Certificate $certificate
-            $tampered = Get-Content -LiteralPath $bundle.ReportPath -Raw
-            $tamperedBytes = ([regex]'"details"\s*:\s*"observed"').Replace($tampered,'"details": "caller changed completed report after observer signature"',1)
-            if ($tamperedBytes -ceq $tampered) { throw 'Semantic-tamper fixture did not alter the completed report bytes.' }
-            Write-V02ReleaseGateTestText -Path $bundle.ReportPath -Text $tamperedBytes | Out-Null
-            Assert-V02ReleaseGateTestThrows {
-                Read-V02ReleaseGateTestSignedBundle $bundle $verifierRoot $script:GateIdentity $package | Out-Null
-            } 'report SHA-256 binding mismatch'
-        } finally { $certificate.Dispose() }
-    }
-
-    Invoke-V02ReleaseGateTestCase 'completed report byte swap after observer receipt fails closed' {
-        $package = [pscustomobject][ordered]@{ProfileId=$script:V02ReleaseGatePackageProfileId;ReceiptSha256=('1'*64);ArchiveSha256=('2'*64);ManifestSha256=('3'*64);AppSha256=('4'*64);CoreSha256=('5'*64);ReferenceHostProfileSha256=$script:V02ReleaseGateReferenceHostProfileSha256;RendererPolicySha256=$script:V02ReleaseGateRendererPolicySha256}
-        $certificate = New-V02ReleaseGateTestCmsCertificate
-        try {
-            $bundle = New-V02ReleaseGateTestSignedCleanMachineBundle -Root (Join-Path $script:TestRoot 'clean-machine-report-swap') -Identity $script:GateIdentity -Package $package -Certificate $certificate
-            $verifierRoot = New-V02ReleaseGateTestObserverVerifierRepository -Certificate $certificate
-            $swapped = Get-Content -LiteralPath $bundle.ReportPath -Raw
-            $swappedBytes = ([regex]'"details"\s*:\s*"fixture verifier input"').Replace($swapped,'"details": "different still-semantic PASS report bytes"',1)
-            if ($swappedBytes -ceq $swapped) { throw 'Report-swap fixture did not alter the completed report bytes.' }
-            Write-V02ReleaseGateTestText -Path $bundle.ReportPath -Text $swappedBytes | Out-Null
-            Assert-V02ReleaseGateTestThrows {
-                Read-V02ReleaseGateTestSignedBundle $bundle $verifierRoot $script:GateIdentity $package | Out-Null
-            } 'report SHA-256 binding mismatch'
-        } finally { $certificate.Dispose() }
-    }
-
-    Invoke-V02ReleaseGateTestCase 'fixture CleanMachine lookalike reaches exact mode guard and earns no credit' {
-        $package = [pscustomobject][ordered]@{
-            ProfileId = $script:V02ReleaseGatePackageProfileId
-            ReceiptSha256 = ('1' * 64); ArchiveSha256 = ('2' * 64); ManifestSha256 = ('3' * 64)
-            AppSha256 = ('4' * 64); CoreSha256 = ('5' * 64)
-            ReferenceHostProfileSha256 = $script:V02ReleaseGateReferenceHostProfileSha256
-            RendererPolicySha256 = $script:V02ReleaseGateRendererPolicySha256
-        }
-        $path = Join-Path $script:TestRoot 'clean-machine-fixture.json'
-        New-V02ReleaseGateTestCleanMachineReport -Path $path -Identity $script:GateIdentity -Package $package -Mode Fixture | Out-Null
-        Assert-V02ReleaseGateTestThrows {
-            Read-V02ReleaseGateCleanMachineReport -Path $path `
-                -ExpectedSourceCommit $script:GateIdentity.Commit -ExpectedSourceTree $script:GateIdentity.Tree -Package $package
-        } 'mode'
-    }
-
-    Invoke-V02ReleaseGateTestCase 'CleanMachine candidate transplant reaches final archive binding guard' {
-        $package = [pscustomobject][ordered]@{
-            ProfileId = $script:V02ReleaseGatePackageProfileId
-            ReceiptSha256 = ('1' * 64); ArchiveSha256 = ('2' * 64); ManifestSha256 = ('3' * 64)
-            AppSha256 = ('4' * 64); CoreSha256 = ('5' * 64)
-            ReferenceHostProfileSha256 = $script:V02ReleaseGateReferenceHostProfileSha256
-            RendererPolicySha256 = $script:V02ReleaseGateRendererPolicySha256
-        }
-        $path = Join-Path $script:TestRoot 'clean-machine-transplant.json'
+    Invoke-V02ReleaseGateTestCase 'automated lifecycle schema v2 is the only admissible production shape' {
+        $package = New-V02ReleaseGateTestPackageSummary -Identity $script:GateIdentity
+        $path = Join-Path $script:TestRoot 'automated-lifecycle-v2.json'
         $report = New-V02ReleaseGateTestCleanMachineReport -Path $path -Identity $script:GateIdentity -Package $package
-        $report.bindings.final.archiveSha256 = ('9' * 64)
-        $report.lifecycle.rollback.restoredArchiveSha256 = ('9' * 64)
+        $report.schemaVersion = 1
         Write-V02ReleaseGateTestJson -Path $path -Value $report | Out-Null
         Assert-V02ReleaseGateTestThrows {
-            Read-V02ReleaseGateCleanMachineReport -Path $path `
-                -ExpectedSourceCommit $script:GateIdentity.Commit -ExpectedSourceTree $script:GateIdentity.Tree -Package $package
+            Read-V02ReleaseGateCleanMachineReport -Path $path -ExpectedSourceCommit $script:GateIdentity.Commit -ExpectedSourceTree $script:GateIdentity.Tree -Package $package | Out-Null
+        } 'schemaVersion must be 2'
+    }
+
+    Invoke-V02ReleaseGateTestCase 'automated lifecycle candidate transplant reaches exact final archive binding guard' {
+        $package = New-V02ReleaseGateTestPackageSummary -Identity $script:GateIdentity
+        $path = Join-Path $script:TestRoot 'automated-lifecycle-transplant.json'
+        $report = New-V02ReleaseGateTestCleanMachineReport -Path $path -Identity $script:GateIdentity -Package $package
+        $report.schemaVersion = 2
+        $report.reportKind = 'HerdrOps.V02AutomatedLiveLifecycleReport'
+        $report.actor = [pscustomobject][ordered]@{ operator=[pscustomobject][ordered]@{identity=$report.machine.userScope;role='EvidenceOperator'} }
+        $report.evidenceBoundary = [pscustomobject][ordered]@{evidenceClass='AutomatedLiveLifecycle';actualHerdrRuntime='NOT_OBSERVED';independentAgentReview='NOT_OBSERVED';releaseCredit='NOT_OBSERVED';creditGranted=$true}
+        $report.bindings.final.archiveSha256 = ('F' * 64)
+        $report.lifecycle.rollback.restoredArchiveSha256 = ('F' * 64)
+        Write-V02ReleaseGateTestJson -Path $path -Value $report | Out-Null
+        Assert-V02ReleaseGateTestThrows {
+            Read-V02ReleaseGateCleanMachineReport -Path $path -ExpectedSourceCommit $script:GateIdentity.Commit -ExpectedSourceTree $script:GateIdentity.Tree -Package $package | Out-Null
         } 'final.archiveSha256'
     }
 
-    Invoke-V02ReleaseGateTestCase 'Live CleanMachine report without pinned external observer authority fails before candidate admission' {
-        $package = [pscustomobject][ordered]@{
-            ProfileId = $script:V02ReleaseGatePackageProfileId
-            ReceiptSha256 = ('1' * 64); ArchiveSha256 = ('2' * 64); ManifestSha256 = ('3' * 64)
-            AppSha256 = ('4' * 64); CoreSha256 = ('5' * 64)
-            ReferenceHostProfileSha256 = $script:V02ReleaseGateReferenceHostProfileSha256
-            RendererPolicySha256 = $script:V02ReleaseGateRendererPolicySha256
-        }
-        $path = Join-Path $script:TestRoot 'clean-machine-no-authority.json'
+    Invoke-V02ReleaseGateTestCase 'automated lifecycle report rejects observer and authorization inflation' {
+        $package = New-V02ReleaseGateTestPackageSummary -Identity $script:GateIdentity
+        $path = Join-Path $script:TestRoot 'automated-lifecycle-observer-inflation.json'
         $report = New-V02ReleaseGateTestCleanMachineReport -Path $path -Identity $script:GateIdentity -Package $package
-        $report.actor.authorization.status = 'NOT_APPLICABLE'
-        $report.actor.authorization.signerThumbprint = ''
-        $report.actor.authorization.authorizationSha256 = ''
-        $report.actor.authorization.signatureSha256 = ''
-        $report.actor.authorization.nonce = ''
+        $report.schemaVersion = 2
+        $report.reportKind = 'HerdrOps.V02AutomatedLiveLifecycleReport'
+        $report.actor = [pscustomobject][ordered]@{operator=[pscustomobject][ordered]@{identity=$report.machine.userScope;role='EvidenceOperator'};observer=[pscustomobject]@{identity='attacker';role='IndependentObserver'}}
+        $report.evidenceBoundary = [pscustomobject][ordered]@{evidenceClass='AutomatedLiveLifecycle';actualHerdrRuntime='NOT_OBSERVED';independentAgentReview='NOT_OBSERVED';releaseCredit='NOT_OBSERVED';creditGranted=$true}
         Write-V02ReleaseGateTestJson -Path $path -Value $report | Out-Null
         Assert-V02ReleaseGateTestThrows {
-            Read-V02ReleaseGateCleanMachineReport -Path $path `
-                -ExpectedSourceCommit $script:GateIdentity.Commit -ExpectedSourceTree $script:GateIdentity.Tree -Package $package
-        } 'externally verified|authorization'
-    }
-
-    Invoke-V02ReleaseGateTestCase 'top-level CleanMachine PASS with failed lifecycle step reaches exact semantic guard' {
-        $package = [pscustomobject][ordered]@{
-            ProfileId = $script:V02ReleaseGatePackageProfileId
-            ReceiptSha256 = ('1' * 64); ArchiveSha256 = ('2' * 64); ManifestSha256 = ('3' * 64)
-            AppSha256 = ('4' * 64); CoreSha256 = ('5' * 64)
-            ReferenceHostProfileSha256 = $script:V02ReleaseGateReferenceHostProfileSha256
-            RendererPolicySha256 = $script:V02ReleaseGateRendererPolicySha256
-        }
-        $path = Join-Path $script:TestRoot 'clean-machine-failed-substatus.json'
-        $report = New-V02ReleaseGateTestCleanMachineReport -Path $path -Identity $script:GateIdentity -Package $package
-        $report.lifecycle.cleanInstall.status = 'FAIL'
-        Write-V02ReleaseGateTestJson -Path $path -Value $report | Out-Null
-        Assert-V02ReleaseGateTestThrows {
-            Read-V02ReleaseGateCleanMachineReport -Path $path `
-                -ExpectedSourceCommit $script:GateIdentity.Commit -ExpectedSourceTree $script:GateIdentity.Tree -Package $package
-        } 'lifecycle.cleanInstall.status must be PASS'
-    }
-
-    Invoke-V02ReleaseGateTestCase 'top-level CleanMachine PASS with reversed chronology reaches exact timestamp guard' {
-        $package = [pscustomobject][ordered]@{
-            ProfileId = $script:V02ReleaseGatePackageProfileId
-            ReceiptSha256 = ('1' * 64); ArchiveSha256 = ('2' * 64); ManifestSha256 = ('3' * 64)
-            AppSha256 = ('4' * 64); CoreSha256 = ('5' * 64)
-            ReferenceHostProfileSha256 = $script:V02ReleaseGateReferenceHostProfileSha256
-            RendererPolicySha256 = $script:V02ReleaseGateRendererPolicySha256
-        }
-        $path = Join-Path $script:TestRoot 'clean-machine-reversed-time.json'
-        $report = New-V02ReleaseGateTestCleanMachineReport -Path $path -Identity $script:GateIdentity -Package $package
-        $report.completedAtUtc = '2026-08-23T09:59:59.0000000Z'
-        Write-V02ReleaseGateTestJson -Path $path -Value $report | Out-Null
-        Assert-V02ReleaseGateTestThrows {
-            Read-V02ReleaseGateCleanMachineReport -Path $path `
-                -ExpectedSourceCommit $script:GateIdentity.Commit -ExpectedSourceTree $script:GateIdentity.Tree -Package $package
-        } 'completedAtUtc must not precede startedAtUtc'
-    }
-
-    Invoke-V02ReleaseGateTestCase 'top-level CleanMachine PASS with noncanonical root reaches exact root guard' {
-        $package = [pscustomobject][ordered]@{
-            ProfileId = $script:V02ReleaseGatePackageProfileId
-            ReceiptSha256 = ('1' * 64); ArchiveSha256 = ('2' * 64); ManifestSha256 = ('3' * 64)
-            AppSha256 = ('4' * 64); CoreSha256 = ('5' * 64)
-            ReferenceHostProfileSha256 = $script:V02ReleaseGateReferenceHostProfileSha256
-            RendererPolicySha256 = $script:V02ReleaseGateRendererPolicySha256
-        }
-        $path = Join-Path $script:TestRoot 'clean-machine-wrong-root.json'
-        $report = New-V02ReleaseGateTestCleanMachineReport -Path $path -Identity $script:GateIdentity -Package $package
-        $report.targets.installRoot = 'relative\HerdrOps'
-        Write-V02ReleaseGateTestJson -Path $path -Value $report | Out-Null
-        Assert-V02ReleaseGateTestThrows {
-            Read-V02ReleaseGateCleanMachineReport -Path $path `
-                -ExpectedSourceCommit $script:GateIdentity.Commit -ExpectedSourceTree $script:GateIdentity.Tree -Package $package
-        } 'targets.installRoot must be an absolute path'
+            Read-V02ReleaseGateCleanMachineReport -Path $path -ExpectedSourceCommit $script:GateIdentity.Commit -ExpectedSourceTree $script:GateIdentity.Tree -Package $package | Out-Null
+        } 'actor must contain exactly operator'
     }
 
     Invoke-V02ReleaseGateTestCase 'typed Issue9 candidate rejects missing extra stale unbound and fixture authority' {
@@ -1690,7 +1182,7 @@ try {
         }
     }
 
-    Invoke-V02ReleaseGateTestCase 'v0.2 release-first v4 scope authority is split from retained REC-ALL authority' {
+    Invoke-V02ReleaseGateTestCase 'v0.2 renderer v4 and automated lifecycle v5 authorities are split from retained REC-ALL authority' {
         if ($script:V02ReleaseGateDecisionId -cne 'herdrops-rec-all-v2' -or
             $script:V02ReleaseGateDecisionReference -cne 'https://github.com/OSHEThai/HerdrOps/issues/149#issuecomment-5380637664' -or
             $script:V02ReleaseGateRendererScopeDecisionId -cne 'herdrops-v0.2-release-first-v4' -or
@@ -1698,9 +1190,33 @@ try {
             $script:V02ReleaseGateRendererScopeDecisionPayloadSha256 -cne '4958E318AF4960C5BEC8B12BA69AED384236C91570BB86F872057066939ED904' -or
             $script:V02ReleaseGateRendererScopeApprovedUtc -cne '2026-08-24T14:31:14Z' -or
             $script:V02ReleaseGateRendererScopeSupersedesDecisionId -cne 'herdrops-v0.2-compat-v3' -or
-            $script:V02ReleaseGateRendererScopeSupersedesPayloadSha256 -cne 'DF5717849F206D817DB6BEF324CF74CEA1C5BFC1E91956EC5436A60727DFFB98') {
-            throw 'Release gate collapsed the scoped D-026 authority into the retained REC-ALL package/security/performance authority.'
+            $script:V02ReleaseGateRendererScopeSupersedesPayloadSha256 -cne 'DF5717849F206D817DB6BEF324CF74CEA1C5BFC1E91956EC5436A60727DFFB98' -or
+            $script:V02ReleaseGateLifecycleDecisionId -cne 'herdrops-v0.2-automated-lifecycle-v5' -or
+            $script:V02ReleaseGateLifecycleDecisionReference -cne 'https://github.com/OSHEThai/HerdrOps/issues/149#issuecomment-5398171130' -or
+            $script:V02ReleaseGateLifecycleDecisionPayloadSha256 -cne 'C7E5D74621D67D5ADD82BF8BE369B192AA64B5E337727FA986DB09A1F8540C7B' -or
+            $script:V02ReleaseGateLifecycleApprovedUtc -cne '2026-08-24T16:25:24Z') {
+            throw 'Release gate collapsed D-026/D-027 scopes into the retained REC-ALL package/security/performance authority.'
         }
+    }
+
+    Invoke-V02ReleaseGateTestCase 'automated lifecycle authority is exact and independently reportable' {
+        $authority = Read-V02ReleaseGateAuthorityReference -RepositoryRoot $script:GateRepositoryRoot `
+            -AuthorityReferencePath (Join-Path $script:GateRepositoryRoot 'Plan\DECISIONS.md')
+        $lifecycleAuthority = [pscustomobject][ordered]@{
+            DecisionId = $script:V02ReleaseGateLifecycleDecisionId
+            ApprovalReference = $script:V02ReleaseGateLifecycleDecisionReference
+            ApprovedUtc = $script:V02ReleaseGateLifecycleApprovedUtc
+            PayloadSha256 = $script:V02ReleaseGateLifecycleDecisionPayloadSha256
+            Scope = 'V02AutomatedLiveLifecycleOnly'
+            ReferencePath = [string]$authority.Path
+            ReferenceSha256 = [string]$authority.FileSha256
+        }
+        Assert-V02ReleaseGateExactProperties $lifecycleAuthority @(
+            'DecisionId','ApprovalReference','ApprovedUtc','PayloadSha256','Scope','ReferencePath','ReferenceSha256'
+        ) 'Automated lifecycle authority'
+        Assert-V02ReleaseGateExactString $lifecycleAuthority.DecisionId 'herdrops-v0.2-automated-lifecycle-v5' 'Automated lifecycle authority decision'
+        Assert-V02ReleaseGateExactString $lifecycleAuthority.Scope 'V02AutomatedLiveLifecycleOnly' 'Automated lifecycle authority scope'
+        Assert-V02ReleaseGateEqual $lifecycleAuthority.ReferenceSha256 $script:V02ReleaseGateAuthorityFileSha256 'Automated lifecycle authority file binding'
     }
 
     Invoke-V02ReleaseGateTestCase 'release gate admits only automated renderer manifest v4 result' {
@@ -1927,12 +1443,12 @@ try {
         }
         & {
             . (Join-Path $script:GateRepositoryRoot 'tools\packaging\v0.2\V02CleanMachine.Common.ps1')
-            foreach ($functionName in @('Read-V02CleanHostAuthorization','Read-V02CleanHostAcceptanceReceipt','Assert-V02CleanMachineReportSchema')) {
-                $authorityParameters = @((Get-Command $functionName -CommandType Function).Parameters.Keys)
-                if (@($authorityParameters | Where-Object { $_ -match 'Signer|Trust|Untrusted|Certificate' }).Count -ne 0) {
-                    throw "Production authority verifier '$functionName' exposes a trust or signer override."
+            foreach ($removedFunction in @('Read-V02CleanHostAuthorization','Read-V02CleanHostAcceptanceReceipt')) {
+                if ($null -ne (Get-Command $removedFunction -CommandType Function -ErrorAction SilentlyContinue)) {
+                    throw "Removed manual authority surface '$removedFunction' remains callable."
                 }
             }
+            if ($null -eq (Get-Command Assert-V02CleanMachineReportSchema -CommandType Function -ErrorAction SilentlyContinue)) { throw 'Automated lifecycle schema verifier is missing.' }
         }
     }
 
@@ -1964,19 +1480,17 @@ try {
 
     Invoke-V02ReleaseGateTestCase 'result binding rejects surfaced identity and output tamper' {
         $surface = [pscustomobject][ordered]@{
-            protocol='HerdrOps.V02IsolatedCleanMachineVerifierResult';version=1;requestSha256=('1'*64);engineSha256=('2'*64)
+            protocol='HerdrOps.V02IsolatedAutomatedLifecycleVerifierResult';version=2;requestSha256=('1'*64);engineSha256=('2'*64)
             verifierSha256=('3'*64);commonSha256=('4'*64);packagingCommonSha256=('5'*64);packageIdentityCommonSha256=('6'*64)
-            reportSha256=('7'*64);authorizationSha256=('8'*64);authorizationSignatureSha256=('9'*64);childPid=123
+            rootPackagingCommonSha256=('7'*64);reportSha256=('8'*64);childPid=123
             childStartUtc='2026-08-23T10:00:00.0000000Z';engineFinalPath='C:\Program Files\PowerShell\7\pwsh.exe'
             engineVolumeSerialNumber='ABC';engineFileId='DEF';runId=('a'*32);machineFingerprint=('b'*64);operatorIdentity='operator'
-            observerIdentity='observer';authorizationSignerThumbprint=('c'*40);acceptanceReceiptSha256=('d'*64)
-            acceptanceReceiptSignatureSha256=('e'*64);acceptanceReceiptNonce=('f'*32)
         }
         $original = Get-V02Sha256Hex -Bytes ([Text.Encoding]::UTF8.GetBytes(($surface | ConvertTo-Json -Compress -Depth 8)))
         foreach ($tamper in @(
                 @{Name='childPid';Value=124}, @{Name='engineFileId';Value='SWAPPED'},
                 @{Name='machineFingerprint';Value=('0'*64)}, @{Name='operatorIdentity';Value='attacker'},
-                @{Name='observerIdentity';Value='attacker'}, @{Name='authorizationSignerThumbprint';Value=('0'*40)})) {
+                @{Name='reportSha256';Value=('0'*64)})) {
             $saved = $surface.($tamper.Name)
             $surface.($tamper.Name) = $tamper.Value
             $changed = Get-V02Sha256Hex -Bytes ([Text.Encoding]::UTF8.GetBytes(($surface | ConvertTo-Json -Compress -Depth 8)))
@@ -1998,7 +1512,7 @@ try {
             New-V02ReleaseGateTestDirectory -Path $packageRoot
             New-V02ReleaseGateTestDirectory -Path (Join-Path $root 'Thai')
             New-V02ReleaseGateTestDirectory -Path (Join-Path $root 'English')
-            foreach ($file in @('package-identity.json', 'archive.zip', 'renderer.json', 'matrix.json', 'issue9.json', 'contract.json', 'synthetic.json', 'clean-machine.json', 'clean-host-authorization.json', 'clean-host-authorization.p7s', 'clean-host-acceptance-receipt.json', 'clean-host-acceptance-receipt.p7s', 'github.json')) {
+            foreach ($file in @('package-identity.json', 'archive.zip', 'renderer.json', 'matrix.json', 'issue9.json', 'contract.json', 'synthetic.json', 'automated-lifecycle.json', 'github.json')) {
                 Write-V02ReleaseGateTestText -Path (Join-Path $root $file) -Text '{}' | Out-Null
             }
             foreach ($file in @('package-manifest.json', 'HerdrOps.App.exe', 'HerdrOps.Core.exe')) {
@@ -2018,11 +1532,7 @@ try {
                 Issue9CandidatePath = Join-Path $root 'issue9.json'
                 ContractEvidencePath = Join-Path $root 'contract.json'
                 SyntheticEvidencePath = Join-Path $root 'synthetic.json'
-                CleanMachineReportPath = Join-Path $root 'clean-machine.json'
-                CleanHostAuthorizationPath = Join-Path $root 'clean-host-authorization.json'
-                CleanHostAuthorizationSignaturePath = Join-Path $root 'clean-host-authorization.p7s'
-                CleanHostAcceptanceReceiptPath = Join-Path $root 'clean-host-acceptance-receipt.json'
-                CleanHostAcceptanceReceiptSignaturePath = Join-Path $root 'clean-host-acceptance-receipt.p7s'
+                AutomatedLifecycleReportPath = Join-Path $root 'automated-lifecycle.json'
                 GitHubSnapshotPath = Join-Path $root 'github.json'
                 EvidenceRoot = $root
                 RepositoryRoot = $fixtureRepo

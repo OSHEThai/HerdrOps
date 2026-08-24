@@ -221,10 +221,18 @@ public sealed class SolutionTopologyTests
         StringAssert.Contains(githubRoadmap, "UI-stall p95 <=50 ms max <=100 ms");
 
         StringAssert.Contains(decisions, "D-026 — v0.2 release-first v4 uses agent-collectable automated acceptance");
+        StringAssert.Contains(decisions, "D-027 — v0.2 install lifecycle is automated and Agent-reviewed");
         StringAssert.Contains(decisions, "automated performance/resource checks without soak");
         StringAssert.Contains(decisions, "role-distinct Agent review");
         StringAssert.Contains(decisions, "No physical monitor, desktop-DPI, power-source, thermal, Narrator");
         StringAssert.Contains(decisions, "no ProductOwner test action is required");
+        StringAssert.Contains(releaseGates, "AutomatedLiveLifecycle");
+        StringAssert.Contains(githubRoadmap, "no clean-host certificate or manual observer is required");
+
+        var v02Gate = File.ReadAllText(Path.Combine(root, "tools", "Test-V02ReleaseGate.ps1"));
+        StringAssert.Contains(v02Gate, "AutomatedLifecycleReportPath");
+        Assert.IsFalse(v02Gate.Contains("CleanHostAuthorizationPath", StringComparison.Ordinal));
+        Assert.IsFalse(v02Gate.Contains("CleanHostAcceptanceReceiptPath", StringComparison.Ordinal));
     }
 
     private static string FindRepositoryRoot()

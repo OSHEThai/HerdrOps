@@ -15,11 +15,7 @@ param(
     [string]$Issue9CandidatePath,
     [string]$ContractEvidencePath,
     [string]$SyntheticEvidencePath,
-    [string]$CleanMachineReportPath,
-    [string]$CleanHostAuthorizationPath,
-    [string]$CleanHostAuthorizationSignaturePath,
-    [string]$CleanHostAcceptanceReceiptPath,
-    [string]$CleanHostAcceptanceReceiptSignaturePath,
+    [string]$AutomatedLifecycleReportPath,
     [string]$GitHubSnapshotPath,
     [string]$CandidateLockPath,
     [string]$AuthorityReferencePath,
@@ -56,8 +52,12 @@ $script:V02ReleaseGateRendererScopeDecisionReference = 'https://github.com/OSHET
 $script:V02ReleaseGateRendererScopeApprovedUtc = '2026-08-24T14:31:14Z'
 $script:V02ReleaseGateRendererScopeSupersedesDecisionId = 'herdrops-v0.2-compat-v3'
 $script:V02ReleaseGateRendererScopeSupersedesPayloadSha256 = 'DF5717849F206D817DB6BEF324CF74CEA1C5BFC1E91956EC5436A60727DFFB98'
+$script:V02ReleaseGateLifecycleDecisionId = 'herdrops-v0.2-automated-lifecycle-v5'
+$script:V02ReleaseGateLifecycleDecisionPayloadSha256 = 'C7E5D74621D67D5ADD82BF8BE369B192AA64B5E337727FA986DB09A1F8540C7B'
+$script:V02ReleaseGateLifecycleDecisionReference = 'https://github.com/OSHEThai/HerdrOps/issues/149#issuecomment-5398171130'
+$script:V02ReleaseGateLifecycleApprovedUtc = '2026-08-24T16:25:24Z'
 $script:V02ReleaseGateAuthorityReferenceRelativePath = 'Plan/DECISIONS.md#D-026'
-$script:V02ReleaseGateAuthorityFileSha256 = 'D8C7C382B2120715DADDC8EDADFC3B9953D1F5D9C09B96D63C994225E8878303'
+$script:V02ReleaseGateAuthorityFileSha256 = 'E5B83AFF914FACEFDC478F5E2835637F3674255B9D516A7CA3E1E095078351C7'
 $script:V02ReleaseGateAuthorityOwner = '@yutthaphon'
 $script:V02ReleaseGateAuthorityRole = 'ProductOwner'
 $script:V02ReleaseGateIndependentReceiptEvidenceClass = 'ExternalIndependentCandidateReceipt'
@@ -90,7 +90,12 @@ $script:V02ReleaseGateTransitiveGovernanceRelativePaths = @(
     'tools/packaging/v0.2/Test-V02PackageIdentity.ps1',
     'tools/packaging/v0.2/V02PackageIdentity.Common.ps1',
     'tools/packaging/v0.2/V02CleanMachine.Common.ps1',
+    'tools/packaging/v0.2/Invoke-V02CleanMachineAcceptance.ps1',
     'tools/packaging/v0.2/Invoke-V02CleanMachineReleaseVerifier.ps1',
+    'tools/packaging/v0.2/Install-HerdrOpsV02Package.ps1',
+    'tools/packaging/v0.2/Uninstall-HerdrOpsV02Package.ps1',
+    'tools/packaging/v0.2/Test-V02CleanMachineAcceptance.Tests.ps1',
+    'tools/packaging/v0.2/README.md',
     'tools/packaging/v0.2/V02Packaging.Common.ps1',
     'tools/packaging/v0.2/clean-machine-report.schema.json',
     'tools/packaging/Packaging.Common.ps1',
@@ -914,7 +919,7 @@ function Read-V02ReleaseGateAuthorityReference {
     }
     $snapshot = Get-V02ReleaseGateStableFileSnapshot -Path $actualPath -Context 'Authority reference'
     if ($snapshot.Sha256 -cne $script:V02ReleaseGateAuthorityFileSha256) {
-        throw "Authority reference hash is not the approved D-024 through D-026 record. Expected=$script:V02ReleaseGateAuthorityFileSha256 Observed=$($snapshot.Sha256)"
+        throw "Authority reference hash is not the approved D-024 through D-027 record. Expected=$script:V02ReleaseGateAuthorityFileSha256 Observed=$($snapshot.Sha256)"
     }
     $text = [Text.UTF8Encoding]::new($false, $true).GetString($snapshot.Bytes)
     foreach ($required in @(
@@ -930,6 +935,11 @@ function Read-V02ReleaseGateAuthorityReference {
             $script:V02ReleaseGateRendererScopeDecisionId,
             $script:V02ReleaseGateRendererScopeDecisionReference,
             $script:V02ReleaseGateRendererScopeDecisionPayloadSha256,
+            'D-027',
+            $script:V02ReleaseGateLifecycleDecisionId,
+            $script:V02ReleaseGateLifecycleDecisionReference,
+            $script:V02ReleaseGateLifecycleDecisionPayloadSha256,
+            'AutomatedLiveLifecycle',
             $script:V02ReleaseGateAuthorityOwner,
             'role-distinct Agent review'
         )) {
@@ -1945,10 +1955,6 @@ function Assert-V02ReleaseGateIndependentReceiptBinding {
 function Invoke-V02ReleaseGateIsolatedCleanMachineVerifier {
     param(
         [Parameter(Mandatory = $true)][string]$ReportPath,
-        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$AuthorizationPath,
-        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$AuthorizationSignaturePath,
-        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$AcceptanceReceiptPath,
-        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$AcceptanceReceiptSignaturePath,
         [Parameter(Mandatory = $true)][string]$ExpectedSourceCommit,
         [Parameter(Mandatory = $true)][string]$ExpectedSourceTree,
         [Parameter(Mandatory = $true)]$Package
@@ -1980,27 +1986,14 @@ function Invoke-V02ReleaseGateIsolatedCleanMachineVerifier {
         [void]$held.Add($packageIdentityCommonSnapshot)
         $rootPackagingCommonSnapshot = Get-V02ReleaseGateStableFileSnapshot -Path $rootPackagingCommonPath -Context 'Root packaging common verifier dependency' -KeepOpen
         [void]$held.Add($rootPackagingCommonSnapshot)
-        foreach ($input in @(
-                @('report',$ReportPath,'CleanMachine report input'),
-                @('authorization',$AuthorizationPath,'CleanMachine authorization input'),
-                @('authorizationSignature',$AuthorizationSignaturePath,'CleanMachine authorization signature input'),
-                @('acceptanceReceipt',$AcceptanceReceiptPath,'CleanMachine acceptance receipt input'),
-                @('acceptanceReceiptSignature',$AcceptanceReceiptSignaturePath,'CleanMachine acceptance receipt signature input'))) {
-            if (-not [string]::IsNullOrWhiteSpace([string]$input[1])) {
-                $inputSnapshot = Get-V02ReleaseGateStableFileSnapshot -Path ([string]$input[1]) -Context ([string]$input[2]) -KeepOpen
-                $inputSnapshots[[string]$input[0]] = $inputSnapshot
-                [void]$held.Add($inputSnapshot)
-            }
-        }
+        $inputSnapshot = Get-V02ReleaseGateStableFileSnapshot -Path $ReportPath -Context 'Automated lifecycle report input' -KeepOpen
+        $inputSnapshots['report'] = $inputSnapshot
+        [void]$held.Add($inputSnapshot)
         $enginePath = [IO.Path]::GetFullPath([Diagnostics.Process]::GetCurrentProcess().MainModule.FileName)
         $engineSnapshot = Get-V02ReleaseGateStableFileSnapshot -Path $enginePath -Context 'Isolated PowerShell executable' -KeepOpen
         [void]$held.Add($engineSnapshot)
         $request = [pscustomobject][ordered]@{
             reportPath = [IO.Path]::GetFullPath($ReportPath)
-            authorizationPath = $(if ([string]::IsNullOrWhiteSpace($AuthorizationPath)) { '' } else { [IO.Path]::GetFullPath($AuthorizationPath) })
-            authorizationSignaturePath = $(if ([string]::IsNullOrWhiteSpace($AuthorizationSignaturePath)) { '' } else { [IO.Path]::GetFullPath($AuthorizationSignaturePath) })
-            acceptanceReceiptPath = $(if ([string]::IsNullOrWhiteSpace($AcceptanceReceiptPath)) { '' } else { [IO.Path]::GetFullPath($AcceptanceReceiptPath) })
-            acceptanceReceiptSignaturePath = $(if ([string]::IsNullOrWhiteSpace($AcceptanceReceiptSignaturePath)) { '' } else { [IO.Path]::GetFullPath($AcceptanceReceiptSignaturePath) })
             expectedSourceCommit = $ExpectedSourceCommit
             expectedSourceTree = $ExpectedSourceTree
             engineSha256 = $engineSnapshot.Sha256
@@ -2010,10 +2003,6 @@ function Invoke-V02ReleaseGateIsolatedCleanMachineVerifier {
             packageIdentityCommonSha256 = $packageIdentityCommonSnapshot.Sha256
             rootPackagingCommonSha256 = $rootPackagingCommonSnapshot.Sha256
             reportSha256 = $inputSnapshots['report'].Sha256
-            authorizationSha256 = $(if ($inputSnapshots.ContainsKey('authorization')) { $inputSnapshots['authorization'].Sha256 } else { '' })
-            authorizationSignatureSha256 = $(if ($inputSnapshots.ContainsKey('authorizationSignature')) { $inputSnapshots['authorizationSignature'].Sha256 } else { '' })
-            acceptanceReceiptSha256 = $(if ($inputSnapshots.ContainsKey('acceptanceReceipt')) { $inputSnapshots['acceptanceReceipt'].Sha256 } else { '' })
-            acceptanceReceiptSignatureSha256 = $(if ($inputSnapshots.ContainsKey('acceptanceReceiptSignature')) { $inputSnapshots['acceptanceReceiptSignature'].Sha256 } else { '' })
             package = [pscustomobject][ordered]@{
                 profileId = $Package.ProfileId; receiptSha256 = $Package.ReceiptSha256
                 archiveSha256 = $Package.ArchiveSha256; manifestSha256 = $Package.ManifestSha256
@@ -2065,13 +2054,13 @@ function Invoke-V02ReleaseGateIsolatedCleanMachineVerifier {
         $lines = @($stdout -split "`r?`n" | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
         if ($lines.Count -ne 1) { throw 'The isolated CleanMachine verifier returned an ambiguous result stream.' }
         $result = $lines[0] | ConvertFrom-Json
-        $expectedProperties = @('protocol','version','requestSha256','engineSha256','verifierSha256','commonSha256','packagingCommonSha256','packageIdentityCommonSha256','rootPackagingCommonSha256','reportSha256','authorizationSha256','authorizationSignatureSha256','childPid','childStartUtc','engineFinalPath','engineVolumeSerialNumber','engineFileId','runId','machineFingerprint','operatorIdentity','observerIdentity','authorizationSignerThumbprint','acceptanceReceiptSha256','acceptanceReceiptSignatureSha256','acceptanceReceiptNonce','resultBindingSha256')
+        $expectedProperties = @('protocol','version','requestSha256','engineSha256','verifierSha256','commonSha256','packagingCommonSha256','packageIdentityCommonSha256','rootPackagingCommonSha256','reportSha256','childPid','childStartUtc','engineFinalPath','engineVolumeSerialNumber','engineFileId','runId','machineFingerprint','operatorIdentity','resultBindingSha256')
         $actualProperties = @($result.PSObject.Properties.Name)
         if ($actualProperties.Count -ne $expectedProperties.Count -or @($actualProperties | Where-Object { $expectedProperties -cnotcontains $_ }).Count -ne 0) {
             throw 'The isolated CleanMachine verifier returned a malformed result.'
         }
-        Assert-V02ReleaseGateExactString $result.protocol 'HerdrOps.V02IsolatedCleanMachineVerifierResult' 'Isolated CleanMachine verifier protocol'
-        Assert-V02ReleaseGateEqual $result.version 1 'Isolated CleanMachine verifier version'
+        Assert-V02ReleaseGateExactString $result.protocol 'HerdrOps.V02IsolatedAutomatedLifecycleVerifierResult' 'Isolated automated lifecycle verifier protocol'
+        Assert-V02ReleaseGateEqual $result.version 2 'Isolated automated lifecycle verifier version'
         Assert-V02ReleaseGateEqual $result.requestSha256 $requestSnapshot.Sha256 'Isolated CleanMachine verifier request binding'
         Assert-V02ReleaseGateEqual $result.engineSha256 $engineSnapshot.Sha256 'Isolated PowerShell executable binding'
         Assert-V02ReleaseGateEqual $result.verifierSha256 $verifierSnapshot.Sha256 'Isolated CleanMachine verifier source binding'
@@ -2080,10 +2069,6 @@ function Invoke-V02ReleaseGateIsolatedCleanMachineVerifier {
         Assert-V02ReleaseGateEqual $result.packageIdentityCommonSha256 $packageIdentityCommonSnapshot.Sha256 'Isolated V02 package identity dependency binding'
         Assert-V02ReleaseGateEqual $result.rootPackagingCommonSha256 $rootPackagingCommonSnapshot.Sha256 'Isolated root packaging dependency binding'
         Assert-V02ReleaseGateEqual $result.reportSha256 $inputSnapshots['report'].Sha256 'Isolated CleanMachine report input binding'
-        Assert-V02ReleaseGateEqual $result.authorizationSha256 $inputSnapshots['authorization'].Sha256 'Isolated CleanMachine authorization input binding'
-        Assert-V02ReleaseGateEqual $result.authorizationSignatureSha256 $inputSnapshots['authorizationSignature'].Sha256 'Isolated CleanMachine authorization signature binding'
-        Assert-V02ReleaseGateEqual $result.acceptanceReceiptSha256 $inputSnapshots['acceptanceReceipt'].Sha256 'Isolated CleanMachine acceptance receipt input binding'
-        Assert-V02ReleaseGateEqual $result.acceptanceReceiptSignatureSha256 $inputSnapshots['acceptanceReceiptSignature'].Sha256 'Isolated CleanMachine acceptance receipt signature binding'
         Assert-V02ReleaseGateEqual $result.childPid $observedChildPid 'Isolated CleanMachine child PID binding'
         Assert-V02ReleaseGateEqual $result.childStartUtc $observedChildStartUtc 'Isolated CleanMachine child start-time binding'
         Assert-V02ReleaseGateEqual $result.engineFinalPath $engineSnapshot.FinalPath 'Isolated CleanMachine child executable final-path binding'
@@ -2110,18 +2095,11 @@ function Read-V02ReleaseGateCleanMachineReport {
         [Parameter(Mandatory = $true)][string]$Path,
         [Parameter(Mandatory = $true)][string]$ExpectedSourceCommit,
         [Parameter(Mandatory = $true)][string]$ExpectedSourceTree,
-        [Parameter(Mandatory = $true)]$Package,
-        [string]$CleanHostAuthorizationPath,
-        [string]$CleanHostAuthorizationSignaturePath,
-        [string]$CleanHostAcceptanceReceiptPath,
-        [string]$CleanHostAcceptanceReceiptSignaturePath
+        [Parameter(Mandatory = $true)]$Package
     )
 
     $isolated = Invoke-V02ReleaseGateIsolatedCleanMachineVerifier `
-        -ReportPath $Path -AuthorizationPath $CleanHostAuthorizationPath `
-        -AuthorizationSignaturePath $CleanHostAuthorizationSignaturePath `
-        -AcceptanceReceiptPath $CleanHostAcceptanceReceiptPath `
-        -AcceptanceReceiptSignaturePath $CleanHostAcceptanceReceiptSignaturePath `
+        -ReportPath $Path `
         -ExpectedSourceCommit $ExpectedSourceCommit -ExpectedSourceTree $ExpectedSourceTree -Package $Package
 
     # This exported helper is intentionally incapable of production credit.
@@ -2136,11 +2114,6 @@ function Read-V02ReleaseGateCleanMachineReport {
         RunId = [string]$isolated.runId
         MachineFingerprint = [string]$isolated.machineFingerprint
         OperatorIdentity = [string]$isolated.operatorIdentity
-        ObserverIdentity = [string]$isolated.observerIdentity
-        AuthorizationSignerThumbprint = [string]$isolated.authorizationSignerThumbprint
-        AcceptanceReceiptSha256 = [string]$isolated.acceptanceReceiptSha256
-        AcceptanceReceiptSignatureSha256 = [string]$isolated.acceptanceReceiptSignatureSha256
-        AcceptanceReceiptNonce = [string]$isolated.acceptanceReceiptNonce
         LifecycleCreditGranted = $false
         Runtime = 'NOT_OBSERVED'
         Release = 'NOT_OBSERVED'
@@ -2471,11 +2444,7 @@ function Invoke-V02ReleaseGate {
         [Parameter(Mandatory = $true)][string]$Issue9CandidatePath,
         [Parameter(Mandatory = $true)][string]$ContractEvidencePath,
         [Parameter(Mandatory = $true)][string]$SyntheticEvidencePath,
-        [Parameter(Mandatory = $true)][string]$CleanMachineReportPath,
-        [Parameter(Mandatory = $true)][string]$CleanHostAuthorizationPath,
-        [Parameter(Mandatory = $true)][string]$CleanHostAuthorizationSignaturePath,
-        [Parameter(Mandatory = $true)][string]$CleanHostAcceptanceReceiptPath,
-        [Parameter(Mandatory = $true)][string]$CleanHostAcceptanceReceiptSignaturePath,
+        [Parameter(Mandatory = $true)][string]$AutomatedLifecycleReportPath,
         [Parameter(Mandatory = $true)][string]$GitHubSnapshotPath,
         [string]$CandidateLockPath,
         [string]$AuthorityReferencePath,
@@ -2547,11 +2516,7 @@ function Invoke-V02ReleaseGate {
         [pscustomobject]@{ Path = $Issue9CandidatePath; Type = 'Leaf'; Name = 'Issue #9 runtime candidate' }
         [pscustomobject]@{ Path = $ContractEvidencePath; Type = 'Leaf'; Name = 'Contract evidence receipt' }
         [pscustomobject]@{ Path = $SyntheticEvidencePath; Type = 'Leaf'; Name = 'Synthetic evidence receipt' }
-        [pscustomobject]@{ Path = $CleanMachineReportPath; Type = 'Leaf'; Name = 'Clean-machine acceptance report' }
-        [pscustomobject]@{ Path = $CleanHostAuthorizationPath; Type = 'Leaf'; Name = 'Clean-host authorization' }
-        [pscustomobject]@{ Path = $CleanHostAuthorizationSignaturePath; Type = 'Leaf'; Name = 'Clean-host authorization signature' }
-        [pscustomobject]@{ Path = $CleanHostAcceptanceReceiptPath; Type = 'Leaf'; Name = 'Clean-host acceptance receipt' }
-        [pscustomobject]@{ Path = $CleanHostAcceptanceReceiptSignaturePath; Type = 'Leaf'; Name = 'Clean-host acceptance receipt signature' }
+        [pscustomobject]@{ Path = $AutomatedLifecycleReportPath; Type = 'Leaf'; Name = 'Automated live lifecycle report' }
         [pscustomobject]@{ Path = $GitHubSnapshotPath; Type = 'Leaf'; Name = 'GitHub snapshot' }
     )
     foreach ($input in $evidenceInputs) {
@@ -2618,11 +2583,7 @@ function Invoke-V02ReleaseGate {
         (Resolve-V02ReleaseGateExistingPath -Path $Issue9CandidatePath -Type Leaf -Context 'Issue #9 runtime candidate'),
         (Resolve-V02ReleaseGateExistingPath -Path $ContractEvidencePath -Type Leaf -Context 'Contract evidence receipt'),
         (Resolve-V02ReleaseGateExistingPath -Path $SyntheticEvidencePath -Type Leaf -Context 'Synthetic evidence receipt'),
-        (Resolve-V02ReleaseGateExistingPath -Path $CleanMachineReportPath -Type Leaf -Context 'Clean-machine acceptance report'),
-        (Resolve-V02ReleaseGateExistingPath -Path $CleanHostAuthorizationPath -Type Leaf -Context 'Clean-host authorization'),
-        (Resolve-V02ReleaseGateExistingPath -Path $CleanHostAuthorizationSignaturePath -Type Leaf -Context 'Clean-host authorization signature'),
-        (Resolve-V02ReleaseGateExistingPath -Path $CleanHostAcceptanceReceiptPath -Type Leaf -Context 'Clean-host acceptance receipt'),
-        (Resolve-V02ReleaseGateExistingPath -Path $CleanHostAcceptanceReceiptSignaturePath -Type Leaf -Context 'Clean-host acceptance receipt signature'),
+        (Resolve-V02ReleaseGateExistingPath -Path $AutomatedLifecycleReportPath -Type Leaf -Context 'Automated live lifecycle report'),
         (Resolve-V02ReleaseGateExistingPath -Path $GitHubSnapshotPath -Type Leaf -Context 'GitHub snapshot'),
         $candidateLock.Path, $authority.Path, $candidateLock.IndependentReceipt.Path
     )
@@ -2646,18 +2607,13 @@ function Invoke-V02ReleaseGate {
     # scriptblock or unqualified dynamic command lookup participates in credit.
     $directCleanMachineVerifier = ${function:Invoke-V02ReleaseGateIsolatedCleanMachineVerifier}
     $isolatedCleanMachine = & $directCleanMachineVerifier `
-        -ReportPath $CleanMachineReportPath -AuthorizationPath $CleanHostAuthorizationPath `
-        -AuthorizationSignaturePath $CleanHostAuthorizationSignaturePath `
-        -AcceptanceReceiptPath $CleanHostAcceptanceReceiptPath `
-        -AcceptanceReceiptSignaturePath $CleanHostAcceptanceReceiptSignaturePath `
+        -ReportPath $AutomatedLifecycleReportPath `
         -ExpectedSourceCommit $ExpectedSourceCommit -ExpectedSourceTree $ExpectedSourceTree -Package $package
     $cleanMachine = [pscustomobject][ordered]@{
-        Path=[IO.Path]::GetFullPath($CleanMachineReportPath);FileSha256=[string]$isolatedCleanMachine.reportSha256
-        EvidenceClass='CleanMachine';Status='PASS';Mode='Live';RunId=[string]$isolatedCleanMachine.runId
+        Path=[IO.Path]::GetFullPath($AutomatedLifecycleReportPath);FileSha256=[string]$isolatedCleanMachine.reportSha256
+        EvidenceClass='AutomatedLiveLifecycle';Status='PASS';Mode='Live';RunId=[string]$isolatedCleanMachine.runId
         MachineFingerprint=[string]$isolatedCleanMachine.machineFingerprint;OperatorIdentity=[string]$isolatedCleanMachine.operatorIdentity
-        ObserverIdentity=[string]$isolatedCleanMachine.observerIdentity;AuthorizationSignerThumbprint=[string]$isolatedCleanMachine.authorizationSignerThumbprint
-        AcceptanceReceiptSha256=[string]$isolatedCleanMachine.acceptanceReceiptSha256;AcceptanceReceiptSignatureSha256=[string]$isolatedCleanMachine.acceptanceReceiptSignatureSha256
-        AcceptanceReceiptNonce=[string]$isolatedCleanMachine.acceptanceReceiptNonce;LifecycleCreditGranted=$true
+        LifecycleCreditGranted=$true
         Runtime='NOT_OBSERVED';Release='NOT_OBSERVED'
     }
     Assert-V02ReleaseGateBoundSnapshots -Snapshots $preValidationSnapshots -Phase 'Post-package validation'
@@ -2716,6 +2672,15 @@ function Invoke-V02ReleaseGate {
         RepositoryRoot = $identityAfter.RepositoryRoot
         CandidateLock = $candidateLock
         AuthorityReference = $authority
+        LifecycleAuthority = [pscustomobject][ordered]@{
+            DecisionId = $script:V02ReleaseGateLifecycleDecisionId
+            ApprovalReference = $script:V02ReleaseGateLifecycleDecisionReference
+            ApprovedUtc = $script:V02ReleaseGateLifecycleApprovedUtc
+            PayloadSha256 = $script:V02ReleaseGateLifecycleDecisionPayloadSha256
+            Scope = 'V02AutomatedLiveLifecycleOnly'
+            ReferencePath = [string]$authority.Path
+            ReferenceSha256 = [string]$authority.FileSha256
+        }
         ValidatorHelperSnapshots = @($validatorSnapshots | ForEach-Object {
                 [pscustomobject][ordered]@{
                     Path = $_.Path
@@ -2798,7 +2763,7 @@ function Invoke-V02ReleaseGate {
             ReceiptFileSha256 = [string]$candidateLock.IndependentReceipt.FileSha256
             RoleDistinct = $true
         }
-        CleanMachine = $cleanMachine
+        AutomatedLiveLifecycle = $cleanMachine
         EvidenceClasses = [pscustomobject][ordered]@{
             Static = [pscustomobject][ordered]@{ Status = 'PASS'; Classification = 'Static/PackagedCompatibilityPreparation'; Credit = 'PREPARATION_ONLY' }
             Contract = [pscustomobject][ordered]@{ Status = 'PASS'; Classification = 'Contract'; Credit = 'CONTRACT_ONLY' }
@@ -2875,11 +2840,7 @@ if ($MyInvocation.InvocationName -ne '.') {
         -Issue9CandidatePath $Issue9CandidatePath `
         -ContractEvidencePath $ContractEvidencePath `
         -SyntheticEvidencePath $SyntheticEvidencePath `
-        -CleanMachineReportPath $CleanMachineReportPath `
-        -CleanHostAuthorizationPath $CleanHostAuthorizationPath `
-        -CleanHostAuthorizationSignaturePath $CleanHostAuthorizationSignaturePath `
-        -CleanHostAcceptanceReceiptPath $CleanHostAcceptanceReceiptPath `
-        -CleanHostAcceptanceReceiptSignaturePath $CleanHostAcceptanceReceiptSignaturePath `
+        -AutomatedLifecycleReportPath $AutomatedLifecycleReportPath `
         -GitHubSnapshotPath $GitHubSnapshotPath `
         -CandidateLockPath $CandidateLockPath `
         -AuthorityReferencePath $AuthorityReferencePath `

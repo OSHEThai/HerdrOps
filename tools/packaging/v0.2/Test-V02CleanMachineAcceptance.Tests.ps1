@@ -230,7 +230,7 @@ try {
             -ExpectedSourceTree $fixtureTree `
             -ExpectedMachineName $env:COMPUTERNAME `
             -ExpectedMachineFingerprint (Get-V02MachineFingerprint) `
-            -LiveConfirmationToken 'HERDROPS-V02-CLEAN-MACHINE' `
+            -LiveConfirmationToken 'HERDROPS-V02-AUTOMATED-LIFECYCLE' `
             -IUnderstandLiveMutation `
             -MockRegistryHive $liveRegistry `
             -AllowElevatedForTesting } 'rejects mock registry|test-only controls'
@@ -259,7 +259,7 @@ try {
                 -ProfilePath $profilePath `
                 -ExpectedMachineName ([Environment]::MachineName) `
                 -ExpectedMachineFingerprint (Get-V02MachineFingerprint) `
-                -LiveConfirmationToken 'HERDROPS-V02-CLEAN-MACHINE' `
+                -LiveConfirmationToken 'HERDROPS-V02-AUTOMATED-LIFECYCLE' `
                 -IUnderstandLiveMutation
             } $expectedPattern
             if (Test-Path -LiteralPath $redirected) { throw 'Rejected LOCALAPPDATA redirection created a Live target.' }
@@ -400,7 +400,7 @@ try {
                 -ProfilePath $profilePath `
                 -ExpectedMachineName 'FORGED-MACHINE-NAME' `
                 -ExpectedMachineFingerprint (Get-V02MachineFingerprint) `
-                -LiveConfirmationToken 'HERDROPS-V02-CLEAN-MACHINE' `
+                -LiveConfirmationToken 'HERDROPS-V02-AUTOMATED-LIFECYCLE' `
                 -IUnderstandLiveMutation `
                 -AllowElevatedForTesting
         } 'Machine name mismatch'
@@ -418,27 +418,19 @@ try {
                 -ProfilePath $profilePath `
                 -ExpectedMachineName $env:COMPUTERNAME `
                 -ExpectedMachineFingerprint ('A' * 64) `
-                -LiveConfirmationToken 'HERDROPS-V02-CLEAN-MACHINE' `
+                -LiveConfirmationToken 'HERDROPS-V02-AUTOMATED-LIFECYCLE' `
                 -IUnderstandLiveMutation `
                 -AllowElevatedForTesting
         } 'Machine fingerprint mismatch'
     }
 
-    # Hostile 2: Colliding operator and observer identities (case-insensitive)
-    Invoke-Case 'Hostile 2: Colliding operator and observer identities rejected' {
-        Assert-Throws {
-            & $scriptPath `
-                -Mode 'DryRun' `
-                -IdentityReceiptPath $receiptPath `
-                -ArchivePath $archivePath `
-                -InstallRoot $mockInstallRoot `
-                -UserDataRoot $mockUserDataRoot `
-                -RepositoryRoot $repo `
-                -ProfilePath $profilePath `
-                -OperatorIdentity '@operator' `
-                -ObserverIdentity '@OPERATOR' `
-                -AllowElevatedForTesting
-        } 'OperatorIdentity and ObserverIdentity must be distinct'
+    # Hostile 2: legacy certificate-era schema cannot earn lifecycle credit.
+    Invoke-Case 'Hostile 2: Legacy schema v1 is non-closable' {
+        $legacy = & $scriptPath -Mode DryRun -IdentityReceiptPath $receiptPath -ArchivePath $archivePath `
+            -InstallRoot $mockInstallRoot -UserDataRoot $mockUserDataRoot -RepositoryRoot $repo `
+            -ProfilePath $profilePath -AllowElevatedForTesting
+        $legacy.schemaVersion = 1
+        Assert-Throws { Assert-V02CleanMachineReportSchema -Report $legacy -RepositoryRoot $repo } 'schemaVersion must be 2'
     }
 
     # Hostile 3: Corrupt bytes in archive
@@ -650,23 +642,12 @@ try {
         if (@(Get-ChildItem -LiteralPath $testRoot -Filter '.no-clobber-report.json.staging-*' -Force).Count -ne 0) { throw 'Report staging residue remained.' }
     }
 
-    Invoke-Case 'Hostile 10b: Caller-authored clean-host authorization cannot verify' {
-        $forgedAuthorization = Join-Path $testRoot 'forged-clean-host-authorization.json'
-        $forgedSignature = Join-Path $testRoot 'forged-clean-host-authorization.p7s'
-        [IO.File]::WriteAllText($forgedAuthorization,'{}',(New-Object Text.UTF8Encoding($false)))
-        [IO.File]::WriteAllBytes($forgedSignature,[byte[]](1,2,3,4,5,6,7,8))
-        Assert-Throws {
-            Read-V02CleanHostAuthorization `
-                -AuthorizationPath $forgedAuthorization `
-                -SignaturePath $forgedSignature `
-                -MachineName ([Environment]::MachineName) `
-                -MachineFingerprint (Get-V02MachineFingerprint) `
-                -PrincipalSid (Get-V02ExecutingPrincipalSid) `
-                -InstallRoot $mockInstallRoot `
-                -UserDataRoot $mockUserDataRoot `
-                -InitialBinding ([pscustomobject]@{}) `
-                -FinalBinding ([pscustomobject]@{})
-        } 'signature is invalid or untrusted'
+    Invoke-Case 'Hostile 10b: Caller-added observer authority cannot inflate the automated report' {
+        $forged = & $scriptPath -Mode DryRun -IdentityReceiptPath $receiptPath -ArchivePath $archivePath `
+            -InstallRoot $mockInstallRoot -UserDataRoot $mockUserDataRoot -RepositoryRoot $repo `
+            -ProfilePath $profilePath -AllowElevatedForTesting
+        $forged.actor | Add-Member -NotePropertyName observer -NotePropertyValue ([pscustomobject]@{ identity='attacker'; role='IndependentObserver' })
+        Assert-Throws { Assert-V02CleanMachineReportSchema -Report $forged -RepositoryRoot $repo } 'actor must contain exactly operator'
     }
 
     Invoke-Case 'Hostile 10c: Failed report cleanup keeps its original handle and never deletes a leaf-swap victim' {
