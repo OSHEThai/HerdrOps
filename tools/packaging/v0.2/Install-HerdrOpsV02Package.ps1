@@ -52,13 +52,20 @@ $installOutput=Invoke-PackagingOperationWithCleanup -Operation {
     $installParent=Split-Path $safeInstallRoot -Parent; if(-not(Test-Path -LiteralPath $installParent -PathType Container)){New-Item -ItemType Directory $installParent -Force|Out-Null}; Assert-V02PathNoReparse $installParent
     $installName=[IO.Path]::GetFileName($safeInstallRoot); $script:stagingInstallDir=Join-Path $installParent ('.'+$installName+'.staging-'+[Guid]::NewGuid().ToString('N')); New-Item -ItemType Directory $script:stagingInstallDir|Out-Null; $script:stagingIdentity=Get-V02DirectoryPathIdentity $script:stagingInstallDir 'created install staging directory'
     Copy-V02StableTreeForInstall -Source $heldPayload -Destination $script:stagingInstallDir -InstallRoot $safeInstallRoot
-    $stageArchiveRoot=Join-Path $tempWorkRoot 'stage-archive';New-Item -ItemType Directory $stageArchiveRoot|Out-Null
-    $stageArchive=Join-Path $stageArchiveRoot ([string]$profile.archiveFileName); $null=New-DeterministicPackageArchive $script:stagingInstallDir $stageArchive
+    $null=Assert-V02OwnedStagingIdentity $script:stagingInstallDir $script:stagingIdentity 'install staging after payload copy'
     if($TestFaultInjectionStage -eq 'StageMutation'){[IO.File]::AppendAllText((Join-Path $script:stagingInstallDir ([string]$profile.components.appRelativePath)),'MUTATED')}
-    $null=Assert-V02PackageIdentity $identity $profile $repositoryRoot $stageArchive $script:stagingInstallDir $profilePath $receiptParsed.ReceiptSha256 $receiptParsed.CanonicalJson
     $null=Copy-V02StableFile $heldReceipt (Join-Path $script:stagingInstallDir 'identity.json')
     $state=[pscustomobject][ordered]@{productId='HerdrOps';packageVersion='0.2.0';runtimeIdentifier='win-x64';receiptSha256=$receiptParsed.ReceiptSha256;installRoot=$safeInstallRoot;userDataRoot=$safeUserDataRoot;startupRegistered=[bool]$RegisterStartup;autoUpdate='disabled-by-policy'}
-    Write-V02CanonicalJsonFile $state (Join-Path $script:stagingInstallDir 'install-state.json') $repositoryRoot
+    $stateTempPath=Join-Path $tempWorkRoot 'install-state.json';$stateTempBinding=Write-V02CanonicalTempFileNoClobber $state $stateTempPath $repositoryRoot
+    $null=Copy-V02InstallStateToOwnedStaging -SourcePath $stateTempPath -ExpectedSourceBinding $stateTempBinding `
+        -DestinationPath (Join-Path $script:stagingInstallDir 'install-state.json') `
+        -OwnedStagingRoot $script:stagingInstallDir `
+        -ExpectedStagingIdentity $script:stagingIdentity `
+        -InstallRoot $safeInstallRoot
+    $null=Assert-V02OwnedStagingIdentity $script:stagingInstallDir $script:stagingIdentity 'install staging before complete binding validation'
+    $stageBindingRoot=Join-Path $tempWorkRoot 'stage-binding';New-Item -ItemType Directory $stageBindingRoot|Out-Null
+    $null=Assert-V02CompleteInstalledBinding -InstallRoot $script:stagingInstallDir -Profile $profile -ProfilePath $profilePath -RepositoryRoot $repositoryRoot -WorkRoot $stageBindingRoot -ExpectedInstallRoot $safeInstallRoot
+    $null=Assert-V02OwnedStagingIdentity $script:stagingInstallDir $script:stagingIdentity 'install staging after complete binding validation'
     if($TestFaultInjectionStage -eq 'MidCopy'){throw 'Injected install failure during copy.'}
 
     if(Test-Path -LiteralPath $safeInstallRoot){

@@ -152,6 +152,84 @@ $archiveOriginal = [IO.File]::ReadAllBytes($archivePath)
 $receiptOriginal = [IO.File]::ReadAllBytes($receiptPath)
 
 try {
+    $installStateFixture = [pscustomobject][ordered]@{
+        productId='HerdrOps';packageVersion='0.2.0';runtimeIdentifier='win-x64';receiptSha256=$receiptParsed.ReceiptSha256
+        installRoot=$installRoot;userDataRoot=$userDataRoot;startupRegistered=$false;autoUpdate='disabled-by-policy'
+    }
+    $installStateSource=Join-Path $testRoot 'install-state-writer-source.json'
+    Write-V02CanonicalJsonFile $installStateFixture $installStateSource $repo
+    $installStateSourceBinding=Get-V02StableFileIdentity $installStateSource
+
+    Invoke-Case 'install-state writer admits exact identity-bound transaction staging root' {
+        $parent=Join-Path $testRoot 'state-positive';New-Item -ItemType Directory -Path $parent -Force|Out-Null
+        $target=Join-Path $parent 'HerdrOps';$stage=Join-Path $parent ('.HerdrOps.staging-'+[guid]::NewGuid().ToString('N'));New-Item -ItemType Directory -Path $stage|Out-Null
+        $identity=Get-V02DirectoryPathIdentity $stage 'positive install-state staging'
+        $path=Join-Path $stage 'install-state.json'
+        $null=Copy-V02InstallStateToOwnedStaging -SourcePath $installStateSource -ExpectedSourceBinding $installStateSourceBinding -DestinationPath $path -OwnedStagingRoot $stage -ExpectedStagingIdentity $identity -InstallRoot $target
+        $expected=(ConvertTo-V02CanonicalJson $installStateFixture $repo)+"`n"
+        if([IO.File]::ReadAllText($path,[Text.UTF8Encoding]::new($false,$true))-cne$expected){throw 'Owned install-state bytes are not exact canonical JSON plus one LF.'}
+    }
+
+    Invoke-Case 'install-state writer rejects arbitrary LocalAppData Programs destination' {
+        $programs=Join-Path (Get-V02KnownLocalAppDataRoot) 'Programs'
+        $target=Join-Path $programs 'HerdrOps'
+        $arbitrary=Join-Path $programs 'arbitrary-unowned-directory'
+        Assert-Throws {
+            Copy-V02InstallStateToOwnedStaging -SourcePath $installStateSource -ExpectedSourceBinding $installStateSourceBinding -DestinationPath (Join-Path $arbitrary 'install-state.json') -OwnedStagingRoot $arbitrary -ExpectedStagingIdentity ([pscustomobject]@{}) -InstallRoot $target
+        } 'exact transaction sibling'
+    }
+
+    Invoke-Case 'install-state writer rejects unowned staging identity' {
+        $parent=Join-Path $testRoot 'state-unowned';New-Item -ItemType Directory -Path $parent -Force|Out-Null
+        $target=Join-Path $parent 'HerdrOps';$stage=Join-Path $parent ('.HerdrOps.staging-'+[guid]::NewGuid().ToString('N'));$other=Join-Path $parent 'other-owned-object'
+        New-Item -ItemType Directory -Path $stage,$other|Out-Null
+        $wrongIdentity=Get-V02DirectoryPathIdentity $other 'unrelated directory identity'
+        Assert-Throws {
+            Copy-V02InstallStateToOwnedStaging -SourcePath $installStateSource -ExpectedSourceBinding $installStateSourceBinding -DestinationPath (Join-Path $stage 'install-state.json') -OwnedStagingRoot $stage -ExpectedStagingIdentity $wrongIdentity -InstallRoot $target
+        } 'changed while held'
+        if(Test-Path -LiteralPath (Join-Path $stage 'install-state.json')){throw 'Rejected unowned staging received install-state bytes.'}
+    }
+
+    Invoke-Case 'install-state writer rejects destination path drift' {
+        $parent=Join-Path $testRoot 'state-path-drift';New-Item -ItemType Directory -Path $parent -Force|Out-Null
+        $target=Join-Path $parent 'HerdrOps';$stage=Join-Path $parent ('.HerdrOps.staging-'+[guid]::NewGuid().ToString('N'));New-Item -ItemType Directory -Path $stage|Out-Null
+        $identity=Get-V02DirectoryPathIdentity $stage 'path-drift staging'
+        Assert-Throws {
+            Copy-V02InstallStateToOwnedStaging -SourcePath $installStateSource -ExpectedSourceBinding $installStateSourceBinding -DestinationPath (Join-Path $stage 'transplanted-state.json') -OwnedStagingRoot $stage -ExpectedStagingIdentity $identity -InstallRoot $target
+        } 'exact direct install-state.json child'
+    }
+
+    Invoke-Case 'install-state writer rejects staging identity drift' {
+        $parent=Join-Path $testRoot 'state-identity-drift';New-Item -ItemType Directory -Path $parent -Force|Out-Null
+        $target=Join-Path $parent 'HerdrOps';$stage=Join-Path $parent ('.HerdrOps.staging-'+[guid]::NewGuid().ToString('N'));New-Item -ItemType Directory -Path $stage|Out-Null
+        $staleIdentity=Get-V02DirectoryPathIdentity $stage 'pre-swap staging'
+        [IO.Directory]::Delete($stage,$false);[IO.Directory]::CreateDirectory($stage)|Out-Null
+        Assert-Throws {
+            Copy-V02InstallStateToOwnedStaging -SourcePath $installStateSource -ExpectedSourceBinding $installStateSourceBinding -DestinationPath (Join-Path $stage 'install-state.json') -OwnedStagingRoot $stage -ExpectedStagingIdentity $staleIdentity -InstallRoot $target
+        } 'changed while held'
+    }
+
+    Invoke-Case 'install-state writer rejects reparse staging root' {
+        $parent=Join-Path $testRoot 'state-reparse';New-Item -ItemType Directory -Path $parent -Force|Out-Null
+        $target=Join-Path $parent 'HerdrOps';$real=Join-Path $testRoot 'state-reparse-real';New-Item -ItemType Directory -Path $real|Out-Null
+        $stage=Join-Path $parent ('.HerdrOps.staging-'+[guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Junction -Path $stage -Target $real -ErrorAction Stop|Out-Null
+        try {
+            $identity=Get-V02DirectoryPathIdentity $real 'real staging target'
+            Assert-Throws {
+                Copy-V02InstallStateToOwnedStaging -SourcePath $installStateSource -ExpectedSourceBinding $installStateSourceBinding -DestinationPath (Join-Path $stage 'install-state.json') -OwnedStagingRoot $stage -ExpectedStagingIdentity $identity -InstallRoot $target
+            } 'reparse'
+        } finally { if(Test-Path -LiteralPath $stage){[IO.Directory]::Delete($stage,$false)} }
+    }
+
+    Invoke-Case 'installer never submits live transaction staging to generic archive destination guard' {
+        $installerSource=[IO.File]::ReadAllText((Join-Path $PSScriptRoot 'Install-HerdrOpsV02Package.ps1'))
+        if($installerSource.Contains('New-DeterministicPackageArchive $script:stagingInstallDir')){throw 'Installer still archives directly from the protected live staging destination.'}
+        foreach($required in @('Write-V02CanonicalTempFileNoClobber','Copy-V02InstallStateToOwnedStaging','Assert-V02CompleteInstalledBinding -InstallRoot $script:stagingInstallDir','-ExpectedInstallRoot $safeInstallRoot')){
+            if(-not$installerSource.Contains($required)){throw "Installer is missing the governed staging validation step: $required"}
+        }
+    }
+
     # 1. Schema & receipt parity
     Invoke-Case 'package identity receipt valid against schema' {
         $hash = Assert-V02ReceiptSchema -Identity $receiptParsed.Identity -CanonicalJson $receiptParsed.CanonicalJson -RepositoryRoot $repo
