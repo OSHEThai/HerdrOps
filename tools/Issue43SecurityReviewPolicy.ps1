@@ -235,6 +235,40 @@ function Test-Issue43ForbiddenDeclaration {
     }
 }
 
+function Remove-Issue43ExactAllowedDeclaration {
+    param(
+        [Parameter(Mandatory)]
+        [string]$Text,
+
+        [Parameter(Mandatory)]
+        [string]$RelativePath,
+
+        [Parameter(Mandatory)]
+        $Allowance
+    )
+
+    if ([string]$Allowance.Path -cne $RelativePath) {
+        return $Text
+    }
+
+    $declaration = [string]$Allowance.Declaration
+    if ([string]::IsNullOrWhiteSpace($declaration)) {
+        throw 'Issue #43 exact declaration allowance cannot be empty.'
+    }
+
+    $first = $Text.IndexOf($declaration, [StringComparison]::Ordinal)
+    $second = if ($first -ge 0) {
+        $Text.IndexOf($declaration, $first + $declaration.Length, [StringComparison]::Ordinal)
+    } else {
+        -1
+    }
+    if ($first -lt 0 -or $second -ge 0) {
+        throw "Issue #43 exact declaration allowance must occur exactly once at '$RelativePath'."
+    }
+
+    return $Text.Remove($first, $declaration.Length).Insert($first, (' ' * $declaration.Length))
+}
+
 function Test-Issue43ScannerFixtures {
     $commentOnly = @"
 // TcpListener and requireAdministrator are prohibited declarations.
@@ -247,6 +281,9 @@ var message = "HttpListener, runas, and NativeLibrary.Load(\"bind\")";
     $adminDynamic = 'var verb = "runas";'
     $jsonEndpoint = '{"urls":"http://localhost:5000"}'
     $escapedCSharpJson = 'var configuration = "{\"urls\":\"http://localhost:5000\"}";'
+    $allowedAdminPath = 'src/HerdrOps.App/RuntimeEvidence/AutomatedRendererMatrixCollector.cs'
+    $allowedAdminDeclaration = 'new WindowsPrincipal(WindowsIdentity.GetCurrent()).IsInRole(WindowsBuiltInRole.Administrator)'
+    $allowedAdmin = [pscustomobject]@{ Path = $allowedAdminPath; Declaration = $allowedAdminDeclaration }
 
     $commentResult = Test-Issue43ForbiddenDeclaration `
         -Text $commentOnly `
@@ -272,9 +309,24 @@ var message = "HttpListener, runas, and NativeLibrary.Load(\"bind\")";
     $jsonEndpointResult = Test-Issue43ForbiddenDeclaration -Text $jsonEndpoint -CodePattern '(?i)\b(?:https?|wss?)\s*:\s*//\s*(?:localhost|127\.0\.0\.1|\[?::1\]?)(?::\d+)?' -RawPattern '(?i)(?:https?|wss?)\s*:\s*//\s*(?:localhost|127\.0\.0\.1|\[?::1\]?)(?::\d+)?' -TreatQuotedTextAsCode
     $escapedCSharpJsonResult = Test-Issue43ForbiddenDeclaration -Text $escapedCSharpJson -CodePattern '(?i)\b(?:https?|wss?)\s*:\s*//\s*(?:localhost|127\.0\.0\.1|\[?::1\]?)(?::\d+)?' -RawPattern '(?i)(?:https?|wss?)\s*:\s*//\s*(?:localhost|127\.0\.0\.1|\[?::1\]?)(?::\d+)?'
 
+    $scrubbedAllowedAdmin = Remove-Issue43ExactAllowedDeclaration -Text "private static bool IsElevated() => $allowedAdminDeclaration;" -RelativePath $allowedAdminPath -Allowance $allowedAdmin
+    $allowedAdminResult = Test-Issue43ForbiddenDeclaration -Text $scrubbedAllowedAdmin -CodePattern '(?i)\b(?:requireAdministrator|WindowsBuiltInRole\s*\.\s*Administrator|IsInRole)\b' -RawPattern '(?i)requestedExecutionLevel\b'
+    $wrongPathAdmin = Remove-Issue43ExactAllowedDeclaration -Text $allowedAdminDeclaration -RelativePath 'src/HerdrOps.App/App.xaml.cs' -Allowance $allowedAdmin
+    $wrongPathAdminResult = Test-Issue43ForbiddenDeclaration -Text $wrongPathAdmin -CodePattern '(?i)\b(?:requireAdministrator|WindowsBuiltInRole\s*\.\s*Administrator|IsInRole)\b' -RawPattern '(?i)requestedExecutionLevel\b'
+    $extraAdmin = Remove-Issue43ExactAllowedDeclaration -Text "$allowedAdminDeclaration; requireAdministrator" -RelativePath $allowedAdminPath -Allowance $allowedAdmin
+    $extraAdminResult = Test-Issue43ForbiddenDeclaration -Text $extraAdmin -CodePattern '(?i)\b(?:requireAdministrator|WindowsBuiltInRole\s*\.\s*Administrator|IsInRole)\b' -RawPattern '(?i)requestedExecutionLevel\b'
+    $duplicateAllowanceRejected = $false
+    try {
+        Remove-Issue43ExactAllowedDeclaration -Text "$allowedAdminDeclaration; $allowedAdminDeclaration" -RelativePath $allowedAdminPath -Allowance $allowedAdmin | Out-Null
+    } catch {
+        $duplicateAllowanceRejected = $_.Exception.Message -match 'exactly once'
+    }
+
     if ($commentResult.IsMatch -or -not $listenerResult.IsMatch -or -not $dynamicResult.IsMatch -or
         -not $adminResult.IsMatch -or -not $adminDynamicResult.IsMatch -or
-        -not $jsonEndpointResult.IsMatch -or $escapedCSharpJsonResult.IsMatch) {
+        -not $jsonEndpointResult.IsMatch -or $escapedCSharpJsonResult.IsMatch -or
+        $allowedAdminResult.IsMatch -or -not $wrongPathAdminResult.IsMatch -or
+        -not $extraAdminResult.IsMatch -or -not $duplicateAllowanceRejected) {
         throw 'Issue #43 scanner fixtures did not preserve comment/string exclusions, JSON endpoint detection, and dynamic declaration detection.'
     }
 
