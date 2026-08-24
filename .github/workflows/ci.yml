@@ -291,7 +291,7 @@ jobs:
     # plus the hostile evidence suites under both PowerShell 7 and 5.1.  The
     # PS5 held-file/reparse checks are materially slower on hosted runners, so
     # keep a finite job bound without cancelling a valid exact-head run.
-    timeout-minutes: 60
+    timeout-minutes: 120
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -378,7 +378,10 @@ jobs:
   v02-acceptance-gates:
     name: v0.2 Acceptance Composition Gates
     runs-on: windows-latest
-    timeout-minutes: 30
+    # The dual-shell Issue #10 acceptance/composer suites each revalidate held
+    # 3,600-row AC and Battery timelines across their hostile cases. Keep a
+    # finite bound that permits the complete exact-head matrix to execute.
+    timeout-minutes: 180
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
