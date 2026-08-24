@@ -396,6 +396,7 @@ Assert-MatrixDistinctTrees $thai.CaptureRoot $english.CaptureRoot 'Thai and Engl
 # transaction nonce.  Replay resistance comes from the disjoint language
 # evidence trees and their exact gate/report/capture hashes, not from inventing
 # a second transaction identity for the English leg.
+if($thai.EvidenceRunNonce-cne$english.EvidenceRunNonce){throw 'Thai and English EvidenceRunNonce values must be identical for one bilingual acceptance transaction.'}
 $matrixProducerRunNonce=Assert-MatrixRunNonce $ProducerRunNonce 'Matrix producer RunNonce'
 if($matrixProducerRunNonce-ceq$thai.EvidenceRunNonce-or$matrixProducerRunNonce-ceq$english.EvidenceRunNonce){throw 'Matrix producer RunNonce must be distinct from both runtime-evidence RunNonce values.'}
 foreach($name in @('SourceCommit','SourceTree','ProfileId','ProfileSha256','ReferenceHostSchemaSha256','HerdrReleaseId','HerdrExecutableSha256','AppExecutableSha256','CoreExecutableSha256','BundledSchemaSha256','HerdrProtocol','RendererPolicyId','WpfProcessRenderMode','PackageIdentityReceiptSha256')) { Assert-MatrixEqual $thai.$name $english.$name "Thai/English $name" }

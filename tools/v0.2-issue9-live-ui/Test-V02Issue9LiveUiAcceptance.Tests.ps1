@@ -200,6 +200,15 @@ try {
     Expect-I9Failure {ConvertFrom-I9NativeSessionReference 'target-reference-fixture' 'legacy opaque session'|Out-Null} 'legacy opaque operator session reference' 'structured Herdr CLI JSON'
     Assert-I9Test (@($candidate.Languages.EvidenceRunNonce|Sort-Object -Unique).Count -eq 1 -and [string]$candidate.Languages[0].EvidenceRunNonce-ceq$runtimeNonce -and [string]$candidate.MatrixCandidate.ProducerRunNonce-ceq('3'*32)) 'Candidate did not preserve the shared bilingual runtime nonce and distinct matrix-producer nonce.'
 
+    $englishGateOriginal=[IO.File]::ReadAllText($english.GatePath,[Text.UTF8Encoding]::new($false))
+    try {
+        Write-I9TestText $english.GatePath ($englishGateOriginal.Replace("RunNonce: $runtimeNonce","RunNonce: $foreignNonce"))
+        $distinctNonceArgs=@{}+$invokeArgs;$distinctNonceArgs.OutputPath=Join-Path $root 'hostile-distinct-runtime-nonces.json'
+        Expect-I9Failure {Invoke-I9LiveUiVerification @distinctNonceArgs|Out-Null} 'distinct Thai/English runtime nonces before matrix producer collision checks' 'values must be identical for one bilingual acceptance transaction'
+    } finally {
+        Write-I9TestText $english.GatePath $englishGateOriginal
+    }
+
     function Invoke-I9ReceiptMutation {
         param([string]$Name,[string]$Expected,[scriptblock]$Mutate,[scriptblock]$Prepare,[scriptblock]$Cleanup)
         $original=[IO.File]::ReadAllText($thai.ReceiptPath,[Text.UTF8Encoding]::new($false))

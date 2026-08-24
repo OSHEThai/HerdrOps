@@ -246,6 +246,9 @@ try {
     $fixture=New-RRFixture;$fixtures+=$fixture
     Assert-RRFailure 'reviewer nonce collides with runtime evidence' {Invoke-RRFixture $fixture -ReviewRunNonce ('1'*32)|Out-Null} 'distinct from both runtime-evidence RunNonce values'
 
+    $fixture=New-RRFixture;$fixtures+=$fixture;$englishGatePath=Join-Path $fixture.English 'gate-report.txt';Set-RRGateField $englishGatePath 'RunNonce' ('2'*32)
+    Assert-RRFailure 'distinct Thai and English runtime nonces before reviewer collision checks' {Invoke-RRFixture $fixture|Out-Null} 'values must be identical for one bilingual acceptance transaction'
+
     $fixture=New-RRFixture;$fixtures+=$fixture;$corePath=Join-Path $fixture.Thai 'core-runtime.json';$core=(Read-V02RuntimeReviewStrictJsonFile $corePath 'repeated transition').Value;$core.Transitions[2].ObservedUtc=$core.Transitions[1].ObservedUtc;Write-RRFixtureJson $corePath $core;Sync-RRFixtureLeg $fixture Thai
     Assert-RRFailure 'repeated transition timestamp' {Invoke-RRFixture $fixture|Out-Null} 'unique and strictly increasing'
 
