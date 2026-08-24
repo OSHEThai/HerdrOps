@@ -32,6 +32,14 @@ side-by-side capture. Lifecycle evidence must show Dashboard close while Core
 continues, target disconnect/reconnect, and reconciliation. Page and language
 fields are strict and unknown/duplicate/missing values are rejected.
 
+The Thai and English legs may, and for the Issue #10 final bilingual
+transaction do, carry the same `EvidenceRunNonce`. That nonce identifies the
+transaction rather than a language slot. Replay and transplant attempts remain
+fail-closed because the two runtime/UI trees are disjoint, each receipt has an
+exact language, and every gate, App/Core report, capture, and UI receipt path
+and SHA-256 is bound to its language entry. The matrix producer uses a separate
+nonce and cannot reuse the bilingual runtime nonce.
+
 `Test-V02Issue9LiveUiAcceptance.Tests.ps1` is fixture-only Synthetic evidence.
 It never starts or stops the default Herdr session or an application process.
 The emitted candidate is `Issue9RuntimeCandidate`; its Runtime and HumanVisual
