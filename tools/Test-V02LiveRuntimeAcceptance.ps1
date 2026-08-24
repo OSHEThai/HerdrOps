@@ -28,9 +28,6 @@ param(
     [ValidateNotNullOrEmpty()]
     [string]$ExtractedPackageRoot,
 
-    [AllowEmptyString()]
-    [string]$TargetAgentSessionReference = '',
-
     [string]$Issue10WidgetReportPath = '',
 
     [string]$Issue10BindingManifestPath = '',
@@ -1056,8 +1053,7 @@ $sessionTopology = Assert-V02AcceptanceSessionTopology `
     -TargetSocketPath $targetHerdrSocketPath
 $targetAgentSessionBefore = Get-V02TargetAgentSessionObservation `
     -HerdrExecutable $HerdrExecutable `
-    -TargetSessionName $sessionTopology.TargetSessionName `
-    -ExpectedNativeSessionReference $TargetAgentSessionReference
+    -TargetSessionName $sessionTopology.TargetSessionName
 
 $controlPaneOutput = @(& $HerdrExecutable pane current --current)
 if ($LASTEXITCODE -ne 0 -or $controlPaneOutput.Count -eq 0) {
@@ -1223,8 +1219,7 @@ try {
         if ($lastPhase -ceq 'herdr-reconnected-waiting-for-post-reconnect-update' -and $null -eq $targetAgentSessionAfter) {
             $targetAgentSessionAfter = Get-V02TargetAgentSessionObservation `
                 -HerdrExecutable $HerdrExecutable `
-                -TargetSessionName $sessionTopology.TargetSessionName `
-                -ExpectedNativeSessionReference $TargetAgentSessionReference
+                -TargetSessionName $sessionTopology.TargetSessionName
             $targetAgentSessionEvidence = Assert-V02TargetAgentSessionContinuity `
                 -BeforeRestart $targetAgentSessionBefore `
                 -AfterRestart $targetAgentSessionAfter
@@ -1358,8 +1353,7 @@ if ($null -eq $targetAgentSessionEvidence) {
 }
 $targetAgentSessionAtCompletion = Get-V02TargetAgentSessionObservation `
     -HerdrExecutable $HerdrExecutable `
-    -TargetSessionName $sessionTopology.TargetSessionName `
-    -ExpectedNativeSessionReference $TargetAgentSessionReference
+    -TargetSessionName $sessionTopology.TargetSessionName
 $targetAgentSessionEvidence = Assert-V02TargetAgentSessionContinuity `
     -BeforeRestart $targetAgentSessionEvidence `
     -AfterRestart $targetAgentSessionAtCompletion
@@ -1963,7 +1957,7 @@ $reportLines = @(
     'EvidenceBoundary:',
     'This gate proves exact-hash-bound actual Herdr snapshot/Agent-status-event/reconnect behavior, separate Acceptance-control and Agent-Lab target sessions, Core-to-App runtime-health propagation, live production WPF page and Widget rendering, Dashboard-close continuity, state-hash correspondence, measured latency/resources, no owned TCP listener, and non-elevated operation for this host and run.',
     'It launches the App and Core from the package root whose receipt, ZIP, manifest, source, and component bytes passed the committed package validator. This is runtime use of validated package bytes, not clean-machine installation or Release evidence.',
-    'The native target Agent/session reference is operator attestation because the gate cannot independently observe that client-owned session identity.',
+    'The gate directly observed and exact-bound the same structured native Agent session through Herdr CLI metadata before restart, at reconnect, and through completion.',
     'It does not prove clean-machine installation, later-version features, independent human review, or future Herdr releases.'
 )
 $reportLines | Set-Content -LiteralPath $gateReportPath -Encoding utf8

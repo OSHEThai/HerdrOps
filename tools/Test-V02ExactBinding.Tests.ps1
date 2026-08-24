@@ -129,7 +129,8 @@ foreach ($path in @(
 Assert-SourceContains -Path $compositeRuntime -Text '[string]$PackageIdentityPath' -Description 'Composite gate requires the package identity receipt'
 Assert-SourceContains -Path $compositeRuntime -Text '[string]$PackageArchivePath' -Description 'Composite gate requires the package ZIP archive'
 Assert-SourceContains -Path $compositeRuntime -Text '[string]$ExtractedPackageRoot' -Description 'Composite gate requires the exact extracted package root'
-Assert-SourceContains -Path $compositeRuntime -Text "[string]`$TargetAgentSessionReference = ''" -Description 'Composite gate makes the caller reference optional rather than an operator authority'
+$compositeParameterBlock=(Get-Content -LiteralPath $compositeRuntime|Select-Object -First 80)-join"`n"
+if ($compositeParameterBlock.Contains('[string]$TargetAgentSessionReference')) { throw 'Composite gate still accepts a caller-authored target Agent session reference.' }
 Assert-SourceContains -Path $compositeRuntime -Text 'Get-V02TargetAgentSessionObservation' -Description 'Composite gate directly observes target Herdr CLI Agent metadata before and after restart'
 Assert-SourceContains -Path $compositeRuntime -Text 'Assert-V02TargetAgentSessionContinuity' -Description 'Composite gate exact-binds pre/post target native Agent-session continuity'
 Assert-SourceContains -Path $compositeRuntime -Text 'Resolve-V02RuntimePackageBinding' -Description 'Composite gate invokes the exact package binding validator before launch'
@@ -269,8 +270,7 @@ Assert-SourceContains `
 $requiredCompositeDocumentationArguments = @(
     '-PackageIdentityPath $packageIdentityPath',
     '-PackageArchivePath $packageArchivePath',
-    '-ExtractedPackageRoot $extractedPackageRoot',
-    '-TargetAgentSessionReference $targetAgentSessionReference'
+    '-ExtractedPackageRoot $extractedPackageRoot'
 )
 foreach ($document in @($toolsReadme, $runtimeMonitorContract)) {
     Assert-DocumentedCompositeInvocationContains `

@@ -434,8 +434,7 @@ function Assert-V02ExactObjectProperties {
 function ConvertFrom-V02HerdrAgentListObservation {
     param(
         [Parameter(Mandatory = $true)][string]$AgentListJson,
-        [Parameter(Mandatory = $true)][string]$TargetSessionName,
-        [AllowEmptyString()][string]$ExpectedNativeSessionReference = ''
+        [Parameter(Mandatory = $true)][string]$TargetSessionName
     )
     if ($TargetSessionName -cnotmatch '^[a-z0-9][a-z0-9_-]{0,63}$') {
         throw 'Target Herdr session name is invalid.'
@@ -468,9 +467,6 @@ function ConvertFrom-V02HerdrAgentListObservation {
     if ([string]$native.agent -cne $agentKind -or [string]$native.kind -cne 'id' -or [string]$native.source -cne "herdr:$agentKind") {
         throw 'Target Herdr native Agent session does not bind the detected Agent kind.'
     }
-    if (-not [string]::IsNullOrEmpty($ExpectedNativeSessionReference) -and [string]$native.value -cne $ExpectedNativeSessionReference) {
-        throw 'Target Herdr native Agent session differs from the optional caller assertion.'
-    }
     $structured = [pscustomobject][ordered]@{
         agent = [string]$native.agent
         kind = [string]$native.kind
@@ -492,8 +488,7 @@ function ConvertFrom-V02HerdrAgentListObservation {
 function Get-V02TargetAgentSessionObservation {
     param(
         [Parameter(Mandatory = $true)][string]$HerdrExecutable,
-        [Parameter(Mandatory = $true)][string]$TargetSessionName,
-        [AllowEmptyString()][string]$ExpectedNativeSessionReference = ''
+        [Parameter(Mandatory = $true)][string]$TargetSessionName
     )
     if (-not (Test-Path -LiteralPath $HerdrExecutable -PathType Leaf)) { throw 'Installed Herdr executable is missing for target Agent observation.' }
     $output = @(& $HerdrExecutable --session $TargetSessionName agent list)
@@ -501,8 +496,7 @@ function Get-V02TargetAgentSessionObservation {
     if ($exitCode -ne 0 -or $output.Count -eq 0) { throw "Could not observe managed Agents in target Herdr session '$TargetSessionName'." }
     return ConvertFrom-V02HerdrAgentListObservation `
         -AgentListJson ($output -join [Environment]::NewLine) `
-        -TargetSessionName $TargetSessionName `
-        -ExpectedNativeSessionReference $ExpectedNativeSessionReference
+        -TargetSessionName $TargetSessionName
 }
 
 function Assert-V02TargetAgentSessionContinuity {
