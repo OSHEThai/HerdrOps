@@ -96,7 +96,8 @@ requires two separately bound complete runtime reports and disjoint capture root
 manifest must prove the same commit/tree, profile/schema, Herdr release/binary, App/Core binaries and
 protocol identity, while each observed report language equals its CLI request, its final language/culture
 remains unchanged, and its event-backed native `LanguageChangeCount` is zero. Automated pairing remains
-a `RuntimeMatrixCandidate` pending role-distinct human review.
+a `RuntimeMatrixCandidate` pending the authenticated role-distinct Agent review required by D-026/D-028;
+no Human or ProductOwner test action is required.
 
 The v0.2 profile is not a waiver and is not a cross-host target. A host, OS, graphics-adapter/driver,
 installed-Herdr, sampling, language or renderer mismatch fails closed rather than falling back to
