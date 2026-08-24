@@ -43,6 +43,25 @@ powershell -File ./tools/packaging/v0.2/Test-V02PackageIdentity.Tests.ps1
     -EvidenceRoot '<held-evidence-root>' `
     -RepositoryRoot '<clean-exact-source-worktree>'
 
+# From a bound unfinalized manifest-v4 capture, launch its exact packaged App in
+# the production off-screen collector mode. This collects six viewport PNGs,
+# seven automated accessibility observations, and the governed environment
+# observation; independently recomputes all 20 held capture/reference pixel
+# comparisons; publishes all 14 typed receipts; and atomically emits a new
+# unfinalized candidate. The result is AutomatedPackagedRendering only: it does
+# not claim ActualHerdr Runtime, Human review, Release, or final credit. The
+# operator and role-distinct Agent reviewer identities are provenance, not a
+# substitute for the manifest's later independent Agent approval.
+./tools/v0.2-renderer-compatibility/Invoke-V02AutomatedRendererMatrixCapture.ps1 `
+    -CaptureCandidateDirectory '<unfinalized-manifest-v4-capture-directory>' `
+    -DestinationDirectory '<new-matrix-bound-candidate-directory>' `
+    -OperatorIdentity '<evidence-operator-agent-id>' `
+    -IndependentReviewerIdentity '<role-distinct-reviewer-agent-id>' `
+    -RepositoryRoot '<clean-exact-source-worktree>'
+
+pwsh -File ./tools/v0.2-renderer-compatibility/Test-V02AutomatedRendererMatrixCapture.SelfTests.ps1
+powershell -File ./tools/v0.2-renderer-compatibility/Test-V02AutomatedRendererMatrixCapture.SelfTests.ps1
+
 # From one unfinalized manifest-v4 capture, collect live AB/BA performance.
 # Only the final pipeline commit admits the four held
 # raw/binding/transaction/receipt files. Its normalized

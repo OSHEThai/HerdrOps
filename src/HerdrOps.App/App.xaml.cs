@@ -90,6 +90,13 @@ public partial class App : Application
             return;
         }
 
+        if (AutomatedRendererMatrixCollector.IsRequested(e.Args))
+        {
+            await AutomatedRendererMatrixCollector.RunFromCommandLineAsync(e.Args);
+            Shutdown(AutomatedRendererMatrixCollector.ExitCode);
+            return;
+        }
+
         if (_performanceTelemetryOptions is not null)
         {
             await RunIssue10PerformanceTelemetryAsync(_performanceTelemetryOptions);
