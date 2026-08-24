@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://herdrops.local/schema/v0.2/clean-machine-report.schema.json",
-  "title": "HerdrOps v0.2 Clean-Machine Acceptance Report Schema",
+  "title": "HerdrOps v0.2 Automated Live Lifecycle Report Schema",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -33,11 +33,11 @@
   "properties": {
     "schemaVersion": {
       "type": "integer",
-      "const": 1
+      "const": 2
     },
     "reportKind": {
       "type": "string",
-      "const": "HerdrOps.V02CleanMachineReport"
+      "const": "HerdrOps.V02AutomatedLiveLifecycleReport"
     },
     "scope": {
       "type": "string",
@@ -112,7 +112,7 @@
     "actor": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["operator", "observer", "authorization"],
+      "required": ["operator"],
       "properties": {
         "operator": {
           "type": "object",
@@ -121,27 +121,6 @@
           "properties": {
             "identity": { "type": "string", "minLength": 1 },
             "role": { "type": "string", "const": "EvidenceOperator" }
-          }
-        },
-        "observer": {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["identity", "role"],
-          "properties": {
-            "identity": { "type": "string", "minLength": 1 },
-            "role": { "type": "string", "const": "IndependentObserver" }
-          }
-        },
-        "authorization": {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["status", "signerThumbprint", "authorizationSha256", "signatureSha256", "nonce"],
-          "properties": {
-            "status": { "type": "string", "enum": ["NOT_APPLICABLE", "VERIFIED"] },
-            "signerThumbprint": { "type": "string" },
-            "authorizationSha256": { "type": "string" },
-            "signatureSha256": { "type": "string" },
-            "nonce": { "type": "string" }
           }
         }
       }
@@ -284,16 +263,14 @@
       "required": [
         "evidenceClass",
         "actualHerdrRuntime",
-        "independentReview",
-        "humanGo",
+        "independentAgentReview",
         "releaseCredit",
         "creditGranted"
       ],
       "properties": {
-        "evidenceClass": { "type": "string", "enum": ["Synthetic", "CleanMachine"] },
+        "evidenceClass": { "type": "string", "enum": ["Synthetic", "AutomatedLiveLifecycle"] },
         "actualHerdrRuntime": { "type": "string", "const": "NOT_OBSERVED" },
-        "independentReview": { "type": "string", "const": "NOT_OBSERVED" },
-        "humanGo": { "type": "string", "const": "NOT_OBSERVED" },
+        "independentAgentReview": { "type": "string", "const": "NOT_OBSERVED" },
         "releaseCredit": { "type": "string", "const": "NOT_OBSERVED" },
         "creditGranted": { "type": "boolean" }
       }

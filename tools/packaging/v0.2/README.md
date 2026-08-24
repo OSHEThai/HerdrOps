@@ -23,3 +23,18 @@ both before and after validation. Self-tests use an isolated clean temporary Git
 Synthetic test data and is not a product package. PowerShell 7 additionally applies the pinned Draft
 2020-12 receipt schema. Windows PowerShell 5.1 uses the same pinned canonical schema hash and complete
 manual exact-shape/type validation.
+
+## Automated live install lifecycle
+
+`Invoke-V02CleanMachineAcceptance.ps1 -Mode Live` remains the compatibility
+entrypoint name, but D-027 changes its authoritative output to report schema v2,
+`HerdrOps.V02AutomatedLiveLifecycleReport`. It runs as the real non-elevated
+principal through install, same-version replacement, rollback and uninstall,
+then verifies retained data and zero product residue. A passing report is
+classified `AutomatedLiveLifecycle`; it is not CleanMachine, Human, Runtime or
+Release evidence.
+
+The producer accepts no observer, certificate, preauthorization or post-run
+receipt input. `Test-V02ReleaseGate.ps1` holds and revalidates the report and
+exact package bindings in its isolated verifier. Candidate approval remains a
+separate authenticated receipt from a role-distinct `IndependentAgentReviewer`.

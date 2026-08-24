@@ -64,8 +64,9 @@
         "Disconnect and reconnect restore state matching snapshot.",
         "Atomic package identity and process-wide SoftwareOnly renderer policy validation pass.",
         "Renderer compatibility and visual parity pass on governed Windows 11 build 26220 reference-host profile 96D01ED15A536F2DF50B59B43CFDEB3683DCE8667AE2E7BF6A96124182FE13A3.",
-        "Atomic Thai/English language matrix reports with disjoint capture roots and Narrator accessibility pass.",
+        "Atomic Thai/English language matrix reports with disjoint capture roots and automated UIA-accessibility pass.",
         "Six automated packaged off-screen viewport cases (1920x1080, 1366x768 @ 100/125/150%) plus automated language and UIA-accessibility checks pass; v0.2 requires no physical display change, ProductOwner action, manual UI review, or Human attestation gate.",
+        "A non-elevated automated live lifecycle binds the exact machine, principal, source and package while proving clean install, same-version replacement, rollback, uninstall and residue cleanup; no clean-host certificate or manual observer is required, and the candidate still requires a role-distinct IndependentAgentReviewer receipt.",
         "Performance budgets (CPU <=1%, event-to-WPF p95 <=250 ms, UI-stall p95 <=50 ms max <=100 ms, regression <=10%) pass through exactly 24 governed AB/BA acquisitions; v0.2 has no soak requirement.",
         "Normal operation opens no localhost HTTP listener and requires no Administrator privilege."
       ],

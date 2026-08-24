@@ -35,6 +35,32 @@ Build, verification, GitHub roadmap, evidence capture, and packaging helpers liv
 pwsh -File ./tools/packaging/v0.2/Test-V02PackageIdentity.Tests.ps1
 powershell -File ./tools/packaging/v0.2/Test-V02PackageIdentity.Tests.ps1
 
+# On the bound Windows host, run the real v0.2 per-user lifecycle as a standard
+# non-elevated Agent. The same exact candidate is used for install and
+# same-version replacement; rollback, uninstall, retained data and residue are
+# checked automatically. The report is AutomatedLiveLifecycle evidence only.
+./tools/packaging/v0.2/Invoke-V02CleanMachineAcceptance.ps1 `
+    -Mode Live `
+    -IdentityReceiptPath '<identity.json>' `
+    -ArchivePath '<HerdrOps-0.2.0-win-x64.zip>' `
+    -ReplacementIdentityReceiptPath '<identity.json>' `
+    -ReplacementArchivePath '<HerdrOps-0.2.0-win-x64.zip>' `
+    -RepositoryRoot '<clean-exact-source-worktree>' `
+    -ReportPath '<new-no-clobber-automated-lifecycle-report.json>' `
+    -ExpectedSourceCommit '<lowercase-40-hex>' `
+    -ExpectedSourceTree '<lowercase-40-hex>' `
+    -ExpectedReplacementSourceCommit '<lowercase-40-hex>' `
+    -ExpectedReplacementSourceTree '<lowercase-40-hex>' `
+    -ExpectedMachineName '<exact-machine-name>' `
+    -ExpectedMachineFingerprint '<uppercase-64-hex>' `
+    -LiveConfirmationToken 'HERDROPS-V02-AUTOMATED-LIFECYCLE' `
+    -IUnderstandLiveMutation
+
+# No clean-host certificate, preauthorization, manual observer or post-run CMS
+# receipt is accepted. The final release gate holds this report and the exact
+# package, then separately requires the authenticated role-distinct
+# IndependentAgentReviewer candidate receipt.
+
 # Validate one atomic packaged-renderer compatibility manifest and every bound
 # evidence file. Human review, actual Herdr Runtime, clean install, Release, tag,
 # and publication remain separate and unclaimed.
