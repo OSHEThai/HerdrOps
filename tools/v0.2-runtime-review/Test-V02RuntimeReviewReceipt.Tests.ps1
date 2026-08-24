@@ -75,7 +75,7 @@ function New-RRFixture {
     $legIndex=0
     foreach ($language in @('Thai', 'English')) {
         $legUtc=$baseUtc.AddSeconds($legIndex*20);$legIndex++
-        $runNonce=('{0:x32}' -f $legIndex)
+        $runNonce=('1'*32)
         $evidence = if ($language -eq 'Thai') { $thai } else { $english }
         $captureDirectory = Join-Path $evidence 'captures'
         $captures = @()
@@ -168,7 +168,7 @@ try {
     Assert-V02RuntimeReviewString $candidateDocument.Value.EvidenceBoundary.HumanVisualGo 'emitted human visual boundary' 'NOT_OBSERVED' | Out-Null
     Assert-V02RuntimeReviewFalse $candidateDocument.Value.EvidenceBoundary.RuntimeCredit 'emitted runtime boundary'
     Assert-V02RuntimeReviewFalse $candidateDocument.Value.EvidenceBoundary.ReleaseCredit 'emitted release boundary'
-    $allNonces=@($candidateDocument.Value.Languages.EvidenceRunNonce)+@($candidateDocument.Value.RunNonces.MatrixProducer,$candidateDocument.Value.RunNonces.IndependentReviewer);if(@($allNonces|Sort-Object -Unique).Count-ne4){throw 'Emitted candidate did not preserve four role-distinct exact RunNonce values.'}
+    $allNonces=@($candidateDocument.Value.Languages.EvidenceRunNonce)+@($candidateDocument.Value.RunNonces.MatrixProducer,$candidateDocument.Value.RunNonces.IndependentReviewer);if(@($candidateDocument.Value.Languages.EvidenceRunNonce|Sort-Object -Unique).Count-ne1-or@($allNonces|Sort-Object -Unique).Count-ne3){throw 'Emitted candidate did not preserve one shared bilingual runtime nonce plus distinct matrix-producer and reviewer nonces.'}
     $testJson = Get-Command Test-Json -CommandType Cmdlet -ErrorAction SilentlyContinue
     if ($null -ne $testJson -and $testJson.Parameters.ContainsKey('SchemaFile')) {
         $schemaPath = Join-Path $PSScriptRoot 'runtime-review-receipt.schema.json'
@@ -237,14 +237,14 @@ try {
     $fixture=New-RRFixture;$fixtures+=$fixture;$candidate=(Read-V02RuntimeReviewStrictJsonFile $fixture.Matrix 'mismatched matrix RunNonce').Value;$run=@($candidate.Payload.Runs|Where-Object Language -CEQ 'Thai')[0];$run.EvidenceRunNonce='f'*32;Save-RRFixtureMatrix $fixture $candidate
     Assert-RRFailure 'mismatched matrix RunNonce' {Invoke-RRFixture $fixture|Out-Null} 'Matrix Thai EvidenceRunNonce'
 
-    $fixture=New-RRFixture;$fixtures+=$fixture;$thaiNonce=(Get-V02RuntimeReviewGateMap (Join-Path $fixture.Thai 'gate-report.txt')).Values.RunNonce;$englishGate=Join-Path $fixture.English 'gate-report.txt';Set-RRGateField $englishGate 'RunNonce' $thaiNonce;Sync-RRFixtureLeg $fixture English;$candidate=(Read-V02RuntimeReviewStrictJsonFile $fixture.Matrix 'replayed RunNonce').Value;$run=@($candidate.Payload.Runs|Where-Object Language -CEQ 'English')[0];$run.EvidenceRunNonce=$thaiNonce;Save-RRFixtureMatrix $fixture $candidate
-    Assert-RRFailure 'cross-leg replayed RunNonce' {Invoke-RRFixture $fixture|Out-Null} 'replay the same RunNonce'
+    $fixture=New-RRFixture;$fixtures+=$fixture;$englishGate=Join-Path $fixture.English 'gate-report.txt';$thaiGate=Join-Path $fixture.Thai 'gate-report.txt';Write-RRFixtureText $englishGate ([IO.File]::ReadAllText($thaiGate))
+    Assert-RRFailure 'Thai gate transplanted into English evidence tree' {Invoke-RRFixture $fixture|Out-Null} 'English runtime gate Language is not the required value'
 
     $fixture=New-RRFixture;$fixtures+=$fixture
     Assert-RRFailure 'reviewer nonce collides with matrix producer' {Invoke-RRFixture $fixture -ReviewRunNonce ('e'*32)|Out-Null} 'distinct from the matrix-producer RunNonce'
 
     $fixture=New-RRFixture;$fixtures+=$fixture
-    Assert-RRFailure 'reviewer nonce collides with runtime evidence' {Invoke-RRFixture $fixture -ReviewRunNonce ('0'*31+'1')|Out-Null} 'distinct from both runtime-evidence RunNonce values'
+    Assert-RRFailure 'reviewer nonce collides with runtime evidence' {Invoke-RRFixture $fixture -ReviewRunNonce ('1'*32)|Out-Null} 'distinct from both runtime-evidence RunNonce values'
 
     $fixture=New-RRFixture;$fixtures+=$fixture;$corePath=Join-Path $fixture.Thai 'core-runtime.json';$core=(Read-V02RuntimeReviewStrictJsonFile $corePath 'repeated transition').Value;$core.Transitions[2].ObservedUtc=$core.Transitions[1].ObservedUtc;Write-RRFixtureJson $corePath $core;Sync-RRFixtureLeg $fixture Thai
     Assert-RRFailure 'repeated transition timestamp' {Invoke-RRFixture $fixture|Out-Null} 'unique and strictly increasing'

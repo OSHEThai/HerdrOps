@@ -65,7 +65,7 @@ try {
     $repositoryRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
     $producerScript = Join-Path $repositoryRoot 'tools\Test-V02LiveRuntimeAcceptance.ps1'
     $commit='a'*40; $tree='b'*40; $herdrSha='C'*64; $schemaSha='D'*64; $profileSha='E'*64; $hostSchemaSha='F'*64
-    $thaiNonce='1'*32; $englishNonce='2'*32
+    $runtimeNonce='1'*32; $foreignNonce='2'*32
     $controlSocket=Join-Path $root 'control.sock'; $targetSocket=Join-Path $root 'target.sock'
     $packageRoot=Join-Path $root 'package'; $packageIdentityPath=Join-Path $root 'package-identity.json'; $packageArchivePath=Join-Path $root 'HerdrOps-0.2.0-win-x64.zip'
     $thaiRuntime=Join-Path $root 'thai-runtime'; $englishRuntime=Join-Path $root 'english-runtime'
@@ -163,15 +163,15 @@ try {
         return [pscustomobject]@{Root=[IO.Path]::GetFullPath($RuntimeRoot);EvidenceRunNonce=$Nonce;GatePath=$gatePath;GateHash=(Read-I9HeldFile $gatePath).Sha256;AppPath=$appPath;AppHash=$appHash;CorePath=$corePath;CoreHash=$coreHash;SideObservation=$sideObservation;ReceiptPath=$receipt.Path}
     }
 
-    $thai=New-I9RuntimeLeg $thaiRuntime 'Thai' $thaiNonce 20
-    $english=New-I9RuntimeLeg $englishRuntime 'English' $englishNonce 40
-    Assert-I9Test ($thaiNonce -cne $englishNonce) 'Synthetic language legs reused a RunNonce.'
+    $thai=New-I9RuntimeLeg $thaiRuntime 'Thai' $runtimeNonce 20
+    $english=New-I9RuntimeLeg $englishRuntime 'English' $runtimeNonce 40
+    Assert-I9Test ($thai.EvidenceRunNonce -ceq $english.EvidenceRunNonce) 'Synthetic language legs did not preserve the shared Issue #10 RunNonce.'
     foreach ($leg in @($thai,$english)) {
         $receiptValue=(Read-I9Json $leg.ReceiptPath 'schema-v2 production receipt').Value
         $artifactPaths=@([string]$receiptValue.SideBySideCapture.Path)+@($receiptValue.Pages|ForEach-Object{[string]$_.UiCapturePath})
         Assert-I9Test ($artifactPaths.Count -eq 4 -and @($artifactPaths|Sort-Object -Unique).Count -eq 4) 'Production receipt did not preserve exactly four distinct captures per language leg.'
     }
-    Expect-I9Failure { New-I9LiveUiObservation -RuntimeEvidenceDirectory $thaiRuntime -UiEvidenceDirectory $thaiUi -GateReportPath $thai.GatePath -AppRuntimeReportPath $thai.AppPath -CoreRuntimeReportPath $thai.CorePath -SideBySideCapture $thai.SideObservation -Language Thai -ExpectedSourceCommit $commit -ExpectedSourceTree $tree -RunNonce $englishNonce -ProducerScriptPath $producerScript -ControlServerIdentityBefore $controlIdentity -ControlServerIdentityAfter $controlIdentity -OutputPath (Join-Path $thaiUi 'cross-leg.json') } 'producer cross-leg nonce' 'does not match the held runtime leg'
+    Expect-I9Failure { New-I9LiveUiObservation -RuntimeEvidenceDirectory $thaiRuntime -UiEvidenceDirectory $thaiUi -GateReportPath $thai.GatePath -AppRuntimeReportPath $thai.AppPath -CoreRuntimeReportPath $thai.CorePath -SideBySideCapture $thai.SideObservation -Language Thai -ExpectedSourceCommit $commit -ExpectedSourceTree $tree -RunNonce $foreignNonce -ProducerScriptPath $producerScript -ControlServerIdentityBefore $controlIdentity -ControlServerIdentityAfter $controlIdentity -OutputPath (Join-Path $thaiUi 'foreign-nonce.json') } 'producer foreign nonce transplant' 'does not match the held runtime leg'
 
     $matrixPayload=[ordered]@{
         GeneratedUnixTimeMilliseconds=[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds();RunNonce=('3'*32);IndependentHumanReview='NOT_OBSERVED';ReleaseCredit=$false
@@ -198,7 +198,7 @@ try {
     Assert-I9Test ([int64]$publishedCandidate.SchemaVersion-eq2) 'Published candidate did not use successor schema version 2.'
     Assert-I9Test ([string]$publishedCandidate.Sessions.Target.EvidenceSource-ceq'HerdrCliAgentMetadata'-and[bool]$publishedCandidate.Sessions.Target.ObservableByGate) 'Published candidate did not preserve gate-observed native session authority.'
     Expect-I9Failure {ConvertFrom-I9NativeSessionReference 'target-reference-fixture' 'legacy opaque session'|Out-Null} 'legacy opaque operator session reference' 'structured Herdr CLI JSON'
-    Assert-I9Test (@($candidate.Languages.EvidenceRunNonce|Sort-Object -Unique).Count -eq 2 -and [string]$candidate.MatrixCandidate.ProducerRunNonce-ceq('3'*32)) 'Candidate did not preserve role-distinct matrix/evidence RunNonce bindings.'
+    Assert-I9Test (@($candidate.Languages.EvidenceRunNonce|Sort-Object -Unique).Count -eq 1 -and [string]$candidate.Languages[0].EvidenceRunNonce-ceq$runtimeNonce -and [string]$candidate.MatrixCandidate.ProducerRunNonce-ceq('3'*32)) 'Candidate did not preserve the shared bilingual runtime nonce and distinct matrix-producer nonce.'
 
     function Invoke-I9ReceiptMutation {
         param([string]$Name,[string]$Expected,[scriptblock]$Mutate,[scriptblock]$Prepare,[scriptblock]$Cleanup)
@@ -217,7 +217,7 @@ try {
     }
 
     Invoke-I9ReceiptMutation 'wrong phase/state' 'wrong semantic phase/state' { param($v) $v.Pages[0].Phase='event-a-pre-close';$v.Pages[0].Sequence=2;$v.Pages[0].StateSha256=$pre }
-    Invoke-I9ReceiptMutation 'cross-leg nonce replay' 'RunNonce is replayed or cross-leg' { param($v) $v.RunNonce=$englishNonce }
+    Invoke-I9ReceiptMutation 'foreign receipt nonce transplant' 'RunNonce is replayed or cross-leg' { param($v) $v.RunNonce=$foreignNonce }
     Invoke-I9ReceiptMutation 'stale capture' 'stale or outside its semantic window' { param($v) $v.SideBySideCapture.ObservedUtc=$t0.AddSeconds(-1).ToString('O') }
     Invoke-I9ReceiptMutation 'forged synchronized identifiers' 'not the exact initial Core semantic snapshot' { param($v) foreach($p in @($v.Pages)){$p.WorkspaceId='forged-workspace';$p.ProjectId='forged-workspace';$p.AgentId='forged-agent';$p.TaskId='forged-task';$p.PaneId='forged-pane'};$v.Selection.WorkspaceId='forged-workspace';$v.Selection.ProjectId='forged-workspace';$v.Selection.AgentId='forged-agent';$v.Selection.TaskId='forged-task';$v.Selection.PaneId='forged-pane' }
     Invoke-I9ReceiptMutation 'producer provenance' 'producer provenance is stale or forged' { param($v) $v.Producer.ScriptSha256='8'*64 }

@@ -696,7 +696,9 @@ function Invoke-V02RuntimeReviewVerificationCore {
     $package = Assert-V02RuntimeReviewPackage $PackageIdentityPath $PackageArchivePath $ExtractedPackageRoot $ExpectedSourceCommit $ExpectedSourceTree $RepositoryRoot -FixtureMode:$FixtureMode
     $thaiGate = Get-V02RuntimeReviewGateMap (Join-Path $thaiRoot 'gate-report.txt'); $englishGate = Get-V02RuntimeReviewGateMap (Join-Path $englishRoot 'gate-report.txt')
     $thaiGateIdentity=Assert-V02RuntimeReviewGate $thaiGate 'Thai' $ExpectedSourceCommit $ExpectedSourceTree;$englishGateIdentity=Assert-V02RuntimeReviewGate $englishGate 'English' $ExpectedSourceCommit $ExpectedSourceTree
-    if($thaiGateIdentity.RunNonce-ceq$englishGateIdentity.RunNonce){throw 'Thai and English runtime legs replay the same RunNonce.'}
+    # Issue #10 uses one nonce for its exact Thai/English transaction.  Each
+    # language leg remains independently bound by disjoint trees, chronology,
+    # gate/report/capture hashes, and the strict matrix language entries.
     if($reviewRunNonce-ceq$thaiGateIdentity.RunNonce-or$reviewRunNonce-ceq$englishGateIdentity.RunNonce){throw 'Independent reviewer RunNonce must be distinct from both runtime-evidence RunNonce values.'}
     $thai = Assert-V02RuntimeReviewReports $thaiGate $thaiRoot 'Thai'; $english = Assert-V02RuntimeReviewReports $englishGate $englishRoot 'English'
     if([string]$thai.Core.Admission.ExecutablePath-cne[string]$english.Core.Admission.ExecutablePath){throw 'Thai and English held Herdr executable paths are not exact.'}
