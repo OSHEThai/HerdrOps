@@ -83,7 +83,7 @@ The current install-lifecycle record is `herdrops-v0.2-automated-lifecycle-v5`, 
 Product owner `@yutthaphon` approved Issue #149 options M-A and R-A in the dated
 [approval comment](https://github.com/OSHEThai/HerdrOps/issues/149#issuecomment-5379418145).
 The provisional 255 MiB ceiling applies only to a future exact v0.2 candidate that independently
-re-observes every `environmentBinding` leaf, pins/recomputes the applicable `candidatePolicy` leaves,
+re-observes the admission-critical host, OS, graphics-adapter, and installed-Herdr leaves, pins/recomputes the applicable `candidatePolicy` leaves,
 and binds the canonical SHA-256 of `Plan/reference-hosts/v0.2.json`. It uses process-wide WPF
 `SoftwareOnly` before the first window and throughout the measurement, and passes the complete updated
 producer and independent-validator contract. The exact candidate commit, tree and binary hashes must be
@@ -98,11 +98,11 @@ protocol identity, while each observed report language equals its CLI request, i
 remains unchanged, and its event-backed native `LanguageChangeCount` is zero. Automated pairing remains
 a `RuntimeMatrixCandidate` pending role-distinct human review.
 
-The v0.2 profile is not a waiver and is not a cross-host target. A host, driver, sole active-monitor/primary-Screen identity, adapter mode,
-desktop `AppliedDPI` scaling,
+The v0.2 profile is not a waiver and is not a cross-host target. A host, OS, graphics-adapter/driver,
 installed-Herdr, sampling, language or renderer mismatch fails closed rather than falling back to
 255 MiB. All earlier runs remain failed and receive no retroactive Runtime credit. The default target,
 including the independently enforced v0.7 budget, remains 180 MiB.
+Under D-026, physical-monitor identity, adapter mode, desktop `AppliedDPI`, and window display metrics remain diagnostic provenance only; they are not v0.2 admission or closure comparisons.
 
 ### v0.7 performance waiver authority
 

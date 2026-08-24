@@ -1082,9 +1082,9 @@ $trustedReferenceHost = Get-V02TrustedReferenceHostObservation `
     -DurationSeconds $IdleSeconds `
     -IntervalMilliseconds 250
 Assert-V02BindingEqual `
-    -Expected $referenceHostProfile.Profile.environmentBinding `
-    -Observed $trustedReferenceHost.EnvironmentBinding `
-    -Path 'environmentBinding'
+    -Expected (Get-V02ReferenceHostAdmissionBinding -EnvironmentBinding $referenceHostProfile.Profile.environmentBinding) `
+    -Observed $trustedReferenceHost.AdmissionEnvironmentBinding `
+    -Path 'admissionEnvironmentBinding'
 Assert-V02BindingEqual `
     -Expected $referenceHostProfile.Profile.candidatePolicy `
     -Observed $trustedReferenceHost.CandidatePolicy `

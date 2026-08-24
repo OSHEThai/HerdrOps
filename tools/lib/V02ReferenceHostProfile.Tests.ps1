@@ -56,20 +56,52 @@ try {
     Pass 'all environment binding leaves exact' { Assert-V02BindingEqual $approved.environmentBinding $observed 'environmentBinding' }
     $observed.activeDisplay.physicalWidthPixels = [int64]($observed.activeDisplay.physicalWidthPixels + 1)
     Fail 'environment binding drift' { Assert-V02BindingEqual $approved.environmentBinding $observed 'environmentBinding' }
+    $admission=Get-V02ReferenceHostAdmissionBinding -EnvironmentBinding $approved.environmentBinding
+    $observedAdmission=$admission|ConvertTo-Json -Depth 20|ConvertFrom-Json
+    Pass 'admission binding retains exact host graphics and Herdr leaves' { Assert-V02BindingEqual $admission $observedAdmission 'admissionEnvironmentBinding' }
+    $displayDiagnosticDrift=$approved.environmentBinding|ConvertTo-Json -Depth 20|ConvertFrom-Json
+    $displayDiagnosticDrift.activeDisplay.activeMonitorCount=[int64]9
+    $displayDiagnosticDrift.activeDisplay.desktopAppliedDpi=[int64]288
+    $displayDiagnosticDrift.activeDisplay.primaryDisplayDeviceName='DIAGNOSTIC-ONLY'
+    Pass 'display monitor and DPI drift is excluded from admission binding' {
+        Assert-V02BindingEqual $admission (Get-V02ReferenceHostAdmissionBinding $displayDiagnosticDrift) 'admissionEnvironmentBinding'
+    }
+    $hostTransplant=$admission|ConvertTo-Json -Depth 20|ConvertFrom-Json
+    $hostTransplant.host.machineName='TRANSPLANTED-HOST'
+    Fail 'admission host transplant' { Assert-V02BindingEqual $admission $hostTransplant 'admissionEnvironmentBinding' }
+    $osTransplant=$admission|ConvertTo-Json -Depth 20|ConvertFrom-Json
+    $osTransplant.host.operatingSystemBuild=[int64]($osTransplant.host.operatingSystemBuild + 1)
+    Fail 'admission OS transplant' { Assert-V02BindingEqual $admission $osTransplant 'admissionEnvironmentBinding' }
+    $graphicsTransplant=$admission|ConvertTo-Json -Depth 20|ConvertFrom-Json
+    $graphicsTransplant.graphicsAdapters[0].driverVersion='TRANSPLANTED-DRIVER'
+    Fail 'admission graphics transplant' { Assert-V02BindingEqual $admission $graphicsTransplant 'admissionEnvironmentBinding' }
+    $herdrTransplant=$admission|ConvertTo-Json -Depth 20|ConvertFrom-Json
+    $herdrTransplant.herdr.executableSha256='0'*64
+    Fail 'admission installed-Herdr transplant' { Assert-V02BindingEqual $admission $herdrTransplant 'admissionEnvironmentBinding' }
     $policy=$approved.candidatePolicy|ConvertTo-Json -Depth 20|ConvertFrom-Json
     Pass 'all candidate policy leaves exact' { Assert-V02BindingEqual $approved.candidatePolicy $policy 'candidatePolicy' }
     $policy.sampling.requiredLanguageMatrix=@('Thai')
     Fail 'candidate policy language-matrix drift' { Assert-V02BindingEqual $approved.candidatePolicy $policy 'candidatePolicy' }
     $trusted=[pscustomobject]@{MachineName='M';OperatingSystem='O';OsArchitecture='X64';ProcessArchitecture='X64';ProcessorCount=[int64]8;DesktopAppliedDpi=[int64]120;MainWindowDpiX=[double]120;MainWindowDpiY=[double]120;WindowDisplayDeviceName='DISPLAY1';WindowDisplayLogicalWidthPixels=[int64]2048;WindowDisplayLogicalHeightPixels=[int64]1280}
     $reported=$trusted|ConvertTo-Json|ConvertFrom-Json
-    Pass 'producer host diagnostics match trusted DPI and logical display' { Assert-V02ObservedHostReport $reported $trusted }
-    $reported.MainWindowDpiX=96
-    Fail 'producer host DPI contradiction' { Assert-V02ObservedHostReport $reported $trusted }
+    Pass 'producer host diagnostics preserve expected report shape' { Assert-V02ObservedHostReport $reported $trusted }
+    $reported.DesktopAppliedDpi=[int64]288
+    $reported.MainWindowDpiX=[double]144
+    $reported.MainWindowDpiY=[double]120
+    $reported.WindowDisplayDeviceName='DIAGNOSTIC-DISPLAY'
+    $reported.WindowDisplayLogicalWidthPixels=[int64]800
+    $reported.WindowDisplayLogicalHeightPixels=[int64]600
+    Pass 'producer display DPI and monitor diagnostics do not gate closure' { Assert-V02ObservedHostReport $reported $trusted }
+    $reported.MachineName='TRANSPLANTED-HOST'
+    Fail 'producer host identity contradiction' { Assert-V02ObservedHostReport $reported $trusted }
+    $missingDiagnostic=$trusted|ConvertTo-Json|ConvertFrom-Json
+    $missingDiagnostic.PSObject.Properties.Remove('DesktopAppliedDpi')
+    Fail 'producer diagnostic provenance field missing' { Assert-V02ObservedHostReport $missingDiagnostic $trusted }
 }
 finally {
     foreach($path in $knownFiles){ if(Test-Path -LiteralPath $path -PathType Leaf){[IO.File]::Delete($path)} }
     if(Test-Path -LiteralPath $probe -PathType Container){[IO.Directory]::Delete($probe,$false)}
 }
 
-if($script:cases -ne 18){throw "Unexpected profile test count: $script:cases"}
+if($script:cases -ne 26){throw "Unexpected profile test count: $script:cases"}
 Write-Host "All $script:cases v0.2 reference-host profile cases passed."

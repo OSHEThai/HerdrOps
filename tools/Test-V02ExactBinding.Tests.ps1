@@ -192,11 +192,19 @@ Assert-SourceContains `
 Assert-SourceContains `
     -Path $compositeRuntime `
     -Text 'Get-V02TrustedReferenceHostObservation' `
-    -Description 'Composite gate probes trusted host/OS/GPU/display/Herdr identity'
+    -Description 'Composite gate probes trusted host/OS/GPU/Herdr admission identity'
 Assert-SourceContains `
-    -Path (Join-Path $repositoryRoot 'tools\lib\V02ReferenceHostProfile.ps1') `
-    -Text '$primaryScreen.Bounds.Width' `
-    -Description 'Trusted display probe independently reads live logical Screen bounds'
+    -Path $compositeRuntime `
+    -Text 'Get-V02ReferenceHostAdmissionBinding' `
+    -Description 'Composite gate projects the approved host profile to D-026 admission-critical fields'
+$compositeRuntimeSource = Get-Content -LiteralPath $compositeRuntime -Raw
+Assert-TestTrue `
+    -Condition (-not $compositeRuntimeSource.Contains('-Expected $referenceHostProfile.Profile.environmentBinding')) `
+    -Message 'Composite gate does not compare diagnostic active-display leaves for admission'
+$referenceHostSource = Get-Content -LiteralPath (Join-Path $repositoryRoot 'tools\lib\V02ReferenceHostProfile.ps1') -Raw
+Assert-TestTrue `
+    -Condition (-not $referenceHostSource.Contains('WmiMonitorID') -and -not $referenceHostSource.Contains('System.Windows.Forms')) `
+    -Message 'Trusted admission probe does not require a physical monitor or desktop Screen probe'
 Assert-SourceContains `
     -Path $compositeRuntime `
     -Text '$appReport.Language -is [string]' `
