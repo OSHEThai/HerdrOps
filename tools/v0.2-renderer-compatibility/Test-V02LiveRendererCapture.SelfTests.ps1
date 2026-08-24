@@ -733,6 +733,33 @@ try {
     }
     Pass 'operator-driven capture harness generates strict validated synthetic candidate evidence'
 
+    # The production chain passes the live-capture directory directly through
+    # matrix enrichment and finalization. Every stage must therefore use the
+    # canonical live manifest name; copying or renaming it would break the held
+    # evidence identity that the downstream pipeline validates.
+    $canonicalManifestName = 'v0.2-renderer-compatibility-manifest.json'
+    if ((Split-Path -Leaf $result1.ManifestPath) -cne $canonicalManifestName -or
+        -not (Test-Path -LiteralPath (Join-Path $out1 $canonicalManifestName) -PathType Leaf)) {
+        throw 'Live capture did not publish the canonical production manifest filename.'
+    }
+    foreach ($consumerName in @(
+        'Invoke-V02AutomatedRendererMatrixCapture.ps1',
+        'Complete-V02RendererCompatibilityManifest.ps1')) {
+        $consumerSource = Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot $consumerName)
+        if ($consumerSource -cnotmatch [regex]::Escape("Join-Path `$source 'v0.2-renderer-compatibility-manifest.json'") -and
+            $consumerSource -cnotmatch [regex]::Escape("Join-Path `$capture 'v0.2-renderer-compatibility-manifest.json'")) {
+            throw "$consumerName does not consume the canonical live-capture manifest filename directly."
+        }
+        if ($consumerSource -cmatch "Join-Path [`$][A-Za-z]+ 'renderer-compatibility-manifest[.]json'") {
+            throw "$consumerName retains the obsolete non-canonical manifest filename."
+        }
+    }
+    $pipelineSource = Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot 'Invoke-V02Issue149PerformancePipeline.ps1')
+    if ($pipelineSource -cnotmatch [regex]::Escape('$captureManifestPath=Resolve-I149ContainedPath $root $CaptureCandidateManifestPath')) {
+        throw 'Performance pipeline no longer consumes the exact matrix manifest path supplied by the caller.'
+    }
+    Pass 'production live output flows to matrix, performance, and finalizer under one canonical manifest filename without rename'
+
     # 2. Positive real-capture input path: PNG bytes are admitted from a
     # contained source directory, but the result remains synthetic/no-credit.
     $sourceCaptures = New-CaptureSourceDirectory (Join-Path $temp 'capture-source')

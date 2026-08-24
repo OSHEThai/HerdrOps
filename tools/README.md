@@ -39,7 +39,7 @@ powershell -File ./tools/packaging/v0.2/Test-V02PackageIdentity.Tests.ps1
 # evidence file. Human review, actual Herdr Runtime, clean install, Release, tag,
 # and publication remain separate and unclaimed.
 ./tools/v0.2-renderer-compatibility/Test-V02RendererCompatibilityManifest.ps1 `
-    -ManifestPath '<renderer-compatibility-manifest.json>' `
+    -ManifestPath '<v0.2-renderer-compatibility-manifest.json>' `
     -EvidenceRoot '<held-evidence-root>' `
     -RepositoryRoot '<clean-exact-source-worktree>'
 

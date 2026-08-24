@@ -26,7 +26,7 @@ Assert-RendererNonReparsePath $repo $repo 'RepositoryRoot'
 Assert-RendererNonReparsePath $source $source 'CaptureCandidateDirectory'
 foreach($entry in @(Get-ChildItem -LiteralPath $source -Force -Recurse)){if(($entry.Attributes-band[IO.FileAttributes]::ReparsePoint)-ne0){throw "Capture candidate contains prohibited reparse entry '$($entry.FullName)'."}}
 
-$manifestPath=Join-Path $source 'renderer-compatibility-manifest.json'
+$manifestPath=Join-Path $source 'v0.2-renderer-compatibility-manifest.json'
 $sourceResult=Test-RendererCompatibilityManifest -ManifestPath $manifestPath -EvidenceRoot $source -RepositoryRoot $repo -ValidateBindings
 if($sourceResult.ManifestVersion-ne4-or$sourceResult.ActualHerdrRuntime-cne'NOT_OBSERVED'-or[bool]$sourceResult.CreditGranted){throw 'Capture candidate is not an uncredited manifest-v4 automated packaged candidate.'}
 $sourceManifestStable=Get-RendererStableFileIdentity $source $manifestPath 'Source renderer manifest' -IncludeBytes -KeepOpen
@@ -35,7 +35,7 @@ $published=$false;$process=$null
 try{
     New-Item -ItemType Directory -Path $staging -ErrorAction Stop|Out-Null
     foreach($entry in @(Get-ChildItem -LiteralPath $source -Force)){Copy-Item -LiteralPath $entry.FullName -Destination $staging -Recurse -ErrorAction Stop}
-    $stagedManifestPath=Join-Path $staging 'renderer-compatibility-manifest.json'
+    $stagedManifestPath=Join-Path $staging 'v0.2-renderer-compatibility-manifest.json'
     $manifestJson=Get-Content -LiteralPath $stagedManifestPath -Raw
     $manifest=ConvertFrom-StrictHumanDesignReviewJson -Json $manifestJson -Description 'Staged renderer manifest'
     if($PSVersionTable.PSVersion.Major-ge7-and(Get-Command ConvertFrom-Json).Parameters.ContainsKey('DateKind')){$manifest=$manifestJson|ConvertFrom-Json -DateKind String}
@@ -91,7 +91,7 @@ try{
     if($sourceFinal.ManifestVersion-ne$sourceResult.ManifestVersion-or$sourceFinal.AutomatedMatrixEvidence-cne$sourceResult.AutomatedMatrixEvidence){throw 'Source capture candidate changed during automated matrix collection.'}
     [IO.Directory]::Move($staging,$destination)
     $published=$true
-    [pscustomobject][ordered]@{ManifestPath=(Join-Path $destination 'renderer-compatibility-manifest.json');RawDirectory=(Join-Path $destination 'matrix-raw');ReceiptDirectory=(Join-Path $destination 'matrix-receipts');MatrixEvidence='PASS';PixelComparison='PASS';ActualHerdrRuntime='NOT_OBSERVED';HumanReview='NOT_OBSERVED';Release='NOT_OBSERVED';CreditGranted=$false}
+    [pscustomobject][ordered]@{ManifestPath=(Join-Path $destination 'v0.2-renderer-compatibility-manifest.json');RawDirectory=(Join-Path $destination 'matrix-raw');ReceiptDirectory=(Join-Path $destination 'matrix-receipts');MatrixEvidence='PASS';PixelComparison='PASS';ActualHerdrRuntime='NOT_OBSERVED';HumanReview='NOT_OBSERVED';Release='NOT_OBSERVED';CreditGranted=$false}
 }finally{
     if($null-ne$sourceManifestStable.Stream){$sourceManifestStable.Stream.Dispose()}
     if($null-ne$process-and-not$process.HasExited){try{$process.Kill()}catch{}}
