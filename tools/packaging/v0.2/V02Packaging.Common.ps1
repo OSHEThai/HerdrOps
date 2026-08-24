@@ -230,9 +230,15 @@ function Write-V02CanonicalTempFileNoClobber {
         return [pscustomobject][ordered]@{Path=$destination;Length=[int64]$bytes.Length;Sha256=$expectedSha256;VolumeSerialNumber=$identity.VolumeSerialNumber;FileId=$identity.FileId;LinkCount=$identity.LinkCount}
     }
     finally {
-        if ($null -ne $stream) { $stream.Dispose() }
-        $null = Assert-V02SameHandleIdentity -Handle $parentLease -Expected $parentLease.V02Identity -ExpectedPath $parent -Context 'canonical temporary-file parent' -RequireSingleLink
-        $parentLease.Dispose()
+        try {
+            if ($null -ne $stream) { $stream.Dispose() }
+        }
+        finally {
+            try {
+                $null = Assert-V02SameHandleIdentity -Handle $parentLease -Expected $parentLease.V02Identity -ExpectedPath $parent -Context 'canonical temporary-file parent' -RequireSingleLink
+            }
+            finally { $parentLease.Dispose() }
+        }
     }
 }
 
@@ -276,8 +282,10 @@ function Copy-V02InstallStateToOwnedStaging {
     }
     finally {
         if ($null -ne $stagingLease) {
-            $null = Assert-V02SameHandleIdentity -Handle $stagingLease -Expected $ExpectedStagingIdentity -ExpectedPath $stagingRoot -Context 'install-state owned staging root' -RequireSingleLink
-            $stagingLease.Dispose()
+            try {
+                $null = Assert-V02SameHandleIdentity -Handle $stagingLease -Expected $ExpectedStagingIdentity -ExpectedPath $stagingRoot -Context 'install-state owned staging root' -RequireSingleLink
+            }
+            finally { $stagingLease.Dispose() }
         }
     }
 }

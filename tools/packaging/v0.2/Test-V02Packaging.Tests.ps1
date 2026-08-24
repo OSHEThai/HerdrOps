@@ -160,6 +160,17 @@ try {
     Write-V02CanonicalJsonFile $installStateFixture $installStateSource $repo
     $installStateSourceBinding=Get-V02StableFileIdentity $installStateSource
 
+    Invoke-Case 'canonical temp no-clobber rejection releases its parent lease' {
+        $parent=Join-Path $testRoot 'state-temp-collision';New-Item -ItemType Directory -Path $parent|Out-Null
+        $parentIdentity=Get-V02DirectoryPathIdentity $parent 'temp collision parent'
+        $path=Join-Path $parent 'install-state.json';[IO.File]::WriteAllText($path,'UNOWNED')
+        Assert-Throws { Write-V02CanonicalTempFileNoClobber $installStateFixture $path $repo } 'overwrite'
+        if([IO.File]::ReadAllText($path)-cne'UNOWNED'){throw 'No-clobber rejection changed the unowned temporary file.'}
+        [IO.File]::Delete($path)
+        Remove-V02TransactionDirectory -Path $parent -ExpectedParent $testRoot -ExpectedIdentity $parentIdentity
+        if(Test-Path -LiteralPath $parent){throw 'Canonical temp rejection leaked a parent handle that blocked cleanup.'}
+    }
+
     Invoke-Case 'install-state writer admits exact identity-bound transaction staging root' {
         $parent=Join-Path $testRoot 'state-positive';New-Item -ItemType Directory -Path $parent -Force|Out-Null
         $target=Join-Path $parent 'HerdrOps';$stage=Join-Path $parent ('.HerdrOps.staging-'+[guid]::NewGuid().ToString('N'));New-Item -ItemType Directory -Path $stage|Out-Null
@@ -188,6 +199,9 @@ try {
             Copy-V02InstallStateToOwnedStaging -SourcePath $installStateSource -ExpectedSourceBinding $installStateSourceBinding -DestinationPath (Join-Path $stage 'install-state.json') -OwnedStagingRoot $stage -ExpectedStagingIdentity $wrongIdentity -InstallRoot $target
         } 'changed while held'
         if(Test-Path -LiteralPath (Join-Path $stage 'install-state.json')){throw 'Rejected unowned staging received install-state bytes.'}
+        $stageIdentity=Get-V02DirectoryPathIdentity $stage 'rejected unowned staging cleanup'
+        Remove-V02TransactionDirectory -Path $stage -ExpectedParent $parent -ExpectedIdentity $stageIdentity
+        if(Test-Path -LiteralPath $stage){throw 'Unowned-staging rejection leaked a handle that blocked cleanup.'}
     }
 
     Invoke-Case 'install-state writer rejects destination path drift' {
@@ -207,6 +221,9 @@ try {
         Assert-Throws {
             Copy-V02InstallStateToOwnedStaging -SourcePath $installStateSource -ExpectedSourceBinding $installStateSourceBinding -DestinationPath (Join-Path $stage 'install-state.json') -OwnedStagingRoot $stage -ExpectedStagingIdentity $staleIdentity -InstallRoot $target
         } 'changed while held'
+        $replacementIdentity=Get-V02DirectoryPathIdentity $stage 'replacement staging cleanup'
+        Remove-V02TransactionDirectory -Path $stage -ExpectedParent $parent -ExpectedIdentity $replacementIdentity
+        if(Test-Path -LiteralPath $stage){throw 'Identity-drift rejection leaked a handle that blocked cleanup.'}
     }
 
     Invoke-Case 'install-state writer rejects reparse staging root' {
