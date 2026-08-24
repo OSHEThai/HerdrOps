@@ -4,7 +4,7 @@
   "additionalProperties": false,
   "required": ["SchemaVersion", "EvidenceClassification", "Result", "Issues", "RunNonces", "Source", "Package", "Roles", "Herdr", "Sessions", "MatrixCandidate", "Languages", "EvidenceBoundary"],
   "properties": {
-    "SchemaVersion": {"const": 1, "type": "integer"},
+    "SchemaVersion": {"const": 2, "type": "integer"},
     "EvidenceClassification": {"const": "IndependentReviewCandidate", "type": "string"},
     "Result": {"const": "PASS", "type": "string"},
     "Issues": {"type": "array", "const": [7, 9, 10, 11, 149], "items": {"type": "integer"}},
@@ -24,7 +24,8 @@
     "identity": {"type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[^\\s\\p{Cc}]+$"},
     "source": {"type": "object", "additionalProperties": false, "required": ["CommitSha", "TreeSha", "GitTreeClean"], "properties": {"CommitSha": {"type": "string", "pattern": "^[0-9a-f]{40}$"}, "TreeSha": {"type": "string", "pattern": "^[0-9a-f]{40}$"}, "GitTreeClean": {"const": true, "type": "boolean"}}},
     "sessionControl": {"type": "object", "additionalProperties": false, "required": ["Name", "SocketPath", "ServerIdentity"], "properties": {"Name": {"type": "string", "minLength": 1}, "SocketPath": {"type": "string", "minLength": 1}, "ServerIdentity": {"type": "string", "minLength": 1}}},
-    "sessionTarget": {"type": "object", "additionalProperties": false, "required": ["Name", "SocketPath", "Reference"], "properties": {"Name": {"type": "string", "minLength": 1}, "SocketPath": {"type": "string", "minLength": 1}, "Reference": {"type": "string", "minLength": 1}}},
+    "nativeSession": {"type": "object", "additionalProperties": false, "required": ["agent", "kind", "source", "value"], "properties": {"agent": {"type": "string", "minLength": 1}, "kind": {"const": "id", "type": "string"}, "source": {"type": "string", "pattern": "^herdr:[^\\s\\p{Cc}]+$"}, "value": {"type": "string", "minLength": 1}}},
+    "sessionTarget": {"type": "object", "additionalProperties": false, "required": ["Name", "SocketPath", "NativeSession", "EvidenceSource", "ObservableByGate"], "properties": {"Name": {"type": "string", "minLength": 1}, "SocketPath": {"type": "string", "minLength": 1}, "NativeSession": {"$ref": "#/$defs/nativeSession"}, "EvidenceSource": {"const": "HerdrCliAgentMetadata", "type": "string"}, "ObservableByGate": {"const": true, "type": "boolean"}}},
     "file": {"type": "object", "additionalProperties": false, "required": ["Path", "Bytes", "Sha256"], "properties": {"Path": {"type": "string", "minLength": 1}, "Bytes": {"type": "integer", "minimum": 0}, "Sha256": {"$ref": "#/$defs/sha"}}},
     "language": {"type": "object", "additionalProperties": false, "required": ["Language", "EvidenceRunNonce", "EvidenceDirectory", "CaptureRoot", "GateReportSha256", "AppRuntimeReportSha256", "CoreRuntimeReportSha256", "Files"], "properties": {"Language": {"enum": ["Thai", "English"], "type": "string"}, "EvidenceRunNonce": {"$ref": "#/$defs/nonce"}, "EvidenceDirectory": {"type": "string", "minLength": 1}, "CaptureRoot": {"type": "string", "minLength": 1}, "GateReportSha256": {"$ref": "#/$defs/sha"}, "AppRuntimeReportSha256": {"$ref": "#/$defs/sha"}, "CoreRuntimeReportSha256": {"$ref": "#/$defs/sha"}, "Files": {"type": "array", "minItems": 5, "items": {"$ref": "#/$defs/file"}}}}
   }

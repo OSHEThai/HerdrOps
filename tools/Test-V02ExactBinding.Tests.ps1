@@ -129,7 +129,10 @@ foreach ($path in @(
 Assert-SourceContains -Path $compositeRuntime -Text '[string]$PackageIdentityPath' -Description 'Composite gate requires the package identity receipt'
 Assert-SourceContains -Path $compositeRuntime -Text '[string]$PackageArchivePath' -Description 'Composite gate requires the package ZIP archive'
 Assert-SourceContains -Path $compositeRuntime -Text '[string]$ExtractedPackageRoot' -Description 'Composite gate requires the exact extracted package root'
-Assert-SourceContains -Path $compositeRuntime -Text '[string]$TargetAgentSessionReference' -Description 'Composite gate records the operator-attested native Agent/session reference'
+$compositeParameterBlock=(Get-Content -LiteralPath $compositeRuntime|Select-Object -First 80)-join"`n"
+if ($compositeParameterBlock.Contains('[string]$TargetAgentSessionReference')) { throw 'Composite gate still accepts a caller-authored target Agent session reference.' }
+Assert-SourceContains -Path $compositeRuntime -Text 'Get-V02TargetAgentSessionObservation' -Description 'Composite gate directly observes target Herdr CLI Agent metadata before and after restart'
+Assert-SourceContains -Path $compositeRuntime -Text 'Assert-V02TargetAgentSessionContinuity' -Description 'Composite gate exact-binds pre/post target native Agent-session continuity'
 Assert-SourceContains -Path $compositeRuntime -Text 'Resolve-V02RuntimePackageBinding' -Description 'Composite gate invokes the exact package binding validator before launch'
 Assert-SourceContains -Path $compositeRuntime -Text '$coreExecutable = $packageBinding.CorePath' -Description 'Composite gate launches Core from the validated package root'
 Assert-SourceContains -Path $compositeRuntime -Text '$appExecutable = $packageBinding.AppPath' -Description 'Composite gate launches App from the validated package root'
@@ -138,7 +141,8 @@ Assert-SourceContains -Path $compositeRuntime -Text 'PackageIdentityReceiptSha25
 Assert-SourceContains -Path $compositeRuntime -Text 'AppSha256:' -Description 'Composite gate exposes the validated package App hash for cross-run binding'
 Assert-SourceContains -Path $compositeRuntime -Text 'CoreSha256:' -Description 'Composite gate exposes the validated package Core hash for cross-run binding'
 Assert-SourceContains -Path $runtimePackageBinding -Text "'tools\packaging\v0.2\Test-V02PackageIdentity.ps1'" -Description 'Runtime binding calls the committed v0.2 package validator'
-Assert-SourceContains -Path $runtimePackageBinding -Text "EvidenceSource = 'OperatorAttestation'" -Description 'Unobservable native Agent/session identity has an explicit attestation boundary'
+Assert-SourceContains -Path $runtimePackageBinding -Text "EvidenceSource = 'HerdrCliAgentMetadata'" -Description 'Native Agent/session identity is directly observed through Herdr CLI metadata'
+Assert-SourceContains -Path $runtimePackageBinding -Text '& $HerdrExecutable --session $TargetSessionName agent list' -Description 'Runtime binding queries the exact isolated target session rather than the control session'
 Assert-SourceContains -Path $runtimePackageBinding -Text 'Invoke-V02CommittedPackageValidator -ValidatorPath $Binding.ValidatorPath' -Description 'Finalization re-runs the entire committed package validator'
 Assert-SourceContains -Path $runtimePackageBinding -Text 'New-Variable -Scope Script -Name V02GovernedPassingTestCount -Value 926 -Option Constant' -Description 'TRX preservation declares the governed exact current 926-test aggregate as a constant'
 Assert-SourceContains -Path $runtimePackageBinding -Text 'V02GovernedTestAssemblyFileNames' -Description 'TRX preservation binds the exact four governed test assembly filenames'
@@ -266,8 +270,7 @@ Assert-SourceContains `
 $requiredCompositeDocumentationArguments = @(
     '-PackageIdentityPath $packageIdentityPath',
     '-PackageArchivePath $packageArchivePath',
-    '-ExtractedPackageRoot $extractedPackageRoot',
-    '-TargetAgentSessionReference $targetAgentSessionReference'
+    '-ExtractedPackageRoot $extractedPackageRoot'
 )
 foreach ($document in @($toolsReadme, $runtimeMonitorContract)) {
     Assert-DocumentedCompositeInvocationContains `
