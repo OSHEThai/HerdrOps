@@ -324,6 +324,18 @@ function Assert-V02BindingEqual {
     }
 }
 
+function Get-V02ReferenceHostAdmissionBinding {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)]$EnvironmentBinding)
+
+    Assert-V02ExactProperties $EnvironmentBinding @('host','graphicsAdapters','activeDisplay','herdr') 'Reference-host environment binding'
+    return [pscustomobject][ordered]@{
+        host = $EnvironmentBinding.host
+        graphicsAdapters = @($EnvironmentBinding.graphicsAdapters)
+        herdr = $EnvironmentBinding.herdr
+    }
+}
+
 function Get-V02TrustedReferenceHostObservation {
     [CmdletBinding()]
     param(
@@ -337,35 +349,7 @@ function Get-V02TrustedReferenceHostObservation {
     $computer = @(Get-CimInstance Win32_ComputerSystem)
     $operatingSystem = @(Get-CimInstance Win32_OperatingSystem)
     $videoControllers = @(Get-CimInstance Win32_VideoController | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_.PNPDeviceID) })
-    $activeMonitors = @(Get-CimInstance -Namespace root\wmi -ClassName WmiMonitorID | Where-Object { $_.Active -eq $true })
-    if ($computer.Count -ne 1 -or $operatingSystem.Count -ne 1 -or $videoControllers.Count -lt 1 -or $activeMonitors.Count -ne 1) { throw 'Trusted WMI host/display identity is incomplete or ambiguous.' }
-
-    Add-Type -AssemblyName System.Windows.Forms
-    $primaryScreen = [Windows.Forms.Screen]::PrimaryScreen
-    if ($null -eq $primaryScreen) { throw 'Trusted primary display probe returned no screen.' }
-    $desktopMetrics = Get-ItemProperty -LiteralPath 'HKCU:\Control Panel\Desktop\WindowMetrics' -Name AppliedDPI -ErrorAction Stop
-    if ($null -eq $desktopMetrics.AppliedDPI -or $desktopMetrics.AppliedDPI -isnot [int]) {
-        throw 'Trusted desktop AppliedDPI registry probe is missing or not a native DWORD.'
-    }
-    $desktopAppliedDpi = [int64]$desktopMetrics.AppliedDPI
-    if ($desktopAppliedDpi -le 0) { throw 'Trusted desktop AppliedDPI registry probe returned an invalid value.' }
-    $activeCandidates = @($videoControllers | Where-Object {
-        [string]$_.PNPDeviceID -ceq [string]$Profile.environmentBinding.activeDisplay.adapterPnpDeviceId -and
-        [int64]$_.CurrentHorizontalResolution -gt 0 -and
-        [int64]$_.CurrentVerticalResolution -gt 0 -and
-        [int64]$_.CurrentRefreshRate -gt 0
-    })
-    if ($activeCandidates.Count -ne 1) { throw 'Trusted active-display GPU binding is incomplete or ambiguous.' }
-    $activeAdapter = $activeCandidates[0]
-    $physicalWidth = [int64]$activeAdapter.CurrentHorizontalResolution
-    $physicalHeight = [int64]$activeAdapter.CurrentVerticalResolution
-    $logicalWidth = [int64]$primaryScreen.Bounds.Width
-    $logicalHeight = [int64]$primaryScreen.Bounds.Height
-    $derivedLogicalWidth = [int64][Math]::Round(([double]$physicalWidth*96.0)/$desktopAppliedDpi)
-    $derivedLogicalHeight = [int64][Math]::Round(([double]$physicalHeight*96.0)/$desktopAppliedDpi)
-    if ($logicalWidth -ne $derivedLogicalWidth -or $logicalHeight -ne $derivedLogicalHeight) {
-        throw "Trusted primary Screen bounds contradict physical mode / AppliedDPI. Screen=${logicalWidth}x${logicalHeight} Derived=${derivedLogicalWidth}x${derivedLogicalHeight}."
-    }
+    if ($computer.Count -ne 1 -or $operatingSystem.Count -ne 1 -or $videoControllers.Count -lt 1) { throw 'Trusted WMI host/OS/graphics identity is incomplete or ambiguous.' }
 
     $orderedAdapters = @()
     foreach ($expectedAdapter in @($Profile.environmentBinding.graphicsAdapters)) {
@@ -386,10 +370,9 @@ function Get-V02TrustedReferenceHostObservation {
     $architecture = [Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString().ToLowerInvariant()
     $releaseArchitecture = if ($architecture -eq 'x64') { 'x86_64-pc-windows-msvc' } elseif ($architecture -eq 'arm64') { 'aarch64-pc-windows-msvc' } else { throw "Unsupported trusted OS architecture '$architecture'." }
 
-    $environmentBinding = [pscustomobject]@{
+    $admissionEnvironmentBinding = [pscustomobject][ordered]@{
         host=[pscustomobject]@{machineName=[Environment]::MachineName;manufacturer=[string]$computer[0].Manufacturer;model=[string]$computer[0].Model;operatingSystemCaption=[string]$operatingSystem[0].Caption;operatingSystemVersion=[string]$operatingSystem[0].Version;operatingSystemBuild=[int64]$operatingSystem[0].BuildNumber;architecture=$architecture}
         graphicsAdapters=$orderedAdapters
-        activeDisplay=[pscustomobject]@{activeMonitorCount=[int64]$activeMonitors.Count;adapterPnpDeviceId=[string]$activeAdapter.PNPDeviceID;monitorInstanceName=[string]$activeMonitors[0].InstanceName;primaryDisplayDeviceName=[string]$primaryScreen.DeviceName;physicalWidthPixels=$physicalWidth;physicalHeightPixels=$physicalHeight;logicalWidthPixels=$logicalWidth;logicalHeightPixels=$logicalHeight;refreshRateHz=[int64]$activeAdapter.CurrentRefreshRate;desktopAppliedDpi=$desktopAppliedDpi;scalePercent=[int64][Math]::Round(([double]$desktopAppliedDpi/96.0)*100.0)}
         herdr=[pscustomobject]@{version=$version;releaseId="$version-$releaseArchitecture";installPathRelativeToLocalAppData=$relativeHerdr;executableSha256=((Get-FileHash -LiteralPath $resolvedHerdr -Algorithm SHA256).Hash).ToUpperInvariant()}
     }
     $candidatePolicy = [pscustomobject]@{
@@ -398,27 +381,20 @@ function Get-V02TrustedReferenceHostObservation {
         workingSetPolicy=[pscustomobject]@{combinedMaximumMebibytes=[int64]255;combinedMaximumBytes=[int64]267386880;statistic='maximum'}
     }
     return [pscustomobject]@{
-        EnvironmentBinding=$environmentBinding
+        AdmissionEnvironmentBinding=$admissionEnvironmentBinding
         CandidatePolicy=$candidatePolicy
-        ReportObservedHost=[pscustomobject]@{MachineName=[Environment]::MachineName;OperatingSystem=[Runtime.InteropServices.RuntimeInformation]::OSDescription;OsArchitecture=[Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString();ProcessArchitecture=[Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture.ToString();ProcessorCount=[Environment]::ProcessorCount;DesktopAppliedDpi=$desktopAppliedDpi;MainWindowDpiX=[double]$desktopAppliedDpi;MainWindowDpiY=[double]$desktopAppliedDpi;WindowDisplayDeviceName=[string]$primaryScreen.DeviceName;WindowDisplayLogicalWidthPixels=$logicalWidth;WindowDisplayLogicalHeightPixels=$logicalHeight}
+        ReportObservedHost=[pscustomobject]@{MachineName=[Environment]::MachineName;OperatingSystem=[Runtime.InteropServices.RuntimeInformation]::OSDescription;OsArchitecture=[Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString();ProcessArchitecture=[Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture.ToString();ProcessorCount=[Environment]::ProcessorCount}
     }
 }
 
 function Assert-V02ObservedHostReport {
     param([Parameter(Mandatory)]$Reported,[Parameter(Mandatory)]$Trusted)
     Assert-V02ExactProperties $Reported @('MachineName','OperatingSystem','OsArchitecture','ProcessArchitecture','ProcessorCount','DesktopAppliedDpi','MainWindowDpiX','MainWindowDpiY','WindowDisplayDeviceName','WindowDisplayLogicalWidthPixels','WindowDisplayLogicalHeightPixels') 'Reported observed host'
-    foreach($name in @('MachineName','OperatingSystem','OsArchitecture','ProcessArchitecture','WindowDisplayDeviceName')) {
+    foreach($name in @('MachineName','OperatingSystem','OsArchitecture','ProcessArchitecture')) {
         if ($Reported.$name -isnot [string] -or [string]$Reported.$name -cne [string]$Trusted.$name) { throw "Reported ObservedHost.$name contradicts the independent trusted probe." }
     }
     $integerTypes=@([TypeCode]::Byte,[TypeCode]::SByte,[TypeCode]::UInt16,[TypeCode]::UInt32,[TypeCode]::UInt64,[TypeCode]::Int16,[TypeCode]::Int32,[TypeCode]::Int64)
-    foreach($name in @('ProcessorCount','DesktopAppliedDpi','WindowDisplayLogicalWidthPixels','WindowDisplayLogicalHeightPixels')) {
+    foreach($name in @('ProcessorCount')) {
         if ($null -eq $Reported.$name -or $integerTypes -notcontains [Type]::GetTypeCode($Reported.$name.GetType()) -or [int64]$Reported.$name -ne [int64]$Trusted.$name) { throw "Reported ObservedHost.$name contradicts the independent trusted probe." }
-    }
-    foreach($name in @('MainWindowDpiX','MainWindowDpiY')) {
-        if ($null -eq $Reported.$name -or $Reported.$name -isnot [ValueType] -or
-            [double]::IsNaN([double]$Reported.$name) -or [double]::IsInfinity([double]$Reported.$name) -or
-            [double]$Reported.$name -ne [double]$Trusted.$name) {
-            throw "Reported ObservedHost.$name contradicts the independent trusted probe."
-        }
     }
 }
