@@ -19,7 +19,7 @@ function Invoke-V02ReleaseGateTestCase {
     }
     catch {
         [void]$script:Failures.Add("$Name`: $($_.Exception.Message)")
-        Write-Host "FAIL: $Name" -ForegroundColor Red
+        Write-Host "FAIL: $Name -- $($_.Exception.Message)" -ForegroundColor Red
     }
 }
 
@@ -176,7 +176,7 @@ function New-V02ReleaseGateTestCandidateLock {
         [string]$GitHubSnapshotSha256 = ('A' * 64)
     )
     $lock = [pscustomobject][ordered]@{
-        SchemaVersion = 2
+        SchemaVersion = 3
         EvidenceClass = 'ApprovedCandidateLock'
         Result = 'APPROVED'
         Immutable = $true
@@ -194,7 +194,7 @@ function New-V02ReleaseGateTestCandidateLock {
         RendererManifestSha256 = $RendererManifestSha256
         RuntimeMatrixManifestSha256 = $RuntimeMatrixManifestSha256
         Issue9CandidateSha256 = $Issue9CandidateSha256
-        GitHubSnapshotSha256 = $GitHubSnapshotSha256
+        PreclosureGitHubSnapshotSha256 = $GitHubSnapshotSha256
         Authority = [pscustomobject][ordered]@{
             DecisionId = $Authority.DecisionId
             ApprovalReference = $Authority.ApprovalReference
@@ -203,14 +203,17 @@ function New-V02ReleaseGateTestCandidateLock {
             ReferenceSha256 = $Authority.FileSha256
             OwnerIdentity = $Authority.OwnerIdentity
             OwnerRole = $Authority.OwnerRole
-            Authentication = 'TRUSTED_OWNER_PLUS_EXTERNAL_RSA_AUTHENTICATED_RECEIPT'
+            Authentication = 'TRUSTED_OWNER_PLUS_LIVE_GITHUB_AGENT_REVIEW'
             IndependentReceiptPath = $IndependentReceipt.Path
             IndependentReceiptSha256 = $IndependentReceipt.FileSha256
             IndependentReceiptIdentity = $IndependentReceipt.ReviewerIdentity
             IndependentReceiptRole = $IndependentReceipt.ReviewerRole
             IndependentReceiptAuthentication = $IndependentReceipt.Authentication
-            IndependentReceiptTrustAnchorFingerprint = $IndependentReceipt.TrustAnchorFingerprint
-            IndependentReceiptSignedPayloadSha256 = $IndependentReceipt.SignedPayloadSha256
+            IndependentReceiptGitHubCommentId = $IndependentReceipt.CommentId
+            IndependentReceiptGitHubCommentUrl = $IndependentReceipt.AuthenticationReference
+            IndependentReceiptCommentBodySha256 = $IndependentReceipt.CommentBodySha256
+            IndependentReviewResultPath = $IndependentReceipt.ReviewResultPath
+            IndependentReviewResultSha256 = $IndependentReceipt.ReviewResultSha256
         }
         Runtime = 'NOT_OBSERVED'
         Release = 'NOT_OBSERVED'
@@ -219,108 +222,29 @@ function New-V02ReleaseGateTestCandidateLock {
     return $lock
 }
 
+# The owner-authenticated GitHub comment itself is re-fetched only by the
+# production gate; unit tests validate its exact locally-bound shape here.
 function New-V02ReleaseGateTestExternalIndependentReceipt {
     param(
-        [Parameter(Mandatory = $true)][string]$Path,
-        [Parameter(Mandatory = $true)]$Identity,
-        [Parameter(Mandatory = $true)][string]$ProfileFileSha256,
-        [Parameter(Mandatory = $true)][string]$ProfileCanonicalSha256,
-        [string]$PackageReceiptSha256 = ('1' * 64),
-        [string]$PackageReceiptFileSha256 = ('2' * 64),
-        [string]$PackageArchiveSha256 = ('3' * 64),
-        [string]$PackageManifestSha256 = ('4' * 64),
-        [string]$PackageAppSha256 = ('5' * 64),
-        [string]$PackageCoreSha256 = ('6' * 64),
-        [string]$RendererManifestSha256 = ('7' * 64),
-        [string]$RuntimeMatrixManifestSha256 = ('8' * 64),
-        [string]$Issue9CandidateSha256 = ('9' * 64),
-        [string]$GitHubSnapshotSha256 = ('A' * 64),
-        [string]$ReviewerIdentity = '@independent-reviewer',
-        [System.Security.Cryptography.RSA]$RsaKey = $null
+        [Parameter(Mandatory = $true)][string]$Path,[Parameter(Mandatory = $true)]$Identity,
+        [Parameter(Mandatory = $true)][string]$ProfileFileSha256,[Parameter(Mandatory = $true)][string]$ProfileCanonicalSha256,
+        [string]$PackageReceiptSha256 = ('1' * 64),[string]$PackageReceiptFileSha256 = ('2' * 64),[string]$PackageArchiveSha256 = ('3' * 64),
+        [string]$PackageManifestSha256 = ('4' * 64),[string]$PackageAppSha256 = ('5' * 64),[string]$PackageCoreSha256 = ('6' * 64),
+        [string]$RendererManifestSha256 = ('7' * 64),[string]$RuntimeMatrixManifestSha256 = ('8' * 64),[string]$Issue9CandidateSha256 = ('9' * 64),
+        [string]$GitHubSnapshotSha256 = ('A' * 64),[string]$ReviewerIdentity = 'review-agent'
     )
-    $rsa = $RsaKey
-    if ($null -eq $rsa) {
-        $rsa = [System.Security.Cryptography.RSA]::Create(2048)
-    }
-    $pubParams = $rsa.ExportParameters($false)
-    $trustAnchor = [pscustomobject][ordered]@{
-        KeyType = 'RSA-2048'
-        Modulus = [Convert]::ToBase64String($pubParams.Modulus)
-        Exponent = [Convert]::ToBase64String($pubParams.Exponent)
-    }
-    $signedPayload = [pscustomobject][ordered]@{
-        DecisionId = $script:V02ReleaseGateRendererScopeDecisionId
-        ApprovalReference = $script:V02ReleaseGateRendererScopeDecisionReference
-        AuthorityReference = $script:V02ReleaseGateAuthorityReferenceRelativePath
-        AuthorityReferenceSha256 = $script:V02ReleaseGateAuthorityFileSha256
-        Candidate = [pscustomobject][ordered]@{
-            SourceCommit = $Identity.Commit
-            SourceTree = $Identity.Tree
-            ProfileId = $script:V02ReleaseGatePackageProfileId
-            ProfileFileSha256 = $ProfileFileSha256
-            ProfileCanonicalSha256 = $ProfileCanonicalSha256
-            PackageReceiptSha256 = $PackageReceiptSha256
-            PackageReceiptFileSha256 = $PackageReceiptFileSha256
-            PackageArchiveSha256 = $PackageArchiveSha256
-            PackageManifestSha256 = $PackageManifestSha256
-            PackageAppSha256 = $PackageAppSha256
-            PackageCoreSha256 = $PackageCoreSha256
-            RendererManifestSha256 = $RendererManifestSha256
-            RuntimeMatrixManifestSha256 = $RuntimeMatrixManifestSha256
-            Issue9CandidateSha256 = $Issue9CandidateSha256
-            GitHubSnapshotSha256 = $GitHubSnapshotSha256
-        }
-        Owner = [pscustomobject][ordered]@{ Identity = '@yutthaphon'; Role = 'ProductOwner' }
-        IndependentReviewer = [pscustomobject][ordered]@{ Identity = $ReviewerIdentity; Role = 'IndependentAgentReviewer' }
-    }
-    $canonicalJson = ConvertTo-V02Jcs $signedPayload
-    $canonicalBytes = [Text.UTF8Encoding]::new($false, $true).GetBytes($canonicalJson)
-    $sigBytes = $rsa.SignData($canonicalBytes, [System.Security.Cryptography.HashAlgorithmName]::SHA256, [System.Security.Cryptography.RSASignaturePadding]::Pkcs1)
-    $sigB64 = [Convert]::ToBase64String($sigBytes)
-    $payloadSha256 = (Get-V02Sha256Hex -Bytes $canonicalBytes).ToUpperInvariant()
-    $modulusFingerprint = (Get-V02Sha256Hex -Bytes $pubParams.Modulus).ToUpperInvariant()
-
-    $receipt = [pscustomobject][ordered]@{
-        SchemaVersion = 3
-        EvidenceClass = 'ExternalIndependentCandidateReceipt'
-        Result = 'APPROVED_CANDIDATE_ONLY'
-        DecisionId = $script:V02ReleaseGateRendererScopeDecisionId
-        ApprovalReference = $script:V02ReleaseGateRendererScopeDecisionReference
-        AuthorityReference = $script:V02ReleaseGateAuthorityReferenceRelativePath
-        AuthorityReferenceSha256 = $script:V02ReleaseGateAuthorityFileSha256
-        Candidate = $signedPayload.Candidate
-        Owner = $signedPayload.Owner
-        IndependentReviewer = $signedPayload.IndependentReviewer
-        Authentication = [pscustomobject][ordered]@{
-            Method = 'EXTERNAL_RSA_SHA256_AUTHENTICATED_REVIEW'
-            Reference = 'https://external-review.invalid/herdrops/v0.2/candidate'
-            VerifiedBy = $ReviewerIdentity
-            VerifiedRole = 'IndependentAgentReviewer'
-            TrustAnchor = $trustAnchor
-            Signature = $sigB64
-            SignatureAlgorithm = 'RSASSA-PKCS1-v1_5-SHA256'
-            Authenticated = $true
-        }
-        RoleDistinct = $true
-        Runtime = 'NOT_OBSERVED'
-        Release = 'NOT_OBSERVED'
-        CreditGranted = $false
-    }
-    $hash = Write-V02ReleaseGateTestJson -Path $Path -Value $receipt
-    return [pscustomobject][ordered]@{
-        Path = [IO.Path]::GetFullPath($Path)
-        FileSha256 = $hash
-        ReviewerIdentity = $ReviewerIdentity
-        ReviewerRole = 'IndependentAgentReviewer'
-        Authentication = 'EXTERNAL_RSA_SHA256_AUTHENTICATED_REVIEW'
-        TrustAnchor = $trustAnchor
-        TrustAnchorFingerprint = $modulusFingerprint
-        Signature = $sigB64
-        SignedPayloadSha256 = $payloadSha256
-        Candidate = $receipt.Candidate
-        Value = $receipt
-        PrivateKey = $rsa
-    }
+    $candidate=[pscustomobject][ordered]@{SourceCommit=$Identity.Commit;SourceTree=$Identity.Tree;ProfileId=$script:V02ReleaseGatePackageProfileId;ProfileFileSha256=$ProfileFileSha256;ProfileCanonicalSha256=$ProfileCanonicalSha256;PackageReceiptSha256=$PackageReceiptSha256;PackageReceiptFileSha256=$PackageReceiptFileSha256;PackageArchiveSha256=$PackageArchiveSha256;PackageManifestSha256=$PackageManifestSha256;PackageAppSha256=$PackageAppSha256;PackageCoreSha256=$PackageCoreSha256;RendererManifestSha256=$RendererManifestSha256;RuntimeMatrixManifestSha256=$RuntimeMatrixManifestSha256;Issue9CandidateSha256=$Issue9CandidateSha256;PreclosureGitHubSnapshotSha256=$GitHubSnapshotSha256}
+    $builder=[pscustomobject][ordered]@{Identity='builder-agent';Task='build-v02-candidate';Role='CandidateBuilder'}
+    $reviewer=[pscustomobject][ordered]@{Identity=$ReviewerIdentity;Task='review-v02-candidate';Role='IndependentAgentReviewer'}
+    $reviewResultPath=Join-Path ([IO.Path]::GetDirectoryName([IO.Path]::GetFullPath($Path))) 'agent-review-result.json'
+    $reviewResultValue=[pscustomobject][ordered]@{SchemaVersion=1;EvidenceClass='IndependentAgentReviewResult';DecisionId='herdrops-v0.2-release-first-v4';Candidate=$candidate;Builder=$builder;IndependentReviewer=$reviewer;Decision='APPROVED_CANDIDATE_ONLY';Findings=@();EvidenceBoundary=[pscustomobject][ordered]@{Runtime='NOT_OBSERVED';Release='NOT_OBSERVED';CreditGranted=$false}}
+    $reviewResultSha=Write-V02ReleaseGateTestText -Path $reviewResultPath -Text ((ConvertTo-V02Jcs $reviewResultValue)+"`n")
+    $review=[pscustomobject][ordered]@{Result='APPROVED_CANDIDATE_ONLY';OpenHighCriticalDefects=0;ReviewResultPath=$reviewResultPath;ReviewResultSha256=$reviewResultSha}
+    $body=New-V02ReleaseArtifactAgentReviewCommentBody $candidate $builder $reviewer $review
+    $bodySha=Get-V02ReleaseArtifactSha256Bytes ([Text.UTF8Encoding]::new($false,$true).GetBytes($body));$commentId=[long]9001
+    $receipt=[pscustomobject][ordered]@{SchemaVersion=4;EvidenceClass='ExternalIndependentCandidateReceipt';Result='APPROVED_CANDIDATE_ONLY';DecisionId=$script:V02ReleaseGateRendererScopeDecisionId;ApprovalReference=$script:V02ReleaseGateRendererScopeDecisionReference;AuthorityReference=$script:V02ReleaseGateAuthorityReferenceRelativePath;AuthorityReferenceSha256=$script:V02ReleaseGateAuthorityFileSha256;Candidate=$candidate;Owner=[pscustomobject][ordered]@{Identity='@yutthaphon';Role='ProductOwner'};Builder=$builder;IndependentReviewer=$reviewer;Review=$review;Authentication=[pscustomobject][ordered]@{Method='LIVE_GITHUB_OWNER_AUTHENTICATED_AGENT_REVIEW_COMMENT';ApiUrl="https://api.github.com/repos/OSHEThai/HerdrOps/issues/comments/$commentId";HtmlUrl="https://github.com/OSHEThai/HerdrOps/issues/149#issuecomment-$commentId";IssueNumber=149;CommentId=$commentId;CommentAuthor='yutthaphon';AuthorAssociation='OWNER';CreatedAtUtc='2026-08-25T00:00:00Z';UpdatedAtUtc='2026-08-25T00:00:00Z';CommentBodySha256=$bodySha;Authenticated=$true};RoleDistinct=$true;Runtime='NOT_OBSERVED';Release='NOT_OBSERVED';CreditGranted=$false}
+    $hash=Write-V02ReleaseGateTestJson -Path $Path -Value $receipt
+    return [pscustomobject][ordered]@{Path=[IO.Path]::GetFullPath($Path);FileSha256=$hash;ReviewerIdentity=$ReviewerIdentity;ReviewerRole='IndependentAgentReviewer';Authentication=$receipt.Authentication.Method;AuthenticationReference=$receipt.Authentication.HtmlUrl;CommentId=$commentId;CommentBody=$body;CommentBodySha256=$bodySha;ReviewResultPath=$reviewResultPath;ReviewResultSha256=$reviewResultSha;Candidate=$candidate;Value=$receipt}
 }
 
 function New-V02ReleaseGateTestGitHubSnapshot {
@@ -342,13 +266,17 @@ function New-V02ReleaseGateTestGitHubSnapshot {
         [pscustomobject][ordered]@{ number = 149; title = 'issue 149'; state = 'closed'; milestone = $milestone }
     )
     $snapshot = [pscustomobject][ordered]@{
-        schemaVersion = 2
+        schemaVersion = 3
+        evidenceClass = 'AuthenticatedLiveGitHubSnapshot'
+        phase = 'FinalClosure'
         repository = 'OSHEThai/HerdrOps'
+        authentication = [pscustomobject][ordered]@{ method = 'LIVE_GITHUB_API_BEARER_TLS'; apiBaseUri = 'https://api.github.com'; authenticated = $true }
+        preclosureSnapshotSha256 = ('A' * 64)
         source = [pscustomobject][ordered]@{ commitSha = $SourceCommit; treeSha = $SourceTree }
         ci = [pscustomobject][ordered]@{
             headSha = $SourceCommit
             conclusion = 'success'
-            requiredChecks = @([pscustomobject][ordered]@{ name = 'build-test'; headSha = $SourceCommit; conclusion = 'success' })
+            requiredChecks = @([pscustomobject][ordered]@{ name = 'build-test'; headSha = $SourceCommit; conclusion = 'success'; checkRunId = [long]1; completedAtUtc = '2026-08-25T00:00:00Z'; detailsUrl = 'https://github.com/OSHEThai/HerdrOps/actions/runs/1/job/2' })
         }
         milestones = @([pscustomobject][ordered]@{ number = 2; title = 'v0.2.0'; state = 'closed' })
         issues = $issues
@@ -500,7 +428,7 @@ $script:TestRoot = Join-Path ([IO.Path]::GetTempPath()) ('herdrops-v02-gate-test
 New-V02ReleaseGateTestDirectory -Path $script:TestRoot
 
 try {
-    Invoke-V02ReleaseGateTestCase 'approved candidate lock binds exact source/profile/authority and cryptographically verified external receipt' {
+    Invoke-V02ReleaseGateTestCase 'approved candidate lock binds exact source/profile/authority and owner-authenticated Agent review comment' {
         $evidenceRoot = Join-Path $script:TestRoot 'lock'
         New-V02ReleaseGateTestDirectory -Path $evidenceRoot
         $authority = Read-V02ReleaseGateAuthorityReference -RepositoryRoot $script:GateRepositoryRoot `
@@ -514,7 +442,7 @@ try {
             -ExpectedSourceCommit $script:GateIdentity.Commit -ExpectedSourceTree $script:GateIdentity.Tree `
             -PackageProfilePath $script:GateProfilePath -RepositoryRoot $script:GateRepositoryRoot `
             -AuthorityReferencePath (Join-Path $script:GateRepositoryRoot 'Plan\DECISIONS.md') -IndependentCandidateReceiptPath $receipt.Path
-        if ($lock.Result -cne 'APPROVED_CANDIDATE_ONLY' -or $lock.Authentication -cne 'TRUSTED_OWNER_PLUS_EXTERNAL_RSA_AUTHENTICATED_RECEIPT') {
+        if ($lock.Result -cne 'APPROVED_CANDIDATE_ONLY' -or $lock.Authentication -cne 'TRUSTED_OWNER_PLUS_LIVE_GITHUB_AGENT_REVIEW') {
             throw 'Candidate lock did not remain candidate-only and owner/independent-receipt bound.'
         }
     }
@@ -531,6 +459,17 @@ try {
         } 'missing'
     }
 
+    Invoke-V02ReleaseGateTestCase 'legacy schema-v3 self-keyed Agent receipt is non-closable' {
+        $receipt=New-V02ReleaseGateTestExternalIndependentReceipt -Path (Join-Path $script:TestRoot 'legacy-v3-receipt\receipt.json') -Identity $script:GateIdentity -ProfileFileSha256 $script:GateProfileSha -ProfileCanonicalSha256 $script:GateProfileCanonicalSha
+        $legacy=$receipt.Value|ConvertTo-Json -Depth 100|ConvertFrom-Json;$legacy.SchemaVersion=3;Write-V02ReleaseGateTestJson -Path $receipt.Path -Value $legacy|Out-Null
+        Assert-V02ReleaseGateTestThrows {Read-V02ReleaseGateExternalIndependentCandidateReceipt -Path $receipt.Path -RepositoryRoot $script:GateRepositoryRoot -EvidenceRoot (Join-Path $script:TestRoot 'legacy-v3-evidence') -ExpectedSourceCommit $script:GateIdentity.Commit -ExpectedSourceTree $script:GateIdentity.Tree} 'SchemaVersion'
+    }
+
+    Invoke-V02ReleaseGateTestCase 'legacy schema-v2 local GitHub snapshot is non-closable' {
+        $snapshot=New-V02ReleaseGateTestGitHubSnapshot -Path (Join-Path $script:TestRoot 'legacy-github-v2.json');$snapshot.schemaVersion=2
+        Assert-V02ReleaseGateTestThrows {Assert-V02ReleaseGateGitHubSnapshot -Snapshot $snapshot -ExpectedSourceCommit $script:GateIdentity.Commit -ExpectedSourceTree $script:GateIdentity.Tree} 'schemaVersion'
+    }
+
     Invoke-V02ReleaseGateTestCase 'builder-authored trust anchor inside repo is rejected' {
         $insideRepoReceipt = Join-Path $script:GateRepositoryRoot 'tools\packaging\v0.2\fake-receipt.json'
         Assert-V02ReleaseGateTestThrows {
@@ -540,37 +479,40 @@ try {
         } 'missing|must be externally supplied outside'
     }
 
-    Invoke-V02ReleaseGateTestCase 'forged external receipt cryptographic signature fails closed' {
+    Invoke-V02ReleaseGateTestCase 'forged external receipt comment-body hash fails closed' {
         $receipt = New-V02ReleaseGateTestExternalIndependentReceipt -Path (Join-Path $script:TestRoot 'external-forged-sig\receipt.json') `
             -Identity $script:GateIdentity -ProfileFileSha256 $script:GateProfileSha -ProfileCanonicalSha256 $script:GateProfileCanonicalSha
         $forged = $receipt.Value | ConvertTo-Json -Depth 100 | ConvertFrom-Json
-        # Corrupt the RSA signature bytes
-        $sigBytes = [Convert]::FromBase64String($forged.Authentication.Signature)
-        $sigBytes[0] = [byte]($sigBytes[0] -bxor 0xFF)
-        $forged.Authentication.Signature = [Convert]::ToBase64String($sigBytes)
+        $forged.Authentication.CommentBodySha256 = ('F' * 64)
         Write-V02ReleaseGateTestJson -Path $receipt.Path -Value $forged | Out-Null
         Assert-V02ReleaseGateTestThrows {
             Read-V02ReleaseGateExternalIndependentCandidateReceipt -Path $receipt.Path `
                 -RepositoryRoot $script:GateRepositoryRoot -EvidenceRoot (Join-Path $script:TestRoot 'forged-sig-evidence') `
                 -ExpectedSourceCommit $script:GateIdentity.Commit -ExpectedSourceTree $script:GateIdentity.Tree
-        } 'cryptographic signature verification failed'
+        } 'comment body hash'
     }
 
-    Invoke-V02ReleaseGateTestCase 'tampered candidate payload under valid RSA signature fails closed' {
+    Invoke-V02ReleaseGateTestCase 'tampered candidate payload under owner-authenticated comment fails closed' {
         $receipt = New-V02ReleaseGateTestExternalIndependentReceipt -Path (Join-Path $script:TestRoot 'external-tampered-payload\receipt.json') `
             -Identity $script:GateIdentity -ProfileFileSha256 $script:GateProfileSha -ProfileCanonicalSha256 $script:GateProfileCanonicalSha
         $tampered = $receipt.Value | ConvertTo-Json -Depth 100 | ConvertFrom-Json
-        # Tamper the package archive hash under original valid signature
+        # Tamper the package archive hash under the original comment binding.
         $tampered.Candidate.PackageArchiveSha256 = ('9' * 64)
         Write-V02ReleaseGateTestJson -Path $receipt.Path -Value $tampered | Out-Null
         Assert-V02ReleaseGateTestThrows {
             Read-V02ReleaseGateExternalIndependentCandidateReceipt -Path $receipt.Path `
                 -RepositoryRoot $script:GateRepositoryRoot -EvidenceRoot (Join-Path $script:TestRoot 'tampered-payload-evidence') `
                 -ExpectedSourceCommit $script:GateIdentity.Commit -ExpectedSourceTree $script:GateIdentity.Tree
-        } 'cryptographic signature verification failed'
+        } 'exact expected candidate'
     }
 
-    Invoke-V02ReleaseGateTestCase 'signed receipt Issue9 field is mandatory closed and signature-bound' {
+    Invoke-V02ReleaseGateTestCase 'tampered independent Agent review-result bytes fail closed' {
+        $receipt=New-V02ReleaseGateTestExternalIndependentReceipt -Path (Join-Path $script:TestRoot 'external-review-result-tamper\receipt.json') -Identity $script:GateIdentity -ProfileFileSha256 $script:GateProfileSha -ProfileCanonicalSha256 $script:GateProfileCanonicalSha
+        Write-V02ReleaseGateTestText -Path $receipt.ReviewResultPath -Text 'forged replacement review result'|Out-Null
+        Assert-V02ReleaseGateTestThrows {Read-V02ReleaseGateExternalIndependentCandidateReceipt -Path $receipt.Path -RepositoryRoot $script:GateRepositoryRoot -EvidenceRoot (Join-Path $script:TestRoot 'review-result-tamper-evidence') -ExpectedSourceCommit $script:GateIdentity.Commit -ExpectedSourceTree $script:GateIdentity.Tree} 'review result bytes'
+    }
+
+    Invoke-V02ReleaseGateTestCase 'owner-comment receipt Issue9 field is mandatory and comment-bound' {
         $receipt = New-V02ReleaseGateTestExternalIndependentReceipt -Path (Join-Path $script:TestRoot 'external-issue9-schema\receipt.json') `
             -Identity $script:GateIdentity -ProfileFileSha256 $script:GateProfileSha -ProfileCanonicalSha256 $script:GateProfileCanonicalSha
         $missing = $receipt.Value | ConvertTo-Json -Depth 100 | ConvertFrom-Json
@@ -602,14 +544,14 @@ try {
             Read-V02ReleaseGateExternalIndependentCandidateReceipt -Path $receipt.Path `
                 -RepositoryRoot $script:GateRepositoryRoot -EvidenceRoot (Join-Path $script:TestRoot 'external-issue9-stale') `
                 -ExpectedSourceCommit $script:GateIdentity.Commit -ExpectedSourceTree $script:GateIdentity.Tree
-        } 'cryptographic signature verification failed'
+        } 'exact expected candidate'
     }
 
-    Invoke-V02ReleaseGateTestCase 'GitHub snapshot hash is mandatory in signed Agent receipt and candidate lock' {
+    Invoke-V02ReleaseGateTestCase 'preclosure GitHub snapshot hash is mandatory in Agent receipt and candidate lock' {
         $receipt = New-V02ReleaseGateTestExternalIndependentReceipt -Path (Join-Path $script:TestRoot 'external-github-binding\receipt.json') `
             -Identity $script:GateIdentity -ProfileFileSha256 $script:GateProfileSha -ProfileCanonicalSha256 $script:GateProfileCanonicalSha
         $missingReceiptBinding = $receipt.Value | ConvertTo-Json -Depth 100 | ConvertFrom-Json
-        $missingReceiptBinding.Candidate.PSObject.Properties.Remove('GitHubSnapshotSha256')
+        $missingReceiptBinding.Candidate.PSObject.Properties.Remove('PreclosureGitHubSnapshotSha256')
         Write-V02ReleaseGateTestJson -Path $receipt.Path -Value $missingReceiptBinding | Out-Null
         Assert-V02ReleaseGateTestThrows {
             Read-V02ReleaseGateExternalIndependentCandidateReceipt -Path $receipt.Path `
@@ -628,7 +570,7 @@ try {
             -ProfileFileSha256 $script:GateProfileSha -ProfileCanonicalSha256 $script:GateProfileCanonicalSha `
             -Authority $authority -IndependentReceipt $receipt | Out-Null
         $missingLockBinding = Get-Content -LiteralPath $lockPath -Raw | ConvertFrom-Json
-        $missingLockBinding.PSObject.Properties.Remove('GitHubSnapshotSha256')
+        $missingLockBinding.PSObject.Properties.Remove('PreclosureGitHubSnapshotSha256')
         Write-V02ReleaseGateTestJson -Path $lockPath -Value $missingLockBinding | Out-Null
         Assert-V02ReleaseGateTestThrows {
             Read-V02ReleaseGateCandidateLock -Path $lockPath -EvidenceRoot $evidenceRoot `
@@ -667,29 +609,28 @@ try {
         } 'Issue9CandidateSha256'
     }
 
-    Invoke-V02ReleaseGateTestCase 'weak RSA key (<2048 bits) in external receipt fails closed' {
-        $weakRsa = [System.Security.Cryptography.RSA]::Create(1024)
+    Invoke-V02ReleaseGateTestCase 'same Agent identity in external receipt fails closed' {
         $receipt = New-V02ReleaseGateTestExternalIndependentReceipt -Path (Join-Path $script:TestRoot 'external-weak-key\receipt.json') `
             -Identity $script:GateIdentity -ProfileFileSha256 $script:GateProfileSha -ProfileCanonicalSha256 $script:GateProfileCanonicalSha `
-            -RsaKey $weakRsa
+            -ReviewerIdentity 'builder-agent'
         Assert-V02ReleaseGateTestThrows {
             Read-V02ReleaseGateExternalIndependentCandidateReceipt -Path $receipt.Path `
                 -RepositoryRoot $script:GateRepositoryRoot -EvidenceRoot (Join-Path $script:TestRoot 'weak-key-evidence') `
                 -ExpectedSourceCommit $script:GateIdentity.Commit -ExpectedSourceTree $script:GateIdentity.Tree
-        } 'at least 2048 bits'
+        } 'Agent identities'
     }
 
-    Invoke-V02ReleaseGateTestCase 'malformed Base64 in RSA trust anchor or signature fails closed' {
+    Invoke-V02ReleaseGateTestCase 'malformed GitHub comment API URL fails closed' {
         $receipt = New-V02ReleaseGateTestExternalIndependentReceipt -Path (Join-Path $script:TestRoot 'external-bad-b64\receipt.json') `
             -Identity $script:GateIdentity -ProfileFileSha256 $script:GateProfileSha -ProfileCanonicalSha256 $script:GateProfileCanonicalSha
         $badB64 = $receipt.Value | ConvertTo-Json -Depth 100 | ConvertFrom-Json
-        $badB64.Authentication.TrustAnchor.Modulus = 'not-valid-base64-!!!'
+        $badB64.Authentication.ApiUrl = 'https://api.github.com/forged'
         Write-V02ReleaseGateTestJson -Path $receipt.Path -Value $badB64 | Out-Null
         Assert-V02ReleaseGateTestThrows {
             Read-V02ReleaseGateExternalIndependentCandidateReceipt -Path $receipt.Path `
                 -RepositoryRoot $script:GateRepositoryRoot -EvidenceRoot (Join-Path $script:TestRoot 'bad-b64-evidence') `
                 -ExpectedSourceCommit $script:GateIdentity.Commit -ExpectedSourceTree $script:GateIdentity.Tree
-        } 'valid Base64'
+        } 'GitHub API URL'
     }
 
     Invoke-V02ReleaseGateTestCase 'forged external receipt unauthenticated or missing fields fails closed' {
@@ -697,13 +638,13 @@ try {
             -Identity $script:GateIdentity -ProfileFileSha256 $script:GateProfileSha -ProfileCanonicalSha256 $script:GateProfileCanonicalSha
         $forged = $receipt.Value | ConvertTo-Json -Depth 100 | ConvertFrom-Json
         $forged.Authentication.Authenticated = $false
-        $forged.Authentication.Reference = (Join-Path $script:TestRoot 'local-proof.json')
+        $forged.Authentication.HtmlUrl = (Join-Path $script:TestRoot 'local-proof.json')
         Write-V02ReleaseGateTestJson -Path $receipt.Path -Value $forged | Out-Null
         Assert-V02ReleaseGateTestThrows {
             Read-V02ReleaseGateExternalIndependentCandidateReceipt -Path $receipt.Path `
                 -RepositoryRoot $script:GateRepositoryRoot -EvidenceRoot (Join-Path $script:TestRoot 'external-forged-evidence') `
                 -ExpectedSourceCommit $script:GateIdentity.Commit -ExpectedSourceTree $script:GateIdentity.Tree
-        } 'external HTTPS|authenticated'
+        } 'GitHub HTML URL|authenticated'
     }
 
     Invoke-V02ReleaseGateTestCase 'copied Plan JSON cannot self-authorize a candidate lock' {
@@ -717,7 +658,7 @@ try {
         New-V02ReleaseGateTestCandidateLock -Path $lockPath -Identity $script:GateIdentity `
             -ProfileFileSha256 $script:GateProfileSha -ProfileCanonicalSha256 $script:GateProfileCanonicalSha -Authority $authority -IndependentReceipt $receipt | Out-Null
         $copiedPlanOnly = Get-Content -LiteralPath $lockPath -Raw | ConvertFrom-Json
-        foreach ($name in @('IndependentReceiptPath', 'IndependentReceiptSha256', 'IndependentReceiptIdentity', 'IndependentReceiptRole', 'IndependentReceiptAuthentication', 'IndependentReceiptTrustAnchorFingerprint', 'IndependentReceiptSignedPayloadSha256')) {
+        foreach ($name in @('IndependentReceiptPath', 'IndependentReceiptSha256', 'IndependentReceiptIdentity', 'IndependentReceiptRole', 'IndependentReceiptAuthentication', 'IndependentReceiptGitHubCommentId', 'IndependentReceiptGitHubCommentUrl', 'IndependentReceiptCommentBodySha256', 'IndependentReviewResultPath', 'IndependentReviewResultSha256')) {
             $copiedPlanOnly.Authority.PSObject.Properties.Remove($name)
         }
         Write-V02ReleaseGateTestJson -Path $lockPath -Value $copiedPlanOnly | Out-Null
@@ -787,7 +728,7 @@ try {
         $snapshot = New-V02ReleaseGateTestGitHubSnapshot -Path $path
         $assessment = Assert-V02ReleaseGateGitHubSnapshot -Snapshot ((Read-V02ReleaseGateJsonFile -Path $path -Context 'test GitHub snapshot').Value) `
             -ExpectedSourceCommit $script:GateIdentity.Commit -ExpectedSourceTree $script:GateIdentity.Tree
-        if ($assessment.Authenticated -or $assessment.Status -cne 'UNAUTHENTICATED_LOCAL_SNAPSHOT') {
+        if ($assessment.Authenticated -or $assessment.Status -cne 'STRUCTURALLY_VALID_PENDING_LIVE_REVALIDATION') {
             throw 'Local GitHub JSON was treated as authenticated authority.'
         }
         $forged = $snapshot | ConvertTo-Json -Depth 20 | ConvertFrom-Json
@@ -1249,6 +1190,12 @@ try {
         if ($receipt.Value.PSObject.Properties.Name -contains 'Human') {
             throw 'Release-first v4 Agent receipt still requires a Human boundary input.'
         }
+    }
+
+    Invoke-V02ReleaseGateTestCase 'Preclosure cannot overclaim exact-candidate Release credit' {
+        $pre=Get-V02ReleaseGatePhaseBoundary Preclosure;$final=Get-V02ReleaseGatePhaseBoundary FinalClosure
+        if($pre.ReleaseReady-or$pre.ReleaseCreditBoundToExactCandidate-or$pre.ReleaseStatus-cne'NOT_READY'-or$pre.ReleaseCredit-cne'NONE'){throw 'Preclosure inflated Release credit.'}
+        if(-not$final.ReleaseReady-or-not$final.ReleaseCreditBoundToExactCandidate-or$final.ReleaseStatus-cne'PASS'-or$final.ReleaseCredit-cne'READY_NOT_PUBLISHED'){throw 'FinalClosure phase boundary is not exact.'}
     }
 
     Invoke-V02ReleaseGateTestCase 'Issue9 performance and release-first v4 governance cannot mutate delete or disappear' {

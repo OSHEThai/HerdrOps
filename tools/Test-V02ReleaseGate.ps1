@@ -16,6 +16,8 @@ param(
     [string]$ContractEvidencePath,
     [string]$SyntheticEvidencePath,
     [string]$AutomatedLifecycleReportPath,
+    [ValidateSet('Preclosure','FinalClosure')][string]$ReleasePhase = 'Preclosure',
+    [string]$PreclosureGitHubSnapshotPath,
     [string]$GitHubSnapshotPath,
     [string]$CandidateLockPath,
     [string]$AuthorityReferencePath,
@@ -23,11 +25,14 @@ param(
     [string]$EvidenceRoot,
     [string]$RepositoryRoot,
     [string]$RendererEvidenceRoot,
-    [string]$OutputPath
+    [string]$OutputPath,
+    [string]$GitHubTokenEnvironmentVariable = 'GH_TOKEN'
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+
+. (Join-Path $PSScriptRoot 'lib\V02ReleaseArtifactProduction.ps1')
 
 $script:V02ReleaseGateVersion = 'v0.2.0'
 $script:V02ReleaseGateMilestoneNumber = 2
@@ -57,14 +62,11 @@ $script:V02ReleaseGateLifecycleDecisionPayloadSha256 = 'C7E5D74621D67D5ADD82BF8B
 $script:V02ReleaseGateLifecycleDecisionReference = 'https://github.com/OSHEThai/HerdrOps/issues/149#issuecomment-5398171130'
 $script:V02ReleaseGateLifecycleApprovedUtc = '2026-08-24T16:25:24Z'
 $script:V02ReleaseGateAuthorityReferenceRelativePath = 'Plan/DECISIONS.md#D-026'
-$script:V02ReleaseGateAuthorityFileSha256 = 'E5B83AFF914FACEFDC478F5E2835637F3674255B9D516A7CA3E1E095078351C7'
+$script:V02ReleaseGateAuthorityFileSha256 = '1A38220430D47CCD94DE146A2763E987FE2EB468F9C24D7E5F73991CD9C32980'
 $script:V02ReleaseGateAuthorityOwner = '@yutthaphon'
 $script:V02ReleaseGateAuthorityRole = 'ProductOwner'
 $script:V02ReleaseGateIndependentReceiptEvidenceClass = 'ExternalIndependentCandidateReceipt'
-$script:V02ReleaseGateIndependentReceiptAuthenticationMethod = 'EXTERNAL_RSA_SHA256_AUTHENTICATED_REVIEW'
-$script:V02ReleaseGateIndependentReceiptSignatureAlgorithm = 'RSASSA-PKCS1-v1_5-SHA256'
-$script:V02ReleaseGateIndependentReceiptKeyType = 'RSA-2048'
-$script:V02ReleaseGateMinimumRsaModulusBytes = 256
+$script:V02ReleaseGateIndependentReceiptAuthenticationMethod = 'LIVE_GITHUB_OWNER_AUTHENTICATED_AGENT_REVIEW_COMMENT'
 $script:V02ReleaseGateIndependentReceiptRole = 'IndependentAgentReviewer'
 $script:V02ReleaseGateMaximumSnapshotBytes = [int64]16777216
 $script:V02ReleaseGateHerdrReleaseId = '0.8.2-preview.2026-08-19-b5c4a0176e91-x86_64-pc-windows-msvc'
@@ -84,7 +86,22 @@ $script:V02ReleaseGateHumanArtifactCheckIds = @(
 $script:V02ReleaseGateTransitiveGovernanceRelativePaths = @(
     '.github/workflows/ci.yml',
     'tools/Test-V02ReleaseGate.ps1',
+    'tools/Test-V02ReleaseGate.Tests.ps1',
+    'tools/Test-V02ProtocolContract.ps1',
+    'tools/Test-V02BundledSchemaContract.ps1',
+    'tools/Test-V02LivePages.ps1',
+    'tools/Test-V02LiveWidgets.ps1',
+    'tools/Test-V02LanguageModes.ps1',
+    'tools/README.md',
     'tools/lib/V02ReferenceHostProfile.ps1',
+    'tools/lib/V02ReleaseArtifactProduction.ps1',
+    'tools/v0.2-release/Invoke-V02ReleaseEvidencePublisher.ps1',
+    'tools/v0.2-release/New-V02AuthenticatedGitHubSnapshot.ps1',
+    'tools/v0.2-release/New-V02IndependentAgentReviewReceipt.ps1',
+    'tools/v0.2-release/New-V02ApprovedCandidateLock.ps1',
+    'tools/v0.2-release/Test-V02ReleaseArtifactProduction.Tests.ps1',
+    'docs/protocol/v0.2-release-artifact-production-contract.md',
+    'Plan/RELEASE-GATES.md',
     'tools/lib/V02RuntimePackageBinding.ps1',
     'tools/lib/V02RuntimePackageBinding.Tests.ps1',
     'tools/packaging/v0.2/Test-V02PackageIdentity.ps1',
@@ -859,8 +876,8 @@ function Read-V02ReleaseGateEvidenceReceipt {
         'SchemaVersion', 'EvidenceClass', 'Result', 'SourceCommit', 'SourceTree',
         'RuntimeObserved', 'ActualHerdrUsed', 'ReleaseCredit', 'Checks'
     ) "$ExpectedClass evidence receipt"
-    Assert-V02ReleaseGateInteger $receipt.SchemaVersion "$ExpectedClass SchemaVersion" 1
-    Assert-V02ReleaseGateEqual $receipt.SchemaVersion 1 "$ExpectedClass SchemaVersion"
+    Assert-V02ReleaseGateInteger $receipt.SchemaVersion "$ExpectedClass SchemaVersion" 2
+    Assert-V02ReleaseGateEqual $receipt.SchemaVersion 2 "$ExpectedClass SchemaVersion"
     Assert-V02ReleaseGateExactString $receipt.EvidenceClass $ExpectedClass "$ExpectedClass EvidenceClass"
     Assert-V02ReleaseGateExactString $receipt.Result 'PASS' "$ExpectedClass Result"
     Assert-V02ReleaseGateGitObjectId $receipt.SourceCommit "$ExpectedClass SourceCommit" | Out-Null
@@ -897,6 +914,8 @@ function Read-V02ReleaseGateEvidenceReceipt {
         $checkSnapshot = Get-V02ReleaseGateStableFileSnapshot -Path $checkPath -Context "$ExpectedClass check '$name' artifact"
         Assert-V02ReleaseGateEqual $checkSnapshot.Sha256 $declaredSha "$ExpectedClass check '$name' artifact hash"
     }
+    $expectedNames=if($ExpectedClass-ceq'Contract'){@('installed-herdr-protocol-contract','bundled-schema-contract')}else{@('live-pages-packaged-rendering','live-widgets-packaged-rendering','thai-english-language-modes')}
+    if((@($checkNames.ToArray()|Sort-Object)-join',')-cne(@($expectedNames|Sort-Object)-join',')){throw "$ExpectedClass evidence governed check set is not exact."}
 
     return [pscustomobject][ordered]@{
         Path = $document.Path
@@ -919,7 +938,7 @@ function Read-V02ReleaseGateAuthorityReference {
     }
     $snapshot = Get-V02ReleaseGateStableFileSnapshot -Path $actualPath -Context 'Authority reference'
     if ($snapshot.Sha256 -cne $script:V02ReleaseGateAuthorityFileSha256) {
-        throw "Authority reference hash is not the approved D-024 through D-027 record. Expected=$script:V02ReleaseGateAuthorityFileSha256 Observed=$($snapshot.Sha256)"
+        throw "Authority reference hash is not the approved D-024 through D-028 record. Expected=$script:V02ReleaseGateAuthorityFileSha256 Observed=$($snapshot.Sha256)"
     }
     $text = [Text.UTF8Encoding]::new($false, $true).GetString($snapshot.Bytes)
     foreach ($required in @(
@@ -940,6 +959,7 @@ function Read-V02ReleaseGateAuthorityReference {
             $script:V02ReleaseGateLifecycleDecisionReference,
             $script:V02ReleaseGateLifecycleDecisionPayloadSha256,
             'AutomatedLiveLifecycle',
+            'D-028',
             $script:V02ReleaseGateAuthorityOwner,
             'role-distinct Agent review'
         )) {
@@ -976,11 +996,11 @@ function Read-V02ReleaseGateExternalIndependentCandidateReceipt {
     $receipt = $document.Value
     Assert-V02ReleaseGateExactProperties $receipt @(
         'SchemaVersion', 'EvidenceClass', 'Result', 'DecisionId', 'ApprovalReference',
-        'AuthorityReference', 'AuthorityReferenceSha256', 'Candidate', 'Owner', 'IndependentReviewer',
-        'Authentication', 'RoleDistinct', 'Runtime', 'Release', 'CreditGranted'
+        'AuthorityReference', 'AuthorityReferenceSha256', 'Candidate', 'Owner', 'Builder', 'IndependentReviewer',
+        'Review', 'Authentication', 'RoleDistinct', 'Runtime', 'Release', 'CreditGranted'
     ) 'External independent candidate receipt'
-    Assert-V02ReleaseGateInteger $receipt.SchemaVersion 'External independent candidate receipt SchemaVersion' 3
-    Assert-V02ReleaseGateEqual $receipt.SchemaVersion 3 'External independent candidate receipt SchemaVersion'
+    Assert-V02ReleaseGateInteger $receipt.SchemaVersion 'External independent candidate receipt SchemaVersion' 4
+    Assert-V02ReleaseGateEqual $receipt.SchemaVersion 4 'External independent candidate receipt SchemaVersion'
     Assert-V02ReleaseGateExactString $receipt.EvidenceClass $script:V02ReleaseGateIndependentReceiptEvidenceClass 'External independent candidate receipt EvidenceClass'
     Assert-V02ReleaseGateExactString $receipt.Result 'APPROVED_CANDIDATE_ONLY' 'External independent candidate receipt Result'
     Assert-V02ReleaseGateExactString $receipt.DecisionId $script:V02ReleaseGateRendererScopeDecisionId 'External independent candidate receipt DecisionId'
@@ -992,7 +1012,7 @@ function Read-V02ReleaseGateExternalIndependentCandidateReceipt {
         'PackageReceiptSha256', 'PackageReceiptFileSha256', 'PackageArchiveSha256',
         'PackageManifestSha256', 'PackageAppSha256', 'PackageCoreSha256',
         'RendererManifestSha256', 'RuntimeMatrixManifestSha256', 'Issue9CandidateSha256',
-        'GitHubSnapshotSha256'
+        'PreclosureGitHubSnapshotSha256'
     ) 'External independent candidate receipt Candidate'
     Assert-V02ReleaseGateGitObjectId $receipt.Candidate.SourceCommit 'External independent candidate receipt SourceCommit' | Out-Null
     Assert-V02ReleaseGateGitObjectId $receipt.Candidate.SourceTree 'External independent candidate receipt SourceTree' | Out-Null
@@ -1003,90 +1023,52 @@ function Read-V02ReleaseGateExternalIndependentCandidateReceipt {
             'ProfileFileSha256', 'ProfileCanonicalSha256', 'PackageReceiptSha256',
             'PackageReceiptFileSha256', 'PackageArchiveSha256', 'PackageManifestSha256',
             'PackageAppSha256', 'PackageCoreSha256', 'RendererManifestSha256',
-            'RuntimeMatrixManifestSha256', 'Issue9CandidateSha256', 'GitHubSnapshotSha256'
+            'RuntimeMatrixManifestSha256', 'Issue9CandidateSha256', 'PreclosureGitHubSnapshotSha256'
         )) {
         Assert-V02ReleaseGateSha256 $receipt.Candidate.$name "External independent candidate receipt Candidate.$name" | Out-Null
     }
     Assert-V02ReleaseGateExactProperties $receipt.Owner @('Identity', 'Role') 'External independent candidate receipt Owner'
     Assert-V02ReleaseGateExactString $receipt.Owner.Identity $script:V02ReleaseGateAuthorityOwner 'External independent candidate receipt owner identity'
     Assert-V02ReleaseGateExactString $receipt.Owner.Role $script:V02ReleaseGateAuthorityRole 'External independent candidate receipt owner role'
-    Assert-V02ReleaseGateExactProperties $receipt.IndependentReviewer @('Identity', 'Role') 'External independent candidate receipt IndependentReviewer'
+    Assert-V02ReleaseGateExactProperties $receipt.Builder @('Identity','Task','Role') 'External independent candidate receipt Builder'
+    Assert-V02ReleaseGateExactString $receipt.Builder.Role 'CandidateBuilder' 'External independent candidate receipt builder role'
+    Assert-V02ReleaseGateString $receipt.Builder.Identity 'External independent candidate receipt builder identity'|Out-Null
+    Assert-V02ReleaseGateString $receipt.Builder.Task 'External independent candidate receipt builder task'|Out-Null
+    Assert-V02ReleaseGateExactProperties $receipt.IndependentReviewer @('Identity','Task','Role') 'External independent candidate receipt IndependentReviewer'
     Assert-V02ReleaseGateString $receipt.IndependentReviewer.Identity 'External independent candidate receipt reviewer identity' | Out-Null
     Assert-V02ReleaseGateExactString $receipt.IndependentReviewer.Role $script:V02ReleaseGateIndependentReceiptRole 'External independent candidate receipt reviewer role'
-    Assert-V02ReleaseGateDistinctSet -Values @($receipt.Owner.Identity, $receipt.IndependentReviewer.Identity) -Context 'External independent candidate receipt identities'
+    Assert-V02ReleaseGateString $receipt.IndependentReviewer.Task 'External independent candidate receipt reviewer task'|Out-Null
+    Assert-V02ReleaseGateDistinctSet -Values @($receipt.Builder.Identity,$receipt.IndependentReviewer.Identity) -Context 'External independent candidate receipt Agent identities'
+    Assert-V02ReleaseGateDistinctSet -Values @($receipt.Builder.Task,$receipt.IndependentReviewer.Task) -Context 'External independent candidate receipt Agent tasks'
+    Assert-V02ReleaseGateExactProperties $receipt.Review @('Result','OpenHighCriticalDefects','ReviewResultPath','ReviewResultSha256') 'External independent candidate receipt Review'
+    Assert-V02ReleaseGateExactString $receipt.Review.Result 'APPROVED_CANDIDATE_ONLY' 'External independent candidate receipt review result'
+    Assert-V02ReleaseGateInteger $receipt.Review.OpenHighCriticalDefects 'External independent candidate receipt open High/Critical defects' 0
+    Assert-V02ReleaseGateEqual $receipt.Review.OpenHighCriticalDefects 0 'External independent candidate receipt open High/Critical defects'
+    $reviewResultPath=Resolve-V02ReleaseGateExistingPath -Path ([string]$receipt.Review.ReviewResultPath) -Type Leaf -Context 'Independent Agent review result'
+    Assert-V02ReleaseGatePathOutsideRoot -Path $reviewResultPath -Root $RepositoryRoot -Context 'Independent Agent review result'|Out-Null
+    Assert-V02ReleaseGatePathOutsideRoot -Path $reviewResultPath -Root $EvidenceRoot -Context 'Independent Agent review result'|Out-Null
+    Assert-V02ReleaseGateSha256 $receipt.Review.ReviewResultSha256 'Independent Agent review result SHA-256'|Out-Null
+    $reviewResultSnapshot=Get-V02ReleaseGateStableFileSnapshot -Path $reviewResultPath -Context 'Independent Agent review result'
+    Assert-V02ReleaseGateEqual $reviewResultSnapshot.Sha256 $receipt.Review.ReviewResultSha256 'Independent Agent review result bytes'
+    $structuredReview=Read-V02ReleaseArtifactAgentReviewResult -Lease ([pscustomobject]@{Bytes=$reviewResultSnapshot.Bytes;Sha256=$reviewResultSnapshot.Sha256;Path=$reviewResultPath}) -ExpectedCandidate $receipt.Candidate
+    Assert-V02ReleaseGateEqual (ConvertTo-V02Jcs $structuredReview.Builder) (ConvertTo-V02Jcs $receipt.Builder) 'Structured Agent review builder binding'
+    Assert-V02ReleaseGateEqual (ConvertTo-V02Jcs $structuredReview.IndependentReviewer) (ConvertTo-V02Jcs $receipt.IndependentReviewer) 'Structured Agent review reviewer binding'
     Assert-V02ReleaseGateExactProperties $receipt.Authentication @(
-        'Method', 'Reference', 'VerifiedBy', 'VerifiedRole', 'TrustAnchor',
-        'Signature', 'SignatureAlgorithm', 'Authenticated'
+        'Method','ApiUrl','HtmlUrl','IssueNumber','CommentId','CommentAuthor','AuthorAssociation',
+        'CreatedAtUtc','UpdatedAtUtc','CommentBodySha256','Authenticated'
     ) 'External independent candidate receipt Authentication'
     Assert-V02ReleaseGateExactString $receipt.Authentication.Method $script:V02ReleaseGateIndependentReceiptAuthenticationMethod 'External independent candidate receipt authentication method'
-    Assert-V02ReleaseGateString $receipt.Authentication.Reference 'External independent candidate receipt authentication reference' | Out-Null
-    if ([string]$receipt.Authentication.Reference -notmatch '^https://[^\s/]+(?:/|$)') {
-        throw 'External independent candidate receipt authentication reference must be an external HTTPS reference.'
-    }
-    if ([string]$receipt.Authentication.Reference -ceq $script:V02ReleaseGateRendererScopeDecisionReference) {
-        throw 'External independent candidate receipt authentication must be distinct from the owner approval reference.'
-    }
-    Assert-V02ReleaseGateExactString $receipt.Authentication.VerifiedBy $receipt.IndependentReviewer.Identity 'External independent candidate receipt verifier identity'
-    Assert-V02ReleaseGateExactString $receipt.Authentication.VerifiedRole $receipt.IndependentReviewer.Role 'External independent candidate receipt verifier role'
-    Assert-V02ReleaseGateExactString $receipt.Authentication.SignatureAlgorithm $script:V02ReleaseGateIndependentReceiptSignatureAlgorithm 'External independent candidate receipt signature algorithm'
-    Assert-V02ReleaseGateExactProperties $receipt.Authentication.TrustAnchor @(
-        'KeyType', 'Modulus', 'Exponent'
-    ) 'External independent candidate receipt TrustAnchor'
-    Assert-V02ReleaseGateExactString $receipt.Authentication.TrustAnchor.KeyType $script:V02ReleaseGateIndependentReceiptKeyType 'External independent candidate receipt trust anchor key type'
-    $modulusStr = Assert-V02ReleaseGateString $receipt.Authentication.TrustAnchor.Modulus 'External independent candidate receipt trust anchor Modulus'
-    $exponentStr = Assert-V02ReleaseGateString $receipt.Authentication.TrustAnchor.Exponent 'External independent candidate receipt trust anchor Exponent'
-    $signatureStr = Assert-V02ReleaseGateString $receipt.Authentication.Signature 'External independent candidate receipt Signature'
-
-    $modulusBytes = $null
-    $exponentBytes = $null
-    $signatureBytes = $null
-    try {
-        $modulusBytes = [Convert]::FromBase64String($modulusStr)
-        $exponentBytes = [Convert]::FromBase64String($exponentStr)
-        $signatureBytes = [Convert]::FromBase64String($signatureStr)
-    }
-    catch {
-        throw 'External independent candidate receipt trust anchor and signature must be valid Base64.'
-    }
-    if ($modulusBytes.Length -lt $script:V02ReleaseGateMinimumRsaModulusBytes) {
-        throw "Trust anchor RSA key size must be at least $($script:V02ReleaseGateMinimumRsaModulusBytes * 8) bits."
-    }
-    if ($signatureBytes.Length -lt $script:V02ReleaseGateMinimumRsaModulusBytes) {
-        throw "Signature byte length must match RSA modulus length ($($script:V02ReleaseGateMinimumRsaModulusBytes) bytes)."
-    }
-
-    $signedPayload = [pscustomobject][ordered]@{
-        DecisionId = [string]$receipt.DecisionId
-        ApprovalReference = [string]$receipt.ApprovalReference
-        AuthorityReference = [string]$receipt.AuthorityReference
-        AuthorityReferenceSha256 = [string]$receipt.AuthorityReferenceSha256
-        Candidate = $receipt.Candidate
-        Owner = $receipt.Owner
-        IndependentReviewer = $receipt.IndependentReviewer
-    }
-    $canonicalPayloadJson = ConvertTo-V02Jcs $signedPayload
-    $canonicalPayloadBytes = [Text.UTF8Encoding]::new($false, $true).GetBytes($canonicalPayloadJson)
-    $payloadSha256 = (Get-V02Sha256Hex -Bytes $canonicalPayloadBytes).ToUpperInvariant()
-
-    $rsa = $null
-    $signatureVerified = $false
-    try {
-        $rsa = [System.Security.Cryptography.RSA]::Create()
-        $rsaParams = New-Object System.Security.Cryptography.RSAParameters
-        $rsaParams.Modulus = $modulusBytes
-        $rsaParams.Exponent = $exponentBytes
-        $rsa.ImportParameters($rsaParams)
-        $signatureVerified = $rsa.VerifyData($canonicalPayloadBytes, $signatureBytes, [System.Security.Cryptography.HashAlgorithmName]::SHA256, [System.Security.Cryptography.RSASignaturePadding]::Pkcs1)
-    }
-    catch {
-        throw "External independent candidate receipt cryptographic trust anchor error: $($_.Exception.Message)"
-    }
-    finally {
-        if ($null -ne $rsa) { $rsa.Dispose() }
-    }
-    if (-not $signatureVerified) {
-        throw 'External independent candidate receipt cryptographic signature verification failed.'
-    }
+    Assert-V02ReleaseGateEqual $receipt.Authentication.IssueNumber 149 'External independent candidate receipt GitHub issue number'
+    if([long]$receipt.Authentication.CommentId-le0){throw 'External independent candidate receipt CommentId must be positive.'}
+    Assert-V02ReleaseGateExactString $receipt.Authentication.ApiUrl ("https://api.github.com/repos/OSHEThai/HerdrOps/issues/comments/{0}" -f [long]$receipt.Authentication.CommentId) 'External independent candidate receipt GitHub API URL'
+    if([string]$receipt.Authentication.HtmlUrl -notmatch '^https://github\.com/OSHEThai/HerdrOps/issues/149#issuecomment-[0-9]+$'){throw 'External independent candidate receipt GitHub HTML URL is not exact.'}
+    Assert-V02ReleaseGateExactString $receipt.Authentication.CommentAuthor 'yutthaphon' 'External independent candidate receipt GitHub comment author'
+    Assert-V02ReleaseGateExactString $receipt.Authentication.AuthorAssociation 'OWNER' 'External independent candidate receipt GitHub owner association'
+    Assert-V02ReleaseGateExactString $receipt.Authentication.UpdatedAtUtc $receipt.Authentication.CreatedAtUtc 'External independent candidate receipt unedited comment time'
+    Assert-V02ReleaseGateSha256 $receipt.Authentication.CommentBodySha256 'External independent candidate receipt comment body SHA-256'|Out-Null
+    $expectedCommentBody=New-V02ReleaseArtifactAgentReviewCommentBody -Candidate $receipt.Candidate -Builder $receipt.Builder -IndependentReviewer $receipt.IndependentReviewer -Review $receipt.Review
+    $expectedCommentSha=Get-V02ReleaseArtifactSha256Bytes ([Text.UTF8Encoding]::new($false,$true).GetBytes($expectedCommentBody))
+    Assert-V02ReleaseGateEqual $receipt.Authentication.CommentBodySha256 $expectedCommentSha 'External independent candidate receipt exact comment body hash'
 
     if (-not (Assert-V02ReleaseGateBoolean $receipt.Authentication.Authenticated 'External independent candidate receipt Authenticated')) {
         throw 'External independent candidate receipt must be externally authenticated.'
@@ -1107,11 +1089,17 @@ function Read-V02ReleaseGateExternalIndependentCandidateReceipt {
         OwnerRole = [string]$receipt.Owner.Role
         ReviewerIdentity = [string]$receipt.IndependentReviewer.Identity
         ReviewerRole = [string]$receipt.IndependentReviewer.Role
-        AuthenticationReference = [string]$receipt.Authentication.Reference
-        TrustAnchor = $receipt.Authentication.TrustAnchor
-        TrustAnchorFingerprint = (Get-V02Sha256Hex -Bytes $modulusBytes).ToUpperInvariant()
-        Signature = [string]$receipt.Authentication.Signature
-        SignedPayloadSha256 = $payloadSha256
+        AuthenticationReference = [string]$receipt.Authentication.HtmlUrl
+        Builder = $receipt.Builder
+        IndependentReviewer = $receipt.IndependentReviewer
+        ReviewResultPath = $reviewResultPath
+        ReviewResultSha256 = [string]$receipt.Review.ReviewResultSha256
+        CommentId = [long]$receipt.Authentication.CommentId
+        CommentBody = $expectedCommentBody
+        CommentBodySha256 = [string]$receipt.Authentication.CommentBodySha256
+        CommentAuthor = [string]$receipt.Authentication.CommentAuthor
+        AuthorAssociation = [string]$receipt.Authentication.AuthorAssociation
+        CreatedAtUtc = [string]$receipt.Authentication.CreatedAtUtc
         Authentication = [string]$receipt.Authentication.Method
         Result = 'APPROVED_CANDIDATE_ONLY'
     }
@@ -1145,11 +1133,11 @@ function Read-V02ReleaseGateCandidateLock {
         'ProfileId', 'ProfileFileSha256', 'ProfileCanonicalSha256', 'PackageReceiptSha256',
         'PackageReceiptFileSha256', 'PackageArchiveSha256', 'PackageManifestSha256',
         'PackageAppSha256', 'PackageCoreSha256', 'RendererManifestSha256',
-        'RuntimeMatrixManifestSha256', 'Issue9CandidateSha256', 'GitHubSnapshotSha256',
+        'RuntimeMatrixManifestSha256', 'Issue9CandidateSha256', 'PreclosureGitHubSnapshotSha256',
         'Authority', 'Runtime', 'Release'
     ) 'Approved candidate lock'
-    Assert-V02ReleaseGateInteger $document.Value.SchemaVersion 'Approved candidate lock SchemaVersion' 2
-    Assert-V02ReleaseGateEqual $document.Value.SchemaVersion 2 'Approved candidate lock SchemaVersion'
+    Assert-V02ReleaseGateInteger $document.Value.SchemaVersion 'Approved candidate lock SchemaVersion' 3
+    Assert-V02ReleaseGateEqual $document.Value.SchemaVersion 3 'Approved candidate lock SchemaVersion'
     Assert-V02ReleaseGateExactString $document.Value.EvidenceClass 'ApprovedCandidateLock' 'Approved candidate lock EvidenceClass'
     Assert-V02ReleaseGateExactString $document.Value.Result 'APPROVED' 'Approved candidate lock Result'
     if (-not (Assert-V02ReleaseGateBoolean $document.Value.Immutable 'Approved candidate lock Immutable')) {
@@ -1169,7 +1157,7 @@ function Read-V02ReleaseGateCandidateLock {
             'PackageReceiptSha256', 'PackageReceiptFileSha256', 'PackageArchiveSha256',
             'PackageManifestSha256', 'PackageAppSha256', 'PackageCoreSha256',
             'RendererManifestSha256', 'RuntimeMatrixManifestSha256', 'Issue9CandidateSha256',
-            'GitHubSnapshotSha256'
+            'PreclosureGitHubSnapshotSha256'
         )) {
         Assert-V02ReleaseGateSha256 $document.Value.$name "Approved candidate lock $name" | Out-Null
     }
@@ -1178,7 +1166,7 @@ function Read-V02ReleaseGateCandidateLock {
             'PackageReceiptSha256', 'PackageReceiptFileSha256', 'PackageArchiveSha256',
             'PackageManifestSha256', 'PackageAppSha256', 'PackageCoreSha256',
             'RendererManifestSha256', 'RuntimeMatrixManifestSha256', 'Issue9CandidateSha256',
-            'GitHubSnapshotSha256'
+            'PreclosureGitHubSnapshotSha256'
         )) {
         Assert-V02ReleaseGateEqual $document.Value.$name $IndependentReceipt.Candidate.$name `
             "Approved candidate lock external receipt Candidate.$name"
@@ -1190,8 +1178,9 @@ function Read-V02ReleaseGateCandidateLock {
         'DecisionId', 'ApprovalReference', 'PayloadSha256', 'Reference', 'ReferenceSha256',
         'OwnerIdentity', 'OwnerRole', 'Authentication', 'IndependentReceiptPath',
         'IndependentReceiptSha256', 'IndependentReceiptIdentity', 'IndependentReceiptRole',
-        'IndependentReceiptAuthentication', 'IndependentReceiptTrustAnchorFingerprint',
-        'IndependentReceiptSignedPayloadSha256'
+        'IndependentReceiptAuthentication', 'IndependentReceiptGitHubCommentId',
+        'IndependentReceiptGitHubCommentUrl','IndependentReceiptCommentBodySha256',
+        'IndependentReviewResultPath','IndependentReviewResultSha256'
     ) 'Approved candidate lock Authority'
     Assert-V02ReleaseGateEqual $document.Value.Authority.DecisionId $Authority.DecisionId 'Approved candidate lock authority decision'
     Assert-V02ReleaseGateEqual $document.Value.Authority.ApprovalReference $Authority.ApprovalReference 'Approved candidate lock authority reference'
@@ -1200,14 +1189,17 @@ function Read-V02ReleaseGateCandidateLock {
     Assert-V02ReleaseGateEqual $document.Value.Authority.ReferenceSha256 $Authority.FileSha256 'Approved candidate lock authority bytes'
     Assert-V02ReleaseGateExactString $document.Value.Authority.OwnerIdentity $Authority.OwnerIdentity 'Approved candidate lock authority owner'
     Assert-V02ReleaseGateExactString $document.Value.Authority.OwnerRole $Authority.OwnerRole 'Approved candidate lock authority role'
-    Assert-V02ReleaseGateExactString $document.Value.Authority.Authentication 'TRUSTED_OWNER_PLUS_EXTERNAL_RSA_AUTHENTICATED_RECEIPT' 'Approved candidate lock authority authentication'
+    Assert-V02ReleaseGateExactString $document.Value.Authority.Authentication 'TRUSTED_OWNER_PLUS_LIVE_GITHUB_AGENT_REVIEW' 'Approved candidate lock authority authentication'
     Assert-V02ReleaseGateExactString $document.Value.Authority.IndependentReceiptPath $IndependentReceipt.Path 'Approved candidate lock independent receipt path'
     Assert-V02ReleaseGateEqual $document.Value.Authority.IndependentReceiptSha256 $IndependentReceipt.FileSha256 'Approved candidate lock independent receipt bytes'
     Assert-V02ReleaseGateExactString $document.Value.Authority.IndependentReceiptIdentity $IndependentReceipt.ReviewerIdentity 'Approved candidate lock independent receipt identity'
     Assert-V02ReleaseGateExactString $document.Value.Authority.IndependentReceiptRole $IndependentReceipt.ReviewerRole 'Approved candidate lock independent receipt role'
     Assert-V02ReleaseGateExactString $document.Value.Authority.IndependentReceiptAuthentication $IndependentReceipt.Authentication 'Approved candidate lock independent receipt authentication'
-    Assert-V02ReleaseGateExactString $document.Value.Authority.IndependentReceiptTrustAnchorFingerprint $IndependentReceipt.TrustAnchorFingerprint 'Approved candidate lock independent receipt trust anchor fingerprint'
-    Assert-V02ReleaseGateExactString $document.Value.Authority.IndependentReceiptSignedPayloadSha256 $IndependentReceipt.SignedPayloadSha256 'Approved candidate lock independent receipt signed payload hash'
+    Assert-V02ReleaseGateEqual $document.Value.Authority.IndependentReceiptGitHubCommentId $IndependentReceipt.CommentId 'Approved candidate lock independent receipt GitHub comment id'
+    Assert-V02ReleaseGateExactString $document.Value.Authority.IndependentReceiptGitHubCommentUrl $IndependentReceipt.AuthenticationReference 'Approved candidate lock independent receipt GitHub comment URL'
+    Assert-V02ReleaseGateEqual $document.Value.Authority.IndependentReceiptCommentBodySha256 $IndependentReceipt.CommentBodySha256 'Approved candidate lock independent receipt comment body hash'
+    Assert-V02ReleaseGateExactString $document.Value.Authority.IndependentReviewResultPath $IndependentReceipt.ReviewResultPath 'Approved candidate lock independent review result path'
+    Assert-V02ReleaseGateEqual $document.Value.Authority.IndependentReviewResultSha256 $IndependentReceipt.ReviewResultSha256 'Approved candidate lock independent review result hash'
     return [pscustomobject][ordered]@{
         Path = $document.Path
         FileSha256 = $document.FileSha256
@@ -1225,10 +1217,10 @@ function Read-V02ReleaseGateCandidateLock {
         RendererManifestSha256 = [string]$document.Value.RendererManifestSha256
         RuntimeMatrixManifestSha256 = [string]$document.Value.RuntimeMatrixManifestSha256
         Issue9CandidateSha256 = [string]$document.Value.Issue9CandidateSha256
-        GitHubSnapshotSha256 = [string]$document.Value.GitHubSnapshotSha256
+        PreclosureGitHubSnapshotSha256 = [string]$document.Value.PreclosureGitHubSnapshotSha256
         Authority = $Authority
         IndependentReceipt = $IndependentReceipt
-        Authentication = 'TRUSTED_OWNER_PLUS_EXTERNAL_RSA_AUTHENTICATED_RECEIPT'
+        Authentication = 'TRUSTED_OWNER_PLUS_LIVE_GITHUB_AGENT_REVIEW'
         Result = 'APPROVED_CANDIDATE_ONLY'
     }
 }
@@ -2125,13 +2117,23 @@ function Assert-V02ReleaseGateGitHubSnapshot {
         [Parameter(Mandatory = $true)]$Snapshot,
         [Parameter(Mandatory = $true)][string]$ExpectedSourceCommit,
         [Parameter(Mandatory = $true)][string]$ExpectedSourceTree,
+        [ValidateSet('Preclosure','FinalClosure')][string]$ExpectedPhase = 'FinalClosure',
         [string]$Context = 'GitHub snapshot'
     )
 
-    Assert-V02ReleaseGateExactProperties $Snapshot @('schemaVersion', 'repository', 'source', 'ci', 'milestones', 'issues') $Context
+    Assert-V02ReleaseGateExactProperties $Snapshot @('schemaVersion','evidenceClass','phase','repository','authentication','preclosureSnapshotSha256','source','ci','milestones','issues') $Context
     Assert-V02ReleaseGateInteger $Snapshot.schemaVersion "$Context schemaVersion" 1
-    Assert-V02ReleaseGateEqual $Snapshot.schemaVersion 2 "$Context schemaVersion"
+    Assert-V02ReleaseGateEqual $Snapshot.schemaVersion 3 "$Context schemaVersion"
+    Assert-V02ReleaseGateExactString $Snapshot.evidenceClass 'AuthenticatedLiveGitHubSnapshot' "$Context evidence class"
+    Assert-V02ReleaseGateExactString $Snapshot.phase $ExpectedPhase "$Context phase"
     Assert-V02ReleaseGateExactString $Snapshot.repository 'OSHEThai/HerdrOps' "$Context repository"
+    Assert-V02ReleaseGateExactProperties $Snapshot.authentication @('method','apiBaseUri','authenticated') "$Context authentication"
+    Assert-V02ReleaseGateExactString $Snapshot.authentication.method 'LIVE_GITHUB_API_BEARER_TLS' "$Context authentication method"
+    Assert-V02ReleaseGateExactString $Snapshot.authentication.apiBaseUri 'https://api.github.com' "$Context API base"
+    if(-not(Assert-V02ReleaseGateBoolean $Snapshot.authentication.authenticated "$Context authenticated")){throw "$Context must record an authenticated live API acquisition."}
+    if($ExpectedPhase-ceq'Preclosure'){
+        if($null-ne$Snapshot.preclosureSnapshotSha256){throw "$Context Preclosure preclosureSnapshotSha256 must be null."}
+    } else {Assert-V02ReleaseGateSha256 ([string]$Snapshot.preclosureSnapshotSha256) "$Context preclosure snapshot SHA-256"|Out-Null}
     Assert-V02ReleaseGateExactProperties $Snapshot.source @('commitSha','treeSha') "$Context source"
     Assert-V02ReleaseGateEqual $Snapshot.source.commitSha $ExpectedSourceCommit "$Context exact source commit"
     Assert-V02ReleaseGateEqual $Snapshot.source.treeSha $ExpectedSourceTree "$Context exact source tree"
@@ -2144,7 +2146,9 @@ function Assert-V02ReleaseGateGitHubSnapshot {
     }
     $checkNames = New-Object System.Collections.Generic.List[string]
     foreach ($check in $requiredChecks) {
-        Assert-V02ReleaseGateExactProperties $check @('name','headSha','conclusion') "$Context CI required check"
+        Assert-V02ReleaseGateExactProperties $check @('name','headSha','conclusion','checkRunId','completedAtUtc','detailsUrl') "$Context CI required check"
+        if([long]$check.checkRunId-le0){throw "$Context CI required check id must be positive."}
+        $completed=[datetimeoffset]::MinValue;if(-not[datetimeoffset]::TryParse([string]$check.completedAtUtc,[Globalization.CultureInfo]::InvariantCulture,[Globalization.DateTimeStyles]::AssumeUniversal,[ref]$completed)){throw "$Context CI required check completion time is invalid."}
         $checkName = Assert-V02ReleaseGateString $check.name "$Context CI required check name"
         if ($checkNames.Contains($checkName)) { throw "$Context CI contains duplicate required check '$checkName'." }
         [void]$checkNames.Add($checkName)
@@ -2161,7 +2165,8 @@ function Assert-V02ReleaseGateGitHubSnapshot {
     if ($matchingMilestones.Count -ne 1) {
         throw "$Context must contain exactly one v0.2.0 milestone #$script:V02ReleaseGateMilestoneNumber."
     }
-    Assert-V02ReleaseGateExactString $matchingMilestones[0].state 'closed' "$Context v0.2.0 milestone state"
+    $expectedMilestoneState=if($ExpectedPhase-ceq'Preclosure'){'open'}else{'closed'}
+    Assert-V02ReleaseGateExactString $matchingMilestones[0].state $expectedMilestoneState "$Context v0.2.0 milestone state"
 
     $issues = @($Snapshot.issues)
     $numbers = @($issues | ForEach-Object { [int]$_.number })
@@ -2173,13 +2178,14 @@ function Assert-V02ReleaseGateGitHubSnapshot {
     if (($milestoneIssueNumbers -join ',') -cne (@($script:V02ReleaseGateExpectedMilestoneIssues | Sort-Object) -join ',')) {
         throw "$Context v0.2.0 issue set is incomplete or unexpected. Expected=$(@($script:V02ReleaseGateExpectedMilestoneIssues | Sort-Object) -join ',') Observed=$($milestoneIssueNumbers -join ',')."
     }
-    foreach ($number in @($script:V02ReleaseGateRequiredIssues + $script:V02ReleaseGateTrackerIssue)) {
+    foreach ($number in @($script:V02ReleaseGateExpectedMilestoneIssues)) {
         $matches = @($issues | Where-Object { [int]$_.number -eq $number })
         if ($matches.Count -ne 1) {
             throw "$Context must contain exactly one issue #$number."
         }
         $issue = $matches[0]
-        Assert-V02ReleaseGateExactString $issue.state 'closed' "$Context issue #$number state"
+        $expectedIssueState=if($ExpectedPhase-ceq'Preclosure' -and $number-in@(11,149)){'open'}else{'closed'}
+        Assert-V02ReleaseGateExactString $issue.state $expectedIssueState "$Context issue #$number state"
         if ($null -eq $issue.milestone -or [int]$issue.milestone.number -ne $script:V02ReleaseGateMilestoneNumber -or
             [string]$issue.milestone.title -cne $script:V02ReleaseGateVersion) {
             throw "$Context issue #$number is not attached to the exact v0.2.0 milestone."
@@ -2193,11 +2199,11 @@ function Assert-V02ReleaseGateGitHubSnapshot {
             $null -ne $milestone -and [int]$milestone.number -eq $script:V02ReleaseGateMilestoneNumber -and
                 [string]$milestone.title -ceq $script:V02ReleaseGateVersion -and [string]$_.state -ceq 'open'
         })
-    if ($openV02Issues.Count -ne 0) {
-        throw "$Context has open v0.2.0 issue(s): $(@($openV02Issues | ForEach-Object { $_.number }) -join ', ')."
-    }
+    $expectedOpen=if($ExpectedPhase-ceq'Preclosure'){@(11,149)}else{@()}
+    $observedOpen=@($openV02Issues|ForEach-Object{[int]$_.number}|Sort-Object)
+    if(($observedOpen-join',')-cne(@($expectedOpen|Sort-Object)-join',')){throw "$Context $ExpectedPhase open issue set is not exact."}
     return [pscustomobject][ordered]@{
-        Status = 'UNAUTHENTICATED_LOCAL_SNAPSHOT'
+        Status = 'STRUCTURALLY_VALID_PENDING_LIVE_REVALIDATION'
         Authenticated = $false
         HeadSha = [string]$Snapshot.ci.headSha
         RequiredCheckCount = $requiredChecks.Count
@@ -2428,6 +2434,12 @@ function Assert-V02ReleaseGateBoundSnapshots {
     }
 }
 
+function Get-V02ReleaseGatePhaseBoundary {
+    param([Parameter(Mandatory=$true)][ValidateSet('Preclosure','FinalClosure')][string]$ReleasePhase)
+    if($ReleasePhase-ceq'FinalClosure'){return [pscustomobject]@{ReleaseReady=$true;ReleaseStatus='PASS';ReleaseCredit='READY_NOT_PUBLISHED';ReleaseCreditBoundToExactCandidate=$true}}
+    return [pscustomobject]@{ReleaseReady=$false;ReleaseStatus='NOT_READY';ReleaseCredit='NONE';ReleaseCreditBoundToExactCandidate=$false}
+}
+
 function Invoke-V02ReleaseGate {
     [CmdletBinding()]
     param(
@@ -2445,6 +2457,8 @@ function Invoke-V02ReleaseGate {
         [Parameter(Mandatory = $true)][string]$ContractEvidencePath,
         [Parameter(Mandatory = $true)][string]$SyntheticEvidencePath,
         [Parameter(Mandatory = $true)][string]$AutomatedLifecycleReportPath,
+        [ValidateSet('Preclosure','FinalClosure')][string]$ReleasePhase = 'Preclosure',
+        [string]$PreclosureGitHubSnapshotPath,
         [Parameter(Mandatory = $true)][string]$GitHubSnapshotPath,
         [string]$CandidateLockPath,
         [string]$AuthorityReferencePath,
@@ -2452,7 +2466,8 @@ function Invoke-V02ReleaseGate {
         [string]$EvidenceRoot,
         [string]$RepositoryRoot,
         [string]$RendererEvidenceRoot,
-        [string]$OutputPath
+        [string]$OutputPath,
+        [string]$GitHubTokenEnvironmentVariable = 'GH_TOKEN'
     )
 
     $definitionPath = [IO.Path]::GetFullPath($MyInvocation.MyCommand.ScriptBlock.File)
@@ -2498,6 +2513,8 @@ function Invoke-V02ReleaseGate {
         return $report
     }
     $evidenceRootPath = Resolve-V02ReleaseGateExistingPath -Path $EvidenceRoot -Type Container -Context 'EvidenceRoot'
+    if($ReleasePhase-ceq'Preclosure'){$PreclosureGitHubSnapshotPath=$GitHubSnapshotPath}
+    elseif([string]::IsNullOrWhiteSpace($PreclosureGitHubSnapshotPath)){throw 'FinalClosure requires the immutable PreclosureGitHubSnapshotPath.'}
 
     $profilePath = Resolve-V02ReleaseGateExistingPath -Path $PackageProfilePath -Type Leaf -Context 'Package identity profile'
     $expectedProfilePath = [IO.Path]::GetFullPath((Join-Path $identityBefore.RepositoryRoot 'tools\packaging\v0.2\package-identity-profile.json')).TrimEnd([char[]]@('\', '/'))
@@ -2519,6 +2536,7 @@ function Invoke-V02ReleaseGate {
         [pscustomobject]@{ Path = $AutomatedLifecycleReportPath; Type = 'Leaf'; Name = 'Automated live lifecycle report' }
         [pscustomobject]@{ Path = $GitHubSnapshotPath; Type = 'Leaf'; Name = 'GitHub snapshot' }
     )
+    if($ReleasePhase-ceq'FinalClosure'){$evidenceInputs+= [pscustomobject]@{Path=$PreclosureGitHubSnapshotPath;Type='Leaf';Name='Preclosure GitHub snapshot'}}
     foreach ($input in $evidenceInputs) {
         $resolvedInput = Resolve-V02ReleaseGateExistingPath -Path ([string]$input.Path) -Type $input.Type -Context $input.Name
         Assert-V02ReleaseGatePathWithinRoot -Path $resolvedInput -Root $evidenceRootPath -Context $input.Name | Out-Null
@@ -2585,8 +2603,9 @@ function Invoke-V02ReleaseGate {
         (Resolve-V02ReleaseGateExistingPath -Path $SyntheticEvidencePath -Type Leaf -Context 'Synthetic evidence receipt'),
         (Resolve-V02ReleaseGateExistingPath -Path $AutomatedLifecycleReportPath -Type Leaf -Context 'Automated live lifecycle report'),
         (Resolve-V02ReleaseGateExistingPath -Path $GitHubSnapshotPath -Type Leaf -Context 'GitHub snapshot'),
-        $candidateLock.Path, $authority.Path, $candidateLock.IndependentReceipt.Path
+        $candidateLock.Path, $authority.Path, $candidateLock.IndependentReceipt.Path, $candidateLock.IndependentReceipt.ReviewResultPath
     )
+    if($ReleasePhase-ceq'FinalClosure'){$boundFilePaths+=(Resolve-V02ReleaseGateExistingPath -Path $PreclosureGitHubSnapshotPath -Type Leaf -Context 'Preclosure GitHub snapshot')}
     $validatorSnapshots = Get-V02ReleaseGateValidatorSnapshots -RepositoryRoot $identityBefore.RepositoryRoot
     $boundSnapshots = New-Object System.Collections.Generic.List[object]
     $preValidationSnapshots = $null
@@ -2599,6 +2618,13 @@ function Invoke-V02ReleaseGate {
             $boundSnapshots.ToArray()
         )
         Assert-V02ReleaseGateDistinctFileIdentities -Snapshots $preValidationSnapshots -Context 'Pre-validation bound artifacts and validators'
+        $heldReviewResult = @($preValidationSnapshots | Where-Object {
+            [StringComparer]::OrdinalIgnoreCase.Equals([string]$_.Path, [string]$candidateLock.IndependentReceipt.ReviewResultPath)
+        })
+        if ($heldReviewResult.Count -ne 1) {
+            throw 'Independent Agent review result is not held exactly once by the release gate.'
+        }
+        Assert-V02ReleaseGateEqual $heldReviewResult[0].Sha256 $candidateLock.IndependentReceipt.ReviewResultSha256 'Held independent Agent review-result hash'
 
     $package = Invoke-V02ReleaseGatePackageValidation -Context $context `
         -ExpectedSourceCommit $ExpectedSourceCommit -ExpectedSourceTree $ExpectedSourceTree
@@ -2634,11 +2660,26 @@ function Invoke-V02ReleaseGate {
         -CandidateLock $candidateLock -Identity $identityBefore -Package $package -Renderer $renderer -Matrix $matrix -Issue9 $issue9
     Assert-V02ReleaseGateBoundSnapshots -Snapshots $preValidationSnapshots -Phase 'Post-matrix/Issue9 validation'
     try {
+        $preclosureGitHubDocument = Read-V02ReleaseGateJsonFile -Path $PreclosureGitHubSnapshotPath -Context 'Preclosure GitHub snapshot'
+        $null = Assert-V02ReleaseGateGitHubSnapshot $preclosureGitHubDocument.Value `
+            -ExpectedSourceCommit $ExpectedSourceCommit -ExpectedSourceTree $ExpectedSourceTree -ExpectedPhase Preclosure
+        Assert-V02ReleaseGateEqual $preclosureGitHubDocument.FileSha256 $candidateLock.PreclosureGitHubSnapshotSha256 'Candidate lock preclosure GitHub snapshot bytes'
+        Assert-V02ReleaseGateEqual $preclosureGitHubDocument.FileSha256 $candidateLock.IndependentReceipt.Candidate.PreclosureGitHubSnapshotSha256 'Independent Agent review preclosure GitHub snapshot bytes'
         $githubDocument = Read-V02ReleaseGateJsonFile -Path $GitHubSnapshotPath -Context 'GitHub read-only snapshot'
         $githubAssessment = Assert-V02ReleaseGateGitHubSnapshot $githubDocument.Value `
-            -ExpectedSourceCommit $ExpectedSourceCommit -ExpectedSourceTree $ExpectedSourceTree
-        Assert-V02ReleaseGateEqual $githubDocument.FileSha256 $candidateLock.GitHubSnapshotSha256 'Candidate lock GitHub snapshot bytes'
-        Assert-V02ReleaseGateEqual $githubDocument.FileSha256 $candidateLock.IndependentReceipt.Candidate.GitHubSnapshotSha256 'Independent Agent review GitHub snapshot bytes'
+            -ExpectedSourceCommit $ExpectedSourceCommit -ExpectedSourceTree $ExpectedSourceTree -ExpectedPhase $ReleasePhase
+        if($ReleasePhase-ceq'FinalClosure'){
+            Assert-V02ReleaseGateEqual $githubDocument.Value.preclosureSnapshotSha256 $preclosureGitHubDocument.FileSha256 'FinalClosure snapshot preclosure binding'
+        }
+        $liveGitHubState=Get-V02ReleaseArtifactGitHubState -SourceCommit $ExpectedSourceCommit -TokenEnvironmentVariable $GitHubTokenEnvironmentVariable
+        Assert-V02ReleaseArtifactLiveSnapshotMatch -Snapshot $githubDocument.Value -LiveState $liveGitHubState|Out-Null
+        $liveReview=Get-V02ReleaseArtifactAgentReviewComment -CommentId $candidateLock.IndependentReceipt.CommentId `
+            -ExpectedBody $candidateLock.IndependentReceipt.CommentBody -TokenEnvironmentVariable $GitHubTokenEnvironmentVariable
+        Assert-V02ReleaseGateExactString $liveReview.commentAuthor $candidateLock.IndependentReceipt.CommentAuthor 'Live GitHub Agent review comment author'
+        Assert-V02ReleaseGateExactString $liveReview.authorAssociation $candidateLock.IndependentReceipt.AuthorAssociation 'Live GitHub Agent review comment association'
+        Assert-V02ReleaseGateExactString $liveReview.htmlUrl $candidateLock.IndependentReceipt.AuthenticationReference 'Live GitHub Agent review comment URL'
+        $githubAssessment.Status='LIVE_GITHUB_API_AUTHENTICATED'
+        $githubAssessment.Authenticated=$true
     }
     catch {
         $report = New-V02ReleaseGateNotReadyReport -Identity $identityBefore `
@@ -2661,11 +2702,14 @@ function Invoke-V02ReleaseGate {
 
     Assert-V02ReleaseGateBoundSnapshots -Snapshots $preValidationSnapshots -Phase 'Final post-validation'
 
+    $phaseBoundary=Get-V02ReleaseGatePhaseBoundary $ReleasePhase
     $report = [pscustomobject][ordered]@{
         SchemaVersion = 4
         Version = $script:V02ReleaseGateVersion
         Result = 'PASS'
-        ReleaseReady = $true
+        ReleasePhase = $ReleasePhase
+        ClosureReady = $true
+        ReleaseReady = $phaseBoundary.ReleaseReady
         SourceCommit = $ExpectedSourceCommit
         SourceTree = $ExpectedSourceTree
         SourceParents = @($identityAfter.Parents)
@@ -2690,7 +2734,7 @@ function Invoke-V02ReleaseGate {
                     Sha256 = $_.Sha256
                 }
             })
-        GateReason = 'ALL_V02_RELEASE_FIRST_V4_AUTOMATED_GATES_PASSED'
+        GateReason = $(if($ReleasePhase-ceq'Preclosure'){'READY_FOR_GITHUB_CLOSURE'}else{'ALL_V02_RELEASE_FIRST_V4_AUTOMATED_GATES_PASSED'})
         Package = [pscustomobject][ordered]@{
             EvidenceClass = $package.EvidenceClass
             ProfileId = $package.ProfileId
@@ -2769,7 +2813,7 @@ function Invoke-V02ReleaseGate {
             Contract = [pscustomobject][ordered]@{ Status = 'PASS'; Classification = 'Contract'; Credit = 'CONTRACT_ONLY' }
             Synthetic = [pscustomobject][ordered]@{ Status = 'PASS'; Classification = 'Synthetic'; Credit = 'SYNTHETIC_ONLY' }
             Runtime = [pscustomobject][ordered]@{ Status = 'PASS'; Classification = 'ActualHerdrRuntime'; Credit = 'EXACT_CANDIDATE_ONLY' }
-            Release = [pscustomobject][ordered]@{ Status = 'PASS'; Classification = 'ReleaseAcceptance'; Credit = 'READY_NOT_PUBLISHED' }
+            Release = [pscustomobject][ordered]@{ Status = $phaseBoundary.ReleaseStatus; Classification = 'ReleaseAcceptance'; Credit = $phaseBoundary.ReleaseCredit }
         }
         EvidenceBoundary = [pscustomobject][ordered]@{
             ActualHerdrControlInvoked = $false
@@ -2779,7 +2823,7 @@ function Invoke-V02ReleaseGate {
             RuntimeMatrixRemainsCandidate = $true
             RuntimeObserved = $true
             AgentReviewObserved = $true
-            ReleaseCreditBoundToExactCandidate = $true
+            ReleaseCreditBoundToExactCandidate = $phaseBoundary.ReleaseCreditBoundToExactCandidate
         }
     }
     if (-not [string]::IsNullOrWhiteSpace($OutputPath)) {
@@ -2841,6 +2885,8 @@ if ($MyInvocation.InvocationName -ne '.') {
         -ContractEvidencePath $ContractEvidencePath `
         -SyntheticEvidencePath $SyntheticEvidencePath `
         -AutomatedLifecycleReportPath $AutomatedLifecycleReportPath `
+        -ReleasePhase $ReleasePhase `
+        -PreclosureGitHubSnapshotPath $PreclosureGitHubSnapshotPath `
         -GitHubSnapshotPath $GitHubSnapshotPath `
         -CandidateLockPath $CandidateLockPath `
         -AuthorityReferencePath $AuthorityReferencePath `
@@ -2848,5 +2894,6 @@ if ($MyInvocation.InvocationName -ne '.') {
         -EvidenceRoot $EvidenceRoot `
         -RepositoryRoot $RepositoryRoot `
         -RendererEvidenceRoot $RendererEvidenceRoot `
-        -OutputPath $OutputPath | Out-Host
+        -OutputPath $OutputPath `
+        -GitHubTokenEnvironmentVariable $GitHubTokenEnvironmentVariable | Out-Host
 }
