@@ -18,10 +18,7 @@ param(
 
     [string]$RepositoryRoot,
 
-    [object]$OwnerNumericLimits,
-
-    # Fixture-only synchronization point used to inspect the pre-rename state.
-    [string]$TestBeforeAtomicMoveSignalPath
+    [object]$OwnerNumericLimits
 )
 
 Set-StrictMode -Version Latest
@@ -46,16 +43,17 @@ function Get-ApprovedLimits {
         $limitNames = @(
             'cpuMaximumPercent','eventToWpfP95Milliseconds','cpuRegressionMaximumPercent',
             'cpuRegressionMaximumPercentagePoints','latencyRegressionMaximumPercent',
-            'uiStallP95Milliseconds','uiStallMaximumMilliseconds','soakAcDurationMinutes',
-            'soakBatteryDurationMinutes','soakBinMinutes','workingSetMaximumBytes',
-            'resourceSlopeMaximumBytesPerTenMinutes'
+            'uiStallP95Milliseconds','uiStallMaximumMilliseconds','workingSetMaximumBytes'
         )
-        Assert-PerfReceiptExactProperties $InputLimits (@('status','approvalReference') + $limitNames) 'Owner numeric limits'
+        Assert-PerfReceiptExactProperties $InputLimits (@('status','approvalReference','scopeCorrectionReference') + $limitNames) 'Owner numeric limits'
         if ($InputLimits.status -cne 'APPROVED') {
             throw 'Owner numeric limits must be APPROVED to generate a candidate performance receipt.'
         }
         if ($InputLimits.approvalReference -cne $script:RendererAuthorizedApprovalReference) {
             throw 'Owner numeric limits do not bind REC-ALL v2.'
+        }
+        if ($InputLimits.scopeCorrectionReference -cne 'https://github.com/OSHEThai/HerdrOps/issues/149#issuecomment-5396694185') {
+            throw 'Owner numeric limits do not bind the v0.2 compatibility v4 performance-only scope correction.'
         }
         $expectedLimits = [ordered]@{
             cpuMaximumPercent = 1
@@ -65,11 +63,7 @@ function Get-ApprovedLimits {
             latencyRegressionMaximumPercent = 10
             uiStallP95Milliseconds = 50
             uiStallMaximumMilliseconds = 100
-            soakAcDurationMinutes = 60
-            soakBatteryDurationMinutes = 60
-            soakBinMinutes = 5
             workingSetMaximumBytes = 267386880
-            resourceSlopeMaximumBytesPerTenMinutes = 1048576
         }
         foreach ($n in $limitNames) {
             Assert-RendererFiniteNumber $InputLimits.$n "Owner numeric limit $n" 0 ([double]::MaxValue) -ExclusiveMinimum
@@ -77,7 +71,7 @@ function Get-ApprovedLimits {
                 throw "Owner numeric limit $n does not equal REC-ALL v2."
             }
         }
-        foreach ($n in @('workingSetMaximumBytes','resourceSlopeMaximumBytesPerTenMinutes')) {
+        foreach ($n in @('workingSetMaximumBytes')) {
             Assert-RendererPositiveInteger $InputLimits.$n "Owner numeric limit $n"
         }
         return $InputLimits
@@ -86,6 +80,7 @@ function Get-ApprovedLimits {
     return [pscustomobject][ordered]@{
         status = 'APPROVED'
         approvalReference = $script:RendererAuthorizedApprovalReference
+        scopeCorrectionReference = 'https://github.com/OSHEThai/HerdrOps/issues/149#issuecomment-5396694185'
         cpuMaximumPercent = 1
         eventToWpfP95Milliseconds = 250
         cpuRegressionMaximumPercent = 10
@@ -93,11 +88,7 @@ function Get-ApprovedLimits {
         latencyRegressionMaximumPercent = 10
         uiStallP95Milliseconds = 50
         uiStallMaximumMilliseconds = 100
-        soakAcDurationMinutes = 60
-        soakBatteryDurationMinutes = 60
-        soakBinMinutes = 5
         workingSetMaximumBytes = 267386880
-        resourceSlopeMaximumBytesPerTenMinutes = 1048576
     }
 }
 
@@ -258,7 +249,7 @@ if ($fullRawSource -cne $EvidenceRoot -and -not $fullRawSource.StartsWith($Evide
 $rawSourceRelative = $fullRawSource.Substring($EvidenceRoot.Length).TrimStart('\','/').Replace('\','/')
 Assert-RendererRelativePath $rawSourceRelative 'Raw performance observations source relativePath'
 $rawSourceRead = Read-CanonicalRawSource -Path $fullRawSource -Root $EvidenceRoot -RepositoryRoot $RepositoryRoot
-Assert-PerfReceiptExactProperties $rawSourceRead.Value @('orders','soakBins') 'Raw performance observations source'
+Assert-PerfReceiptExactProperties $rawSourceRead.Value @('orders') 'Raw performance observations source'
 $providedRawCanonical = ConvertTo-RendererCanonicalJson $rawObj $RepositoryRoot
 if ($providedRawCanonical -cne $rawSourceRead.CanonicalJson) {
     throw 'RawObservations does not exactly match the held raw-source provenance file.'
@@ -267,7 +258,7 @@ $rawObj = $rawSourceRead.Value
 $rawSourceRead.Binding.relativePath = $rawSourceRelative
 
 # Validate top-level properties of raw observations
-Assert-PerfReceiptExactProperties $rawObj @('orders','soakBins') 'Raw performance observations'
+Assert-PerfReceiptExactProperties $rawObj @('orders') 'Raw performance observations'
 
 Assert-RendererPerformanceProvenance $CandidateProvenance 'Candidate performance provenance'
 
@@ -388,75 +379,16 @@ for ($oi = 0; $oi -lt 2; $oi++) {
     }
 }
 
-$rawBins = @($rawObj.soakBins)
-if ($rawBins.Count -ne 24) {
-    throw "Raw performance observations must contain exactly 24 five-minute soak bins (12 AC then 12 Battery); found $($rawBins.Count)."
-}
-
-$canonicalBins = @()
-for ($bi = 0; $bi -lt 24; $bi++) {
-    $bin = $rawBins[$bi]
-    Assert-PerfReceiptExactProperties $bin @('powerSource','ordinal','durationMinutes','observedUtc','workingSetStartBytes','workingSetEndBytes','rendererStable') "Soak bin $bi"
-
-    $expectedPower = if ($bi -lt 12) { 'AC' } else { 'Battery' }
-    $expectedOrdinal = $bi % 12
-
-    if ([string]$bin.powerSource -cne $expectedPower) {
-        throw "Soak bin $bi powerSource must be '$expectedPower'; found '$($bin.powerSource)'."
-    }
-    Assert-RendererNonnegativeInteger $bin.ordinal "Soak bin $bi ordinal"
-    if ([long]$bin.ordinal -ne $expectedOrdinal) {
-        throw "Soak bin $bi ordinal must be $expectedOrdinal; found $($bin.ordinal)."
-    }
-    Assert-RendererPositiveInteger $bin.durationMinutes "Soak bin $bi durationMinutes"
-    if ([long]$bin.durationMinutes -ne 5) {
-        throw "Soak bin $bi durationMinutes must be 5; found $($bin.durationMinutes)."
-    }
-    Assert-RendererUtc $bin.observedUtc "Soak bin $bi observedUtc"
-    Assert-RendererNonnegativeInteger $bin.workingSetStartBytes "Soak bin $bi workingSetStartBytes"
-    Assert-RendererNonnegativeInteger $bin.workingSetEndBytes "Soak bin $bi workingSetEndBytes"
-    Assert-RendererBoolean $bin.rendererStable "Soak bin $bi rendererStable"
-
-    if (-not [bool]$bin.rendererStable) {
-        $passed = $false
-        $breaches += "Soak bin $bi renderer was not stable."
-    }
-    if ([long]$bin.workingSetStartBytes -gt [long]$limits.workingSetMaximumBytes) {
-        $passed = $false
-        $breaches += "Soak bin $bi start working set ($($bin.workingSetStartBytes) bytes) > maximum ($($limits.workingSetMaximumBytes) bytes)"
-    }
-    if ([long]$bin.workingSetEndBytes -gt [long]$limits.workingSetMaximumBytes) {
-        $passed = $false
-        $breaches += "Soak bin $bi end working set ($($bin.workingSetEndBytes) bytes) > maximum ($($limits.workingSetMaximumBytes) bytes)"
-    }
-
-    $slope = [Math]::Abs([double]$bin.workingSetEndBytes - [double]$bin.workingSetStartBytes) * 2
-    if ($slope -gt [double]$limits.resourceSlopeMaximumBytesPerTenMinutes) {
-        $passed = $false
-        $breaches += "Soak bin $bi working set slope ($($slope) B/10m) > maximum ($($limits.resourceSlopeMaximumBytesPerTenMinutes) B/10m)"
-    }
-
-    $canonicalBins += [pscustomobject][ordered]@{
-        powerSource = $expectedPower
-        ordinal = [int]$expectedOrdinal
-        durationMinutes = 5
-        observedUtc = [string]$bin.observedUtc
-        workingSetStartBytes = [long]$bin.workingSetStartBytes
-        workingSetEndBytes = [long]$bin.workingSetEndBytes
-        rendererStable = [bool]$bin.rendererStable
-    }
-}
-
 if (-not $passed) {
     throw "Performance threshold breached: $($breaches -join '; ')"
 }
 $aggregateStatus = 'PASS'
 
 $receiptObject = [pscustomobject][ordered]@{
+    schemaVersion = 4
     provenance = $CandidateProvenance
     rawSource = $rawSourceRead.Binding
     orders = $canonicalOrders
-    soakBins = $canonicalBins
     aggregateStatus = $aggregateStatus
 }
 
@@ -485,16 +417,6 @@ Assert-RendererNonReparsePath -Root $EvidenceRoot -Path $stagingPath -Context 'S
 $stagedIdentity = Get-RendererStableFileIdentity $EvidenceRoot $stagingPath 'Staged performance evidence receipt' -IncludeBytes
 if ($stagedIdentity.Bytes -ne [long]$fileBytes.Length -or $stagedIdentity.Sha256 -ne (Get-HumanDesignReviewSha256ForBytes $fileBytes)) {
     throw 'Staged performance evidence receipt does not equal the intended canonical bytes.'
-}
-
-if (-not [string]::IsNullOrWhiteSpace($TestBeforeAtomicMoveSignalPath)) {
-    if (Test-Path -LiteralPath $TestBeforeAtomicMoveSignalPath) {
-        throw 'Test synchronization signal path already exists.'
-    }
-    New-Item -ItemType File -Path $TestBeforeAtomicMoveSignalPath | Out-Null
-    while (Test-Path -LiteralPath $TestBeforeAtomicMoveSignalPath) {
-        Start-Sleep -Milliseconds 10
-    }
 }
 
 # A directory rename on one volume is atomic and refuses an existing target.

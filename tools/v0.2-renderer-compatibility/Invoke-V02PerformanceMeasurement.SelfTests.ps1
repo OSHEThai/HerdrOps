@@ -7,6 +7,7 @@ $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'lib\V02PerformanceTestHarness.ps1')
 $script:InvokePerfPath = Join-Path $PSScriptRoot 'Invoke-V02PerformanceMeasurement.ps1'
 $script:NewReceiptPath = Join-Path $PSScriptRoot 'New-V02PerformanceEvidenceReceipt.ps1'
+$script:PublisherPath = Join-Path $PSScriptRoot '..\v0.2-issue10-live-widget\Publish-V02Issue10PerformanceEvidence.ps1'
 
 $positiveCases = 0
 $negativeCases = 0
@@ -117,8 +118,7 @@ try {
     if ($perfRes.EvidenceClassification -ne 'SyntheticVerifierSelftest' -or
         $perfRes.Orders.Count -ne 2 -or
         $perfRes.Orders[0].order -ne 'AB' -or
-        $perfRes.Orders[1].order -ne 'BA' -or
-        $perfRes.SoakBins.Count -ne 24) {
+        $perfRes.Orders[1].order -ne 'BA') {
         throw "Synthetic raw performance collector failed basic assertions."
     }
     Pass-PositiveCase 'valid synthetic raw performance observations generation in AB then BA order'
@@ -179,17 +179,6 @@ try {
     }
     Pass-PositiveCase 'each mode sample contains exactly 20 latency and 20 UI-stall observations'
 
-    # 4. Soak bins preserved (12 AC then 12 Battery, 5-minute duration)
-    for ($bi = 0; $bi -lt 24; $bi++) {
-        $bin = $perfRes.SoakBins[$bi]
-        $expectedPower = if ($bi -lt 12) { 'AC' } else { 'Battery' }
-        $expectedOrdinal = $bi % 12
-        if ($bin.powerSource -ne $expectedPower -or $bin.ordinal -ne $expectedOrdinal -or $bin.durationMinutes -ne 5 -or -not $bin.rendererStable) {
-            throw "Soak bin $bi does not meet contract."
-        }
-    }
-    Pass-PositiveCase 'soak bins preserved (12 AC then 12 Battery, 5-minute duration)'
-
     # 5. Direct compatibility with New-V02PerformanceEvidenceReceipt.ps1
     # Create package identity receipt fixture to supply candidate provenance
     $packageRoot = Join-Path $tempRoot 'package'
@@ -233,6 +222,7 @@ try {
     $receiptPath = Join-Path $tempRoot 'package-identity-receipt.json'
     Write-RendererPackageCanonicalJson $receiptValue $receiptPath $repoRoot
     $receiptStable = Get-RendererPackageStableIdentity $receiptPath
+    $receiptCanonical = Read-RendererCanonicalPackageReceipt $receiptPath $repoRoot
 
     $candidateProvenance = [pscustomobject][ordered]@{
         runNonce = ('1' * 32)
@@ -277,6 +267,40 @@ try {
         throw "New-V02PerformanceEvidenceReceipt failed to consume collector raw observations."
     }
     Pass-PositiveCase 'raw performance observations are directly consumed by New-V02PerformanceEvidenceReceipt.ps1'
+
+    # Exercise the production publisher against exact package/raw/telemetry/
+    # transaction inputs. Each hostile writes fresh canonical inputs and must
+    # fail before its no-clobber destination becomes visible.
+    $rawPublisherStable=Get-RendererStableFileIdentity $tempRoot $rawDest 'Publisher raw performance' -IncludeBytes
+    $rawPublisherText=(New-Object Text.UTF8Encoding($false,$true)).GetString($rawPublisherStable.Content)
+    if(-not$rawPublisherText.EndsWith("`n",[StringComparison]::Ordinal)-or$rawPublisherText.EndsWith("`n`n",[StringComparison]::Ordinal)){throw 'Publisher raw fixture is not canonical JSON plus exactly one LF.'}
+    $rawPublisherCanonical=Get-HumanDesignReviewSha256ForText $rawPublisherText.Substring(0,$rawPublisherText.Length-1)
+    $script:PublisherSequence=0
+    function Invoke-PublisherFixture([string]$Name,[scriptblock]$MutateSidecar=$null,[scriptblock]$MutateCommit=$null,[string]$ExpectedPattern=''){
+        $script:PublisherSequence++
+        $caseRoot=Join-Path $tempRoot ("publisher-case-$($script:PublisherSequence)")
+        New-Item -ItemType Directory -Path $caseRoot -Force|Out-Null
+        $bindingPath=Join-Path $caseRoot 'performance-telemetry-binding.json';$commitPath=Join-Path $caseRoot 'performance-commit.json';$destination=Join-Path $caseRoot 'published'
+        $base=[DateTimeOffset]::Parse('2026-08-22T10:00:00.0000000Z');$serverPath=[IO.Path]::GetFullPath([Diagnostics.Process]::GetCurrentProcess().MainModule.FileName);$serverSha=(Get-FileHash -LiteralPath $serverPath -Algorithm SHA256).Hash
+        $acquisitions=@(0..23|ForEach-Object{$index=$_;$order=if($index-lt12){'AB'}else{'BA'};$within=$index%12;$warmup=$within-lt2;$repetition=if($warmup){0}else{[int][Math]::Floor(($within-2)/2)};$mode=if($order-ceq'AB'){if($within%2-eq0){'a'}else{'b'}}else{if($within%2-eq0){'b'}else{'a'}};$requested=if($mode-ceq'a'){'Hardware'}else{'SoftwareOnly'};$native=if($mode-ceq'a'){'Default'}else{'SoftwareOnly'};[pscustomobject][ordered]@{sequenceNumber=$index;order=$order;isWarmup=$warmup;repetitionOrdinal=$repetition;semanticMode=$mode;requestedMode=$requested;appProcessId=1000+$index;appStartUtc=$base.AddSeconds($index+1).ToString('O');appPath=[IO.Path]::GetFullPath($appPath);appSha256=$appStable.Sha256;coreProcessId=2000;coreStartUtc=$base.ToString('O');corePath=[IO.Path]::GetFullPath($corePath);coreSha256=$coreStable.Sha256;serverProcessId=$PID;serverStartUtc=$base.AddMinutes(-1).ToString('O');serverPath=$serverPath;serverSha256=$serverSha;nativeProcessRenderMode=$native;nativeTier=if($mode-ceq'a'){1}else{0};preFirstHwndProof=$true;observedUtc=$base.AddMinutes($index+1).ToString('O');boundary='PackagedCompatibilityPerformance-NativeTierComparator-NoPerFrameGpuOrRuntimeCredit'}})
+        $sidecar=[pscustomobject][ordered]@{schemaVersion=2;evidenceClassification='PackagedCompatibilityPerformanceTelemetryBinding-NoRuntimeCredit';runNonce=('1'*32);source=[pscustomobject][ordered]@{commitSha=$repo.Commit;treeSha=$repo.Tree};session=[pscustomobject][ordered]@{kind='LocalConsole';name='Issue10PerformanceComparator';sessionId=1L;transport='Physical';powerSource='AC';thermalState='Nominal';elevated=$false;userScope='SingleUser'};package=[pscustomobject][ordered]@{identitySha256=$receiptCanonical.ReceiptSha256;identityFileSha256=$receiptStable.Sha256;profileFileSha256=$profileIdentity.FileSha256;archiveSha256=$archiveStable.Sha256;manifestSha256=$manifestStable.Sha256;appSha256=$appStable.Sha256;coreSha256=$coreStable.Sha256};rawSource=[pscustomobject][ordered]@{relativePath=([IO.Path]::GetFullPath($rawDest).Substring([IO.Path]::GetFullPath($tempRoot).TrimEnd('\','/').Length).TrimStart('\','/').Replace('\','/'));bytes=[long]$rawPublisherStable.Bytes;fileSha256=$rawPublisherStable.Sha256;canonicalSha256=$rawPublisherCanonical};acquisitions=$acquisitions;evidenceBoundary=[pscustomobject][ordered]@{actualHerdrRuntime='NOT_OBSERVED';release='NOT_OBSERVED';creditGranted=$false}}
+        if($null-ne$MutateSidecar){&$MutateSidecar $sidecar}
+        Write-RendererPackageCanonicalJson $sidecar $bindingPath $repoRoot;$bindingStable=Get-RendererStableFileIdentity $tempRoot $bindingPath 'Publisher binding'
+        $commit=[pscustomobject][ordered]@{schemaVersion=1;kind='issue10-performance-transaction-commit';runNonce=('1'*32);raw=[pscustomobject][ordered]@{fileName=[IO.Path]::GetFileName($rawDest);bytes=[long]$rawPublisherStable.Bytes;sha256=$rawPublisherStable.Sha256};binding=[pscustomobject][ordered]@{fileName=[IO.Path]::GetFileName($bindingPath);bytes=[long]$bindingStable.Bytes;sha256=$bindingStable.Sha256};creditGranted=$false}
+        if($null-ne$MutateCommit){&$MutateCommit $commit}
+        Write-RendererPackageCanonicalJson $commit $commitPath $repoRoot
+        $invoke={&$script:PublisherPath -RawPerformancePath $rawDest -PerformanceBindingPath $bindingPath -PerformanceCommitPath $commitPath -DestinationDirectory $destination -EvidenceRoot $tempRoot -RepositoryRoot $repoRoot -RunNonce ('1'*32) -PackageIdentityPath $receiptPath -PackageArchivePath $archivePath -ExtractedPackageRoot $packageRoot -ExpectedSourceCommit $repo.Commit -ExpectedSourceTree $repo.Tree}
+        if([string]::IsNullOrWhiteSpace($ExpectedPattern)){return &$invoke}
+        Assert-ThrowsMatch {&$invoke|Out-Null} $ExpectedPattern $Name
+        if(Test-Path -LiteralPath $destination){throw "Publisher hostile '$Name' exposed a final destination."}
+    }
+    $published=Invoke-PublisherFixture 'positive'
+    if($published.SchemaVersion-ne4-or$published.CreditGranted-or-not(Test-Path -LiteralPath $published.PerformanceReceiptPath -PathType Leaf)){throw 'Production publisher positive fixture did not produce an exact schema-v4 no-credit receipt.'}
+    Pass-PositiveCase 'production publisher fully validates and atomically publishes exact performance evidence'
+    $null=Invoke-PublisherFixture 'publisher rejects transplanted profile hash' {param($s)$s.package.profileFileSha256=('9'*64)} $null 'package binding is stale'
+    $null=Invoke-PublisherFixture 'publisher rejects transplanted manifest hash' {param($s)$s.package.manifestSha256=('9'*64)} $null 'package binding is stale'
+    $null=Invoke-PublisherFixture 'publisher rejects commit raw fileName transplant' $null {param($c)$c.raw.fileName='other.json'} 'exact leaf names'
+    $null=Invoke-PublisherFixture 'publisher reaches shared full acquisition shape guard' {param($s)$s.acquisitions[0].PSObject.Properties.Remove('nativeTier')} $null 'must contain exactly|nativeTier'
 
     # 6. Evidence boundary verification
     if ($perfRes.EvidenceClassification -ne 'SyntheticVerifierSelftest') {
@@ -424,26 +448,6 @@ try {
             -TestFaultInjectionStage 'BeforeCommit'
     } 'Injected performance collector crash before atomic commit' 'mid-publish crash before commit rolls back cleanly with zero published output' $beforeCommitDest
 
-    # Create dummy soak evidence file with 24 bins for live tests
-    $soakBinsFixture = @()
-    foreach ($power in @('AC', 'Battery')) {
-        for ($i = 0; $i -lt 12; $i++) {
-            $offset = if ($power -ceq 'Battery') { 12 } else { 0 }
-            $soakBinsFixture += [pscustomobject][ordered]@{
-                powerSource = $power
-                ordinal = $i
-                durationMinutes = 5
-                observedUtc = ('2026-08-22T12:{0:00}:00.0000000Z' -f ($i + 1 + $offset))
-                workingSetStartBytes = 104857600
-                workingSetEndBytes = 104857600
-                rendererStable = $true
-            }
-        }
-    }
-    $soakFixturePath = Join-Path $tempRoot 'soak-fixture.json'
-    $soakObj = [pscustomobject][ordered]@{ soakBins = $soakBinsFixture }
-    Write-RendererPackageCanonicalJson $soakObj $soakFixturePath $repoRoot
-
     # 12. Arbitrary caller telemetry is rejected before any process launch.
     $negProc1Dest = Join-Path $tempRoot 'perf\neg-proc1.json'
     Assert-ThrowsMatchAndZeroOutput {
@@ -458,8 +462,7 @@ try {
             -ExpectedSourceTree $repo.Tree `
             -LiveTelemetryProvider { $null } `
             -AppProcessId 0 `
-            -CoreProcessId 0 `
-            -SoakEvidencePath $soakFixturePath
+            -CoreProcessId 0
     } "parameter cannot be found.*LiveTelemetryProvider" 'live mode API has no arbitrary caller telemetry parameter' $negProc1Dest
 
     # 13. Live mode invalid Core PID
@@ -476,8 +479,7 @@ try {
             -ExpectedSourceTree $repo.Tree `
             -RunNonce ([Guid]::NewGuid().ToString('N')) `
             -CoreProcessId 0 `
-            -BindingDestinationPath (Join-Path $tempRoot 'perf\neg-proc-ident-binding.json') `
-            -SoakEvidencePath $soakFixturePath
+            -BindingDestinationPath (Join-Path $tempRoot 'perf\neg-proc-ident-binding.json')
     } 'requires a positive CoreProcessId' 'live mode invalid Core PID produces zero output' $negProcIdentDest
 
     # 14. Live mode non-existent process ID
@@ -494,25 +496,8 @@ try {
             -ExpectedSourceTree $repo.Tree `
             -RunNonce ([Guid]::NewGuid().ToString('N')) `
             -CoreProcessId 999998 `
-            -BindingDestinationPath (Join-Path $tempRoot 'perf\neg-proc2-binding.json') `
-            -SoakEvidencePath $soakFixturePath
+            -BindingDestinationPath (Join-Path $tempRoot 'perf\neg-proc2-binding.json')
     } 'Unable to connect to target Core process' 'live mode non-existent Core process ID produces zero output' $negProc2Dest
-
-    # 15. Live mode missing soak evidence file fails closed
-    $negNoSoakDest = Join-Path $tempRoot 'perf\neg-nosoak.json'
-    Assert-ThrowsMatchAndZeroOutput {
-        & $script:InvokePerfPath `
-            -DestinationPath $negNoSoakDest `
-            -EvidenceRoot $tempRoot `
-            -RepositoryRoot $repoRoot `
-            -PackageIdentityPath $receiptPath `
-            -PackageArchivePath $archivePath `
-            -ExtractedPackageRoot $packageRoot `
-            -ExpectedSourceCommit $repo.Commit `
-            -ExpectedSourceTree $repo.Tree `
-            -RunNonce ([Guid]::NewGuid().ToString('N')) `
-            -CoreProcessId 456
-    } 'Live performance measurement requires separate validated soak evidence' 'live mode missing soak evidence parameter fails closed' $negNoSoakDest
 
     # 16. Destination escaping evidence root
     $negEscapeDest = [IO.Path]::GetFullPath((Join-Path $tempRoot '..\escaped-perf.json'))
@@ -550,8 +535,7 @@ try {
             -ExtractedPackageRoot $packageRoot `
             -ExpectedSourceCommit '0000000000000000000000000000000000000000' `
             -ExpectedSourceTree $repo.Tree `
-            -CoreProcessId 456 `
-            -SoakEvidencePath $soakFixturePath
+            -CoreProcessId 456
     } 'Source commit mismatch' 'source commit mismatch produces zero output' $negCommitDest
 
     # 19. Source tree mismatch
@@ -566,8 +550,7 @@ try {
             -ExtractedPackageRoot $packageRoot `
             -ExpectedSourceCommit $repo.Commit `
             -ExpectedSourceTree '0000000000000000000000000000000000000000' `
-            -CoreProcessId 456 `
-            -SoakEvidencePath $soakFixturePath
+            -CoreProcessId 456
     } 'Source tree mismatch' 'source tree mismatch produces zero output' $negTreeDest
 
     # 20. Package component hash mismatch fails closed with zero output
@@ -584,8 +567,7 @@ try {
             -ExtractedPackageRoot $packageRoot `
             -ExpectedSourceCommit $repo.Commit `
             -ExpectedSourceTree $repo.Tree `
-            -CoreProcessId 456 `
-            -SoakEvidencePath $soakFixturePath
+            -CoreProcessId 456
     } 'Manifest/package-root inventories are not exact and coherent|Package App/Core bytes changed after package validation|hash.*mismatch' 'package component hash mismatch fails closed with zero output' $negPkgTamperDest
     # Restore app binary
     [IO.File]::WriteAllBytes($tamperedAppPath, [Text.Encoding]::UTF8.GetBytes('app-binary'))

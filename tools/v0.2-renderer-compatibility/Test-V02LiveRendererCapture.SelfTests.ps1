@@ -560,7 +560,7 @@ function New-LiveReferenceEnvironmentSnapshot([string]$Path, [string]$Repository
         graphicsAdapters = $adapters
         display = [ordered]@{deviceName=$display.primaryDisplayDeviceName;physicalWidthPixels=[int]$display.physicalWidthPixels;physicalHeightPixels=[int]$display.physicalHeightPixels;logicalWidthPixels=[int]$display.logicalWidthPixels;logicalHeightPixels=[int]$display.logicalHeightPixels;desktopAppliedDpi=[int]$display.desktopAppliedDpi;scalePercent=[int]$display.scalePercent;refreshRateHz=[int]$display.refreshRateHz;monitorCount=[int]$display.activeMonitorCount}
         session = [ordered]@{kind='LocalConsole';name='Console';sessionId=1;transport='Physical';powerSource='AC';thermalState='Nominal';elevated=$false;userScope='SingleUser'}
-        supportScope = [ordered]@{supported=@('windows11-x64-build26220','local-console','non-elevated','single-user','physical-display-matrix','ac-power','battery-power');excluded=@('rdp-runtime','vm-runtime','arm64','remote-cloud','multi-user');vmCleanInstallOnly=$true;vmRuntimeCredit=$false}
+        supportScope = [ordered]@{supported=@('windows11-x64-build26220','automated-packaged-rendering','non-elevated','single-user');excluded=@('rdp-runtime','vm-runtime','arm64','remote-cloud','multi-user');vmCleanInstallOnly=$true;vmRuntimeCredit=$false}
     }
     [IO.File]::WriteAllText($Path, ($value | ConvertTo-Json -Depth 20), (New-Object Text.UTF8Encoding($false)))
     return $Path
@@ -624,7 +624,7 @@ function Invoke-LiveTargetFixtureCase([string]$Root,[string]$RepositoryRoot,[str
                 -TargetObservationPipeName $pipeName `
                 -TargetObservationChallenge $challenge `
                 -TestEnvironmentSnapshotPath $environmentPath
-            if ($result.CaptureMode -cne 'LiveOperator' -or $result.ActualHerdrRuntime -cne 'NOT_OBSERVED' -or [bool]$result.ReleaseCredit -or $result.CaptureCount -ne 20 -or $result.LifecycleStages -ne 8) { throw 'Positive LiveOperator fixture did not preserve exact no-credit result boundaries.' }
+            if ($result.CaptureMode -cne 'AutomatedInstalledRuntime' -or $result.ActualHerdrRuntime -cne 'NOT_OBSERVED' -or [bool]$result.ReleaseCredit -or $result.CaptureCount -ne 20 -or $result.LifecycleStages -ne 8) { throw 'Positive AutomatedInstalledRuntime fixture did not preserve exact no-credit result boundaries.' }
 
             # HWND stability regression: verify all post-first-HWND stages (stages 2-7) maintained the exact same responsive window HWND and App ownership
             $receiptObj = Get-Content -Raw -LiteralPath (Join-Path $output 'proofs/target-binding.json') | ConvertFrom-Json
@@ -666,7 +666,7 @@ function Invoke-LiveTargetFixtureCase([string]$Root,[string]$RepositoryRoot,[str
                 -TargetObservationChallenge $challenge `
                 -TestEnvironmentSnapshotPath $environmentPath `
                 -TestFaultStage $FaultStage
-        } $expectedPatterns[$FaultStage] "LiveOperator hostile fixture '$FaultStage'"
+        } $expectedPatterns[$FaultStage] "AutomatedInstalledRuntime hostile fixture '$FaultStage'"
     } finally {
         Stop-OwnedFixtureProcess $app
         Stop-OwnedFixtureProcess $core
@@ -697,7 +697,7 @@ try {
         -TestEnvironmentSnapshotPath $fixtureEnvironmentPath
     Write-Host 'INFO positive baseline execution complete.'
 
-    if ($result1.EvidenceClassification -cne 'PackagedCompatibilityCandidate' -or
+    if ($result1.EvidenceClassification -cne 'AutomatedPackagedCompatibilityCandidate' -or
         $result1.Status -cne 'ManifestCreated' -or
         $result1.CaptureCount -ne 20 -or
         $result1.ThaiCaptures -ne 10 -or
@@ -705,7 +705,7 @@ try {
         $result1.LifecycleStages -ne 8 -or
         -not $result1.SoftwareOnlyConfirmed -or
         -not $result1.PreFirstHwndProofConfirmed -or
-        $result1.HumanReview -cne 'NOT_OBSERVED' -or
+        $result1.AgentReview -cne 'NOT_OBSERVED' -or
         $result1.ActualHerdrRuntime -cne 'NOT_OBSERVED' -or
         [bool]$result1.ReleaseCredit -or
         [bool]$result1.PackagedCompatibilityReadyForIssue149Closure) {
@@ -718,18 +718,18 @@ try {
         -RepositoryRoot $repo.Root `
         -ValidateBindings
 
-    if ($manifestValidation.EvidenceClassification -cne 'PackagedCompatibilityCandidate' -or
+    if ($manifestValidation.EvidenceClassification -cne 'AutomatedPackagedCompatibilityCandidate' -or
         $manifestValidation.StructuralValidation -cne 'PASS' -or
         $manifestValidation.BindingValidation -cne 'PASS' -or
         $manifestValidation.GovernanceProfileConsistency -cne 'PASS' -or
-        $manifestValidation.HumanReview -cne 'NOT_OBSERVED' -or
+        $manifestValidation.AgentReview -cne 'NOT_OBSERVED' -or
         $manifestValidation.ActualHerdrRuntime -cne 'NOT_OBSERVED' -or
         [bool]$manifestValidation.CreditGranted -or
         [bool]$manifestValidation.PackagedCompatibilityReadyForIssue149Closure) {
         throw 'Self-validation of positive baseline manifest failed.'
     }
-    if ($result1.CaptureMode -cne 'SyntheticSelfTest' -or $manifestValidation.CaptureMode -cne 'SyntheticSelfTest') {
-        throw 'Synthetic baseline did not retain its explicit SyntheticSelfTest boundary.'
+    if ($result1.CaptureMode -cne 'DeterministicPackaged' -or $manifestValidation.CaptureMode -cne 'DeterministicPackaged') {
+        throw 'Synthetic baseline did not retain its explicit DeterministicPackaged boundary.'
     }
     Pass 'operator-driven capture harness generates strict validated synthetic candidate evidence'
 
@@ -751,7 +751,7 @@ try {
     $sourceManifest = Get-Content -Raw -LiteralPath $sourceResult.ManifestPath | ConvertFrom-Json
     $sourceProofPath = Join-Path $outSource $sourceManifest.rendererEvidence.throughoutObservations[0].proofReceipt.relativePath
     $sourceProof = Get-Content -Raw -LiteralPath $sourceProofPath | ConvertFrom-Json
-    if ($sourceResult.CaptureCount -ne 20 -or $sourceResult.CaptureMode -cne 'SyntheticSelfTest' -or
+    if ($sourceResult.CaptureCount -ne 20 -or $sourceResult.CaptureMode -cne 'DeterministicPackaged' -or
         [int]$sourceProof.nativeRenderCapabilityTier -ne 3 -or
         $sourceResult.ActualHerdrRuntime -cne 'NOT_OBSERVED' -or [bool]$sourceResult.ReleaseCredit) {
         throw 'Contained real-capture input path or injected observation was not preserved as synthetic/no-credit.'
@@ -788,24 +788,24 @@ try {
         Assert-RendererLiveEnvironment $elevatedEnvironment $repo.Root
     } 'local, physical, non-elevated single-user session' 'production live admission rejects elevated environment'
 
-    # 3. Positive LiveOperator fixture: copied PowerShell processes implement
+    # 3. Positive AutomatedInstalledRuntime fixture: copied PowerShell processes implement
     # the target-process protocol. This reaches the same PID/start/executable,
     # HWND, render-mode, and capture-binding guards without being Herdr.
     $livePositive = Invoke-LiveTargetFixtureCase $temp $repo.Root $repo.Commit $repo.Tree ''
-    if ($livePositive.EvidenceClassification -cne 'PackagedCompatibilityCandidate' -or
-        $livePositive.CaptureMode -cne 'LiveOperator' -or
+    if ($livePositive.EvidenceClassification -cne 'AutomatedPackagedCompatibilityCandidate' -or
+        $livePositive.CaptureMode -cne 'AutomatedInstalledRuntime' -or
         $livePositive.ActualHerdrRuntime -cne 'NOT_OBSERVED' -or
         [bool]$livePositive.ReleaseCredit -or
         $livePositive.CaptureCount -ne 20 -or
         $livePositive.LifecycleStages -ne 8) {
-        throw 'Positive LiveOperator target-process fixture did not retain exact evidence boundaries.'
+        throw 'Positive AutomatedInstalledRuntime target-process fixture did not retain exact evidence boundaries.'
     }
-    Pass 'LiveOperator positive target-process binding reaches exact guards without Runtime/Release credit'
+    Pass 'AutomatedInstalledRuntime positive target-process binding reaches exact guards without Runtime/Release credit'
 
     foreach ($liveFault in @('PidReuse','WrongProcess','WrongWindow','ArbitraryPng','TransientCaptureReplacement','HungWindow','ChangingHwnd')) {
         Invoke-LiveTargetFixtureCase $temp $repo.Root $repo.Commit $repo.Tree $liveFault | Out-Null
     }
-    Pass-Negative 'LiveOperator hostile target/process/window/capture replacement cases fail closed'
+    Pass-Negative 'AutomatedInstalledRuntime hostile target/process/window/capture replacement cases fail closed'
 
     # Hostile: Receipt verifier rejects changing HWND across post-first stages
     $livePositiveOutput = Join-Path $temp 'live-positive/output'
@@ -842,7 +842,7 @@ try {
             -TargetObservationPipeName 'opaque-guard' `
             -TargetObservationChallenge ('A' * 64) `
             -OperatorObservationAction (New-MockObservationAction)
-    } 'opaque observation' 'LiveOperator rejects opaque operator observations'
+    } 'opaque observation' 'AutomatedInstalledRuntime rejects opaque operator observations'
 
     # 3. Hostile: No-clobber target directory protection
     Assert-Throws {
@@ -1095,7 +1095,7 @@ try {
         NegativeCases = $script:NegativeCases
         TotalCases = ($script:PositiveCases + $script:NegativeCases)
         BindingValidation = 'PASS'
-        FinalHumanGo = 'NOT_OBSERVED'
+        AgentReview = 'NOT_OBSERVED'
         ActualHerdrRuntime = 'NOT_OBSERVED'
         Release = 'NOT_OBSERVED'
         CreditGranted = $false

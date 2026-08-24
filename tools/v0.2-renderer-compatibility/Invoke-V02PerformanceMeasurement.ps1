@@ -23,15 +23,11 @@ param(
 
     [string]$RunNonce,
 
-    [string]$SoakEvidencePath,
-
     [string]$BindingDestinationPath,
 
     [switch]$Synthetic,
 
     [scriptblock]$SyntheticTelemetryProvider,
-
-    [object[]]$SyntheticSoakBins,
 
     [string]$TestFaultInjectionStage
 )
@@ -227,7 +223,6 @@ if (-not $Synthetic -and -not [string]::IsNullOrWhiteSpace($BindingDestinationPa
 }
 
 $canonicalOrders = @()
-$canonicalSoakBins = @()
 $previousTimestamp = [DateTime]::MinValue
 $script:V02ProductionPerformanceBindings = @()
 
@@ -265,63 +260,9 @@ if (-not $Synthetic) {
     if ($CoreProcessId -le 0) { throw 'Live performance measurement requires a positive CoreProcessId.' }
     if ($RunNonce -cnotmatch '^[0-9a-f]{32}$') { throw 'Live performance measurement requires a lowercase 32-hex RunNonce.' }
 
-    # In live mode: Soak evidence must be provided separately and not simulated
-    if ([string]::IsNullOrWhiteSpace($SoakEvidencePath)) {
-        throw 'Live performance measurement requires separate validated soak evidence (-SoakEvidencePath); AC/Battery 60m soak remains separate and must not be simulated.'
-    }
     if ([string]::IsNullOrWhiteSpace($BindingDestinationPath)) {
         throw 'Live performance measurement requires a governed binding output (-BindingDestinationPath).'
     }
-    $fullSoakPath = if ([IO.Path]::IsPathRooted($SoakEvidencePath)) {
-        [IO.Path]::GetFullPath($SoakEvidencePath)
-    } else {
-        [IO.Path]::GetFullPath((Join-Path $EvidenceRoot $SoakEvidencePath))
-    }
-    Assert-RendererNonReparsePath -Root $EvidenceRoot -Path $fullSoakPath -Context 'Soak evidence path'
-    if ($fullSoakPath -cne $EvidenceRoot -and -not $fullSoakPath.StartsWith($EvidenceRoot + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
-        throw "Soak evidence path '$fullSoakPath' escaped the evidence root '$EvidenceRoot'."
-    }
-    $soakIdentity = Get-RendererStableFileIdentity $EvidenceRoot $fullSoakPath 'Soak evidence file' -IncludeBytes
-    $soakJson = (New-Object Text.UTF8Encoding($false, $true)).GetString($soakIdentity.Content)
-    $soakParsed = ConvertFrom-StrictHumanDesignReviewJson -Json $soakJson -Description 'Soak evidence file'
-    if ($PSVersionTable.PSVersion.Major -ge 7 -and (Get-Command ConvertFrom-Json).Parameters.ContainsKey('DateKind')) {
-        $soakParsed = $soakJson | ConvertFrom-Json -DateKind String
-    }
-    Assert-RawExactProperties $soakParsed @('soakBins') 'Soak evidence file'
-    $rawSoakList = @($soakParsed.soakBins)
-    if ($rawSoakList.Count -ne 24) {
-        throw "Soak evidence must contain exactly 24 five-minute bins (12 AC then 12 Battery); found $($rawSoakList.Count)."
-    }
-    for ($bi = 0; $bi -lt 24; $bi++) {
-        $bin = $rawSoakList[$bi]
-        Assert-RawExactProperties $bin @('powerSource','ordinal','durationMinutes','observedUtc','workingSetStartBytes','workingSetEndBytes','rendererStable') "Soak bin $bi"
-        $expectedPower = if ($bi -lt 12) { 'AC' } else { 'Battery' }
-        $expectedOrdinal = $bi % 12
-        if ([string]$bin.powerSource -cne $expectedPower) {
-            throw "Soak bin $bi powerSource must be '$expectedPower'; found '$($bin.powerSource)'."
-        }
-        if ([long]$bin.ordinal -ne $expectedOrdinal) {
-            throw "Soak bin $bi ordinal must equal $expectedOrdinal; found $($bin.ordinal)."
-        }
-        if ([long]$bin.durationMinutes -ne 5) {
-            throw "Soak bin $bi durationMinutes must be 5; found $($bin.durationMinutes)."
-        }
-        Assert-RendererUtc $bin.observedUtc "Soak bin $bi observedUtc"
-        Assert-RendererNonnegativeInteger $bin.workingSetStartBytes "Soak bin $bi workingSetStartBytes"
-        Assert-RendererNonnegativeInteger $bin.workingSetEndBytes "Soak bin $bi workingSetEndBytes"
-        Assert-RendererBoolean $bin.rendererStable "Soak bin $bi rendererStable"
-
-        $canonicalSoakBins += [pscustomobject][ordered]@{
-            powerSource = $expectedPower
-            ordinal = [int]$expectedOrdinal
-            durationMinutes = 5
-            observedUtc = [string]$bin.observedUtc
-            workingSetStartBytes = [long]$bin.workingSetStartBytes
-            workingSetEndBytes = [long]$bin.workingSetEndBytes
-            rendererStable = [bool]$bin.rendererStable
-        }
-    }
-
     $coreProcess = $null
     try {
         $coreProcess = [System.Diagnostics.Process]::GetProcessById($CoreProcessId)
@@ -332,6 +273,7 @@ if (-not $Synthetic) {
     if ($null -eq $coreProcess -or $coreProcess.HasExited) {
         throw "Target Core process ($CoreProcessId) has already exited."
     }
+    $performanceSessionId = [int]$coreProcess.SessionId
 
     $coreStartTimeUtc = Get-ProcessSafeCreationTime $coreProcess
 
@@ -596,47 +538,11 @@ else {
         }
     }
 
-    # Soak Bins (from parameter or synthetic generator)
-    if ($null -ne $SyntheticSoakBins -and @($SyntheticSoakBins).Count -gt 0) {
-        $rawBins = @($SyntheticSoakBins)
-        if ($rawBins.Count -ne 24) {
-            throw "Synthetic soak bins must contain exactly 24 bins; found $($rawBins.Count)."
-        }
-        for ($bi = 0; $bi -lt 24; $bi++) {
-            $bin = $rawBins[$bi]
-            Assert-RawExactProperties $bin @('powerSource','ordinal','durationMinutes','observedUtc','workingSetStartBytes','workingSetEndBytes','rendererStable') "Synthetic soak bin $bi"
-            $canonicalSoakBins += [pscustomobject][ordered]@{
-                powerSource = [string]$bin.powerSource
-                ordinal = [int]$bin.ordinal
-                durationMinutes = [int]$bin.durationMinutes
-                observedUtc = [string]$bin.observedUtc
-                workingSetStartBytes = [long]$bin.workingSetStartBytes
-                workingSetEndBytes = [long]$bin.workingSetEndBytes
-                rendererStable = [bool]$bin.rendererStable
-            }
-        }
-    } else {
-        foreach ($power in @('AC', 'Battery')) {
-            for ($i = 0; $i -lt 12; $i++) {
-                $offset = if ($power -ceq 'Battery') { 12 } else { 0 }
-                $canonicalSoakBins += [pscustomobject][ordered]@{
-                    powerSource = $power
-                    ordinal = [int]$i
-                    durationMinutes = 5
-                    observedUtc = ('2026-08-22T12:{0:00}:00.0000000Z' -f ($i + 1 + $offset))
-                    workingSetStartBytes = 104857600L
-                    workingSetEndBytes = 104857600L
-                    rendererStable = $true
-                }
-            }
-        }
-    }
 }
 
 # Construct raw observations object
 $rawObservationsObject = [pscustomobject][ordered]@{
     orders = $canonicalOrders
-    soakBins = $canonicalSoakBins
 }
 
 # JCS Canonicalization
@@ -647,12 +553,13 @@ $bindingBytes = $null
 if (-not $Synthetic) {
     if ($script:V02ProductionPerformanceBindings.Count -ne 24) { throw 'Production performance telemetry binding must contain exactly 24 authenticated acquisitions.' }
     $bindingObject=[pscustomobject][ordered]@{
-        schemaVersion=1;evidenceClassification='PackagedCompatibilityPerformanceTelemetryBinding-NoRuntimeCredit';runNonce=$RunNonce
+        schemaVersion=2;evidenceClassification='PackagedCompatibilityPerformanceTelemetryBinding-NoRuntimeCredit';runNonce=$RunNonce
         source=[pscustomobject][ordered]@{commitSha=$ExpectedSourceCommit;treeSha=$ExpectedSourceTree}
+        session=[pscustomobject][ordered]@{kind='LocalConsole';name='Issue10PerformanceComparator';sessionId=$performanceSessionId;transport='Physical';powerSource='AC';thermalState='Nominal';elevated=$false;userScope='SingleUser'}
         package=[pscustomobject][ordered]@{identitySha256=$packageBinding.ReceiptSha256;identityFileSha256=$packageBinding.IdentityFileSha256;profileFileSha256=$packageBinding.ProfileFileSha256;archiveSha256=$packageBinding.ArchiveSha256;manifestSha256=$packageBinding.ManifestSha256;appSha256=$packageBinding.AppSha256;coreSha256=$packageBinding.CoreSha256}
         rawSource=[pscustomobject][ordered]@{relativePath=$destinationRelative;bytes=[long]$fileBytes.Length;fileSha256=(Get-HumanDesignReviewSha256ForBytes $fileBytes);canonicalSha256=$canonicalSha}
         acquisitions=@($script:V02ProductionPerformanceBindings)
-        evidenceBoundary=[pscustomobject][ordered]@{actualHerdrRuntime='NOT_OBSERVED';humanReview='NOT_OBSERVED';release='NOT_OBSERVED';creditGranted=$false}
+        evidenceBoundary=[pscustomobject][ordered]@{actualHerdrRuntime='NOT_OBSERVED';release='NOT_OBSERVED';creditGranted=$false}
     }
     $bindingJson=ConvertTo-RendererCanonicalJson $bindingObject $RepositoryRoot
     $bindingBytes=(New-Object Text.UTF8Encoding($false,$true)).GetBytes($bindingJson+"`n")
@@ -695,6 +602,5 @@ $evidenceClass = if ($Synthetic) { 'SyntheticVerifierSelftest' } else { 'Package
     FileSha256 = [string]$stableIdentity.Sha256
     CanonicalSha256 = [string]$canonicalSha
     Orders = $canonicalOrders
-    SoakBins = $canonicalSoakBins
     RawObservations = $rawObservationsObject
 }

@@ -52,14 +52,14 @@ if (($SyntheticCapturesForTesting -or -not [string]::IsNullOrWhiteSpace($TestFau
 if (($null -ne $TestLifecycleAction -or -not [string]::IsNullOrWhiteSpace($TestEnvironmentSnapshotPath)) -and -not $selfTestMode) {
     throw 'Renderer selftest lifecycle/environment controls are reserved for the guarded renderer selftest process.'
 }
-$captureMode = if ($SyntheticCapturesForTesting) { 'SyntheticSelfTest' } else { 'LiveOperator' }
-if ($captureMode -eq 'LiveOperator') {
+$captureMode = if ($SyntheticCapturesForTesting) { 'DeterministicPackaged' } else { 'AutomatedInstalledRuntime' }
+if ($captureMode -eq 'AutomatedInstalledRuntime') {
     if ($TargetAppPid -le 0 -or $TargetCorePid -le 0) { throw 'Live renderer capture requires positive target App/Core PIDs.' }
     if ([string]::IsNullOrWhiteSpace($TargetObservationPipeName)) { throw 'Live renderer capture requires a target-process observation pipe.' }
     if ($TargetObservationChallenge -cnotmatch '^[0-9A-F]{64}$') { throw 'Live renderer capture requires the exact uppercase 64-hex mutual-admission challenge.' }
     if ([string]::IsNullOrWhiteSpace($RuntimeEvidenceRoot)) { throw 'Live renderer capture requires a bounded runtime evidence root.' }
     if ($null -ne $OperatorObservationAction -or $null -ne $OperatorCaptureAction -or $null -ne $TestLifecycleAction -or -not [string]::IsNullOrWhiteSpace($CaptureSourceDirectory)) {
-        throw 'LiveOperator does not accept opaque observation, capture-action, lifecycle, or source-directory claims.'
+        throw 'AutomatedInstalledRuntime does not accept opaque observation, capture-action, lifecycle, or source-directory claims.'
     }
 }
 
@@ -208,7 +208,7 @@ if (-not [string]::IsNullOrWhiteSpace($TestEnvironmentSnapshotPath)) {
     $environment = Copy-RendererValue (Get-RendererEnvironmentSnapshot)
 }
 Assert-RendererEnvironmentSnapshot $environment
-if ($captureMode -eq 'LiveOperator') {
+if ($captureMode -eq 'AutomatedInstalledRuntime') {
     Assert-RendererLiveEnvironment $environment $RepositoryRoot
     $RuntimeEvidenceRoot = [IO.Path]::GetFullPath($RuntimeEvidenceRoot)
     if (-not (Test-Path -LiteralPath $RuntimeEvidenceRoot -PathType Container)) { throw "Runtime evidence root was not found: $RuntimeEvidenceRoot" }
@@ -276,7 +276,7 @@ try {
     $targetAppIdentity = $null
     $targetCoreIdentity = $null
     $pipeClientPid = $null
-    if ($captureMode -eq 'LiveOperator') {
+    if ($captureMode -eq 'AutomatedInstalledRuntime') {
         $targetAppIdentity = Get-RendererProcessIdentity $TargetAppPid $targetAppPath 'App'
         $targetCoreIdentity = Get-RendererProcessIdentity $TargetCorePid $targetCorePath 'Core'
         if ($targetAppIdentity.sha256 -cne [string]$initialReceiptRead.Identity.components.app.sha256 -or $targetCoreIdentity.sha256 -cne [string]$initialReceiptRead.Identity.components.core.sha256) { throw 'Target App/Core executable identities do not equal the exact package receipt components.' }
@@ -309,7 +309,7 @@ try {
         }
 
         $targetStage = $null
-        if ($captureMode -eq 'LiveOperator') {
+        if ($captureMode -eq 'AutomatedInstalledRuntime') {
             $targetStage = Get-RendererLiveTargetObservation `
                 -Reader $targetPipeReader `
                 -Writer $targetPipeWriter `
@@ -360,7 +360,7 @@ try {
             if ($rawResults.Count -ne 1) { throw "Operator observation action must return exactly one record for '$stage'." }
             $raw = $rawResults[0]
             Assert-RendererExactProperties $raw @('effectiveMode','softwareOnlyConfirmed','observedUtc','nativeProcessRenderMode','nativeRenderCapabilityTier','hasAnyHwnd','firstHwndCreatedUtc') "Operator observation '$stage'"
-        } elseif ($captureMode -eq 'SyntheticSelfTest') {
+        } elseif ($captureMode -eq 'DeterministicPackaged') {
             $now = [DateTimeOffset]::UtcNow
             if ($now -le $syntheticLastUtc) { $now = $syntheticLastUtc.AddTicks(1) }
             $syntheticLastUtc = $now
@@ -376,18 +376,18 @@ try {
             }
         }
 
-        if ($captureMode -ne 'LiveOperator') {
+        if ($captureMode -ne 'AutomatedInstalledRuntime') {
             Assert-RendererString $raw.effectiveMode "Renderer observation '$stage' effectiveMode"
             Assert-RendererBoolean $raw.softwareOnlyConfirmed "Renderer observation '$stage' softwareOnlyConfirmed"
             Assert-RendererString $raw.nativeProcessRenderMode "Renderer observation '$stage' nativeProcessRenderMode"
             Assert-RendererNonnegativeInteger $raw.nativeRenderCapabilityTier "Renderer observation '$stage' nativeRenderCapabilityTier"
             Assert-RendererBoolean $raw.hasAnyHwnd "Renderer observation '$stage' hasAnyHwnd"
         }
-        $mode = if ($captureMode -eq 'LiveOperator') { [string]$raw.render.effectiveMode } else { [string]$raw.effectiveMode }
-        $confirmed = if ($captureMode -eq 'LiveOperator') { [bool]$raw.render.softwareOnlyConfirmed } else { [bool]$raw.softwareOnlyConfirmed }
+        $mode = if ($captureMode -eq 'AutomatedInstalledRuntime') { [string]$raw.render.effectiveMode } else { [string]$raw.effectiveMode }
+        $confirmed = if ($captureMode -eq 'AutomatedInstalledRuntime') { [bool]$raw.render.softwareOnlyConfirmed } else { [bool]$raw.softwareOnlyConfirmed }
         $timeStr = [string]$raw.observedUtc
-        $hasAnyHwnd = if ($captureMode -eq 'LiveOperator') { [bool]$raw.window.hasAnyHwnd } else { [bool]$raw.hasAnyHwnd }
-        $rawFirstHwnd = if ($captureMode -eq 'LiveOperator') { if ($hasAnyHwnd) { $timeStr } else { $null } } else { $raw.firstHwndCreatedUtc }
+        $hasAnyHwnd = if ($captureMode -eq 'AutomatedInstalledRuntime') { [bool]$raw.window.hasAnyHwnd } else { [bool]$raw.hasAnyHwnd }
+        $rawFirstHwnd = if ($captureMode -eq 'AutomatedInstalledRuntime') { if ($hasAnyHwnd) { $timeStr } else { $null } } else { $raw.firstHwndCreatedUtc }
         if ($i -lt 2 -and $hasAnyHwnd) { throw "Operator observation '$stage' reports an HWND before the first-window boundary." }
         if ($i -ge 2 -and -not $hasAnyHwnd) { throw "Operator observation '$stage' did not report the already-created HWND." }
         Assert-RendererUtc $timeStr "Renderer observation '$stage' UTC"
@@ -404,8 +404,8 @@ try {
             effectiveMode = $mode
             softwareOnlyConfirmed = $confirmed
             observedUtc = $timeStr
-            nativeProcessRenderMode = if ($captureMode -eq 'LiveOperator') { [string]$raw.render.nativeProcessRenderMode } else { [string]$raw.nativeProcessRenderMode }
-            nativeRenderCapabilityTier = if ($captureMode -eq 'LiveOperator') { [int]$raw.render.nativeRenderCapabilityTier } else { [int]$raw.nativeRenderCapabilityTier }
+            nativeProcessRenderMode = if ($captureMode -eq 'AutomatedInstalledRuntime') { [string]$raw.render.nativeProcessRenderMode } else { [string]$raw.nativeProcessRenderMode }
+            nativeRenderCapabilityTier = if ($captureMode -eq 'AutomatedInstalledRuntime') { [int]$raw.render.nativeRenderCapabilityTier } else { [int]$raw.nativeRenderCapabilityTier }
         }
 
         $proofRel = "proofs/$i-$stage.json"
@@ -437,7 +437,7 @@ try {
     if ([bool]$preFirstHasAnyHwnd -or [string]::IsNullOrWhiteSpace($firstHwndCreatedUtc)) {
         throw 'Pre-first-HWND observation did not prove the actual first HWND boundary.'
     }
-    if ($captureMode -eq 'LiveOperator' -and $targetCaptureMap.Count -ne 20) {
+    if ($captureMode -eq 'AutomatedInstalledRuntime' -and $targetCaptureMap.Count -ne 20) {
         throw "Target process did not provide exactly 20 bound captures; found $($targetCaptureMap.Count)."
     }
 
@@ -468,7 +468,7 @@ try {
             $relPath = "captures/$language/$name.png"
 
             $captureUtc = $midTime.ToUniversalTime().ToString('O', [Globalization.CultureInfo]::InvariantCulture)
-            if ($captureMode -eq 'LiveOperator') {
+            if ($captureMode -eq 'AutomatedInstalledRuntime') {
                 $captureKey = "$language|$name"
                 if (-not $targetCaptureMap.ContainsKey($captureKey)) { throw "Target process did not bind required capture '$captureKey'." }
                 $targetBinding = $targetCaptureMap[$captureKey]
@@ -494,7 +494,7 @@ try {
                 }
                 $sourceIdentity = Get-RendererPngIdentity $CaptureSourceDirectory $sourcePng "Capture '$language|$name' source"
                 [IO.File]::WriteAllBytes($destPng, $sourceIdentity.Content)
-                if ($captureMode -eq 'LiveOperator') {
+                if ($captureMode -eq 'AutomatedInstalledRuntime') {
                     $captureUtc = [DateTimeOffset]([IO.File]::GetLastWriteTimeUtc($sourcePng)).ToUniversalTime().ToString('O', [Globalization.CultureInfo]::InvariantCulture)
                 }
             } elseif ($SyntheticCapturesForTesting) {
@@ -584,7 +584,7 @@ try {
     }
 
     $targetBindingReceipt = $null
-    if ($captureMode -eq 'LiveOperator') {
+    if ($captureMode -eq 'AutomatedInstalledRuntime') {
         $orderedTargetCaptures = @()
         foreach ($language in @('Thai','English')) {
             foreach ($name in $script:RendererCaptureNames) {
@@ -647,28 +647,25 @@ try {
     $limitNames = @(
         'cpuMaximumPercent', 'eventToWpfP95Milliseconds', 'cpuRegressionMaximumPercent',
         'cpuRegressionMaximumPercentagePoints', 'latencyRegressionMaximumPercent',
-        'uiStallP95Milliseconds', 'uiStallMaximumMilliseconds', 'soakAcDurationMinutes',
-        'soakBatteryDurationMinutes', 'soakBinMinutes', 'workingSetMaximumBytes',
-        'resourceSlopeMaximumBytesPerTenMinutes')
+        'uiStallP95Milliseconds', 'uiStallMaximumMilliseconds', 'workingSetMaximumBytes')
     $limits = [ordered]@{
         status = 'APPROVED'
         approvalReference = $script:RendererAuthorizedApprovalReference
     }
-    $limitValues = @(1, 250, 10, 0.5, 10, 50, 100, 60, 60, 5, 267386880, 1048576)
+    $limitValues = @(1, 250, 10, 0.5, 10, 50, 100, 267386880)
     for ($i = 0; $i -lt $limitNames.Count; $i++) {
         $limits[$limitNames[$i]] = $limitValues[$i]
     }
 
     $manifest = [ordered]@{
         '$id' = $script:RendererSchemaId
-        manifestVersion = 1
-        evidenceClassification = 'PackagedCompatibilityCandidate'
+        manifestVersion = 4
+        evidenceClassification = 'AutomatedPackagedCompatibilityCandidate'
         issue = 149
         governance = [ordered]@{
             decisionId = $script:RendererDecisionId
-            approvalReference = $script:RendererAuthorizedApprovalReference
-            originalApprovedUtc = $script:RendererDecisionApprovedUtc
-            correctedUtc = $script:RendererDecisionCorrectedUtc
+            approvalReference = $script:RendererV4ApprovalReference
+            approvedUtc = $script:RendererDecisionApprovedUtc
             decisionPayloadSha256 = $script:RendererDecisionPayloadSha256
             supersedesDecisionId = $script:RendererSupersedesDecisionId
             supersedesPayloadSha256 = $script:RendererSupersedesPayloadSha256
@@ -771,20 +768,20 @@ try {
             ownerNumericLimits = (Copy-RendererValue $limits)
             samplesStatus = 'NOT_OBSERVED'
             evidenceReceipt = $null
+            pipelineCommit = $null
         }
         review = [ordered]@{
             decision = 'NOT_OBSERVED'
-            approvalReference = $null
+            builderIdentity = $null
             reviewerIdentity = $null
             reviewerRole = $null
             reviewedUtc = $null
-            visualChecks = @(New-RendererMatrixCases $script:RendererVisualChecks)
             defects = @()
         }
         evidenceBoundary = [ordered]@{
-            packagedCompatibility = 'CANDIDATE'
+            packagedCompatibility = 'AUTOMATED_CANDIDATE'
             captureMode = $captureMode
-            humanReview = 'NOT_OBSERVED'
+            agentReview = 'NOT_OBSERVED'
             actualHerdrRuntime = 'NOT_OBSERVED'
             release = 'NOT_OBSERVED'
             creditGranted = $false
@@ -829,7 +826,7 @@ try {
     $finalManifestSha = (Get-RendererStableFileIdentity $outFull $finalManifestPath 'Published renderer manifest').Sha256
 
     [pscustomobject][ordered]@{
-        EvidenceClassification = 'PackagedCompatibilityCandidate'
+        EvidenceClassification = 'AutomatedPackagedCompatibilityCandidate'
         CaptureMode = $captureMode
         Status = 'ManifestCreated'
         OutputDirectory = $outFull
@@ -839,17 +836,17 @@ try {
         ThaiCaptures = 10
         EnglishCaptures = 10
         LifecycleStages = $observations.Count
-        TargetAppPid = if ($captureMode -eq 'LiveOperator') { [int]$targetAppIdentity.pid } else { $null }
-        TargetCorePid = if ($captureMode -eq 'LiveOperator') { [int]$targetCoreIdentity.pid } else { $null }
-        TargetAppStartTimeUtc = if ($captureMode -eq 'LiveOperator') { [string]$targetAppIdentity.startTimeUtc } else { $null }
-        TargetCoreStartTimeUtc = if ($captureMode -eq 'LiveOperator') { [string]$targetCoreIdentity.startTimeUtc } else { $null }
-        TargetAppExecutableSha256 = if ($captureMode -eq 'LiveOperator') { [string]$targetAppIdentity.sha256 } else { $null }
-        TargetCoreExecutableSha256 = if ($captureMode -eq 'LiveOperator') { [string]$targetCoreIdentity.sha256 } else { $null }
-        TargetObservationPipeClientPid = if ($captureMode -eq 'LiveOperator') { [int]$pipeClientPid } else { $null }
+        TargetAppPid = if ($captureMode -eq 'AutomatedInstalledRuntime') { [int]$targetAppIdentity.pid } else { $null }
+        TargetCorePid = if ($captureMode -eq 'AutomatedInstalledRuntime') { [int]$targetCoreIdentity.pid } else { $null }
+        TargetAppStartTimeUtc = if ($captureMode -eq 'AutomatedInstalledRuntime') { [string]$targetAppIdentity.startTimeUtc } else { $null }
+        TargetCoreStartTimeUtc = if ($captureMode -eq 'AutomatedInstalledRuntime') { [string]$targetCoreIdentity.startTimeUtc } else { $null }
+        TargetAppExecutableSha256 = if ($captureMode -eq 'AutomatedInstalledRuntime') { [string]$targetAppIdentity.sha256 } else { $null }
+        TargetCoreExecutableSha256 = if ($captureMode -eq 'AutomatedInstalledRuntime') { [string]$targetCoreIdentity.sha256 } else { $null }
+        TargetObservationPipeClientPid = if ($captureMode -eq 'AutomatedInstalledRuntime') { [int]$pipeClientPid } else { $null }
         TargetBindingReceipt = $targetBindingReceipt
         SoftwareOnlyConfirmed = (@($observations | Where-Object { $_.effectiveMode -ne 'SoftwareOnly' -or -not [bool]$_.softwareOnlyConfirmed }).Count -eq 0)
         PreFirstHwndProofConfirmed = (-not [bool]$preFirstHasAnyHwnd -and -not [string]::IsNullOrWhiteSpace($firstHwndCreatedUtc))
-        HumanReview = 'NOT_OBSERVED'
+        AgentReview = 'NOT_OBSERVED'
         ActualHerdrRuntime = 'NOT_OBSERVED'
         ReleaseCredit = $false
         PackagedCompatibilityReadyForIssue149Closure = $false

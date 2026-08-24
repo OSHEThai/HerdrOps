@@ -15,7 +15,7 @@
     "Bindings": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["GateReportSha256", "AppRuntimeReportSha256", "CoreRuntimeReportSha256", "PackageIdentityFileSha256", "PackageIdentityReceiptSha256", "PackageArchiveSha256", "PackageManifestSha256", "AppSha256", "CoreSha256", "HerdrExecutableSha256", "PerformanceReceiptSha256", "SoakReceiptSha256", "ControlSessionIdentity", "TargetSessionIdentity"],
+      "required": ["GateReportSha256", "AppRuntimeReportSha256", "CoreRuntimeReportSha256", "PackageIdentityFileSha256", "PackageIdentityReceiptSha256", "PackageArchiveSha256", "PackageManifestSha256", "AppSha256", "CoreSha256", "HerdrExecutableSha256", "PerformanceReceiptSha256", "PerformanceTelemetryBindingSha256", "PerformanceTransactionCommitSha256", "ControlSessionIdentity", "TargetSessionIdentity"],
       "properties": {
         "GateReportSha256": { "$ref": "#/$defs/sha" },
         "AppRuntimeReportSha256": { "$ref": "#/$defs/sha" },
@@ -28,7 +28,8 @@
         "CoreSha256": { "$ref": "#/$defs/sha" },
         "HerdrExecutableSha256": { "$ref": "#/$defs/sha" },
         "PerformanceReceiptSha256": { "$ref": "#/$defs/sha" },
-        "SoakReceiptSha256": { "$ref": "#/$defs/sha" },
+        "PerformanceTelemetryBindingSha256": { "$ref": "#/$defs/sha" },
+        "PerformanceTransactionCommitSha256": { "$ref": "#/$defs/sha" },
         "ControlSessionIdentity": { "type": "string", "minLength": 1 },
         "TargetSessionIdentity": { "type": "string", "minLength": 1 }
       }

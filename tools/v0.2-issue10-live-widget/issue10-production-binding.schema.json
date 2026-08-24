@@ -4,9 +4,9 @@
   "title": "HerdrOps v0.2 Issue #10 production widget binding",
   "type": "object",
   "additionalProperties": false,
-  "required": ["SchemaVersion", "EvidenceClassification", "Issue", "EvidenceRoot", "RunNonce", "EvidenceStartedUtc", "Source", "GateReport", "CoreRuntimeReport", "Package", "Performance", "SoakReceipt", "Runtime", "EvidenceBoundary"],
+  "required": ["SchemaVersion", "EvidenceClassification", "Issue", "EvidenceRoot", "RunNonce", "EvidenceStartedUtc", "Source", "GateReport", "CoreRuntimeReport", "Package", "Performance", "Runtime", "EvidenceBoundary"],
   "properties": {
-    "SchemaVersion": { "const": 1 },
+    "SchemaVersion": { "const": 4 },
     "EvidenceClassification": { "const": "Issue10ProductionBinding" },
     "Issue": { "const": 10 },
     "EvidenceRoot": { "type": "string", "minLength": 1 },
@@ -31,13 +31,16 @@
     "Performance": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["Receipt", "RawSource"],
+      "required": ["Receipt", "RawSource", "TelemetryBinding", "TransactionCommit", "RuntimeAppPath", "RuntimeCorePath"],
       "properties": {
         "Receipt": { "$ref": "#/$defs/artifact" },
-        "RawSource": { "$ref": "#/$defs/artifact" }
+        "RawSource": { "$ref": "#/$defs/artifact" },
+        "TelemetryBinding": { "$ref": "#/$defs/artifact" },
+        "TransactionCommit": { "$ref": "#/$defs/artifact" },
+        "RuntimeAppPath": { "type": "string", "minLength": 1 },
+        "RuntimeCorePath": { "type": "string", "minLength": 1 }
       }
     },
-    "SoakReceipt": { "$ref": "#/$defs/artifact" },
     "Runtime": {
       "type": "object",
       "additionalProperties": false,
@@ -51,10 +54,9 @@
     "EvidenceBoundary": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["Runtime", "Human", "Release", "CreditGranted"],
+      "required": ["Runtime", "Release", "CreditGranted"],
       "properties": {
         "Runtime": { "const": "NOT_OBSERVED" },
-        "Human": { "const": "NOT_OBSERVED" },
         "Release": { "const": "NOT_OBSERVED" },
         "CreditGranted": { "const": false }
       }

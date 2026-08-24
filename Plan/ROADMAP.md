@@ -67,9 +67,9 @@ Versioning: Semantic Versioning; every version has a version-local acceptance ga
 - Disconnect/reconnect แล้ว state กลับมาตรงกับ snapshot
 - Atomic package identity validation สำหรับ self-contained `win-x64` ZIP + PowerShell installer และ process-wide `SoftwareOnly` renderer policy
 - Renderer compatibility และ visual parity บน reference-host profile (`96D01ED15A536F2DF50B59B43CFDEB3683DCE8667AE2E7BF6A96124182FE13A3`, Windows 11 build 26220, non-elevated single-user)
-- Atomic Thai/English language matrix reports พร้อม disjoint capture roots และ Narrator accessibility
-- Display coverage 1920x1080 และ 1366x768 ที่ 100/125/150% พร้อม mixed-DPI transitions
-- Performance budgets (CPU <=1%, event-to-WPF p95 <=250 ms, UI-stall p95 <=50 ms max <=100 ms, regression <=10%) และ Soak 120 นาที (60 นาที AC + 60 นาที Battery, working set <=255 MiB, slope <=1 MiB/10 min)
+- Atomic Thai/English language matrix reports พร้อม disjoint capture roots และ automated UIA accessibility checks
+- Automated packaged display coverage แบบ off-screen viewport จำนวน 6 cases: 1920x1080 และ 1366x768 ที่ 100/125/150% พร้อม automated language/UIA-accessibility checks; v0.2 ไม่ต้องเปลี่ยน physical display และไม่ต้องมี ProductOwner/manual UI/Human attestation gate
+- Performance budgets (CPU <=1%, event-to-WPF p95 <=250 ms, UI-stall p95 <=50 ms max <=100 ms, regression <=10%) จาก AB/BA comparator จำนวน 24 acquisitions; v0.2 ไม่มี soak requirement
 - ไม่มี localhost HTTP listener และไม่ต้องใช้ Administrator
 
 ## v0.3.0 — Realtime and File Activity

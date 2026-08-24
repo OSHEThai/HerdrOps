@@ -18,7 +18,7 @@ Status: Planned acceptance framework
 | Version | Required evidence |
 |---|---|
 | v0.1 | Build, unit tests, actual WPF screenshots, design review |
-| v0.2 | Contract tests, actual Herdr snapshot/event/reconnect trace, atomic packaged compatibility, reference-host runtime matrix, display/accessibility coverage, and soak acceptance |
+| v0.2 | Contract tests, actual Herdr snapshot/event/reconnect trace, atomic packaged compatibility, automated reference-host rendering/accessibility coverage, no-soak performance checks, and role-distinct Agent review |
 | v0.3 | Replay determinism, live activity trace, bounded-read and redaction tests |
 | v0.4 | Complete assignment/delegation lifecycle trace with provenance |
 | v0.5 | Rule corpus plus role-distinct runtime review workflow |
@@ -45,30 +45,21 @@ Targets are gates to validate, not current achievements.
 
 If a target cannot be met, the release requires a recorded measurement, cause, impact and explicit waiver. Changing a target does not retroactively turn a failed run into a pass.
 
-### REC-ALL v2 authority and v0.2 compatibility gates
+### Historical v0.2 compatibility v3 authority (superseded)
 
-The authoritative owner record is `herdrops-rec-all-v2`, canonical payload SHA-256
-`48474610D2A20EE2F7CA2DAC0A3CCF45F919440C9C5D81EF5BA93AD7E524F62D`, in
-[Issue #149 comment 5380637664](https://github.com/OSHEThai/HerdrOps/issues/149#issuecomment-5380637664).
-It supersedes `herdrops-rec-all-v1` and payload SHA-256
-`DD8EB4D4BC896BE6A4765D409C5E34A16C4DBFB3D70F437EC915A50DF2FC1B1E` for validator binding.
-Only the v2 record and exact reference-host profile SHA-256
-`96D01ED15A536F2DF50B59B43CFDEB3683DCE8667AE2E7BF6A96124182FE13A3` may be admitted.
+D-025 is retained for audit history only. It cannot close the current milestone.
 
-Before v0.2 packaged-compatibility review, all of the following must pass against one exact candidate:
+### v0.2 release-first v4 authority and gates
 
-- Atomic package identity validation binds clean source commit/tree, canonical preparation profile, exact ZIP bytes, extracted package manifest, App/Core bytes, governed reference-host profile, and process-wide `SoftwareOnly` renderer policy. A rebuilt or changed byte set requires fresh evidence.
-- Renderer compatibility validation consumes that package receipt and validates the same held evidence bytes, pre-first-HWND and throughout-renderer observations, Thai/English capture bindings, immutable reference hashes, predeclared mask receipt, exact outside-mask pixels, bounded inside-mask differences, complete display/mixed-DPI/accessibility/environment matrices, AB/BA performance samples, and AC/battery soak samples.
-- Performance requires CPU <=1%, event-to-WPF p95 <=250 ms, renderer CPU regression <=10% and <=0.50 percentage point, latency regression <=10%, UI-stall p95 <=50 ms and maximum <=100 ms, one warm-up and five measured repetitions in each AB and BA order, and no missing sample.
-- Soak requires 60 minutes on AC and 60 minutes on battery, five-minute bins, combined working-set maximum <=255 MiB, resource slope <=1 MiB per ten minutes, and no missing bin or sample.
-- Display coverage is 1920x1080 and 1366x768 at 100/125/150 percent, plus mixed-DPI 100<->150 and 125<->150 in both directions with primary switch and unplug. Narrator and every declared accessibility check are mandatory.
-- The only supported Runtime cohort is Windows 11 x64 build 26220, local non-elevated single-user, governed hardware/profile, physical display, AC/battery. RDP, VM Runtime, ARM64, remote/cloud, and multi-user are excluded. VM evidence is clean-install-only and receives no Runtime credit.
-- Every visual difference is dispositioned; no High/Critical security finding remains open. Critical invariants are not waivable. A later Plan-authorized performance waiver is exact-candidate-specific and never retroactive.
+The current record is `herdrops-v0.2-release-first-v4`, approved UTC `2026-08-24T14:31:14Z`, payload SHA-256 `4958E318AF4960C5BEC8B12BA69AED384236C91570BB86F872057066939ED904`, in [Issue #149 comment 5396694185](https://github.com/OSHEThai/HerdrOps/issues/149#issuecomment-5396694185). It supersedes v3 for all v0.2 renderer/release acceptance. Only manifest v4 is closable; v1-v3 are historical.
 
-CI runs the package and renderer verifier self-tests in PowerShell 7 and Windows PowerShell 5.1.
-Those self-tests are Static/Contract/Synthetic verifier evidence only: they do not build or validate a
-real distributable, observe actual Herdr Runtime, perform clean install, supply Human GO, or grant
-Release/publication credit.
+- Bind the exact clean source commit/tree, canonical package receipt, ZIP, extracted inventory, App/Core bytes, governed profile, and process-wide `SoftwareOnly` state before the first HWND and throughout automated capture.
+- Produce Thai and English captures through deterministic packaged rendering or automated installed-runtime capture. Exercise six off-screen viewport configurations: 1920x1080 and 1366x768 at 100/125/150%. Do not require physical display changes.
+- Pass exact pixel/security checks, automated language and accessibility assertions, and automated no-soak AB/BA performance/resource checks: CPU <=1%, event-to-WPF p95 <=250 ms, UI-stall p95 <=50 ms and maximum <=100 ms, and Hardware-versus-SoftwareOnly regression <=10%. Require a role-distinct independent Agent review with no open High/Critical defect.
+- Do not require or admit soak fields, receipts, bins, durations, power-source/current, resource-slope soak evidence, Narrator/manual perception, ProductOwner UI/UAT, Human visual attestation, Human trust root, Human freshness, or Human replay-ledger input for v0.2 closure.
+- Preserve automated actual-installed-Herdr Runtime, clean install/upgrade/uninstall, no-listener/non-elevated/security checks, exact-head CI, issue mapping, and version-local release integrity. No automated verifier may self-grant Runtime or Release without its separately bound gate evidence.
+
+Historical/manual HumanVisual tooling is optional and non-authoritative for v0.2. Its absence or NO_GO cannot block v4; its presence cannot grant v0.2 closure or Release credit.
 
 ### v0.2 reference-host working-set authority
 

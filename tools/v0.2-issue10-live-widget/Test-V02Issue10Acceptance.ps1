@@ -6,7 +6,6 @@ param(
     [Parameter(Mandatory = $true)][string]$ThaiRuntimeGatePath,
     [Parameter(Mandatory = $true)][string]$EnglishRuntimeGatePath,
     [Parameter(Mandatory = $true)][string]$PerformanceReceiptPath,
-    [Parameter(Mandatory = $true)][string]$SoakReceiptPath,
     [Parameter(Mandatory = $true)][string]$PackageIdentityPath,
     [Parameter(Mandatory = $true)][string]$PackageArchivePath,
     [Parameter(Mandatory = $true)][string]$ExtractedPackageRoot,
@@ -51,7 +50,6 @@ $result = Invoke-I10Issue10Acceptance `
     -ThaiRuntimeGatePath $ThaiRuntimeGatePath `
     -EnglishRuntimeGatePath $EnglishRuntimeGatePath `
     -PerformanceReceiptPath $PerformanceReceiptPath `
-    -SoakReceiptPath $SoakReceiptPath `
     -ExpectedSourceCommit $ExpectedSourceCommit `
     -ExpectedSourceTree $ExpectedSourceTree `
     -RunNonce $RunNonce `
@@ -61,10 +59,9 @@ $result = Invoke-I10Issue10Acceptance `
 
 if ([string]$result.Candidate.EvidenceClassification -cne 'Issue10RuntimeCandidate' -or
     [string]$result.Candidate.EvidenceBoundary.Runtime -cne 'NOT_OBSERVED' -or
-    [string]$result.Candidate.EvidenceBoundary.Human -cne 'NOT_OBSERVED' -or
     [string]$result.Candidate.EvidenceBoundary.Release -cne 'NOT_OBSERVED' -or
     [bool]$result.Candidate.EvidenceBoundary.CreditGranted) {
-    throw 'Issue #10 verifier attempted to grant Runtime, Human, Release, or credit.'
+    throw 'Issue #10 verifier attempted to grant Runtime, Release, or credit.'
 }
 
 $result | ConvertTo-Json -Depth 20 -Compress | Write-Output
