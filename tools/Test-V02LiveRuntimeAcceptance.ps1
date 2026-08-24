@@ -28,10 +28,6 @@ param(
     [ValidateNotNullOrEmpty()]
     [string]$ExtractedPackageRoot,
 
-    [Parameter(Mandatory)]
-    [ValidateNotNullOrEmpty()]
-    [string]$TargetAgentSessionReference,
-
     [string]$Issue10WidgetReportPath = '',
 
     [string]$Issue10BindingManifestPath = '',
@@ -259,6 +255,9 @@ function Write-FailureGateReport {
         [AllowEmptyString()][string]$CoreSha256 = 'NOT_OBSERVED',
         [AllowEmptyString()][string]$TrxSelectionReceiptSha256 = 'NOT_OBSERVED',
         [AllowEmptyString()][string]$TargetAgentSessionReference = 'NOT_OBSERVED',
+        [AllowEmptyString()][string]$TargetAgentSessionEvidenceSource = 'NOT_OBSERVED',
+        [bool]$TargetAgentSessionObservableByGate = $false,
+        [AllowEmptyString()][string]$TargetAgentSessionBoundary = 'The gate did not complete exact pre/post-restart Herdr CLI Agent-session observation.',
         [AllowEmptyString()][string]$FailureType = 'TerminatingFailure'
     )
 
@@ -301,8 +300,9 @@ function Write-FailureGateReport {
             "CoreSha256: $CoreSha256",
             "TrxSelectionReceiptSha256: $TrxSelectionReceiptSha256",
             "TargetAgentSessionReference: $TargetAgentSessionReference",
-            'TargetAgentSessionReferenceEvidenceSource: OperatorAttestation',
-            'TargetAgentSessionReferenceObservableByGate: false',
+            "TargetAgentSessionReferenceEvidenceSource: $TargetAgentSessionEvidenceSource",
+            "TargetAgentSessionReferenceObservableByGate: $($TargetAgentSessionObservableByGate.ToString().ToLowerInvariant())",
+            "TargetAgentSessionReferenceBoundary: $TargetAgentSessionBoundary",
             "CaptureDirectory: $CaptureDirectory",
             "CoreRuntimeReportPath: $CoreReportPath",
             "CoreRuntimeReportSha256: $(Get-OptionalFileSha256 -Path $CoreReportPath)",
@@ -984,7 +984,9 @@ $trustedReferenceHost = $null
 $observedAppLanguage = 'NOT_OBSERVED'
 $packageBinding = $null
 $trxEvidence = $null
-$targetAgentSessionAttestation = $null
+$targetAgentSessionBefore = $null
+$targetAgentSessionAfter = $null
+$targetAgentSessionEvidence = $null
 $issue9SideBySideObservation = $null
 $issue10SameRunBinding = $null
 $issue10WidgetOutputCreated = $false
@@ -1049,6 +1051,9 @@ $sessionTopology = Assert-V02AcceptanceSessionTopology `
     -SessionListJson ($sessionListOutput -join [Environment]::NewLine) `
     -ControlSocketPath $controlHerdrSocketPath `
     -TargetSocketPath $targetHerdrSocketPath
+$targetAgentSessionBefore = Get-V02TargetAgentSessionObservation `
+    -HerdrExecutable $HerdrExecutable `
+    -TargetSessionName $sessionTopology.TargetSessionName
 
 $controlPaneOutput = @(& $HerdrExecutable pane current --current)
 if ($LASTEXITCODE -ne 0 -or $controlPaneOutput.Count -eq 0) {
@@ -1095,7 +1100,6 @@ $sourceIdentity = Get-ExpectedCleanSourceIdentity `
 $sourceCommit = $sourceIdentity.SourceCommit
 $sourceTree = $sourceIdentity.SourceTree
 $preRunGitTreeClean = [string]$sourceIdentity.GitTreeClean
-$targetAgentSessionAttestation = New-V02TargetAgentSessionAttestation -Reference $TargetAgentSessionReference
 $buildStartedUtc = [DateTime]::UtcNow
 & (Join-Path $PSScriptRoot 'Invoke-Build.ps1') -Configuration $Configuration -VerifyFormat
 if ($LASTEXITCODE -ne 0) { throw 'Build and automated tests failed before runtime acceptance.' }
@@ -1211,6 +1215,14 @@ try {
             } catch {
                 # The App replaces the progress file atomically; a later poll will retry.
             }
+        }
+        if ($lastPhase -ceq 'herdr-reconnected-waiting-for-post-reconnect-update' -and $null -eq $targetAgentSessionAfter) {
+            $targetAgentSessionAfter = Get-V02TargetAgentSessionObservation `
+                -HerdrExecutable $HerdrExecutable `
+                -TargetSessionName $sessionTopology.TargetSessionName
+            $targetAgentSessionEvidence = Assert-V02TargetAgentSessionContinuity `
+                -BeforeRestart $targetAgentSessionBefore `
+                -AfterRestart $targetAgentSessionAfter
         }
 
         $runtimeProcessIds = @($coreProcess.Id, $appProcess.Id)
@@ -1336,6 +1348,15 @@ foreach ($requiredReport in @($coreReportPath, $appReportPath, $progressPath, $p
         throw "Required runtime report is missing: $requiredReport"
     }
 }
+if ($null -eq $targetAgentSessionEvidence) {
+    throw 'The gate did not observe exact native Agent-session continuity at the target reconnect phase.'
+}
+$targetAgentSessionAtCompletion = Get-V02TargetAgentSessionObservation `
+    -HerdrExecutable $HerdrExecutable `
+    -TargetSessionName $sessionTopology.TargetSessionName
+$targetAgentSessionEvidence = Assert-V02TargetAgentSessionContinuity `
+    -BeforeRestart $targetAgentSessionEvidence `
+    -AfterRestart $targetAgentSessionAtCompletion
 $coreReport = Get-Content -LiteralPath $coreReportPath -Raw | ConvertFrom-Json
 $appReport = ConvertFrom-V02CheckpointJson (
     Get-Content -LiteralPath $appReportPath -Raw)
@@ -1820,10 +1841,10 @@ $reportLines = @(
     "PackageProfileFileSha256: $($packageBinding.ProfileFileSha256)",
     "PackageProfileCanonicalSha256: $($packageBinding.ProfileCanonicalSha256)",
     "PackageValidationEvidenceClass: $($packageBinding.ValidationEvidenceClass)",
-    "TargetAgentSessionReference: $($targetAgentSessionAttestation.Reference)",
-    "TargetAgentSessionReferenceEvidenceSource: $($targetAgentSessionAttestation.EvidenceSource)",
-    "TargetAgentSessionReferenceObservableByGate: $($targetAgentSessionAttestation.ObservableByGate)",
-    "TargetAgentSessionReferenceBoundary: $($targetAgentSessionAttestation.Boundary)",
+    "TargetAgentSessionReference: $($targetAgentSessionEvidence.Reference)",
+    "TargetAgentSessionReferenceEvidenceSource: $($targetAgentSessionEvidence.EvidenceSource)",
+    "TargetAgentSessionReferenceObservableByGate: $($targetAgentSessionEvidence.ObservableByGate)",
+    "TargetAgentSessionReferenceBoundary: $($targetAgentSessionEvidence.Boundary)",
     "HerdrReleaseId: $($coreReport.Admission.ReleaseId)",
     "HerdrExecutableSha256: $($coreReport.Admission.ExecutableSha256)",
     "HerdrOpsCoreExecutableSha256BeforeLaunch: $coreExecutableHashBeforeLaunch",
@@ -1936,7 +1957,7 @@ $reportLines = @(
     'EvidenceBoundary:',
     'This gate proves exact-hash-bound actual Herdr snapshot/Agent-status-event/reconnect behavior, separate Acceptance-control and Agent-Lab target sessions, Core-to-App runtime-health propagation, live production WPF page and Widget rendering, Dashboard-close continuity, state-hash correspondence, measured latency/resources, no owned TCP listener, and non-elevated operation for this host and run.',
     'It launches the App and Core from the package root whose receipt, ZIP, manifest, source, and component bytes passed the committed package validator. This is runtime use of validated package bytes, not clean-machine installation or Release evidence.',
-    'The native target Agent/session reference is operator attestation because the gate cannot independently observe that client-owned session identity.',
+    'The gate directly observed and exact-bound the same structured native Agent session through Herdr CLI metadata before restart, at reconnect, and through completion.',
     'It does not prove clean-machine installation, later-version features, independent human review, or future Herdr releases.'
 )
 $reportLines | Set-Content -LiteralPath $gateReportPath -Encoding utf8
@@ -2053,7 +2074,10 @@ if($null-ne$issue10PublishedBinding){$issue10PublishedBinding.Widget.HeldStream.
         -AppSha256 $(if($null -eq $packageBinding){'NOT_OBSERVED'}else{$packageBinding.AppSha256}) `
         -CoreSha256 $(if($null -eq $packageBinding){'NOT_OBSERVED'}else{$packageBinding.CoreSha256}) `
         -TrxSelectionReceiptSha256 $(if($null -eq $trxEvidence){'NOT_OBSERVED'}else{$trxEvidence.ReceiptSha256}) `
-        -TargetAgentSessionReference $(if($null -eq $targetAgentSessionAttestation){'NOT_OBSERVED'}else{$targetAgentSessionAttestation.Reference}) `
+        -TargetAgentSessionReference $(if($null-ne$targetAgentSessionEvidence){$targetAgentSessionEvidence.Reference}elseif($null-ne$targetAgentSessionBefore){$targetAgentSessionBefore.Reference}else{'NOT_OBSERVED'}) `
+        -TargetAgentSessionEvidenceSource $(if($null-ne$targetAgentSessionEvidence){$targetAgentSessionEvidence.EvidenceSource}elseif($null-ne$targetAgentSessionBefore){'HerdrCliAgentMetadataPreRestartOnly'}else{'NOT_OBSERVED'}) `
+        -TargetAgentSessionObservableByGate ($null-ne$targetAgentSessionEvidence) `
+        -TargetAgentSessionBoundary $(if($null-ne$targetAgentSessionEvidence){$targetAgentSessionEvidence.Boundary}else{'The gate did not complete exact pre/post-restart Herdr CLI Agent-session observation.'}) `
         -FailureType $failureType
     throw $failureRecord
 }

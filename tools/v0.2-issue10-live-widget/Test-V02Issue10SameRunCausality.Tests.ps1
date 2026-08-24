@@ -23,7 +23,7 @@ function Assert-Issue10AppBuildOutput([string]$OutputDirectory){
 }
 function Invoke-GateHostile([string[]]$ExtraArguments){
     $engine=(Get-Process -Id $PID).Path
-    $arguments=@('-NoLogo','-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',$gatePath,'-TargetHerdrSocketPath','missing.sock','-ExpectedSourceCommit',('a'*40),'-ExpectedSourceTree',('b'*40),'-EvidenceRunNonce',('c'*32),'-PackageIdentityPath','missing-identity.json','-PackageArchivePath','missing.zip','-ExtractedPackageRoot','missing-package','-TargetAgentSessionReference','same-run-hostile')+$ExtraArguments
+    $arguments=@('-NoLogo','-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',$gatePath,'-TargetHerdrSocketPath','missing.sock','-ExpectedSourceCommit',('a'*40),'-ExpectedSourceTree',('b'*40),'-EvidenceRunNonce',('c'*32),'-PackageIdentityPath','missing-identity.json','-PackageArchivePath','missing.zip','-ExtractedPackageRoot','missing-package')+$ExtraArguments
     $priorPreference=$ErrorActionPreference;$priorExitCode=$global:LASTEXITCODE;$ErrorActionPreference='Continue'
     try{$output=@(& $engine @arguments 2>&1);$exit=$global:LASTEXITCODE}finally{$ErrorActionPreference=$priorPreference;$global:LASTEXITCODE=$priorExitCode}
     return [pscustomobject]@{ExitCode=$exit;Text=($output-join"`n")}
