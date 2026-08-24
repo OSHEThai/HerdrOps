@@ -305,6 +305,7 @@ function Get-CiRequiredPartitionJobKeys {
         'v02-gates'
         'v02-package-gates'
         'v02-acceptance-gates'
+        'v02-composer-ps5-gate'
         'v03-v04-gates'
         'v05-v06-gates'
         'v07-v10-gates'
@@ -384,6 +385,8 @@ function Get-CiGovernedCommandInventory {
         @{ Pattern = 'Invoke-V02SoakMeasurement\.SelfTests\.ps1'; Job = 'v02-acceptance-gates'; Shell = 'powershell' },
         @{ Pattern = 'Test-V02Issue10SameRunCausality\.Tests\.ps1'; Job = 'v02-acceptance-gates'; Shell = 'pwsh' },
         @{ Pattern = 'Test-V02Issue10SameRunCausality\.Tests\.ps1'; Job = 'v02-acceptance-gates'; Shell = 'powershell' },
+        @{ Pattern = 'Publish-V02Issue10PerformanceSoakEvidence\.SelfTests\.ps1'; Job = 'v02-acceptance-gates'; Shell = 'pwsh' },
+        @{ Pattern = 'Publish-V02Issue10PerformanceSoakEvidence\.SelfTests\.ps1'; Job = 'v02-composer-ps5-gate'; Shell = 'powershell' },
 
         @{ Pattern = 'Test-V03ImplementationGateTests\.ps1'; Job = 'v03-v04-gates'; Shell = 'pwsh' },
         @{ Pattern = 'Test-V03RuntimeCaptureProvenanceTests\.ps1'; Job = 'v03-v04-gates'; Shell = 'pwsh' },
@@ -569,6 +572,7 @@ function Test-CiAggregatorContract {
         'v02-gates' = 'success'
         'v02-package-gates' = 'success'
         'v02-acceptance-gates' = 'success'
+        'v02-composer-ps5-gate' = 'success'
         'v03-v04-gates' = 'success'
         'v05-v06-gates' = 'success'
         'v07-v10-gates' = 'success'
@@ -674,4 +678,4 @@ Test-BuildScriptScheduling -ScriptPath $buildScript
 Test-CiWorkflowScheduling -WorkflowPath $ciWorkflowPath
 
 Write-Output 'Canonical solution test-project scheduling: PASS (max concurrency 1, AST solution target pinned)'
-Write-Output 'CI workflow partitioned job and governed step scheduling: PASS (7 parallel jobs, exact inventory)'
+Write-Output 'CI workflow partitioned job and governed step scheduling: PASS (8 parallel jobs, exact inventory)'

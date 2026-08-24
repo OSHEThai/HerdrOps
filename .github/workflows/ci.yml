@@ -492,10 +492,6 @@ jobs:
         shell: pwsh
         run: ./tools/v0.2-issue10-live-widget/Publish-V02Issue10PerformanceSoakEvidence.SelfTests.ps1
 
-      - name: Run v0.2 Issue #10 evidence composer selftests (Windows PowerShell 5.1)
-        shell: powershell
-        run: ./tools/v0.2-issue10-live-widget/Publish-V02Issue10PerformanceSoakEvidence.SelfTests.ps1
-
       - name: Upload v0.2 live Widgets gate report
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -513,6 +509,31 @@ jobs:
           name: v0.2-language-mode-gate-report
           path: artifacts/release-gates/v0.2.0/issue-63
           if-no-files-found: warn
+
+  v02-composer-ps5-gate:
+    name: v0.2 Issue #10 Evidence Composer (Windows PowerShell 5.1)
+    runs-on: windows-latest
+    timeout-minutes: 150
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Run v0.2 acceptance canonical Release build prerequisite (clean runner)
+        shell: pwsh
+        run: ./tools/Invoke-Build.ps1 -Configuration Release -VerifyFormat
+
+      # Static/Synthetic only; this independently scheduled PS5 composer suite
+      # does not start HerdrOps/Herdr or grant Runtime/Release credit.
+      - name: Run v0.2 Issue #10 evidence composer selftests (Windows PowerShell 5.1)
+        shell: powershell
+        run: ./tools/v0.2-issue10-live-widget/Publish-V02Issue10PerformanceSoakEvidence.SelfTests.ps1
 
   v03-v04-gates:
     name: v0.3 & v0.4 Milestone Gates
@@ -1129,6 +1150,7 @@ jobs:
       - v02-gates
       - v02-package-gates
       - v02-acceptance-gates
+      - v02-composer-ps5-gate
       - v03-v04-gates
       - v05-v06-gates
       - v07-v10-gates
@@ -1142,6 +1164,7 @@ jobs:
             [pscustomobject]@{ Job = 'v02-gates'; Result = '${{ needs.v02-gates.result }}' }
             [pscustomobject]@{ Job = 'v02-package-gates'; Result = '${{ needs.v02-package-gates.result }}' }
             [pscustomobject]@{ Job = 'v02-acceptance-gates'; Result = '${{ needs.v02-acceptance-gates.result }}' }
+            [pscustomobject]@{ Job = 'v02-composer-ps5-gate'; Result = '${{ needs.v02-composer-ps5-gate.result }}' }
             [pscustomobject]@{ Job = 'v03-v04-gates'; Result = '${{ needs.v03-v04-gates.result }}' }
             [pscustomobject]@{ Job = 'v05-v06-gates'; Result = '${{ needs.v05-v06-gates.result }}' }
             [pscustomobject]@{ Job = 'v07-v10-gates'; Result = '${{ needs.v07-v10-gates.result }}' }
@@ -1151,4 +1174,4 @@ jobs:
             $summary = ($nonSuccess | ForEach-Object { "$($_.Job)=$($_.Result)" }) -join ', '
             throw "CI partition failed closed; non-success dependencies: $summary"
           }
-          Write-Host "All 7 partitioned HerdrOps CI jobs completed successfully."
+          Write-Host "All 8 partitioned HerdrOps CI jobs completed successfully."
