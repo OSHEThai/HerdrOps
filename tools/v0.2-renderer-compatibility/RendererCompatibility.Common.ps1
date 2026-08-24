@@ -120,7 +120,7 @@ namespace RendererCompatibility {
 
         public static void RenameDirectory(SafeFileHandle handle, SafeFileHandle destinationParentHandle, string destinationLeafName) {
             if (destinationLeafName.IndexOfAny(new[] { '\\', '/' }) >= 0 || destinationLeafName == "." || destinationLeafName == "..")
-                throw new ArgumentException("Held-handle directory rename requires one destination leaf name.", nameof(destinationLeafName));
+                throw new ArgumentException("Held-handle directory rename requires one destination leaf name.", "destinationLeafName");
             byte[] name = Encoding.Unicode.GetBytes(destinationLeafName);
             int rootOffset = IntPtr.Size == 8 ? 8 : 4;
             int lengthOffset = IntPtr.Size == 8 ? 16 : 8;
