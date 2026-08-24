@@ -109,7 +109,6 @@ $targetAgentLabSocket = Join-Path $env:APPDATA 'herdr\herdr.sock'
 $packageIdentityPath = '<identity.json>'
 $packageArchivePath = '<HerdrOps-0.2.0-win-x64.zip>'
 $extractedPackageRoot = '<exact-extracted-package-root>'
-$targetAgentSessionReference = '<operator-attested-native-agent-session-reference>'
 ./tools/Test-V02HerdrRuntime.ps1 `
     -TargetHerdrSocketPath $targetAgentLabSocket `
     -ExpectedSourceCommit $expectedSourceCommit `
@@ -127,9 +126,12 @@ $targetAgentSessionReference = '<operator-attested-native-agent-session-referenc
     -PackageIdentityPath $packageIdentityPath `
     -PackageArchivePath $packageArchivePath `
     -ExtractedPackageRoot $extractedPackageRoot `
-    -TargetAgentSessionReference $targetAgentSessionReference `
     -Language Thai `
     -DurationSeconds 600
+
+# The gate derives the native Agent session from structured `herdr agent list`
+# metadata before restart, at reconnect, and again at completion. No operator-
+# supplied session reference is accepted.
 
 # Verify SQLite WAL restart/migration and current-user Core-to-App IPC evidence
 ./tools/Test-V02StateStoreIpc.ps1

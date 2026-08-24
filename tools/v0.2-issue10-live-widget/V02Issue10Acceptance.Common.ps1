@@ -115,6 +115,20 @@ function Assert-I10ExactProperties {
     }
 }
 
+function ConvertFrom-I10NativeSessionReference {
+    param([Parameter(Mandatory = $true)][string]$Reference)
+    try { $native = $Reference | ConvertFrom-Json } catch { throw 'Runtime target-session reference is not structured Herdr CLI JSON.' }
+    Assert-I10ExactProperties $native @('agent','kind','source','value') 'Runtime target-session reference'
+    foreach ($name in @('agent','kind','source','value')) {
+        $value = $native.PSObject.Properties[$name].Value
+        if ($value -isnot [string] -or [string]::IsNullOrWhiteSpace([string]$value) -or [string]$value -match '[\r\n]') { throw "Runtime target-session reference '$name' is invalid." }
+    }
+    if ([string]$native.kind -cne 'id' -or [string]$native.source -cne "herdr:$([string]$native.agent)") { throw 'Runtime target-session reference does not bind Herdr CLI native Agent metadata.' }
+    $canonical = [pscustomobject][ordered]@{ agent=[string]$native.agent; kind=[string]$native.kind; source=[string]$native.source; value=[string]$native.value } | ConvertTo-Json -Compress
+    if ($Reference -cne $canonical) { throw 'Runtime target-session reference is not the exact canonical Herdr CLI metadata form.' }
+    return $native
+}
+
 function Assert-I10String {
     param([Parameter(Mandatory = $true)]$Value,[Parameter(Mandatory = $true)][string]$Context)
     if ($Value -isnot [string] -or [string]::IsNullOrWhiteSpace([string]$Value)) {
@@ -473,7 +487,7 @@ function Get-I10Lines {
             if ($section -eq 'EvidenceBoundary' -and $line -in @(
                 'This gate proves exact-hash-bound actual Herdr snapshot/Agent-status-event/reconnect behavior, separate Acceptance-control and Agent-Lab target sessions, Core-to-App runtime-health propagation, live production WPF page and Widget rendering, Dashboard-close continuity, state-hash correspondence, measured latency/resources, no owned TCP listener, and non-elevated operation for this host and run.',
                 'It launches the App and Core from the package root whose receipt, ZIP, manifest, source, and component bytes passed the committed package validator. This is runtime use of validated package bytes, not clean-machine installation or Release evidence.',
-                'The native target Agent/session reference is operator attestation because the gate cannot independently observe that client-owned session identity.',
+                'The gate directly observed and exact-bound the same structured native Agent session through Herdr CLI metadata before restart, at reconnect, and through completion.',
                 'It does not prove clean-machine installation, later-version features, independent human review, or future Herdr releases.'
             )) { continue }
             throw "Issue #10 gate report has malformed or ignored content at line ${lineNumber}: '$line'."
@@ -553,11 +567,12 @@ function Get-I10GateReport {
         $value = Get-I10Field -Fields $fields -Names @($name) -Context "Runtime $name"
         if ([string]::IsNullOrWhiteSpace($value) -or $value -match '^(NOT_OBSERVED|NOT CLAIMED)$') { throw "Runtime $name is not bound to an observed/attested identity." }
     }
-    $attestationSource = Get-I10Field -Fields $fields -Names @('TargetAgentSessionReferenceEvidenceSource') -Context 'Runtime target-session attestation source'
-    if ($attestationSource -cne 'OperatorAttestation') { throw 'Runtime target-session authority is not explicitly bounded to operator attestation.' }
+    $nativeSession = ConvertFrom-I10NativeSessionReference (Get-I10Field -Fields $fields -Names @('TargetAgentSessionReference') -Context 'Runtime target-session reference')
+    $attestationSource = Get-I10Field -Fields $fields -Names @('TargetAgentSessionReferenceEvidenceSource') -Context 'Runtime target-session evidence source'
+    if ($attestationSource -cne 'HerdrCliAgentMetadata') { throw 'Runtime target-session authority is not direct Herdr CLI Agent metadata.' }
     $observableByGate = Get-I10Field -Fields $fields -Names @('TargetAgentSessionReferenceObservableByGate') -Context 'Runtime target-session observability boundary'
-    if ($observableByGate -notin @('false','False')) { throw 'Runtime target-session reference must remain non-observable by the gate.' }
-    Assert-I10FieldEqual $fields @('TargetAgentSessionReferenceBoundary') 'The gate records this native Agent/session reference but cannot independently observe or prove restoration of the native Agent session.' 'Runtime target-session authority boundary'
+    if ($observableByGate -cne 'true') { throw 'Runtime target-session reference must be directly observable by the gate.' }
+    Assert-I10FieldEqual $fields @('TargetAgentSessionReferenceBoundary') 'The gate directly observed and exact-bound the same structured native Agent session through Herdr CLI metadata before restart, at reconnect, and through completion.' 'Runtime target-session authority boundary'
     foreach ($name in @('SnapshotObserved','EventObserved','ReconnectObserved','DashboardClosed','UpdateAfterDashboardClose')) { Assert-I10FieldEqual $fields @($name) 'True' "Runtime semantic flag $name" }
     Assert-I10FieldEqual $fields @('CoreAcceptedEventKindCheck') 'PASS' 'Runtime event-kind check'
     Assert-I10FieldEqual $fields @('SemanticCaptureBindingCheck') 'PASS' 'Runtime semantic capture check'

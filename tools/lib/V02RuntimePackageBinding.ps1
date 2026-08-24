@@ -416,15 +416,98 @@ function Save-V02FreshTrxEvidence {
     }
 }
 
-function New-V02TargetAgentSessionAttestation {
-    param([Parameter(Mandatory = $true)][string]$Reference)
-    if ([string]::IsNullOrWhiteSpace($Reference) -or $Reference.Length -gt 512 -or $Reference -match '[\r\n]') {
-        throw 'TargetAgentSessionReference must be a non-empty single-line value of at most 512 characters.'
+function Assert-V02ExactObjectProperties {
+    param(
+        [Parameter(Mandatory = $true)]$Value,
+        [Parameter(Mandatory = $true)][string[]]$Expected,
+        [Parameter(Mandatory = $true)][string]$Context
+    )
+    if ($null -eq $Value) { throw "$Context is missing." }
+    $actual = @($Value.PSObject.Properties.Name)
+    if ($actual.Count -ne $Expected.Count -or
+        @($actual | Where-Object { $Expected -cnotcontains $_ }).Count -ne 0 -or
+        @($Expected | Where-Object { $actual -cnotcontains $_ }).Count -ne 0) {
+        throw "$Context has an unexpected property set."
+    }
+}
+
+function ConvertFrom-V02HerdrAgentListObservation {
+    param(
+        [Parameter(Mandatory = $true)][string]$AgentListJson,
+        [Parameter(Mandatory = $true)][string]$TargetSessionName
+    )
+    if ($TargetSessionName -cnotmatch '^[a-z0-9][a-z0-9_-]{0,63}$') {
+        throw 'Target Herdr session name is invalid.'
+    }
+    if ([string]::IsNullOrWhiteSpace($AgentListJson)) { throw 'Target Herdr Agent list output is empty.' }
+    try { $document = $AgentListJson | ConvertFrom-Json } catch { throw 'Target Herdr Agent list returned invalid JSON.' }
+    Assert-V02ExactObjectProperties $document @('id','result') 'Target Herdr Agent list response'
+    Assert-V02ExactObjectProperties $document.result @('agents','type') 'Target Herdr Agent list result'
+    if ([string]$document.result.type -cne 'agent_list') { throw 'Target Herdr Agent list returned an unexpected result type.' }
+    $agents = @($document.result.agents)
+    if ($agents.Count -ne 1) { throw "Target Herdr session must expose exactly one managed Agent; observed $($agents.Count)." }
+    $entry = $agents[0]
+    foreach ($required in @('agent','agent_session','name','pane_id')) {
+        if ($null -eq $entry.PSObject.Properties[$required]) { throw "Target Herdr Agent omitted '$required'." }
+    }
+    $agentName = [string]$entry.name
+    $paneId = [string]$entry.pane_id
+    $agentKind = [string]$entry.agent
+    if ($agentName -cnotmatch '^[a-z][a-z0-9_-]{0,31}$') { throw 'Target Herdr Agent name is invalid.' }
+    if ([string]::IsNullOrWhiteSpace($paneId) -or $paneId.Length -gt 128 -or $paneId -match '[\r\n]') { throw 'Target Herdr Agent pane ID is invalid.' }
+    if ([string]::IsNullOrWhiteSpace($agentKind) -or $agentKind.Length -gt 64 -or $agentKind -match '[\r\n]') { throw 'Target Herdr Agent kind is invalid.' }
+    $native = $entry.agent_session
+    Assert-V02ExactObjectProperties $native @('agent','kind','source','value') 'Target Herdr native Agent session'
+    foreach ($property in @('agent','kind','source','value')) {
+        $text = [string]$native.$property
+        if ([string]::IsNullOrWhiteSpace($text) -or $text.Length -gt 512 -or $text -match '[\r\n]') {
+            throw "Target Herdr native Agent session '$property' is invalid."
+        }
+    }
+    if ([string]$native.agent -cne $agentKind -or [string]$native.kind -cne 'id' -or [string]$native.source -cne "herdr:$agentKind") {
+        throw 'Target Herdr native Agent session does not bind the detected Agent kind.'
+    }
+    $structured = [pscustomobject][ordered]@{
+        agent = [string]$native.agent
+        kind = [string]$native.kind
+        source = [string]$native.source
+        value = [string]$native.value
     }
     return [pscustomobject][ordered]@{
-        Reference = $Reference
-        EvidenceSource = 'OperatorAttestation'
-        ObservableByGate = $false
-        Boundary = 'The gate records this native Agent/session reference but cannot independently observe or prove restoration of the native Agent session.'
+        TargetSessionName = $TargetSessionName
+        AgentName = $agentName
+        PaneId = $paneId
+        NativeSession = $structured
+        Reference = ($structured | ConvertTo-Json -Compress)
+        EvidenceSource = 'HerdrCliAgentMetadata'
+        ObservableByGate = $true
+        Boundary = 'The gate directly observed and exact-bound the same structured native Agent session through Herdr CLI metadata before restart, at reconnect, and through completion.'
     }
+}
+
+function Get-V02TargetAgentSessionObservation {
+    param(
+        [Parameter(Mandatory = $true)][string]$HerdrExecutable,
+        [Parameter(Mandatory = $true)][string]$TargetSessionName
+    )
+    if (-not (Test-Path -LiteralPath $HerdrExecutable -PathType Leaf)) { throw 'Installed Herdr executable is missing for target Agent observation.' }
+    $output = @(& $HerdrExecutable --session $TargetSessionName agent list)
+    $exitCode = $LASTEXITCODE
+    if ($exitCode -ne 0 -or $output.Count -eq 0) { throw "Could not observe managed Agents in target Herdr session '$TargetSessionName'." }
+    return ConvertFrom-V02HerdrAgentListObservation `
+        -AgentListJson ($output -join [Environment]::NewLine) `
+        -TargetSessionName $TargetSessionName
+}
+
+function Assert-V02TargetAgentSessionContinuity {
+    param(
+        [Parameter(Mandatory = $true)]$BeforeRestart,
+        [Parameter(Mandatory = $true)]$AfterRestart
+    )
+    foreach ($property in @('TargetSessionName','AgentName','PaneId','Reference')) {
+        if ([string]$BeforeRestart.$property -cne [string]$AfterRestart.$property) {
+            throw "Target Herdr Agent session continuity failed for '$property'."
+        }
+    }
+    return $AfterRestart
 }
