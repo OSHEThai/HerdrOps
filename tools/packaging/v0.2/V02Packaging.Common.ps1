@@ -188,6 +188,108 @@ function Get-V02DirectoryPathIdentity {
     finally { $lease.Dispose() }
 }
 
+function Assert-V02OwnedStagingIdentity {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)]$ExpectedIdentity,
+        [Parameter(Mandatory = $true)][string]$Context
+    )
+    $lease = Open-V02DirectoryMutationLease -Path $Path
+    try {
+        return Assert-V02SameHandleIdentity -Handle $lease -Expected $ExpectedIdentity -ExpectedPath $Path -Context $Context -RequireSingleLink
+    }
+    finally { $lease.Dispose() }
+}
+
+function Write-V02CanonicalTempFileNoClobber {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]$Value,
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$RepositoryRoot
+    )
+    $destination = Assert-SafeDestination -Path $Path -AllowTempChild
+    $parent = Split-Path -Path $destination -Parent
+    if (-not (Test-Path -LiteralPath $parent -PathType Container)) { throw "Canonical temporary-file parent was not found: $parent" }
+    $json = ConvertTo-V02CanonicalJson -Value $Value -RepositoryRoot $RepositoryRoot
+    $bytes = (New-Object Text.UTF8Encoding($false)).GetBytes($json + "`n")
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try { $expectedSha256 = ([BitConverter]::ToString($sha.ComputeHash($bytes))).Replace('-','') }
+    finally { $sha.Dispose() }
+    $parentLease = Open-V02DirectoryMutationLease -Path $parent
+    $stream = $null
+    try {
+        if (Test-Path -LiteralPath $destination) { throw "Refusing to overwrite canonical temporary file: $destination" }
+        $stream = [IO.File]::Open($destination,[IO.FileMode]::CreateNew,[IO.FileAccess]::ReadWrite,[IO.FileShare]::None)
+        $identity = Get-V02HandleIdentity -Handle $stream.SafeFileHandle -Context 'canonical temporary file'
+        $null = Assert-V02SameHandleIdentity -Handle $stream.SafeFileHandle -Expected $identity -ExpectedPath $destination -Context 'canonical temporary file' -RequireSingleLink
+        $stream.Write($bytes,0,$bytes.Length)
+        $stream.Flush($true)
+        $null = Assert-V02SameHandleIdentity -Handle $stream.SafeFileHandle -Expected $identity -ExpectedPath $destination -Context 'canonical temporary file' -RequireSingleLink
+        return [pscustomobject][ordered]@{Path=$destination;Length=[int64]$bytes.Length;Sha256=$expectedSha256;VolumeSerialNumber=$identity.VolumeSerialNumber;FileId=$identity.FileId;LinkCount=$identity.LinkCount}
+    }
+    finally {
+        try {
+            if ($null -ne $stream) { $stream.Dispose() }
+        }
+        finally {
+            try {
+                $null = Assert-V02SameHandleIdentity -Handle $parentLease -Expected $parentLease.V02Identity -ExpectedPath $parent -Context 'canonical temporary-file parent' -RequireSingleLink
+            }
+            finally { $parentLease.Dispose() }
+        }
+    }
+}
+
+function Copy-V02InstallStateToOwnedStaging {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string]$SourcePath,
+        [Parameter(Mandatory = $true)]$ExpectedSourceBinding,
+        [Parameter(Mandatory = $true)][string]$DestinationPath,
+        [Parameter(Mandatory = $true)][string]$OwnedStagingRoot,
+        [Parameter(Mandatory = $true)]$ExpectedStagingIdentity,
+        [Parameter(Mandatory = $true)][string]$InstallRoot
+    )
+
+    $source = Assert-SafeDestination -Path $SourcePath -AllowTempChild
+    if (-not (Test-Path -LiteralPath $source -PathType Leaf)) { throw "Install-state temporary source was not found: $source" }
+    if ($null -eq $ExpectedSourceBinding -or [int64]$ExpectedSourceBinding.Length -lt 1 -or [string]$ExpectedSourceBinding.Sha256 -notmatch '^[0-9A-F]{64}$') { throw 'Install-state temporary source binding is invalid.' }
+    $destination = [IO.Path]::GetFullPath($DestinationPath)
+    $stagingRoot = [IO.Path]::GetFullPath($OwnedStagingRoot).TrimEnd('\','/')
+    $install = [IO.Path]::GetFullPath($InstallRoot).TrimEnd('\','/')
+    $installParent = (Split-Path -Path $install -Parent).TrimEnd('\','/')
+    $installName = [IO.Path]::GetFileName($install)
+    if (-not [StringComparer]::OrdinalIgnoreCase.Equals((Split-Path -Path $stagingRoot -Parent).TrimEnd('\','/'),$installParent) -or
+        [IO.Path]::GetFileName($stagingRoot) -notmatch ('^\.' + [regex]::Escape($installName) + '\.staging-[0-9a-f]{32}$')) {
+        throw "Install-state staging root is not the exact transaction sibling for '$install': $stagingRoot"
+    }
+    if (-not [StringComparer]::OrdinalIgnoreCase.Equals((Split-Path -Path $destination -Parent).TrimEnd('\','/'),$stagingRoot) -or
+        [IO.Path]::GetFileName($destination) -cne 'install-state.json') {
+        throw "Install-state destination must be the exact direct install-state.json child of the owned staging root: $destination"
+    }
+    if ($null -eq $ExpectedStagingIdentity) { throw 'Install-state staging identity is required.' }
+
+    $stagingLease = $null
+    try {
+        $stagingLease = Open-V02DirectoryMutationLease -Path $stagingRoot
+        $null = Assert-V02SameHandleIdentity -Handle $stagingLease -Expected $ExpectedStagingIdentity -ExpectedPath $stagingRoot -Context 'install-state owned staging root' -RequireSingleLink
+        $copied = Copy-V02StableFile -Source $source -Destination $destination
+        if ([int64]$copied.Length -ne [int64]$ExpectedSourceBinding.Length -or [string]$copied.Sha256 -cne [string]$ExpectedSourceBinding.Sha256) { throw 'Install-state stable copy does not equal the exact canonical temporary source binding.' }
+        $null = Assert-V02SameHandleIdentity -Handle $stagingLease -Expected $ExpectedStagingIdentity -ExpectedPath $stagingRoot -Context 'install-state owned staging root' -RequireSingleLink
+        return $copied
+    }
+    finally {
+        if ($null -ne $stagingLease) {
+            try {
+                $null = Assert-V02SameHandleIdentity -Handle $stagingLease -Expected $ExpectedStagingIdentity -ExpectedPath $stagingRoot -Context 'install-state owned staging root' -RequireSingleLink
+            }
+            finally { $stagingLease.Dispose() }
+        }
+    }
+}
+
 function Get-V02DefaultInstallRoot {
     return (Join-Path (Get-V02KnownLocalAppDataRoot) 'Programs\HerdrOps')
 }
@@ -802,10 +904,12 @@ function Assert-V02CompleteInstalledBinding {
         [Parameter(Mandatory = $true)]$Profile,
         [Parameter(Mandatory = $true)][string]$ProfilePath,
         [Parameter(Mandatory = $true)][string]$RepositoryRoot,
-        [Parameter(Mandatory = $true)][string]$WorkRoot
+        [Parameter(Mandatory = $true)][string]$WorkRoot,
+        [string]$ExpectedInstallRoot = $InstallRoot
     )
 
     $root = [IO.Path]::GetFullPath($InstallRoot)
+    $stateInstallRoot = [IO.Path]::GetFullPath($ExpectedInstallRoot)
     Assert-V02TreeNoReparse -Path $root
     $receiptPath = Join-Path $root 'identity.json'
     $statePath = Join-Path $root 'install-state.json'
@@ -823,7 +927,7 @@ function Assert-V02CompleteInstalledBinding {
     }
     if ([string]$state.productId -cne 'HerdrOps' -or [string]$state.packageVersion -cne '0.2.0' -or
         [string]$state.runtimeIdentifier -cne 'win-x64' -or [string]$state.receiptSha256 -cne $parsed.ReceiptSha256 -or
-        -not [StringComparer]::OrdinalIgnoreCase.Equals([IO.Path]::GetFullPath([string]$state.installRoot), $root)) {
+        -not [StringComparer]::OrdinalIgnoreCase.Equals([IO.Path]::GetFullPath([string]$state.installRoot), $stateInstallRoot)) {
         throw 'Existing installation state does not exactly bind this HerdrOps install root and receipt.'
     }
 

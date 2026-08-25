@@ -821,8 +821,12 @@ try {
         throw 'Live capture did not publish the canonical production manifest filename.'
     }
     $sourceRepositoryRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
+    $appProjectPath = Join-Path $sourceRepositoryRoot 'src\HerdrOps.App\HerdrOps.App.csproj'
+    $fixtureArtifactRoot = Join-Path $sourceRepositoryRoot 'artifacts'
+    & dotnet restore $appProjectPath --artifacts-path $fixtureArtifactRoot
+    if ($LASTEXITCODE -ne 0) { throw 'Fresh exact HerdrOps.App fixture restore failed.' }
     $fixtureBuildStartedUtc = [DateTime]::UtcNow
-    & dotnet build (Join-Path $sourceRepositoryRoot 'src\HerdrOps.App\HerdrOps.App.csproj') --configuration Release --no-restore --artifacts-path (Join-Path $sourceRepositoryRoot 'artifacts') --target Rebuild
+    & dotnet build $appProjectPath --configuration Release --no-restore --artifacts-path $fixtureArtifactRoot --target Rebuild
     if ($LASTEXITCODE -ne 0) { throw 'Fresh exact HerdrOps.App fixture rebuild failed.' }
     $realAppDirectory = Resolve-V02BuiltAppFixtureDirectory $sourceRepositoryRoot -BuildStartedUtc $fixtureBuildStartedUtc
     $matrixPackage = New-IsolatedTestPackage (Join-Path $temp 'matrix-pkg') $repo.Root $repo.Commit $repo.Tree -PackagedAppSourceDirectory $realAppDirectory
