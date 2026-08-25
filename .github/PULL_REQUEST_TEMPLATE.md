@@ -22,6 +22,7 @@ Use `NOT REQUIRED`, `NOT OBSERVED`, or `NOT CLAIMED` where appropriate. Do not p
 - [ ] The change maps to an issue in the matching milestone.
 - [ ] Commit messages reference the issue number.
 - [ ] Relevant tests and version-local gates pass.
+- [ ] No Human-only validation is an acceptance or merge gate; any such activity is tracked only in non-blocking Issue #161.
 - [ ] No credential, personal data, terminal output, local database, diagnostic bundle, or machine-specific evidence is included.
 - [ ] Approved files under `docs/design/reference/` are unchanged.
 - [ ] Exactly one UI language is rendered at a time where UI text changed.

@@ -37,7 +37,7 @@ body:
     id: acceptance
     attributes:
       label: Acceptance criteria
-      description: Add measurable pass/fail checks.
+      description: Add only Agent-executable, measurable pass/fail checks. Move Human-only validation to non-blocking Issue #161.
       value: "- [ ] "
     validations:
       required: true
@@ -49,4 +49,3 @@ body:
       value: "- [ ] "
     validations:
       required: true
-

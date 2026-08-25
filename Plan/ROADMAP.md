@@ -172,7 +172,7 @@ Versioning: Semantic Versioning; every version has a version-local acceptance ga
 
 - ครบ 10 Dashboard pages และ Widget variants ที่ยืนยัน
 - System Tray, start at logon, notification settings และ retention settings
-- ทำ localization ให้ครบทั้ง 10 หน้า บันทึกค่าภาษา accessibility, DPI/multi-monitor และ reduced motion
+- ทำ localization ให้ครบทั้ง 10 หน้า พร้อม automated keyboard/UIA semantics, contrast tokens, off-screen DPI viewport matrix และ reduced motion; Human screen-reader/physical multi-monitor checks อยู่ใน #161 และไม่บล็อก
 - Crash recovery, database migration/backup และ corrupted-state recovery
 - Installer, upgrade, uninstall และ diagnostic bundle
 - Performance profiling และ 8-hour soak test
@@ -182,7 +182,7 @@ Versioning: Semantic Versioning; every version has a version-local acceptance ga
 - Clean-machine install/upgrade/uninstall ผ่านบน Windows reference host
 - 8-hour runtime soak ไม่มี crash หรือ unreconciled state
 - Performance budgets ใน `RELEASE-GATES.md` ผ่านหรือมี waiver ที่อนุมัติ
-- Human UAT และ Design review ผ่าน
+- Automated visual parity, language, keyboard/UIA accessibility และ role-distinct Agent review ผ่าน; Human-only UAT/Design review ย้ายไป backlog #161 และไม่บล็อก Beta
 
 ## v1.0.0 — Stable Local Release
 
@@ -203,7 +203,7 @@ HerdrOps รุ่น Local Stable พร้อมคู่มือ การ�
 - ทุก Version-local gate ที่เป็น dependency มีหลักฐานครบ
 - Release artifact hash ตรงกับ artifact ที่ผ่าน acceptance
 - Clean-machine install และ actual Herdr runtime acceptance ผ่าน
-- Human go/no-go ได้รับการบันทึก
+- Automated exact-artifact release gate และ role-distinct Agent review ผ่าน; Human-only go/no-go ย้ายไป backlog #161 และไม่บล็อก Stable readiness
 
 ## Post-v1 candidates — Not committed
 

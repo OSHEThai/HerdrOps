@@ -348,14 +348,14 @@
     {
       "key": "V070",
       "title": "v0.7.0",
-      "description": "Beta hardening, complete design parity, localization, recovery, packaging, and UAT.",
+      "description": "Beta hardening, automated design parity, localization, recovery, packaging, and acceptance.",
       "outcome": "A complete installable Beta that runs all approved pages/widgets reliably in Thai and English on the reference Windows environment.",
       "releaseGates": [
-        "All ten pages and approved widget variants pass human design review.",
+        "All ten pages and approved widget variants pass automated pixel, layout, language, keyboard and UIA accessibility checks.",
         "Clean-machine install, upgrade, and uninstall pass.",
         "An 8-hour actual-Herdr soak completes without crash or unreconciled state.",
-        "Performance budgets pass or have an explicit user-approved waiver.",
-        "Human UAT passes."
+        "Performance budgets pass or have a Plan-authorized deterministic waiver.",
+        "Role-distinct Agent review passes with no unresolved release-blocking finding."
       ],
       "issues": [
         {
@@ -363,18 +363,18 @@
           "title": "[v0.7.0] Complete ten-page and widget design parity",
           "labels": ["type:quality", "area:app", "priority:P0"],
           "outcome": "Close visual and interaction gaps across all canonical pages and widget variants.",
-          "scope": ["Capture actual WPF screenshots for every page/widget.", "Resolve approved-reference differences or record explicit approvals.", "Verify shared status semantics and navigation consistency."],
-          "acceptance": ["All eleven reference entries have an accepted implementation capture.", "No replacement logo or conflicting status semantics remain.", "Human design review passes."],
-          "evidence": ["Reference/implementation comparison set", "Design review record", "Accessibility screenshots"]
+          "scope": ["Capture actual WPF screenshots for every page/widget.", "Resolve every approved-reference difference or fail the automated gate.", "Verify shared status semantics and navigation consistency."],
+          "acceptance": ["All eleven reference entries have an automated implementation capture.", "No replacement logo or conflicting status semantics remain.", "Automated pixel, layout, language, keyboard and UIA accessibility gates pass."],
+          "evidence": ["Reference/implementation comparison set", "Automated visual gate report", "Accessibility assertion report"]
         },
         {
           "key": "V070-02",
           "title": "[v0.7.0] Deliver tray, startup, settings, localization, and accessibility",
           "labels": ["type:feature", "area:app", "priority:P1"],
           "outcome": "Complete desktop lifecycle and usable Thai/English operation across supported displays.",
-          "scope": ["Implement System Tray, start-at-logon, notification, widget, theme, and retention settings.", "Complete Thai/English localization.", "Validate keyboard, screen reader, contrast, DPI, multi-monitor, and reduced motion."],
-          "acceptance": ["Settings persist and are reversible.", "Thai/English UI passes clipping and language-switch tests.", "Accessibility checklist passes on the reference host."],
-          "evidence": ["Lifecycle tests", "Localization screenshots", "Accessibility report"]
+          "scope": ["Implement System Tray, start-at-logon, notification, widget, theme, and retention settings.", "Complete Thai/English localization.", "Validate keyboard/UIA semantics, automated contrast tokens, six off-screen DPI viewports, and reduced motion."],
+          "acceptance": ["Settings persist and are reversible.", "Thai/English UI passes clipping and language-switch tests.", "Automated keyboard/UIA, contrast-token, off-screen viewport, and reduced-motion gates pass."],
+          "evidence": ["Lifecycle tests", "Localization screenshots", "Automated accessibility and viewport gate report"]
         },
         {
           "key": "V070-03",
@@ -396,12 +396,12 @@
         },
         {
           "key": "V070-05",
-          "title": "[v0.7.0] Pass performance budgets, 8-hour soak, and human UAT",
+          "title": "[v0.7.0] Pass performance budgets, 8-hour soak, and automated acceptance",
           "labels": ["type:quality", "evidence:runtime", "evidence:release", "priority:P0"],
           "outcome": "Prove Beta reliability and usability on the reference Windows/Herdr environment.",
-          "scope": ["Measure CPU, working set, launch, delta latency, and reconnect budgets.", "Run an 8-hour actual-Herdr soak with fault observations.", "Complete user UAT and go/no-go for Beta."],
-          "acceptance": ["No unhandled crash or unreconciled state occurs during soak.", "Budgets pass or have an explicit user-approved waiver.", "Human UAT and Beta go/no-go are recorded."],
-          "evidence": ["Performance report", "8-hour soak log", "UAT decision"]
+          "scope": ["Measure CPU, working set, launch, delta latency, and reconnect budgets.", "Run an 8-hour actual-Herdr soak with automated fault observations.", "Complete deterministic Beta acceptance and role-distinct Agent review."],
+          "acceptance": ["No unhandled crash or unreconciled state occurs during soak.", "Budgets pass or have a Plan-authorized deterministic waiver.", "Automated Beta gate and role-distinct Agent review pass."],
+          "evidence": ["Performance report", "8-hour soak log", "Automated Beta gate and Agent-review record"]
         },
         {
           "key": "V070-06",
@@ -423,7 +423,7 @@
         "All dependency milestones and required issues are closed with evidence.",
         "The exact release candidate passes a 24-hour actual-Herdr soak and fault-injection suite.",
         "Clean install, upgrade, rollback, privacy, and security reviews pass.",
-        "The user records final go/no-go approval.",
+        "The automated exact-artifact gate and role-distinct Agent review pass.",
         "Published artifacts and checksums match the accepted bytes."
       ],
       "issues": [
@@ -465,12 +465,12 @@
         },
         {
           "key": "V100-05",
-          "title": "[v1.0.0] Finalize artifacts, documentation, go/no-go, and GitHub Release",
+          "title": "[v1.0.0] Finalize artifacts, documentation, and GitHub Release",
           "labels": ["type:release", "area:docs", "evidence:release", "priority:P0"],
-          "outcome": "Publish the exact accepted HerdrOps v1.0.0 artifacts with checksums and final documentation after user approval.",
-          "scope": ["Finalize installer, checksums, release notes, user guide, upgrade/rollback, and troubleshooting.", "Obtain explicit user go/no-go.", "Tag v1.0.0 and publish the GitHub Release without rebuilding accepted artifacts."],
-          "acceptance": ["User go/no-go is recorded.", "Tag points to the accepted commit.", "Published artifact hashes match acceptance records exactly.", "GitHub Release is visible in OSHEThai/HerdrOps."],
-          "evidence": ["Go/no-go record", "Tag/commit verification", "Published checksums", "GitHub Release URL"]
+          "outcome": "Publish the exact accepted HerdrOps v1.0.0 artifacts with checksums and final documentation after automated release acceptance.",
+          "scope": ["Finalize installer, checksums, release notes, user guide, upgrade/rollback, and troubleshooting.", "Verify the exact accepted artifact and role-distinct Agent-review record.", "Tag v1.0.0 and publish the GitHub Release without rebuilding accepted artifacts after obtaining any action authorization required by repository safety."],
+          "acceptance": ["Automated exact-artifact release gate passes.", "Tag points to the accepted commit.", "Published artifact hashes match acceptance records exactly.", "GitHub Release is visible in OSHEThai/HerdrOps."],
+          "evidence": ["Automated release-gate report", "Tag/commit verification", "Published checksums", "GitHub Release URL"]
         },
         {
           "key": "V100-06",
