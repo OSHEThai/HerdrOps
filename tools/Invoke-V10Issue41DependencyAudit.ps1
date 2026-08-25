@@ -396,7 +396,7 @@ function Get-VersionConfigurations {
         }
         'v0.7.0' = [ordered]@{
             MilestoneNumber = 7
-            RequiredEvidenceClasses = @('Runtime', 'Independent', 'Human', 'Release')
+            RequiredEvidenceClasses = @('Runtime', 'Independent', 'Release')
             GateScripts = @('tools/Test-VersionMilestone.ps1')
         }
     }

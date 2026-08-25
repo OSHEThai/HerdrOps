@@ -5,6 +5,8 @@ Status: non-runtime preparation only. This document maps to v0.7.0 / issue
 issue, approve a capture, satisfy the v0.7 release gate, or record a human
 design acceptance.
 
+Current authority: D-029 makes the Human-design workflow below historical and optional. It is tracked only in non-blocking Issue #161 and cannot block Issue #35 or v0.7.0; current closure uses automated visual/language/accessibility gates plus role-distinct Agent review.
+
 ## Scope of this slice
 
 This slice prepares the fail-closed manifest and verification tooling that a
@@ -113,8 +115,7 @@ guard is captured from the thrown verifier message, not hardcoded.
 | Human | NOT OBSERVED: no human design acceptance or independent review is recorded |
 | Release | NOT OBSERVED: no signing, publication, clean-machine acceptance, or release approval is performed |
 
-Remaining v0.7 blockers include a real human design-review decision against the
-eleven references on the reference host, accepted capture regeneration and
-review, actual installed-Herdr runtime observation, clean-machine acceptance,
+Remaining v0.7 blockers include automated capture regeneration and validation
+against the eleven references, role-distinct Agent review, actual installed-Herdr runtime observation, automated lifecycle acceptance,
 and the v0.7 milestone/release gate. No GitHub API operation, package
 publication, capture acceptance, or release action is part of this slice.

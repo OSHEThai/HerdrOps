@@ -19,6 +19,9 @@ param(
     [string]$HumanAcceptanceReport,
 
     [Parameter(ParameterSetName = 'ReleaseGate')]
+    [string]$AgentAcceptanceReport,
+
+    [Parameter(ParameterSetName = 'ReleaseGate')]
     [string[]]$PredecessorReleaseGateReports,
 
     [Parameter(ParameterSetName = 'ReleaseGate')]
@@ -234,6 +237,107 @@ function Test-HumanAcceptanceReport {
     }
 }
 
+function Test-AgentAcceptanceReport {
+    param(
+        [Parameter(Mandatory)][string]$ReportPath,
+        [Parameter(Mandatory)][string]$RepositoryRoot,
+        [Parameter(Mandatory)][string]$SourceCommit,
+        [Parameter(Mandatory)][string]$PackageSha256
+    )
+
+    $resolvedPath = Assert-ValidLeafPath -Path $ReportPath -Name 'role-distinct Agent acceptance report' -AllowedRoot $RepositoryRoot
+    $hash = (Get-FileHash -LiteralPath $resolvedPath -Algorithm SHA256).Hash
+    $text = Get-Content -LiteralPath $resolvedPath -Raw
+
+    function Get-RequiredAgentAcceptanceField {
+        param(
+            [Parameter(Mandatory)][string]$Name
+        )
+
+        $matches = [Regex]::Matches($text, "(?m)^$([Regex]::Escape($Name)):[ \t]*(?<value>.*?)[ \t]*\r?$", [Text.RegularExpressions.RegexOptions]::IgnoreCase)
+        if ($matches.Count -ne 1) {
+            throw "Role-distinct Agent acceptance report must contain exactly one nonempty $Name declaration: $resolvedPath"
+        }
+
+        $value = $matches[0].Groups['value'].Value.Trim()
+        if ([string]::IsNullOrWhiteSpace($value)) {
+            throw "Role-distinct Agent acceptance report has empty $Name declaration: $resolvedPath"
+        }
+
+        return $value
+    }
+
+    $reportType = Get-RequiredAgentAcceptanceField -Name 'ReportType'
+    if ($reportType -cne 'AgentAcceptance') {
+        throw "Role-distinct Agent acceptance report must declare ReportType: AgentAcceptance: $resolvedPath"
+    }
+
+    $verdict = Get-RequiredAgentAcceptanceField -Name 'Verdict'
+    if ($verdict -cne 'PASS') {
+        throw "Role-distinct Agent acceptance report must declare Verdict: PASS: $resolvedPath"
+    }
+
+    $boundCommit = Get-RequiredAgentAcceptanceField -Name 'SourceCommit'
+    if (-not $boundCommit.Equals($SourceCommit, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "Role-distinct Agent acceptance report is not bound to source commit $($SourceCommit): $resolvedPath"
+    }
+
+    $boundPackageSha256 = Get-RequiredAgentAcceptanceField -Name 'PackageSha256'
+    if ($boundPackageSha256 -cnotmatch '^[0-9A-F]{64}$') {
+        throw "Role-distinct Agent acceptance report PackageSha256 must be canonical uppercase 64-hex: $resolvedPath"
+    }
+    if (-not $boundPackageSha256.Equals($PackageSha256, [StringComparison]::Ordinal)) {
+        throw "Role-distinct Agent acceptance report is not bound to packaged artifact SHA-256 $($PackageSha256): $resolvedPath"
+    }
+
+    $builderIdentity = Get-RequiredAgentAcceptanceField -Name 'BuilderIdentity'
+    $builderRole = Get-RequiredAgentAcceptanceField -Name 'BuilderRole'
+    $builderTask = Get-RequiredAgentAcceptanceField -Name 'BuilderTask'
+    $reviewerIdentity = Get-RequiredAgentAcceptanceField -Name 'ReviewerIdentity'
+    $reviewerRole = Get-RequiredAgentAcceptanceField -Name 'ReviewerRole'
+    $reviewerTask = Get-RequiredAgentAcceptanceField -Name 'ReviewerTask'
+
+    foreach ($pair in @(
+        @('identity', $builderIdentity, $reviewerIdentity),
+        @('role', $builderRole, $reviewerRole),
+        @('task', $builderTask, $reviewerTask))) {
+        if ([string]::Equals([string]$pair[1], [string]$pair[2], [StringComparison]::OrdinalIgnoreCase)) {
+            throw "Role-distinct Agent acceptance requires distinct Builder and Reviewer $($pair[0]) values: $resolvedPath"
+        }
+    }
+
+    $p0Matches = [Regex]::Matches($text, '(?m)^UnresolvedP0:[ \t]*(?<value>.*?)[ \t]*\r?$', [Text.RegularExpressions.RegexOptions]::IgnoreCase)
+    $p1Matches = [Regex]::Matches($text, '(?m)^UnresolvedP1:[ \t]*(?<value>.*?)[ \t]*\r?$', [Text.RegularExpressions.RegexOptions]::IgnoreCase)
+    $criticalMatches = [Regex]::Matches($text, '(?m)^UnresolvedCritical:[ \t]*(?<value>.*?)[ \t]*\r?$', [Text.RegularExpressions.RegexOptions]::IgnoreCase)
+    $highMatches = [Regex]::Matches($text, '(?m)^UnresolvedHigh:[ \t]*(?<value>.*?)[ \t]*\r?$', [Text.RegularExpressions.RegexOptions]::IgnoreCase)
+    $hasPFindings = $p0Matches.Count -gt 0 -or $p1Matches.Count -gt 0
+    $hasSeverityFindings = $criticalMatches.Count -gt 0 -or $highMatches.Count -gt 0
+    if (-not $hasPFindings -and -not $hasSeverityFindings) {
+        throw "Role-distinct Agent acceptance report must declare zero unresolved P0/P1 or Critical/High findings: $resolvedPath"
+    }
+    if (($hasPFindings -and ($p0Matches.Count -ne 1 -or $p1Matches.Count -ne 1)) -or
+        ($hasSeverityFindings -and ($criticalMatches.Count -ne 1 -or $highMatches.Count -ne 1))) {
+        throw "Role-distinct Agent acceptance report has incomplete or duplicate unresolved-finding declarations: $resolvedPath"
+    }
+    foreach ($finding in @($p0Matches, $p1Matches, $criticalMatches, $highMatches)) {
+        if ($finding.Count -eq 1 -and $finding[0].Groups['value'].Value.Trim() -cne '0') {
+            throw "Role-distinct Agent acceptance report contains unresolved P0/P1 or Critical/High findings: $resolvedPath"
+        }
+    }
+
+    return [pscustomobject]@{
+        Path = $resolvedPath
+        Sha256 = $hash
+        PackageSha256 = $boundPackageSha256
+        BuilderIdentity = $builderIdentity
+        BuilderRole = $builderRole
+        BuilderTask = $builderTask
+        ReviewerIdentity = $reviewerIdentity
+        ReviewerRole = $reviewerRole
+        ReviewerTask = $reviewerTask
+    }
+}
+
 function Resolve-CanonicalRuntimeReports {
     param(
         [Parameter(Mandatory)][string]$CompositeRuntimeReport,
@@ -378,6 +482,7 @@ function Invoke-V05ReleaseGateSelfTests {
 
     try {
         $dummyCommit = '0123456789abcdef0123456789abcdef01234567'
+        $dummyPackageSha256 = 'A' * 64
 
         # Test 1: Assert-ValidLeafPath rejects whitespace or null
         $threw = $false
@@ -514,7 +619,91 @@ function Invoke-V05ReleaseGateSelfTests {
             throw "SelfTest Failed: Test-HumanAcceptanceReport returned incorrect parsed metadata."
         }
 
-        # Test 17: Canonical Runtime Report matching & mismatch rejection
+        $agentBase = @(
+            'ReportType: AgentAcceptance',
+            'Verdict: PASS',
+            "SourceCommit: $dummyCommit",
+            "PackageSha256: $dummyPackageSha256",
+            'BuilderIdentity: builder-agent',
+            'BuilderRole: ImplementationBuilder',
+            'BuilderTask: build-v05-candidate',
+            'ReviewerIdentity: reviewer-agent',
+            'ReviewerRole: IndependentAgentReviewer',
+            'ReviewerTask: review-v05-candidate',
+            'UnresolvedP0: 0',
+            'UnresolvedP1: 0') -join "`n"
+
+        # Test 17: Agent Acceptance: Reject missing package binding
+        $agentMissingPackage = Join-Path $tempDir 'agent-missing-package.txt'
+        [IO.File]::WriteAllText($agentMissingPackage, $agentBase.Replace("PackageSha256: $dummyPackageSha256`n", ''), [Text.UTF8Encoding]::new($false))
+        $threw = $false
+        try { Test-AgentAcceptanceReport -ReportPath $agentMissingPackage -RepositoryRoot $RepositoryRoot -SourceCommit $dummyCommit -PackageSha256 $dummyPackageSha256 } catch { $threw = $true }
+        if (-not $threw) { throw "SelfTest Failed: Test-AgentAcceptanceReport accepted missing PackageSha256." }
+
+        # Test 18: Agent Acceptance: Reject mismatched package binding
+        $agentWrongPackage = Join-Path $tempDir 'agent-wrong-package.txt'
+        [IO.File]::WriteAllText($agentWrongPackage, $agentBase.Replace($dummyPackageSha256, ('B' * 64)), [Text.UTF8Encoding]::new($false))
+        $threw = $false
+        try { Test-AgentAcceptanceReport -ReportPath $agentWrongPackage -RepositoryRoot $RepositoryRoot -SourceCommit $dummyCommit -PackageSha256 $dummyPackageSha256 } catch { $threw = $true }
+        if (-not $threw) { throw "SelfTest Failed: Test-AgentAcceptanceReport accepted mismatched PackageSha256." }
+
+        # Test 19: Agent Acceptance: Reject non-PASS verdict
+        $agentBadVerdict = Join-Path $tempDir 'agent-bad-verdict.txt'
+        [IO.File]::WriteAllText($agentBadVerdict, $agentBase.Replace('Verdict: PASS', 'Verdict: REJECTED'), [Text.UTF8Encoding]::new($false))
+        $threw = $false
+        try { Test-AgentAcceptanceReport -ReportPath $agentBadVerdict -RepositoryRoot $RepositoryRoot -SourceCommit $dummyCommit -PackageSha256 $dummyPackageSha256 } catch { $threw = $true }
+        if (-not $threw) { throw "SelfTest Failed: Test-AgentAcceptanceReport accepted non-PASS verdict." }
+
+        # Test 20: Agent Acceptance: Reject mismatched commit
+        $agentBadCommit = Join-Path $tempDir 'agent-bad-commit.txt'
+        [IO.File]::WriteAllText($agentBadCommit, $agentBase.Replace($dummyCommit, 'ffffffffffffffffffffffffffffffffffffffff'), [Text.UTF8Encoding]::new($false))
+        $threw = $false
+        try { Test-AgentAcceptanceReport -ReportPath $agentBadCommit -RepositoryRoot $RepositoryRoot -SourceCommit $dummyCommit -PackageSha256 $dummyPackageSha256 } catch { $threw = $true }
+        if (-not $threw) { throw "SelfTest Failed: Test-AgentAcceptanceReport accepted mismatched commit." }
+
+        # Test 21: Agent Acceptance: Reject empty required role
+        $agentEmptyRole = Join-Path $tempDir 'agent-empty-role.txt'
+        [IO.File]::WriteAllText($agentEmptyRole, $agentBase.Replace('BuilderRole: ImplementationBuilder', 'BuilderRole: '), [Text.UTF8Encoding]::new($false))
+        $threw = $false
+        try { Test-AgentAcceptanceReport -ReportPath $agentEmptyRole -RepositoryRoot $RepositoryRoot -SourceCommit $dummyCommit -PackageSha256 $dummyPackageSha256 } catch { $threw = $true }
+        if (-not $threw) { throw "SelfTest Failed: Test-AgentAcceptanceReport accepted empty BuilderRole." }
+
+        # Tests 22-24: Agent Acceptance: Reject non-distinct identity, role, or task
+        foreach ($case in @(
+            @('identity', 'ReviewerIdentity: reviewer-agent', 'ReviewerIdentity: builder-agent'),
+            @('role', 'ReviewerRole: IndependentAgentReviewer', 'ReviewerRole: ImplementationBuilder'),
+            @('task', 'ReviewerTask: review-v05-candidate', 'ReviewerTask: build-v05-candidate'))) {
+            $agentNotDistinct = Join-Path $tempDir "agent-same-$($case[0]).txt"
+            [IO.File]::WriteAllText($agentNotDistinct, $agentBase.Replace([string]$case[1], [string]$case[2]), [Text.UTF8Encoding]::new($false))
+            $threw = $false
+            try { Test-AgentAcceptanceReport -ReportPath $agentNotDistinct -RepositoryRoot $RepositoryRoot -SourceCommit $dummyCommit -PackageSha256 $dummyPackageSha256 } catch { $threw = $true }
+            if (-not $threw) { throw "SelfTest Failed: Test-AgentAcceptanceReport accepted non-distinct $($case[0])." }
+        }
+
+        # Test 25: Agent Acceptance: Reject unresolved P1 finding
+        $agentP1 = Join-Path $tempDir 'agent-unresolved-p1.txt'
+        [IO.File]::WriteAllText($agentP1, $agentBase.Replace('UnresolvedP1: 0', 'UnresolvedP1: 1'), [Text.UTF8Encoding]::new($false))
+        $threw = $false
+        try { Test-AgentAcceptanceReport -ReportPath $agentP1 -RepositoryRoot $RepositoryRoot -SourceCommit $dummyCommit -PackageSha256 $dummyPackageSha256 } catch { $threw = $true }
+        if (-not $threw) { throw "SelfTest Failed: Test-AgentAcceptanceReport accepted unresolved P1 finding." }
+
+        # Test 26: Agent Acceptance: Accept exact candidate/package with zero P0/P1 findings
+        $agentValid = Join-Path $tempDir 'agent-valid.txt'
+        [IO.File]::WriteAllText($agentValid, $agentBase, [Text.UTF8Encoding]::new($false))
+        $validatedAgent = Test-AgentAcceptanceReport -ReportPath $agentValid -RepositoryRoot $RepositoryRoot -SourceCommit $dummyCommit -PackageSha256 $dummyPackageSha256
+        if ($validatedAgent.BuilderIdentity -ne 'builder-agent' -or
+            $validatedAgent.ReviewerIdentity -ne 'reviewer-agent' -or
+            $validatedAgent.PackageSha256 -cne $dummyPackageSha256) {
+            throw "SelfTest Failed: Test-AgentAcceptanceReport returned incorrect exact candidate/package metadata."
+        }
+
+        # Test 27: Agent Acceptance: Accept alternate zero Critical/High vocabulary
+        $agentSeverity = Join-Path $tempDir 'agent-valid-severity.txt'
+        $agentSeverityText = $agentBase.Replace("UnresolvedP0: 0`nUnresolvedP1: 0", "UnresolvedCritical: 0`nUnresolvedHigh: 0")
+        [IO.File]::WriteAllText($agentSeverity, $agentSeverityText, [Text.UTF8Encoding]::new($false))
+        $null = Test-AgentAcceptanceReport -ReportPath $agentSeverity -RepositoryRoot $RepositoryRoot -SourceCommit $dummyCommit -PackageSha256 $dummyPackageSha256
+
+        # Test 28: Canonical Runtime Report matching & mismatch rejection
         $herdrRuntimeFile = Join-Path $tempDir 'herdr-runtime.json'
         [IO.File]::WriteAllText($herdrRuntimeFile, '{"runtime":true,"id":"herdr"}', [Text.UTF8Encoding]::new($false))
         $herdrHash = (Get-FileHash -LiteralPath $herdrRuntimeFile -Algorithm SHA256).Hash
@@ -595,7 +784,7 @@ HerdrRuntimeReport: $herdrRuntimeFile
         }
         if (-not $threw) { throw "SelfTest Failed: Resolve-CanonicalRuntimeReports accepted mismatched HerdrRuntimeReportSha256." }
 
-        Write-Host "All Test-V05ReleaseGate self-tests PASSED (24/24 assertions verified)." -ForegroundColor Green
+        Write-Host "All Test-V05ReleaseGate focused self-tests PASSED." -ForegroundColor Green
     } finally {
         if (Test-Path -LiteralPath $tempDir) {
             Remove-Item -LiteralPath $tempDir -Recurse -Force -ErrorAction SilentlyContinue
@@ -690,13 +879,26 @@ if ($hasHumanAcceptance) {
         -SourceCommit $sourceCommit
 }
 
-$releaseReady = $hasPackagedArtifact -and $hasCleanInstall -and $hasPredecessors -and $hasHumanAcceptance
+$hasAgentAcceptance = -not [string]::IsNullOrWhiteSpace($AgentAcceptanceReport)
+$agentAcceptanceData = $null
+if ($hasAgentAcceptance) {
+    if (-not $hasPackagedArtifact) {
+        throw 'AgentAcceptanceReport cannot be validated without the exact PackagedArtifact.'
+    }
+    $agentAcceptanceData = Test-AgentAcceptanceReport `
+        -ReportPath $AgentAcceptanceReport `
+        -RepositoryRoot $repositoryRoot `
+        -SourceCommit $sourceCommit `
+        -PackageSha256 $packagedArtifactSha256
+}
+
+$releaseReady = $hasPackagedArtifact -and $hasCleanInstall -and $hasPredecessors -and $hasAgentAcceptance
 if ($RequireReleaseReady -and -not $releaseReady) {
     $missing = @()
     if (-not $hasPackagedArtifact) { $missing += 'PackagedArtifact' }
     if (-not $hasCleanInstall) { $missing += 'CleanMachineInstallReport' }
     if (-not $hasPredecessors) { $missing += 'PredecessorReleaseGateReports (v0.1.0..v0.4.0)' }
-    if (-not $hasHumanAcceptance) { $missing += 'HumanAcceptanceReport' }
+    if (-not $hasAgentAcceptance) { $missing += 'AgentAcceptanceReport (exact candidate/package, role-distinct, zero P0/P1 or Critical/High)' }
     throw "Release readiness required (-RequireReleaseReady) but release evidence is incomplete: $($missing -join ', ')"
 }
 
@@ -756,6 +958,7 @@ $gateReport = @(
     'ImplementationGates: 4/4 PASS',
     'IndependentReviews: 5/5 PASS',
     'RoleDistinctRuntimeAcceptance: PASS',
+    "RoleDistinctAgentAcceptance: $(if ($hasAgentAcceptance) { 'PASS' } else { 'PENDING / NOT PROVIDED' })",
     'SessionControlInvoked: false',
     "CompositeRuntimeReportSha256: $compositeSha256",
     "HerdrRuntimeReportSha256: $herdrRuntimeSha256",
@@ -766,7 +969,8 @@ $gateReport = @(
     "  PackagedArtifact: $(if ($hasPackagedArtifact) { "PRESENT (sha256=$packagedArtifactSha256)" } else { 'PENDING / NOT PROVIDED' })",
     "  CleanMachineInstall: $(if ($hasCleanInstall) { "PRESENT (sha256=$cleanInstallSha256)" } else { 'PENDING / NOT PROVIDED' })",
     "  PredecessorReleaseGates: $(if ($hasPredecessors) { 'PRESENT (v0.1..v0.4 VERIFIED)' } else { 'PENDING / NOT PROVIDED' })",
-    "  HumanAcceptanceApproval: $(if ($hasHumanAcceptance) { "PRESENT (sha256=$($humanAcceptanceData.Sha256), signer=$($humanAcceptanceData.Signer), role=$($humanAcceptanceData.Role))" } else { 'PENDING / NOT PROVIDED' })",
+    "  AgentAcceptance: $(if ($hasAgentAcceptance) { "PRESENT (sha256=$($agentAcceptanceData.Sha256), packageSha256=$($agentAcceptanceData.PackageSha256), builder=$($agentAcceptanceData.BuilderIdentity), reviewer=$($agentAcceptanceData.ReviewerIdentity))" } else { 'PENDING / NOT PROVIDED' })",
+    "  HumanAcceptanceApproval: $(if ($hasHumanAcceptance) { "SUPPLEMENTAL (sha256=$($humanAcceptanceData.Sha256), signer=$($humanAcceptanceData.Signer), role=$($humanAcceptanceData.Role))" } else { 'MOVED TO #161 / NON-BLOCKING' })",
     '',
     'PredecessorReleaseGateDetails:'
 ) + $predSummaryLines + @(
@@ -776,7 +980,7 @@ $gateReport = @(
     '',
     'EvidenceBoundary:',
     'This gate validates v0.5 compliance review runtime acceptance and checks release readiness criteria.',
-    'ReleaseReady remains false unless packaged artifact, clean-machine install, complete predecessor gates, independent human acceptance and required release evidence are explicitly hash-bound and present.',
+    'ReleaseReady remains false unless packaged artifact, automated lifecycle/install evidence, complete predecessor gates, and an exact-candidate/package role-distinct Agent acceptance report with zero unresolved P0/P1 or Critical/High findings are explicitly hash-bound and present. Human-only acceptance is supplemental in Issue #161 and cannot block this gate.',
     'A passing runtime report does not complete release readiness or authorize tag/release publication.'
 )
 $gateReport | Set-Content -LiteralPath $gateReportPath -Encoding utf8

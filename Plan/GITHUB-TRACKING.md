@@ -25,6 +25,7 @@ Total: 8 milestones, 45 scoped work issues, and 8 release trackers.
 4. Static, synthetic, contract, runtime, independent-review, and release evidence remain separate.
 5. Close the release tracker and milestone only after every required work issue and version-local gate passes.
 6. Do not rebuild an accepted release artifact without invalidating its prior runtime/release evidence.
+7. Keep Human-only validation outside every version milestone and release-critical Issue/PR. Track it only in non-blocking [Issue #161](https://github.com/OSHEThai/HerdrOps/issues/161).
 
 ## Commands
 

@@ -23,8 +23,10 @@ Status: Planned acceptance framework
 | v0.4 | Complete assignment/delegation lifecycle trace with provenance |
 | v0.5 | Rule corpus plus role-distinct runtime review workflow |
 | v0.6 | Reproducible scoring and traceable Daily Summary |
-| v0.7 | Clean-machine package tests, 8-hour soak, UAT and design review |
-| v1.0 | Exact-artifact 24-hour soak, upgrade/rollback, security/privacy and go/no-go |
+| v0.7 | Automated clean-machine package tests, 8-hour soak, visual/language/UIA accessibility checks, and role-distinct Agent review |
+| v1.0 | Exact-artifact 24-hour soak, automated upgrade/rollback, security/privacy gates, and role-distinct Agent review |
+
+Human-only UAT, subjective design/manual-perception review, physical-device exercises unavailable to automation, and human go/no-go are tracked only in [Issue #161](https://github.com/OSHEThai/HerdrOps/issues/161). They are supplemental and cannot block any version gate, issue, milestone, package, tag, or release readiness. Explicit authorization required for an external publication is action authority, not validation evidence.
 
 ## Non-functional target budgets
 

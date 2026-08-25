@@ -76,4 +76,4 @@ MSBuild property evaluation remains fail-closed and bounded. Its process timeout
 | Human | NOT OBSERVED |
 | Release | NOT OBSERVED; no signing, external publication, clean-machine acceptance, or release approval |
 
-Remaining v0.7 blockers include a real non-elevated Windows install/upgrade/uninstall acceptance run, startup and shortcut decisions, actual WPF launch/runtime acceptance, migration and recovery integration, clean-machine evidence, human UAT/design review, signing/release policy, and the v0.7 milestone/release gate. No GitHub API operation, package publication, or release action is part of this slice.
+Remaining v0.7 blockers include a real non-elevated Windows install/upgrade/uninstall acceptance run, startup and shortcut decisions, actual WPF launch/runtime acceptance, migration and recovery integration, automated lifecycle evidence, role-distinct Agent review, signing/release policy, and the v0.7 milestone/release gate. Human-only UAT/design review is tracked in #161 and is non-blocking. No GitHub API operation, package publication, or release action is part of this slice.

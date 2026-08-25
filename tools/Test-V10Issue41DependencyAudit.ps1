@@ -960,7 +960,7 @@ try {
             $readyResult = Invoke-AuditCase -ShellPath $shell.Path -FixturePath $readyFixture -EvidencePath $evidence.Path -OutputPath $readyOutput
             Assert-CaseExit -Result $readyResult -ExpectedExitCode 2 -CaseName "$($shell.Name) offline ready fixture"
             $readyReport = Assert-Report -OutputPath $readyOutput -CaseName "$($shell.Name) offline ready fixture"
-            if (@($readyReport.DependencyMap).Count -ne 45) { throw "$($shell.Name) dependency map count was $(@($readyReport.DependencyMap).Count), expected 45." }
+            if (@($readyReport.DependencyMap).Count -ne 46) { throw "$($shell.Name) dependency map count was $(@($readyReport.DependencyMap).Count), expected 46." }
             $v07WorkIssues = @($readyReport.DependencyMap | Where-Object { $_.Version -eq 'v0.7.0' -and -not $_.IsReleaseTracker })
             if ($v07WorkIssues.Count -ne 6) { throw "$($shell.Name) v0.7.0 work issue count was $($v07WorkIssues.Count), expected 6." }
             $issue103 = @($v07WorkIssues | Where-Object IssueNumber -eq 103)
@@ -984,7 +984,7 @@ try {
                 throw "$($shell.Name) ready fixture produced unexpected inventory blockers: $($unexpectedInventoryBlockers.Code -join ', ')."
             }
             if (@($readyReport.Blockers | Where-Object Code -eq 'OFFLINE_FIXTURE_NO_RELEASE_CREDIT').Count -ne 1 -or
-                @($readyReport.Blockers | Where-Object Code -eq 'EVIDENCE_NOT_OBSERVED').Count -ne 23) {
+                @($readyReport.Blockers | Where-Object Code -eq 'EVIDENCE_NOT_OBSERVED').Count -ne 22) {
                 throw "$($shell.Name) ready fixture evidence blocker set was not the expected offline-only set."
             }
             if (@($readyReport.Blockers | Where-Object { $_.Code -in $mappingDefectCodes }).Count -ne 0) {
@@ -1013,7 +1013,7 @@ try {
             if ($readyReport.ReleaseCandidate.Status -ne 'NOT_RECORDED') { throw 'Offline fixture recorded an RC.' }
             if ($readyReport.EvidenceStatus.Runtime.Status -eq 'PASS' -or $readyReport.EvidenceStatus.Release.Status -eq 'PASS') { throw 'Offline fixture granted Runtime/Release credit.' }
             Assert-Contains -Text (Get-Content -LiteralPath (Join-Path $readyOutput 'dependency-audit.txt') -Raw) -Needle 'OFFLINE_FIXTURE_NO_RELEASE_CREDIT' -CaseName "$($shell.Name) offline ready fixture"
-            [void]$completed.Add("$($shell.Name): ready fixture -> NOT_READY (45 dependency items)")
+            [void]$completed.Add("$($shell.Name): ready fixture -> NOT_READY (46 dependency items)")
 
             $candidateOutput = New-UniqueChildPath -Parent $script:TestRoot -Prefix ("output-$($shell.Name)-candidate-mismatch")
             $candidateResult = Invoke-AuditCase -ShellPath $shell.Path -FixturePath $readyFixture -EvidencePath $evidence.Path -OutputPath $candidateOutput -CandidateCommit ('A' * 40)

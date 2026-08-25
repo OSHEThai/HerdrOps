@@ -1733,7 +1733,7 @@ function ConvertTo-V07RuntimeBudgetReport {
             ContractEvidence   = 'OBSERVED'
             ActualHerdrRuntime = 'OBSERVED'
             SoakExecution      = 'OBSERVED'
-            HumanUatDecision   = 'NOT OBSERVED / PENDING'
+            HumanUatDecision   = 'MOVED TO #161 / NON-BLOCKING'
             ReleaseEvidence    = 'NOT OBSERVED / NOT CLAIMED'
         }
     }

@@ -1,9 +1,10 @@
 # Issue #44 live install-acceptance runbook
 
-Status: fail-closed operator runbook for a future clean-host run. Nothing in this
-document is evidence. Executing this runbook requires explicit human opt-in on a
-designated clean Windows host and does not close Issue #44 by itself; the final
-report must still receive independent review and the v1.0.0 release gate.
+Status: fail-closed automated runbook for a future isolated clean-host run. Nothing in this
+document is evidence. An Agent may execute it on an explicitly designated disposable or
+clean Windows test host under repository safety rules; no Human validation action is required.
+The run does not close Issue #44 by itself, and the final report must still receive
+role-distinct Agent review and pass the v1.0.0 release gate.
 
 This runbook is deliberately restrictive. Every precondition below is mandatory;
 the harness fails closed when any of them is missing or mismatched. Do not weaken

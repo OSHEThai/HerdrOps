@@ -735,7 +735,7 @@ try {
     $lines.Add('--- EVIDENCE BOUNDARY ---')
     $lines.Add("ActualHerdrRuntime:   $(if ($admission.Valid -and $null -ne $finalization -and $finalization.CanFinalize) { 'OBSERVED (finalized)' } else { 'NOT OBSERVED / NOT CLAIMED' })")
     $lines.Add("SoakExecution:        $(if ($null -ne $finalization -and $finalization.CanFinalize) { 'OBSERVED (validated soak artifact)' } else { 'NOT OBSERVED / NOT CLAIMED' })")
-    $lines.Add("HumanUatDecision:     NOT OBSERVED / PENDING")
+    $lines.Add("HumanUatDecision:     MOVED TO #161 / NON-BLOCKING")
     $lines.Add("ReleaseEvidence:      NOT OBSERVED / NOT CLAIMED")
     if ($null -ne $finalization -and -not $finalization.CanFinalize) {
         $lines.Add('')

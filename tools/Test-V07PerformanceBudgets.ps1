@@ -181,7 +181,7 @@ $lines.Add('')
 $lines.Add('--- EVIDENCE BOUNDARY (EXPLICITLY NOT OBSERVED) ---')
 $lines.Add('ActualHerdrRuntime:  NOT OBSERVED / NOT CLAIMED')
 $lines.Add('SoakExecution:       NOT OBSERVED / NOT CLAIMED (8-hour actual Herdr soak requires live environment)')
-$lines.Add('HumanUatDecision:    NOT OBSERVED / PENDING (Requires human user review)')
+$lines.Add('HumanUatDecision:    MOVED TO #161 / NON-BLOCKING (schema field retained for compatibility)')
 $lines.Add('ReleaseEvidence:     NOT OBSERVED / NOT CLAIMED (v0.7.0 release gate pending runtime & soak)')
 $lines.Add('========================================================================')
 
@@ -229,7 +229,7 @@ $jsonGateReport = [ordered]@{
         ContractEvidence   = if ($null -ne $evaluationResult -and $evaluationResult.Passed) { 'OBSERVED' } else { 'EVALUATED' }
         ActualHerdrRuntime = 'NOT OBSERVED / NOT CLAIMED'
         SoakExecution      = 'NOT OBSERVED / NOT CLAIMED'
-        HumanUatDecision   = 'NOT OBSERVED / PENDING'
+        HumanUatDecision   = 'MOVED TO #161 / NON-BLOCKING'
         ReleaseEvidence    = 'NOT OBSERVED / NOT CLAIMED'
     }
     Checks           = if ($null -ne $evaluationResult) { @($evaluationResult.Checks) } else { @() }

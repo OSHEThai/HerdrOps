@@ -19,7 +19,8 @@
 - Synthetic: mock data, replay, fixture, or simulated Herdr behavior.
 - Contract: named-pipe/schema compatibility checks.
 - Runtime: observed behavior against an actual installed Herdr instance.
-- Release: packaged artifact, clean-machine install, runtime acceptance, and required human approval.
+- Release: exact packaged artifact, automated install/lifecycle evidence, runtime acceptance, exact-head CI, and role-distinct Agent review.
+- Human-only validation: optional ProductOwner/UAT, subjective visual, manual assistive-technology, physical-device, or human go/no-go observations tracked only in GitHub Issue #161; this class is supplemental and never blocks implementation, issue closure, milestone closure, packaging, or release readiness.
 
 Report these classes separately. Preparation for a later version does not complete or credit an earlier version.
 
@@ -29,6 +30,17 @@ Report these classes separately. Preparation for a later version does not comple
 - Reference the issue number in commits and pull requests.
 - Close issues only after their acceptance criteria and required evidence are satisfied.
 - A version is not release-ready until its release tracker and milestone pass `tools/Test-VersionMilestone.ps1`.
+- Keep every task that inherently requires a person outside version milestones and release-critical Issues/PRs. Move it to the non-blocking Human-only backlog in GitHub Issue #161 instead of making it an acceptance criterion.
+
+## Mandatory local-first CI policy
+
+- Before pushing a branch or updating a pull request, run every applicable CI-equivalent check locally from a clean isolated worktree bound to the exact candidate SHA.
+- Local preflight must cover every check available on the current machine, including applicable build, format, lint, schema, parser, unit, integration, hostile/security, cross-version, and Windows PowerShell 5.1/PowerShell 7 checks.
+- Require an independent Agent review of the exact candidate SHA with no unresolved P0 or P1 findings before the first push of that candidate.
+- Do not push intermediate or known-failing checkpoints merely to use GitHub Actions as a test runner.
+- Push only a locally green, independently reviewed candidate. Use GitHub Actions as the final confirmation for the clean hosted runner, workflow/action resolution, exact-head required checks, and branch protection.
+- If GitHub Actions reveals a hosted-runner-only failure, reproduce and verify the fix locally where feasible before pushing the successor candidate.
+- Checks that inherently require GitHub-hosted state, live GitHub authentication, or branch-protection evaluation remain GitHub-only and must be reported separately from local evidence.
 
 ## Repository safety
 

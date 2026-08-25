@@ -61,8 +61,8 @@ $script:V02ReleaseGateLifecycleDecisionId = 'herdrops-v0.2-automated-lifecycle-v
 $script:V02ReleaseGateLifecycleDecisionPayloadSha256 = 'C7E5D74621D67D5ADD82BF8BE369B192AA64B5E337727FA986DB09A1F8540C7B'
 $script:V02ReleaseGateLifecycleDecisionReference = 'https://github.com/OSHEThai/HerdrOps/issues/149#issuecomment-5398171130'
 $script:V02ReleaseGateLifecycleApprovedUtc = '2026-08-24T16:25:24Z'
-$script:V02ReleaseGateAuthorityReferenceRelativePath = 'Plan/DECISIONS.md#D-026'
-$script:V02ReleaseGateAuthorityFileSha256 = '1A38220430D47CCD94DE146A2763E987FE2EB468F9C24D7E5F73991CD9C32980'
+$script:V02ReleaseGateAuthorityReferenceRelativePath = 'Plan/DECISIONS.md#D-029'
+$script:V02ReleaseGateAuthorityFileSha256 = '103C3039A40EF2EDE833ACF0A008BFD0E3DAC818464E9CC031E13B66113E97AE'
 $script:V02ReleaseGateAuthorityOwner = '@yutthaphon'
 $script:V02ReleaseGateAuthorityRole = 'ProductOwner'
 $script:V02ReleaseGateIndependentReceiptEvidenceClass = 'ExternalIndependentCandidateReceipt'
@@ -938,7 +938,7 @@ function Read-V02ReleaseGateAuthorityReference {
     }
     $snapshot = Get-V02ReleaseGateStableFileSnapshot -Path $actualPath -Context 'Authority reference'
     if ($snapshot.Sha256 -cne $script:V02ReleaseGateAuthorityFileSha256) {
-        throw "Authority reference hash is not the approved D-024 through D-028 record. Expected=$script:V02ReleaseGateAuthorityFileSha256 Observed=$($snapshot.Sha256)"
+        throw "Authority reference hash is not the approved D-024 through D-029 record. Expected=$script:V02ReleaseGateAuthorityFileSha256 Observed=$($snapshot.Sha256)"
     }
     $text = [Text.UTF8Encoding]::new($false, $true).GetString($snapshot.Bytes)
     foreach ($required in @(
@@ -960,6 +960,8 @@ function Read-V02ReleaseGateAuthorityReference {
             $script:V02ReleaseGateLifecycleDecisionPayloadSha256,
             'AutomatedLiveLifecycle',
             'D-028',
+            'D-029',
+            'GitHub Issue #161',
             $script:V02ReleaseGateAuthorityOwner,
             'role-distinct Agent review'
         )) {
